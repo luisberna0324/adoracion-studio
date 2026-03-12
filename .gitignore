@@ -1,0 +1,28 @@
+# Build outputs
+build/
+build-ios/
+**/Builds/
+
+# JUCE generated / artifacts
+JuceLibraryCode/
+**/JuceLibraryCode/
+**/*_artefacts/
+
+# IDE/editor
+.idea/
+.vscode/
+*.suo
+*.user
+*.userprefs
+*.sln
+*.xcworkspace/
+*.xcodeproj/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.swp
+*.tmp
+*.log
