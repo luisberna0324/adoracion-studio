@@ -9,9 +9,13 @@ StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader, double sam
   readerSource =
       std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
 
+  // Resample to the host sample rate if needed, then buffer on a background thread.
+  resamplingSource = std::make_unique<ResamplingPositionableSource>(
+      readerSource.get(), sampleRateToUse, 2);
+
   // Wrap it in a BufferingAudioSource with a dedicated read-ahead buffer thread
   bufferingSource = std::make_unique<StemBufferingSource>(
-      readerSource.get(), readThread, false, readAheadSamples, 2);
+      resamplingSource.get(), readThread, false, readAheadSamples, 2);
 }
 
 StemTrack::~StemTrack() {
@@ -79,4 +83,3 @@ bool StemTrack::isLooping() const { return bufferingSource->isLooping(); }
 void StemTrack::setLooping(bool shouldLoop) {
   bufferingSource->setLooping(shouldLoop);
 }
-

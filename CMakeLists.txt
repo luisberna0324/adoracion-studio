@@ -33,6 +33,8 @@ target_sources(MTControls
         src/PluginEditor.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        src/ResamplingPositionableSource.cpp
+        src/ResamplingPositionableSource.h
         src/StemTrack.cpp
         src/StemTrack.h
         src/StemBufferingSource.cpp
