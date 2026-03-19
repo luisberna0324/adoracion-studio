@@ -39,6 +39,18 @@ target_sources(MTControls
         src/StemTrack.h
         src/StemBufferingSource.cpp
         src/StemBufferingSource.h
+        src/data/SongData.cpp
+        src/data/SongData.h
+        src/ui/UiCommon.cpp
+        src/ui/UiCommon.h
+        src/ui/panels/ChannelGridPanel.cpp
+        src/ui/panels/ChannelGridPanel.h
+        src/ui/panels/MixerFaderPanel.cpp
+        src/ui/panels/MixerFaderPanel.h
+        src/ui/panels/TopBar.cpp
+        src/ui/panels/TopBar.h
+        src/ui/panels/WaveformBar.cpp
+        src/ui/panels/WaveformBar.h
 )
 
 target_compile_definitions(MTControls

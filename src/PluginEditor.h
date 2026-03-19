@@ -166,6 +166,8 @@ private:
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ChannelStripCard)
 };
 
+class TopBar;
+
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor {
 public:
   explicit MTControlsAudioProcessorEditor(MTControlsAudioProcessor &);
@@ -180,7 +182,7 @@ private:
 
   ChannelStripLookAndFeel stripLookAndFeel;
 
-  std::unique_ptr<juce::Component> topBar;
+  std::unique_ptr<TopBar> topBar;
   std::unique_ptr<juce::Component> waveformBar;
   std::unique_ptr<juce::Component> mixerFaderPanel;
   std::unique_ptr<juce::Component> channelGridPanel;
