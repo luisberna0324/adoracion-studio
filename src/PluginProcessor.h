@@ -48,6 +48,12 @@ public:
   void toggleSongPlayPause();
   void seekSongRelative(double deltaSeconds);
   void seekSongTo(double positionSeconds);
+  void setSongStartSeconds(double seconds) noexcept;
+  void setSongEndSeconds(double seconds) noexcept;
+  void setSongFadeOutSeconds(double seconds) noexcept;
+  double getSongStartSeconds() const noexcept;
+  double getSongEndSeconds() const noexcept;
+  double getSongFadeOutSeconds() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
   void setFadeStopsPlayback(bool shouldStop) noexcept;
   bool isFadeStopsPlayback() const noexcept;
@@ -80,6 +86,8 @@ public:
   bool isStemSoloed(int stemIndex) const noexcept;
   void setMasterVolume(float volume) noexcept;
   float getMasterVolume() const noexcept;
+  void setMasterGain(float gain) noexcept;
+  float getMasterGain() const noexcept;
   void setMasterMute(bool muted) noexcept;
   bool isMasterMuted() const noexcept;
 
@@ -110,6 +118,7 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemClickGuideStates;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
+  std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
@@ -123,6 +132,9 @@ private:
   int playbackBlockSize = 0;
   std::atomic<double> loadedSongLengthSeconds{0.0};
   std::atomic<double> loadedSongBpm{0.0};
+  std::atomic<double> songStartSeconds{0.0};
+  std::atomic<double> songEndSeconds{0.0};
+  std::atomic<double> songFadeOutSeconds{0.0};
   juce::String loadedSongKey;
   juce::String loadedSongTitle;
   std::atomic<bool> songLoaded{false};
@@ -149,7 +161,7 @@ private:
   std::atomic<bool> fadeActive{false};
   std::atomic<float> fadeTarget{1.0f};
   float fadeGain = 1.0f;
-  const double fadeDurationSec = 0.8;
+  const double fadeDurationSec = 2.0;
   std::atomic<bool> fadeStopsPlayback{true};
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)

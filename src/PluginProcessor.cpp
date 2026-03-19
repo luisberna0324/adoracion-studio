@@ -77,6 +77,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
        ++i)
     buffer.clear(i, 0, buffer.getNumSamples());
 
+  bool usedSeparatedMix = false;
+  bool usedMonoClickMix = false;
+  float windowFadeStart = 1.0f;
+  float windowFadeEnd = 1.0f;
+  bool windowFadeActive = false;
+  bool stopAtEnd = false;
+  double stopAtEndSec = 0.0;
+
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
 
@@ -122,7 +130,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
     }
 
-    const float mixGain = stemCount > 0 ? (1.0f / static_cast<float>(stemCount)) : 1.0f;
+    // Keep natural stem balance (no auto-normalization by stem count).
+    const float mixGain = 1.0f;
 
     // Inject lock-free mix state into StemTracks and update UI meters
     for (int i = 0; i < stemCount; ++i) {
@@ -141,9 +150,66 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     for (int i = stemCount; i < maxStemCount; ++i)
       stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
 
+    const float fadeTargetLocalForMix =
+        fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
       const bool monoClick = monoClickMode.load(std::memory_order_relaxed);
-      if (monoClick && numChannels >= 2) {
+      const double length =
+          loadedSongLengthSeconds.load(std::memory_order_relaxed);
+      const double windowStartSec =
+          songStartSeconds.load(std::memory_order_relaxed);
+      double windowEndSec =
+          songEndSeconds.load(std::memory_order_relaxed);
+      if (windowEndSec <= 0.0 || windowEndSec > length)
+        windowEndSec = length;
+      const double fadeOutSec =
+          songFadeOutSeconds.load(std::memory_order_relaxed);
+      const double blockStartSec =
+          playbackSampleRate > 0.0
+              ? static_cast<double>(
+                    globalSamplePosition.load(std::memory_order_relaxed)) /
+                    playbackSampleRate
+              : 0.0;
+      const double blockEndSec =
+          playbackSampleRate > 0.0
+              ? blockStartSec +
+                    (static_cast<double>(numSamples) / playbackSampleRate)
+              : blockStartSec;
+
+      if (fadeOutSec > 0.0 && windowEndSec > windowStartSec &&
+          playbackSampleRate > 0.0) {
+        const double fadeStartSec =
+            juce::jmax(windowStartSec, windowEndSec - fadeOutSec);
+        const auto fadeAt = [fadeStartSec, windowEndSec, fadeOutSec](double t) {
+          if (t <= fadeStartSec)
+            return 1.0;
+          if (t >= windowEndSec)
+            return 0.0;
+          return (windowEndSec - t) / fadeOutSec;
+        };
+        windowFadeStart = static_cast<float>(
+            juce::jlimit(0.0, 1.0, fadeAt(blockStartSec)));
+        windowFadeEnd = static_cast<float>(
+            juce::jlimit(0.0, 1.0, fadeAt(blockEndSec)));
+        windowFadeActive =
+            (windowFadeStart < 0.999f) || (windowFadeEnd < 0.999f);
+      }
+
+      if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
+        stopAtEnd = true;
+        stopAtEndSec = windowEndSec;
+      }
+
+      const bool isolateGuideDuringFade =
+          fadeActive.load(std::memory_order_relaxed) ||
+          !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
+      const bool useSeparatedMix =
+          (monoClick && numChannels >= 2) || isolateGuideDuringFade ||
+          windowFadeActive;
+      usedSeparatedMix = useSeparatedMix;
+      usedMonoClickMix = monoClick && numChannels >= 2;
+
+      if (useSeparatedMix) {
         if (numSamples > stemTempBuffer.getNumSamples()) {
           stemTempBuffer.setSize(numChannels, numSamples, false, false, true);
           stemMixBuffer.setSize(numChannels, numSamples, false, false, true);
@@ -165,24 +231,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           for (int ch = 0; ch < numChannels; ++ch)
             target.addFrom(ch, 0, stemTempBuffer, ch, 0, numSamples);
         }
-
-        buffer.clear();
-        auto *left = buffer.getWritePointer(0);
-        auto *right = buffer.getWritePointer(1);
-        for (int s = 0; s < numSamples; ++s) {
-          float musicSum = 0.0f;
-          float clickSum = 0.0f;
-          for (int ch = 0; ch < numChannels; ++ch) {
-            musicSum += stemMixBuffer.getSample(ch, s);
-            clickSum += dryBuffer.getSample(ch, s);
-          }
-          const float musicMono = musicSum / static_cast<float>(numChannels);
-          const float clickMono = clickSum / static_cast<float>(numChannels);
-          left[s] = musicMono;
-          right[s] = clickMono;
-        }
-        for (int ch = 2; ch < numChannels; ++ch)
-          buffer.clear(ch, 0, numSamples);
       } else {
         // MixerAudioSource will call getNextAudioBlock on all StemTracks, apply their internal volumes, and sum into `buffer`.
         juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
@@ -261,6 +309,84 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   const int numSamples = buffer.getNumSamples();
   const int numChannels = buffer.getNumChannels();
 
+  const float masterOutGain =
+      (masterMuted.load(std::memory_order_relaxed)
+           ? 0.0f
+           : juce::jlimit(0.0f, 1.0f,
+                          masterVolume.load(std::memory_order_relaxed))) *
+      juce::jlimit(0.0f, 2.0f, masterGain.load(std::memory_order_relaxed));
+  const float fadeTargetLocal = fadeTarget.load(std::memory_order_relaxed);
+  float fadeStart = fadeGain;
+  float fadeEnd = fadeGain;
+  if (numSamples > 0 && playbackSampleRate > 0.0f &&
+      !juce::approximatelyEqual(fadeGain, fadeTargetLocal)) {
+    const float step =
+        (fadeTargetLocal - fadeGain) /
+        static_cast<float>(fadeDurationSec * playbackSampleRate);
+    fadeEnd = fadeGain + (step * static_cast<float>(numSamples));
+    if ((step > 0.0f && fadeEnd > fadeTargetLocal) ||
+        (step < 0.0f && fadeEnd < fadeTargetLocal))
+      fadeEnd = fadeTargetLocal;
+    fadeGain = fadeEnd;
+  }
+
+  if (usedSeparatedMix) {
+    const float instrumentFadeStart = fadeStart * windowFadeStart;
+    const float instrumentFadeEnd = fadeEnd * windowFadeEnd;
+    if (!juce::approximatelyEqual(instrumentFadeStart, 1.0f) ||
+        !juce::approximatelyEqual(instrumentFadeEnd, 1.0f)) {
+      if (juce::approximatelyEqual(instrumentFadeStart, instrumentFadeEnd)) {
+        stemMixBuffer.applyGain(instrumentFadeEnd);
+      } else {
+        stemMixBuffer.applyGainRamp(0, numSamples, instrumentFadeStart,
+                                    instrumentFadeEnd);
+      }
+    }
+
+    buffer.clear();
+    if (usedMonoClickMix && numChannels >= 2) {
+      auto *left = buffer.getWritePointer(0);
+      auto *right = buffer.getWritePointer(1);
+      for (int s = 0; s < numSamples; ++s) {
+        float musicSum = 0.0f;
+        float guideSum = 0.0f;
+        for (int ch = 0; ch < numChannels; ++ch) {
+          musicSum += stemMixBuffer.getSample(ch, s);
+          guideSum += dryBuffer.getSample(ch, s);
+        }
+        left[s] = musicSum / static_cast<float>(numChannels);
+        right[s] = guideSum / static_cast<float>(numChannels);
+      }
+      for (int ch = 2; ch < numChannels; ++ch)
+        buffer.clear(ch, 0, numSamples);
+    } else {
+      for (int ch = 0; ch < numChannels; ++ch) {
+        buffer.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
+        buffer.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
+      }
+    }
+
+  } else {
+    const float combinedFadeStart = fadeStart * windowFadeStart;
+    const float combinedFadeEnd = fadeEnd * windowFadeEnd;
+    if (!juce::approximatelyEqual(combinedFadeStart, 1.0f) ||
+        !juce::approximatelyEqual(combinedFadeEnd, 1.0f)) {
+      if (juce::approximatelyEqual(combinedFadeStart, combinedFadeEnd)) {
+        buffer.applyGain(combinedFadeEnd);
+      } else {
+        buffer.applyGainRamp(0, numSamples, combinedFadeStart,
+                             combinedFadeEnd);
+      }
+    }
+  }
+
+  if (fadeStopsPlayback.load(std::memory_order_relaxed) &&
+      fadeActive.load(std::memory_order_relaxed) &&
+      juce::approximatelyEqual(fadeGain, 0.0f) &&
+      getTransportState() == TransportState::playing) {
+    stopSong();
+  }
+
   if (metronomeEnabled.load(std::memory_order_relaxed) && numSamples > 0 &&
       playbackSampleRate > 0.0) {
     const double bpm = metronomeBpm.load(std::memory_order_relaxed);
@@ -311,51 +437,23 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
   }
 
-  float left = numChannels > 0 ? buffer.getMagnitude(0, 0, numSamples) : 0.0f;
-  float right = numChannels > 1 ? buffer.getMagnitude(1, 0, numSamples) : left;
+  if (!juce::approximatelyEqual(masterOutGain, 1.0f))
+    buffer.applyGain(masterOutGain);
 
-  const float masterGain =
-      masterMuted.load(std::memory_order_relaxed)
-          ? 0.0f
-          : juce::jlimit(0.0f, 1.0f,
-                         masterVolume.load(std::memory_order_relaxed));
-  float fadeStart = fadeGain;
-  float fadeEnd = fadeGain;
-  const float fadeTargetLocal = fadeTarget.load(std::memory_order_relaxed);
-  if (numSamples > 0 && playbackSampleRate > 0.0f &&
-      !juce::approximatelyEqual(fadeGain, fadeTargetLocal)) {
-    const float step =
-        (fadeTargetLocal - fadeGain) /
-        static_cast<float>(fadeDurationSec * playbackSampleRate);
-    fadeEnd = fadeGain + (step * static_cast<float>(numSamples));
-    if ((step > 0.0f && fadeEnd > fadeTargetLocal) ||
-        (step < 0.0f && fadeEnd < fadeTargetLocal))
-      fadeEnd = fadeTargetLocal;
-    fadeGain = fadeEnd;
-  }
-
-  const float startGain = masterGain * fadeStart;
-  const float endGain = masterGain * fadeEnd;
-  if (!juce::approximatelyEqual(startGain, 1.0f) ||
-      !juce::approximatelyEqual(endGain, 1.0f)) {
-    if (juce::approximatelyEqual(startGain, endGain)) {
-      buffer.applyGain(endGain);
-      left *= endGain;
-      right *= endGain;
-    } else {
-      buffer.applyGainRamp(0, numSamples, startGain, endGain);
-      left *= endGain;
-      right *= endGain;
+  if (stopAtEnd) {
+    setTransportState(TransportState::stopped);
+    songCurrentPositionSeconds.store(stopAtEndSec, std::memory_order_relaxed);
+    if (playbackSampleRate > 0.0) {
+      const juce::int64 endSamples =
+          static_cast<juce::int64>(stopAtEndSec * playbackSampleRate);
+      globalSamplePosition.store(endSamples, std::memory_order_relaxed);
     }
   }
 
-  if (fadeStopsPlayback.load(std::memory_order_relaxed) &&
-      fadeActive.load(std::memory_order_relaxed) &&
-      juce::approximatelyEqual(fadeGain, 0.0f) &&
-      getTransportState() == TransportState::playing) {
-    stopSong();
-  }
-
+  const float left =
+      numChannels > 0 ? buffer.getMagnitude(0, 0, numSamples) : 0.0f;
+  const float right =
+      numChannels > 1 ? buffer.getMagnitude(1, 0, numSamples) : left;
   meterLevelLeft.store(left, std::memory_order_relaxed);
   meterLevelRight.store(right, std::memory_order_relaxed);
 }
@@ -510,10 +608,15 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
     globalSamplePosition.store(0, std::memory_order_relaxed);
     songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
     masterVolume.store(1.0f, std::memory_order_relaxed);
+    masterGain.store(1.0f, std::memory_order_relaxed);
     masterMuted.store(false, std::memory_order_relaxed);
     requestedSeekPosition.store(-1, std::memory_order_relaxed);
 
     loadedSongLengthSeconds = maxLengthSeconds;
+    songStartSeconds.store(0.0, std::memory_order_relaxed);
+    songEndSeconds.store(maxLengthSeconds, std::memory_order_relaxed);
+    songFadeOutSeconds.store(juce::jmin(1.0, maxLengthSeconds),
+                             std::memory_order_relaxed);
     loadedSongBpm = juce::jmax(0.0, songBpm);
     if (loadedSongBpm > 0.0)
       setMetronomeBpm(loadedSongBpm.load(std::memory_order_relaxed));
@@ -532,6 +635,12 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
 void MTControlsAudioProcessor::playSong() {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
+  const double start = songStartSeconds.load(std::memory_order_relaxed);
+  const double end = songEndSeconds.load(std::memory_order_relaxed);
+  const double current =
+      songCurrentPositionSeconds.load(std::memory_order_relaxed);
+  if (current < start || (end > 0.0 && current >= end))
+    seekSongTo(start);
   setTransportState(TransportState::playing);
 }
 
@@ -545,13 +654,17 @@ void MTControlsAudioProcessor::stopSong() {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   setTransportState(TransportState::stopped);
-  seekTargetSeconds.store(0.0, std::memory_order_relaxed);
+  const double start = songStartSeconds.load(std::memory_order_relaxed);
+  seekTargetSeconds.store(start, std::memory_order_relaxed);
   seekPending.store(true, std::memory_order_release);
-  globalSamplePosition.store(0, std::memory_order_relaxed);
-  songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
+  globalSamplePosition.store(
+      static_cast<juce::int64>(start * playbackSampleRate),
+      std::memory_order_relaxed);
+  songCurrentPositionSeconds.store(start, std::memory_order_relaxed);
   metronomePhase = 0.0;
   metronomeClickSamplesRemaining = 0;
-  requestedSeekPosition.store(0, std::memory_order_relaxed);
+  requestedSeekPosition.store(static_cast<juce::int64>(start * playbackSampleRate),
+                              std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::toggleSongPlayPause() {
@@ -571,9 +684,15 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
   // Use the atomically reported position (safe from any thread).
   const double current =
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double start = songStartSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  start = juce::jlimit(0.0, end, start);
   const double target =
-      juce::jlimit(0.0, loadedSongLengthSeconds.load(std::memory_order_relaxed),
-                   current + deltaSeconds);
+      juce::jlimit(start, end, current + deltaSeconds);
 
   seekSongTo(target);
 }
@@ -582,9 +701,14 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
 
-  const double target =
-      juce::jlimit(0.0, loadedSongLengthSeconds.load(std::memory_order_relaxed),
-                   positionSeconds);
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double start = songStartSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  start = juce::jlimit(0.0, end, start);
+  const double target = juce::jlimit(start, end, positionSeconds);
 
   // Write target atomically. processBlock will pick this up and apply it
   // to ALL stems in the same audio callback → zero inter-stem desync.
@@ -597,6 +721,93 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
         static_cast<juce::int64>(target * playbackSampleRate);
     globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
   }
+}
+
+void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double start = juce::jlimit(0.0, length, seconds);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  end = juce::jlimit(start, length, end);
+  songStartSeconds.store(start, std::memory_order_relaxed);
+  songEndSeconds.store(end, std::memory_order_relaxed);
+
+  const double maxFade = juce::jmax(0.0, end - start);
+  const double fadeOut = songFadeOutSeconds.load(std::memory_order_relaxed);
+  songFadeOutSeconds.store(juce::jlimit(0.0, maxFade, fadeOut),
+                           std::memory_order_relaxed);
+
+  const double current =
+      songCurrentPositionSeconds.load(std::memory_order_relaxed);
+  if (current < start)
+    seekSongTo(start);
+}
+
+void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double start = songStartSeconds.load(std::memory_order_relaxed);
+  double end = juce::jlimit(0.0, length, seconds);
+  start = juce::jlimit(0.0, end, start);
+  end = juce::jlimit(start, length, end);
+  songStartSeconds.store(start, std::memory_order_relaxed);
+  songEndSeconds.store(end, std::memory_order_relaxed);
+
+  const double maxFade = juce::jmax(0.0, end - start);
+  const double fadeOut = songFadeOutSeconds.load(std::memory_order_relaxed);
+  songFadeOutSeconds.store(juce::jlimit(0.0, maxFade, fadeOut),
+                           std::memory_order_relaxed);
+
+  const double current =
+      songCurrentPositionSeconds.load(std::memory_order_relaxed);
+  if (current > end) {
+    seekSongTo(end);
+    if (isSongPlaying())
+      setTransportState(TransportState::stopped);
+  }
+}
+
+void MTControlsAudioProcessor::setSongFadeOutSeconds(double seconds) noexcept {
+  const double start = songStartSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  const double maxFade = juce::jmax(0.0, end - start);
+  songFadeOutSeconds.store(juce::jlimit(0.0, maxFade, seconds),
+                           std::memory_order_relaxed);
+}
+
+double MTControlsAudioProcessor::getSongStartSeconds() const noexcept {
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  const double start =
+      juce::jlimit(0.0, end, songStartSeconds.load(std::memory_order_relaxed));
+  return start;
+}
+
+double MTControlsAudioProcessor::getSongEndSeconds() const noexcept {
+  const double length =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (end <= 0.0 || end > length)
+    end = length;
+  return end;
+}
+
+double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
+  const double start = getSongStartSeconds();
+  const double end = getSongEndSeconds();
+  const double maxFade = juce::jmax(0.0, end - start);
+  const double fade =
+      songFadeOutSeconds.load(std::memory_order_relaxed);
+  return juce::jlimit(0.0, maxFade, fade);
 }
 
 bool MTControlsAudioProcessor::hasLoadedSong() const noexcept {
@@ -722,6 +933,15 @@ float MTControlsAudioProcessor::getMasterVolume() const noexcept {
   return masterVolume.load(std::memory_order_relaxed);
 }
 
+void MTControlsAudioProcessor::setMasterGain(const float gain) noexcept {
+  masterGain.store(juce::jlimit(0.0f, 2.0f, gain),
+                   std::memory_order_relaxed);
+}
+
+float MTControlsAudioProcessor::getMasterGain() const noexcept {
+  return masterGain.load(std::memory_order_relaxed);
+}
+
 void MTControlsAudioProcessor::setMasterMute(const bool muted) noexcept {
   masterMuted.store(muted, std::memory_order_relaxed);
 }
@@ -793,8 +1013,12 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   loadedSongBpm = 0.0;
   loadedSongKey.clear();
   loadedSongTitle.clear();
+  songStartSeconds.store(0.0, std::memory_order_relaxed);
+  songEndSeconds.store(0.0, std::memory_order_relaxed);
+  songFadeOutSeconds.store(0.0, std::memory_order_relaxed);
   resetStemControls(0);
   masterVolume.store(1.0f, std::memory_order_relaxed);
+  masterGain.store(1.0f, std::memory_order_relaxed);
   masterMuted.store(false, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);

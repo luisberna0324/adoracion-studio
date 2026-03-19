@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ResamplingPositionableSource.h"
 #include "StemBufferingSource.h"
 #include <JuceHeader.h>
 #include <atomic>
@@ -56,6 +57,7 @@ public:
 private:
   juce::TimeSliceThread readThread;
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
+  std::unique_ptr<ResamplingPositionableSource> resamplingSource;
   std::unique_ptr<StemBufferingSource> bufferingSource;
 
   std::atomic<float> volume{1.0f};

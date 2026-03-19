@@ -28,53 +28,216 @@ constexpr int kWaveformH = 100;
 constexpr int kWaveformExpandedH = 160;
 
 struct UITheme {
-  static const juce::Colour appBg;
-  static const juce::Colour appBgTop;
-  static const juce::Colour appBgBottom;
-  static const juce::Colour panelDark;
-  static const juce::Colour cardBg;
-  static const juce::Colour cardBgHover;
-  static const juce::Colour cardBgPressed;
-  static const juce::Colour cardBorder;
-  static const juce::Colour textPrimary;
-  static const juce::Colour textSecondary;
-  static const juce::Colour accent;
-  static const juce::Colour accentSoft;
-  static const juce::Colour accentMuted;
-  static const juce::Colour accentMaster;
-  static const juce::Colour cardBgMaster;
-  static const juce::Colour cardBgClickGuide;
-  static const juce::Colour onAccent;
-  static const juce::Colour dividerSoft;
+  static juce::Colour appBg;
+  static juce::Colour appBgTop;
+  static juce::Colour appBgBottom;
+  static juce::Colour panelDark;
+  static juce::Colour cardBg;
+  static juce::Colour cardBgHover;
+  static juce::Colour cardBgPressed;
+  static juce::Colour cardBorder;
+  static juce::Colour textPrimary;
+  static juce::Colour textSecondary;
+  static juce::Colour accent;
+  static juce::Colour accentSoft;
+  static juce::Colour accentMuted;
+  static juce::Colour accentMaster;
+  static juce::Colour cardBgMaster;
+  static juce::Colour cardBgClickGuide;
+  static juce::Colour onAccent;
+  static juce::Colour dividerSoft;
 };
 
-const juce::Colour UITheme::appBg =
+juce::Colour UITheme::appBg =
     juce::Colour::fromRGB(50, 46, 43); // #322E2B
-const juce::Colour UITheme::appBgTop =
+juce::Colour UITheme::appBgTop =
     juce::Colour::fromRGB(56, 52, 49); // #383431
-const juce::Colour UITheme::appBgBottom =
+juce::Colour UITheme::appBgBottom =
     juce::Colour::fromRGB(70, 65, 61); // #46413D
-const juce::Colour UITheme::panelDark =
+juce::Colour UITheme::panelDark =
     juce::Colour::fromRGB(38, 34, 32); // #262220
-const juce::Colour UITheme::cardBg = juce::Colour::fromRGB(212, 212, 212);
-const juce::Colour UITheme::cardBgHover = juce::Colour::fromRGB(218, 218, 218);
-const juce::Colour UITheme::cardBgPressed =
+juce::Colour UITheme::cardBg = juce::Colour::fromRGB(212, 212, 212);
+juce::Colour UITheme::cardBgHover = juce::Colour::fromRGB(218, 218, 218);
+juce::Colour UITheme::cardBgPressed =
     juce::Colour::fromRGB(201, 201, 201);
-const juce::Colour UITheme::cardBorder = juce::Colour::fromRGB(189, 189, 189);
-const juce::Colour UITheme::textPrimary = juce::Colour::fromRGB(78, 78, 78);
-const juce::Colour UITheme::textSecondary =
+juce::Colour UITheme::cardBorder = juce::Colour::fromRGB(189, 189, 189);
+juce::Colour UITheme::textPrimary = juce::Colour::fromRGB(78, 78, 78);
+juce::Colour UITheme::textSecondary =
     juce::Colour::fromRGB(118, 118, 118);
-const juce::Colour UITheme::accent = juce::Colour::fromRGB(193, 122, 90);
-const juce::Colour UITheme::accentSoft = juce::Colour::fromRGB(196, 154, 108);
-const juce::Colour UITheme::accentMuted = juce::Colour::fromRGB(181, 124, 124);
-const juce::Colour UITheme::accentMaster = juce::Colour::fromRGB(163, 108, 74);
-const juce::Colour UITheme::cardBgMaster =
+juce::Colour UITheme::accent = juce::Colour::fromRGB(193, 122, 90);
+juce::Colour UITheme::accentSoft = juce::Colour::fromRGB(196, 154, 108);
+juce::Colour UITheme::accentMuted = juce::Colour::fromRGB(181, 124, 124);
+juce::Colour UITheme::accentMaster = juce::Colour::fromRGB(163, 108, 74);
+juce::Colour UITheme::cardBgMaster =
     juce::Colour::fromRGB(232, 216, 200); // #E8D8C8
-const juce::Colour UITheme::cardBgClickGuide =
+juce::Colour UITheme::cardBgClickGuide =
     juce::Colour::fromRGB(200, 205, 214); // #C8CDD6
-const juce::Colour UITheme::onAccent = juce::Colours::white;
-const juce::Colour UITheme::dividerSoft =
+juce::Colour UITheme::onAccent = juce::Colours::white;
+juce::Colour UITheme::dividerSoft =
     juce::Colour::fromRGBA(255, 255, 255, 20);
+
+enum class ThemePreset { Default = 1, Spotify, Ableton };
+
+void applyTheme(ThemePreset preset) {
+  switch (preset) {
+  case ThemePreset::Spotify:
+    UITheme::appBg = juce::Colour::fromRGB(18, 18, 18);      // #121212
+    UITheme::appBgTop = juce::Colour::fromRGB(25, 20, 20);   // #191414
+    UITheme::appBgBottom = juce::Colour::fromRGB(29, 29, 29);
+    UITheme::panelDark = juce::Colour::fromRGB(16, 16, 16);
+    UITheme::cardBg = juce::Colour::fromRGB(28, 28, 28);
+    UITheme::cardBgHover = juce::Colour::fromRGB(36, 36, 36);
+    UITheme::cardBgPressed = juce::Colour::fromRGB(44, 44, 44);
+    UITheme::cardBorder = juce::Colour::fromRGB(48, 48, 48);
+    UITheme::textPrimary = juce::Colour::fromRGB(245, 245, 245);
+    UITheme::textSecondary = juce::Colour::fromRGB(179, 179, 179);
+    UITheme::accent = juce::Colour::fromRGB(29, 185, 84);    // #1DB954
+    UITheme::accentSoft = juce::Colour::fromRGB(30, 215, 96); // #1ED760
+    UITheme::accentMuted = juce::Colour::fromRGB(88, 140, 88);
+    UITheme::accentMaster = juce::Colour::fromRGB(29, 185, 84);
+    UITheme::cardBgMaster = juce::Colour::fromRGB(24, 24, 24);
+    UITheme::cardBgClickGuide = juce::Colour::fromRGB(32, 32, 32);
+    UITheme::onAccent = juce::Colours::black;
+    UITheme::dividerSoft = juce::Colour::fromRGBA(255, 255, 255, 16);
+    break;
+  case ThemePreset::Ableton:
+    UITheme::appBg = juce::Colour::fromRGB(30, 30, 30);
+    UITheme::appBgTop = juce::Colour::fromRGB(36, 36, 36);
+    UITheme::appBgBottom = juce::Colour::fromRGB(44, 44, 44);
+    UITheme::panelDark = juce::Colour::fromRGB(24, 24, 24);
+    UITheme::cardBg = juce::Colour::fromRGB(40, 40, 40);
+    UITheme::cardBgHover = juce::Colour::fromRGB(48, 48, 48);
+    UITheme::cardBgPressed = juce::Colour::fromRGB(58, 58, 58);
+    UITheme::cardBorder = juce::Colour::fromRGB(68, 68, 68);
+    UITheme::textPrimary = juce::Colour::fromRGB(230, 230, 230);
+    UITheme::textSecondary = juce::Colour::fromRGB(160, 160, 160);
+    UITheme::accent = juce::Colour::fromRGB(255, 179, 71);   // warm
+    UITheme::accentSoft = juce::Colour::fromRGB(76, 182, 255); // cool
+    UITheme::accentMuted = juce::Colour::fromRGB(180, 140, 95);
+    UITheme::accentMaster = juce::Colour::fromRGB(255, 179, 71);
+    UITheme::cardBgMaster = juce::Colour::fromRGB(46, 46, 46);
+    UITheme::cardBgClickGuide = juce::Colour::fromRGB(54, 54, 54);
+    UITheme::onAccent = juce::Colours::black;
+    UITheme::dividerSoft = juce::Colour::fromRGBA(255, 255, 255, 16);
+    break;
+  case ThemePreset::Default:
+  default:
+    UITheme::appBg = juce::Colour::fromRGB(50, 46, 43);
+    UITheme::appBgTop = juce::Colour::fromRGB(56, 52, 49);
+    UITheme::appBgBottom = juce::Colour::fromRGB(70, 65, 61);
+    UITheme::panelDark = juce::Colour::fromRGB(38, 34, 32);
+    UITheme::cardBg = juce::Colour::fromRGB(212, 212, 212);
+    UITheme::cardBgHover = juce::Colour::fromRGB(218, 218, 218);
+    UITheme::cardBgPressed = juce::Colour::fromRGB(201, 201, 201);
+    UITheme::cardBorder = juce::Colour::fromRGB(189, 189, 189);
+    UITheme::textPrimary = juce::Colour::fromRGB(78, 78, 78);
+    UITheme::textSecondary = juce::Colour::fromRGB(118, 118, 118);
+    UITheme::accent = juce::Colour::fromRGB(193, 122, 90);
+    UITheme::accentSoft = juce::Colour::fromRGB(196, 154, 108);
+    UITheme::accentMuted = juce::Colour::fromRGB(181, 124, 124);
+    UITheme::accentMaster = juce::Colour::fromRGB(163, 108, 74);
+    UITheme::cardBgMaster = juce::Colour::fromRGB(232, 216, 200);
+    UITheme::cardBgClickGuide = juce::Colour::fromRGB(200, 205, 214);
+    UITheme::onAccent = juce::Colours::white;
+    UITheme::dividerSoft = juce::Colour::fromRGBA(255, 255, 255, 20);
+    break;
+  }
+}
+
+  class SettingsPanel final : public juce::Component {
+public:
+  using ThemeChanged = std::function<void(ThemePreset)>;
+  using CloseRequested = std::function<void()>;
+
+  SettingsPanel(ThemePreset current, ThemeChanged cb, CloseRequested closeCb)
+      : onThemeChanged(std::move(cb)), onClose(std::move(closeCb)) {
+    title.setText("Settings", juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centredLeft);
+    title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
+    addAndMakeVisible(title);
+
+    themeLabel.setText("Skin", juce::dontSendNotification);
+    themeLabel.setJustificationType(juce::Justification::centredLeft);
+    themeLabel.setFont(juce::FontOptions(12.0f));
+    addAndMakeVisible(themeLabel);
+
+    themeBox.addItem("Default", static_cast<int>(ThemePreset::Default));
+    themeBox.addItem("Spotify", static_cast<int>(ThemePreset::Spotify));
+    themeBox.addItem("Ableton", static_cast<int>(ThemePreset::Ableton));
+    themeBox.setSelectedId(static_cast<int>(current));
+    themeBox.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(themeBox);
+
+    closeButton.setButtonText("CLOSE");
+    closeButton.setClickingTogglesState(false);
+    closeButton.setViewportIgnoreDragFlag(true);
+    closeButton.onClick = [this] { closeSelf(); };
+    addAndMakeVisible(closeButton);
+
+    themeBox.onChange = [this] {
+      const auto id = themeBox.getSelectedId();
+      if (id <= 0 || !onThemeChanged)
+        return;
+      onThemeChanged(static_cast<ThemePreset>(id));
+    };
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(b, 6.0f);
+    g.setColour(UITheme::cardBorder);
+    g.drawRoundedRectangle(b, 6.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(16);
+    title.setBounds(area.removeFromTop(28));
+    area.removeFromTop(10);
+    auto row = area.removeFromTop(26);
+    themeLabel.setBounds(row.removeFromLeft(60));
+    themeBox.setBounds(row);
+    area.removeFromTop(14);
+    closeButton.setBounds(area.removeFromTop(28).removeFromRight(90));
+  }
+
+  void refreshThemeColours() {
+    title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+    themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    themeBox.setColour(juce::ComboBox::backgroundColourId,
+                       UITheme::cardBgHover);
+    themeBox.setColour(juce::ComboBox::outlineColourId,
+                       UITheme::cardBorder.withAlpha(0.65f));
+    themeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+    themeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+    closeButton.setColour(juce::TextButton::buttonColourId,
+                          UITheme::cardBgHover);
+    closeButton.setColour(juce::TextButton::buttonOnColourId,
+                          UITheme::cardBgPressed);
+    closeButton.setColour(juce::TextButton::textColourOffId,
+                          UITheme::textPrimary);
+    closeButton.setColour(juce::TextButton::textColourOnId,
+                          UITheme::textPrimary);
+    repaint();
+  }
+
+private:
+  juce::Label title;
+  juce::Label themeLabel;
+  juce::ComboBox themeBox;
+  juce::TextButton closeButton;
+  ThemeChanged onThemeChanged;
+  CloseRequested onClose;
+
+  void closeSelf() {
+    if (onClose)
+      onClose();
+    if (auto *dw = findParentComponentOfClass<juce::DialogWindow>()) {
+      dw->exitModalState(0);
+      dw->setVisible(false);
+    }
+  }
+  };
 
 struct ImportedStemData {
   juce::String sourcePath;
@@ -1048,11 +1211,13 @@ enum class IconGlyph {
   SeekForward,
   Next,
   Loop,
-  Fade,
+  FadeOut,
+  FadeIn,
   Pencil,
   Settings,
   More,
-  Add
+  Add,
+  Metronome
 };
 
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
@@ -1144,12 +1309,14 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
     g.fillPath(arrow);
     break;
   }
-  case IconGlyph::Fade: {
+  case IconGlyph::FadeOut: {
+    g.drawLine(area.getX(), area.getY(), area.getRight(), area.getBottom(),
+               stroke);
+    break;
+  }
+  case IconGlyph::FadeIn: {
     g.drawLine(area.getX(), area.getBottom(), area.getRight(), area.getY(),
                stroke);
-    g.drawLine(area.getX(), area.getY() + area.getHeight() * 0.35f,
-               area.getRight(), area.getBottom() - area.getHeight() * 0.35f,
-               stroke * 0.9f);
     break;
   }
   case IconGlyph::Pencil: {
@@ -1198,6 +1365,19 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                ring.getBottom() - 2.0f, stroke);
     g.drawLine(ring.getX() + 2.0f, ring.getCentreY(), ring.getRight() - 2.0f,
                ring.getCentreY(), stroke);
+    break;
+  }
+  case IconGlyph::Metronome: {
+    juce::Path body;
+    body.startNewSubPath(area.getX() + 1.0f, area.getBottom());
+    body.lineTo(area.getCentreX(), area.getY() + 1.5f);
+    body.lineTo(area.getRight() - 1.0f, area.getBottom());
+    body.closeSubPath();
+    g.strokePath(body, juce::PathStrokeType(stroke));
+    g.drawLine(area.getCentreX(), area.getY() + 6.0f, area.getCentreX(),
+               area.getBottom() - 3.0f, stroke * 0.9f);
+    g.drawLine(area.getCentreX(), area.getCentreY() + 1.0f,
+               area.getRight() - 3.0f, area.getY() + 4.0f, stroke * 0.9f);
     break;
   }
   }
@@ -1800,6 +1980,16 @@ void ChannelStripCard::setCardBgColour(juce::Colour colour) {
   repaint();
 }
 
+void ChannelStripCard::refreshThemeColours() {
+  gainLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  soloButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  soloButton.setColour(juce::TextButton::textColourOnId,
+                       UITheme::textPrimary.darker(0.18f));
+  muteButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  muteButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  repaint();
+}
+
 void ChannelStripCard::setOnVolumeChanged(std::function<void(float)> cb) {
   onVolumeChanged = std::move(cb);
 }
@@ -1864,6 +2054,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         repaint();
       }
 
+      void setPulseAmount(float amount, bool downbeat) {
+        pulseAmount = juce::jlimit(0.0f, 1.0f, amount);
+        pulseDownbeat = downbeat;
+        repaint();
+      }
+
       void paintButton(juce::Graphics &gr, bool isMouseOverButton,
                        bool isButtonDown) override {
         auto b = getLocalBounds().toFloat();
@@ -1872,6 +2068,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           fill = fill.brighter(0.06f);
         if (isButtonDown || getToggleState())
           fill = isPrimary ? UITheme::accentSoft : UITheme::cardBgPressed;
+        if (pulseAmount > 0.001f) {
+          const auto pulseColour =
+              pulseDownbeat ? UITheme::accentSoft : UITheme::accent;
+          fill = fill.interpolatedWith(pulseColour, 0.25f + (pulseAmount * 0.35f));
+        }
 
         gr.setColour(fill);
         gr.fillRoundedRectangle(b, 6.0f);
@@ -1884,17 +2085,162 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     private:
       IconGlyph glyph;
       bool isPrimary = false;
+      float pulseAmount = 0.0f;
+      bool pulseDownbeat = false;
     };
 
-    TopBar()
+    class ClickableLabel final : public juce::Label {
+    public:
+      std::function<void()> onClick;
+
+      void mouseDown(const juce::MouseEvent &) override {
+        if (onClick)
+          onClick();
+      }
+    };
+
+    class SongWindowPopover final : public juce::Component {
+    public:
+      SongWindowPopover(MTControlsAudioProcessor &processorRef)
+          : processor(processorRef) {
+        configureRow(startLabel, startMinus, startValue, startPlus, "Start");
+        configureRow(endLabel, endMinus, endValue, endPlus, "End");
+        configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus, "Fade out");
+
+        startMinus.onClick = [this] { adjustStart(-stepSeconds()); };
+        startPlus.onClick = [this] { adjustStart(stepSeconds()); };
+        endMinus.onClick = [this] { adjustEnd(-stepSeconds()); };
+        endPlus.onClick = [this] { adjustEnd(stepSeconds()); };
+        fadeMinus.onClick = [this] { adjustFade(-stepSeconds()); };
+        fadePlus.onClick = [this] { adjustFade(stepSeconds()); };
+
+        refreshValues();
+        applyTheme();
+      }
+
+      void refreshValues() {
+        startValue.setText(formatTimeSeconds(processor.getSongStartSeconds()),
+                           juce::dontSendNotification);
+        endValue.setText(formatTimeSeconds(processor.getSongEndSeconds()),
+                         juce::dontSendNotification);
+        const int fadeSecs =
+            static_cast<int>(std::round(processor.getSongFadeOutSeconds()));
+        fadeValue.setText(juce::String(fadeSecs) + " sec",
+                          juce::dontSendNotification);
+      }
+
+      void applyTheme() {
+        for (auto *label : {&startLabel, &endLabel, &fadeLabel}) {
+          label->setColour(juce::Label::textColourId, UITheme::textSecondary);
+          label->setFont(juce::FontOptions(11.0f));
+        }
+        for (auto *value : {&startValue, &endValue, &fadeValue}) {
+          value->setColour(juce::Label::textColourId, UITheme::textPrimary);
+          value->setColour(juce::Label::backgroundColourId,
+                           UITheme::cardBgHover);
+          value->setColour(juce::Label::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.65f));
+          value->setJustificationType(juce::Justification::centred);
+          value->setFont(juce::FontOptions(12.0f));
+        }
+        for (auto *btn :
+             {&startMinus, &startPlus, &endMinus, &endPlus, &fadeMinus,
+              &fadePlus}) {
+          btn->setColour(juce::TextButton::buttonColourId,
+                         UITheme::cardBgHover);
+          btn->setColour(juce::TextButton::buttonOnColourId,
+                         UITheme::cardBgPressed);
+          btn->setColour(juce::TextButton::textColourOffId,
+                         UITheme::textPrimary);
+          btn->setViewportIgnoreDragFlag(true);
+        }
+      }
+
+      void paint(juce::Graphics &g) override {
+        auto b = getLocalBounds().toFloat();
+        g.setColour(UITheme::cardBg);
+        g.fillRoundedRectangle(b, 8.0f);
+        g.setColour(UITheme::cardBorder);
+        g.drawRoundedRectangle(b, 8.0f, 1.0f);
+      }
+
+      void resized() override {
+        auto area = getLocalBounds().reduced(12);
+        const int rowH = 28;
+        layoutRow(area.removeFromTop(rowH), startLabel, startMinus, startValue,
+                  startPlus);
+        area.removeFromTop(8);
+        layoutRow(area.removeFromTop(rowH), endLabel, endMinus, endValue,
+                  endPlus);
+        area.removeFromTop(8);
+        layoutRow(area.removeFromTop(rowH), fadeLabel, fadeMinus, fadeValue,
+                  fadePlus);
+      }
+
+    private:
+      MTControlsAudioProcessor &processor;
+      juce::Label startLabel, endLabel, fadeLabel;
+      juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
+          fadePlus;
+      juce::Label startValue, endValue, fadeValue;
+
+      void configureRow(juce::Label &label, juce::TextButton &minus,
+                        juce::Label &value, juce::TextButton &plus,
+                        const juce::String &text) {
+        label.setText(text, juce::dontSendNotification);
+        addAndMakeVisible(label);
+
+        minus.setButtonText("-");
+        plus.setButtonText("+");
+        addAndMakeVisible(minus);
+        addAndMakeVisible(plus);
+
+        addAndMakeVisible(value);
+      }
+
+      void layoutRow(juce::Rectangle<int> row, juce::Label &label,
+                     juce::TextButton &minus, juce::Label &value,
+                     juce::TextButton &plus) {
+        const int labelW = 60;
+        const int btnW = 28;
+        label.setBounds(row.removeFromLeft(labelW));
+        minus.setBounds(row.removeFromLeft(btnW));
+        plus.setBounds(row.removeFromRight(btnW));
+        value.setBounds(row);
+      }
+
+      double stepSeconds() const {
+        const auto mods = juce::ModifierKeys::getCurrentModifiers();
+        return mods.isShiftDown() ? 5.0 : 1.0;
+      }
+
+      void adjustStart(double delta) {
+        processor.setSongStartSeconds(processor.getSongStartSeconds() + delta);
+        refreshValues();
+      }
+
+      void adjustEnd(double delta) {
+        processor.setSongEndSeconds(processor.getSongEndSeconds() + delta);
+        refreshValues();
+      }
+
+      void adjustFade(double delta) {
+        processor.setSongFadeOutSeconds(
+            processor.getSongFadeOutSeconds() + delta);
+        refreshValues();
+      }
+    };
+
+    TopBar(MTControlsAudioProcessor &processorRef)
         : prevButton("prev", IconGlyph::Prev),
           seekBackButton("seekBack", IconGlyph::SeekBack),
           playButton("play", IconGlyph::Play, true),
           stopButton("stop", IconGlyph::Stop),
           seekForwardButton("seekForward", IconGlyph::SeekForward),
           nextButton("next", IconGlyph::Next),
-          fadeButton("fade", IconGlyph::Fade),
-          settingsButton("settings", IconGlyph::Settings) {
+          fadeButton("fade", IconGlyph::FadeOut),
+          settingsButton("settings", IconGlyph::Settings),
+          processor(processorRef) {
       monoClickButton.setButtonText("MONO/CLICK");
       monoClickButton.setClickingTogglesState(true);
       monoClickButton.setViewportIgnoreDragFlag(true);
@@ -1907,7 +2253,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       monoClickButton.setColour(juce::TextButton::textColourOnId,
                                 UITheme::textPrimary);
 
-      fadeButton.setClickingTogglesState(true);
       for (auto *btn :
            {&prevButton, &seekBackButton, &playButton, &stopButton,
             &seekForwardButton, &nextButton, &fadeButton, &settingsButton}) {
@@ -1916,8 +2261,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       addAndMakeVisible(monoClickButton);
 
       configureDisplay(timeDisplay, "00:00 / 00:00");
-      configureDisplay(bpmDisplay, "BPM");
       configureDisplay(keyDisplay, "Key");
+      timeDisplay.onClick = [this] { showSongWindowPopover(); };
+      configureMetronomeControls();
 
       prevButton.onClick = [this] {
         clearFadeIfActive();
@@ -1940,8 +2286,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           onNextSong();
       };
       fadeButton.onClick = [this] {
+        const bool shouldFadeOut = !processor.isFadeActive();
         if (onFadeToggle)
-          onFadeToggle(fadeButton.getToggleState());
+          onFadeToggle(shouldFadeOut);
       };
       playButton.onClick = [this] {
         clearFadeIfActive();
@@ -1955,12 +2302,21 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           onStop();
         refreshFromProviders();
       };
-      settingsButton.onClick = [this] { clearFadeIfActive(); };
+      settingsButton.onClick = [this] {
+        clearFadeIfActive();
+        if (onSettingsWithAnchor)
+          onSettingsWithAnchor(settingsButton.getBounds(), this);
+        else if (onSettings)
+          onSettings();
+      };
       monoClickButton.onClick = [this] {
         if (onMonoClickToggle)
           onMonoClickToggle(monoClickButton.getToggleState());
       };
-
+      bpmSegmentButton.onClick = [this] { showMetronomePopover(); };
+      metroToggleButton.onClick = [this] {
+        processor.setMetronomeEnabled(metroToggleButton.getToggleState());
+      };
       startTimerHz(20);
     }
 
@@ -1986,12 +2342,10 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     void setTransportProviders(std::function<bool()> playingProviderFn,
                                std::function<double()> positionProviderFn,
                                std::function<double()> lengthProviderFn,
-                               std::function<double()> bpmProviderFn,
                                std::function<juce::String()> keyProviderFn) {
       playingProvider = std::move(playingProviderFn);
       positionProvider = std::move(positionProviderFn);
       lengthProvider = std::move(lengthProviderFn);
-      bpmProvider = std::move(bpmProviderFn);
       keyProvider = std::move(keyProviderFn);
       refreshFromProviders();
     }
@@ -2001,6 +2355,42 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       if (monoClickProvider)
         monoClickButton.setToggleState(monoClickProvider(),
                                        juce::dontSendNotification);
+    }
+
+    void setOnSettings(std::function<void()> cb) {
+      onSettings = std::move(cb);
+    }
+
+    void setOnSettingsWithAnchor(
+        std::function<void(juce::Rectangle<int>, juce::Component *)> cb) {
+      onSettingsWithAnchor = std::move(cb);
+    }
+
+    void refreshThemeColours() {
+      timeDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
+      timeDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
+      timeDisplay.setColour(juce::Label::outlineColourId,
+                            UITheme::cardBorder.withAlpha(0.55f));
+      keyDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
+      keyDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
+      keyDisplay.setColour(juce::Label::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.55f));
+      monoClickButton.setColour(juce::TextButton::buttonColourId,
+                                UITheme::cardBgHover);
+      monoClickButton.setColour(juce::TextButton::buttonOnColourId,
+                                UITheme::cardBgPressed);
+      monoClickButton.setColour(juce::TextButton::textColourOffId,
+                                UITheme::textPrimary);
+      monoClickButton.setColour(juce::TextButton::textColourOnId,
+                                UITheme::textPrimary);
+      bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+      bpmSegmentButton.setColour(juce::TextButton::buttonOnColourId,
+                                 UITheme::accentSoft);
+      bpmSegmentButton.setColour(juce::TextButton::textColourOffId,
+                                 UITheme::onAccent);
+      bpmSegmentButton.setColour(juce::TextButton::textColourOnId,
+                                 UITheme::onAccent);
+      repaint();
     }
 
     void paint(juce::Graphics &g) override {
@@ -2042,16 +2432,24 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       rightX -= monoW + gap;
       keyDisplay.setBounds(rightX - 50, y, 50, 40);
       rightX -= 50 + gap;
-      bpmDisplay.setBounds(rightX - 60, y, 60, 40);
-      rightX -= 60 + gap;
+      const int metroTotalW = 110;
+      const int metroIconW = 44;
+      const int metroY = y - 2;
+      bpmSegmentButton.setBounds(rightX - metroTotalW, metroY,
+                                 metroTotalW - metroIconW, 44);
+      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW, 44);
+      rightX -= metroTotalW + gap;
       timeDisplay.setBounds(rightX - 120, y, 120, 40);
 
       if (timeDisplay.getX() < x + 8) {
         const int shift = (x + 8) - timeDisplay.getX();
-        for (auto *c : {static_cast<juce::Component *>(&timeDisplay),
-                        static_cast<juce::Component *>(&bpmDisplay),
-                        static_cast<juce::Component *>(&keyDisplay),
-                        static_cast<juce::Component *>(&settingsButton)}) {
+        for (auto *c :
+             {static_cast<juce::Component *>(&timeDisplay),
+              static_cast<juce::Component *>(&bpmSegmentButton),
+              static_cast<juce::Component *>(&metroToggleButton),
+              static_cast<juce::Component *>(&keyDisplay),
+              static_cast<juce::Component *>(&monoClickButton),
+              static_cast<juce::Component *>(&settingsButton)}) {
           c->setTopLeftPosition(c->getX() + shift, c->getY());
         }
       }
@@ -2067,10 +2465,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     IconButton fadeButton;
     IconButton settingsButton;
 
-    juce::Label timeDisplay;
-    juce::Label bpmDisplay;
+    ClickableLabel timeDisplay;
     juce::Label keyDisplay;
     juce::TextButton monoClickButton;
+    juce::TextButton bpmSegmentButton;
+    IconButton metroToggleButton{"metroToggle", IconGlyph::Metronome};
 
     std::function<void()> onPlayPause;
     std::function<void()> onStop;
@@ -2079,11 +2478,13 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     std::function<void(bool)> onFadeToggle;
     std::function<void(double)> onSeekRelative;
     std::function<void(bool)> onMonoClickToggle;
+    std::function<void()> onSettings;
+    std::function<void(juce::Rectangle<int>, juce::Component *)>
+        onSettingsWithAnchor;
 
     void clearFadeIfActive() {
-      if (!fadeButton.getToggleState())
+      if (!processor.isFadeActive())
         return;
-      fadeButton.setToggleState(false, juce::dontSendNotification);
       if (onFadeToggle)
         onFadeToggle(false);
     }
@@ -2091,9 +2492,17 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     std::function<bool()> playingProvider;
     std::function<double()> positionProvider;
     std::function<double()> lengthProvider;
-    std::function<double()> bpmProvider;
     std::function<juce::String()> keyProvider;
     std::function<bool()> monoClickProvider;
+    MTControlsAudioProcessor &processor;
+    std::deque<double> tapTimes;
+    double lastTickTime = 0.0;
+    double beatCounter = 0.0;
+    int lastBeatIndex = -1;
+    float beatFlash = 0.0f;
+    bool lastBeatWasDownbeat = true;
+    int beatsPerBar = 4;
+    juce::String timeSignature = "4/4";
 
     void configureDisplay(juce::Label &label, const juce::String &text) {
       label.setText(text, juce::dontSendNotification);
@@ -2106,7 +2515,256 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       addAndMakeVisible(label);
     }
 
-    void timerCallback() override { refreshFromProviders(); }
+    void configureMetronomeControls() {
+      bpmSegmentButton.setButtonText("120 ▼");
+      bpmSegmentButton.setViewportIgnoreDragFlag(true);
+      bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+      bpmSegmentButton.setColour(juce::TextButton::buttonOnColourId,
+                                 UITheme::accentSoft);
+      bpmSegmentButton.setColour(juce::TextButton::textColourOffId,
+                                 UITheme::onAccent);
+      bpmSegmentButton.setColour(juce::TextButton::textColourOnId,
+                                 UITheme::onAccent);
+      bpmSegmentButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+      addAndMakeVisible(bpmSegmentButton);
+
+      metroToggleButton.setClickingTogglesState(true);
+      metroToggleButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
+      addAndMakeVisible(metroToggleButton);
+    }
+
+    void timerCallback() override {
+      refreshFromProviders();
+      const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+      if (lastTickTime == 0.0)
+        lastTickTime = now;
+      const double dt = now - lastTickTime;
+      lastTickTime = now;
+
+      if (processor.isMetronomeEnabled()) {
+        const double bpm = processor.getMetronomeBpm();
+        if (bpm > 0.0) {
+          beatCounter += dt * (bpm / 60.0);
+          const int beatIndex = static_cast<int>(std::floor(beatCounter));
+          if (beatIndex != lastBeatIndex) {
+            lastBeatIndex = beatIndex;
+            lastBeatWasDownbeat = (beatIndex % juce::jmax(1, beatsPerBar)) == 0;
+            beatFlash = 1.0f;
+          }
+        }
+      } else {
+        beatCounter = 0.0;
+        lastBeatIndex = -1;
+        beatFlash = 0.0f;
+      }
+
+      beatFlash = juce::jmax(0.0f, beatFlash - 0.08f);
+      metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
+                                       juce::dontSendNotification);
+      metroToggleButton.setPulseAmount(
+          processor.isMetronomeEnabled() ? beatFlash : 0.0f,
+          lastBeatWasDownbeat);
+    }
+
+    void updateBpmDisplay() {
+      const int bpm = static_cast<int>(std::round(processor.getMetronomeBpm()));
+      bpmSegmentButton.setButtonText((bpm > 0 ? juce::String(bpm) : "120") + " ▼");
+    }
+
+    void applyTimeSignature(const juce::String &sigText) {
+      timeSignature = sigText.trim();
+      const int numerator = timeSignature.upToFirstOccurrenceOf("/", false, false)
+                                .getIntValue();
+      beatsPerBar = numerator > 0 ? numerator : 4;
+      processor.setMetronomeBeatsPerBar(beatsPerBar);
+      beatCounter = 0.0;
+      lastBeatIndex = -1;
+      lastBeatWasDownbeat = true;
+    }
+
+    void setBpmAbsolute(double bpm) {
+      if (bpm <= 0.0)
+        return;
+      processor.setMetronomeBpm(bpm);
+      updateBpmDisplay();
+    }
+
+    void adjustBpm(double delta) {
+      const auto mods = juce::ModifierKeys::getCurrentModifiers();
+      const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0)
+                                             : delta;
+      setBpmAbsolute(processor.getMetronomeBpm() + step);
+    }
+
+    void registerTap() {
+      const double now = juce::Time::getMillisecondCounterHiRes();
+      if (!tapTimes.empty() && (now - tapTimes.back()) > 2000.0)
+        tapTimes.clear();
+      tapTimes.push_back(now);
+      while (tapTimes.size() > 6)
+        tapTimes.pop_front();
+
+      if (tapTimes.size() < 2)
+        return;
+      double sum = 0.0;
+      for (size_t i = 1; i < tapTimes.size(); ++i)
+        sum += (tapTimes[i] - tapTimes[i - 1]);
+      const double avgMs = sum / static_cast<double>(tapTimes.size() - 1);
+      if (avgMs <= 0.0)
+        return;
+      setBpmAbsolute(60000.0 / avgMs);
+    }
+
+    void showMetronomePopover() {
+      class MetronomePopover final : public juce::Component {
+      public:
+        MetronomePopover(std::function<void()> onTapCb,
+                         std::function<void(const juce::String &)> onTimeSigCb,
+                         std::function<void(double)> onSetBpmCb,
+                         std::function<void(double)> onAdjustBpmCb,
+                         std::function<double()> bpmProviderCb,
+                         const juce::String &timeSig)
+            : onTap(std::move(onTapCb)),
+              onTimeSig(std::move(onTimeSigCb)),
+              onSetBpm(std::move(onSetBpmCb)),
+              onAdjustBpm(std::move(onAdjustBpmCb)),
+              bpmProvider(std::move(bpmProviderCb)) {
+          tapButton.setButtonText("TAP");
+          tapButton.onClick = [this] {
+            if (onTap)
+              onTap();
+            syncBpmEditor();
+          };
+          addAndMakeVisible(tapButton);
+
+          timeSigBox.addItem("2/4", 1);
+          timeSigBox.addItem("3/4", 2);
+          timeSigBox.addItem("4/4", 3);
+          timeSigBox.addItem("5/4", 4);
+          timeSigBox.addItem("6/8", 5);
+          timeSigBox.setText(timeSig, juce::dontSendNotification);
+          timeSigBox.onChange = [this] {
+            if (onTimeSig)
+              onTimeSig(timeSigBox.getText().trim());
+          };
+          addAndMakeVisible(timeSigBox);
+
+          minusButton.setButtonText("-");
+          plusButton.setButtonText("+");
+          minusButton.onClick = [this] {
+            if (onAdjustBpm)
+              onAdjustBpm(-1.0);
+            syncBpmEditor();
+          };
+          plusButton.onClick = [this] {
+            if (onAdjustBpm)
+              onAdjustBpm(1.0);
+            syncBpmEditor();
+          };
+          addAndMakeVisible(minusButton);
+          addAndMakeVisible(plusButton);
+
+          bpmEditor.setInputRestrictions(4, "0123456789.");
+          bpmEditor.setJustification(juce::Justification::centred);
+          bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
+          bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
+          addAndMakeVisible(bpmEditor);
+          applyTheme();
+          syncBpmEditor();
+        }
+
+        void paint(juce::Graphics &g) override {
+          auto b = getLocalBounds().toFloat();
+          g.setColour(UITheme::cardBg);
+          g.fillRoundedRectangle(b, 6.0f);
+          g.setColour(UITheme::cardBorder);
+          g.drawRoundedRectangle(b, 6.0f, 1.0f);
+        }
+
+        void resized() override {
+          auto area = getLocalBounds().reduced(10);
+          tapButton.setBounds(area.removeFromTop(32));
+          area.removeFromTop(8);
+          timeSigBox.setBounds(area.removeFromTop(26));
+          area.removeFromTop(8);
+          auto row = area.removeFromTop(30);
+          minusButton.setBounds(row.removeFromLeft(28));
+          plusButton.setBounds(row.removeFromRight(28));
+          bpmEditor.setBounds(row.reduced(6, 0));
+        }
+
+      private:
+        juce::TextButton tapButton, minusButton, plusButton;
+        juce::ComboBox timeSigBox;
+        juce::TextEditor bpmEditor;
+        std::function<void()> onTap;
+        std::function<void(const juce::String &)> onTimeSig;
+        std::function<void(double)> onSetBpm;
+        std::function<void(double)> onAdjustBpm;
+        std::function<double()> bpmProvider;
+
+        void applyTheme() {
+          for (auto *btn : {&tapButton, &minusButton, &plusButton}) {
+            btn->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+            btn->setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+            btn->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+          }
+          timeSigBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+          timeSigBox.setColour(juce::ComboBox::outlineColourId, UITheme::cardBorder.withAlpha(0.65f));
+          timeSigBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+          timeSigBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+          bpmEditor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
+          bpmEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+          bpmEditor.setColour(juce::TextEditor::outlineColourId, UITheme::cardBorder.withAlpha(0.7f));
+        }
+
+        void syncBpmEditor() {
+          if (!bpmProvider)
+            return;
+          bpmEditor.setText(juce::String(static_cast<int>(std::round(bpmProvider()))),
+                            juce::dontSendNotification);
+        }
+
+        void submitBpmEditor() {
+          if (!onSetBpm)
+            return;
+          const double bpm = bpmEditor.getText().trim().getDoubleValue();
+          if (bpm > 0.0)
+            onSetBpm(bpm);
+          syncBpmEditor();
+        }
+      };
+
+      auto panel = std::make_unique<MetronomePopover>(
+          [this] { registerTap(); }, [this](const juce::String &sig) { applyTimeSignature(sig); },
+          [this](double bpm) { setBpmAbsolute(bpm); },
+          [this](double delta) { adjustBpm(delta); },
+          [this] { return processor.getMetronomeBpm(); }, timeSignature);
+      panel->setSize(180, 120);
+      auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+      juce::Component *parentComp =
+          editor != nullptr ? static_cast<juce::Component *>(editor)
+                            : static_cast<juce::Component *>(this);
+      const auto anchor = parentComp->getLocalArea(this, bpmSegmentButton.getBounds());
+      auto &callout = juce::CallOutBox::launchAsynchronously(
+          std::move(panel), anchor, parentComp);
+      callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    }
+
+    void showSongWindowPopover() {
+      if (!processor.hasLoadedSong())
+        return;
+      auto panel = std::make_unique<SongWindowPopover>(processor);
+      panel->setSize(230, 128);
+      auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+      juce::Component *parentComp =
+          editor != nullptr ? static_cast<juce::Component *>(editor)
+                            : static_cast<juce::Component *>(this);
+      const auto anchor = parentComp->getLocalArea(this, timeDisplay.getBounds());
+      auto &callout = juce::CallOutBox::launchAsynchronously(
+          std::move(panel), anchor, parentComp);
+      callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    }
 
     void refreshFromProviders() {
       const double pos = positionProvider ? positionProvider() : 0.0;
@@ -2115,13 +2773,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
                               formatTimeSeconds(len),
                           juce::dontSendNotification);
 
-      if (bpmProvider) {
-        const int bpm = static_cast<int>(std::round(bpmProvider()));
-        bpmDisplay.setText(bpm > 0 ? juce::String(bpm) + " BPM" : "BPM",
-                           juce::dontSendNotification);
-      } else {
-        bpmDisplay.setText("BPM", juce::dontSendNotification);
-      }
+      updateBpmDisplay();
 
       if (keyProvider) {
         const auto key = keyProvider().trim();
@@ -2137,6 +2789,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         monoClickButton.setToggleState(monoClickProvider(),
                                        juce::dontSendNotification);
       }
+      const bool fadeOutActive = processor.isFadeActive();
+      fadeButton.setGlyph(fadeOutActive ? IconGlyph::FadeIn
+                                        : IconGlyph::FadeOut);
+      fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
+      metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
+                                       juce::dontSendNotification);
     }
   };
 
@@ -2151,19 +2809,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       editButton.setButtonText("EDITAR");
       editButton.setClickingTogglesState(true);
       editButton.setViewportIgnoreDragFlag(true);
-      editButton.setColour(juce::TextButton::buttonColourId,
-                           UITheme::cardBgHover);
-      editButton.setColour(juce::TextButton::buttonOnColourId,
-                           UITheme::cardBgPressed);
-      editButton.setColour(juce::TextButton::textColourOffId,
-                           UITheme::textPrimary);
-      editButton.setColour(juce::TextButton::textColourOnId,
-                           UITheme::textPrimary);
       editButton.onClick = [this] {
         if (onEditToggle)
           onEditToggle(editButton.getToggleState());
       };
       addAndMakeVisible(editButton);
+      refreshThemeColours();
 
       startTimerHz(30);
     }
@@ -2182,6 +2833,18 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     void setSeekCallback(SeekCallback cb) { onSeekTo = std::move(cb); }
     void setOnEditToggle(EditToggleCallback cb) {
       onEditToggle = std::move(cb);
+    }
+
+    void refreshThemeColours() {
+      editButton.setColour(juce::TextButton::buttonColourId,
+                           UITheme::cardBgHover);
+      editButton.setColour(juce::TextButton::buttonOnColourId,
+                           UITheme::cardBgPressed);
+      editButton.setColour(juce::TextButton::textColourOffId,
+                           UITheme::textPrimary);
+      editButton.setColour(juce::TextButton::textColourOnId,
+                           UITheme::textPrimary);
+      repaint();
     }
 
     void paint(juce::Graphics &g) override {
@@ -2431,6 +3094,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     void setSong(const ImportedSongData &song) {
       slots.clear();
       adjustableStems.clear();
+      clickGuideStems.clear();
       content.removeAllChildren();
       const int stemCount = processor.getLoadedStemCount();
       int mappedStemIndex = 0;
@@ -2465,13 +3129,16 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
         const int stemIndex = mappedStemIndex++;
         const bool isAdjustable = stemPriorityForStripOrder(stem) > 1;
+        const bool isClickGuide = stemPriorityForStripOrder(stem) <= 1;
         auto slot = std::make_unique<StripSlot>(
             channelName.toUpperCase(), lookAndFeel, [this, stemIndex] {
               const float level = processor.getStemLevel(stemIndex);
               return std::pair<float, float>{level, level};
             });
-        if (stemPriorityForStripOrder(stem) <= 1)
+        if (isClickGuide)
           slot->getStrip().setCardBgColour(UITheme::cardBgClickGuide);
+        slot->getStrip().setChannelBandColours(UITheme::accent, UITheme::onAccent);
+        slot->getStrip().refreshThemeColours();
         slot->getStrip().setVolume(processor.getStemVolume(stemIndex));
         slot->getStrip().setGain(processor.getStemGain(stemIndex));
         slot->getStrip().setMuteState(processor.isStemMuted(stemIndex));
@@ -2490,6 +3157,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         });
         content.addAndMakeVisible(*slot);
         adjustableStems.push_back(isAdjustable);
+        clickGuideStems.push_back(isClickGuide);
         slots.push_back(std::move(slot));
       }
 
@@ -2514,6 +3182,19 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         processor.setStemVolume(i, next);
         slots[static_cast<size_t>(i)]->getStrip().setVolume(next);
       }
+    }
+
+    void refreshThemeColours() {
+      for (size_t i = 0; i < slots.size(); ++i) {
+        auto &strip = slots[i]->getStrip();
+        const bool isClickGuide =
+            i < clickGuideStems.size() ? clickGuideStems[i] : false;
+        strip.setCardBgColour(isClickGuide ? UITheme::cardBgClickGuide
+                                           : UITheme::cardBg);
+        strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
+        strip.refreshThemeColours();
+      }
+      repaint();
     }
 
     void paint(juce::Graphics &g) override {
@@ -2587,130 +3268,275 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     juce::Component content;
     std::vector<std::unique_ptr<StripSlot>> slots;
     std::vector<bool> adjustableStems;
+    std::vector<bool> clickGuideStems;
   };
 
   class MetronomePanel final : public juce::Component, private juce::Timer {
   public:
-    class BpmLabel final : public juce::Label {
+    class BpmSegmentButton final : public juce::Button {
     public:
-      void mouseUp(const juce::MouseEvent &event) override {
-        if (!event.mouseWasClicked())
-          return;
-        if (getPeer() == nullptr || !isShowing())
-          return;
-        showEditor();
+      BpmSegmentButton() : juce::Button("metroBpmSegment") {}
+
+      void setBpmText(juce::String text) {
+        bpmText = std::move(text);
+        repaint();
       }
-    };
-
-    class MetroButton final : public juce::Button {
-    public:
-      enum class Style { Flat, Tap, Small };
-
-      MetroButton(juce::String text, Style styleToUse)
-          : juce::Button(std::move(text)), style(styleToUse) {}
 
       void paintButton(juce::Graphics &g, bool isMouseOverButton,
                        bool isButtonDown) override {
-        auto bounds = getLocalBounds().toFloat();
-        const bool pressed = isButtonDown || getToggleState();
+        auto b = getLocalBounds().toFloat();
+        juce::Colour fill = UITheme::accent;
+        if (isMouseOverButton)
+          fill = fill.brighter(0.06f);
+        if (isButtonDown)
+          fill = UITheme::accentSoft;
 
-        juce::Colour fill = UITheme::cardBgHover;
-        if (style != Style::Tap && isMouseOverButton)
-          fill = fill.brighter(0.1f);
-        if (pressed)
-          fill = (style == Style::Tap) ? UITheme::cardBgPressed
-                                       : fill.brighter(0.18f);
+        juce::Path leftSegment;
+        leftSegment.addRoundedRectangle(b.getX(), b.getY(), b.getWidth(),
+                                        b.getHeight(), 8.0f, 8.0f, true, false,
+                                        true, false);
         g.setColour(fill);
-        const float radius = (style == Style::Tap) ? 6.0f : 3.0f;
-        g.fillRoundedRectangle(bounds, radius);
-        g.setColour(UITheme::cardBorder.withAlpha(0.65f));
-        g.drawRoundedRectangle(bounds, radius, 1.0f);
-        g.setColour(UITheme::textPrimary);
+        g.fillPath(leftSegment);
+        g.setColour(UITheme::cardBorder.withAlpha(0.7f));
+        g.strokePath(leftSegment, juce::PathStrokeType(1.0f));
 
-        g.setFont(juce::FontOptions(style == Style::Tap ? 16.0f
-                                                       : (style == Style::Small
-                                                              ? 11.5f
-                                                              : 12.5f))
-                      .withKerningFactor(0.08f));
-        g.drawFittedText(getButtonText(), getLocalBounds(),
-                         juce::Justification::centred, 1);
+        auto textArea = getLocalBounds().reduced(8, 2);
+        textArea.removeFromBottom(8);
+        g.setColour(UITheme::onAccent);
+        g.setFont(juce::FontOptions(17.0f).withKerningFactor(0.06f));
+        g.drawFittedText(bpmText, textArea, juce::Justification::centred, 1);
 
-        if (getComponentID() == "metroPlay" &&
-            getButtonText().containsIgnoreCase("play")) {
-          auto tri = bounds.removeFromRight(bounds.getHeight() * 0.45f)
-                         .reduced(3.0f);
-          juce::Path icon;
-          icon.addTriangle(tri.getX(), tri.getY(), tri.getRight(),
-                           tri.getCentreY(), tri.getX(), tri.getBottom());
-          g.setColour(UITheme::textSecondary);
-          g.fillPath(icon);
-        }
+        const float cx = b.getCentreX();
+        const float cy = b.getBottom() - 7.0f;
+        juce::Path caret;
+        caret.startNewSubPath(cx - 4.0f, cy - 2.0f);
+        caret.lineTo(cx, cy + 2.0f);
+        caret.lineTo(cx + 4.0f, cy - 2.0f);
+        g.strokePath(caret, juce::PathStrokeType(1.6f));
       }
 
     private:
-      Style style;
+      juce::String bpmText = "120";
     };
 
-    MetronomePanel(MTControlsAudioProcessor &processorRef)
-        : processor(processorRef),
-          minusButton("-", MetroButton::Style::Flat),
-          tapButton("TAP", MetroButton::Style::Tap),
-          plusButton("+", MetroButton::Style::Flat),
-          startStopButton("PLAY", MetroButton::Style::Flat) {
-
-      bpmLabel.setText(formatBpmWithUnit(processor.getMetronomeBpm()),
-                       juce::dontSendNotification);
-      bpmLabel.setJustificationType(juce::Justification::centred);
-      bpmLabel.setFont(juce::Font(
-          juce::Font::getDefaultMonospacedFontName(), 15.0f,
-          juce::Font::plain));
-      bpmLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-      bpmLabel.setEditable(true, true, false);
-      bpmLabel.onEditorShow = [this] {
-        bpmLabel.setText(formatBpmNumber(processor.getMetronomeBpm()),
-                         juce::dontSendNotification);
-        if (auto *ed = bpmLabel.getCurrentTextEditor())
-          ed->selectAll();
-      };
-      bpmLabel.onTextChange = [this] { applyBpmFromLabel(); };
-      addAndMakeVisible(bpmLabel);
-
-
-      timeSigBox.addItem("4/4", 1);
-      timeSigBox.addItem("3/4", 2);
-      timeSigBox.addItem("6/8", 3);
-      timeSigBox.addItem("2/4", 4);
-      timeSigBox.addItem("5/4", 5);
-      timeSigBox.setSelectedId(1);
-      timeSigBox.setJustificationType(juce::Justification::centred);
-      timeSigBox.setColour(juce::ComboBox::backgroundColourId,
-                           UITheme::cardBgHover);
-      timeSigBox.setColour(juce::ComboBox::outlineColourId,
-                           UITheme::cardBorder.withAlpha(0.65f));
-      timeSigBox.setColour(juce::ComboBox::textColourId,
-                           UITheme::textPrimary);
-      timeSigBox.setColour(juce::ComboBox::arrowColourId,
-                           UITheme::textPrimary);
-      timeSigBox.onChange = [this] { updateTimeSignatureFromBox(); };
-      timeSigBox.setViewportIgnoreDragFlag(true);
-      addAndMakeVisible(timeSigBox);
-
-      tapButton.onClick = [this] { registerTap(); };
-      startStopButton.setClickingTogglesState(true);
-      startStopButton.setComponentID("metroPlay");
-      startStopButton.onClick = [this] {
-        const bool enabled = startStopButton.getToggleState();
-        processor.setMetronomeEnabled(enabled);
-        syncStartStopLabel();
-      };
-      for (auto *btn : {&tapButton, &startStopButton}) {
-        btn->setViewportIgnoreDragFlag(true);
-        addAndMakeVisible(*btn);
+    class MetronomeIconButton final : public juce::Button {
+    public:
+      MetronomeIconButton() : juce::Button("metroIconSegment") {
+        setClickingTogglesState(true);
       }
-      minusButton.setVisible(false);
-      plusButton.setVisible(false);
 
-      updateTimeSignatureFromBox();
+      void setBeatPulse(float intensity, bool downbeat) {
+        pulse = juce::jlimit(0.0f, 1.0f, intensity);
+        isDownbeat = downbeat;
+        repaint();
+      }
+
+      void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                       bool isButtonDown) override {
+        auto b = getLocalBounds().toFloat();
+        const bool enabled = getToggleState();
+
+        juce::Colour fill = enabled ? UITheme::accent : UITheme::cardBgHover;
+        if (enabled && pulse > 0.001f) {
+          const auto flashColour =
+              isDownbeat ? UITheme::accentSoft : UITheme::onAccent;
+          fill = fill.interpolatedWith(flashColour, 0.18f + (pulse * 0.42f));
+        }
+        if (isMouseOverButton)
+          fill = fill.brighter(0.06f);
+        if (isButtonDown)
+          fill = fill.darker(0.06f);
+
+        juce::Path rightSegment;
+        rightSegment.addRoundedRectangle(b.getX(), b.getY(), b.getWidth(),
+                                         b.getHeight(), 8.0f, 8.0f, false, true,
+                                         false, true);
+        g.setColour(fill);
+        g.fillPath(rightSegment);
+        g.setColour(UITheme::cardBorder.withAlpha(0.7f));
+        g.strokePath(rightSegment, juce::PathStrokeType(1.0f));
+
+        const auto iconArea = b.reduced(b.getWidth() * 0.26f, b.getHeight() * 0.2f);
+        juce::Path body;
+        body.startNewSubPath(iconArea.getX() + 1.0f, iconArea.getBottom());
+        body.lineTo(iconArea.getCentreX(), iconArea.getY() + 2.0f);
+        body.lineTo(iconArea.getRight() - 1.0f, iconArea.getBottom());
+        body.closeSubPath();
+
+        const auto iconColour = enabled ? UITheme::onAccent : UITheme::textPrimary;
+        g.setColour(iconColour);
+        g.strokePath(body, juce::PathStrokeType(1.8f));
+
+        g.drawLine(iconArea.getCentreX(), iconArea.getY() + 7.0f,
+                   iconArea.getCentreX(), iconArea.getBottom() - 3.0f, 1.5f);
+        g.drawLine(iconArea.getCentreX(), iconArea.getCentreY() + 1.0f,
+                   iconArea.getRight() - 3.0f, iconArea.getY() + 5.0f, 1.5f);
+      }
+
+    private:
+      float pulse = 0.0f;
+      bool isDownbeat = false;
+    };
+
+    class MetronomePopover final : public juce::Component {
+    public:
+      using TapCallback = std::function<void()>;
+      using TimeSignatureCallback = std::function<void(const juce::String &)>;
+      using BpmSetCallback = std::function<void(double)>;
+      using BpmAdjustCallback = std::function<void(double)>;
+      using BpmProvider = std::function<double()>;
+
+      MetronomePopover(const juce::String &timeSig, TapCallback onTapCb,
+                       TimeSignatureCallback onTimeSigCb,
+                       BpmSetCallback onBpmSetCb,
+                       BpmAdjustCallback onBpmAdjustCb,
+                       BpmProvider bpmProviderCb)
+          : onTap(std::move(onTapCb)),
+            onTimeSignatureChanged(std::move(onTimeSigCb)),
+            onBpmSet(std::move(onBpmSetCb)),
+            onBpmAdjust(std::move(onBpmAdjustCb)),
+            bpmProvider(std::move(bpmProviderCb)) {
+        tapButton.setButtonText("TAP");
+        tapButton.setViewportIgnoreDragFlag(true);
+        tapButton.onClick = [this] {
+          if (onTap)
+            onTap();
+          syncBpmEditor();
+        };
+        addAndMakeVisible(tapButton);
+
+        timeSigBox.addItem("2/4", 1);
+        timeSigBox.addItem("3/4", 2);
+        timeSigBox.addItem("4/4", 3);
+        timeSigBox.addItem("5/4", 4);
+        timeSigBox.addItem("6/8", 5);
+        timeSigBox.setText(timeSig, juce::dontSendNotification);
+        timeSigBox.onChange = [this] {
+          if (onTimeSignatureChanged)
+            onTimeSignatureChanged(timeSigBox.getText().trim());
+        };
+        addAndMakeVisible(timeSigBox);
+
+        minusButton.setButtonText("-");
+        plusButton.setButtonText("+");
+        minusButton.setViewportIgnoreDragFlag(true);
+        plusButton.setViewportIgnoreDragFlag(true);
+        minusButton.onClick = [this] {
+          if (onBpmAdjust)
+            onBpmAdjust(-1.0);
+          syncBpmEditor();
+        };
+        plusButton.onClick = [this] {
+          if (onBpmAdjust)
+            onBpmAdjust(1.0);
+          syncBpmEditor();
+        };
+        addAndMakeVisible(minusButton);
+        addAndMakeVisible(plusButton);
+
+        bpmEditor.setInputRestrictions(4, "0123456789.");
+        bpmEditor.setJustification(juce::Justification::centred);
+        bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
+        bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
+        addAndMakeVisible(bpmEditor);
+
+        syncBpmEditor();
+      }
+
+      void refreshThemeColours() {
+        tapButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+        tapButton.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+        tapButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+        tapButton.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
+
+        minusButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+        minusButton.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+        minusButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+        plusButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+        plusButton.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+        plusButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+
+        timeSigBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+        timeSigBox.setColour(juce::ComboBox::outlineColourId, UITheme::cardBorder.withAlpha(0.65f));
+        timeSigBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+        timeSigBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+
+        bpmEditor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
+        bpmEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+        bpmEditor.setColour(juce::TextEditor::outlineColourId, UITheme::cardBorder.withAlpha(0.7f));
+        repaint();
+      }
+
+      void paint(juce::Graphics &g) override {
+        auto b = getLocalBounds().toFloat();
+        g.setColour(UITheme::cardBg);
+        g.fillRoundedRectangle(b, 6.0f);
+        g.setColour(UITheme::cardBorder);
+        g.drawRoundedRectangle(b, 6.0f, 1.0f);
+      }
+
+      void resized() override {
+        auto area = getLocalBounds().reduced(10);
+        const int tapH = 32;
+        tapButton.setBounds(area.removeFromTop(tapH));
+        area.removeFromTop(8);
+
+        timeSigBox.setBounds(area.removeFromTop(26));
+        area.removeFromTop(8);
+
+        auto bpmRow = area.removeFromTop(30);
+        minusButton.setBounds(bpmRow.removeFromLeft(28));
+        plusButton.setBounds(bpmRow.removeFromRight(28));
+        bpmEditor.setBounds(bpmRow.reduced(6, 0));
+      }
+
+    private:
+      juce::TextButton tapButton;
+      juce::ComboBox timeSigBox;
+      juce::TextButton minusButton;
+      juce::TextButton plusButton;
+      juce::TextEditor bpmEditor;
+
+      TapCallback onTap;
+      TimeSignatureCallback onTimeSignatureChanged;
+      BpmSetCallback onBpmSet;
+      BpmAdjustCallback onBpmAdjust;
+      BpmProvider bpmProvider;
+
+      void syncBpmEditor() {
+        if (!bpmProvider)
+          return;
+        bpmEditor.setText(juce::String(static_cast<int>(std::round(bpmProvider()))),
+                          juce::dontSendNotification);
+      }
+
+      void submitBpmEditor() {
+        const auto text = bpmEditor.getText().trim();
+        if (text.isEmpty() || !onBpmSet)
+          return;
+        const double bpm = text.getDoubleValue();
+        if (bpm > 0.0)
+          onBpmSet(bpm);
+        syncBpmEditor();
+      }
+    };
+
+    explicit MetronomePanel(MTControlsAudioProcessor &processorRef)
+        : processor(processorRef) {
+      bpmButton.setViewportIgnoreDragFlag(true);
+      iconButton.setViewportIgnoreDragFlag(true);
+
+      bpmButton.onClick = [this] { showPopover(); };
+      iconButton.onClick = [this] {
+        processor.setMetronomeEnabled(iconButton.getToggleState());
+      };
+
+      addAndMakeVisible(bpmButton);
+      addAndMakeVisible(iconButton);
+
+      applyTimeSignature("4/4");
+      refreshFromProcessor();
+      refreshThemeColours();
       startTimerHz(30);
     }
 
@@ -2719,89 +3545,79 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         return;
       manualOverride = false;
       processor.setMetronomeBpm(bpm);
-      updateBpmLabel();
+      updateBpmDisplay();
     }
 
-    void paint(juce::Graphics &) override {}
+    void refreshThemeColours() { repaint(); }
+
+    void paint(juce::Graphics &g) override {
+      auto b = getLocalBounds().toFloat().reduced(4.0f, 6.0f);
+      const float separatorX = b.getX() + (b.getWidth() * 0.64f);
+      g.setColour(UITheme::cardBorder.withAlpha(0.5f));
+      g.drawLine(separatorX, b.getY() + 4.0f, separatorX, b.getBottom() - 4.0f,
+                 1.0f);
+    }
 
     void resized() override {
-      auto area = getLocalBounds().reduced(10, 8);
-      area.removeFromTop(4);
-
-      const int tapW =
-          juce::jmin(96, juce::jmin(area.getWidth(), area.getHeight()));
-      const int tapH = juce::jmin(72, tapW);
-      const int bpmH = 20;
-      auto tapRow = area.removeFromTop(tapH + bpmH);
-      const int tapX = tapRow.getX() + (tapRow.getWidth() - tapW) / 2;
-      const int tapY = tapRow.getY();
-      tapButton.setBounds(tapX, tapY, tapW, tapH);
-      bpmLabel.setBounds(tapX, tapY + tapH, tapW, bpmH);
-
-      area.removeFromTop(6);
-
-      area.removeFromTop(6);
-      const int sigH = 28;
-      timeSigBarArea = area.removeFromTop(sigH);
-      layoutTimeSigControls();
-
-      area.removeFromTop(8);
-      const int startH = 36;
-      startStopButton.setBounds(area.removeFromTop(startH));
+      auto area = getLocalBounds().reduced(4, 6);
+      const int segmentW = static_cast<int>(std::round(area.getWidth() * 0.64f));
+      bpmButton.setBounds(area.removeFromLeft(segmentW));
+      iconButton.setBounds(area);
     }
 
   private:
     MTControlsAudioProcessor &processor;
-    BpmLabel bpmLabel;
-    MetroButton minusButton;
-    MetroButton tapButton;
-    MetroButton plusButton;
-    MetroButton startStopButton;
-    juce::ComboBox timeSigBox;
-    juce::Rectangle<int> timeSigBarArea;
+    BpmSegmentButton bpmButton;
+    MetronomeIconButton iconButton;
     bool manualOverride = false;
     double lastTickTime = 0.0;
     double beatCounter = 0.0;
     int lastBeatIndex = -1;
     float beatFlash = 0.0f;
-    bool leftBeatActive = true;
+    bool lastBeatWasDownbeat = true;
     std::deque<double> tapTimes;
     int beatsPerBar = 4;
+    juce::String timeSignature = "4/4";
 
-    void layoutTimeSigControls() {
-      const int h = timeSigBarArea.getHeight();
-      timeSigBox.setBounds(timeSigBarArea.getX(), timeSigBarArea.getY(),
-                           timeSigBarArea.getWidth(), h);
+    void showPopover() {
+      auto panel = std::make_unique<MetronomePopover>(
+          timeSignature, [this] { registerTap(); },
+          [this](const juce::String &sig) { applyTimeSignature(sig); },
+          [this](double bpm) { setBpmAbsolute(bpm); },
+          [this](double delta) { adjustBpm(delta); },
+          [this] { return processor.getMetronomeBpm(); });
+      panel->setSize(180, 120);
+      panel->refreshThemeColours();
+
+      auto &callout = juce::CallOutBox::launchAsynchronously(
+          std::move(panel), bpmButton.getBounds(), this);
+      callout.setDismissalMouseClicksAreAlwaysConsumed(true);
     }
 
-    juce::String formatBpmNumber(double bpm) const {
-      return juce::String(static_cast<int>(std::round(bpm)));
+    void refreshFromProcessor() {
+      updateBpmDisplay();
+      iconButton.setToggleState(processor.isMetronomeEnabled(),
+                                juce::dontSendNotification);
     }
 
-    juce::String formatBpmWithUnit(double bpm) const {
-      return formatBpmNumber(bpm) + " BPM";
+    void updateBpmDisplay() {
+      bpmButton.setBpmText(
+          juce::String(static_cast<int>(std::round(processor.getMetronomeBpm()))));
     }
 
-    void applyBpmFromLabel() {
-      const auto text = bpmLabel.getText().trim();
-      if (text.isEmpty())
-        return;
-      const auto digits = text.retainCharacters("0123456789.");
-      const double value = digits.getDoubleValue();
-      if (value <= 0.0)
+    void setBpmAbsolute(double bpm) {
+      if (bpm <= 0.0)
         return;
       manualOverride = true;
-      processor.setMetronomeBpm(value);
-      updateBpmLabel();
+      processor.setMetronomeBpm(bpm);
+      updateBpmDisplay();
     }
 
     void adjustBpm(double delta) {
       const auto mods = juce::ModifierKeys::getCurrentModifiers();
       const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0)
                                              : delta;
-      manualOverride = true;
-      processor.setMetronomeBpm(processor.getMetronomeBpm() + step);
-      updateBpmLabel();
+      setBpmAbsolute(processor.getMetronomeBpm() + step);
     }
 
     void registerTap() {
@@ -2822,33 +3638,18 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       if (avgMs <= 0.0)
         return;
 
-      const double bpm = 60000.0 / avgMs;
-      manualOverride = true;
-      processor.setMetronomeBpm(bpm);
-      updateBpmLabel();
+      setBpmAbsolute(60000.0 / avgMs);
     }
 
-    void updateBpmLabel() {
-      if (bpmLabel.isBeingEdited())
-        return;
-      bpmLabel.setText(formatBpmWithUnit(processor.getMetronomeBpm()),
-                       juce::dontSendNotification);
-    }
-
-    void syncStartStopLabel() {
-      const bool enabled = processor.isMetronomeEnabled();
-      startStopButton.setToggleState(enabled, juce::dontSendNotification);
-      startStopButton.setButtonText(enabled ? "STOP" : "PLAY");
-    }
-
-    void updateTimeSignatureFromBox() {
-      const auto text = timeSigBox.getText().trim();
-      const int numerator = text.upToFirstOccurrenceOf("/", false, false)
+    void applyTimeSignature(const juce::String &sigText) {
+      timeSignature = sigText.trim();
+      const int numerator = timeSignature.upToFirstOccurrenceOf("/", false, false)
                                 .getIntValue();
       beatsPerBar = numerator > 0 ? numerator : 4;
       processor.setMetronomeBeatsPerBar(beatsPerBar);
       beatCounter = 0.0;
       lastBeatIndex = -1;
+      lastBeatWasDownbeat = true;
     }
 
     void timerCallback() override {
@@ -2858,8 +3659,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       const double dt = now - lastTickTime;
       lastTickTime = now;
 
-      updateBpmLabel();
-      syncStartStopLabel();
+      refreshFromProcessor();
 
       if (processor.isMetronomeEnabled()) {
         const double bpm = processor.getMetronomeBpm();
@@ -2868,7 +3668,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           const int beatIndex = static_cast<int>(std::floor(beatCounter));
           if (beatIndex != lastBeatIndex) {
             lastBeatIndex = beatIndex;
-            leftBeatActive = (beatIndex % 2) == 1;
+            lastBeatWasDownbeat = (beatIndex % juce::jmax(1, beatsPerBar)) == 0;
             beatFlash = 1.0f;
           }
         }
@@ -2879,10 +3679,8 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       }
 
       beatFlash = juce::jmax(0.0f, beatFlash - 0.08f);
-      const bool flashOn =
-          processor.isMetronomeEnabled() && beatFlash > 0.02f;
-      tapButton.setToggleState(flashOn, juce::dontSendNotification);
-      repaint();
+      const float pulse = processor.isMetronomeEnabled() ? beatFlash : 0.0f;
+      iconButton.setBeatPulse(pulse, lastBeatWasDownbeat);
     }
   };
 
@@ -2893,9 +3691,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MixerFaderPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                     MTControlsAudioProcessor &processorRef)
         : lookAndFeel(lookAndFeelRef), processor(processorRef) {
-      metronomePanel = std::make_unique<MetronomePanel>(processor);
-      addAndMakeVisible(*metronomePanel);
-
       masterStrip = std::make_unique<ChannelStripCard>(
           "MASTER", lookAndFeel,
           [this] {
@@ -2910,20 +3705,23 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
                                          UITheme::onAccent);
       masterStrip->setSoloEnabled(false);
       masterStrip->setSoloVisible(false);
-      masterStrip->setGainVisible(false);
+      masterStrip->setGainVisible(true);
       masterStrip->setMuteAlignedToFader(true);
       masterStrip->setVolume(processor.getMasterVolume());
+      masterStrip->setGain(processor.getMasterGain());
       masterStrip->setMuteState(processor.isMasterMuted());
       masterStrip->setOnVolumeChanged([this](float value) {
         processor.setMasterVolume(value);
+      });
+      masterStrip->setOnGainChanged([this](float value) {
+        processor.setMasterGain(value);
       });
       masterStrip->setOnMuteChanged([this](bool muted) {
         processor.setMasterMute(muted);
       });
       addAndMakeVisible(*masterStrip);
 
-      configureTitleLabel(titleLabel, "ALL FADERS");
-      configureTitleLabel(metronomeLabel, "METRONOME");
+      configureTitleLabel(titleLabel, "ALL FADER");
       configureTitleLabel(masterLabel, "MASTER LEVEL");
       configureButton(upButton, "VOL +");
       configureButton(downButton, "VOL -");
@@ -2938,18 +3736,30 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       };
 
       addAndMakeVisible(titleLabel);
-      addAndMakeVisible(metronomeLabel);
       addAndMakeVisible(masterLabel);
       addAndMakeVisible(upButton);
       addAndMakeVisible(downButton);
+      refreshThemeColours();
     }
 
     ~MixerFaderPanel() override { clearLookAndFeel(); }
 
     void setOnAdjust(AdjustCallback cb) { onAdjust = std::move(cb); }
-    void setSongBpm(double bpm) {
-      if (metronomePanel)
-        metronomePanel->setSongBpm(bpm);
+    void setSongBpm(double) {}
+
+    void refreshThemeColours() {
+      configureTitleLabel(titleLabel, "ALL FADER");
+      configureTitleLabel(masterLabel, "MASTER LEVEL");
+      configureButton(upButton, "VOL +");
+      configureButton(downButton, "VOL -");
+
+      if (masterStrip) {
+        masterStrip->setCardBgColour(UITheme::cardBgMaster);
+        masterStrip->setChannelBandColours(UITheme::accentMaster,
+                                           UITheme::onAccent);
+        masterStrip->refreshThemeColours();
+      }
+      repaint();
     }
 
     void paint(juce::Graphics &g) override {
@@ -2975,7 +3785,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       };
 
       drawSection(allFadersSection);
-      drawSection(metronomeSection);
       drawSection(masterSection);
     }
 
@@ -3005,9 +3814,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       y += buttonH + sectionGap;
       const int allBottom = y - (sectionGap / 2);
 
-      metronomeLabel.setBounds(sectionX, y, sectionW, titleH);
-      y += titleH + gap;
-
       const int masterTitleH = titleH;
       const int masterTitleGap = gap;
       const int masterTop =
@@ -3017,15 +3823,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       const int stripX = area.getX() + (area.getWidth() - stripW) / 2;
       const int stripY = masterTop + masterTitleH + masterTitleGap;
       masterStrip->setBounds(stripX, stripY, stripW, stripH);
-
-      if (metronomePanel) {
-        const int metroTop = y;
-        const int metroBottom = masterTop - sectionGap;
-        const int metroH = juce::jmax(0, metroBottom - metroTop);
-        metronomePanel->setBounds(area.getX(), metroTop, area.getWidth(),
-                                  metroH);
-        metronomeSection = {};
-      }
 
       allFadersSection =
           juce::Rectangle<int>(area.getX(), allTop, area.getWidth(),
@@ -3038,15 +3835,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   private:
     ChannelStripLookAndFeel &lookAndFeel;
     MTControlsAudioProcessor &processor;
-    std::unique_ptr<MetronomePanel> metronomePanel;
     std::unique_ptr<ChannelStripCard> masterStrip;
     juce::Label titleLabel;
-    juce::Label metronomeLabel;
     juce::Label masterLabel;
     juce::TextButton upButton;
     juce::TextButton downButton;
     juce::Rectangle<int> allFadersSection;
-    juce::Rectangle<int> metronomeSection;
     juce::Rectangle<int> masterSection;
     AdjustCallback onAdjust;
     const float step = 0.05f;
@@ -3387,14 +4181,13 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     int lastActivatedIndex = -1;
   };
 
-  auto topBarImpl = std::make_unique<TopBar>();
+  auto topBarImpl = std::make_unique<TopBar>(p);
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
   topBarRaw->setTransportProviders(
       [&p] { return p.isSongPlaying(); },
       [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongLengthSeconds(); },
-      [&p] { return p.getLoadedSongBpm(); },
+      [&p] { return p.getSongEndSeconds(); },
       [&p] { return p.getLoadedSongKey(); });
   topBarRaw->setMonoClickProvider([&p] { return p.isMonoClickMode(); });
 
@@ -3426,6 +4219,17 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     if (channelGridRaw)
       channelGridRaw->nudgeFaders(delta);
   });
+  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw,
+                        mixerFaderRaw] {
+    if (topBarRaw)
+      topBarRaw->refreshThemeColours();
+    if (waveformBarRaw)
+      waveformBarRaw->refreshThemeColours();
+    if (channelGridRaw)
+      channelGridRaw->refreshThemeColours();
+    if (mixerFaderRaw)
+      mixerFaderRaw->refreshThemeColours();
+  };
 
   auto songListImpl = std::make_unique<SongListPanel>();
   auto *songListRaw = songListImpl.get();
@@ -3549,9 +4353,16 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   topBarRaw->setTransportCallbacks(
       [&p] { p.toggleSongPlayPause(); }, [&p] { p.stopSong(); }, prevSong,
-      nextSong, [&p](bool fadeOut) { p.setFadeActive(fadeOut); },
+      nextSong, [&p](bool fadeOut) {
+        p.setFadeStopsPlayback(false);
+        p.setFadeActive(fadeOut);
+      },
       [&p](double deltaSec) { p.seekSongRelative(deltaSec); },
       [&p](bool enabled) { p.setMonoClickMode(enabled); });
+  topBarRaw->setOnSettingsWithAnchor(
+      [this](juce::Rectangle<int> anchor, juce::Component *parent) {
+        showSettings(anchor, parent);
+      });
 
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
@@ -3570,6 +4381,35 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   setWantsKeyboardFocus(true);
   grabKeyboardFocus();
   setSize(1200, 760);
+}
+
+void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
+                                                  juce::Component *parent) {
+  juce::DialogWindow::LaunchOptions options;
+  options.dialogTitle = "Settings";
+  options.dialogBackgroundColour = UITheme::appBg;
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  auto *panel = new SettingsPanel(
+      static_cast<ThemePreset>(currentThemeId),
+      [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
+      [] {});
+  panel->setSize(272, 172);
+  panel->refreshThemeColours();
+  options.content.setOwned(panel);
+
+  if (auto *window = options.launchAsync()) {
+    window->centreAroundComponent(parent != nullptr ? parent : this, 272, 172);
+  }
+}
+
+void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
+  currentThemeId = presetId;
+  applyTheme(static_cast<ThemePreset>(presetId));
+  if (refreshTopBarTheme)
+    refreshTopBarTheme();
+  repaint();
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() = default;

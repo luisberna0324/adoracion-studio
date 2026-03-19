@@ -128,6 +128,7 @@ public:
   void setMuteAlignedToFader(bool aligned);
   void setChannelBandColours(juce::Colour bandColour, juce::Colour textColour);
   void setCardBgColour(juce::Colour colour);
+  void refreshThemeColours();
   void setOnVolumeChanged(std::function<void(float)> cb);
   void setOnGainChanged(std::function<void(float)> cb);
   void setOnMuteChanged(std::function<void(bool)> cb);
@@ -185,11 +186,16 @@ private:
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;
+  int currentThemeId = 1;
+  std::function<void()> refreshTopBarTheme;
   bool isSetlistCollapsed = false;
   int currentSongIndex = -1;
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;
   bool isWaveformExpanded = false;
+  void showSettings(juce::Rectangle<int> anchor,
+                    juce::Component *parent);
+  void applyThemePreset(int presetId);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };
