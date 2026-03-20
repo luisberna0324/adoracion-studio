@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  macos-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure (macOS)
+        env:
+          JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
+        run: cmake --preset macos-release
+      - name: Build (macOS)
+        run: cmake --build --preset macos-release
+      - name: Upload Standalone (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTControls-macos-standalone
+          path: build/macos-release/MTControls_artefacts/Standalone
+          if-no-files-found: error
+
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (Windows)
+        env:
+          JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
+        run: cmake --preset windows-release
+      - name: Build (Windows)
+        run: cmake --build --preset windows-release
+      - name: Upload Standalone (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTControls-windows-standalone
+          path: build/windows-release/MTControls_artefacts/Standalone
+          if-no-files-found: error
