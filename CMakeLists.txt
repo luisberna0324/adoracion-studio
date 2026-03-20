@@ -21,7 +21,7 @@ juce_add_plugin(MTControls
     COPY_PLUGIN_AFTER_BUILD FALSE
     PLUGIN_MANUFACTURER_CODE MLTK
     PLUGIN_CODE Mtc1
-    FORMATS VST3 Standalone
+    FORMATS Standalone
     PRODUCT_NAME "Adoracion Estudio"
 )
 
@@ -41,12 +41,32 @@ target_sources(MTControls
         src/StemBufferingSource.h
         src/data/SongData.cpp
         src/data/SongData.h
+        src/data/SongLibraryStore.cpp
+        src/data/SongLibraryStore.h
         src/ui/UiCommon.cpp
         src/ui/UiCommon.h
+        src/ui/components/ChannelStripCard.cpp
+        src/ui/components/ChannelStripCard.h
+        src/ui/components/ChannelStripLookAndFeel.cpp
+        src/ui/components/ChannelStripLookAndFeel.h
+        src/ui/components/SetlistHandlePanel.cpp
+        src/ui/components/SetlistHandlePanel.h
+        src/ui/components/StereoVUMeter.cpp
+        src/ui/components/StereoVUMeter.h
+        src/ui/components/WaveformRowComponent.cpp
+        src/ui/components/WaveformRowComponent.h
+        src/ui/components/MetronomePanel.cpp
+        src/ui/components/MetronomePanel.h
         src/ui/panels/ChannelGridPanel.cpp
         src/ui/panels/ChannelGridPanel.h
         src/ui/panels/MixerFaderPanel.cpp
         src/ui/panels/MixerFaderPanel.h
+        src/ui/panels/SettingsPanel.cpp
+        src/ui/panels/SettingsPanel.h
+        src/ui/panels/SongImportWizardComponent.cpp
+        src/ui/panels/SongImportWizardComponent.h
+        src/ui/panels/SongListPanel.cpp
+        src/ui/panels/SongListPanel.h
         src/ui/panels/TopBar.cpp
         src/ui/panels/TopBar.h
         src/ui/panels/WaveformBar.cpp
@@ -69,4 +89,3 @@ target_link_libraries(MTControls
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
-target_sources(MTControls PRIVATE src/WaveformRowComponent.cpp)

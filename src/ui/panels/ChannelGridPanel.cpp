@@ -1,7 +1,7 @@
 #include "ChannelGridPanel.h"
 
+#include "../components/ChannelStripCard.h"
 #include "../../PluginProcessor.h"
-#include "../../PluginEditor.h"
 
 #include <algorithm>
 

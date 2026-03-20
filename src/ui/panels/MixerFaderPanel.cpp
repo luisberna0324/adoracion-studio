@@ -1,7 +1,7 @@
 #include "MixerFaderPanel.h"
 
-#include "../../PluginEditor.h"
 #include "../../PluginProcessor.h"
+#include "../components/ChannelStripCard.h"
 
 MixerFaderPanel::MixerFaderPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                                  MTControlsAudioProcessor &processorRef)

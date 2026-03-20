@@ -1,5 +1,5 @@
 #include "WaveformRowComponent.h"
-#include "PluginEditor.h"
+#include "ChannelStripLookAndFeel.h"
 
 // --- Subcomponents ---
 
