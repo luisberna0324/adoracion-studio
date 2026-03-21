@@ -68,6 +68,18 @@ int stemPriorityForStripOrder(const ImportedStemData &stem) {
   return 2;
 }
 
+bool isStemPitchShiftable(const ImportedStemData &stem) {
+  const auto category = stem.category.trim();
+  if (category.isEmpty())
+    return true;
+  if (category.equalsIgnoreCase("Drums") ||
+      category.equalsIgnoreCase("Percussion") ||
+      category.equalsIgnoreCase("Click") ||
+      category.equalsIgnoreCase("Cues"))
+    return false;
+  return true;
+}
+
 std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
                                           int binCount) {
   if (binCount <= 0)

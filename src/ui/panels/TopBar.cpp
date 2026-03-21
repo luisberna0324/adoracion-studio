@@ -3,6 +3,89 @@
 #include "../../PluginProcessor.h"
 
 #include <cmath>
+#include <iterator>
+
+namespace {
+struct NoteOption {
+  const char *label;
+  int semitone;
+};
+
+constexpr NoteOption kNoteOptions[] = {{"Ab", 8}, {"A", 9},  {"Bb", 10},
+                                       {"B", 11}, {"C", 0},  {"Db", 1},
+                                       {"D", 2},  {"Eb", 3}, {"E", 4},
+                                       {"F", 5},  {"Gb", 6}, {"G", 7}};
+
+int normalizeSemitone(int semitone) {
+  const int mod = semitone % 12;
+  return mod < 0 ? mod + 12 : mod;
+}
+
+juce::String noteLabelForSemitone(int semitone) {
+  const int normalized = normalizeSemitone(semitone);
+  for (const auto &opt : kNoteOptions) {
+    if (opt.semitone == normalized)
+      return opt.label;
+  }
+  return "C";
+}
+
+bool parseKeySemitone(const juce::String &keyText, int &semitoneOut) {
+  auto token = keyText.trim();
+  if (token.isEmpty())
+    return false;
+  token = token.upToFirstOccurrenceOf(" ", false, false).trim();
+  if (token.isEmpty())
+    return false;
+
+  const auto letter = token.substring(0, 1).toUpperCase();
+  juce::String accidental;
+  if (token.length() > 1) {
+    const auto second = token.substring(1, 2);
+    if (second == "#" || second == "b" || second == "B")
+      accidental = (second == "B") ? "b" : second;
+  }
+
+  const auto normalized = (letter + accidental).toUpperCase();
+  if (normalized == "C")
+    semitoneOut = 0;
+  else if (normalized == "C#" || normalized == "DB")
+    semitoneOut = 1;
+  else if (normalized == "D")
+    semitoneOut = 2;
+  else if (normalized == "D#" || normalized == "EB")
+    semitoneOut = 3;
+  else if (normalized == "E")
+    semitoneOut = 4;
+  else if (normalized == "F")
+    semitoneOut = 5;
+  else if (normalized == "F#" || normalized == "GB")
+    semitoneOut = 6;
+  else if (normalized == "G")
+    semitoneOut = 7;
+  else if (normalized == "G#" || normalized == "AB")
+    semitoneOut = 8;
+  else if (normalized == "A")
+    semitoneOut = 9;
+  else if (normalized == "A#" || normalized == "BB")
+    semitoneOut = 10;
+  else if (normalized == "B")
+    semitoneOut = 11;
+  else
+    return false;
+
+  return true;
+}
+
+int semitoneDelta(int from, int to) {
+  int delta = normalizeSemitone(to) - normalizeSemitone(from);
+  if (delta > 6)
+    delta -= 12;
+  else if (delta < -6)
+    delta += 12;
+  return delta;
+}
+} // namespace
 
 TopBar::IconButton::IconButton(juce::String name, IconGlyph g, bool primary)
     : juce::Button(std::move(name)), glyph(g), isPrimary(primary) {}
@@ -77,7 +160,9 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, "Key");
+  activeKeyLabel = "Key";
   timeDisplay.onClick = [this] { showSongWindowPopover(); };
+  keyDisplay.onClick = [this] { showKeyPopover(); };
   configureMetronomeControls();
 
   prevButton.onClick = [this] {
@@ -245,8 +330,8 @@ void TopBar::resized() {
   const int monoW = 92;
   monoClickButton.setBounds(rightX - monoW, y + 2, monoW, 36);
   rightX -= monoW + gap;
-  keyDisplay.setBounds(rightX - 50, y, 50, 40);
-  rightX -= 50 + gap;
+  keyDisplay.setBounds(rightX - 56, y, 56, 40);
+  rightX -= 56 + gap;
   const int metroTotalW = 110;
   const int metroIconW = 44;
   const int metroY = y - 2;
@@ -281,6 +366,7 @@ void TopBar::configureDisplay(juce::Label &label, const juce::String &text) {
   label.setText(text, juce::dontSendNotification);
   label.setJustificationType(juce::Justification::centred);
   label.setFont(juce::FontOptions(13.0f));
+  label.setMouseCursor(juce::MouseCursor::PointingHandCursor);
   label.setColour(juce::Label::textColourId, UITheme::textPrimary);
   label.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
   label.setColour(juce::Label::outlineColourId,
@@ -534,6 +620,114 @@ void TopBar::showMetronomePopover() {
   callout.setDismissalMouseClicksAreAlwaysConsumed(true);
 }
 
+void TopBar::showKeyPopover() {
+  class NoteChip final : public juce::Button {
+  public:
+    explicit NoteChip(const juce::String &labelText)
+        : juce::Button(labelText), label(labelText) {}
+
+    void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                     bool isButtonDown) override {
+      auto b = getLocalBounds().toFloat();
+      auto fill = getToggleState() ? UITheme::accent : UITheme::cardBgHover;
+      if (isMouseOverButton)
+        fill = fill.brighter(0.06f);
+      if (isButtonDown)
+        fill = fill.darker(0.05f);
+      g.setColour(fill);
+      const float radius = b.getHeight() * 0.5f;
+      g.fillRoundedRectangle(b, radius);
+      g.setColour(UITheme::cardBorder.withAlpha(0.6f));
+      g.drawRoundedRectangle(b, radius, 1.0f);
+      g.setColour(getToggleState() ? UITheme::onAccent : UITheme::textPrimary);
+      g.setFont(juce::FontOptions(12.0f));
+      g.drawFittedText(label, getLocalBounds(), juce::Justification::centred,
+                       1);
+    }
+
+  private:
+    juce::String label;
+  };
+
+  class KeyPopover final : public juce::Component {
+  public:
+    KeyPopover(int activeSemitone, std::function<void(int)> onSelectFn)
+        : onSelect(std::move(onSelectFn)) {
+      for (size_t i = 0; i < std::size(kNoteOptions); ++i) {
+        auto chip =
+            std::make_unique<NoteChip>(kNoteOptions[i].label);
+        chip->setClickingTogglesState(true);
+        const bool isActive = kNoteOptions[i].semitone == activeSemitone;
+        chip->setToggleState(isActive, juce::dontSendNotification);
+        chip->onClick = [this, i] {
+          setActiveIndex(static_cast<int>(i));
+          if (onSelect)
+            onSelect(kNoteOptions[i].semitone);
+        };
+        addAndMakeVisible(*chip);
+        chips.push_back(std::move(chip));
+      }
+    }
+
+    void paint(juce::Graphics &g) override {
+      auto b = getLocalBounds().toFloat();
+      g.setColour(UITheme::cardBg);
+      g.fillRoundedRectangle(b, 8.0f);
+      g.setColour(UITheme::cardBorder);
+      g.drawRoundedRectangle(b, 8.0f, 1.0f);
+    }
+
+    void resized() override {
+      auto area = getLocalBounds().reduced(12, 10);
+      const int count = static_cast<int>(chips.size());
+      const int gap = 6;
+      const int chipH = 28;
+      const int totalGap = gap * (count - 1);
+      const int chipW =
+          juce::jmax(28, (area.getWidth() - totalGap) / count);
+      int x = area.getX();
+      const int y = area.getCentreY() - (chipH / 2);
+      for (auto &chip : chips) {
+        chip->setBounds(x, y, chipW, chipH);
+        x += chipW + gap;
+      }
+    }
+
+  private:
+    std::vector<std::unique_ptr<NoteChip>> chips;
+    std::function<void(int)> onSelect;
+
+    void setActiveIndex(int index) {
+      for (int i = 0; i < static_cast<int>(chips.size()); ++i) {
+        chips[static_cast<size_t>(i)]->setToggleState(
+            i == index, juce::dontSendNotification);
+      }
+    }
+  };
+
+  if (!processor.hasLoadedSong())
+    return;
+
+  auto panel = std::make_unique<KeyPopover>(
+      activeKeySemitone, [this](int semitone) {
+        activeKeySemitone = normalizeSemitone(semitone);
+        activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
+        keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
+        processor.setPitchSemiTones(
+            semitoneDelta(baseKeySemitone, activeKeySemitone));
+      });
+
+  panel->setSize(480, 56);
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  juce::Component *parentComp = editor != nullptr
+                                    ? static_cast<juce::Component *>(editor)
+                                    : static_cast<juce::Component *>(this);
+  const auto anchor = parentComp->getLocalArea(this, keyDisplay.getBounds());
+  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
+                                                         anchor, parentComp);
+  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+}
+
 void TopBar::showSongWindowPopover() {
   class SongWindowPopover final : public juce::Component {
   public:
@@ -686,12 +880,43 @@ void TopBar::refreshFromProviders() {
 
   updateBpmDisplay();
 
-  if (keyProvider) {
-    const auto key = keyProvider().trim();
-    keyDisplay.setText(key.isNotEmpty() ? key : "Key",
-                       juce::dontSendNotification);
-  } else {
+  const bool songLoaded = processor.hasLoadedSong();
+  if (!songLoaded) {
+    if (hasKey || lastSongTitle.isNotEmpty() || lastKeyToken.isNotEmpty()) {
+      hasKey = false;
+      lastSongTitle.clear();
+      lastKeyToken.clear();
+      baseKeySemitone = 0;
+      activeKeySemitone = 0;
+      activeKeyLabel = "Key";
+      processor.setPitchSemiTones(0);
+    }
     keyDisplay.setText("Key", juce::dontSendNotification);
+  } else {
+    const auto keyText = keyProvider ? keyProvider().trim() : juce::String{};
+    const auto songTitle = processor.getLoadedSongTitle();
+    const bool songChanged = songTitle != lastSongTitle;
+    const bool keyChanged = keyText != lastKeyToken;
+    if (songChanged || keyChanged || !hasKey) {
+      lastSongTitle = songTitle;
+      lastKeyToken = keyText;
+      int semitone = 0;
+      if (parseKeySemitone(keyText, semitone)) {
+        baseKeySemitone = semitone;
+        activeKeySemitone = semitone;
+        activeKeyLabel = noteLabelForSemitone(semitone);
+      } else {
+        baseKeySemitone = 0;
+        activeKeySemitone = 0;
+        activeKeyLabel = keyText.isNotEmpty() ? keyText : "Key";
+      }
+      hasKey = true;
+      processor.setPitchSemiTones(0);
+    }
+
+    if (activeKeyLabel.isEmpty())
+      activeKeyLabel = "Key";
+    keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
   }
 
   const bool playing = playingProvider ? playingProvider() : false;

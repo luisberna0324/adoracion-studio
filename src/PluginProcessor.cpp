@@ -26,6 +26,9 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   dryBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
   stemMixBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
   stemTempBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
+  percussionBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
+  pitchShift.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
+  pitchShift.reset();
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
@@ -51,6 +54,7 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
 
 void MTControlsAudioProcessor::releaseResources() {
   diagnostics.stopBackgroundLogger();
+  pitchShift.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   mixerSource.releaseResources();
   for (auto &track : stemTracks)
@@ -91,6 +95,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
     const bool isPlaying = getTransportState() == TransportState::playing;
+    const int targetPitch =
+        pitchTargetSemiTones.load(std::memory_order_relaxed);
+    if (targetPitch != pitchActiveSemiTones) {
+      pitchActiveSemiTones = targetPitch;
+      pitchShift.setPitchSemiTones(pitchActiveSemiTones);
+    }
 
     // --- Diagnostics: measure time until lock is acquired ---
     const int64_t lockStartTick = juce::Time::getHighResolutionTicks();
@@ -205,7 +215,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
       const bool useSeparatedMix =
           (monoClick && numChannels >= 2) || isolateGuideDuringFade ||
-          windowFadeActive;
+          windowFadeActive || (pitchActiveSemiTones != 0);
       usedSeparatedMix = useSeparatedMix;
       usedMonoClickMix = monoClick && numChannels >= 2;
 
@@ -213,10 +223,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (numSamples > stemTempBuffer.getNumSamples()) {
           stemTempBuffer.setSize(numChannels, numSamples, false, false, true);
           stemMixBuffer.setSize(numChannels, numSamples, false, false, true);
+          percussionBuffer.setSize(numChannels, numSamples, false, false, true);
           dryBuffer.setSize(numChannels, numSamples, false, false, true);
         }
 
         stemMixBuffer.clear();
+        percussionBuffer.clear();
         dryBuffer.clear();
 
         for (int i = 0; i < stemCount; ++i) {
@@ -227,7 +239,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const bool isClickGuide =
               stemClickGuideStates[static_cast<size_t>(i)].load(
                   std::memory_order_relaxed);
-          auto &target = isClickGuide ? dryBuffer : stemMixBuffer;
+          const bool pitchShiftable =
+              stemPitchShiftStates[static_cast<size_t>(i)].load(
+                  std::memory_order_relaxed);
+          auto &target = isClickGuide
+                             ? dryBuffer
+                             : (pitchShiftable ? stemMixBuffer
+                                               : percussionBuffer);
           for (int ch = 0; ch < numChannels; ++ch)
             target.addFrom(ch, 0, stemTempBuffer, ch, 0, numSamples);
         }
@@ -337,10 +355,21 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         !juce::approximatelyEqual(instrumentFadeEnd, 1.0f)) {
       if (juce::approximatelyEqual(instrumentFadeStart, instrumentFadeEnd)) {
         stemMixBuffer.applyGain(instrumentFadeEnd);
+        percussionBuffer.applyGain(instrumentFadeEnd);
       } else {
         stemMixBuffer.applyGainRamp(0, numSamples, instrumentFadeStart,
                                     instrumentFadeEnd);
+        percussionBuffer.applyGainRamp(0, numSamples, instrumentFadeStart,
+                                       instrumentFadeEnd);
       }
+    }
+
+    if (pitchActiveSemiTones != 0) {
+      if (!pitchShift.isPrepared() ||
+          pitchShift.getNumChannels() != numChannels) {
+        pitchShift.prepare(playbackSampleRate, playbackBlockSize, numChannels);
+      }
+      pitchShift.process(stemMixBuffer);
     }
 
     buffer.clear();
@@ -352,6 +381,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         float guideSum = 0.0f;
         for (int ch = 0; ch < numChannels; ++ch) {
           musicSum += stemMixBuffer.getSample(ch, s);
+          musicSum += percussionBuffer.getSample(ch, s);
           guideSum += dryBuffer.getSample(ch, s);
         }
         left[s] = musicSum / static_cast<float>(numChannels);
@@ -362,6 +392,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     } else {
       for (int ch = 0; ch < numChannels; ++ch) {
         buffer.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
+        buffer.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
         buffer.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
       }
     }
@@ -626,6 +657,7 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
       loadedSongTitle = songTitle;
     }
     songLoaded.store(true, std::memory_order_relaxed);
+    pitchTargetSemiTones.store(0, std::memory_order_relaxed);
     setTransportState(TransportState::stopped);
   }
 
@@ -1022,6 +1054,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   masterMuted.store(false, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
+  pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   setTransportState(TransportState::stopped);
 }
 
@@ -1045,6 +1078,8 @@ void MTControlsAudioProcessor::resetStemControls(
                                                  std::memory_order_relaxed);
     stemClickGuideStates[static_cast<size_t>(i)].store(
         false, std::memory_order_relaxed);
+    stemPitchShiftStates[static_cast<size_t>(i)].store(
+        true, std::memory_order_relaxed);
   }
 }
 
@@ -1056,6 +1091,25 @@ void MTControlsAudioProcessor::setStemClickGuideMask(
     stemClickGuideStates[static_cast<size_t>(i)].store(
         isClickGuide, std::memory_order_relaxed);
   }
+}
+
+void MTControlsAudioProcessor::setStemPitchShiftMask(
+    const std::vector<bool> &mask) noexcept {
+  const int limit = juce::jmin(static_cast<int>(mask.size()), maxStemCount);
+  for (int i = 0; i < maxStemCount; ++i) {
+    const bool canPitch = i < limit ? mask[static_cast<size_t>(i)] : true;
+    stemPitchShiftStates[static_cast<size_t>(i)].store(
+        canPitch, std::memory_order_relaxed);
+  }
+}
+
+void MTControlsAudioProcessor::setPitchSemiTones(
+    const int semitoneDelta) noexcept {
+  pitchTargetSemiTones.store(semitoneDelta, std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
+  return pitchTargetSemiTones.load(std::memory_order_relaxed);
 }
 
 MTControlsAudioProcessor::TransportState

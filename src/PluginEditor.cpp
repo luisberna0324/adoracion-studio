@@ -71,6 +71,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
                    this](const ImportedSongData &song, int songIndex) {
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
+    std::vector<bool> pitchShiftMask;
     ImportedSongData loadedSong = song;
     loadedSong.stems.clear();
     loadedSong.stems.reserve(song.stems.size());
@@ -103,6 +104,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       loadedSong.stems.push_back(loadedStem);
       const bool isClickGuide = stemPriorityForStripOrder(loadedStem) <= 1;
       clickGuideMask.push_back(isClickGuide);
+      pitchShiftMask.push_back(isStemPitchShiftable(loadedStem));
     }
 
     const bool loaded = p.loadSongStems(stemPaths, song.title, song.key,
@@ -119,6 +121,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     }
 
     p.setStemClickGuideMask(clickGuideMask);
+    p.setStemPitchShiftMask(pitchShiftMask);
 
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {

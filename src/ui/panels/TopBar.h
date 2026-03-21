@@ -70,7 +70,7 @@ private:
   IconButton settingsButton;
 
   ClickableLabel timeDisplay;
-  juce::Label keyDisplay;
+  ClickableLabel keyDisplay;
   juce::TextButton monoClickButton;
   juce::TextButton bpmSegmentButton;
   IconButton metroToggleButton{"metroToggle", IconGlyph::Metronome};
@@ -92,6 +92,12 @@ private:
   std::function<juce::String()> keyProvider;
   std::function<bool()> monoClickProvider;
   MTControlsAudioProcessor &processor;
+  juce::String lastSongTitle;
+  juce::String lastKeyToken;
+  juce::String activeKeyLabel;
+  int baseKeySemitone = 0;
+  int activeKeySemitone = 0;
+  bool hasKey = false;
   std::deque<double> tapTimes;
   double lastTickTime = 0.0;
   double beatCounter = 0.0;
@@ -111,6 +117,7 @@ private:
   void adjustBpm(double delta);
   void registerTap();
   void showMetronomePopover();
+  void showKeyPopover();
   void showSongWindowPopover();
   void refreshFromProviders();
 };

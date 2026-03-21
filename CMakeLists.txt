@@ -4,12 +4,22 @@ project(MTControls VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
+include(FetchContent)
 
 if(NOT DEFINED JUCE_DIR)
     message(FATAL_ERROR "JUCE_DIR is not set. Configure with: cmake -S . -B build -DJUCE_DIR=/path/to/JUCE")
 endif()
 
 add_subdirectory(${JUCE_DIR} JUCE)
+
+FetchContent_Declare(
+    soundtouch
+    URL https://gitlab.com/soundtouch/soundtouch/-/archive/2.3.1/soundtouch-2.3.1.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(soundtouch)
 
 juce_add_plugin(MTControls
     COMPANY_NAME "Multitracks"
@@ -33,6 +43,8 @@ target_sources(MTControls
         src/PluginEditor.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        src/PitchShiftProcessor.cpp
+        src/PitchShiftProcessor.h
         src/ResamplingPositionableSource.cpp
         src/ResamplingPositionableSource.h
         src/StemTrack.cpp
@@ -78,6 +90,7 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
+        SOUNDTOUCH_FLOAT_SAMPLES=1
 )
 
 target_link_libraries(MTControls
@@ -89,3 +102,15 @@ target_link_libraries(MTControls
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+if (TARGET SoundTouch)
+    target_compile_definitions(SoundTouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
+    target_link_libraries(MTControls PRIVATE SoundTouch)
+    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+elseif (TARGET soundtouch)
+    target_compile_definitions(soundtouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
+    target_link_libraries(MTControls PRIVATE soundtouch)
+    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+else()
+    message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
+endif()
