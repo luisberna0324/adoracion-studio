@@ -440,12 +440,12 @@ void SongImportWizardComponent::openStemChooser() {
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
       "*.wav;*.aif;*.aiff;*.flac;*.mp3");
 
-  const auto flags = juce::FileBrowserComponent::openMode |
-                     juce::FileBrowserComponent::canSelectFiles |
-                     juce::FileBrowserComponent::canSelectMultipleItems;
+  const auto chooserFlags = juce::FileBrowserComponent::openMode |
+                           juce::FileBrowserComponent::canSelectFiles |
+                           juce::FileBrowserComponent::canSelectMultipleItems;
 
   stemChooser->launchAsync(
-      flags, [safeThis](const juce::FileChooser &chooser) {
+      chooserFlags, [safeThis](const juce::FileChooser &chooser) {
         if (safeThis == nullptr)
           return;
         safeThis->handleSelectedStemFiles(chooser.getResults());

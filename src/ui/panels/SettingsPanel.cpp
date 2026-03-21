@@ -1,8 +1,10 @@
 #include "SettingsPanel.h"
 
-SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
+SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunch,
+                             ThemeChanged cb, ExpandLaunchChanged expandCb,
                              CloseRequested closeCb)
-    : onThemeChanged(std::move(cb)), onClose(std::move(closeCb)) {
+    : onThemeChanged(std::move(cb)),
+      onExpandLaunchChanged(std::move(expandCb)), onClose(std::move(closeCb)) {
   title.setText("Settings", juce::dontSendNotification);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
@@ -19,6 +21,21 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   themeBox.setSelectedId(static_cast<int>(current));
   themeBox.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(themeBox);
+
+  expandLaunchLabel.setText("Ventana al iniciar", juce::dontSendNotification);
+  expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
+  expandLaunchLabel.setFont(juce::FontOptions(12.0f));
+  addAndMakeVisible(expandLaunchLabel);
+
+  expandLaunchToggle.setButtonText("Expandir al área de trabajo");
+  expandLaunchToggle.setClickingTogglesState(true);
+  expandLaunchToggle.setToggleState(expandWindowOnLaunch,
+                                    juce::dontSendNotification);
+  expandLaunchToggle.onClick = [this] {
+    if (onExpandLaunchChanged)
+      onExpandLaunchChanged(expandLaunchToggle.getToggleState());
+  };
+  addAndMakeVisible(expandLaunchToggle);
 
   closeButton.setButtonText("CLOSE");
   closeButton.setClickingTogglesState(false);
@@ -50,6 +67,10 @@ void SettingsPanel::resized() {
   themeLabel.setBounds(row.removeFromLeft(60));
   themeBox.setBounds(row);
   area.removeFromTop(14);
+  auto expandRow = area.removeFromTop(26);
+  expandLaunchLabel.setBounds(expandRow.removeFromLeft(130));
+  expandLaunchToggle.setBounds(expandRow);
+  area.removeFromTop(14);
   closeButton.setBounds(area.removeFromTop(28).removeFromRight(90));
 }
 
@@ -61,6 +82,13 @@ void SettingsPanel::refreshThemeColours() {
                      UITheme::cardBorder.withAlpha(0.65f));
   themeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   themeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  expandLaunchToggle.setColour(juce::ToggleButton::textColourId,
+                               UITheme::textPrimary);
+  expandLaunchToggle.setColour(juce::ToggleButton::tickColourId,
+                               UITheme::accent);
+  expandLaunchToggle.setColour(juce::ToggleButton::tickDisabledColourId,
+                               UITheme::textSecondary);
   closeButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   closeButton.setColour(juce::TextButton::buttonOnColourId,
                         UITheme::cardBgPressed);

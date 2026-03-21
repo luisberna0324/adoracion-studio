@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "data/AppSettings.h"
 #include "data/SongData.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
@@ -14,6 +15,13 @@ namespace {
 constexpr int kTopBarH = 60;
 constexpr int kWaveformH = 100;
 constexpr int kWaveformExpandedH = 160;
+
+constexpr int kDefaultWindowW = 1200;
+constexpr int kDefaultWindowH = 760;
+/** Mínimo para que la UI siga siendo usable (setlist + canales). */
+constexpr int kMinWindowW = 800;
+constexpr int kMinWindowH = 560;
+constexpr int kScreenMargin = 40;
 
 } // namespace
 
@@ -239,7 +247,26 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   setWantsKeyboardFocus(true);
   grabKeyboardFocus();
-  setSize(1200, 760);
+
+  const auto userArea =
+      juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+  const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
+  const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
+  const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
+  const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
+  setSize(w, h);
+
+  setResizable(true, true);
+  setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+
+  if (AppSettings::getExpandWindowOnLaunch()) {
+    juce::MessageManager::callAsync(
+        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+             this)] {
+          if (safe != nullptr)
+            expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+        });
+  }
 }
 
 void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
@@ -252,14 +279,18 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.resizable = false;
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
+      AppSettings::getExpandWindowOnLaunch(),
       [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
+      [](const bool expandOnLaunch) {
+        AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
+      },
       [] {});
-  panel->setSize(272, 172);
+  panel->setSize(320, 230);
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 
   if (auto *window = options.launchAsync()) {
-    window->centreAroundComponent(parent != nullptr ? parent : this, 272, 172);
+    window->centreAroundComponent(parent != nullptr ? parent : this, 320, 230);
   }
 }
 

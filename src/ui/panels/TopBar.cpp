@@ -137,6 +137,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       seekForwardButton("seekForward", IconGlyph::SeekForward),
       nextButton("next", IconGlyph::Next),
       fadeButton("fade", IconGlyph::FadeOut),
+      windowModeButton("windowMode", IconGlyph::WindowMaximize),
       settingsButton("settings", IconGlyph::Settings),
       processor(processorRef) {
   monoClickButton.setButtonText("MONO/CLICK");
@@ -153,7 +154,8 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
 
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
-        &seekForwardButton, &nextButton, &fadeButton, &settingsButton}) {
+        &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
+        &settingsButton}) {
     addAndMakeVisible(*btn);
   }
   addAndMakeVisible(monoClickButton);
@@ -201,6 +203,14 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     if (onStop)
       onStop();
     refreshFromProviders();
+  };
+  windowModeButton.onClick = [this] {
+    clearFadeIfActive();
+    toggleTopLevelWindowMaximised(this);
+    const bool maxed = isTopLevelWindowMaximised(this);
+    windowModeButton.setGlyph(maxed ? IconGlyph::WindowRestore
+                                    : IconGlyph::WindowMaximize);
+    lastTopLevelMaximised = maxed;
   };
   settingsButton.onClick = [this] {
     clearFadeIfActive();
@@ -311,7 +321,7 @@ void TopBar::resized() {
 
   int x = 12;
 
-  auto placeSquare = [&x, y](juce::Component &c) {
+  auto placeSquare = [&x, y, square, gap](juce::Component &c) {
     c.setBounds(x, y - 2, square, square);
     x += square + gap;
   };
@@ -326,6 +336,8 @@ void TopBar::resized() {
 
   int rightX = getWidth() - 12;
   settingsButton.setBounds(rightX - square, y - 2, square, square);
+  rightX -= square + gap;
+  windowModeButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
   const int monoW = 92;
   monoClickButton.setBounds(rightX - monoW, y + 2, monoW, 36);
@@ -349,6 +361,7 @@ void TopBar::resized() {
           static_cast<juce::Component *>(&metroToggleButton),
           static_cast<juce::Component *>(&keyDisplay),
           static_cast<juce::Component *>(&monoClickButton),
+          static_cast<juce::Component *>(&windowModeButton),
           static_cast<juce::Component *>(&settingsButton)}) {
       c->setTopLeftPosition(c->getX() + shift, c->getY());
     }
@@ -396,6 +409,14 @@ void TopBar::configureMetronomeControls() {
 
 void TopBar::timerCallback() {
   refreshFromProviders();
+
+  const bool maxed = isTopLevelWindowMaximised(this);
+  if (maxed != lastTopLevelMaximised) {
+    lastTopLevelMaximised = maxed;
+    windowModeButton.setGlyph(maxed ? IconGlyph::WindowRestore
+                                    : IconGlyph::WindowMaximize);
+  }
+
   const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
   if (lastTickTime == 0.0)
     lastTickTime = now;

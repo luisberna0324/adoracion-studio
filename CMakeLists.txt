@@ -51,6 +51,8 @@ target_sources(MTControls
         src/StemTrack.h
         src/StemBufferingSource.cpp
         src/StemBufferingSource.h
+        src/data/AppSettings.cpp
+        src/data/AppSettings.h
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp

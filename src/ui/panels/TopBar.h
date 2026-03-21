@@ -67,6 +67,8 @@ private:
   IconButton seekForwardButton;
   IconButton nextButton;
   IconButton fadeButton;
+  /** Maximizar / restaurar ventana (Standalone y hosts que usen ResizableWindow). */
+  IconButton windowModeButton;
   IconButton settingsButton;
 
   ClickableLabel timeDisplay;
@@ -104,6 +106,7 @@ private:
   int lastBeatIndex = -1;
   float beatFlash = 0.0f;
   bool lastBeatWasDownbeat = true;
+  bool lastTopLevelMaximised = false;
   int beatsPerBar = 4;
   juce::String timeSignature = "4/4";
 

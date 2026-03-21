@@ -7,8 +7,8 @@
 MetronomePanel::BpmSegmentButton::BpmSegmentButton()
     : juce::Button("metroBpmSegment") {}
 
-void MetronomePanel::BpmSegmentButton::setBpmText(juce::String text) {
-  bpmText = std::move(text);
+void MetronomePanel::BpmSegmentButton::setBpmText(juce::String newText) {
+  bpmText = std::move(newText);
   repaint();
 }
 
