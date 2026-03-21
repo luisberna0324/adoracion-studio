@@ -256,7 +256,88 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                area.getRight() - 3.0f, area.getY() + 4.0f, stroke * 0.9f);
     break;
   }
+  case IconGlyph::WindowMaximize: {
+    const auto r = area.reduced(area.getWidth() * 0.12f, area.getHeight() * 0.12f);
+    g.drawRect(r, stroke);
+    break;
   }
+  case IconGlyph::WindowRestore: {
+    const float w = area.getWidth();
+    const float h = area.getHeight();
+    const float s = juce::jmin(w, h) * 0.42f;
+    const float ox = area.getX() + w * 0.08f;
+    const float oy = area.getY() + h * 0.18f;
+    g.drawRect(ox + s * 0.35f, oy, s, s, stroke);
+    g.drawRect(ox, oy + s * 0.35f, s, s, stroke);
+    break;
+  }
+  }
+}
+
+namespace {
+
+bool fillsPrimaryWorkArea(const juce::Component *top,
+                          const juce::Rectangle<int> &userArea) {
+  if (top == nullptr)
+    return false;
+  const auto b = top->getBounds();
+  return b.getWidth() >= userArea.getWidth() - 4 &&
+         b.getHeight() >= userArea.getHeight() - 4 &&
+         std::abs(b.getX() - userArea.getX()) <= 2 &&
+         std::abs(b.getY() - userArea.getY()) <= 2;
+}
+
+/** Último tamaño antes de expandir (JUCE 8+ ya no expone setMaximised en la API pública). */
+juce::Rectangle<int> g_boundsBeforeExpand{100, 100, 1200, 760};
+
+} // namespace
+
+void expandTopLevelWindowToPrimaryWorkArea(juce::Component *fromComponent) {
+  if (fromComponent == nullptr)
+    return;
+  auto *top = fromComponent->getTopLevelComponent();
+  if (top == nullptr)
+    return;
+  const auto *display =
+      juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+  if (display == nullptr)
+    return;
+  g_boundsBeforeExpand = top->getBounds();
+  top->setBounds(display->userArea);
+}
+
+void toggleTopLevelWindowMaximised(juce::Component *fromComponent) {
+  if (fromComponent == nullptr)
+    return;
+  auto *top = fromComponent->getTopLevelComponent();
+  if (top == nullptr)
+    return;
+
+  const auto *display =
+      juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+  if (display == nullptr)
+    return;
+  const auto userArea = display->userArea;
+
+  if (fillsPrimaryWorkArea(top, userArea)) {
+    top->setBounds(g_boundsBeforeExpand);
+  } else {
+    g_boundsBeforeExpand = top->getBounds();
+    top->setBounds(userArea);
+  }
+}
+
+bool isTopLevelWindowMaximised(juce::Component *fromComponent) {
+  if (fromComponent == nullptr)
+    return false;
+  auto *top = fromComponent->getTopLevelComponent();
+  if (top == nullptr)
+    return false;
+  const auto *display =
+      juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
+  if (display == nullptr)
+    return false;
+  return fillsPrimaryWorkArea(top, display->userArea);
 }
 
 namespace {

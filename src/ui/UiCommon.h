@@ -43,9 +43,20 @@ enum class IconGlyph {
   Settings,
   More,
   Add,
-  Metronome
+  Metronome,
+  /** Cuadrado (maximizar ventana). */
+  WindowMaximize,
+  /** Dos rectángulos superpuestos (restaurar ventana). */
+  WindowRestore
 };
 
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                    IconGlyph glyph, juce::Colour colour, float stroke = 1.7f);
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
+
+/** Busca la ventana JUCE contenedora (Standalone / host) y alterna maximizado. */
+void toggleTopLevelWindowMaximised(juce::Component *fromComponent);
+/** `true` si la ventana contenedora está maximizada (o no hay ventana). */
+bool isTopLevelWindowMaximised(juce::Component *fromComponent);
+/** Expande la ventana al área de trabajo del monitor principal (guarda tamaño previo). */
+void expandTopLevelWindowToPrimaryWorkArea(juce::Component *fromComponent);

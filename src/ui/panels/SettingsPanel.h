@@ -9,9 +9,11 @@
 class SettingsPanel final : public juce::Component {
 public:
   using ThemeChanged = std::function<void(ThemePreset)>;
+  using ExpandLaunchChanged = std::function<void(bool)>;
   using CloseRequested = std::function<void()>;
 
-  SettingsPanel(ThemePreset current, ThemeChanged cb, CloseRequested closeCb);
+  SettingsPanel(ThemePreset current, bool expandWindowOnLaunch, ThemeChanged cb,
+                  ExpandLaunchChanged expandCb, CloseRequested closeCb);
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -21,8 +23,11 @@ private:
   juce::Label title;
   juce::Label themeLabel;
   juce::ComboBox themeBox;
+  juce::Label expandLaunchLabel;
+  juce::ToggleButton expandLaunchToggle;
   juce::TextButton closeButton;
   ThemeChanged onThemeChanged;
+  ExpandLaunchChanged onExpandLaunchChanged;
   CloseRequested onClose;
 
   void closeSelf();
