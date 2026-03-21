@@ -872,12 +872,12 @@ float MTControlsAudioProcessor::getStemVolume(
 }
 
 void MTControlsAudioProcessor::setStemGain(const int stemIndex,
-                                           const float gain) noexcept {
+                                           const float gainValue) noexcept {
   if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
     return;
 
   stemGains[static_cast<size_t>(stemIndex)].store(
-      juce::jlimit(0.0f, 2.0f, gain), std::memory_order_relaxed);
+      juce::jlimit(0.0f, 2.0f, gainValue), std::memory_order_relaxed);
 }
 
 float MTControlsAudioProcessor::getStemGain(
@@ -933,8 +933,8 @@ float MTControlsAudioProcessor::getMasterVolume() const noexcept {
   return masterVolume.load(std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setMasterGain(const float gain) noexcept {
-  masterGain.store(juce::jlimit(0.0f, 2.0f, gain),
+void MTControlsAudioProcessor::setMasterGain(const float gainValue) noexcept {
+  masterGain.store(juce::jlimit(0.0f, 2.0f, gainValue),
                    std::memory_order_relaxed);
 }
 

@@ -13,7 +13,7 @@ public:
   public:
     BpmSegmentButton();
 
-    void setBpmText(juce::String text);
+    void setBpmText(juce::String newText);
 
     void paintButton(juce::Graphics &g, bool isMouseOverButton,
                      bool isButtonDown) override;

@@ -51,8 +51,8 @@ void ChannelStripLookAndFeel::drawRotarySlider(juce::Graphics &g, int x, int y,
 
 void ChannelStripLookAndFeel::drawLinearSlider(
     juce::Graphics &g, int x, int y, int width, int height, float sliderPos,
-    float minSliderPos, float maxSliderPos, const juce::Slider::SliderStyle,
-    juce::Slider &slider) {
+    float /* minSliderPos */, float /* maxSliderPos */, const juce::Slider::SliderStyle /* style */,
+    juce::Slider & /* slider */) {
 
   // Track (Recessed Groove)
   const float trackWidth = 3.0f;
