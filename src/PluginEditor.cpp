@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <deque>
+#include <limits>
 
 namespace {
 float dbToNorm(float db) {
@@ -240,6 +241,7 @@ private:
   };
 
 struct ImportedStemData {
+  juce::String stemId;
   juce::String sourcePath;
   juce::String storedPath;
   juce::String fileName;
@@ -261,6 +263,45 @@ struct ImportedSongData {
   juce::String fileType;
   int64_t createdMs = 0;
   std::vector<ImportedStemData> stems;
+};
+
+struct StemMixSnapshot {
+  juce::String stemId;
+  float volume = 1.0f;
+  float gain = 1.0f;
+  bool mute = false;
+  bool solo = false;
+};
+
+struct MasterMixSnapshot {
+  float volume = 1.0f;
+  float gain = 1.0f;
+  bool mute = false;
+};
+
+struct SongMixSnapshot {
+  MasterMixSnapshot master;
+  std::vector<StemMixSnapshot> stems;
+};
+
+struct SetlistItem {
+  juce::String songId;
+  SongMixSnapshot mix;
+  int64_t updatedMs = 0;
+};
+
+struct SetlistData {
+  juce::String id;
+  juce::String name;
+  std::vector<SetlistItem> items;
+  int64_t createdMs = 0;
+  int64_t updatedMs = 0;
+};
+
+struct LibraryState {
+  std::vector<ImportedSongData> songs;
+  std::vector<SetlistData> setlists;
+  juce::String activeSetlistId;
 };
 
 constexpr std::array<const char *, 11> kTrackCategories = {{
@@ -424,34 +465,226 @@ std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
 class SongLibraryStore {
 public:
   static std::vector<ImportedSongData> loadSongs() {
-    std::vector<ImportedSongData> songs;
+    return loadLibrary().songs;
+  }
 
-    const auto dbFile = getDbFile();
-    if (!dbFile.existsAsFile())
-      return songs;
+  static LibraryState loadLibrarySnapshot() { return loadLibrary(); }
 
-    const auto parsed = juce::JSON::parse(dbFile.loadFileAsString());
-    auto *rootObj = parsed.getDynamicObject();
-    if (rootObj == nullptr)
-      return songs;
+  static bool setActiveSetlistId(const juce::String &setlistId) {
+    auto library = loadLibrary();
+    if (!setlistExists(library, setlistId))
+      return false;
+    library.activeSetlistId = setlistId;
+    return saveLibrary(library);
+  }
 
-    auto *songsArray = rootObj->getProperty("songs").getArray();
-    if (songsArray == nullptr)
-      return songs;
+  static juce::String createSetlist(const juce::String &name) {
+    auto library = loadLibrary();
+    SetlistData setlist;
+    setlist.id = juce::Uuid().toString();
+    setlist.name = name.isNotEmpty() ? name : "New Setlist";
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    setlist.createdMs = now;
+    setlist.updatedMs = now;
+    library.setlists.push_back(std::move(setlist));
+    if (library.activeSetlistId.isEmpty())
+      library.activeSetlistId = library.setlists.back().id;
+    if (!saveLibrary(library))
+      return {};
+    return library.setlists.back().id;
+  }
 
-    songs.reserve(static_cast<size_t>(songsArray->size()));
-    for (const auto &songVar : *songsArray)
-      songs.push_back(songFromVar(songVar));
+  static bool renameSetlist(const juce::String &setlistId,
+                            const juce::String &name) {
+    auto library = loadLibrary();
+    auto *setlist = findSetlistById(library, setlistId);
+    if (setlist == nullptr)
+      return false;
+    setlist->name = name;
+    setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    return saveLibrary(library);
+  }
 
-    return songs;
+  static bool deleteSetlist(const juce::String &setlistId) {
+    auto library = loadLibrary();
+    if (library.setlists.size() <= 1)
+      return false;
+    auto it = std::remove_if(
+        library.setlists.begin(), library.setlists.end(),
+        [&setlistId](const SetlistData &setlist) {
+          return setlist.id == setlistId;
+        });
+    if (it == library.setlists.end())
+      return false;
+    library.setlists.erase(it, library.setlists.end());
+    if (!setlistExists(library, library.activeSetlistId))
+      library.activeSetlistId =
+          library.setlists.empty() ? juce::String()
+                                   : library.setlists.front().id;
+    return saveLibrary(library);
+  }
+
+  static bool addSongToSetlist(const juce::String &setlistId,
+                               const juce::String &songId) {
+    auto library = loadLibrary();
+    auto *setlist = findSetlistById(library, setlistId);
+    if (setlist == nullptr)
+      return false;
+    const auto *song = findSongById(library.songs, songId);
+    if (song == nullptr)
+      return false;
+    const bool exists =
+        std::any_of(setlist->items.begin(), setlist->items.end(),
+                    [&songId](const SetlistItem &item) {
+                      return item.songId == songId;
+                    });
+    if (exists)
+      return true;
+    setlist->items.push_back(createSetlistItem(*song));
+    setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    return saveLibrary(library);
+  }
+
+  static bool removeSongFromSetlist(const juce::String &setlistId,
+                                    const juce::String &songId) {
+    auto library = loadLibrary();
+    auto *setlist = findSetlistById(library, setlistId);
+    if (setlist == nullptr)
+      return false;
+    const auto before = setlist->items.size();
+    setlist->items.erase(
+        std::remove_if(setlist->items.begin(), setlist->items.end(),
+                       [&songId](const SetlistItem &item) {
+                         return item.songId == songId;
+                       }),
+        setlist->items.end());
+    if (setlist->items.size() == before)
+      return false;
+    setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    return saveLibrary(library);
+  }
+
+  static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
+                                int toIndex) {
+    auto library = loadLibrary();
+    auto *setlist = findSetlistById(library, setlistId);
+    if (setlist == nullptr)
+      return false;
+    const int count = static_cast<int>(setlist->items.size());
+    if (!juce::isPositiveAndBelow(fromIndex, count) ||
+        !juce::isPositiveAndBelow(toIndex, count))
+      return false;
+    if (fromIndex == toIndex)
+      return true;
+    auto item = setlist->items[static_cast<size_t>(fromIndex)];
+    setlist->items.erase(setlist->items.begin() + fromIndex);
+    setlist->items.insert(setlist->items.begin() + toIndex, item);
+    setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    return saveLibrary(library);
   }
 
   static bool appendSong(ImportedSongData song) {
     copyStemFiles(song);
 
-    auto songs = loadSongs();
-    songs.push_back(std::move(song));
-    return saveSongs(songs);
+    auto library = loadLibrary();
+    ensureSongHasStemIds(song);
+    library.songs.push_back(song);
+    ensureDefaultSetlist(library);
+    addSongToActiveSetlist(library, song);
+    return saveLibrary(library);
+  }
+
+  static bool getActiveSetlistMix(const juce::String &songId,
+                                  SongMixSnapshot &outMix) {
+    if (songId.isEmpty())
+      return false;
+    auto library = loadLibrary();
+    ensureDefaultSetlist(library);
+    auto *setlist = findSetlistById(library, library.activeSetlistId);
+    if (setlist == nullptr)
+      return false;
+    auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                           [&songId](const SetlistItem &item) {
+                             return item.songId == songId;
+                           });
+    const auto *song = findSongById(library.songs, songId);
+    if (song == nullptr)
+      return false;
+
+    bool changed = false;
+    if (it == setlist->items.end()) {
+      setlist->items.push_back(createSetlistItem(*song));
+      it = std::prev(setlist->items.end());
+      changed = true;
+    } else {
+      it->mix = reconcileMixForSong(it->mix, *song, changed);
+    }
+
+    outMix = it->mix;
+    if (changed) {
+      const auto now = juce::Time::getCurrentTime().toMilliseconds();
+      it->updatedMs = now;
+      setlist->updatedMs = now;
+      saveLibrary(library);
+    }
+    return true;
+  }
+
+  static bool updateStemVolumeForActiveSetlist(const juce::String &songId,
+                                               const juce::String &stemId,
+                                               float volume) {
+    return updateStemMixValue(songId, stemId,
+                              [volume](StemMixSnapshot &mix) {
+                                mix.volume = volume;
+                              });
+  }
+
+  static bool updateStemGainForActiveSetlist(const juce::String &songId,
+                                             const juce::String &stemId,
+                                             float gain) {
+    return updateStemMixValue(songId, stemId,
+                              [gain](StemMixSnapshot &mix) {
+                                mix.gain = gain;
+                              });
+  }
+
+  static bool updateStemMuteForActiveSetlist(const juce::String &songId,
+                                             const juce::String &stemId,
+                                             bool muted) {
+    return updateStemMixValue(songId, stemId,
+                              [muted](StemMixSnapshot &mix) {
+                                mix.mute = muted;
+                              });
+  }
+
+  static bool updateStemSoloForActiveSetlist(const juce::String &songId,
+                                             const juce::String &stemId,
+                                             bool soloed) {
+    return updateStemMixValue(songId, stemId,
+                              [soloed](StemMixSnapshot &mix) {
+                                mix.solo = soloed;
+                              });
+  }
+
+  static bool updateMasterVolumeForActiveSetlist(const juce::String &songId,
+                                                 float volume) {
+    return updateMasterMixValue(songId, [volume](MasterMixSnapshot &mix) {
+      mix.volume = volume;
+    });
+  }
+
+  static bool updateMasterGainForActiveSetlist(const juce::String &songId,
+                                               float gain) {
+    return updateMasterMixValue(songId, [gain](MasterMixSnapshot &mix) {
+      mix.gain = gain;
+    });
+  }
+
+  static bool updateMasterMuteForActiveSetlist(const juce::String &songId,
+                                               bool muted) {
+    return updateMasterMixValue(songId, [muted](MasterMixSnapshot &mix) {
+      mix.mute = muted;
+    });
   }
 
   static bool saveWaveformCache(const juce::String &songId,
@@ -473,18 +706,109 @@ public:
     if (!file.existsAsFile())
       return {};
     const auto size = file.getSize();
-    if (size < static_cast<juce::int64>(sizeof(float)) ||
-        (size % sizeof(float)) != 0)
+    if (size < static_cast<juce::int64>(sizeof(float)))
       return {};
-    std::vector<float> bins(static_cast<size_t>(size / sizeof(float)));
+    const auto sizeBytes = static_cast<size_t>(size);
+    if ((sizeBytes % sizeof(float)) != 0)
+      return {};
+    if (sizeBytes > static_cast<size_t>(std::numeric_limits<int>::max()))
+      return {};
+    std::vector<float> bins(sizeBytes / sizeof(float));
     juce::FileInputStream in(file);
     if (in.failedToOpen())
       return {};
-    in.read(bins.data(), static_cast<int>(size));
+    in.read(bins.data(), static_cast<int>(sizeBytes));
     return bins;
   }
 
 private:
+  static LibraryState loadLibrary() {
+    LibraryState library;
+    bool needsSave = false;
+
+    const auto dbFile = getDbFile();
+    if (!dbFile.existsAsFile()) {
+      ensureDefaultSetlist(library);
+      return library;
+    }
+
+    const auto parsed = juce::JSON::parse(dbFile.loadFileAsString());
+    auto *rootObj = parsed.getDynamicObject();
+    if (rootObj == nullptr) {
+      ensureDefaultSetlist(library);
+      return library;
+    }
+
+    const int version = static_cast<int>(rootObj->getProperty("version"));
+    auto *songsArray = rootObj->getProperty("songs").getArray();
+    if (songsArray != nullptr) {
+      library.songs.reserve(static_cast<size_t>(songsArray->size()));
+      for (const auto &songVar : *songsArray) {
+        auto song = songFromVar(songVar);
+        if (ensureSongHasStemIds(song))
+          needsSave = true;
+        library.songs.push_back(std::move(song));
+      }
+    }
+
+    if (version >= 2) {
+      library.activeSetlistId =
+          rootObj->getProperty("activeSetlistId").toString();
+      auto *setlistsArray = rootObj->getProperty("setlists").getArray();
+      if (setlistsArray != nullptr) {
+        for (const auto &setlistVar : *setlistsArray) {
+          auto setlist = setlistFromVar(setlistVar, library.songs, needsSave);
+          if (setlist.id.isNotEmpty())
+            library.setlists.push_back(std::move(setlist));
+        }
+      }
+    } else {
+      needsSave = true;
+    }
+
+    if (library.setlists.empty()) {
+      ensureDefaultSetlist(library);
+      needsSave = true;
+    }
+
+    if (library.activeSetlistId.isEmpty() ||
+        !setlistExists(library, library.activeSetlistId)) {
+      library.activeSetlistId =
+          library.setlists.empty() ? juce::String()
+                                   : library.setlists.front().id;
+      needsSave = true;
+    }
+
+    if (needsSave)
+      saveLibrary(library);
+
+    return library;
+  }
+
+  static bool saveLibrary(const LibraryState &library) {
+    juce::Array<juce::var> songVars;
+    songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
+    for (const auto &song : library.songs)
+      songVars.add(songToVar(song));
+
+    juce::Array<juce::var> setlistVars;
+    setlistVars.ensureStorageAllocated(
+        static_cast<int>(library.setlists.size()));
+    for (const auto &setlist : library.setlists)
+      setlistVars.add(setlistToVar(setlist));
+
+    juce::var rootVar(new juce::DynamicObject());
+    if (auto *root = rootVar.getDynamicObject()) {
+      root->setProperty("version", 2);
+      root->setProperty("activeSetlistId", library.activeSetlistId);
+      root->setProperty("songs", juce::var(songVars));
+      root->setProperty("setlists", juce::var(setlistVars));
+    }
+
+    const auto json = juce::JSON::toString(rootVar, true);
+    return getDbFile().replaceWithText(json);
+  }
+
   static juce::File getRootDirectory() {
     auto root =
         juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
@@ -508,22 +832,6 @@ private:
     auto dir = getRootDirectory().getChildFile("waveforms");
     dir.createDirectory();
     return dir;
-  }
-
-  static bool saveSongs(const std::vector<ImportedSongData> &songs) {
-    juce::Array<juce::var> songVars;
-    songVars.ensureStorageAllocated(static_cast<int>(songs.size()));
-    for (const auto &song : songs)
-      songVars.add(songToVar(song));
-
-    juce::var rootVar(new juce::DynamicObject());
-    if (auto *root = rootVar.getDynamicObject()) {
-      root->setProperty("version", 1);
-      root->setProperty("songs", juce::var(songVars));
-    }
-
-    const auto json = juce::JSON::toString(rootVar, true);
-    return getDbFile().replaceWithText(json);
   }
 
   static void copyStemFiles(ImportedSongData &song) {
@@ -557,6 +865,7 @@ private:
 
   static juce::var stemToVar(const ImportedStemData &stem) {
     auto *obj = new juce::DynamicObject();
+    obj->setProperty("stemId", stem.stemId);
     obj->setProperty("sourcePath", stem.sourcePath);
     obj->setProperty("storedPath", stem.storedPath);
     obj->setProperty("fileName", stem.fileName);
@@ -575,6 +884,7 @@ private:
     if (obj == nullptr)
       return stem;
 
+    stem.stemId = obj->getProperty("stemId").toString();
     stem.sourcePath = obj->getProperty("sourcePath").toString();
     stem.storedPath = obj->getProperty("storedPath").toString();
     stem.fileName = obj->getProperty("fileName").toString();
@@ -584,6 +894,9 @@ private:
     stem.durationSec = static_cast<double>(obj->getProperty("durationSec"));
     stem.sampleRate = static_cast<int>(obj->getProperty("sampleRate"));
     stem.channels = static_cast<int>(obj->getProperty("channels"));
+
+    if (stem.stemId.isEmpty())
+      stem.stemId = juce::Uuid().toString();
     return stem;
   }
 
@@ -630,6 +943,380 @@ private:
 
     return song;
   }
+
+  static bool ensureSongHasStemIds(ImportedSongData &song) {
+    bool changed = false;
+    for (auto &stem : song.stems) {
+      if (stem.stemId.isEmpty()) {
+        stem.stemId = juce::Uuid().toString();
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  static bool setlistExists(const LibraryState &library,
+                            const juce::String &setlistId) {
+    if (setlistId.isEmpty())
+      return false;
+    return std::any_of(library.setlists.begin(), library.setlists.end(),
+                       [&setlistId](const SetlistData &setlist) {
+                         return setlist.id == setlistId;
+                       });
+  }
+
+  static void ensureDefaultSetlist(LibraryState &library) {
+    if (!library.setlists.empty())
+      return;
+    SetlistData setlist;
+    setlist.id = "setlist_default";
+    setlist.name = "Setlist A";
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    setlist.createdMs = now;
+    setlist.updatedMs = now;
+    setlist.items.reserve(library.songs.size());
+    for (const auto &song : library.songs)
+      setlist.items.push_back(createSetlistItem(song));
+    library.setlists.push_back(std::move(setlist));
+    library.activeSetlistId = library.setlists.front().id;
+  }
+
+  static void addSongToActiveSetlist(LibraryState &library,
+                                     const ImportedSongData &song) {
+    if (library.setlists.empty())
+      ensureDefaultSetlist(library);
+    auto *setlist = findSetlistById(library, library.activeSetlistId);
+    if (setlist == nullptr && !library.setlists.empty()) {
+      library.activeSetlistId = library.setlists.front().id;
+      setlist = &library.setlists.front();
+    }
+    if (setlist == nullptr)
+      return;
+    setlist->items.push_back(createSetlistItem(song));
+    setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  }
+
+  static SetlistData *findSetlistById(LibraryState &library,
+                                      const juce::String &setlistId) {
+    if (setlistId.isEmpty())
+      return nullptr;
+    for (auto &setlist : library.setlists) {
+      if (setlist.id == setlistId)
+        return &setlist;
+    }
+    return nullptr;
+  }
+
+  static SetlistItem createSetlistItem(const ImportedSongData &song) {
+    SetlistItem item;
+    item.songId = song.id;
+    item.mix = createDefaultMixForSong(song);
+    item.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    return item;
+  }
+
+  static SongMixSnapshot createDefaultMixForSong(const ImportedSongData &song) {
+    SongMixSnapshot mix;
+    mix.master = MasterMixSnapshot{};
+    mix.stems.reserve(song.stems.size());
+    for (const auto &stem : song.stems) {
+      if (!stem.include)
+        continue;
+      StemMixSnapshot stemMix;
+      stemMix.stemId = stem.stemId;
+      mix.stems.push_back(std::move(stemMix));
+    }
+    return mix;
+  }
+
+  static SongMixSnapshot reconcileMixForSong(const SongMixSnapshot &mix,
+                                             const ImportedSongData &song,
+                                             bool &changed) {
+    SongMixSnapshot out = mix;
+    std::vector<StemMixSnapshot> nextStems;
+    nextStems.reserve(song.stems.size());
+    for (const auto &stem : song.stems) {
+      if (!stem.include)
+        continue;
+      auto it = std::find_if(out.stems.begin(), out.stems.end(),
+                             [&stem](const StemMixSnapshot &snapshot) {
+                               return snapshot.stemId == stem.stemId;
+                             });
+      if (it != out.stems.end()) {
+        nextStems.push_back(*it);
+      } else {
+        StemMixSnapshot snapshot;
+        snapshot.stemId = stem.stemId;
+        nextStems.push_back(snapshot);
+        changed = true;
+      }
+    }
+    if (nextStems.size() != out.stems.size())
+      changed = true;
+    out.stems = std::move(nextStems);
+    return out;
+  }
+
+  static bool normalizeLegacyMix(SongMixSnapshot &mix) {
+    const bool masterDefault = juce::approximatelyEqual(mix.master.volume, 1.0f) &&
+                               juce::approximatelyEqual(mix.master.gain, 0.0f) &&
+                               !mix.master.mute;
+    if (!masterDefault)
+      return false;
+
+    for (const auto &stem : mix.stems) {
+      const bool stemDefault =
+          juce::approximatelyEqual(stem.volume, 1.0f) &&
+          juce::approximatelyEqual(stem.gain, 0.0f) && !stem.mute &&
+          !stem.solo;
+      if (!stemDefault)
+        return false;
+    }
+
+    mix.master.gain = 1.0f;
+    for (auto &stem : mix.stems)
+      stem.gain = 1.0f;
+    return true;
+  }
+
+  static juce::var masterMixToVar(const MasterMixSnapshot &mix) {
+    auto *obj = new juce::DynamicObject();
+    obj->setProperty("volume", mix.volume);
+    obj->setProperty("gain", mix.gain);
+    obj->setProperty("mute", mix.mute);
+    return juce::var(obj);
+  }
+
+  static MasterMixSnapshot masterMixFromVar(const juce::var &v) {
+    MasterMixSnapshot mix;
+    auto *obj = v.getDynamicObject();
+    if (obj == nullptr)
+      return mix;
+    mix.volume = static_cast<float>(obj->getProperty("volume"));
+    if (obj->hasProperty("gain"))
+      mix.gain = static_cast<float>(obj->getProperty("gain"));
+    mix.mute = static_cast<bool>(obj->getProperty("mute"));
+    return mix;
+  }
+
+  static juce::var stemMixToVar(const StemMixSnapshot &mix) {
+    auto *obj = new juce::DynamicObject();
+    obj->setProperty("volume", mix.volume);
+    obj->setProperty("gain", mix.gain);
+    obj->setProperty("mute", mix.mute);
+    obj->setProperty("solo", mix.solo);
+    return juce::var(obj);
+  }
+
+  static StemMixSnapshot stemMixFromVar(const juce::var &v,
+                                        const juce::String &stemId) {
+    StemMixSnapshot mix;
+    mix.stemId = stemId;
+    auto *obj = v.getDynamicObject();
+    if (obj == nullptr)
+      return mix;
+    mix.volume = static_cast<float>(obj->getProperty("volume"));
+    if (obj->hasProperty("gain"))
+      mix.gain = static_cast<float>(obj->getProperty("gain"));
+    mix.mute = static_cast<bool>(obj->getProperty("mute"));
+    mix.solo = static_cast<bool>(obj->getProperty("solo"));
+    return mix;
+  }
+
+  static juce::var mixToVar(const SongMixSnapshot &mix) {
+    auto *obj = new juce::DynamicObject();
+    obj->setProperty("master", masterMixToVar(mix.master));
+
+    auto *stemsObj = new juce::DynamicObject();
+    for (const auto &stem : mix.stems) {
+      if (stem.stemId.isNotEmpty())
+        stemsObj->setProperty(stem.stemId, stemMixToVar(stem));
+    }
+    obj->setProperty("stems", juce::var(stemsObj));
+    return juce::var(obj);
+  }
+
+  static SongMixSnapshot mixFromVar(const juce::var &v,
+                                    const ImportedSongData *song,
+                                    bool &changed) {
+    SongMixSnapshot mix;
+    auto *obj = v.getDynamicObject();
+    if (obj != nullptr) {
+      mix.master = masterMixFromVar(obj->getProperty("master"));
+      auto stemsVar = obj->getProperty("stems");
+      if (auto *stemsObj = stemsVar.getDynamicObject()) {
+        const auto &props = stemsObj->getProperties();
+        for (const auto &prop : props) {
+          auto stemId = prop.name.toString();
+          mix.stems.push_back(stemMixFromVar(prop.value, stemId));
+        }
+      } else if (auto *stemsArray = stemsVar.getArray()) {
+        for (const auto &stemVar : *stemsArray) {
+          auto *stemObj = stemVar.getDynamicObject();
+          if (stemObj == nullptr)
+            continue;
+          const auto stemId = stemObj->getProperty("stemId").toString();
+          if (stemId.isEmpty())
+            continue;
+          mix.stems.push_back(stemMixFromVar(stemVar, stemId));
+        }
+      }
+    }
+
+    if (song != nullptr)
+      mix = reconcileMixForSong(mix, *song, changed);
+    if (normalizeLegacyMix(mix))
+      changed = true;
+    return mix;
+  }
+
+  static juce::var setlistItemToVar(const SetlistItem &item) {
+    auto *obj = new juce::DynamicObject();
+    obj->setProperty("songId", item.songId);
+    obj->setProperty("mix", mixToVar(item.mix));
+    obj->setProperty("updatedMs",
+                     static_cast<juce::int64>(item.updatedMs));
+    return juce::var(obj);
+  }
+
+  static SetlistItem setlistItemFromVar(const juce::var &v,
+                                        const ImportedSongData *song,
+                                        bool &changed) {
+    SetlistItem item;
+    auto *obj = v.getDynamicObject();
+    if (obj == nullptr)
+      return item;
+    item.songId = obj->getProperty("songId").toString();
+    item.updatedMs =
+        static_cast<juce::int64>(obj->getProperty("updatedMs"));
+    item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
+    return item;
+  }
+
+  static juce::var setlistToVar(const SetlistData &setlist) {
+    auto *obj = new juce::DynamicObject();
+    obj->setProperty("id", setlist.id);
+    obj->setProperty("name", setlist.name);
+    obj->setProperty("createdMs", static_cast<juce::int64>(setlist.createdMs));
+    obj->setProperty("updatedMs", static_cast<juce::int64>(setlist.updatedMs));
+
+    juce::Array<juce::var> itemsArray;
+    itemsArray.ensureStorageAllocated(static_cast<int>(setlist.items.size()));
+    for (const auto &item : setlist.items)
+      itemsArray.add(setlistItemToVar(item));
+    obj->setProperty("items", juce::var(itemsArray));
+    return juce::var(obj);
+  }
+
+  static SetlistData setlistFromVar(const juce::var &v,
+                                    const std::vector<ImportedSongData> &songs,
+                                    bool &changed) {
+    SetlistData setlist;
+    auto *obj = v.getDynamicObject();
+    if (obj == nullptr)
+      return setlist;
+    setlist.id = obj->getProperty("id").toString();
+    setlist.name = obj->getProperty("name").toString();
+    setlist.createdMs =
+        static_cast<juce::int64>(obj->getProperty("createdMs"));
+    setlist.updatedMs =
+        static_cast<juce::int64>(obj->getProperty("updatedMs"));
+
+    auto *itemsArray = obj->getProperty("items").getArray();
+    if (itemsArray != nullptr) {
+      for (const auto &itemVar : *itemsArray) {
+        auto *itemObj = itemVar.getDynamicObject();
+        if (itemObj == nullptr)
+          continue;
+        const auto songId = itemObj->getProperty("songId").toString();
+        const auto *song = findSongById(songs, songId);
+        if (song == nullptr) {
+          changed = true;
+          continue;
+        }
+        setlist.items.push_back(setlistItemFromVar(itemVar, song, changed));
+      }
+    }
+
+    return setlist;
+  }
+
+  static const ImportedSongData *findSongById(
+      const std::vector<ImportedSongData> &songs,
+      const juce::String &songId) {
+    if (songId.isEmpty())
+      return nullptr;
+    for (const auto &song : songs) {
+      if (song.id == songId)
+        return &song;
+    }
+    return nullptr;
+  }
+
+  static bool updateActiveSetlistItem(
+      const juce::String &songId,
+      std::function<void(SetlistItem &, const ImportedSongData &)> updater) {
+    if (songId.isEmpty())
+      return false;
+    auto library = loadLibrary();
+    ensureDefaultSetlist(library);
+    auto *setlist = findSetlistById(library, library.activeSetlistId);
+    if (setlist == nullptr)
+      return false;
+    const auto *song = findSongById(library.songs, songId);
+    if (song == nullptr)
+      return false;
+
+    auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                           [&songId](const SetlistItem &item) {
+                             return item.songId == songId;
+                           });
+    if (it == setlist->items.end()) {
+      setlist->items.push_back(createSetlistItem(*song));
+      it = std::prev(setlist->items.end());
+    }
+
+    bool changed = false;
+    it->mix = reconcileMixForSong(it->mix, *song, changed);
+    updater(*it, *song);
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    it->updatedMs = now;
+    setlist->updatedMs = now;
+    return saveLibrary(library);
+  }
+
+  static bool updateStemMixValue(
+      const juce::String &songId, const juce::String &stemId,
+      std::function<void(StemMixSnapshot &)> updater) {
+    if (stemId.isEmpty())
+      return false;
+    return updateActiveSetlistItem(
+        songId, [&stemId, &updater](SetlistItem &item,
+                                   const ImportedSongData &song) {
+          juce::ignoreUnused(song);
+          auto it = std::find_if(
+              item.mix.stems.begin(), item.mix.stems.end(),
+              [&stemId](const StemMixSnapshot &mix) {
+                return mix.stemId == stemId;
+              });
+          if (it == item.mix.stems.end()) {
+            StemMixSnapshot mix;
+            mix.stemId = stemId;
+            item.mix.stems.push_back(mix);
+            it = std::prev(item.mix.stems.end());
+          }
+          updater(*it);
+        });
+  }
+
+  static bool updateMasterMixValue(
+      const juce::String &songId,
+      std::function<void(MasterMixSnapshot &)> updater) {
+    return updateActiveSetlistItem(
+        songId, [&updater](SetlistItem &item, const ImportedSongData &) {
+          updater(item.mix.master);
+        });
+  }
 };
 
 class SongImportWizardComponent final : public juce::Component {
@@ -641,17 +1328,74 @@ public:
 
     titleLabel.setText("Add Song", juce::dontSendNotification);
     titleLabel.setFont(juce::FontOptions(30.0f));
-    titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(titleLabel);
 
-    subtitleLabel.setColour(juce::Label::textColourId,
-                            juce::Colours::white.withAlpha(0.65f));
     subtitleLabel.setFont(juce::FontOptions(14.0f));
     addAndMakeVisible(subtitleLabel);
 
-    configureTextEditor(songTitleEditor, "Song title");
-    configureTextEditor(artistEditor, "Artist");
-    configureTextEditor(bpmEditor, "BPM");
+    stemsSectionLabel.setText("Stems", juce::dontSendNotification);
+    stemsSectionLabel.setFont(juce::FontOptions(12.0f));
+    stemsSectionLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(stemsSectionLabel);
+
+    infoSectionLabel.setText("Song Info", juce::dontSendNotification);
+    infoSectionLabel.setFont(juce::FontOptions(12.0f));
+    infoSectionLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(infoSectionLabel);
+
+    songTitleLabel.setText("Title", juce::dontSendNotification);
+    songTitleLabel.setFont(juce::FontOptions(11.0f));
+    songTitleLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(songTitleLabel);
+
+    artistLabel.setText("Artist", juce::dontSendNotification);
+    artistLabel.setFont(juce::FontOptions(11.0f));
+    artistLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(artistLabel);
+
+    fileTypeLabel.setText("File type", juce::dontSendNotification);
+    fileTypeLabel.setFont(juce::FontOptions(11.0f));
+    fileTypeLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(fileTypeLabel);
+
+    bpmLabel.setText("BPM", juce::dontSendNotification);
+    bpmLabel.setFont(juce::FontOptions(11.0f));
+    bpmLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(bpmLabel);
+
+    keyLabel.setText("Key", juce::dontSendNotification);
+    keyLabel.setFont(juce::FontOptions(11.0f));
+    keyLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(keyLabel);
+
+    timeSignatureLabel.setText("Time", juce::dontSendNotification);
+    timeSignatureLabel.setFont(juce::FontOptions(11.0f));
+    timeSignatureLabel.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(timeSignatureLabel);
+
+    mapFileHeader.setText("File", juce::dontSendNotification);
+    mapFileHeader.setFont(juce::FontOptions(11.0f));
+    mapFileHeader.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(mapFileHeader);
+
+    mapNameHeader.setText("Display name", juce::dontSendNotification);
+    mapNameHeader.setFont(juce::FontOptions(11.0f));
+    mapNameHeader.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(mapNameHeader);
+
+    mapCategoryHeader.setText("Category", juce::dontSendNotification);
+    mapCategoryHeader.setFont(juce::FontOptions(11.0f));
+    mapCategoryHeader.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(mapCategoryHeader);
+
+    mapLoadHeader.setText("Load", juce::dontSendNotification);
+    mapLoadHeader.setFont(juce::FontOptions(11.0f));
+    mapLoadHeader.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(mapLoadHeader);
+
+    configureTextEditor(songTitleEditor, songTitlePlaceholder);
+    configureTextEditor(artistEditor, artistPlaceholder);
+    configureTextEditor(bpmEditor, bpmPlaceholder);
     bpmEditor.setInputRestrictions(3, "0123456789");
     addAndMakeVisible(songTitleEditor);
     addAndMakeVisible(artistEditor);
@@ -680,19 +1424,11 @@ public:
     chooseFilesButton.onClick = [this] { openStemChooser(); };
     addAndMakeVisible(chooseFilesButton);
 
-    selectedFilesLabel.setColour(juce::Label::textColourId,
-                                 juce::Colours::white.withAlpha(0.70f));
     selectedFilesLabel.setText("No stems selected", juce::dontSendNotification);
     addAndMakeVisible(selectedFilesLabel);
 
     selectedFilesEditor.setReadOnly(true);
     selectedFilesEditor.setMultiLine(true);
-    selectedFilesEditor.setColour(juce::TextEditor::backgroundColourId,
-                                  juce::Colour::fromRGB(42, 46, 54));
-    selectedFilesEditor.setColour(juce::TextEditor::textColourId,
-                                  juce::Colours::white.withAlpha(0.9f));
-    selectedFilesEditor.setColour(juce::TextEditor::outlineColourId,
-                                  juce::Colour::fromRGB(64, 69, 79));
     addAndMakeVisible(selectedFilesEditor);
 
     mapViewport.setViewedComponent(&mapContent, false);
@@ -703,12 +1439,6 @@ public:
 
     summaryEditor.setReadOnly(true);
     summaryEditor.setMultiLine(true);
-    summaryEditor.setColour(juce::TextEditor::backgroundColourId,
-                            juce::Colour::fromRGB(42, 46, 54));
-    summaryEditor.setColour(juce::TextEditor::textColourId,
-                            juce::Colours::white.withAlpha(0.9f));
-    summaryEditor.setColour(juce::TextEditor::outlineColourId,
-                            juce::Colour::fromRGB(64, 69, 79));
     addAndMakeVisible(summaryEditor);
 
     cancelButton.setButtonText("Cancel");
@@ -723,14 +1453,15 @@ public:
     for (auto *btn : {&cancelButton, &backButton, &nextButton, &submitButton})
       addAndMakeVisible(*btn);
 
+    refreshThemeColours();
     changeStep(0);
   }
 
   void paint(juce::Graphics &g) override {
     auto b = getLocalBounds().toFloat();
-    g.setColour(juce::Colour::fromRGB(24, 26, 30));
+    g.setColour(UITheme::cardBg);
     g.fillRoundedRectangle(b, 8.0f);
-    g.setColour(juce::Colour::fromRGBA(255, 255, 255, 24));
+    g.setColour(UITheme::cardBorder.withAlpha(0.8f));
     g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
   }
 
@@ -753,6 +1484,52 @@ public:
     layoutStepThree(content);
   }
 
+  void refreshThemeColours() {
+    titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+    subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    for (auto *label :
+         {&stemsSectionLabel, &infoSectionLabel, &songTitleLabel, &artistLabel,
+          &fileTypeLabel, &bpmLabel, &keyLabel, &timeSignatureLabel,
+          &mapFileHeader, &mapNameHeader, &mapCategoryHeader, &mapLoadHeader}) {
+      label->setColour(juce::Label::textColourId, UITheme::textSecondary);
+    }
+
+    applyEditorTheme(songTitleEditor, songTitlePlaceholder);
+    applyEditorTheme(artistEditor, artistPlaceholder);
+    applyEditorTheme(bpmEditor, bpmPlaceholder);
+
+    selectedFilesLabel.setColour(juce::Label::textColourId,
+                                 UITheme::textSecondary);
+    selectedFilesEditor.setColour(juce::TextEditor::backgroundColourId,
+                                  UITheme::cardBgHover);
+    selectedFilesEditor.setColour(juce::TextEditor::textColourId,
+                                  UITheme::textPrimary);
+    selectedFilesEditor.setColour(juce::TextEditor::outlineColourId,
+                                  UITheme::cardBorder.withAlpha(0.7f));
+
+    summaryEditor.setColour(juce::TextEditor::backgroundColourId,
+                            UITheme::cardBgHover);
+    summaryEditor.setColour(juce::TextEditor::textColourId,
+                            UITheme::textPrimary);
+    summaryEditor.setColour(juce::TextEditor::outlineColourId,
+                            UITheme::cardBorder.withAlpha(0.7f));
+
+    configureCombo(fileTypeBox);
+    configureCombo(keyBox);
+    configureCombo(timeSignatureBox);
+
+    styleSecondaryButton(chooseFilesButton);
+    styleSecondaryButton(cancelButton);
+    styleSecondaryButton(backButton);
+    stylePrimaryButton(nextButton);
+    stylePrimaryButton(submitButton);
+
+    for (auto &row : mappingRows)
+      row->refreshThemeColours();
+
+    repaint();
+  }
+
 private:
   struct StemDraft {
     juce::File file;
@@ -768,37 +1545,22 @@ private:
   public:
     explicit MappingRow(const StemDraft &stem) {
       fileLabel.setText(stem.file.getFileName(), juce::dontSendNotification);
-      fileLabel.setColour(juce::Label::textColourId,
-                          juce::Colours::white.withAlpha(0.72f));
       fileLabel.setFont(juce::FontOptions(12.0f));
       addAndMakeVisible(fileLabel);
 
       displayNameEditor.setText(stem.displayName, juce::dontSendNotification);
-      displayNameEditor.setColour(juce::TextEditor::backgroundColourId,
-                                  juce::Colour::fromRGB(48, 52, 61));
-      displayNameEditor.setColour(juce::TextEditor::textColourId,
-                                  juce::Colours::white);
-      displayNameEditor.setColour(juce::TextEditor::outlineColourId,
-                                  juce::Colour::fromRGB(66, 72, 84));
       addAndMakeVisible(displayNameEditor);
 
       for (size_t i = 0; i < kTrackCategories.size(); ++i)
         categoryBox.addItem(kTrackCategories[i], static_cast<int>(i) + 1);
       categoryBox.setText(stem.category, juce::dontSendNotification);
-      categoryBox.setColour(juce::ComboBox::backgroundColourId,
-                            juce::Colour::fromRGB(48, 52, 61));
-      categoryBox.setColour(juce::ComboBox::textColourId, juce::Colours::white);
-      categoryBox.setColour(juce::ComboBox::outlineColourId,
-                            juce::Colour::fromRGB(66, 72, 84));
-      categoryBox.setColour(juce::ComboBox::arrowColourId,
-                            juce::Colours::white.withAlpha(0.65f));
       addAndMakeVisible(categoryBox);
 
       includeToggle.setButtonText("Load");
       includeToggle.setToggleState(stem.include, juce::dontSendNotification);
-      includeToggle.setColour(juce::ToggleButton::textColourId,
-                              juce::Colours::white.withAlpha(0.86f));
       addAndMakeVisible(includeToggle);
+
+      refreshThemeColours();
     }
 
     void applyTo(StemDraft &stem) const {
@@ -820,11 +1582,28 @@ private:
     }
 
     void paint(juce::Graphics &g) override {
-      g.setColour(juce::Colour::fromRGBA(255, 255, 255, 9));
+      g.setColour(UITheme::cardBgHover.withAlpha(0.9f));
       g.fillRoundedRectangle(getLocalBounds().toFloat(), 4.0f);
-      g.setColour(juce::Colour::fromRGBA(255, 255, 255, 22));
+      g.setColour(UITheme::cardBorder.withAlpha(0.8f));
       g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f,
                              1.0f);
+    }
+
+    void refreshThemeColours() {
+      fileLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+      displayNameEditor.setColour(juce::TextEditor::backgroundColourId,
+                                  UITheme::cardBg);
+      displayNameEditor.setColour(juce::TextEditor::textColourId,
+                                  UITheme::textPrimary);
+      displayNameEditor.setColour(juce::TextEditor::outlineColourId,
+                                  UITheme::cardBorder.withAlpha(0.7f));
+      categoryBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
+      categoryBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+      categoryBox.setColour(juce::ComboBox::outlineColourId,
+                            UITheme::cardBorder.withAlpha(0.7f));
+      categoryBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+      includeToggle.setColour(juce::ToggleButton::textColourId,
+                              UITheme::textPrimary);
     }
 
   private:
@@ -836,23 +1615,15 @@ private:
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder) {
-    editor.setTextToShowWhenEmpty(placeholder,
-                                  juce::Colours::white.withAlpha(0.45f));
-    editor.setColour(juce::TextEditor::backgroundColourId,
-                     juce::Colour::fromRGB(42, 46, 54));
-    editor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
-    editor.setColour(juce::TextEditor::outlineColourId,
-                     juce::Colour::fromRGB(64, 69, 79));
+    applyEditorTheme(editor, placeholder);
   }
 
   void configureCombo(juce::ComboBox &combo) {
-    combo.setColour(juce::ComboBox::backgroundColourId,
-                    juce::Colour::fromRGB(42, 46, 54));
-    combo.setColour(juce::ComboBox::textColourId, juce::Colours::white);
+    combo.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+    combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
     combo.setColour(juce::ComboBox::outlineColourId,
-                    juce::Colour::fromRGB(64, 69, 79));
-    combo.setColour(juce::ComboBox::arrowColourId,
-                    juce::Colours::white.withAlpha(0.65f));
+                    UITheme::cardBorder.withAlpha(0.7f));
+    combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   }
 
   void layoutStepOne(juce::Rectangle<int> bounds) {
@@ -865,40 +1636,98 @@ private:
                     static_cast<juce::Component *>(&bpmEditor),
                     static_cast<juce::Component *>(&fileTypeBox),
                     static_cast<juce::Component *>(&keyBox),
-                    static_cast<juce::Component *>(&timeSignatureBox)}) {
+                    static_cast<juce::Component *>(&timeSignatureBox),
+                    static_cast<juce::Component *>(&stemsSectionLabel),
+                    static_cast<juce::Component *>(&infoSectionLabel),
+                    static_cast<juce::Component *>(&songTitleLabel),
+                    static_cast<juce::Component *>(&artistLabel),
+                    static_cast<juce::Component *>(&fileTypeLabel),
+                    static_cast<juce::Component *>(&bpmLabel),
+                    static_cast<juce::Component *>(&keyLabel),
+                    static_cast<juce::Component *>(&timeSignatureLabel)}) {
       c->setVisible(visible);
     }
     if (!visible)
       return;
 
-    auto topRow = bounds.removeFromTop(30);
-    chooseFilesButton.setBounds(topRow.removeFromLeft(140));
-    selectedFilesLabel.setBounds(topRow.reduced(12, 0));
+    const int sectionLabelH = 18;
+    const int fieldLabelH = 16;
+    const int fieldH = 30;
+    const int rowGap = 6;
 
-    bounds.removeFromTop(8);
-    selectedFilesEditor.setBounds(bounds.removeFromTop(180));
+    auto stemHeader = bounds.removeFromTop(sectionLabelH);
+    stemsSectionLabel.setBounds(stemHeader.removeFromLeft(200));
+    chooseFilesButton.setBounds(stemHeader.removeFromRight(140));
+
+    bounds.removeFromTop(4);
+    selectedFilesLabel.setBounds(bounds.removeFromTop(18));
+    bounds.removeFromTop(6);
+    selectedFilesEditor.setBounds(bounds.removeFromTop(150));
+
     bounds.removeFromTop(12);
-    songTitleEditor.setBounds(bounds.removeFromTop(34));
-    bounds.removeFromTop(8);
-    artistEditor.setBounds(bounds.removeFromTop(34));
-    bounds.removeFromTop(8);
+    infoSectionLabel.setBounds(bounds.removeFromTop(sectionLabelH));
+    bounds.removeFromTop(6);
 
-    auto row = bounds.removeFromTop(34);
-    fileTypeBox.setBounds(row.removeFromLeft(220));
-    row.removeFromLeft(8);
-    bpmEditor.setBounds(row.removeFromLeft(80));
-    row.removeFromLeft(8);
-    keyBox.setBounds(row.removeFromLeft(80));
-    row.removeFromLeft(8);
-    timeSignatureBox.setBounds(row.removeFromLeft(100));
+    auto infoArea = bounds;
+    const int leftW =
+        juce::jlimit(240, 320, static_cast<int>(infoArea.getWidth() * 0.48f));
+    auto left = infoArea.removeFromLeft(leftW);
+    auto right = infoArea;
+
+    auto labelRow = left.removeFromTop(fieldLabelH);
+    songTitleLabel.setBounds(labelRow);
+    songTitleEditor.setBounds(left.removeFromTop(fieldH));
+    left.removeFromTop(rowGap);
+
+    labelRow = left.removeFromTop(fieldLabelH);
+    artistLabel.setBounds(labelRow);
+    artistEditor.setBounds(left.removeFromTop(fieldH));
+
+    const int rightRowH = fieldLabelH + fieldH;
+    auto rightRow = right.removeFromTop(rightRowH);
+    const int gap = 10;
+    auto colW = (rightRow.getWidth() - gap) / 2;
+    auto col = rightRow.removeFromLeft(colW);
+    fileTypeLabel.setBounds(col.removeFromTop(fieldLabelH));
+    fileTypeBox.setBounds(col.removeFromTop(fieldH));
+    rightRow.removeFromLeft(gap);
+    col = rightRow.removeFromLeft(colW);
+    bpmLabel.setBounds(col.removeFromTop(fieldLabelH));
+    bpmEditor.setBounds(col.removeFromTop(fieldH));
+
+    right.removeFromTop(rowGap);
+    rightRow = right.removeFromTop(rightRowH);
+    col = rightRow.removeFromLeft(colW);
+    keyLabel.setBounds(col.removeFromTop(fieldLabelH));
+    keyBox.setBounds(col.removeFromTop(fieldH));
+    rightRow.removeFromLeft(gap);
+    col = rightRow.removeFromLeft(colW);
+    timeSignatureLabel.setBounds(col.removeFromTop(fieldLabelH));
+    timeSignatureBox.setBounds(col.removeFromTop(fieldH));
   }
 
   void layoutStepTwo(juce::Rectangle<int> bounds) {
     const bool visible = currentStep == 1;
     mapViewport.setVisible(visible);
+    for (auto *c : {static_cast<juce::Component *>(&mapFileHeader),
+                    static_cast<juce::Component *>(&mapNameHeader),
+                    static_cast<juce::Component *>(&mapCategoryHeader),
+                    static_cast<juce::Component *>(&mapLoadHeader)}) {
+      c->setVisible(visible);
+    }
     if (!visible)
       return;
 
+    auto header = bounds.removeFromTop(20);
+    auto fileCol = header.removeFromLeft(230);
+    auto nameCol = header.removeFromLeft(170);
+    auto catCol = header.removeFromLeft(160);
+    mapFileHeader.setBounds(fileCol);
+    mapNameHeader.setBounds(nameCol);
+    mapCategoryHeader.setBounds(catCol);
+    mapLoadHeader.setBounds(header.reduced(8, 0));
+
+    bounds.removeFromTop(6);
     mapViewport.setBounds(bounds);
     layoutMappingRows();
   }
@@ -1115,6 +1944,7 @@ private:
     song.stems.reserve(stems.size());
     for (const auto &stem : stems) {
       ImportedStemData data;
+      data.stemId = juce::Uuid().toString();
       data.sourcePath = stem.file.getFullPathName();
       data.fileName = stem.file.getFileName();
       data.displayName = stem.displayName;
@@ -1180,6 +2010,18 @@ private:
 
   juce::Label titleLabel;
   juce::Label subtitleLabel;
+  juce::Label stemsSectionLabel;
+  juce::Label infoSectionLabel;
+  juce::Label songTitleLabel;
+  juce::Label artistLabel;
+  juce::Label fileTypeLabel;
+  juce::Label bpmLabel;
+  juce::Label keyLabel;
+  juce::Label timeSignatureLabel;
+  juce::Label mapFileHeader;
+  juce::Label mapNameHeader;
+  juce::Label mapCategoryHeader;
+  juce::Label mapLoadHeader;
 
   juce::TextButton chooseFilesButton;
   juce::Label selectedFilesLabel;
@@ -1200,6 +2042,35 @@ private:
   juce::TextButton backButton;
   juce::TextButton nextButton;
   juce::TextButton submitButton;
+
+  const juce::String songTitlePlaceholder = "Song title";
+  const juce::String artistPlaceholder = "Artist";
+  const juce::String bpmPlaceholder = "BPM";
+
+  void applyEditorTheme(juce::TextEditor &editor,
+                        const juce::String &placeholder) {
+    editor.setTextToShowWhenEmpty(placeholder,
+                                  UITheme::textSecondary.withAlpha(0.6f));
+    editor.setColour(juce::TextEditor::backgroundColourId,
+                     UITheme::cardBgHover);
+    editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+    editor.setColour(juce::TextEditor::outlineColourId,
+                     UITheme::cardBorder.withAlpha(0.7f));
+  }
+
+  void stylePrimaryButton(juce::TextButton &button) {
+    button.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+    button.setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+    button.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
+    button.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  }
+
+  void styleSecondaryButton(juce::TextButton &button) {
+    button.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+    button.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+    button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
+  }
 };
 
 enum class IconGlyph {
@@ -1448,6 +2319,14 @@ public:
 
   std::function<void()> onToggle;
 
+  void setTitle(const juce::String &name) {
+    auto next = name.toUpperCase();
+    if (title == next)
+      return;
+    title = next;
+    repaint();
+  }
+
   void setCollapsed(bool collapsedState) {
     if (isCollapsed == collapsedState)
       return;
@@ -1575,6 +2454,7 @@ void ChannelStripLookAndFeel::drawLinearSlider(
     juce::Graphics &g, int x, int y, int width, int height, float sliderPos,
     float minSliderPos, float maxSliderPos, const juce::Slider::SliderStyle,
     juce::Slider &slider) {
+  juce::ignoreUnused(minSliderPos, maxSliderPos, slider);
 
   // Track (Recessed Groove)
   const float trackWidth = 3.0f;
@@ -3095,9 +3975,14 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       slots.clear();
       adjustableStems.clear();
       clickGuideStems.clear();
+      slotStemIndices.clear();
+      slotStemIds.clear();
       content.removeAllChildren();
       const int stemCount = processor.getLoadedStemCount();
       int mappedStemIndex = 0;
+      currentSongId = song.id;
+
+      addMasterSlot();
 
       std::vector<const ImportedStemData *> orderedStems;
       orderedStems.reserve(song.stems.size());
@@ -3128,6 +4013,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           channelName = "STEM";
 
         const int stemIndex = mappedStemIndex++;
+        const auto stemId = stem.stemId;
         const bool isAdjustable = stemPriorityForStripOrder(stem) > 1;
         const bool isClickGuide = stemPriorityForStripOrder(stem) <= 1;
         auto slot = std::make_unique<StripSlot>(
@@ -3143,21 +4029,39 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         slot->getStrip().setGain(processor.getStemGain(stemIndex));
         slot->getStrip().setMuteState(processor.isStemMuted(stemIndex));
         slot->getStrip().setSoloState(processor.isStemSoloed(stemIndex));
-        slot->getStrip().setOnVolumeChanged([this, stemIndex](float value) {
-          processor.setStemVolume(stemIndex, value);
-        });
-        slot->getStrip().setOnGainChanged([this, stemIndex](float value) {
-          processor.setStemGain(stemIndex, value);
-        });
-        slot->getStrip().setOnMuteChanged([this, stemIndex](bool muted) {
-          processor.setStemMute(stemIndex, muted);
-        });
-        slot->getStrip().setOnSoloChanged([this, stemIndex](bool soloed) {
-          processor.setStemSolo(stemIndex, soloed);
-        });
+        slot->getStrip().setOnVolumeChanged(
+            [this, stemIndex, stemId](float value) {
+              processor.setStemVolume(stemIndex, value);
+              if (currentSongId.isNotEmpty())
+                SongLibraryStore::updateStemVolumeForActiveSetlist(
+                    currentSongId, stemId, value);
+            });
+        slot->getStrip().setOnGainChanged(
+            [this, stemIndex, stemId](float value) {
+              processor.setStemGain(stemIndex, value);
+              if (currentSongId.isNotEmpty())
+                SongLibraryStore::updateStemGainForActiveSetlist(
+                    currentSongId, stemId, value);
+            });
+        slot->getStrip().setOnMuteChanged(
+            [this, stemIndex, stemId](bool muted) {
+              processor.setStemMute(stemIndex, muted);
+              if (currentSongId.isNotEmpty())
+                SongLibraryStore::updateStemMuteForActiveSetlist(
+                    currentSongId, stemId, muted);
+            });
+        slot->getStrip().setOnSoloChanged(
+            [this, stemIndex, stemId](bool soloed) {
+              processor.setStemSolo(stemIndex, soloed);
+              if (currentSongId.isNotEmpty())
+                SongLibraryStore::updateStemSoloForActiveSetlist(
+                    currentSongId, stemId, soloed);
+            });
         content.addAndMakeVisible(*slot);
         adjustableStems.push_back(isAdjustable);
         clickGuideStems.push_back(isClickGuide);
+        slotStemIndices.push_back(stemIndex);
+        slotStemIds.push_back(stemId);
         slots.push_back(std::move(slot));
       }
 
@@ -3169,24 +4073,44 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       if (slots.empty())
         return;
 
-      const int stemCount = static_cast<int>(slots.size());
-      for (int i = 0; i < stemCount; ++i) {
+      const int slotCount = static_cast<int>(slots.size());
+      for (int i = 0; i < slotCount; ++i) {
+        const int stemIndex =
+            i < static_cast<int>(slotStemIndices.size())
+                ? slotStemIndices[static_cast<size_t>(i)]
+                : -1;
+        if (stemIndex < 0)
+          continue;
         if (i >= static_cast<int>(adjustableStems.size()) ||
             !adjustableStems[static_cast<size_t>(i)]) {
           continue;
         }
-        const float current = processor.getStemVolume(i);
+        const float current = processor.getStemVolume(stemIndex);
         const float next = juce::jlimit(0.0f, 1.0f, current + delta);
         if (juce::approximatelyEqual(current, next))
           continue;
-        processor.setStemVolume(i, next);
+        processor.setStemVolume(stemIndex, next);
         slots[static_cast<size_t>(i)]->getStrip().setVolume(next);
+        if (currentSongId.isNotEmpty() &&
+            i < static_cast<int>(slotStemIds.size()) &&
+            slotStemIds[static_cast<size_t>(i)].isNotEmpty()) {
+          SongLibraryStore::updateStemVolumeForActiveSetlist(
+              currentSongId, slotStemIds[static_cast<size_t>(i)], next);
+        }
       }
     }
 
     void refreshThemeColours() {
       for (size_t i = 0; i < slots.size(); ++i) {
         auto &strip = slots[i]->getStrip();
+        const int stemIndex =
+            i < slotStemIndices.size() ? slotStemIndices[i] : -1;
+        if (stemIndex < 0) {
+          strip.setCardBgColour(UITheme::cardBgMaster);
+          strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+          strip.refreshThemeColours();
+          continue;
+        }
         const bool isClickGuide =
             i < clickGuideStems.size() ? clickGuideStems[i] : false;
         strip.setCardBgColour(isClickGuide ? UITheme::cardBgClickGuide
@@ -3269,6 +4193,56 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     std::vector<std::unique_ptr<StripSlot>> slots;
     std::vector<bool> adjustableStems;
     std::vector<bool> clickGuideStems;
+    std::vector<int> slotStemIndices;
+    std::vector<juce::String> slotStemIds;
+    juce::String currentSongId;
+
+    void addMasterSlot() {
+      auto slot = std::make_unique<StripSlot>(
+          "MASTER", lookAndFeel,
+          [this] {
+            float l = 0.0f;
+            float r = 0.0f;
+            processor.getOutputMeterLevels(l, r);
+            return std::pair<float, float>{l, r};
+          });
+      auto &strip = slot->getStrip();
+      strip.setCardBgColour(UITheme::cardBgMaster);
+      strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+      strip.setSoloEnabled(false);
+      strip.setSoloVisible(false);
+      strip.setGainVisible(true);
+      strip.setMuteAlignedToFader(true);
+      strip.setVolume(processor.getMasterVolume());
+      strip.setGain(processor.getMasterGain());
+      strip.setMuteState(processor.isMasterMuted());
+      strip.setOnVolumeChanged([this](float value) {
+        processor.setMasterVolume(value);
+        if (currentSongId.isNotEmpty())
+          SongLibraryStore::updateMasterVolumeForActiveSetlist(currentSongId,
+                                                               value);
+      });
+      strip.setOnGainChanged([this](float value) {
+        processor.setMasterGain(value);
+        if (currentSongId.isNotEmpty())
+          SongLibraryStore::updateMasterGainForActiveSetlist(currentSongId,
+                                                             value);
+      });
+      strip.setOnMuteChanged([this](bool muted) {
+        processor.setMasterMute(muted);
+        if (currentSongId.isNotEmpty())
+          SongLibraryStore::updateMasterMuteForActiveSetlist(currentSongId,
+                                                             muted);
+      });
+      strip.refreshThemeColours();
+
+      content.addAndMakeVisible(*slot);
+      slots.push_back(std::move(slot));
+      adjustableStems.push_back(false);
+      clickGuideStems.push_back(false);
+      slotStemIndices.push_back(-1);
+      slotStemIds.push_back({});
+    }
   };
 
   class MetronomePanel final : public juce::Component, private juce::Timer {
@@ -3684,202 +4658,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     }
   };
 
-  class MixerFaderPanel final : public juce::Component {
-  public:
-    using AdjustCallback = std::function<void(float)>;
-
-    MixerFaderPanel(ChannelStripLookAndFeel &lookAndFeelRef,
-                    MTControlsAudioProcessor &processorRef)
-        : lookAndFeel(lookAndFeelRef), processor(processorRef) {
-      masterStrip = std::make_unique<ChannelStripCard>(
-          "MASTER", lookAndFeel,
-          [this] {
-            float l = 0.0f;
-            float r = 0.0f;
-            processor.getOutputMeterLevels(l, r);
-            return std::pair<float, float>{l, r};
-          },
-          false);
-      masterStrip->setCardBgColour(UITheme::cardBgMaster);
-      masterStrip->setChannelBandColours(UITheme::accentMaster,
-                                         UITheme::onAccent);
-      masterStrip->setSoloEnabled(false);
-      masterStrip->setSoloVisible(false);
-      masterStrip->setGainVisible(true);
-      masterStrip->setMuteAlignedToFader(true);
-      masterStrip->setVolume(processor.getMasterVolume());
-      masterStrip->setGain(processor.getMasterGain());
-      masterStrip->setMuteState(processor.isMasterMuted());
-      masterStrip->setOnVolumeChanged([this](float value) {
-        processor.setMasterVolume(value);
-      });
-      masterStrip->setOnGainChanged([this](float value) {
-        processor.setMasterGain(value);
-      });
-      masterStrip->setOnMuteChanged([this](bool muted) {
-        processor.setMasterMute(muted);
-      });
-      addAndMakeVisible(*masterStrip);
-
-      configureTitleLabel(titleLabel, "ALL FADER");
-      configureTitleLabel(masterLabel, "MASTER LEVEL");
-      configureButton(upButton, "VOL +");
-      configureButton(downButton, "VOL -");
-
-      upButton.onClick = [this] {
-        if (onAdjust)
-          onAdjust(step);
-      };
-      downButton.onClick = [this] {
-        if (onAdjust)
-          onAdjust(-step);
-      };
-
-      addAndMakeVisible(titleLabel);
-      addAndMakeVisible(masterLabel);
-      addAndMakeVisible(upButton);
-      addAndMakeVisible(downButton);
-      refreshThemeColours();
-    }
-
-    ~MixerFaderPanel() override { clearLookAndFeel(); }
-
-    void setOnAdjust(AdjustCallback cb) { onAdjust = std::move(cb); }
-    void setSongBpm(double) {}
-
-    void refreshThemeColours() {
-      configureTitleLabel(titleLabel, "ALL FADER");
-      configureTitleLabel(masterLabel, "MASTER LEVEL");
-      configureButton(upButton, "VOL +");
-      configureButton(downButton, "VOL -");
-
-      if (masterStrip) {
-        masterStrip->setCardBgColour(UITheme::cardBgMaster);
-        masterStrip->setChannelBandColours(UITheme::accentMaster,
-                                           UITheme::onAccent);
-        masterStrip->refreshThemeColours();
-      }
-      repaint();
-    }
-
-    void paint(juce::Graphics &g) override {
-      const auto bounds = getLocalBounds().toFloat();
-      g.setColour(UITheme::cardBgMaster.withAlpha(0.9f));
-      g.fillRoundedRectangle(bounds, 6.0f);
-      g.setColour(UITheme::cardBorder.withAlpha(0.7f));
-      g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
-
-      auto drawSection = [&g](const juce::Rectangle<int> &section) {
-        if (section.isEmpty())
-          return;
-        auto b = section.toFloat().reduced(2.0f, 2.0f);
-        juce::ColourGradient grad(UITheme::cardBg.withAlpha(0.28f),
-                                  b.getCentreX(), b.getY(),
-                                  UITheme::cardBgHover.withAlpha(0.38f),
-                                  b.getCentreX(), b.getBottom(), false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(b, 4.0f);
-        g.setColour(UITheme::cardBorder.withAlpha(0.25f));
-        g.drawLine(b.getX() + 6.0f, b.getY(), b.getRight() - 6.0f, b.getY(),
-                   1.0f);
-      };
-
-      drawSection(allFadersSection);
-      drawSection(masterSection);
-    }
-
-    void resized() override {
-      auto area = getLocalBounds().reduced(8, 8);
-      const auto stripLayout = ChannelStripCard::Layout{};
-      const int stripW = stripLayout.width;
-      const int stripH = stripLayout.height;
-
-      const int titleH = 18;
-      const int buttonH = 22;
-      const int gap = 4;
-      const int sectionGap = 10;
-
-      const int sectionW = stripW;
-      const int sectionX = area.getX() + (area.getWidth() - sectionW) / 2;
-      int y = area.getY() + 4;
-      const int allTop = y;
-
-      titleLabel.setBounds(sectionX, y, sectionW, titleH);
-      y += titleH + gap;
-
-      const int buttonW = sectionW;
-      upButton.setBounds(sectionX, y, buttonW, buttonH);
-      y += buttonH + gap;
-      downButton.setBounds(sectionX, y, buttonW, buttonH);
-      y += buttonH + sectionGap;
-      const int allBottom = y - (sectionGap / 2);
-
-      const int masterTitleH = titleH;
-      const int masterTitleGap = gap;
-      const int masterTop =
-          area.getBottom() - stripH - masterTitleH - masterTitleGap;
-      masterLabel.setBounds(sectionX, masterTop, sectionW, masterTitleH);
-
-      const int stripX = area.getX() + (area.getWidth() - stripW) / 2;
-      const int stripY = masterTop + masterTitleH + masterTitleGap;
-      masterStrip->setBounds(stripX, stripY, stripW, stripH);
-
-      allFadersSection =
-          juce::Rectangle<int>(area.getX(), allTop, area.getWidth(),
-                               juce::jmax(0, allBottom - allTop));
-      masterSection =
-          juce::Rectangle<int>(area.getX(), masterTop, area.getWidth(),
-                               juce::jmax(0, area.getBottom() - masterTop));
-    }
-
-  private:
-    ChannelStripLookAndFeel &lookAndFeel;
-    MTControlsAudioProcessor &processor;
-    std::unique_ptr<ChannelStripCard> masterStrip;
-    juce::Label titleLabel;
-    juce::Label masterLabel;
-    juce::TextButton upButton;
-    juce::TextButton downButton;
-    juce::Rectangle<int> allFadersSection;
-    juce::Rectangle<int> masterSection;
-    AdjustCallback onAdjust;
-    const float step = 0.05f;
-
-    void configureLabel(juce::Label &label, const juce::String &text) {
-      label.setText(text.toUpperCase(), juce::dontSendNotification);
-      label.setJustificationType(juce::Justification::centred);
-      label.setFont(juce::FontOptions(9.0f).withKerningFactor(0.10f));
-      label.setColour(juce::Label::textColourId, UITheme::textSecondary);
-    }
-
-    void configureTitleLabel(juce::Label &label, const juce::String &text) {
-      label.setText(text.toUpperCase(), juce::dontSendNotification);
-      label.setJustificationType(juce::Justification::centred);
-      label.setFont(juce::FontOptions(11.0f).withKerningFactor(0.12f));
-      label.setColour(juce::Label::textColourId, UITheme::onAccent);
-      label.setColour(juce::Label::backgroundColourId, UITheme::accentSoft);
-      label.setColour(juce::Label::outlineColourId,
-                      UITheme::accent.withAlpha(0.6f));
-    }
-
-    void configureButton(juce::TextButton &button, const juce::String &text) {
-      button.setButtonText(text);
-      button.setViewportIgnoreDragFlag(true);
-      button.setLookAndFeel(&lookAndFeel);
-      button.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
-      button.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
-      button.setColour(juce::TextButton::textColourOffId,
-                       UITheme::textPrimary);
-      button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
-    }
-
-    void clearLookAndFeel() {
-      upButton.setLookAndFeel(nullptr);
-      downButton.setLookAndFeel(nullptr);
-    }
-  };
-
   class SongListPanel final : public juce::Component {
   public:
     class AddSongButton final : public juce::Button {
@@ -3911,6 +4689,34 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       }
     };
 
+    class ManageSetlistsButton final : public juce::Button {
+    public:
+      ManageSetlistsButton() : juce::Button("setlistsButton") {}
+
+      void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                       bool isButtonDown) override {
+        auto b = getLocalBounds().toFloat();
+        juce::Colour fill = UITheme::cardBg;
+        if (isMouseOverButton)
+          fill = UITheme::cardBgHover;
+        if (isButtonDown)
+          fill = UITheme::cardBgPressed;
+
+        g.setColour(fill);
+        g.fillRoundedRectangle(b, 5.0f);
+        g.setColour(UITheme::cardBorder.withAlpha(0.82f));
+        g.drawRoundedRectangle(b, 5.0f, 1.0f);
+
+        auto iconRect = b.removeFromLeft(24.0f).reduced(4.0f);
+        drawIconGlyph(g, iconRect, IconGlyph::Settings, UITheme::accent, 1.6f);
+
+        g.setColour(UITheme::textPrimary);
+        g.setFont(juce::FontOptions(10.5f).withKerningFactor(0.08f));
+        g.drawText("Setlists", b.reduced(4.0f, 0.0f).toNearestInt(),
+                   juce::Justification::centredLeft);
+      }
+    };
+
     SongListPanel() {
       listViewport.setViewedComponent(&listContent, false);
       listViewport.setScrollBarsShown(true, false, false, false);
@@ -3918,15 +4724,23 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       listViewport.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::all);
       addAndMakeVisible(listViewport);
       addAndMakeVisible(addSongButton);
+      addAndMakeVisible(manageSetlistsButton);
 
       addSongButton.onClick = [this] { openSongImportWizard(); };
+      manageSetlistsButton.onClick = [this] { openSetlistManager(); };
+
       listContent.setOnSongActivated([this](int songIndex) {
-        if (!juce::isPositiveAndBelow(songIndex,
-                                      static_cast<int>(librarySongs.size())))
+        if (!juce::isPositiveAndBelow(
+                songIndex, static_cast<int>(activeSongIndices.size())))
           return;
         lastActivatedIndex = songIndex;
+        const int libraryIndex =
+            activeSongIndices[static_cast<size_t>(songIndex)];
+        if (!juce::isPositiveAndBelow(
+                libraryIndex, static_cast<int>(librarySongs.size())))
+          return;
         if (onSongActivated)
-          onSongActivated(librarySongs[static_cast<size_t>(songIndex)],
+          onSongActivated(librarySongs[static_cast<size_t>(libraryIndex)],
                           songIndex);
       });
       refreshFromStorage();
@@ -3937,16 +4751,29 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       onSongActivated = std::move(cb);
     }
 
-    int getSongCount() const { return static_cast<int>(librarySongs.size()); }
+    void setOnSetlistNameChanged(
+        std::function<void(const juce::String &)> cb) {
+      onSetlistNameChanged = std::move(cb);
+    }
+
+    int getSongCount() const {
+      return static_cast<int>(activeSongIndices.size());
+    }
 
     const ImportedSongData *getSongPtr(int index) const {
       if (!juce::isPositiveAndBelow(index,
-                                    static_cast<int>(librarySongs.size())))
+                                    static_cast<int>(activeSongIndices.size())))
         return nullptr;
-      return &librarySongs[static_cast<size_t>(index)];
+      const int libraryIndex = activeSongIndices[static_cast<size_t>(index)];
+      if (!juce::isPositiveAndBelow(
+              libraryIndex, static_cast<int>(librarySongs.size())))
+        return nullptr;
+      return &librarySongs[static_cast<size_t>(libraryIndex)];
     }
 
     int getLastActivatedIndex() const { return lastActivatedIndex; }
+
+    juce::String getActiveSetlistName() const { return activeSetlistName; }
 
     void paint(juce::Graphics &g) override {
       const auto bounds = getLocalBounds().toFloat();
@@ -3957,12 +4784,10 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
       g.setColour(UITheme::textPrimary);
       g.setFont(juce::FontOptions(18.0f));
-      g.drawText("Setlist A", 14, 8, getWidth() - 190, 24,
+      const auto title =
+          activeSetlistName.isNotEmpty() ? activeSetlistName : "Setlist";
+      g.drawText(title, 14, 8, getWidth() - 220, 24,
                  juce::Justification::centredLeft);
-
-      const float pencilX = static_cast<float>(addSongButton.getX() - 24);
-      drawIconGlyph(g, juce::Rectangle<float>(pencilX, 8.0f, 20.0f, 22.0f),
-                    IconGlyph::Pencil, UITheme::accent, 1.6f);
     }
 
     void resized() override {
@@ -3972,6 +4797,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       const int addW = 126;
       addSongButton.setBounds(header.getRight() - addW, header.getY() + 3, addW,
                               24);
+      const int manageW = 110;
+      manageSetlistsButton.setBounds(addSongButton.getX() - manageW - 8,
+                                     header.getY() + 3, manageW, 24);
 
       area.removeFromTop(8);
       listViewport.setBounds(area);
@@ -4011,7 +4839,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         if (songs.empty()) {
           g.setColour(UITheme::textSecondary.withAlpha(0.88f));
           g.setFont(juce::FontOptions(12.0f));
-          g.drawFittedText("No songs yet. Use Add Song to import stems.",
+          g.drawFittedText("No songs in this setlist yet.",
                            getLocalBounds().reduced(10),
                            juce::Justification::centred, 2);
           return;
@@ -4100,18 +4928,732 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       std::function<void(int)> onSongActivated;
     };
 
+    class SetlistManagerPanel final : public juce::Component {
+    public:
+      using SetlistLoadedCallback = std::function<void(const juce::String &)>;
+
+      explicit SetlistManagerPanel(SetlistLoadedCallback onLoaded)
+          : onSetlistLoaded(std::move(onLoaded)) {
+        setSize(860, 560);
+
+        titleLabel.setText("Setlists", juce::dontSendNotification);
+        titleLabel.setJustificationType(juce::Justification::centred);
+        titleLabel.setFont(juce::FontOptions(18.0f));
+        addAndMakeVisible(titleLabel);
+
+        createButton.setButtonText("Create a Setlist");
+        createButton.onClick = [this] { createSetlist(); };
+        addAndMakeVisible(createButton);
+
+        searchEditor.setTextToShowWhenEmpty("Search Setlists",
+                                            UITheme::textSecondary);
+        searchEditor.onTextChange = [this] { refreshSetlistRows(); };
+        addAndMakeVisible(searchEditor);
+
+        setlistViewport.setViewedComponent(&setlistContent, false);
+        setlistViewport.setScrollBarsShown(true, false, false, false);
+        setlistViewport.setScrollBarThickness(1);
+        addAndMakeVisible(setlistViewport);
+
+        songsViewport.setViewedComponent(&songsContent, false);
+        songsViewport.setScrollBarsShown(true, false, false, false);
+        songsViewport.setScrollBarThickness(1);
+        addAndMakeVisible(songsViewport);
+
+        addSongButton.setButtonText("Add Song");
+        addSongButton.onClick = [this] { showAddSongMenu(); };
+        addAndMakeVisible(addSongButton);
+
+        loadButton.setButtonText("Load setlist");
+        loadButton.onClick = [this] { loadSelectedSetlist(); };
+        addAndMakeVisible(loadButton);
+
+        setlistContent.setOnAction(
+            [this](int index, SetlistListContent::Action action) {
+              handleSetlistAction(index, action);
+            });
+
+        songsContent.setOnAction(
+            [this](int row, SongsListContent::Action action) {
+              handleSongAction(row, action);
+            });
+
+        applyTheme();
+        reloadLibrary();
+      }
+
+      void paint(juce::Graphics &g) override {
+        auto b = getLocalBounds().toFloat();
+        g.setColour(UITheme::cardBg);
+        g.fillRoundedRectangle(b, 10.0f);
+        g.setColour(UITheme::cardBorder.withAlpha(0.7f));
+        g.drawRoundedRectangle(b.reduced(0.5f), 10.0f, 1.0f);
+      }
+
+      void resized() override {
+        auto area = getLocalBounds().reduced(18);
+        auto header = area.removeFromTop(36);
+        titleLabel.setBounds(header);
+
+        const int createW = 160;
+        auto headerRight = header.removeFromRight(createW);
+        createButton.setBounds(headerRight.removeFromLeft(createW));
+
+        area.removeFromTop(8);
+        auto topRow = area.removeFromTop(30);
+        searchEditor.setBounds(topRow.removeFromLeft(
+            juce::jmin(320, topRow.getWidth() / 2)));
+
+        area.removeFromTop(10);
+        auto contentArea = area;
+        const int leftW =
+            juce::jlimit(240, 320, static_cast<int>(contentArea.getWidth() * 0.38f));
+        auto left = contentArea.removeFromLeft(leftW);
+        auto right = contentArea;
+
+        left.removeFromTop(6);
+        setlistViewport.setBounds(left);
+
+        auto rightHeader = right.removeFromTop(32);
+        addSongButton.setBounds(rightHeader.removeFromLeft(110));
+        rightHeader.removeFromLeft(8);
+        loadButton.setBounds(rightHeader.removeFromLeft(130));
+        right.removeFromTop(6);
+        songsViewport.setBounds(right);
+
+        setlistContent.setSize(
+            juce::jmax(1, setlistViewport.getWidth()),
+            juce::jmax(setlistViewport.getHeight(),
+                       setlistContent.getPreferredHeight()));
+        songsContent.setSize(juce::jmax(1, songsViewport.getWidth()),
+                             juce::jmax(songsViewport.getHeight(),
+                                        songsContent.getPreferredHeight()));
+      }
+
+    private:
+      struct SetlistRow {
+        juce::String id;
+        juce::String name;
+        int songCount = 0;
+      };
+
+      class SetlistListContent final : public juce::Component {
+      public:
+        enum class Action { Select, Rename, Delete };
+
+        void setRows(std::vector<SetlistRow> nextRows, int selected) {
+          rows = std::move(nextRows);
+          selectedIndex = selected;
+          repaint();
+        }
+
+        void setOnAction(std::function<void(int, Action)> cb) {
+          onAction = std::move(cb);
+        }
+
+        int getPreferredHeight() const {
+          if (rows.empty())
+            return 88;
+          constexpr int rowH = 44;
+          constexpr int gap = 6;
+          return 8 + static_cast<int>(rows.size()) * (rowH + gap);
+        }
+
+        void paint(juce::Graphics &g) override {
+          if (rows.empty()) {
+            g.setColour(UITheme::textSecondary.withAlpha(0.8f));
+            g.setFont(juce::FontOptions(12.0f));
+            g.drawFittedText("No setlists yet.",
+                             getLocalBounds().reduced(10),
+                             juce::Justification::centred, 1);
+            return;
+          }
+
+          constexpr int rowH = 44;
+          constexpr int gap = 6;
+          for (size_t i = 0; i < rows.size(); ++i) {
+            auto row = juce::Rectangle<int>(
+                6, 8 + static_cast<int>(i) * (rowH + gap), getWidth() - 12,
+                rowH);
+            const bool selected = static_cast<int>(i) == selectedIndex;
+            g.setColour(selected ? UITheme::cardBgHover : UITheme::cardBg);
+            g.fillRoundedRectangle(row.toFloat(), 4.0f);
+            g.setColour(UITheme::cardBorder.withAlpha(0.6f));
+            g.drawRoundedRectangle(row.toFloat(), 4.0f, 1.0f);
+
+            auto textArea = row.reduced(10, 6);
+            const int actionSize = 16;
+            const int actionGap = 6;
+            const int actionRightPad = 10;
+            const int actionY =
+                row.getCentreY() - (actionSize / 2);
+            const int deleteX = row.getRight() - actionRightPad - actionSize;
+            const int renameX = deleteX - actionGap - actionSize;
+            auto renameRect =
+                juce::Rectangle<int>(renameX, actionY, actionSize, actionSize);
+            auto deleteRect =
+                juce::Rectangle<int>(deleteX, actionY, actionSize, actionSize);
+            g.setColour(UITheme::textPrimary);
+            g.setFont(juce::FontOptions(12.0f));
+            g.drawFittedText(rows[i].name, textArea.removeFromTop(16),
+                             juce::Justification::centredLeft, 1);
+            g.setColour(UITheme::textSecondary);
+            g.setFont(juce::FontOptions(9.0f));
+            g.drawFittedText(
+                juce::String(rows[i].songCount) + " songs", textArea,
+                juce::Justification::centredLeft, 1);
+
+            drawActionButton(g, renameRect, IconGlyph::Pencil,
+                             UITheme::textSecondary);
+            drawDeleteButton(g, deleteRect, UITheme::accent);
+          }
+        }
+
+        void mouseUp(const juce::MouseEvent &event) override {
+          const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
+          if (!juce::isPositiveAndBelow(idx, static_cast<int>(rows.size())))
+            return;
+
+          auto row = juce::Rectangle<int>(
+              6, 8 + static_cast<int>(idx) * (44 + 6), getWidth() - 12, 44);
+          const int actionSize = 16;
+          const int actionGap = 6;
+          const int actionRightPad = 10;
+          const int actionY =
+              row.getCentreY() - (actionSize / 2);
+          const int deleteX = row.getRight() - actionRightPad - actionSize;
+          const int renameX = deleteX - actionGap - actionSize;
+          auto renameRect =
+              juce::Rectangle<int>(renameX, actionY, actionSize, actionSize);
+          auto deleteRect =
+              juce::Rectangle<int>(deleteX, actionY, actionSize, actionSize);
+
+          const auto pos = event.position.toInt();
+          if (renameRect.contains(pos)) {
+            if (onAction)
+              onAction(idx, Action::Rename);
+            return;
+          }
+          if (deleteRect.contains(pos)) {
+            if (onAction)
+              onAction(idx, Action::Delete);
+            return;
+          }
+          if (onAction)
+            onAction(idx, Action::Select);
+        }
+
+      private:
+        int rowIndexAtY(int y) const {
+          constexpr int rowStart = 8;
+          constexpr int rowH = 44;
+          constexpr int gap = 6;
+          if (y < rowStart)
+            return -1;
+          const int relY = y - rowStart;
+          const int step = rowH + gap;
+          const int row = relY / step;
+          if (!juce::isPositiveAndBelow(row, static_cast<int>(rows.size())))
+            return -1;
+          if ((relY % step) >= rowH)
+            return -1;
+          return row;
+        }
+
+        std::vector<SetlistRow> rows;
+        int selectedIndex = -1;
+        std::function<void(int, Action)> onAction;
+
+        void drawActionButton(juce::Graphics &g, juce::Rectangle<int> bounds,
+                              IconGlyph glyph, juce::Colour iconColour) {
+          auto b = bounds.toFloat();
+          g.setColour(UITheme::cardBgHover);
+          g.fillRoundedRectangle(b, 3.0f);
+          g.setColour(UITheme::cardBorder.withAlpha(0.6f));
+          g.drawRoundedRectangle(b, 3.0f, 1.0f);
+          drawIconGlyph(g, b.reduced(2.0f), glyph, iconColour, 1.4f);
+        }
+
+        void drawDeleteButton(juce::Graphics &g, juce::Rectangle<int> bounds,
+                              juce::Colour iconColour) {
+          auto b = bounds.toFloat();
+          g.setColour(UITheme::cardBgHover);
+          g.fillRoundedRectangle(b, 3.0f);
+          g.setColour(UITheme::cardBorder.withAlpha(0.6f));
+          g.drawRoundedRectangle(b, 3.0f, 1.0f);
+
+          const auto pad = 5.0f;
+          g.setColour(iconColour);
+          g.drawLine(b.getX() + pad, b.getY() + pad, b.getRight() - pad,
+                     b.getBottom() - pad, 1.6f);
+          g.drawLine(b.getRight() - pad, b.getY() + pad, b.getX() + pad,
+                     b.getBottom() - pad, 1.6f);
+        }
+      };
+
+      class SongsListContent final : public juce::Component {
+      public:
+        enum class Action { Remove };
+
+        struct SongRow {
+          juce::String songId;
+          juce::String title;
+          juce::String meta;
+        };
+
+        void setRows(std::vector<SongRow> nextRows) {
+          rows = std::move(nextRows);
+          repaint();
+        }
+
+        void setOnAction(
+            std::function<void(int, Action)> cb) {
+          onAction = std::move(cb);
+        }
+
+        int getPreferredHeight() const {
+          if (rows.empty())
+            return 120;
+          constexpr int rowH = 52;
+          constexpr int gap = 6;
+          return 8 + static_cast<int>(rows.size()) * (rowH + gap);
+        }
+
+        void paint(juce::Graphics &g) override {
+          if (rows.empty()) {
+            g.setColour(UITheme::textSecondary.withAlpha(0.8f));
+            g.setFont(juce::FontOptions(12.0f));
+            g.drawFittedText("No songs in this setlist.",
+                             getLocalBounds().reduced(10),
+                             juce::Justification::centred, 1);
+            return;
+          }
+
+          constexpr int rowH = 52;
+          constexpr int gap = 6;
+          for (size_t i = 0; i < rows.size(); ++i) {
+            auto row = juce::Rectangle<int>(
+                6, 8 + static_cast<int>(i) * (rowH + gap), getWidth() - 12,
+                rowH);
+            g.setColour(UITheme::cardBgHover);
+            g.fillRoundedRectangle(row.toFloat(), 4.0f);
+            g.setColour(UITheme::cardBorder.withAlpha(0.6f));
+            g.drawRoundedRectangle(row.toFloat(), 4.0f, 1.0f);
+
+            auto c = row.reduced(8, 6);
+            auto orderRect = c.removeFromLeft(24);
+            g.setColour(UITheme::textSecondary);
+            g.setFont(juce::FontOptions(11.0f));
+            g.drawText(juce::String(static_cast<int>(i) + 1), orderRect,
+                       juce::Justification::centred);
+
+            auto buttonArea = c.removeFromRight(26);
+            auto removeRect = buttonArea.removeFromRight(22).reduced(2);
+            drawActionButton(g, removeRect, "X", UITheme::accent);
+
+            g.setColour(UITheme::textPrimary.darker(0.16f));
+            g.setFont(juce::FontOptions(12.0f));
+            g.drawFittedText(rows[i].title, c.removeFromTop(16),
+                             juce::Justification::centredLeft, 1);
+            g.setColour(UITheme::textSecondary);
+            g.setFont(juce::FontOptions(9.0f));
+            g.drawFittedText(rows[i].meta, c, juce::Justification::centredLeft,
+                             1);
+          }
+        }
+
+        void mouseUp(const juce::MouseEvent &event) override {
+          const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
+          if (!juce::isPositiveAndBelow(idx, static_cast<int>(rows.size())))
+            return;
+
+          auto row = juce::Rectangle<int>(
+              6, 8 + idx * (52 + 6), getWidth() - 12, 52);
+          auto c = row.reduced(8, 6);
+          c.removeFromLeft(24);
+          auto buttonArea = c.removeFromRight(26);
+          auto removeRect = buttonArea.removeFromRight(22).reduced(2);
+
+          const auto pos = event.position.toInt();
+          if (removeRect.contains(pos)) {
+            if (onAction)
+              onAction(idx, Action::Remove);
+            return;
+          }
+        }
+
+      private:
+        int rowIndexAtY(int y) const {
+          constexpr int rowStart = 8;
+          constexpr int rowH = 52;
+          constexpr int gap = 6;
+          if (y < rowStart)
+            return -1;
+          const int relY = y - rowStart;
+          const int step = rowH + gap;
+          const int row = relY / step;
+          if (!juce::isPositiveAndBelow(row, static_cast<int>(rows.size())))
+            return -1;
+          if ((relY % step) >= rowH)
+            return -1;
+          return row;
+        }
+
+        void drawActionButton(juce::Graphics &g, juce::Rectangle<int> bounds,
+                              const juce::String &label,
+                              juce::Colour colour) {
+          g.setColour(UITheme::cardBorder.withAlpha(0.5f));
+          g.drawRoundedRectangle(bounds.toFloat(), 3.0f, 1.0f);
+          g.setColour(colour);
+          g.setFont(juce::FontOptions(10.0f));
+          g.drawFittedText(label, bounds, juce::Justification::centred, 1);
+        }
+
+        std::vector<SongRow> rows;
+        std::function<void(int, Action)> onAction;
+      };
+
+      void applyTheme() {
+        titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+        searchEditor.setColour(juce::TextEditor::backgroundColourId,
+                               UITheme::cardBgHover);
+        searchEditor.setColour(juce::TextEditor::textColourId,
+                               UITheme::textPrimary);
+        searchEditor.setColour(juce::TextEditor::outlineColourId,
+                               UITheme::cardBorder.withAlpha(0.6f));
+        styleButton(createButton, UITheme::cardBgHover);
+        styleButton(loadButton, UITheme::accent);
+        styleButton(addSongButton, UITheme::cardBgHover);
+      }
+
+      void styleButton(juce::TextButton &button, juce::Colour base) {
+        button.setColour(juce::TextButton::buttonColourId, base);
+        button.setColour(juce::TextButton::buttonOnColourId,
+                         base.darker(0.08f));
+        button.setColour(juce::TextButton::textColourOffId,
+                         UITheme::textPrimary);
+        button.setColour(juce::TextButton::textColourOnId,
+                         UITheme::textPrimary);
+      }
+
+      void reloadLibrary() {
+        library = SongLibraryStore::loadLibrarySnapshot();
+        if (selectedSetlistId.isEmpty() ||
+            !setlistExists(selectedSetlistId)) {
+          selectedSetlistId = library.activeSetlistId;
+        }
+        if (selectedSetlistId.isEmpty() && !library.setlists.empty())
+          selectedSetlistId = library.setlists.front().id;
+        refreshSetlistRows();
+        refreshSongsRows();
+      }
+
+      bool setlistExists(const juce::String &id) const {
+        for (const auto &setlist : library.setlists) {
+          if (setlist.id == id)
+            return true;
+        }
+        return false;
+      }
+
+      std::vector<SetlistRow> buildSetlistRows() const {
+        const auto query = searchEditor.getText().trim().toLowerCase();
+        std::vector<SetlistRow> rows;
+        rows.reserve(library.setlists.size());
+        for (const auto &setlist : library.setlists) {
+          if (query.isNotEmpty() &&
+              !setlist.name.toLowerCase().contains(query))
+            continue;
+          rows.push_back({setlist.id, setlist.name,
+                          static_cast<int>(setlist.items.size())});
+        }
+        return rows;
+      }
+
+      void refreshSetlistRows() {
+        auto rows = buildSetlistRows();
+
+        int selectedIndex = -1;
+        for (size_t i = 0; i < rows.size(); ++i) {
+          if (rows[i].id == selectedSetlistId) {
+            selectedIndex = static_cast<int>(i);
+            break;
+          }
+        }
+        setlistContent.setRows(std::move(rows), selectedIndex);
+        resized();
+      }
+
+      void refreshSongsRows() {
+        std::vector<SongsListContent::SongRow> rows;
+        const auto *setlist = findSetlist(selectedSetlistId);
+        if (setlist != nullptr) {
+          rows.reserve(setlist->items.size());
+          for (size_t i = 0; i < setlist->items.size(); ++i) {
+            const auto &item = setlist->items[i];
+            const auto *song = findSong(item.songId);
+            if (song == nullptr)
+              continue;
+            rows.push_back(buildSongRow(*song, static_cast<int>(i)));
+          }
+        }
+        songsContent.setRows(std::move(rows));
+        resized();
+      }
+
+      SongsListContent::SongRow buildSongRow(const ImportedSongData &song,
+                                             int index) const {
+        juce::ignoreUnused(index);
+        const auto includedStems = static_cast<int>(std::count_if(
+            song.stems.begin(), song.stems.end(),
+            [](const ImportedStemData &stem) { return stem.include; }));
+
+        juce::String meta;
+        if (song.artist.isNotEmpty())
+          meta << song.artist << " • ";
+        if (song.key.isNotEmpty())
+          meta << song.key << " • ";
+        if (song.bpm > 0)
+          meta << juce::String(song.bpm) << " BPM • ";
+        meta << juce::String(includedStems) << " stems";
+
+        SongsListContent::SongRow row;
+        row.songId = song.id;
+        row.title = song.title.isNotEmpty() ? song.title : "Untitled Song";
+        row.meta = meta;
+        return row;
+      }
+
+      const SetlistData *findSetlist(const juce::String &id) const {
+        for (const auto &setlist : library.setlists) {
+          if (setlist.id == id)
+            return &setlist;
+        }
+        return nullptr;
+      }
+
+      const ImportedSongData *findSong(const juce::String &id) const {
+        for (const auto &song : library.songs) {
+          if (song.id == id)
+            return &song;
+        }
+        return nullptr;
+      }
+
+      void selectSetlistByIndex(int index) {
+        auto rows = buildSetlistRows();
+        if (!juce::isPositiveAndBelow(index, static_cast<int>(rows.size())))
+          return;
+        selectedSetlistId = rows[static_cast<size_t>(index)].id;
+        refreshSetlistRows();
+        refreshSongsRows();
+      }
+
+      void handleSetlistAction(int index,
+                               SetlistListContent::Action action) {
+        auto rows = buildSetlistRows();
+        if (!juce::isPositiveAndBelow(index, static_cast<int>(rows.size())))
+          return;
+        const auto id = rows[static_cast<size_t>(index)].id;
+        switch (action) {
+        case SetlistListContent::Action::Select:
+          selectedSetlistId = id;
+          refreshSetlistRows();
+          refreshSongsRows();
+          break;
+        case SetlistListContent::Action::Rename:
+          renameSetlist(id);
+          break;
+        case SetlistListContent::Action::Delete:
+          deleteSetlist(id);
+          break;
+        }
+      }
+
+      void handleSongAction(int row, SongsListContent::Action action) {
+        const auto *setlist = findSetlist(selectedSetlistId);
+        if (setlist == nullptr)
+          return;
+        if (!juce::isPositiveAndBelow(
+                row, static_cast<int>(setlist->items.size())))
+          return;
+        const auto &item = setlist->items[static_cast<size_t>(row)];
+        switch (action) {
+        case SongsListContent::Action::Remove:
+          SongLibraryStore::removeSongFromSetlist(selectedSetlistId,
+                                                  item.songId);
+          dirty = true;
+          break;
+        }
+        reloadLibrary();
+      }
+
+      void showAddSongMenu() {
+        const auto *setlist = findSetlist(selectedSetlistId);
+        if (setlist == nullptr)
+          return;
+        juce::PopupMenu menu;
+        for (const auto &song : library.songs) {
+          const bool exists =
+              std::any_of(setlist->items.begin(), setlist->items.end(),
+                          [&song](const SetlistItem &item) {
+                            return item.songId == song.id;
+                          });
+          if (exists)
+            continue;
+          menu.addItem(
+              song.title.isNotEmpty() ? song.title : "Untitled Song",
+              [this, id = song.id] {
+                SongLibraryStore::addSongToSetlist(selectedSetlistId, id);
+                dirty = true;
+                reloadLibrary();
+              });
+        }
+        if (menu.getNumItems() == 0) {
+          menu.addItem("No songs available", false, false, nullptr);
+        }
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(
+            addSongButton));
+      }
+
+      void createSetlist() {
+        promptTextAsync(
+            "Create Setlist", "Setlist name:", "",
+            [this](juce::String name) {
+              name = name.trim();
+              if (name.isEmpty())
+                return;
+              const auto id = SongLibraryStore::createSetlist(name);
+              if (id.isNotEmpty())
+                selectedSetlistId = id;
+              dirty = true;
+              reloadLibrary();
+            });
+      }
+
+      void renameSetlist() {
+        renameSetlist(selectedSetlistId);
+      }
+
+      void renameSetlist(const juce::String &id) {
+        if (id.isEmpty())
+          return;
+        const auto *setlist = findSetlist(id);
+        if (setlist == nullptr)
+          return;
+        promptTextAsync(
+            "Rename Setlist", "Setlist name:", setlist->name,
+            [this, id](juce::String name) {
+              name = name.trim();
+              if (name.isEmpty())
+                return;
+              SongLibraryStore::renameSetlist(id, name);
+              dirty = true;
+              reloadLibrary();
+            });
+      }
+
+      void deleteSetlist() { deleteSetlist(selectedSetlistId); }
+
+      void deleteSetlist(const juce::String &id) {
+        if (id.isEmpty())
+          return;
+        if (library.setlists.size() <= 1) {
+          juce::AlertWindow::showMessageBoxAsync(
+              juce::AlertWindow::WarningIcon, "Can't delete",
+              "At least one setlist is required.");
+          return;
+        }
+        juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::WarningIcon, "Delete setlist",
+            "Delete this setlist? This won't remove songs from the library.",
+            "Delete", "Cancel", this,
+            juce::ModalCallbackFunction::create([this, id](int result) {
+              if (result != 1)
+                return;
+              SongLibraryStore::deleteSetlist(id);
+              selectedSetlistId = {};
+              dirty = true;
+              reloadLibrary();
+            }));
+      }
+
+      void loadSelectedSetlist() {
+        if (selectedSetlistId.isEmpty())
+          return;
+        if (!SongLibraryStore::setActiveSetlistId(selectedSetlistId))
+          return;
+        if (onSetlistLoaded)
+          onSetlistLoaded(selectedSetlistId);
+        dirty = false;
+        closeSelf();
+      }
+
+      void promptTextAsync(const juce::String &title,
+                           const juce::String &message,
+                           const juce::String &initial,
+                           std::function<void(juce::String)> onComplete) {
+        auto *window =
+            new juce::AlertWindow(title, message, juce::AlertWindow::NoIcon);
+        window->addTextEditor("value", initial, {});
+        window->addButton("Cancel", 0);
+        window->addButton("OK", 1);
+        window->enterModalState(
+            true,
+            juce::ModalCallbackFunction::create(
+                [window, callback = std::move(onComplete)](int result) {
+                  if (result == 1 && callback)
+                    callback(
+                        window->getTextEditorContents("value").trim());
+                }),
+            true);
+      }
+
+      void closeSelf() {
+        if (dirty && onSetlistLoaded) {
+          const auto active =
+              SongLibraryStore::loadLibrarySnapshot().activeSetlistId;
+          onSetlistLoaded(active);
+        }
+        if (auto *dw = findParentComponentOfClass<juce::DialogWindow>()) {
+          dw->exitModalState(0);
+          dw->setVisible(false);
+        }
+      }
+
+      juce::Label titleLabel;
+      juce::TextButton createButton;
+      juce::TextEditor searchEditor;
+      juce::TextButton addSongButton;
+      juce::TextButton loadButton;
+
+      juce::Viewport setlistViewport;
+      SetlistListContent setlistContent;
+      juce::Viewport songsViewport;
+      SongsListContent songsContent;
+
+      LibraryState library;
+      juce::String selectedSetlistId;
+      SetlistLoadedCallback onSetlistLoaded;
+      bool dirty = false;
+    };
+
     void openSongImportWizard() {
       auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+      auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+      auto *centerTarget =
+          editor != nullptr ? static_cast<juce::Component *>(editor)
+                            : static_cast<juce::Component *>(this);
 
       juce::DialogWindow::LaunchOptions options;
       options.dialogTitle = "Import Song";
-      options.dialogBackgroundColour = juce::Colour::fromRGB(24, 26, 30);
+      options.dialogBackgroundColour = UITheme::appBg;
       options.escapeKeyTriggersCloseButton = true;
       options.useNativeTitleBar = true;
       options.resizable = true;
-      options.componentToCentreAround = this;
-      options.content.setOwned(
-          new SongImportWizardComponent([safeThis](ImportedSongData song) {
+      options.componentToCentreAround = centerTarget;
+      auto *panel = new SongImportWizardComponent(
+          [safeThis](ImportedSongData song) {
             if (safeThis == nullptr)
               return;
 
@@ -4131,26 +5673,86 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
             }
 
             safeThis->refreshFromStorage();
-          }));
+          });
+      panel->refreshThemeColours();
+      options.content.setOwned(panel);
 
       if (auto *window = options.launchAsync()) {
         window->setResizable(true, true);
-        window->centreAroundComponent(this, 780, 580);
+        window->centreAroundComponent(centerTarget, 780, 580);
+      }
+    }
+
+    void openSetlistManager() {
+      auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+      auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+      auto *centerTarget =
+          editor != nullptr ? static_cast<juce::Component *>(editor)
+                            : static_cast<juce::Component *>(this);
+
+      juce::DialogWindow::LaunchOptions options;
+      options.dialogTitle = "Setlists";
+      options.dialogBackgroundColour = UITheme::appBg;
+      options.escapeKeyTriggersCloseButton = true;
+      options.useNativeTitleBar = true;
+      options.resizable = true;
+      options.componentToCentreAround = centerTarget;
+
+      auto *panel = new SetlistManagerPanel(
+          [safeThis](const juce::String &) {
+            if (safeThis == nullptr)
+              return;
+            safeThis->refreshFromStorage();
+          });
+      options.content.setOwned(panel);
+
+      if (auto *window = options.launchAsync()) {
+        window->setResizable(true, true);
+        window->centreAroundComponent(centerTarget, 900, 600);
       }
     }
 
     void refreshFromStorage() {
-      librarySongs = SongLibraryStore::loadSongs();
-      if (!juce::isPositiveAndBelow(lastActivatedIndex,
-                                    static_cast<int>(librarySongs.size())))
-        lastActivatedIndex = librarySongs.empty() ? -1 : 0;
+      auto library = SongLibraryStore::loadLibrarySnapshot();
+      librarySongs = library.songs;
+      activeSetlistId = library.activeSetlistId;
+      activeSetlistName = "Setlist";
+      activeSongIndices.clear();
+
+      const SetlistData *activeSetlist = nullptr;
+      for (const auto &setlist : library.setlists) {
+        if (setlist.id == activeSetlistId) {
+          activeSetlist = &setlist;
+          break;
+        }
+      }
+      if (activeSetlist == nullptr && !library.setlists.empty()) {
+        activeSetlist = &library.setlists.front();
+        activeSetlistId = activeSetlist->id;
+      }
+      if (activeSetlist != nullptr)
+        activeSetlistName = activeSetlist->name;
 
       std::vector<SongRow> rows;
-      rows.reserve(librarySongs.size());
+      if (activeSetlist != nullptr)
+        rows.reserve(activeSetlist->items.size());
 
       int order = 1;
-      for (size_t i = 0; i < librarySongs.size(); ++i) {
-        const auto &song = librarySongs[i];
+      if (activeSetlist != nullptr) {
+        for (size_t i = 0; i < activeSetlist->items.size(); ++i) {
+          const auto &item = activeSetlist->items[i];
+          const auto it = std::find_if(
+              librarySongs.begin(), librarySongs.end(),
+              [&item](const ImportedSongData &song) {
+                return song.id == item.songId;
+              });
+          if (it == librarySongs.end())
+            continue;
+          const auto &song = *it;
+          const int libraryIndex =
+              static_cast<int>(std::distance(librarySongs.begin(), it));
+          activeSongIndices.push_back(libraryIndex);
+
         const auto includedStems = static_cast<int>(std::count_if(
             song.stems.begin(), song.stems.end(),
             [](const ImportedStemData &stem) { return stem.include; }));
@@ -4164,20 +5766,35 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           meta << juce::String(song.bpm) << " BPM • ";
         meta << juce::String(includedStems) << " stems";
 
-        rows.push_back({order++,
-                        song.title.isNotEmpty() ? song.title : "Untitled Song",
-                        meta, static_cast<int>(i)});
+          const int rowIndex = static_cast<int>(rows.size());
+          rows.push_back(
+              {order++,
+               song.title.isNotEmpty() ? song.title : "Untitled Song", meta,
+               rowIndex});
+        }
       }
+
+      if (!juce::isPositiveAndBelow(
+              lastActivatedIndex,
+              static_cast<int>(activeSongIndices.size())))
+        lastActivatedIndex = activeSongIndices.empty() ? -1 : 0;
 
       listContent.setSongs(std::move(rows));
       resized();
+      if (onSetlistNameChanged)
+        onSetlistNameChanged(activeSetlistName);
     }
 
     juce::Viewport listViewport;
     ListContent listContent;
     AddSongButton addSongButton;
+    ManageSetlistsButton manageSetlistsButton;
     std::vector<ImportedSongData> librarySongs;
+    std::vector<int> activeSongIndices;
+    juce::String activeSetlistId;
+    juce::String activeSetlistName;
     std::function<void(const ImportedSongData &, int)> onSongActivated;
+    std::function<void(const juce::String &)> onSetlistNameChanged;
     int lastActivatedIndex = -1;
   };
 
@@ -4211,31 +5828,24 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
 
-  auto mixerFaderImpl =
-      std::make_unique<MixerFaderPanel>(stripLookAndFeel, p);
-  auto *mixerFaderRaw = mixerFaderImpl.get();
-  mixerFaderPanel = std::move(mixerFaderImpl);
-  mixerFaderRaw->setOnAdjust([channelGridRaw](float delta) {
-    if (channelGridRaw)
-      channelGridRaw->nudgeFaders(delta);
-  });
-  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw,
-                        mixerFaderRaw] {
+  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw] {
     if (topBarRaw)
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
       waveformBarRaw->refreshThemeColours();
     if (channelGridRaw)
       channelGridRaw->refreshThemeColours();
-    if (mixerFaderRaw)
-      mixerFaderRaw->refreshThemeColours();
   };
 
   auto songListImpl = std::make_unique<SongListPanel>();
   auto *songListRaw = songListImpl.get();
   songListPanel = std::move(songListImpl);
+  songListRaw->setOnSetlistNameChanged([this](const juce::String &name) {
+    if (setlistHandlePanel)
+      setlistHandlePanel->setTitle(name);
+  });
 
-  auto loadSong = [channelGridRaw, waveformBarRaw, mixerFaderRaw, &p,
+  auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) {
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
@@ -4288,9 +5898,32 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
     p.setStemClickGuideMask(clickGuideMask);
 
+    SongMixSnapshot mixSnapshot;
+    if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
+      p.setMasterVolume(mixSnapshot.master.volume);
+      p.setMasterGain(mixSnapshot.master.gain);
+      p.setMasterMute(mixSnapshot.master.mute);
+
+      for (size_t i = 0; i < loadedSong.stems.size(); ++i) {
+        const auto &stem = loadedSong.stems[i];
+        if (!stem.include)
+          continue;
+        const auto it = std::find_if(
+            mixSnapshot.stems.begin(), mixSnapshot.stems.end(),
+            [&stem](const StemMixSnapshot &snapshot) {
+              return snapshot.stemId == stem.stemId;
+            });
+        if (it == mixSnapshot.stems.end())
+          continue;
+        const int stemIndex = static_cast<int>(i);
+        p.setStemVolume(stemIndex, it->volume);
+        p.setStemGain(stemIndex, it->gain);
+        p.setStemMute(stemIndex, it->mute);
+        p.setStemSolo(stemIndex, it->solo);
+      }
+    }
+
     channelGridRaw->setSong(loadedSong);
-    if (mixerFaderRaw)
-      mixerFaderRaw->setSongBpm(song.bpm);
     currentSongIndex = songIndex;
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
@@ -4370,10 +6003,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     resized();
     repaint();
   };
+  if (songListRaw)
+    setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
-  addAndMakeVisible(*mixerFaderPanel);
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
@@ -4436,9 +6070,6 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea.reduced(8);
-  constexpr int mixerPanelW = 120;
-  auto mixerPanelArea = rightChannelsArea.removeFromLeft(mixerPanelW);
-  mixerFaderPanel->setBounds(mixerPanelArea);
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (isSetlistCollapsed) {
