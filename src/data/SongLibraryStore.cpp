@@ -1,40 +1,230 @@
 #include "SongLibraryStore.h"
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 std::vector<ImportedSongData> SongLibraryStore::loadSongs() {
-  std::vector<ImportedSongData> songs;
+  return loadLibrary().songs;
+}
 
-  const auto dbFile = getDbFile();
-  if (!dbFile.existsAsFile())
-    return songs;
+LibraryState SongLibraryStore::loadLibrarySnapshot() { return loadLibrary(); }
 
-  const auto parsed = juce::JSON::parse(dbFile.loadFileAsString());
-  auto *rootObj = parsed.getDynamicObject();
-  if (rootObj == nullptr)
-    return songs;
+bool SongLibraryStore::setActiveSetlistId(const juce::String &setlistId) {
+  auto library = loadLibrary();
+  if (!setlistExists(library, setlistId))
+    return false;
+  library.activeSetlistId = setlistId;
+  return saveLibrary(library);
+}
 
-  auto *songsArray = rootObj->getProperty("songs").getArray();
-  if (songsArray == nullptr)
-    return songs;
+juce::String SongLibraryStore::createSetlist(const juce::String &name) {
+  auto library = loadLibrary();
+  SetlistData setlist;
+  setlist.id = juce::Uuid().toString();
+  setlist.name = name.isNotEmpty() ? name : "New Setlist";
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  setlist.createdMs = now;
+  setlist.updatedMs = now;
+  library.setlists.push_back(std::move(setlist));
+  if (library.activeSetlistId.isEmpty())
+    library.activeSetlistId = library.setlists.back().id;
+  if (!saveLibrary(library))
+    return {};
+  return library.setlists.back().id;
+}
 
-  songs.reserve(static_cast<size_t>(songsArray->size()));
-  for (const auto &songVar : *songsArray)
-    songs.push_back(songFromVar(songVar));
+bool SongLibraryStore::renameSetlist(const juce::String &setlistId,
+                                    const juce::String &name) {
+  auto library = loadLibrary();
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+  setlist->name = name;
+  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
+}
 
-  return songs;
+bool SongLibraryStore::deleteSetlist(const juce::String &setlistId) {
+  auto library = loadLibrary();
+  if (library.setlists.size() <= 1)
+    return false;
+  auto it = std::remove_if(
+      library.setlists.begin(), library.setlists.end(),
+      [&setlistId](const SetlistData &setlist) {
+        return setlist.id == setlistId;
+      });
+  if (it == library.setlists.end())
+    return false;
+  library.setlists.erase(it, library.setlists.end());
+  if (!setlistExists(library, library.activeSetlistId))
+    library.activeSetlistId =
+        library.setlists.empty() ? juce::String()
+                                 : library.setlists.front().id;
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::addSongToSetlist(const juce::String &setlistId,
+                                       const juce::String &songId) {
+  auto library = loadLibrary();
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+  const bool exists =
+      std::any_of(setlist->items.begin(), setlist->items.end(),
+                  [&songId](const SetlistItem &item) {
+                    return item.songId == songId;
+                  });
+  if (exists)
+    return true;
+  setlist->items.push_back(createSetlistItem(*song));
+  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::removeSongFromSetlist(const juce::String &setlistId,
+                                            const juce::String &songId) {
+  auto library = loadLibrary();
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+  const auto before = setlist->items.size();
+  setlist->items.erase(
+      std::remove_if(setlist->items.begin(), setlist->items.end(),
+                     [&songId](const SetlistItem &item) {
+                       return item.songId == songId;
+                     }),
+      setlist->items.end());
+  if (setlist->items.size() == before)
+    return false;
+  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
+                                        int fromIndex, int toIndex) {
+  auto library = loadLibrary();
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+  const int count = static_cast<int>(setlist->items.size());
+  if (!juce::isPositiveAndBelow(fromIndex, count) ||
+      !juce::isPositiveAndBelow(toIndex, count))
+    return false;
+  if (fromIndex == toIndex)
+    return true;
+  auto item = setlist->items[static_cast<size_t>(fromIndex)];
+  setlist->items.erase(setlist->items.begin() + fromIndex);
+  setlist->items.insert(setlist->items.begin() + toIndex, item);
+  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
 }
 
 bool SongLibraryStore::appendSong(ImportedSongData song) {
   copyStemFiles(song);
 
-  auto songs = loadSongs();
-  songs.push_back(std::move(song));
-  return saveSongs(songs);
+  auto library = loadLibrary();
+  ensureSongHasStemIds(song);
+  library.songs.push_back(song);
+  ensureDefaultSetlist(library);
+  addSongToActiveSetlist(library, song);
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,
+                                           SongMixSnapshot &outMix) {
+  if (songId.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+
+  bool changed = false;
+  if (it == setlist->items.end()) {
+    setlist->items.push_back(createSetlistItem(*song));
+    it = std::prev(setlist->items.end());
+    changed = true;
+  } else {
+    it->mix = reconcileMixForSong(it->mix, *song, changed);
+  }
+
+  outMix = it->mix;
+  if (changed) {
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    it->updatedMs = now;
+    setlist->updatedMs = now;
+    saveLibrary(library);
+  }
+  return true;
+}
+
+bool SongLibraryStore::updateStemVolumeForActiveSetlist(
+    const juce::String &songId, const juce::String &stemId, float volume) {
+  return updateStemMixValue(songId, stemId,
+                            [volume](StemMixSnapshot &mix) {
+                              mix.volume = volume;
+                            });
+}
+
+bool SongLibraryStore::updateStemGainForActiveSetlist(
+    const juce::String &songId, const juce::String &stemId, float gain) {
+  return updateStemMixValue(songId, stemId,
+                            [gain](StemMixSnapshot &mix) {
+                              mix.gain = gain;
+                            });
+}
+
+bool SongLibraryStore::updateStemMuteForActiveSetlist(
+    const juce::String &songId, const juce::String &stemId, bool muted) {
+  return updateStemMixValue(songId, stemId,
+                            [muted](StemMixSnapshot &mix) {
+                              mix.mute = muted;
+                            });
+}
+
+bool SongLibraryStore::updateStemSoloForActiveSetlist(
+    const juce::String &songId, const juce::String &stemId, bool soloed) {
+  return updateStemMixValue(songId, stemId,
+                            [soloed](StemMixSnapshot &mix) {
+                              mix.solo = soloed;
+                            });
+}
+
+bool SongLibraryStore::updateMasterVolumeForActiveSetlist(
+    const juce::String &songId, float volume) {
+  return updateMasterMixValue(songId, [volume](MasterMixSnapshot &mix) {
+    mix.volume = volume;
+  });
+}
+
+bool SongLibraryStore::updateMasterGainForActiveSetlist(
+    const juce::String &songId, float gain) {
+  return updateMasterMixValue(songId, [gain](MasterMixSnapshot &mix) {
+    mix.gain = gain;
+  });
+}
+
+bool SongLibraryStore::updateMasterMuteForActiveSetlist(
+    const juce::String &songId, bool muted) {
+  return updateMasterMixValue(songId, [muted](MasterMixSnapshot &mix) {
+    mix.mute = muted;
+  });
 }
 
 bool SongLibraryStore::saveWaveformCache(const juce::String &songId,
-                                         const std::vector<float> &bins) {
+                                        const std::vector<float> &bins) {
   if (songId.isEmpty() || bins.empty())
     return false;
   auto file = getWaveformCacheDir().getChildFile(songId + ".bin");
@@ -53,15 +243,106 @@ std::vector<float> SongLibraryStore::loadWaveformCache(
   if (!file.existsAsFile())
     return {};
   const auto size = file.getSize();
-  if (size < static_cast<juce::int64>(sizeof(float)) ||
-      (size % sizeof(float)) != 0)
+  if (size < static_cast<juce::int64>(sizeof(float)))
     return {};
-  std::vector<float> bins(static_cast<size_t>(size / sizeof(float)));
+  const auto sizeBytes = static_cast<size_t>(size);
+  if ((sizeBytes % sizeof(float)) != 0)
+    return {};
+  if (sizeBytes > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return {};
+  std::vector<float> bins(sizeBytes / sizeof(float));
   juce::FileInputStream in(file);
   if (in.failedToOpen())
     return {};
-  in.read(bins.data(), static_cast<int>(size));
+  in.read(bins.data(), static_cast<int>(sizeBytes));
   return bins;
+}
+
+LibraryState SongLibraryStore::loadLibrary() {
+  LibraryState library;
+  bool needsSave = false;
+
+  const auto dbFile = getDbFile();
+  if (!dbFile.existsAsFile()) {
+    ensureDefaultSetlist(library);
+    return library;
+  }
+
+  const auto parsed = juce::JSON::parse(dbFile.loadFileAsString());
+  auto *rootObj = parsed.getDynamicObject();
+  if (rootObj == nullptr) {
+    ensureDefaultSetlist(library);
+    return library;
+  }
+
+  const int version = static_cast<int>(rootObj->getProperty("version"));
+  auto *songsArray = rootObj->getProperty("songs").getArray();
+  if (songsArray != nullptr) {
+    library.songs.reserve(static_cast<size_t>(songsArray->size()));
+    for (const auto &songVar : *songsArray) {
+      auto song = songFromVar(songVar);
+      if (ensureSongHasStemIds(song))
+        needsSave = true;
+      library.songs.push_back(std::move(song));
+    }
+  }
+
+  if (version >= 2) {
+    library.activeSetlistId =
+        rootObj->getProperty("activeSetlistId").toString();
+    auto *setlistsArray = rootObj->getProperty("setlists").getArray();
+    if (setlistsArray != nullptr) {
+      for (const auto &setlistVar : *setlistsArray) {
+        auto setlist = setlistFromVar(setlistVar, library.songs, needsSave);
+        if (setlist.id.isNotEmpty())
+          library.setlists.push_back(std::move(setlist));
+      }
+    }
+  } else {
+    needsSave = true;
+  }
+
+  if (library.setlists.empty()) {
+    ensureDefaultSetlist(library);
+    needsSave = true;
+  }
+
+  if (library.activeSetlistId.isEmpty() ||
+      !setlistExists(library, library.activeSetlistId)) {
+    library.activeSetlistId =
+        library.setlists.empty() ? juce::String()
+                                 : library.setlists.front().id;
+    needsSave = true;
+  }
+
+  if (needsSave)
+    saveLibrary(library);
+
+  return library;
+}
+
+bool SongLibraryStore::saveLibrary(const LibraryState &library) {
+  juce::Array<juce::var> songVars;
+  songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
+  for (const auto &song : library.songs)
+    songVars.add(songToVar(song));
+
+  juce::Array<juce::var> setlistVars;
+  setlistVars.ensureStorageAllocated(
+      static_cast<int>(library.setlists.size()));
+  for (const auto &setlist : library.setlists)
+    setlistVars.add(setlistToVar(setlist));
+
+  juce::var rootVar(new juce::DynamicObject());
+  if (auto *root = rootVar.getDynamicObject()) {
+    root->setProperty("version", 2);
+    root->setProperty("activeSetlistId", library.activeSetlistId);
+    root->setProperty("songs", juce::var(songVars));
+    root->setProperty("setlists", juce::var(setlistVars));
+  }
+
+  const auto json = juce::JSON::toString(rootVar, true);
+  return getDbFile().replaceWithText(json);
 }
 
 juce::File SongLibraryStore::getRootDirectory() {
@@ -87,22 +368,6 @@ juce::File SongLibraryStore::getWaveformCacheDir() {
   auto dir = getRootDirectory().getChildFile("waveforms");
   dir.createDirectory();
   return dir;
-}
-
-bool SongLibraryStore::saveSongs(const std::vector<ImportedSongData> &songs) {
-  juce::Array<juce::var> songVars;
-  songVars.ensureStorageAllocated(static_cast<int>(songs.size()));
-  for (const auto &song : songs)
-    songVars.add(songToVar(song));
-
-  juce::var rootVar(new juce::DynamicObject());
-  if (auto *root = rootVar.getDynamicObject()) {
-    root->setProperty("version", 1);
-    root->setProperty("songs", juce::var(songVars));
-  }
-
-  const auto json = juce::JSON::toString(rootVar, true);
-  return getDbFile().replaceWithText(json);
 }
 
 void SongLibraryStore::copyStemFiles(ImportedSongData &song) {
@@ -136,6 +401,7 @@ void SongLibraryStore::copyStemFiles(ImportedSongData &song) {
 
 juce::var SongLibraryStore::stemToVar(const ImportedStemData &stem) {
   auto *obj = new juce::DynamicObject();
+  obj->setProperty("stemId", stem.stemId);
   obj->setProperty("sourcePath", stem.sourcePath);
   obj->setProperty("storedPath", stem.storedPath);
   obj->setProperty("fileName", stem.fileName);
@@ -154,6 +420,7 @@ ImportedStemData SongLibraryStore::stemFromVar(const juce::var &v) {
   if (obj == nullptr)
     return stem;
 
+  stem.stemId = obj->getProperty("stemId").toString();
   stem.sourcePath = obj->getProperty("sourcePath").toString();
   stem.storedPath = obj->getProperty("storedPath").toString();
   stem.fileName = obj->getProperty("fileName").toString();
@@ -208,4 +475,372 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v) {
   }
 
   return song;
+}
+
+bool SongLibraryStore::ensureSongHasStemIds(ImportedSongData &song) {
+  bool changed = false;
+  for (auto &stem : song.stems) {
+    if (stem.stemId.isEmpty()) {
+      stem.stemId = juce::Uuid().toString();
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+bool SongLibraryStore::setlistExists(const LibraryState &library,
+                                    const juce::String &setlistId) {
+  if (setlistId.isEmpty())
+    return false;
+  return std::any_of(library.setlists.begin(), library.setlists.end(),
+                     [&setlistId](const SetlistData &setlist) {
+                       return setlist.id == setlistId;
+                     });
+}
+
+void SongLibraryStore::ensureDefaultSetlist(LibraryState &library) {
+  if (!library.setlists.empty())
+    return;
+  SetlistData setlist;
+  setlist.id = "setlist_default";
+  setlist.name = "Setlist A";
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  setlist.createdMs = now;
+  setlist.updatedMs = now;
+  setlist.items.reserve(library.songs.size());
+  for (const auto &song : library.songs)
+    setlist.items.push_back(createSetlistItem(song));
+  library.setlists.push_back(std::move(setlist));
+  library.activeSetlistId = library.setlists.front().id;
+}
+
+void SongLibraryStore::addSongToActiveSetlist(LibraryState &library,
+                                             const ImportedSongData &song) {
+  if (library.setlists.empty())
+    ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr && !library.setlists.empty()) {
+    library.activeSetlistId = library.setlists.front().id;
+    setlist = &library.setlists.front();
+  }
+  if (setlist == nullptr)
+    return;
+  setlist->items.push_back(createSetlistItem(song));
+  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+}
+
+SetlistData *SongLibraryStore::findSetlistById(LibraryState &library,
+                                              const juce::String &setlistId) {
+  if (setlistId.isEmpty())
+    return nullptr;
+  for (auto &setlist : library.setlists) {
+    if (setlist.id == setlistId)
+      return &setlist;
+  }
+  return nullptr;
+}
+
+SetlistItem SongLibraryStore::createSetlistItem(const ImportedSongData &song) {
+  SetlistItem item;
+  item.songId = song.id;
+  item.mix = createDefaultMixForSong(song);
+  item.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return item;
+}
+
+SongMixSnapshot SongLibraryStore::createDefaultMixForSong(
+    const ImportedSongData &song) {
+  SongMixSnapshot mix;
+  mix.master = MasterMixSnapshot{};
+  mix.stems.reserve(song.stems.size());
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    StemMixSnapshot stemMix;
+    stemMix.stemId = stem.stemId;
+    mix.stems.push_back(std::move(stemMix));
+  }
+  return mix;
+}
+
+SongMixSnapshot SongLibraryStore::reconcileMixForSong(
+    const SongMixSnapshot &mix, const ImportedSongData &song, bool &changed) {
+  SongMixSnapshot out = mix;
+  std::vector<StemMixSnapshot> nextStems;
+  nextStems.reserve(song.stems.size());
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    auto it = std::find_if(out.stems.begin(), out.stems.end(),
+                           [&stem](const StemMixSnapshot &snapshot) {
+                             return snapshot.stemId == stem.stemId;
+                           });
+    if (it != out.stems.end()) {
+      nextStems.push_back(*it);
+    } else {
+      StemMixSnapshot snapshot;
+      snapshot.stemId = stem.stemId;
+      nextStems.push_back(snapshot);
+      changed = true;
+    }
+  }
+  if (nextStems.size() != out.stems.size())
+    changed = true;
+  out.stems = std::move(nextStems);
+  return out;
+}
+
+bool SongLibraryStore::normalizeLegacyMix(SongMixSnapshot &mix) {
+  const bool masterDefault = juce::approximatelyEqual(mix.master.volume, 1.0f) &&
+                             juce::approximatelyEqual(mix.master.gain, 0.0f) &&
+                             !mix.master.mute;
+  if (!masterDefault)
+    return false;
+
+  for (const auto &stem : mix.stems) {
+    const bool stemDefault = juce::approximatelyEqual(stem.volume, 1.0f) &&
+                             juce::approximatelyEqual(stem.gain, 0.0f) &&
+                             !stem.mute && !stem.solo;
+    if (!stemDefault)
+      return false;
+  }
+
+  mix.master.gain = 1.0f;
+  for (auto &stem : mix.stems)
+    stem.gain = 1.0f;
+  return true;
+}
+
+juce::var SongLibraryStore::masterMixToVar(const MasterMixSnapshot &mix) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("volume", mix.volume);
+  obj->setProperty("gain", mix.gain);
+  obj->setProperty("mute", mix.mute);
+  return juce::var(obj);
+}
+
+MasterMixSnapshot SongLibraryStore::masterMixFromVar(const juce::var &v) {
+  MasterMixSnapshot mix;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return mix;
+  mix.volume = static_cast<float>(obj->getProperty("volume"));
+  if (obj->hasProperty("gain"))
+    mix.gain = static_cast<float>(obj->getProperty("gain"));
+  mix.mute = static_cast<bool>(obj->getProperty("mute"));
+  return mix;
+}
+
+juce::var SongLibraryStore::stemMixToVar(const StemMixSnapshot &mix) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("volume", mix.volume);
+  obj->setProperty("gain", mix.gain);
+  obj->setProperty("mute", mix.mute);
+  obj->setProperty("solo", mix.solo);
+  return juce::var(obj);
+}
+
+StemMixSnapshot SongLibraryStore::stemMixFromVar(const juce::var &v,
+                                                const juce::String &stemId) {
+  StemMixSnapshot mix;
+  mix.stemId = stemId;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return mix;
+  mix.volume = static_cast<float>(obj->getProperty("volume"));
+  if (obj->hasProperty("gain"))
+    mix.gain = static_cast<float>(obj->getProperty("gain"));
+  mix.mute = static_cast<bool>(obj->getProperty("mute"));
+  mix.solo = static_cast<bool>(obj->getProperty("solo"));
+  return mix;
+}
+
+juce::var SongLibraryStore::mixToVar(const SongMixSnapshot &mix) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("master", masterMixToVar(mix.master));
+
+  auto *stemsObj = new juce::DynamicObject();
+  for (const auto &stem : mix.stems) {
+    if (stem.stemId.isNotEmpty())
+      stemsObj->setProperty(stem.stemId, stemMixToVar(stem));
+  }
+  obj->setProperty("stems", juce::var(stemsObj));
+  return juce::var(obj);
+}
+
+SongMixSnapshot SongLibraryStore::mixFromVar(const juce::var &v,
+                                            const ImportedSongData *song,
+                                            bool &changed) {
+  SongMixSnapshot mix;
+  auto *obj = v.getDynamicObject();
+  if (obj != nullptr) {
+    mix.master = masterMixFromVar(obj->getProperty("master"));
+    auto stemsVar = obj->getProperty("stems");
+    if (auto *stemsObj = stemsVar.getDynamicObject()) {
+      const auto &props = stemsObj->getProperties();
+      for (const auto &prop : props) {
+        auto stemId = prop.name.toString();
+        mix.stems.push_back(stemMixFromVar(prop.value, stemId));
+      }
+    } else if (auto *stemsArray = stemsVar.getArray()) {
+      for (const auto &stemVar : *stemsArray) {
+        auto *stemObj = stemVar.getDynamicObject();
+        if (stemObj == nullptr)
+          continue;
+        const auto stemId = stemObj->getProperty("stemId").toString();
+        if (stemId.isEmpty())
+          continue;
+        mix.stems.push_back(stemMixFromVar(stemVar, stemId));
+      }
+    }
+  }
+
+  if (song != nullptr)
+    mix = reconcileMixForSong(mix, *song, changed);
+  if (normalizeLegacyMix(mix))
+    changed = true;
+  return mix;
+}
+
+juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("songId", item.songId);
+  obj->setProperty("mix", mixToVar(item.mix));
+  obj->setProperty("updatedMs", static_cast<juce::int64>(item.updatedMs));
+  return juce::var(obj);
+}
+
+SetlistItem SongLibraryStore::setlistItemFromVar(
+    const juce::var &v, const ImportedSongData *song, bool &changed) {
+  SetlistItem item;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return item;
+  item.songId = obj->getProperty("songId").toString();
+  item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
+  item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
+  return item;
+}
+
+juce::var SongLibraryStore::setlistToVar(const SetlistData &setlist) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("id", setlist.id);
+  obj->setProperty("name", setlist.name);
+  obj->setProperty("createdMs", static_cast<juce::int64>(setlist.createdMs));
+  obj->setProperty("updatedMs", static_cast<juce::int64>(setlist.updatedMs));
+
+  juce::Array<juce::var> itemsArray;
+  itemsArray.ensureStorageAllocated(static_cast<int>(setlist.items.size()));
+  for (const auto &item : setlist.items)
+    itemsArray.add(setlistItemToVar(item));
+  obj->setProperty("items", juce::var(itemsArray));
+  return juce::var(obj);
+}
+
+SetlistData SongLibraryStore::setlistFromVar(
+    const juce::var &v, const std::vector<ImportedSongData> &songs,
+    bool &changed) {
+  SetlistData setlist;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return setlist;
+  setlist.id = obj->getProperty("id").toString();
+  setlist.name = obj->getProperty("name").toString();
+  setlist.createdMs =
+      static_cast<juce::int64>(obj->getProperty("createdMs"));
+  setlist.updatedMs =
+      static_cast<juce::int64>(obj->getProperty("updatedMs"));
+
+  auto *itemsArray = obj->getProperty("items").getArray();
+  if (itemsArray != nullptr) {
+    for (const auto &itemVar : *itemsArray) {
+      auto *itemObj = itemVar.getDynamicObject();
+      if (itemObj == nullptr)
+        continue;
+      const auto songId = itemObj->getProperty("songId").toString();
+      const auto *song = findSongById(songs, songId);
+      if (song == nullptr) {
+        changed = true;
+        continue;
+      }
+      setlist.items.push_back(setlistItemFromVar(itemVar, song, changed));
+    }
+  }
+
+  return setlist;
+}
+
+const ImportedSongData *SongLibraryStore::findSongById(
+    const std::vector<ImportedSongData> &songs, const juce::String &songId) {
+  if (songId.isEmpty())
+    return nullptr;
+  for (const auto &song : songs) {
+    if (song.id == songId)
+      return &song;
+  }
+  return nullptr;
+}
+
+bool SongLibraryStore::updateActiveSetlistItem(
+    const juce::String &songId,
+    std::function<void(SetlistItem &, const ImportedSongData &)> updater) {
+  if (songId.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end()) {
+    setlist->items.push_back(createSetlistItem(*song));
+    it = std::prev(setlist->items.end());
+  }
+
+  bool changed = false;
+  it->mix = reconcileMixForSong(it->mix, *song, changed);
+  updater(*it, *song);
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  it->updatedMs = now;
+  setlist->updatedMs = now;
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::updateStemMixValue(
+    const juce::String &songId, const juce::String &stemId,
+    std::function<void(StemMixSnapshot &)> updater) {
+  if (stemId.isEmpty())
+    return false;
+  return updateActiveSetlistItem(
+      songId, [&stemId, &updater](SetlistItem &item,
+                                 const ImportedSongData &song) {
+        juce::ignoreUnused(song);
+        auto it = std::find_if(item.mix.stems.begin(), item.mix.stems.end(),
+                               [&stemId](const StemMixSnapshot &mix) {
+                                 return mix.stemId == stemId;
+                               });
+        if (it == item.mix.stems.end()) {
+          StemMixSnapshot mix;
+          mix.stemId = stemId;
+          item.mix.stems.push_back(mix);
+          it = std::prev(item.mix.stems.end());
+        }
+        updater(*it);
+      });
+}
+
+bool SongLibraryStore::updateMasterMixValue(
+    const juce::String &songId,
+    std::function<void(MasterMixSnapshot &)> updater) {
+  return updateActiveSetlistItem(
+      songId, [&updater](SetlistItem &item, const ImportedSongData &) {
+        updater(item.mix.master);
+      });
 }

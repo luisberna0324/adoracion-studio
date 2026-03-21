@@ -15,6 +15,7 @@ public:
 
   void paint(juce::Graphics &g) override;
   void resized() override;
+  void refreshThemeColours();
 
 private:
   struct StemDraft {
@@ -49,6 +50,10 @@ private:
   void submitSong();
   void changeStep(int step);
   void closeDialog();
+  void applyEditorTheme(juce::TextEditor &editor,
+                        const juce::String &placeholder);
+  void stylePrimaryButton(juce::TextButton &button);
+  void styleSecondaryButton(juce::TextButton &button);
 
   std::function<void(ImportedSongData)> onSubmit;
   int currentStep = 0;
@@ -58,6 +63,18 @@ private:
 
   juce::Label titleLabel;
   juce::Label subtitleLabel;
+  juce::Label stemsSectionLabel;
+  juce::Label infoSectionLabel;
+  juce::Label songTitleLabel;
+  juce::Label artistLabel;
+  juce::Label fileTypeLabel;
+  juce::Label bpmLabel;
+  juce::Label keyLabel;
+  juce::Label timeSignatureLabel;
+  juce::Label mapFileHeader;
+  juce::Label mapNameHeader;
+  juce::Label mapCategoryHeader;
+  juce::Label mapLoadHeader;
 
   juce::TextButton chooseFilesButton;
   juce::Label selectedFilesLabel;
@@ -78,4 +95,8 @@ private:
   juce::TextButton backButton;
   juce::TextButton nextButton;
   juce::TextButton submitButton;
+
+  const juce::String songTitlePlaceholder = "Song title";
+  const juce::String artistPlaceholder = "Artist";
+  const juce::String bpmPlaceholder = "BPM";
 };

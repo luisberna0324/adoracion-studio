@@ -1,5 +1,7 @@
 #include "SongImportWizardComponent.h"
 
+#include "../UiCommon.h"
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -9,37 +11,22 @@ class SongImportWizardComponent::MappingRow final : public juce::Component {
 public:
   explicit MappingRow(const StemDraft &stem) {
     fileLabel.setText(stem.file.getFileName(), juce::dontSendNotification);
-    fileLabel.setColour(juce::Label::textColourId,
-                        juce::Colours::white.withAlpha(0.72f));
     fileLabel.setFont(juce::FontOptions(12.0f));
     addAndMakeVisible(fileLabel);
 
     displayNameEditor.setText(stem.displayName, juce::dontSendNotification);
-    displayNameEditor.setColour(juce::TextEditor::backgroundColourId,
-                                juce::Colour::fromRGB(48, 52, 61));
-    displayNameEditor.setColour(juce::TextEditor::textColourId,
-                                juce::Colours::white);
-    displayNameEditor.setColour(juce::TextEditor::outlineColourId,
-                                juce::Colour::fromRGB(66, 72, 84));
     addAndMakeVisible(displayNameEditor);
 
     for (size_t i = 0; i < kTrackCategories.size(); ++i)
       categoryBox.addItem(kTrackCategories[i], static_cast<int>(i) + 1);
     categoryBox.setText(stem.category, juce::dontSendNotification);
-    categoryBox.setColour(juce::ComboBox::backgroundColourId,
-                          juce::Colour::fromRGB(48, 52, 61));
-    categoryBox.setColour(juce::ComboBox::textColourId, juce::Colours::white);
-    categoryBox.setColour(juce::ComboBox::outlineColourId,
-                          juce::Colour::fromRGB(66, 72, 84));
-    categoryBox.setColour(juce::ComboBox::arrowColourId,
-                          juce::Colours::white.withAlpha(0.65f));
     addAndMakeVisible(categoryBox);
 
     includeToggle.setButtonText("Load");
     includeToggle.setToggleState(stem.include, juce::dontSendNotification);
-    includeToggle.setColour(juce::ToggleButton::textColourId,
-                            juce::Colours::white.withAlpha(0.86f));
     addAndMakeVisible(includeToggle);
+
+    refreshThemeColours();
   }
 
   void applyTo(StemDraft &stem) const {
@@ -61,11 +48,28 @@ public:
   }
 
   void paint(juce::Graphics &g) override {
-    g.setColour(juce::Colour::fromRGBA(255, 255, 255, 9));
+    g.setColour(UITheme::cardBgHover.withAlpha(0.9f));
     g.fillRoundedRectangle(getLocalBounds().toFloat(), 4.0f);
-    g.setColour(juce::Colour::fromRGBA(255, 255, 255, 22));
+    g.setColour(UITheme::cardBorder.withAlpha(0.8f));
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 4.0f,
                            1.0f);
+  }
+
+  void refreshThemeColours() {
+    fileLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    displayNameEditor.setColour(juce::TextEditor::backgroundColourId,
+                                UITheme::cardBg);
+    displayNameEditor.setColour(juce::TextEditor::textColourId,
+                                UITheme::textPrimary);
+    displayNameEditor.setColour(juce::TextEditor::outlineColourId,
+                                UITheme::cardBorder.withAlpha(0.7f));
+    categoryBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
+    categoryBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+    categoryBox.setColour(juce::ComboBox::outlineColourId,
+                          UITheme::cardBorder.withAlpha(0.7f));
+    categoryBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+    includeToggle.setColour(juce::ToggleButton::textColourId,
+                            UITheme::textPrimary);
   }
 
 private:
@@ -82,17 +86,74 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   titleLabel.setText("Add Song", juce::dontSendNotification);
   titleLabel.setFont(juce::FontOptions(30.0f));
-  titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
   addAndMakeVisible(titleLabel);
 
-  subtitleLabel.setColour(juce::Label::textColourId,
-                          juce::Colours::white.withAlpha(0.65f));
   subtitleLabel.setFont(juce::FontOptions(14.0f));
   addAndMakeVisible(subtitleLabel);
 
-  configureTextEditor(songTitleEditor, "Song title");
-  configureTextEditor(artistEditor, "Artist");
-  configureTextEditor(bpmEditor, "BPM");
+  stemsSectionLabel.setText("Stems", juce::dontSendNotification);
+  stemsSectionLabel.setFont(juce::FontOptions(12.0f));
+  stemsSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(stemsSectionLabel);
+
+  infoSectionLabel.setText("Song Info", juce::dontSendNotification);
+  infoSectionLabel.setFont(juce::FontOptions(12.0f));
+  infoSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(infoSectionLabel);
+
+  songTitleLabel.setText("Title", juce::dontSendNotification);
+  songTitleLabel.setFont(juce::FontOptions(11.0f));
+  songTitleLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(songTitleLabel);
+
+  artistLabel.setText("Artist", juce::dontSendNotification);
+  artistLabel.setFont(juce::FontOptions(11.0f));
+  artistLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(artistLabel);
+
+  fileTypeLabel.setText("File type", juce::dontSendNotification);
+  fileTypeLabel.setFont(juce::FontOptions(11.0f));
+  fileTypeLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(fileTypeLabel);
+
+  bpmLabel.setText("BPM", juce::dontSendNotification);
+  bpmLabel.setFont(juce::FontOptions(11.0f));
+  bpmLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(bpmLabel);
+
+  keyLabel.setText("Key", juce::dontSendNotification);
+  keyLabel.setFont(juce::FontOptions(11.0f));
+  keyLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(keyLabel);
+
+  timeSignatureLabel.setText("Time", juce::dontSendNotification);
+  timeSignatureLabel.setFont(juce::FontOptions(11.0f));
+  timeSignatureLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(timeSignatureLabel);
+
+  mapFileHeader.setText("File", juce::dontSendNotification);
+  mapFileHeader.setFont(juce::FontOptions(11.0f));
+  mapFileHeader.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(mapFileHeader);
+
+  mapNameHeader.setText("Display name", juce::dontSendNotification);
+  mapNameHeader.setFont(juce::FontOptions(11.0f));
+  mapNameHeader.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(mapNameHeader);
+
+  mapCategoryHeader.setText("Category", juce::dontSendNotification);
+  mapCategoryHeader.setFont(juce::FontOptions(11.0f));
+  mapCategoryHeader.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(mapCategoryHeader);
+
+  mapLoadHeader.setText("Load", juce::dontSendNotification);
+  mapLoadHeader.setFont(juce::FontOptions(11.0f));
+  mapLoadHeader.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(mapLoadHeader);
+
+  configureTextEditor(songTitleEditor, songTitlePlaceholder);
+  configureTextEditor(artistEditor, artistPlaceholder);
+  configureTextEditor(bpmEditor, bpmPlaceholder);
   bpmEditor.setInputRestrictions(3, "0123456789");
   addAndMakeVisible(songTitleEditor);
   addAndMakeVisible(artistEditor);
@@ -122,19 +183,11 @@ SongImportWizardComponent::SongImportWizardComponent(
   chooseFilesButton.onClick = [this] { openStemChooser(); };
   addAndMakeVisible(chooseFilesButton);
 
-  selectedFilesLabel.setColour(juce::Label::textColourId,
-                               juce::Colours::white.withAlpha(0.70f));
   selectedFilesLabel.setText("No stems selected", juce::dontSendNotification);
   addAndMakeVisible(selectedFilesLabel);
 
   selectedFilesEditor.setReadOnly(true);
   selectedFilesEditor.setMultiLine(true);
-  selectedFilesEditor.setColour(juce::TextEditor::backgroundColourId,
-                                juce::Colour::fromRGB(42, 46, 54));
-  selectedFilesEditor.setColour(juce::TextEditor::textColourId,
-                                juce::Colours::white.withAlpha(0.9f));
-  selectedFilesEditor.setColour(juce::TextEditor::outlineColourId,
-                                juce::Colour::fromRGB(64, 69, 79));
   addAndMakeVisible(selectedFilesEditor);
 
   mapViewport.setViewedComponent(&mapContent, false);
@@ -145,12 +198,6 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   summaryEditor.setReadOnly(true);
   summaryEditor.setMultiLine(true);
-  summaryEditor.setColour(juce::TextEditor::backgroundColourId,
-                          juce::Colour::fromRGB(42, 46, 54));
-  summaryEditor.setColour(juce::TextEditor::textColourId,
-                          juce::Colours::white.withAlpha(0.9f));
-  summaryEditor.setColour(juce::TextEditor::outlineColourId,
-                          juce::Colour::fromRGB(64, 69, 79));
   addAndMakeVisible(summaryEditor);
 
   cancelButton.setButtonText("Cancel");
@@ -165,6 +212,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   for (auto *btn : {&cancelButton, &backButton, &nextButton, &submitButton})
     addAndMakeVisible(*btn);
 
+  refreshThemeColours();
   changeStep(0);
 }
 
@@ -172,9 +220,9 @@ SongImportWizardComponent::~SongImportWizardComponent() = default;
 
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
-  g.setColour(juce::Colour::fromRGB(24, 26, 30));
+  g.setColour(UITheme::cardBg);
   g.fillRoundedRectangle(b, 8.0f);
-  g.setColour(juce::Colour::fromRGBA(255, 255, 255, 24));
+  g.setColour(UITheme::cardBorder.withAlpha(0.8f));
   g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
 }
 
@@ -188,34 +236,86 @@ void SongImportWizardComponent::resized() {
   auto content = area;
 
   cancelButton.setBounds(footer.removeFromLeft(96));
-  backButton.setBounds(footer.removeFromRight(96).withTrimmedLeft(8));
-  submitButton.setBounds(footer.removeFromRight(140).withTrimmedLeft(8));
-  nextButton.setBounds(footer.removeFromRight(96).withTrimmedLeft(8));
+
+  auto rightEdge = footer.getRight();
+  const int buttonH = footer.getHeight();
+  const int y = footer.getY();
+  const int gap = 8;
+  auto placeRight = [&](juce::Component &button, int w) {
+    button.setBounds(rightEdge - w, y, w, buttonH);
+    rightEdge -= (w + gap);
+  };
+
+  if (submitButton.isVisible())
+    placeRight(submitButton, 140);
+  else
+    placeRight(nextButton, 96);
+
+  if (backButton.isVisible())
+    placeRight(backButton, 96);
 
   layoutStepOne(content);
   layoutStepTwo(content);
   layoutStepThree(content);
 }
 
+void SongImportWizardComponent::refreshThemeColours() {
+  titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  for (auto *label :
+       {&stemsSectionLabel, &infoSectionLabel, &songTitleLabel, &artistLabel,
+        &fileTypeLabel, &bpmLabel, &keyLabel, &timeSignatureLabel,
+        &mapFileHeader, &mapNameHeader, &mapCategoryHeader, &mapLoadHeader}) {
+    label->setColour(juce::Label::textColourId, UITheme::textSecondary);
+  }
+
+  applyEditorTheme(songTitleEditor, songTitlePlaceholder);
+  applyEditorTheme(artistEditor, artistPlaceholder);
+  applyEditorTheme(bpmEditor, bpmPlaceholder);
+
+  selectedFilesLabel.setColour(juce::Label::textColourId,
+                               UITheme::textSecondary);
+  selectedFilesEditor.setColour(juce::TextEditor::backgroundColourId,
+                                UITheme::cardBgHover);
+  selectedFilesEditor.setColour(juce::TextEditor::textColourId,
+                                UITheme::textPrimary);
+  selectedFilesEditor.setColour(juce::TextEditor::outlineColourId,
+                                UITheme::cardBorder.withAlpha(0.7f));
+
+  summaryEditor.setColour(juce::TextEditor::backgroundColourId,
+                          UITheme::cardBgHover);
+  summaryEditor.setColour(juce::TextEditor::textColourId,
+                          UITheme::textPrimary);
+  summaryEditor.setColour(juce::TextEditor::outlineColourId,
+                          UITheme::cardBorder.withAlpha(0.7f));
+
+  configureCombo(fileTypeBox);
+  configureCombo(keyBox);
+  configureCombo(timeSignatureBox);
+
+  styleSecondaryButton(chooseFilesButton);
+  styleSecondaryButton(cancelButton);
+  styleSecondaryButton(backButton);
+  stylePrimaryButton(nextButton);
+  stylePrimaryButton(submitButton);
+
+  for (auto &row : mappingRows)
+    row->refreshThemeColours();
+
+  repaint();
+}
+
 void SongImportWizardComponent::configureTextEditor(
     juce::TextEditor &editor, const juce::String &placeholder) {
-  editor.setTextToShowWhenEmpty(placeholder,
-                                juce::Colours::white.withAlpha(0.45f));
-  editor.setColour(juce::TextEditor::backgroundColourId,
-                   juce::Colour::fromRGB(42, 46, 54));
-  editor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
-  editor.setColour(juce::TextEditor::outlineColourId,
-                   juce::Colour::fromRGB(64, 69, 79));
+  applyEditorTheme(editor, placeholder);
 }
 
 void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
-  combo.setColour(juce::ComboBox::backgroundColourId,
-                  juce::Colour::fromRGB(42, 46, 54));
-  combo.setColour(juce::ComboBox::textColourId, juce::Colours::white);
+  combo.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+  combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   combo.setColour(juce::ComboBox::outlineColourId,
-                  juce::Colour::fromRGB(64, 69, 79));
-  combo.setColour(juce::ComboBox::arrowColourId,
-                  juce::Colours::white.withAlpha(0.65f));
+                  UITheme::cardBorder.withAlpha(0.7f));
+  combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
 }
 
 void SongImportWizardComponent::layoutStepOne(juce::Rectangle<int> bounds) {
@@ -228,40 +328,98 @@ void SongImportWizardComponent::layoutStepOne(juce::Rectangle<int> bounds) {
                   static_cast<juce::Component *>(&bpmEditor),
                   static_cast<juce::Component *>(&fileTypeBox),
                   static_cast<juce::Component *>(&keyBox),
-                  static_cast<juce::Component *>(&timeSignatureBox)}) {
+                  static_cast<juce::Component *>(&timeSignatureBox),
+                  static_cast<juce::Component *>(&stemsSectionLabel),
+                  static_cast<juce::Component *>(&infoSectionLabel),
+                  static_cast<juce::Component *>(&songTitleLabel),
+                  static_cast<juce::Component *>(&artistLabel),
+                  static_cast<juce::Component *>(&fileTypeLabel),
+                  static_cast<juce::Component *>(&bpmLabel),
+                  static_cast<juce::Component *>(&keyLabel),
+                  static_cast<juce::Component *>(&timeSignatureLabel)}) {
     c->setVisible(visible);
   }
   if (!visible)
     return;
 
-  auto topRow = bounds.removeFromTop(30);
-  chooseFilesButton.setBounds(topRow.removeFromLeft(140));
-  selectedFilesLabel.setBounds(topRow.reduced(12, 0));
+  const int sectionLabelH = 18;
+  const int fieldLabelH = 16;
+  const int fieldH = 30;
+  const int rowGap = 6;
 
-  bounds.removeFromTop(8);
-  selectedFilesEditor.setBounds(bounds.removeFromTop(180));
+  auto stemHeader = bounds.removeFromTop(sectionLabelH);
+  stemsSectionLabel.setBounds(stemHeader.removeFromLeft(200));
+  chooseFilesButton.setBounds(stemHeader.removeFromRight(140));
+
+  bounds.removeFromTop(4);
+  selectedFilesLabel.setBounds(bounds.removeFromTop(18));
+  bounds.removeFromTop(6);
+  selectedFilesEditor.setBounds(bounds.removeFromTop(150));
+
   bounds.removeFromTop(12);
-  songTitleEditor.setBounds(bounds.removeFromTop(34));
-  bounds.removeFromTop(8);
-  artistEditor.setBounds(bounds.removeFromTop(34));
-  bounds.removeFromTop(8);
+  infoSectionLabel.setBounds(bounds.removeFromTop(sectionLabelH));
+  bounds.removeFromTop(6);
 
-  auto row = bounds.removeFromTop(34);
-  fileTypeBox.setBounds(row.removeFromLeft(220));
-  row.removeFromLeft(8);
-  bpmEditor.setBounds(row.removeFromLeft(80));
-  row.removeFromLeft(8);
-  keyBox.setBounds(row.removeFromLeft(80));
-  row.removeFromLeft(8);
-  timeSignatureBox.setBounds(row.removeFromLeft(100));
+  auto infoArea = bounds;
+  const int leftW =
+      juce::jlimit(240, 320, static_cast<int>(infoArea.getWidth() * 0.48f));
+  auto left = infoArea.removeFromLeft(leftW);
+  auto right = infoArea;
+
+  auto labelRow = left.removeFromTop(fieldLabelH);
+  songTitleLabel.setBounds(labelRow);
+  songTitleEditor.setBounds(left.removeFromTop(fieldH));
+  left.removeFromTop(rowGap);
+
+  labelRow = left.removeFromTop(fieldLabelH);
+  artistLabel.setBounds(labelRow);
+  artistEditor.setBounds(left.removeFromTop(fieldH));
+
+  const int rightRowH = fieldLabelH + fieldH;
+  auto rightRow = right.removeFromTop(rightRowH);
+  const int gap = 10;
+  auto colW = (rightRow.getWidth() - gap) / 2;
+  auto col = rightRow.removeFromLeft(colW);
+  fileTypeLabel.setBounds(col.removeFromTop(fieldLabelH));
+  fileTypeBox.setBounds(col.removeFromTop(fieldH));
+  rightRow.removeFromLeft(gap);
+  col = rightRow.removeFromLeft(colW);
+  bpmLabel.setBounds(col.removeFromTop(fieldLabelH));
+  bpmEditor.setBounds(col.removeFromTop(fieldH));
+
+  right.removeFromTop(rowGap);
+  rightRow = right.removeFromTop(rightRowH);
+  col = rightRow.removeFromLeft(colW);
+  keyLabel.setBounds(col.removeFromTop(fieldLabelH));
+  keyBox.setBounds(col.removeFromTop(fieldH));
+  rightRow.removeFromLeft(gap);
+  col = rightRow.removeFromLeft(colW);
+  timeSignatureLabel.setBounds(col.removeFromTop(fieldLabelH));
+  timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 }
 
 void SongImportWizardComponent::layoutStepTwo(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == 1;
   mapViewport.setVisible(visible);
+  for (auto *c : {static_cast<juce::Component *>(&mapFileHeader),
+                  static_cast<juce::Component *>(&mapNameHeader),
+                  static_cast<juce::Component *>(&mapCategoryHeader),
+                  static_cast<juce::Component *>(&mapLoadHeader)}) {
+    c->setVisible(visible);
+  }
   if (!visible)
     return;
 
+  auto header = bounds.removeFromTop(20);
+  auto fileCol = header.removeFromLeft(230);
+  auto nameCol = header.removeFromLeft(170);
+  auto catCol = header.removeFromLeft(160);
+  mapFileHeader.setBounds(fileCol);
+  mapNameHeader.setBounds(nameCol);
+  mapCategoryHeader.setBounds(catCol);
+  mapLoadHeader.setBounds(header.reduced(8, 0));
+
+  bounds.removeFromTop(6);
   mapViewport.setBounds(bounds);
   layoutMappingRows();
 }
@@ -275,22 +433,24 @@ void SongImportWizardComponent::layoutStepThree(juce::Rectangle<int> bounds) {
 }
 
 void SongImportWizardComponent::openStemChooser() {
-  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  auto safeThis =
+      juce::Component::SafePointer<SongImportWizardComponent>(this);
   stemChooser = std::make_unique<juce::FileChooser>(
       "Select stems",
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-      "*.wav;*.aif;*.aiff;*.flac");
+      "*.wav;*.aif;*.aiff;*.flac;*.mp3");
 
   const auto flags = juce::FileBrowserComponent::openMode |
                      juce::FileBrowserComponent::canSelectFiles |
                      juce::FileBrowserComponent::canSelectMultipleItems;
 
-  stemChooser->launchAsync(flags, [safeThis](const juce::FileChooser &chooser) {
-    if (safeThis == nullptr)
-      return;
-    safeThis->handleSelectedStemFiles(chooser.getResults());
-    safeThis->stemChooser.reset();
-  });
+  stemChooser->launchAsync(
+      flags, [safeThis](const juce::FileChooser &chooser) {
+        if (safeThis == nullptr)
+          return;
+        safeThis->handleSelectedStemFiles(chooser.getResults());
+        safeThis->stemChooser.reset();
+      });
 }
 
 void SongImportWizardComponent::handleSelectedStemFiles(
@@ -338,14 +498,15 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 
 void SongImportWizardComponent::updateSelectedFilesText() {
   if (stems.empty()) {
-    selectedFilesLabel.setText("No stems selected", juce::dontSendNotification);
+    selectedFilesLabel.setText("No stems selected",
+                               juce::dontSendNotification);
     selectedFilesEditor.setText({}, juce::dontSendNotification);
     return;
   }
 
-  selectedFilesLabel.setText(
-      juce::String(stems.size()) + " stems ready to map",
-      juce::dontSendNotification);
+  selectedFilesLabel.setText(juce::String(stems.size()) +
+                                 " stems ready to map",
+                             juce::dontSendNotification);
 
   juce::StringArray lines;
   for (const auto &stem : stems) {
@@ -476,6 +637,7 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.stems.reserve(stems.size());
   for (const auto &stem : stems) {
     ImportedStemData data;
+    data.stemId = juce::Uuid().toString();
     data.sourcePath = stem.file.getFullPathName();
     data.fileName = stem.file.getFileName();
     data.displayName = stem.displayName;
@@ -531,4 +693,28 @@ void SongImportWizardComponent::closeDialog() {
     dw->exitModalState(0);
     dw->setVisible(false);
   }
+}
+
+void SongImportWizardComponent::applyEditorTheme(
+    juce::TextEditor &editor, const juce::String &placeholder) {
+  editor.setTextToShowWhenEmpty(placeholder,
+                                UITheme::textSecondary.withAlpha(0.6f));
+  editor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
+  editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+  editor.setColour(juce::TextEditor::outlineColourId,
+                   UITheme::cardBorder.withAlpha(0.7f));
+}
+
+void SongImportWizardComponent::stylePrimaryButton(juce::TextButton &button) {
+  button.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  button.setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+  button.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
+  button.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+}
+
+void SongImportWizardComponent::styleSecondaryButton(juce::TextButton &button) {
+  button.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  button.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
+  button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
 }

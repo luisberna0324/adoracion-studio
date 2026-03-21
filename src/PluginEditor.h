@@ -21,7 +21,6 @@ private:
 
   std::unique_ptr<TopBar> topBar;
   std::unique_ptr<juce::Component> waveformBar;
-  std::unique_ptr<juce::Component> mixerFaderPanel;
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;
