@@ -18,14 +18,23 @@ public:
                      bool isButtonDown) override;
   };
 
+  class ManageSetlistsButton final : public juce::Button {
+  public:
+    ManageSetlistsButton();
+    void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                     bool isButtonDown) override;
+  };
+
   SongListPanel();
   ~SongListPanel() override;
 
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
+  void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
   int getSongCount() const;
   const ImportedSongData *getSongPtr(int index) const;
   int getLastActivatedIndex() const;
+  juce::String getActiveSetlistName() const;
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -54,13 +63,21 @@ private:
     std::function<void(int)> onSongActivated;
   };
 
+  class SetlistManagerPanel;
+
   void openSongImportWizard();
+  void openSetlistManager();
   void refreshFromStorage();
 
   juce::Viewport listViewport;
   ListContent listContent;
   AddSongButton addSongButton;
+  ManageSetlistsButton manageSetlistsButton;
   std::vector<ImportedSongData> librarySongs;
+  std::vector<int> activeSongIndices;
+  juce::String activeSetlistId;
+  juce::String activeSetlistName;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
+  std::function<void(const juce::String &)> onSetlistNameChanged;
   int lastActivatedIndex = -1;
 };

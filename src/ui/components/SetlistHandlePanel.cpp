@@ -5,6 +5,14 @@ SetlistHandlePanel::SetlistHandlePanel(juce::String setlistName)
   setMouseCursor(juce::MouseCursor::PointingHandCursor);
 }
 
+void SetlistHandlePanel::setTitle(juce::String setlistName) {
+  const auto next = setlistName.trim().toUpperCase();
+  if (title == next)
+    return;
+  title = next;
+  repaint();
+}
+
 void SetlistHandlePanel::setCollapsed(bool collapsedState) {
   if (isCollapsed == collapsedState)
     return;

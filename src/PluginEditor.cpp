@@ -4,7 +4,6 @@
 #include "ui/UiCommon.h"
 #include "ui/components/SetlistHandlePanel.h"
 #include "ui/panels/ChannelGridPanel.h"
-#include "ui/panels/MixerFaderPanel.h"
 #include "ui/panels/SettingsPanel.h"
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
@@ -51,31 +50,24 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
 
-  auto mixerFaderImpl =
-      std::make_unique<MixerFaderPanel>(stripLookAndFeel, p);
-  auto *mixerFaderRaw = mixerFaderImpl.get();
-  mixerFaderPanel = std::move(mixerFaderImpl);
-  mixerFaderRaw->setOnAdjust([channelGridRaw](float delta) {
-    if (channelGridRaw)
-      channelGridRaw->nudgeFaders(delta);
-  });
-  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw,
-                        mixerFaderRaw] {
+  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw] {
     if (topBarRaw)
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
       waveformBarRaw->refreshThemeColours();
     if (channelGridRaw)
       channelGridRaw->refreshThemeColours();
-    if (mixerFaderRaw)
-      mixerFaderRaw->refreshThemeColours();
   };
 
   auto songListImpl = std::make_unique<SongListPanel>();
   auto *songListRaw = songListImpl.get();
   songListPanel = std::move(songListImpl);
+  songListRaw->setOnSetlistNameChanged([this](const juce::String &name) {
+    if (setlistHandlePanel)
+      setlistHandlePanel->setTitle(name);
+  });
 
-  auto loadSong = [channelGridRaw, waveformBarRaw, mixerFaderRaw, &p,
+  auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) {
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
@@ -128,9 +120,32 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
     p.setStemClickGuideMask(clickGuideMask);
 
+    SongMixSnapshot mixSnapshot;
+    if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
+      p.setMasterVolume(mixSnapshot.master.volume);
+      p.setMasterGain(mixSnapshot.master.gain);
+      p.setMasterMute(mixSnapshot.master.mute);
+
+      for (size_t i = 0; i < loadedSong.stems.size(); ++i) {
+        const auto &stem = loadedSong.stems[i];
+        if (!stem.include)
+          continue;
+        const auto it = std::find_if(
+            mixSnapshot.stems.begin(), mixSnapshot.stems.end(),
+            [&stem](const StemMixSnapshot &snapshot) {
+              return snapshot.stemId == stem.stemId;
+            });
+        if (it == mixSnapshot.stems.end())
+          continue;
+        const int stemIndex = static_cast<int>(i);
+        p.setStemVolume(stemIndex, it->volume);
+        p.setStemGain(stemIndex, it->gain);
+        p.setStemMute(stemIndex, it->mute);
+        p.setStemSolo(stemIndex, it->solo);
+      }
+    }
+
     channelGridRaw->setSong(loadedSong);
-    if (mixerFaderRaw)
-      mixerFaderRaw->setSongBpm(song.bpm);
     currentSongIndex = songIndex;
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
@@ -210,10 +225,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     resized();
     repaint();
   };
+  if (songListRaw)
+    setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
-  addAndMakeVisible(*mixerFaderPanel);
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
@@ -276,9 +292,6 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea.reduced(8);
-  constexpr int mixerPanelW = 120;
-  auto mixerPanelArea = rightChannelsArea.removeFromLeft(mixerPanelW);
-  mixerFaderPanel->setBounds(mixerPanelArea);
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (isSetlistCollapsed) {

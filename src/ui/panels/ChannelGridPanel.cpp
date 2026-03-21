@@ -2,6 +2,7 @@
 
 #include "../components/ChannelStripCard.h"
 #include "../../PluginProcessor.h"
+#include "../../data/SongLibraryStore.h"
 
 #include <algorithm>
 
@@ -45,9 +46,14 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   slots.clear();
   adjustableStems.clear();
   clickGuideStems.clear();
+  slotStemIndices.clear();
+  slotStemIds.clear();
   content.removeAllChildren();
   const int stemCount = processor.getLoadedStemCount();
   int mappedStemIndex = 0;
+  currentSongId = song.id;
+
+  addMasterSlot();
 
   std::vector<const ImportedStemData *> orderedStems;
   orderedStems.reserve(song.stems.size());
@@ -77,6 +83,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
       channelName = "STEM";
 
     const int stemIndex = mappedStemIndex++;
+    const auto stemId = stem.stemId;
     const bool isAdjustable = stemPriorityForStripOrder(stem) > 1;
     const bool isClickGuide = stemPriorityForStripOrder(stem) <= 1;
     auto slot = std::make_unique<StripSlot>(
@@ -92,21 +99,39 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->getStrip().setGain(processor.getStemGain(stemIndex));
     slot->getStrip().setMuteState(processor.isStemMuted(stemIndex));
     slot->getStrip().setSoloState(processor.isStemSoloed(stemIndex));
-    slot->getStrip().setOnVolumeChanged([this, stemIndex](float value) {
+    slot->getStrip().setOnVolumeChanged(
+        [this, stemIndex, stemId](float value) {
       processor.setStemVolume(stemIndex, value);
+      if (currentSongId.isNotEmpty())
+        SongLibraryStore::updateStemVolumeForActiveSetlist(currentSongId,
+                                                           stemId, value);
     });
-    slot->getStrip().setOnGainChanged([this, stemIndex](float value) {
+    slot->getStrip().setOnGainChanged(
+        [this, stemIndex, stemId](float value) {
       processor.setStemGain(stemIndex, value);
+      if (currentSongId.isNotEmpty())
+        SongLibraryStore::updateStemGainForActiveSetlist(currentSongId, stemId,
+                                                         value);
     });
-    slot->getStrip().setOnMuteChanged([this, stemIndex](bool muted) {
+    slot->getStrip().setOnMuteChanged(
+        [this, stemIndex, stemId](bool muted) {
       processor.setStemMute(stemIndex, muted);
+      if (currentSongId.isNotEmpty())
+        SongLibraryStore::updateStemMuteForActiveSetlist(currentSongId, stemId,
+                                                         muted);
     });
-    slot->getStrip().setOnSoloChanged([this, stemIndex](bool soloed) {
+    slot->getStrip().setOnSoloChanged(
+        [this, stemIndex, stemId](bool soloed) {
       processor.setStemSolo(stemIndex, soloed);
+      if (currentSongId.isNotEmpty())
+        SongLibraryStore::updateStemSoloForActiveSetlist(currentSongId, stemId,
+                                                         soloed);
     });
     content.addAndMakeVisible(*slot);
     adjustableStems.push_back(isAdjustable);
     clickGuideStems.push_back(isClickGuide);
+    slotStemIndices.push_back(stemIndex);
+    slotStemIds.push_back(stemId);
     slots.push_back(std::move(slot));
   }
 
@@ -118,24 +143,44 @@ void ChannelGridPanel::nudgeFaders(float delta) {
   if (slots.empty())
     return;
 
-  const int stemCount = static_cast<int>(slots.size());
-  for (int i = 0; i < stemCount; ++i) {
+  const int slotCount = static_cast<int>(slots.size());
+  for (int i = 0; i < slotCount; ++i) {
+    const int stemIndex =
+        i < static_cast<int>(slotStemIndices.size())
+            ? slotStemIndices[static_cast<size_t>(i)]
+            : -1;
+    if (stemIndex < 0)
+      continue;
     if (i >= static_cast<int>(adjustableStems.size()) ||
         !adjustableStems[static_cast<size_t>(i)]) {
       continue;
     }
-    const float current = processor.getStemVolume(i);
+    const float current = processor.getStemVolume(stemIndex);
     const float next = juce::jlimit(0.0f, 1.0f, current + delta);
     if (juce::approximatelyEqual(current, next))
       continue;
-    processor.setStemVolume(i, next);
+    processor.setStemVolume(stemIndex, next);
     slots[static_cast<size_t>(i)]->getStrip().setVolume(next);
+    if (currentSongId.isNotEmpty() &&
+        i < static_cast<int>(slotStemIds.size()) &&
+        slotStemIds[static_cast<size_t>(i)].isNotEmpty()) {
+      SongLibraryStore::updateStemVolumeForActiveSetlist(
+          currentSongId, slotStemIds[static_cast<size_t>(i)], next);
+    }
   }
 }
 
 void ChannelGridPanel::refreshThemeColours() {
   for (size_t i = 0; i < slots.size(); ++i) {
     auto &strip = slots[i]->getStrip();
+    const int stemIndex =
+        i < slotStemIndices.size() ? slotStemIndices[i] : -1;
+    if (stemIndex < 0) {
+      strip.setCardBgColour(UITheme::cardBgMaster);
+      strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+      strip.refreshThemeColours();
+      continue;
+    }
     const bool isClickGuide =
         i < clickGuideStems.size() ? clickGuideStems[i] : false;
     strip.setCardBgColour(isClickGuide ? UITheme::cardBgClickGuide
@@ -184,4 +229,49 @@ void ChannelGridPanel::resized() {
   const int neededH =
       pad + (rows * cellH) + (juce::jmax(0, rows - 1) * gapY) + pad;
   content.setSize(contentWidth, juce::jmax(viewport.getHeight(), neededH));
+}
+
+void ChannelGridPanel::addMasterSlot() {
+  auto slot = std::make_unique<StripSlot>(
+      "MASTER", lookAndFeel,
+      [this] {
+        float l = 0.0f;
+        float r = 0.0f;
+        processor.getOutputMeterLevels(l, r);
+        return std::pair<float, float>{l, r};
+      });
+  auto &strip = slot->getStrip();
+  strip.setCardBgColour(UITheme::cardBgMaster);
+  strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+  strip.setSoloEnabled(false);
+  strip.setSoloVisible(false);
+  strip.setGainVisible(true);
+  strip.setMuteAlignedToFader(true);
+  strip.setVolume(processor.getMasterVolume());
+  strip.setGain(processor.getMasterGain());
+  strip.setMuteState(processor.isMasterMuted());
+  strip.setOnVolumeChanged([this](float value) {
+    processor.setMasterVolume(value);
+    if (currentSongId.isNotEmpty())
+      SongLibraryStore::updateMasterVolumeForActiveSetlist(currentSongId,
+                                                           value);
+  });
+  strip.setOnGainChanged([this](float value) {
+    processor.setMasterGain(value);
+    if (currentSongId.isNotEmpty())
+      SongLibraryStore::updateMasterGainForActiveSetlist(currentSongId, value);
+  });
+  strip.setOnMuteChanged([this](bool muted) {
+    processor.setMasterMute(muted);
+    if (currentSongId.isNotEmpty())
+      SongLibraryStore::updateMasterMuteForActiveSetlist(currentSongId, muted);
+  });
+  strip.refreshThemeColours();
+
+  content.addAndMakeVisible(*slot);
+  slots.push_back(std::move(slot));
+  adjustableStems.push_back(false);
+  clickGuideStems.push_back(false);
+  slotStemIndices.push_back(-1);
+  slotStemIds.push_back({});
 }

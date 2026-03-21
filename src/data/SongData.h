@@ -6,6 +6,7 @@
 #include <vector>
 
 struct ImportedStemData {
+  juce::String stemId;
   juce::String sourcePath;
   juce::String storedPath;
   juce::String fileName;

@@ -12,6 +12,7 @@ public:
 
   std::function<void()> onToggle;
 
+  void setTitle(juce::String setlistName);
   void setCollapsed(bool collapsedState);
 
   void paint(juce::Graphics &g) override;

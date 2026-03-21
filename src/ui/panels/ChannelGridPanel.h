@@ -36,4 +36,9 @@ private:
   std::vector<std::unique_ptr<StripSlot>> slots;
   std::vector<bool> adjustableStems;
   std::vector<bool> clickGuideStems;
+  std::vector<int> slotStemIndices;
+  std::vector<juce::String> slotStemIds;
+  juce::String currentSongId;
+
+  void addMasterSlot();
 };
