@@ -35,5 +35,6 @@ extern const std::array<const char *, 11> kTrackCategories;
 juce::String makeDisplayNameFromFile(const juce::File &file);
 juce::String suggestCategoryFromFilename(const juce::String &filename);
 int stemPriorityForStripOrder(const ImportedStemData &stem);
+bool isStemPitchShiftable(const ImportedStemData &stem);
 std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
                                           int binCount = 1400);
