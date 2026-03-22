@@ -23,23 +23,14 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   spec.numChannels = static_cast<juce::uint32>(getTotalNumOutputChannels());
   gain.prepare(spec);
   gain.setRampDurationSeconds(0.02);
-  dryBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
-  stemMixBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
-  stemTempBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
-  percussionBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
-  pitchShift.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
-  pitchShift.reset();
+  dryMixBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
+  mixEngine.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     playbackSampleRate = sampleRate;
     playbackBlockSize = samplesPerBlock;
-    metronomePhase = 0.0;
-    metronomeClickSamplesRemaining = 0;
-    metronomeBeatIndex =
-        juce::jmax(1, metronomeBeatsPerBar.load(std::memory_order_relaxed)) -
-        1;
-    metronomeClickGain = 0.12f;
+    metronome.prepare(sampleRate);
     mixerSource.prepareToPlay(samplesPerBlock, sampleRate);
     for (auto &track : stemTracks)
       track->prepareToPlay(samplesPerBlock, sampleRate);
@@ -54,7 +45,7 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
 
 void MTControlsAudioProcessor::releaseResources() {
   diagnostics.stopBackgroundLogger();
-  pitchShift.reset();
+  mixEngine.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   mixerSource.releaseResources();
   for (auto &track : stemTracks)
@@ -99,7 +90,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         pitchTargetSemiTones.load(std::memory_order_relaxed);
     if (targetPitch != pitchActiveSemiTones) {
       pitchActiveSemiTones = targetPitch;
-      pitchShift.setPitchSemiTones(pitchActiveSemiTones);
+      mixEngine.setPitchSemiTones(pitchActiveSemiTones);
     }
 
     // --- Diagnostics: measure time until lock is acquired ---
@@ -122,11 +113,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
-      const double bpm = metronomeBpm.load(std::memory_order_relaxed);
-      if (bpm > 0.0) {
-        const double beatPos = (seekTarget * bpm) / 60.0;
-        metronomePhase = beatPos - std::floor(beatPos);
-      }
+      metronome.syncPhaseForTimeSeconds(seekTarget);
     }
 
     const int stemCount = static_cast<int>(stemTracks.size());
@@ -163,7 +150,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const float fadeTargetLocalForMix =
         fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
-      const bool monoClick = monoClickMode.load(std::memory_order_relaxed);
+      const bool monoClick = metronome.isMonoClickMode();
       const double length =
           loadedSongLengthSeconds.load(std::memory_order_relaxed);
       const double windowStartSec =
@@ -220,35 +207,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       usedMonoClickMix = monoClick && numChannels >= 2;
 
       if (useSeparatedMix) {
-        if (numSamples > stemTempBuffer.getNumSamples()) {
-          stemTempBuffer.setSize(numChannels, numSamples, false, false, true);
-          stemMixBuffer.setSize(numChannels, numSamples, false, false, true);
-          percussionBuffer.setSize(numChannels, numSamples, false, false, true);
-          dryBuffer.setSize(numChannels, numSamples, false, false, true);
-        }
-
-        stemMixBuffer.clear();
-        percussionBuffer.clear();
-        dryBuffer.clear();
-
-        for (int i = 0; i < stemCount; ++i) {
-          stemTempBuffer.clear();
-          juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, numSamples);
-          stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(info);
-
-          const bool isClickGuide =
-              stemClickGuideStates[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed);
-          const bool pitchShiftable =
-              stemPitchShiftStates[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed);
-          auto &target = isClickGuide
-                             ? dryBuffer
-                             : (pitchShiftable ? stemMixBuffer
-                                               : percussionBuffer);
-          for (int ch = 0; ch < numChannels; ++ch)
-            target.addFrom(ch, 0, stemTempBuffer, ch, 0, numSamples);
-        }
+        mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
+                           stemPitchShiftStates.data(), stemCount, numSamples,
+                           numChannels);
       } else {
         // MixerAudioSource will call getNextAudioBlock on all StemTracks, apply their internal volumes, and sum into `buffer`.
         juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
@@ -305,7 +266,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       auto *inputGain = apvts.getRawParameterValue(inputGainId);
       auto *mix = apvts.getRawParameterValue(mixId);
 
-      dryBuffer.makeCopyOf(buffer, true);
+      dryMixBuffer.makeCopyOf(buffer, true);
 
       gain.setGainDecibels(inputGain->load());
       juce::dsp::AudioBlock<float> block(buffer);
@@ -316,7 +277,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
       for (int channel = 0; channel < buffer.getNumChannels(); ++channel) {
         auto *wetData = buffer.getWritePointer(channel);
-        const auto *dryData = dryBuffer.getReadPointer(channel);
+        const auto *dryData = dryMixBuffer.getReadPointer(channel);
 
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
           wetData[sample] = (wetData[sample] * wet) + (dryData[sample] * dry);
@@ -349,54 +310,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
 
   if (usedSeparatedMix) {
-    const float instrumentFadeStart = fadeStart * windowFadeStart;
-    const float instrumentFadeEnd = fadeEnd * windowFadeEnd;
-    if (!juce::approximatelyEqual(instrumentFadeStart, 1.0f) ||
-        !juce::approximatelyEqual(instrumentFadeEnd, 1.0f)) {
-      if (juce::approximatelyEqual(instrumentFadeStart, instrumentFadeEnd)) {
-        stemMixBuffer.applyGain(instrumentFadeEnd);
-        percussionBuffer.applyGain(instrumentFadeEnd);
-      } else {
-        stemMixBuffer.applyGainRamp(0, numSamples, instrumentFadeStart,
-                                    instrumentFadeEnd);
-        percussionBuffer.applyGainRamp(0, numSamples, instrumentFadeStart,
-                                       instrumentFadeEnd);
-      }
-    }
-
-    if (pitchActiveSemiTones != 0) {
-      if (!pitchShift.isPrepared() ||
-          pitchShift.getNumChannels() != numChannels) {
-        pitchShift.prepare(playbackSampleRate, playbackBlockSize, numChannels);
-      }
-      pitchShift.process(stemMixBuffer);
-    }
-
-    buffer.clear();
-    if (usedMonoClickMix && numChannels >= 2) {
-      auto *left = buffer.getWritePointer(0);
-      auto *right = buffer.getWritePointer(1);
-      for (int s = 0; s < numSamples; ++s) {
-        float musicSum = 0.0f;
-        float guideSum = 0.0f;
-        for (int ch = 0; ch < numChannels; ++ch) {
-          musicSum += stemMixBuffer.getSample(ch, s);
-          musicSum += percussionBuffer.getSample(ch, s);
-          guideSum += dryBuffer.getSample(ch, s);
-        }
-        left[s] = musicSum / static_cast<float>(numChannels);
-        right[s] = guideSum / static_cast<float>(numChannels);
-      }
-      for (int ch = 2; ch < numChannels; ++ch)
-        buffer.clear(ch, 0, numSamples);
-    } else {
-      for (int ch = 0; ch < numChannels; ++ch) {
-        buffer.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
-        buffer.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
-        buffer.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
-      }
-    }
-
+    usedMonoClickMix = mixEngine.renderToOutput(
+        buffer, usedMonoClickMix, pitchActiveSemiTones != 0, fadeStart, fadeEnd,
+        windowFadeStart, windowFadeEnd);
   } else {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
@@ -418,55 +334,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     stopSong();
   }
 
-  if (metronomeEnabled.load(std::memory_order_relaxed) && numSamples > 0 &&
-      playbackSampleRate > 0.0) {
-    const double bpm = metronomeBpm.load(std::memory_order_relaxed);
-    const int beatsPerBar =
-        juce::jmax(1, metronomeBeatsPerBar.load(std::memory_order_relaxed));
-    if (bpm > 0.0) {
-      const double phaseInc = bpm / (60.0 * playbackSampleRate);
-      const int clickLength =
-          juce::jmax(8, static_cast<int>(playbackSampleRate * 0.025));
-      const double clickFreq = 900.0;
-      const double twoPi = juce::MathConstants<double>::twoPi;
-
-      for (int sample = 0; sample < numSamples; ++sample) {
-        metronomePhase += phaseInc;
-        if (metronomePhase >= 1.0) {
-          metronomePhase -= 1.0;
-          metronomeClickSamplesRemaining = clickLength;
-          metronomeBeatIndex = (metronomeBeatIndex + 1) % beatsPerBar;
-          metronomeClickGain =
-              (metronomeBeatIndex == 0) ? 0.18f : 0.12f;
-        }
-
-        float clickSample = 0.0f;
-        if (metronomeClickSamplesRemaining > 0) {
-          const int idx = clickLength - metronomeClickSamplesRemaining;
-          const float env =
-              std::exp(-6.0f * static_cast<float>(idx) /
-                       static_cast<float>(clickLength));
-          clickSample =
-              static_cast<float>(std::sin(twoPi * clickFreq *
-                                          (static_cast<double>(idx) /
-                                           playbackSampleRate))) *
-              env * metronomeClickGain;
-          --metronomeClickSamplesRemaining;
-        }
-
-        if (clickSample != 0.0f) {
-          const bool monoClick =
-              monoClickMode.load(std::memory_order_relaxed);
-          if (monoClick && numChannels >= 2) {
-            buffer.addSample(1, sample, clickSample);
-          } else {
-            for (int ch = 0; ch < numChannels; ++ch)
-              buffer.addSample(ch, sample, clickSample);
-          }
-        }
-      }
-    }
-  }
+  metronome.process(buffer);
 
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
     buffer.applyGain(masterOutGain);
@@ -693,8 +561,7 @@ void MTControlsAudioProcessor::stopSong() {
       static_cast<juce::int64>(start * playbackSampleRate),
       std::memory_order_relaxed);
   songCurrentPositionSeconds.store(start, std::memory_order_relaxed);
-  metronomePhase = 0.0;
-  metronomeClickSamplesRemaining = 0;
+  metronome.reset();
   requestedSeekPosition.store(static_cast<juce::int64>(start * playbackSampleRate),
                               std::memory_order_relaxed);
 }
@@ -1000,44 +867,32 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 }
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
-  metronomeEnabled.store(enabled, std::memory_order_relaxed);
-  if (enabled) {
-    metronomeBeatIndex =
-        juce::jmax(1, metronomeBeatsPerBar.load(std::memory_order_relaxed)) -
-        1;
-  } else {
-    metronomePhase = 0.0;
-    metronomeClickSamplesRemaining = 0;
-    metronomeBeatIndex = 0;
-    metronomeClickGain = 0.12f;
-  }
+  metronome.setEnabled(enabled);
+  metronome.reset();
 }
 
 bool MTControlsAudioProcessor::isMetronomeEnabled() const noexcept {
-  return metronomeEnabled.load(std::memory_order_relaxed);
+  return metronome.isEnabled();
 }
 
 void MTControlsAudioProcessor::setMetronomeBpm(double bpm) noexcept {
-  const double clamped = juce::jlimit(20.0, 300.0, bpm);
-  metronomeBpm.store(clamped, std::memory_order_relaxed);
+  metronome.setBpm(bpm);
 }
 
 double MTControlsAudioProcessor::getMetronomeBpm() const noexcept {
-  return metronomeBpm.load(std::memory_order_relaxed);
+  return metronome.getBpm();
 }
 
 void MTControlsAudioProcessor::setMetronomeBeatsPerBar(int beats) noexcept {
-  const int clamped = juce::jmax(1, beats);
-  metronomeBeatsPerBar.store(clamped, std::memory_order_relaxed);
-  metronomeBeatIndex = clamped - 1;
+  metronome.setBeatsPerBar(beats);
 }
 
 void MTControlsAudioProcessor::setMonoClickMode(bool enabled) noexcept {
-  monoClickMode.store(enabled, std::memory_order_relaxed);
+  metronome.setMonoClickMode(enabled);
 }
 
 bool MTControlsAudioProcessor::isMonoClickMode() const noexcept {
-  return monoClickMode.load(std::memory_order_relaxed);
+  return metronome.isMonoClickMode();
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
@@ -1055,6 +910,8 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
+  mixEngine.reset();
+  metronome.reset();
   setTransportState(TransportState::stopped);
 }
 

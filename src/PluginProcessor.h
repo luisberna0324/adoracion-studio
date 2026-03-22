@@ -1,7 +1,8 @@
 #pragma once
 
 #include "AudioDiagnostics.h"
-#include "PitchShiftProcessor.h"
+#include "MetronomeEngine.h"
+#include "StemMixEngine.h"
 #include "StemTrack.h"
 #include <JuceHeader.h>
 #include <array>
@@ -103,27 +104,9 @@ private:
   static constexpr int maxStemCount = 64;
   enum class TransportState : int { stopped = 0, playing, paused };
 
-  struct SimpleDelayLine {
-    void prepare(int channels, int maxDelaySamples);
-    void setDelay(int delaySamplesToUse);
-    void reset();
-    void process(juce::AudioBuffer<float> &buffer);
-    int getDelaySamples() const noexcept { return delaySamples; }
-
-  private:
-    juce::AudioBuffer<float> delayBuffer;
-    int writePos = 0;
-    int delaySamples = 0;
-    int maxDelaySamples = 0;
-    int numChannels = 0;
-  };
-
   juce::AudioProcessorValueTreeState apvts;
   juce::dsp::Gain<float> gain;
-  juce::AudioBuffer<float> dryBuffer;
-  juce::AudioBuffer<float> stemMixBuffer;
-  juce::AudioBuffer<float> stemTempBuffer;
-  juce::AudioBuffer<float> percussionBuffer;
+  juce::AudioBuffer<float> dryMixBuffer;
   std::atomic<float> meterLevelLeft{0.0f};
   std::atomic<float> meterLevelRight{0.0f};
 
@@ -141,11 +124,9 @@ private:
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
-  PitchShiftProcessor pitchShift;
+  StemMixEngine mixEngine;
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
-  SimpleDelayLine pitchDelayPercussion;
-  SimpleDelayLine pitchDelayGuide;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   // SpinLock protects stemTransportSources vector modifications.
@@ -173,15 +154,7 @@ private:
   std::atomic<bool> seekPending{false};
   std::atomic<double> seekTargetSeconds{0.0};
 
-  // Metronome
-  std::atomic<bool> metronomeEnabled{false};
-  std::atomic<double> metronomeBpm{120.0};
-  std::atomic<int> metronomeBeatsPerBar{4};
-  std::atomic<bool> monoClickMode{false};
-  double metronomePhase = 0.0;
-  int metronomeClickSamplesRemaining = 0;
-  int metronomeBeatIndex = 0;
-  float metronomeClickGain = 0.12f;
+  MetronomeEngine metronome;
 
   // Master fade (0..1) multiplier
   std::atomic<bool> fadeActive{false};

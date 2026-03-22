@@ -43,8 +43,12 @@ target_sources(MTControls
         src/PluginEditor.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        src/MetronomeEngine.cpp
+        src/MetronomeEngine.h
         src/PitchShiftProcessor.cpp
         src/PitchShiftProcessor.h
+        src/StemMixEngine.cpp
+        src/StemMixEngine.h
         src/ResamplingPositionableSource.cpp
         src/ResamplingPositionableSource.h
         src/StemTrack.cpp
