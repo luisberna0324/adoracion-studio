@@ -55,12 +55,26 @@ target_sources(MTControls
         src/StemTrack.h
         src/StemBufferingSource.cpp
         src/StemBufferingSource.h
+        src/audio/AudioDeviceMonitor.cpp
+        src/audio/AudioDeviceMonitor.h
+        src/audio/OutputChannelCatalog.cpp
+        src/audio/OutputChannelCatalog.h
+        src/audio/RoutingSuggestionEngine.cpp
+        src/audio/RoutingSuggestionEngine.h
+        src/audio/StandaloneAudioDeviceBridge.cpp
+        src/audio/StandaloneAudioDeviceBridge.h
+        src/audio/StemOutputRouter.cpp
+        src/audio/StemOutputRouter.h
+        src/audio/StemOutputRoutingState.cpp
+        src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp
         src/data/SongLibraryStore.h
+        src/ui/DeviceNotificationBanner.cpp
+        src/ui/DeviceNotificationBanner.h
         src/ui/UiCommon.cpp
         src/ui/UiCommon.h
         src/ui/components/ChannelStripCard.cpp

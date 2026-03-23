@@ -6,10 +6,11 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
     : AudioProcessor(
           BusesProperties()
               .withInput("Input", juce::AudioChannelSet::stereo(), true)
-              .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+              .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playbackFormatManager.registerBasicFormats();
   resetStemControls(0);
+  standaloneAudioDeviceBridge.setAvailableOutputChannelCount(2);
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
@@ -25,6 +26,13 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   gain.setRampDurationSeconds(0.02);
   dryMixBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
   mixEngine.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
+  stemRoutingTempBuffer.setSize(2, samplesPerBlock);
+  standaloneAudioDeviceBridge.setAvailableOutputChannelCount(getTotalNumOutputChannels());
+  stemOutputRoutingState.normalizeForDevice(getTotalNumOutputChannels());
+  for (int i = 0; i < maxStemCount; ++i) {
+    const int channel = stemOutputRoutingState.getStemOutputChannel(i);
+    stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
+  }
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
@@ -56,9 +64,12 @@ bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
   const auto input = layouts.getMainInputChannelSet();
   const auto output = layouts.getMainOutputChannelSet();
+  if (input != juce::AudioChannelSet::mono() &&
+      input != juce::AudioChannelSet::stereo())
+    return false;
 
-  return input == output && (input == juce::AudioChannelSet::mono() ||
-                             input == juce::AudioChannelSet::stereo());
+  const int outputChannels = output.size();
+  return outputChannels >= 1 && outputChannels <= maxStemCount;
 }
 
 void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
@@ -147,6 +158,16 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     for (int i = stemCount; i < maxStemCount; ++i)
       stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
 
+    bool routingActive = false;
+    for (int i = 0; i < stemCount; ++i) {
+      const int assignedChannel =
+          stemOutputChannels[static_cast<size_t>(i)].load(std::memory_order_relaxed);
+      if (assignedChannel > 1) {
+        routingActive = true;
+        break;
+      }
+    }
+
     const float fadeTargetLocalForMix =
         fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
@@ -197,23 +218,47 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         stopAtEndSec = windowEndSec;
       }
 
-      const bool isolateGuideDuringFade =
-          fadeActive.load(std::memory_order_relaxed) ||
-          !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
-      const bool useSeparatedMix =
-          (monoClick && numChannels >= 2) || isolateGuideDuringFade ||
-          windowFadeActive || (pitchActiveSemiTones != 0);
-      usedSeparatedMix = useSeparatedMix;
-      usedMonoClickMix = monoClick && numChannels >= 2;
+      if (routingActive) {
+        if (stemRoutingTempBuffer.getNumSamples() < numSamples)
+          stemRoutingTempBuffer.setSize(2, numSamples, false, false, true);
 
-      if (useSeparatedMix) {
-        mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
-                           stemPitchShiftStates.data(), stemCount, numSamples,
-                           numChannels);
+        buffer.clear();
+        for (int i = 0; i < stemCount; ++i) {
+          stemRoutingTempBuffer.clear();
+          juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
+                                                numSamples);
+          stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
+          const int assignedChannelOneBased =
+              stemOutputChannels[static_cast<size_t>(i)].load(
+                  std::memory_order_relaxed);
+          const int outputIndex =
+              juce::jlimit(0, juce::jmax(0, numChannels - 1),
+                           assignedChannelOneBased - 1);
+          stemOutputRouter.routeStemToOutputChannel(stemRoutingTempBuffer,
+                                                    outputIndex, buffer);
+        }
+        usedSeparatedMix = false;
+        usedMonoClickMix = false;
       } else {
-        // MixerAudioSource will call getNextAudioBlock on all StemTracks, apply their internal volumes, and sum into `buffer`.
-        juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
-        mixerSource.getNextAudioBlock(info);
+        const bool isolateGuideDuringFade =
+            fadeActive.load(std::memory_order_relaxed) ||
+            !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
+        const bool useSeparatedMix =
+            (monoClick && numChannels >= 2) || isolateGuideDuringFade ||
+            windowFadeActive || (pitchActiveSemiTones != 0);
+        usedSeparatedMix = useSeparatedMix;
+        usedMonoClickMix = monoClick && numChannels >= 2;
+
+        if (useSeparatedMix) {
+          mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
+                             stemPitchShiftStates.data(), stemCount, numSamples,
+                             numChannels);
+        } else {
+          // MixerAudioSource will call getNextAudioBlock on all StemTracks, apply
+          // their internal volumes, and sum into `buffer`.
+          juce::AudioSourceChannelInfo info(&buffer, 0, numSamples);
+          mixerSource.getNextAudioBlock(info);
+        }
       }
 
       const double currentSec =
@@ -287,6 +332,15 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
   const int numSamples = buffer.getNumSamples();
   const int numChannels = buffer.getNumChannels();
+  if (numChannels != standaloneAudioDeviceBridge.getAvailableOutputChannelCount()) {
+    standaloneAudioDeviceBridge.setAvailableOutputChannelCount(numChannels);
+    stemOutputRoutingState.normalizeForDevice(numChannels);
+    for (int i = 0; i < maxStemCount; ++i) {
+      stemOutputChannels[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputChannel(i),
+          std::memory_order_relaxed);
+    }
+  }
 
   const float masterOutGain =
       (masterMuted.load(std::memory_order_relaxed)
@@ -387,7 +441,12 @@ void MTControlsAudioProcessor::changeProgramName(int, const juce::String &) {}
 
 void MTControlsAudioProcessor::getStateInformation(
     juce::MemoryBlock &destData) {
-  if (const auto state = apvts.copyState(); state.isValid()) {
+  if (auto state = apvts.copyState(); state.isValid()) {
+    const auto routingChild =
+        state.getChildWithName(StemOutputRoutingState::stateTag);
+    if (routingChild.isValid())
+      state.removeChild(routingChild, nullptr);
+    state.appendChild(stemOutputRoutingState.toValueTree(), nullptr);
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
   }
@@ -400,8 +459,18 @@ void MTControlsAudioProcessor::setStateInformation(const void *data,
     return;
 
   const juce::ValueTree tree = juce::ValueTree::fromXml(*xml);
-  if (tree.isValid())
+  if (tree.isValid()) {
     apvts.replaceState(tree);
+    stemOutputRoutingState.fromValueTree(
+        tree.getChildWithName(StemOutputRoutingState::stateTag));
+    stemOutputRoutingState.normalizeForDevice(
+        standaloneAudioDeviceBridge.getAvailableOutputChannelCount());
+    for (int i = 0; i < maxStemCount; ++i) {
+      stemOutputChannels[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputChannel(i),
+          std::memory_order_relaxed);
+    }
+  }
 }
 
 juce::AudioProcessorValueTreeState &
@@ -823,6 +892,49 @@ bool MTControlsAudioProcessor::isStemSoloed(
       std::memory_order_relaxed);
 }
 
+void MTControlsAudioProcessor::setStemOutputChannel(
+    const int stemIndex, const int outputChannel) noexcept {
+  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
+    return;
+
+  const int normalizedChannel = juce::jlimit(
+      1, juce::jmax(1, standaloneAudioDeviceBridge.getAvailableOutputChannelCount()),
+      outputChannel);
+  stemOutputChannels[static_cast<size_t>(stemIndex)].store(
+      normalizedChannel, std::memory_order_relaxed);
+  stemOutputRoutingState.setStemOutputChannel(stemIndex, normalizedChannel);
+}
+
+int MTControlsAudioProcessor::getStemOutputChannel(const int stemIndex) const noexcept {
+  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
+    return 1;
+
+  return stemOutputChannels[static_cast<size_t>(stemIndex)].load(
+      std::memory_order_relaxed);
+}
+
+juce::StringArray MTControlsAudioProcessor::getAvailableOutputChannelNames() const {
+  return standaloneAudioDeviceBridge.getOutputChannelNames();
+}
+
+int MTControlsAudioProcessor::getAvailableOutputChannelCount() const noexcept {
+  return standaloneAudioDeviceBridge.getAvailableOutputChannelCount();
+}
+
+AppAudioMode MTControlsAudioProcessor::getCurrentAudioMode() const noexcept {
+  return standaloneAudioDeviceBridge.getCurrentAudioMode();
+}
+
+StandaloneAudioDeviceBridge &
+MTControlsAudioProcessor::getAudioDeviceBridge() noexcept {
+  return standaloneAudioDeviceBridge;
+}
+
+const StandaloneAudioDeviceBridge &
+MTControlsAudioProcessor::getAudioDeviceBridge() const noexcept {
+  return standaloneAudioDeviceBridge;
+}
+
 void MTControlsAudioProcessor::setMasterVolume(const float volume) noexcept {
   masterVolume.store(juce::jlimit(0.0f, 1.0f, volume),
                      std::memory_order_relaxed);
@@ -924,6 +1036,9 @@ void MTControlsAudioProcessor::resetStemControls(
     const int activeStemCount) noexcept {
   const int clampedCount = juce::jlimit(0, maxStemCount, activeStemCount);
   loadedStemCount.store(clampedCount, std::memory_order_relaxed);
+  stemOutputRoutingState.resetToDefaults(clampedCount);
+  stemOutputRoutingState.normalizeForDevice(
+      standaloneAudioDeviceBridge.getAvailableOutputChannelCount());
 
   for (int i = 0; i < maxStemCount; ++i) {
     stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
@@ -937,6 +1052,8 @@ void MTControlsAudioProcessor::resetStemControls(
         false, std::memory_order_relaxed);
     stemPitchShiftStates[static_cast<size_t>(i)].store(
         true, std::memory_order_relaxed);
+    stemOutputChannels[static_cast<size_t>(i)].store(
+        stemOutputRoutingState.getStemOutputChannel(i), std::memory_order_relaxed);
   }
 }
 

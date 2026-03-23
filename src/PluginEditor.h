@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "ui/DeviceNotificationBanner.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include <JuceHeader.h>
 
@@ -21,6 +22,7 @@ private:
 
   std::unique_ptr<TopBar> topBar;
   std::unique_ptr<juce::Component> waveformBar;
+  std::unique_ptr<DeviceNotificationBanner> deviceBanner;
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;

@@ -13,7 +13,7 @@ class ChannelStripLookAndFeel;
 class ChannelStripCard;
 class MTControlsAudioProcessor;
 
-class ChannelGridPanel final : public juce::Component {
+class ChannelGridPanel final : public juce::Component, private juce::Timer {
 public:
   ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                    MTControlsAudioProcessor &processorRef);
@@ -23,14 +23,28 @@ public:
   void nudgeFaders(float delta);
   void refreshThemeColours();
 
+  /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
+  void beginAutomaticRoutingDraft();
+
+  /** Actualiza visibilidad de combos y nombres de canal tras cambio de interfaz / buffer. */
+  void refreshStemRoutingVisibility();
+
   void paint(juce::Graphics &g) override;
   void resized() override;
 
 private:
   class StripSlot;
+  void timerCallback() override;
+  void updateModeBadge();
+  void layoutHeaderAndViewport();
+  void applyRoutingDraft();
+  void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
+  juce::Label modeBadge;
+  juce::Label routingHintLabel;
+  juce::TextButton applyRoutingButton{"Aplicar"};
   juce::Viewport viewport;
   juce::Component content;
   std::vector<std::unique_ptr<StripSlot>> slots;
@@ -39,6 +53,10 @@ private:
   std::vector<int> slotStemIndices;
   std::vector<juce::String> slotStemIds;
   juce::String currentSongId;
+
+  bool routingDraftActive = false;
+  std::vector<int> pendingOutputBySlotIndex;
+  int lastSeenOutputChannelCount = -1;
 
   void addMasterSlot();
 };

@@ -10,6 +10,7 @@ struct StemMixSnapshot {
   float gain = 1.0f;
   bool mute = false;
   bool solo = false;
+  int outputChannel = 1;
 };
 
 struct MasterMixSnapshot {
@@ -73,6 +74,9 @@ public:
   static bool updateStemSoloForActiveSetlist(const juce::String &songId,
                                              const juce::String &stemId,
                                              bool soloed);
+  static bool updateStemOutputChannelForActiveSetlist(const juce::String &songId,
+                                                      const juce::String &stemId,
+                                                      int outputChannel);
   static bool updateMasterVolumeForActiveSetlist(const juce::String &songId,
                                                  float volume);
   static bool updateMasterGainForActiveSetlist(const juce::String &songId,

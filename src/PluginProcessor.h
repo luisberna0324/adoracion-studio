@@ -4,6 +4,9 @@
 #include "MetronomeEngine.h"
 #include "StemMixEngine.h"
 #include "StemTrack.h"
+#include "audio/StandaloneAudioDeviceBridge.h"
+#include "audio/StemOutputRouter.h"
+#include "audio/StemOutputRoutingState.h"
 #include <JuceHeader.h>
 #include <array>
 
@@ -89,6 +92,13 @@ public:
   bool isStemMuted(int stemIndex) const noexcept;
   void setStemSolo(int stemIndex, bool soloed) noexcept;
   bool isStemSoloed(int stemIndex) const noexcept;
+  void setStemOutputChannel(int stemIndex, int outputChannel) noexcept;
+  int getStemOutputChannel(int stemIndex) const noexcept;
+  juce::StringArray getAvailableOutputChannelNames() const;
+  int getAvailableOutputChannelCount() const noexcept;
+  AppAudioMode getCurrentAudioMode() const noexcept;
+  StandaloneAudioDeviceBridge &getAudioDeviceBridge() noexcept;
+  const StandaloneAudioDeviceBridge &getAudioDeviceBridge() const noexcept;
   void setMasterVolume(float volume) noexcept;
   float getMasterVolume() const noexcept;
   void setMasterGain(float gain) noexcept;
@@ -120,11 +130,16 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemSoloStates;
   std::array<std::atomic<bool>, maxStemCount> stemClickGuideStates;
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
+  std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
   StemMixEngine mixEngine;
+  StemOutputRouter stemOutputRouter;
+  StemOutputRoutingState stemOutputRoutingState;
+  StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
+  juce::AudioBuffer<float> stemRoutingTempBuffer;
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};

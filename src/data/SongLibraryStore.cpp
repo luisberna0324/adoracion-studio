@@ -202,6 +202,15 @@ bool SongLibraryStore::updateStemSoloForActiveSetlist(
                             });
 }
 
+bool SongLibraryStore::updateStemOutputChannelForActiveSetlist(
+    const juce::String &songId, const juce::String &stemId,
+    const int outputChannel) {
+  return updateStemMixValue(songId, stemId,
+                            [outputChannel](StemMixSnapshot &mix) {
+                              mix.outputChannel = juce::jmax(1, outputChannel);
+                            });
+}
+
 bool SongLibraryStore::updateMasterVolumeForActiveSetlist(
     const juce::String &songId, float volume) {
   return updateMasterMixValue(songId, [volume](MasterMixSnapshot &mix) {
@@ -600,7 +609,8 @@ bool SongLibraryStore::normalizeLegacyMix(SongMixSnapshot &mix) {
   for (const auto &stem : mix.stems) {
     const bool stemDefault = juce::approximatelyEqual(stem.volume, 1.0f) &&
                              juce::approximatelyEqual(stem.gain, 0.0f) &&
-                             !stem.mute && !stem.solo;
+                             !stem.mute && !stem.solo &&
+                             stem.outputChannel == 1;
     if (!stemDefault)
       return false;
   }
@@ -637,6 +647,7 @@ juce::var SongLibraryStore::stemMixToVar(const StemMixSnapshot &mix) {
   obj->setProperty("gain", mix.gain);
   obj->setProperty("mute", mix.mute);
   obj->setProperty("solo", mix.solo);
+  obj->setProperty("outputChannel", mix.outputChannel);
   return juce::var(obj);
 }
 
@@ -652,6 +663,11 @@ StemMixSnapshot SongLibraryStore::stemMixFromVar(const juce::var &v,
     mix.gain = static_cast<float>(obj->getProperty("gain"));
   mix.mute = static_cast<bool>(obj->getProperty("mute"));
   mix.solo = static_cast<bool>(obj->getProperty("solo"));
+  if (obj->hasProperty("outputChannel"))
+    mix.outputChannel =
+        juce::jmax(1, static_cast<int>(obj->getProperty("outputChannel")));
+  else
+    mix.outputChannel = 1;
   return mix;
 }
 

@@ -9,6 +9,7 @@
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
+#include "audio/AudioDeviceMonitor.h"
 #include <algorithm>
 
 namespace {
@@ -57,6 +58,23 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
+
+  deviceBanner = std::make_unique<DeviceNotificationBanner>();
+  deviceBanner->onConfirm = [channelGridRaw] {
+    if (channelGridRaw != nullptr)
+      channelGridRaw->beginAutomaticRoutingDraft();
+  };
+  p.getAudioDeviceBridge().setOnDeviceConnected(
+      [&p, this, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
+        if (!info.isMultichannel)
+          return;
+        p.getAudioDeviceBridge().setAvailableOutputChannelCount(
+            juce::jmax(2, info.numOutputChannels));
+        if (channelGridRaw != nullptr)
+          channelGridRaw->refreshStemRoutingVisibility();
+        if (deviceBanner != nullptr)
+          deviceBanner->showForDevice(info);
+      });
 
   refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw] {
     if (topBarRaw)
@@ -153,6 +171,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         p.setStemGain(stemIndex, it->gain);
         p.setStemMute(stemIndex, it->mute);
         p.setStemSolo(stemIndex, it->solo);
+        p.setStemOutputChannel(stemIndex, it->outputChannel);
       }
     }
 
@@ -241,6 +260,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
+  addChildComponent(*deviceBanner);
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
@@ -302,7 +322,11 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
   repaint();
 }
 
-MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() = default;
+MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
+  proc.getAudioDeviceBridge().setOnDeviceConnected({});
+  proc.getAudioDeviceBridge().setOnDeviceDisconnected({});
+}
 
 void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
   drawStudioBackground(g, getLocalBounds().toFloat());
@@ -312,9 +336,16 @@ void MTControlsAudioProcessorEditor::resized() {
   auto area = getLocalBounds();
 
   topBar->setBounds(area.removeFromTop(kTopBarH));
-  waveformBar->setBounds(
-      area.removeFromTop(isWaveformExpanded ? kWaveformExpandedH
-                                            : kWaveformH));
+  const int waveH =
+      isWaveformExpanded ? kWaveformExpandedH : kWaveformH;
+  auto waveformArea = area.removeFromTop(waveH);
+  waveformBar->setBounds(waveformArea);
+  if (deviceBanner != nullptr) {
+    constexpr int kDeviceBannerH = 40;
+    deviceBanner->setBounds(waveformArea.withHeight(
+        juce::jmin(kDeviceBannerH, waveformArea.getHeight())));
+    deviceBanner->toFront(false);
+  }
 
   auto mainArea = area;
   constexpr int handleW = 28;
