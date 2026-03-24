@@ -4,7 +4,7 @@
 #include <cmath>
 #include <utility>
 
-const std::array<const char *, 11> kTrackCategories = {{
+const std::array<const char *, 19> kTrackCategories = {{
     "Bass",
     "Click",
     "Accordion",
@@ -16,6 +16,14 @@ const std::array<const char *, 11> kTrackCategories = {{
     "Piano",
     "Vocals",
     "Other",
+    "Electric Guitars",
+    "Lead Guitars",
+    "Synths",
+    "Strings",
+    "Brass",
+    "Woodwinds",
+    "FX",
+    "Pads/Ambience",
 }};
 
 juce::String makeDisplayNameFromFile(const juce::File &file) {
@@ -32,26 +40,74 @@ juce::String makeDisplayNameFromFile(const juce::File &file) {
 
 juce::String suggestCategoryFromFilename(const juce::String &filename) {
   const auto lower = filename.toLowerCase();
-  if (lower.contains("click"))
+  juce::String normalized;
+  normalized.preallocateBytes(lower.getNumBytesAsUTF8());
+  for (int i = 0; i < lower.length(); ++i) {
+    const juce::juce_wchar c = lower[i];
+    normalized += juce::CharacterFunctions::isLetterOrDigit(c) ? c : ' ';
+  }
+  auto tokens = juce::StringArray::fromTokens(normalized, " ", "");
+  tokens.removeEmptyStrings();
+
+  auto hasToken = [&tokens](const juce::String &t) {
+    for (const auto &tok : tokens) {
+      if (tok.equalsIgnoreCase(t))
+        return true;
+    }
+    return false;
+  };
+
+  if (lower.contains("click") || hasToken("click"))
     return "Click";
-  if (lower.contains("cue") || lower.contains("guide"))
+  if (lower.contains("cue") || lower.contains("guide") || hasToken("cue") ||
+      hasToken("cues"))
     return "Cues";
-  if (lower.contains("bass"))
+  if (lower.contains("bass") || hasToken("bass"))
     return "Bass";
   if (lower.contains("drum") || lower.contains("kick") ||
-      lower.contains("snare"))
+      lower.contains("snare") || hasToken("drums") || hasToken("drum"))
     return "Drums";
-  if (lower.contains("perc"))
+  if (lower.contains("perc") || hasToken("perc") || hasToken("percussion"))
     return "Percussion";
-  if (lower.contains("piano"))
+  if (lower.contains("piano") || hasToken("piano"))
     return "Piano";
-  if (lower.contains("key") || lower.contains("synth"))
-    return "Keys";
-  if (lower.contains("vox") || lower.contains("vocal"))
+  if (lower.contains("vocal") || lower.contains("vox") || hasToken("vocal") ||
+      hasToken("vocals"))
     return "Vocals";
+
+  if (lower.contains("synth") || hasToken("synth") || hasToken("synths"))
+    return "Synths";
+  if (lower.contains("pad") || lower.contains("ambience") ||
+      lower.contains("ambient") || hasToken("pad") || hasToken("pads") ||
+      hasToken("ambience") || hasToken("ambient"))
+    return "Pads/Ambience";
+  if (lower.contains("string") || hasToken("string") || hasToken("strings") ||
+      hasToken("violin") || hasToken("cello"))
+    return "Strings";
+  if (lower.contains("brass") || hasToken("brass") || hasToken("trumpet") ||
+      hasToken("trombone") || hasToken("horn"))
+    return "Brass";
+  if (lower.contains("woodwind") || hasToken("woodwind") ||
+      hasToken("woodwinds") || hasToken("flute") || hasToken("sax") ||
+      hasToken("saxophone") || hasToken("clarinet") || hasToken("oboe") ||
+      hasToken("bassoon"))
+    return "Woodwinds";
+  if (lower.contains("fx") || hasToken("fx") || hasToken("sfx"))
+    return "FX";
+
+  if (lower.contains("lead") || hasToken("lead") || hasToken("solo") ||
+      hasToken("lg"))
+    return "Lead Guitars";
+  if (lower.contains("electric") || hasToken("electric") || hasToken("eg"))
+    return "Electric Guitars";
   if (lower.contains("acoustic") || lower.contains("gtr") ||
-      lower.contains("guitar"))
+      lower.contains("guitar") || hasToken("ag") || hasToken("acoustic") ||
+      hasToken("acgtr"))
     return "Acoustic";
+
+  if (lower.contains("key") || hasToken("keys"))
+    return "Keys";
+
   return "Other";
 }
 

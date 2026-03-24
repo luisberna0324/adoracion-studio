@@ -1,7 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
-#include "ui/DeviceNotificationBanner.h"
+#include "data/SongData.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include <JuceHeader.h>
 
@@ -22,7 +22,6 @@ private:
 
   std::unique_ptr<TopBar> topBar;
   std::unique_ptr<juce::Component> waveformBar;
-  std::unique_ptr<DeviceNotificationBanner> deviceBanner;
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;
@@ -33,9 +32,12 @@ private:
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;
   bool isWaveformExpanded = false;
+  ImportedSongData currentLoadedSong;
+  bool hasCurrentLoadedSong = false;
   void showSettings(juce::Rectangle<int> anchor,
                     juce::Component *parent);
   void applyThemePreset(int presetId);
+  void applyRoutingDefaultsToSong(const ImportedSongData &song);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };

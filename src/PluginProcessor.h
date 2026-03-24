@@ -94,6 +94,8 @@ public:
   bool isStemSoloed(int stemIndex) const noexcept;
   void setStemOutputChannel(int stemIndex, int outputChannel) noexcept;
   int getStemOutputChannel(int stemIndex) const noexcept;
+  void setStemOutputWidth(int stemIndex, int width) noexcept;
+  int getStemOutputWidth(int stemIndex) const noexcept;
   juce::StringArray getAvailableOutputChannelNames() const;
   int getAvailableOutputChannelCount() const noexcept;
   AppAudioMode getCurrentAudioMode() const noexcept;
@@ -131,6 +133,7 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemClickGuideStates;
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
+  std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};

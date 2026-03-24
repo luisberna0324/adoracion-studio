@@ -30,7 +30,7 @@ struct ImportedSongData {
   std::vector<ImportedStemData> stems;
 };
 
-extern const std::array<const char *, 11> kTrackCategories;
+extern const std::array<const char *, 19> kTrackCategories;
 
 juce::String makeDisplayNameFromFile(const juce::File &file);
 juce::String suggestCategoryFromFilename(const juce::String &filename);

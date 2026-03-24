@@ -4,7 +4,7 @@
 
 class StemOutputRouter {
 public:
-  void routeStemToOutputChannel(const juce::AudioBuffer<float> &stemBuffer,
-                                int outputChannelIndex,
-                                juce::AudioBuffer<float> &outputBuffer) const;
+  void routeStemToOutputChannels(const juce::AudioBuffer<float> &stemBuffer,
+                                 int outputChannelIndex, int width,
+                                 juce::AudioBuffer<float> &outputBuffer) const;
 };

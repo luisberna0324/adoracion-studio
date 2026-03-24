@@ -2,6 +2,13 @@
 
 #include <JuceHeader.h>
 
+#include <vector>
+
+struct CategoryRoutingDefaults {
+  int baseChannel = 1; // 1-based
+  int width = 1;       // 1 = mono, 2 = stereo
+};
+
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
 public:
@@ -10,6 +17,11 @@ public:
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
+  static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
+  static void setRoutingDefaults(
+      const std::vector<CategoryRoutingDefaults> &defaults);
+  static CategoryRoutingDefaults
+  getRoutingDefaultsForCategory(const juce::String &category);
 
 private:
   static juce::File getSettingsFile();

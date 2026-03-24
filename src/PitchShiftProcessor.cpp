@@ -8,17 +8,28 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   currentChannels = numChannels;
   prepared = (currentSampleRate > 0.0 && currentChannels > 0);
 
+  interleavedInput.clear();
+  receiveBuffer.clear();
+  outputFifo.clear();
+  outputReadPos = 0;
+
+  if (!prepared) {
+    latencySamples = 0;
+    return;
+  }
+
+  if (currentChannels > SOUNDTOUCH_MAX_CHANNELS) {
+    prepared = false;
+    latencySamples = 0;
+    return;
+  }
+
   soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
   soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
   soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
   soundtouch.setTempo(1.0f);
   soundtouch.setRate(1.0f);
   soundtouch.clear();
-
-  interleavedInput.clear();
-  receiveBuffer.clear();
-  outputFifo.clear();
-  outputReadPos = 0;
 
   if (samplesPerBlock > 0 && currentChannels > 0) {
     interleavedInput.resize(
@@ -41,11 +52,13 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   if (pitchSemiTones == semitones)
     return;
   pitchSemiTones = semitones;
-  soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-  soundtouch.clear();
-  outputFifo.clear();
-  outputReadPos = 0;
-  primeLatency();
+  if (prepared) {
+    soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
+    soundtouch.clear();
+    outputFifo.clear();
+    outputReadPos = 0;
+    primeLatency();
+  }
 }
 
 int PitchShiftProcessor::getPitchSemiTones() const noexcept {

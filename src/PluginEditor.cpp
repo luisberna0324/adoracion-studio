@@ -24,6 +24,31 @@ constexpr int kMinWindowW = 800;
 constexpr int kMinWindowH = 560;
 constexpr int kScreenMargin = 40;
 
+int categoryIndexForName(const juce::String &category) {
+  const auto needle = category.trim();
+  if (needle.isEmpty())
+    return -1;
+
+  int otherIndex = -1;
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    const juce::String name = kTrackCategories[i];
+    if (name.equalsIgnoreCase("Other"))
+      otherIndex = static_cast<int>(i);
+    if (name.equalsIgnoreCase(needle))
+      return static_cast<int>(i);
+  }
+  return otherIndex;
+}
+
+CategoryRoutingDefaults routingForCategory(
+    const std::vector<CategoryRoutingDefaults> &defaults,
+    const juce::String &category) {
+  const int idx = categoryIndexForName(category);
+  if (idx < 0 || idx >= static_cast<int>(defaults.size()))
+    return CategoryRoutingDefaults{};
+  return defaults[static_cast<size_t>(idx)];
+}
+
 } // namespace
 
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
@@ -59,11 +84,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
 
-  deviceBanner = std::make_unique<DeviceNotificationBanner>();
-  deviceBanner->onConfirm = [channelGridRaw] {
-    if (channelGridRaw != nullptr)
-      channelGridRaw->beginAutomaticRoutingDraft();
-  };
   p.getAudioDeviceBridge().setOnDeviceConnected(
       [&p, this, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
         if (!info.isMultichannel)
@@ -72,8 +92,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
             juce::jmax(2, info.numOutputChannels));
         if (channelGridRaw != nullptr)
           channelGridRaw->refreshStemRoutingVisibility();
-        if (deviceBanner != nullptr)
-          deviceBanner->showForDevice(info);
       });
 
   refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw] {
@@ -143,6 +161,8 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       waveformBarRaw->setWaveformBins({});
       p.setStemClickGuideMask({});
       channelGridRaw->setSong(ImportedSongData{});
+      hasCurrentLoadedSong = false;
+      currentLoadedSong = ImportedSongData{};
       return;
     }
 
@@ -171,9 +191,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         p.setStemGain(stemIndex, it->gain);
         p.setStemMute(stemIndex, it->mute);
         p.setStemSolo(stemIndex, it->solo);
-        p.setStemOutputChannel(stemIndex, it->outputChannel);
       }
     }
+
+    currentLoadedSong = loadedSong;
+    hasCurrentLoadedSong = true;
+    applyRoutingDefaultsToSong(currentLoadedSong);
 
     channelGridRaw->setSong(loadedSong);
     currentSongIndex = songIndex;
@@ -260,7 +283,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
-  addChildComponent(*deviceBanner);
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
@@ -297,6 +319,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
   options.resizable = false;
+  auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
+  const auto routingDefaults = AppSettings::getRoutingDefaults();
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
       AppSettings::getExpandWindowOnLaunch(),
@@ -304,13 +328,18 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [](const bool expandOnLaunch) {
         AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
       },
-      [] {});
-  panel->setSize(320, 230);
+      [] {}, routingDefaults, proc.getAvailableOutputChannelCount(),
+      [this](const std::vector<CategoryRoutingDefaults> &next) {
+        AppSettings::setRoutingDefaults(next);
+        if (hasCurrentLoadedSong)
+          applyRoutingDefaultsToSong(currentLoadedSong);
+      });
+  panel->setSize(640, 560);
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 
   if (auto *window = options.launchAsync()) {
-    window->centreAroundComponent(parent != nullptr ? parent : this, 320, 230);
+    window->centreAroundComponent(parent != nullptr ? parent : this, 640, 560);
   }
 }
 
@@ -320,6 +349,26 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
   if (refreshTopBarTheme)
     refreshTopBarTheme();
   repaint();
+}
+
+void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
+    const ImportedSongData &song) {
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const int stemCount = processorRef.getLoadedStemCount();
+  const auto defaults = AppSettings::getRoutingDefaults();
+
+  int stemIndex = 0;
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    if (!juce::isPositiveAndBelow(stemIndex, stemCount))
+      break;
+
+    const auto routing = routingForCategory(defaults, stem.category);
+    processorRef.setStemOutputWidth(stemIndex, routing.width);
+    processorRef.setStemOutputChannel(stemIndex, routing.baseChannel);
+    ++stemIndex;
+  }
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
@@ -340,12 +389,6 @@ void MTControlsAudioProcessorEditor::resized() {
       isWaveformExpanded ? kWaveformExpandedH : kWaveformH;
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
-  if (deviceBanner != nullptr) {
-    constexpr int kDeviceBannerH = 40;
-    deviceBanner->setBounds(waveformArea.withHeight(
-        juce::jmin(kDeviceBannerH, waveformArea.getHeight())));
-    deviceBanner->toFront(false);
-  }
 
   auto mainArea = area;
   constexpr int handleW = 28;

@@ -201,8 +201,7 @@ void ChannelGridPanel::applyRoutingDraft() {
 }
 
 void ChannelGridPanel::refreshStemRoutingVisibility() {
-  const int n = processor.getAvailableOutputChannelCount();
-  const bool showStemRouting = n > 2;
+  const bool showStemRouting = false;
   const auto names = processor.getAvailableOutputChannelNames();
 
   for (size_t i = 0; i < slots.size(); ++i) {
@@ -287,7 +286,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
   addMasterSlot();
 
-  const bool showStemRouting = processor.getAvailableOutputChannelCount() > 2;
+  const bool showStemRouting = false;
 
   std::vector<const ImportedStemData *> orderedStems;
   orderedStems.reserve(song.stems.size());

@@ -32,6 +32,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   for (int i = 0; i < maxStemCount; ++i) {
     const int channel = stemOutputRoutingState.getStemOutputChannel(i);
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
+    const int width = stemOutputRoutingState.getStemOutputWidth(i);
+    stemOutputWidths[static_cast<size_t>(i)].store(width, std::memory_order_relaxed);
   }
 
   {
@@ -231,11 +233,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const int assignedChannelOneBased =
               stemOutputChannels[static_cast<size_t>(i)].load(
                   std::memory_order_relaxed);
+          const int assignedWidth =
+              stemOutputWidths[static_cast<size_t>(i)].load(
+                  std::memory_order_relaxed);
           const int outputIndex =
               juce::jlimit(0, juce::jmax(0, numChannels - 1),
                            assignedChannelOneBased - 1);
-          stemOutputRouter.routeStemToOutputChannel(stemRoutingTempBuffer,
-                                                    outputIndex, buffer);
+          stemOutputRouter.routeStemToOutputChannels(
+              stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
         }
         usedSeparatedMix = false;
         usedMonoClickMix = false;
@@ -338,6 +343,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     for (int i = 0; i < maxStemCount; ++i) {
       stemOutputChannels[static_cast<size_t>(i)].store(
           stemOutputRoutingState.getStemOutputChannel(i),
+          std::memory_order_relaxed);
+      stemOutputWidths[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputWidth(i),
           std::memory_order_relaxed);
     }
   }
@@ -468,6 +476,9 @@ void MTControlsAudioProcessor::setStateInformation(const void *data,
     for (int i = 0; i < maxStemCount; ++i) {
       stemOutputChannels[static_cast<size_t>(i)].store(
           stemOutputRoutingState.getStemOutputChannel(i),
+          std::memory_order_relaxed);
+      stemOutputWidths[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputWidth(i),
           std::memory_order_relaxed);
     }
   }
@@ -897,8 +908,13 @@ void MTControlsAudioProcessor::setStemOutputChannel(
   if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
     return;
 
+  const int width =
+      stemOutputRoutingState.getStemOutputWidth(stemIndex);
+  const int maxChannels =
+      juce::jmax(1, standaloneAudioDeviceBridge.getAvailableOutputChannelCount());
+  const int maxBase = juce::jmax(1, maxChannels - (width >= 2 ? 1 : 0));
   const int normalizedChannel = juce::jlimit(
-      1, juce::jmax(1, standaloneAudioDeviceBridge.getAvailableOutputChannelCount()),
+      1, maxBase,
       outputChannel);
   stemOutputChannels[static_cast<size_t>(stemIndex)].store(
       normalizedChannel, std::memory_order_relaxed);
@@ -910,6 +926,31 @@ int MTControlsAudioProcessor::getStemOutputChannel(const int stemIndex) const no
     return 1;
 
   return stemOutputChannels[static_cast<size_t>(stemIndex)].load(
+      std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setStemOutputWidth(const int stemIndex,
+                                                  const int width) noexcept {
+  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
+    return;
+
+  const int normalizedWidth = juce::jlimit(1, 2, width);
+  stemOutputWidths[static_cast<size_t>(stemIndex)].store(
+      normalizedWidth, std::memory_order_relaxed);
+  stemOutputRoutingState.setStemOutputWidth(stemIndex, normalizedWidth);
+
+  const int currentChannel =
+      stemOutputChannels[static_cast<size_t>(stemIndex)].load(
+          std::memory_order_relaxed);
+  setStemOutputChannel(stemIndex, currentChannel);
+}
+
+int MTControlsAudioProcessor::getStemOutputWidth(
+    const int stemIndex) const noexcept {
+  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
+    return 1;
+
+  return stemOutputWidths[static_cast<size_t>(stemIndex)].load(
       std::memory_order_relaxed);
 }
 
@@ -1054,6 +1095,8 @@ void MTControlsAudioProcessor::resetStemControls(
         true, std::memory_order_relaxed);
     stemOutputChannels[static_cast<size_t>(i)].store(
         stemOutputRoutingState.getStemOutputChannel(i), std::memory_order_relaxed);
+    stemOutputWidths[static_cast<size_t>(i)].store(
+        stemOutputRoutingState.getStemOutputWidth(i), std::memory_order_relaxed);
   }
 }
 
