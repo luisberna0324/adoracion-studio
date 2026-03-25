@@ -61,6 +61,8 @@ target_sources(MTControls
         src/audio/OutputChannelCatalog.h
         src/audio/RoutingSuggestionEngine.cpp
         src/audio/RoutingSuggestionEngine.h
+        src/audio/SimpleDelayLine.cpp
+        src/audio/SimpleDelayLine.h
         src/audio/StandaloneAudioDeviceBridge.cpp
         src/audio/StandaloneAudioDeviceBridge.h
         src/audio/StemOutputRouter.cpp

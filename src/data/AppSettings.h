@@ -20,6 +20,11 @@ public:
   static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
   static void setRoutingDefaults(
       const std::vector<CategoryRoutingDefaults> &defaults);
+  static std::vector<CategoryRoutingDefaults>
+  getRoutingDefaultsForDevice(const juce::String &deviceKey);
+  static void setRoutingDefaultsForDevice(
+      const juce::String &deviceKey,
+      const std::vector<CategoryRoutingDefaults> &defaults);
   static CategoryRoutingDefaults
   getRoutingDefaultsForCategory(const juce::String &category);
 

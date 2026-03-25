@@ -34,7 +34,12 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
     const int width = stemOutputRoutingState.getStemOutputWidth(i);
     stemOutputWidths[static_cast<size_t>(i)].store(width, std::memory_order_relaxed);
+    stemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
+    stemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
+    stemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
+    stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
   }
+  routingPitchLatencySamples = 0;
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
@@ -104,6 +109,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (targetPitch != pitchActiveSemiTones) {
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
+      routingPitchLatencySamples = 0;
     }
 
     // --- Diagnostics: measure time until lock is acquired ---
@@ -221,6 +227,30 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
 
       if (routingActive) {
+        const bool pitchActive = pitchActiveSemiTones != 0;
+        int targetLatency = 0;
+        if (pitchActive) {
+          for (int i = 0; i < stemCount; ++i) {
+            const bool pitchShiftable =
+                stemPitchShiftStates[static_cast<size_t>(i)].load(
+                    std::memory_order_relaxed);
+            if (!pitchShiftable)
+              continue;
+            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+            if (!proc.isPrepared() || proc.getNumChannels() != 2)
+              proc.prepare(playbackSampleRate, numSamples, 2);
+            proc.setPitchSemiTones(pitchActiveSemiTones);
+            targetLatency = proc.getLatencySamples();
+            break;
+          }
+        }
+
+        if (targetLatency != routingPitchLatencySamples) {
+          routingPitchLatencySamples = targetLatency;
+          for (auto &delay : stemPitchDelayLines)
+            delay.setDelay(targetLatency);
+        }
+
         if (stemRoutingTempBuffer.getNumSamples() < numSamples)
           stemRoutingTempBuffer.setSize(2, numSamples, false, false, true);
 
@@ -230,6 +260,19 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
                                                 numSamples);
           stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
+          const bool pitchShiftable =
+              stemPitchShiftStates[static_cast<size_t>(i)].load(
+                  std::memory_order_relaxed);
+          if (pitchActive && pitchShiftable) {
+            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+            if (!proc.isPrepared() || proc.getNumChannels() != 2)
+              proc.prepare(playbackSampleRate, numSamples, 2);
+            proc.setPitchSemiTones(pitchActiveSemiTones);
+            proc.process(stemRoutingTempBuffer);
+          } else if (routingPitchLatencySamples > 0) {
+            stemPitchDelayLines[static_cast<size_t>(i)].process(
+                stemRoutingTempBuffer);
+          }
           const int assignedChannelOneBased =
               stemOutputChannels[static_cast<size_t>(i)].load(
                   std::memory_order_relaxed);
@@ -1065,6 +1108,11 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   mixEngine.reset();
   metronome.reset();
+  routingPitchLatencySamples = 0;
+  for (auto &delay : stemPitchDelayLines)
+    delay.reset();
+  for (auto &processor : stemPitchProcessors)
+    processor.reset();
   setTransportState(TransportState::stopped);
 }
 
@@ -1081,24 +1129,26 @@ void MTControlsAudioProcessor::resetStemControls(
   stemOutputRoutingState.normalizeForDevice(
       standaloneAudioDeviceBridge.getAvailableOutputChannelCount());
 
-  for (int i = 0; i < maxStemCount; ++i) {
-    stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
-    stemVolumes[static_cast<size_t>(i)].store(1.0f, std::memory_order_relaxed);
-    stemGains[static_cast<size_t>(i)].store(1.0f, std::memory_order_relaxed);
-    stemMuteStates[static_cast<size_t>(i)].store(false,
-                                                 std::memory_order_relaxed);
-    stemSoloStates[static_cast<size_t>(i)].store(false,
-                                                 std::memory_order_relaxed);
-    stemClickGuideStates[static_cast<size_t>(i)].store(
-        false, std::memory_order_relaxed);
-    stemPitchShiftStates[static_cast<size_t>(i)].store(
-        true, std::memory_order_relaxed);
-    stemOutputChannels[static_cast<size_t>(i)].store(
-        stemOutputRoutingState.getStemOutputChannel(i), std::memory_order_relaxed);
-    stemOutputWidths[static_cast<size_t>(i)].store(
-        stemOutputRoutingState.getStemOutputWidth(i), std::memory_order_relaxed);
+    for (int i = 0; i < maxStemCount; ++i) {
+      stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
+      stemVolumes[static_cast<size_t>(i)].store(1.0f, std::memory_order_relaxed);
+      stemGains[static_cast<size_t>(i)].store(1.0f, std::memory_order_relaxed);
+      stemMuteStates[static_cast<size_t>(i)].store(false,
+                                                   std::memory_order_relaxed);
+      stemSoloStates[static_cast<size_t>(i)].store(false,
+                                                   std::memory_order_relaxed);
+      stemClickGuideStates[static_cast<size_t>(i)].store(
+          false, std::memory_order_relaxed);
+      stemPitchShiftStates[static_cast<size_t>(i)].store(
+          true, std::memory_order_relaxed);
+      stemOutputChannels[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputChannel(i), std::memory_order_relaxed);
+      stemOutputWidths[static_cast<size_t>(i)].store(
+          stemOutputRoutingState.getStemOutputWidth(i), std::memory_order_relaxed);
+      stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
+      stemPitchProcessors[static_cast<size_t>(i)].reset();
+    }
   }
-}
 
 void MTControlsAudioProcessor::setStemClickGuideMask(
     const std::vector<bool> &mask) noexcept {

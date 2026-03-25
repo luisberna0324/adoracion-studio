@@ -63,6 +63,15 @@ public:
     channelBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   }
 
+  void setDefaults(const CategoryRoutingDefaults &defaults,
+                   const int outputChannels) {
+    availableOutputChannels = juce::jmax(1, outputChannels);
+    current = defaults;
+    refreshChannelOptions();
+  }
+
+  CategoryRoutingDefaults getDefaults() const { return current; }
+
 private:
   void refreshChannelOptions() {
     const bool stereoAllowed = availableOutputChannels >= 2;
@@ -107,43 +116,60 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
                              CloseRequested closeCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
-                             RoutingDefaultsChanged routingCb)
+                             RoutingDefaultsChanged routingCb,
+                             juce::AudioDeviceManager *deviceManagerToUse,
+                             int maxInputChannels,
+                             int maxOutputChannels)
     : onThemeChanged(std::move(cb)),
       onExpandLaunchChanged(std::move(expandCb)), onClose(std::move(closeCb)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
-      availableOutputChannels(juce::jmax(1, outputChannels)) {
+      availableOutputChannels(juce::jmax(1, outputChannels)),
+      deviceManager(deviceManagerToUse) {
   title.setText("Settings", juce::dontSendNotification);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
   addAndMakeVisible(title);
 
-  generalTab.setButtonText("General");
-  generalTab.setClickingTogglesState(true);
-  generalTab.onClick = [this] { setActiveSection(0); };
-  addAndMakeVisible(generalTab);
+  tabs.addTab("General", UITheme::cardBg, &generalPage, false);
+  tabs.addTab("Ruteo", UITheme::cardBg, &routingPage, false);
+  tabs.addTab("Audio", UITheme::cardBg, &audioPage, false);
+  tabs.onTabChanged = [this](int newIndex, const juce::String &) {
+    if (newIndex == 1) {
+      refreshDeviceOptions();
+      refreshRoutingForDevice();
+    }
+  };
+  addAndMakeVisible(tabs);
 
-  routingTab.setButtonText("Ruteo");
-  routingTab.setClickingTogglesState(true);
-  routingTab.onClick = [this] { setActiveSection(1); };
-  addAndMakeVisible(routingTab);
+  deviceLabel.setText("Interfaz", juce::dontSendNotification);
+  deviceLabel.setJustificationType(juce::Justification::centredLeft);
+  deviceLabel.setFont(juce::FontOptions(11.0f));
+  routingPage.addAndMakeVisible(deviceLabel);
+
+  deviceBox.onChange = [this] {
+    const int id = deviceBox.getSelectedId();
+    if (id > 0)
+      applyDeviceSelection(id - 1);
+  };
+  routingPage.addAndMakeVisible(deviceBox);
 
   themeLabel.setText("Skin", juce::dontSendNotification);
   themeLabel.setJustificationType(juce::Justification::centredLeft);
   themeLabel.setFont(juce::FontOptions(12.0f));
-  addAndMakeVisible(themeLabel);
+  generalPage.addAndMakeVisible(themeLabel);
 
   themeBox.addItem("Default", static_cast<int>(ThemePreset::Default));
   themeBox.addItem("Spotify", static_cast<int>(ThemePreset::Spotify));
   themeBox.addItem("Ableton", static_cast<int>(ThemePreset::Ableton));
   themeBox.setSelectedId(static_cast<int>(current));
   themeBox.setJustificationType(juce::Justification::centredLeft);
-  addAndMakeVisible(themeBox);
+  generalPage.addAndMakeVisible(themeBox);
 
   expandLaunchLabel.setText("Ventana al iniciar", juce::dontSendNotification);
   expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
   expandLaunchLabel.setFont(juce::FontOptions(12.0f));
-  addAndMakeVisible(expandLaunchLabel);
+  generalPage.addAndMakeVisible(expandLaunchLabel);
 
   expandLaunchToggle.setButtonText("Expandir al área de trabajo");
   expandLaunchToggle.setClickingTogglesState(true);
@@ -153,16 +179,32 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
     if (onExpandLaunchChanged)
       onExpandLaunchChanged(expandLaunchToggle.getToggleState());
   };
-  addAndMakeVisible(expandLaunchToggle);
+  generalPage.addAndMakeVisible(expandLaunchToggle);
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
-  addAndMakeVisible(routingSectionLabel);
+  routingSectionLabel.setText("Ruteo por tipo", juce::dontSendNotification);
+  routingPage.addAndMakeVisible(routingSectionLabel);
 
   routingViewport.setViewedComponent(&routingContent, false);
   routingViewport.setScrollBarsShown(true, false, false, false);
   routingViewport.setScrollBarThickness(2);
-  addAndMakeVisible(routingViewport);
+  routingPage.addAndMakeVisible(routingViewport);
+
+  if (deviceManager != nullptr) {
+    const int maxIns = juce::jmax(0, maxInputChannels);
+    const int maxOuts = juce::jmax(0, maxOutputChannels);
+    audioSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
+        *deviceManager, 0, maxIns, 0, maxOuts, true, true, true, false);
+    audioPage.addAndMakeVisible(*audioSelector);
+  } else {
+    audioUnavailableLabel.setText("Audio disponible solo en Standalone",
+                                  juce::dontSendNotification);
+    audioUnavailableLabel.setJustificationType(
+        juce::Justification::centredLeft);
+    audioUnavailableLabel.setFont(juce::FontOptions(12.0f));
+    audioPage.addAndMakeVisible(audioUnavailableLabel);
+  }
 
   closeButton.setButtonText("CLOSE");
   closeButton.setClickingTogglesState(false);
@@ -211,14 +253,16 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
         [this, i](const CategoryRoutingDefaults &next) {
           if (i < routingDefaults.size())
             routingDefaults[i] = next;
-          if (onRoutingDefaultsChanged)
-            onRoutingDefaultsChanged(routingDefaults);
+          setRoutingDefaultsLocal(routingDefaults);
         });
     routingContent.addAndMakeVisible(*row);
+    routingRowCategoryIndices.push_back(i);
     routingRows.push_back(std::move(row));
   }
 
-  setActiveSection(0);
+  refreshDeviceOptions();
+  refreshRoutingForDevice();
+  tabs.setCurrentTabIndex(0);
 }
 
 void SettingsPanel::paint(juce::Graphics &g) {
@@ -231,62 +275,34 @@ void SettingsPanel::paint(juce::Graphics &g) {
 
 void SettingsPanel::resized() {
   auto area = getLocalBounds().reduced(16);
-  const int headerH = 28;
-  auto header = area.removeFromTop(headerH);
+  auto header = area.removeFromTop(28);
   title.setBounds(header);
   area.removeFromTop(10);
+  auto footer = area.removeFromBottom(28);
+  closeButton.setBounds(footer.removeFromRight(90));
+  tabs.setBounds(area);
 
-  const int navW = 140;
-  auto nav = area.removeFromLeft(navW);
-  auto body = area;
-
-  const int navBtnH = 30;
-  generalTab.setBounds(nav.removeFromTop(navBtnH));
-  nav.removeFromTop(6);
-  routingTab.setBounds(nav.removeFromTop(navBtnH));
-
-  const int titleH = 22;
-  auto bodyHeader = body.removeFromTop(titleH);
-  routingSectionLabel.setBounds(bodyHeader);
-  body.removeFromTop(10);
-
-  if (activeSection == 0) {
-    auto row = body.removeFromTop(26);
-    themeLabel.setBounds(row.removeFromLeft(60));
-    themeBox.setBounds(row);
-    body.removeFromTop(14);
-    auto expandRow = body.removeFromTop(26);
-    expandLaunchLabel.setBounds(expandRow.removeFromLeft(130));
-    expandLaunchToggle.setBounds(expandRow);
-  } else {
-    routingViewport.setBounds(body);
-    const int rowH = 28;
-    int y = 0;
-    const int contentW = juce::jmax(1, routingViewport.getWidth() - 6);
-    for (auto &rowComp : routingRows) {
-      rowComp->setBounds(2, y, contentW, rowH);
-      y += rowH + 4;
-    }
-    routingContent.setSize(contentW + 4,
-                           juce::jmax(y + 2, routingViewport.getHeight()));
-  }
-
-  const int closeH = 28;
-  closeButton.setBounds(getLocalBounds().reduced(16).removeFromBottom(closeH).removeFromRight(90));
+  layoutGeneralPage();
+  layoutRoutingPage();
+  layoutAudioPage();
 }
 
 void SettingsPanel::refreshThemeColours() {
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  generalTab.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
-  generalTab.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
-  generalTab.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
-  generalTab.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
-  routingTab.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
-  routingTab.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
-  routingTab.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
-  routingTab.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
+  tabs.setColour(juce::TabbedButtonBar::tabTextColourId,
+                 UITheme::textSecondary);
+  tabs.setColour(juce::TabbedButtonBar::frontTextColourId,
+                 UITheme::textPrimary);
+  tabs.setColour(juce::TabbedButtonBar::tabOutlineColourId,
+                 UITheme::cardBorder.withAlpha(0.7f));
+  tabs.setColour(juce::TabbedButtonBar::frontOutlineColourId,
+                 UITheme::cardBorder);
+  deviceLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  deviceBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
+  deviceBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  deviceBox.setColour(juce::ComboBox::outlineColourId,
+                      UITheme::cardBorder.withAlpha(0.7f));
+  deviceBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   themeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
   themeBox.setColour(juce::ComboBox::outlineColourId,
@@ -308,6 +324,8 @@ void SettingsPanel::refreshThemeColours() {
                         UITheme::textPrimary);
   closeButton.setColour(juce::TextButton::textColourOnId,
                         UITheme::textPrimary);
+  audioUnavailableLabel.setColour(juce::Label::textColourId,
+                                  UITheme::textSecondary);
   for (auto &row : routingRows)
     row->refreshThemeColours();
   repaint();
@@ -322,23 +340,154 @@ void SettingsPanel::closeSelf() {
   }
 }
 
-void SettingsPanel::setActiveSection(const int section) {
-  activeSection = section;
-  const bool showRouting = activeSection == 1;
-  generalTab.setToggleState(!showRouting, juce::dontSendNotification);
-  routingTab.setToggleState(showRouting, juce::dontSendNotification);
+void SettingsPanel::layoutGeneralPage() {
+  auto area = generalPage.getLocalBounds().reduced(4);
+  auto row = area.removeFromTop(26);
+  themeLabel.setBounds(row.removeFromLeft(60));
+  themeBox.setBounds(row);
+  area.removeFromTop(14);
+  auto expandRow = area.removeFromTop(26);
+  expandLaunchLabel.setBounds(expandRow.removeFromLeft(130));
+  expandLaunchToggle.setBounds(expandRow);
+}
 
-  themeLabel.setVisible(!showRouting);
-  themeBox.setVisible(!showRouting);
-  expandLaunchLabel.setVisible(!showRouting);
-  expandLaunchToggle.setVisible(!showRouting);
+void SettingsPanel::layoutRoutingPage() {
+  auto area = routingPage.getLocalBounds().reduced(4);
+  routingSectionLabel.setBounds(area.removeFromTop(22));
+  area.removeFromTop(8);
+  auto deviceRow = area.removeFromTop(26);
+  deviceLabel.setBounds(deviceRow.removeFromLeft(70));
+  deviceBox.setBounds(deviceRow);
+  area.removeFromTop(8);
+  routingViewport.setBounds(area);
+  const int rowH = 28;
+  int y = 0;
+  const int contentW = juce::jmax(1, routingViewport.getWidth() - 6);
+  for (auto &rowComp : routingRows) {
+    rowComp->setBounds(2, y, contentW, rowH);
+    y += rowH + 4;
+  }
+  routingContent.setSize(contentW + 4,
+                         juce::jmax(y + 2, routingViewport.getHeight()));
+}
 
-  routingViewport.setVisible(showRouting);
-  if (showRouting)
-    routingSectionLabel.setText("Ruteo por tipo", juce::dontSendNotification);
-  else
-    routingSectionLabel.setText("General", juce::dontSendNotification);
+void SettingsPanel::layoutAudioPage() {
+  auto area = audioPage.getLocalBounds().reduced(4);
+  if (audioSelector != nullptr) {
+    audioSelector->setBounds(area);
+  } else {
+    audioUnavailableLabel.setBounds(area.removeFromTop(24));
+  }
+}
 
-  resized();
-  repaint();
+void SettingsPanel::refreshDeviceOptions() {
+  deviceOptions.clear();
+  deviceBox.clear(juce::dontSendNotification);
+
+  if (deviceManager == nullptr) {
+    deviceBox.addItem("Audio no disponible", 1);
+    deviceBox.setSelectedId(1, juce::dontSendNotification);
+    return;
+  }
+
+  auto *currentDevice = deviceManager->getCurrentAudioDevice();
+  const juce::String currentType = deviceManager->getCurrentAudioDeviceType();
+  const juce::String currentName =
+      currentDevice != nullptr ? currentDevice->getName() : juce::String{};
+
+  auto &deviceTypes = deviceManager->getAvailableDeviceTypes();
+  for (auto *ioType : deviceTypes) {
+    if (ioType == nullptr)
+      continue;
+    ioType->scanForDevices();
+    const juce::String typeName = ioType->getTypeName();
+    const auto outputs = ioType->getDeviceNames(false);
+    for (int i = 0; i < outputs.size(); ++i) {
+      const auto name = outputs[i];
+      if (name.isNotEmpty())
+        deviceOptions.push_back({typeName, name});
+    }
+  }
+
+  int selectedId = 0;
+  for (size_t i = 0; i < deviceOptions.size(); ++i) {
+    const auto &opt = deviceOptions[i];
+    const bool includeType = deviceOptions.size() > 1 &&
+                             opt.typeName.isNotEmpty();
+    const juce::String label =
+        includeType ? (opt.typeName + " - " + opt.deviceName) : opt.deviceName;
+    const int itemId = static_cast<int>(i) + 1;
+    deviceBox.addItem(label, itemId);
+    if (opt.typeName == currentType && opt.deviceName == currentName)
+      selectedId = itemId;
+  }
+
+  if (selectedId > 0)
+    deviceBox.setSelectedId(selectedId, juce::dontSendNotification);
+  else if (deviceBox.getNumItems() > 0)
+    deviceBox.setSelectedId(1, juce::dontSendNotification);
+}
+
+void SettingsPanel::applyDeviceSelection(const int optionIndex) {
+  if (deviceManager == nullptr)
+    return;
+  if (!juce::isPositiveAndBelow(optionIndex,
+                                static_cast<int>(deviceOptions.size())))
+    return;
+
+  const auto &opt = deviceOptions[static_cast<size_t>(optionIndex)];
+  deviceManager->setCurrentAudioDeviceType(opt.typeName, true);
+  juce::AudioDeviceManager::AudioDeviceSetup setup;
+  deviceManager->getAudioDeviceSetup(setup);
+  setup.outputDeviceName = opt.deviceName;
+  deviceManager->setAudioDeviceSetup(setup, true);
+
+  refreshDeviceOptions();
+  refreshRoutingForDevice();
+  setRoutingDefaultsLocal(routingDefaults);
+}
+
+void SettingsPanel::refreshRoutingForDevice() {
+  if (deviceManager != nullptr) {
+    auto *currentDevice = deviceManager->getCurrentAudioDevice();
+    const juce::String typeName = deviceManager->getCurrentAudioDeviceType();
+    const juce::String deviceName =
+        currentDevice != nullptr ? currentDevice->getName() : juce::String{};
+    currentDeviceKey = typeName.isNotEmpty() && deviceName.isNotEmpty()
+                           ? (typeName + "|" + deviceName)
+                           : juce::String{};
+    if (currentDevice != nullptr) {
+      availableOutputChannels =
+          juce::jmax(1, currentDevice->getOutputChannelNames().size());
+    }
+  }
+
+  const auto deviceDefaults =
+      AppSettings::getRoutingDefaultsForDevice(currentDeviceKey);
+  if (routingDefaults.size() < kTrackCategories.size())
+    routingDefaults.resize(kTrackCategories.size());
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    if (i < deviceDefaults.size())
+      routingDefaults[i] = deviceDefaults[i];
+  }
+
+  for (size_t rowIndex = 0; rowIndex < routingRows.size(); ++rowIndex) {
+    const size_t categoryIndex =
+        rowIndex < routingRowCategoryIndices.size()
+            ? routingRowCategoryIndices[rowIndex]
+            : rowIndex;
+    const CategoryRoutingDefaults def =
+        categoryIndex < routingDefaults.size() ? routingDefaults[categoryIndex]
+                                               : CategoryRoutingDefaults{};
+    routingRows[rowIndex]->setDefaults(def, availableOutputChannels);
+    if (categoryIndex < routingDefaults.size())
+      routingDefaults[categoryIndex] = routingRows[rowIndex]->getDefaults();
+  }
+}
+
+void SettingsPanel::setRoutingDefaultsLocal(
+    const std::vector<CategoryRoutingDefaults> &next) {
+  routingDefaults = next;
+  if (onRoutingDefaultsChanged)
+    onRoutingDefaultsChanged(currentDeviceKey, routingDefaults);
 }

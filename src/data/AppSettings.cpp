@@ -11,6 +11,7 @@ juce::File getMtControlsDirectory() {
 }
 
 constexpr const char *kRoutingByCategoryKey = "routingByCategory";
+constexpr const char *kRoutingByDeviceKey = "routingByDevice";
 constexpr const char *kRoutingChannelKey = "channel";
 constexpr const char *kRoutingWidthKey = "width";
 
@@ -38,6 +39,49 @@ std::vector<CategoryRoutingDefaults> buildDefaultRouting() {
     entry.width = 1;
   }
   return out;
+}
+
+juce::var routingDefaultsToVar(
+    const std::vector<CategoryRoutingDefaults> &defaults) {
+  auto *routingObj = new juce::DynamicObject();
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    auto *entry = new juce::DynamicObject();
+    const CategoryRoutingDefaults def =
+        i < defaults.size() ? defaults[i] : CategoryRoutingDefaults{};
+    entry->setProperty(kRoutingChannelKey, juce::jmax(1, def.baseChannel));
+    entry->setProperty(kRoutingWidthKey, juce::jlimit(1, 2, def.width));
+    routingObj->setProperty(kTrackCategories[i], juce::var(entry));
+  }
+  return juce::var(routingObj);
+}
+
+void applyRoutingVarToDefaults(const juce::var &routingVar,
+                               std::vector<CategoryRoutingDefaults> &defaults) {
+  const auto *routingObj = routingVar.getDynamicObject();
+  if (routingObj == nullptr)
+    return;
+
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    const juce::String categoryName = kTrackCategories[i];
+    if (!routingObj->hasProperty(categoryName))
+      continue;
+    const auto entryVar = routingObj->getProperty(categoryName);
+    const auto *entryObj = entryVar.getDynamicObject();
+    if (entryObj == nullptr)
+      continue;
+    int channel = 1;
+    if (entryObj->hasProperty(kRoutingChannelKey))
+      channel = static_cast<int>(entryObj->getProperty(kRoutingChannelKey));
+    int width = 1;
+    if (entryObj->hasProperty(kRoutingWidthKey))
+      width = static_cast<int>(entryObj->getProperty(kRoutingWidthKey));
+    channel = juce::jmax(1, channel);
+    width = juce::jlimit(1, 2, width);
+    if (i < defaults.size()) {
+      defaults[i].baseChannel = channel;
+      defaults[i].width = width;
+    }
+  }
 }
 } // namespace
 
@@ -85,29 +129,7 @@ std::vector<CategoryRoutingDefaults> AppSettings::getRoutingDefaults() {
     return defaults;
 
   const auto routingVar = root->getProperty(kRoutingByCategoryKey);
-  const auto *routingObj = routingVar.getDynamicObject();
-  if (routingObj == nullptr)
-    return defaults;
-
-  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
-    const juce::String categoryName = kTrackCategories[i];
-    if (!routingObj->hasProperty(categoryName))
-      continue;
-    const auto entryVar = routingObj->getProperty(categoryName);
-    const auto *entryObj = entryVar.getDynamicObject();
-    if (entryObj == nullptr)
-      continue;
-    int channel = 1;
-    if (entryObj->hasProperty(kRoutingChannelKey))
-      channel = static_cast<int>(entryObj->getProperty(kRoutingChannelKey));
-    int width = 1;
-    if (entryObj->hasProperty(kRoutingWidthKey))
-      width = static_cast<int>(entryObj->getProperty(kRoutingWidthKey));
-    channel = juce::jmax(1, channel);
-    width = juce::jlimit(1, 2, width);
-    defaults[i].baseChannel = channel;
-    defaults[i].width = width;
-  }
+  applyRoutingVarToDefaults(routingVar, defaults);
 
   return defaults;
 }
@@ -120,19 +142,67 @@ void AppSettings::setRoutingDefaults(
   if (!root.isObject())
     root = juce::var(new juce::DynamicObject());
 
-  auto *routingObj = new juce::DynamicObject();
-  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
-    auto *entry = new juce::DynamicObject();
-    const CategoryRoutingDefaults def =
-        i < defaults.size() ? defaults[i] : CategoryRoutingDefaults{};
-    entry->setProperty(kRoutingChannelKey, juce::jmax(1, def.baseChannel));
-    entry->setProperty(kRoutingWidthKey, juce::jlimit(1, 2, def.width));
-    routingObj->setProperty(kTrackCategories[i], juce::var(entry));
-  }
-
   if (auto *o = root.getDynamicObject()) {
     o->setProperty("version", 2);
-    o->setProperty(kRoutingByCategoryKey, juce::var(routingObj));
+    o->setProperty(kRoutingByCategoryKey, routingDefaultsToVar(defaults));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+std::vector<CategoryRoutingDefaults>
+AppSettings::getRoutingDefaultsForDevice(const juce::String &deviceKey) {
+  if (deviceKey.trim().isEmpty())
+    return getRoutingDefaults();
+
+  auto defaults = getRoutingDefaults();
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return defaults;
+
+  const auto parsed = juce::JSON::parse(f);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr || !root->hasProperty(kRoutingByDeviceKey))
+    return defaults;
+
+  const auto byDeviceVar = root->getProperty(kRoutingByDeviceKey);
+  const auto *byDeviceObj = byDeviceVar.getDynamicObject();
+  if (byDeviceObj == nullptr)
+    return defaults;
+
+  if (!byDeviceObj->hasProperty(deviceKey))
+    return defaults;
+
+  const auto routingVar = byDeviceObj->getProperty(deviceKey);
+  applyRoutingVarToDefaults(routingVar, defaults);
+  return defaults;
+}
+
+void AppSettings::setRoutingDefaultsForDevice(
+    const juce::String &deviceKey,
+    const std::vector<CategoryRoutingDefaults> &defaults) {
+  if (deviceKey.trim().isEmpty()) {
+    setRoutingDefaults(defaults);
+    return;
+  }
+
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  juce::DynamicObject *byDeviceObj = nullptr;
+  if (auto *o = root.getDynamicObject()) {
+    if (o->hasProperty(kRoutingByDeviceKey)) {
+      byDeviceObj = o->getProperty(kRoutingByDeviceKey).getDynamicObject();
+    }
+    if (byDeviceObj == nullptr) {
+      byDeviceObj = new juce::DynamicObject();
+      o->setProperty(kRoutingByDeviceKey, juce::var(byDeviceObj));
+    }
+    byDeviceObj->setProperty(deviceKey, routingDefaultsToVar(defaults));
+    o->setProperty("version", 3);
   }
 
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));

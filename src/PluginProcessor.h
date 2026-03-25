@@ -4,6 +4,7 @@
 #include "MetronomeEngine.h"
 #include "StemMixEngine.h"
 #include "StemTrack.h"
+#include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/StemOutputRouter.h"
 #include "audio/StemOutputRoutingState.h"
@@ -134,6 +135,8 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
+  std::array<PitchShiftProcessor, maxStemCount> stemPitchProcessors;
+  std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
@@ -180,6 +183,8 @@ private:
   float fadeGain = 1.0f;
   const double fadeDurationSec = 2.0;
   std::atomic<bool> fadeStopsPlayback{true};
+  int routingPitchLatencySamples = 0;
+  static constexpr int kMaxRoutingPitchLatencySamples = 65536;
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;

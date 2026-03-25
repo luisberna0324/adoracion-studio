@@ -12,6 +12,10 @@
 #include "audio/AudioDeviceMonitor.h"
 #include <algorithm>
 
+#if JucePlugin_Build_Standalone
+#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
+
 namespace {
 constexpr int kTopBarH = 60;
 constexpr int kWaveformH = 100;
@@ -23,6 +27,38 @@ constexpr int kDefaultWindowH = 760;
 constexpr int kMinWindowW = 800;
 constexpr int kMinWindowH = 560;
 constexpr int kScreenMargin = 40;
+
+struct StandaloneAudioContext {
+  juce::AudioDeviceManager *manager = nullptr;
+  int maxInputs = 0;
+  int maxOutputs = 0;
+};
+
+StandaloneAudioContext getStandaloneAudioContext() {
+#if JucePlugin_Build_Standalone
+  if (auto *holder = juce::StandalonePluginHolder::getInstance()) {
+    StandaloneAudioContext ctx;
+    ctx.manager = &holder->deviceManager;
+    ctx.maxInputs = holder->getNumInputChannels();
+    ctx.maxOutputs = holder->getNumOutputChannels();
+    return ctx;
+  }
+#endif
+  return {};
+}
+
+juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx) {
+  if (ctx.manager == nullptr)
+    return {};
+  auto *device = ctx.manager->getCurrentAudioDevice();
+  if (device == nullptr)
+    return {};
+  const juce::String typeName = ctx.manager->getCurrentAudioDeviceType();
+  const juce::String deviceName = device->getName();
+  if (typeName.isEmpty() || deviceName.isEmpty())
+    return {};
+  return typeName + "|" + deviceName;
+}
 
 int categoryIndexForName(const juce::String &category) {
   const auto needle = category.trim();
@@ -321,6 +357,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.resizable = false;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
+  const auto audioCtx = getStandaloneAudioContext();
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
       AppSettings::getExpandWindowOnLaunch(),
@@ -329,17 +366,19 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
       },
       [] {}, routingDefaults, proc.getAvailableOutputChannelCount(),
-      [this](const std::vector<CategoryRoutingDefaults> &next) {
-        AppSettings::setRoutingDefaults(next);
+      [this](const juce::String &deviceKey,
+             const std::vector<CategoryRoutingDefaults> &next) {
+        AppSettings::setRoutingDefaultsForDevice(deviceKey, next);
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
-      });
-  panel->setSize(640, 560);
+      },
+      audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
+  panel->setSize(760, 620);
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 
   if (auto *window = options.launchAsync()) {
-    window->centreAroundComponent(parent != nullptr ? parent : this, 640, 560);
+    window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
   }
 }
 
@@ -355,7 +394,9 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
     const ImportedSongData &song) {
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   const int stemCount = processorRef.getLoadedStemCount();
-  const auto defaults = AppSettings::getRoutingDefaults();
+  const auto audioCtx = getStandaloneAudioContext();
+  const auto deviceKey = getCurrentDeviceKey(audioCtx);
+  const auto defaults = AppSettings::getRoutingDefaultsForDevice(deviceKey);
 
   int stemIndex = 0;
   for (const auto &stem : song.stems) {
