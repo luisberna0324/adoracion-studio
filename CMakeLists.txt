@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
+set(MTCONTROLS_FFMPEG_BIN_MACOS "" CACHE FILEPATH
+    "Path to ffmpeg binary that will be bundled in the macOS app")
+set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
+    "Path to ffmpeg.exe that will be bundled in the Windows build")
+
 include(FetchContent)
 
 if(NOT DEFINED JUCE_DIR)
@@ -71,6 +76,8 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
+        src/data/PrimeLibrarySource.cpp
+        src/data/PrimeLibrarySource.h
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp
@@ -135,4 +142,26 @@ elseif (TARGET soundtouch)
     target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
+endif()
+
+if (TARGET MTControls_Standalone)
+    if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_FFMPEG_BIN_MACOS}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg/ffmpeg"
+            VERBATIM)
+    endif()
+
+    if (WIN32 AND MTCONTROLS_FFMPEG_BIN_WINDOWS)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_FFMPEG_BIN_WINDOWS}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg.exe"
+            VERBATIM)
+    endif()
 endif()

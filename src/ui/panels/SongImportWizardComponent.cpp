@@ -79,9 +79,62 @@ private:
   juce::ToggleButton includeToggle;
 };
 
+class SongImportWizardComponent::PrimeSongListModel final
+    : public juce::ListBoxModel {
+public:
+  explicit PrimeSongListModel(SongImportWizardComponent &ownerIn)
+      : owner(ownerIn) {}
+
+  int getNumRows() override {
+    return static_cast<int>(owner.primeSongs.size());
+  }
+
+  void selectedRowsChanged(int row) override {
+    owner.usePrimeSongButton.setEnabled(
+        juce::isPositiveAndBelow(row, static_cast<int>(owner.primeSongs.size())));
+  }
+
+  void paintListBoxItem(int row, juce::Graphics &g, int width, int height,
+                        bool rowIsSelected) override {
+    if (!juce::isPositiveAndBelow(row, static_cast<int>(owner.primeSongs.size())))
+      return;
+
+    const auto &song = owner.primeSongs[static_cast<size_t>(row)];
+    auto area = juce::Rectangle<int>(0, 0, width, height).reduced(6, 4);
+
+    g.setColour(rowIsSelected ? UITheme::accent.withAlpha(0.28f)
+                              : UITheme::cardBgHover.withAlpha(0.92f));
+    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.7f));
+    g.drawRoundedRectangle(area.toFloat(), 4.0f, 1.0f);
+
+    auto textArea = area.reduced(8, 5);
+    g.setColour(UITheme::textPrimary);
+    g.setFont(juce::FontOptions(12.5f));
+    g.drawFittedText(song.title.isNotEmpty() ? song.title : "Untitled Song",
+                     textArea.removeFromTop(16),
+                     juce::Justification::centredLeft, 1);
+
+    g.setColour(UITheme::textSecondary);
+    g.setFont(juce::FontOptions(10.0f));
+    juce::String meta;
+    if (song.artist.isNotEmpty())
+      meta << song.artist << " • ";
+    if (song.bpm > 0)
+      meta << juce::String(song.bpm) << " BPM • ";
+    meta << juce::String(static_cast<int>(song.tracks.size())) << " stems";
+    g.drawFittedText(meta, textArea, juce::Justification::centredLeft, 1);
+  }
+
+private:
+  SongImportWizardComponent &owner;
+};
+
 SongImportWizardComponent::SongImportWizardComponent(
-    std::function<void(ImportedSongData)> onSubmitSong)
-    : onSubmit(std::move(onSubmitSong)) {
+    std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+    const bool primeImportEnabledIn)
+    : onSubmit(std::move(onSubmitSong)),
+      primeImportEnabled(primeImportEnabledIn) {
   setSize(760, 560);
 
   titleLabel.setText("Add Song", juce::dontSendNotification);
@@ -95,6 +148,16 @@ SongImportWizardComponent::SongImportWizardComponent(
   stemsSectionLabel.setFont(juce::FontOptions(12.0f));
   stemsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(stemsSectionLabel);
+
+  primeSectionLabel.setText("Import from PRIME", juce::dontSendNotification);
+  primeSectionLabel.setFont(juce::FontOptions(12.0f));
+  primeSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(primeSectionLabel);
+
+  primeStatusLabel.setText("Ready", juce::dontSendNotification);
+  primeStatusLabel.setFont(juce::FontOptions(10.0f));
+  primeStatusLabel.setJustificationType(juce::Justification::centredLeft);
+  addAndMakeVisible(primeStatusLabel);
 
   infoSectionLabel.setText("Song Info", juce::dontSendNotification);
   infoSectionLabel.setFont(juce::FontOptions(12.0f));
@@ -159,7 +222,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   addAndMakeVisible(artistEditor);
   addAndMakeVisible(bpmEditor);
 
-  fileTypeBox.addItem("Multitrack WAV", 1);
+  fileTypeBox.addItem("Multitrack ALAC", 1);
   fileTypeBox.addItem("Stereo", 2);
   fileTypeBox.addItem("Split", 3);
   fileTypeBox.setSelectedId(1);
@@ -182,6 +245,23 @@ SongImportWizardComponent::SongImportWizardComponent(
   chooseFilesButton.setButtonText("Load stems...");
   chooseFilesButton.onClick = [this] { openStemChooser(); };
   addAndMakeVisible(chooseFilesButton);
+
+  refreshPrimeButton.setButtonText("Refresh PRIME");
+  refreshPrimeButton.onClick = [this] { reloadPrimeSongs(); };
+  addAndMakeVisible(refreshPrimeButton);
+
+  usePrimeSongButton.setButtonText("Use Selected");
+  usePrimeSongButton.onClick = [this] { useSelectedPrimeSong(); };
+  usePrimeSongButton.setEnabled(false);
+  addAndMakeVisible(usePrimeSongButton);
+
+  primeSongListModel = std::make_unique<PrimeSongListModel>(*this);
+  primeSongsList.setRowHeight(42);
+  primeSongsList.setModel(primeSongListModel.get());
+  primeSongsList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
+  primeSongsList.setColour(juce::ListBox::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.7f));
+  addAndMakeVisible(primeSongsList);
 
   selectedFilesLabel.setText("No stems selected", juce::dontSendNotification);
   addAndMakeVisible(selectedFilesLabel);
@@ -214,6 +294,8 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   refreshThemeColours();
   changeStep(0);
+  if (primeImportEnabled)
+    reloadPrimeSongs();
 }
 
 SongImportWizardComponent::~SongImportWizardComponent() = default;
@@ -263,11 +345,13 @@ void SongImportWizardComponent::refreshThemeColours() {
   titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   for (auto *label :
-       {&stemsSectionLabel, &infoSectionLabel, &songTitleLabel, &artistLabel,
-        &fileTypeLabel, &bpmLabel, &keyLabel, &timeSignatureLabel,
-        &mapFileHeader, &mapNameHeader, &mapCategoryHeader, &mapLoadHeader}) {
+       {&stemsSectionLabel, &primeSectionLabel, &infoSectionLabel,
+        &songTitleLabel, &artistLabel, &fileTypeLabel, &bpmLabel, &keyLabel,
+        &timeSignatureLabel, &mapFileHeader, &mapNameHeader,
+        &mapCategoryHeader, &mapLoadHeader}) {
     label->setColour(juce::Label::textColourId, UITheme::textSecondary);
   }
+  primeStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
 
   applyEditorTheme(songTitleEditor, songTitlePlaceholder);
   applyEditorTheme(artistEditor, artistPlaceholder);
@@ -294,6 +378,8 @@ void SongImportWizardComponent::refreshThemeColours() {
   configureCombo(timeSignatureBox);
 
   styleSecondaryButton(chooseFilesButton);
+  styleSecondaryButton(refreshPrimeButton);
+  stylePrimaryButton(usePrimeSongButton);
   styleSecondaryButton(cancelButton);
   styleSecondaryButton(backButton);
   stylePrimaryButton(nextButton);
@@ -320,7 +406,13 @@ void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
 
 void SongImportWizardComponent::layoutStepOne(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == 0;
+  const bool showPrime = visible && primeImportEnabled;
   for (auto *c : {static_cast<juce::Component *>(&chooseFilesButton),
+                  static_cast<juce::Component *>(&refreshPrimeButton),
+                  static_cast<juce::Component *>(&usePrimeSongButton),
+                  static_cast<juce::Component *>(&primeSongsList),
+                  static_cast<juce::Component *>(&primeSectionLabel),
+                  static_cast<juce::Component *>(&primeStatusLabel),
                   static_cast<juce::Component *>(&selectedFilesLabel),
                   static_cast<juce::Component *>(&selectedFilesEditor),
                   static_cast<juce::Component *>(&songTitleEditor),
@@ -337,7 +429,13 @@ void SongImportWizardComponent::layoutStepOne(juce::Rectangle<int> bounds) {
                   static_cast<juce::Component *>(&bpmLabel),
                   static_cast<juce::Component *>(&keyLabel),
                   static_cast<juce::Component *>(&timeSignatureLabel)}) {
-    c->setVisible(visible);
+    const bool isPrimeControl =
+        c == static_cast<juce::Component *>(&refreshPrimeButton) ||
+        c == static_cast<juce::Component *>(&usePrimeSongButton) ||
+        c == static_cast<juce::Component *>(&primeSongsList) ||
+        c == static_cast<juce::Component *>(&primeSectionLabel) ||
+        c == static_cast<juce::Component *>(&primeStatusLabel);
+    c->setVisible(isPrimeControl ? showPrime : visible);
   }
   if (!visible)
     return;
@@ -346,6 +444,21 @@ void SongImportWizardComponent::layoutStepOne(juce::Rectangle<int> bounds) {
   const int fieldLabelH = 16;
   const int fieldH = 30;
   const int rowGap = 6;
+
+  if (primeImportEnabled) {
+    auto primeHeader = bounds.removeFromTop(sectionLabelH);
+    primeSectionLabel.setBounds(primeHeader.removeFromLeft(170));
+    auto primeButtons = primeHeader.removeFromRight(258);
+    refreshPrimeButton.setBounds(primeButtons.removeFromLeft(122));
+    primeButtons.removeFromLeft(8);
+    usePrimeSongButton.setBounds(primeButtons.removeFromLeft(128));
+
+    bounds.removeFromTop(4);
+    primeSongsList.setBounds(bounds.removeFromTop(118));
+    bounds.removeFromTop(2);
+    primeStatusLabel.setBounds(bounds.removeFromTop(18));
+    bounds.removeFromTop(8);
+  }
 
   auto stemHeader = bounds.removeFromTop(sectionLabelH);
   stemsSectionLabel.setBounds(stemHeader.removeFromLeft(200));
@@ -438,7 +551,7 @@ void SongImportWizardComponent::openStemChooser() {
   stemChooser = std::make_unique<juce::FileChooser>(
       "Select stems",
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-      "*.wav;*.aif;*.aiff;*.flac;*.mp3");
+      "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
 
   const auto chooserFlags = juce::FileBrowserComponent::openMode |
                            juce::FileBrowserComponent::canSelectFiles |
@@ -471,6 +584,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 
     StemDraft draft;
     draft.file = file;
+    draft.stemId = juce::Uuid().toString();
     draft.displayName = makeDisplayNameFromFile(file);
     draft.category =
         suggestCategoryFromFilename(file.getFileNameWithoutExtension());
@@ -544,6 +658,101 @@ void SongImportWizardComponent::layoutMappingRows() {
     y += rowH + gap;
   }
   mapContent.setSize(width + 8, juce::jmax(mapViewport.getHeight(), y + 4));
+}
+
+void SongImportWizardComponent::reloadPrimeSongs() {
+  if (!primeImportEnabled)
+    return;
+
+  primeSongs.clear();
+  usePrimeSongButton.setEnabled(false);
+  primeSongsList.updateContent();
+  primeSongsList.selectRow(-1);
+
+  if (!PrimeLibrarySource::isSupportedOnCurrentPlatform()) {
+    primeStatusLabel.setText("PRIME import is available only on macOS.",
+                             juce::dontSendNotification);
+    return;
+  }
+
+  juce::String error;
+  primeSongs = PrimeLibrarySource::loadSongs(error);
+  primeSongsList.updateContent();
+
+  if (primeSongs.empty()) {
+    primeStatusLabel.setText(
+        error.isNotEmpty() ? error : "No PRIME songs available to import.",
+        juce::dontSendNotification);
+    return;
+  }
+
+  primeStatusLabel.setText(
+      juce::String(static_cast<int>(primeSongs.size())) +
+          " PRIME songs available.",
+      juce::dontSendNotification);
+}
+
+void SongImportWizardComponent::useSelectedPrimeSong() {
+  const int row = primeSongsList.getSelectedRow();
+  if (!juce::isPositiveAndBelow(row, static_cast<int>(primeSongs.size()))) {
+    primeStatusLabel.setText("Select a PRIME song first.",
+                             juce::dontSendNotification);
+    return;
+  }
+
+  applyPrimeSong(static_cast<size_t>(row));
+}
+
+void SongImportWizardComponent::applyPrimeSong(const size_t index) {
+  if (index >= primeSongs.size())
+    return;
+
+  const auto &song = primeSongs[index];
+  songTitleEditor.setText(song.title, juce::dontSendNotification);
+  artistEditor.setText(song.artist, juce::dontSendNotification);
+  bpmEditor.setText(song.bpm > 0 ? juce::String(song.bpm) : juce::String(),
+                    juce::dontSendNotification);
+  if (song.key.isNotEmpty())
+    keyBox.setText(song.key, juce::dontSendNotification);
+  if (song.timeSignature.isNotEmpty())
+    timeSignatureBox.setText(song.timeSignature, juce::dontSendNotification);
+  fileTypeBox.setText("Multitrack ALAC", juce::dontSendNotification);
+
+  stems.clear();
+  stems.reserve(song.tracks.size());
+
+  juce::AudioFormatManager fm;
+  fm.registerBasicFormats();
+
+  for (const auto &track : song.tracks) {
+    const juce::File file(track.sourcePath);
+    if (!file.existsAsFile())
+      continue;
+
+    StemDraft draft;
+    draft.file = file;
+    draft.stemId = track.stemId;
+    draft.displayName = track.displayName;
+    draft.category = track.category;
+    draft.include = true;
+
+    if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
+            fm.createReaderFor(file))) {
+      draft.sampleRate = static_cast<int>(reader->sampleRate);
+      draft.channels = static_cast<int>(reader->numChannels);
+      if (reader->sampleRate > 0.0)
+        draft.durationSec =
+            static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+    }
+
+    stems.push_back(std::move(draft));
+  }
+
+  updateSelectedFilesText();
+  rebuildMappingRows();
+  primeStatusLabel.setText(
+      "Loaded \"" + song.title + "\" from PRIME for import.",
+      juce::dontSendNotification);
 }
 
 void SongImportWizardComponent::syncMappingsToDrafts() {
@@ -637,7 +846,7 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.stems.reserve(stems.size());
   for (const auto &stem : stems) {
     ImportedStemData data;
-    data.stemId = juce::Uuid().toString();
+    data.stemId = stem.stemId.isNotEmpty() ? stem.stemId : juce::Uuid().toString();
     data.sourcePath = stem.file.getFullPathName();
     data.fileName = stem.file.getFileName();
     data.displayName = stem.displayName;
@@ -656,8 +865,16 @@ void SongImportWizardComponent::submitSong() {
   if (currentStep != 2)
     return;
 
-  if (onSubmit)
-    onSubmit(buildSongData());
+  if (onSubmit) {
+    juce::String errorMessage;
+    if (!onSubmit(buildSongData(), errorMessage)) {
+      juce::AlertWindow::showMessageBoxAsync(
+          juce::AlertWindow::WarningIcon, "Import error",
+          errorMessage.isNotEmpty() ? errorMessage
+                                    : "Couldn't import the selected song.");
+      return;
+    }
+  }
 
   closeDialog();
 }

@@ -113,6 +113,8 @@ private:
 
 SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunch,
                              ThemeChanged cb, ExpandLaunchChanged expandCb,
+                             const bool primeImportEnabled,
+                             PrimeImportChanged primeImportCb,
                              CloseRequested closeCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
@@ -121,7 +123,9 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
                              int maxInputChannels,
                              int maxOutputChannels)
     : onThemeChanged(std::move(cb)),
-      onExpandLaunchChanged(std::move(expandCb)), onClose(std::move(closeCb)),
+      onExpandLaunchChanged(std::move(expandCb)),
+      onPrimeImportChanged(std::move(primeImportCb)),
+      onClose(std::move(closeCb)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
@@ -180,6 +184,21 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
       onExpandLaunchChanged(expandLaunchToggle.getToggleState());
   };
   generalPage.addAndMakeVisible(expandLaunchToggle);
+
+  primeImportLabel.setText("Importar desde PRIME", juce::dontSendNotification);
+  primeImportLabel.setJustificationType(juce::Justification::centredLeft);
+  primeImportLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(primeImportLabel);
+
+  primeImportToggle.setButtonText("Habilitar importacion desde PRIME");
+  primeImportToggle.setClickingTogglesState(true);
+  primeImportToggle.setToggleState(primeImportEnabled,
+                                   juce::dontSendNotification);
+  primeImportToggle.onClick = [this] {
+    if (onPrimeImportChanged)
+      onPrimeImportChanged(primeImportToggle.getToggleState());
+  };
+  generalPage.addAndMakeVisible(primeImportToggle);
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -316,6 +335,13 @@ void SettingsPanel::refreshThemeColours() {
                                UITheme::accent);
   expandLaunchToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                                UITheme::textSecondary);
+  primeImportLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  primeImportToggle.setColour(juce::ToggleButton::textColourId,
+                              UITheme::textPrimary);
+  primeImportToggle.setColour(juce::ToggleButton::tickColourId,
+                              UITheme::accent);
+  primeImportToggle.setColour(juce::ToggleButton::tickDisabledColourId,
+                              UITheme::textSecondary);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   closeButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   closeButton.setColour(juce::TextButton::buttonOnColourId,
@@ -349,6 +375,10 @@ void SettingsPanel::layoutGeneralPage() {
   auto expandRow = area.removeFromTop(26);
   expandLaunchLabel.setBounds(expandRow.removeFromLeft(130));
   expandLaunchToggle.setBounds(expandRow);
+  area.removeFromTop(10);
+  auto primeRow = area.removeFromTop(26);
+  primeImportLabel.setBounds(primeRow.removeFromLeft(150));
+  primeImportToggle.setBounds(primeRow);
 }
 
 void SettingsPanel::layoutRoutingPage() {

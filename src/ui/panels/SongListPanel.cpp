@@ -2,6 +2,7 @@
 
 #include "SongImportWizardComponent.h"
 #include "../../PluginEditor.h"
+#include "../../data/AppSettings.h"
 
 #include <algorithm>
 #include <utility>
@@ -958,15 +959,21 @@ void SongListPanel::openSongImportWizard() {
   options.resizable = true;
   options.componentToCentreAround = centerTarget;
   auto *panel = new SongImportWizardComponent(
-      [safeThis](ImportedSongData song) {
-        if (safeThis == nullptr)
-          return;
+      [safeThis](ImportedSongData song, juce::String &errorMessage) {
+        if (safeThis == nullptr) {
+          errorMessage = "Import UI is no longer available.";
+          return false;
+        }
 
-        if (!SongLibraryStore::appendSong(std::move(song))) {
-          juce::AlertWindow::showMessageBoxAsync(
-              juce::AlertWindow::WarningIcon, "Save error",
-              "Couldn't persist the imported song.");
-          return;
+        juce::MouseCursor::showWaitCursor();
+        juce::String importError;
+        const bool success = SongLibraryStore::appendSong(std::move(song), &importError);
+        juce::MouseCursor::hideWaitCursor();
+
+        if (!success) {
+          errorMessage = importError.isNotEmpty() ? importError
+                                                  : "Couldn't persist the imported song.";
+          return false;
         }
 
         const auto allSongs = SongLibraryStore::loadSongs();
@@ -977,7 +984,9 @@ void SongListPanel::openSongImportWizard() {
         }
 
         safeThis->refreshFromStorage();
-      });
+        return true;
+      },
+      AppSettings::getPrimeImportEnabled());
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 

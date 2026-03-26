@@ -14,9 +14,12 @@ class AppSettings {
 public:
   /** Por defecto: expandir la ventana al área de trabajo al abrir la app. */
   static constexpr bool kDefaultExpandWindowOnLaunch = true;
+  static constexpr bool kDefaultPrimeImportEnabled = false;
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
+  static bool getPrimeImportEnabled();
+  static void setPrimeImportEnabled(bool value);
   static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
   static void setRoutingDefaults(
       const std::vector<CategoryRoutingDefaults> &defaults);

@@ -13,13 +13,15 @@ class SettingsPanel final : public juce::Component {
 public:
   using ThemeChanged = std::function<void(ThemePreset)>;
   using ExpandLaunchChanged = std::function<void(bool)>;
+  using PrimeImportChanged = std::function<void(bool)>;
   using CloseRequested = std::function<void()>;
   using RoutingDefaultsChanged =
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
 
   SettingsPanel(ThemePreset current, bool expandWindowOnLaunch, ThemeChanged cb,
-                ExpandLaunchChanged expandCb, CloseRequested closeCb,
+                ExpandLaunchChanged expandCb, bool primeImportEnabled,
+                PrimeImportChanged primeImportCb, CloseRequested closeCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
                 int availableOutputChannels,
                 RoutingDefaultsChanged routingCb,
@@ -57,6 +59,8 @@ private:
   juce::ComboBox themeBox;
   juce::Label expandLaunchLabel;
   juce::ToggleButton expandLaunchToggle;
+  juce::Label primeImportLabel;
+  juce::ToggleButton primeImportToggle;
   juce::Label routingSectionLabel;
   juce::Viewport routingViewport;
   juce::Component routingContent;
@@ -65,6 +69,7 @@ private:
   juce::TextButton closeButton;
   ThemeChanged onThemeChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
+  PrimeImportChanged onPrimeImportChanged;
   CloseRequested onClose;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
   std::vector<CategoryRoutingDefaults> routingDefaults;
