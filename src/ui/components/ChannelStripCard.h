@@ -55,6 +55,7 @@ public:
 
   const juce::String &getChannelName() const;
   const Layout &getLayout() const { return layout; }
+  void setLayoutScale(float scale);
   void setVolume(float volume);
   void setGain(float gain);
   void setMuteState(bool muted);
@@ -72,7 +73,9 @@ public:
   void setOnSoloChanged(std::function<void(bool)> cb);
 
 private:
+  Layout baseLayout;
   Layout layout;
+  float layoutScale = 1.0f;
   ChannelStripLookAndFeel &lookAndFeel;
   juce::String name;
 

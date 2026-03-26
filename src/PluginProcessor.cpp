@@ -445,13 +445,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     buffer.applyGain(masterOutGain);
 
   if (stopAtEnd) {
-    setTransportState(TransportState::stopped);
-    songCurrentPositionSeconds.store(stopAtEndSec, std::memory_order_relaxed);
-    if (playbackSampleRate > 0.0) {
-      const juce::int64 endSamples =
-          static_cast<juce::int64>(stopAtEndSec * playbackSampleRate);
-      globalSamplePosition.store(endSamples, std::memory_order_relaxed);
-    }
+    juce::ignoreUnused(stopAtEndSec);
+    // Al llegar al final de la ventana, detenemos y volvemos al inicio para
+    // que el seek no quede clavado al final.
+    stopSong();
   }
 
   const float left =

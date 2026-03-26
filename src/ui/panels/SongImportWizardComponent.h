@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
 #include <JuceHeader.h>
 
@@ -10,7 +11,8 @@
 class SongImportWizardComponent final : public juce::Component {
 public:
   explicit SongImportWizardComponent(
-      std::function<void(ImportedSongData)> onSubmitSong);
+      std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+      bool primeImportEnabled);
   ~SongImportWizardComponent() override;
 
   void paint(juce::Graphics &g) override;
@@ -20,6 +22,7 @@ public:
 private:
   struct StemDraft {
     juce::File file;
+    juce::String stemId;
     juce::String displayName;
     juce::String category;
     bool include = true;
@@ -29,6 +32,7 @@ private:
   };
 
   class MappingRow;
+  class PrimeSongListModel;
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder);
@@ -41,6 +45,9 @@ private:
   void updateSelectedFilesText();
   void rebuildMappingRows();
   void layoutMappingRows();
+  void reloadPrimeSongs();
+  void useSelectedPrimeSong();
+  void applyPrimeSong(size_t index);
   void syncMappingsToDrafts();
   void updateSummaryText();
   void goToNextStep();
@@ -55,15 +62,20 @@ private:
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
 
-  std::function<void(ImportedSongData)> onSubmit;
+  std::function<bool(ImportedSongData, juce::String &)> onSubmit;
+  bool primeImportEnabled = false;
   int currentStep = 0;
   std::unique_ptr<juce::FileChooser> stemChooser;
   std::vector<StemDraft> stems;
   std::vector<std::unique_ptr<MappingRow>> mappingRows;
+  std::vector<PrimeSongData> primeSongs;
+  std::unique_ptr<PrimeSongListModel> primeSongListModel;
 
   juce::Label titleLabel;
   juce::Label subtitleLabel;
   juce::Label stemsSectionLabel;
+  juce::Label primeSectionLabel;
+  juce::Label primeStatusLabel;
   juce::Label infoSectionLabel;
   juce::Label songTitleLabel;
   juce::Label artistLabel;
@@ -77,6 +89,9 @@ private:
   juce::Label mapLoadHeader;
 
   juce::TextButton chooseFilesButton;
+  juce::TextButton refreshPrimeButton;
+  juce::TextButton usePrimeSongButton;
+  juce::ListBox primeSongsList;
   juce::Label selectedFilesLabel;
   juce::TextEditor selectedFilesEditor;
   juce::TextEditor songTitleEditor;

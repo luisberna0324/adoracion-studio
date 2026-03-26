@@ -34,42 +34,42 @@ juce::String formatTimeSeconds(double seconds) {
 void applyTheme(ThemePreset preset) {
   switch (preset) {
   case ThemePreset::Spotify:
-    UITheme::appBg = juce::Colour::fromRGB(18, 18, 18); // #121212
-    UITheme::appBgTop = juce::Colour::fromRGB(25, 20, 20); // #191414
-    UITheme::appBgBottom = juce::Colour::fromRGB(29, 29, 29);
-    UITheme::panelDark = juce::Colour::fromRGB(16, 16, 16);
-    UITheme::cardBg = juce::Colour::fromRGB(28, 28, 28);
-    UITheme::cardBgHover = juce::Colour::fromRGB(36, 36, 36);
-    UITheme::cardBgPressed = juce::Colour::fromRGB(44, 44, 44);
-    UITheme::cardBorder = juce::Colour::fromRGB(48, 48, 48);
+    UITheme::appBg = juce::Colour::fromRGB(30, 30, 30); // #1E1E1E
+    UITheme::appBgTop = juce::Colour::fromRGB(36, 31, 31); // #241F1F
+    UITheme::appBgBottom = juce::Colour::fromRGB(42, 42, 42); // #2A2A2A
+    UITheme::panelDark = juce::Colour::fromRGB(24, 24, 24); // #181818
+    UITheme::cardBg = juce::Colour::fromRGB(38, 38, 38); // #262626
+    UITheme::cardBgHover = juce::Colour::fromRGB(50, 50, 50); // #323232
+    UITheme::cardBgPressed = juce::Colour::fromRGB(60, 60, 60); // #3C3C3C
+    UITheme::cardBorder = juce::Colour::fromRGB(64, 64, 64); // #404040
     UITheme::textPrimary = juce::Colour::fromRGB(245, 245, 245);
-    UITheme::textSecondary = juce::Colour::fromRGB(179, 179, 179);
+    UITheme::textSecondary = juce::Colour::fromRGB(190, 190, 190);
     UITheme::accent = juce::Colour::fromRGB(29, 185, 84); // #1DB954
     UITheme::accentSoft = juce::Colour::fromRGB(30, 215, 96); // #1ED760
-    UITheme::accentMuted = juce::Colour::fromRGB(88, 140, 88);
+    UITheme::accentMuted = juce::Colour::fromRGB(102, 150, 102);
     UITheme::accentMaster = juce::Colour::fromRGB(29, 185, 84);
-    UITheme::cardBgMaster = juce::Colour::fromRGB(24, 24, 24);
-    UITheme::cardBgClickGuide = juce::Colour::fromRGB(32, 32, 32);
+    UITheme::cardBgMaster = juce::Colour::fromRGB(44, 44, 44); // #2C2C2C
+    UITheme::cardBgClickGuide = juce::Colour::fromRGB(52, 52, 52); // #343434
     UITheme::onAccent = juce::Colours::black;
     UITheme::dividerSoft = juce::Colour::fromRGBA(255, 255, 255, 16);
     break;
   case ThemePreset::Ableton:
-    UITheme::appBg = juce::Colour::fromRGB(30, 30, 30);
-    UITheme::appBgTop = juce::Colour::fromRGB(36, 36, 36);
-    UITheme::appBgBottom = juce::Colour::fromRGB(44, 44, 44);
-    UITheme::panelDark = juce::Colour::fromRGB(24, 24, 24);
-    UITheme::cardBg = juce::Colour::fromRGB(40, 40, 40);
-    UITheme::cardBgHover = juce::Colour::fromRGB(48, 48, 48);
-    UITheme::cardBgPressed = juce::Colour::fromRGB(58, 58, 58);
-    UITheme::cardBorder = juce::Colour::fromRGB(68, 68, 68);
-    UITheme::textPrimary = juce::Colour::fromRGB(230, 230, 230);
-    UITheme::textSecondary = juce::Colour::fromRGB(160, 160, 160);
+    UITheme::appBg = juce::Colour::fromRGB(36, 36, 36); // #242424
+    UITheme::appBgTop = juce::Colour::fromRGB(42, 42, 42); // #2A2A2A
+    UITheme::appBgBottom = juce::Colour::fromRGB(52, 52, 52); // #343434
+    UITheme::panelDark = juce::Colour::fromRGB(30, 30, 30); // #1E1E1E
+    UITheme::cardBg = juce::Colour::fromRGB(52, 52, 52); // #343434
+    UITheme::cardBgHover = juce::Colour::fromRGB(66, 66, 66); // #424242
+    UITheme::cardBgPressed = juce::Colour::fromRGB(76, 76, 76); // #4C4C4C
+    UITheme::cardBorder = juce::Colour::fromRGB(82, 82, 82); // #525252
+    UITheme::textPrimary = juce::Colour::fromRGB(235, 235, 235);
+    UITheme::textSecondary = juce::Colour::fromRGB(184, 184, 184);
     UITheme::accent = juce::Colour::fromRGB(255, 179, 71); // warm
-    UITheme::accentSoft = juce::Colour::fromRGB(76, 182, 255); // cool
-    UITheme::accentMuted = juce::Colour::fromRGB(180, 140, 95);
+    UITheme::accentSoft = juce::Colour::fromRGB(255, 198, 112); // warm soft
+    UITheme::accentMuted = juce::Colour::fromRGB(192, 152, 108);
     UITheme::accentMaster = juce::Colour::fromRGB(255, 179, 71);
-    UITheme::cardBgMaster = juce::Colour::fromRGB(46, 46, 46);
-    UITheme::cardBgClickGuide = juce::Colour::fromRGB(54, 54, 54);
+    UITheme::cardBgMaster = juce::Colour::fromRGB(58, 58, 58); // #3A3A3A
+    UITheme::cardBgClickGuide = juce::Colour::fromRGB(64, 64, 64); // #404040
     UITheme::onAccent = juce::Colours::black;
     UITheme::dividerSoft = juce::Colour::fromRGBA(255, 255, 255, 16);
     break;

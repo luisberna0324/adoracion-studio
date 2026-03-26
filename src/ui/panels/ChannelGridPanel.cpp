@@ -75,6 +75,11 @@ public:
     onOutputChannelChanged = std::move(callback);
   }
 
+  void setStripScale(const float scale) {
+    strip->setLayoutScale(scale);
+    resized();
+  }
+
   ChannelStripCard &getStrip() { return *strip; }
 
 private:
@@ -88,10 +93,10 @@ private:
 ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                                    MTControlsAudioProcessor &processorRef)
     : lookAndFeel(lookAndFeelRef), processor(processorRef) {
-  modeBadge.setJustificationType(juce::Justification::centredLeft);
-  modeBadge.setFont(juce::FontOptions(11.0f));
-  modeBadge.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  addAndMakeVisible(modeBadge);
+  nudgeHintLabel.setText("Volumen stems", juce::dontSendNotification);
+  nudgeHintLabel.setJustificationType(juce::Justification::centredLeft);
+  nudgeHintLabel.setFont(juce::FontOptions(10.0f));
+  addAndMakeVisible(nudgeHintLabel);
 
   routingHintLabel.setJustificationType(juce::Justification::centredLeft);
   routingHintLabel.setFont(juce::FontOptions(11.0f));
@@ -109,6 +114,19 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   applyRoutingButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
   addAndMakeVisible(applyRoutingButton);
 
+  nudgeUpButton.setClickingTogglesState(false);
+  nudgeUpButton.setLookAndFeel(&lookAndFeel);
+  nudgeUpButton.onClick = [this] { nudgeFaders(nudgeStep); };
+  nudgeUpButton.setTooltip("Sube todos los stems (excepto master/click/guia)");
+  addAndMakeVisible(nudgeUpButton);
+
+  nudgeDownButton.setClickingTogglesState(false);
+  nudgeDownButton.setLookAndFeel(&lookAndFeel);
+  nudgeDownButton.onClick = [this] { nudgeFaders(-nudgeStep); };
+  nudgeDownButton.setTooltip(
+      "Baja todos los stems (excepto master/click/guia)");
+  addAndMakeVisible(nudgeDownButton);
+
   viewport.setViewedComponent(&content, false);
   viewport.setScrollBarsShown(true, false, false, false);
   viewport.setScrollBarThickness(1);
@@ -116,13 +134,15 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   addAndMakeVisible(viewport);
 
   startTimerHz(2);
-  updateModeBadge();
+  refreshThemeColours();
 }
 
-ChannelGridPanel::~ChannelGridPanel() = default;
+ChannelGridPanel::~ChannelGridPanel() {
+  nudgeUpButton.setLookAndFeel(nullptr);
+  nudgeDownButton.setLookAndFeel(nullptr);
+}
 
 void ChannelGridPanel::timerCallback() {
-  updateModeBadge();
   const int n = processor.getAvailableOutputChannelCount();
   if (n != lastSeenOutputChannelCount) {
     lastSeenOutputChannelCount = n;
@@ -131,21 +151,16 @@ void ChannelGridPanel::timerCallback() {
   }
 }
 
-void ChannelGridPanel::updateModeBadge() {
-  const bool stage = processor.getCurrentAudioMode() == AppAudioMode::Stage;
-  const juce::String next =
-      stage ? juce::String::fromUTF8(u8"\U0001F39B Modo escena")
-            : juce::String::fromUTF8(u8"\U0001F3A7 Modo ensayo");
-  if (modeBadge.getText() != next)
-    modeBadge.setText(next, juce::dontSendNotification);
-}
-
 void ChannelGridPanel::layoutHeaderAndViewport() {
   auto r = getLocalBounds();
   const int headerH = 34;
   auto header = r.removeFromTop(headerH);
 
-  modeBadge.setBounds(header.removeFromLeft(200).reduced(6, 6));
+  auto leftArea = header.removeFromLeft(264);
+  auto nudgeButtonsArea = leftArea.removeFromRight(140);
+  nudgeHintLabel.setBounds(leftArea.reduced(6, 8));
+  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(70).reduced(2, 5));
+  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(70).reduced(2, 5));
   if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
     applyRoutingButton.setVisible(true);
     routingHintLabel.setVisible(true);
@@ -419,6 +434,26 @@ void ChannelGridPanel::nudgeFaders(float delta) {
 }
 
 void ChannelGridPanel::refreshThemeColours() {
+  nudgeHintLabel.setColour(juce::Label::textColourId,
+                           UITheme::textSecondary.withAlpha(0.8f));
+
+  nudgeUpButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  nudgeUpButton.setColour(juce::TextButton::buttonOnColourId,
+                          UITheme::cardBgPressed);
+  nudgeUpButton.setColour(juce::TextButton::textColourOffId,
+                          UITheme::textPrimary);
+  nudgeUpButton.setColour(juce::TextButton::textColourOnId,
+                          UITheme::textPrimary);
+
+  nudgeDownButton.setColour(juce::TextButton::buttonColourId,
+                            UITheme::cardBgHover);
+  nudgeDownButton.setColour(juce::TextButton::buttonOnColourId,
+                            UITheme::cardBgPressed);
+  nudgeDownButton.setColour(juce::TextButton::textColourOffId,
+                            UITheme::textPrimary);
+  nudgeDownButton.setColour(juce::TextButton::textColourOnId,
+                            UITheme::textPrimary);
+
   for (size_t i = 0; i < slots.size(); ++i) {
     auto &strip = slots[i]->getStrip();
     const int stemIndex =
@@ -453,21 +488,38 @@ void ChannelGridPanel::resized() {
   layoutHeaderAndViewport();
 
   const int contentWidth = juce::jmax(1, viewport.getWidth());
-  const bool gridShowsRouting = processor.getAvailableOutputChannelCount() > 2;
+  // Mantener altura estable: actualmente el ruteo por canal está oculto.
+  const bool gridShowsRouting = false;
 
   const int pad = 8;
   const int gapX = 4;
   const int gapY = 10;
-  const auto stripLayout = ChannelStripCard::Layout{};
+  const auto baseLayout = ChannelStripCard::Layout{};
+  const int baseCellW = baseLayout.width + 2;
+  const int maxColumnsAtBase =
+      juce::jmax(1, (contentWidth - (pad * 2) + gapX) / (baseCellW + gapX));
+  const int visibleSlots = static_cast<int>(slots.size());
+  const int scaleColumns =
+      juce::jmax(1, juce::jmin(juce::jmax(1, visibleSlots), maxColumnsAtBase));
+  const int availableCellWidth =
+      juce::jmax(1, contentWidth - (pad * 2) - (juce::jmax(0, scaleColumns - 1) * gapX));
+  const float widthScale =
+      static_cast<float>(availableCellWidth) /
+      static_cast<float>(juce::jmax(1, scaleColumns * baseCellW));
+  const bool isWideViewport = contentWidth >= 1500;
+  const float stripScale =
+      isWideViewport ? juce::jlimit(1.0f, 1.22f, widthScale) : 1.0f;
+
+  for (auto &slot : slots)
+    slot->setStripScale(stripScale);
+
+  const auto stripLayout =
+      slots.empty() ? baseLayout : slots.front()->getStrip().getLayout();
   const int cellW = stripLayout.width + 2;
-  const int rows =
-      (static_cast<int>(slots.size()) +
-       juce::jmax(1, (contentWidth - (pad * 2) + gapX) / (cellW + gapX)) - 1) /
-      juce::jmax(1, (contentWidth - (pad * 2) + gapX) / (cellW + gapX));
   const int columns =
       juce::jmax(1, (contentWidth - (pad * 2) + gapX) / (cellW + gapX));
-  const int cellH =
-      stripLayout.height + (gridShowsRouting ? 34 : 8);
+  const int rows = (visibleSlots + columns - 1) / columns;
+  const int cellH = stripLayout.height + (gridShowsRouting ? 34 : 8);
 
   for (size_t i = 0; i < slots.size(); ++i) {
     const int row = static_cast<int>(i) / columns;

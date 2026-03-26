@@ -123,15 +123,23 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
   return saveLibrary(library);
 }
 
-bool SongLibraryStore::appendSong(ImportedSongData song) {
-  copyStemFiles(song);
+bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMessage) {
+  juce::String localError;
+  if (!copyStemFiles(song, localError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
 
   auto library = loadLibrary();
   ensureSongHasStemIds(song);
   library.songs.push_back(song);
   ensureDefaultSetlist(library);
   addSongToActiveSetlist(library, song);
-  return saveLibrary(library);
+  const bool saved = saveLibrary(library);
+  if (!saved && errorMessage != nullptr && localError.isEmpty())
+    *errorMessage = "Couldn't persist song metadata.";
+  return saved;
 }
 
 bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,
@@ -379,33 +387,144 @@ juce::File SongLibraryStore::getWaveformCacheDir() {
   return dir;
 }
 
-void SongLibraryStore::copyStemFiles(ImportedSongData &song) {
+juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
+  const auto executable =
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+  if (!executable.existsAsFile())
+    return {};
+
+#if JUCE_MAC
+  // Standalone app bundle: <App>.app/Contents/MacOS/<binary>
+  const auto macOSDir = executable.getParentDirectory();
+  const auto resourcesDir = macOSDir.getSiblingFile("Resources");
+  const auto bundled = resourcesDir.getChildFile("ffmpeg").getChildFile("ffmpeg");
+  if (bundled.existsAsFile())
+    return bundled;
+#elif JUCE_WINDOWS
+  // Standalone app folder: <app>/ffmpeg/ffmpeg.exe
+  const auto bundled = executable.getParentDirectory()
+                           .getChildFile("ffmpeg")
+                           .getChildFile("ffmpeg.exe");
+  if (bundled.existsAsFile())
+    return bundled;
+#endif
+
+  // Development fallback.
+#if JUCE_MAC
+  const juce::File homebrew("/opt/homebrew/bin/ffmpeg");
+  if (homebrew.existsAsFile())
+    return homebrew;
+#endif
+  return {};
+}
+
+bool SongLibraryStore::convertStemToAlac(const juce::File &source,
+                                         const juce::File &destination,
+                                         juce::String &errorMessage) {
+  const auto ffmpegBinary = resolveBundledFfmpegBinary();
+  if (!ffmpegBinary.existsAsFile()) {
+    errorMessage =
+        "Couldn't find bundled ffmpeg binary for ALAC conversion.";
+    return false;
+  }
+
+  destination.getParentDirectory().createDirectory();
+  if (destination.existsAsFile())
+    destination.deleteFile();
+
+  juce::StringArray args;
+  args.add(ffmpegBinary.getFullPathName());
+  args.add("-y");
+  args.add("-v");
+  args.add("error");
+  args.add("-i");
+  args.add(source.getFullPathName());
+  args.add("-map_metadata");
+  args.add("-1");
+  args.add("-vn");
+  args.add("-c:a");
+  args.add("alac");
+  args.add(destination.getFullPathName());
+
+  juce::ChildProcess process;
+  if (!process.start(args)) {
+    errorMessage = "Couldn't launch ffmpeg conversion process.";
+    return false;
+  }
+
+  if (!process.waitForProcessToFinish(10 * 60 * 1000)) {
+    process.kill();
+    errorMessage = "ALAC conversion timed out.";
+    return false;
+  }
+
+  const auto output = process.readAllProcessOutput().trim();
+  if (static_cast<int>(process.getExitCode()) != 0 || !destination.existsAsFile()) {
+    if (destination.existsAsFile())
+      destination.deleteFile();
+    errorMessage = output.isNotEmpty() ? output
+                                       : "ffmpeg failed converting stem to ALAC.";
+    return false;
+  }
+
+  return true;
+}
+
+bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage) {
+  errorMessage.clear();
   if (song.id.isEmpty())
     song.id = juce::Uuid().toString();
 
   auto songDir = getAudioRoot().getChildFile(song.id);
   songDir.createDirectory();
+  auto failImport = [&songDir, &errorMessage](const juce::String &msg) {
+    errorMessage = msg;
+    songDir.deleteRecursively();
+    return false;
+  };
 
-  for (size_t i = 0; i < song.stems.size(); ++i) {
-    auto &stem = song.stems[i];
+  for (auto &stem : song.stems) {
     if (!stem.include || stem.sourcePath.isEmpty())
       continue;
+    if (stem.stemId.isEmpty())
+      stem.stemId = juce::Uuid().toString();
 
     const juce::File src(stem.sourcePath);
     if (!src.existsAsFile())
-      continue;
+      return failImport("Stem source file not found: " + stem.sourcePath);
 
-    const auto baseName =
-        juce::File::createLegalFileName(src.getFileNameWithoutExtension());
-    auto dst = songDir.getNonexistentChildFile(
-        baseName.isEmpty()
-            ? juce::String("stem_") + juce::String(static_cast<int>(i) + 1)
-            : baseName,
-        src.getFileExtension(), false);
+    const auto legalStemId = juce::File::createLegalFileName(stem.stemId);
+    if (legalStemId.isEmpty())
+      return failImport("Invalid stem id while importing song.");
 
-    if (src.copyFileTo(dst))
-      stem.storedPath = dst.getFullPathName();
+    const auto dst = songDir.getChildFile(legalStemId + ".m4a");
+    const auto srcPathLower = src.getFullPathName().toLowerCase();
+    const bool isPrimeSource =
+        srcPathLower.contains("/library/containers/com.loopcommunity.primemac/");
+    const bool alreadyPrimeStemM4a =
+        src.hasFileExtension(".m4a") &&
+        src.getFileNameWithoutExtension().equalsIgnoreCase(legalStemId);
+
+    if (isPrimeSource && alreadyPrimeStemM4a) {
+      if (dst.existsAsFile())
+        dst.deleteFile();
+      if (!src.copyFileTo(dst))
+        return failImport("Failed copying PRIME stem '" + stem.displayName + "'.");
+    } else {
+      if (!convertStemToAlac(src, dst, errorMessage))
+        return failImport("Failed converting stem '" + stem.displayName + "': " +
+                          errorMessage);
+    }
+
+    if (!dst.existsAsFile())
+      return failImport("Converted stem file wasn't created: " +
+                        dst.getFullPathName());
+
+    stem.storedPath = dst.getFullPathName();
+    stem.fileName = dst.getFileName();
   }
+
+  return true;
 }
 
 juce::var SongLibraryStore::stemToVar(const ImportedStemData &stem) {

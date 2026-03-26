@@ -35,14 +35,15 @@ public:
 private:
   class StripSlot;
   void timerCallback() override;
-  void updateModeBadge();
   void layoutHeaderAndViewport();
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
-  juce::Label modeBadge;
+  juce::Label nudgeHintLabel;
+  juce::TextButton nudgeUpButton{"VOL +"};
+  juce::TextButton nudgeDownButton{"VOL -"};
   juce::Label routingHintLabel;
   juce::TextButton applyRoutingButton{"Aplicar"};
   juce::Viewport viewport;
@@ -57,6 +58,7 @@ private:
   bool routingDraftActive = false;
   std::vector<int> pendingOutputBySlotIndex;
   int lastSeenOutputChannelCount = -1;
+  const float nudgeStep = 0.05f;
 
   void addMasterSlot();
 };

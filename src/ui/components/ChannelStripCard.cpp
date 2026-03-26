@@ -1,11 +1,13 @@
 #include "ChannelStripCard.h"
 
+#include <cmath>
 #include <utility>
 
 ChannelStripCard::ChannelStripCard(
     const juce::String &channelName, ChannelStripLookAndFeel &lookAndFeelRef,
     StereoVUMeter::LevelProvider levelProvider, bool isCompact)
-    : layout(isCompact ? Layout::createCompact() : Layout{}),
+    : baseLayout(isCompact ? Layout::createCompact() : Layout{}),
+      layout(baseLayout),
       lookAndFeel(lookAndFeelRef), name(channelName),
       meter(
           std::move(levelProvider),
@@ -134,6 +136,38 @@ void ChannelStripCard::resized() {
 }
 
 const juce::String &ChannelStripCard::getChannelName() const { return name; }
+
+void ChannelStripCard::setLayoutScale(float scale) {
+  const float nextScale = juce::jlimit(0.9f, 1.4f, scale);
+  if (std::abs(nextScale - layoutScale) < 0.001f)
+    return;
+
+  auto scaled = [nextScale](int value, int minValue) {
+    return juce::jmax(minValue,
+                      juce::roundToInt(static_cast<float>(value) * nextScale));
+  };
+
+  layout = baseLayout;
+  layout.width = scaled(baseLayout.width, 60);
+  layout.height = scaled(baseLayout.height, 120);
+  layout.paddingX = scaled(baseLayout.paddingX, 6);
+  layout.paddingBottom = scaled(baseLayout.paddingBottom, 6);
+  layout.faderWidth = scaled(baseLayout.faderWidth, 14);
+  layout.faderHeight = scaled(baseLayout.faderHeight, 72);
+  layout.faderMeterGap = scaled(baseLayout.faderMeterGap, 2);
+  layout.soloWidth = scaled(baseLayout.soloWidth, 30);
+  layout.soloHeight = scaled(baseLayout.soloHeight, 14);
+  layout.buttonGap = scaled(baseLayout.buttonGap, 1);
+  layout.buttonToBandGap = scaled(baseLayout.buttonToBandGap, 2);
+  layout.channelBandHeight = scaled(baseLayout.channelBandHeight, 12);
+  layout.knobSize = scaled(baseLayout.knobSize, 22);
+  layout.knobTop = scaled(baseLayout.knobTop, 4);
+  layout.meterToKnobGap = scaled(baseLayout.meterToKnobGap, 4);
+
+  layoutScale = nextScale;
+  resized();
+  repaint();
+}
 
 void ChannelStripCard::setVolume(float volume) {
   volSlider.setValue(volume, juce::dontSendNotification);

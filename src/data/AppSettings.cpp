@@ -117,6 +117,34 @@ void AppSettings::setExpandWindowOnLaunch(const bool value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+bool AppSettings::getPrimeImportEnabled() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return kDefaultPrimeImportEnabled;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("primeImportEnabled"))
+      return static_cast<bool>(o->getProperty("primeImportEnabled"));
+  }
+  return kDefaultPrimeImportEnabled;
+}
+
+void AppSettings::setPrimeImportEnabled(const bool value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 4);
+    o->setProperty("primeImportEnabled", value);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 std::vector<CategoryRoutingDefaults> AppSettings::getRoutingDefaults() {
   auto defaults = buildDefaultRouting();
   const auto f = getSettingsFile();

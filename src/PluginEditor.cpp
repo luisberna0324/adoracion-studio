@@ -365,6 +365,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [](const bool expandOnLaunch) {
         AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
       },
+      AppSettings::getPrimeImportEnabled(),
+      [](const bool enabled) { AppSettings::setPrimeImportEnabled(enabled); },
       [] {}, routingDefaults, proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,
              const std::vector<CategoryRoutingDefaults> &next) {
