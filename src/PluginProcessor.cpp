@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 MTControlsAudioProcessor::MTControlsAudioProcessor()
     : AudioProcessor(
@@ -97,6 +99,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool windowFadeActive = false;
   bool stopAtEnd = false;
   double stopAtEndSec = 0.0;
+  bool transitionToNextArrangementPart = false;
+  int nextArrangementPartIndex = -1;
+  double nextArrangementPartStartSec = 0.0;
 
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
@@ -182,14 +187,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const bool monoClick = metronome.isMonoClickMode();
       const double length =
           loadedSongLengthSeconds.load(std::memory_order_relaxed);
-      const double windowStartSec =
-          songStartSeconds.load(std::memory_order_relaxed);
+      const bool customArrangement =
+          arrangementCustomActive.load(std::memory_order_relaxed);
+      double windowStartSec = songStartSeconds.load(std::memory_order_relaxed);
       double windowEndSec =
           songEndSeconds.load(std::memory_order_relaxed);
       if (windowEndSec <= 0.0 || windowEndSec > length)
         windowEndSec = length;
-      const double fadeOutSec =
-          songFadeOutSeconds.load(std::memory_order_relaxed);
+      double fadeOutSec = songFadeOutSeconds.load(std::memory_order_relaxed);
       const double blockStartSec =
           playbackSampleRate > 0.0
               ? static_cast<double>(
@@ -201,6 +206,67 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               ? blockStartSec +
                     (static_cast<double>(numSamples) / playbackSampleRate)
               : blockStartSec;
+
+      int mappedPartIndex = -1;
+      if (!arrangementParts.empty()) {
+        mappedPartIndex = findArrangementPartIndexForSourceTime(blockStartSec);
+        if (juce::isPositiveAndBelow(mappedPartIndex,
+                                     static_cast<int>(arrangementParts.size()))) {
+          arrangementCurrentPartIndex.store(mappedPartIndex,
+                                            std::memory_order_relaxed);
+        }
+      }
+
+      if (customArrangement && !arrangementParts.empty() &&
+          juce::isPositiveAndBelow(mappedPartIndex,
+                                   static_cast<int>(arrangementParts.size()))) {
+        const int partIndex = mappedPartIndex;
+        const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
+        windowStartSec = part.startSec;
+        windowEndSec = part.endSec;
+        fadeOutSec = 0.0;
+
+        if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
+          const int pendingIndex =
+              arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
+          if (juce::isPositiveAndBelow(pendingIndex,
+                                       static_cast<int>(arrangementParts.size())) &&
+              pendingIndex != partIndex) {
+            transitionToNextArrangementPart = true;
+            nextArrangementPartIndex = pendingIndex;
+            nextArrangementPartStartSec =
+                arrangementParts[static_cast<size_t>(pendingIndex)].startSec;
+            arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+          } else {
+            const int nextIndex = partIndex + 1;
+            if (juce::isPositiveAndBelow(
+                    nextIndex, static_cast<int>(arrangementParts.size()))) {
+              transitionToNextArrangementPart = true;
+              nextArrangementPartIndex = nextIndex;
+              nextArrangementPartStartSec =
+                  arrangementParts[static_cast<size_t>(nextIndex)].startSec;
+            } else {
+              stopAtEnd = true;
+              stopAtEndSec = windowEndSec;
+            }
+          }
+        }
+      } else if (!customArrangement && !arrangementParts.empty() &&
+                 juce::isPositiveAndBelow(mappedPartIndex,
+                                          static_cast<int>(arrangementParts.size()))) {
+        const auto &part = arrangementParts[static_cast<size_t>(mappedPartIndex)];
+        const int pendingIndex =
+            arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
+        if (juce::isPositiveAndBelow(pendingIndex,
+                                     static_cast<int>(arrangementParts.size())) &&
+            pendingIndex != mappedPartIndex && blockEndSec >= part.endSec) {
+          transitionToNextArrangementPart = true;
+          nextArrangementPartIndex = pendingIndex;
+          nextArrangementPartStartSec =
+              arrangementParts[static_cast<size_t>(pendingIndex)].startSec;
+          arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+        }
+      }
 
       if (fadeOutSec > 0.0 && windowEndSec > windowStartSec &&
           playbackSampleRate > 0.0) {
@@ -221,7 +287,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             (windowFadeStart < 0.999f) || (windowFadeEnd < 0.999f);
       }
 
-      if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
+      if (!customArrangement && windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
         stopAtEnd = true;
         stopAtEndSec = windowEndSec;
       }
@@ -444,7 +510,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
     buffer.applyGain(masterOutGain);
 
-  if (stopAtEnd) {
+  if (transitionToNextArrangementPart) {
+    arrangementCurrentPartIndex.store(nextArrangementPartIndex,
+                                      std::memory_order_relaxed);
+    seekTargetSeconds.store(nextArrangementPartStartSec,
+                            std::memory_order_relaxed);
+    seekPending.store(true, std::memory_order_release);
+    songCurrentPositionSeconds.store(nextArrangementPartStartSec,
+                                     std::memory_order_relaxed);
+    if (playbackSampleRate > 0.0) {
+      const juce::int64 nextSamples =
+          static_cast<juce::int64>(nextArrangementPartStartSec *
+                                   playbackSampleRate);
+      globalSamplePosition.store(nextSamples, std::memory_order_relaxed);
+    }
+    metronome.syncPhaseForTimeSeconds(nextArrangementPartStartSec);
+  } else if (stopAtEnd) {
     juce::ignoreUnused(stopAtEndSec);
     // Al llegar al final de la ventana, detenemos y volvemos al inicio para
     // que el seek no quede clavado al final.
@@ -645,6 +726,13 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
       loadedSongTitle = songTitle;
     }
     songLoaded.store(true, std::memory_order_relaxed);
+    arrangementParts.clear();
+    arrangementParts.push_back({0.0, maxLengthSeconds});
+    arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+    arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+    arrangementCustomActive.store(false, std::memory_order_relaxed);
+    arrangementTotalLengthSeconds.store(maxLengthSeconds,
+                                        std::memory_order_relaxed);
     pitchTargetSemiTones.store(0, std::memory_order_relaxed);
     setTransportState(TransportState::stopped);
   }
@@ -655,6 +743,31 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
 void MTControlsAudioProcessor::playSong() {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  if (customArrangement) {
+    const juce::SpinLock::ScopedLockType lock(stemListLock);
+    if (arrangementParts.empty())
+      return;
+    const double current =
+        songCurrentPositionSeconds.load(std::memory_order_relaxed);
+    int partIndex = findArrangementPartIndexForSourceTime(current);
+    if (!juce::isPositiveAndBelow(partIndex,
+                                  static_cast<int>(arrangementParts.size()))) {
+      partIndex = 0;
+      arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
+      seekTargetSeconds.store(arrangementParts.front().startSec,
+                              std::memory_order_relaxed);
+      seekPending.store(true, std::memory_order_release);
+    } else {
+      arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
+      const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
+      if (current >= part.endSec || current < part.startSec) {
+        seekTargetSeconds.store(part.startSec, std::memory_order_relaxed);
+        seekPending.store(true, std::memory_order_release);
+      }
+    }
+  }
   const double start = songStartSeconds.load(std::memory_order_relaxed);
   const double end = songEndSeconds.load(std::memory_order_relaxed);
   const double current =
@@ -674,7 +787,11 @@ void MTControlsAudioProcessor::stopSong() {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   setTransportState(TransportState::stopped);
-  const double start = songStartSeconds.load(std::memory_order_relaxed);
+  double start = songStartSeconds.load(std::memory_order_relaxed);
+  if (arrangementCustomActive.load(std::memory_order_relaxed))
+    start = getArrangementStartSeconds();
+  arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+  arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
   seekTargetSeconds.store(start, std::memory_order_relaxed);
   seekPending.store(true, std::memory_order_release);
   globalSamplePosition.store(
@@ -727,7 +844,23 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
   if (end <= 0.0 || end > length)
     end = length;
   start = juce::jlimit(0.0, end, start);
-  const double target = juce::jlimit(start, end, positionSeconds);
+  double target = juce::jlimit(start, end, positionSeconds);
+  arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+  if (arrangementCustomActive.load(std::memory_order_relaxed)) {
+    const juce::SpinLock::ScopedLockType lock(stemListLock);
+    if (!arrangementParts.empty()) {
+      int partIndex = findArrangementPartIndexForSourceTime(target);
+      if (!juce::isPositiveAndBelow(partIndex,
+                                    static_cast<int>(arrangementParts.size())))
+        partIndex = 0;
+      const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
+      arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
+      if (target < part.startSec || target > part.endSec)
+        target = part.startSec;
+      else
+        target = juce::jlimit(part.startSec, part.endSec, target);
+    }
+  }
 
   // Write target atomically. processBlock will pick this up and apply it
   // to ALL stems in the same audio callback → zero inter-stem desync.
@@ -827,6 +960,109 @@ double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
   const double fade =
       songFadeOutSeconds.load(std::memory_order_relaxed);
   return juce::jlimit(0.0, maxFade, fade);
+}
+
+void MTControlsAudioProcessor::setSongArrangement(
+    const SongArrangementSnapshot &arrangement, bool isCustomArrangement) {
+  constexpr double kRuntimeMinPartDurationSec = 0.25;
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  const double songLength =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+
+  std::vector<ArrangementRuntimePart> next;
+  next.reserve(arrangement.parts.size());
+  double totalLength = 0.0;
+  for (const auto &part : arrangement.parts) {
+    double start = juce::jlimit(0.0, songLength, part.startSec);
+    double end = juce::jlimit(0.0, songLength, part.endSec);
+    if (end < start)
+      std::swap(start, end);
+    if (songLength > 0.0 && (end - start) < kRuntimeMinPartDurationSec)
+      continue;
+    next.push_back({start, end});
+    totalLength += juce::jmax(0.0, end - start);
+  }
+
+  if (next.size() > 1) {
+    std::stable_sort(
+        next.begin(), next.end(),
+        [](const ArrangementRuntimePart &a, const ArrangementRuntimePart &b) {
+          if (std::abs(a.startSec - b.startSec) <= 0.0001)
+            return a.endSec < b.endSec;
+          return a.startSec < b.startSec;
+        });
+  }
+
+  if (next.empty()) {
+    next.push_back({0.0, songLength});
+    totalLength = songLength;
+    isCustomArrangement = false;
+  }
+
+  arrangementParts = std::move(next);
+  arrangementTotalLengthSeconds.store(totalLength, std::memory_order_relaxed);
+  arrangementCustomActive.store(isCustomArrangement, std::memory_order_relaxed);
+  arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+  arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+
+  if (isCustomArrangement) {
+    const double target = arrangementParts.front().startSec;
+    seekTargetSeconds.store(target, std::memory_order_relaxed);
+    seekPending.store(true, std::memory_order_release);
+    songCurrentPositionSeconds.store(target, std::memory_order_relaxed);
+    if (playbackSampleRate > 0.0) {
+      globalSamplePosition.store(
+          static_cast<juce::int64>(target * playbackSampleRate),
+          std::memory_order_relaxed);
+    }
+    if (getTransportState() == TransportState::playing)
+      setTransportState(TransportState::stopped);
+  }
+}
+
+void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
+  if (!songLoaded.load(std::memory_order_relaxed))
+    return;
+
+  double targetStartSec = 0.0;
+  bool shouldSeekNow = false;
+
+  {
+    const juce::SpinLock::ScopedLockType lock(stemListLock);
+    if (!juce::isPositiveAndBelow(partIndex,
+                                  static_cast<int>(arrangementParts.size())))
+      return;
+
+    const bool playing = getTransportState() == TransportState::playing;
+    const double currentSec =
+        songCurrentPositionSeconds.load(std::memory_order_relaxed);
+    const int currentPartIndex = findArrangementPartIndexForSourceTime(currentSec);
+
+    if (playing) {
+      if (partIndex == currentPartIndex) {
+        arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+        return;
+      }
+      arrangementPendingJumpPartIndex.store(partIndex, std::memory_order_relaxed);
+      return;
+    }
+
+    arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+    arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
+    targetStartSec = arrangementParts[static_cast<size_t>(partIndex)].startSec;
+    shouldSeekNow = true;
+  }
+
+  if (shouldSeekNow)
+    seekSongTo(targetStartSec);
+}
+
+int MTControlsAudioProcessor::getPendingArrangementPartJumpIndex() const noexcept {
+  return arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isCustomArrangementActive() const noexcept {
+  return arrangementCustomActive.load(std::memory_order_relaxed);
 }
 
 bool MTControlsAudioProcessor::hasLoadedSong() const noexcept {
@@ -1102,6 +1338,11 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   masterMuted.store(false, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
+  arrangementParts.clear();
+  arrangementCustomActive.store(false, std::memory_order_relaxed);
+  arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+  arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+  arrangementTotalLengthSeconds.store(0.0, std::memory_order_relaxed);
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   mixEngine.reset();
   metronome.reset();
@@ -1174,6 +1415,39 @@ void MTControlsAudioProcessor::setPitchSemiTones(
 
 int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
   return pitchTargetSemiTones.load(std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::findArrangementPartIndexForSourceTime(
+    const double sourceSeconds) const noexcept {
+  if (arrangementParts.empty())
+    return -1;
+
+  for (size_t i = 0; i < arrangementParts.size(); ++i) {
+    const auto &part = arrangementParts[i];
+    if (sourceSeconds >= part.startSec && sourceSeconds < part.endSec)
+      return static_cast<int>(i);
+  }
+
+  int bestIndex = 0;
+  double bestDistance = std::numeric_limits<double>::max();
+  for (size_t i = 0; i < arrangementParts.size(); ++i) {
+    const auto &part = arrangementParts[i];
+    const double distance = sourceSeconds < part.startSec
+                                ? (part.startSec - sourceSeconds)
+                                : (sourceSeconds - part.endSec);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = static_cast<int>(i);
+    }
+  }
+  return bestIndex;
+}
+
+double MTControlsAudioProcessor::getArrangementStartSeconds() const noexcept {
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  if (arrangementParts.empty())
+    return songStartSeconds.load(std::memory_order_relaxed);
+  return arrangementParts.front().startSec;
 }
 
 MTControlsAudioProcessor::TransportState

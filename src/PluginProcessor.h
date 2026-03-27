@@ -4,6 +4,7 @@
 #include "MetronomeEngine.h"
 #include "StemMixEngine.h"
 #include "StemTrack.h"
+#include "data/SongData.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/StemOutputRouter.h"
@@ -60,6 +61,11 @@ public:
   double getSongStartSeconds() const noexcept;
   double getSongEndSeconds() const noexcept;
   double getSongFadeOutSeconds() const noexcept;
+  void setSongArrangement(const SongArrangementSnapshot &arrangement,
+                          bool isCustomArrangement);
+  void requestArrangementPartJump(int partIndex);
+  int getPendingArrangementPartJumpIndex() const noexcept;
+  bool isCustomArrangementActive() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
   void setFadeStopsPlayback(bool shouldStop) noexcept;
   bool isFadeStopsPlayback() const noexcept;
@@ -166,6 +172,16 @@ private:
   juce::String loadedSongKey;
   juce::String loadedSongTitle;
   std::atomic<bool> songLoaded{false};
+
+  struct ArrangementRuntimePart {
+    double startSec = 0.0;
+    double endSec = 0.0;
+  };
+  std::vector<ArrangementRuntimePart> arrangementParts;
+  std::atomic<bool> arrangementCustomActive{false};
+  std::atomic<int> arrangementCurrentPartIndex{0};
+  std::atomic<int> arrangementPendingJumpPartIndex{-1};
+  std::atomic<double> arrangementTotalLengthSeconds{0.0};
   
   // Custom hybrid transport state
   std::atomic<juce::int64> globalSamplePosition{0};
@@ -192,6 +208,8 @@ private:
   void clearLoadedSongState();
   void removeAllStemSources();
   void resetStemControls(int activeStemCount) noexcept;
+  int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
+  double getArrangementStartSeconds() const noexcept;
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;
 

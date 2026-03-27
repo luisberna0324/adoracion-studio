@@ -18,8 +18,8 @@
 
 namespace {
 constexpr int kTopBarH = 60;
-constexpr int kWaveformH = 100;
-constexpr int kWaveformExpandedH = 160;
+constexpr int kWaveformH = 250;
+constexpr int kWaveformExpandedH = 250;
 
 constexpr int kDefaultWindowW = 1200;
 constexpr int kDefaultWindowH = 760;
@@ -109,10 +109,37 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   waveformBarRaw->setSeekCallback([&p](double targetSeconds) {
     p.seekSongTo(targetSeconds);
   });
+  waveformBarRaw->setOnArrangementPartJumpRequest(
+      [&p](int partIndex) { p.requestArrangementPartJump(partIndex); });
+  waveformBarRaw->setPendingArrangementPartProvider(
+      [&p] { return p.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
     isWaveformExpanded = expanded;
     resized();
     repaint();
+  });
+  waveformBarRaw->setOnArrangementChanged(
+      [this, &p](const SongArrangementSnapshot &arrangement,
+                 bool isCustomArrangement) {
+        if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+          return;
+        SongLibraryStore::updateArrangementForActiveSetlist(
+            currentLoadedSong.id, arrangement, isCustomArrangement);
+        // Las partes son marcadores visuales/editables y no deben alterar
+        // el flujo de reproducción normal de la canción.
+        p.setSongArrangement(arrangement, false);
+      });
+  waveformBarRaw->setOnArrangementReset([this, &p] {
+    if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+      return;
+    SongLibraryStore::resetArrangementForActiveSetlist(currentLoadedSong.id);
+    SongArrangementSnapshot arrangement;
+    bool isCustomArrangement = false;
+    if (SongLibraryStore::getActiveSetlistArrangement(currentLoadedSong.id,
+                                                      arrangement,
+                                                      isCustomArrangement)) {
+      p.setSongArrangement(arrangement, false);
+    }
   });
 
   auto channelGridImpl =
@@ -195,6 +222,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
           juce::AlertWindow::WarningIcon, "Load error",
           "Couldn't load audio stems for this song.");
       waveformBarRaw->setWaveformBins({});
+      waveformBarRaw->setSongRhythm(0.0, {});
       p.setStemClickGuideMask({});
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
@@ -244,6 +272,17 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     }
 
     waveformBarRaw->setWaveformBins(std::move(cachedBins));
+    waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
+                                  loadedSong.timeSignature);
+    SongArrangementSnapshot arrangement;
+    bool isCustomArrangement = false;
+    if (!SongLibraryStore::getActiveSetlistArrangement(
+            loadedSong.id, arrangement, isCustomArrangement)) {
+      arrangement.parts.clear();
+      isCustomArrangement = false;
+    }
+    waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
+    p.setSongArrangement(arrangement, false);
   };
 
   songListRaw->setOnSongActivated(

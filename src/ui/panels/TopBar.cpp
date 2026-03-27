@@ -752,8 +752,9 @@ void TopBar::showKeyPopover() {
 void TopBar::showSongWindowPopover() {
   class SongWindowPopover final : public juce::Component {
   public:
-    explicit SongWindowPopover(MTControlsAudioProcessor &processorRef)
-        : processor(processorRef) {
+    SongWindowPopover(MTControlsAudioProcessor &processorRef,
+                      const bool readOnlyArrangement)
+        : processor(processorRef), arrangementReadOnly(readOnlyArrangement) {
       configureRow(startLabel, startMinus, startValue, startPlus, "Start");
       configureRow(endLabel, endMinus, endValue, endPlus, "End");
       configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus, "Fade out");
@@ -764,6 +765,20 @@ void TopBar::showSongWindowPopover() {
       endPlus.onClick = [this] { adjustEnd(stepSeconds()); };
       fadeMinus.onClick = [this] { adjustFade(-stepSeconds()); };
       fadePlus.onClick = [this] { adjustFade(stepSeconds()); };
+
+      for (auto *btn : {&startMinus, &startPlus, &endMinus, &endPlus,
+                        &fadeMinus, &fadePlus}) {
+        btn->setEnabled(!arrangementReadOnly);
+      }
+
+      if (arrangementReadOnly) {
+        arrangementInfoLabel.setText(
+            "Custom arrangement active: Start/End/Fade locked",
+            juce::dontSendNotification);
+        arrangementInfoLabel.setJustificationType(juce::Justification::centred);
+        arrangementInfoLabel.setFont(juce::FontOptions(11.0f));
+        addAndMakeVisible(arrangementInfoLabel);
+      }
 
       refreshValues();
       applyTheme();
@@ -802,6 +817,10 @@ void TopBar::showSongWindowPopover() {
         btn->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
         btn->setViewportIgnoreDragFlag(true);
       }
+      if (arrangementReadOnly) {
+        arrangementInfoLabel.setColour(juce::Label::textColourId,
+                                       UITheme::accent);
+      }
     }
 
     void paint(juce::Graphics &g) override {
@@ -823,14 +842,20 @@ void TopBar::showSongWindowPopover() {
       area.removeFromTop(8);
       layoutRow(area.removeFromTop(rowH), fadeLabel, fadeMinus, fadeValue,
                 fadePlus);
+      if (arrangementReadOnly) {
+        area.removeFromTop(6);
+        arrangementInfoLabel.setBounds(area.removeFromTop(18));
+      }
     }
 
   private:
     MTControlsAudioProcessor &processor;
+    bool arrangementReadOnly = false;
     juce::Label startLabel, endLabel, fadeLabel;
     juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
         fadePlus;
     juce::Label startValue, endValue, fadeValue;
+    juce::Label arrangementInfoLabel;
 
     void configureRow(juce::Label &label, juce::TextButton &minus,
                       juce::Label &value, juce::TextButton &plus,
@@ -880,8 +905,10 @@ void TopBar::showSongWindowPopover() {
 
   if (!processor.hasLoadedSong())
     return;
-  auto panel = std::make_unique<SongWindowPopover>(processor);
-  panel->setSize(230, 128);
+  const bool arrangementReadOnly = processor.isCustomArrangementActive();
+  auto panel =
+      std::make_unique<SongWindowPopover>(processor, arrangementReadOnly);
+  panel->setSize(230, arrangementReadOnly ? 156 : 128);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)
