@@ -210,7 +210,7 @@ emit_output "TAG" "${tag}"
 emit_output "BRANCH_KIND" "${branch_kind}"
 emit_output "LAST_STABLE" "${last_stable}"
 
-# Lowercase aliases for workflow ergonomics.
+# Lowercase aliases for workflow ergonomics. un ajuste para el bugfix
 emit_output "semver" "${semver}"
 emit_output "next_stable" "${next_stable}"
 emit_output "tag" "${tag}"
