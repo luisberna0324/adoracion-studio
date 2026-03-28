@@ -9,34 +9,72 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute SemVer
+        id: semver
+        shell: bash
+        run: |
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          scripts/semver.sh \
+            --branch "${branch_name}" \
+            --sequence "${GITHUB_RUN_NUMBER}" \
+            --prerelease
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
       - name: Install Ninja
         run: brew install ninja
       - name: Configure (macOS)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
+          MTCONTROLS_APP_VERSION: ${{ steps.semver.outputs.next_stable }}
         run: cmake --preset macos-release
       - name: Build (macOS)
         run: cmake --build --preset macos-release
       - name: Upload Standalone (macOS)
         uses: actions/upload-artifact@v4
         with:
-          name: MTControls-macos-standalone
-          path: build/macos-release/MTControls_artefacts/Standalone
+          name: MTControls-macos-standalone-${{ steps.semver.outputs.semver }}
+          path: build/macos-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
 
   windows-build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute SemVer
+        id: semver
+        shell: bash
+        run: |
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          scripts/semver.sh \
+            --branch "${branch_name}" \
+            --sequence "${GITHUB_RUN_NUMBER}" \
+            --prerelease
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
+          MTCONTROLS_APP_VERSION: ${{ steps.semver.outputs.next_stable }}
         run: cmake --preset windows-release
       - name: Build (Windows)
         run: cmake --build --preset windows-release
       - name: Upload Standalone (Windows)
         uses: actions/upload-artifact@v4
         with:
-          name: MTControls-windows-standalone
-          path: build/windows-release/MTControls_artefacts/Standalone
+          name: MTControls-windows-standalone-${{ steps.semver.outputs.semver }}
+          path: build/windows-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error

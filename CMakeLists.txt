@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(MTControls VERSION 0.1.0)
+set(MTCONTROLS_APP_VERSION "0.1.0" CACHE STRING
+    "Semantic version used for build metadata (MAJOR.MINOR.PATCH)")
+
+if(DEFINED ENV{MTCONTROLS_APP_VERSION} AND NOT "$ENV{MTCONTROLS_APP_VERSION}" STREQUAL "")
+    set(MTCONTROLS_APP_VERSION "$ENV{MTCONTROLS_APP_VERSION}")
+endif()
+
+if(NOT MTCONTROLS_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "MTCONTROLS_APP_VERSION must match MAJOR.MINOR.PATCH, got: ${MTCONTROLS_APP_VERSION}")
+endif()
+
+project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,11 +24,15 @@ set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
 
 include(FetchContent)
 
-if(NOT DEFINED JUCE_DIR)
+if(NOT DEFINED JUCE_DIR OR JUCE_DIR STREQUAL "")
     message(FATAL_ERROR "JUCE_DIR is not set. Configure with: cmake -S . -B build -DJUCE_DIR=/path/to/JUCE")
 endif()
 
-add_subdirectory(${JUCE_DIR} JUCE)
+if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "JUCE_DIR does not point to a JUCE checkout: ${JUCE_DIR}")
+endif()
+
+add_subdirectory("${JUCE_DIR}" JUCE)
 
 FetchContent_Declare(
     soundtouch
@@ -28,6 +43,7 @@ FetchContent_MakeAvailable(soundtouch)
 
 juce_add_plugin(MTControls
     COMPANY_NAME "Multitracks"
+    VERSION "${MTCONTROLS_APP_VERSION}"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE
     NEEDS_MIDI_OUTPUT FALSE
