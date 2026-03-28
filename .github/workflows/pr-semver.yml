@@ -10,12 +10,14 @@ on:
       - reopened
       - ready_for_review
       - edited
+      - closed
 
 permissions:
   contents: read
 
 jobs:
   semver-check:
+    if: github.event.action != 'closed'
     name: Validate SemVer Policy 
     runs-on: ubuntu-latest
     steps:
@@ -48,3 +50,43 @@ jobs:
             echo "- PR prerelease: \`${{ steps.semver.outputs.semver }}\`"
             echo "- Tag candidate: \`${{ steps.semver.outputs.tag }}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  create-tag-on-merge:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true
+    name: Create SemVer Tag On Merge
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute SemVer tag from merged PR branch
+        id: semver
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/semver.sh \
+            --branch "${{ github.event.pull_request.head.ref }}" \
+            --require-supported-branch
+
+      - name: Create and push tag if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.semver.outputs.tag }}"
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          PR_BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          git fetch --tags origin
+
+          if git ls-remote --exit-code --refs --tags origin "${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists. Skipping."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" "${MERGE_SHA}" -m "Release ${TAG} (merged from ${PR_BRANCH})"
+          git push origin "${TAG}"
