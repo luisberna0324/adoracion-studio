@@ -26,7 +26,7 @@ on:
 
 permissions:
   contents: write
-
+  
 concurrency:
   group: build-artifacts-${{ github.run_id }}
   cancel-in-progress: false
@@ -44,7 +44,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ inputs.ref }}
 
       - name: Resolve version, tag and ref
         id: resolve
@@ -52,37 +51,84 @@ jobs:
         run: |
           set -euo pipefail
 
-          REF_INPUT="${{ inputs.ref }}"
-          TAG_INPUT="${{ inputs.tag }}"
-          VERSION_INPUT="${{ inputs.version }}"
+          trim() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "${value}"
+          }
+
+          strip_wrapping_quotes() {
+            local value="$1"
+            if [[ ${#value} -ge 2 ]]; then
+              if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+                value="${value:1:${#value}-2}"
+              elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+                value="${value:1:${#value}-2}"
+              fi
+            fi
+            printf '%s' "${value}"
+          }
+
+          normalize_version_input() {
+            local raw="$1"
+            raw="$(trim "${raw}")"
+            raw="$(strip_wrapping_quotes "${raw}")"
+            raw="${raw#refs/tags/}"
+            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              printf '%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
+          }
+
+          normalize_tag_input() {
+            local raw="$1"
+            raw="$(trim "${raw}")"
+            raw="$(strip_wrapping_quotes "${raw}")"
+            raw="${raw#refs/tags/}"
+            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              printf 'v%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
+          }
+
+          REF_INPUT="$(trim "${{ inputs.ref }}")"
+          if [[ -z "${REF_INPUT}" ]]; then
+            REF_INPUT="main"
+          fi
+          TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
+          VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
           PUBLISH_INPUT="${{ inputs.publish_release }}"
 
-          if [[ -z "${TAG_INPUT}" && -z "${VERSION_INPUT}" ]]; then
+          if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
             echo "Debes indicar al menos 'tag' o 'version'." >&2
             exit 1
           fi
 
-          if [[ -n "${TAG_INPUT}" ]]; then
-            if [[ ! "${TAG_INPUT}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              echo "Tag invalido '${TAG_INPUT}'. Formato esperado: vMAJOR.MINOR.PATCH" >&2
+          if [[ -n "${TAG_INPUT_RAW}" ]]; then
+            if ! TAG_FROM_INPUT="$(normalize_tag_input "${TAG_INPUT_RAW}")"; then
+              echo "Tag invalido '${TAG_INPUT_RAW}'. Formato esperado: vMAJOR.MINOR.PATCH (o MAJOR.MINOR.PATCH)." >&2
               exit 1
             fi
-            TAG_FROM_INPUT="${TAG_INPUT}"
-            VERSION_FROM_TAG="${TAG_INPUT#v}"
+            VERSION_FROM_TAG="${TAG_FROM_INPUT#v}"
           else
             TAG_FROM_INPUT=""
             VERSION_FROM_TAG=""
           fi
 
-          if [[ -n "${VERSION_INPUT}" ]]; then
-            if [[ ! "${VERSION_INPUT}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              echo "Version invalida '${VERSION_INPUT}'. Formato esperado: MAJOR.MINOR.PATCH" >&2
+          if [[ -n "${VERSION_INPUT_RAW}" ]]; then
+            if ! VERSION_INPUT="$(normalize_version_input "${VERSION_INPUT_RAW}")"; then
+              echo "Version invalida '${VERSION_INPUT_RAW}'. Formato esperado: MAJOR.MINOR.PATCH (o vMAJOR.MINOR.PATCH)." >&2
               exit 1
             fi
+          else
+            VERSION_INPUT=""
           fi
 
           if [[ -n "${VERSION_INPUT}" && -n "${VERSION_FROM_TAG}" && "${VERSION_INPUT}" != "${VERSION_FROM_TAG}" ]]; then
-            echo "Inconsistencia: tag=${TAG_INPUT} y version=${VERSION_INPUT} no coinciden." >&2
+            echo "Inconsistencia: tag=${TAG_FROM_INPUT} y version=${VERSION_INPUT} no coinciden." >&2
             exit 1
           fi
 
@@ -96,10 +142,10 @@ jobs:
           RELEASE_REF="${REF_INPUT}"
           TAG_EXISTS="false"
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
             TAG_EXISTS="true"
             RELEASE_REF="${TAG}"
-          elif git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+          elif git ls-remote --exit-code --refs --tags origin "${TAG}" >/dev/null 2>&1; then
             TAG_EXISTS="true"
             RELEASE_REF="${TAG}"
           fi
