@@ -1,76 +1,117 @@
-name: Release
+name: Build Artifacts
 
 on:
-  pull_request:
-    types: [closed]
-    branches:
-      - main
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Manual stable bump type"
+      ref:
+        description: "Branch, tag o SHA para construir (si el tag existe, tiene prioridad)"
         required: true
-        default: major
-        type: choice
-        options:
-          - major
+        default: main
+        type: string
+      tag:
+        description: "Tag semver opcional (ej: v1.2.3)"
+        required: false
+        default: ""
+        type: string
+      version:
+        description: "Version semver opcional (ej: 1.2.3)"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Publicar GitHub Release con los artefactos"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.pull_request.merge_commit_sha || github.ref_name || github.run_id }}
+  group: build-artifacts-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   prepare:
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
     runs-on: ubuntu-latest
     outputs:
-      semver: ${{ steps.semver.outputs.semver }}
-      next_stable: ${{ steps.semver.outputs.next_stable }}
-      tag: ${{ steps.semver.outputs.tag }}
-      source_branch: ${{ steps.context.outputs.source_branch }}
-      release_ref: ${{ steps.context.outputs.release_ref }}
-      release_kind: ${{ steps.context.outputs.release_kind }}
+      release_ref: ${{ steps.resolve.outputs.release_ref }}
+      semver: ${{ steps.resolve.outputs.semver }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      publish_release: ${{ steps.resolve.outputs.publish_release }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref }}
 
-      - name: Resolve release context
-        id: context
+      - name: Resolve version, tag and ref
+        id: resolve
         shell: bash
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-              echo "Manual release must run from main. Current branch: ${GITHUB_REF_NAME}" >&2
+          set -euo pipefail
+
+          REF_INPUT="${{ inputs.ref }}"
+          TAG_INPUT="${{ inputs.tag }}"
+          VERSION_INPUT="${{ inputs.version }}"
+          PUBLISH_INPUT="${{ inputs.publish_release }}"
+
+          if [[ -z "${TAG_INPUT}" && -z "${VERSION_INPUT}" ]]; then
+            echo "Debes indicar al menos 'tag' o 'version'." >&2
+            exit 1
+          fi
+
+          if [[ -n "${TAG_INPUT}" ]]; then
+            if [[ ! "${TAG_INPUT}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Tag invalido '${TAG_INPUT}'. Formato esperado: vMAJOR.MINOR.PATCH" >&2
               exit 1
             fi
-            echo "source_branch=main" >> "${GITHUB_OUTPUT}"
-            echo "release_ref=main" >> "${GITHUB_OUTPUT}"
-            echo "release_kind=${{ inputs.bump }}" >> "${GITHUB_OUTPUT}"
+            TAG_FROM_INPUT="${TAG_INPUT}"
+            VERSION_FROM_TAG="${TAG_INPUT#v}"
           else
-            echo "source_branch=${{ github.event.pull_request.head.ref }}" >> "${GITHUB_OUTPUT}"
-            echo "release_ref=${{ github.event.pull_request.merge_commit_sha }}" >> "${GITHUB_OUTPUT}"
-            echo "release_kind=auto" >> "${GITHUB_OUTPUT}"
+            TAG_FROM_INPUT=""
+            VERSION_FROM_TAG=""
           fi
 
-      - name: Compute release SemVer
-        id: semver
-        shell: bash
-        run: |
-          if [[ "${{ steps.context.outputs.release_kind }}" == "auto" ]]; then
-            scripts/semver.sh \
-              --branch "${{ steps.context.outputs.source_branch }}" \
-              --require-supported-branch
-          else
-            scripts/semver.sh \
-              --release-kind "${{ steps.context.outputs.release_kind }}"
+          if [[ -n "${VERSION_INPUT}" ]]; then
+            if [[ ! "${VERSION_INPUT}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Version invalida '${VERSION_INPUT}'. Formato esperado: MAJOR.MINOR.PATCH" >&2
+              exit 1
+            fi
           fi
+
+          if [[ -n "${VERSION_INPUT}" && -n "${VERSION_FROM_TAG}" && "${VERSION_INPUT}" != "${VERSION_FROM_TAG}" ]]; then
+            echo "Inconsistencia: tag=${TAG_INPUT} y version=${VERSION_INPUT} no coinciden." >&2
+            exit 1
+          fi
+
+          if [[ -n "${VERSION_INPUT}" ]]; then
+            SEMVER="${VERSION_INPUT}"
+          else
+            SEMVER="${VERSION_FROM_TAG}"
+          fi
+
+          TAG="v${SEMVER}"
+          RELEASE_REF="${REF_INPUT}"
+          TAG_EXISTS="false"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TAG_EXISTS="true"
+            RELEASE_REF="${TAG}"
+          elif git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
+            TAG_EXISTS="true"
+            RELEASE_REF="${TAG}"
+          fi
+
+          echo "release_ref=${RELEASE_REF}" >> "${GITHUB_OUTPUT}"
+          echo "semver=${SEMVER}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
+          echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
 
   build-macos:
-    name: Build macOS release artifact
+    name: Build macOS artifact
     needs: prepare
     runs-on: macos-latest
     steps:
@@ -93,7 +134,7 @@ jobs:
       - name: Configure (macOS)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
-          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.next_stable }}
+          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
         run: cmake --preset macos-release
 
       - name: Build (macOS)
@@ -107,7 +148,7 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows release artifact
+    name: Build Windows artifact
     needs: prepare
     runs-on: windows-latest
     steps:
@@ -127,7 +168,7 @@ jobs:
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
-          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.next_stable }}
+          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
         run: cmake --preset windows-release
 
       - name: Build (Windows)
@@ -141,7 +182,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Tag and publish release
+    if: needs.prepare.outputs.publish_release == 'true'
+    name: Publish GitHub Release
     needs:
       - prepare
       - build-macos
@@ -153,23 +195,19 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_ref }}
           fetch-depth: 0
 
-      - name: Ensure tag does not already exist
+      - name: Ensure tag exists
         shell: bash
         run: |
+          set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
-          if git ls-remote --tags origin "refs/tags/${TAG}" | grep -q .; then
-            echo "Tag ${TAG} already exists on origin. Aborting duplicate release." >&2
-            exit 1
-          fi
+          TAG_EXISTS="${{ needs.prepare.outputs.tag_exists }}"
 
-      - name: Create and push tag
-        shell: bash
-        run: |
-          TAG="${{ needs.prepare.outputs.tag }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
+          if [[ "${TAG_EXISTS}" != "true" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+          fi
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
@@ -188,20 +226,29 @@ jobs:
         env:
           SEMVER: ${{ needs.prepare.outputs.semver }}
         run: |
+          set -euo pipefail
           mkdir -p release-assets
           (cd dist && zip -r "../release-assets/MTControls-macos-standalone-${SEMVER}.zip" macos)
           (cd dist && zip -r "../release-assets/MTControls-windows-standalone-${SEMVER}.zip" windows)
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
           SEMVER="${{ needs.prepare.outputs.semver }}"
-          gh release create "${TAG}" \
-            "release-assets/MTControls-macos-standalone-${SEMVER}.zip" \
-            "release-assets/MTControls-windows-standalone-${SEMVER}.zip" \
-            --title "${TAG}" \
-            --target "${{ needs.prepare.outputs.release_ref }}" \
-            --generate-notes
+          MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
+          WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${MAC_ZIP}" "${WIN_ZIP}" --clobber
+          else
+            gh release create "${TAG}" \
+              "${MAC_ZIP}" \
+              "${WIN_ZIP}" \
+              --title "${TAG}" \
+              --target "${{ needs.prepare.outputs.release_ref }}" \
+              --generate-notes
+          fi
