@@ -9,6 +9,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
       - name: Install Ninja
         run: brew install ninja
       - name: Configure (macOS)
@@ -28,6 +35,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE

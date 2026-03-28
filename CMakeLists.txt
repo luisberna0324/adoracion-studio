@@ -13,11 +13,15 @@ set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
 
 include(FetchContent)
 
-if(NOT DEFINED JUCE_DIR)
+if(NOT DEFINED JUCE_DIR OR JUCE_DIR STREQUAL "")
     message(FATAL_ERROR "JUCE_DIR is not set. Configure with: cmake -S . -B build -DJUCE_DIR=/path/to/JUCE")
 endif()
 
-add_subdirectory(${JUCE_DIR} JUCE)
+if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "JUCE_DIR does not point to a JUCE checkout: ${JUCE_DIR}")
+endif()
+
+add_subdirectory("${JUCE_DIR}" JUCE)
 
 FetchContent_Declare(
     soundtouch
