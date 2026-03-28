@@ -30,11 +30,27 @@ struct ImportedSongData {
   std::vector<ImportedStemData> stems;
 };
 
+struct SongArrangementPartSnapshot {
+  juce::String id;
+  juce::String name;
+  juce::String color;
+  double startSec = 0.0;
+  double endSec = 0.0;
+};
+
+struct SongArrangementSnapshot {
+  std::vector<SongArrangementPartSnapshot> parts;
+};
+
 extern const std::array<const char *, 19> kTrackCategories;
+extern const std::array<const char *, 14> kSongSectionSuggestions;
 
 juce::String makeDisplayNameFromFile(const juce::File &file);
 juce::String suggestCategoryFromFilename(const juce::String &filename);
 int stemPriorityForStripOrder(const ImportedStemData &stem);
 bool isStemPitchShiftable(const ImportedStemData &stem);
+juce::String makeRandomArrangementPartColor();
+bool isArrangementPartColorValid(const juce::String &value);
+double estimateSongLengthSeconds(const ImportedSongData &song);
 std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
                                           int binCount = 1400);

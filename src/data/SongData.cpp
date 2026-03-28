@@ -26,6 +26,23 @@ const std::array<const char *, 19> kTrackCategories = {{
     "Pads/Ambience",
 }};
 
+const std::array<const char *, 14> kSongSectionSuggestions = {{
+    "Intro",
+    "Verse",
+    "Pre-Chorus",
+    "Chorus",
+    "Post-Chorus",
+    "Bridge",
+    "Instrumental",
+    "Solo",
+    "Breakdown",
+    "Interlude",
+    "Tag",
+    "Vamp",
+    "Outro",
+    "Ending",
+}};
+
 juce::String makeDisplayNameFromFile(const juce::File &file) {
   auto name = file.getFileNameWithoutExtension().trim();
   if (name.isEmpty())
@@ -134,6 +151,31 @@ bool isStemPitchShiftable(const ImportedStemData &stem) {
       category.equalsIgnoreCase("Cues"))
     return false;
   return true;
+}
+
+juce::String makeRandomArrangementPartColor() {
+  auto &rng = juce::Random::getSystemRandom();
+  const float hue = rng.nextFloat();
+  const float saturation = 0.52f + (rng.nextFloat() * 0.35f);
+  const float brightness = 0.68f + (rng.nextFloat() * 0.24f);
+  return juce::Colour::fromHSV(hue, saturation, brightness, 1.0f).toString();
+}
+
+bool isArrangementPartColorValid(const juce::String &value) {
+  if (value.trim().isEmpty())
+    return false;
+  const auto parsed = juce::Colour::fromString(value);
+  return parsed.getAlpha() > 0;
+}
+
+double estimateSongLengthSeconds(const ImportedSongData &song) {
+  double maxDuration = 0.0;
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    maxDuration = juce::jmax(maxDuration, stem.durationSec);
+  }
+  return juce::jmax(0.0, maxDuration);
 }
 
 std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,

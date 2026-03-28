@@ -27,6 +27,8 @@ struct SongMixSnapshot {
 struct SetlistItem {
   juce::String songId;
   SongMixSnapshot mix;
+  SongArrangementSnapshot arrangement;
+  bool arrangementCustomized = false;
   int64_t updatedMs = 0;
 };
 
@@ -83,6 +85,13 @@ public:
                                                float gain);
   static bool updateMasterMuteForActiveSetlist(const juce::String &songId,
                                                bool muted);
+  static bool getActiveSetlistArrangement(const juce::String &songId,
+                                          SongArrangementSnapshot &outArrangement,
+                                          bool &outIsCustomArrangement);
+  static bool updateArrangementForActiveSetlist(
+      const juce::String &songId, const SongArrangementSnapshot &arrangement,
+      bool isCustomArrangement);
+  static bool resetArrangementForActiveSetlist(const juce::String &songId);
   static bool saveWaveformCache(const juce::String &songId,
                                 const std::vector<float> &bins);
   static std::vector<float> loadWaveformCache(const juce::String &songId);
@@ -112,10 +121,22 @@ private:
                                       const juce::String &setlistId);
   static SetlistItem createSetlistItem(const ImportedSongData &song);
   static SongMixSnapshot createDefaultMixForSong(const ImportedSongData &song);
+  static SongArrangementSnapshot
+  createDefaultArrangementForSong(const ImportedSongData &song);
   static SongMixSnapshot reconcileMixForSong(const SongMixSnapshot &mix,
                                              const ImportedSongData &song,
                                              bool &changed);
+  static SongArrangementSnapshot reconcileArrangementForSong(
+      const SongArrangementSnapshot &arrangement, const ImportedSongData &song,
+      bool &changed);
   static bool normalizeLegacyMix(SongMixSnapshot &mix);
+  static juce::var arrangementPartToVar(
+      const SongArrangementPartSnapshot &part);
+  static SongArrangementPartSnapshot arrangementPartFromVar(const juce::var &v);
+  static juce::var arrangementToVar(const SongArrangementSnapshot &arrangement);
+  static SongArrangementSnapshot arrangementFromVar(const juce::var &v,
+                                                    const ImportedSongData *song,
+                                                    bool &changed);
   static juce::var masterMixToVar(const MasterMixSnapshot &mix);
   static MasterMixSnapshot masterMixFromVar(const juce::var &v);
   static juce::var stemMixToVar(const StemMixSnapshot &mix);

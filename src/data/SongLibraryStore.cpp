@@ -1,8 +1,34 @@
 #include "SongLibraryStore.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <utility>
+
+namespace {
+constexpr double kMinPartDurationSec = 0.25;
+constexpr double kArrangementEpsilon = 0.0001;
+
+bool nearlyEqual(double a, double b) {
+  return std::abs(a - b) <= kArrangementEpsilon;
+}
+
+bool arrangementsEqual(const SongArrangementSnapshot &a,
+                       const SongArrangementSnapshot &b) {
+  if (a.parts.size() != b.parts.size())
+    return false;
+  for (size_t i = 0; i < a.parts.size(); ++i) {
+    const auto &lhs = a.parts[i];
+    const auto &rhs = b.parts[i];
+    if (lhs.name != rhs.name)
+      return false;
+    if (!nearlyEqual(lhs.startSec, rhs.startSec) ||
+        !nearlyEqual(lhs.endSec, rhs.endSec))
+      return false;
+  }
+  return true;
+}
+} // namespace
 
 std::vector<ImportedSongData> SongLibraryStore::loadSongs() {
   return loadLibrary().songs;
@@ -238,6 +264,75 @@ bool SongLibraryStore::updateMasterMuteForActiveSetlist(
   return updateMasterMixValue(songId, [muted](MasterMixSnapshot &mix) {
     mix.mute = muted;
   });
+}
+
+bool SongLibraryStore::getActiveSetlistArrangement(
+    const juce::String &songId, SongArrangementSnapshot &outArrangement,
+    bool &outIsCustomArrangement) {
+  if (songId.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  bool changed = false;
+  if (it == setlist->items.end()) {
+    setlist->items.push_back(createSetlistItem(*song));
+    it = std::prev(setlist->items.end());
+    changed = true;
+  } else {
+    it->arrangement =
+        reconcileArrangementForSong(it->arrangement, *song, changed);
+    const auto defaultArrangement = createDefaultArrangementForSong(*song);
+    if (!it->arrangementCustomized &&
+        !arrangementsEqual(it->arrangement, defaultArrangement)) {
+      it->arrangementCustomized = true;
+      changed = true;
+    }
+  }
+
+  outArrangement = it->arrangement;
+  outIsCustomArrangement = it->arrangementCustomized;
+  if (changed) {
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    it->updatedMs = now;
+    setlist->updatedMs = now;
+    saveLibrary(library);
+  }
+  return true;
+}
+
+bool SongLibraryStore::updateArrangementForActiveSetlist(
+    const juce::String &songId, const SongArrangementSnapshot &arrangement,
+    const bool isCustomArrangement) {
+  return updateActiveSetlistItem(
+      songId,
+      [&arrangement, isCustomArrangement](SetlistItem &item,
+                                          const ImportedSongData &song) {
+        bool changed = false;
+        item.arrangement =
+            reconcileArrangementForSong(arrangement, song, changed);
+        juce::ignoreUnused(changed);
+        item.arrangementCustomized = isCustomArrangement;
+      });
+}
+
+bool SongLibraryStore::resetArrangementForActiveSetlist(
+    const juce::String &songId) {
+  return updateActiveSetlistItem(
+      songId, [](SetlistItem &item, const ImportedSongData &song) {
+        item.arrangement = createDefaultArrangementForSong(song);
+        item.arrangementCustomized = false;
+      });
 }
 
 bool SongLibraryStore::saveWaveformCache(const juce::String &songId,
@@ -672,6 +767,8 @@ SetlistItem SongLibraryStore::createSetlistItem(const ImportedSongData &song) {
   SetlistItem item;
   item.songId = song.id;
   item.mix = createDefaultMixForSong(song);
+  item.arrangement = createDefaultArrangementForSong(song);
+  item.arrangementCustomized = false;
   item.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return item;
 }
@@ -689,6 +786,13 @@ SongMixSnapshot SongLibraryStore::createDefaultMixForSong(
     mix.stems.push_back(std::move(stemMix));
   }
   return mix;
+}
+
+SongArrangementSnapshot SongLibraryStore::createDefaultArrangementForSong(
+    const ImportedSongData &song) {
+  juce::ignoreUnused(song);
+  SongArrangementSnapshot arrangement;
+  return arrangement;
 }
 
 SongMixSnapshot SongLibraryStore::reconcileMixForSong(
@@ -718,6 +822,80 @@ SongMixSnapshot SongLibraryStore::reconcileMixForSong(
   return out;
 }
 
+SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
+    const SongArrangementSnapshot &arrangement, const ImportedSongData &song,
+    bool &changed) {
+  const double songLength = estimateSongLengthSeconds(song);
+  if (arrangement.parts.empty())
+    return arrangement;
+
+  SongArrangementSnapshot out = arrangement;
+  for (auto &part : out.parts) {
+    if (part.id.isEmpty()) {
+      part.id = juce::Uuid().toString();
+      changed = true;
+    }
+    if (part.name.trim().isEmpty()) {
+      part.name = "Part";
+      changed = true;
+    } else if (part.name != part.name.trim()) {
+      part.name = part.name.trim();
+      changed = true;
+    }
+    if (!isArrangementPartColorValid(part.color)) {
+      part.color = makeRandomArrangementPartColor();
+      changed = true;
+    }
+
+    const auto originalStart = part.startSec;
+    const auto originalEnd = part.endSec;
+    part.startSec = juce::jlimit(0.0, songLength, originalStart);
+    part.endSec = juce::jlimit(0.0, songLength, originalEnd);
+    if (part.endSec < part.startSec)
+      std::swap(part.startSec, part.endSec);
+
+    if (songLength > 0.0 && (part.endSec - part.startSec) < kMinPartDurationSec) {
+      part.endSec = juce::jmin(songLength, part.startSec + kMinPartDurationSec);
+      if (part.endSec <= part.startSec)
+        part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
+    }
+
+    if (!nearlyEqual(originalStart, part.startSec) ||
+        !nearlyEqual(originalEnd, part.endSec))
+      changed = true;
+  }
+
+  if (out.parts.size() > 1) {
+    auto sorted = out.parts;
+    std::stable_sort(
+        sorted.begin(), sorted.end(),
+        [](const SongArrangementPartSnapshot &a,
+           const SongArrangementPartSnapshot &b) {
+          if (nearlyEqual(a.startSec, b.startSec))
+            return a.endSec < b.endSec;
+          return a.startSec < b.startSec;
+        });
+
+    bool orderChanged = sorted.size() != out.parts.size();
+    if (!orderChanged) {
+      for (size_t i = 0; i < sorted.size(); ++i) {
+        const auto &prev = out.parts[i];
+        const auto &next = sorted[i];
+        if (prev.id != next.id || !nearlyEqual(prev.startSec, next.startSec) ||
+            !nearlyEqual(prev.endSec, next.endSec)) {
+          orderChanged = true;
+          break;
+        }
+      }
+    }
+    if (orderChanged)
+      changed = true;
+    out.parts = std::move(sorted);
+  }
+
+  return out;
+}
+
 bool SongLibraryStore::normalizeLegacyMix(SongMixSnapshot &mix) {
   const bool masterDefault = juce::approximatelyEqual(mix.master.volume, 1.0f) &&
                              juce::approximatelyEqual(mix.master.gain, 0.0f) &&
@@ -738,6 +916,64 @@ bool SongLibraryStore::normalizeLegacyMix(SongMixSnapshot &mix) {
   for (auto &stem : mix.stems)
     stem.gain = 1.0f;
   return true;
+}
+
+juce::var SongLibraryStore::arrangementPartToVar(
+    const SongArrangementPartSnapshot &part) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("id", part.id);
+  obj->setProperty("name", part.name);
+  obj->setProperty("color", part.color);
+  obj->setProperty("startSec", part.startSec);
+  obj->setProperty("endSec", part.endSec);
+  return juce::var(obj);
+}
+
+SongArrangementPartSnapshot
+SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
+  SongArrangementPartSnapshot part;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return part;
+  part.id = obj->getProperty("id").toString();
+  part.name = obj->getProperty("name").toString();
+  if (obj->hasProperty("color"))
+    part.color = obj->getProperty("color").toString();
+  part.startSec = static_cast<double>(obj->getProperty("startSec"));
+  part.endSec = static_cast<double>(obj->getProperty("endSec"));
+  return part;
+}
+
+juce::var SongLibraryStore::arrangementToVar(
+    const SongArrangementSnapshot &arrangement) {
+  auto *obj = new juce::DynamicObject();
+  juce::Array<juce::var> partsArray;
+  partsArray.ensureStorageAllocated(static_cast<int>(arrangement.parts.size()));
+  for (const auto &part : arrangement.parts)
+    partsArray.add(arrangementPartToVar(part));
+  obj->setProperty("parts", juce::var(partsArray));
+  return juce::var(obj);
+}
+
+SongArrangementSnapshot SongLibraryStore::arrangementFromVar(
+    const juce::var &v, const ImportedSongData *song, bool &changed) {
+  SongArrangementSnapshot arrangement;
+  auto *obj = v.getDynamicObject();
+  if (obj != nullptr) {
+    if (auto *partsArray = obj->getProperty("parts").getArray()) {
+      arrangement.parts.reserve(static_cast<size_t>(partsArray->size()));
+      for (const auto &partVar : *partsArray) {
+        auto part = arrangementPartFromVar(partVar);
+        if (part.name.isEmpty() && part.id.isEmpty() &&
+            nearlyEqual(part.startSec, 0.0) && nearlyEqual(part.endSec, 0.0))
+          continue;
+        arrangement.parts.push_back(std::move(part));
+      }
+    }
+  }
+  if (song != nullptr)
+    arrangement = reconcileArrangementForSong(arrangement, *song, changed);
+  return arrangement;
 }
 
 juce::var SongLibraryStore::masterMixToVar(const MasterMixSnapshot &mix) {
@@ -841,6 +1077,10 @@ juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("songId", item.songId);
   obj->setProperty("mix", mixToVar(item.mix));
+  if (item.arrangementCustomized) {
+    obj->setProperty("arrangement", arrangementToVar(item.arrangement));
+    obj->setProperty("arrangementCustomized", true);
+  }
   obj->setProperty("updatedMs", static_cast<juce::int64>(item.updatedMs));
   return juce::var(obj);
 }
@@ -854,6 +1094,24 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   item.songId = obj->getProperty("songId").toString();
   item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
   item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
+  if (song != nullptr)
+    item.arrangement = createDefaultArrangementForSong(*song);
+  if (obj->hasProperty("arrangement")) {
+    item.arrangement = arrangementFromVar(obj->getProperty("arrangement"), song,
+                                          changed);
+    item.arrangementCustomized = true;
+  }
+  if (obj->hasProperty("arrangementCustomized"))
+    item.arrangementCustomized =
+        static_cast<bool>(obj->getProperty("arrangementCustomized"));
+  if (song != nullptr) {
+    const auto defaultArrangement = createDefaultArrangementForSong(*song);
+    if (!item.arrangementCustomized &&
+        !arrangementsEqual(item.arrangement, defaultArrangement)) {
+      item.arrangementCustomized = true;
+      changed = true;
+    }
+  }
   return item;
 }
 
@@ -941,6 +1199,14 @@ bool SongLibraryStore::updateActiveSetlistItem(
 
   bool changed = false;
   it->mix = reconcileMixForSong(it->mix, *song, changed);
+  it->arrangement =
+      reconcileArrangementForSong(it->arrangement, *song, changed);
+  const auto defaultArrangement = createDefaultArrangementForSong(*song);
+  if (!it->arrangementCustomized &&
+      !arrangementsEqual(it->arrangement, defaultArrangement)) {
+    it->arrangementCustomized = true;
+    changed = true;
+  }
   updater(*it, *song);
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   it->updatedMs = now;
