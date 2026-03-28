@@ -9,6 +9,17 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute SemVer
+        id: semver
+        shell: bash
+        run: |
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          scripts/semver.sh \
+            --branch "${branch_name}" \
+            --sequence "${GITHUB_RUN_NUMBER}" \
+            --prerelease
       - name: Checkout JUCE
         uses: actions/checkout@v4
         with:
@@ -21,13 +32,14 @@ jobs:
       - name: Configure (macOS)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
+          MTCONTROLS_APP_VERSION: ${{ steps.semver.outputs.next_stable }}
         run: cmake --preset macos-release
       - name: Build (macOS)
         run: cmake --build --preset macos-release
       - name: Upload Standalone (macOS)
         uses: actions/upload-artifact@v4
         with:
-          name: MTControls-macos-standalone
+          name: MTControls-macos-standalone-${{ steps.semver.outputs.semver }}
           path: build/macos-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
 
@@ -35,6 +47,17 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute SemVer
+        id: semver
+        shell: bash
+        run: |
+          branch_name="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          scripts/semver.sh \
+            --branch "${branch_name}" \
+            --sequence "${GITHUB_RUN_NUMBER}" \
+            --prerelease
       - name: Checkout JUCE
         uses: actions/checkout@v4
         with:
@@ -45,12 +68,13 @@ jobs:
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
+          MTCONTROLS_APP_VERSION: ${{ steps.semver.outputs.next_stable }}
         run: cmake --preset windows-release
       - name: Build (Windows)
         run: cmake --build --preset windows-release
       - name: Upload Standalone (Windows)
         uses: actions/upload-artifact@v4
         with:
-          name: MTControls-windows-standalone
+          name: MTControls-windows-standalone-${{ steps.semver.outputs.semver }}
           path: build/windows-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
