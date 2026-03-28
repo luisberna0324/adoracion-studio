@@ -80,3 +80,5 @@ cmake --build build -j
 ## Siguiente foco
 
 Iterar el diseño de controles (`LookAndFeel`, layout por secciones, estados hover/drag, tipografía y palette).
+
+Se agrega nueva linea para probar el feature

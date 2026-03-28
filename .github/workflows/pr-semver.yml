@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   semver-check:
-    name: Validate SemVer Policy
+    name: Validate SemVer Policy 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
