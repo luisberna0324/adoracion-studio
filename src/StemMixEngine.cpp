@@ -160,10 +160,9 @@ void StemMixEngine::mixStems(
   }
 }
 
-bool StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
-                                   bool monoClick, bool pitchActive,
-                                   float fadeStart, float fadeEnd,
-                                   float windowFadeStart,
+void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
+                                   bool pitchActive, float fadeStart,
+                                   float fadeEnd, float windowFadeStart,
                                    float windowFadeEnd) {
   const int numSamples = output.getNumSamples();
   const int numChannels = output.getNumChannels();
@@ -184,30 +183,9 @@ bool StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
   }
 
   output.clear();
-  const bool useMonoClickMix = monoClick && numChannels >= 2;
-  if (useMonoClickMix) {
-    auto *left = output.getWritePointer(0);
-    auto *right = output.getWritePointer(1);
-    for (int s = 0; s < numSamples; ++s) {
-      float musicSum = 0.0f;
-      float guideSum = 0.0f;
-      for (int ch = 0; ch < numChannels; ++ch) {
-        musicSum += stemMixBuffer.getSample(ch, s);
-        musicSum += percussionBuffer.getSample(ch, s);
-        guideSum += dryBuffer.getSample(ch, s);
-      }
-      left[s] = musicSum / static_cast<float>(numChannels);
-      right[s] = guideSum / static_cast<float>(numChannels);
-    }
-    for (int ch = 2; ch < numChannels; ++ch)
-      output.clear(ch, 0, numSamples);
-  } else {
-    for (int ch = 0; ch < numChannels; ++ch) {
-      output.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
-      output.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
-      output.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
-    }
+  for (int ch = 0; ch < numChannels; ++ch) {
+    output.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
+    output.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
+    output.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
   }
-
-  return useMonoClickMix;
 }

@@ -466,11 +466,30 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
     return;
 
   const auto &opt = deviceOptions[static_cast<size_t>(optionIndex)];
-  deviceManager->setCurrentAudioDeviceType(opt.typeName, true);
+  deviceManager->setCurrentAudioDeviceType(opt.typeName, false);
+  if (deviceManager->getCurrentAudioDeviceType() != opt.typeName) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon, "Couldn't switch audio driver",
+        "The selected audio driver couldn't be applied.");
+    refreshDeviceOptions();
+    refreshRoutingForDevice();
+    return;
+  }
+
   juce::AudioDeviceManager::AudioDeviceSetup setup;
   deviceManager->getAudioDeviceSetup(setup);
   setup.outputDeviceName = opt.deviceName;
-  deviceManager->setAudioDeviceSetup(setup, true);
+  setup.inputDeviceName = {};
+  setup.useDefaultInputChannels = false;
+  setup.inputChannels.clear();
+  setup.useDefaultOutputChannels = true;
+
+  const auto setupError = deviceManager->setAudioDeviceSetup(setup, false);
+  if (setupError.isNotEmpty()) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon, "Couldn't switch audio interface",
+        setupError);
+  }
 
   refreshDeviceOptions();
   refreshRoutingForDevice();

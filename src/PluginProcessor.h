@@ -75,8 +75,6 @@ public:
   void setMetronomeBpm(double bpm) noexcept;
   double getMetronomeBpm() const noexcept;
   void setMetronomeBeatsPerBar(int beats) noexcept;
-  void setMonoClickMode(bool enabled) noexcept;
-  bool isMonoClickMode() const noexcept;
   void setStemClickGuideMask(const std::vector<bool> &mask) noexcept;
   void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
   void setPitchSemiTones(int semitoneDelta) noexcept;

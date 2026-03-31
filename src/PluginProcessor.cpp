@@ -93,7 +93,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     buffer.clear(i, 0, buffer.getNumSamples());
 
   bool usedSeparatedMix = false;
-  bool usedMonoClickMix = false;
   float windowFadeStart = 1.0f;
   float windowFadeEnd = 1.0f;
   bool windowFadeActive = false;
@@ -184,7 +183,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const float fadeTargetLocalForMix =
         fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
-      const bool monoClick = metronome.isMonoClickMode();
       const double length =
           loadedSongLengthSeconds.load(std::memory_order_relaxed);
       const bool customArrangement =
@@ -352,16 +350,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
         }
         usedSeparatedMix = false;
-        usedMonoClickMix = false;
       } else {
         const bool isolateGuideDuringFade =
             fadeActive.load(std::memory_order_relaxed) ||
             !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
         const bool useSeparatedMix =
-            (monoClick && numChannels >= 2) || isolateGuideDuringFade ||
-            windowFadeActive || (pitchActiveSemiTones != 0);
+            isolateGuideDuringFade || windowFadeActive ||
+            (pitchActiveSemiTones != 0);
         usedSeparatedMix = useSeparatedMix;
-        usedMonoClickMix = monoClick && numChannels >= 2;
 
         if (useSeparatedMix) {
           mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
@@ -481,9 +477,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
 
   if (usedSeparatedMix) {
-    usedMonoClickMix = mixEngine.renderToOutput(
-        buffer, usedMonoClickMix, pitchActiveSemiTones != 0, fadeStart, fadeEnd,
-        windowFadeStart, windowFadeEnd);
+    mixEngine.renderToOutput(buffer, pitchActiveSemiTones != 0, fadeStart,
+                             fadeEnd, windowFadeStart, windowFadeEnd);
   } else {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
@@ -1037,8 +1032,14 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
     const int currentPartIndex = findArrangementPartIndexForSourceTime(currentSec);
+    const int pendingPartIndex =
+        arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
 
     if (playing) {
+      if (pendingPartIndex == partIndex) {
+        arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+        return;
+      }
       if (partIndex == currentPartIndex) {
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
         return;
@@ -1314,14 +1315,6 @@ double MTControlsAudioProcessor::getMetronomeBpm() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeBeatsPerBar(int beats) noexcept {
   metronome.setBeatsPerBar(beats);
-}
-
-void MTControlsAudioProcessor::setMonoClickMode(bool enabled) noexcept {
-  metronome.setMonoClickMode(enabled);
-}
-
-bool MTControlsAudioProcessor::isMonoClickMode() const noexcept {
-  return metronome.isMonoClickMode();
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {

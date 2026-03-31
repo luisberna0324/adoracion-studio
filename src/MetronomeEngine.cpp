@@ -39,14 +39,6 @@ int MetronomeEngine::getBeatsPerBar() const noexcept {
   return beatsPerBar.load(std::memory_order_relaxed);
 }
 
-void MetronomeEngine::setMonoClickMode(bool enabledToUse) noexcept {
-  monoClickMode.store(enabledToUse, std::memory_order_relaxed);
-}
-
-bool MetronomeEngine::isMonoClickMode() const noexcept {
-  return monoClickMode.load(std::memory_order_relaxed);
-}
-
 void MetronomeEngine::syncPhaseForTimeSeconds(double seconds) noexcept {
   const double bpmLocal = bpm.load(std::memory_order_relaxed);
   if (bpmLocal <= 0.0)
@@ -73,7 +65,6 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
       juce::jmax(8, static_cast<int>(sampleRate * 0.025));
   const double clickFreq = 900.0;
   const double twoPi = juce::MathConstants<double>::twoPi;
-  const bool monoClick = monoClickMode.load(std::memory_order_relaxed);
   const int numChannels = buffer.getNumChannels();
 
   for (int sample = 0; sample < numSamples; ++sample) {
@@ -101,11 +92,7 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
     if (clickSample == 0.0f)
       continue;
 
-    if (monoClick && numChannels >= 2) {
-      buffer.addSample(1, sample, clickSample);
-    } else {
-      for (int ch = 0; ch < numChannels; ++ch)
-        buffer.addSample(ch, sample, clickSample);
-    }
+    for (int ch = 0; ch < numChannels; ++ch)
+      buffer.addSample(ch, sample, clickSample);
   }
 }

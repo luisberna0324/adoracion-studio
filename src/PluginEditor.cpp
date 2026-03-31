@@ -98,7 +98,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongEndSeconds(); },
       [&p] { return p.getLoadedSongKey(); });
-  topBarRaw->setMonoClickProvider([&p] { return p.isMonoClickMode(); });
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
   auto *waveformBarRaw = waveformBarImpl.get();
@@ -169,13 +168,14 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   auto songListImpl = std::make_unique<SongListPanel>();
   auto *songListRaw = songListImpl.get();
   songListPanel = std::move(songListImpl);
+  songListPanelRaw = songListRaw;
   songListRaw->setOnSetlistNameChanged([this](const juce::String &name) {
     if (setlistHandlePanel)
       setlistHandlePanel->setTitle(name);
   });
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
-                   this](const ImportedSongData &song, int songIndex) {
+                   this](const ImportedSongData &song, int songIndex) -> bool {
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
     std::vector<bool> pitchShiftMask;
@@ -227,7 +227,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
       currentLoadedSong = ImportedSongData{};
-      return;
+      return false;
     }
 
     p.setStemClickGuideMask(clickGuideMask);
@@ -283,27 +283,52 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     }
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
     p.setSongArrangement(arrangement, false);
+    return true;
   };
 
   songListRaw->setOnSongActivated(
       [loadSong](const ImportedSongData &song, int songIndex) {
-        loadSong(song, songIndex);
+        (void)loadSong(song, songIndex);
       });
 
-  auto loadSongByIndex = [songListRaw, loadSong](int index) {
+  auto loadSongByIndex = [songListRaw, loadSong](int index) -> bool {
     if (!songListRaw)
-      return;
+      return false;
     if (const auto *song = songListRaw->getSongPtr(index))
-      loadSong(*song, index);
+      return loadSong(*song, index);
+    return false;
   };
 
-  auto prevSong = [songListRaw, loadSongByIndex, this]() {
+  loadSongByIndexAction = [songListRaw, loadSongByIndex, &p](int index,
+                                                              bool autoPlay) {
+    if (!songListRaw)
+      return;
+    if (!juce::isPositiveAndBelow(index, songListRaw->getSongCount()))
+      return;
+    if (loadSongByIndex(index) && autoPlay)
+      p.playSong();
+  };
+
+  auto resolveCurrentSongIndex = [songListRaw, this]() -> int {
+    if (!songListRaw)
+      return -1;
+    if (hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
+      const int resolved = songListRaw->getSongIndexById(currentLoadedSong.id);
+      if (resolved >= 0) {
+        currentSongIndex = resolved;
+        return resolved;
+      }
+    }
+    return currentSongIndex;
+  };
+
+  auto prevSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex]() {
     if (!songListRaw)
       return;
     const int count = songListRaw->getSongCount();
     if (count <= 0)
       return;
-    int index = currentSongIndex;
+    int index = resolveCurrentSongIndex();
     if (index < 0)
       index = songListRaw->getLastActivatedIndex();
     if (index < 0)
@@ -314,13 +339,13 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     loadSongByIndex(target);
   };
 
-  auto nextSong = [songListRaw, loadSongByIndex, this]() {
+  auto nextSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex]() {
     if (!songListRaw)
       return;
     const int count = songListRaw->getSongCount();
     if (count <= 0)
       return;
-    int index = currentSongIndex;
+    int index = resolveCurrentSongIndex();
     if (index < 0)
       index = songListRaw->getLastActivatedIndex();
     if (index < 0)
@@ -340,8 +365,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         p.setFadeStopsPlayback(false);
         p.setFadeActive(fadeOut);
       },
-      [&p](double deltaSec) { p.seekSongRelative(deltaSec); },
-      [&p](bool enabled) { p.setMonoClickMode(enabled); });
+      [&p](double deltaSec) { p.seekSongRelative(deltaSec); });
   topBarRaw->setOnSettingsWithAnchor(
       [this](juce::Rectangle<int> anchor, juce::Component *parent) {
         showSettings(anchor, parent);
@@ -375,6 +399,10 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   setResizable(true, true);
   setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+
+  wasSongPlaying = p.isSongPlaying();
+  lastObservedSongPositionSec = p.getSongCurrentPositionSeconds();
+  startTimerHz(20);
 
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
@@ -453,7 +481,50 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   }
 }
 
+void MTControlsAudioProcessorEditor::timerCallback() {
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const bool isPlayingNow = processorRef.isSongPlaying();
+  const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
+
+  if (songListPanelRaw != nullptr) {
+    const bool hasPlayingSong = isPlayingNow && hasCurrentLoadedSong &&
+                                currentLoadedSong.id.isNotEmpty();
+    songListPanelRaw->setNowPlayingSong(
+        hasPlayingSong ? currentLoadedSong.id : juce::String(), hasPlayingSong);
+  }
+
+  if (wasSongPlaying && !isPlayingNow && songListPanelRaw != nullptr &&
+      hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
+    const double startSec = processorRef.getSongStartSeconds();
+    const double endSec = processorRef.getSongEndSeconds();
+    const bool reachedSongEnd =
+        endSec > startSec && lastObservedSongPositionSec >= (endSec - 0.12);
+    const bool wrappedToStart = currentPosSec <= (startSec + 0.12);
+
+    if (reachedSongEnd && wrappedToStart &&
+        songListPanelRaw->isAutoPlayNextEnabledForSong(currentLoadedSong.id)) {
+      const int currentIndex =
+          songListPanelRaw->getSongIndexById(currentLoadedSong.id);
+      const int nextIndex = currentIndex + 1;
+      if (juce::isPositiveAndBelow(nextIndex, songListPanelRaw->getSongCount()) &&
+          loadSongByIndexAction) {
+        loadSongByIndexAction(nextIndex, true);
+      }
+    }
+  }
+
+  if (isPlayingNow)
+    lastObservedSongPositionSec = currentPosSec;
+  else if (!wasSongPlaying)
+    lastObservedSongPositionSec = currentPosSec;
+
+  wasSongPlaying = isPlayingNow;
+}
+
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  stopTimer();
+  loadSongByIndexAction = {};
+  songListPanelRaw = nullptr;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   proc.getAudioDeviceBridge().setOnDeviceConnected({});
   proc.getAudioDeviceBridge().setOnDeviceDisconnected({});

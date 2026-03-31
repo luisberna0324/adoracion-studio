@@ -140,25 +140,12 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       windowModeButton("windowMode", IconGlyph::WindowMaximize),
       settingsButton("settings", IconGlyph::Settings),
       processor(processorRef) {
-  monoClickButton.setButtonText("MONO/CLICK");
-  monoClickButton.setClickingTogglesState(true);
-  monoClickButton.setViewportIgnoreDragFlag(true);
-  monoClickButton.setColour(juce::TextButton::buttonColourId,
-                            UITheme::cardBgHover);
-  monoClickButton.setColour(juce::TextButton::buttonOnColourId,
-                            UITheme::cardBgPressed);
-  monoClickButton.setColour(juce::TextButton::textColourOffId,
-                            UITheme::textPrimary);
-  monoClickButton.setColour(juce::TextButton::textColourOnId,
-                            UITheme::textPrimary);
-
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
         &settingsButton}) {
     addAndMakeVisible(*btn);
   }
-  addAndMakeVisible(monoClickButton);
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, "Key");
@@ -219,10 +206,6 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     else if (onSettings)
       onSettings();
   };
-  monoClickButton.onClick = [this] {
-    if (onMonoClickToggle)
-      onMonoClickToggle(monoClickButton.getToggleState());
-  };
   bpmSegmentButton.onClick = [this] { showMetronomePopover(); };
   metroToggleButton.onClick = [this] {
     processor.setMetronomeEnabled(metroToggleButton.getToggleState());
@@ -238,15 +221,13 @@ void TopBar::setTransportCallbacks(
     std::function<void()> prevSongCallback,
     std::function<void()> nextSongCallback,
     std::function<void(bool)> fadeToggleCallback,
-    std::function<void(double)> seekRelativeCallback,
-    std::function<void(bool)> monoClickCallback) {
+    std::function<void(double)> seekRelativeCallback) {
   onPlayPause = std::move(playPauseCallback);
   onStop = std::move(stopCallback);
   onPrevSong = std::move(prevSongCallback);
   onNextSong = std::move(nextSongCallback);
   onFadeToggle = std::move(fadeToggleCallback);
   onSeekRelative = std::move(seekRelativeCallback);
-  onMonoClickToggle = std::move(monoClickCallback);
 }
 
 void TopBar::setTransportProviders(std::function<bool()> playingProviderFn,
@@ -258,13 +239,6 @@ void TopBar::setTransportProviders(std::function<bool()> playingProviderFn,
   lengthProvider = std::move(lengthProviderFn);
   keyProvider = std::move(keyProviderFn);
   refreshFromProviders();
-}
-
-void TopBar::setMonoClickProvider(std::function<bool()> monoClickProviderFn) {
-  monoClickProvider = std::move(monoClickProviderFn);
-  if (monoClickProvider)
-    monoClickButton.setToggleState(monoClickProvider(),
-                                   juce::dontSendNotification);
 }
 
 void TopBar::setOnSettings(std::function<void()> cb) {
@@ -285,14 +259,6 @@ void TopBar::refreshThemeColours() {
   keyDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
   keyDisplay.setColour(juce::Label::outlineColourId,
                        UITheme::cardBorder.withAlpha(0.55f));
-  monoClickButton.setColour(juce::TextButton::buttonColourId,
-                            UITheme::cardBgHover);
-  monoClickButton.setColour(juce::TextButton::buttonOnColourId,
-                            UITheme::cardBgPressed);
-  monoClickButton.setColour(juce::TextButton::textColourOffId,
-                            UITheme::textPrimary);
-  monoClickButton.setColour(juce::TextButton::textColourOnId,
-                            UITheme::textPrimary);
   bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
   bpmSegmentButton.setColour(juce::TextButton::buttonOnColourId,
                              UITheme::accentSoft);
@@ -321,7 +287,7 @@ void TopBar::resized() {
 
   int x = 12;
 
-  auto placeSquare = [&x, y, square, gap](juce::Component &c) {
+  auto placeSquare = [&x, y](juce::Component &c) {
     c.setBounds(x, y - 2, square, square);
     x += square + gap;
   };
@@ -339,9 +305,6 @@ void TopBar::resized() {
   rightX -= square + gap;
   windowModeButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
-  const int monoW = 92;
-  monoClickButton.setBounds(rightX - monoW, y + 2, monoW, 36);
-  rightX -= monoW + gap;
   keyDisplay.setBounds(rightX - 56, y, 56, 40);
   rightX -= 56 + gap;
   const int metroTotalW = 110;
@@ -360,7 +323,6 @@ void TopBar::resized() {
           static_cast<juce::Component *>(&bpmSegmentButton),
           static_cast<juce::Component *>(&metroToggleButton),
           static_cast<juce::Component *>(&keyDisplay),
-          static_cast<juce::Component *>(&monoClickButton),
           static_cast<juce::Component *>(&windowModeButton),
           static_cast<juce::Component *>(&settingsButton)}) {
       c->setTopLeftPosition(c->getX() + shift, c->getY());
@@ -969,10 +931,6 @@ void TopBar::refreshFromProviders() {
 
   const bool playing = playingProvider ? playingProvider() : false;
   playButton.setGlyph(playing ? IconGlyph::Pause : IconGlyph::Play);
-  if (monoClickProvider) {
-    monoClickButton.setToggleState(monoClickProvider(),
-                                   juce::dontSendNotification);
-  }
   const bool fadeOutActive = processor.isFadeActive();
   fadeButton.setGlyph(fadeOutActive ? IconGlyph::FadeIn : IconGlyph::FadeOut);
   fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);

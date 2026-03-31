@@ -17,15 +17,13 @@ public:
                              std::function<void()> prevSongCallback,
                              std::function<void()> nextSongCallback,
                              std::function<void(bool)> fadeToggleCallback,
-                             std::function<void(double)> seekRelativeCallback,
-                             std::function<void(bool)> monoClickCallback);
+                             std::function<void(double)> seekRelativeCallback);
 
   void setTransportProviders(std::function<bool()> playingProviderFn,
                              std::function<double()> positionProviderFn,
                              std::function<double()> lengthProviderFn,
                              std::function<juce::String()> keyProviderFn);
 
-  void setMonoClickProvider(std::function<bool()> monoClickProviderFn);
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
@@ -73,7 +71,6 @@ private:
 
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
-  juce::TextButton monoClickButton;
   juce::TextButton bpmSegmentButton;
   IconButton metroToggleButton{"metroToggle", IconGlyph::Metronome};
 
@@ -83,7 +80,6 @@ private:
   std::function<void()> onNextSong;
   std::function<void(bool)> onFadeToggle;
   std::function<void(double)> onSeekRelative;
-  std::function<void(bool)> onMonoClickToggle;
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
@@ -92,7 +88,6 @@ private:
   std::function<double()> positionProvider;
   std::function<double()> lengthProvider;
   std::function<juce::String()> keyProvider;
-  std::function<bool()> monoClickProvider;
   MTControlsAudioProcessor &processor;
   juce::String lastSongTitle;
   juce::String lastKeyToken;

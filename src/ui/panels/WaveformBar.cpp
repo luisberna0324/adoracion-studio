@@ -823,10 +823,19 @@ double WaveformBar::getSongLengthSeconds() const {
   return lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
 }
 
+double WaveformBar::getBarDurationSeconds() const {
+  if (songBpm <= 0.0 || songBeatsPerBar <= 0)
+    return 0.0;
+  return (60.0 / songBpm) * static_cast<double>(songBeatsPerBar);
+}
+
 double WaveformBar::snapSeconds(const double seconds) const {
   if (!std::isfinite(seconds))
     return 0.0;
-  return std::round(seconds / kPartSnapSeconds) * kPartSnapSeconds;
+
+  const double barDurationSec = getBarDurationSeconds();
+  const double snapStepSec = barDurationSec > 0.0 ? barDurationSec : kPartSnapSeconds;
+  return std::round(seconds / snapStepSec) * snapStepSec;
 }
 
 void WaveformBar::normalizeArrangement(const bool sortByStart) {
@@ -1104,7 +1113,7 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   if (showGrid) {
     const double songLength = getSongLengthSeconds();
     if (songBpm > 0.0 && songLength > 0.0 && songBeatsPerBar > 0) {
-      const double barDurationSec = (60.0 / songBpm) * songBeatsPerBar;
+      const double barDurationSec = getBarDurationSeconds();
       if (barDurationSec > 0.0) {
         const double visibleStartSec = songLength * windowStart;
         const double visibleEndSec = songLength * (windowStart + windowSpan);
@@ -1216,7 +1225,7 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
     const float majorBottom = bounds.getBottom() - 2.5f;
 
     if (songBpm > 0.0 && songBeatsPerBar > 0) {
-      const double barDurationSec = (60.0 / songBpm) * songBeatsPerBar;
+      const double barDurationSec = getBarDurationSeconds();
       if (barDurationSec > 0.0) {
         const double visibleStartSec = songLength * windowStart;
         const double visibleEndSec = songLength * (windowStart + windowSpan);

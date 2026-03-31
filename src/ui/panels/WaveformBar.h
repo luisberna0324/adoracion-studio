@@ -116,6 +116,7 @@ private:
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
   double getSongLengthSeconds() const;
+  double getBarDurationSeconds() const;
   double snapSeconds(double seconds) const;
   void normalizeArrangement(bool sortByStart);
   int findPartIndexById(const juce::String &id) const;

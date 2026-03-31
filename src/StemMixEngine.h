@@ -17,10 +17,9 @@ public:
                 const std::atomic<bool> *pitchShiftStates, int stemCount,
                 int numSamples, int numChannels);
 
-  // Returns true if mono-click mix was used.
-  bool renderToOutput(juce::AudioBuffer<float> &output, bool monoClick,
-                      bool pitchActive, float fadeStart, float fadeEnd,
-                      float windowFadeStart, float windowFadeEnd);
+  void renderToOutput(juce::AudioBuffer<float> &output, bool pitchActive,
+                      float fadeStart, float fadeEnd, float windowFadeStart,
+                      float windowFadeEnd);
 
 private:
   class SimpleDelayLine {

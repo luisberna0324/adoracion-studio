@@ -17,9 +17,6 @@ public:
   void setBeatsPerBar(int beats) noexcept;
   int getBeatsPerBar() const noexcept;
 
-  void setMonoClickMode(bool enabled) noexcept;
-  bool isMonoClickMode() const noexcept;
-
   void syncPhaseForTimeSeconds(double seconds) noexcept;
   void process(juce::AudioBuffer<float> &buffer) noexcept;
 
@@ -27,7 +24,6 @@ private:
   std::atomic<bool> enabled{false};
   std::atomic<double> bpm{120.0};
   std::atomic<int> beatsPerBar{4};
-  std::atomic<bool> monoClickMode{false};
 
   double phase = 0.0;
   int clickSamplesRemaining = 0;

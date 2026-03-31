@@ -7,8 +7,10 @@
 
 class TopBar;
 class SetlistHandlePanel;
+class SongListPanel;
 
-class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor {
+class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                       private juce::Timer {
 public:
   explicit MTControlsAudioProcessorEditor(MTControlsAudioProcessor &);
   ~MTControlsAudioProcessorEditor() override;
@@ -34,6 +36,12 @@ private:
   bool isWaveformExpanded = false;
   ImportedSongData currentLoadedSong;
   bool hasCurrentLoadedSong = false;
+  SongListPanel *songListPanelRaw = nullptr;
+  std::function<void(int, bool)> loadSongByIndexAction;
+  bool wasSongPlaying = false;
+  double lastObservedSongPositionSec = 0.0;
+
+  void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
                     juce::Component *parent);
   void applyThemePreset(int presetId);
