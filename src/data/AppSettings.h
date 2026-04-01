@@ -9,17 +9,26 @@ struct CategoryRoutingDefaults {
   int width = 1;       // 1 = mono, 2 = stereo
 };
 
+enum class AppLanguage { Spanish = 0, English = 1 };
+
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
 public:
   /** Por defecto: expandir la ventana al área de trabajo al abrir la app. */
   static constexpr bool kDefaultExpandWindowOnLaunch = true;
   static constexpr bool kDefaultPrimeImportEnabled = false;
+  static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
   static bool getPrimeImportEnabled();
   static void setPrimeImportEnabled(bool value);
+  static AppLanguage getLanguage();
+  static void setLanguage(AppLanguage value);
+  static int getThemePresetId();
+  static void setThemePresetId(int presetId);
+  static juce::String getLastSelectedSongId();
+  static void setLastSelectedSongId(const juce::String &songId);
   static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
   static void setRoutingDefaults(
       const std::vector<CategoryRoutingDefaults> &defaults);

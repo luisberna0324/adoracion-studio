@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "Localization.h"
 
 #include <algorithm>
 #include <cmath>
@@ -48,7 +49,8 @@ juce::String SongLibraryStore::createSetlist(const juce::String &name) {
   auto library = loadLibrary();
   SetlistData setlist;
   setlist.id = juce::Uuid().toString();
-  setlist.name = name.isNotEmpty() ? name : "New Setlist";
+  setlist.name =
+      name.isNotEmpty() ? name : L10n::tr("Nuevo Setlist", "New Setlist");
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   setlist.createdMs = now;
   setlist.updatedMs = now;
@@ -604,7 +606,8 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
       if (dst.existsAsFile())
         dst.deleteFile();
       if (!src.copyFileTo(dst))
-        return failImport("Failed copying PRIME stem '" + stem.displayName + "'.");
+        return failImport("Failed copying local library stem '" +
+                          stem.displayName + "'.");
     } else {
       if (!convertStemToAlac(src, dst, errorMessage))
         return failImport("Failed converting stem '" + stem.displayName + "': " +
@@ -726,7 +729,7 @@ void SongLibraryStore::ensureDefaultSetlist(LibraryState &library) {
     return;
   SetlistData setlist;
   setlist.id = "setlist_default";
-  setlist.name = "Setlist A";
+  setlist.name = L10n::tr("Setlist A", "Setlist A");
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   setlist.createdMs = now;
   setlist.updatedMs = now;

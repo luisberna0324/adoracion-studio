@@ -145,6 +145,99 @@ void AppSettings::setPrimeImportEnabled(const bool value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+AppLanguage AppSettings::getLanguage() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return kDefaultLanguage;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("language")) {
+      const auto raw = o->getProperty("language").toString().trim().toLowerCase();
+      if (raw == "en")
+        return AppLanguage::English;
+      if (raw == "es")
+        return AppLanguage::Spanish;
+    }
+  }
+  return kDefaultLanguage;
+}
+
+void AppSettings::setLanguage(const AppLanguage value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 5);
+    o->setProperty("language",
+                   value == AppLanguage::English ? juce::var("en")
+                                                 : juce::var("es"));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+int AppSettings::getThemePresetId() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return 1;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("themePresetId")) {
+      const int id = static_cast<int>(o->getProperty("themePresetId"));
+      return juce::jlimit(1, 3, id);
+    }
+  }
+  return 1;
+}
+
+void AppSettings::setThemePresetId(const int presetId) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 6);
+    o->setProperty("themePresetId", juce::jlimit(1, 3, presetId));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+juce::String AppSettings::getLastSelectedSongId() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return {};
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("lastSelectedSongId"))
+      return o->getProperty("lastSelectedSongId").toString().trim();
+  }
+  return {};
+}
+
+void AppSettings::setLastSelectedSongId(const juce::String &songId) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 7);
+    o->setProperty("lastSelectedSongId", songId.trim());
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 std::vector<CategoryRoutingDefaults> AppSettings::getRoutingDefaults() {
   auto defaults = buildDefaultRouting();
   const auto f = getSettingsFile();

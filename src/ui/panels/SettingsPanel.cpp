@@ -1,6 +1,7 @@
 #include "SettingsPanel.h"
 
 #include "../../audio/OutputChannelCatalog.h"
+#include "../../data/Localization.h"
 #include "../../data/SongData.h"
 
 class SettingsPanel::RoutingRow final : public juce::Component {
@@ -111,8 +112,11 @@ private:
   CategoryRoutingDefaults current;
 };
 
-SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunch,
-                             ThemeChanged cb, ExpandLaunchChanged expandCb,
+SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
+                             const AppLanguage language,
+                             LanguageChanged languageCb,
+                             const bool expandWindowOnLaunch,
+                             ExpandLaunchChanged expandCb,
                              const bool primeImportEnabled,
                              PrimeImportChanged primeImportCb,
                              CloseRequested closeCb,
@@ -123,21 +127,23 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
                              int maxInputChannels,
                              int maxOutputChannels)
     : onThemeChanged(std::move(cb)),
+      onLanguageChanged(std::move(languageCb)),
       onExpandLaunchChanged(std::move(expandCb)),
       onPrimeImportChanged(std::move(primeImportCb)),
-      onClose(std::move(closeCb)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
-  title.setText("Settings", juce::dontSendNotification);
+  juce::ignoreUnused(closeCb, maxInputChannels, maxOutputChannels);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
   addAndMakeVisible(title);
 
-  tabs.addTab("General", UITheme::cardBg, &generalPage, false);
-  tabs.addTab("Ruteo", UITheme::cardBg, &routingPage, false);
-  tabs.addTab("Audio", UITheme::cardBg, &audioPage, false);
+  tabs.addTab(L10n::tr("General", "General"), UITheme::cardBg, &generalPage,
+              false);
+  tabs.addTab(L10n::tr("Ruteo", "Routing"), UITheme::cardBg, &routingPage,
+              false);
+  tabs.setTabBarDepth(30);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
     if (newIndex == 1) {
       refreshDeviceOptions();
@@ -146,7 +152,6 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
   };
   addAndMakeVisible(tabs);
 
-  deviceLabel.setText("Interfaz", juce::dontSendNotification);
   deviceLabel.setJustificationType(juce::Justification::centredLeft);
   deviceLabel.setFont(juce::FontOptions(11.0f));
   routingPage.addAndMakeVisible(deviceLabel);
@@ -158,24 +163,47 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
   };
   routingPage.addAndMakeVisible(deviceBox);
 
-  themeLabel.setText("Skin", juce::dontSendNotification);
   themeLabel.setJustificationType(juce::Justification::centredLeft);
   themeLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(themeLabel);
 
-  themeBox.addItem("Default", static_cast<int>(ThemePreset::Default));
-  themeBox.addItem("Spotify", static_cast<int>(ThemePreset::Spotify));
-  themeBox.addItem("Ableton", static_cast<int>(ThemePreset::Ableton));
+  themeBox.addItem(L10n::tr("Clásico", "Classic"),
+                   static_cast<int>(ThemePreset::Default));
+  themeBox.addItem(L10n::tr("Verde Noche", "Night Green"),
+                   static_cast<int>(ThemePreset::Spotify));
+  themeBox.addItem(L10n::tr("Ámbar Estudio", "Studio Amber"),
+                   static_cast<int>(ThemePreset::Ableton));
   themeBox.setSelectedId(static_cast<int>(current));
   themeBox.setJustificationType(juce::Justification::centredLeft);
   generalPage.addAndMakeVisible(themeBox);
 
-  expandLaunchLabel.setText("Ventana al iniciar", juce::dontSendNotification);
+  languageLabel.setJustificationType(juce::Justification::centredLeft);
+  languageLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(languageLabel);
+
+  languageBox.addItem("Español", static_cast<int>(AppLanguage::Spanish) + 1);
+  languageBox.addItem("English", static_cast<int>(AppLanguage::English) + 1);
+  languageBox.setSelectedId(static_cast<int>(language) + 1,
+                            juce::dontSendNotification);
+  languageBox.setJustificationType(juce::Justification::centredLeft);
+  languageBox.onChange = [this] {
+    const int id = languageBox.getSelectedId();
+    if (id <= 0)
+      return;
+    const auto selectedLanguage =
+        static_cast<AppLanguage>(juce::jlimit(0, 1, id - 1));
+    if (onLanguageChanged)
+      onLanguageChanged(selectedLanguage);
+    applyLanguageTexts();
+    resized();
+    repaint();
+  };
+  generalPage.addAndMakeVisible(languageBox);
+
   expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
   expandLaunchLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(expandLaunchLabel);
 
-  expandLaunchToggle.setButtonText("Expandir al área de trabajo");
   expandLaunchToggle.setClickingTogglesState(true);
   expandLaunchToggle.setToggleState(expandWindowOnLaunch,
                                     juce::dontSendNotification);
@@ -185,12 +213,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
   };
   generalPage.addAndMakeVisible(expandLaunchToggle);
 
-  primeImportLabel.setText("Importar desde PRIME", juce::dontSendNotification);
   primeImportLabel.setJustificationType(juce::Justification::centredLeft);
   primeImportLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(primeImportLabel);
 
-  primeImportToggle.setButtonText("Habilitar importacion desde PRIME");
   primeImportToggle.setClickingTogglesState(true);
   primeImportToggle.setToggleState(primeImportEnabled,
                                    juce::dontSendNotification);
@@ -202,34 +228,12 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
-  routingSectionLabel.setText("Ruteo por tipo", juce::dontSendNotification);
   routingPage.addAndMakeVisible(routingSectionLabel);
 
   routingViewport.setViewedComponent(&routingContent, false);
   routingViewport.setScrollBarsShown(true, false, false, false);
   routingViewport.setScrollBarThickness(2);
   routingPage.addAndMakeVisible(routingViewport);
-
-  if (deviceManager != nullptr) {
-    const int maxIns = juce::jmax(0, maxInputChannels);
-    const int maxOuts = juce::jmax(0, maxOutputChannels);
-    audioSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
-        *deviceManager, 0, maxIns, 0, maxOuts, true, true, true, false);
-    audioPage.addAndMakeVisible(*audioSelector);
-  } else {
-    audioUnavailableLabel.setText("Audio disponible solo en Standalone",
-                                  juce::dontSendNotification);
-    audioUnavailableLabel.setJustificationType(
-        juce::Justification::centredLeft);
-    audioUnavailableLabel.setFont(juce::FontOptions(12.0f));
-    audioPage.addAndMakeVisible(audioUnavailableLabel);
-  }
-
-  closeButton.setButtonText("CLOSE");
-  closeButton.setClickingTogglesState(false);
-  closeButton.setViewportIgnoreDragFlag(true);
-  closeButton.onClick = [this] { closeSelf(); };
-  addAndMakeVisible(closeButton);
 
   themeBox.onChange = [this] {
     const auto id = themeBox.getSelectedId();
@@ -282,6 +286,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, const bool expandWindowOnLaunc
   refreshDeviceOptions();
   refreshRoutingForDevice();
   tabs.setCurrentTabIndex(0);
+  applyLanguageTexts();
+  refreshThemeColours();
 }
 
 void SettingsPanel::paint(juce::Graphics &g) {
@@ -297,13 +303,10 @@ void SettingsPanel::resized() {
   auto header = area.removeFromTop(28);
   title.setBounds(header);
   area.removeFromTop(10);
-  auto footer = area.removeFromBottom(28);
-  closeButton.setBounds(footer.removeFromRight(90));
   tabs.setBounds(area);
 
   layoutGeneralPage();
   layoutRoutingPage();
-  layoutAudioPage();
 }
 
 void SettingsPanel::refreshThemeColours() {
@@ -328,6 +331,12 @@ void SettingsPanel::refreshThemeColours() {
                      UITheme::cardBorder.withAlpha(0.65f));
   themeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   themeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  languageLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  languageBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+  languageBox.setColour(juce::ComboBox::outlineColourId,
+                        UITheme::cardBorder.withAlpha(0.65f));
+  languageBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  languageBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   expandLaunchToggle.setColour(juce::ToggleButton::textColourId,
                                UITheme::textPrimary);
@@ -343,41 +352,50 @@ void SettingsPanel::refreshThemeColours() {
   primeImportToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                               UITheme::textSecondary);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  closeButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
-  closeButton.setColour(juce::TextButton::buttonOnColourId,
-                        UITheme::cardBgPressed);
-  closeButton.setColour(juce::TextButton::textColourOffId,
-                        UITheme::textPrimary);
-  closeButton.setColour(juce::TextButton::textColourOnId,
-                        UITheme::textPrimary);
-  audioUnavailableLabel.setColour(juce::Label::textColourId,
-                                  UITheme::textSecondary);
   for (auto &row : routingRows)
     row->refreshThemeColours();
   repaint();
 }
 
-void SettingsPanel::closeSelf() {
-  if (onClose)
-    onClose();
-  if (auto *dw = findParentComponentOfClass<juce::DialogWindow>()) {
-    dw->exitModalState(0);
-    dw->setVisible(false);
-  }
+void SettingsPanel::applyLanguageTexts() {
+  title.setText(L10n::tr("Configuración", "Settings"),
+                juce::dontSendNotification);
+  tabs.setTabName(0, L10n::tr("General", "General"));
+  tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
+  deviceLabel.setText(L10n::tr("Interfaz", "Device"), juce::dontSendNotification);
+  themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
+  languageLabel.setText(L10n::tr("Idioma", "Language"),
+                        juce::dontSendNotification);
+  expandLaunchLabel.setText(L10n::tr("Ventana al iniciar", "Window on launch"),
+                            juce::dontSendNotification);
+  expandLaunchToggle.setButtonText(
+      L10n::tr("Expandir al área de trabajo", "Expand to work area"));
+  primeImportLabel.setText(
+      L10n::tr("Importar desde disco local", "Import from local disk"),
+                           juce::dontSendNotification);
+  primeImportToggle.setButtonText(
+      L10n::tr("Habilitar importación desde disco local",
+               "Enable import from local disk"));
+  routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
+                              juce::dontSendNotification);
 }
 
 void SettingsPanel::layoutGeneralPage() {
   auto area = generalPage.getLocalBounds().reduced(4);
   auto row = area.removeFromTop(26);
-  themeLabel.setBounds(row.removeFromLeft(60));
+  themeLabel.setBounds(row.removeFromLeft(90));
   themeBox.setBounds(row);
+  area.removeFromTop(8);
+  auto languageRow = area.removeFromTop(26);
+  languageLabel.setBounds(languageRow.removeFromLeft(90));
+  languageBox.setBounds(languageRow);
   area.removeFromTop(14);
   auto expandRow = area.removeFromTop(26);
-  expandLaunchLabel.setBounds(expandRow.removeFromLeft(130));
+  expandLaunchLabel.setBounds(expandRow.removeFromLeft(160));
   expandLaunchToggle.setBounds(expandRow);
   area.removeFromTop(10);
   auto primeRow = area.removeFromTop(26);
-  primeImportLabel.setBounds(primeRow.removeFromLeft(150));
+  primeImportLabel.setBounds(primeRow.removeFromLeft(160));
   primeImportToggle.setBounds(primeRow);
 }
 
@@ -401,21 +419,12 @@ void SettingsPanel::layoutRoutingPage() {
                          juce::jmax(y + 2, routingViewport.getHeight()));
 }
 
-void SettingsPanel::layoutAudioPage() {
-  auto area = audioPage.getLocalBounds().reduced(4);
-  if (audioSelector != nullptr) {
-    audioSelector->setBounds(area);
-  } else {
-    audioUnavailableLabel.setBounds(area.removeFromTop(24));
-  }
-}
-
 void SettingsPanel::refreshDeviceOptions() {
   deviceOptions.clear();
   deviceBox.clear(juce::dontSendNotification);
 
   if (deviceManager == nullptr) {
-    deviceBox.addItem("Audio no disponible", 1);
+    deviceBox.addItem(L10n::tr("Audio no disponible", "Audio unavailable"), 1);
     deviceBox.setSelectedId(1, juce::dontSendNotification);
     return;
   }
@@ -469,8 +478,11 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
   deviceManager->setCurrentAudioDeviceType(opt.typeName, false);
   if (deviceManager->getCurrentAudioDeviceType() != opt.typeName) {
     juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon, "Couldn't switch audio driver",
-        "The selected audio driver couldn't be applied.");
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo cambiar el driver de audio",
+                 "Couldn't switch audio driver"),
+        L10n::tr("No se pudo aplicar el driver de audio seleccionado.",
+                 "The selected audio driver couldn't be applied."));
     refreshDeviceOptions();
     refreshRoutingForDevice();
     return;
@@ -487,7 +499,9 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
   const auto setupError = deviceManager->setAudioDeviceSetup(setup, false);
   if (setupError.isNotEmpty()) {
     juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon, "Couldn't switch audio interface",
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo cambiar la interfaz de audio",
+                 "Couldn't switch audio interface"),
         setupError);
   }
 

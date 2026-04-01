@@ -12,6 +12,7 @@
 class SettingsPanel final : public juce::Component {
 public:
   using ThemeChanged = std::function<void(ThemePreset)>;
+  using LanguageChanged = std::function<void(AppLanguage)>;
   using ExpandLaunchChanged = std::function<void(bool)>;
   using PrimeImportChanged = std::function<void(bool)>;
   using CloseRequested = std::function<void()>;
@@ -19,7 +20,8 @@ public:
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
 
-  SettingsPanel(ThemePreset current, bool expandWindowOnLaunch, ThemeChanged cb,
+  SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
+                LanguageChanged languageCb, bool expandWindowOnLaunch,
                 ExpandLaunchChanged expandCb, bool primeImportEnabled,
                 PrimeImportChanged primeImportCb, CloseRequested closeCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
@@ -52,11 +54,12 @@ private:
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtTop};
   juce::Component generalPage;
   juce::Component routingPage;
-  juce::Component audioPage;
   juce::Label deviceLabel;
   juce::ComboBox deviceBox;
   juce::Label themeLabel;
   juce::ComboBox themeBox;
+  juce::Label languageLabel;
+  juce::ComboBox languageBox;
   juce::Label expandLaunchLabel;
   juce::ToggleButton expandLaunchToggle;
   juce::Label primeImportLabel;
@@ -64,13 +67,10 @@ private:
   juce::Label routingSectionLabel;
   juce::Viewport routingViewport;
   juce::Component routingContent;
-  std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSelector;
-  juce::Label audioUnavailableLabel;
-  juce::TextButton closeButton;
   ThemeChanged onThemeChanged;
+  LanguageChanged onLanguageChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
   PrimeImportChanged onPrimeImportChanged;
-  CloseRequested onClose;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
   std::vector<CategoryRoutingDefaults> routingDefaults;
   int availableOutputChannels = 2;
@@ -84,12 +84,11 @@ private:
   };
   std::vector<DeviceOption> deviceOptions;
 
-  void closeSelf();
   void refreshDeviceOptions();
   void applyDeviceSelection(int optionIndex);
   void refreshRoutingForDevice();
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
   void layoutRoutingPage();
-  void layoutAudioPage();
+  void applyLanguageTexts();
 };

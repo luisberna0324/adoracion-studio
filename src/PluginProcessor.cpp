@@ -1299,6 +1299,11 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   metronome.setEnabled(enabled);
   metronome.reset();
+  if (enabled) {
+    const double currentSec =
+        songCurrentPositionSeconds.load(std::memory_order_relaxed);
+    metronome.syncPhaseForTimeSeconds(currentSec);
+  }
 }
 
 bool MTControlsAudioProcessor::isMetronomeEnabled() const noexcept {

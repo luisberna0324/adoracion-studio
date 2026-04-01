@@ -1,4 +1,5 @@
 #include "WaveformBar.h"
+#include "../../data/Localization.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,11 +43,13 @@ juce::Colour partColorOrFallback(const SongArrangementPartSnapshot &part,
 } // namespace
 
 WaveformBar::WaveformBar() {
-  editButton.setButtonText("EDITAR");
+  editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
   editButton.setClickingTogglesState(true);
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
-    editButton.setButtonText(editButton.getToggleState() ? "SALIR" : "EDITAR");
+    editButton.setButtonText(
+        editButton.getToggleState() ? L10n::tr("SALIR", "EXIT")
+                                    : L10n::tr("EDITAR", "EDIT"));
     // Cuando el alto del panel no cambia entre modos, resized() no siempre se
     // dispara desde el padre. Forzamos layout local para mostrar/ocultar
     // correctamente los botones de partes.
@@ -72,7 +75,7 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
 
   if (!hasLoadedSong && wasEditing) {
     editButton.setToggleState(false, juce::dontSendNotification);
-    editButton.setButtonText("EDITAR");
+    editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
     if (onEditToggle)
       onEditToggle(false);
   }
@@ -187,7 +190,8 @@ void WaveformBar::paint(juce::Graphics &g) {
   if (waveformBins.empty()) {
     g.setColour(UITheme::cardBg.withAlpha(0.55f));
     g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText("Double-click a song to load stems waveform",
+    g.drawFittedText(L10n::tr("Doble click en una cancion para cargar waveform",
+                              "Double-click a song to load stems waveform"),
                      mainWaveBodyBounds.toNearestInt().reduced(20),
                      juce::Justification::centred, 2);
     if (miniMapBounds.getHeight() > 0.0f) {
@@ -851,7 +855,7 @@ void WaveformBar::normalizeArrangement(const bool sortByStart) {
       part.id = juce::Uuid().toString();
 
     const auto trimmedName = part.name.trim();
-    part.name = trimmedName.isEmpty() ? "Part" : trimmedName;
+    part.name = trimmedName.isEmpty() ? L10n::tr("Parte", "Part") : trimmedName;
     if (!isArrangementPartColorValid(part.color))
       part.color = makeRandomArrangementPartColor();
 
@@ -922,7 +926,8 @@ WaveformBar::getEditToolbarBounds(const juce::Rectangle<float> &bounds) const {
 juce::Rectangle<float>
 WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
   auto area = bounds.reduced(8.0f, 6.0f);
-  area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
+  if (isEditingArrangement())
+    area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   area = area.withTrimmedBottom(kMiniMapHeight + kMiniMapGap);
   return area;
 }
@@ -954,7 +959,8 @@ juce::Rectangle<float> WaveformBar::getMainWaveBodyBounds(
 juce::Rectangle<float>
 WaveformBar::getMiniMapBounds(const juce::Rectangle<float> &bounds) const {
   auto area = bounds.reduced(8.0f, 6.0f);
-  area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
+  if (isEditingArrangement())
+    area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   if (area.getHeight() <= kMiniMapHeight)
     return {};
 
@@ -1346,7 +1352,8 @@ void WaveformBar::drawArrangementOverlay(
       g.drawRoundedRectangle(overlay.body, 2.5f, 1.05f);
     }
 
-    const auto partName = part.name.isNotEmpty() ? part.name : "Part";
+    const auto partName =
+        part.name.isNotEmpty() ? part.name : L10n::tr("Parte", "Part");
     auto textArea = overlay.body.toNearestInt().reduced(6, 4);
     g.setColour(juce::Colours::white.withAlpha(
         pendingJump ? 0.96f : (selected ? 0.94f : 0.86f)));
@@ -1356,9 +1363,9 @@ void WaveformBar::drawArrangementOverlay(
 
     if (editing) {
       g.setFont(juce::FontOptions(10.2f));
-      g.drawFittedText("Inicio " + formatSeconds(part.startSec),
+      g.drawFittedText(L10n::tr("Inicio ", "Start ") + formatSeconds(part.startSec),
                        textArea.removeFromTop(12), juce::Justification::topLeft, 1);
-      g.drawFittedText("Fin " + formatSeconds(part.endSec),
+      g.drawFittedText(L10n::tr("Fin ", "End ") + formatSeconds(part.endSec),
                        textArea.removeFromTop(12), juce::Justification::topLeft, 1);
     }
 
@@ -1437,9 +1444,11 @@ void WaveformBar::rebuildSectionAddButtons() {
 
   for (const auto *section : kSongSectionSuggestions) {
     auto btn = std::make_unique<juce::TextButton>();
-    const juce::String sectionName = section != nullptr ? juce::String(section) : "Part";
+    const juce::String sectionName = section != nullptr
+                                         ? juce::String(section)
+                                         : L10n::tr("Parte", "Part");
     btn->setButtonText("+ " + sectionName);
-    btn->setTooltip("Agregar " + sectionName);
+    btn->setTooltip(L10n::tr("Agregar ", "Add ") + sectionName);
     btn->setViewportIgnoreDragFlag(true);
     btn->onClick = [this, sectionName] { addArrangementPart(sectionName); };
     addAndMakeVisible(*btn);
@@ -1455,25 +1464,26 @@ void WaveformBar::openPartActionMenu(const int partIndex) {
 
   auto safe = juce::Component::SafePointer<WaveformBar>(this);
   juce::PopupMenu menu;
-  menu.addItem("Duplicar parte", [safe, partIndex] {
+  menu.addItem(L10n::tr("Duplicar parte", "Duplicate part"), [safe, partIndex] {
     if (safe != nullptr)
       safe->duplicateArrangementPart(partIndex);
   });
-  menu.addItem("Renombrar parte", [safe, partIndex] {
+  menu.addItem(L10n::tr("Renombrar parte", "Rename part"), [safe, partIndex] {
     if (safe != nullptr)
       safe->renameArrangementPart(partIndex);
   });
-  menu.addItem("Editar rango", [safe, partIndex] {
+  menu.addItem(L10n::tr("Editar rango", "Edit range"), [safe, partIndex] {
     if (safe != nullptr)
       safe->editArrangementPartRange(partIndex);
   });
-  menu.addItem("Eliminar parte", arrangement.parts.size() > 1, false,
+  menu.addItem(L10n::tr("Eliminar parte", "Delete part"),
+               arrangement.parts.size() > 1, false,
                [safe, partIndex] {
                  if (safe != nullptr)
                    safe->confirmDeleteArrangementPart(partIndex);
                });
   menu.addSeparator();
-  menu.addItem("Resetear arreglo", [safe] {
+  menu.addItem(L10n::tr("Resetear arreglo", "Reset arrangement"), [safe] {
     if (safe != nullptr)
       safe->resetArrangementToDefault();
   });
@@ -1492,7 +1502,7 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
     nextName = kSongSectionSuggestions[static_cast<size_t>(suggestionIndex)];
   }
   if (nextName.isEmpty())
-    nextName = "Part";
+    nextName = L10n::tr("Parte", "Part");
 
   double startSec = 0.0;
   if (juce::isPositiveAndBelow(selectedPartIndex,
@@ -1534,7 +1544,8 @@ void WaveformBar::duplicateArrangementPart(const int partIndex) {
   auto copy = arrangement.parts[static_cast<size_t>(partIndex)];
   copy.id = juce::Uuid().toString();
   copy.color = makeRandomArrangementPartColor();
-  copy.name = copy.name.trim().isEmpty() ? "Part" : (copy.name + " Copy");
+  copy.name = copy.name.trim().isEmpty() ? L10n::tr("Parte", "Part")
+                                         : (copy.name + L10n::tr(" Copia", " Copy"));
   arrangement.parts.push_back(std::move(copy));
   selectedPartIndex = static_cast<int>(arrangement.parts.size()) - 1;
   customArrangement = true;
@@ -1547,13 +1558,14 @@ void WaveformBar::renameArrangementPart(const int partIndex) {
                                 static_cast<int>(arrangement.parts.size())))
     return;
 
-  auto *dialog = new juce::AlertWindow("Renombrar parte", "Nuevo nombre",
+  auto *dialog = new juce::AlertWindow(L10n::tr("Renombrar parte", "Rename part"),
+                                       L10n::tr("Nuevo nombre", "New name"),
                                        juce::AlertWindow::NoIcon);
   dialog->addTextEditor("name",
                         arrangement.parts[static_cast<size_t>(partIndex)].name,
-                        "Nombre");
-  dialog->addButton("Cancelar", 0);
-  dialog->addButton("Guardar", 1);
+                        L10n::tr("Nombre", "Name"));
+  dialog->addButton(L10n::tr("Cancelar", "Cancel"), 0);
+  dialog->addButton(L10n::tr("Guardar", "Save"), 1);
 
   auto safe = juce::Component::SafePointer<WaveformBar>(this);
   dialog->enterModalState(
@@ -1566,7 +1578,7 @@ void WaveformBar::renameArrangementPart(const int partIndex) {
           return;
         const auto nextName = dialog->getTextEditorContents("name").trim();
         safe->arrangement.parts[static_cast<size_t>(partIndex)].name =
-            nextName.isEmpty() ? "Part" : nextName;
+            nextName.isEmpty() ? L10n::tr("Parte", "Part") : nextName;
         safe->selectedPartIndex = partIndex;
         safe->customArrangement = true;
         safe->notifyArrangementChanged(true);
@@ -1581,12 +1593,16 @@ void WaveformBar::editArrangementPartRange(const int partIndex) {
     return;
 
   const auto &part = arrangement.parts[static_cast<size_t>(partIndex)];
-  auto *dialog = new juce::AlertWindow("Editar rango", "Ajusta inicio y fin",
+  auto *dialog = new juce::AlertWindow(L10n::tr("Editar rango", "Edit range"),
+                                       L10n::tr("Ajusta inicio y fin",
+                                                "Adjust start and end"),
                                        juce::AlertWindow::NoIcon);
-  dialog->addTextEditor("start", juce::String(part.startSec, 2), "Inicio (sec)");
-  dialog->addTextEditor("end", juce::String(part.endSec, 2), "Fin (sec)");
-  dialog->addButton("Cancelar", 0);
-  dialog->addButton("Guardar", 1);
+  dialog->addTextEditor("start", juce::String(part.startSec, 2),
+                        L10n::tr("Inicio (seg)", "Start (sec)"));
+  dialog->addTextEditor("end", juce::String(part.endSec, 2),
+                        L10n::tr("Fin (seg)", "End (sec)"));
+  dialog->addButton(L10n::tr("Cancelar", "Cancel"), 0);
+  dialog->addButton(L10n::tr("Guardar", "Save"), 1);
 
   auto safe = juce::Component::SafePointer<WaveformBar>(this);
   dialog->enterModalState(
@@ -1637,12 +1653,13 @@ void WaveformBar::confirmDeleteArrangementPart(const int partIndex) {
   }
 
   const auto partName = arrangement.parts[static_cast<size_t>(partIndex)].name;
-  auto *dialog = new juce::AlertWindow("Eliminar parte",
-                                       "Se eliminará \"" + partName +
-                                           "\". ¿Confirmas?",
+  auto *dialog = new juce::AlertWindow(L10n::tr("Eliminar parte", "Delete part"),
+                                       L10n::tr("Se eliminara \"", "This will delete \"") +
+                                           partName +
+                                           L10n::tr("\". Confirmas?", "\". Confirm?"),
                                        juce::AlertWindow::WarningIcon);
-  dialog->addButton("Cancelar", 0);
-  dialog->addButton("Eliminar", 1);
+  dialog->addButton(L10n::tr("Cancelar", "Cancel"), 0);
+  dialog->addButton(L10n::tr("Eliminar", "Delete"), 1);
 
   auto safe = juce::Component::SafePointer<WaveformBar>(this);
   dialog->enterModalState(

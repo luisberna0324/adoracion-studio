@@ -92,6 +92,7 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
+        src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h
         src/data/SongData.cpp

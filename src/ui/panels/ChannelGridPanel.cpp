@@ -3,6 +3,7 @@
 #include "../../audio/RoutingSuggestionEngine.h"
 #include "../components/ChannelStripCard.h"
 #include "../../PluginProcessor.h"
+#include "../../data/Localization.h"
 #include "../../data/SongLibraryStore.h"
 
 #include <algorithm>
@@ -479,8 +480,10 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
   if (slots.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.85f));
     g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText("Double-click a song\nfrom setlist", viewport.getBounds(),
-                     juce::Justification::centred, 2);
+    g.drawFittedText(
+        L10n::tr("Doble click en una cancion\ndel setlist",
+                 "Double-click a song\nfrom setlist"),
+        viewport.getBounds(), juce::Justification::centred, 2);
   }
 }
 

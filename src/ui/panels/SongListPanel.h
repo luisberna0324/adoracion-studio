@@ -38,6 +38,7 @@ public:
   void setNowPlayingSong(const juce::String &songId, bool isPlaying);
   int getLastActivatedIndex() const;
   juce::String getActiveSetlistName() const;
+  void refreshLanguageTexts();
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -50,6 +51,7 @@ private:
     juce::String songId;
     bool autoPlayNext = false;
     bool isNowPlaying = false;
+    bool isSelected = false;
     int songIndex = -1;
   };
 
@@ -57,6 +59,7 @@ private:
   public:
     void setSongs(std::vector<SongRow> rows);
     void setNowPlayingSong(const juce::String &songId, bool isPlaying);
+    void setSelectedSongId(const juce::String &songId);
     void setOnSongActivated(std::function<void(int)> cb);
     void setOnSongsReordered(std::function<void(int, int)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
@@ -109,6 +112,7 @@ private:
   juce::String activeSetlistId;
   juce::String activeSetlistName;
   juce::String nowPlayingSongId;
+  juce::String selectedSongId;
   bool isPlaybackActive = false;
   juce::StringArray autoPlayNextMarks;
   std::function<void(const ImportedSongData &, int)> onSongActivated;

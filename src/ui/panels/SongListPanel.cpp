@@ -3,6 +3,7 @@
 #include "SongImportWizardComponent.h"
 #include "../../PluginEditor.h"
 #include "../../data/AppSettings.h"
+#include "../../data/Localization.h"
 
 #include <algorithm>
 #include <utility>
@@ -39,7 +40,8 @@ void SongListPanel::AddSongButton::paintButton(juce::Graphics &g,
 
   g.setColour(UITheme::textPrimary);
   g.setFont(juce::FontOptions(10.5f).withKerningFactor(0.08f));
-  g.drawText("Add Song", b.reduced(4.0f, 0.0f).toNearestInt(),
+  g.drawText(L10n::tr("Agregar", "Add Song"),
+             b.reduced(4.0f, 0.0f).toNearestInt(),
              juce::Justification::centredLeft);
 }
 
@@ -65,11 +67,14 @@ void SongListPanel::ManageSetlistsButton::paintButton(
 
   g.setColour(UITheme::textPrimary);
   g.setFont(juce::FontOptions(10.5f).withKerningFactor(0.08f));
-  g.drawText("Setlists", b.reduced(4.0f, 0.0f).toNearestInt(),
+  g.drawText(L10n::tr("Setlists", "Setlists"),
+             b.reduced(4.0f, 0.0f).toNearestInt(),
              juce::Justification::centredLeft);
 }
 
 SongListPanel::SongListPanel() {
+  selectedSongId = AppSettings::getLastSelectedSongId();
+
   listViewport.setViewedComponent(&listContent, false);
   listViewport.setScrollBarsShown(true, false, false, false);
   listViewport.setScrollBarThickness(1);
@@ -91,6 +96,9 @@ SongListPanel::SongListPanel() {
     if (!juce::isPositiveAndBelow(libraryIndex,
                                   static_cast<int>(librarySongs.size())))
       return;
+    selectedSongId = librarySongs[static_cast<size_t>(libraryIndex)].id;
+    AppSettings::setLastSelectedSongId(selectedSongId);
+    listContent.setSelectedSongId(selectedSongId);
     if (onSongActivated)
       onSongActivated(librarySongs[static_cast<size_t>(libraryIndex)],
                       songIndex);
@@ -213,6 +221,8 @@ juce::String SongListPanel::getActiveSetlistName() const {
   return activeSetlistName;
 }
 
+void SongListPanel::refreshLanguageTexts() { repaint(); }
+
 void SongListPanel::paint(juce::Graphics &g) {
   const auto bounds = getLocalBounds().toFloat();
   g.setColour(UITheme::cardBg);
@@ -223,7 +233,8 @@ void SongListPanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::textPrimary);
   g.setFont(juce::FontOptions(18.0f));
   const auto title =
-      activeSetlistName.isNotEmpty() ? activeSetlistName : "Setlist";
+      activeSetlistName.isNotEmpty() ? activeSetlistName
+                                     : L10n::tr("Setlist", "Setlist");
   g.drawText(title, 14, 8, getWidth() - 220, 24,
              juce::Justification::centredLeft);
 }
@@ -270,6 +281,19 @@ void SongListPanel::ListContent::setNowPlayingSong(const juce::String &songId,
     repaint();
 }
 
+void SongListPanel::ListContent::setSelectedSongId(const juce::String &songId) {
+  bool changed = false;
+  for (auto &row : songs) {
+    const bool next = songId.isNotEmpty() && row.songId == songId;
+    if (row.isSelected == next)
+      continue;
+    row.isSelected = next;
+    changed = true;
+  }
+  if (changed)
+    repaint();
+}
+
 void SongListPanel::ListContent::setOnSongActivated(
     std::function<void(int)> cb) {
   onSongActivated = std::move(cb);
@@ -302,7 +326,8 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
   if (songs.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.88f));
     g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText("No songs in this setlist yet.",
+    g.drawFittedText(L10n::tr("Aún no hay canciones en este setlist.",
+                              "No songs in this setlist yet."),
                      getLocalBounds().reduced(10),
                      juce::Justification::centred, 2);
     return;
@@ -318,6 +343,8 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                            juce::Colour fill, float fillAlpha,
                            float borderAlpha) {
     auto rowFill = fill;
+    if (rowData.isSelected)
+      rowFill = rowFill.interpolatedWith(UITheme::accent, 0.18f);
     if (rowData.isNowPlaying)
       rowFill = rowFill.interpolatedWith(UITheme::accentSoft, 0.24f);
     g.setColour(rowFill.withAlpha(fillAlpha));
@@ -327,6 +354,9 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
         rowData.isNowPlaying
             ? UITheme::accent.withAlpha(juce::jlimit(0.0f, 1.0f,
                                                      borderAlpha + 0.28f))
+            : rowData.isSelected
+                  ? UITheme::accent.withAlpha(
+                        juce::jlimit(0.0f, 1.0f, borderAlpha + 0.20f))
             : UITheme::cardBorder.withAlpha(borderAlpha);
     g.setColour(borderColour);
     g.drawRoundedRectangle(row.toFloat(), 4.0f, 1.0f);
@@ -512,6 +542,10 @@ void SongListPanel::ListContent::mouseDoubleClick(
   if (optionsButtonBoundsForRow(rowBounds).contains(event.position.toInt()))
     return;
 
+  for (int i = 0; i < static_cast<int>(songs.size()); ++i)
+    songs[static_cast<size_t>(i)].isSelected = (i == idx);
+  repaint();
+
   if (onSongActivated)
     onSongActivated(songs[static_cast<size_t>(idx)].songIndex);
 }
@@ -634,10 +668,14 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
   public:
     SongActionsPopover(bool autoPlayEnabled, std::function<void()> onToggleFn,
                        std::function<void()> onRemoveFn)
-        : toggleChip(autoPlayEnabled ? "Disable auto-play next"
-                                     : "Enable auto-play next",
+        : toggleChip(autoPlayEnabled
+                         ? L10n::tr("Desactivar auto-play siguiente",
+                                    "Disable auto-play next")
+                         : L10n::tr("Activar auto-play siguiente",
+                                    "Enable auto-play next"),
                      autoPlayEnabled, false),
-          removeChip("Remove from setlist", false, true),
+          removeChip(L10n::tr("Quitar del setlist", "Remove from setlist"),
+                     false, true),
           onToggle(std::move(onToggleFn)), onRemove(std::move(onRemoveFn)) {
       toggleChip.onClick = [this] {
         if (onToggle)
@@ -729,17 +767,18 @@ public:
       : onSetlistLoaded(std::move(onLoaded)) {
     setSize(860, 560);
 
-    titleLabel.setText("Setlists", juce::dontSendNotification);
+    titleLabel.setText(L10n::tr("Setlists", "Setlists"),
+                       juce::dontSendNotification);
     titleLabel.setJustificationType(juce::Justification::centred);
     titleLabel.setFont(juce::FontOptions(18.0f));
     addAndMakeVisible(titleLabel);
 
-    createButton.setButtonText("Create a Setlist");
+    createButton.setButtonText(L10n::tr("Crear Setlist", "Create a Setlist"));
     createButton.onClick = [this] { createSetlist(); };
     addAndMakeVisible(createButton);
 
-    searchEditor.setTextToShowWhenEmpty("Search Setlists",
-                                        UITheme::textSecondary);
+    searchEditor.setTextToShowWhenEmpty(
+        L10n::tr("Buscar Setlists", "Search Setlists"), UITheme::textSecondary);
     searchEditor.onTextChange = [this] { refreshSetlistRows(); };
     addAndMakeVisible(searchEditor);
 
@@ -753,11 +792,11 @@ public:
     songsViewport.setScrollBarThickness(1);
     addAndMakeVisible(songsViewport);
 
-    addSongButton.setButtonText("Add Song");
+    addSongButton.setButtonText(L10n::tr("Agregar canción", "Add Song"));
     addSongButton.onClick = [this] { showAddSongMenu(); };
     addAndMakeVisible(addSongButton);
 
-    loadButton.setButtonText("Load setlist");
+    loadButton.setButtonText(L10n::tr("Cargar setlist", "Load setlist"));
     loadButton.onClick = [this] { loadSelectedSetlist(); };
     addAndMakeVisible(loadButton);
 
@@ -856,7 +895,8 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText("No setlists yet.", getLocalBounds().reduced(10),
+        g.drawFittedText(L10n::tr("Aún no hay setlists.", "No setlists yet."),
+                         getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
       }
@@ -889,7 +929,9 @@ private:
                          juce::Justification::centredLeft, 1);
         g.setColour(UITheme::textSecondary);
         g.setFont(juce::FontOptions(9.0f));
-        g.drawFittedText(juce::String(rows[i].songCount) + " songs", textArea,
+        g.drawFittedText(juce::String(rows[i].songCount) + " " +
+                             L10n::tr("canciones", "songs"),
+                         textArea,
                          juce::Justification::centredLeft, 1);
 
         drawActionButton(g, renameRect, IconGlyph::Pencil,
@@ -1010,7 +1052,8 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText("No songs yet.", getLocalBounds().reduced(10),
+        g.drawFittedText(L10n::tr("Aún no hay canciones.", "No songs yet."),
+                         getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
       }
@@ -1192,7 +1235,9 @@ private:
 
     SongsListContent::SongRow row;
     row.songId = song.id;
-    row.title = song.title.isNotEmpty() ? song.title : "Untitled Song";
+    row.title = song.title.isNotEmpty()
+                    ? song.title
+                    : L10n::tr("Canción sin título", "Untitled Song");
     row.meta = meta;
     return row;
   }
@@ -1272,7 +1317,9 @@ private:
                       });
       if (exists)
         continue;
-      menu.addItem(song.title.isNotEmpty() ? song.title : "Untitled Song",
+      menu.addItem(song.title.isNotEmpty()
+                       ? song.title
+                       : L10n::tr("Canción sin título", "Untitled Song"),
                    [this, id = song.id] {
                      SongLibraryStore::addSongToSetlist(selectedSetlistId, id);
                      dirty = true;
@@ -1280,7 +1327,9 @@ private:
                    });
     }
     if (menu.getNumItems() == 0) {
-      menu.addItem("No songs available", false, false, nullptr);
+      menu.addItem(L10n::tr("No hay canciones disponibles",
+                            "No songs available"),
+                   false, false, nullptr);
     }
     menu.showMenuAsync(
         juce::PopupMenu::Options().withTargetComponent(addSongButton));
@@ -1288,7 +1337,8 @@ private:
 
   void createSetlist() {
     promptTextAsync(
-        "Create Setlist", "Setlist name:", "",
+        L10n::tr("Crear Setlist", "Create Setlist"),
+        L10n::tr("Nombre del setlist:", "Setlist name:"), "",
         [this](juce::String name) {
           name = name.trim();
           if (name.isEmpty())
@@ -1310,7 +1360,8 @@ private:
     if (setlist == nullptr)
       return;
     promptTextAsync(
-        "Rename Setlist", "Setlist name:", setlist->name,
+        L10n::tr("Renombrar Setlist", "Rename Setlist"),
+        L10n::tr("Nombre del setlist:", "Setlist name:"), setlist->name,
         [this, id](juce::String name) {
           name = name.trim();
           if (name.isEmpty())
@@ -1328,14 +1379,18 @@ private:
       return;
     if (library.setlists.size() <= 1) {
       juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon, "Can't delete",
-          "At least one setlist is required.");
+          juce::AlertWindow::WarningIcon,
+          L10n::tr("No se puede eliminar", "Can't delete"),
+          L10n::tr("Se requiere al menos un setlist.",
+                   "At least one setlist is required."));
       return;
     }
     juce::AlertWindow::showOkCancelBox(
-        juce::AlertWindow::WarningIcon, "Delete setlist",
-        "Delete this setlist? This won't remove songs from the library.",
-        "Delete", "Cancel", this,
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Eliminar setlist", "Delete setlist"),
+        L10n::tr("Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
+                 "Delete this setlist? This won't remove songs from the library."),
+        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
         juce::ModalCallbackFunction::create([this, id](int result) {
           if (result != 1)
             return;
@@ -1363,8 +1418,8 @@ private:
     auto *window =
         new juce::AlertWindow(title, message, juce::AlertWindow::NoIcon);
     window->addTextEditor("value", initial, {});
-    window->addButton("Cancel", 0);
-    window->addButton("OK", 1);
+    window->addButton(L10n::tr("Cancelar", "Cancel"), 0);
+    window->addButton(L10n::tr("Aceptar", "OK"), 1);
     window->enterModalState(
         true,
         juce::ModalCallbackFunction::create(
@@ -1412,7 +1467,7 @@ void SongListPanel::openSongImportWizard() {
                         : static_cast<juce::Component *>(this);
 
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = "Import Song";
+  options.dialogTitle = L10n::tr("Importar canción", "Import Song");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -1421,7 +1476,9 @@ void SongListPanel::openSongImportWizard() {
   auto *panel = new SongImportWizardComponent(
       [safeThis](ImportedSongData song, juce::String &errorMessage) {
         if (safeThis == nullptr) {
-          errorMessage = "Import UI is no longer available.";
+          errorMessage =
+              L10n::tr("La vista de importación ya no está disponible.",
+                       "Import UI is no longer available.");
           return false;
         }
 
@@ -1432,7 +1489,9 @@ void SongListPanel::openSongImportWizard() {
 
         if (!success) {
           errorMessage = importError.isNotEmpty() ? importError
-                                                  : "Couldn't persist the imported song.";
+                                                  : L10n::tr(
+                                                        "No se pudo guardar la canción importada.",
+                                                        "Couldn't persist the imported song.");
           return false;
         }
 
@@ -1489,7 +1548,7 @@ void SongListPanel::refreshFromStorage() {
   auto library = SongLibraryStore::loadLibrarySnapshot();
   librarySongs = library.songs;
   activeSetlistId = library.activeSetlistId;
-  activeSetlistName = "Setlist";
+  activeSetlistName = L10n::tr("Setlist", "Setlist");
   activeSongIndices.clear();
 
   const SetlistData *activeSetlist = nullptr;
@@ -1542,11 +1601,14 @@ void SongListPanel::refreshFromStorage() {
       const int rowIndex = static_cast<int>(rows.size());
       const auto autoPlayKey = makeAutoPlayNextMarkKey(activeSetlistId, song.id);
       rows.push_back({order++,
-                      song.title.isNotEmpty() ? song.title : "Untitled Song",
+                      song.title.isNotEmpty()
+                          ? song.title
+                          : L10n::tr("Canción sin título", "Untitled Song"),
                       meta,
                       song.id,
                       autoPlayNextMarks.contains(autoPlayKey),
                       isPlaybackActive && song.id == nowPlayingSongId,
+                      song.id == selectedSongId,
                       rowIndex});
     }
   }
@@ -1555,7 +1617,16 @@ void SongListPanel::refreshFromStorage() {
                                 static_cast<int>(activeSongIndices.size())))
     lastActivatedIndex = activeSongIndices.empty() ? -1 : 0;
 
+  if (selectedSongId.isEmpty() &&
+      juce::isPositiveAndBelow(lastActivatedIndex,
+                               static_cast<int>(activeSongIndices.size()))) {
+    const int libIndex = activeSongIndices[static_cast<size_t>(lastActivatedIndex)];
+    if (juce::isPositiveAndBelow(libIndex, static_cast<int>(librarySongs.size())))
+      selectedSongId = librarySongs[static_cast<size_t>(libIndex)].id;
+  }
+
   listContent.setSongs(std::move(rows));
+  listContent.setSelectedSongId(selectedSongId);
   resized();
   if (onSetlistNameChanged)
     onSetlistNameChanged(activeSetlistName);

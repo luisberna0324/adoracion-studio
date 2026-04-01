@@ -39,6 +39,7 @@ private:
     IconButton(juce::String name, IconGlyph g, bool primary = false);
 
     void setGlyph(IconGlyph g);
+    void setBadgeText(juce::String text);
     void setPulseAmount(float amount, bool downbeat);
 
     void paintButton(juce::Graphics &gr, bool isMouseOverButton,
@@ -46,6 +47,7 @@ private:
 
   private:
     IconGlyph glyph;
+    juce::String badgeText;
     bool isPrimary = false;
     float pulseAmount = 0.0f;
     bool pulseDownbeat = false;

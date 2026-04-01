@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "data/AppSettings.h"
+#include "data/Localization.h"
 #include "data/SongData.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
@@ -60,6 +61,36 @@ juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx) {
   return typeName + "|" + deviceName;
 }
 
+#if JucePlugin_Build_Standalone
+void hideStandaloneOptionsButton(juce::Component *fromComponent) {
+  if (fromComponent == nullptr)
+    return;
+
+  auto *topLevel = fromComponent->getTopLevelComponent();
+  if (topLevel == nullptr)
+    return;
+
+  auto hideRecursively = [](auto &&self, juce::Component *component) -> void {
+    if (component == nullptr)
+      return;
+
+    if (auto *button = dynamic_cast<juce::Button *>(component)) {
+      const auto text = button->getButtonText().trim();
+      if (text.equalsIgnoreCase("Options") ||
+          text.equalsIgnoreCase("Opciones")) {
+        button->setVisible(false);
+        button->setEnabled(false);
+      }
+    }
+
+    for (int i = 0; i < component->getNumChildComponents(); ++i)
+      self(self, component->getChildComponent(i));
+  };
+
+  hideRecursively(hideRecursively, topLevel);
+}
+#endif
+
 int categoryIndexForName(const juce::String &category) {
   const auto needle = category.trim();
   if (needle.isEmpty())
@@ -90,6 +121,9 @@ CategoryRoutingDefaults routingForCategory(
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MTControlsAudioProcessor &p)
     : AudioProcessorEditor(p) {
+  currentThemeId = AppSettings::getThemePresetId();
+  applyTheme(static_cast<ThemePreset>(currentThemeId));
+
   auto topBarImpl = std::make_unique<TopBar>(p);
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
@@ -219,8 +253,10 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
     if (!loaded) {
       juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon, "Load error",
-          "Couldn't load audio stems for this song.");
+          juce::AlertWindow::WarningIcon,
+          L10n::tr("Error de carga", "Load error"),
+          L10n::tr("No se pudieron cargar los stems de esta canción.",
+                   "Couldn't load audio stems for this song."));
       waveformBarRaw->setWaveformBins({});
       waveformBarRaw->setSongRhythm(0.0, {});
       p.setStemClickGuideMask({});
@@ -260,6 +296,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
     currentLoadedSong = loadedSong;
     hasCurrentLoadedSong = true;
+    AppSettings::setLastSelectedSongId(currentLoadedSong.id);
     applyRoutingDefaultsToSong(currentLoadedSong);
 
     channelGridRaw->setSong(loadedSong);
@@ -308,6 +345,17 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     if (loadSongByIndex(index) && autoPlay)
       p.playSong();
   };
+
+  {
+    const auto lastSelectedSongId = AppSettings::getLastSelectedSongId();
+    if (lastSelectedSongId.isNotEmpty()) {
+      const int index = songListRaw != nullptr
+                            ? songListRaw->getSongIndexById(lastSelectedSongId)
+                            : -1;
+      if (index >= 0)
+        loadSongByIndex(index);
+    }
+  }
 
   auto resolveCurrentSongIndex = [songListRaw, this]() -> int {
     if (!songListRaw)
@@ -412,12 +460,21 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
             expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
         });
   }
+
+#if JucePlugin_Build_Standalone
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+           this)] {
+        if (safe != nullptr)
+          hideStandaloneOptionsButton(safe.getComponent());
+      });
+#endif
 }
 
 void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                                   juce::Component *parent) {
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = "Settings";
+  options.dialogTitle = L10n::tr("Configuración", "Settings");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -427,8 +484,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   const auto audioCtx = getStandaloneAudioContext();
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
-      AppSettings::getExpandWindowOnLaunch(),
       [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
+      AppSettings::getLanguage(),
+      [this](AppLanguage language) {
+        AppSettings::setLanguage(language);
+        if (songListPanelRaw != nullptr)
+          songListPanelRaw->refreshLanguageTexts();
+        repaint();
+      },
+      AppSettings::getExpandWindowOnLaunch(),
       [](const bool expandOnLaunch) {
         AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
       },
@@ -452,8 +516,9 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 }
 
 void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
-  currentThemeId = presetId;
-  applyTheme(static_cast<ThemePreset>(presetId));
+  currentThemeId = juce::jlimit(1, 3, presetId);
+  AppSettings::setThemePresetId(currentThemeId);
+  applyTheme(static_cast<ThemePreset>(currentThemeId));
   if (refreshTopBarTheme)
     refreshTopBarTheme();
   repaint();

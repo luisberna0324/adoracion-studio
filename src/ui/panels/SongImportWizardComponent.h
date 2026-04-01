@@ -111,7 +111,4 @@ private:
   juce::TextButton nextButton;
   juce::TextButton submitButton;
 
-  const juce::String songTitlePlaceholder = "Song title";
-  const juce::String artistPlaceholder = "Artist";
-  const juce::String bpmPlaceholder = "BPM";
 };

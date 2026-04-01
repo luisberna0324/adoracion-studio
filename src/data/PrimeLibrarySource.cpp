@@ -111,7 +111,7 @@ bool runSqliteQuery(const juce::File &dbFile, const juce::String &sql,
 
   if (!process.waitForProcessToFinish(8000)) {
     process.kill();
-    errorMessage = "Timed out reading PRIME database.";
+    errorMessage = "Timed out reading local library database.";
     return false;
   }
 
@@ -127,7 +127,7 @@ bool runSqliteQuery(const juce::File &dbFile, const juce::String &sql,
   return true;
 #else
   juce::ignoreUnused(dbFile, sql, rows);
-  errorMessage = "PRIME import is only supported on macOS.";
+  errorMessage = "Local library import is only supported on macOS.";
   return false;
 #endif
 }
@@ -216,7 +216,7 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
   errorMessage.clear();
 
   if (!isSupportedOnCurrentPlatform()) {
-    errorMessage = "PRIME import is only supported on macOS.";
+    errorMessage = "Local library import is only supported on macOS.";
     return songs;
   }
 
@@ -224,11 +224,11 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
   const auto db = locateDatabaseFile();
   const auto tracksDir = locateTracksDirectory(docs);
   if (!db.existsAsFile()) {
-    errorMessage = "PRIME database not found.";
+    errorMessage = "Local library database not found.";
     return songs;
   }
   if (!tracksDir.isDirectory()) {
-    errorMessage = "PRIME tracks folder not found.";
+    errorMessage = "Local tracks folder not found.";
     return songs;
   }
 
@@ -309,8 +309,7 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
               songs.end());
 
   if (songs.empty())
-    errorMessage = "No PRIME songs with local tracks were found.";
+    errorMessage = "No songs with local tracks were found.";
 
   return songs;
 }
-

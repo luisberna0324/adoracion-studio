@@ -1,6 +1,7 @@
 #include "TopBar.h"
 
 #include "../../PluginProcessor.h"
+#include "../../data/Localization.h"
 
 #include <cmath>
 #include <iterator>
@@ -95,6 +96,11 @@ void TopBar::IconButton::setGlyph(IconGlyph g) {
   repaint();
 }
 
+void TopBar::IconButton::setBadgeText(juce::String text) {
+  badgeText = std::move(text);
+  repaint();
+}
+
 void TopBar::IconButton::setPulseAmount(float amount, bool downbeat) {
   pulseAmount = juce::jlimit(0.0f, 1.0f, amount);
   pulseDownbeat = downbeat;
@@ -122,6 +128,14 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   gr.drawRoundedRectangle(b, 6.0f, 1.0f);
   drawIconGlyph(gr, b, glyph,
                 isPrimary ? UITheme::onAccent : UITheme::textPrimary);
+
+  if (badgeText.isNotEmpty()) {
+    gr.setColour(isPrimary ? UITheme::onAccent.withAlpha(0.92f)
+                           : UITheme::textSecondary.withAlpha(0.88f));
+    gr.setFont(juce::FontOptions(9.0f).withKerningFactor(0.04f));
+    gr.drawFittedText(badgeText, getLocalBounds().withTrimmedTop(24),
+                      juce::Justification::centredTop, 1);
+  }
 }
 
 void TopBar::ClickableLabel::mouseDown(const juce::MouseEvent &) {
@@ -135,7 +149,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       playButton("play", IconGlyph::Play, true),
       stopButton("stop", IconGlyph::Stop),
       seekForwardButton("seekForward", IconGlyph::SeekForward),
-      nextButton("next", IconGlyph::Next),
+      nextButton("next", IconGlyph::Next, true),
       fadeButton("fade", IconGlyph::FadeOut),
       windowModeButton("windowMode", IconGlyph::WindowMaximize),
       settingsButton("settings", IconGlyph::Settings),
@@ -148,8 +162,16 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   }
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
-  configureDisplay(keyDisplay, "Key");
-  activeKeyLabel = "Key";
+  configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
+  keyDisplay.setFont(juce::FontOptions(15.0f).withStyle("Bold"));
+  activeKeyLabel = L10n::tr("Tono", "Key");
+  seekBackButton.setBadgeText("-5s");
+  seekForwardButton.setBadgeText("+5s");
+  seekBackButton.setTooltip(
+      L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
+  seekForwardButton.setTooltip(
+      L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
+  nextButton.setTooltip(L10n::tr("Siguiente canción", "Next song"));
   timeDisplay.onClick = [this] { showSongWindowPopover(); };
   keyDisplay.onClick = [this] { showKeyPopover(); };
   configureMetronomeControls();
@@ -305,8 +327,8 @@ void TopBar::resized() {
   rightX -= square + gap;
   windowModeButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
-  keyDisplay.setBounds(rightX - 56, y, 56, 40);
-  rightX -= 56 + gap;
+  keyDisplay.setBounds(rightX - 72, y, 72, 40);
+  rightX -= 72 + gap;
   const int metroTotalW = 110;
   const int metroIconW = 44;
   const int metroY = y - 2;
@@ -388,8 +410,9 @@ void TopBar::timerCallback() {
   if (processor.isMetronomeEnabled()) {
     const double bpm = processor.getMetronomeBpm();
     if (bpm > 0.0) {
-      beatCounter += dt * (bpm / 60.0);
-      const int beatIndex = static_cast<int>(std::floor(beatCounter));
+      const double currentPos = positionProvider ? juce::jmax(0.0, positionProvider()) : 0.0;
+      const double beatPosition = (currentPos * bpm) / 60.0;
+      const int beatIndex = static_cast<int>(std::floor(beatPosition));
       if (beatIndex != lastBeatIndex) {
         lastBeatIndex = beatIndex;
         lastBeatWasDownbeat = (beatIndex % juce::jmax(1, beatsPerBar)) == 0;
@@ -402,7 +425,7 @@ void TopBar::timerCallback() {
     beatFlash = 0.0f;
   }
 
-  beatFlash = juce::jmax(0.0f, beatFlash - 0.08f);
+  beatFlash = juce::jmax(0.0f, beatFlash - static_cast<float>(dt * 1.6));
   metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
                                    juce::dontSendNotification);
   metroToggleButton.setPulseAmount(
@@ -717,9 +740,12 @@ void TopBar::showSongWindowPopover() {
     SongWindowPopover(MTControlsAudioProcessor &processorRef,
                       const bool readOnlyArrangement)
         : processor(processorRef), arrangementReadOnly(readOnlyArrangement) {
-      configureRow(startLabel, startMinus, startValue, startPlus, "Start");
-      configureRow(endLabel, endMinus, endValue, endPlus, "End");
-      configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus, "Fade out");
+      configureRow(startLabel, startMinus, startValue, startPlus,
+                   L10n::tr("Inicio", "Start"));
+      configureRow(endLabel, endMinus, endValue, endPlus,
+                   L10n::tr("Fin", "End"));
+      configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus,
+                   L10n::tr("Salida", "Fade out"));
 
       startMinus.onClick = [this] { adjustStart(-stepSeconds()); };
       startPlus.onClick = [this] { adjustStart(stepSeconds()); };
@@ -735,7 +761,8 @@ void TopBar::showSongWindowPopover() {
 
       if (arrangementReadOnly) {
         arrangementInfoLabel.setText(
-            "Custom arrangement active: Start/End/Fade locked",
+            L10n::tr("Arreglo personalizado activo: Inicio/Fin/Salida bloqueados",
+                     "Custom arrangement active: Start/End/Fade locked"),
             juce::dontSendNotification);
         arrangementInfoLabel.setJustificationType(juce::Justification::centred);
         arrangementInfoLabel.setFont(juce::FontOptions(11.0f));
@@ -753,7 +780,7 @@ void TopBar::showSongWindowPopover() {
                        juce::dontSendNotification);
       const int fadeSecs =
           static_cast<int>(std::round(processor.getSongFadeOutSeconds()));
-      fadeValue.setText(juce::String(fadeSecs) + " sec",
+      fadeValue.setText(juce::String(fadeSecs) + " " + L10n::tr("seg", "sec"),
                         juce::dontSendNotification);
     }
 
@@ -898,10 +925,10 @@ void TopBar::refreshFromProviders() {
       lastKeyToken.clear();
       baseKeySemitone = 0;
       activeKeySemitone = 0;
-      activeKeyLabel = "Key";
+      activeKeyLabel = L10n::tr("Tono", "Key");
       processor.setPitchSemiTones(0);
     }
-    keyDisplay.setText("Key", juce::dontSendNotification);
+    keyDisplay.setText(L10n::tr("Tono", "Key"), juce::dontSendNotification);
   } else {
     const auto keyText = keyProvider ? keyProvider().trim() : juce::String{};
     const auto songTitle = processor.getLoadedSongTitle();
@@ -918,14 +945,14 @@ void TopBar::refreshFromProviders() {
       } else {
         baseKeySemitone = 0;
         activeKeySemitone = 0;
-        activeKeyLabel = keyText.isNotEmpty() ? keyText : "Key";
+        activeKeyLabel = keyText.isNotEmpty() ? keyText : L10n::tr("Tono", "Key");
       }
       hasKey = true;
       processor.setPitchSemiTones(0);
     }
 
     if (activeKeyLabel.isEmpty())
-      activeKeyLabel = "Key";
+      activeKeyLabel = L10n::tr("Tono", "Key");
     keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
   }
 

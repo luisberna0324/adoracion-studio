@@ -43,7 +43,10 @@ void MetronomeEngine::syncPhaseForTimeSeconds(double seconds) noexcept {
   const double bpmLocal = bpm.load(std::memory_order_relaxed);
   if (bpmLocal <= 0.0)
     return;
-  const double beatPos = (seconds * bpmLocal) / 60.0;
+  const double beatPos = (juce::jmax(0.0, seconds) * bpmLocal) / 60.0;
+  const int beats = juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed));
+  const int wholeBeats = static_cast<int>(std::floor(beatPos));
+  beatIndex = ((wholeBeats % beats) + beats) % beats;
   phase = beatPos - std::floor(beatPos);
 }
 
