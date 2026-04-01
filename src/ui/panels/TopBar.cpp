@@ -303,13 +303,13 @@ void TopBar::paint(juce::Graphics &g) {
 }
 
 void TopBar::resized() {
-  const int y = (getHeight() - 40) / 2;
+  const int y = 10;
   const int square = 44;
   const int gap = 8;
 
   int x = 12;
 
-  auto placeSquare = [&x, y](juce::Component &c) {
+  auto placeSquare = [&x](juce::Component &c) {
     c.setBounds(x, y - 2, square, square);
     x += square + gap;
   };
@@ -407,11 +407,23 @@ void TopBar::timerCallback() {
   const double dt = now - lastTickTime;
   lastTickTime = now;
 
-  if (processor.isMetronomeEnabled()) {
+  const bool metronomeEnabled = processor.isMetronomeEnabled();
+  if (metronomeEnabled) {
     const double bpm = processor.getMetronomeBpm();
     if (bpm > 0.0) {
-      const double currentPos = positionProvider ? juce::jmax(0.0, positionProvider()) : 0.0;
-      const double beatPosition = (currentPos * bpm) / 60.0;
+      const bool transportPlaying = playingProvider ? playingProvider() : false;
+      double beatPosition = 0.0;
+      if (transportPlaying) {
+        const double currentPos =
+            positionProvider ? juce::jmax(0.0, positionProvider()) : 0.0;
+        beatPosition = (currentPos * bpm) / 60.0;
+        beatCounter = beatPosition;
+      } else {
+        if (!lastMetronomeEnabled && beatCounter <= 0.0)
+          beatCounter = 0.0;
+        beatCounter += (dt * bpm) / 60.0;
+        beatPosition = beatCounter;
+      }
       const int beatIndex = static_cast<int>(std::floor(beatPosition));
       if (beatIndex != lastBeatIndex) {
         lastBeatIndex = beatIndex;
@@ -424,6 +436,7 @@ void TopBar::timerCallback() {
     lastBeatIndex = -1;
     beatFlash = 0.0f;
   }
+  lastMetronomeEnabled = metronomeEnabled;
 
   beatFlash = juce::jmax(0.0f, beatFlash - static_cast<float>(dt * 1.6));
   metroToggleButton.setToggleState(processor.isMetronomeEnabled(),

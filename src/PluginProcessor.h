@@ -75,6 +75,16 @@ public:
   void setMetronomeBpm(double bpm) noexcept;
   double getMetronomeBpm() const noexcept;
   void setMetronomeBeatsPerBar(int beats) noexcept;
+  void setMetronomeVolume(float volume) noexcept;
+  float getMetronomeVolume() const noexcept;
+  void setMetronomeMuted(bool muted) noexcept;
+  bool isMetronomeMuted() const noexcept;
+  void setMetronomeGain(float gainValue) noexcept;
+  float getMetronomeGain() const noexcept;
+  void setMetronomeSolo(bool soloed) noexcept;
+  bool isMetronomeSolo() const noexcept;
+  void setMetronomeOutputRouting(int outputChannel, int width) noexcept;
+  void setMetronomeClickStemIndex(int stemIndexOrMinusOne) noexcept;
   void setStemClickGuideMask(const std::vector<bool> &mask) noexcept;
   void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
   void setPitchSemiTones(int semitoneDelta) noexcept;
@@ -126,6 +136,13 @@ private:
   juce::AudioBuffer<float> dryMixBuffer;
   std::atomic<float> meterLevelLeft{0.0f};
   std::atomic<float> meterLevelRight{0.0f};
+  std::atomic<float> metronomeVolumeState{1.0f};
+  std::atomic<bool> metronomeMutedState{false};
+  std::atomic<float> metronomeGainState{1.0f};
+  std::atomic<bool> metronomeSoloState{false};
+  std::atomic<int> metronomeOutputChannel{1};
+  std::atomic<int> metronomeOutputWidth{1};
+  std::atomic<int> metronomeClickStemIndex{-1};
 
   juce::AudioFormatManager playbackFormatManager;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
@@ -150,6 +167,7 @@ private:
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
   juce::AudioBuffer<float> stemRoutingTempBuffer;
+  juce::AudioBuffer<float> metronomeRenderBuffer;
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};

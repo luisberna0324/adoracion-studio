@@ -39,6 +39,27 @@ int MetronomeEngine::getBeatsPerBar() const noexcept {
   return beatsPerBar.load(std::memory_order_relaxed);
 }
 
+void MetronomeEngine::setVolume(const float volumeToUse) noexcept {
+  volume.store(juce::jlimit(0.0f, 1.0f, volumeToUse),
+               std::memory_order_relaxed);
+}
+
+float MetronomeEngine::getVolume() const noexcept {
+  return volume.load(std::memory_order_relaxed);
+}
+
+void MetronomeEngine::setMuted(const bool mutedToUse) noexcept {
+  muted.store(mutedToUse, std::memory_order_relaxed);
+}
+
+bool MetronomeEngine::isMuted() const noexcept {
+  return muted.load(std::memory_order_relaxed);
+}
+
+void MetronomeEngine::triggerImmediateClick() noexcept {
+  pendingImmediateClick.store(true, std::memory_order_relaxed);
+}
+
 void MetronomeEngine::syncPhaseForTimeSeconds(double seconds) noexcept {
   const double bpmLocal = bpm.load(std::memory_order_relaxed);
   if (bpmLocal <= 0.0)
@@ -52,6 +73,12 @@ void MetronomeEngine::syncPhaseForTimeSeconds(double seconds) noexcept {
 
 void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
   if (!enabled.load(std::memory_order_relaxed))
+    return;
+  const float gain = muted.load(std::memory_order_relaxed)
+                         ? 0.0f
+                         : juce::jlimit(0.0f, 1.0f,
+                                        volume.load(std::memory_order_relaxed));
+  if (gain <= 0.0001f)
     return;
   const int numSamples = buffer.getNumSamples();
   if (numSamples <= 0 || sampleRate <= 0.0)
@@ -69,6 +96,11 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
   const double clickFreq = 900.0;
   const double twoPi = juce::MathConstants<double>::twoPi;
   const int numChannels = buffer.getNumChannels();
+
+  if (pendingImmediateClick.exchange(false, std::memory_order_relaxed)) {
+    clickSamplesRemaining = clickLength;
+    clickGain = (beatIndex == 0) ? 0.18f : 0.12f;
+  }
 
   for (int sample = 0; sample < numSamples; ++sample) {
     phase += phaseInc;
@@ -88,7 +120,7 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
       clickSample = static_cast<float>(
                         std::sin(twoPi * clickFreq *
                                  (static_cast<double>(idx) / sampleRate))) *
-                    env * clickGain;
+                    env * clickGain * gain;
       --clickSamplesRemaining;
     }
 

@@ -29,8 +29,12 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   dryMixBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
   mixEngine.prepare(sampleRate, samplesPerBlock, getTotalNumOutputChannels());
   stemRoutingTempBuffer.setSize(2, samplesPerBlock);
+  metronomeRenderBuffer.setSize(2, samplesPerBlock);
   standaloneAudioDeviceBridge.setAvailableOutputChannelCount(getTotalNumOutputChannels());
   stemOutputRoutingState.normalizeForDevice(getTotalNumOutputChannels());
+  setMetronomeOutputRouting(
+      metronomeOutputChannel.load(std::memory_order_relaxed),
+      metronomeOutputWidth.load(std::memory_order_relaxed));
   for (int i = 0; i < maxStemCount; ++i) {
     const int channel = stemOutputRoutingState.getStemOutputChannel(i);
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
@@ -141,10 +145,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
     const int stemCount = static_cast<int>(stemTracks.size());
 
-    // Evaluate global solo state
-    bool anySoloActive = false;
+    const int clickStemIndexLocal =
+        metronomeClickStemIndex.load(std::memory_order_relaxed);
+    const bool hasRealClickStem = juce::isPositiveAndBelow(clickStemIndexLocal,
+                                                           stemCount);
+    const bool virtualMetronomeSoloActive =
+        !hasRealClickStem &&
+        metronomeSoloState.load(std::memory_order_relaxed);
+
+    // Evaluate global solo state (includes virtual metronome solo when no real
+    // click stem exists so stems mute and only click remains audible).
+    bool anySoloActive = virtualMetronomeSoloActive;
     for (int i = 0; i < stemCount; ++i) {
-      if (stemSoloStates[static_cast<size_t>(i)].load(std::memory_order_relaxed)) {
+      if (stemSoloStates[static_cast<size_t>(i)].load(
+              std::memory_order_relaxed)) {
         anySoloActive = true;
         break;
       }
@@ -453,6 +467,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           stemOutputRoutingState.getStemOutputWidth(i),
           std::memory_order_relaxed);
     }
+    setMetronomeOutputRouting(
+        metronomeOutputChannel.load(std::memory_order_relaxed),
+        metronomeOutputWidth.load(std::memory_order_relaxed));
   }
 
   const float masterOutGain =
@@ -500,7 +517,75 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     stopSong();
   }
 
-  metronome.process(buffer);
+  if (isMetronomeEnabled()) {
+    if (metronomeRenderBuffer.getNumSamples() < numSamples)
+      metronomeRenderBuffer.setSize(2, numSamples, false, false, true);
+    metronomeRenderBuffer.clear();
+
+    const int activeStemCount = loadedStemCount.load(std::memory_order_relaxed);
+    const int clickStemIndex =
+        metronomeClickStemIndex.load(std::memory_order_relaxed);
+    const bool hasRealClickStem =
+        juce::isPositiveAndBelow(clickStemIndex, activeStemCount) &&
+        juce::isPositiveAndBelow(clickStemIndex, maxStemCount);
+
+    bool anySoloActive = false;
+    for (int i = 0; i < activeStemCount; ++i) {
+      if (stemSoloStates[static_cast<size_t>(i)].load(
+              std::memory_order_relaxed)) {
+        anySoloActive = true;
+        break;
+      }
+    }
+
+    float effectiveVolume =
+        metronomeVolumeState.load(std::memory_order_relaxed);
+    float effectiveGain =
+        metronomeGainState.load(std::memory_order_relaxed);
+    bool muted = metronomeMutedState.load(std::memory_order_relaxed);
+    bool soloed = metronomeSoloState.load(std::memory_order_relaxed);
+    int outputChannelOneBased =
+        metronomeOutputChannel.load(std::memory_order_relaxed);
+    int outputWidth = metronomeOutputWidth.load(std::memory_order_relaxed);
+
+    if (hasRealClickStem) {
+      const auto idx = static_cast<size_t>(clickStemIndex);
+      effectiveVolume = stemVolumes[idx].load(std::memory_order_relaxed);
+      effectiveGain = stemGains[idx].load(std::memory_order_relaxed);
+      muted = stemMuteStates[idx].load(std::memory_order_relaxed);
+      soloed = stemSoloStates[idx].load(std::memory_order_relaxed);
+      outputChannelOneBased =
+          stemOutputChannels[idx].load(std::memory_order_relaxed);
+      outputWidth = stemOutputWidths[idx].load(std::memory_order_relaxed);
+    } else if (soloed) {
+      // Virtual click solo behaves like a regular solo source.
+      anySoloActive = true;
+    }
+
+    effectiveVolume = juce::jlimit(0.0f, 1.0f, effectiveVolume);
+    effectiveGain = juce::jlimit(0.0f, 2.0f, effectiveGain);
+
+    outputWidth = juce::jlimit(1, 2, outputWidth);
+    if (numChannels < 2)
+      outputWidth = 1;
+    outputChannelOneBased = juce::jlimit(1, juce::jmax(1, numChannels),
+                                         outputChannelOneBased);
+    if (outputWidth >= 2 && outputChannelOneBased >= numChannels)
+      outputChannelOneBased = juce::jmax(1, numChannels - 1);
+
+    const bool metronomeAudible = !muted && (!anySoloActive || soloed);
+    metronome.setVolume(effectiveVolume);
+    metronome.setMuted(!metronomeAudible);
+    metronome.process(metronomeRenderBuffer);
+    if (!juce::approximatelyEqual(effectiveGain, 1.0f))
+      metronomeRenderBuffer.applyGain(effectiveGain);
+
+    const int outputIndex = juce::jlimit(
+        0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
+    stemOutputRouter.routeStemToOutputChannels(metronomeRenderBuffer,
+                                               outputIndex, outputWidth,
+                                               buffer);
+  }
 
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
     buffer.applyGain(masterOutGain);
@@ -769,6 +854,8 @@ void MTControlsAudioProcessor::playSong() {
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
+  metronome.syncPhaseForTimeSeconds(
+      songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
 }
 
@@ -793,7 +880,6 @@ void MTControlsAudioProcessor::stopSong() {
       static_cast<juce::int64>(start * playbackSampleRate),
       std::memory_order_relaxed);
   songCurrentPositionSeconds.store(start, std::memory_order_relaxed);
-  metronome.reset();
   requestedSeekPosition.store(static_cast<juce::int64>(start * playbackSampleRate),
                               std::memory_order_relaxed);
 }
@@ -1298,11 +1384,12 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   metronome.setEnabled(enabled);
-  metronome.reset();
   if (enabled) {
+    metronome.reset();
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
     metronome.syncPhaseForTimeSeconds(currentSec);
+    metronome.triggerImmediateClick();
   }
 }
 
@@ -1320,6 +1407,64 @@ double MTControlsAudioProcessor::getMetronomeBpm() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeBeatsPerBar(int beats) noexcept {
   metronome.setBeatsPerBar(beats);
+}
+
+void MTControlsAudioProcessor::setMetronomeVolume(const float volume) noexcept {
+  metronomeVolumeState.store(juce::jlimit(0.0f, 1.0f, volume),
+                             std::memory_order_relaxed);
+}
+
+float MTControlsAudioProcessor::getMetronomeVolume() const noexcept {
+  return metronomeVolumeState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setMetronomeMuted(const bool muted) noexcept {
+  metronomeMutedState.store(muted, std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isMetronomeMuted() const noexcept {
+  return metronomeMutedState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setMetronomeGain(
+    const float gainValue) noexcept {
+  metronomeGainState.store(juce::jlimit(0.0f, 2.0f, gainValue),
+                           std::memory_order_relaxed);
+}
+
+float MTControlsAudioProcessor::getMetronomeGain() const noexcept {
+  return metronomeGainState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setMetronomeSolo(const bool soloed) noexcept {
+  metronomeSoloState.store(soloed, std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isMetronomeSolo() const noexcept {
+  return metronomeSoloState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setMetronomeOutputRouting(
+    const int outputChannel, const int width) noexcept {
+  const int availableChannels =
+      juce::jmax(1, getAvailableOutputChannelCount());
+  int normalizedWidth = juce::jlimit(1, 2, width);
+  int normalizedChannel = juce::jlimit(1, availableChannels, outputChannel);
+  if (normalizedWidth >= 2 && normalizedChannel >= availableChannels)
+    normalizedChannel = juce::jmax(1, availableChannels - 1);
+
+  metronomeOutputChannel.store(normalizedChannel, std::memory_order_relaxed);
+  metronomeOutputWidth.store(normalizedWidth, std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setMetronomeClickStemIndex(
+    const int stemIndexOrMinusOne) noexcept {
+  if (stemIndexOrMinusOne < 0 || stemIndexOrMinusOne >= maxStemCount) {
+    metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
+    return;
+  }
+  metronomeClickStemIndex.store(stemIndexOrMinusOne,
+                                std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
@@ -1344,6 +1489,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   mixEngine.reset();
   metronome.reset();
+  metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
   routingPitchLatencySamples = 0;
   for (auto &delay : stemPitchDelayLines)
     delay.reset();

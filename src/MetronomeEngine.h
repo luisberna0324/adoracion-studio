@@ -16,6 +16,11 @@ public:
 
   void setBeatsPerBar(int beats) noexcept;
   int getBeatsPerBar() const noexcept;
+  void setVolume(float volume) noexcept;
+  float getVolume() const noexcept;
+  void setMuted(bool muted) noexcept;
+  bool isMuted() const noexcept;
+  void triggerImmediateClick() noexcept;
 
   void syncPhaseForTimeSeconds(double seconds) noexcept;
   void process(juce::AudioBuffer<float> &buffer) noexcept;
@@ -24,6 +29,9 @@ private:
   std::atomic<bool> enabled{false};
   std::atomic<double> bpm{120.0};
   std::atomic<int> beatsPerBar{4};
+  std::atomic<float> volume{1.0f};
+  std::atomic<bool> muted{false};
+  std::atomic<bool> pendingImmediateClick{false};
 
   double phase = 0.0;
   int clickSamplesRemaining = 0;

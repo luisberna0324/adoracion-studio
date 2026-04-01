@@ -213,6 +213,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
     std::vector<bool> pitchShiftMask;
+    int clickStemIndex = -1;
     ImportedSongData loadedSong = song;
     loadedSong.stems.clear();
     loadedSong.stems.reserve(song.stems.size());
@@ -241,9 +242,13 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
                      });
 
     for (const auto &loadedStem : resolvedStems) {
+      const int stemPriority = stemPriorityForStripOrder(loadedStem);
+      const int mappedStemIndex = static_cast<int>(loadedSong.stems.size());
+      if (clickStemIndex < 0 && stemPriority == 0)
+        clickStemIndex = mappedStemIndex;
       stemPaths.add(loadedStem.storedPath);
       loadedSong.stems.push_back(loadedStem);
-      const bool isClickGuide = stemPriorityForStripOrder(loadedStem) <= 1;
+      const bool isClickGuide = stemPriority <= 1;
       clickGuideMask.push_back(isClickGuide);
       pitchShiftMask.push_back(isStemPitchShiftable(loadedStem));
     }
@@ -260,6 +265,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       waveformBarRaw->setWaveformBins({});
       waveformBarRaw->setSongRhythm(0.0, {});
       p.setStemClickGuideMask({});
+      p.setMetronomeClickStemIndex(-1);
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
       currentLoadedSong = ImportedSongData{};
@@ -268,6 +274,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
     p.setStemClickGuideMask(clickGuideMask);
     p.setStemPitchShiftMask(pitchShiftMask);
+    p.setMetronomeClickStemIndex(clickStemIndex);
 
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
@@ -531,6 +538,9 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   const auto audioCtx = getStandaloneAudioContext();
   const auto deviceKey = getCurrentDeviceKey(audioCtx);
   const auto defaults = AppSettings::getRoutingDefaultsForDevice(deviceKey);
+  const auto clickRouting = routingForCategory(defaults, "Click");
+  processorRef.setMetronomeOutputRouting(clickRouting.baseChannel,
+                                         clickRouting.width);
 
   int stemIndex = 0;
   for (const auto &stem : song.stems) {

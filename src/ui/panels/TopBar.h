@@ -103,6 +103,7 @@ private:
   int lastBeatIndex = -1;
   float beatFlash = 0.0f;
   bool lastBeatWasDownbeat = true;
+  bool lastMetronomeEnabled = false;
   bool lastTopLevelMaximised = false;
   int beatsPerBar = 4;
   juce::String timeSignature = "4/4";

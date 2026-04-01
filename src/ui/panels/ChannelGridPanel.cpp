@@ -144,6 +144,8 @@ ChannelGridPanel::~ChannelGridPanel() {
 }
 
 void ChannelGridPanel::timerCallback() {
+  syncMetronomeVirtualSlotFromProcessor();
+
   const int n = processor.getAvailableOutputChannelCount();
   if (n != lastSeenOutputChannelCount) {
     lastSeenOutputChannelCount = n;
@@ -289,6 +291,7 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
 
 void ChannelGridPanel::setSong(const ImportedSongData &song) {
   routingDraftActive = false;
+  metronomeVirtualSlotIndex = -1;
   slots.clear();
   adjustableStems.clear();
   clickGuideStems.clear();
@@ -316,6 +319,14 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
                             stemPriorityForStripOrder(*b);
                    });
 
+  const bool hasRealClickStem = std::any_of(
+      orderedStems.begin(), orderedStems.end(),
+      [](const ImportedStemData *stemPtr) {
+        return stemPtr != nullptr && stemPriorityForStripOrder(*stemPtr) == 0;
+      });
+  if (!orderedStems.empty() && !hasRealClickStem)
+    addMetronomeVirtualSlot();
+
   for (const auto *stemPtr : orderedStems) {
     if (stemPtr == nullptr)
       continue;
@@ -333,8 +344,9 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
     const int stemIndex = mappedStemIndex++;
     const auto stemId = stem.stemId;
-    const bool isAdjustable = stemPriorityForStripOrder(stem) > 1;
-    const bool isClickGuide = stemPriorityForStripOrder(stem) <= 1;
+    const int stemPriority = stemPriorityForStripOrder(stem);
+    const bool isAdjustable = stemPriority > 1;
+    const bool isClickGuide = stemPriority <= 1;
     const size_t slotIndex = slots.size();
 
     auto slot = std::make_unique<StripSlot>(
@@ -459,9 +471,15 @@ void ChannelGridPanel::refreshThemeColours() {
     auto &strip = slots[i]->getStrip();
     const int stemIndex =
         i < slotStemIndices.size() ? slotStemIndices[i] : -1;
-    if (stemIndex < 0) {
+    if (stemIndex == -1) {
       strip.setCardBgColour(UITheme::cardBgMaster);
       strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+      strip.refreshThemeColours();
+      continue;
+    }
+    if (stemIndex == -2) {
+      strip.setCardBgColour(UITheme::cardBgClickGuide);
+      strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
       strip.refreshThemeColours();
       continue;
     }
@@ -581,4 +599,58 @@ void ChannelGridPanel::addMasterSlot() {
   clickGuideStems.push_back(false);
   slotStemIndices.push_back(-1);
   slotStemIds.push_back({});
+}
+
+void ChannelGridPanel::addMetronomeVirtualSlot() {
+  auto slot = std::make_unique<StripSlot>(
+      "CLICK", lookAndFeel,
+      [] {
+        return std::pair<float, float>{0.0f, 0.0f};
+      });
+  auto &strip = slot->getStrip();
+  strip.setCardBgColour(UITheme::cardBgClickGuide);
+  strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
+  strip.setMuteAlignedToFader(true);
+  slot->setShowOutputRouting(false);
+
+  strip.setVolume(processor.getMetronomeVolume());
+  strip.setGain(processor.getMetronomeGain());
+  strip.setMuteState(processor.isMetronomeMuted());
+  strip.setSoloState(processor.isMetronomeSolo());
+  strip.setOnVolumeChanged([this](float value) {
+    processor.setMetronomeVolume(value);
+  });
+  strip.setOnGainChanged([this](float value) {
+    processor.setMetronomeGain(value);
+  });
+  strip.setOnMuteChanged([this](bool muted) {
+    processor.setMetronomeMuted(muted);
+  });
+  strip.setOnSoloChanged([this](bool soloed) {
+    processor.setMetronomeSolo(soloed);
+  });
+  strip.refreshThemeColours();
+
+  content.addAndMakeVisible(*slot);
+  metronomeVirtualSlotIndex = static_cast<int>(slots.size());
+  slots.push_back(std::move(slot));
+  adjustableStems.push_back(false);
+  clickGuideStems.push_back(true);
+  slotStemIndices.push_back(-2);
+  slotStemIds.push_back({});
+}
+
+void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
+  if (!juce::isPositiveAndBelow(metronomeVirtualSlotIndex,
+                                static_cast<int>(slots.size())))
+    return;
+
+  auto &strip =
+      slots[static_cast<size_t>(metronomeVirtualSlotIndex)]->getStrip();
+  if (!strip.isMouseButtonDown()) {
+    strip.setVolume(processor.getMetronomeVolume());
+    strip.setGain(processor.getMetronomeGain());
+  }
+  strip.setMuteState(processor.isMetronomeMuted());
+  strip.setSoloState(processor.isMetronomeSolo());
 }

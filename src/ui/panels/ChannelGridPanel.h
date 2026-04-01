@@ -38,6 +38,8 @@ private:
   void layoutHeaderAndViewport();
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
+  void addMetronomeVirtualSlot();
+  void syncMetronomeVirtualSlotFromProcessor();
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
@@ -58,6 +60,7 @@ private:
   bool routingDraftActive = false;
   std::vector<int> pendingOutputBySlotIndex;
   int lastSeenOutputChannelCount = -1;
+  int metronomeVirtualSlotIndex = -1;
   const float nudgeStep = 0.05f;
 
   void addMasterSlot();
