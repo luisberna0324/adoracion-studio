@@ -120,6 +120,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              const bool primeImportEnabled,
                              PrimeImportChanged primeImportCb,
                              CloseRequested closeCb,
+                             SessionSummary sessionSummary,
+                             LogoutRequested logoutCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
                              RoutingDefaultsChanged routingCb,
@@ -130,6 +132,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onLanguageChanged(std::move(languageCb)),
       onExpandLaunchChanged(std::move(expandCb)),
       onPrimeImportChanged(std::move(primeImportCb)),
+      onLogoutRequested(std::move(logoutCb)),
+      session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
@@ -225,6 +229,44 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onPrimeImportChanged(primeImportToggle.getToggleState());
   };
   generalPage.addAndMakeVisible(primeImportToggle);
+
+  sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionSectionLabel.setFont(juce::FontOptions(14.0f));
+  generalPage.addAndMakeVisible(sessionSectionLabel);
+
+  sessionUidLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionUidLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionUidLabel);
+  sessionUidValue.setJustificationType(juce::Justification::centredLeft);
+  sessionUidValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionUidValue);
+
+  sessionEmailLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionEmailLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionEmailLabel);
+  sessionEmailValue.setJustificationType(juce::Justification::centredLeft);
+  sessionEmailValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionEmailValue);
+
+  sessionPlanLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionPlanLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionPlanLabel);
+  sessionPlanValue.setJustificationType(juce::Justification::centredLeft);
+  sessionPlanValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionPlanValue);
+
+  sessionStatusLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionStatusLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionStatusLabel);
+  sessionStatusValue.setJustificationType(juce::Justification::centredLeft);
+  sessionStatusValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionStatusValue);
+
+  logoutButton.onClick = [this] {
+    if (onLogoutRequested)
+      onLogoutRequested();
+  };
+  generalPage.addAndMakeVisible(logoutButton);
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -351,6 +393,20 @@ void SettingsPanel::refreshThemeColours() {
                               UITheme::accent);
   primeImportToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                               UITheme::textSecondary);
+  sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionPlanLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionUidValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionEmailValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionPlanValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionStatusValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  logoutButton.setColour(juce::TextButton::buttonColourId,
+                         juce::Colour::fromRGB(125, 45, 45));
+  logoutButton.setColour(juce::TextButton::buttonOnColourId,
+                         juce::Colour::fromRGB(148, 54, 54));
+  logoutButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   for (auto &row : routingRows)
     row->refreshThemeColours();
@@ -376,6 +432,24 @@ void SettingsPanel::applyLanguageTexts() {
   primeImportToggle.setButtonText(
       L10n::tr("Habilitar importación desde disco local",
                "Enable import from local disk"));
+  sessionSectionLabel.setText(L10n::tr("Sesion", "Session"),
+                              juce::dontSendNotification);
+  sessionUidLabel.setText("UID", juce::dontSendNotification);
+  sessionEmailLabel.setText("Email", juce::dontSendNotification);
+  sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
+  sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
+                             juce::dontSendNotification);
+  sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
+                          juce::dontSendNotification);
+  sessionEmailValue.setText(session.email.isNotEmpty() ? session.email : "-",
+                            juce::dontSendNotification);
+  sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
+                           juce::dontSendNotification);
+  sessionStatusValue.setText(session.subscriptionStatus.isNotEmpty()
+                                 ? session.subscriptionStatus
+                                 : "-",
+                             juce::dontSendNotification);
+  logoutButton.setButtonText(L10n::tr("Salir", "Logout"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
 }
@@ -397,6 +471,23 @@ void SettingsPanel::layoutGeneralPage() {
   auto primeRow = area.removeFromTop(26);
   primeImportLabel.setBounds(primeRow.removeFromLeft(160));
   primeImportToggle.setBounds(primeRow);
+  area.removeFromTop(16);
+  sessionSectionLabel.setBounds(area.removeFromTop(24));
+  area.removeFromTop(4);
+  auto sessionUidRow = area.removeFromTop(24);
+  sessionUidLabel.setBounds(sessionUidRow.removeFromLeft(80));
+  sessionUidValue.setBounds(sessionUidRow);
+  auto sessionEmailRow = area.removeFromTop(24);
+  sessionEmailLabel.setBounds(sessionEmailRow.removeFromLeft(80));
+  sessionEmailValue.setBounds(sessionEmailRow);
+  auto sessionPlanRow = area.removeFromTop(24);
+  sessionPlanLabel.setBounds(sessionPlanRow.removeFromLeft(80));
+  sessionPlanValue.setBounds(sessionPlanRow);
+  auto sessionStatusRow = area.removeFromTop(24);
+  sessionStatusLabel.setBounds(sessionStatusRow.removeFromLeft(80));
+  sessionStatusValue.setBounds(sessionStatusRow);
+  area.removeFromTop(12);
+  logoutButton.setBounds(area.removeFromTop(30).withSizeKeepingCentre(160, 30));
 }
 
 void SettingsPanel::layoutRoutingPage() {

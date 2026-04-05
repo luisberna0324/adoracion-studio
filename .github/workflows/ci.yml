@@ -23,6 +23,11 @@ on:
         required: true
         default: false
         type: boolean
+      publish_installers:
+        description: "Generar y publicar instaladores (.dmg y .exe)"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -40,6 +45,7 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       tag_exists: ${{ steps.resolve.outputs.tag_exists }}
       publish_release: ${{ steps.resolve.outputs.publish_release }}
+      publish_installers: ${{ steps.resolve.outputs.publish_installers }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,6 +107,7 @@ jobs:
           TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
           VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
           PUBLISH_INPUT="${{ inputs.publish_release }}"
+          PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
 
           if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
             echo "Debes indicar al menos 'tag' o 'version'." >&2
@@ -155,6 +162,7 @@ jobs:
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
+          echo "publish_installers=${PUBLISH_INSTALLERS_INPUT}" >> "${GITHUB_OUTPUT}"
 
   build-macos:
     name: Build macOS artifact
@@ -193,6 +201,24 @@ jobs:
           path: build/macos-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
 
+      - name: Package DMG installer (macOS)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          bash scripts/package_macos_dmg.sh \
+            --version "${SEMVER}" \
+            --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone \
+            --output-dir dist
+
+      - name: Upload installer (macOS)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship-macos-installer-${{ needs.prepare.outputs.semver }}.dmg
+          if-no-files-found: error
+
   build-windows:
     name: Build Windows artifact
     needs: prepare
@@ -225,6 +251,28 @@ jobs:
         with:
           name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
           path: build/windows-release/MTControls_artefacts/Release/Standalone
+          if-no-files-found: error
+
+      - name: Install Inno Setup
+        if: needs.prepare.outputs.publish_installers == 'true'
+        run: choco install innosetup --no-progress -y
+
+      - name: Package installer (Windows)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        shell: pwsh
+        run: |
+          ./scripts/package_windows_installer.ps1 `
+            -Version "${{ needs.prepare.outputs.semver }}" `
+            -StandaloneDir "build/windows-release/MTControls_artefacts/Release/Standalone" `
+            -OutputDir "dist" `
+            -IssFile "packaging/windows/MTControls.iss"
+
+      - name: Upload installer (Windows)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}.exe
           if-no-files-found: error
 
   publish:
@@ -267,6 +315,20 @@ jobs:
           name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
           path: dist/windows
 
+      - name: Download macOS installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Windows installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
       - name: Package release assets
         shell: bash
         env:
@@ -285,15 +347,24 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
           SEMVER="${{ needs.prepare.outputs.semver }}"
+          PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
           MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
           WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
+          MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.dmg"
+          WIN_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}.exe"
+          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}")
+
+          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+            [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
+            [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
+            ASSETS+=("${MAC_INSTALLER}" "${WIN_INSTALLER}")
+          fi
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${MAC_ZIP}" "${WIN_ZIP}" --clobber
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
           else
             gh release create "${TAG}" \
-              "${MAC_ZIP}" \
-              "${WIN_ZIP}" \
+              "${ASSETS[@]}" \
               --title "${TAG}" \
               --target "${{ needs.prepare.outputs.release_ref }}" \
               --generate-notes

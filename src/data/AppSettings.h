@@ -29,6 +29,10 @@ public:
   static void setThemePresetId(int presetId);
   static juce::String getLastSelectedSongId();
   static void setLastSelectedSongId(const juce::String &songId);
+  static juce::int64 getLastSuccessfulLoginMs();
+  static void setLastSuccessfulLoginMs(juce::int64 value);
+  static juce::int64 getReauthGraceDeadlineMs();
+  static void setReauthGraceDeadlineMs(juce::int64 value);
   static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
   static void setRoutingDefaults(
       const std::vector<CategoryRoutingDefaults> &defaults);

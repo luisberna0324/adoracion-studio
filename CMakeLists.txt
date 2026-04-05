@@ -21,6 +21,12 @@ set(MTCONTROLS_FFMPEG_BIN_MACOS "" CACHE FILEPATH
     "Path to ffmpeg binary that will be bundled in the macOS app")
 set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
     "Path to ffmpeg.exe that will be bundled in the Windows build")
+set(MTCONTROLS_API_BASE_URL "https://api.playworship.com" CACHE STRING
+    "Base URL for PlayWorship backend/login frontend")
+set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
+    "Minutes before forcing re-login in app (default: 5 days)")
+set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
+    "Minutes of grace window after re-login is requested (default: 5 hours)")
 
 include(FetchContent)
 
@@ -57,6 +63,11 @@ juce_add_plugin(MTControls
 )
 
 juce_generate_juce_header(MTControls)
+
+juce_add_binary_data(MTControlsAssets
+    SOURCES
+        assets/logoPlayWorship.jpeg
+)
 
 target_sources(MTControls
     PRIVATE
@@ -136,6 +147,9 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
+        MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
+        MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
+        MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         SOUNDTOUCH_FLOAT_SAMPLES=1
 )
 
@@ -143,6 +157,7 @@ target_link_libraries(MTControls
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
+        MTControlsAssets
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
