@@ -2,8 +2,14 @@
 set -euo pipefail
 
 export JUCE_DIR="/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE"
+export MTCONTROLS_API_BASE_URL="${MTCONTROLS_API_BASE_URL:-http://localhost:3000}"
+export MTCONTROLS_SESSION_REAUTH_MINUTES="${MTCONTROLS_SESSION_REAUTH_MINUTES:-7200}"
+export MTCONTROLS_REAUTH_GRACE_MINUTES="${MTCONTROLS_REAUTH_GRACE_MINUTES:-300}"
 
-cmake --preset macos-release
+cmake --preset macos-release \
+  -DMTCONTROLS_API_BASE_URL="$MTCONTROLS_API_BASE_URL" \
+  -DMTCONTROLS_SESSION_REAUTH_MINUTES="$MTCONTROLS_SESSION_REAUTH_MINUTES" \
+  -DMTCONTROLS_REAUTH_GRACE_MINUTES="$MTCONTROLS_REAUTH_GRACE_MINUTES"
 cmake --build --preset macos-release
 
 APP_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/MTControls_artefacts/Release/Standalone"

@@ -47,6 +47,36 @@ cmake --preset windows-release
 cmake --build --preset windows-release
 ```
 
+## Instaladores (MVP)
+
+### macOS (DMG drag-and-drop)
+
+Genera el build y luego empaqueta el instalador `.dmg`:
+
+```bash
+cmake --preset macos-release
+cmake --build --preset macos-release
+bash scripts/package_macos_dmg.sh --version 1.2.3
+```
+
+Salida esperada:
+
+`dist/playworship-macos-installer-1.2.3.dmg`
+
+### Windows (Inno Setup EXE)
+
+Genera el build y luego empaqueta el instalador `.exe`:
+
+```powershell
+cmake --preset windows-release
+cmake --build --preset windows-release
+.\scripts\package_windows_installer.ps1 -Version 1.2.3
+```
+
+Salida esperada:
+
+`dist/playworship-windows-installer-1.2.3.exe`
+
 ### iOS
 
 ```bash
@@ -76,6 +106,20 @@ cmake --build build -j
 - Windows: GitHub Actions con `windows-latest` + preset `windows-release`
 - macOS: GitHub Actions con `macos-latest` + preset `macos-release`
 - iOS: generar proyecto Xcode con preset `ios-release` (requiere signing para build/run)
+
+### Workflow `Build Artifacts`
+
+Entradas relevantes:
+
+- `publish_release`: publica (o actualiza) GitHub Release.
+- `publish_installers` (default `true`): genera/publica instaladores `dmg` y `exe`.
+
+Assets publicados cuando `publish_release=true`:
+
+- `MTControls-macos-standalone-<semver>.zip`
+- `MTControls-windows-standalone-<semver>.zip`
+- `playworship-macos-installer-<semver>.dmg` (si `publish_installers=true`)
+- `playworship-windows-installer-<semver>.exe` (si `publish_installers=true`)
 
 ## Siguiente foco
 
