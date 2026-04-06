@@ -96,8 +96,8 @@ void TopBar::IconButton::setGlyph(IconGlyph g) {
   repaint();
 }
 
-void TopBar::IconButton::setBadgeText(juce::String text) {
-  badgeText = std::move(text);
+void TopBar::IconButton::setBadgeText(juce::String badge) {
+  badgeText = std::move(badge);
   repaint();
 }
 
@@ -309,7 +309,7 @@ void TopBar::resized() {
 
   int x = 12;
 
-  auto placeSquare = [&x](juce::Component &c) {
+  auto placeSquare = [&](juce::Component &c) {
     c.setBounds(x, y - 2, square, square);
     x += square + gap;
   };
