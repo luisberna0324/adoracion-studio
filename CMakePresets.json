@@ -23,7 +23,8 @@
       "binaryDir": "${sourceDir}/build/windows-release",
       "cacheVariables": {
         "CMAKE_CONFIGURATION_TYPES": "Release",
-        "JUCE_DIR": "$env{JUCE_DIR}"
+        "JUCE_DIR": "$env{JUCE_DIR}",
+        "MTCONTROLS_FFMPEG_BIN_WINDOWS": "$env{MTCONTROLS_FFMPEG_BIN_WINDOWS}"
       }
     },
     {
