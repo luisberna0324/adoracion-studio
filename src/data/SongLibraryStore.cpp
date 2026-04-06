@@ -10,6 +10,16 @@ namespace {
 constexpr double kMinPartDurationSec = 0.25;
 constexpr double kArrangementEpsilon = 0.0001;
 
+#if JUCE_WINDOWS
+constexpr const char *kStoredStemExtension = ".flac";
+constexpr const char *kFfmpegAudioCodec = "flac";
+constexpr const char *kStorageFormatLabel = "FLAC";
+#else
+constexpr const char *kStoredStemExtension = ".m4a";
+constexpr const char *kFfmpegAudioCodec = "alac";
+constexpr const char *kStorageFormatLabel = "ALAC";
+#endif
+
 bool nearlyEqual(double a, double b) {
   return std::abs(a - b) <= kArrangementEpsilon;
 }
@@ -515,13 +525,13 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
   return {};
 }
 
-bool SongLibraryStore::convertStemToAlac(const juce::File &source,
-                                         const juce::File &destination,
-                                         juce::String &errorMessage) {
+bool SongLibraryStore::convertStemToStorageFormat(
+    const juce::File &source, const juce::File &destination,
+    juce::String &errorMessage) {
   const auto ffmpegBinary = resolveBundledFfmpegBinary();
   if (!ffmpegBinary.existsAsFile()) {
-    errorMessage =
-        "Couldn't find bundled ffmpeg binary for ALAC conversion.";
+    errorMessage = "Couldn't find bundled ffmpeg binary for " +
+                   juce::String(kStorageFormatLabel) + " conversion.";
     return false;
   }
 
@@ -540,7 +550,7 @@ bool SongLibraryStore::convertStemToAlac(const juce::File &source,
   args.add("-1");
   args.add("-vn");
   args.add("-c:a");
-  args.add("alac");
+  args.add(kFfmpegAudioCodec);
   args.add(destination.getFullPathName());
 
   juce::ChildProcess process;
@@ -551,7 +561,7 @@ bool SongLibraryStore::convertStemToAlac(const juce::File &source,
 
   if (!process.waitForProcessToFinish(10 * 60 * 1000)) {
     process.kill();
-    errorMessage = "ALAC conversion timed out.";
+    errorMessage = juce::String(kStorageFormatLabel) + " conversion timed out.";
     return false;
   }
 
@@ -560,7 +570,8 @@ bool SongLibraryStore::convertStemToAlac(const juce::File &source,
     if (destination.existsAsFile())
       destination.deleteFile();
     errorMessage = output.isNotEmpty() ? output
-                                       : "ffmpeg failed converting stem to ALAC.";
+                                       : "ffmpeg failed converting stem to " +
+                                             juce::String(kStorageFormatLabel) + ".";
     return false;
   }
 
@@ -594,22 +605,23 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     if (legalStemId.isEmpty())
       return failImport("Invalid stem id while importing song.");
 
-    const auto dst = songDir.getChildFile(legalStemId + ".m4a");
+    const auto dst = songDir.getChildFile(
+        legalStemId + juce::String(kStoredStemExtension));
     const auto srcPathLower = src.getFullPathName().toLowerCase();
     const bool isPrimeSource =
         srcPathLower.contains("/library/containers/com.loopcommunity.primemac/");
-    const bool alreadyPrimeStemM4a =
-        src.hasFileExtension(".m4a") &&
+    const bool alreadyPrimeStemInTargetFormat =
+        src.hasFileExtension(juce::String(kStoredStemExtension).substring(1)) &&
         src.getFileNameWithoutExtension().equalsIgnoreCase(legalStemId);
 
-    if (isPrimeSource && alreadyPrimeStemM4a) {
+    if (isPrimeSource && alreadyPrimeStemInTargetFormat) {
       if (dst.existsAsFile())
         dst.deleteFile();
       if (!src.copyFileTo(dst))
         return failImport("Failed copying local library stem '" +
                           stem.displayName + "'.");
     } else {
-      if (!convertStemToAlac(src, dst, errorMessage))
+      if (!convertStemToStorageFormat(src, dst, errorMessage))
         return failImport("Failed converting stem '" + stem.displayName + "': " +
                           errorMessage);
     }

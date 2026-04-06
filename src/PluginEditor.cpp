@@ -829,6 +829,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         continue;
 
       juce::File file(stem.storedPath);
+#if JUCE_WINDOWS
+      // Legacy fallback: older imports stored ALAC .m4a, which can fail to
+      // decode on some Windows setups. Prefer original source when available.
+      if (file.existsAsFile() && file.hasFileExtension(".m4a")) {
+        const juce::File source(stem.sourcePath);
+        if (source.existsAsFile())
+          file = source;
+      }
+#endif
       if (!file.existsAsFile())
         file = juce::File(stem.sourcePath);
       if (file.existsAsFile()) {

@@ -105,8 +105,9 @@ private:
   static juce::File getWaveformCacheDir();
   static bool copyStemFiles(ImportedSongData &song, juce::String &errorMessage);
   static juce::File resolveBundledFfmpegBinary();
-  static bool convertStemToAlac(const juce::File &source, const juce::File &destination,
-                                juce::String &errorMessage);
+  static bool convertStemToStorageFormat(const juce::File &source,
+                                         const juce::File &destination,
+                                         juce::String &errorMessage);
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);
