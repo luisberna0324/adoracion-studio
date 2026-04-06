@@ -21,7 +21,7 @@ set(MTCONTROLS_FFMPEG_BIN_MACOS "" CACHE FILEPATH
     "Path to ffmpeg binary that will be bundled in the macOS app")
 set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
     "Path to ffmpeg.exe that will be bundled in the Windows build")
-set(MTCONTROLS_API_BASE_URL "https://api.playworship.com" CACHE STRING
+set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
     "Minutes before forcing re-login in app (default: 5 days)")

@@ -37,7 +37,7 @@ constexpr int kAuthWindowH = 320;
 constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
 
 #ifndef MTCONTROLS_API_BASE_URL
-#define MTCONTROLS_API_BASE_URL "https://api.playworship.com"
+#define MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app"
 #endif
 
 #ifndef MTCONTROLS_SESSION_REAUTH_MINUTES
@@ -270,7 +270,7 @@ juce::String buildStableDeviceId() {
 
 juce::String getApiBaseUrl() {
   const juce::String configured = juce::String(MTCONTROLS_API_BASE_URL).trim();
-  const juce::String fallback = "https://api.playworship.com";
+  const juce::String fallback = "https://playworship-345830648064.us-east1.run.app";
   if (configured.isEmpty())
     return fallback;
 
