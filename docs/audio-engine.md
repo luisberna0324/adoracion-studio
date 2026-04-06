@@ -1,4 +1,4 @@
-# Motor de Audio (Adoración Estudio)
+# Motor de Audio (PlayWorship)
 
 Este documento describe cómo está construido el motor de audio y cómo fluye el audio en tiempo real.
 

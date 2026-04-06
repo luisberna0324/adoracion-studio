@@ -18,7 +18,11 @@ if compgen -G "$APP_DIR/*.app" > /dev/null; then
   if open "$APP_PATH"; then
     exit 0
   fi
-  EXEC_PATH="$APP_PATH/Contents/MacOS/Adoracion Estudio"
+  APP_EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ -z "$APP_EXEC_NAME" ]]; then
+    APP_EXEC_NAME="$(basename "$APP_PATH" .app)"
+  fi
+  EXEC_PATH="$APP_PATH/Contents/MacOS/$APP_EXEC_NAME"
   echo "Could not open app bundle in this environment."
   echo "Launch manually with:"
   echo "  \"$EXEC_PATH\""
@@ -31,7 +35,11 @@ if compgen -G "$FALLBACK_DIR/*.app" > /dev/null; then
   if open "$APP_PATH"; then
     exit 0
   fi
-  EXEC_PATH="$APP_PATH/Contents/MacOS/Adoracion Estudio"
+  APP_EXEC_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+  if [[ -z "$APP_EXEC_NAME" ]]; then
+    APP_EXEC_NAME="$(basename "$APP_PATH" .app)"
+  fi
+  EXEC_PATH="$APP_PATH/Contents/MacOS/$APP_EXEC_NAME"
   echo "Could not open app bundle in this environment."
   echo "Launch manually with:"
   echo "  \"$EXEC_PATH\""

@@ -1,4 +1,4 @@
-#define AppName "Adoracion Estudio"
+#define AppName "PlayWorship"
 #define AppPublisher "Multitracks"
 #ifndef AppVersion
   #define AppVersion "0.0.0"

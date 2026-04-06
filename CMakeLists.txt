@@ -64,7 +64,7 @@ juce_add_plugin(MTControls
     PLUGIN_MANUFACTURER_CODE MLTK
     PLUGIN_CODE Mtc1
     FORMATS Standalone
-    PRODUCT_NAME "Adoracion Estudio"
+    PRODUCT_NAME "PlayWorship"
     ICON_BIG "assets/icons/app-icon-1024.png"
     ICON_SMALL "assets/icons/app-icon-1024.png"
 )

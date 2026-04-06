@@ -28,9 +28,6 @@ on:
         required: true
         default: true
         type: boolean
-  push:
-    tags:
-      - "v*.*.*"
 
 permissions:
   contents: write
@@ -103,24 +100,14 @@ jobs:
             return 1
           }
 
-          EVENT_NAME="${{ github.event_name }}"
-
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            REF_INPUT="$(trim "${{ inputs.ref }}")"
-            if [[ -z "${REF_INPUT}" ]]; then
-              REF_INPUT="main"
-            fi
-            TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
-            VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
-            PUBLISH_INPUT="${{ inputs.publish_release }}"
-            PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
-          else
-            REF_INPUT="${{ github.ref_name }}"
-            TAG_INPUT_RAW="${{ github.ref_name }}"
-            VERSION_INPUT_RAW=""
-            PUBLISH_INPUT="true"
-            PUBLISH_INSTALLERS_INPUT="true"
+          REF_INPUT="$(trim "${{ inputs.ref }}")"
+          if [[ -z "${REF_INPUT}" ]]; then
+            REF_INPUT="main"
           fi
+          TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
+          VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
+          PUBLISH_INPUT="${{ inputs.publish_release }}"
+          PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
 
           if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
             echo "Debes indicar al menos 'tag' o 'version'." >&2
