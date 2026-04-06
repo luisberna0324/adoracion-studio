@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "BinaryData.h"
 #include "data/AppSettings.h"
 #include "data/Localization.h"
 #include "data/SongData.h"
@@ -12,6 +13,7 @@
 #include "ui/panels/WaveformBar.h"
 #include "audio/AudioDeviceMonitor.h"
 #include <algorithm>
+#include <cctype>
 
 #if JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
@@ -28,6 +30,28 @@ constexpr int kDefaultWindowH = 760;
 constexpr int kMinWindowW = 800;
 constexpr int kMinWindowH = 560;
 constexpr int kScreenMargin = 40;
+constexpr int kAuthModalW = 520;
+constexpr int kAuthModalH = 260;
+constexpr int kAuthWindowW = 560;
+constexpr int kAuthWindowH = 320;
+constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
+
+#ifndef MTCONTROLS_API_BASE_URL
+#define MTCONTROLS_API_BASE_URL "https://api.playworship.com"
+#endif
+
+#ifndef MTCONTROLS_SESSION_REAUTH_MINUTES
+#define MTCONTROLS_SESSION_REAUTH_MINUTES 7200
+#endif
+
+#ifndef MTCONTROLS_REAUTH_GRACE_MINUTES
+#define MTCONTROLS_REAUTH_GRACE_MINUTES 300
+#endif
+
+constexpr juce::int64 kSessionReauthIntervalMs =
+    static_cast<juce::int64>(MTCONTROLS_SESSION_REAUTH_MINUTES) * 60LL * 1000LL;
+constexpr juce::int64 kReauthGraceWindowMs =
+    static_cast<juce::int64>(MTCONTROLS_REAUTH_GRACE_MINUTES) * 60LL * 1000LL;
 
 struct StandaloneAudioContext {
   juce::AudioDeviceManager *manager = nullptr;
@@ -116,6 +140,473 @@ CategoryRoutingDefaults routingForCategory(
   return defaults[static_cast<size_t>(idx)];
 }
 
+juce::String urlEncode(const juce::String &value) {
+  return juce::URL::addEscapeChars(value, true);
+}
+
+void addParamsFromChunk(const juce::String &chunk,
+                        juce::StringPairArray &params) {
+  auto cleaned = chunk.trim();
+  if (cleaned.startsWithChar('?') || cleaned.startsWithChar('#'))
+    cleaned = cleaned.substring(1);
+  if (cleaned.isEmpty())
+    return;
+
+  const auto pairs = juce::StringArray::fromTokens(cleaned, "&", "");
+  for (const auto &pair : pairs) {
+    if (pair.isEmpty())
+      continue;
+    const auto sep = pair.indexOfChar('=');
+    const auto key = juce::URL::removeEscapeChars(
+        (sep >= 0 ? pair.substring(0, sep) : pair).replace("+", " "));
+    const auto value = juce::URL::removeEscapeChars(
+        (sep >= 0 ? pair.substring(sep + 1) : juce::String{}).replace("+", " "));
+    if (key.isNotEmpty())
+      params.set(key, value);
+  }
+}
+
+juce::StringPairArray parseCallbackParams(const juce::String &url) {
+  juce::StringPairArray params;
+  const auto hashPos = url.indexOfChar('#');
+  const auto queryPos = url.indexOfChar('?');
+  if (queryPos >= 0) {
+    const int queryEnd =
+        (hashPos >= 0 && hashPos > queryPos) ? hashPos : url.length();
+    addParamsFromChunk(url.substring(queryPos + 1, queryEnd), params);
+  }
+  if (hashPos >= 0)
+    addParamsFromChunk(url.substring(hashPos + 1), params);
+  return params;
+}
+
+juce::String readStringFromObject(const juce::var &objVar,
+                                  const juce::Identifier &key) {
+  if (const auto *obj = objVar.getDynamicObject()) {
+    if (obj->hasProperty(key))
+      return obj->getProperty(key).toString().trim();
+  }
+  return {};
+}
+
+bool parseBooleanLike(const juce::String &value, bool fallback) {
+  const auto v = value.trim().toLowerCase();
+  if (v.isEmpty())
+    return fallback;
+  if (v == "1" || v == "true" || v == "yes")
+    return true;
+  if (v == "0" || v == "false" || v == "no")
+    return false;
+  return fallback;
+}
+
+juce::String userMessageForAccessDenial(const juce::String &reasonCode,
+                                        const juce::String &reasonFallback) {
+  const auto code = reasonCode.trim().toUpperCase();
+  if (code == "LICENSE_INACTIVE")
+    return "Tu suscripcion no esta activa. Activa tu plan para continuar.";
+  if (code == "TRIAL_EXPIRED")
+    return "Tu periodo de prueba ha finalizado. Debes comprar una suscripcion para continuar.";
+  if (code == "NO_SUBSCRIPTION")
+    return "No tienes una suscripcion activa. Inicia un plan para continuar.";
+  if (code == "CANCELLED_SUBSCRIPTION")
+    return "Tu suscripcion fue cancelada. Reactiva tu plan para continuar.";
+  if (code == "DEVICE_LIMIT")
+    return "Alcanzaste el limite de dispositivos para esta licencia.";
+  if (code == "LICENSE_NOT_FOUND")
+    return "No encontramos una licencia activa para tu cuenta.";
+  if (code == "MISSING_DEVICE_ID")
+    return "No fue posible validar este dispositivo. Intenta de nuevo.";
+  if (code == "UNAUTHORIZED")
+    return "Tu sesion no es valida. Inicia sesion nuevamente.";
+  if (code == "INTERNAL_ERROR")
+    return "No se pudo validar tu acceso en este momento. Intenta de nuevo.";
+  if (code == "INVALID_SUBSCRIPTION_STATE")
+    return "Tu suscripcion no es valida actualmente. Inicia sesion nuevamente.";
+  if (reasonFallback.isNotEmpty())
+    return reasonFallback;
+  return "Acceso denegado.";
+}
+
+bool hasValidAccessBySubscriptionState(const juce::String &subscriptionStatus,
+                                       const juce::String &plan) {
+  const auto status = subscriptionStatus.trim().toLowerCase();
+  const auto normalizedPlan = plan.trim().toUpperCase();
+
+  if (status == "trial")
+    return true;
+
+  if (status == "active")
+    return normalizedPlan.isNotEmpty() && normalizedPlan != "NONE";
+
+  return false;
+}
+
+juce::String buildStableDeviceId() {
+  juce::String raw = juce::SystemStats::getUniqueDeviceID().trim();
+  if (raw.isEmpty()) {
+    raw = juce::SystemStats::getComputerName().trim() + "-" +
+          juce::SystemStats::getOperatingSystemName().trim();
+  }
+  if (raw.isEmpty())
+    raw = "unknown-device";
+
+  juce::String normalized;
+  normalized.preallocateBytes(raw.getNumBytesAsUTF8());
+  bool lastWasDash = false;
+  for (auto c : raw.toLowerCase()) {
+    const bool alphaNum = juce::CharacterFunctions::isLetterOrDigit(c);
+    if (alphaNum) {
+      normalized << juce::String::charToString(c);
+      lastWasDash = false;
+    } else if (!lastWasDash) {
+      normalized << "-";
+      lastWasDash = true;
+    }
+  }
+  normalized = normalized.trimCharactersAtStart("-").trimCharactersAtEnd("-");
+  return normalized.isNotEmpty() ? normalized : juce::String("unknown-device");
+}
+
+juce::String getApiBaseUrl() {
+  const juce::String configured = juce::String(MTCONTROLS_API_BASE_URL).trim();
+  const juce::String fallback = "https://api.playworship.com";
+  if (configured.isEmpty())
+    return fallback;
+
+  const bool isHttps = configured.startsWithIgnoreCase("https://");
+  const bool isHttp = configured.startsWithIgnoreCase("http://");
+  if (!isHttps && !isHttp)
+    return fallback;
+
+  const juce::URL parsed(configured);
+  const auto host = parsed.getDomain().trim().toLowerCase();
+  if (host.isEmpty())
+    return fallback;
+
+  const bool isLocalHost = host == "localhost" || host == "127.0.0.1";
+  if (isHttp && !isLocalHost)
+    return fallback;
+
+  return configured.trimCharactersAtEnd("/");
+}
+
+} // namespace
+
+class LocalAuthCallbackServer final : private juce::Thread {
+public:
+  using Callback = std::function<void(const juce::String &)>;
+
+  explicit LocalAuthCallbackServer(Callback cb)
+      : juce::Thread("AuthCallbackServer"), onCallback(std::move(cb)) {}
+
+  ~LocalAuthCallbackServer() override { stop(); }
+
+  bool start(int &outPort) {
+    stop();
+    outPort = 0;
+
+    if (listenerSocket.createListener(0, "127.0.0.1")) {
+      outPort = listenerSocket.getBoundPort();
+      if (outPort > 0) {
+        startThread();
+        return true;
+      }
+      listenerSocket.close();
+    }
+
+    for (int i = 0; i < 32; ++i) {
+      const int candidate = 43123 + i;
+      if (!listenerSocket.createListener(candidate, "127.0.0.1"))
+        continue;
+      outPort = listenerSocket.getBoundPort();
+      if (outPort <= 0)
+        outPort = candidate;
+      startThread();
+      return true;
+    }
+    return false;
+  }
+
+  void stop() {
+    signalThreadShouldExit();
+    listenerSocket.close();
+    stopThread(1500);
+  }
+
+private:
+  void run() override {
+    while (!threadShouldExit()) {
+      auto *client = listenerSocket.waitForNextConnection();
+      if (client == nullptr)
+        continue;
+
+      juce::String rawRequest;
+      char buffer[4096] = {};
+      if (client->waitUntilReady(true, 1200) == 1) {
+        for (int attempt = 0; attempt < 32; ++attempt) {
+          const int bytesRead =
+              client->read(buffer, static_cast<int>(sizeof(buffer) - 1), false);
+          if (bytesRead <= 0)
+            break;
+          buffer[bytesRead] = '\0';
+          rawRequest += juce::String::fromUTF8(buffer);
+          // Stop once request line + headers are complete. Callback URLs can
+          // be long due to encoded session payload, so we allow larger reads.
+          if (rawRequest.contains("\r\n\r\n"))
+            break;
+          if (client->waitUntilReady(true, 40) != 1)
+            break;
+        }
+      }
+
+      const auto firstLine =
+          rawRequest.upToFirstOccurrenceOf("\r\n", false, false);
+      const auto parts = juce::StringArray::fromTokens(firstLine, " ", "");
+      const auto requestPath = parts.size() >= 2 ? parts[1].trim() : juce::String{};
+      if (requestPath.startsWith("/auth/callback")) {
+        if (onCallback)
+          onCallback("http://127.0.0.1" + requestPath);
+      }
+
+      const juce::String response =
+          "HTTP/1.1 200 OK\r\n"
+          "Content-Type: text/html; charset=utf-8\r\n"
+          "Connection: close\r\n\r\n"
+          "<html><body><h3>Procesando autenticacion...</h3>"
+          "<p>Vuelve a la aplicacion para confirmar el resultado.</p>"
+          "<script>setTimeout(function(){ window.close(); }, 900);</script>"
+          "</body></html>";
+      client->write(response.toRawUTF8(), response.getNumBytesAsUTF8() - 1);
+      client->close();
+      delete client;
+    }
+  }
+
+  juce::StreamingSocket listenerSocket;
+  Callback onCallback;
+};
+
+namespace {
+class WelcomeModal final : public juce::Component {
+public:
+  std::function<void()> onLoginRequested;
+
+  WelcomeModal() {
+    logoImage = juce::ImageFileFormat::loadFrom(
+        BinaryData::logoPlayWorship_jpeg, BinaryData::logoPlayWorship_jpegSize);
+    if (logoImage.isValid())
+      addAndMakeVisible(logo);
+
+    title.setText("Bienvenido", juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setFont(juce::FontOptions(26.0f).withStyle("Bold"));
+    addAndMakeVisible(title);
+
+    subtitle.setText("Inicia sesion para continuar.", juce::dontSendNotification);
+    subtitle.setJustificationType(juce::Justification::centred);
+    subtitle.setFont(juce::FontOptions(14.0f));
+    addAndMakeVisible(subtitle);
+
+    status.setText("Pulsa Ingresar para abrir el navegador.", juce::dontSendNotification);
+    status.setJustificationType(juce::Justification::centred);
+    status.setFont(juce::FontOptions(12.5f));
+    addAndMakeVisible(status);
+
+    loginButton.setButtonText("Ingresar");
+    loginButton.onClick = [this] {
+      if (onLoginRequested)
+        onLoginRequested();
+    };
+    addAndMakeVisible(loginButton);
+
+    infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
+    infoLink.setButtonText("Mas informacion");
+    infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
+                     juce::Justification::centred);
+    addAndMakeVisible(infoLink);
+  }
+
+  void setStatusText(const juce::String &text, bool isError) {
+    status.setText(text, juce::dontSendNotification);
+    status.setColour(juce::Label::textColourId,
+                     isError ? juce::Colour::fromRGB(255, 164, 164)
+                             : juce::Colour::fromRGB(205, 214, 227));
+  }
+
+  void resetStatusToDefault() {
+    setStatusText("Pulsa Ingresar para abrir el navegador.", false);
+  }
+
+  void paint(juce::Graphics &g) override {
+    drawStudioBackground(g, getLocalBounds().toFloat());
+    auto box = getLocalBounds().toFloat().reduced(1.5f);
+    g.setColour(juce::Colour::fromRGB(20, 20, 24));
+    g.fillRoundedRectangle(box, 10.0f);
+    g.setColour(juce::Colour::fromRGB(70, 75, 86));
+    g.drawRoundedRectangle(box, 10.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(18);
+    if (logoImage.isValid()) {
+      auto logoArea = area.removeFromTop(62);
+      logo.setImage(logoImage, juce::RectanglePlacement::centred);
+      logo.setBounds(logoArea.withSizeKeepingCentre(220, 56));
+      area.removeFromTop(6);
+    }
+    title.setBounds(area.removeFromTop(38));
+    subtitle.setBounds(area.removeFromTop(26));
+    area.removeFromTop(12);
+    status.setBounds(area.removeFromTop(38));
+    area.removeFromTop(10);
+    auto controlsRow = area.removeFromTop(40).withSizeKeepingCentre(390, 36);
+    auto loginArea = controlsRow.removeFromLeft(200);
+    controlsRow.removeFromLeft(10);
+    auto linkArea = controlsRow;
+    loginButton.setBounds(loginArea);
+    infoLink.setBounds(linkArea);
+  }
+
+private:
+  juce::ImageComponent logo;
+  juce::Image logoImage;
+  juce::Label title;
+  juce::Label subtitle;
+  juce::Label status;
+  juce::TextButton loginButton;
+  juce::HyperlinkButton infoLink{"Mas informacion",
+                                 juce::URL(kSubscriptionInfoUrl)};
+};
+
+class ReauthPromptModal final : public juce::Component {
+public:
+  std::function<void()> onLoginNow;
+  std::function<void()> onLater;
+
+  ReauthPromptModal() {
+    title.setText("Renovar sesion", juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setFont(juce::FontOptions(20.0f).withStyle("Bold"));
+    addAndMakeVisible(title);
+
+    message.setText(
+        "Para continuar con seguridad, necesitamos que vuelvas a iniciar sesion.",
+        juce::dontSendNotification);
+    message.setJustificationType(juce::Justification::centred);
+    message.setFont(juce::FontOptions(13.0f));
+    addAndMakeVisible(message);
+
+    const int graceMinutes =
+        juce::jmax(1, static_cast<int>(MTCONTROLS_REAUTH_GRACE_MINUTES));
+    juce::String graceText;
+    if (graceMinutes % 60 == 0) {
+      const int hours = graceMinutes / 60;
+      graceText = "Tienes hasta " + juce::String(hours) +
+                  (hours == 1 ? " hora" : " horas") +
+                  " de gracia para completar el login.";
+    } else {
+      graceText = "Tienes " + juce::String(graceMinutes) +
+                  " minutos de gracia para completar el login.";
+    }
+    graceInfo.setText(graceText, juce::dontSendNotification);
+    graceInfo.setJustificationType(juce::Justification::centred);
+    graceInfo.setFont(juce::FontOptions(12.0f));
+    addAndMakeVisible(graceInfo);
+
+    status.setText("Pulsa Ingresar ahora para abrir el navegador.",
+                   juce::dontSendNotification);
+    status.setJustificationType(juce::Justification::centred);
+    status.setFont(juce::FontOptions(12.0f));
+    addAndMakeVisible(status);
+
+    loginNowButton.setButtonText("Ingresar ahora");
+    loginNowButton.onClick = [this] {
+      if (onLoginNow)
+        onLoginNow();
+    };
+    addAndMakeVisible(loginNowButton);
+
+    laterButton.setButtonText("Mas tarde");
+    laterButton.onClick = [this] {
+      if (onLater)
+        onLater();
+    };
+    addAndMakeVisible(laterButton);
+
+    infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
+    infoLink.setButtonText("Mas informacion");
+    infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
+                     juce::Justification::centred);
+    addAndMakeVisible(infoLink);
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colour::fromRGBA(0, 0, 0, 70));
+    g.fillRoundedRectangle(bounds, 10.0f);
+    g.setColour(juce::Colour::fromRGB(65, 76, 98));
+    g.drawRoundedRectangle(bounds, 10.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(14);
+    title.setBounds(area.removeFromTop(34));
+    area.removeFromTop(4);
+    message.setBounds(area.removeFromTop(52));
+    graceInfo.setBounds(area.removeFromTop(28));
+    status.setBounds(area.removeFromTop(26));
+    area.removeFromTop(12);
+
+    auto controlsRow = area.removeFromTop(42).withSizeKeepingCentre(520, 36);
+    auto loginArea = controlsRow.removeFromLeft(185);
+    controlsRow.removeFromLeft(10);
+    auto laterArea = controlsRow.removeFromLeft(145);
+    controlsRow.removeFromLeft(10);
+    auto linkArea = controlsRow;
+    loginNowButton.setBounds(loginArea);
+    laterButton.setBounds(laterArea);
+    infoLink.setBounds(linkArea);
+  }
+
+private:
+  void setStatusText(const juce::String &text, bool isError) {
+    status.setText(text, juce::dontSendNotification);
+    status.setColour(juce::Label::textColourId,
+                     isError ? juce::Colour::fromRGB(255, 164, 164)
+                             : juce::Colour::fromRGB(205, 214, 227));
+  }
+
+public:
+  void showWaitingForCallback() {
+    setStatusText("Esperando autenticacion en el navegador...", false);
+    loginNowButton.setEnabled(false);
+    laterButton.setEnabled(false);
+  }
+
+  void showReadyState() {
+    setStatusText("Pulsa Ingresar ahora para abrir el navegador.", false);
+    loginNowButton.setEnabled(true);
+    laterButton.setEnabled(true);
+  }
+
+  void showError(const juce::String &text) {
+    setStatusText(text, true);
+    loginNowButton.setEnabled(true);
+    laterButton.setEnabled(true);
+  }
+
+private:
+  juce::Label title;
+  juce::Label message;
+  juce::Label graceInfo;
+  juce::Label status;
+  juce::TextButton loginNowButton;
+  juce::TextButton laterButton;
+  juce::HyperlinkButton infoLink{"Mas informacion",
+                                 juce::URL(kSubscriptionInfoUrl)};
+};
+
 } // namespace
 
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
@@ -124,6 +615,119 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   currentThemeId = AppSettings::getThemePresetId();
   applyTheme(static_cast<ThemePreset>(currentThemeId));
 
+  const auto userArea =
+      juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+  const int authW = juce::jmin(kAuthWindowW, userArea.getWidth());
+  const int authH = juce::jmin(kAuthWindowH, userArea.getHeight());
+  setSize(authW, authH);
+  setResizable(false, false);
+  setResizeLimits(authW, authH, authW, authH);
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
+       authW, authH] {
+        if (safe == nullptr)
+          return;
+        if (auto *top = safe->getTopLevelComponent()) {
+          auto bounds = top->getBounds();
+          bounds.setSize(authW, authH);
+          if (auto *display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(bounds))
+            bounds.setCentre(display->userArea.getCentre());
+          top->setBounds(bounds);
+        }
+      });
+
+  showWelcomeOnlyMode();
+  initializeWelcomeModal();
+  lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
+  reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
+  startTimerHz(12);
+
+#if JucePlugin_Build_Standalone
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+           this)] {
+        if (safe != nullptr)
+          hideStandaloneOptionsButton(safe.getComponent());
+      });
+#endif
+}
+
+void MTControlsAudioProcessorEditor::initializeMainUi() {
+  if (lastSuccessfulLoginMs > 0) {
+    const auto nowMs = juce::Time::currentTimeMillis();
+    const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
+    if (nowMs >= sessionDueAtMs) {
+      // El bloqueo en arranque solo aplica si el usuario ya eligió "Mas tarde"
+      // y su periodo de gracia ya venció.
+      if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
+        showWelcomeOnlyMode();
+        if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+          modal->setStatusText(
+              "Tu periodo de gracia termino. Debes iniciar sesion para continuar.",
+              true);
+        }
+        return;
+      }
+    }
+  }
+
+  if (mainUiInitialized)
+    return;
+
+  if (topBar != nullptr && waveformBar != nullptr && channelGridPanel != nullptr &&
+      songListPanel != nullptr && setlistHandlePanel != nullptr) {
+    topBar->setVisible(true);
+    waveformBar->setVisible(true);
+    channelGridPanel->setVisible(true);
+    songListPanel->setVisible(true);
+    setlistHandlePanel->setVisible(true);
+    if (welcomeModal)
+      welcomeModal->setVisible(false);
+    if (reauthPromptModal)
+      reauthPromptModal->setVisible(false);
+    setResizable(true, true);
+    setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+
+    const auto userArea =
+        juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+    const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
+    const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
+    const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
+    const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
+
+    if (AppSettings::getExpandWindowOnLaunch()) {
+      juce::MessageManager::callAsync(
+          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+               this)] {
+            if (safe != nullptr)
+              expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+          });
+    } else {
+      setSize(w, h);
+      juce::MessageManager::callAsync(
+          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+               this),
+           w, h] {
+            if (safe == nullptr)
+              return;
+            if (auto *top = safe->getTopLevelComponent()) {
+              auto bounds = top->getBounds();
+              bounds.setSize(w, h);
+              if (auto *display =
+                      juce::Desktop::getInstance().getDisplays().getDisplayForRect(
+                          bounds))
+                bounds.setCentre(display->userArea.getCentre());
+              top->setBounds(bounds);
+            }
+          });
+    }
+
+    mainUiInitialized = true;
+    resized();
+    return;
+  }
+
+  auto &p = static_cast<MTControlsAudioProcessor &>(processor);
   auto topBarImpl = std::make_unique<TopBar>(p);
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
@@ -181,7 +785,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   channelGridPanel = std::move(channelGridImpl);
 
   p.getAudioDeviceBridge().setOnDeviceConnected(
-      [&p, this, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
+      [&p, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
         if (!info.isMultichannel)
           return;
         p.getAudioDeviceBridge().setAvailableOutputChannelCount(
@@ -440,9 +1044,26 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
-
-  setWantsKeyboardFocus(true);
-  grabKeyboardFocus();
+  if (reauthPromptModal == nullptr) {
+    auto prompt = std::make_unique<ReauthPromptModal>();
+    prompt->onLoginNow = [this] {
+      reauthPromptDismissed = false;
+      reauthLoginInProgress = true;
+      if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+        reauth->showWaitingForCallback();
+      launchExternalLogin();
+    };
+    prompt->onLater = [this] {
+      reauthPromptDismissed = true;
+      reauthLoginInProgress = false;
+      hideReauthPromptModal();
+    };
+    reauthPromptModal = std::move(prompt);
+    addAndMakeVisible(*reauthPromptModal);
+    reauthPromptModal->setVisible(false);
+  }
+  if (welcomeModal)
+    welcomeModal->setVisible(false);
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
@@ -450,14 +1071,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
   const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
   const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
-  setSize(w, h);
-
   setResizable(true, true);
   setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
-
-  wasSongPlaying = p.isSongPlaying();
-  lastObservedSongPositionSec = p.getSongCurrentPositionSeconds();
-  startTimerHz(20);
+  setSize(w, h);
 
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
@@ -468,18 +1084,203 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         });
   }
 
-#if JucePlugin_Build_Standalone
-  juce::MessageManager::callAsync(
-      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-           this)] {
-        if (safe != nullptr)
-          hideStandaloneOptionsButton(safe.getComponent());
-      });
-#endif
+  setWantsKeyboardFocus(true);
+  grabKeyboardFocus();
+
+  wasSongPlaying = p.isSongPlaying();
+  lastObservedSongPositionSec = p.getSongCurrentPositionSeconds();
+  startTimerHz(20);
+  mainUiInitialized = true;
+  resized();
+}
+
+void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
+  auto modal = std::make_unique<WelcomeModal>();
+  modal->onLoginRequested = [this] { launchExternalLogin(); };
+  welcomeModal = std::move(modal);
+  addAndMakeVisible(*welcomeModal);
+  resized();
+}
+
+void MTControlsAudioProcessorEditor::launchExternalLogin() {
+  if (localAuthServer != nullptr)
+    localAuthServer->stop();
+  localAuthServer = std::make_unique<LocalAuthCallbackServer>(
+      [this](const juce::String &callbackUrl) { enqueueAuthCallbackUrl(callbackUrl); });
+  authCallbackPort = 0;
+
+  if (!localAuthServer->start(authCallbackPort)) {
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText(
+          "No se pudo iniciar el callback local. Verifica puertos locales.", true);
+    if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+      reauth->showError("No se pudo iniciar el callback local. Verifica puertos.");
+    reauthLoginInProgress = false;
+    authCallbackPort = 0;
+    return;
+  }
+
+  authExpectedState = juce::Uuid().toString();
+  const juce::String redirectUri =
+      "http://127.0.0.1:" + juce::String(authCallbackPort) + "/auth/callback";
+  const juce::String deviceId = buildStableDeviceId();
+  const juce::String apiBaseUrl = getApiBaseUrl();
+  const juce::String loginUrl =
+      apiBaseUrl + "/login?redirect_uri=" + urlEncode(redirectUri) +
+      "&state=" + urlEncode(authExpectedState) +
+      "&deviceId=" + urlEncode(deviceId);
+
+  if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+    modal->setStatusText("Esperando autenticacion en el navegador...", false);
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+    reauth->showWaitingForCallback();
+
+  juce::URL(loginUrl).launchInDefaultBrowser();
+}
+
+void MTControlsAudioProcessorEditor::completeBootstrapLogin(
+    const juce::String &callbackUrl) {
+  const auto params = parseCallbackParams(callbackUrl);
+  const auto receivedState = params["state"].trim();
+  if (authExpectedState.isEmpty() || receivedState.isEmpty() ||
+      receivedState != authExpectedState) {
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+      modal->setStatusText("Autenticación inválida. Reintenta.", true);
+    }
+    if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+      reauth->showError("Autenticacion invalida. Reintenta.");
+    reauthLoginInProgress = false;
+    return;
+  }
+
+  activeSession.uid = params["uid"].trim();
+  activeSession.email = params["email"].trim();
+  activeSession.plan = params["plan"].trim();
+  activeSession.subscriptionStatus = params["subscriptionStatus"].trim();
+  activeSession.expiresAt = params["expiresAt"].trim();
+  activeSession.allowed = parseBooleanLike(params["allowed"], false);
+  activeSession.reasonCode = params["reasonCode"].trim();
+  activeSession.reason = params["reason"].trim();
+  activeSession.refreshToken = params["refreshToken"].trim();
+  activeSession.firebaseApiKey = params["firebaseApiKey"].trim();
+  const auto expMsFromParams = params["idTokenExpiresAtMs"].trim().getLargeIntValue();
+  if (expMsFromParams > 0)
+    activeSession.idTokenExpiresAtMs = expMsFromParams;
+  const auto sessionJsonRaw = params["session"].trim();
+  if (sessionJsonRaw.isNotEmpty()) {
+    const auto parsed = juce::JSON::parse(sessionJsonRaw);
+    activeSession.uid =
+        readStringFromObject(parsed, "uid").isNotEmpty()
+            ? readStringFromObject(parsed, "uid")
+            : activeSession.uid;
+    activeSession.email =
+        readStringFromObject(parsed, "email").isNotEmpty()
+            ? readStringFromObject(parsed, "email")
+            : activeSession.email;
+    activeSession.plan =
+        readStringFromObject(parsed, "plan").isNotEmpty()
+            ? readStringFromObject(parsed, "plan")
+            : activeSession.plan;
+    activeSession.subscriptionStatus =
+        readStringFromObject(parsed, "subscriptionStatus").isNotEmpty()
+            ? readStringFromObject(parsed, "subscriptionStatus")
+            : activeSession.subscriptionStatus;
+    activeSession.expiresAt =
+        readStringFromObject(parsed, "expiresAt").isNotEmpty()
+            ? readStringFromObject(parsed, "expiresAt")
+            : activeSession.expiresAt;
+    activeSession.allowed = parseBooleanLike(
+        readStringFromObject(parsed, "allowed"), activeSession.allowed);
+    activeSession.reasonCode = readStringFromObject(parsed, "reasonCode")
+                                   .isNotEmpty()
+                               ? readStringFromObject(parsed, "reasonCode")
+                               : activeSession.reasonCode;
+    activeSession.reason = readStringFromObject(parsed, "reason").isNotEmpty()
+                               ? readStringFromObject(parsed, "reason")
+                               : activeSession.reason;
+    activeSession.refreshToken =
+        readStringFromObject(parsed, "refreshToken").isNotEmpty()
+            ? readStringFromObject(parsed, "refreshToken")
+            : activeSession.refreshToken;
+    activeSession.firebaseApiKey =
+        readStringFromObject(parsed, "firebaseApiKey").isNotEmpty()
+            ? readStringFromObject(parsed, "firebaseApiKey")
+            : activeSession.firebaseApiKey;
+    const auto expMsRaw = readStringFromObject(parsed, "idTokenExpiresAtMs");
+    const auto expMs = expMsRaw.getLargeIntValue();
+    if (expMs > 0)
+      activeSession.idTokenExpiresAtMs = expMs;
+
+    const auto userVar = parsed.getProperty("user", juce::var{});
+    if (userVar.isObject()) {
+      const auto userUid = readStringFromObject(userVar, "uid");
+      const auto userEmail = readStringFromObject(userVar, "email");
+      const auto userPlan = readStringFromObject(userVar, "plan");
+      const auto userStatus = readStringFromObject(userVar, "subscriptionStatus");
+      if (userUid.isNotEmpty())
+        activeSession.uid = userUid;
+      if (userEmail.isNotEmpty())
+        activeSession.email = userEmail;
+      if (userPlan.isNotEmpty())
+        activeSession.plan = userPlan;
+      if (userStatus.isNotEmpty())
+        activeSession.subscriptionStatus = userStatus;
+    }
+  }
+
+  if (activeSession.allowed &&
+      !hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
+                                         activeSession.plan)) {
+    activeSession.allowed = false;
+    if (activeSession.reasonCode.isEmpty())
+      activeSession.reasonCode = "INVALID_SUBSCRIPTION_STATE";
+    if (activeSession.reason.isEmpty()) {
+      activeSession.reason =
+          "Subscription status is not trial/active with a valid plan";
+    }
+  }
+
+  if (!activeSession.allowed) {
+    juce::String message =
+        userMessageForAccessDenial(activeSession.reasonCode, activeSession.reason);
+    reauthLoginInProgress = false;
+    if (mainUiInitialized) {
+      handleLogout();
+    }
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText(message, true);
+    return;
+  }
+
+  lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
+  AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+  reauthGraceDeadlineMs = 0;
+  AppSettings::setReauthGraceDeadlineMs(0);
+  reauthPromptDismissed = false;
+  reauthLoginInProgress = false;
+  hideReauthPromptModal();
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+    reauth->showReadyState();
+  initializeMainUi();
+}
+
+juce::String MTControlsAudioProcessorEditor::consumePendingAuthCallbackUrl() {
+  const juce::ScopedLock lock(authCallbackLock);
+  auto url = pendingAuthCallbackUrl;
+  pendingAuthCallbackUrl.clear();
+  return url;
+}
+
+void MTControlsAudioProcessorEditor::enqueueAuthCallbackUrl(
+    const juce::String &callbackUrl) {
+  const juce::ScopedLock lock(authCallbackLock);
+  pendingAuthCallbackUrl = callbackUrl;
 }
 
 void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                                   juce::Component *parent) {
+  if (!mainUiInitialized)
+    return;
   juce::DialogWindow::LaunchOptions options;
   options.dialogTitle = L10n::tr("Configuración", "Settings");
   options.dialogBackgroundColour = UITheme::appBg;
@@ -505,7 +1306,16 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       },
       AppSettings::getPrimeImportEnabled(),
       [](const bool enabled) { AppSettings::setPrimeImportEnabled(enabled); },
-      [] {}, routingDefaults, proc.getAvailableOutputChannelCount(),
+      [] {},
+      SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
+                                    activeSession.plan,
+                                    activeSession.subscriptionStatus,
+                                    activeSession.expiresAt,
+                                    activeSession.allowed,
+                                    activeSession.reasonCode,
+                                    activeSession.reason},
+      [this] { handleLogout(); }, routingDefaults,
+      proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,
              const std::vector<CategoryRoutingDefaults> &next) {
         AppSettings::setRoutingDefaultsForDevice(deviceKey, next);
@@ -518,8 +1328,142 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.content.setOwned(panel);
 
   if (auto *window = options.launchAsync()) {
+    settingsWindow = window;
     window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
   }
+}
+
+void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
+  setResizable(false, false);
+  setResizeLimits(kAuthWindowW, kAuthWindowH, kAuthWindowW, kAuthWindowH);
+  setSize(kAuthWindowW, kAuthWindowH);
+  if (topBar)
+    topBar->setVisible(false);
+  if (waveformBar)
+    waveformBar->setVisible(false);
+  if (channelGridPanel)
+    channelGridPanel->setVisible(false);
+  if (songListPanel)
+    songListPanel->setVisible(false);
+  if (setlistHandlePanel)
+    setlistHandlePanel->setVisible(false);
+  if (welcomeModal)
+    welcomeModal->setVisible(true);
+  if (reauthPromptModal)
+    reauthPromptModal->setVisible(false);
+  mainUiInitialized = false;
+  resized();
+}
+
+void MTControlsAudioProcessorEditor::handleLogout() {
+  if (settingsWindow != nullptr) {
+    settingsWindow->setVisible(false);
+    settingsWindow->exitModalState(0);
+    settingsWindow = nullptr;
+  }
+
+  if (localAuthServer != nullptr)
+    localAuthServer->stop();
+  authCallbackPort = 0;
+
+  activeSession = {};
+  lastSuccessfulLoginMs = 0;
+  AppSettings::setLastSuccessfulLoginMs(0);
+  reauthGraceDeadlineMs = 0;
+  AppSettings::setReauthGraceDeadlineMs(0);
+  reauthPromptDismissed = false;
+  reauthLoginInProgress = false;
+  hideReauthPromptModal();
+  authExpectedState.clear();
+  {
+    const juce::ScopedLock lock(authCallbackLock);
+    pendingAuthCallbackUrl.clear();
+  }
+  if (auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
+      proc.isSongPlaying()) {
+    proc.stopSong();
+  }
+  showWelcomeOnlyMode();
+  if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+    modal->resetStatusToDefault();
+}
+
+void MTControlsAudioProcessorEditor::showReauthPromptModal() {
+  if (!mainUiInitialized || reauthPromptModal == nullptr)
+    return;
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get())) {
+    if (reauthLoginInProgress)
+      reauth->showWaitingForCallback();
+    else
+      reauth->showReadyState();
+  }
+  reauthPromptModal->setVisible(true);
+  reauthPromptModal->toFront(false);
+  resized();
+}
+
+void MTControlsAudioProcessorEditor::hideReauthPromptModal() {
+  if (reauthPromptModal == nullptr)
+    return;
+  reauthPromptModal->setVisible(false);
+}
+
+void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
+  if (!mainUiInitialized || lastSuccessfulLoginMs <= 0)
+    return;
+
+  if (!hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
+                                         activeSession.plan)) {
+    activeSession.allowed = false;
+    activeSession.reasonCode =
+        activeSession.subscriptionStatus.trim().toLowerCase() == "cancelled"
+            ? "CANCELLED_SUBSCRIPTION"
+            : "INVALID_SUBSCRIPTION_STATE";
+    activeSession.reason =
+        "Subscription status is not trial/active with a valid plan";
+    handleLogout();
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText(userMessageForAccessDenial(activeSession.reasonCode,
+                                                      activeSession.reason),
+                           true);
+    return;
+  }
+
+  const auto nowMs = juce::Time::currentTimeMillis();
+  const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
+  if (nowMs < sessionDueAtMs) {
+    if (reauthGraceDeadlineMs != 0) {
+      reauthGraceDeadlineMs = 0;
+      AppSettings::setReauthGraceDeadlineMs(0);
+    }
+    hideReauthPromptModal();
+    return;
+  }
+
+  // La gracia inicia en el momento en que solicitamos re-login por primera vez.
+  if (reauthGraceDeadlineMs <= 0) {
+    reauthGraceDeadlineMs = nowMs + kReauthGraceWindowMs;
+    AppSettings::setReauthGraceDeadlineMs(reauthGraceDeadlineMs);
+    reauthPromptDismissed = false;
+  }
+
+  if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
+    handleLogout();
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText(
+          "Tu periodo de gracia termino. Debes iniciar sesion para continuar.",
+          true);
+    return;
+  }
+
+  // Si ya hay gracia activa (el usuario pulsó "Mas tarde"), no molestamos
+  // hasta que venza esa gracia.
+  if (reauthGraceDeadlineMs > 0 && reauthPromptDismissed) {
+    hideReauthPromptModal();
+    return;
+  }
+
+  showReauthPromptModal();
 }
 
 void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
@@ -557,6 +1501,20 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+  const auto callbackUrl = consumePendingAuthCallbackUrl();
+  if (callbackUrl.isNotEmpty()) {
+    completeBootstrapLogin(callbackUrl);
+    if (!mainUiInitialized)
+      return;
+  }
+
+  if (!mainUiInitialized) {
+    return;
+  }
+  evaluateReauthPolicy();
+  if (!mainUiInitialized)
+    return;
+
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   const bool isPlayingNow = processorRef.isSongPlaying();
   const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
@@ -598,6 +1556,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  if (localAuthServer)
+    localAuthServer->stop();
+  localAuthServer.reset();
   loadSongByIndexAction = {};
   songListPanelRaw = nullptr;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
@@ -610,7 +1571,19 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 }
 
 void MTControlsAudioProcessorEditor::resized() {
+  if (!mainUiInitialized) {
+    if (welcomeModal != nullptr) {
+      welcomeModal->setBounds(juce::Rectangle<int>(kAuthModalW, kAuthModalH)
+                                  .withCentre(getLocalBounds().getCentre()));
+    }
+    return;
+  }
+
   auto area = getLocalBounds();
+
+  if (topBar == nullptr || waveformBar == nullptr || channelGridPanel == nullptr ||
+      songListPanel == nullptr || setlistHandlePanel == nullptr)
+    return;
 
   topBar->setBounds(area.removeFromTop(kTopBarH));
   const int waveH =
@@ -640,9 +1613,18 @@ void MTControlsAudioProcessorEditor::resized() {
 
   setlistHandlePanel->setBounds(handleArea.reduced(2, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
+
+  if (reauthPromptModal != nullptr) {
+    reauthPromptModal->setBounds(
+        juce::Rectangle<int>(560, 230).withCentre(getLocalBounds().getCentre()));
+    reauthPromptModal->toFront(false);
+  }
 }
 
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
+  if (!mainUiInitialized)
+    return true;
+
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
 
   if (key == juce::KeyPress::spaceKey) {

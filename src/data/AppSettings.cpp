@@ -238,6 +238,62 @@ void AppSettings::setLastSelectedSongId(const juce::String &songId) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+juce::int64 AppSettings::getLastSuccessfulLoginMs() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return 0;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("lastSuccessfulLoginMs"))
+      return static_cast<juce::int64>(o->getProperty("lastSuccessfulLoginMs"));
+  }
+  return 0;
+}
+
+void AppSettings::setLastSuccessfulLoginMs(const juce::int64 value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 8);
+    o->setProperty("lastSuccessfulLoginMs", value);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+juce::int64 AppSettings::getReauthGraceDeadlineMs() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return 0;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("reauthGraceDeadlineMs"))
+      return static_cast<juce::int64>(o->getProperty("reauthGraceDeadlineMs"));
+  }
+  return 0;
+}
+
+void AppSettings::setReauthGraceDeadlineMs(const juce::int64 value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 9);
+    o->setProperty("reauthGraceDeadlineMs", value);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 std::vector<CategoryRoutingDefaults> AppSettings::getRoutingDefaults() {
   auto defaults = buildDefaultRouting();
   const auto f = getSettingsFile();

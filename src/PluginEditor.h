@@ -8,6 +8,7 @@
 class TopBar;
 class SetlistHandlePanel;
 class SongListPanel;
+class LocalAuthCallbackServer;
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
                                        private juce::Timer {
@@ -40,12 +41,50 @@ private:
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
   double lastObservedSongPositionSec = 0.0;
+  struct SessionSummary {
+    juce::String uid;
+    juce::String email;
+    juce::String plan;
+    juce::String subscriptionStatus;
+    juce::String expiresAt;
+    bool allowed = true;
+    juce::String reasonCode;
+    juce::String reason;
+    juce::String refreshToken;
+    juce::String firebaseApiKey;
+    juce::int64 idTokenExpiresAtMs = 0;
+  };
+  SessionSummary activeSession;
+  bool mainUiInitialized = false;
+  std::unique_ptr<juce::Component> welcomeModal;
+  std::unique_ptr<LocalAuthCallbackServer> localAuthServer;
+  juce::String authExpectedState;
+  juce::String pendingAuthCallbackUrl;
+  juce::CriticalSection authCallbackLock;
+  int authCallbackPort = 0;
+  juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
+  juce::int64 lastSuccessfulLoginMs = 0;
+  juce::int64 reauthGraceDeadlineMs = 0;
+  bool reauthPromptDismissed = false;
+  bool reauthLoginInProgress = false;
+  std::unique_ptr<juce::Component> reauthPromptModal;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
                     juce::Component *parent);
   void applyThemePreset(int presetId);
   void applyRoutingDefaultsToSong(const ImportedSongData &song);
+  void initializeMainUi();
+  void initializeWelcomeModal();
+  void launchExternalLogin();
+  void completeBootstrapLogin(const juce::String &callbackUrl);
+  void handleLogout();
+  void showWelcomeOnlyMode();
+  void evaluateReauthPolicy();
+  void showReauthPromptModal();
+  void hideReauthPromptModal();
+  juce::String consumePendingAuthCallbackUrl();
+  void enqueueAuthCallbackUrl(const juce::String &callbackUrl);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };
