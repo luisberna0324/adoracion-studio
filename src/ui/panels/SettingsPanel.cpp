@@ -262,6 +262,27 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   sessionStatusValue.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(sessionStatusValue);
 
+  sessionExpiresLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionExpiresLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionExpiresLabel);
+  sessionExpiresValue.setJustificationType(juce::Justification::centredLeft);
+  sessionExpiresValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionExpiresValue);
+
+  actionsSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  actionsSectionLabel.setFont(juce::FontOptions(14.0f));
+  generalPage.addAndMakeVisible(actionsSectionLabel);
+
+  actionLogoutLabel.setJustificationType(juce::Justification::centredLeft);
+  actionLogoutLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(actionLogoutLabel);
+
+  actionInfoLabel.setJustificationType(juce::Justification::centredLeft);
+  actionInfoLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(actionInfoLabel);
+
+  generalPage.addAndMakeVisible(infoLinkButton);
+
   logoutButton.onClick = [this] {
     if (onLogoutRequested)
       onLogoutRequested();
@@ -398,10 +419,17 @@ void SettingsPanel::refreshThemeColours() {
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionPlanLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionExpiresLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionUidValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionEmailValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionPlanValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionStatusValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionExpiresValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  actionsSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  actionLogoutLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  actionInfoLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
+                           UITheme::accent);
   logoutButton.setColour(juce::TextButton::buttonColourId,
                          juce::Colour::fromRGB(125, 45, 45));
   logoutButton.setColour(juce::TextButton::buttonOnColourId,
@@ -439,6 +467,8 @@ void SettingsPanel::applyLanguageTexts() {
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
+  sessionExpiresLabel.setText(L10n::tr("Vence", "Expires"),
+                              juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
   sessionEmailValue.setText(session.email.isNotEmpty() ? session.email : "-",
@@ -449,7 +479,18 @@ void SettingsPanel::applyLanguageTexts() {
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
-  logoutButton.setButtonText(L10n::tr("Salir", "Logout"));
+  sessionExpiresValue.setText(
+      session.expiresAt.isNotEmpty() ? formatIsoDateTime(session.expiresAt) : "-",
+      juce::dontSendNotification);
+  actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
+                              juce::dontSendNotification);
+  actionLogoutLabel.setText(L10n::tr("Salir de la aplicacion", "Logout from application"),
+                            juce::dontSendNotification);
+  actionInfoLabel.setText(L10n::tr("Saber mas", "More information"),
+                          juce::dontSendNotification);
+  logoutButton.setButtonText(
+      L10n::tr("Salir de la aplicacion", "Logout from application"));
+  infoLinkButton.setButtonText(L10n::tr("Saber mas", "More information"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
 }
@@ -475,19 +516,40 @@ void SettingsPanel::layoutGeneralPage() {
   sessionSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);
   auto sessionUidRow = area.removeFromTop(24);
-  sessionUidLabel.setBounds(sessionUidRow.removeFromLeft(80));
+  sessionUidLabel.setBounds(sessionUidRow.removeFromLeft(120));
   sessionUidValue.setBounds(sessionUidRow);
   auto sessionEmailRow = area.removeFromTop(24);
-  sessionEmailLabel.setBounds(sessionEmailRow.removeFromLeft(80));
+  sessionEmailLabel.setBounds(sessionEmailRow.removeFromLeft(120));
   sessionEmailValue.setBounds(sessionEmailRow);
   auto sessionPlanRow = area.removeFromTop(24);
-  sessionPlanLabel.setBounds(sessionPlanRow.removeFromLeft(80));
+  sessionPlanLabel.setBounds(sessionPlanRow.removeFromLeft(120));
   sessionPlanValue.setBounds(sessionPlanRow);
   auto sessionStatusRow = area.removeFromTop(24);
-  sessionStatusLabel.setBounds(sessionStatusRow.removeFromLeft(80));
+  sessionStatusLabel.setBounds(sessionStatusRow.removeFromLeft(120));
   sessionStatusValue.setBounds(sessionStatusRow);
+  auto sessionExpiresRow = area.removeFromTop(24);
+  sessionExpiresLabel.setBounds(sessionExpiresRow.removeFromLeft(120));
+  sessionExpiresValue.setBounds(sessionExpiresRow);
   area.removeFromTop(12);
-  logoutButton.setBounds(area.removeFromTop(30).withSizeKeepingCentre(160, 30));
+  actionsSectionLabel.setBounds(area.removeFromTop(24));
+  area.removeFromTop(4);
+  actionLogoutLabel.setBounds(area.removeFromTop(22));
+  logoutButton.setBounds(area.removeFromTop(30));
+  area.removeFromTop(8);
+  actionInfoLabel.setBounds(area.removeFromTop(22));
+  infoLinkButton.setBounds(area.removeFromTop(24));
+}
+
+juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
+  const auto trimmed = isoDateTime.trim();
+  if (trimmed.isEmpty())
+    return "-";
+
+  const auto parsed = juce::Time::fromISO8601(trimmed);
+  if (parsed.toMilliseconds() <= 0)
+    return trimmed;
+
+  return parsed.formatted("%Y-%m-%d %H:%M");
 }
 
 void SettingsPanel::layoutRoutingPage() {

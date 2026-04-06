@@ -46,6 +46,7 @@ private:
     juce::String email;
     juce::String plan;
     juce::String subscriptionStatus;
+    juce::String expiresAt;
     bool allowed = true;
     juce::String reasonCode;
     juce::String reason;

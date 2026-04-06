@@ -26,6 +26,7 @@ public:
     juce::String email;
     juce::String plan;
     juce::String subscriptionStatus;
+    juce::String expiresAt;
     bool allowed = true;
     juce::String reasonCode;
     juce::String reason;
@@ -86,6 +87,13 @@ private:
   juce::Label sessionPlanValue;
   juce::Label sessionStatusLabel;
   juce::Label sessionStatusValue;
+  juce::Label sessionExpiresLabel;
+  juce::Label sessionExpiresValue;
+  juce::Label actionsSectionLabel;
+  juce::Label actionLogoutLabel;
+  juce::Label actionInfoLabel;
+  juce::HyperlinkButton infoLinkButton{
+      "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
   juce::TextButton logoutButton;
   juce::Label routingSectionLabel;
   juce::Viewport routingViewport;
@@ -116,4 +124,5 @@ private:
   void layoutGeneralPage();
   void layoutRoutingPage();
   void applyLanguageTexts();
+  static juce::String formatIsoDateTime(const juce::String &isoDateTime);
 };

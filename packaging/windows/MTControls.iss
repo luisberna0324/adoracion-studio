@@ -15,6 +15,9 @@
 #ifndef AppExeName
   #define AppExeName "MTControls.exe"
 #endif
+#ifndef InstallerIconFile
+  #define InstallerIconFile ""
+#endif
 
 [Setup]
 AppId={{B96A1AA6-ADF8-45BB-90D5-9F7CC1D309B9}
@@ -31,6 +34,10 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
+UninstallDisplayIcon={app}\{#AppExeName}
+#if InstallerIconFile != ""
+SetupIconFile={#InstallerIconFile}
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

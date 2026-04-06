@@ -34,6 +34,7 @@ constexpr int kAuthModalW = 520;
 constexpr int kAuthModalH = 260;
 constexpr int kAuthWindowW = 560;
 constexpr int kAuthWindowH = 320;
+constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
 
 #ifndef MTCONTROLS_API_BASE_URL
 #define MTCONTROLS_API_BASE_URL "https://api.playworship.com"
@@ -205,9 +206,11 @@ juce::String userMessageForAccessDenial(const juce::String &reasonCode,
   if (code == "LICENSE_INACTIVE")
     return "Tu suscripcion no esta activa. Activa tu plan para continuar.";
   if (code == "TRIAL_EXPIRED")
-    return "Tu periodo de prueba ha finalizado. Activa un plan para continuar.";
+    return "Tu periodo de prueba ha finalizado. Debes comprar una suscripcion para continuar.";
   if (code == "NO_SUBSCRIPTION")
     return "No tienes una suscripcion activa. Inicia un plan para continuar.";
+  if (code == "CANCELLED_SUBSCRIPTION")
+    return "Tu suscripcion fue cancelada. Reactiva tu plan para continuar.";
   if (code == "DEVICE_LIMIT")
     return "Alcanzaste el limite de dispositivos para esta licencia.";
   if (code == "LICENSE_NOT_FOUND")
@@ -218,9 +221,25 @@ juce::String userMessageForAccessDenial(const juce::String &reasonCode,
     return "Tu sesion no es valida. Inicia sesion nuevamente.";
   if (code == "INTERNAL_ERROR")
     return "No se pudo validar tu acceso en este momento. Intenta de nuevo.";
+  if (code == "INVALID_SUBSCRIPTION_STATE")
+    return "Tu suscripcion no es valida actualmente. Inicia sesion nuevamente.";
   if (reasonFallback.isNotEmpty())
     return reasonFallback;
   return "Acceso denegado.";
+}
+
+bool hasValidAccessBySubscriptionState(const juce::String &subscriptionStatus,
+                                       const juce::String &plan) {
+  const auto status = subscriptionStatus.trim().toLowerCase();
+  const auto normalizedPlan = plan.trim().toUpperCase();
+
+  if (status == "trial")
+    return true;
+
+  if (status == "active")
+    return normalizedPlan.isNotEmpty() && normalizedPlan != "NONE";
+
+  return false;
 }
 
 juce::String buildStableDeviceId() {
@@ -400,6 +419,12 @@ public:
         onLoginRequested();
     };
     addAndMakeVisible(loginButton);
+
+    infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
+    infoLink.setButtonText("Mas informacion");
+    infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
+                     juce::Justification::centred);
+    addAndMakeVisible(infoLink);
   }
 
   void setStatusText(const juce::String &text, bool isError) {
@@ -435,7 +460,12 @@ public:
     area.removeFromTop(12);
     status.setBounds(area.removeFromTop(38));
     area.removeFromTop(10);
-    loginButton.setBounds(area.removeFromTop(36).withSizeKeepingCentre(180, 36));
+    auto controlsRow = area.removeFromTop(40).withSizeKeepingCentre(390, 36);
+    auto loginArea = controlsRow.removeFromLeft(200);
+    controlsRow.removeFromLeft(10);
+    auto linkArea = controlsRow;
+    loginButton.setBounds(loginArea);
+    infoLink.setBounds(linkArea);
   }
 
 private:
@@ -445,6 +475,8 @@ private:
   juce::Label subtitle;
   juce::Label status;
   juce::TextButton loginButton;
+  juce::HyperlinkButton infoLink{"Mas informacion",
+                                 juce::URL(kSubscriptionInfoUrl)};
 };
 
 class ReauthPromptModal final : public juce::Component {
@@ -501,6 +533,12 @@ public:
         onLater();
     };
     addAndMakeVisible(laterButton);
+
+    infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
+    infoLink.setButtonText("Mas informacion");
+    infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
+                     juce::Justification::centred);
+    addAndMakeVisible(infoLink);
   }
 
   void paint(juce::Graphics &g) override {
@@ -520,11 +558,15 @@ public:
     status.setBounds(area.removeFromTop(26));
     area.removeFromTop(12);
 
-    auto buttons = area.removeFromTop(42);
-    auto left = buttons.removeFromLeft(buttons.getWidth() / 2).reduced(4, 0);
-    auto right = buttons.reduced(4, 0);
-    loginNowButton.setBounds(left);
-    laterButton.setBounds(right);
+    auto controlsRow = area.removeFromTop(42).withSizeKeepingCentre(520, 36);
+    auto loginArea = controlsRow.removeFromLeft(185);
+    controlsRow.removeFromLeft(10);
+    auto laterArea = controlsRow.removeFromLeft(145);
+    controlsRow.removeFromLeft(10);
+    auto linkArea = controlsRow;
+    loginNowButton.setBounds(loginArea);
+    laterButton.setBounds(laterArea);
+    infoLink.setBounds(linkArea);
   }
 
 private:
@@ -561,6 +603,8 @@ private:
   juce::Label status;
   juce::TextButton loginNowButton;
   juce::TextButton laterButton;
+  juce::HyperlinkButton infoLink{"Mas informacion",
+                                 juce::URL(kSubscriptionInfoUrl)};
 };
 
 } // namespace
@@ -613,11 +657,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const auto nowMs = juce::Time::currentTimeMillis();
     const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
     if (nowMs >= sessionDueAtMs) {
-      if (reauthGraceDeadlineMs <= 0) {
-        reauthGraceDeadlineMs = nowMs + kReauthGraceWindowMs;
-        AppSettings::setReauthGraceDeadlineMs(reauthGraceDeadlineMs);
-      }
-      if (nowMs >= reauthGraceDeadlineMs) {
+      // El bloqueo en arranque solo aplica si el usuario ya eligió "Mas tarde"
+      // y su periodo de gracia ya venció.
+      if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
         showWelcomeOnlyMode();
         if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
           modal->setStatusText(
@@ -645,6 +687,41 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       reauthPromptModal->setVisible(false);
     setResizable(true, true);
     setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+
+    const auto userArea =
+        juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+    const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
+    const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
+    const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
+    const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
+
+    if (AppSettings::getExpandWindowOnLaunch()) {
+      juce::MessageManager::callAsync(
+          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+               this)] {
+            if (safe != nullptr)
+              expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+          });
+    } else {
+      setSize(w, h);
+      juce::MessageManager::callAsync(
+          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+               this),
+           w, h] {
+            if (safe == nullptr)
+              return;
+            if (auto *top = safe->getTopLevelComponent()) {
+              auto bounds = top->getBounds();
+              bounds.setSize(w, h);
+              if (auto *display =
+                      juce::Desktop::getInstance().getDisplays().getDisplayForRect(
+                          bounds))
+                bounds.setCentre(display->userArea.getCentre());
+              top->setBounds(bounds);
+            }
+          });
+    }
+
     mainUiInitialized = true;
     resized();
     return;
@@ -1080,6 +1157,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   activeSession.email = params["email"].trim();
   activeSession.plan = params["plan"].trim();
   activeSession.subscriptionStatus = params["subscriptionStatus"].trim();
+  activeSession.expiresAt = params["expiresAt"].trim();
   activeSession.allowed = parseBooleanLike(params["allowed"], false);
   activeSession.reasonCode = params["reasonCode"].trim();
   activeSession.reason = params["reason"].trim();
@@ -1107,6 +1185,10 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
         readStringFromObject(parsed, "subscriptionStatus").isNotEmpty()
             ? readStringFromObject(parsed, "subscriptionStatus")
             : activeSession.subscriptionStatus;
+    activeSession.expiresAt =
+        readStringFromObject(parsed, "expiresAt").isNotEmpty()
+            ? readStringFromObject(parsed, "expiresAt")
+            : activeSession.expiresAt;
     activeSession.allowed = parseBooleanLike(
         readStringFromObject(parsed, "allowed"), activeSession.allowed);
     activeSession.reasonCode = readStringFromObject(parsed, "reasonCode")
@@ -1143,6 +1225,18 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
         activeSession.plan = userPlan;
       if (userStatus.isNotEmpty())
         activeSession.subscriptionStatus = userStatus;
+    }
+  }
+
+  if (activeSession.allowed &&
+      !hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
+                                         activeSession.plan)) {
+    activeSession.allowed = false;
+    if (activeSession.reasonCode.isEmpty())
+      activeSession.reasonCode = "INVALID_SUBSCRIPTION_STATE";
+    if (activeSession.reason.isEmpty()) {
+      activeSession.reason =
+          "Subscription status is not trial/active with a valid plan";
     }
   }
 
@@ -1216,6 +1310,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,
                                     activeSession.subscriptionStatus,
+                                    activeSession.expiresAt,
                                     activeSession.allowed,
                                     activeSession.reasonCode,
                                     activeSession.reason},
@@ -1317,6 +1412,23 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
   if (!mainUiInitialized || lastSuccessfulLoginMs <= 0)
     return;
 
+  if (!hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
+                                         activeSession.plan)) {
+    activeSession.allowed = false;
+    activeSession.reasonCode =
+        activeSession.subscriptionStatus.trim().toLowerCase() == "cancelled"
+            ? "CANCELLED_SUBSCRIPTION"
+            : "INVALID_SUBSCRIPTION_STATE";
+    activeSession.reason =
+        "Subscription status is not trial/active with a valid plan";
+    handleLogout();
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText(userMessageForAccessDenial(activeSession.reasonCode,
+                                                      activeSession.reason),
+                           true);
+    return;
+  }
+
   const auto nowMs = juce::Time::currentTimeMillis();
   const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
   if (nowMs < sessionDueAtMs) {
@@ -1328,13 +1440,14 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
     return;
   }
 
+  // La gracia inicia en el momento en que solicitamos re-login por primera vez.
   if (reauthGraceDeadlineMs <= 0) {
     reauthGraceDeadlineMs = nowMs + kReauthGraceWindowMs;
     AppSettings::setReauthGraceDeadlineMs(reauthGraceDeadlineMs);
     reauthPromptDismissed = false;
   }
 
-  if (nowMs >= reauthGraceDeadlineMs) {
+  if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
     handleLogout();
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
       modal->setStatusText(
@@ -1343,8 +1456,14 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
     return;
   }
 
-  if (!reauthPromptDismissed)
-    showReauthPromptModal();
+  // Si ya hay gracia activa (el usuario pulsó "Mas tarde"), no molestamos
+  // hasta que venza esa gracia.
+  if (reauthGraceDeadlineMs > 0 && reauthPromptDismissed) {
+    hideReauthPromptModal();
+    return;
+  }
+
+  showReauthPromptModal();
 }
 
 void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {

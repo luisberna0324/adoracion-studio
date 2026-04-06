@@ -60,6 +60,8 @@ juce_add_plugin(MTControls
     PLUGIN_CODE Mtc1
     FORMATS Standalone
     PRODUCT_NAME "Adoracion Estudio"
+    ICON_BIG "assets/icons/app-icon-1024.png"
+    ICON_SMALL "assets/icons/app-icon-1024.png"
 )
 
 juce_generate_juce_header(MTControls)

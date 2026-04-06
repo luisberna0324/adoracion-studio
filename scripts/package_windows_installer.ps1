@@ -19,6 +19,7 @@ if (!(Test-Path -LiteralPath $StandaloneDir)) {
 $standaloneFull = (Resolve-Path -LiteralPath $StandaloneDir).Path
 $outputFull = [System.IO.Path]::GetFullPath($OutputDir)
 $issFull = (Resolve-Path -LiteralPath $IssFile).Path
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 
 New-Item -ItemType Directory -Force -Path $outputFull | Out-Null
 
@@ -39,14 +40,24 @@ if ([string]::IsNullOrWhiteSpace($iscc)) {
 
 $outputBaseFilename = "playworship-windows-installer-$Version"
 $exeName = $exe.Name
+$installerIconFile = Join-Path $repoRoot "assets/icons/app-icon.ico"
+$hasInstallerIcon = Test-Path -LiteralPath $installerIconFile
 
-& $iscc `
-  "/DAppVersion=$Version" `
-  "/DSourceDir=$standaloneFull" `
-  "/DOutputDir=$outputFull" `
-  "/DOutputBaseFilename=$outputBaseFilename" `
-  "/DAppExeName=$exeName" `
-  $issFull
+$args = @(
+  "/DAppVersion=$Version",
+  "/DSourceDir=$standaloneFull",
+  "/DOutputDir=$outputFull",
+  "/DOutputBaseFilename=$outputBaseFilename",
+  "/DAppExeName=$exeName"
+)
+
+if ($hasInstallerIcon) {
+  $args += "/DInstallerIconFile=$installerIconFile"
+}
+
+$args += $issFull
+
+& $iscc @args
 
 $installerPath = Join-Path $outputFull "$outputBaseFilename.exe"
 if (!(Test-Path -LiteralPath $installerPath)) {
