@@ -12,13 +12,13 @@ cmake --preset macos-release \
   -DMTCONTROLS_REAUTH_GRACE_MINUTES="$MTCONTROLS_REAUTH_GRACE_MINUTES"
 cmake --build --preset macos-release
 
-APP_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/MTControls_artefacts/Release/Standalone"
+APP_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/PlayWorship_artefacts/Release/Standalone"
 if compgen -G "$APP_DIR/*.app" > /dev/null; then
   open "$APP_DIR"/*.app
   exit 0
 fi
 
-FALLBACK_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/MTControls_artefacts/Standalone"
+FALLBACK_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/PlayWorship_artefacts/Standalone"
 if compgen -G "$FALLBACK_DIR/*.app" > /dev/null; then
   open "$FALLBACK_DIR"/*.app
 else

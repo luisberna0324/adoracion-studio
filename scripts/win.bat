@@ -8,7 +8,7 @@ if errorlevel 1 exit /b 1
 cmake --build --preset windows-release
 if errorlevel 1 exit /b 1
 
-set APP_DIR=C:\Users\luisberna\dev\multitracks\multitracks\juce-controls-plugin\build\windows-release\MTControls_artefacts\Standalone
+set APP_DIR=C:\Users\luisberna\dev\multitracks\multitracks\juce-controls-plugin\build\windows-release\PlayWorship_artefacts\Standalone
 if exist "%APP_DIR%" (
   for %%F in ("%APP_DIR%\*.exe") do (
     start "" "%%F"

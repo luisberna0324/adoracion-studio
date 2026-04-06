@@ -1,4 +1,4 @@
-#define AppName "Adoracion Estudio"
+#define AppName "PlayWorship"
 #define AppPublisher "Multitracks"
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -13,7 +13,7 @@
   #define OutputBaseFilename "playworship-windows-installer"
 #endif
 #ifndef AppExeName
-  #define AppExeName "MTControls.exe"
+  #define AppExeName "PlayWorship.exe"
 #endif
 #ifndef InstallerIconFile
   #define InstallerIconFile ""

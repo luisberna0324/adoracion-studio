@@ -11,7 +11,11 @@ if(NOT MTCONTROLS_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "MTCONTROLS_APP_VERSION must match MAJOR.MINOR.PATCH, got: ${MTCONTROLS_APP_VERSION}")
 endif()
 
-project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
+set(APP_TARGET_NAME PlayWorship)
+set(APP_ASSETS_TARGET PlayWorshipAssets)
+set(APP_STANDALONE_TARGET ${APP_TARGET_NAME}_Standalone)
+
+project(${APP_TARGET_NAME} VERSION ${MTCONTROLS_APP_VERSION})
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,7 +51,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(soundtouch)
 
-juce_add_plugin(MTControls
+juce_add_plugin(${APP_TARGET_NAME}
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
     IS_SYNTH FALSE
@@ -59,19 +63,19 @@ juce_add_plugin(MTControls
     PLUGIN_MANUFACTURER_CODE MLTK
     PLUGIN_CODE Mtc1
     FORMATS Standalone
-    PRODUCT_NAME "Adoracion Estudio"
+    PRODUCT_NAME "PlayWorship"
     ICON_BIG "assets/icons/app-icon-1024.png"
     ICON_SMALL "assets/icons/app-icon-1024.png"
 )
 
-juce_generate_juce_header(MTControls)
+juce_generate_juce_header(${APP_TARGET_NAME})
 
-juce_add_binary_data(MTControlsAssets
+juce_add_binary_data(${APP_ASSETS_TARGET}
     SOURCES
         assets/logoPlayWorship.jpeg
 )
 
-target_sources(MTControls
+target_sources(${APP_TARGET_NAME}
     PRIVATE
         src/PluginEditor.cpp
         src/PluginEditor.h
@@ -144,7 +148,7 @@ target_sources(MTControls
         src/ui/panels/WaveformBar.h
 )
 
-target_compile_definitions(MTControls
+target_compile_definitions(${APP_TARGET_NAME}
     PRIVATE
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
@@ -155,11 +159,11 @@ target_compile_definitions(MTControls
         SOUNDTOUCH_FLOAT_SAMPLES=1
 )
 
-target_link_libraries(MTControls
+target_link_libraries(${APP_TARGET_NAME}
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
-        MTControlsAssets
+        ${APP_ASSETS_TARGET}
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
@@ -168,34 +172,34 @@ target_link_libraries(MTControls
 
 if (TARGET SoundTouch)
     target_compile_definitions(SoundTouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
-    target_link_libraries(MTControls PRIVATE SoundTouch)
-    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_link_libraries(${APP_TARGET_NAME} PRIVATE SoundTouch)
+    target_include_directories(${APP_TARGET_NAME} PRIVATE ${soundtouch_SOURCE_DIR}/include)
 elseif (TARGET soundtouch)
     target_compile_definitions(soundtouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
-    target_link_libraries(MTControls PRIVATE soundtouch)
-    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_link_libraries(${APP_TARGET_NAME} PRIVATE soundtouch)
+    target_include_directories(${APP_TARGET_NAME} PRIVATE ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
 endif()
 
-if (TARGET MTControls_Standalone)
+if (TARGET ${APP_STANDALONE_TARGET})
     if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
-        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+        add_custom_command(TARGET ${APP_STANDALONE_TARGET} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg"
+                "$<TARGET_BUNDLE_CONTENT_DIR:${APP_STANDALONE_TARGET}>/Resources/ffmpeg"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MTCONTROLS_FFMPEG_BIN_MACOS}"
-                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg/ffmpeg"
+                "$<TARGET_BUNDLE_CONTENT_DIR:${APP_STANDALONE_TARGET}>/Resources/ffmpeg/ffmpeg"
             VERBATIM)
     endif()
 
     if (WIN32 AND MTCONTROLS_FFMPEG_BIN_WINDOWS)
-        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+        add_custom_command(TARGET ${APP_STANDALONE_TARGET} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg"
+                "$<TARGET_FILE_DIR:${APP_STANDALONE_TARGET}>/ffmpeg"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MTCONTROLS_FFMPEG_BIN_WINDOWS}"
-                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg.exe"
+                "$<TARGET_FILE_DIR:${APP_STANDALONE_TARGET}>/ffmpeg/ffmpeg.exe"
             VERBATIM)
     endif()
 endif()

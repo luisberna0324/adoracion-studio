@@ -7,13 +7,13 @@ Usage:
   scripts/package_macos_dmg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>]
 
 Defaults:
-  --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone
+  --standalone-dir build/macos-release/PlayWorship_artefacts/Release/Standalone
   --output-dir dist
 EOF
 }
 
 VERSION=""
-STANDALONE_DIR="build/macos-release/MTControls_artefacts/Release/Standalone"
+STANDALONE_DIR="build/macos-release/PlayWorship_artefacts/Release/Standalone"
 OUTPUT_DIR="dist"
 
 while [[ $# -gt 0 ]]; do
@@ -77,7 +77,7 @@ DMG_PATH="${OUTPUT_DIR}/playworship-macos-installer-${VERSION}.dmg"
 rm -f "${DMG_PATH}"
 
 hdiutil create \
-  -volname "MTControls Installer ${VERSION}" \
+  -volname "PlayWorship Installer ${VERSION}" \
   -srcfolder "${STAGE_DIR}" \
   -ov \
   -format UDZO \

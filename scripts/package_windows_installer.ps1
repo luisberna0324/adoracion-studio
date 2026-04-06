@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
-    [string]$StandaloneDir = "build/windows-release/MTControls_artefacts/Release/Standalone",
+    [string]$StandaloneDir = "build/windows-release/PlayWorship_artefacts/Release/Standalone",
     [string]$OutputDir = "dist",
     [string]$IssFile = "packaging/windows/MTControls.iss"
 )
