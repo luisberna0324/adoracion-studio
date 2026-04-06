@@ -19,7 +19,12 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 set(MTCONTROLS_FFMPEG_BIN_MACOS "" CACHE FILEPATH
     "Path to ffmpeg binary that will be bundled in the macOS app")
-set(MTCONTROLS_FFMPEG_BIN_WINDOWS "" CACHE FILEPATH
+set(_mtcontrols_ffmpeg_windows_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/windows/ffmpeg.exe")
+    set(_mtcontrols_ffmpeg_windows_default
+        "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/windows/ffmpeg.exe")
+endif()
+set(MTCONTROLS_FFMPEG_BIN_WINDOWS "${_mtcontrols_ffmpeg_windows_default}" CACHE FILEPATH
     "Path to ffmpeg.exe that will be bundled in the Windows build")
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")

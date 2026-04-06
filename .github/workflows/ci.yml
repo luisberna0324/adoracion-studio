@@ -241,10 +241,20 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
+          MTCONTROLS_FFMPEG_BIN_WINDOWS: ${{ github.workspace }}\\third_party\\ffmpeg\\windows\\ffmpeg.exe
         run: cmake --preset windows-release
 
       - name: Build (Windows)
         run: cmake --build --preset windows-release
+
+      - name: Verify ffmpeg bundled in Standalone (Windows)
+        shell: pwsh
+        run: |
+          $ffmpegPath = "build/windows-release/MTControls_artefacts/Release/Standalone/ffmpeg/ffmpeg.exe"
+          if (!(Test-Path -LiteralPath $ffmpegPath)) {
+            throw "Expected bundled ffmpeg not found: $ffmpegPath"
+          }
+          Write-Host "Bundled ffmpeg found: $ffmpegPath"
 
       - name: Upload Standalone (Windows)
         uses: actions/upload-artifact@v4
@@ -265,7 +275,9 @@ jobs:
             -Version "${{ needs.prepare.outputs.semver }}" `
             -StandaloneDir "build/windows-release/MTControls_artefacts/Release/Standalone" `
             -OutputDir "dist" `
-            -IssFile "packaging/windows/MTControls.iss"
+            -IssFile "packaging/windows/MTControls.iss" `
+            -FfmpegExe "${{ github.workspace }}\third_party\ffmpeg\windows\ffmpeg.exe" `
+            -RequireFfmpeg
 
       - name: Upload installer (Windows)
         if: needs.prepare.outputs.publish_installers == 'true'
