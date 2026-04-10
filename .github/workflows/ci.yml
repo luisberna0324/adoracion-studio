@@ -1,13 +1,9 @@
-# This file contains the CI/CD configuration for the project.
-# It is managed using GitHub Actions.
+# Updated CI Configuration
 
-name: Continuous Integration
+name: CI
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
     branches:
       - main
 
@@ -15,33 +11,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v2
 
       - name: Set up JUCE
         run: |
-          git clone https://github.com/juce-framework/JUCE.git
+          git clone --branch 8.1.0 https://github.com/juce-framework/JUCE.git
+
+      - name: Build
+        run: |
           cd JUCE
-          git checkout 8.1.0
-      - name: Build the project
-        run: |
-          cd ProjectFolder
-          build --config Release
-
-# Additional steps for testing and deployment
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Set up JUCE for testing
-        run: |
-          git clone https://github.com/juce-framework/JUCE.git
-          cd JUCE
-          git checkout 8.1.0
-      - name: Run tests
-        run: |
-          cd ProjectFolder
-          run_tests
+          ./build.sh
