@@ -1,24 +1,394 @@
-# Updated CI Configuration
-
-name: CI
+name: Build Artifacts
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag o SHA para construir (si el tag existe, tiene prioridad)"
+        required: true
+        default: main
+        type: string
+      tag:
+        description: "Tag semver opcional (ej: v1.2.3)"
+        required: false
+        default: ""
+        type: string
+      version:
+        description: "Version semver opcional (ej: 1.2.3)"
+        required: false
+        default: ""
+        type: string
+      publish_release:
+        description: "Publicar GitHub Release con los artefactos"
+        required: true
+        default: false
+        type: boolean
+      publish_installers:
+        description: "Generar y publicar instaladores (.dmg y .exe)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  
+concurrency:
+  group: build-artifacts-${{ github.run_id }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_ref: ${{ steps.resolve.outputs.release_ref }}
+      semver: ${{ steps.resolve.outputs.semver }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      tag_exists: ${{ steps.resolve.outputs.tag_exists }}
+      publish_release: ${{ steps.resolve.outputs.publish_release }}
+      publish_installers: ${{ steps.resolve.outputs.publish_installers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version, tag and ref
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          trim() {
+            local value="$1"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            printf '%s' "${value}"
+          }
+
+          strip_wrapping_quotes() {
+            local value="$1"
+            if [[ ${#value} -ge 2 ]]; then
+              if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+                value="${value:1:${#value}-2}"
+              elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+                value="${value:1:${#value}-2}"
+              fi
+            fi
+            printf '%s' "${value}"
+          }
+
+          normalize_version_input() {
+            local raw="$1"
+            raw="$(trim "${raw}")"
+            raw="$(strip_wrapping_quotes "${raw}")"
+            raw="${raw#refs/tags/}"
+            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              printf '%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
+          }
+
+          normalize_tag_input() {
+            local raw="$1"
+            raw="$(trim "${raw}")"
+            raw="$(strip_wrapping_quotes "${raw}")"
+            raw="${raw#refs/tags/}"
+            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              printf 'v%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+              return 0
+            fi
+            return 1
+          }
+
+          REF_INPUT="$(trim "${{ inputs.ref }}")"
+          if [[ -z "${REF_INPUT}" ]]; then
+            REF_INPUT="main"
+          fi
+          TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
+          VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
+          PUBLISH_INPUT="${{ inputs.publish_release }}"
+          PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
+
+          if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
+            echo "Debes indicar al menos 'tag' o 'version'." >&2
+            exit 1
+          fi
+
+          if [[ -n "${TAG_INPUT_RAW}" ]]; then
+            if ! TAG_FROM_INPUT="$(normalize_tag_input "${TAG_INPUT_RAW}")"; then
+              echo "Tag invalido '${TAG_INPUT_RAW}'. Formato esperado: vMAJOR.MINOR.PATCH (o MAJOR.MINOR.PATCH)." >&2
+              exit 1
+            fi
+            VERSION_FROM_TAG="${TAG_FROM_INPUT#v}"
+          else
+            TAG_FROM_INPUT=""
+            VERSION_FROM_TAG=""
+          fi
+
+          if [[ -n "${VERSION_INPUT_RAW}" ]]; then
+            if ! VERSION_INPUT="$(normalize_version_input "${VERSION_INPUT_RAW}")"; then
+              echo "Version invalida '${VERSION_INPUT_RAW}'. Formato esperado: MAJOR.MINOR.PATCH (o vMAJOR.MINOR.PATCH)." >&2
+              exit 1
+            fi
+          else
+            VERSION_INPUT=""
+          fi
+
+          if [[ -n "${VERSION_INPUT}" && -n "${VERSION_FROM_TAG}" && "${VERSION_INPUT}" != "${VERSION_FROM_TAG}" ]]; then
+            echo "Inconsistencia: tag=${TAG_FROM_INPUT} y version=${VERSION_INPUT} no coinciden." >&2
+            exit 1
+          fi
+
+          if [[ -n "${VERSION_INPUT}" ]]; then
+            SEMVER="${VERSION_INPUT}"
+          else
+            SEMVER="${VERSION_FROM_TAG}"
+          fi
+
+          TAG="v${SEMVER}"
+          RELEASE_REF="${REF_INPUT}"
+          TAG_EXISTS="false"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            TAG_EXISTS="true"
+            RELEASE_REF="${TAG}"
+          elif git ls-remote --exit-code --refs --tags origin "${TAG}" >/dev/null 2>&1; then
+            TAG_EXISTS="true"
+            RELEASE_REF="${TAG}"
+          fi
+
+          echo "release_ref=${RELEASE_REF}" >> "${GITHUB_OUTPUT}"
+          echo "semver=${SEMVER}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
+          echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
+          echo "publish_installers=${PUBLISH_INSTALLERS_INPUT}" >> "${GITHUB_OUTPUT}"
+
+  build-macos:
+    name: Build macOS artifact
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure (macOS)
+        env:
+          JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
+          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
+          MTCONTROLS_FFMPEG_BIN_MACOS: ${{ github.workspace }}/third_party/ffmpeg/macos/ffmpeg
+        run: cmake --preset macos-release
+
+      - name: Build (macOS)
+        run: cmake --build --preset macos-release
+
+      - name: Verify ffmpeg bundled in app (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/macos-release/MTControls_artefacts/Release/Standalone -maxdepth 1 -type d -name "*.app" -print -quit)"
+          [[ -n "${APP_PATH}" ]] || { echo "No .app found after macOS build" >&2; exit 1; }
+          BUNDLED_FFMPEG="${APP_PATH}/Contents/Resources/ffmpeg/ffmpeg"
+          [[ -f "${BUNDLED_FFMPEG}" ]] || { echo "Bundled ffmpeg missing: ${BUNDLED_FFMPEG}" >&2; exit 1; }
+          echo "Bundled ffmpeg found: ${BUNDLED_FFMPEG}"
+
+      - name: Upload Standalone (macOS)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTControls-macos-standalone-${{ needs.prepare.outputs.semver }}
+          path: build/macos-release/MTControls_artefacts/Release/Standalone
+          if-no-files-found: error
+
+      - name: Package DMG installer (macOS)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          bash scripts/package_macos_dmg.sh \
+            --version "${SEMVER}" \
+            --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone \
+            --output-dir dist
+
+      - name: Upload installer (macOS)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship-macos-installer-${{ needs.prepare.outputs.semver }}.dmg
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows artifact
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
+
+      - name: Configure (Windows)
+        env:
+          JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
+          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
+          MTCONTROLS_FFMPEG_BIN_WINDOWS: ${{ github.workspace }}\\third_party\\ffmpeg\\windows\\ffmpeg.exe
+        run: cmake --preset windows-release
+
+      - name: Build (Windows)
+        run: cmake --build --preset windows-release
+
+      - name: Verify ffmpeg bundled in Standalone (Windows)
+        shell: pwsh
+        run: |
+          $ffmpegPath = "build/windows-release/MTControls_artefacts/Release/Standalone/ffmpeg/ffmpeg.exe"
+          if (!(Test-Path -LiteralPath $ffmpegPath)) {
+            throw "Expected bundled ffmpeg not found: $ffmpegPath"
+          }
+          Write-Host "Bundled ffmpeg found: $ffmpegPath"
+
+      - name: Upload Standalone (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
+          path: build/windows-release/MTControls_artefacts/Release/Standalone
+          if-no-files-found: error
+
+      - name: Install Inno Setup
+        if: needs.prepare.outputs.publish_installers == 'true'
+        run: choco install innosetup --no-progress -y
+
+      - name: Package installer (Windows)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        shell: pwsh
+        run: |
+          ./scripts/package_windows_installer.ps1 `
+            -Version "${{ needs.prepare.outputs.semver }}" `
+            -StandaloneDir "build/windows-release/MTControls_artefacts/Release/Standalone" `
+            -OutputDir "dist" `
+            -IssFile "packaging/windows/MTControls.iss" `
+            -FfmpegExe "${{ github.workspace }}\third_party\ffmpeg\windows\ffmpeg.exe" `
+            -RequireFfmpeg
+
+      - name: Upload installer (Windows)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}.exe
+          if-no-files-found: error
+
+  publish:
+    if: needs.prepare.outputs.publish_release == 'true'
+    name: Publish GitHub Release
+    needs:
+      - prepare
+      - build-macos
+      - build-windows
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+          fetch-depth: 0
 
-      - name: Set up JUCE
+      - name: Ensure tag exists
+        shell: bash
         run: |
-          git clone --branch 8.1.0 https://github.com/juce-framework/JUCE.git
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          TAG_EXISTS="${{ needs.prepare.outputs.tag_exists }}"
 
-      - name: Build
+          if [[ "${TAG_EXISTS}" != "true" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+          fi
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MTControls-macos-standalone-${{ needs.prepare.outputs.semver }}
+          path: dist/macos
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
+          path: dist/windows
+
+      - name: Download macOS installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Windows installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Package release assets
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
         run: |
-          cd JUCE
-          ./build.sh
+          set -euo pipefail
+          mkdir -p release-assets
+          (cd dist && zip -r "../release-assets/MTControls-macos-standalone-${SEMVER}.zip" macos)
+          (cd dist && zip -r "../release-assets/MTControls-windows-standalone-${SEMVER}.zip" windows)
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.prepare.outputs.tag }}"
+          SEMVER="${{ needs.prepare.outputs.semver }}"
+          PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
+          MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
+          WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
+          MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.dmg"
+          WIN_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}.exe"
+          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}")
+
+          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+            [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
+            [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
+            ASSETS+=("${MAC_INSTALLER}" "${WIN_INSTALLER}")
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
+          else
+            gh release create "${TAG}" \
+              "${ASSETS[@]}" \
+              --title "${TAG}" \
+              --target "${{ needs.prepare.outputs.release_ref }}" \
+              --generate-notes
+          fi
