@@ -170,7 +170,8 @@ if (WIN32)
         PRIVATE
             WINVER=0x0A00
             _WIN32_WINNT=0x0A00
-            NTDDI_VERSION=0x0A000000
+            # DirectWrite color glyph APIs used by JUCE require at least Windows 10 RS3 SDK surface.
+            NTDDI_VERSION=0x0A000004
     )
 endif()
 
