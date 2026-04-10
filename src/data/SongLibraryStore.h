@@ -50,6 +50,11 @@ class SongLibraryStore {
 public:
   static std::vector<ImportedSongData> loadSongs();
   static LibraryState loadLibrarySnapshot();
+  static bool saveLibrarySnapshot(const LibraryState &library);
+  static juce::String exportLibraryJson(const LibraryState &library);
+  static juce::String exportCurrentLibraryJson();
+  static juce::File getLibraryDbFile();
+  static juce::File getAudioStorageRoot();
   static bool setActiveSetlistId(const juce::String &setlistId);
   static juce::String createSetlist(const juce::String &name);
   static bool renameSetlist(const juce::String &setlistId,
@@ -99,6 +104,7 @@ public:
 private:
   static LibraryState loadLibrary();
   static bool saveLibrary(const LibraryState &library);
+  static juce::var libraryToVar(const LibraryState &library);
   static juce::File getRootDirectory();
   static juce::File getDbFile();
   static juce::File getAudioRoot();

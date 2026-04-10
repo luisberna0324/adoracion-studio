@@ -47,6 +47,22 @@ std::vector<ImportedSongData> SongLibraryStore::loadSongs() {
 
 LibraryState SongLibraryStore::loadLibrarySnapshot() { return loadLibrary(); }
 
+bool SongLibraryStore::saveLibrarySnapshot(const LibraryState &library) {
+  return saveLibrary(library);
+}
+
+juce::String SongLibraryStore::exportLibraryJson(const LibraryState &library) {
+  return juce::JSON::toString(libraryToVar(library), true);
+}
+
+juce::String SongLibraryStore::exportCurrentLibraryJson() {
+  return exportLibraryJson(loadLibrary());
+}
+
+juce::File SongLibraryStore::getLibraryDbFile() { return getDbFile(); }
+
+juce::File SongLibraryStore::getAudioStorageRoot() { return getAudioRoot(); }
+
 bool SongLibraryStore::setActiveSetlistId(const juce::String &setlistId) {
   auto library = loadLibrary();
   if (!setlistExists(library, setlistId))
@@ -446,6 +462,11 @@ LibraryState SongLibraryStore::loadLibrary() {
 }
 
 bool SongLibraryStore::saveLibrary(const LibraryState &library) {
+  const auto json = exportLibraryJson(library);
+  return getDbFile().replaceWithText(json);
+}
+
+juce::var SongLibraryStore::libraryToVar(const LibraryState &library) {
   juce::Array<juce::var> songVars;
   songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
   for (const auto &song : library.songs)
@@ -465,8 +486,7 @@ bool SongLibraryStore::saveLibrary(const LibraryState &library) {
     root->setProperty("setlists", juce::var(setlistVars));
   }
 
-  const auto json = juce::JSON::toString(rootVar, true);
-  return getDbFile().replaceWithText(json);
+  return rootVar;
 }
 
 juce::File SongLibraryStore::getRootDirectory() {
@@ -643,6 +663,9 @@ juce::var SongLibraryStore::stemToVar(const ImportedStemData &stem) {
   obj->setProperty("sourcePath", stem.sourcePath);
   obj->setProperty("storedPath", stem.storedPath);
   obj->setProperty("fileName", stem.fileName);
+  obj->setProperty("remoteFileId", stem.remoteFileId);
+  obj->setProperty("contentHash", stem.contentHash);
+  obj->setProperty("updatedMs", static_cast<juce::int64>(stem.updatedMs));
   obj->setProperty("displayName", stem.displayName);
   obj->setProperty("category", stem.category);
   obj->setProperty("include", stem.include);
@@ -662,6 +685,12 @@ ImportedStemData SongLibraryStore::stemFromVar(const juce::var &v) {
   stem.sourcePath = obj->getProperty("sourcePath").toString();
   stem.storedPath = obj->getProperty("storedPath").toString();
   stem.fileName = obj->getProperty("fileName").toString();
+  if (obj->hasProperty("remoteFileId"))
+    stem.remoteFileId = obj->getProperty("remoteFileId").toString();
+  if (obj->hasProperty("contentHash"))
+    stem.contentHash = obj->getProperty("contentHash").toString();
+  if (obj->hasProperty("updatedMs"))
+    stem.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
   stem.displayName = obj->getProperty("displayName").toString();
   stem.category = obj->getProperty("category").toString();
   stem.include = static_cast<bool>(obj->getProperty("include"));
@@ -681,6 +710,10 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("timeSignature", song.timeSignature);
   obj->setProperty("fileType", song.fileType);
   obj->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
+  obj->setProperty("remoteFileId", song.remoteFileId);
+  obj->setProperty("contentHash", song.contentHash);
+  obj->setProperty("updatedMs", static_cast<juce::int64>(song.updatedMs));
+  obj->setProperty("snapshotVersion", song.snapshotVersion);
 
   juce::Array<juce::var> stemVars;
   stemVars.ensureStorageAllocated(static_cast<int>(song.stems.size()));
@@ -704,6 +737,14 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v) {
   song.timeSignature = obj->getProperty("timeSignature").toString();
   song.fileType = obj->getProperty("fileType").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
+  if (obj->hasProperty("remoteFileId"))
+    song.remoteFileId = obj->getProperty("remoteFileId").toString();
+  if (obj->hasProperty("contentHash"))
+    song.contentHash = obj->getProperty("contentHash").toString();
+  if (obj->hasProperty("updatedMs"))
+    song.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
+  if (obj->hasProperty("snapshotVersion"))
+    song.snapshotVersion = obj->getProperty("snapshotVersion").toString();
 
   auto *stemsArray = obj->getProperty("stems").getArray();
   if (stemsArray != nullptr) {

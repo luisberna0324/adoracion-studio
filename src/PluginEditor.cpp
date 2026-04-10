@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "BinaryData.h"
+#include "cloud/DriveAuthSession.h"
 #include "data/AppSettings.h"
 #include "data/Localization.h"
 #include "data/SongData.h"
@@ -883,6 +884,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (setlistHandlePanel)
       setlistHandlePanel->setTitle(name);
   });
+  songListRaw->setOnConnectDriveRequested([this] { launchExternalLogin(); });
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
@@ -1254,6 +1256,17 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   const auto expMsFromParams = params["idTokenExpiresAtMs"].trim().getLargeIntValue();
   if (expMsFromParams > 0)
     activeSession.idTokenExpiresAtMs = expMsFromParams;
+
+  DriveAuthCredentials driveCredentials = DriveAuthSession::load();
+  driveCredentials.accessToken = params["driveAccessToken"].trim();
+  driveCredentials.tokenType = params["driveTokenType"].trim();
+  driveCredentials.grantedScopes = params["driveScopes"].trim();
+  driveCredentials.accountEmail = params["driveAccountEmail"].trim();
+  const auto driveExpMsFromParams =
+      params["driveAccessTokenExpiresAtMs"].trim().getLargeIntValue();
+  if (driveExpMsFromParams > 0)
+    driveCredentials.accessTokenExpiresAtMs = driveExpMsFromParams;
+
   const auto sessionJsonRaw = params["session"].trim();
   if (sessionJsonRaw.isNotEmpty()) {
     const auto parsed = juce::JSON::parse(sessionJsonRaw);
@@ -1299,6 +1312,27 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     if (expMs > 0)
       activeSession.idTokenExpiresAtMs = expMs;
 
+    const auto driveVar = parsed.getProperty("drive", juce::var{});
+    if (driveVar.isObject()) {
+      const auto driveAccessToken = readStringFromObject(driveVar, "accessToken");
+      const auto driveTokenType = readStringFromObject(driveVar, "tokenType");
+      const auto driveScopes = readStringFromObject(driveVar, "scopes");
+      const auto driveEmail = readStringFromObject(driveVar, "accountEmail");
+      const auto driveExpMs = readStringFromObject(driveVar, "accessTokenExpiresAtMs")
+                                  .getLargeIntValue();
+
+      if (driveAccessToken.isNotEmpty())
+        driveCredentials.accessToken = driveAccessToken;
+      if (driveTokenType.isNotEmpty())
+        driveCredentials.tokenType = driveTokenType;
+      if (driveScopes.isNotEmpty())
+        driveCredentials.grantedScopes = driveScopes;
+      if (driveEmail.isNotEmpty())
+        driveCredentials.accountEmail = driveEmail;
+      if (driveExpMs > 0)
+        driveCredentials.accessTokenExpiresAtMs = driveExpMs;
+    }
+
     const auto userVar = parsed.getProperty("user", juce::var{});
     if (userVar.isObject()) {
       const auto userUid = readStringFromObject(userVar, "uid");
@@ -1339,6 +1373,9 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       modal->setStatusText(message, true);
     return;
   }
+
+  if (driveCredentials.accessToken.isNotEmpty())
+    DriveAuthSession::save(driveCredentials);
 
   lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
   AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);

@@ -31,6 +31,7 @@ public:
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
+  void setOnConnectDriveRequested(std::function<void()> cb);
   int getSongCount() const;
   const ImportedSongData *getSongPtr(int index) const;
   int getSongIndexById(const juce::String &songId) const;
@@ -107,6 +108,10 @@ private:
   ListContent listContent;
   AddSongButton addSongButton;
   ManageSetlistsButton manageSetlistsButton;
+  juce::TextButton connectDriveButton;
+  juce::TextButton pullDriveButton;
+  juce::TextButton pushDriveButton;
+  juce::String cloudStatusText;
   std::vector<ImportedSongData> librarySongs;
   std::vector<int> activeSongIndices;
   juce::String activeSetlistId;
@@ -117,5 +122,6 @@ private:
   juce::StringArray autoPlayNextMarks;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
+  std::function<void()> onConnectDriveRequested;
   int lastActivatedIndex = -1;
 };

@@ -2,6 +2,7 @@
 
 #include "SongImportWizardComponent.h"
 #include "../../PluginEditor.h"
+#include "../../cloud/CloudLibrarySyncService.h"
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
 
@@ -14,6 +15,14 @@ juce::String makeAutoPlayNextMarkKey(const juce::String &setlistId,
   if (setlistId.isEmpty() || songId.isEmpty())
     return {};
   return setlistId + "|" + songId;
+}
+
+void styleFlatButton(juce::TextButton &button, const juce::Colour base) {
+  button.setColour(juce::TextButton::buttonColourId, base);
+  button.setColour(juce::TextButton::buttonOnColourId,
+                   base.contrasting(0.12f));
+  button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
 }
 } // namespace
 
@@ -82,9 +91,45 @@ SongListPanel::SongListPanel() {
   addAndMakeVisible(listViewport);
   addAndMakeVisible(addSongButton);
   addAndMakeVisible(manageSetlistsButton);
+  addAndMakeVisible(connectDriveButton);
+  addAndMakeVisible(pullDriveButton);
+  addAndMakeVisible(pushDriveButton);
+
+  connectDriveButton.setButtonText(L10n::tr("Conectar Drive", "Connect Drive"));
+  pullDriveButton.setButtonText(L10n::tr("Cargar Drive", "Pull Drive"));
+  pushDriveButton.setButtonText(L10n::tr("Guardar Drive", "Push Drive"));
+  styleFlatButton(connectDriveButton, UITheme::cardBg);
+  styleFlatButton(pullDriveButton, UITheme::cardBg);
+  styleFlatButton(pushDriveButton, UITheme::accent);
 
   addSongButton.onClick = [this] { openSongImportWizard(); };
   manageSetlistsButton.onClick = [this] { openSetlistManager(); };
+  connectDriveButton.onClick = [this] {
+    if (onConnectDriveRequested)
+      onConnectDriveRequested();
+    else
+      cloudStatusText =
+          L10n::tr("Abre login para conectar Drive.", "Open login to connect Drive.");
+    repaint();
+  };
+  pullDriveButton.onClick = [this] {
+    juce::MouseCursor::showWaitCursor();
+    const auto syncResult = CloudLibrarySyncService::pullFromDrive();
+    juce::MouseCursor::hideWaitCursor();
+    cloudStatusText = syncResult.message;
+    if (syncResult.ok)
+      refreshFromStorage();
+    repaint();
+  };
+  pushDriveButton.onClick = [this] {
+    juce::MouseCursor::showWaitCursor();
+    const auto syncResult = CloudLibrarySyncService::pushToDrive();
+    juce::MouseCursor::hideWaitCursor();
+    cloudStatusText = syncResult.message;
+    if (syncResult.ok)
+      refreshFromStorage();
+    repaint();
+  };
 
   listContent.setOnSongActivated([this](int songIndex) {
     if (!juce::isPositiveAndBelow(songIndex,
@@ -169,6 +214,10 @@ void SongListPanel::setOnSetlistNameChanged(
   onSetlistNameChanged = std::move(cb);
 }
 
+void SongListPanel::setOnConnectDriveRequested(std::function<void()> cb) {
+  onConnectDriveRequested = std::move(cb);
+}
+
 int SongListPanel::getSongCount() const {
   return static_cast<int>(activeSongIndices.size());
 }
@@ -235,20 +284,39 @@ void SongListPanel::paint(juce::Graphics &g) {
   const auto title =
       activeSetlistName.isNotEmpty() ? activeSetlistName
                                      : L10n::tr("Setlist", "Setlist");
-  g.drawText(title, 14, 8, getWidth() - 220, 24,
+  g.drawText(title, 14, 8, getWidth() - 460, 24,
              juce::Justification::centredLeft);
+
+  if (cloudStatusText.isNotEmpty()) {
+    g.setColour(UITheme::textSecondary.withAlpha(0.9f));
+    g.setFont(juce::FontOptions(10.0f));
+    g.drawFittedText(cloudStatusText, 14, 28, getWidth() - 28, 16,
+                     juce::Justification::centredLeft, 1);
+  }
 }
 
 void SongListPanel::resized() {
   auto area = getLocalBounds().reduced(10);
-  auto header = area.removeFromTop(30);
+  auto header = area.removeFromTop(52);
+  auto headerTop = header.removeFromTop(30);
 
   const int addW = 126;
-  addSongButton.setBounds(header.getRight() - addW, header.getY() + 3, addW,
+  addSongButton.setBounds(headerTop.getRight() - addW, headerTop.getY() + 3, addW,
                           24);
   const int manageW = 110;
   manageSetlistsButton.setBounds(addSongButton.getX() - manageW - 8,
-                                 header.getY() + 3, manageW, 24);
+                                 headerTop.getY() + 3, manageW, 24);
+  const int connectW = 130;
+  connectDriveButton.setBounds(manageSetlistsButton.getX() - connectW - 8,
+                               headerTop.getY() + 3, connectW, 24);
+
+  auto driveRow = header.removeFromTop(20);
+  const int pushW = 110;
+  const int pullW = 100;
+  const int rowRight = getWidth() - 10;
+  pushDriveButton.setBounds(rowRight - pushW - 6, driveRow.getY(), pushW, 18);
+  pullDriveButton.setBounds(pushDriveButton.getX() - pullW - 6, driveRow.getY(),
+                            pullW, 18);
 
   area.removeFromTop(8);
   listViewport.setBounds(area);

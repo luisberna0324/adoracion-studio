@@ -10,6 +10,9 @@ struct ImportedStemData {
   juce::String sourcePath;
   juce::String storedPath;
   juce::String fileName;
+  juce::String remoteFileId;
+  juce::String contentHash;
+  juce::int64 updatedMs = 0;
   juce::String displayName;
   juce::String category;
   bool include = true;
@@ -27,6 +30,10 @@ struct ImportedSongData {
   juce::String timeSignature;
   juce::String fileType;
   int64_t createdMs = 0;
+  juce::String remoteFileId;
+  juce::String contentHash;
+  juce::int64 updatedMs = 0;
+  juce::String snapshotVersion;
   std::vector<ImportedStemData> stems;
 };
 

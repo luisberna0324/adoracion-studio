@@ -113,6 +113,12 @@ target_sources(MTControls
         src/audio/StemOutputRouter.h
         src/audio/StemOutputRoutingState.cpp
         src/audio/StemOutputRoutingState.h
+        src/cloud/CloudLibrarySyncService.cpp
+        src/cloud/CloudLibrarySyncService.h
+        src/cloud/DriveApiClient.cpp
+        src/cloud/DriveApiClient.h
+        src/cloud/DriveAuthSession.cpp
+        src/cloud/DriveAuthSession.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
         src/data/Localization.h
