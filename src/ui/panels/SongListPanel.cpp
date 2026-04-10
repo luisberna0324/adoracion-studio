@@ -326,7 +326,7 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
   if (songs.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.88f));
     g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText(L10n::tr("Aún no hay canciones en este setlist.",
+    g.drawFittedText(L10n::tr("Aun no hay canciones en este setlist.",
                               "No songs in this setlist yet."),
                      getLocalBounds().reduced(10),
                      juce::Justification::centred, 2);
@@ -792,7 +792,7 @@ public:
     songsViewport.setScrollBarThickness(1);
     addAndMakeVisible(songsViewport);
 
-    addSongButton.setButtonText(L10n::tr("Agregar canción", "Add Song"));
+    addSongButton.setButtonText(L10n::tr("Agregar cancion", "Add Song"));
     addSongButton.onClick = [this] { showAddSongMenu(); };
     addAndMakeVisible(addSongButton);
 
@@ -895,7 +895,7 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText(L10n::tr("Aún no hay setlists.", "No setlists yet."),
+        g.drawFittedText(L10n::tr("Aun no hay setlists.", "No setlists yet."),
                          getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
@@ -1052,7 +1052,7 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText(L10n::tr("Aún no hay canciones.", "No songs yet."),
+        g.drawFittedText(L10n::tr("Aun no hay canciones.", "No songs yet."),
                          getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
@@ -1237,7 +1237,7 @@ private:
     row.songId = song.id;
     row.title = song.title.isNotEmpty()
                     ? song.title
-                    : L10n::tr("Canción sin título", "Untitled Song");
+                    : L10n::tr("Cancion sin titulo", "Untitled Song");
     row.meta = meta;
     return row;
   }
@@ -1319,7 +1319,7 @@ private:
         continue;
       menu.addItem(song.title.isNotEmpty()
                        ? song.title
-                       : L10n::tr("Canción sin título", "Untitled Song"),
+                       : L10n::tr("Cancion sin titulo", "Untitled Song"),
                    [this, id = song.id] {
                      SongLibraryStore::addSongToSetlist(selectedSetlistId, id);
                      dirty = true;
@@ -1388,7 +1388,7 @@ private:
     juce::AlertWindow::showOkCancelBox(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Eliminar setlist", "Delete setlist"),
-        L10n::tr("Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
+        L10n::tr("Eliminar este setlist? Esto no quitara canciones de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
         L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
         juce::ModalCallbackFunction::create([this, id](int result) {
@@ -1467,7 +1467,7 @@ void SongListPanel::openSongImportWizard() {
                         : static_cast<juce::Component *>(this);
 
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Importar canción", "Import Song");
+  options.dialogTitle = L10n::tr("Importar cancion", "Import Song");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -1477,7 +1477,7 @@ void SongListPanel::openSongImportWizard() {
       [safeThis](ImportedSongData song, juce::String &errorMessage) {
         if (safeThis == nullptr) {
           errorMessage =
-              L10n::tr("La vista de importación ya no está disponible.",
+              L10n::tr("La vista de importacion ya no esta disponible.",
                        "Import UI is no longer available.");
           return false;
         }
@@ -1490,7 +1490,7 @@ void SongListPanel::openSongImportWizard() {
         if (!success) {
           errorMessage = importError.isNotEmpty() ? importError
                                                   : L10n::tr(
-                                                        "No se pudo guardar la canción importada.",
+                                                        "No se pudo guardar la cancion importada.",
                                                         "Couldn't persist the imported song.");
           return false;
         }
@@ -1603,7 +1603,7 @@ void SongListPanel::refreshFromStorage() {
       rows.push_back({order++,
                       song.title.isNotEmpty()
                           ? song.title
-                          : L10n::tr("Canción sin título", "Untitled Song"),
+                          : L10n::tr("Cancion sin titulo", "Untitled Song"),
                       meta,
                       song.id,
                       autoPlayNextMarks.contains(autoPlayKey),

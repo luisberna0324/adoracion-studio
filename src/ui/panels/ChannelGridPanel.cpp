@@ -103,7 +103,7 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   routingHintLabel.setFont(juce::FontOptions(11.0f));
   routingHintLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   routingHintLabel.setText(
-      "Routing sugerido automáticamente — puedes ajustarlo antes de aplicar",
+      "Routing sugerido automaticamente — puedes ajustarlo antes de aplicar",
       juce::dontSendNotification);
   routingHintLabel.setVisible(false);
   addAndMakeVisible(routingHintLabel);
@@ -143,6 +143,15 @@ ChannelGridPanel::~ChannelGridPanel() {
   nudgeDownButton.setLookAndFeel(nullptr);
 }
 
+void ChannelGridPanel::setResponsiveProfile(
+    const ResponsiveLayoutProfile profile) {
+  if (responsiveProfile == profile)
+    return;
+  responsiveProfile = profile;
+  resized();
+  repaint();
+}
+
 void ChannelGridPanel::timerCallback() {
   syncMetronomeVirtualSlotFromProcessor();
 
@@ -156,14 +165,20 @@ void ChannelGridPanel::timerCallback() {
 
 void ChannelGridPanel::layoutHeaderAndViewport() {
   auto r = getLocalBounds();
-  const int headerH = 34;
+  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
+                          ? 30
+                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 36
+                                                                                 : 34);
   auto header = r.removeFromTop(headerH);
 
-  auto leftArea = header.removeFromLeft(264);
-  auto nudgeButtonsArea = leftArea.removeFromRight(140);
-  nudgeHintLabel.setBounds(leftArea.reduced(6, 8));
-  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(70).reduced(2, 5));
-  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(70).reduced(2, 5));
+  const int leftW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 216 : 264;
+  const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 62 : 70;
+  auto leftArea = header.removeFromLeft(leftW);
+  auto nudgeButtonsArea = leftArea.removeFromRight(nudgeBtnW * 2);
+  nudgeHintLabel.setBounds(leftArea.reduced(6, responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8));
+  nudgeHintLabel.setFont(juce::FontOptions(responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.0f : 10.0f));
+  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW).reduced(2, responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 5));
+  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW).reduced(2, responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 5));
   if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
     applyRoutingButton.setVisible(true);
     routingHintLabel.setVisible(true);
@@ -509,12 +524,12 @@ void ChannelGridPanel::resized() {
   layoutHeaderAndViewport();
 
   const int contentWidth = juce::jmax(1, viewport.getWidth());
-  // Mantener altura estable: actualmente el ruteo por canal está oculto.
+  // Mantener altura estable: actualmente el ruteo por canal esta oculto.
   const bool gridShowsRouting = false;
 
-  const int pad = 8;
-  const int gapX = 4;
-  const int gapY = 10;
+  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
+  const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 3 : 4;
+  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10;
   const auto baseLayout = ChannelStripCard::Layout{};
   const int baseCellW = baseLayout.width + 2;
   const int maxColumnsAtBase =
@@ -527,9 +542,16 @@ void ChannelGridPanel::resized() {
   const float widthScale =
       static_cast<float>(availableCellWidth) /
       static_cast<float>(juce::jmax(1, scaleColumns * baseCellW));
+  float profileScale = 1.0f;
+  if (responsiveProfile == ResponsiveLayoutProfile::Compact)
+    profileScale = 0.9f;
+  else if (responsiveProfile == ResponsiveLayoutProfile::Large)
+    profileScale = 1.08f;
+
   const bool isWideViewport = contentWidth >= 1500;
-  const float stripScale =
-      isWideViewport ? juce::jlimit(1.0f, 1.22f, widthScale) : 1.0f;
+  const float widthAdaptiveScale =
+      isWideViewport ? juce::jlimit(0.82f, 1.22f, widthScale) : juce::jlimit(0.82f, 1.08f, widthScale);
+  const float stripScale = juce::jlimit(0.82f, 1.25f, widthAdaptiveScale * profileScale);
 
   for (auto &slot : slots)
     slot->setStripScale(stripScale);

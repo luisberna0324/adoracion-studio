@@ -189,10 +189,21 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
+          MTCONTROLS_FFMPEG_BIN_MACOS: ${{ github.workspace }}/third_party/ffmpeg/macos/ffmpeg
         run: cmake --preset macos-release
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
+
+      - name: Verify ffmpeg bundled in app (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$(find build/macos-release/MTControls_artefacts/Release/Standalone -maxdepth 1 -type d -name "*.app" -print -quit)"
+          [[ -n "${APP_PATH}" ]] || { echo "No .app found after macOS build" >&2; exit 1; }
+          BUNDLED_FFMPEG="${APP_PATH}/Contents/Resources/ffmpeg/ffmpeg"
+          [[ -f "${BUNDLED_FFMPEG}" ]] || { echo "Bundled ffmpeg missing: ${BUNDLED_FFMPEG}" >&2; exit 1; }
+          echo "Bundled ffmpeg found: ${BUNDLED_FFMPEG}"
 
       - name: Upload Standalone (macOS)
         uses: actions/upload-artifact@v4

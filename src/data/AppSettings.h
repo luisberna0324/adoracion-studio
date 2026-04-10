@@ -10,11 +10,12 @@ struct CategoryRoutingDefaults {
 };
 
 enum class AppLanguage { Spanish = 0, English = 1 };
+enum class AppLayoutMode { Auto = 0, Compact = 1, Standard = 2, Large = 3 };
 
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
 public:
-  /** Por defecto: expandir la ventana al área de trabajo al abrir la app. */
+  /** Por defecto: expandir la ventana al area de trabajo al abrir la app. */
   static constexpr bool kDefaultExpandWindowOnLaunch = true;
   static constexpr bool kDefaultPrimeImportEnabled = false;
   static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
@@ -25,6 +26,8 @@ public:
   static void setPrimeImportEnabled(bool value);
   static AppLanguage getLanguage();
   static void setLanguage(AppLanguage value);
+  static AppLayoutMode getLayoutMode();
+  static void setLayoutMode(AppLayoutMode mode);
   static int getThemePresetId();
   static void setThemePresetId(int presetId);
   static juce::String getLastSelectedSongId();

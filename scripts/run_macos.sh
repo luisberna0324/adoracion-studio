@@ -5,11 +5,13 @@ export JUCE_DIR="/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE"
 export MTCONTROLS_API_BASE_URL="${MTCONTROLS_API_BASE_URL:-https://playworship-345830648064.us-east1.run.app}"
 export MTCONTROLS_SESSION_REAUTH_MINUTES="${MTCONTROLS_SESSION_REAUTH_MINUTES:-7200}"
 export MTCONTROLS_REAUTH_GRACE_MINUTES="${MTCONTROLS_REAUTH_GRACE_MINUTES:-300}"
+export MTCONTROLS_FFMPEG_BIN_MACOS="${MTCONTROLS_FFMPEG_BIN_MACOS:-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/third_party/ffmpeg/macos/ffmpeg}"
 
 cmake --preset macos-release \
   -DMTCONTROLS_API_BASE_URL="$MTCONTROLS_API_BASE_URL" \
   -DMTCONTROLS_SESSION_REAUTH_MINUTES="$MTCONTROLS_SESSION_REAUTH_MINUTES" \
-  -DMTCONTROLS_REAUTH_GRACE_MINUTES="$MTCONTROLS_REAUTH_GRACE_MINUTES"
+  -DMTCONTROLS_REAUTH_GRACE_MINUTES="$MTCONTROLS_REAUTH_GRACE_MINUTES" \
+  -DMTCONTROLS_FFMPEG_BIN_MACOS="$MTCONTROLS_FFMPEG_BIN_MACOS"
 cmake --build --preset macos-release
 
 APP_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release/MTControls_artefacts/Release/Standalone"

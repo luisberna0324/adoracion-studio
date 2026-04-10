@@ -20,20 +20,27 @@
 #endif
 
 namespace {
-constexpr int kTopBarH = 60;
-constexpr int kWaveformH = 250;
-constexpr int kWaveformExpandedH = 250;
+constexpr int kDefaultTopBarH = 60;
+constexpr int kDefaultWaveformH = 180;
+constexpr int kCompactWaveformH = 156;
+constexpr int kDefaultWaveformExpandedH = 220;
+constexpr int kCompactWaveformExpandedH = 200;
+constexpr int kLargeWaveformH = 200;
 
-constexpr int kDefaultWindowW = 1200;
-constexpr int kDefaultWindowH = 760;
-/** Mínimo para que la UI siga siendo usable (setlist + canales). */
-constexpr int kMinWindowW = 800;
-constexpr int kMinWindowH = 560;
+constexpr int kDefaultWindowW = 1120;
+constexpr int kDefaultWindowH = 700;
+/** Minimo para que la UI siga siendo usable (setlist + canales). */
+constexpr int kMinWindowW = 940;
+constexpr int kMinWindowH = 600;
 constexpr int kScreenMargin = 40;
 constexpr int kAuthModalW = 520;
 constexpr int kAuthModalH = 260;
 constexpr int kAuthWindowW = 560;
 constexpr int kAuthWindowH = 320;
+constexpr int kCompactBreakpointW = 1180;
+constexpr int kCompactBreakpointH = 700;
+constexpr int kLargeBreakpointW = 1680;
+constexpr int kLargeBreakpointH = 900;
 constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
 
 #ifndef MTCONTROLS_API_BASE_URL
@@ -398,22 +405,27 @@ public:
     if (logoImage.isValid())
       addAndMakeVisible(logo);
 
-    title.setText("Bienvenido", juce::dontSendNotification);
+    title.setText(L10n::tr("Bienvenido", "Welcome"), juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centred);
     title.setFont(juce::FontOptions(26.0f).withStyle("Bold"));
     addAndMakeVisible(title);
 
-    subtitle.setText("Inicia sesion para continuar.", juce::dontSendNotification);
+    subtitle.setText(L10n::tr("Inicia sesion para continuar.",
+                              "Sign in to continue."),
+                     juce::dontSendNotification);
     subtitle.setJustificationType(juce::Justification::centred);
     subtitle.setFont(juce::FontOptions(14.0f));
     addAndMakeVisible(subtitle);
 
-    status.setText("Pulsa Ingresar para abrir el navegador.", juce::dontSendNotification);
+    status.setText(
+        L10n::tr("Pulsa Ingresar para abrir el navegador.",
+                 "Press Sign in to open the browser."),
+        juce::dontSendNotification);
     status.setJustificationType(juce::Justification::centred);
     status.setFont(juce::FontOptions(12.5f));
     addAndMakeVisible(status);
 
-    loginButton.setButtonText("Ingresar");
+    loginButton.setButtonText(L10n::tr("Ingresar", "Sign in"));
     loginButton.onClick = [this] {
       if (onLoginRequested)
         onLoginRequested();
@@ -421,7 +433,7 @@ public:
     addAndMakeVisible(loginButton);
 
     infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
-    infoLink.setButtonText("Mas informacion");
+    infoLink.setButtonText(L10n::tr("Mas informacion", "More information"));
     infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
                      juce::Justification::centred);
     addAndMakeVisible(infoLink);
@@ -435,7 +447,9 @@ public:
   }
 
   void resetStatusToDefault() {
-    setStatusText("Pulsa Ingresar para abrir el navegador.", false);
+    setStatusText(L10n::tr("Pulsa Ingresar para abrir el navegador.",
+                           "Press Sign in to open the browser."),
+                  false);
   }
 
   void paint(juce::Graphics &g) override {
@@ -485,13 +499,15 @@ public:
   std::function<void()> onLater;
 
   ReauthPromptModal() {
-    title.setText("Renovar sesion", juce::dontSendNotification);
+    title.setText(L10n::tr("Renovar sesion", "Renew session"),
+                  juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centred);
     title.setFont(juce::FontOptions(20.0f).withStyle("Bold"));
     addAndMakeVisible(title);
 
     message.setText(
-        "Para continuar con seguridad, necesitamos que vuelvas a iniciar sesion.",
+        L10n::tr("Para continuar con seguridad, necesitamos que vuelvas a iniciar sesion.",
+                 "To continue securely, please sign in again."),
         juce::dontSendNotification);
     message.setJustificationType(juce::Justification::centred);
     message.setFont(juce::FontOptions(13.0f));
@@ -502,32 +518,37 @@ public:
     juce::String graceText;
     if (graceMinutes % 60 == 0) {
       const int hours = graceMinutes / 60;
-      graceText = "Tienes hasta " + juce::String(hours) +
-                  (hours == 1 ? " hora" : " horas") +
-                  " de gracia para completar el login.";
+      graceText = L10n::tr("Tienes hasta ", "You have up to ") +
+                  juce::String(hours) +
+                  (hours == 1 ? L10n::tr(" hora", " hour")
+                              : L10n::tr(" horas", " hours")) +
+                  L10n::tr(" de gracia para completar el login.",
+                           " grace period to complete sign in.");
     } else {
-      graceText = "Tienes " + juce::String(graceMinutes) +
-                  " minutos de gracia para completar el login.";
+      graceText = L10n::tr("Tienes ", "You have ") + juce::String(graceMinutes) +
+                  L10n::tr(" minutos de gracia para completar el login.",
+                           " minutes of grace period to complete sign in.");
     }
     graceInfo.setText(graceText, juce::dontSendNotification);
     graceInfo.setJustificationType(juce::Justification::centred);
     graceInfo.setFont(juce::FontOptions(12.0f));
     addAndMakeVisible(graceInfo);
 
-    status.setText("Pulsa Ingresar ahora para abrir el navegador.",
+    status.setText(L10n::tr("Pulsa Ingresar ahora para abrir el navegador.",
+                            "Press Sign in now to open the browser."),
                    juce::dontSendNotification);
     status.setJustificationType(juce::Justification::centred);
     status.setFont(juce::FontOptions(12.0f));
     addAndMakeVisible(status);
 
-    loginNowButton.setButtonText("Ingresar ahora");
+    loginNowButton.setButtonText(L10n::tr("Ingresar ahora", "Sign in now"));
     loginNowButton.onClick = [this] {
       if (onLoginNow)
         onLoginNow();
     };
     addAndMakeVisible(loginNowButton);
 
-    laterButton.setButtonText("Mas tarde");
+    laterButton.setButtonText(L10n::tr("Mas tarde", "Later"));
     laterButton.onClick = [this] {
       if (onLater)
         onLater();
@@ -535,7 +556,7 @@ public:
     addAndMakeVisible(laterButton);
 
     infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
-    infoLink.setButtonText("Mas informacion");
+    infoLink.setButtonText(L10n::tr("Mas informacion", "More information"));
     infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
                      juce::Justification::centred);
     addAndMakeVisible(infoLink);
@@ -579,13 +600,17 @@ private:
 
 public:
   void showWaitingForCallback() {
-    setStatusText("Esperando autenticacion en el navegador...", false);
+    setStatusText(L10n::tr("Esperando autenticacion en el navegador...",
+                           "Waiting for browser authentication..."),
+                  false);
     loginNowButton.setEnabled(false);
     laterButton.setEnabled(false);
   }
 
   void showReadyState() {
-    setStatusText("Pulsa Ingresar ahora para abrir el navegador.", false);
+    setStatusText(L10n::tr("Pulsa Ingresar ahora para abrir el navegador.",
+                           "Press Sign in now to open the browser."),
+                  false);
     loginNowButton.setEnabled(true);
     laterButton.setEnabled(true);
   }
@@ -652,13 +677,52 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #endif
 }
 
+ResponsiveLayoutProfile MTControlsAudioProcessorEditor::resolveResponsiveLayoutProfile()
+    const {
+  switch (AppSettings::getLayoutMode()) {
+  case AppLayoutMode::Compact:
+    return ResponsiveLayoutProfile::Compact;
+  case AppLayoutMode::Standard:
+    return ResponsiveLayoutProfile::Standard;
+  case AppLayoutMode::Large:
+    return ResponsiveLayoutProfile::Large;
+  case AppLayoutMode::Auto:
+  default:
+    break;
+  }
+
+  const int w = getWidth() > 0 ? getWidth() : kDefaultWindowW;
+  const int h = getHeight() > 0 ? getHeight() : kDefaultWindowH;
+  if (w < kCompactBreakpointW || h < kCompactBreakpointH)
+    return ResponsiveLayoutProfile::Compact;
+  if (w >= kLargeBreakpointW && h >= kLargeBreakpointH)
+    return ResponsiveLayoutProfile::Large;
+  return ResponsiveLayoutProfile::Standard;
+}
+
+void MTControlsAudioProcessorEditor::applyResponsiveLayoutProfile(
+    const ResponsiveLayoutProfile profile) {
+  responsiveLayoutProfile = profile;
+
+  if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
+    bar->setResponsiveProfile(profile);
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->setResponsiveProfile(profile);
+}
+
+void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
+  const auto nextProfile = resolveResponsiveLayoutProfile();
+  if (nextProfile != responsiveLayoutProfile)
+    applyResponsiveLayoutProfile(nextProfile);
+}
+
 void MTControlsAudioProcessorEditor::initializeMainUi() {
   if (lastSuccessfulLoginMs > 0) {
     const auto nowMs = juce::Time::currentTimeMillis();
     const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
     if (nowMs >= sessionDueAtMs) {
-      // El bloqueo en arranque solo aplica si el usuario ya eligió "Mas tarde"
-      // y su periodo de gracia ya venció.
+      // El bloqueo en arranque solo aplica si el usuario ya eligio "Mas tarde"
+      // y su periodo de gracia ya vencio.
       if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
         showWelcomeOnlyMode();
         if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
@@ -722,6 +786,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           });
     }
 
+    applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
+    if (!autoSetlistCollapseInitialized) {
+      isSetlistCollapsed =
+          (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact);
+      autoSetlistCollapseInitialized = true;
+    }
     mainUiInitialized = true;
     resized();
     return;
@@ -731,6 +801,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto topBarImpl = std::make_unique<TopBar>(p);
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
+  topBarRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
   topBarRaw->setTransportProviders(
       [&p] { return p.isSongPlaying(); },
       [&p] { return p.getSongCurrentPositionSeconds(); },
@@ -763,7 +834,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         SongLibraryStore::updateArrangementForActiveSetlist(
             currentLoadedSong.id, arrangement, isCustomArrangement);
         // Las partes son marcadores visuales/editables y no deben alterar
-        // el flujo de reproducción normal de la canción.
+        // el flujo de reproduccion normal de la cancion.
         p.setSongArrangement(arrangement, false);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
@@ -783,6 +854,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
+  channelGridRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
 
   p.getAudioDeviceBridge().setOnDeviceConnected(
       [&p, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
@@ -873,7 +945,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       juce::AlertWindow::showMessageBoxAsync(
           juce::AlertWindow::WarningIcon,
           L10n::tr("Error de carga", "Load error"),
-          L10n::tr("No se pudieron cargar los stems de esta canción.",
+          L10n::tr("No se pudieron cargar los stems de esta cancion.",
                    "Couldn't load audio stems for this song."));
       waveformBarRaw->setWaveformBins({});
       waveformBarRaw->setSongRhythm(0.0, {});
@@ -1041,6 +1113,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
+    autoSetlistCollapseInitialized = true;
     isSetlistCollapsed = !isSetlistCollapsed;
     resized();
     repaint();
@@ -1083,6 +1156,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   setResizable(true, true);
   setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
   setSize(w, h);
+  applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
+  if (!autoSetlistCollapseInitialized) {
+    isSetlistCollapsed =
+        (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact);
+    autoSetlistCollapseInitialized = true;
+  }
 
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
@@ -1154,7 +1233,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   if (authExpectedState.isEmpty() || receivedState.isEmpty() ||
       receivedState != authExpectedState) {
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
-      modal->setStatusText("Autenticación inválida. Reintenta.", true);
+      modal->setStatusText("Autenticacion invalida. Reintenta.", true);
     }
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError("Autenticacion invalida. Reintenta.");
@@ -1291,7 +1370,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   if (!mainUiInitialized)
     return;
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Configuración", "Settings");
+  options.dialogTitle = L10n::tr("Configuracion", "Settings");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -1361,6 +1440,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
   if (reauthPromptModal)
     reauthPromptModal->setVisible(false);
   mainUiInitialized = false;
+  autoSetlistCollapseInitialized = false;
   resized();
 }
 
@@ -1465,7 +1545,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
     return;
   }
 
-  // Si ya hay gracia activa (el usuario pulsó "Mas tarde"), no molestamos
+  // Si ya hay gracia activa (el usuario pulso "Mas tarde"), no molestamos
   // hasta que venza esa gracia.
   if (reauthGraceDeadlineMs > 0 && reauthPromptDismissed) {
     hideReauthPromptModal();
@@ -1589,27 +1669,54 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   auto area = getLocalBounds();
+  updateResponsiveLayoutProfile();
 
   if (topBar == nullptr || waveformBar == nullptr || channelGridPanel == nullptr ||
       songListPanel == nullptr || setlistHandlePanel == nullptr)
     return;
 
-  topBar->setBounds(area.removeFromTop(kTopBarH));
-  const int waveH =
-      isWaveformExpanded ? kWaveformExpandedH : kWaveformH;
+  int topBarH = kDefaultTopBarH;
+  int waveformH = kDefaultWaveformH;
+  int waveformExpandedH = kDefaultWaveformExpandedH;
+  float setlistRatio = 0.35f;
+  int setlistMinW = 280;
+  int setlistMaxW = 460;
+  int contentInset = 8;
+
+  if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
+    topBarH = 54;
+    waveformH = kCompactWaveformH;
+    waveformExpandedH = kCompactWaveformExpandedH;
+    setlistRatio = 0.32f;
+    setlistMinW = 220;
+    setlistMaxW = 360;
+    contentInset = 6;
+  } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
+    topBarH = 62;
+    waveformH = kLargeWaveformH;
+    waveformExpandedH = kDefaultWaveformExpandedH;
+    setlistRatio = 0.36f;
+    setlistMinW = 320;
+    setlistMaxW = 520;
+    contentInset = 9;
+  }
+
+  topBar->setBounds(area.removeFromTop(topBarH));
+  const int waveH = isWaveformExpanded ? waveformExpandedH : waveformH;
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
 
   auto mainArea = area;
   constexpr int handleW = 28;
   int setlistWidth =
-      juce::jlimit(280, 460, static_cast<int>(mainArea.getWidth() * 0.35f));
+      juce::jlimit(setlistMinW, setlistMaxW,
+                   static_cast<int>(mainArea.getWidth() * setlistRatio));
   if (isSetlistCollapsed)
     setlistWidth = 0;
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
-  auto rightChannelsArea = mainArea.reduced(8);
+  auto rightChannelsArea = mainArea.reduced(contentInset);
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (isSetlistCollapsed) {
@@ -1617,7 +1724,7 @@ void MTControlsAudioProcessorEditor::resized() {
     songListPanel->setBounds({});
   } else {
     songListPanel->setVisible(true);
-    songListPanel->setBounds(leftSetlistArea.reduced(8));
+    songListPanel->setBounds(leftSetlistArea.reduced(contentInset));
   }
 
   setlistHandlePanel->setBounds(handleArea.reduced(2, 8));

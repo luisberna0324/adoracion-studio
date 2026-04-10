@@ -6,7 +6,7 @@
 
 #include <functional>
 
-/** Franja sutil a ancho completo sobre el waveform: nueva interfaz, botón Configurar. */
+/** Franja sutil a ancho completo sobre el waveform: nueva interfaz, boton Configurar. */
 class DeviceNotificationBanner : public juce::Component, private juce::Timer {
 public:
   DeviceNotificationBanner();

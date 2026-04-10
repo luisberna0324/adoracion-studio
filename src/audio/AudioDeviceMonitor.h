@@ -6,7 +6,7 @@
 #include <map>
 #include <vector>
 
-/** Observa enumeración de dispositivos de audio; no modifica el dispositivo activo. */
+/** Observa enumeracion de dispositivos de audio; no modifica el dispositivo activo. */
 class AudioDeviceMonitor : public juce::ChangeListener, private juce::Timer {
 public:
   struct DeviceInfo {

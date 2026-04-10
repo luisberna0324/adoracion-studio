@@ -163,15 +163,15 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
-  keyDisplay.setFont(juce::FontOptions(15.0f).withStyle("Bold"));
   activeKeyLabel = L10n::tr("Tono", "Key");
+  applyResponsiveTypography();
   seekBackButton.setBadgeText("-5s");
   seekForwardButton.setBadgeText("+5s");
   seekBackButton.setTooltip(
       L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
   seekForwardButton.setTooltip(
       L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
-  nextButton.setTooltip(L10n::tr("Siguiente canción", "Next song"));
+  nextButton.setTooltip(L10n::tr("Siguiente cancion", "Next song"));
   timeDisplay.onClick = [this] { showSongWindowPopover(); };
   keyDisplay.onClick = [this] { showKeyPopover(); };
   configureMetronomeControls();
@@ -272,6 +272,15 @@ void TopBar::setOnSettingsWithAnchor(
   onSettingsWithAnchor = std::move(cb);
 }
 
+void TopBar::setResponsiveProfile(const ResponsiveLayoutProfile profile) {
+  if (responsiveProfile == profile)
+    return;
+  responsiveProfile = profile;
+  applyResponsiveTypography();
+  resized();
+  repaint();
+}
+
 void TopBar::refreshThemeColours() {
   timeDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
   timeDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
@@ -303,9 +312,31 @@ void TopBar::paint(juce::Graphics &g) {
 }
 
 void TopBar::resized() {
-  const int y = 10;
-  const int square = 44;
-  const int gap = 8;
+  int y = 10;
+  int square = 44;
+  int gap = 8;
+  int keyWidth = 72;
+  int metroTotalW = 110;
+  int metroIconW = 44;
+  int timeWidth = 120;
+
+  if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
+    y = 8;
+    square = 38;
+    gap = 6;
+    keyWidth = 64;
+    metroTotalW = 92;
+    metroIconW = 38;
+    timeWidth = 96;
+  } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
+    y = 10;
+    square = 46;
+    gap = 8;
+    keyWidth = 76;
+    metroTotalW = 114;
+    metroIconW = 46;
+    timeWidth = 128;
+  }
 
   int x = 12;
 
@@ -322,23 +353,77 @@ void TopBar::resized() {
   placeSquare(nextButton);
   placeSquare(fadeButton);
 
+  const int rightPadding = 12;
+  const int fixedButtonsW = (2 * square) + gap;
+  const int transportW = x;
+  const int availableDynamicW =
+      getWidth() - rightPadding - transportW - fixedButtonsW - 8;
+
+  const int minTimeW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 72 : 88;
+  const int minKeyW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 52 : 60;
+  const int metroCoreW = metroTotalW;
+  bool showTime = true;
+  bool showKey = true;
+  bool showBpmText = true;
+
+  int wantedDynamicW = timeWidth + gap + metroCoreW + gap + keyWidth;
+  if (availableDynamicW < wantedDynamicW) {
+    const int overflow = wantedDynamicW - availableDynamicW;
+    const int timeShrink = juce::jmin(overflow, timeWidth - minTimeW);
+    timeWidth -= timeShrink;
+    wantedDynamicW -= timeShrink;
+  }
+  if (availableDynamicW < wantedDynamicW) {
+    const int overflow = wantedDynamicW - availableDynamicW;
+    const int keyShrink = juce::jmin(overflow, keyWidth - minKeyW);
+    keyWidth -= keyShrink;
+    wantedDynamicW -= keyShrink;
+  }
+  if (availableDynamicW < wantedDynamicW) {
+    showTime = false;
+    wantedDynamicW -= (timeWidth + gap);
+  }
+  if (availableDynamicW < wantedDynamicW) {
+    showKey = false;
+    wantedDynamicW -= (keyWidth + gap);
+  }
+  if (availableDynamicW < wantedDynamicW) {
+    showBpmText = false;
+    wantedDynamicW -= (metroTotalW - metroIconW);
+  }
+
+  timeDisplay.setVisible(showTime);
+  keyDisplay.setVisible(showKey);
+  bpmSegmentButton.setVisible(showBpmText);
+
   int rightX = getWidth() - 12;
   settingsButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
   windowModeButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
-  keyDisplay.setBounds(rightX - 72, y, 72, 40);
-  rightX -= 72 + gap;
-  const int metroTotalW = 110;
-  const int metroIconW = 44;
-  const int metroY = y - 2;
-  bpmSegmentButton.setBounds(rightX - metroTotalW, metroY,
-                             metroTotalW - metroIconW, 44);
-  metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW, 44);
-  rightX -= metroTotalW + gap;
-  timeDisplay.setBounds(rightX - 120, y, 120, 40);
 
-  if (timeDisplay.getX() < x + 8) {
+  if (showKey) {
+    keyDisplay.setBounds(rightX - keyWidth, y, keyWidth, 40);
+    rightX -= keyWidth + gap;
+  } else {
+    keyDisplay.setBounds({});
+  }
+
+  const int metroY = y - 2;
+  const int metroTextW = showBpmText ? (metroTotalW - metroIconW) : 0;
+  const int metroUsedW = showBpmText ? metroTotalW : metroIconW;
+  if (showBpmText)
+    bpmSegmentButton.setBounds(rightX - metroTotalW, metroY, metroTextW, 44);
+  else
+    bpmSegmentButton.setBounds({});
+  metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW, 44);
+  rightX -= metroUsedW + gap;
+  if (showTime)
+    timeDisplay.setBounds(rightX - timeWidth, y, timeWidth, 40);
+  else
+    timeDisplay.setBounds({});
+
+  if (showTime && timeDisplay.getX() < x + 8) {
     const int shift = (x + 8) - timeDisplay.getX();
     for (auto *c :
          {static_cast<juce::Component *>(&timeDisplay),
@@ -357,6 +442,20 @@ void TopBar::clearFadeIfActive() {
     return;
   if (onFadeToggle)
     onFadeToggle(false);
+}
+
+void TopBar::applyResponsiveTypography() {
+  float displayFont = 13.0f;
+  float keyFont = 15.0f;
+  if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
+    displayFont = 11.5f;
+    keyFont = 13.0f;
+  } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
+    displayFont = 13.5f;
+    keyFont = 15.5f;
+  }
+  timeDisplay.setFont(juce::FontOptions(displayFont));
+  keyDisplay.setFont(juce::FontOptions(keyFont).withStyle("Bold"));
 }
 
 void TopBar::configureDisplay(juce::Label &label, const juce::String &text) {

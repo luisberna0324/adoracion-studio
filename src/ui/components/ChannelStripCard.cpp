@@ -138,7 +138,7 @@ void ChannelStripCard::resized() {
 const juce::String &ChannelStripCard::getChannelName() const { return name; }
 
 void ChannelStripCard::setLayoutScale(float scale) {
-  const float nextScale = juce::jlimit(0.9f, 1.4f, scale);
+  const float nextScale = juce::jlimit(0.82f, 1.4f, scale);
   if (std::abs(nextScale - layoutScale) < 0.001f)
     return;
 

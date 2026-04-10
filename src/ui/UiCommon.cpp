@@ -287,7 +287,7 @@ bool fillsPrimaryWorkArea(const juce::Component *top,
          std::abs(b.getY() - userArea.getY()) <= 2;
 }
 
-/** Último tamaño antes de expandir (JUCE 8+ ya no expone setMaximised en la API pública). */
+/** Ultimo tamano antes de expandir (JUCE 8+ ya no expone setMaximised en la API publica). */
 juce::Rectangle<int> g_boundsBeforeExpand{100, 100, 1200, 760};
 
 } // namespace

@@ -27,6 +27,7 @@ public:
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
+  void setResponsiveProfile(ResponsiveLayoutProfile profile);
 
   void refreshThemeColours();
 
@@ -105,10 +106,12 @@ private:
   bool lastBeatWasDownbeat = true;
   bool lastMetronomeEnabled = false;
   bool lastTopLevelMaximised = false;
+  ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   int beatsPerBar = 4;
   juce::String timeSignature = "4/4";
 
   void clearFadeIfActive();
+  void applyResponsiveTypography();
   void configureDisplay(juce::Label &label, const juce::String &text);
   void configureMetronomeControls();
   void timerCallback() override;

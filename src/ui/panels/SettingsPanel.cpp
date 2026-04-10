@@ -171,11 +171,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   themeLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(themeLabel);
 
-  themeBox.addItem(L10n::tr("Clásico", "Classic"),
+  themeBox.addItem(L10n::tr("Clasico", "Classic"),
                    static_cast<int>(ThemePreset::Default));
   themeBox.addItem(L10n::tr("Verde Noche", "Night Green"),
                    static_cast<int>(ThemePreset::Spotify));
-  themeBox.addItem(L10n::tr("Ámbar Estudio", "Studio Amber"),
+  themeBox.addItem(L10n::tr("Ambar Estudio", "Studio Amber"),
                    static_cast<int>(ThemePreset::Ableton));
   themeBox.setSelectedId(static_cast<int>(current));
   themeBox.setJustificationType(juce::Justification::centredLeft);
@@ -185,7 +185,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   languageLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(languageLabel);
 
-  languageBox.addItem("Español", static_cast<int>(AppLanguage::Spanish) + 1);
+  languageBox.addItem("Espanol", static_cast<int>(AppLanguage::Spanish) + 1);
   languageBox.addItem("English", static_cast<int>(AppLanguage::English) + 1);
   languageBox.setSelectedId(static_cast<int>(language) + 1,
                             juce::dontSendNotification);
@@ -442,7 +442,7 @@ void SettingsPanel::refreshThemeColours() {
 }
 
 void SettingsPanel::applyLanguageTexts() {
-  title.setText(L10n::tr("Configuración", "Settings"),
+  title.setText(L10n::tr("Configuracion", "Settings"),
                 juce::dontSendNotification);
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
@@ -453,12 +453,12 @@ void SettingsPanel::applyLanguageTexts() {
   expandLaunchLabel.setText(L10n::tr("Ventana al iniciar", "Window on launch"),
                             juce::dontSendNotification);
   expandLaunchToggle.setButtonText(
-      L10n::tr("Expandir al área de trabajo", "Expand to work area"));
+      L10n::tr("Expandir al area de trabajo", "Expand to work area"));
   primeImportLabel.setText(
       L10n::tr("Importar desde disco local", "Import from local disk"),
                            juce::dontSendNotification);
   primeImportToggle.setButtonText(
-      L10n::tr("Habilitar importación desde disco local",
+      L10n::tr("Habilitar importacion desde disco local",
                "Enable import from local disk"));
   sessionSectionLabel.setText(L10n::tr("Sesion", "Session"),
                               juce::dontSendNotification);

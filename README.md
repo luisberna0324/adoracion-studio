@@ -1,11 +1,11 @@
 # MT Controls (JUCE)
 
-Proyecto base JUCE para iterar diseño de controles (Standalone).
+Proyecto base JUCE para iterar diseno de controles (Standalone).
 
 ## Incluye
 
 - Standalone (macOS, Windows, iOS)
-- Parámetros iniciales:
+- Parametros iniciales:
   - `inputGain` (`-24 dB` a `+24 dB`)
   - `mix` (`0%` a `100%`)
   - `bypass` (`on/off`)
@@ -123,6 +123,6 @@ Assets publicados cuando `publish_release=true`:
 
 ## Siguiente foco
 
-Iterar el diseño de controles (`LookAndFeel`, layout por secciones, estados hover/drag, tipografía y palette).
+Iterar el diseno de controles (`LookAndFeel`, layout por secciones, estados hover/drag, tipografia y palette).
 
 Se agrega nueva linea para probar el feature

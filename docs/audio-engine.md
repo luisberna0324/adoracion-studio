@@ -1,23 +1,23 @@
 # Motor de Audio (PlayWorship)
 
-Este documento describe cómo está construido el motor de audio y cómo fluye el audio en tiempo real.
+Este documento describe como esta construido el motor de audio y como fluye el audio en tiempo real.
 
 ## Componentes principales
 
 - **StemTrack**: Uno por stem. Lee/streaming del audio y aplica volumen/ganancia/mute/solo por stem.
 - **MixerAudioSource**: Suma los stems cuando no se requiere mezcla separada.
 - **Buffers de mezcla separada** (cuando se necesita):
-  - `stemMixBuffer`: stems melódicos (a estos se aplica pitch‑shift).
-  - `percussionBuffer`: stems de percusión (no se transpone).
-  - `dryBuffer`: click/guía.
-- **PitchShiftProcessor (SoundTouch)**: Transposición de tono sólo para stems melódicos.
-- **Compensación de latencia**: retrasa percusión y guía el mismo tiempo que SoundTouch.
-- **Metrónomo**: agrega el click final si está activo.
+  - `stemMixBuffer`: stems melodicos (a estos se aplica pitch‑shift).
+  - `percussionBuffer`: stems de percusion (no se transpone).
+  - `dryBuffer`: click/guia.
+- **PitchShiftProcessor (SoundTouch)**: Transposicion de tono solo para stems melodicos.
+- **Compensacion de latencia**: retrasa percusion y guia el mismo tiempo que SoundTouch.
+- **Metronomo**: agrega el click final si esta activo.
 - **Master**: volumen/ganancia/mute y fade‑out global.
 
-## Flujo con canción cargada
+## Flujo con cancion cargada
 
-Cuando hay una canción cargada, el motor escoge **una de dos rutas** por bloque:
+Cuando hay una cancion cargada, el motor escoge **una de dos rutas** por bloque:
 
 ### A) Ruta de mezcla separada (cuando aplica)
 Se usa si:
@@ -29,10 +29,10 @@ Se usa si:
 
 ```
 StemTracks
-  -> se separan por categoría:
-     - Click/Guía  -> dryBuffer
-     - Percusión  -> percussionBuffer
-     - Melódicos  -> stemMixBuffer
+  -> se separan por categoria:
+     - Click/Guia  -> dryBuffer
+     - Percusion  -> percussionBuffer
+     - Melodicos  -> stemMixBuffer
 
 stemMixBuffer
   -> (si hay pitch) SoundTouch pitch‑shift
@@ -45,17 +45,17 @@ Si hay pitch:
   retrasar percussionBuffer + dryBuffer por la latencia de SoundTouch
 
 Suma final:
-  - si hay mono click: Left = (melodía + percusión), Right = guía
-  - si no: suma melodía + percusión + guía
+  - si hay mono click: Left = (melodia + percusion), Right = guia
+  - si no: suma melodia + percusion + guia
 
--> Metrónomo
+-> Metronomo
 -> Volumen/Ganancia/Mute master
--> Salida + medición
+-> Salida + medicion
 ```
 
 **Notas:**
-- El pitch‑shift se aplica **solo** a los stems melódicos.
-- Percusión y guía se **retrasan** cuando hay pitch para mantener alineación.
+- El pitch‑shift se aplica **solo** a los stems melodicos.
+- Percusion y guia se **retrasan** cuando hay pitch para mantener alineacion.
 
 ### B) Ruta simple (cuando NO hay pitch, mono click ni fades)
 Se usa `MixerAudioSource` para eficiencia:
@@ -65,46 +65,46 @@ StemTracks
   -> MixerAudioSource
   -> Buffer combinado
   -> Fade/ventana
-  -> Metrónomo
+  -> Metronomo
   -> Volumen/Ganancia/Mute master
-  -> Salida + medición
+  -> Salida + medicion
 ```
 
-## Flujo sin canción cargada
+## Flujo sin cancion cargada
 
-Cuando no hay canción cargada, el plugin funciona como FX simple:
+Cuando no hay cancion cargada, el plugin funciona como FX simple:
 
 ```
 Entrada de audio
-  -> ¿Bypass?
-     - Sí: salida directa
+  -> ?Bypass?
+     - Si: salida directa
      - No: Input Gain -> Dry/Wet -> salida
 ```
 
-## Pitch‑shift y compensación de latencia
+## Pitch‑shift y compensacion de latencia
 
 - SoundTouch introduce latencia interna.
 - Esa latencia se consulta con `SETTING_INITIAL_LATENCY`.
-- Para mantener sincronía:
+- Para mantener sincronia:
   - `percussionBuffer` y `dryBuffer` se retrasan exactamente lo mismo.
 
-## Reglas de categorías (pitch‑shift)
+## Reglas de categorias (pitch‑shift)
 
-Un stem **NO** se transpone si su categoría es:
+Un stem **NO** se transpone si su categoria es:
 - `Drums`
 - `Percussion`
 - `Click`
 - `Cues`
 
-Todo lo demás se considera melódico.
+Todo lo demas se considera melodico.
 
-## Dónde está en el código
+## Donde esta en el codigo
 
 - **Loop principal**: `src/PluginProcessor.cpp` (`processBlock`)
 - **Pitch processor**: `src/PitchShiftProcessor.h/.cpp`
-- **Categorías**: `src/data/SongData.h/.cpp`
+- **Categorias**: `src/data/SongData.h/.cpp`
 - **Control UI de pitch**: `src/ui/panels/TopBar.h/.cpp`
 
 ---
 
-Si quieres, puedo agregar un diagrama ASCII con cajas o detallar el orden exacto de fades/solo/mute y el metrónomo paso a paso.
+Si quieres, puedo agregar un diagrama ASCII con cajas o detallar el orden exacto de fades/solo/mute y el metronomo paso a paso.

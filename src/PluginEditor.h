@@ -56,6 +56,9 @@ private:
   };
   SessionSummary activeSession;
   bool mainUiInitialized = false;
+  ResponsiveLayoutProfile responsiveLayoutProfile =
+      ResponsiveLayoutProfile::Standard;
+  bool autoSetlistCollapseInitialized = false;
   std::unique_ptr<juce::Component> welcomeModal;
   std::unique_ptr<LocalAuthCallbackServer> localAuthServer;
   juce::String authExpectedState;
@@ -74,6 +77,9 @@ private:
                     juce::Component *parent);
   void applyThemePreset(int presetId);
   void applyRoutingDefaultsToSong(const ImportedSongData &song);
+  ResponsiveLayoutProfile resolveResponsiveLayoutProfile() const;
+  void applyResponsiveLayoutProfile(ResponsiveLayoutProfile profile);
+  void updateResponsiveLayoutProfile();
   void initializeMainUi();
   void initializeWelcomeModal();
   void launchExternalLogin();

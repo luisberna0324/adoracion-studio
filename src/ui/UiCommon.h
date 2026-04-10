@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 enum class ThemePreset { Default = 1, Spotify, Ableton };
+enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
 
 struct UITheme {
   static juce::Colour appBg;
@@ -46,7 +47,7 @@ enum class IconGlyph {
   Metronome,
   /** Cuadrado (maximizar ventana). */
   WindowMaximize,
-  /** Dos rectángulos superpuestos (restaurar ventana). */
+  /** Dos rectangulos superpuestos (restaurar ventana). */
   WindowRestore
 };
 
@@ -56,7 +57,7 @@ void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 
 /** Busca la ventana JUCE contenedora (Standalone / host) y alterna maximizado. */
 void toggleTopLevelWindowMaximised(juce::Component *fromComponent);
-/** `true` si la ventana contenedora está maximizada (o no hay ventana). */
+/** `true` si la ventana contenedora esta maximizada (o no hay ventana). */
 bool isTopLevelWindowMaximised(juce::Component *fromComponent);
-/** Expande la ventana al área de trabajo del monitor principal (guarda tamaño previo). */
+/** Expande la ventana al area de trabajo del monitor principal (guarda tamano previo). */
 void expandTopLevelWindowToPrimaryWorkArea(juce::Component *fromComponent);

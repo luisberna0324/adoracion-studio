@@ -1,6 +1,6 @@
 ---
 name: Integracion interfaz y ruteo
-overview: Diseñar e implementar en Standalone un sistema modular de asignación de salida por stem a canales físicos individuales (Canal 1, Canal 2, etc.), manteniendo `PluginProcessor` liviano y con persistencia de ruteo.
+overview: Disenar e implementar en Standalone un sistema modular de asignacion de salida por stem a canales fisicos individuales (Canal 1, Canal 2, etc.), manteniendo `PluginProcessor` liviano y con persistencia de ruteo.
 todos:
   - id: map-current-audio-path
     content: Documentar flujo actual de mezcla y punto exacto para insertar etapa de routing final por stem.

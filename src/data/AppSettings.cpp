@@ -180,6 +180,49 @@ void AppSettings::setLanguage(const AppLanguage value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+AppLayoutMode AppSettings::getLayoutMode() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return AppLayoutMode::Auto;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("layoutMode")) {
+      const auto raw = o->getProperty("layoutMode").toString().trim().toLowerCase();
+      if (raw == "compact")
+        return AppLayoutMode::Compact;
+      if (raw == "standard")
+        return AppLayoutMode::Standard;
+      if (raw == "large")
+        return AppLayoutMode::Large;
+    }
+  }
+  return AppLayoutMode::Auto;
+}
+
+void AppSettings::setLayoutMode(const AppLayoutMode mode) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  juce::String modeText = "auto";
+  if (mode == AppLayoutMode::Compact)
+    modeText = "compact";
+  else if (mode == AppLayoutMode::Standard)
+    modeText = "standard";
+  else if (mode == AppLayoutMode::Large)
+    modeText = "large";
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 10);
+    o->setProperty("layoutMode", modeText);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 int AppSettings::getThemePresetId() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())

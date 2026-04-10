@@ -22,6 +22,7 @@ public:
   void setSong(const ImportedSongData &song);
   void nudgeFaders(float delta);
   void refreshThemeColours();
+  void setResponsiveProfile(ResponsiveLayoutProfile profile);
 
   /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
   void beginAutomaticRoutingDraft();
@@ -61,6 +62,7 @@ private:
   std::vector<int> pendingOutputBySlotIndex;
   int lastSeenOutputChannelCount = -1;
   int metronomeVirtualSlotIndex = -1;
+  ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   const float nudgeStep = 0.05f;
 
   void addMasterSlot();

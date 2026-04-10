@@ -17,7 +17,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
-set(MTCONTROLS_FFMPEG_BIN_MACOS "" CACHE FILEPATH
+set(_mtcontrols_ffmpeg_macos_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/macos/ffmpeg")
+    set(_mtcontrols_ffmpeg_macos_default
+        "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/macos/ffmpeg")
+endif()
+set(MTCONTROLS_FFMPEG_BIN_MACOS "${_mtcontrols_ffmpeg_macos_default}" CACHE FILEPATH
     "Path to ffmpeg binary that will be bundled in the macOS app")
 set(_mtcontrols_ffmpeg_windows_default "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/windows/ffmpeg.exe")
@@ -159,6 +164,15 @@ target_compile_definitions(MTControls
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         SOUNDTOUCH_FLOAT_SAMPLES=1
 )
+
+if (WIN32)
+    target_compile_definitions(MTControls
+        PRIVATE
+            WINVER=0x0A00
+            _WIN32_WINNT=0x0A00
+            NTDDI_VERSION=0x0A000000
+    )
+endif()
 
 target_link_libraries(MTControls
     PRIVATE

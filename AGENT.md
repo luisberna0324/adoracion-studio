@@ -29,7 +29,7 @@ Usar el sistema de color definido en `UITheme`:
   - `panelDark` `#262220`
 - Cards/canales:
   - `cardBg` `#D4D4D4` (stems regulares)
-  - `cardBgMaster` `#E8D8C8` (crema cálido, fondo card Master)
+  - `cardBgMaster` `#E8D8C8` (crema calido, fondo card Master)
   - `cardBgClickGuide` `#C8CDD6` (gris azulado, fondo card Click/Guide)
   - `cardBorder` gris medio
   - `textPrimary` gris oscuro
