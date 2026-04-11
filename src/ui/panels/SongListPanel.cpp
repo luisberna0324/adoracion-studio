@@ -1,8 +1,10 @@
 #include "SongListPanel.h"
 
 #include "SongImportWizardComponent.h"
+#include "SongLibraryBrowserComponent.h"
 #include "../../PluginEditor.h"
 #include "../../cloud/CloudLibrarySyncService.h"
+#include "../../cloud/SongDownloadManager.h"
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
 
@@ -17,13 +19,6 @@ juce::String makeAutoPlayNextMarkKey(const juce::String &setlistId,
   return setlistId + "|" + songId;
 }
 
-void styleFlatButton(juce::TextButton &button, const juce::Colour base) {
-  button.setColour(juce::TextButton::buttonColourId, base);
-  button.setColour(juce::TextButton::buttonOnColourId,
-                   base.contrasting(0.12f));
-  button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
-  button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
-}
 } // namespace
 
 SongListPanel::AddSongButton::AddSongButton() : juce::Button("addSong") {}
@@ -91,45 +86,11 @@ SongListPanel::SongListPanel() {
   addAndMakeVisible(listViewport);
   addAndMakeVisible(addSongButton);
   addAndMakeVisible(manageSetlistsButton);
-  addAndMakeVisible(connectDriveButton);
-  addAndMakeVisible(pullDriveButton);
-  addAndMakeVisible(pushDriveButton);
 
-  connectDriveButton.setButtonText(L10n::tr("Conectar Drive", "Connect Drive"));
-  pullDriveButton.setButtonText(L10n::tr("Cargar Drive", "Pull Drive"));
-  pushDriveButton.setButtonText(L10n::tr("Guardar Drive", "Push Drive"));
-  styleFlatButton(connectDriveButton, UITheme::cardBg);
-  styleFlatButton(pullDriveButton, UITheme::cardBg);
-  styleFlatButton(pushDriveButton, UITheme::accent);
-
-  addSongButton.onClick = [this] { openSongImportWizard(); };
+  addSongButton.onClick = [this] {
+    openSongLibraryBrowser({}, {});
+  };
   manageSetlistsButton.onClick = [this] { openSetlistManager(); };
-  connectDriveButton.onClick = [this] {
-    if (onConnectDriveRequested)
-      onConnectDriveRequested();
-    else
-      cloudStatusText =
-          L10n::tr("Abre login para conectar Drive.", "Open login to connect Drive.");
-    repaint();
-  };
-  pullDriveButton.onClick = [this] {
-    juce::MouseCursor::showWaitCursor();
-    const auto syncResult = CloudLibrarySyncService::pullFromDrive();
-    juce::MouseCursor::hideWaitCursor();
-    cloudStatusText = syncResult.message;
-    if (syncResult.ok)
-      refreshFromStorage();
-    repaint();
-  };
-  pushDriveButton.onClick = [this] {
-    juce::MouseCursor::showWaitCursor();
-    const auto syncResult = CloudLibrarySyncService::pushToDrive();
-    juce::MouseCursor::hideWaitCursor();
-    cloudStatusText = syncResult.message;
-    if (syncResult.ok)
-      refreshFromStorage();
-    repaint();
-  };
 
   listContent.setOnSongActivated([this](int songIndex) {
     if (!juce::isPositiveAndBelow(songIndex,
@@ -200,9 +161,13 @@ SongListPanel::SongListPanel() {
     refreshFromStorage();
   });
   refreshFromStorage();
+
+  SongDownloadManager::getInstance().addChangeListener(this);
 }
 
-SongListPanel::~SongListPanel() = default;
+SongListPanel::~SongListPanel() {
+  SongDownloadManager::getInstance().removeChangeListener(this);
+}
 
 void SongListPanel::setOnSongActivated(
     std::function<void(const ImportedSongData &, int)> cb) {
@@ -214,8 +179,8 @@ void SongListPanel::setOnSetlistNameChanged(
   onSetlistNameChanged = std::move(cb);
 }
 
-void SongListPanel::setOnConnectDriveRequested(std::function<void()> cb) {
-  onConnectDriveRequested = std::move(cb);
+void SongListPanel::setBrowserLoadedSongId(const juce::String &songId) {
+  browserLoadedSongId = songId;
 }
 
 int SongListPanel::getSongCount() const {
@@ -272,6 +237,13 @@ juce::String SongListPanel::getActiveSetlistName() const {
 
 void SongListPanel::refreshLanguageTexts() { repaint(); }
 
+void SongListPanel::changeListenerCallback(juce::ChangeBroadcaster *) {
+  // Called when SongDownloadManager reports a progress update or completion.
+  // Re-run refreshFromStorage so rows get the updated downloadProgress values.
+  // If a download just completed we also reload the library so the song metadata is fresh.
+  refreshFromStorage();
+}
+
 void SongListPanel::paint(juce::Graphics &g) {
   const auto bounds = getLocalBounds().toFloat();
   g.setColour(UITheme::cardBg);
@@ -284,21 +256,13 @@ void SongListPanel::paint(juce::Graphics &g) {
   const auto title =
       activeSetlistName.isNotEmpty() ? activeSetlistName
                                      : L10n::tr("Setlist", "Setlist");
-  g.drawText(title, 14, 8, getWidth() - 460, 24,
+  g.drawText(title, 14, 8, getWidth() - 260, 24,
              juce::Justification::centredLeft);
-
-  if (cloudStatusText.isNotEmpty()) {
-    g.setColour(UITheme::textSecondary.withAlpha(0.9f));
-    g.setFont(juce::FontOptions(10.0f));
-    g.drawFittedText(cloudStatusText, 14, 28, getWidth() - 28, 16,
-                     juce::Justification::centredLeft, 1);
-  }
 }
 
 void SongListPanel::resized() {
   auto area = getLocalBounds().reduced(10);
-  auto header = area.removeFromTop(52);
-  auto headerTop = header.removeFromTop(30);
+  auto headerTop = area.removeFromTop(30);
 
   const int addW = 126;
   addSongButton.setBounds(headerTop.getRight() - addW, headerTop.getY() + 3, addW,
@@ -306,17 +270,6 @@ void SongListPanel::resized() {
   const int manageW = 110;
   manageSetlistsButton.setBounds(addSongButton.getX() - manageW - 8,
                                  headerTop.getY() + 3, manageW, 24);
-  const int connectW = 130;
-  connectDriveButton.setBounds(manageSetlistsButton.getX() - connectW - 8,
-                               headerTop.getY() + 3, connectW, 24);
-
-  auto driveRow = header.removeFromTop(20);
-  const int pushW = 110;
-  const int pullW = 100;
-  const int rowRight = getWidth() - 10;
-  pushDriveButton.setBounds(rowRight - pushW - 6, driveRow.getY(), pushW, 18);
-  pullDriveButton.setBounds(pushDriveButton.getX() - pullW - 6, driveRow.getY(),
-                            pullW, 18);
 
   area.removeFromTop(8);
   listViewport.setBounds(area);
@@ -484,6 +437,30 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
       continue;
     }
     paintSongRow(songs[i], row, UITheme::cardBgHover, 1.0f, 0.58f);
+
+    // --- Download progress overlay ---
+    const float dlProgress = songs[i].downloadProgress;
+    if (dlProgress >= 0.0f) {
+      // Semi-transparent dark scrim over the row
+      g.setColour(juce::Colour(0xff000000).withAlpha(0.52f));
+      g.fillRoundedRectangle(row.toFloat(), 4.0f);
+
+      // Progress bar at the bottom (4px tall)
+      const auto barBackground = row.removeFromBottom(4).toFloat();
+      g.setColour(UITheme::cardBg.withAlpha(0.4f));
+      g.fillRoundedRectangle(barBackground, 2.0f);
+      auto barFill = barBackground.withWidth(barBackground.getWidth() * dlProgress);
+      g.setColour(UITheme::accent);
+      g.fillRoundedRectangle(barFill, 2.0f);
+
+      // Centred text: download icon + percentage
+      const int pct = juce::roundToInt(dlProgress * 100.0f);
+      const auto label = L10n::tr("Descargando", "Downloading") +
+                         "  " + juce::String(pct) + "%";
+      g.setColour(juce::Colours::white.withAlpha(0.92f));
+      g.setFont(juce::FontOptions(11.0f));
+      g.drawFittedText(label, row, juce::Justification::centred, 1);
+    }
   }
 
   if (hasActiveDrag) {
@@ -830,9 +807,13 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
 class SongListPanel::SetlistManagerPanel final : public juce::Component {
 public:
   using SetlistLoadedCallback = std::function<void(const juce::String &)>;
+  using OpenSongBrowserFn = std::function<void(
+      const juce::String &setlistId, std::function<void()> afterSongAdded)>;
 
-  explicit SetlistManagerPanel(SetlistLoadedCallback onLoaded)
-      : onSetlistLoaded(std::move(onLoaded)) {
+  explicit SetlistManagerPanel(SetlistLoadedCallback onLoaded,
+                               OpenSongBrowserFn openSongBrowser)
+      : onSetlistLoaded(std::move(onLoaded)),
+        onOpenSongBrowser(std::move(openSongBrowser)) {
     setSize(860, 560);
 
     titleLabel.setText(L10n::tr("Setlists", "Setlists"),
@@ -861,7 +842,14 @@ public:
     addAndMakeVisible(songsViewport);
 
     addSongButton.setButtonText(L10n::tr("Agregar cancion", "Add Song"));
-    addSongButton.onClick = [this] { showAddSongMenu(); };
+    addSongButton.onClick = [this] {
+      if (selectedSetlistId.isEmpty() || !onOpenSongBrowser)
+        return;
+      onOpenSongBrowser(selectedSetlistId, [this] {
+        dirty = true;
+        reloadLibrary();
+      });
+    };
     addAndMakeVisible(addSongButton);
 
     loadButton.setButtonText(L10n::tr("Cargar setlist", "Load setlist"));
@@ -1372,37 +1360,6 @@ private:
     reloadLibrary();
   }
 
-  void showAddSongMenu() {
-    const auto *setlist = findSetlist(selectedSetlistId);
-    if (setlist == nullptr)
-      return;
-    juce::PopupMenu menu;
-    for (const auto &song : library.songs) {
-      const bool exists =
-          std::any_of(setlist->items.begin(), setlist->items.end(),
-                      [&song](const SetlistItem &item) {
-                        return item.songId == song.id;
-                      });
-      if (exists)
-        continue;
-      menu.addItem(song.title.isNotEmpty()
-                       ? song.title
-                       : L10n::tr("Cancion sin titulo", "Untitled Song"),
-                   [this, id = song.id] {
-                     SongLibraryStore::addSongToSetlist(selectedSetlistId, id);
-                     dirty = true;
-                     reloadLibrary();
-                   });
-    }
-    if (menu.getNumItems() == 0) {
-      menu.addItem(L10n::tr("No hay canciones disponibles",
-                            "No songs available"),
-                   false, false, nullptr);
-    }
-    menu.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(addSongButton));
-  }
-
   void createSetlist() {
     promptTextAsync(
         L10n::tr("Crear Setlist", "Create Setlist"),
@@ -1524,62 +1481,123 @@ private:
   LibraryState library;
   juce::String selectedSetlistId;
   SetlistLoadedCallback onSetlistLoaded;
+  OpenSongBrowserFn onOpenSongBrowser;
   bool dirty = false;
 };
 
-void SongListPanel::openSongImportWizard() {
+bool SongListPanel::finishImportWizardSubmission(ImportedSongData song,
+                                                 const bool syncWithDrive,
+                                                 juce::String &errorMessage) {
+  juce::MouseCursor::showWaitCursor();
+  juce::String importError;
+  const bool success = SongLibraryStore::appendSong(std::move(song), &importError);
+  juce::MouseCursor::hideWaitCursor();
+
+  if (!success) {
+    errorMessage = importError.isNotEmpty() ? importError
+                                            : L10n::tr(
+                                                  "No se pudo guardar la cancion importada.",
+                                                  "Couldn't persist the imported song.");
+    return false;
+  }
+
+  const auto allSongs = SongLibraryStore::loadSongs();
+  if (allSongs.empty()) {
+    errorMessage = L10n::tr("No se pudo leer la cancion guardada.",
+                            "Couldn't read the saved song.");
+    return false;
+  }
+  const auto &saved = allSongs.back();
+
+  if (syncWithDrive) {
+    const auto syncResult = CloudLibrarySyncService::pushSongToDrive(saved.id);
+    if (!syncResult.ok) {
+      errorMessage = syncResult.message.isNotEmpty()
+                         ? syncResult.message
+                         : L10n::tr("No se pudo sincronizar con Drive.",
+                                    "Couldn't sync with Drive.");
+      return false;
+    }
+  }
+
+  {
+    auto bins = buildMixedWaveformBins(saved);
+    SongLibraryStore::saveWaveformCache(saved.id, bins);
+  }
+
+  refreshFromStorage();
+  return true;
+}
+
+void SongListPanel::openSongLibraryBrowser(
+    const juce::String &setlistIdForPick,
+    std::function<void()> afterAddedToSetlist) {
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
   auto *centerTarget =
       editor != nullptr ? static_cast<juce::Component *>(editor)
                         : static_cast<juce::Component *>(this);
 
-  juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Importar cancion", "Import Song");
-  options.dialogBackgroundColour = UITheme::appBg;
-  options.escapeKeyTriggersCloseButton = true;
-  options.useNativeTitleBar = true;
-  options.resizable = true;
-  options.componentToCentreAround = centerTarget;
-  auto *panel = new SongImportWizardComponent(
-      [safeThis](ImportedSongData song, juce::String &errorMessage) {
+  std::function<void(const juce::String &)> onChosen;
+  if (setlistIdForPick.isNotEmpty()) {
+    onChosen = [setlistIdForPick, after = std::move(afterAddedToSetlist)](
+                   const juce::String &songId) {
+      SongLibraryStore::addSongToSetlist(setlistIdForPick, songId);
+      if (after)
+        after();
+    };
+  } else {
+    onChosen = [safeThis](const juce::String &songId) {
+      if (safeThis == nullptr)
+        return;
+      const auto lib = SongLibraryStore::loadLibrarySnapshot();
+      for (const auto &s : lib.songs) {
+        if (s.id != songId)
+          continue;
+        const int idx = safeThis->getSongIndexById(songId);
+        if (safeThis->onSongActivated)
+          safeThis->onSongActivated(s, idx);
+        return;
+      }
+    };
+  }
+
+  auto *browser = new SongLibraryBrowserComponent(
+      [safeThis](ImportedSongData song, const bool sync,
+                 juce::String &errorMessage) {
         if (safeThis == nullptr) {
           errorMessage =
               L10n::tr("La vista de importacion ya no esta disponible.",
                        "Import UI is no longer available.");
           return false;
         }
-
-        juce::MouseCursor::showWaitCursor();
-        juce::String importError;
-        const bool success = SongLibraryStore::appendSong(std::move(song), &importError);
-        juce::MouseCursor::hideWaitCursor();
-
-        if (!success) {
-          errorMessage = importError.isNotEmpty() ? importError
-                                                  : L10n::tr(
-                                                        "No se pudo guardar la cancion importada.",
-                                                        "Couldn't persist the imported song.");
-          return false;
-        }
-
-        const auto allSongs = SongLibraryStore::loadSongs();
-        if (!allSongs.empty()) {
-          const auto &saved = allSongs.back();
-          auto bins = buildMixedWaveformBins(saved);
-          SongLibraryStore::saveWaveformCache(saved.id, bins);
-        }
-
-        safeThis->refreshFromStorage();
-        return true;
+        return safeThis->finishImportWizardSubmission(std::move(song), sync,
+                                                      errorMessage);
       },
-      AppSettings::getPrimeImportEnabled());
-  panel->refreshThemeColours();
-  options.content.setOwned(panel);
+      setlistIdForPick,
+      safeThis != nullptr ? safeThis->browserLoadedSongId : juce::String{},
+      std::move(onChosen), AppSettings::getPrimeImportEnabled(),
+      [safeThis] {
+        if (safeThis != nullptr)
+          safeThis->refreshFromStorage();
+      });
+
+  juce::DialogWindow::LaunchOptions options;
+  options.dialogTitle =
+      setlistIdForPick.isNotEmpty()
+          ? L10n::tr("Elegir cancion", "Choose Song")
+          : L10n::tr("Biblioteca", "Music library");
+  options.dialogBackgroundColour = UITheme::appBg;
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = true;
+  options.componentToCentreAround = centerTarget;
+  options.content.setOwned(browser);
+  browser->refreshLocalList();
 
   if (auto *window = options.launchAsync()) {
     window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 780, 580);
+    window->centreAroundComponent(centerTarget, 720, 520);
   }
 }
 
@@ -1603,6 +1621,12 @@ void SongListPanel::openSetlistManager() {
         if (safeThis == nullptr)
           return;
         safeThis->refreshFromStorage();
+      },
+      [safeThis](const juce::String &setlistId,
+                 std::function<void()> afterSongAdded) {
+        if (safeThis == nullptr)
+          return;
+        safeThis->openSongLibraryBrowser(setlistId, std::move(afterSongAdded));
       });
   options.content.setOwned(panel);
 
@@ -1668,6 +1692,11 @@ void SongListPanel::refreshFromStorage() {
 
       const int rowIndex = static_cast<int>(rows.size());
       const auto autoPlayKey = makeAutoPlayNextMarkKey(activeSetlistId, song.id);
+
+      // Inject current download progress for this song (if any).
+      const float dlProgress =
+          SongDownloadManager::getInstance().getProgress(song.id);
+
       rows.push_back({order++,
                       song.title.isNotEmpty()
                           ? song.title
@@ -1677,7 +1706,8 @@ void SongListPanel::refreshFromStorage() {
                       autoPlayNextMarks.contains(autoPlayKey),
                       isPlaybackActive && song.id == nowPlayingSongId,
                       song.id == selectedSongId,
-                      rowIndex});
+                      rowIndex,
+                      dlProgress});
     }
   }
 

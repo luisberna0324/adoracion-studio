@@ -40,6 +40,17 @@ cmake --preset macos-release
 cmake --build --preset macos-release
 ```
 
+### Backend local (`localhost`) por variable
+
+Para ejecutar el plugin apuntando al backend local:
+
+```bash
+export MTCONTROLS_API_BASE_URL="http://127.0.0.1:3000"
+bash scripts/run_macos.sh
+```
+
+Si no defines la variable, `scripts/run_macos.sh` usa `http://127.0.0.1:3000` por defecto.
+
 ### Windows
 
 ```bash

@@ -135,7 +135,7 @@ private:
 };
 
 SongImportWizardComponent::SongImportWizardComponent(
-    std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+    std::function<bool(ImportedSongData, bool, juce::String &)> onSubmitSong,
     const bool primeImportEnabledIn)
     : onSubmit(std::move(onSubmitSong)),
       primeImportEnabled(primeImportEnabledIn) {
@@ -301,6 +301,10 @@ SongImportWizardComponent::SongImportWizardComponent(
   summaryEditor.setReadOnly(true);
   summaryEditor.setMultiLine(true);
   addAndMakeVisible(summaryEditor);
+  syncWithDriveToggle.setButtonText(
+      L10n::tr("Sincronizar con Drive al guardar", "Sync with Drive on save"));
+  syncWithDriveToggle.setToggleState(false, juce::dontSendNotification);
+  addAndMakeVisible(syncWithDriveToggle);
 
   cancelButton.setButtonText(L10n::tr("Cancelar", "Cancel"));
   cancelButton.onClick = [this] { closeDialog(); };
@@ -395,6 +399,10 @@ void SongImportWizardComponent::refreshThemeColours() {
                           UITheme::textPrimary);
   summaryEditor.setColour(juce::TextEditor::outlineColourId,
                           UITheme::cardBorder.withAlpha(0.7f));
+  syncWithDriveToggle.setColour(juce::ToggleButton::textColourId,
+                                UITheme::textPrimary);
+  syncWithDriveToggle.setColour(juce::ToggleButton::tickColourId,
+                                UITheme::accent);
 
   configureCombo(fileTypeBox);
   configureCombo(keyBox);
@@ -563,8 +571,12 @@ void SongImportWizardComponent::layoutStepTwo(juce::Rectangle<int> bounds) {
 void SongImportWizardComponent::layoutStepThree(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == 2;
   summaryEditor.setVisible(visible);
+  syncWithDriveToggle.setVisible(visible);
   if (!visible)
     return;
+  auto toggleRow = bounds.removeFromBottom(26);
+  syncWithDriveToggle.setBounds(toggleRow);
+  bounds.removeFromBottom(6);
   summaryEditor.setBounds(bounds);
 }
 
@@ -908,7 +920,8 @@ void SongImportWizardComponent::submitSong() {
 
   if (onSubmit) {
     juce::String errorMessage;
-    if (!onSubmit(buildSongData(), errorMessage)) {
+    if (!onSubmit(buildSongData(), syncWithDriveToggle.getToggleState(),
+                  errorMessage)) {
       juce::AlertWindow::showMessageBoxAsync(
           juce::AlertWindow::WarningIcon,
           L10n::tr("Error de importacion", "Import error"),

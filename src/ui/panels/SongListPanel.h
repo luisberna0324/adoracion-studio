@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../cloud/SongDownloadManager.h"
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
 #include "../UiCommon.h"
@@ -9,7 +10,8 @@
 #include <memory>
 #include <vector>
 
-class SongListPanel final : public juce::Component {
+class SongListPanel final : public juce::Component,
+                            public juce::ChangeListener {
 public:
   class AddSongButton final : public juce::Button {
   public:
@@ -31,7 +33,8 @@ public:
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
-  void setOnConnectDriveRequested(std::function<void()> cb);
+  /** Song currently loaded in the editor (for Drive tab highlight). */
+  void setBrowserLoadedSongId(const juce::String &songId);
   int getSongCount() const;
   const ImportedSongData *getSongPtr(int index) const;
   int getSongIndexById(const juce::String &songId) const;
@@ -54,6 +57,7 @@ private:
     bool isNowPlaying = false;
     bool isSelected = false;
     int songIndex = -1;
+    float downloadProgress = -1.0f; // -1 = not downloading; [0,1] = in progress
   };
 
   class ListContent : public juce::Component {
@@ -100,18 +104,21 @@ private:
 
   class SetlistManagerPanel;
 
-  void openSongImportWizard();
+  /** `setlistIdForPick` empty = main library browser; otherwise add-to-setlist flow. */
+  void openSongLibraryBrowser(
+      const juce::String &setlistIdForPick,
+      std::function<void()> afterAddedToSetlist = {});
+  bool finishImportWizardSubmission(ImportedSongData song, bool syncWithDrive,
+                                    juce::String &errorMessage);
   void openSetlistManager();
   void refreshFromStorage();
+  void changeListenerCallback(juce::ChangeBroadcaster *source) override;
 
   juce::Viewport listViewport;
   ListContent listContent;
   AddSongButton addSongButton;
   ManageSetlistsButton manageSetlistsButton;
-  juce::TextButton connectDriveButton;
-  juce::TextButton pullDriveButton;
-  juce::TextButton pushDriveButton;
-  juce::String cloudStatusText;
+  juce::String browserLoadedSongId;
   std::vector<ImportedSongData> librarySongs;
   std::vector<int> activeSongIndices;
   juce::String activeSetlistId;
@@ -122,6 +129,5 @@ private:
   juce::StringArray autoPlayNextMarks;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
-  std::function<void()> onConnectDriveRequested;
   int lastActivatedIndex = -1;
 };

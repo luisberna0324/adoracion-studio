@@ -884,7 +884,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (setlistHandlePanel)
       setlistHandlePanel->setTitle(name);
   });
-  songListRaw->setOnConnectDriveRequested([this] { launchExternalLogin(); });
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
@@ -956,6 +955,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
       currentLoadedSong = ImportedSongData{};
+      if (songListPanelRaw != nullptr)
+        songListPanelRaw->setBrowserLoadedSongId({});
       return false;
     }
 
@@ -992,6 +993,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     hasCurrentLoadedSong = true;
     AppSettings::setLastSelectedSongId(currentLoadedSong.id);
     applyRoutingDefaultsToSong(currentLoadedSong);
+    if (songListPanelRaw != nullptr)
+      songListPanelRaw->setBrowserLoadedSongId(currentLoadedSong.id);
 
     channelGridRaw->setSong(loadedSong);
     currentSongIndex = songIndex;
@@ -1376,6 +1379,8 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
   if (driveCredentials.accessToken.isNotEmpty())
     DriveAuthSession::save(driveCredentials);
+  if (driveCredentials.accessToken.isNotEmpty())
+    AppSettings::setDriveConnected(true);
 
   lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
   AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
@@ -1415,6 +1420,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
   const auto audioCtx = getStandaloneAudioContext();
+  const auto driveCredentials = DriveAuthSession::load();
+  const bool driveConnected =
+      AppSettings::getDriveConnected() ||
+      DriveAuthSession::hasValidAccessToken(driveCredentials);
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
       [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
@@ -1439,6 +1448,14 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.allowed,
                                     activeSession.reasonCode,
                                     activeSession.reason},
+      driveConnected,
+      [this](bool currentlyConnected) {
+        if (currentlyConnected) {
+          DriveAuthSession::clear();
+          AppSettings::setDriveConnected(false);
+        } else
+          launchExternalLogin();
+      },
       [this] { handleLogout(); }, routingDefaults,
       proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,

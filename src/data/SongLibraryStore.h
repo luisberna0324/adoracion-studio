@@ -51,6 +51,9 @@ public:
   static std::vector<ImportedSongData> loadSongs();
   static LibraryState loadLibrarySnapshot();
   static bool saveLibrarySnapshot(const LibraryState &library);
+  /** Parses library JSON (e.g. from Drive snapshot) without reading or writing the local DB. */
+  static bool parseLibraryFromJson(const juce::String &json, LibraryState &outLibrary,
+                                   juce::String *errorMessage = nullptr);
   static juce::String exportLibraryJson(const LibraryState &library);
   static juce::String exportCurrentLibraryJson();
   static juce::File getLibraryDbFile();
@@ -64,6 +67,13 @@ public:
                                const juce::String &songId);
   static bool removeSongFromSetlist(const juce::String &setlistId,
                                     const juce::String &songId);
+  /** Removes the song from the global library, all setlists, local audio folder,
+      and waveform cache. */
+  static bool removeSongFromLibrary(const juce::String &songId,
+                                    juce::String *errorMessage = nullptr);
+  /** Replaces an existing song by id or appends and adds to the active setlist if new. */
+  static bool upsertLibrarySong(ImportedSongData song,
+                                juce::String *errorMessage = nullptr);
   static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
                                 int toIndex);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr);

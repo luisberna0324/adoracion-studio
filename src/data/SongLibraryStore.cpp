@@ -158,6 +158,86 @@ bool SongLibraryStore::removeSongFromSetlist(const juce::String &setlistId,
   return saveLibrary(library);
 }
 
+bool SongLibraryStore::removeSongFromLibrary(const juce::String &songId,
+                                            juce::String *errorMessage) {
+  if (songId.isEmpty()) {
+    if (errorMessage != nullptr)
+      *errorMessage = "No song id.";
+    return false;
+  }
+
+  auto library = loadLibrary();
+  const auto beforeSongCount = library.songs.size();
+  library.songs.erase(
+      std::remove_if(library.songs.begin(), library.songs.end(),
+                     [&songId](const ImportedSongData &s) { return s.id == songId; }),
+      library.songs.end());
+  if (library.songs.size() == beforeSongCount) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Song not found in library.";
+    return false;
+  }
+
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  for (auto &setlist : library.setlists) {
+    const auto beforeItems = setlist.items.size();
+    setlist.items.erase(
+        std::remove_if(setlist.items.begin(), setlist.items.end(),
+                       [&songId](const SetlistItem &item) {
+                         return item.songId == songId;
+                       }),
+        setlist.items.end());
+    if (setlist.items.size() != beforeItems)
+      setlist.updatedMs = now;
+  }
+
+  if (!saveLibrary(library)) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Couldn't persist library after removing song.";
+    return false;
+  }
+
+  const auto songDir = getAudioRoot().getChildFile(songId);
+  if (songDir.exists())
+    (void)songDir.deleteRecursively();
+
+  const auto waveFile = getWaveformCacheDir().getChildFile(songId + ".bin");
+  if (waveFile.existsAsFile())
+    (void)waveFile.deleteFile();
+
+  return true;
+}
+
+bool SongLibraryStore::upsertLibrarySong(ImportedSongData song,
+                                        juce::String *errorMessage) {
+  if (song.id.trim().isEmpty()) {
+    if (errorMessage != nullptr)
+      *errorMessage = "No song id.";
+    return false;
+  }
+
+  ensureSongHasStemIds(song);
+  auto library = loadLibrary();
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&song](const ImportedSongData &s) {
+                           return s.id == song.id;
+                         });
+  if (it != library.songs.end()) {
+    *it = std::move(song);
+  } else {
+    library.songs.push_back(std::move(song));
+    ensureDefaultSetlist(library);
+    addSongToActiveSetlist(library, library.songs.back());
+  }
+
+  if (!saveLibrary(library)) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Couldn't persist library.";
+    return false;
+  }
+  return true;
+}
+
 bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
                                         int fromIndex, int toIndex) {
   auto library = loadLibrary();
@@ -398,6 +478,50 @@ std::vector<float> SongLibraryStore::loadWaveformCache(
   return bins;
 }
 
+bool SongLibraryStore::parseLibraryFromJson(const juce::String &json,
+                                            LibraryState &outLibrary,
+                                            juce::String *errorMessage) {
+  outLibrary = {};
+  const auto parsed = juce::JSON::parse(json);
+  auto *rootObj = parsed.getDynamicObject();
+  if (rootObj == nullptr) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Invalid library JSON.";
+    return false;
+  }
+
+  bool repairHints = false;
+  const int version = static_cast<int>(rootObj->getProperty("version"));
+  auto *songsArray = rootObj->getProperty("songs").getArray();
+  if (songsArray == nullptr) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Missing songs array.";
+    return false;
+  }
+
+  outLibrary.songs.reserve(static_cast<size_t>(songsArray->size()));
+  for (const auto &songVar : *songsArray) {
+    auto song = songFromVar(songVar);
+    (void)ensureSongHasStemIds(song);
+    outLibrary.songs.push_back(std::move(song));
+  }
+
+  if (version >= 2) {
+    outLibrary.activeSetlistId =
+        rootObj->getProperty("activeSetlistId").toString();
+    auto *setlistsArray = rootObj->getProperty("setlists").getArray();
+    if (setlistsArray != nullptr) {
+      for (const auto &setlistVar : *setlistsArray) {
+        auto setlist = setlistFromVar(setlistVar, outLibrary.songs, repairHints);
+        if (setlist.id.isNotEmpty())
+          outLibrary.setlists.push_back(std::move(setlist));
+      }
+    }
+  }
+
+  return true;
+}
+
 LibraryState SongLibraryStore::loadLibrary() {
   LibraryState library;
   bool needsSave = false;
@@ -408,38 +532,15 @@ LibraryState SongLibraryStore::loadLibrary() {
     return library;
   }
 
-  const auto parsed = juce::JSON::parse(dbFile.loadFileAsString());
-  auto *rootObj = parsed.getDynamicObject();
-  if (rootObj == nullptr) {
+  juce::String parseError;
+  if (!parseLibraryFromJson(dbFile.loadFileAsString(), library, &parseError)) {
     ensureDefaultSetlist(library);
     return library;
   }
 
-  const int version = static_cast<int>(rootObj->getProperty("version"));
-  auto *songsArray = rootObj->getProperty("songs").getArray();
-  if (songsArray != nullptr) {
-    library.songs.reserve(static_cast<size_t>(songsArray->size()));
-    for (const auto &songVar : *songsArray) {
-      auto song = songFromVar(songVar);
-      if (ensureSongHasStemIds(song))
-        needsSave = true;
-      library.songs.push_back(std::move(song));
-    }
-  }
-
-  if (version >= 2) {
-    library.activeSetlistId =
-        rootObj->getProperty("activeSetlistId").toString();
-    auto *setlistsArray = rootObj->getProperty("setlists").getArray();
-    if (setlistsArray != nullptr) {
-      for (const auto &setlistVar : *setlistsArray) {
-        auto setlist = setlistFromVar(setlistVar, library.songs, needsSave);
-        if (setlist.id.isNotEmpty())
-          library.setlists.push_back(std::move(setlist));
-      }
-    }
-  } else {
-    needsSave = true;
+  for (auto &song : library.songs) {
+    if (ensureSongHasStemIds(song))
+      needsSave = true;
   }
 
   if (library.setlists.empty()) {

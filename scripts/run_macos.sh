@@ -2,7 +2,7 @@
 set -euo pipefail
 
 export JUCE_DIR="/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE"
-export MTCONTROLS_API_BASE_URL="${MTCONTROLS_API_BASE_URL:-https://playworship-345830648064.us-east1.run.app}"
+export MTCONTROLS_API_BASE_URL="${MTCONTROLS_API_BASE_URL:-http://127.0.0.1:3000}"
 export MTCONTROLS_SESSION_REAUTH_MINUTES="${MTCONTROLS_SESSION_REAUTH_MINUTES:-7200}"
 export MTCONTROLS_REAUTH_GRACE_MINUTES="${MTCONTROLS_REAUTH_GRACE_MINUTES:-300}"
 export MTCONTROLS_FFMPEG_BIN_MACOS="${MTCONTROLS_FFMPEG_BIN_MACOS:-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/third_party/ffmpeg/macos/ffmpeg}"

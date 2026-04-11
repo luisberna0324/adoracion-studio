@@ -121,6 +121,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              PrimeImportChanged primeImportCb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
+                             const bool driveConnected,
+                             ConnectDriveRequested connectDriveCb,
                              LogoutRequested logoutCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
@@ -132,12 +134,14 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onLanguageChanged(std::move(languageCb)),
       onExpandLaunchChanged(std::move(expandCb)),
       onPrimeImportChanged(std::move(primeImportCb)),
+      onConnectDriveRequested(std::move(connectDriveCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
-      deviceManager(deviceManagerToUse) {
+      deviceManager(deviceManagerToUse),
+      isDriveConnected(driveConnected) {
   juce::ignoreUnused(closeCb, maxInputChannels, maxOutputChannels);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
@@ -277,11 +281,21 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   actionLogoutLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(actionLogoutLabel);
 
+  actionConnectDriveLabel.setJustificationType(juce::Justification::centredLeft);
+  actionConnectDriveLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(actionConnectDriveLabel);
+
   actionInfoLabel.setJustificationType(juce::Justification::centredLeft);
   actionInfoLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(actionInfoLabel);
 
   generalPage.addAndMakeVisible(infoLinkButton);
+
+  connectDriveButton.onClick = [this] {
+    if (onConnectDriveRequested)
+      onConnectDriveRequested(isDriveConnected);
+  };
+  generalPage.addAndMakeVisible(connectDriveButton);
 
   logoutButton.onClick = [this] {
     if (onLogoutRequested)
@@ -427,9 +441,16 @@ void SettingsPanel::refreshThemeColours() {
   sessionExpiresValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   actionLogoutLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  actionConnectDriveLabel.setColour(juce::Label::textColourId,
+                                    UITheme::textSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
+  connectDriveButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  connectDriveButton.setColour(juce::TextButton::buttonOnColourId,
+                               UITheme::accentSoft);
+  connectDriveButton.setColour(juce::TextButton::textColourOffId,
+                               UITheme::onAccent);
   logoutButton.setColour(juce::TextButton::buttonColourId,
                          juce::Colour::fromRGB(125, 45, 45));
   logoutButton.setColour(juce::TextButton::buttonOnColourId,
@@ -484,10 +505,18 @@ void SettingsPanel::applyLanguageTexts() {
       juce::dontSendNotification);
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
+  actionConnectDriveLabel.setText(
+      isDriveConnected
+          ? L10n::tr("Desconectar Google Drive", "Disconnect Google Drive")
+          : L10n::tr("Conectar Google Drive", "Connect Google Drive"),
+      juce::dontSendNotification);
   actionLogoutLabel.setText(L10n::tr("Salir de la aplicacion", "Logout from application"),
                             juce::dontSendNotification);
   actionInfoLabel.setText(L10n::tr("Saber mas", "More information"),
                           juce::dontSendNotification);
+  connectDriveButton.setButtonText(
+      isDriveConnected ? L10n::tr("Desconectar Drive", "Disconnect Drive")
+                       : L10n::tr("Conectar Drive", "Connect Drive"));
   logoutButton.setButtonText(
       L10n::tr("Salir de la aplicacion", "Logout from application"));
   infoLinkButton.setButtonText(L10n::tr("Saber mas", "More information"));
@@ -533,6 +562,9 @@ void SettingsPanel::layoutGeneralPage() {
   area.removeFromTop(12);
   actionsSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);
+  actionConnectDriveLabel.setBounds(area.removeFromTop(22));
+  connectDriveButton.setBounds(area.removeFromTop(30));
+  area.removeFromTop(8);
   actionLogoutLabel.setBounds(area.removeFromTop(22));
   logoutButton.setBounds(area.removeFromTop(30));
   area.removeFromTop(8);

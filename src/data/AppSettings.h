@@ -36,6 +36,8 @@ public:
   static void setLastSuccessfulLoginMs(juce::int64 value);
   static juce::int64 getReauthGraceDeadlineMs();
   static void setReauthGraceDeadlineMs(juce::int64 value);
+  static bool getDriveConnected();
+  static void setDriveConnected(bool value);
   static std::vector<CategoryRoutingDefaults> getRoutingDefaults();
   static void setRoutingDefaults(
       const std::vector<CategoryRoutingDefaults> &defaults);

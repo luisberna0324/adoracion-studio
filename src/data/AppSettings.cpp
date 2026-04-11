@@ -337,6 +337,34 @@ void AppSettings::setReauthGraceDeadlineMs(const juce::int64 value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+bool AppSettings::getDriveConnected() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return false;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("driveConnected"))
+      return static_cast<bool>(o->getProperty("driveConnected"));
+  }
+  return false;
+}
+
+void AppSettings::setDriveConnected(const bool value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 11);
+    o->setProperty("driveConnected", value);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 std::vector<CategoryRoutingDefaults> AppSettings::getRoutingDefaults() {
   auto defaults = buildDefaultRouting();
   const auto f = getSettingsFile();

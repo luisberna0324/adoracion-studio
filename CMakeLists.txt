@@ -119,6 +119,8 @@ target_sources(MTControls
         src/cloud/DriveApiClient.h
         src/cloud/DriveAuthSession.cpp
         src/cloud/DriveAuthSession.h
+        src/cloud/SongDownloadManager.cpp
+        src/cloud/SongDownloadManager.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
         src/data/Localization.h
@@ -152,6 +154,8 @@ target_sources(MTControls
         src/ui/panels/SettingsPanel.h
         src/ui/panels/SongImportWizardComponent.cpp
         src/ui/panels/SongImportWizardComponent.h
+        src/ui/panels/SongLibraryBrowserComponent.cpp
+        src/ui/panels/SongLibraryBrowserComponent.h
         src/ui/panels/SongListPanel.cpp
         src/ui/panels/SongListPanel.h
         src/ui/panels/TopBar.cpp

@@ -17,6 +17,7 @@ public:
   using PrimeImportChanged = std::function<void(bool)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
+  using ConnectDriveRequested = std::function<void(bool)>;
   using RoutingDefaultsChanged =
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
@@ -37,6 +38,8 @@ public:
                 ExpandLaunchChanged expandCb, bool primeImportEnabled,
                 PrimeImportChanged primeImportCb, CloseRequested closeCb,
                 SessionSummary sessionSummary,
+                bool driveConnected,
+                ConnectDriveRequested connectDriveCb,
                 LogoutRequested logoutCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
                 int availableOutputChannels,
@@ -91,9 +94,11 @@ private:
   juce::Label sessionExpiresValue;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
+  juce::Label actionConnectDriveLabel;
   juce::Label actionInfoLabel;
   juce::HyperlinkButton infoLinkButton{
       "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
+  juce::TextButton connectDriveButton;
   juce::TextButton logoutButton;
   juce::Label routingSectionLabel;
   juce::Viewport routingViewport;
@@ -102,6 +107,7 @@ private:
   LanguageChanged onLanguageChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
   PrimeImportChanged onPrimeImportChanged;
+  ConnectDriveRequested onConnectDriveRequested;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
@@ -116,6 +122,7 @@ private:
     juce::String deviceName;
   };
   std::vector<DeviceOption> deviceOptions;
+  bool isDriveConnected = false;
 
   void refreshDeviceOptions();
   void applyDeviceSelection(int optionIndex);

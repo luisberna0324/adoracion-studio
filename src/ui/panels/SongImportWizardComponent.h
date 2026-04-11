@@ -11,7 +11,7 @@
 class SongImportWizardComponent final : public juce::Component {
 public:
   explicit SongImportWizardComponent(
-      std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+      std::function<bool(ImportedSongData, bool, juce::String &)> onSubmitSong,
       bool primeImportEnabled);
   ~SongImportWizardComponent() override;
 
@@ -62,7 +62,7 @@ private:
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
 
-  std::function<bool(ImportedSongData, juce::String &)> onSubmit;
+  std::function<bool(ImportedSongData, bool, juce::String &)> onSubmit;
   bool primeImportEnabled = false;
   int currentStep = 0;
   std::unique_ptr<juce::FileChooser> stemChooser;
@@ -105,6 +105,7 @@ private:
   juce::Component mapContent;
 
   juce::TextEditor summaryEditor;
+  juce::ToggleButton syncWithDriveToggle;
 
   juce::TextButton cancelButton;
   juce::TextButton backButton;
