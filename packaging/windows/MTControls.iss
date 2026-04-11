@@ -42,6 +42,9 @@ SetupIconFile={#InstallerIconFile}
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[CustomMessages]
+english.AdditionalTasks=Additional tasks:
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "firewallexception"; Description: "Agregar excepcion de firewall para {#AppName}"; GroupDescription: "{cm:AdditionalTasks}"; Flags: checkedonce
