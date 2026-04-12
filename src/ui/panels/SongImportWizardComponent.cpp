@@ -1,5 +1,6 @@
 #include "SongImportWizardComponent.h"
 
+#include "../components/SongLoadProgressOverlay.h"
 #include "../UiCommon.h"
 #include "../../data/Localization.h"
 
@@ -135,7 +136,9 @@ private:
 };
 
 SongImportWizardComponent::SongImportWizardComponent(
-    std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+    std::function<bool(ImportedSongData, juce::String &,
+                       const SongImportProgressFn &)>
+        onSubmitSong,
     const bool primeImportEnabledIn)
     : onSubmit(std::move(onSubmitSong)),
       primeImportEnabled(primeImportEnabledIn) {
@@ -906,18 +909,57 @@ void SongImportWizardComponent::submitSong() {
   if (currentStep != 2)
     return;
 
-  if (onSubmit) {
-    juce::String errorMessage;
-    if (!onSubmit(buildSongData(), errorMessage)) {
-      juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon,
-          L10n::tr("Error de importacion", "Import error"),
-          errorMessage.isNotEmpty()
-              ? errorMessage
-              : L10n::tr("No se pudo importar la cancion seleccionada.",
-                         "Couldn't import the selected song."));
-      return;
-    }
+  if (!onSubmit) {
+    closeDialog();
+    return;
+  }
+
+  submitButton.setEnabled(false);
+  backButton.setEnabled(false);
+  nextButton.setEnabled(false);
+  cancelButton.setEnabled(false);
+
+  SongLoadProgressOverlay overlay;
+  addAndMakeVisible(overlay);
+  overlay.refreshThemeColours();
+  overlay.setTitleText(
+      L10n::tr("Importando cancion", "Importing song"));
+  overlay.setAlwaysOnTop(true);
+  overlay.setBounds(getLocalBounds());
+  overlay.setVisible(true);
+  overlay.toFront(true);
+
+  auto pumpUi = [] {
+    if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+      mm->runDispatchLoopUntil(14);
+  };
+
+  const SongImportProgressFn report =
+      [&overlay, pumpUi](const double progress01, const juce::String &phase) {
+        overlay.setProgress(juce::jlimit(0.0, 1.0, progress01));
+        overlay.setPhaseText(phase);
+        pumpUi();
+      };
+
+  juce::String errorMessage;
+  const bool ok = onSubmit(buildSongData(), errorMessage, report);
+
+  removeChildComponent(&overlay);
+
+  submitButton.setEnabled(true);
+  backButton.setEnabled(true);
+  nextButton.setEnabled(true);
+  cancelButton.setEnabled(true);
+
+  if (!ok) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Error de importacion", "Import error"),
+        errorMessage.isNotEmpty()
+            ? errorMessage
+            : L10n::tr("No se pudo importar la cancion seleccionada.",
+                       "Couldn't import the selected song."));
+    return;
   }
 
   closeDialog();

@@ -1474,7 +1474,8 @@ void SongListPanel::openSongImportWizard() {
   options.resizable = true;
   options.componentToCentreAround = centerTarget;
   auto *panel = new SongImportWizardComponent(
-      [safeThis](ImportedSongData song, juce::String &errorMessage) {
+      [safeThis](ImportedSongData song, juce::String &errorMessage,
+                 const SongImportProgressFn &progress) {
         if (safeThis == nullptr) {
           errorMessage =
               L10n::tr("La vista de importacion ya no esta disponible.",
@@ -1482,10 +1483,9 @@ void SongListPanel::openSongImportWizard() {
           return false;
         }
 
-        juce::MouseCursor::showWaitCursor();
         juce::String importError;
-        const bool success = SongLibraryStore::appendSong(std::move(song), &importError);
-        juce::MouseCursor::hideWaitCursor();
+        const bool success =
+            SongLibraryStore::appendSong(std::move(song), &importError, progress);
 
         if (!success) {
           errorMessage = importError.isNotEmpty() ? importError
@@ -1495,12 +1495,28 @@ void SongListPanel::openSongImportWizard() {
           return false;
         }
 
+        if (progress)
+          progress(0.97, L10n::tr("Actualizando lista de canciones…",
+                                  "Refreshing song list…"));
         const auto allSongs = SongLibraryStore::loadSongs();
         if (!allSongs.empty()) {
           const auto &saved = allSongs.back();
-          auto bins = buildMixedWaveformBins(saved);
+          if (progress)
+            progress(0.98, L10n::tr("Generando vista de forma de onda…",
+                                    "Generating waveform preview…"));
+          auto bins = buildMixedWaveformBins(
+              saved, 1400,
+              [&progress](const double wf01) {
+                if (progress)
+                  progress(0.98 + 0.02 * juce::jlimit(0.0, 1.0, wf01),
+                           L10n::tr("Generando vista de forma de onda…",
+                                    "Generating waveform preview…"));
+              });
           SongLibraryStore::saveWaveformCache(saved.id, bins);
         }
+
+        if (progress)
+          progress(1.0, L10n::tr("Importacion completa", "Import complete"));
 
         safeThis->refreshFromStorage();
         return true;

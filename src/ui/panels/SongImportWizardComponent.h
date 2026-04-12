@@ -2,6 +2,7 @@
 
 #include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
+#include "../../data/SongLibraryStore.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -11,7 +12,9 @@
 class SongImportWizardComponent final : public juce::Component {
 public:
   explicit SongImportWizardComponent(
-      std::function<bool(ImportedSongData, juce::String &)> onSubmitSong,
+      std::function<bool(ImportedSongData, juce::String &,
+                         const SongImportProgressFn &)>
+          onSubmitSong,
       bool primeImportEnabled);
   ~SongImportWizardComponent() override;
 
@@ -62,7 +65,9 @@ private:
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
 
-  std::function<bool(ImportedSongData, juce::String &)> onSubmit;
+  std::function<bool(ImportedSongData, juce::String &,
+                     const SongImportProgressFn &)>
+      onSubmit;
   bool primeImportEnabled = false;
   int currentStep = 0;
   std::unique_ptr<juce::FileChooser> stemChooser;

@@ -1,7 +1,10 @@
 #include "PluginEditor.h"
 #include "BinaryData.h"
 #include "data/AppSettings.h"
+#include "data/AuthSessionApi.h"
 #include "data/Localization.h"
+#include "data/SessionAuthLogger.h"
+#include "data/SessionPersistence.h"
 #include "data/SongData.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
@@ -11,9 +14,11 @@
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
+#include "ui/components/SongLoadProgressOverlay.h"
 #include "audio/AudioDeviceMonitor.h"
 #include <algorithm>
 #include <cctype>
+#include <thread>
 
 #if JucePlugin_Build_Standalone
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
@@ -33,10 +38,8 @@ constexpr int kDefaultWindowH = 700;
 constexpr int kMinWindowW = 940;
 constexpr int kMinWindowH = 600;
 constexpr int kScreenMargin = 40;
-constexpr int kAuthModalW = 520;
-constexpr int kAuthModalH = 260;
-constexpr int kAuthWindowW = 560;
-constexpr int kAuthWindowH = 320;
+constexpr int kAuthWindowW = 680;
+constexpr int kAuthWindowH = 588;
 constexpr int kCompactBreakpointW = 1180;
 constexpr int kCompactBreakpointH = 700;
 constexpr int kLargeBreakpointW = 1680;
@@ -54,6 +57,12 @@ constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/"
 #ifndef MTCONTROLS_REAUTH_GRACE_MINUTES
 #define MTCONTROLS_REAUTH_GRACE_MINUTES 300
 #endif
+#ifndef MTCONTROLS_MAX_OFFLINE_HOURS
+#define MTCONTROLS_MAX_OFFLINE_HOURS 168
+#endif
+
+constexpr juce::int64 kMaxOfflineMs =
+    static_cast<juce::int64>(MTCONTROLS_MAX_OFFLINE_HOURS) * 3600LL * 1000LL;
 
 constexpr juce::int64 kSessionReauthIntervalMs =
     static_cast<juce::int64>(MTCONTROLS_SESSION_REAUTH_MINUTES) * 60LL * 1000LL;
@@ -395,102 +404,213 @@ private:
 };
 
 namespace {
+/** Botones tipo pildora (referencia: pantallas de bienvenida centradas). */
+class WelcomePillLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  enum class Style { Primary, Secondary };
+  explicit WelcomePillLookAndFeel(Style s) : style(s) {}
+
+  void drawButtonBackground(juce::Graphics &g, juce::Button &button,
+                            const juce::Colour &backgroundColour,
+                            bool isMouseOverButton,
+                            bool isButtonDown) override {
+    juce::ignoreUnused(backgroundColour);
+    auto r = button.getLocalBounds().toFloat().reduced(0.5f, 1.0f);
+    const float rad = r.getHeight() * 0.5f;
+    if (style == Style::Primary) {
+      auto fill = juce::Colour(0xfff5f5f7);
+      if (isButtonDown)
+        fill = fill.darker(0.14f);
+      else if (isMouseOverButton)
+        fill = juce::Colour(0xffffffff);
+      g.setColour(fill);
+      g.fillRoundedRectangle(r, rad);
+      g.setColour(juce::Colour(0xff000000).withAlpha(0.06f));
+      g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
+    } else {
+      auto fill = juce::Colour(0x00000000);
+      if (isButtonDown)
+        fill = juce::Colour(0xff2a2a30).withAlpha(0.9f);
+      else if (isMouseOverButton)
+        fill = juce::Colour(0xff34343c).withAlpha(0.55f);
+      g.setColour(fill);
+      g.fillRoundedRectangle(r, rad);
+      const auto border = juce::Colour(0xff5c5c66);
+      g.setColour(border.withMultipliedAlpha(isMouseOverButton ? 1.1f : 0.85f));
+      g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
+    }
+  }
+
+  juce::Font getTextButtonFont(juce::TextButton &, int buttonHeight) override {
+    const float px =
+        juce::jlimit(15.0f, 17.0f, static_cast<float>(buttonHeight) * 0.34f);
+    return juce::Font(
+        juce::FontOptions(px).withStyle(style == Style::Primary ? "Bold"
+                                                                 : "Regular"));
+  }
+
+private:
+  Style style;
+};
+
 class WelcomeModal final : public juce::Component {
 public:
   std::function<void()> onLoginRequested;
 
   WelcomeModal() {
+    setOpaque(false);
+
     logoImage = juce::ImageFileFormat::loadFrom(
         BinaryData::logoPlayWorship_jpeg, BinaryData::logoPlayWorship_jpegSize);
-    if (logoImage.isValid())
+    if (logoImage.isValid()) {
+      logo.setOpaque(false);
       addAndMakeVisible(logo);
+    }
 
-    title.setText(L10n::tr("Bienvenido", "Welcome"), juce::dontSendNotification);
+    auto clearLabelBg = [](juce::Label &l) {
+      l.setOpaque(false);
+      l.setColour(juce::Label::backgroundColourId,
+                  juce::Colours::transparentBlack);
+      l.setColour(juce::Label::outlineColourId,
+                  juce::Colours::transparentBlack);
+    };
+
+    title.setText(
+        L10n::tr("Te damos la bienvenida\na PlayWorship",
+                 "Welcome to\nPlayWorship"),
+        juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centred);
-    title.setFont(juce::FontOptions(26.0f).withStyle("Bold"));
+    title.setFont(juce::FontOptions(30.0f).withStyle("Bold"));
+    title.setMinimumHorizontalScale(0.82f);
+    title.setColour(juce::Label::textColourId,
+                    juce::Colour::fromRGB(252, 252, 255));
     addAndMakeVisible(title);
+    clearLabelBg(title);
 
-    subtitle.setText(L10n::tr("Inicia sesion para continuar.",
-                              "Sign in to continue."),
-                     juce::dontSendNotification);
+    subtitle.setText(
+        L10n::tr("Inicia sesion para continuar con tu biblioteca y setlists.",
+                 "Sign in to continue with your library and setlists."),
+        juce::dontSendNotification);
     subtitle.setJustificationType(juce::Justification::centred);
-    subtitle.setFont(juce::FontOptions(14.0f));
+    subtitle.setFont(juce::FontOptions(15.0f));
+    subtitle.setColour(juce::Label::textColourId,
+                       juce::Colour::fromRGB(168, 170, 184));
     addAndMakeVisible(subtitle);
+    clearLabelBg(subtitle);
 
     status.setText(
         L10n::tr("Pulsa Ingresar para abrir el navegador.",
                  "Press Sign in to open the browser."),
         juce::dontSendNotification);
     status.setJustificationType(juce::Justification::centred);
-    status.setFont(juce::FontOptions(12.5f));
+    status.setFont(juce::FontOptions(13.0f));
+    status.setColour(juce::Label::textColourId,
+                     juce::Colour::fromRGB(146, 148, 160));
     addAndMakeVisible(status);
+    clearLabelBg(status);
 
     loginButton.setButtonText(L10n::tr("Ingresar", "Sign in"));
+    loginButton.setLookAndFeel(&primaryLaf);
+    loginButton.setColour(juce::TextButton::buttonColourId,
+                          juce::Colours::transparentWhite);
+    loginButton.setColour(juce::TextButton::buttonOnColourId,
+                          juce::Colours::transparentWhite);
+    loginButton.setColour(juce::TextButton::textColourOffId,
+                          juce::Colour::fromRGB(18, 18, 22));
+    loginButton.setColour(juce::TextButton::textColourOnId,
+                          juce::Colour::fromRGB(18, 18, 22));
     loginButton.onClick = [this] {
       if (onLoginRequested)
         onLoginRequested();
     };
     addAndMakeVisible(loginButton);
 
-    infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
-    infoLink.setButtonText(L10n::tr("Mas informacion", "More information"));
-    infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
-                     juce::Justification::centred);
-    addAndMakeVisible(infoLink);
+    moreInfoButton.setButtonText(
+        L10n::tr("Mas informacion", "More information"));
+    moreInfoButton.setLookAndFeel(&secondaryLaf);
+    moreInfoButton.setColour(juce::TextButton::buttonColourId,
+                             juce::Colours::transparentWhite);
+    moreInfoButton.setColour(juce::TextButton::buttonOnColourId,
+                             juce::Colours::transparentWhite);
+    moreInfoButton.setColour(juce::TextButton::textColourOffId,
+                             juce::Colour::fromRGB(236, 236, 242));
+    moreInfoButton.setColour(juce::TextButton::textColourOnId,
+                             juce::Colour::fromRGB(252, 252, 255));
+    moreInfoButton.onClick = [] {
+      juce::URL(kSubscriptionInfoUrl).launchInDefaultBrowser();
+    };
+    addAndMakeVisible(moreInfoButton);
+  }
+
+  ~WelcomeModal() override {
+    loginButton.setLookAndFeel(nullptr);
+    moreInfoButton.setLookAndFeel(nullptr);
   }
 
   void setStatusText(const juce::String &text, bool isError) {
     status.setText(text, juce::dontSendNotification);
     status.setColour(juce::Label::textColourId,
                      isError ? juce::Colour::fromRGB(255, 164, 164)
-                             : juce::Colour::fromRGB(205, 214, 227));
+                             : juce::Colour::fromRGB(146, 148, 160));
   }
 
   void resetStatusToDefault() {
     setStatusText(L10n::tr("Pulsa Ingresar para abrir el navegador.",
                            "Press Sign in to open the browser."),
                   false);
+    setChecking(false);
   }
 
-  void paint(juce::Graphics &g) override {
-    drawStudioBackground(g, getLocalBounds().toFloat());
-    auto box = getLocalBounds().toFloat().reduced(1.5f);
-    g.setColour(juce::Colour::fromRGB(20, 20, 24));
-    g.fillRoundedRectangle(box, 10.0f);
-    g.setColour(juce::Colour::fromRGB(70, 75, 86));
-    g.drawRoundedRectangle(box, 10.0f, 1.0f);
+  void setChecking(bool isChecking) {
+    loginButton.setVisible(!isChecking);
+    moreInfoButton.setVisible(!isChecking);
+    subtitle.setVisible(!isChecking);
   }
+
+  void paint(juce::Graphics &) override {}
 
   void resized() override {
-    auto area = getLocalBounds().reduced(18);
+    const int sidePad = juce::jlimit(36, 56, getWidth() / 9);
+    const int topPad = juce::jlimit(32, 48, getHeight() / 11);
+    auto area = getLocalBounds().reduced(sidePad, topPad);
+    const int maxCol = 420;
+    const int colW = juce::jmin(maxCol, area.getWidth());
+    auto column = area.withSizeKeepingCentre(colW, area.getHeight());
+
     if (logoImage.isValid()) {
-      auto logoArea = area.removeFromTop(62);
+      auto logoArea = column.removeFromTop(80);
+      const int logoW = juce::jmin(300, logoArea.getWidth());
+      const int logoH = juce::jlimit(50, 72, logoArea.getHeight() - 6);
       logo.setImage(logoImage, juce::RectanglePlacement::centred);
-      logo.setBounds(logoArea.withSizeKeepingCentre(220, 56));
-      area.removeFromTop(6);
+      logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
+      column.removeFromTop(24);
+    } else {
+      column.removeFromTop(8);
     }
-    title.setBounds(area.removeFromTop(38));
-    subtitle.setBounds(area.removeFromTop(26));
-    area.removeFromTop(12);
-    status.setBounds(area.removeFromTop(38));
-    area.removeFromTop(10);
-    auto controlsRow = area.removeFromTop(40).withSizeKeepingCentre(390, 36);
-    auto loginArea = controlsRow.removeFromLeft(200);
-    controlsRow.removeFromLeft(10);
-    auto linkArea = controlsRow;
-    loginButton.setBounds(loginArea);
-    infoLink.setBounds(linkArea);
+
+    title.setBounds(column.removeFromTop(72));
+    column.removeFromTop(12);
+    subtitle.setBounds(column.removeFromTop(52));
+    column.removeFromTop(20);
+    status.setBounds(column.removeFromTop(38));
+    column.removeFromTop(26);
+
+    const int btnH = 48;
+    loginButton.setBounds(column.removeFromTop(btnH));
+    column.removeFromTop(12);
+    moreInfoButton.setBounds(column.removeFromTop(btnH));
   }
 
 private:
+  WelcomePillLookAndFeel primaryLaf{WelcomePillLookAndFeel::Style::Primary};
+  WelcomePillLookAndFeel secondaryLaf{WelcomePillLookAndFeel::Style::Secondary};
   juce::ImageComponent logo;
   juce::Image logoImage;
   juce::Label title;
   juce::Label subtitle;
   juce::Label status;
   juce::TextButton loginButton;
-  juce::HyperlinkButton infoLink{"Mas informacion",
-                                 juce::URL(kSubscriptionInfoUrl)};
+  juce::TextButton moreInfoButton;
 };
 
 class ReauthPromptModal final : public juce::Component {
@@ -637,6 +757,9 @@ private:
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MTControlsAudioProcessor &p)
     : AudioProcessorEditor(p) {
+  SessionAuthLogger::write("PluginEditor ctor");
+  SessionAuthLogger::write("PluginEditor ctor: log file " +
+                           SessionAuthLogger::getLogFile().getFullPathName());
   currentThemeId = AppSettings::getThemePresetId();
   applyTheme(static_cast<ThemePreset>(currentThemeId));
 
@@ -665,6 +788,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   initializeWelcomeModal();
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
+  {
+    PersistedSessionSnapshot bootSnap;
+    if (SessionPersistence::load(bootSnap))
+      lastOnlineValidationMs = bootSnap.lastOnlineValidationMs;
+  }
+  tryResumeSessionAsync();
   startTimerHz(12);
 
 #if JucePlugin_Build_Standalone
@@ -884,8 +1013,40 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       setlistHandlePanel->setTitle(name);
   });
 
+  struct SongLoadUiScope {
+    bool &busy;
+    SongLoadProgressOverlay *overlay;
+    ~SongLoadUiScope() {
+      busy = false;
+      if (overlay != nullptr)
+        overlay->setVisible(false);
+    }
+  };
+
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
+    if (songLoadBusy)
+      return false;
+    songLoadBusy = true;
+    SongLoadUiScope loadUiScope{songLoadBusy, songLoadOverlay.get()};
+
+    auto pumpUi = [] {
+      if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+        mm->runDispatchLoopUntil(14);
+    };
+
+    auto pushLoadUi = [this, pumpUi](double overall01, const juce::String &phase) {
+      if (songLoadOverlay == nullptr)
+        return;
+      songLoadOverlay->setProgress(overall01);
+      songLoadOverlay->setPhaseText(phase);
+      if (!songLoadOverlay->isVisible()) {
+        songLoadOverlay->setVisible(true);
+        songLoadOverlay->toFront(false);
+      }
+      pumpUi();
+    };
+
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
     std::vector<bool> pitchShiftMask;
@@ -938,8 +1099,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       pitchShiftMask.push_back(isStemPitchShiftable(loadedStem));
     }
 
-    const bool loaded = p.loadSongStems(stemPaths, song.title, song.key,
-                                        static_cast<double>(song.bpm));
+    pushLoadUi(0.0, L10n::tr("Preparando pistas…", "Preparing tracks…"));
+
+    const bool loaded = p.loadSongStems(
+        stemPaths, song.title, song.key, static_cast<double>(song.bpm),
+        [&pushLoadUi](double stemPhase01) {
+          pushLoadUi(0.55 * stemPhase01,
+                     L10n::tr("Leyendo audio de las pistas…",
+                              "Reading stem audio…"));
+        });
 
     if (!loaded) {
       juce::AlertWindow::showMessageBoxAsync(
@@ -996,10 +1164,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
     if (cachedBins.empty()) {
-      cachedBins = buildMixedWaveformBins(loadedSong);
+      pushLoadUi(0.58, L10n::tr("Generando vista de forma de onda…",
+                                "Generating waveform preview…"));
+      cachedBins = buildMixedWaveformBins(
+          loadedSong, 1400, [&pushLoadUi](const double wf01) {
+            pushLoadUi(0.58 + 0.40 * wf01,
+                       L10n::tr("Generando vista de forma de onda…",
+                                "Generating waveform preview…"));
+          });
       SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins);
+    } else {
+      pushLoadUi(0.98, L10n::tr("Cargando forma de onda en caché…",
+                                "Loading cached waveform…"));
     }
 
+    pushLoadUi(1.0, L10n::tr("Finalizando…", "Finishing…"));
     waveformBarRaw->setWaveformBins(std::move(cachedBins));
     waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
                                   loadedSong.timeSignature);
@@ -1126,6 +1305,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
+
+  songLoadOverlay = std::make_unique<SongLoadProgressOverlay>();
+  addChildComponent(*songLoadOverlay);
+  songLoadOverlay->setVisible(false);
+
   if (reauthPromptModal == nullptr) {
     auto prompt = std::make_unique<ReauthPromptModal>();
     prompt->onLoginNow = [this] {
@@ -1251,6 +1435,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   activeSession.reason = params["reason"].trim();
   activeSession.refreshToken = params["refreshToken"].trim();
   activeSession.firebaseApiKey = params["firebaseApiKey"].trim();
+  activeSession.licenseKey = params["licenseKey"].trim();
   const auto expMsFromParams = params["idTokenExpiresAtMs"].trim().getLargeIntValue();
   if (expMsFromParams > 0)
     activeSession.idTokenExpiresAtMs = expMsFromParams;
@@ -1294,6 +1479,8 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
         readStringFromObject(parsed, "firebaseApiKey").isNotEmpty()
             ? readStringFromObject(parsed, "firebaseApiKey")
             : activeSession.firebaseApiKey;
+    if (readStringFromObject(parsed, "licenseKey").isNotEmpty())
+      activeSession.licenseKey = readStringFromObject(parsed, "licenseKey");
     const auto expMsRaw = readStringFromObject(parsed, "idTokenExpiresAtMs");
     const auto expMs = expMsRaw.getLargeIntValue();
     if (expMs > 0)
@@ -1349,6 +1536,10 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   hideReauthPromptModal();
   if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
     reauth->showReadyState();
+  saveSessionSnapshotToDisk();
+  SessionAuthLogger::write(
+      "completeBootstrapLogin: web login OK, snapshot saved, calling "
+      "initializeMainUi");
   initializeMainUi();
 }
 
@@ -1401,7 +1592,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.expiresAt,
                                     activeSession.allowed,
                                     activeSession.reasonCode,
-                                    activeSession.reason},
+                                    activeSession.reason,
+                                    activeSession.licenseKey},
       [this] { handleLogout(); }, routingDefaults,
       proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,
@@ -1445,6 +1637,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 }
 
 void MTControlsAudioProcessorEditor::handleLogout() {
+  SessionAuthLogger::write("handleLogout");
   if (settingsWindow != nullptr) {
     settingsWindow->setVisible(false);
     settingsWindow->exitModalState(0);
@@ -1456,6 +1649,8 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   authCallbackPort = 0;
 
   activeSession = {};
+  lastOnlineValidationMs = 0;
+  SessionPersistence::clear();
   lastSuccessfulLoginMs = 0;
   AppSettings::setLastSuccessfulLoginMs(0);
   reauthGraceDeadlineMs = 0;
@@ -1497,7 +1692,247 @@ void MTControlsAudioProcessorEditor::hideReauthPromptModal() {
   reauthPromptModal->setVisible(false);
 }
 
+PersistedSessionSnapshot
+MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
+    const juce::int64 lastOnlineMs) const {
+  PersistedSessionSnapshot p;
+  p.uid = activeSession.uid;
+  p.email = activeSession.email;
+  p.plan = activeSession.plan;
+  p.subscriptionStatus = activeSession.subscriptionStatus;
+  p.expiresAt = activeSession.expiresAt;
+  p.licenseKey = activeSession.licenseKey;
+  p.allowed = activeSession.allowed;
+  p.reasonCode = activeSession.reasonCode;
+  p.reason = activeSession.reason;
+  p.refreshToken = activeSession.refreshToken;
+  p.firebaseApiKey = activeSession.firebaseApiKey;
+  p.idTokenExpiresAtMs = activeSession.idTokenExpiresAtMs;
+  p.lastOnlineValidationMs = lastOnlineMs;
+  return p;
+}
+
+void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
+    const PersistedSessionSnapshot &snap) {
+  activeSession.uid = snap.uid;
+  activeSession.email = snap.email;
+  activeSession.plan = snap.plan;
+  activeSession.subscriptionStatus = snap.subscriptionStatus;
+  activeSession.expiresAt = snap.expiresAt;
+  activeSession.licenseKey = snap.licenseKey;
+  activeSession.allowed = snap.allowed;
+  activeSession.reasonCode = snap.reasonCode;
+  activeSession.reason = snap.reason;
+  activeSession.refreshToken = snap.refreshToken;
+  activeSession.firebaseApiKey = snap.firebaseApiKey;
+  activeSession.idTokenExpiresAtMs = snap.idTokenExpiresAtMs;
+  lastOnlineValidationMs = snap.lastOnlineValidationMs;
+}
+
+void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
+  const auto nowMs = juce::Time::currentTimeMillis();
+  lastOnlineValidationMs = nowMs;
+  SessionPersistence::save(persistedSnapshotFromActiveSession(nowMs));
+}
+
+void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
+  SessionAuthLogger::write("tryResumeSessionAsync: begin");
+  PersistedSessionSnapshot snap;
+  if (!SessionPersistence::load(snap)) {
+    SessionAuthLogger::write(
+        "tryResumeSessionAsync: no valid snapshot, user must use web login");
+    return;
+  }
+  if (!snap.allowed ||
+      !hasValidAccessBySubscriptionState(snap.subscriptionStatus, snap.plan)) {
+    SessionAuthLogger::write(
+        "tryResumeSessionAsync: snapshot invalid allowed=" +
+        juce::String(static_cast<int>(snap.allowed)) + " plan=" + snap.plan +
+        " status=" + snap.subscriptionStatus + " -> clearing snapshot");
+    SessionPersistence::clear();
+    return;
+  }
+
+  if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+    modal->setStatusText(L10n::tr("Comprobando sesion...", "Checking session..."),
+                         false);
+    modal->setChecking(true);
+  }
+
+  juce::Component::SafePointer<MTControlsAudioProcessorEditor> safe(this);
+  const juce::String apiBase = getApiBaseUrl();
+  const juce::String deviceId = buildStableDeviceId();
+  SessionAuthLogger::write("tryResumeSessionAsync: apiBase=" + apiBase +
+                           " deviceIdPrefix=" + deviceId.substring(0, 12) + "...");
+
+  std::thread([safe, snap, apiBase, deviceId] {
+    bool success = false;
+    bool validatedOnline = false;
+    bool clearSnapshot = false;
+    juce::String welcomeError;
+    PersistedSessionSnapshot out = snap;
+
+    const auto tryOfflineWithinTtl = [&]() {
+      const juce::int64 nowMs = juce::Time::currentTimeMillis();
+      const juce::int64 ageMs = nowMs - snap.lastOnlineValidationMs;
+      if (snap.lastOnlineValidationMs > 0 &&
+          ageMs <= kMaxOfflineMs && snap.allowed &&
+          hasValidAccessBySubscriptionState(snap.subscriptionStatus, snap.plan)) {
+        SessionAuthLogger::write(
+            "tryResumeSessionAsync(bg): offline fallback OK ageMs=" +
+            juce::String(ageMs) + " maxOfflineMs=" + juce::String(kMaxOfflineMs));
+        success = true;
+        validatedOnline = false;
+        out = snap;
+        return true;
+      }
+      SessionAuthLogger::write(
+          "tryResumeSessionAsync(bg): offline fallback FAIL ageMs=" +
+          juce::String(ageMs) + " lastOnlineMs=" +
+          juce::String(snap.lastOnlineValidationMs) + " nowMs=" +
+          juce::String(nowMs));
+      welcomeError =
+          L10n::tr("Se requiere conexion para validar la suscripcion.",
+                   "An internet connection is required to validate your subscription.");
+      clearSnapshot = false;
+      return false;
+    };
+
+    const auto fr =
+        AuthSessionApi::refreshFirebaseIdToken(snap.firebaseApiKey, snap.refreshToken);
+    if (fr.ok) {
+      out.refreshToken =
+          fr.refreshToken.isNotEmpty() ? fr.refreshToken : snap.refreshToken;
+
+      const auto va = AuthSessionApi::fetchValidateAccess(
+          apiBase, fr.idToken, deviceId, snap.licenseKey);
+      if (va.rawError == "network" || va.rawError == "parse") {
+        SessionAuthLogger::write(
+            va.rawError == "network"
+                ? "tryResumeSessionAsync(bg): validate-access network error, trying "
+                  "offline TTL"
+                : "tryResumeSessionAsync(bg): validate-access non-JSON/infra "
+                  "(parse), trying offline TTL");
+        if (!tryOfflineWithinTtl())
+          success = false;
+      } else if (va.allowed && hasValidAccessBySubscriptionState(va.subscriptionStatus,
+                                                                   va.plan)) {
+        SessionAuthLogger::write(
+            "tryResumeSessionAsync(bg): validate-access OK (online)");
+        success = true;
+        validatedOnline = true;
+        out.allowed = true;
+        out.plan = va.plan;
+        out.subscriptionStatus = va.subscriptionStatus;
+        out.expiresAt = va.expiresAt;
+        if (va.licenseKey.isNotEmpty())
+          out.licenseKey = va.licenseKey;
+        out.reasonCode.clear();
+        out.reason.clear();
+        out.lastOnlineValidationMs = juce::Time::currentTimeMillis();
+      } else {
+        SessionAuthLogger::write(
+            "tryResumeSessionAsync(bg): validate-access denied allowed=" +
+            juce::String(static_cast<int>(va.allowed)) + " reasonCode=" +
+            va.reasonCode);
+        clearSnapshot = true;
+        welcomeError =
+            userMessageForAccessDenial(va.reasonCode, va.reason);
+      }
+    } else {
+      if (fr.errorMessage == "network" || fr.errorMessage == "parse") {
+        SessionAuthLogger::write(
+            fr.errorMessage == "network"
+                ? "tryResumeSessionAsync(bg): Firebase refresh network, trying "
+                  "offline TTL"
+                : "tryResumeSessionAsync(bg): Firebase refresh parse/infra, trying "
+                  "offline TTL");
+        if (!tryOfflineWithinTtl())
+          success = false;
+      } else {
+        SessionAuthLogger::write(
+            "tryResumeSessionAsync(bg): Firebase refresh failed error=" +
+            fr.errorMessage);
+        clearSnapshot = true;
+        welcomeError =
+            L10n::tr("Sesion expirada. Vuelve a iniciar sesion.",
+                     "Session expired. Please sign in again.");
+      }
+    }
+
+    SessionAuthLogger::write(
+        juce::String("tryResumeSessionAsync(bg): done success=") +
+        juce::String(static_cast<int>(success)) + " validatedOnline=" +
+        juce::String(static_cast<int>(validatedOnline)) + " clearSnapshot=" +
+        juce::String(static_cast<int>(clearSnapshot)));
+
+    juce::MessageManager::callAsync([safe, success, validatedOnline, out, welcomeError,
+                                     clearSnapshot] {
+      if (safe != nullptr)
+        safe->applySessionResumeOnMessageThread(success, validatedOnline, out,
+                                                welcomeError, clearSnapshot);
+    });
+  }).detach();
+}
+
+void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
+    const bool success, const bool validatedOnline, PersistedSessionSnapshot snapshot,
+    const juce::String &welcomeError, const bool clearSnapshotFile) {
+  if (mainUiInitialized) {
+    SessionAuthLogger::write(
+        "applySessionResumeOnMessageThread: skipped (mainUiInitialized already)");
+    return;
+  }
+  if (authExpectedState.isNotEmpty()) {
+    SessionAuthLogger::write(
+        "applySessionResumeOnMessageThread: skipped (user started web login, "
+        "authExpectedState set)");
+    return;
+  }
+
+  if (clearSnapshotFile)
+    SessionPersistence::clear();
+
+  if (!success) {
+    SessionAuthLogger::write(
+        "applySessionResumeOnMessageThread: failure welcomeError=" + welcomeError);
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+      modal->setChecking(false);
+      if (welcomeError.isNotEmpty())
+        modal->setStatusText(welcomeError, true);
+      else
+        modal->resetStatusToDefault();
+    }
+    return;
+  }
+
+  SessionAuthLogger::write(
+      juce::String("applySessionResumeOnMessageThread: entering main UI ") +
+      "validatedOnline=" + juce::String(static_cast<int>(validatedOnline)));
+
+  applyPersistedSnapshotToActive(snapshot);
+  if (validatedOnline) {
+    SessionPersistence::save(snapshot);
+    lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
+    lastOnlineValidationMs = snapshot.lastOnlineValidationMs;
+    AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+  } else {
+    lastSuccessfulLoginMs =
+        juce::jmax(lastSuccessfulLoginMs, snapshot.lastOnlineValidationMs);
+    AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+  }
+  reauthGraceDeadlineMs = 0;
+  AppSettings::setReauthGraceDeadlineMs(0);
+  reauthPromptDismissed = false;
+  reauthLoginInProgress = false;
+
+  initializeMainUi();
+}
+
 void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
+  // lastSuccessfulLoginMs: ultima confirmacion util (login web o validate-access al
+  // arrancar). Se actualiza en disco via AppSettings; lastOnlineValidationMs duplica
+  // el valor persistido en session_snapshot para ventana offline.
   if (!mainUiInitialized || lastSuccessfulLoginMs <= 0)
     return;
 
@@ -1510,6 +1945,9 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
             : "INVALID_SUBSCRIPTION_STATE";
     activeSession.reason =
         "Subscription status is not trial/active with a valid plan";
+    SessionAuthLogger::write(
+        "evaluateReauthPolicy: invalid subscription state -> handleLogout code=" +
+        activeSession.reasonCode);
     handleLogout();
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
       modal->setStatusText(userMessageForAccessDenial(activeSession.reasonCode,
@@ -1537,6 +1975,8 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
   }
 
   if (reauthGraceDeadlineMs > 0 && nowMs >= reauthGraceDeadlineMs) {
+    SessionAuthLogger::write(
+        "evaluateReauthPolicy: reauth grace expired -> handleLogout");
     handleLogout();
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
       modal->setStatusText(
@@ -1561,6 +2001,8 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
   applyTheme(static_cast<ThemePreset>(currentThemeId));
   if (refreshTopBarTheme)
     refreshTopBarTheme();
+  if (songLoadOverlay != nullptr)
+    songLoadOverlay->refreshThemeColours();
   repaint();
 }
 
@@ -1648,6 +2090,7 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   if (localAuthServer)
     localAuthServer->stop();
   localAuthServer.reset();
+  songLoadOverlay.reset();
   loadSongByIndexAction = {};
   songListPanelRaw = nullptr;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
@@ -1661,10 +2104,8 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 
 void MTControlsAudioProcessorEditor::resized() {
   if (!mainUiInitialized) {
-    if (welcomeModal != nullptr) {
-      welcomeModal->setBounds(juce::Rectangle<int>(kAuthModalW, kAuthModalH)
-                                  .withCentre(getLocalBounds().getCentre()));
-    }
+    if (welcomeModal != nullptr)
+      welcomeModal->setBounds(getLocalBounds());
     return;
   }
 
@@ -1734,6 +2175,12 @@ void MTControlsAudioProcessorEditor::resized() {
     reauthPromptModal->setBounds(
         juce::Rectangle<int>(560, 230).withCentre(getLocalBounds().getCentre()));
     reauthPromptModal->toFront(false);
+  }
+
+  if (songLoadOverlay != nullptr) {
+    songLoadOverlay->setBounds(getLocalBounds());
+    if (songLoadOverlay->isVisible())
+      songLoadOverlay->toFront(false);
   }
 }
 

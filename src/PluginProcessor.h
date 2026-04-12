@@ -11,6 +11,7 @@
 #include "audio/StemOutputRoutingState.h"
 #include <JuceHeader.h>
 #include <array>
+#include <functional>
 
 class MTControlsAudioProcessor : public juce::AudioProcessor {
 public:
@@ -46,9 +47,10 @@ public:
   static juce::AudioProcessorValueTreeState::ParameterLayout
   createParameterLayout();
 
-  bool loadSongStems(const juce::StringArray &stemPaths,
-                     const juce::String &songTitle, const juce::String &songKey,
-                     double songBpm);
+  bool loadSongStems(
+      const juce::StringArray &stemPaths, const juce::String &songTitle,
+      const juce::String &songKey, double songBpm,
+      const std::function<void(double progress01)> &onLoadProgress = {});
   void playSong();
   void pauseSong();
   void stopSong();

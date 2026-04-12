@@ -30,6 +30,7 @@ public:
     bool allowed = true;
     juce::String reasonCode;
     juce::String reason;
+    juce::String licenseKey;
   };
 
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
@@ -89,6 +90,8 @@ private:
   juce::Label sessionStatusValue;
   juce::Label sessionExpiresLabel;
   juce::Label sessionExpiresValue;
+  juce::Label sessionLicenseLabel;
+  juce::Label sessionLicenseValue;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
   juce::Label actionInfoLabel;

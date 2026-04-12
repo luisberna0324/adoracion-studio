@@ -4,11 +4,14 @@
 #include <cmath>
 #include <limits>
 
+#if JucePlugin_Build_Standalone
+#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#endif
+
 MTControlsAudioProcessor::MTControlsAudioProcessor()
     : AudioProcessor(
-          BusesProperties()
-              .withInput("Input", juce::AudioChannelSet::stereo(), true)
-              .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
+          BusesProperties().withOutput(
+              "Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playbackFormatManager.registerBasicFormats();
   resetStemControls(0);
@@ -75,12 +78,11 @@ void MTControlsAudioProcessor::releaseResources() {
 
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
-  const auto input = layouts.getMainInputChannelSet();
-  const auto output = layouts.getMainOutputChannelSet();
-  if (input != juce::AudioChannelSet::mono() &&
-      input != juce::AudioChannelSet::stereo())
+  if (layouts.getMainInputChannelSet() != juce::AudioChannelSet::disabled())
     return false;
-
+  const auto output = layouts.getMainOutputChannelSet();
+  if (output.isDisabled())
+    return false;
   const int outputChannels = output.size();
   return outputChannels >= 1 && outputChannels <= maxStemCount;
 }
@@ -386,9 +388,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
 
       const double currentSec =
-          static_cast<double>(
-              globalSamplePosition.load(std::memory_order_relaxed)) /
-          playbackSampleRate;
+          playbackSampleRate > 0.0
+              ? static_cast<double>(
+                    globalSamplePosition.load(std::memory_order_relaxed)) /
+                    playbackSampleRate
+              : 0.0;
       songCurrentPositionSeconds.store(currentSec, std::memory_order_relaxed);
       globalSamplePosition.fetch_add(numSamples, std::memory_order_relaxed);
     } else {
@@ -424,7 +428,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                              blockMs > budgetMs, isPlaying});
     }
   } else {
-    // No song loaded — apply bypass/gain processing on raw input
+    // No song loaded — sin bus de entrada física: silencio (los parámetros
+    // inputGain/mix/bypass siguen existiendo por compatibilidad de estado).
     songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
     setTransportState(TransportState::stopped);
 
@@ -722,10 +727,10 @@ MTControlsAudioProcessor::createParameterLayout() {
 
   return {params.begin(), params.end()};
 }
-bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
-                                             const juce::String &songTitle,
-                                             const juce::String &songKey,
-                                             const double songBpm) {
+bool MTControlsAudioProcessor::loadSongStems(
+    const juce::StringArray &stemPaths, const juce::String &songTitle,
+    const juce::String &songKey, const double songBpm,
+    const std::function<void(double)> &onLoadProgress) {
   // Snapshot playback configuration safely before we start building transports.
   double localSampleRate = 0.0;
   int localBlockSize = 0;
@@ -739,12 +744,18 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
   if (stemPaths.isEmpty())
     return false;
 
+  const int pathCount = stemPaths.size();
+  const int denom = juce::jmax(1, pathCount);
+
   double maxLengthSeconds = 0.0;
-  for (const auto &path : stemPaths) {
+  for (int i = 0; i < pathCount; ++i) {
     if (newTracks.size() >= static_cast<size_t>(maxStemCount))
       break;
 
-    const juce::File file(path);
+    if (onLoadProgress)
+      onLoadProgress(static_cast<double>(i) / static_cast<double>(denom));
+
+    const juce::File file(stemPaths[i]);
     if (!file.existsAsFile())
       continue;
 
@@ -770,6 +781,9 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
 
   if (newTracks.empty())
     return false;
+
+  if (onLoadProgress)
+    onLoadProgress(1.0);
 
   // Briefly acquire the lock to swap in the new stem list.
   {
@@ -821,6 +835,18 @@ bool MTControlsAudioProcessor::loadSongStems(const juce::StringArray &stemPaths,
 }
 
 void MTControlsAudioProcessor::playSong() {
+  // Si el procesador queda suspendido o el dispositivo de audio se cerró
+  // (p. ej. tras inactividad prolongada), AudioProcessorPlayer deja de
+  // llamar a processBlock: el UI puede mostrar "playing" pero el tiempo no
+  // avanza hasta que se reanude el procesamiento y el dispositivo exista.
+  suspendProcessing(false);
+#if JucePlugin_Build_Standalone
+  if (auto *holder = juce::StandalonePluginHolder::getInstance()) {
+    auto &dm = holder->deviceManager;
+    if (dm.getCurrentAudioDevice() == nullptr)
+      dm.restartLastAudioDevice();
+  }
+#endif
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   const bool customArrangement =
@@ -917,6 +943,8 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
 void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
+
+  suspendProcessing(false);
 
   const double length =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);

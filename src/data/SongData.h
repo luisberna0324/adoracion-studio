@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include <array>
+#include <functional>
 #include <vector>
 
 struct ImportedStemData {
@@ -52,5 +53,6 @@ bool isStemPitchShiftable(const ImportedStemData &stem);
 juce::String makeRandomArrangementPartColor();
 bool isArrangementPartColorValid(const juce::String &value);
 double estimateSongLengthSeconds(const ImportedSongData &song);
-std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
-                                          int binCount = 1400);
+std::vector<float> buildMixedWaveformBins(
+    const ImportedSongData &song, int binCount = 1400,
+    const std::function<void(double progress01)> &onProgress = {});

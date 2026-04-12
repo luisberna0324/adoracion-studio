@@ -269,6 +269,13 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   sessionExpiresValue.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(sessionExpiresValue);
 
+  sessionLicenseLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionLicenseLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionLicenseLabel);
+  sessionLicenseValue.setJustificationType(juce::Justification::centredLeft);
+  sessionLicenseValue.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(sessionLicenseValue);
+
   actionsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   actionsSectionLabel.setFont(juce::FontOptions(14.0f));
   generalPage.addAndMakeVisible(actionsSectionLabel);
@@ -420,11 +427,13 @@ void SettingsPanel::refreshThemeColours() {
   sessionPlanLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionExpiresLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  sessionLicenseLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionUidValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionEmailValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionPlanValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionStatusValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionExpiresValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  sessionLicenseValue.setColour(juce::Label::textColourId, UITheme::textPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   actionLogoutLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -469,6 +478,8 @@ void SettingsPanel::applyLanguageTexts() {
                              juce::dontSendNotification);
   sessionExpiresLabel.setText(L10n::tr("Vence", "Expires"),
                               juce::dontSendNotification);
+  sessionLicenseLabel.setText(L10n::tr("Licencia", "License key"),
+                              juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
   sessionEmailValue.setText(session.email.isNotEmpty() ? session.email : "-",
@@ -481,6 +492,9 @@ void SettingsPanel::applyLanguageTexts() {
                              juce::dontSendNotification);
   sessionExpiresValue.setText(
       session.expiresAt.isNotEmpty() ? formatIsoDateTime(session.expiresAt) : "-",
+      juce::dontSendNotification);
+  sessionLicenseValue.setText(
+      session.licenseKey.isNotEmpty() ? session.licenseKey : "-",
       juce::dontSendNotification);
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
@@ -530,6 +544,9 @@ void SettingsPanel::layoutGeneralPage() {
   auto sessionExpiresRow = area.removeFromTop(24);
   sessionExpiresLabel.setBounds(sessionExpiresRow.removeFromLeft(120));
   sessionExpiresValue.setBounds(sessionExpiresRow);
+  auto sessionLicenseRow = area.removeFromTop(24);
+  sessionLicenseLabel.setBounds(sessionLicenseRow.removeFromLeft(120));
+  sessionLicenseValue.setBounds(sessionLicenseRow);
   area.removeFromTop(12);
   actionsSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);

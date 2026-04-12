@@ -161,22 +161,34 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
   return saveLibrary(library);
 }
 
-bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMessage) {
+bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMessage,
+                                   const SongImportProgressFn &onProgress) {
   juce::String localError;
-  if (!copyStemFiles(song, localError)) {
+  const auto mapStemProgress = [&onProgress](double t, const juce::String &s) {
+    if (onProgress)
+      onProgress(0.02 + 0.78 * juce::jlimit(0.0, 1.0, t), s);
+  };
+  if (!copyStemFiles(song, localError, mapStemProgress)) {
     if (errorMessage != nullptr)
       *errorMessage = localError;
     return false;
   }
 
+  if (onProgress)
+    onProgress(0.84, L10n::tr("Actualizando biblioteca…",
+                              "Updating library…"));
   auto library = loadLibrary();
   ensureSongHasStemIds(song);
   library.songs.push_back(song);
   ensureDefaultSetlist(library);
   addSongToActiveSetlist(library, song);
+  if (onProgress)
+    onProgress(0.92, L10n::tr("Guardando cambios…", "Saving changes…"));
   const bool saved = saveLibrary(library);
   if (!saved && errorMessage != nullptr && localError.isEmpty())
     *errorMessage = "Couldn't persist song metadata.";
+  if (saved && onProgress)
+    onProgress(0.96, L10n::tr("Cancion guardada", "Song saved"));
   return saved;
 }
 
@@ -578,7 +590,8 @@ bool SongLibraryStore::convertStemToStorageFormat(
   return true;
 }
 
-bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage) {
+bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage,
+                                     const SongImportProgressFn &onProgress) {
   errorMessage.clear();
   if (song.id.isEmpty())
     song.id = juce::Uuid().toString();
@@ -591,11 +604,31 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     return false;
   };
 
+  int stemsToCopy = 0;
+  for (const auto &s : song.stems) {
+    if (s.include && s.sourcePath.isNotEmpty())
+      ++stemsToCopy;
+  }
+  const int denom = juce::jmax(1, stemsToCopy);
+  int stemDone = 0;
+
+  if (onProgress)
+    onProgress(0.0, L10n::tr("Preparando carpeta de la cancion…",
+                              "Preparing song folder…"));
+
   for (auto &stem : song.stems) {
     if (!stem.include || stem.sourcePath.isEmpty())
       continue;
     if (stem.stemId.isEmpty())
       stem.stemId = juce::Uuid().toString();
+
+    if (onProgress) {
+      const double frac =
+          static_cast<double>(stemDone) / static_cast<double>(denom);
+      onProgress(frac,
+                 L10n::tr(juce::String("Procesando: ") + stem.displayName,
+                          juce::String("Processing: ") + stem.displayName));
+    }
 
     const juce::File src(stem.sourcePath);
     if (!src.existsAsFile())
@@ -632,6 +665,14 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
 
     stem.storedPath = dst.getFullPathName();
     stem.fileName = dst.getFileName();
+    ++stemDone;
+    if (onProgress) {
+      const double frac =
+          static_cast<double>(stemDone) / static_cast<double>(denom);
+      onProgress(frac,
+                 L10n::tr(juce::String("Listo: ") + stem.displayName,
+                          juce::String("Done: ") + stem.displayName));
+    }
   }
 
   return true;

@@ -178,10 +178,16 @@ double estimateSongLengthSeconds(const ImportedSongData &song) {
   return juce::jmax(0.0, maxDuration);
 }
 
-std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
-                                          int binCount) {
+std::vector<float> buildMixedWaveformBins(
+    const ImportedSongData &song, const int binCount,
+    const std::function<void(double)> &onProgress) {
   if (binCount <= 0)
     return {};
+
+  const auto report = [&onProgress](double p) {
+    if (onProgress)
+      onProgress(juce::jlimit(0.0, 1.0, p));
+  };
 
   juce::AudioFormatManager formatManager;
   formatManager.registerBasicFormats();
@@ -203,6 +209,7 @@ std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
   if (files.empty())
     return {};
 
+  report(0.03);
   juce::int64 maxLengthSamples = 0;
   for (const auto &file : files) {
     if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
@@ -214,22 +221,34 @@ std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
   if (maxLengthSamples <= 0)
     return {};
 
+  report(0.07);
   std::vector<float> mixedBins(static_cast<size_t>(binCount), 0.0f);
   std::vector<float> stemBins(static_cast<size_t>(binCount), 0.0f);
 
   constexpr int blockSize = 4096;
+  const int nFiles = static_cast<int>(files.size());
+  int fileIndex = 0;
   for (const auto &file : files) {
+    const double spanStart = static_cast<double>(fileIndex) / static_cast<double>(nFiles);
+    const double spanEnd =
+        static_cast<double>(fileIndex + 1) / static_cast<double>(nFiles);
+    report(0.07 + 0.88 * spanStart);
+
     std::fill(stemBins.begin(), stemBins.end(), 0.0f);
 
     auto reader = std::unique_ptr<juce::AudioFormatReader>(
         formatManager.createReaderFor(file));
-    if (reader == nullptr)
+    if (reader == nullptr) {
+      ++fileIndex;
       continue;
+    }
 
     const int channels = juce::jmax(1, static_cast<int>(reader->numChannels));
     juce::AudioBuffer<float> readBuffer(channels, blockSize);
 
     juce::int64 readPos = 0;
+    juce::int64 lastProgressPos = 0;
+    const juce::int64 totalLen = juce::jmax<juce::int64>(1, reader->lengthInSamples);
     while (readPos < reader->lengthInSamples) {
       const int toRead = static_cast<int>(juce::jmin<juce::int64>(
           blockSize, reader->lengthInSamples - readPos));
@@ -253,21 +272,33 @@ std::vector<float> buildMixedWaveformBins(const ImportedSongData &song,
       }
 
       readPos += toRead;
+      if (onProgress && (readPos - lastProgressPos) >= 300000) {
+        lastProgressPos = readPos;
+        const double inner =
+            static_cast<double>(readPos) / static_cast<double>(totalLen);
+        report(0.07 + 0.88 * (spanStart + (spanEnd - spanStart) * inner));
+      }
     }
 
+    report(0.07 + 0.88 * spanEnd);
     for (int i = 0; i < binCount; ++i)
       mixedBins[static_cast<size_t>(i)] += stemBins[static_cast<size_t>(i)];
+    ++fileIndex;
   }
 
+  report(0.96);
   const auto maxIt = std::max_element(mixedBins.begin(), mixedBins.end());
   const float maxValue = (maxIt != mixedBins.end()) ? *maxIt : 0.0f;
-  if (maxValue <= 0.0f)
+  if (maxValue <= 0.0f) {
+    report(1.0);
     return mixedBins;
+  }
 
   for (auto &v : mixedBins) {
     const float normal = juce::jlimit(0.0f, 1.0f, v / maxValue);
     v = std::sqrt(normal);
   }
 
+  report(1.0);
   return mixedBins;
 }

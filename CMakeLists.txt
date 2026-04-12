@@ -37,6 +37,8 @@ set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
     "Minutes before forcing re-login in app (default: 5 days)")
 set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
     "Minutes of grace window after re-login is requested (default: 5 hours)")
+set(MTCONTROLS_MAX_OFFLINE_HOURS "168" CACHE STRING
+    "Max hours without network after last online validation (default: 7 days)")
 
 include(FetchContent)
 
@@ -115,6 +117,12 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
+        src/data/AuthSessionApi.cpp
+        src/data/AuthSessionApi.h
+        src/data/SessionAuthLogger.cpp
+        src/data/SessionAuthLogger.h
+        src/data/SessionPersistence.cpp
+        src/data/SessionPersistence.h
         src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h
@@ -132,6 +140,8 @@ target_sources(MTControls
         src/ui/components/ChannelStripLookAndFeel.h
         src/ui/components/SetlistHandlePanel.cpp
         src/ui/components/SetlistHandlePanel.h
+        src/ui/components/SongLoadProgressOverlay.cpp
+        src/ui/components/SongLoadProgressOverlay.h
         src/ui/components/StereoVUMeter.cpp
         src/ui/components/StereoVUMeter.h
         src/ui/components/WaveformRowComponent.cpp
@@ -156,12 +166,14 @@ target_sources(MTControls
 
 target_compile_definitions(MTControls
     PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
+        MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
         SOUNDTOUCH_FLOAT_SAMPLES=1
 )
 

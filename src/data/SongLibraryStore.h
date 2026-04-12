@@ -46,6 +46,10 @@ struct LibraryState {
   juce::String activeSetlistId;
 };
 
+/** Progreso 0..1 y texto de fase (ES/EN) durante importacion a biblioteca. */
+using SongImportProgressFn =
+    std::function<void(double progress01, const juce::String &phase)>;
+
 class SongLibraryStore {
 public:
   static std::vector<ImportedSongData> loadSongs();
@@ -61,7 +65,8 @@ public:
                                     const juce::String &songId);
   static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
                                 int toIndex);
-  static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr);
+  static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
+                         const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
                                   SongMixSnapshot &outMix);
   static bool updateStemVolumeForActiveSetlist(const juce::String &songId,
@@ -103,7 +108,8 @@ private:
   static juce::File getDbFile();
   static juce::File getAudioRoot();
   static juce::File getWaveformCacheDir();
-  static bool copyStemFiles(ImportedSongData &song, juce::String &errorMessage);
+  static bool copyStemFiles(ImportedSongData &song, juce::String &errorMessage,
+                            const SongImportProgressFn &onProgress = {});
   static juce::File resolveBundledFfmpegBinary();
   static bool convertStemToStorageFormat(const juce::File &source,
                                          const juce::File &destination,
