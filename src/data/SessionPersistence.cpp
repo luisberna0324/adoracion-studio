@@ -11,6 +11,43 @@ juce::File getMtControlsDirectory() {
 }
 
 constexpr int kSnapshotVersion = 1;
+
+juce::String getObfuscationKey() {
+  juce::String hwid = juce::SystemStats::getUniqueDeviceID().trim();
+  if (hwid.isEmpty())
+    hwid = juce::SystemStats::getComputerName().trim();
+  if (hwid.isEmpty())
+    hwid = "PlayWorshipBackupKey";
+  return hwid + "_MTControlsSalt2024";
+}
+
+juce::String obfuscateToOblivion(const juce::String &cleartext) {
+  juce::MemoryBlock mb;
+  mb.append(cleartext.toRawUTF8(), cleartext.getNumBytesAsUTF8());
+
+  juce::String key = getObfuscationKey();
+  auto *data = static_cast<char *>(mb.getData());
+  for (size_t i = 0; i < mb.getSize(); ++i) {
+    data[i] ^= key[static_cast<int>(i) % key.length()];
+  }
+
+  return mb.toBase64Encoding();
+}
+
+juce::String deobfuscateFromOblivion(const juce::String &base64Text) {
+  juce::MemoryBlock mb;
+  if (!mb.fromBase64Encoding(base64Text))
+    return {};
+
+  juce::String key = getObfuscationKey();
+  auto *data = static_cast<char *>(mb.getData());
+  for (size_t i = 0; i < mb.getSize(); ++i) {
+    data[i] ^= key[static_cast<int>(i) % key.length()];
+  }
+
+  return juce::String::fromUTF8(data, static_cast<int>(mb.getSize()));
+}
+
 } // namespace
 
 juce::File SessionPersistence::getSnapshotFile() {
@@ -25,7 +62,12 @@ bool SessionPersistence::load(PersistedSessionSnapshot &out) {
     return false;
   }
 
-  const auto parsed = juce::JSON::parse(f.loadFileAsString());
+  const juce::String rawText = f.loadFileAsString();
+  juce::String jsonText = deobfuscateFromOblivion(rawText);
+  if (jsonText.isEmpty() || !jsonText.startsWithChar('{'))
+    jsonText = rawText; // Fallback para snapshots viejos legibles
+
+  const auto parsed = juce::JSON::parse(jsonText);
   const auto *o = parsed.getDynamicObject();
   if (o == nullptr || !o->hasProperty("version")) {
     SessionAuthLogger::write(
@@ -92,8 +134,11 @@ bool SessionPersistence::save(const PersistedSessionSnapshot &snapshot) {
   o->setProperty("lastOnlineValidationMs", snapshot.lastOnlineValidationMs);
 
   const juce::var root(o);
+  const juce::String jsonText = juce::JSON::toString(root, true);
+  const juce::String obfuscatedText = obfuscateToOblivion(jsonText);
+
   const bool ok =
-      getSnapshotFile().replaceWithText(juce::JSON::toString(root, true));
+      getSnapshotFile().replaceWithText(obfuscatedText);
   SessionAuthLogger::write(
       juce::String("SessionPersistence::save: ") + (ok ? "ok" : "FAILED") +
       " path=" + getSnapshotFile().getFullPathName());
