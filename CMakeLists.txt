@@ -81,6 +81,7 @@ juce_generate_juce_header(MTControls)
 juce_add_binary_data(MTControlsAssets
     SOURCES
         assets/logoPlayWorship.jpeg
+        assets/pwLogoSinFondo.png
 )
 
 target_sources(MTControls

@@ -461,7 +461,7 @@ public:
     setOpaque(false);
 
     logoImage = juce::ImageFileFormat::loadFrom(
-        BinaryData::logoPlayWorship_jpeg, BinaryData::logoPlayWorship_jpegSize);
+        BinaryData::pwLogoSinFondo_png, BinaryData::pwLogoSinFondo_pngSize);
     if (logoImage.isValid()) {
       logo.setOpaque(false);
       addAndMakeVisible(logo);
@@ -578,9 +578,9 @@ public:
     auto column = area.withSizeKeepingCentre(colW, area.getHeight());
 
     if (logoImage.isValid()) {
-      auto logoArea = column.removeFromTop(80);
-      const int logoW = juce::jmin(300, logoArea.getWidth());
-      const int logoH = juce::jlimit(50, 72, logoArea.getHeight() - 6);
+      auto logoArea = column.removeFromTop(160);
+      const int logoW = juce::jmin(400, logoArea.getWidth());
+      const int logoH = logoArea.getHeight();
       logo.setImage(logoImage, juce::RectanglePlacement::centred);
       logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
       column.removeFromTop(24);
