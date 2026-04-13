@@ -236,13 +236,14 @@ endif()
 
 if (TARGET MTControls_Standalone)
     # APPLE is true for iOS too; bundling the macOS ffmpeg binary into an iOS app breaks CodeSign.
-    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND MTCONTROLS_FFMPEG_BIN_MACOS)
+    if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MTCONTROLS_FFMPEG_BIN_MACOS}"
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg/ffmpeg"
+            COMMAND chmod +x "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg/ffmpeg"
             VERBATIM)
     endif()
 
