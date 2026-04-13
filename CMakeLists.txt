@@ -39,6 +39,8 @@ set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
     "Minutes of grace window after re-login is requested (default: 5 hours)")
 set(MTCONTROLS_MAX_OFFLINE_HOURS "168" CACHE STRING
     "Max hours without network after last online validation (default: 7 days)")
+set(MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY "2" CACHE STRING
+    "Xcode TARGETED_DEVICE_FAMILY for iOS: 2=iPad only, 1=iPhone only, 1,2=Universal")
 
 include(FetchContent)
 
@@ -59,6 +61,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(soundtouch)
 
+if (TARGET soundstretch)
+    set_target_properties(soundstretch PROPERTIES 
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.multitracks.playworship.soundstretch"
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+        XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+        MACOSX_BUNDLE OFF
+        XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
+endif()
+
 juce_add_plugin(MTControls
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
@@ -74,7 +85,19 @@ juce_add_plugin(MTControls
     PRODUCT_NAME "PlayWorship"
     ICON_BIG "assets/icons/app-icon-1024.png"
     ICON_SMALL "assets/icons/app-icon-1024.png"
+    BUNDLE_ID "com.multitracks.playworship"
+    BACKGROUND_AUDIO_ENABLED TRUE
+    MICROPHONE_PERMISSION_ENABLED FALSE
+    # iOS: committed asset catalog includes LaunchImage.launchimage so JUCE omits LaunchScreen.storyboard.
+    # The default storyboard leaves LaunchScreen.storyboardc unsigned; device install then fails (invalid bundle).
+    CUSTOM_XCASSETS_FOLDER "assets/ios/Images.xcassets"
 )
+
+# iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set_target_properties(MTControls PROPERTIES
+        JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}")
+endif()
 
 juce_generate_juce_header(MTControls)
 
@@ -212,7 +235,8 @@ else()
 endif()
 
 if (TARGET MTControls_Standalone)
-    if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
+    # APPLE is true for iOS too; bundling the macOS ffmpeg binary into an iOS app breaks CodeSign.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND MTCONTROLS_FFMPEG_BIN_MACOS)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg"
