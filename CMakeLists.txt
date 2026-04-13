@@ -88,15 +88,21 @@ juce_add_plugin(MTControls
     BUNDLE_ID "com.multitracks.playworship"
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
-    # iOS: committed asset catalog includes LaunchImage.launchimage so JUCE omits LaunchScreen.storyboard.
-    # The default storyboard leaves LaunchScreen.storyboardc unsigned; device install then fails (invalid bundle).
+    # iOS: committed asset catalog; LaunchImage.launchimage exists (empty images) so JUCE omits LaunchScreen.storyboard.
+    # Legacy launch PNGs at the app root break CodeSign on recent Xcode; UILaunchScreen (merged plist) replaces them.
     CUSTOM_XCASSETS_FOLDER "assets/ios/Images.xcassets"
+    PLIST_TO_MERGE "assets/ios/PlistMerge-Launch.plist"
 )
 
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_target_properties(MTControls PROPERTIES
         JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}")
+    # Do not compile a named Launch Image set from the catalog (avoids actool emitting LaunchImage-700-*.png at bundle root).
+    if(TARGET MTControls_Standalone)
+        set_target_properties(MTControls_Standalone PROPERTIES
+            XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_LAUNCHIMAGE_NAME "")
+    endif()
 endif()
 
 juce_generate_juce_header(MTControls)
@@ -211,10 +217,28 @@ if (WIN32)
     )
 endif()
 
+if (IOS)
+    set_target_properties(MTControls PROPERTIES
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.multitracks.playworship"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.multitracks.playworship"
+        XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS "--deep"
+        XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS YES
+    )
+    if (TARGET MTControls_Standalone)
+        set_target_properties(MTControls_Standalone PROPERTIES
+            MACOSX_BUNDLE_GUI_IDENTIFIER "com.multitracks.playworship"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.multitracks.playworship"
+            XCODE_ATTRIBUTE_OTHER_CODE_SIGN_FLAGS "--deep"
+            XCODE_ATTRIBUTE_CODE_SIGN_INJECT_BASE_ENTITLEMENTS YES
+        )
+    endif()
+endif()
+
 target_link_libraries(MTControls
     PRIVATE
         juce::juce_audio_utils
         juce::juce_dsp
+        juce::juce_opengl
         MTControlsAssets
     PUBLIC
         juce::juce_recommended_config_flags

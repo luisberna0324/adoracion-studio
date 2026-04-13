@@ -763,13 +763,21 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   currentThemeId = AppSettings::getThemePresetId();
   applyTheme(static_cast<ThemePreset>(currentThemeId));
 
+#if JUCE_IOS
+  const auto userArea = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+  const int authW = userArea.getWidth();
+  const int authH = userArea.getHeight();
+#else
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
   const int authW = juce::jmin(kAuthWindowW, userArea.getWidth());
   const int authH = juce::jmin(kAuthWindowH, userArea.getHeight());
+#endif
   setSize(authW, authH);
   setResizable(false, false);
+#if !JUCE_IOS
   setResizeLimits(authW, authH, authW, authH);
+#endif
   juce::MessageManager::callAsync(
       [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
        authW, authH] {
@@ -794,7 +802,12 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
       lastOnlineValidationMs = bootSnap.lastOnlineValidationMs;
   }
   tryResumeSessionAsync();
-  startTimerHz(12);
+  
+  // Aceleración por GPU (Indispensable para iPad)
+  openGLContext.attachTo(*getTopLevelComponent());
+  
+  // Refresco más rápido para mejor respuesta al tacto
+  startTimerHz(30); 
 
 #if JucePlugin_Build_Standalone
   juce::MessageManager::callAsync(
@@ -819,6 +832,10 @@ ResponsiveLayoutProfile MTControlsAudioProcessorEditor::resolveResponsiveLayoutP
   default:
     break;
   }
+
+#if JUCE_IOS
+  return ResponsiveLayoutProfile::Large;
+#endif
 
   const int w = getWidth() > 0 ? getWidth() : kDefaultWindowW;
   const int h = getHeight() > 0 ? getHeight() : kDefaultWindowH;

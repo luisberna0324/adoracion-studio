@@ -84,6 +84,7 @@ private:
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<SongLoadProgressOverlay> songLoadOverlay;
   bool songLoadBusy = false;
+  juce::OpenGLContext openGLContext;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
