@@ -10,8 +10,9 @@
 
 MTControlsAudioProcessor::MTControlsAudioProcessor()
     : AudioProcessor(
-          BusesProperties().withOutput(
-              "Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
+          BusesProperties()
+              .withInput("Input", juce::AudioChannelSet::stereo(), false)
+              .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playbackFormatManager.registerBasicFormats();
   resetStemControls(0);
@@ -78,10 +79,10 @@ void MTControlsAudioProcessor::releaseResources() {
 
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
-  if (layouts.getMainInputChannelSet() != juce::AudioChannelSet::disabled())
-    return false;
+  const auto input = layouts.getMainInputChannelSet();
   const auto output = layouts.getMainOutputChannelSet();
-  if (output.isDisabled())
+  if (input != juce::AudioChannelSet::mono() &&
+      input != juce::AudioChannelSet::stereo())
     return false;
   const int outputChannels = output.size();
   return outputChannels >= 1 && outputChannels <= maxStemCount;
