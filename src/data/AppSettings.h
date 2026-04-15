@@ -18,12 +18,15 @@ public:
   /** Por defecto: expandir la ventana al area de trabajo al abrir la app. */
   static constexpr bool kDefaultExpandWindowOnLaunch = true;
   static constexpr bool kDefaultPrimeImportEnabled = false;
+  static constexpr bool kDefaultStemOptimizationEnabled = false;
   static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
   static bool getPrimeImportEnabled();
   static void setPrimeImportEnabled(bool value);
+  static bool getStemOptimizationEnabled();
+  static void setStemOptimizationEnabled(bool value);
   static AppLanguage getLanguage();
   static void setLanguage(AppLanguage value);
   static AppLayoutMode getLayoutMode();

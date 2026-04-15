@@ -4,17 +4,19 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/package_macos_dmg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>]
+  scripts/package_macos_dmg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>] [--ffmpeg-bin <path>]
 
 Defaults:
   --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone
   --output-dir dist
+  --ffmpeg-bin third_party/ffmpeg/macos/ffmpeg (or MTCONTROLS_FFMPEG_BIN_MACOS env)
 EOF
 }
 
 VERSION=""
 STANDALONE_DIR="build/macos-release/MTControls_artefacts/Release/Standalone"
 OUTPUT_DIR="dist"
+FFMPEG_BIN="${MTCONTROLS_FFMPEG_BIN_MACOS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +30,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output-dir)
       OUTPUT_DIR="${2:-}"
+      shift 2
+      ;;
+    --ffmpeg-bin)
+      FFMPEG_BIN="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -48,13 +54,34 @@ if [[ -z "${VERSION}" ]]; then
   exit 1
 fi
 
-if [[ ! -d "${STANDALONE_DIR}" ]]; then
-  echo "Standalone directory not found: ${STANDALONE_DIR}" >&2
+if [[ ! -d "${STANDALONE_DIR}" ]] || ! compgen -G "${STANDALONE_DIR}"/*.app >/dev/null; then
+  for candidate in \
+    "build/macos-release/MTControls_artefacts/Standalone" \
+    "build/macos-release/MTControls_artefacts/Release/Standalone" \
+    "build/macos-release/MTControls_artefacts/Debug/Standalone"; do
+    if [[ -d "${candidate}" ]] && compgen -G "${candidate}"/*.app >/dev/null; then
+      STANDALONE_DIR="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [[ ! -d "${STANDALONE_DIR}" ]] || ! compgen -G "${STANDALONE_DIR}"/*.app >/dev/null; then
+  echo "No .app found for Standalone packaging." >&2
+  echo "Checked: ${STANDALONE_DIR}" >&2
+  echo "Hint: build Standalone target first, for example:" >&2
+  echo "  cmake --build --preset macos-release --target MTControls_Standalone" >&2
   exit 1
 fi
 
-if ! compgen -G "${STANDALONE_DIR}"/*.app >/dev/null; then
-  echo "No .app found in ${STANDALONE_DIR}" >&2
+if [[ -z "${FFMPEG_BIN}" ]]; then
+  if [[ -f "third_party/ffmpeg/macos/ffmpeg" ]]; then
+    FFMPEG_BIN="third_party/ffmpeg/macos/ffmpeg"
+  fi
+fi
+
+if [[ -z "${FFMPEG_BIN}" || ! -f "${FFMPEG_BIN}" ]]; then
+  echo "ffmpeg binary not found. Set --ffmpeg-bin or MTCONTROLS_FFMPEG_BIN_MACOS." >&2
   exit 1
 fi
 
@@ -71,6 +98,15 @@ mkdir -p "${STAGE_DIR}"
 
 # Keep full standalone output content in the installer image.
 cp -R "${STANDALONE_DIR}/." "${STAGE_DIR}/"
+
+# Ensure ffmpeg is embedded inside every app bundle in the DMG payload.
+while IFS= read -r -d '' app_path; do
+  ffmpeg_dir="${app_path}/Contents/Resources/ffmpeg"
+  mkdir -p "${ffmpeg_dir}"
+  cp -f "${FFMPEG_BIN}" "${ffmpeg_dir}/ffmpeg"
+  chmod +x "${ffmpeg_dir}/ffmpeg"
+done < <(find "${STAGE_DIR}" -maxdepth 1 -type d -name "*.app" -print0)
+
 ln -s /Applications "${STAGE_DIR}/Applications"
 
 DMG_PATH="${OUTPUT_DIR}/playworship-macos-installer-${VERSION}.dmg"

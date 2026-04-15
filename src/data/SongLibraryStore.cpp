@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "AppSettings.h"
 #include "Localization.h"
 
 #include <algorithm>
@@ -528,12 +529,6 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
     return bundled;
 #endif
 
-  // Development fallback.
-#if JUCE_MAC
-  const juce::File homebrew("/opt/homebrew/bin/ffmpeg");
-  if (homebrew.existsAsFile())
-    return homebrew;
-#endif
   return {};
 }
 
@@ -604,6 +599,8 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     return false;
   };
 
+  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
+
   int stemsToCopy = 0;
   for (const auto &s : song.stems) {
     if (s.include && s.sourcePath.isNotEmpty())
@@ -638,8 +635,12 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     if (legalStemId.isEmpty())
       return failImport("Invalid stem id while importing song.");
 
-    const auto dst = songDir.getChildFile(
-        legalStemId + juce::String(kStoredStemExtension));
+    const auto srcExtension = src.getFileExtension();
+    const auto targetExtension =
+        stemOptimizationEnabled ? juce::String(kStoredStemExtension)
+                                : (srcExtension.isNotEmpty() ? srcExtension
+                                                             : juce::String(".wav"));
+    const auto dst = songDir.getChildFile(legalStemId + targetExtension);
     const auto srcPathLower = src.getFullPathName().toLowerCase();
     const bool isPrimeSource =
         srcPathLower.contains("/library/containers/com.loopcommunity.primemac/");
@@ -647,7 +648,12 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
         src.hasFileExtension(juce::String(kStoredStemExtension).substring(1)) &&
         src.getFileNameWithoutExtension().equalsIgnoreCase(legalStemId);
 
-    if (isPrimeSource && alreadyPrimeStemInTargetFormat) {
+    if (!stemOptimizationEnabled) {
+      if (dst.existsAsFile())
+        dst.deleteFile();
+      if (!src.copyFileTo(dst))
+        return failImport("Failed copying stem '" + stem.displayName + "'.");
+    } else if (isPrimeSource && alreadyPrimeStemInTargetFormat) {
       if (dst.existsAsFile())
         dst.deleteFile();
       if (!src.copyFileTo(dst))

@@ -145,6 +145,34 @@ void AppSettings::setPrimeImportEnabled(const bool value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+bool AppSettings::getStemOptimizationEnabled() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return kDefaultStemOptimizationEnabled;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("stemOptimizationEnabled"))
+      return static_cast<bool>(o->getProperty("stemOptimizationEnabled"));
+  }
+  return kDefaultStemOptimizationEnabled;
+}
+
+void AppSettings::setStemOptimizationEnabled(const bool value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 11);
+    o->setProperty("stemOptimizationEnabled", value);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 AppLanguage AppSettings::getLanguage() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())

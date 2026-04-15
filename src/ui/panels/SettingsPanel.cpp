@@ -119,6 +119,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              ExpandLaunchChanged expandCb,
                              const bool primeImportEnabled,
                              PrimeImportChanged primeImportCb,
+                             const bool stemOptimizationEnabled,
+                             StemOptimizationChanged stemOptimizationCb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
                              LogoutRequested logoutCb,
@@ -132,6 +134,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onLanguageChanged(std::move(languageCb)),
       onExpandLaunchChanged(std::move(expandCb)),
       onPrimeImportChanged(std::move(primeImportCb)),
+      onStemOptimizationChanged(std::move(stemOptimizationCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
@@ -229,6 +232,19 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onPrimeImportChanged(primeImportToggle.getToggleState());
   };
   generalPage.addAndMakeVisible(primeImportToggle);
+
+  stemOptimizationLabel.setJustificationType(juce::Justification::centredLeft);
+  stemOptimizationLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(stemOptimizationLabel);
+
+  stemOptimizationToggle.setClickingTogglesState(true);
+  stemOptimizationToggle.setToggleState(stemOptimizationEnabled,
+                                        juce::dontSendNotification);
+  stemOptimizationToggle.onClick = [this] {
+    if (onStemOptimizationChanged)
+      onStemOptimizationChanged(stemOptimizationToggle.getToggleState());
+  };
+  generalPage.addAndMakeVisible(stemOptimizationToggle);
 
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
   sessionSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -421,6 +437,14 @@ void SettingsPanel::refreshThemeColours() {
                               UITheme::accent);
   primeImportToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                               UITheme::textSecondary);
+  stemOptimizationLabel.setColour(juce::Label::textColourId,
+                                  UITheme::textSecondary);
+  stemOptimizationToggle.setColour(juce::ToggleButton::textColourId,
+                                   UITheme::textPrimary);
+  stemOptimizationToggle.setColour(juce::ToggleButton::tickColourId,
+                                   UITheme::accent);
+  stemOptimizationToggle.setColour(juce::ToggleButton::tickDisabledColourId,
+                                   UITheme::textSecondary);
   sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -469,6 +493,12 @@ void SettingsPanel::applyLanguageTexts() {
   primeImportToggle.setButtonText(
       L10n::tr("Habilitar importacion desde disco local",
                "Enable import from local disk"));
+  stemOptimizationLabel.setText(
+      L10n::tr("Optimizacion de stems", "Stem optimization"),
+      juce::dontSendNotification);
+  stemOptimizationToggle.setButtonText(
+      L10n::tr("Optimizar almacenamiento en disco",
+               "Optimize disk storage"));
   sessionSectionLabel.setText(L10n::tr("Sesion", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
@@ -526,6 +556,10 @@ void SettingsPanel::layoutGeneralPage() {
   auto primeRow = area.removeFromTop(26);
   primeImportLabel.setBounds(primeRow.removeFromLeft(160));
   primeImportToggle.setBounds(primeRow);
+  area.removeFromTop(10);
+  auto stemOptimizationRow = area.removeFromTop(26);
+  stemOptimizationLabel.setBounds(stemOptimizationRow.removeFromLeft(160));
+  stemOptimizationToggle.setBounds(stemOptimizationRow);
   area.removeFromTop(16);
   sessionSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);

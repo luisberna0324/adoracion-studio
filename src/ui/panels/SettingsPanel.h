@@ -15,6 +15,7 @@ public:
   using LanguageChanged = std::function<void(AppLanguage)>;
   using ExpandLaunchChanged = std::function<void(bool)>;
   using PrimeImportChanged = std::function<void(bool)>;
+  using StemOptimizationChanged = std::function<void(bool)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
   using RoutingDefaultsChanged =
@@ -36,7 +37,9 @@ public:
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
                 LanguageChanged languageCb, bool expandWindowOnLaunch,
                 ExpandLaunchChanged expandCb, bool primeImportEnabled,
-                PrimeImportChanged primeImportCb, CloseRequested closeCb,
+                PrimeImportChanged primeImportCb, bool stemOptimizationEnabled,
+                StemOptimizationChanged stemOptimizationCb,
+                CloseRequested closeCb,
                 SessionSummary sessionSummary,
                 LogoutRequested logoutCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
@@ -79,6 +82,8 @@ private:
   juce::ToggleButton expandLaunchToggle;
   juce::Label primeImportLabel;
   juce::ToggleButton primeImportToggle;
+  juce::Label stemOptimizationLabel;
+  juce::ToggleButton stemOptimizationToggle;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;
@@ -105,6 +110,7 @@ private:
   LanguageChanged onLanguageChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
   PrimeImportChanged onPrimeImportChanged;
+  StemOptimizationChanged onStemOptimizationChanged;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
