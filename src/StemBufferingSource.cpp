@@ -43,7 +43,7 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
       juce::Thread::sleep(5);
     } while (prefillBuffer &&
              (bufferValidEnd - bufferValidStart <
-              juce::jmin(((int)newSampleRate) / 4, buffer.getNumSamples() / 2)));
+              std::min((int)(newSampleRate / 4.0), buffer.getNumSamples() / 2)));
   }
 }
 
@@ -77,7 +77,7 @@ void StemBufferingSource::getNextAudioBlock(
 
   if (validStart < validEnd) {
     const juce::ScopedLock sl(callbackLock);
-    for (int chan = juce::jmin(numberOfChannels, info.buffer->getNumChannels());
+    for (int chan = std::min(numberOfChannels, info.buffer->getNumChannels());
          --chan >= 0;) {
       jassert(buffer.getNumSamples() > 0);
 
@@ -187,7 +187,7 @@ bool StemBufferingSource::readNextBufferChunk() {
       bufferValidEnd = 0;
     }
 
-    newBVS = juce::jmax((juce::int64)0, nextPlayPos.load());
+    newBVS = std::max((juce::int64)0, nextPlayPos.load());
     newBVE = newBVS + buffer.getNumSamples() - 4;
     sectionToReadStart = 0;
     sectionToReadEnd = 0;
@@ -198,7 +198,7 @@ bool StemBufferingSource::readNextBufferChunk() {
     constexpr int maxChunkSize = 32768;
 
     if (newBVS < bufferValidStart || newBVS >= bufferValidEnd) {
-      newBVE = juce::jmin(newBVE, newBVS + maxChunkSize);
+      newBVE = std::min(newBVE, newBVS + (juce::int64)maxChunkSize);
 
       sectionToReadStart = newBVS;
       sectionToReadEnd = newBVE;
@@ -207,13 +207,13 @@ bool StemBufferingSource::readNextBufferChunk() {
       bufferValidEnd = 0;
     } else if (std::abs((int)(newBVS - bufferValidStart)) > 512 ||
                std::abs((int)(newBVE - bufferValidEnd)) > 512) {
-      newBVE = juce::jmin(newBVE, bufferValidEnd + maxChunkSize);
+      newBVE = std::min(newBVE, bufferValidEnd + (juce::int64)maxChunkSize);
 
       sectionToReadStart = bufferValidEnd;
       sectionToReadEnd = newBVE;
 
       bufferValidStart = newBVS;
-      bufferValidEnd = juce::jmin(bufferValidEnd, newBVE);
+      bufferValidEnd = std::min(bufferValidEnd, newBVE);
     }
   }
 

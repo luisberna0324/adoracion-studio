@@ -173,9 +173,9 @@ double estimateSongLengthSeconds(const ImportedSongData &song) {
   for (const auto &stem : song.stems) {
     if (!stem.include)
       continue;
-    maxDuration = juce::jmax(maxDuration, stem.durationSec);
+    maxDuration = std::max(maxDuration, stem.durationSec);
   }
-  return juce::jmax(0.0, maxDuration);
+  return std::max(0.0, maxDuration);
 }
 
 std::vector<float> buildMixedWaveformBins(
@@ -214,7 +214,7 @@ std::vector<float> buildMixedWaveformBins(
   for (const auto &file : files) {
     if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
             formatManager.createReaderFor(file))) {
-      maxLengthSamples = juce::jmax(maxLengthSamples, reader->lengthInSamples);
+      maxLengthSamples = std::max(maxLengthSamples, (juce::int64)reader->lengthInSamples);
     }
   }
 
@@ -243,15 +243,14 @@ std::vector<float> buildMixedWaveformBins(
       continue;
     }
 
-    const int channels = juce::jmax(1, static_cast<int>(reader->numChannels));
+    const int channels = std::max(1, static_cast<int>(reader->numChannels));
     juce::AudioBuffer<float> readBuffer(channels, blockSize);
 
     juce::int64 readPos = 0;
     juce::int64 lastProgressPos = 0;
-    const juce::int64 totalLen = juce::jmax<juce::int64>(1, reader->lengthInSamples);
+    const juce::int64 totalLen = std::max((juce::int64)1, (juce::int64)reader->lengthInSamples);
     while (readPos < reader->lengthInSamples) {
-      const int toRead = static_cast<int>(juce::jmin<juce::int64>(
-          blockSize, reader->lengthInSamples - readPos));
+      const int toRead = static_cast<int>(std::min((juce::int64)blockSize, (juce::int64)(reader->lengthInSamples - readPos)));
       if (!reader->read(&readBuffer, 0, toRead, readPos, true, true))
         break;
 
@@ -268,7 +267,7 @@ std::vector<float> buildMixedWaveformBins(
                              maxLengthSamples));
 
         stemBins[static_cast<size_t>(bin)] =
-            juce::jmax(stemBins[static_cast<size_t>(bin)], std::abs(mono));
+            std::max(stemBins[static_cast<size_t>(bin)], std::abs(mono));
       }
 
       readPos += toRead;
