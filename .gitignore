@@ -25,4 +25,5 @@ Thumbs.db
 # Misc
 *.swp
 *.tmp
-*.log
+# Artifacts
+dist/

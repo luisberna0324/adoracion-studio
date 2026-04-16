@@ -31,6 +31,13 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/windows/ffmpeg.exe")
 endif()
 set(MTCONTROLS_FFMPEG_BIN_WINDOWS "${_mtcontrols_ffmpeg_windows_default}" CACHE FILEPATH
     "Path to ffmpeg.exe that will be bundled in the Windows build")
+set(_mtcontrols_ffmpeg_linux_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/linux/ffmpeg")
+    set(_mtcontrols_ffmpeg_linux_default
+        "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/linux/ffmpeg")
+endif()
+set(MTCONTROLS_FFMPEG_BIN_LINUX "${_mtcontrols_ffmpeg_linux_default}" CACHE FILEPATH
+    "Path to ffmpeg binary that will be bundled in the Linux build")
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
@@ -254,6 +261,17 @@ if (TARGET MTControls_Standalone)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MTCONTROLS_FFMPEG_BIN_WINDOWS}"
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg.exe"
+            VERBATIM)
+    endif()
+
+    if (UNIX AND NOT APPLE AND MTCONTROLS_FFMPEG_BIN_LINUX)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_FFMPEG_BIN_LINUX}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg"
+            COMMAND chmod +x "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg"
             VERBATIM)
     endif()
 endif()

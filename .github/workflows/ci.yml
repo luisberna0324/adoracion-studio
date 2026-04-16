@@ -298,6 +298,93 @@ jobs:
           path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}.exe
           if-no-files-found: error
 
+  build-linux:
+    name: Build Linux artifact
+    needs: prepare
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+          fetch-depth: 0
+
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
+
+      - name: Install JUCE dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libwebkit2gtk-4.0-dev \
+            libglu1-mesa-dev \
+            freeglut3-dev \
+            mesa-common-dev \
+            ninja-build
+
+      - name: Download static ffmpeg (Linux)
+        run: |
+          mkdir -p third_party/ffmpeg/linux
+          curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar xJ -C third_party/ffmpeg/linux --strip-components=1
+          mv third_party/ffmpeg/linux/ffmpeg third_party/ffmpeg/linux/ffmpeg.bin
+          mv third_party/ffmpeg/linux/ffmpeg.bin third_party/ffmpeg/linux/ffmpeg
+          chmod +x third_party/ffmpeg/linux/ffmpeg
+
+      - name: Configure (Linux)
+        env:
+          JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
+          MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
+          MTCONTROLS_FFMPEG_BIN_LINUX: ${{ github.workspace }}/third_party/ffmpeg/linux/ffmpeg
+        run: cmake --preset linux-release
+
+      - name: Build (Linux)
+        run: cmake --build --preset linux-release
+
+      - name: Verify ffmpeg bundled in Standalone (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          FFMPEG_PATH="build/linux-release/MTControls_artefacts/Release/Standalone/ffmpeg/ffmpeg"
+          [[ -f "${FFMPEG_PATH}" ]] || { echo "Bundled ffmpeg missing: ${FFMPEG_PATH}" >&2; exit 1; }
+          echo "Bundled ffmpeg found: ${FFMPEG_PATH}"
+
+      - name: Upload Standalone (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: MTControls-linux-standalone-${{ needs.prepare.outputs.semver }}
+          path: build/linux-release/MTControls_artefacts/Release/Standalone
+          if-no-files-found: error
+
+      - name: Package installer (Linux)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          bash scripts/package_linux_deb.sh \
+            --version "${SEMVER}" \
+            --standalone-dir build/linux-release/MTControls_artefacts/Release/Standalone \
+            --output-dir dist
+
+      - name: Upload installer (Linux)
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playworship-linux-installer-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship_${{ needs.prepare.outputs.semver }}_amd64.deb
+          if-no-files-found: error
+
   publish:
     if: needs.prepare.outputs.publish_release == 'true'
     name: Publish GitHub Release
@@ -305,6 +392,7 @@ jobs:
       - prepare
       - build-macos
       - build-windows
+      - build-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -338,6 +426,12 @@ jobs:
           name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
           path: dist/windows
 
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MTControls-linux-standalone-${{ needs.prepare.outputs.semver }}
+          path: dist/linux
+
       - name: Download macOS installer
         if: needs.prepare.outputs.publish_installers == 'true'
         uses: actions/download-artifact@v4
@@ -352,6 +446,13 @@ jobs:
           name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
           path: release-assets
 
+      - name: Download Linux installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-linux-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
       - name: Package release assets
         shell: bash
         env:
@@ -361,6 +462,7 @@ jobs:
           mkdir -p release-assets
           (cd dist && zip -r "../release-assets/MTControls-macos-standalone-${SEMVER}.zip" macos)
           (cd dist && zip -r "../release-assets/MTControls-windows-standalone-${SEMVER}.zip" windows)
+          (cd dist && zip -r "../release-assets/MTControls-linux-standalone-${SEMVER}.zip" linux)
 
       - name: Create or update GitHub release
         shell: bash
@@ -373,14 +475,17 @@ jobs:
           PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
           MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
           WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
+          LINUX_ZIP="release-assets/MTControls-linux-standalone-${SEMVER}.zip"
           MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.dmg"
           WIN_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}.exe"
-          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}")
+          LINUX_INSTALLER="release-assets/playworship_${SEMVER}_amd64.deb"
+          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}" "${LINUX_ZIP}")
 
           if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
             [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
             [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
-            ASSETS+=("${MAC_INSTALLER}" "${WIN_INSTALLER}")
+            [[ -f "${LINUX_INSTALLER}" ]] || { echo "Missing Linux installer: ${LINUX_INSTALLER}" >&2; exit 1; }
+            ASSETS+=("${MAC_INSTALLER}" "${WIN_INSTALLER}" "${LINUX_INSTALLER}")
           fi
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
