@@ -67,6 +67,7 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   pitchShift.prepare(sampleRate, samplesPerBlock, numChannels);
   pitchShift.reset();
   pitchShift.setPitchSemiTones(pitchSemiTones);
+  pitchShift.setTempoRatio(tempoRatio);
 
   stemMixBuffer.setSize(numChannels, samplesPerBlock);
   stemTempBuffer.setSize(numChannels, samplesPerBlock);
@@ -94,6 +95,15 @@ void StemMixEngine::setPitchSemiTones(int semitones) {
     return;
   pitchSemiTones = semitones;
   pitchShift.setPitchSemiTones(semitones);
+  lastLatencySamples = 0;
+}
+
+void StemMixEngine::setTempoRatio(double ratio) {
+  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  if (juce::approximatelyEqual(tempoRatio, normalized))
+    return;
+  tempoRatio = normalized;
+  pitchShift.setTempoRatio(tempoRatio);
   lastLatencySamples = 0;
 }
 
@@ -161,7 +171,7 @@ void StemMixEngine::mixStems(
 }
 
 void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
-                                   bool pitchActive, float fadeStart,
+                                   bool timeProcessActive, float fadeStart,
                                    float fadeEnd, float windowFadeStart,
                                    float windowFadeEnd) {
   const int numSamples = output.getNumSamples();
@@ -171,7 +181,7 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
   applyFade(stemMixBuffer, instrumentFadeStart, instrumentFadeEnd);
   applyFade(percussionBuffer, instrumentFadeStart, instrumentFadeEnd);
 
-  if (pitchActive) {
+  if (timeProcessActive) {
     if (!pitchShift.isPrepared() || pitchShift.getNumChannels() != numChannels)
       pitchShift.prepare(currentSampleRate, currentBlockSize, numChannels);
     pitchShift.process(stemMixBuffer);

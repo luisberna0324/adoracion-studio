@@ -1,0 +1,80 @@
+#!/bin/bash
+set -u
+
+ASSETS_BASE_URL="https://storage.googleapis.com/playworship-assets"
+ENCODER_VERSION="2026-04-18-1"
+PADS_VERSION="roman-v1"
+
+ENCODER_URL="$ASSETS_BASE_URL/encoder/macos/$ENCODER_VERSION/ffmpeg"
+PADS_ZIP_URL="$ASSETS_BASE_URL/pads/$PADS_VERSION/pads-pack.zip"
+
+log() {
+  /bin/echo "[MTControls postinstall] $1"
+}
+
+download_file() {
+  local url="$1"
+  local dest="$2"
+  /usr/bin/curl -fL --retry 3 --connect-timeout 15 --max-time 180 "$url" -o "$dest"
+}
+
+CONSOLE_USER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)"
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" ]]; then
+  log "No console user available; skipping asset bootstrap."
+  exit 0
+fi
+
+USER_HOME="$(/usr/bin/dscl . -read /Users/"$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
+  log "Couldn't resolve home for user $CONSOLE_USER; skipping asset bootstrap."
+  exit 0
+fi
+
+ASSETS_ROOT="$USER_HOME/Library/MTControls/Assets"
+ENCODER_DIR="$ASSETS_ROOT/encoder"
+PADS_DIR="$ASSETS_ROOT/pads/RomanVizcaino"
+TMP_DIR="/tmp/mtcontrols-assets-bootstrap"
+
+mkdir -p "$ENCODER_DIR" "$PADS_DIR" "$TMP_DIR"
+chown -R "$CONSOLE_USER":staff "$ASSETS_ROOT" 2>/dev/null || true
+log "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."
+
+ENCODER_PATH="$ENCODER_DIR/ffmpeg"
+if [[ ! -f "$ENCODER_PATH" ]]; then
+  log "Descargando encoder... / Downloading encoder..."
+  ENCODER_TMP="$TMP_DIR/ffmpeg.download"
+  if download_file "$ENCODER_URL" "$ENCODER_TMP"; then
+    /bin/mv -f "$ENCODER_TMP" "$ENCODER_PATH"
+    /bin/chmod +x "$ENCODER_PATH"
+    /usr/sbin/chown "$CONSOLE_USER":staff "$ENCODER_PATH" 2>/dev/null || true
+  else
+    log "Failed downloading encoder; app will retry at runtime."
+  fi
+fi
+
+PAD_COUNT="$(/usr/bin/find "$PADS_DIR" -type f \( -name '*.mp3' -o -name '*.wav' -o -name '*.aif' -o -name '*.aiff' \) 2>/dev/null | /usr/bin/wc -l | /usr/bin/xargs)"
+if [[ -z "$PAD_COUNT" ]]; then
+  PAD_COUNT=0
+fi
+
+if (( PAD_COUNT < 12 )); then
+  log "Descargando pack de pads... / Downloading pads pack..."
+  PADS_ZIP="$TMP_DIR/pads-pack.zip"
+  if download_file "$PADS_ZIP_URL" "$PADS_ZIP"; then
+    /bin/rm -rf "$PADS_DIR"
+    /bin/mkdir -p "$PADS_DIR"
+    /usr/bin/unzip -o -q "$PADS_ZIP" -d "$PADS_DIR"
+    /usr/sbin/chown -R "$CONSOLE_USER":staff "$PADS_DIR" 2>/dev/null || true
+
+    PAD_COUNT="$(/usr/bin/find "$PADS_DIR" -type f \( -name '*.mp3' -o -name '*.wav' -o -name '*.aif' -o -name '*.aiff' \) 2>/dev/null | /usr/bin/wc -l | /usr/bin/xargs)"
+    if [[ -z "$PAD_COUNT" || "$PAD_COUNT" -lt 12 ]]; then
+      log "Pads package invalid after unzip; app will retry at runtime."
+    fi
+  else
+    log "Failed downloading pads package; app will retry at runtime."
+  fi
+fi
+
+log "Proceso de recursos iniciales finalizado. / Initial resource bootstrap completed."
+
+exit 0

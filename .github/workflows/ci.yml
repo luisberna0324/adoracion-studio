@@ -24,7 +24,7 @@ on:
         default: false
         type: boolean
       publish_installers:
-        description: "Generar y publicar instaladores (.dmg y .exe)"
+        description: "Generar/publicar instalador Linux (.deb). macOS (.pkg) y Windows (.exe) siempre se generan"
         required: true
         default: true
         type: boolean
@@ -189,21 +189,10 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
-          MTCONTROLS_FFMPEG_BIN_MACOS: ${{ github.workspace }}/third_party/ffmpeg/macos/ffmpeg
         run: cmake --preset macos-release
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
-
-      - name: Verify ffmpeg bundled in app (macOS)
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_PATH="$(find build/macos-release/MTControls_artefacts/Release/Standalone -maxdepth 1 -type d -name "*.app" -print -quit)"
-          [[ -n "${APP_PATH}" ]] || { echo "No .app found after macOS build" >&2; exit 1; }
-          BUNDLED_FFMPEG="${APP_PATH}/Contents/Resources/ffmpeg/ffmpeg"
-          [[ -f "${BUNDLED_FFMPEG}" ]] || { echo "Bundled ffmpeg missing: ${BUNDLED_FFMPEG}" >&2; exit 1; }
-          echo "Bundled ffmpeg found: ${BUNDLED_FFMPEG}"
 
       - name: Upload Standalone (macOS)
         uses: actions/upload-artifact@v4
@@ -212,22 +201,20 @@ jobs:
           path: build/macos-release/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
 
-      - name: Package DMG installer (macOS)
-        if: needs.prepare.outputs.publish_installers == 'true'
+      - name: Package PKG installer (macOS)
         env:
           SEMVER: ${{ needs.prepare.outputs.semver }}
         run: |
-          bash scripts/package_macos_dmg.sh \
+          bash scripts/package_macos_pkg.sh \
             --version "${SEMVER}" \
             --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone \
             --output-dir dist
 
       - name: Upload installer (macOS)
-        if: needs.prepare.outputs.publish_installers == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
-          path: dist/playworship-macos-installer-${{ needs.prepare.outputs.semver }}.dmg
+          path: dist/playworship-macos-installer-${{ needs.prepare.outputs.semver }}.pkg
           if-no-files-found: error
 
   build-windows:
@@ -252,20 +239,10 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
-          MTCONTROLS_FFMPEG_BIN_WINDOWS: ${{ github.workspace }}\\third_party\\ffmpeg\\windows\\ffmpeg.exe
         run: cmake --preset windows-release
 
       - name: Build (Windows)
         run: cmake --build --preset windows-release
-
-      - name: Verify ffmpeg bundled in Standalone (Windows)
-        shell: pwsh
-        run: |
-          $ffmpegPath = "build/windows-release/MTControls_artefacts/Release/Standalone/ffmpeg/ffmpeg.exe"
-          if (!(Test-Path -LiteralPath $ffmpegPath)) {
-            throw "Expected bundled ffmpeg not found: $ffmpegPath"
-          }
-          Write-Host "Bundled ffmpeg found: $ffmpegPath"
 
       - name: Upload Standalone (Windows)
         uses: actions/upload-artifact@v4
@@ -275,23 +252,18 @@ jobs:
           if-no-files-found: error
 
       - name: Install Inno Setup
-        if: needs.prepare.outputs.publish_installers == 'true'
         run: choco install innosetup --no-progress -y
 
       - name: Package installer (Windows)
-        if: needs.prepare.outputs.publish_installers == 'true'
         shell: pwsh
         run: |
           ./scripts/package_windows_installer.ps1 `
             -Version "${{ needs.prepare.outputs.semver }}" `
             -StandaloneDir "build/windows-release/MTControls_artefacts/Release/Standalone" `
             -OutputDir "dist" `
-            -IssFile "packaging/windows/MTControls.iss" `
-            -FfmpegExe "${{ github.workspace }}\third_party\ffmpeg\windows\ffmpeg.exe" `
-            -RequireFfmpeg
+            -IssFile "packaging/windows/MTControls.iss"
 
       - name: Upload installer (Windows)
-        if: needs.prepare.outputs.publish_installers == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
@@ -433,14 +405,12 @@ jobs:
           path: dist/linux
 
       - name: Download macOS installer
-        if: needs.prepare.outputs.publish_installers == 'true'
         uses: actions/download-artifact@v4
         with:
           name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
           path: release-assets
 
       - name: Download Windows installer
-        if: needs.prepare.outputs.publish_installers == 'true'
         uses: actions/download-artifact@v4
         with:
           name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
@@ -476,16 +446,16 @@ jobs:
           MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
           WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
           LINUX_ZIP="release-assets/MTControls-linux-standalone-${SEMVER}.zip"
-          MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.dmg"
+          MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.pkg"
           WIN_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}.exe"
           LINUX_INSTALLER="release-assets/playworship_${SEMVER}_amd64.deb"
-          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}" "${LINUX_ZIP}")
+          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}" "${LINUX_ZIP}" "${MAC_INSTALLER}" "${WIN_INSTALLER}")
 
+          [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
+          [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
           if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
-            [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
-            [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
             [[ -f "${LINUX_INSTALLER}" ]] || { echo "Missing Linux installer: ${LINUX_INSTALLER}" >&2; exit 1; }
-            ASSETS+=("${MAC_INSTALLER}" "${WIN_INSTALLER}" "${LINUX_INSTALLER}")
+            ASSETS+=("${LINUX_INSTALLER}")
           fi
 
           if gh release view "${TAG}" >/dev/null 2>&1; then

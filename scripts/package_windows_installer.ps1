@@ -59,7 +59,7 @@ or env var:
 }
 
 if (-not $ffmpegAlreadyBundled) {
-    Write-Warning "ffmpeg.exe was not found/bundled. Installer will be generated without ffmpeg."
+    Write-Warning "ffmpeg.exe was not found/bundled. Installer will be generated without ffmpeg (runtime bootstrap will download it)."
 }
 
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source

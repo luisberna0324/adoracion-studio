@@ -9,7 +9,7 @@ Usage:
 Defaults:
   --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone
   --output-dir dist
-  --ffmpeg-bin third_party/ffmpeg/macos/ffmpeg (or MTCONTROLS_FFMPEG_BIN_MACOS env)
+  --ffmpeg-bin third_party/ffmpeg/macos/ffmpeg (or MTCONTROLS_FFMPEG_BIN_MACOS env, optional)
 EOF
 }
 
@@ -80,11 +80,6 @@ if [[ -z "${FFMPEG_BIN}" ]]; then
   fi
 fi
 
-if [[ -z "${FFMPEG_BIN}" || ! -f "${FFMPEG_BIN}" ]]; then
-  echo "ffmpeg binary not found. Set --ffmpeg-bin or MTCONTROLS_FFMPEG_BIN_MACOS." >&2
-  exit 1
-fi
-
 mkdir -p "${OUTPUT_DIR}"
 
 TMP_DIR="$(mktemp -d)"
@@ -99,13 +94,17 @@ mkdir -p "${STAGE_DIR}"
 # Keep full standalone output content in the installer image.
 cp -R "${STANDALONE_DIR}/." "${STAGE_DIR}/"
 
-# Ensure ffmpeg is embedded inside every app bundle in the DMG payload.
-while IFS= read -r -d '' app_path; do
-  ffmpeg_dir="${app_path}/Contents/Resources/ffmpeg"
-  mkdir -p "${ffmpeg_dir}"
-  cp -f "${FFMPEG_BIN}" "${ffmpeg_dir}/ffmpeg"
-  chmod +x "${ffmpeg_dir}/ffmpeg"
-done < <(find "${STAGE_DIR}" -maxdepth 1 -type d -name "*.app" -print0)
+if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
+  # Optional legacy behavior: include ffmpeg inside app bundle when explicitly provided.
+  while IFS= read -r -d '' app_path; do
+    ffmpeg_dir="${app_path}/Contents/Resources/ffmpeg"
+    mkdir -p "${ffmpeg_dir}"
+    cp -f "${FFMPEG_BIN}" "${ffmpeg_dir}/ffmpeg"
+    chmod +x "${ffmpeg_dir}/ffmpeg"
+  done < <(find "${STAGE_DIR}" -maxdepth 1 -type d -name "*.app" -print0)
+else
+  echo "ffmpeg binary not provided; installer will bootstrap encoder at runtime."
+fi
 
 ln -s /Applications "${STAGE_DIR}/Applications"
 

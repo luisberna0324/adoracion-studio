@@ -4,6 +4,7 @@
 #include "MetronomeEngine.h"
 #include "StemMixEngine.h"
 #include "StemTrack.h"
+#include "audio/PadsEngine.h"
 #include "data/SongData.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
@@ -76,6 +77,9 @@ public:
   bool isMetronomeEnabled() const noexcept;
   void setMetronomeBpm(double bpm) noexcept;
   double getMetronomeBpm() const noexcept;
+  void setPlaybackTempoBpm(double bpm) noexcept;
+  double getPlaybackTempoBpm() const noexcept;
+  double getOriginalSongBpm() const noexcept;
   void setMetronomeBeatsPerBar(int beats) noexcept;
   void setMetronomeVolume(float volume) noexcept;
   float getMetronomeVolume() const noexcept;
@@ -124,6 +128,21 @@ public:
   float getMasterGain() const noexcept;
   void setMasterMute(bool muted) noexcept;
   bool isMasterMuted() const noexcept;
+  bool loadPadsPackFromFolder(const juce::File &sourceFolder);
+  bool reloadLastPadsPack();
+  bool ensurePadsPackReady();
+  void refreshPadsRoutingFromSettings() noexcept;
+  void setPadsEnabled(bool enabled) noexcept;
+  bool isPadsEnabled() const noexcept;
+  void setPadsVolume(float volume) noexcept;
+  float getPadsVolume() const noexcept;
+  void setPadsGain(float gain) noexcept;
+  float getPadsGain() const noexcept;
+  void triggerPadNote(int noteIndex, int octave);
+  void stopPadNote(int noteIndex);
+  float getPadsOutputLevel() const noexcept;
+  bool isPadsPackLoaded() const noexcept;
+  juce::String getPadsPackStatusText() const;
 
   static constexpr const char *inputGainId = "inputGain";
   static constexpr const char *mixId = "mix";
@@ -160,6 +179,8 @@ private:
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
   std::array<PitchShiftProcessor, maxStemCount> stemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
+  std::array<PitchShiftProcessor, maxStemCount> outgoingStemPitchProcessors;
+  std::array<SimpleDelayLine, maxStemCount> outgoingStemPitchDelayLines;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
@@ -168,10 +189,31 @@ private:
   StemOutputRouter stemOutputRouter;
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
+  PadsEngine padsEngine;
   juce::AudioBuffer<float> stemRoutingTempBuffer;
   juce::AudioBuffer<float> metronomeRenderBuffer;
+  juce::AudioBuffer<float> padsRenderBuffer;
+  std::atomic<bool> padsEnabledState{true};
+  std::atomic<float> padsVolume{1.0f};
+  std::atomic<float> padsGain{1.0f};
+  std::atomic<bool> padsMuted{false};
+  std::atomic<int> padsOutputChannel{1};
+  std::atomic<int> padsOutputWidth{1};
+  juce::String padsPackStatusText{"Not loaded"};
+  std::atomic<bool> padsPackLoaded{false};
+  mutable juce::SpinLock padsStateLock;
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
+  std::atomic<double> playbackTempoBpm{120.0};
+  double playbackTempoRatioActive = 1.0;
+  std::atomic<bool> songCrossfadeActive{false};
+  std::atomic<float> songCrossfadeProgress{1.0f};
+  std::atomic<float> songCrossfadeIncomingGain{1.0f};
+  std::atomic<float> songCrossfadeOutgoingGain{0.0f};
+  std::vector<std::unique_ptr<StemTrack>> outgoingStemTracks;
+  juce::MixerAudioSource outgoingMixerSource;
+  juce::AudioBuffer<float> outgoingStemRenderBuffer;
+  const double songCrossfadeDurationSec = 2.5;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   // SpinLock protects stemTransportSources vector modifications.
@@ -218,6 +260,7 @@ private:
   const double fadeDurationSec = 2.0;
   std::atomic<bool> fadeStopsPlayback{true};
   int routingPitchLatencySamples = 0;
+  int outgoingRoutingPitchLatencySamples = 0;
   static constexpr int kMaxRoutingPitchLatencySamples = 65536;
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
@@ -226,6 +269,11 @@ private:
   void clearLoadedSongState();
   void removeAllStemSources();
   void resetStemControls(int activeStemCount) noexcept;
+  bool loadPadsPackInternal(const juce::File &folderToLoad,
+                            const juce::String &sourcePathForSettings,
+                            bool persistSettings);
+  static juce::String buildPadsPackHash(const juce::Array<juce::File> &files);
+  double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
   double getArrangementStartSeconds() const noexcept;
   TransportState getTransportState() const noexcept;

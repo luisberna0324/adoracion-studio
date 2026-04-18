@@ -38,6 +38,9 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/linux/ffmpeg")
 endif()
 set(MTCONTROLS_FFMPEG_BIN_LINUX "${_mtcontrols_ffmpeg_linux_default}" CACHE FILEPATH
     "Path to ffmpeg binary that will be bundled in the Linux build")
+set(MTCONTROLS_ASSETS_BASE_URL "https://storage.googleapis.com/playworship-assets" CACHE STRING
+    "Base URL for remote asset bootstrap downloads")
+option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
@@ -136,6 +139,8 @@ target_sources(MTControls
         src/audio/AudioDeviceMonitor.h
         src/audio/OutputChannelCatalog.cpp
         src/audio/OutputChannelCatalog.h
+        src/audio/PadsEngine.cpp
+        src/audio/PadsEngine.h
         src/audio/RoutingSuggestionEngine.cpp
         src/audio/RoutingSuggestionEngine.h
         src/audio/SimpleDelayLine.cpp
@@ -148,6 +153,8 @@ target_sources(MTControls
         src/audio/StemOutputRoutingState.h
         src/data/AppSettings.cpp
         src/data/AppSettings.h
+        src/data/AssetBootstrapManager.cpp
+        src/data/AssetBootstrapManager.h
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
         src/data/SessionAuthLogger.cpp
@@ -212,6 +219,7 @@ target_compile_definitions(MTControls
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
+        MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
@@ -251,7 +259,7 @@ else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
 endif()
 
-if (TARGET MTControls_Standalone)
+if (TARGET MTControls_Standalone AND MTCONTROLS_BUNDLE_FFMPEG)
     # APPLE is true for iOS too; bundling the macOS ffmpeg binary into an iOS app breaks CodeSign.
     if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD

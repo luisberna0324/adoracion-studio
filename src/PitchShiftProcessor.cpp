@@ -27,7 +27,7 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
   soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
   soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-  soundtouch.setTempo(1.0f);
+  soundtouch.setTempo(static_cast<float>(tempoRatio));
   soundtouch.setRate(1.0f);
   soundtouch.clear();
 
@@ -61,9 +61,25 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   }
 }
 
+void PitchShiftProcessor::setTempoRatio(double ratio) {
+  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  if (juce::approximatelyEqual(tempoRatio, normalized))
+    return;
+  tempoRatio = normalized;
+  if (prepared) {
+    soundtouch.setTempo(static_cast<float>(tempoRatio));
+    soundtouch.clear();
+    outputFifo.clear();
+    outputReadPos = 0;
+    primeLatency();
+  }
+}
+
 int PitchShiftProcessor::getPitchSemiTones() const noexcept {
   return pitchSemiTones;
 }
+
+double PitchShiftProcessor::getTempoRatio() const noexcept { return tempoRatio; }
 
 int PitchShiftProcessor::getLatencySamples() const noexcept {
   return latencySamples;
@@ -78,7 +94,7 @@ bool PitchShiftProcessor::isPrepared() const noexcept { return prepared; }
 void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
   if (!prepared || currentChannels <= 0)
     return;
-  if (pitchSemiTones == 0)
+  if (pitchSemiTones == 0 && juce::approximatelyEqual(tempoRatio, 1.0))
     return;
 
   const int numSamples = buffer.getNumSamples();

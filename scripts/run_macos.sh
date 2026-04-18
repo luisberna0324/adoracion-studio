@@ -7,6 +7,12 @@ export MTCONTROLS_SESSION_REAUTH_MINUTES="${MTCONTROLS_SESSION_REAUTH_MINUTES:-7
 export MTCONTROLS_REAUTH_GRACE_MINUTES="${MTCONTROLS_REAUTH_GRACE_MINUTES:-300}"
 export MTCONTROLS_FFMPEG_BIN_MACOS="${MTCONTROLS_FFMPEG_BIN_MACOS:-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/third_party/ffmpeg/macos/ffmpeg}"
 
+BUILD_DIR="/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/macos-release"
+if [[ -d "$BUILD_DIR" ]]; then
+  echo "Cleaning previous build at: $BUILD_DIR"
+  rm -rf "$BUILD_DIR"
+fi
+
 cmake --preset macos-release \
   -DMTCONTROLS_API_BASE_URL="$MTCONTROLS_API_BASE_URL" \
   -DMTCONTROLS_SESSION_REAUTH_MINUTES="$MTCONTROLS_SESSION_REAUTH_MINUTES" \

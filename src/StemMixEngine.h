@@ -11,13 +11,14 @@ public:
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
   void setPitchSemiTones(int semitones);
+  void setTempoRatio(double ratio);
 
   void mixStems(const std::vector<std::unique_ptr<StemTrack>> &stems,
                 const std::atomic<bool> *clickGuideStates,
                 const std::atomic<bool> *pitchShiftStates, int stemCount,
                 int numSamples, int numChannels);
 
-  void renderToOutput(juce::AudioBuffer<float> &output, bool pitchActive,
+  void renderToOutput(juce::AudioBuffer<float> &output, bool timeProcessActive,
                       float fadeStart, float fadeEnd, float windowFadeStart,
                       float windowFadeEnd);
 
@@ -56,6 +57,7 @@ private:
   int currentBlockSize = 0;
   int currentChannels = 0;
   int pitchSemiTones = 0;
+  double tempoRatio = 1.0;
 
   static constexpr int kMaxPitchLatencySamples = 65536;
 };
