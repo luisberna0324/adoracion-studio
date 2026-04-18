@@ -191,7 +191,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     for (int i = 0; i < stemCount; ++i) {
       const int assignedChannel =
           stemOutputChannels[static_cast<size_t>(i)].load(std::memory_order_relaxed);
-      if (assignedChannel > 1) {
+      const int assignedWidth = juce::jlimit(
+          1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
+                    std::memory_order_relaxed));
+      // Engage explicit routing not only when using channels beyond 1,
+      // but also when any stem is configured as mono on a stereo-capable bus.
+      if (assignedChannel > 1 || (numChannels > 1 && assignedWidth == 1)) {
         routingActive = true;
         break;
       }
@@ -354,12 +359,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             stemPitchDelayLines[static_cast<size_t>(i)].process(
                 stemRoutingTempBuffer);
           }
-          const int assignedChannelOneBased =
+          int assignedWidth = juce::jlimit(
+              1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
+                        std::memory_order_relaxed));
+          if (numChannels < 2)
+            assignedWidth = 1;
+
+          const int maxBaseChannel = juce::jmax(
+              1, numChannels - (assignedWidth >= 2 ? 1 : 0));
+          const int assignedChannelOneBased = juce::jlimit(
+              1, maxBaseChannel,
               stemOutputChannels[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed);
-          const int assignedWidth =
-              stemOutputWidths[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed);
+                  std::memory_order_relaxed));
           const int outputIndex =
               juce::jlimit(0, juce::jmax(0, numChannels - 1),
                            assignedChannelOneBased - 1);

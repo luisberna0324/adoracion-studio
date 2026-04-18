@@ -1045,8 +1045,7 @@ void TopBar::refreshFromProviders() {
     const auto keyText = keyProvider ? keyProvider().trim() : juce::String{};
     const auto songTitle = processor.getLoadedSongTitle();
     const bool songChanged = songTitle != lastSongTitle;
-    const bool keyChanged = keyText != lastKeyToken;
-    if (songChanged || keyChanged || !hasKey) {
+    if (songChanged || !hasKey) {
       lastSongTitle = songTitle;
       lastKeyToken = keyText;
       int semitone = 0;
@@ -1061,11 +1060,30 @@ void TopBar::refreshFromProviders() {
       }
       hasKey = true;
       processor.setPitchSemiTones(0);
+    } else if (keyText != lastKeyToken) {
+      // Metadata key text may refresh asynchronously; keep user-selected
+      // transposition and only refresh labels/base reference.
+      const int currentDelta =
+          semitoneDelta(baseKeySemitone, activeKeySemitone);
+      lastKeyToken = keyText;
+      int semitone = 0;
+      if (parseKeySemitone(keyText, semitone)) {
+        baseKeySemitone = semitone;
+        activeKeySemitone = normalizeSemitone(baseKeySemitone + currentDelta);
+        activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
+      } else {
+        baseKeySemitone = 0;
+        activeKeySemitone = normalizeSemitone(currentDelta);
+        activeKeyLabel = keyText.isNotEmpty() ? keyText
+                                              : L10n::tr("Tono", "Key");
+      }
     }
 
     if (activeKeyLabel.isEmpty())
       activeKeyLabel = L10n::tr("Tono", "Key");
     keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
+    processor.setPitchSemiTones(
+        semitoneDelta(baseKeySemitone, activeKeySemitone));
   }
 
   const bool playing = playingProvider ? playingProvider() : false;
