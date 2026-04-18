@@ -10,6 +10,8 @@ class TopBar;
 class SetlistHandlePanel;
 class SongListPanel;
 class SongLoadProgressOverlay;
+class PadsComponent;
+class PadsHandlePanel;
 class LocalAuthCallbackServer;
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -83,6 +85,9 @@ private:
   bool reauthLoginInProgress = false;
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<SongLoadProgressOverlay> songLoadOverlay;
+  std::unique_ptr<PadsComponent> padsComponent;
+  std::unique_ptr<PadsHandlePanel> padsHandlePanel;
+  bool isPadsCollapsed = true;
   bool songLoadBusy = false;
 
   void timerCallback() override;

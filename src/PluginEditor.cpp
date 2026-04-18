@@ -14,6 +14,8 @@
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
+#include "ui/panels/PadsComponent.h"
+#include "ui/components/PadsHandlePanel.h"
 #include "ui/components/SongLoadProgressOverlay.h"
 #include "audio/AudioDeviceMonitor.h"
 #include <algorithm>
@@ -995,13 +997,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           channelGridRaw->refreshStemRoutingVisibility();
       });
 
-  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw] {
+  auto *padsRaw = padsComponent.get();
+  auto *padsHandleRaw = padsHandlePanel.get();
+  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw, padsRaw, padsHandleRaw] {
     if (topBarRaw)
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
       waveformBarRaw->refreshThemeColours();
     if (channelGridRaw)
       channelGridRaw->refreshThemeColours();
+    if (padsRaw)
+      padsRaw->refreshThemeColours();
+    if (padsHandleRaw)
+      padsHandleRaw->repaint();
   };
 
   auto songListImpl = std::make_unique<SongListPanel>();
@@ -1299,6 +1307,20 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
+
+  padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel);
+  padsComponent->setVisible(false);
+  addChildComponent(*padsComponent);
+
+  padsHandlePanel = std::make_unique<PadsHandlePanel>();
+  padsHandlePanel->setCollapsed(isPadsCollapsed);
+  padsHandlePanel->onToggle = [this] {
+    isPadsCollapsed = !isPadsCollapsed;
+    padsHandlePanel->setCollapsed(isPadsCollapsed);
+    padsComponent->setVisible(!isPadsCollapsed);
+    resized();
+  };
+  addAndMakeVisible(*padsHandlePanel);
 
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
@@ -2160,6 +2182,23 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea.reduced(contentInset);
+
+  if (padsHandlePanel) {
+    constexpr int kHandleH = 22;
+    constexpr int kPadsH   = 280;
+    constexpr int kPadsW   = 560;
+
+    const int totalPadsH = isPadsCollapsed ? kHandleH : kHandleH + kPadsH;
+    auto padsBar = rightChannelsArea.removeFromBottom(totalPadsH);
+
+    padsHandlePanel->setBounds(padsBar.removeFromTop(kHandleH));
+
+    if (!isPadsCollapsed && padsComponent) {
+      const int padsW = juce::jmin(kPadsW, padsBar.getWidth());
+      padsComponent->setBounds(padsBar.withWidth(padsW));
+    }
+  }
+
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (isSetlistCollapsed) {

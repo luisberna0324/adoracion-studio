@@ -193,6 +193,16 @@ target_sources(MTControls
         src/ui/panels/TopBar.h
         src/ui/panels/WaveformBar.cpp
         src/ui/panels/WaveformBar.h
+        src/ui/components/NotePadButton.cpp
+        src/ui/components/NotePadButton.h
+        src/ui/components/OctaveControl.cpp
+        src/ui/components/OctaveControl.h
+        src/ui/components/PowerButton.cpp
+        src/ui/components/PowerButton.h
+        src/ui/components/PadsHandlePanel.cpp
+        src/ui/components/PadsHandlePanel.h
+        src/ui/panels/PadsComponent.cpp
+        src/ui/panels/PadsComponent.h
 )
 
 target_compile_definitions(MTControls
