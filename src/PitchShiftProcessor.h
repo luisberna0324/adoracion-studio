@@ -9,7 +9,9 @@ public:
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
   void setPitchSemiTones(int semitones);
+  void setTempoRatio(double ratio);
   int getPitchSemiTones() const noexcept;
+  double getTempoRatio() const noexcept;
   int getLatencySamples() const noexcept;
   int getNumChannels() const noexcept;
   bool isPrepared() const noexcept;
@@ -27,6 +29,7 @@ private:
   double currentSampleRate = 0.0;
   int currentChannels = 0;
   int pitchSemiTones = 0;
+  double tempoRatio = 1.0;
   int latencySamples = 0;
   bool prepared = false;
 };

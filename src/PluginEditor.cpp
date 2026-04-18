@@ -993,23 +993,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           return;
         p.getAudioDeviceBridge().setAvailableOutputChannelCount(
             juce::jmax(2, info.numOutputChannels));
+        p.refreshPadsRoutingFromSettings();
         if (channelGridRaw != nullptr)
           channelGridRaw->refreshStemRoutingVisibility();
       });
 
-  auto *padsRaw = padsComponent.get();
-  auto *padsHandleRaw = padsHandlePanel.get();
-  refreshTopBarTheme = [topBarRaw, waveformBarRaw, channelGridRaw, padsRaw, padsHandleRaw] {
+  refreshTopBarTheme = [this, topBarRaw, waveformBarRaw, channelGridRaw] {
     if (topBarRaw)
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
       waveformBarRaw->refreshThemeColours();
     if (channelGridRaw)
       channelGridRaw->refreshThemeColours();
-    if (padsRaw)
-      padsRaw->refreshThemeColours();
-    if (padsHandleRaw)
-      padsHandleRaw->repaint();
+    if (padsComponent)
+      padsComponent->refreshThemeColours();
+    if (padsHandlePanel)
+      padsHandlePanel->repaint();
   };
 
   auto songListImpl = std::make_unique<SongListPanel>();
@@ -1623,6 +1622,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [this](const juce::String &deviceKey,
              const std::vector<CategoryRoutingDefaults> &next) {
         AppSettings::setRoutingDefaultsForDevice(deviceKey, next);
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        processorRef.refreshPadsRoutingFromSettings();
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
@@ -2053,6 +2054,7 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
     processorRef.setStemOutputChannel(stemIndex, routing.baseChannel);
     ++stemIndex;
   }
+  processorRef.refreshPadsRoutingFromSettings();
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
@@ -2186,7 +2188,7 @@ void MTControlsAudioProcessorEditor::resized() {
   if (padsHandlePanel) {
     constexpr int kHandleH = 22;
     constexpr int kPadsH   = 280;
-    constexpr int kPadsW   = 560;
+    constexpr int kPadsW   = 584; // 484 (grid) + 90 (strip) + 4 (margin) + 6 (padding)
 
     const int totalPadsH = isPadsCollapsed ? kHandleH : kHandleH + kPadsH;
     auto padsBar = rightChannelsArea.removeFromBottom(totalPadsH);

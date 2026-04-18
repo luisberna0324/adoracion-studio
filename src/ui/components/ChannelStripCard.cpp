@@ -41,6 +41,8 @@ ChannelStripCard::ChannelStripCard(
   muteButton.setLookAndFeel(&lookAndFeel);
   muteButton.setComponentID("muteButton");
   addAndMakeVisible(muteButton);
+  addAndMakeVisible(powerButton);
+  powerButton.setVisible(false);
 
   volSlider.onValueChange = [this] {
     if (onVolumeChanged)
@@ -58,6 +60,10 @@ ChannelStripCard::ChannelStripCard(
     if (onSoloChanged)
       onSoloChanged(soloButton.getToggleState());
   };
+  powerButton.setOnToggled([this](bool poweredOn) {
+    if (onPowerToggled)
+      onPowerToggled(poweredOn);
+  });
 }
 
 ChannelStripCard::~ChannelStripCard() { clearLookAndFeelFromControls(); }
@@ -77,13 +83,18 @@ void ChannelStripCard::paint(juce::Graphics &g) {
   g.fillRect(band);
 
   g.setColour(channelBandTextColour);
-  g.setFont(juce::FontOptions(8.0f).withKerningFactor(0.08f));
+  const float bandFontSize = juce::jlimit(
+      9.5f, 12.0f, static_cast<float>(layout.channelBandHeight) * 0.70f);
+  g.setFont(juce::FontOptions(bandFontSize).withStyle("Bold").withKerningFactor(0.05f));
   g.drawFittedText(name, band.toNearestInt(), juce::Justification::centred, 1);
 }
 
 void ChannelStripCard::resized() {
-  const int buttonsY = getHeight() - layout.channelBandHeight -
-                       layout.buttonToBandGap - layout.soloHeight;
+  const bool hasButtonRow = soloVisible || muteVisible;
+  const int buttonsY = hasButtonRow
+                           ? getHeight() - layout.channelBandHeight -
+                                 layout.buttonToBandGap - layout.soloHeight
+                           : 0;
 
   // Calculate total width of Fader + Gap + Meter
   const int totalGroupWidth = layout.faderWidth + layout.faderMeterGap +
@@ -96,7 +107,10 @@ void ChannelStripCard::resized() {
 
   const int knobX = faderX + (layout.faderWidth - layout.knobSize) / 2;
   const int knobY = layout.knobTop;
-  gainKnob.setBounds(knobX, knobY, layout.knobSize, layout.knobSize);
+  const juce::Rectangle<int> knobBounds(knobX, knobY, layout.knobSize,
+                                        layout.knobSize);
+  gainKnob.setBounds(knobBounds);
+  powerButton.setBounds(knobBounds);
   const int labelW = layout.knobSize + 10;
   const int labelH = 12;
   const int labelX = faderX + (layout.faderWidth - labelW) / 2;
@@ -104,8 +118,11 @@ void ChannelStripCard::resized() {
   gainLabel.setBounds(labelX, labelY, labelW, labelH);
 
   // Vertically, position the fader just above the buttons
-  const int mainVolBottomSpacing = 12;
-  const int componentBottomY = buttonsY - mainVolBottomSpacing;
+  const int mainVolBottomSpacing = hasButtonRow ? 12 : 2;
+  const int componentBottomY =
+      hasButtonRow ? (buttonsY - mainVolBottomSpacing)
+                   : (getHeight() - layout.channelBandHeight -
+                      layout.buttonToBandGap - mainVolBottomSpacing);
 
   const int minFaderY = labelY + labelH + 6;
   const int faderY =
@@ -116,23 +133,40 @@ void ChannelStripCard::resized() {
   // Make the VU meter span from near the top of the strip down to just
   // above the mute/solo buttons.
   const int meterTop = layout.knobTop;
-  const int meterBottom = buttonsY - 10;
+  const int meterBottom = hasButtonRow
+                              ? (buttonsY - 10)
+                              : (getHeight() - layout.channelBandHeight -
+                                 layout.buttonToBandGap - 2);
   const int meterHeight = juce::jmax(12, meterBottom - meterTop);
   meter.setBounds(meterX, meterTop, meter.getLayout().getBlockWidth(),
                   meterHeight);
 
+  if (!hasButtonRow) {
+    soloButton.setBounds({});
+    muteButton.setBounds({});
+    return;
+  }
+
   const int buttonsX = (getWidth() - layout.soloWidth) / 2;
-  if (soloVisible) {
+  if (soloVisible && muteVisible) {
     const int buttonW = (layout.soloWidth - layout.buttonGap) / 2;
     soloButton.setBounds(buttonsX, buttonsY, buttonW, layout.soloHeight);
     muteButton.setBounds(buttonsX + buttonW + layout.buttonGap, buttonsY,
                          layout.soloWidth - buttonW - layout.buttonGap,
                          layout.soloHeight);
-  } else {
-    soloButton.setBounds({});
-    muteButton.setBounds(buttonsX, buttonsY, layout.soloWidth,
-                         layout.soloHeight);
+    return;
   }
+
+  if (soloVisible) {
+    soloButton.setBounds(buttonsX, buttonsY, layout.soloWidth,
+                         layout.soloHeight);
+    muteButton.setBounds({});
+    return;
+  }
+
+  soloButton.setBounds({});
+  muteButton.setBounds(buttonsX, buttonsY, layout.soloWidth,
+                       layout.soloHeight);
 }
 
 const juce::String &ChannelStripCard::getChannelName() const { return name; }
@@ -192,12 +226,31 @@ void ChannelStripCard::setSoloEnabled(bool enabled) {
 void ChannelStripCard::setSoloVisible(bool visible) {
   soloVisible = visible;
   soloButton.setVisible(soloVisible);
+  resized();
+}
+
+void ChannelStripCard::setMuteVisible(bool visible) {
+  muteVisible = visible;
+  muteButton.setVisible(muteVisible);
+  resized();
 }
 
 void ChannelStripCard::setGainVisible(bool visible) {
   gainVisible = visible;
-  gainKnob.setVisible(gainVisible);
-  gainLabel.setVisible(gainVisible);
+  gainKnob.setVisible(gainVisible && !powerVisible);
+  gainLabel.setVisible(gainVisible && !powerVisible);
+}
+
+void ChannelStripCard::setPowerVisible(bool visible) {
+  powerVisible = visible;
+  powerButton.setVisible(powerVisible);
+  gainKnob.setVisible(gainVisible && !powerVisible);
+  gainLabel.setVisible(gainVisible && !powerVisible);
+  resized();
+}
+
+void ChannelStripCard::setPowerState(bool poweredOn) {
+  powerButton.setPoweredOn(poweredOn);
 }
 
 void ChannelStripCard::setMuteAlignedToFader(bool aligned) {
@@ -252,6 +305,10 @@ void ChannelStripCard::setOnMuteChanged(std::function<void(bool)> cb) {
 
 void ChannelStripCard::setOnSoloChanged(std::function<void(bool)> cb) {
   onSoloChanged = std::move(cb);
+}
+
+void ChannelStripCard::setOnPowerToggled(std::function<void(bool)> cb) {
+  onPowerToggled = std::move(cb);
 }
 
 void ChannelStripCard::configureLabel(juce::Label &label,

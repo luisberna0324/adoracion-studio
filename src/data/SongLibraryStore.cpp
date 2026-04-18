@@ -1,5 +1,6 @@
 #include "SongLibraryStore.h"
 #include "AppSettings.h"
+#include "AssetBootstrapManager.h"
 #include "Localization.h"
 
 #include <algorithm>
@@ -508,6 +509,10 @@ juce::File SongLibraryStore::getWaveformCacheDir() {
 }
 
 juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
+  const auto managed = AssetBootstrapManager::getEncoderBinaryPath();
+  if (managed.existsAsFile())
+    return managed;
+
   const auto executable =
       juce::File::getSpecialLocation(juce::File::currentExecutableFile);
   if (!executable.existsAsFile())
@@ -535,10 +540,20 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
 bool SongLibraryStore::convertStemToStorageFormat(
     const juce::File &source, const juce::File &destination,
     juce::String &errorMessage) {
-  const auto ffmpegBinary = resolveBundledFfmpegBinary();
+  auto ffmpegBinary = resolveBundledFfmpegBinary();
   if (!ffmpegBinary.existsAsFile()) {
-    errorMessage = "Couldn't find bundled ffmpeg binary for " +
+    juce::String bootstrapError;
+    if (AssetBootstrapManager::ensureEncoderReady(&bootstrapError))
+      ffmpegBinary = resolveBundledFfmpegBinary();
+    else if (bootstrapError.isNotEmpty())
+      errorMessage = bootstrapError;
+  }
+
+  if (!ffmpegBinary.existsAsFile()) {
+    if (errorMessage.isEmpty()) {
+      errorMessage = "Couldn't find bundled or downloaded ffmpeg binary for " +
                    juce::String(kStorageFormatLabel) + " conversion.";
+    }
     return false;
   }
 

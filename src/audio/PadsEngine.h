@@ -1,0 +1,67 @@
+#pragma once
+
+#include <JuceHeader.h>
+#include <array>
+
+class PadsEngine {
+public:
+  static constexpr int kNoteCount = 12;
+  static constexpr const char *kNoteNames[kNoteCount] = {"C",  "C#", "D",  "D#",
+                                                          "E",  "F",  "F#", "G",
+                                                          "G#", "A",  "A#", "B"};
+
+  struct LoadResult {
+    bool ok = false;
+    juce::String statusText;
+    int loadedNotes = 0;
+  };
+
+  void prepare(double sampleRate, int maxBlockSize);
+  void releaseResources();
+
+  void setEnabled(bool shouldEnable) noexcept;
+  bool isEnabled() const noexcept { return enabled.load(std::memory_order_relaxed); }
+
+  LoadResult loadFromFolder(const juce::File &folder, juce::AudioFormatManager &formatManager);
+
+  void triggerNote(int noteIndex, int octave);
+  void stopNote(int noteIndex);
+  void stopAll();
+
+  void process(juce::AudioBuffer<float> &outputBuffer);
+  float getOutputLevel() const noexcept { return outputLevel.load(std::memory_order_relaxed); }
+
+private:
+  enum class VoiceState : int { stopped = 0, fadingIn, playing, fadingOut };
+
+  struct NoteSample {
+    juce::AudioBuffer<float> data;
+    double sourceSampleRate = 44100.0;
+    bool valid = false;
+  };
+
+  struct Voice {
+    VoiceState state = VoiceState::stopped;
+    int noteIndex = -1;
+    int octave = 0;
+    double position = 0.0;
+    double increment = 1.0;
+    float gain = 0.0f;
+  };
+
+  std::array<NoteSample, kNoteCount> noteSamples;
+  std::array<Voice, kNoteCount> voices;
+  double outputSampleRate = 44100.0;
+  int maxBlock = 0;
+  std::atomic<bool> enabled{true};
+  std::atomic<float> outputLevel{0.0f};
+  int fadeInSamples = 1;
+  int fadeOutSamples = 1;
+
+  static int parseNoteIndexFromFilename(const juce::String &name);
+  static int cleanlinessScore(const juce::String &name);
+  void updateVoiceIncrement(Voice &voice);
+  void fadeOutAllExcept(int noteIndex);
+  bool hasActiveVoices() const noexcept;
+  void renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffer);
+};

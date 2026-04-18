@@ -2,6 +2,7 @@
 
 #include "../UiCommon.h"
 #include "ChannelStripLookAndFeel.h"
+#include "PowerButton.h"
 #include "StereoVUMeter.h"
 #include <JuceHeader.h>
 
@@ -55,6 +56,7 @@ public:
 
   const juce::String &getChannelName() const;
   const Layout &getLayout() const { return layout; }
+  juce::Rectangle<int> getGainKnobBounds() const { return gainKnob.getBounds(); }
   void setLayoutScale(float scale);
   void setVolume(float volume);
   void setGain(float gain);
@@ -62,7 +64,11 @@ public:
   void setSoloState(bool soloed);
   void setSoloEnabled(bool enabled);
   void setSoloVisible(bool visible);
+  void setMuteVisible(bool visible);
   void setGainVisible(bool visible);
+  void setPowerVisible(bool visible);
+  void setPowerState(bool poweredOn);
+  bool isPowerOn() const { return powerButton.isPoweredOn(); }
   void setMuteAlignedToFader(bool aligned);
   void setChannelBandColours(juce::Colour bandColour, juce::Colour textColour);
   void setCardBgColour(juce::Colour colour);
@@ -71,6 +77,7 @@ public:
   void setOnGainChanged(std::function<void(float)> cb);
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
+  void setOnPowerToggled(std::function<void(bool)> cb);
 
 private:
   Layout baseLayout;
@@ -84,6 +91,7 @@ private:
 
   juce::Slider volSlider;
   juce::Slider gainKnob;
+  PowerButton powerButton;
   StereoVUMeter meter;
   juce::TextButton soloButton;
   juce::TextButton muteButton;
@@ -94,8 +102,11 @@ private:
   std::function<void(float)> onGainChanged;
   std::function<void(bool)> onMuteChanged;
   std::function<void(bool)> onSoloChanged;
+  std::function<void(bool)> onPowerToggled;
   bool soloVisible = true;
+  bool muteVisible = true;
   bool gainVisible = true;
+  bool powerVisible = false;
   bool muteAlignedToFader = false;
 
   void configureLabel(juce::Label &label, const juce::String &text, float size,

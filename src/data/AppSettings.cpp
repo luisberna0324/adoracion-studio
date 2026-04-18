@@ -14,6 +14,8 @@ constexpr const char *kRoutingByCategoryKey = "routingByCategory";
 constexpr const char *kRoutingByDeviceKey = "routingByDevice";
 constexpr const char *kRoutingChannelKey = "channel";
 constexpr const char *kRoutingWidthKey = "width";
+constexpr const char *kPadsPackKey = "padsPack";
+constexpr const char *kAssetsBootstrapKey = "assetsBootstrap";
 
 int getCategoryIndexForName(const juce::String &category) {
   const auto needle = category.trim();
@@ -463,4 +465,100 @@ AppSettings::getRoutingDefaultsForCategory(const juce::String &category) {
   if (idx < 0 || idx >= static_cast<int>(defaults.size()))
     return CategoryRoutingDefaults{};
   return defaults[static_cast<size_t>(idx)];
+}
+
+PadsPackSettings AppSettings::getPadsPackSettings() {
+  PadsPackSettings out;
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return out;
+
+  const auto parsed = juce::JSON::parse(f);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr || !root->hasProperty(kPadsPackKey))
+    return out;
+
+  const auto packVar = root->getProperty(kPadsPackKey);
+  const auto *packObj = packVar.getDynamicObject();
+  if (packObj == nullptr)
+    return out;
+
+  out.folderPath = packObj->getProperty("folderPath").toString().trim();
+  out.sourcePath = packObj->getProperty("sourcePath").toString().trim();
+  out.hash = packObj->getProperty("hash").toString().trim();
+  out.importedAtMs = static_cast<juce::int64>(packObj->getProperty("importedAtMs"));
+  out.valid = static_cast<bool>(packObj->getProperty("valid"));
+  out.status = packObj->getProperty("status").toString().trim();
+  return out;
+}
+
+void AppSettings::setPadsPackSettings(const PadsPackSettings &settings) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  auto *packObj = new juce::DynamicObject();
+  packObj->setProperty("folderPath", settings.folderPath.trim());
+  packObj->setProperty("sourcePath", settings.sourcePath.trim());
+  packObj->setProperty("hash", settings.hash.trim());
+  packObj->setProperty("importedAtMs", settings.importedAtMs);
+  packObj->setProperty("valid", settings.valid);
+  packObj->setProperty("status", settings.status.trim());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 12);
+    o->setProperty(kPadsPackKey, juce::var(packObj));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+AssetsBootstrapState AppSettings::getAssetsBootstrapState() {
+  AssetsBootstrapState out;
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return out;
+
+  const auto parsed = juce::JSON::parse(f);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr || !root->hasProperty(kAssetsBootstrapKey))
+    return out;
+
+  const auto assetsVar = root->getProperty(kAssetsBootstrapKey);
+  const auto *assetsObj = assetsVar.getDynamicObject();
+  if (assetsObj == nullptr)
+    return out;
+
+  out.encoderVersion = assetsObj->getProperty("encoderVersion").toString().trim();
+  out.encoderStatus = assetsObj->getProperty("encoderStatus").toString().trim();
+  out.padsVersion = assetsObj->getProperty("padsVersion").toString().trim();
+  out.padsStatus = assetsObj->getProperty("padsStatus").toString().trim();
+  out.lastError = assetsObj->getProperty("lastError").toString().trim();
+  out.updatedAtMs = static_cast<juce::int64>(assetsObj->getProperty("updatedAtMs"));
+  return out;
+}
+
+void AppSettings::setAssetsBootstrapState(const AssetsBootstrapState &state) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  auto *assetsObj = new juce::DynamicObject();
+  assetsObj->setProperty("encoderVersion", state.encoderVersion.trim());
+  assetsObj->setProperty("encoderStatus", state.encoderStatus.trim());
+  assetsObj->setProperty("padsVersion", state.padsVersion.trim());
+  assetsObj->setProperty("padsStatus", state.padsStatus.trim());
+  assetsObj->setProperty("lastError", state.lastError.trim());
+  assetsObj->setProperty("updatedAtMs", state.updatedAtMs);
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 13);
+    o->setProperty(kAssetsBootstrapKey, juce::var(assetsObj));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }

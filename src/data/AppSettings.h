@@ -9,6 +9,24 @@ struct CategoryRoutingDefaults {
   int width = 1;       // 1 = mono, 2 = stereo
 };
 
+struct PadsPackSettings {
+  juce::String folderPath;
+  juce::String sourcePath;
+  juce::String hash;
+  juce::int64 importedAtMs = 0;
+  bool valid = false;
+  juce::String status;
+};
+
+struct AssetsBootstrapState {
+  juce::String encoderVersion;
+  juce::String encoderStatus;
+  juce::String padsVersion;
+  juce::String padsStatus;
+  juce::String lastError;
+  juce::int64 updatedAtMs = 0;
+};
+
 enum class AppLanguage { Spanish = 0, English = 1 };
 enum class AppLayoutMode { Auto = 0, Compact = 1, Standard = 2, Large = 3 };
 
@@ -49,6 +67,10 @@ public:
       const std::vector<CategoryRoutingDefaults> &defaults);
   static CategoryRoutingDefaults
   getRoutingDefaultsForCategory(const juce::String &category);
+  static PadsPackSettings getPadsPackSettings();
+  static void setPadsPackSettings(const PadsPackSettings &settings);
+  static AssetsBootstrapState getAssetsBootstrapState();
+  static void setAssetsBootstrapState(const AssetsBootstrapState &state);
 
 private:
   static juce::File getSettingsFile();

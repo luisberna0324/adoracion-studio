@@ -6,17 +6,20 @@ PowerButton::PowerButton() {
 
 void PowerButton::paint(juce::Graphics& g) {
     auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    constexpr float radius = 6.0f;
+    const float diameter = juce::jmin(bounds.getWidth(), bounds.getHeight());
+    const auto circle = juce::Rectangle<float>(diameter, diameter)
+                            .withCentre(bounds.getCentre());
 
-    juce::Colour bg = on ? UITheme::accent.withAlpha(0.12f)
-                         : (hovered ? UITheme::cardBgHover : UITheme::cardBg);
+    const juce::Colour bg = on ? UITheme::accent.withAlpha(0.16f)
+                               : (hovered ? UITheme::cardBgHover : UITheme::cardBg);
     g.setColour(bg);
-    g.fillRoundedRectangle(bounds, radius);
+    g.fillEllipse(circle);
 
     g.setColour(UITheme::cardBorder);
-    g.drawRoundedRectangle(bounds, radius, 1.0f);
+    g.drawEllipse(circle, 1.0f);
 
-    drawPowerIcon(g, bounds.reduced(18.0f), on ? UITheme::accent : UITheme::textSecondary);
+    drawPowerIcon(g, circle.reduced(diameter * 0.22f),
+                  on ? UITheme::accent : UITheme::textSecondary);
 }
 
 void PowerButton::drawPowerIcon(juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colour) {
