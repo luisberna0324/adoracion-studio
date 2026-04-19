@@ -1,8 +1,10 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include <SoundTouch.h>
+#include <memory>
 #include <vector>
+
+class PitchShiftBackend;
 
 class PitchShiftProcessor {
 public:
@@ -18,15 +20,12 @@ public:
   void process(juce::AudioBuffer<float> &buffer);
 
 private:
+  std::unique_ptr<PitchShiftBackend> backend;
+
   void primeLatency();
 
-  soundtouch::SoundTouch soundtouch;
-  std::vector<float> interleavedInput;
-  std::vector<float> receiveBuffer;
-  std::vector<float> outputFifo;
-  size_t outputReadPos = 0;
-
   double currentSampleRate = 0.0;
+  int currentBlockSize = 0;
   int currentChannels = 0;
   int pitchSemiTones = 0;
   double tempoRatio = 1.0;

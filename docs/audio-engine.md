@@ -10,7 +10,7 @@ Este documento describe como esta construido el motor de audio y como fluye el a
   - `stemMixBuffer`: stems melodicos (a estos se aplica pitch‑shift).
   - `percussionBuffer`: stems de percusion (no se transpone).
   - `dryBuffer`: click/guia.
-- **PitchShiftProcessor (SoundTouch)**: Transposicion de tono solo para stems melodicos.
+- **PitchShiftProcessor (Rubber Band / SoundTouch)**: Transposicion de tono y cambio de tiempo para stems melodicos.
 - **Compensacion de latencia**: retrasa percusion y guia el mismo tiempo que SoundTouch.
 - **Metronomo**: agrega el click final si esta activo.
 - **Master**: volumen/ganancia/mute y fade‑out global.
@@ -83,8 +83,8 @@ Entrada de audio
 
 ## Pitch‑shift y compensacion de latencia
 
-- SoundTouch introduce latencia interna.
-- Esa latencia se consulta con `SETTING_INITIAL_LATENCY`.
+- El backend de time/pitch introduce latencia interna (Rubber Band o SoundTouch).
+- Esa latencia se consulta desde el backend activo.
 - Para mantener sincronia:
   - `percussionBuffer` y `dryBuffer` se retrasan exactamente lo mismo.
 
