@@ -71,6 +71,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(soundtouch)
 
+option(MTCONTROLS_ENABLE_RUBBERBAND "Enable Rubber Band backend for time/pitch shifting when available" ON)
+set(MTCONTROLS_TIMEPITCH_BACKEND "auto" CACHE STRING
+    "Time/pitch backend selection: auto, rubberband, or soundtouch")
+set_property(CACHE MTCONTROLS_TIMEPITCH_BACKEND PROPERTY STRINGS auto rubberband soundtouch)
+
 if (TARGET soundstretch)
     set_target_properties(soundstretch PROPERTIES 
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.multitracks.playworship.soundstretch"
@@ -224,6 +229,8 @@ target_compile_definitions(MTControls
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
         SOUNDTOUCH_FLOAT_SAMPLES=1
+        MTCONTROLS_HAS_RUBBERBAND=0
+        MTCONTROLS_TIMEPITCH_BACKEND_RUBBERBAND=0
 )
 
 if (WIN32)
@@ -257,6 +264,33 @@ elseif (TARGET soundtouch)
     target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
+endif()
+
+set(_mtcontrols_rubberband_found FALSE)
+if(MTCONTROLS_ENABLE_RUBBERBAND)
+    find_path(MTCONTROLS_RUBBERBAND_INCLUDE_DIR
+        NAMES rubberband/RubberBandStretcher.h)
+    find_library(MTCONTROLS_RUBBERBAND_LIBRARY
+        NAMES rubberband)
+    if(MTCONTROLS_RUBBERBAND_INCLUDE_DIR AND MTCONTROLS_RUBBERBAND_LIBRARY)
+        set(_mtcontrols_rubberband_found TRUE)
+        target_include_directories(MTControls PRIVATE ${MTCONTROLS_RUBBERBAND_INCLUDE_DIR})
+        target_link_libraries(MTControls PRIVATE ${MTCONTROLS_RUBBERBAND_LIBRARY})
+        target_compile_definitions(MTControls PRIVATE MTCONTROLS_HAS_RUBBERBAND=1)
+    endif()
+endif()
+
+if(MTCONTROLS_TIMEPITCH_BACKEND STREQUAL "rubberband")
+    if(NOT _mtcontrols_rubberband_found)
+        message(FATAL_ERROR "MTCONTROLS_TIMEPITCH_BACKEND=rubberband but Rubber Band library was not found")
+    endif()
+    target_compile_definitions(MTControls PRIVATE MTCONTROLS_TIMEPITCH_BACKEND_RUBBERBAND=1)
+elseif(MTCONTROLS_TIMEPITCH_BACKEND STREQUAL "auto")
+    if(_mtcontrols_rubberband_found)
+        target_compile_definitions(MTControls PRIVATE MTCONTROLS_TIMEPITCH_BACKEND_RUBBERBAND=1)
+    endif()
+elseif(NOT MTCONTROLS_TIMEPITCH_BACKEND STREQUAL "soundtouch")
+    message(FATAL_ERROR "Unsupported MTCONTROLS_TIMEPITCH_BACKEND=${MTCONTROLS_TIMEPITCH_BACKEND}")
 endif()
 
 if (TARGET MTControls_Standalone AND MTCONTROLS_BUNDLE_FFMPEG)
