@@ -186,6 +186,7 @@ private:
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
   StemMixEngine mixEngine;
+  StemMixEngine outgoingMixEngine;
   StemOutputRouter stemOutputRouter;
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
