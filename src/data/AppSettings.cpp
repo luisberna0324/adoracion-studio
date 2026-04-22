@@ -175,6 +175,48 @@ void AppSettings::setStemOptimizationEnabled(const bool value) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+PadsCrossfadePreset AppSettings::getPadsCrossfadePreset() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return kDefaultPadsCrossfadePreset;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty("padsCrossfadePreset")) {
+      const auto raw =
+          o->getProperty("padsCrossfadePreset").toString().trim().toLowerCase();
+      if (raw == "fast")
+        return PadsCrossfadePreset::Fast;
+      if (raw == "long")
+        return PadsCrossfadePreset::Long;
+      if (raw == "medium")
+        return PadsCrossfadePreset::Medium;
+    }
+  }
+  return kDefaultPadsCrossfadePreset;
+}
+
+void AppSettings::setPadsCrossfadePreset(const PadsCrossfadePreset preset) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  juce::String presetText = "medium";
+  if (preset == PadsCrossfadePreset::Fast)
+    presetText = "fast";
+  else if (preset == PadsCrossfadePreset::Long)
+    presetText = "long";
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 12);
+    o->setProperty("padsCrossfadePreset", presetText);
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 AppLanguage AppSettings::getLanguage() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())

@@ -1703,6 +1703,17 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [](const bool enabled) { AppSettings::setPrimeImportEnabled(enabled); },
       AppSettings::getStemOptimizationEnabled(),
       [](const bool enabled) { AppSettings::setStemOptimizationEnabled(enabled); },
+      AppSettings::getPadsCrossfadePreset(),
+      [this](const PadsCrossfadePreset preset) {
+        AppSettings::setPadsCrossfadePreset(preset);
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        auto enginePreset = PadsEngine::CrossfadePreset::Medium;
+        if (preset == PadsCrossfadePreset::Fast)
+          enginePreset = PadsEngine::CrossfadePreset::Fast;
+        else if (preset == PadsCrossfadePreset::Long)
+          enginePreset = PadsEngine::CrossfadePreset::Long;
+        processorRef.setPadsCrossfadePreset(enginePreset);
+      },
       [] {},
       SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,

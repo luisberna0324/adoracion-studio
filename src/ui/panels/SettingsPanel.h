@@ -16,6 +16,7 @@ public:
   using ExpandLaunchChanged = std::function<void(bool)>;
   using PrimeImportChanged = std::function<void(bool)>;
   using StemOptimizationChanged = std::function<void(bool)>;
+  using PadsCrossfadeChanged = std::function<void(PadsCrossfadePreset)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
   using RoutingDefaultsChanged =
@@ -39,6 +40,8 @@ public:
                 ExpandLaunchChanged expandCb, bool primeImportEnabled,
                 PrimeImportChanged primeImportCb, bool stemOptimizationEnabled,
                 StemOptimizationChanged stemOptimizationCb,
+                PadsCrossfadePreset padsCrossfadePreset,
+                PadsCrossfadeChanged padsCrossfadeCb,
                 CloseRequested closeCb,
                 SessionSummary sessionSummary,
                 LogoutRequested logoutCb,
@@ -84,6 +87,8 @@ private:
   juce::ToggleButton primeImportToggle;
   juce::Label stemOptimizationLabel;
   juce::ToggleButton stemOptimizationToggle;
+  juce::Label padsCrossfadeLabel;
+  juce::ComboBox padsCrossfadeBox;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;
@@ -111,6 +116,7 @@ private:
   ExpandLaunchChanged onExpandLaunchChanged;
   PrimeImportChanged onPrimeImportChanged;
   StemOptimizationChanged onStemOptimizationChanged;
+  PadsCrossfadeChanged onPadsCrossfadeChanged;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;

@@ -14,16 +14,44 @@ float smoothstep(const float t) {
   const float clamped = juce::jlimit(0.0f, 1.0f, t);
   return clamped * clamped * (3.0f - 2.0f * clamped);
 }
+
+constexpr double kCrossfadeFastSec = 1.0;
+constexpr double kCrossfadeMediumSec = 3.0;
+constexpr double kCrossfadeLongSec = 5.0;
 } // namespace
 
 void PadsEngine::prepare(const double sampleRate, const int maxBlockSize) {
   outputSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
   maxBlock = juce::jmax(0, maxBlockSize);
-  // Ramps tuned for ambient note transitions with audible overlap.
+  updateFadeDurations();
+}
+
+void PadsEngine::setCrossfadePreset(const CrossfadePreset preset) noexcept {
+  crossfadePreset = preset;
+  updateFadeDurations();
+}
+
+void PadsEngine::updateFadeDurations() noexcept {
+  double seconds = kCrossfadeMediumSec;
+  switch (crossfadePreset) {
+  case CrossfadePreset::Fast:
+    seconds = kCrossfadeFastSec;
+    break;
+  case CrossfadePreset::Long:
+    seconds = kCrossfadeLongSec;
+    break;
+  case CrossfadePreset::Medium:
+  default:
+    seconds = kCrossfadeMediumSec;
+    break;
+  }
+
+  // Symmetric crossfade: incoming fades in while outgoing fades out over
+  // the same interval.
   fadeInSamples = juce::jmax(
-      1, static_cast<int>(std::llround(outputSampleRate * 0.18)));
+      1, static_cast<int>(std::llround(outputSampleRate * seconds)));
   fadeOutSamples = juce::jmax(
-      1, static_cast<int>(std::llround(outputSampleRate * 1.10)));
+      1, static_cast<int>(std::llround(outputSampleRate * seconds)));
 }
 
 void PadsEngine::releaseResources() { stopAll(); }

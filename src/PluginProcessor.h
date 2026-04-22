@@ -138,6 +138,8 @@ public:
   float getPadsVolume() const noexcept;
   void setPadsGain(float gain) noexcept;
   float getPadsGain() const noexcept;
+  void setPadsCrossfadePreset(PadsEngine::CrossfadePreset preset) noexcept;
+  PadsEngine::CrossfadePreset getPadsCrossfadePreset() const noexcept;
   void triggerPadNote(int noteIndex, int octave);
   void stopPadNote(int noteIndex);
   float getPadsOutputLevel() const noexcept;

@@ -124,6 +124,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              PrimeImportChanged primeImportCb,
                              const bool stemOptimizationEnabled,
                              StemOptimizationChanged stemOptimizationCb,
+                             const PadsCrossfadePreset padsCrossfadePreset,
+                             PadsCrossfadeChanged padsCrossfadeCb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
                              LogoutRequested logoutCb,
@@ -138,6 +140,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onExpandLaunchChanged(std::move(expandCb)),
       onPrimeImportChanged(std::move(primeImportCb)),
       onStemOptimizationChanged(std::move(stemOptimizationCb)),
+      onPadsCrossfadeChanged(std::move(padsCrossfadeCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
@@ -248,6 +251,33 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onStemOptimizationChanged(stemOptimizationToggle.getToggleState());
   };
   generalPage.addAndMakeVisible(stemOptimizationToggle);
+
+  padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
+  padsCrossfadeLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(padsCrossfadeLabel);
+
+  padsCrossfadeBox.addItem("Rapido (1s)", 1);
+  padsCrossfadeBox.addItem("Medio (3s)", 2);
+  padsCrossfadeBox.addItem("Largo (5s)", 3);
+  int padsCrossfadeId = 2;
+  if (padsCrossfadePreset == PadsCrossfadePreset::Fast)
+    padsCrossfadeId = 1;
+  else if (padsCrossfadePreset == PadsCrossfadePreset::Long)
+    padsCrossfadeId = 3;
+  padsCrossfadeBox.setSelectedId(padsCrossfadeId, juce::dontSendNotification);
+  padsCrossfadeBox.setJustificationType(juce::Justification::centredLeft);
+  padsCrossfadeBox.onChange = [this] {
+    const int id = padsCrossfadeBox.getSelectedId();
+    if (id <= 0 || !onPadsCrossfadeChanged)
+      return;
+    auto preset = PadsCrossfadePreset::Medium;
+    if (id == 1)
+      preset = PadsCrossfadePreset::Fast;
+    else if (id == 3)
+      preset = PadsCrossfadePreset::Long;
+    onPadsCrossfadeChanged(preset);
+  };
+  generalPage.addAndMakeVisible(padsCrossfadeBox);
 
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
   sessionSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -448,6 +478,13 @@ void SettingsPanel::refreshThemeColours() {
                                    UITheme::accent);
   stemOptimizationToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                                    UITheme::textSecondary);
+  padsCrossfadeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  padsCrossfadeBox.setColour(juce::ComboBox::backgroundColourId,
+                             UITheme::cardBgHover);
+  padsCrossfadeBox.setColour(juce::ComboBox::outlineColourId,
+                             UITheme::cardBorder.withAlpha(0.65f));
+  padsCrossfadeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  padsCrossfadeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -502,6 +539,12 @@ void SettingsPanel::applyLanguageTexts() {
   stemOptimizationToggle.setButtonText(
       L10n::tr("Optimizar almacenamiento en disco",
                "Optimize disk storage"));
+  padsCrossfadeLabel.setText(
+      L10n::tr("Crossfade de pads", "Pads crossfade"),
+      juce::dontSendNotification);
+  padsCrossfadeBox.changeItemText(1, L10n::tr("Rapido (1s)", "Fast (1s)"));
+  padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
+  padsCrossfadeBox.changeItemText(3, L10n::tr("Largo (5s)", "Long (5s)"));
   sessionSectionLabel.setText(L10n::tr("Sesion", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
@@ -563,6 +606,10 @@ void SettingsPanel::layoutGeneralPage() {
   auto stemOptimizationRow = area.removeFromTop(26);
   stemOptimizationLabel.setBounds(stemOptimizationRow.removeFromLeft(160));
   stemOptimizationToggle.setBounds(stemOptimizationRow);
+  area.removeFromTop(10);
+  auto padsCrossfadeRow = area.removeFromTop(26);
+  padsCrossfadeLabel.setBounds(padsCrossfadeRow.removeFromLeft(160));
+  padsCrossfadeBox.setBounds(padsCrossfadeRow);
   area.removeFromTop(16);
   sessionSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);

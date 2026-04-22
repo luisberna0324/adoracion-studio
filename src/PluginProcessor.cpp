@@ -30,6 +30,19 @@ juce::File getPadsSourceFolderEmpirikFallback() {
       .getChildFile("Downloads")
       .getChildFile("PADS CONTINUOS EMPIRIK");
 }
+
+PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
+    const PadsCrossfadePreset preset) {
+  switch (preset) {
+  case PadsCrossfadePreset::Fast:
+    return PadsEngine::CrossfadePreset::Fast;
+  case PadsCrossfadePreset::Long:
+    return PadsEngine::CrossfadePreset::Long;
+  case PadsCrossfadePreset::Medium:
+  default:
+    return PadsEngine::CrossfadePreset::Medium;
+  }
+}
 } // namespace
 
 #if JucePlugin_Build_Standalone
@@ -45,6 +58,8 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   playbackFormatManager.registerBasicFormats();
   resetStemControls(0);
   standaloneAudioDeviceBridge.setAvailableOutputChannelCount(2);
+  padsEngine.setCrossfadePreset(
+      toPadsEngineCrossfadePreset(AppSettings::getPadsCrossfadePreset()));
   refreshPadsRoutingFromSettings();
 
   const auto settings = AppSettings::getPadsPackSettings();
@@ -1823,6 +1838,20 @@ void MTControlsAudioProcessor::setPadsGain(const float gainValue) noexcept {
 
 float MTControlsAudioProcessor::getPadsGain() const noexcept {
   return padsGain.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setPadsCrossfadePreset(
+    const PadsEngine::CrossfadePreset preset) noexcept {
+  const juce::SpinLock::ScopedLockType lock(padsStateLock);
+  padsEngine.setCrossfadePreset(preset);
+}
+
+PadsEngine::CrossfadePreset
+MTControlsAudioProcessor::getPadsCrossfadePreset() const noexcept {
+  const juce::SpinLock::ScopedTryLockType lock(padsStateLock);
+  if (lock.isLocked())
+    return padsEngine.getCrossfadePreset();
+  return PadsEngine::CrossfadePreset::Medium;
 }
 
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,

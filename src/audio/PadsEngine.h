@@ -16,11 +16,15 @@ public:
     int loadedNotes = 0;
   };
 
+  enum class CrossfadePreset : int { Fast = 0, Medium, Long };
+
   void prepare(double sampleRate, int maxBlockSize);
   void releaseResources();
 
   void setEnabled(bool shouldEnable) noexcept;
   bool isEnabled() const noexcept { return enabled.load(std::memory_order_relaxed); }
+  void setCrossfadePreset(CrossfadePreset preset) noexcept;
+  CrossfadePreset getCrossfadePreset() const noexcept { return crossfadePreset; }
 
   LoadResult loadFromFolder(const juce::File &folder, juce::AudioFormatManager &formatManager);
 
@@ -59,9 +63,11 @@ private:
   std::atomic<float> outputLevel{0.0f};
   int fadeInSamples = 1;
   int fadeOutSamples = 1;
+  CrossfadePreset crossfadePreset = CrossfadePreset::Medium;
 
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);
+  void updateFadeDurations() noexcept;
   void updateVoiceIncrement(Voice &voice);
   static void beginFadeOut(Voice &voice);
   void fadeOutAllActive();

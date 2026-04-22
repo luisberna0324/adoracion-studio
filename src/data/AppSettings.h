@@ -29,6 +29,7 @@ struct AssetsBootstrapState {
 
 enum class AppLanguage { Spanish = 0, English = 1 };
 enum class AppLayoutMode { Auto = 0, Compact = 1, Standard = 2, Large = 3 };
+enum class PadsCrossfadePreset { Fast = 0, Medium = 1, Long = 2 };
 
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
@@ -38,6 +39,8 @@ public:
   static constexpr bool kDefaultPrimeImportEnabled = false;
   static constexpr bool kDefaultStemOptimizationEnabled = false;
   static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
+  static constexpr PadsCrossfadePreset kDefaultPadsCrossfadePreset =
+      PadsCrossfadePreset::Medium;
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
@@ -45,6 +48,8 @@ public:
   static void setPrimeImportEnabled(bool value);
   static bool getStemOptimizationEnabled();
   static void setStemOptimizationEnabled(bool value);
+  static PadsCrossfadePreset getPadsCrossfadePreset();
+  static void setPadsCrossfadePreset(PadsCrossfadePreset preset);
   static AppLanguage getLanguage();
   static void setLanguage(AppLanguage value);
   static AppLayoutMode getLayoutMode();
