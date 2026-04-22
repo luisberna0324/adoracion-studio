@@ -58,7 +58,7 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\bootstrap-assets.ps1"""; StatusMsg: "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."; Flags: runhidden ignoreerrors
+Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\bootstrap-assets.ps1"" || exit /b 0"; StatusMsg: "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."; Flags: runhidden
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Inbound)"" dir=in action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Outbound)"" dir=out action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

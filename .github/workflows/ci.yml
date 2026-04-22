@@ -319,7 +319,10 @@ jobs:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
           MTCONTROLS_FFMPEG_BIN_LINUX: ${{ github.workspace }}/third_party/ffmpeg/linux/ffmpeg
-        run: cmake --preset linux-release
+        run: |
+          cmake --preset linux-release \
+            -DMTCONTROLS_BUNDLE_FFMPEG=ON \
+            -DMTCONTROLS_FFMPEG_BIN_LINUX="$MTCONTROLS_FFMPEG_BIN_LINUX"
 
       - name: Build (Linux)
         run: cmake --build --preset linux-release
