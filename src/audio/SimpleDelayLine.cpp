@@ -10,9 +10,9 @@ void SimpleDelayLine::prepare(int channels, int maxDelaySamplesToUse) {
 }
 
 void SimpleDelayLine::setDelay(int delaySamplesToUse) {
+  // Keep buffered history when delay changes to avoid introducing
+  // audible gaps from clearing mid-playback.
   delaySamples = juce::jlimit(0, maxDelaySamples, delaySamplesToUse);
-  delayBuffer.clear();
-  writePos = 0;
 }
 
 void SimpleDelayLine::reset() {

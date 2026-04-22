@@ -86,6 +86,9 @@ int semitoneDelta(int from, int to) {
     delta += 12;
   return delta;
 }
+
+constexpr double kUiTempoMinRatio = 0.8;
+constexpr double kUiTempoMaxRatio = 1.25;
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, IconGlyph g, bool primary)
@@ -546,7 +549,7 @@ void TopBar::timerCallback() {
 }
 
 void TopBar::updateBpmDisplay() {
-  const int bpm = static_cast<int>(std::round(processor.getMetronomeBpm()));
+  const int bpm = static_cast<int>(std::round(getDisplayedBpm()));
   const auto arrow =
       juce::String::charToString(static_cast<juce::juce_wchar>(0x25BC));
   bpmSegmentButton.setButtonText(
@@ -567,14 +570,34 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
 void TopBar::setBpmAbsolute(double bpm) {
   if (bpm <= 0.0)
     return;
-  processor.setMetronomeBpm(bpm);
+  if (processor.hasLoadedSong())
+    processor.setPlaybackTempoBpm(clampToMusicalTempoRange(bpm));
+  else
+    processor.setMetronomeBpm(bpm);
   updateBpmDisplay();
 }
 
 void TopBar::adjustBpm(double delta) {
   const auto mods = juce::ModifierKeys::getCurrentModifiers();
   const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0) : delta;
-  setBpmAbsolute(processor.getMetronomeBpm() + step);
+  setBpmAbsolute(getDisplayedBpm() + step);
+}
+
+double TopBar::getDisplayedBpm() const {
+  if (processor.hasLoadedSong())
+    return processor.getPlaybackTempoBpm();
+  return processor.getMetronomeBpm();
+}
+
+double TopBar::clampToMusicalTempoRange(double bpm) const {
+  const double sanitized = juce::jmax(1.0, bpm);
+  if (!processor.hasLoadedSong())
+    return sanitized;
+
+  const double originalBpm = juce::jmax(20.0, processor.getOriginalSongBpm());
+  const double minBpm = originalBpm * kUiTempoMinRatio;
+  const double maxBpm = originalBpm * kUiTempoMaxRatio;
+  return juce::jlimit(minBpm, maxBpm, sanitized);
 }
 
 void TopBar::registerTap() {
@@ -726,7 +749,7 @@ void TopBar::showMetronomePopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getMetronomeBpm(); }, timeSignature);
+      [this] { return getDisplayedBpm(); }, timeSignature);
   panel->setSize(180, 120);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr

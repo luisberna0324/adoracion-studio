@@ -8,6 +8,19 @@
 
 class StemMixEngine {
 public:
+  struct RenderStats {
+    int processedPaths = 0;
+    int inputFrames = 0;
+    int paddedFrames = 0;
+    int receivedFrames = 0;
+    int receiveCalls = 0;
+    int maxReceiveFrames = 0;
+    int fifoAvailableBeforeFrames = 0;
+    int fifoAvailableAfterFrames = 0;
+    int targetLatencySamples = 0;
+    int delayLineChanges = 0;
+  };
+
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
   void setPitchSemiTones(int semitones);
@@ -20,7 +33,7 @@ public:
 
   void renderToOutput(juce::AudioBuffer<float> &output, bool timeProcessActive,
                       float fadeStart, float fadeEnd, float windowFadeStart,
-                      float windowFadeEnd);
+                      float windowFadeEnd, RenderStats *stats = nullptr);
 
 private:
   class SimpleDelayLine {
@@ -41,7 +54,8 @@ private:
 
   void ensureBuffers(int numChannels, int numSamples);
   void applyFade(juce::AudioBuffer<float> &buffer, float start, float end);
-  void updateLatencyDelays(int latencySamples);
+  int updateLatencyDelays(int melodicDelaySamples, int percussionDelaySamples,
+                          int guideDelaySamples);
 
   juce::AudioBuffer<float> stemMixBuffer;
   juce::AudioBuffer<float> stemTempBuffer;
@@ -49,9 +63,14 @@ private:
   juce::AudioBuffer<float> dryBuffer;
 
   PitchShiftProcessor pitchShift;
+  PitchShiftProcessor tempoShiftPercussion;
+  PitchShiftProcessor tempoShiftGuide;
+  SimpleDelayLine pitchDelayMelodic;
   SimpleDelayLine pitchDelayPercussion;
   SimpleDelayLine pitchDelayGuide;
-  int lastLatencySamples = 0;
+  int lastMelodicDelaySamples = 0;
+  int lastPercussionDelaySamples = 0;
+  int lastGuideDelaySamples = 0;
 
   double currentSampleRate = 0.0;
   int currentBlockSize = 0;

@@ -119,6 +119,8 @@ private:
   void applyTimeSignature(const juce::String &sigText);
   void setBpmAbsolute(double bpm);
   void adjustBpm(double delta);
+  double getDisplayedBpm() const;
+  double clampToMusicalTempoRange(double bpm) const;
   void registerTap();
   void showMetronomePopover();
   void showKeyPopover();

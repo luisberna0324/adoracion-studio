@@ -15,7 +15,14 @@
  * rows to a rotating CSV file under ~/Library/Logs/MTControls/.
  *
  * CSV columns:
- *   wall_ms, block_ms, budget_ms, overrun, lock_wait_ms, stem_count, is_playing
+ *   wall_ms, block_ms, budget_ms, overrun, lock_wait_ms, stem_count,
+ *   is_playing, tempo_ratio, source_advance_samples, time_input_samples,
+ *   time_processed_paths, time_padded_frames, time_received_frames,
+ *   pitch_semitones, pitch_up_active, tempo_up_active, combo_up_active,
+ *   pitch_changed, tempo_changed, routing_active, time_process_active,
+ *   time_receive_calls, time_max_receive_frames, time_fifo_before_frames,
+ *   time_fifo_after_frames, time_target_latency_samples, time_delay_changes,
+ *   routing_target_latency_samples, routing_delay_changes
  */
 class AudioDiagnostics {
 public:
@@ -27,6 +34,28 @@ public:
     int stemCount = 0;
     bool overrun = false;     // blockMs > budgetMs
     bool isPlaying = false;
+    double tempoRatio = 1.0;
+    int sourceAdvanceSamples = 0;
+    int timeInputSamples = 0;
+    int timeProcessedPaths = 0;
+    int timePaddedFrames = 0;
+    int timeReceivedFrames = 0;
+    int pitchSemitones = 0;
+    bool pitchUpActive = false;
+    bool tempoUpActive = false;
+    bool comboUpActive = false;
+    bool pitchChanged = false;
+    bool tempoChanged = false;
+    bool routingActive = false;
+    bool timeProcessActive = false;
+    int timeReceiveCalls = 0;
+    int timeMaxReceiveFrames = 0;
+    int timeFifoBeforeFrames = 0;
+    int timeFifoAfterFrames = 0;
+    int timeTargetLatencySamples = 0;
+    int timeDelayChanges = 0;
+    int routingTargetLatencySamples = 0;
+    int routingDelayChanges = 0;
   };
 
   AudioDiagnostics() = default;
@@ -63,7 +92,7 @@ public:
     // Write CSV header
     if (auto stream = logFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,is_playing\n",
+          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,is_playing,tempo_ratio,source_advance_samples,time_input_samples,time_processed_paths,time_padded_frames,time_received_frames,pitch_semitones,pitch_up_active,tempo_up_active,combo_up_active,pitch_changed,tempo_changed,routing_active,time_process_active,time_receive_calls,time_max_receive_frames,time_fifo_before_frames,time_fifo_after_frames,time_target_latency_samples,time_delay_changes,routing_target_latency_samples,routing_delay_changes\n",
           false, false, nullptr);
     }
 
@@ -134,7 +163,29 @@ private:
           << (ev.overrun ? "1" : "0") << ","
           << juce::String(ev.lockWaitMs, 3).toStdString() << ","
           << ev.stemCount << ","
-          << (ev.isPlaying ? "1" : "0") << "\n";
+          << (ev.isPlaying ? "1" : "0") << ","
+          << juce::String(ev.tempoRatio, 4).toStdString() << ","
+          << ev.sourceAdvanceSamples << ","
+          << ev.timeInputSamples << ","
+          << ev.timeProcessedPaths << ","
+          << ev.timePaddedFrames << ","
+          << ev.timeReceivedFrames << ","
+          << ev.pitchSemitones << ","
+          << (ev.pitchUpActive ? "1" : "0") << ","
+          << (ev.tempoUpActive ? "1" : "0") << ","
+          << (ev.comboUpActive ? "1" : "0") << ","
+          << (ev.pitchChanged ? "1" : "0") << ","
+          << (ev.tempoChanged ? "1" : "0") << ","
+          << (ev.routingActive ? "1" : "0") << ","
+          << (ev.timeProcessActive ? "1" : "0") << ","
+          << ev.timeReceiveCalls << ","
+          << ev.timeMaxReceiveFrames << ","
+          << ev.timeFifoBeforeFrames << ","
+          << ev.timeFifoAfterFrames << ","
+          << ev.timeTargetLatencySamples << ","
+          << ev.timeDelayChanges << ","
+          << ev.routingTargetLatencySamples << ","
+          << ev.routingDelayChanges << "\n";
 
       // Update cumulative stats
       totalCount.fetch_add(1, std::memory_order_relaxed);

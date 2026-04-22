@@ -84,19 +84,27 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   setMetronomeOutputRouting(
       metronomeOutputChannel.load(std::memory_order_relaxed),
       metronomeOutputWidth.load(std::memory_order_relaxed));
+  // Step chosen to spread SoundTouch overlap-add window phases across
+  // parallel stems. SoundTouch's default sequenceMs ≈ 82 ms, so ~3900 frames
+  // at 48 kHz. 257 is a small prime that gives well-varied offsets even for
+  // many stems (modulo the window) and avoids falling on common factors.
+  constexpr int kPhaseOffsetStepSamples = 257;
   for (int i = 0; i < maxStemCount; ++i) {
     const int channel = stemOutputRoutingState.getStemOutputChannel(i);
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
     const int width = stemOutputRoutingState.getStemOutputWidth(i);
     stemOutputWidths[static_cast<size_t>(i)].store(width, std::memory_order_relaxed);
-    stemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
+    const int phaseOffset = i * kPhaseOffsetStepSamples;
     stemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
     stemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
+    stemPitchProcessors[static_cast<size_t>(i)].setPhaseOffsetSamples(phaseOffset);
+    stemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
     stemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
     stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
     outgoingStemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
     outgoingStemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].setPhaseOffsetSamples(phaseOffset);
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
   }
@@ -168,6 +176,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool transitionToNextArrangementPart = false;
   int nextArrangementPartIndex = -1;
   double nextArrangementPartStartSec = 0.0;
+  int diagSourceAdvanceSamples = buffer.getNumSamples();
+  int diagTimeInputSamples = buffer.getNumSamples();
+  int diagTimeProcessedPaths = 0;
+  int diagTimePaddedFrames = 0;
+  int diagTimeReceivedFrames = 0;
+  int diagTimeReceiveCalls = 0;
+  int diagTimeMaxReceiveFrames = 0;
+  int diagTimeFifoBeforeFrames = 0;
+  int diagTimeFifoAfterFrames = 0;
+  int diagTimeTargetLatencySamples = 0;
+  int diagTimeDelayChanges = 0;
+  int diagPitchSemitones = 0;
+  bool diagPitchUpActive = false;
+  bool diagTempoUpActive = false;
+  bool diagComboUpActive = false;
+  bool diagPitchChanged = false;
+  bool diagTempoChanged = false;
+  bool diagRoutingActive = false;
+  bool diagTimeProcessActive = false;
+  int diagRoutingTargetLatencySamples = 0;
+  int diagRoutingDelayChanges = 0;
 
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
@@ -179,19 +208,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         pitchTargetSemiTones.load(std::memory_order_relaxed);
     const double targetTempoRatio = getPlaybackTempoRatio();
     if (targetPitch != pitchActiveSemiTones) {
+      diagPitchChanged = true;
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
       outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
-      routingPitchLatencySamples = 0;
-      outgoingRoutingPitchLatencySamples = 0;
     }
     if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive)) {
+      diagTempoChanged = true;
       playbackTempoRatioActive = targetTempoRatio;
+      tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
       mixEngine.setTempoRatio(playbackTempoRatioActive);
       outgoingMixEngine.setTempoRatio(playbackTempoRatioActive);
-      routingPitchLatencySamples = 0;
-      outgoingRoutingPitchLatencySamples = 0;
     }
+    diagPitchSemitones = pitchActiveSemiTones;
+    diagPitchUpActive = (pitchActiveSemiTones > 0);
+    diagTempoUpActive = (playbackTempoRatioActive > 1.0001);
+    diagComboUpActive = diagPitchUpActive && diagTempoUpActive;
 
     // --- Diagnostics: measure time until lock is acquired ---
     const int64_t lockStartTick = juce::Time::getHighResolutionTicks();
@@ -212,6 +244,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         track->setNextReadPosition(seekSamples);
       globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
+
+      // Flush time-stretch/pitch pipelines on seek so the jump is immediate
+      // and doesn't keep buffered audio from the previous timeline position.
+      mixEngine.reset();
+      outgoingMixEngine.reset();
+      tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
+      routingPitchLatencySamples = 0;
+      outgoingRoutingPitchLatencySamples = 0;
+      for (auto &delay : stemPitchDelayLines)
+        delay.reset();
+      for (auto &processor : stemPitchProcessors)
+        processor.reset();
+      for (auto &delay : outgoingStemPitchDelayLines)
+        delay.reset();
+      for (auto &processor : outgoingStemPitchProcessors)
+        processor.reset();
 
       metronome.syncPhaseForTimeSeconds(seekTarget);
     }
@@ -271,10 +319,31 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         break;
       }
     }
+    diagRoutingActive = routingActive;
 
     const float fadeTargetLocalForMix =
         fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
+      int sourceAdvanceSamples = numSamples;
+      const bool tempoProcessActiveForBlock =
+          !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+      const int timeProcessInputSamples = [this, numSamples,
+                                           tempoProcessActiveForBlock]() {
+        if (!tempoProcessActiveForBlock) {
+          tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
+          return numSamples;
+        }
+
+        const double carry = tempoInputSampleCarry.load(std::memory_order_relaxed);
+        const double exactInputSamples =
+            (static_cast<double>(numSamples) * playbackTempoRatioActive) + carry;
+        const int roundedDownInputSamples =
+            static_cast<int>(std::floor(exactInputSamples));
+        const double nextCarry = exactInputSamples -
+                                 static_cast<double>(roundedDownInputSamples);
+        tempoInputSampleCarry.store(nextCarry, std::memory_order_relaxed);
+        return juce::jmax(1, roundedDownInputSamples);
+      }();
       const double length =
           loadedSongLengthSeconds.load(std::memory_order_relaxed);
       const bool customArrangement =
@@ -294,7 +363,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const double blockEndSec =
           playbackSampleRate > 0.0
               ? blockStartSec +
-                    (static_cast<double>(numSamples) / playbackSampleRate)
+                    (static_cast<double>(timeProcessInputSamples) /
+                     playbackSampleRate)
               : blockStartSec;
 
       int mappedPartIndex = -1;
@@ -383,53 +453,86 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
 
       if (routingActive) {
-        const bool timeProcessActive =
-            (pitchActiveSemiTones != 0) ||
+        const bool pitchProcessActive = (pitchActiveSemiTones != 0);
+        const bool tempoProcessActive =
             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+        const bool timeProcessActive = pitchProcessActive || tempoProcessActive;
+        diagTimeProcessActive = timeProcessActive;
+        const int processingInputSamples =
+            tempoProcessActive ? timeProcessInputSamples : numSamples;
+        diagTimeInputSamples = processingInputSamples;
+        std::array<bool, maxStemCount> stemNeedsProcessing{};
+        std::array<int, maxStemCount> stemLatencies{};
         int targetLatency = 0;
+        sourceAdvanceSamples = processingInputSamples;
         if (timeProcessActive) {
           for (int i = 0; i < stemCount; ++i) {
             const bool pitchShiftable =
                 stemPitchShiftStates[static_cast<size_t>(i)].load(
                     std::memory_order_relaxed);
-            if (!pitchShiftable)
+            const bool applyPitch = pitchProcessActive && pitchShiftable;
+            const bool needsProcessing = tempoProcessActive || applyPitch;
+            stemNeedsProcessing[static_cast<size_t>(i)] = needsProcessing;
+            if (!needsProcessing)
               continue;
+
             auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
-              proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
+              proc.prepare(playbackSampleRate, processingInputSamples, 2);
+            proc.setPitchSemiTones(applyPitch ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
-            targetLatency = proc.getLatencySamples();
-            break;
+            const int latency = proc.getLatencySamples();
+            stemLatencies[static_cast<size_t>(i)] = latency;
+            targetLatency = juce::jmax(targetLatency, latency);
           }
         }
 
-        if (targetLatency != routingPitchLatencySamples) {
+        if (targetLatency != routingPitchLatencySamples)
           routingPitchLatencySamples = targetLatency;
-          for (auto &delay : stemPitchDelayLines)
-            delay.setDelay(targetLatency);
+        diagRoutingTargetLatencySamples = targetLatency;
+        if (timeProcessActive)
+          diagTimeTargetLatencySamples =
+              juce::jmax(diagTimeTargetLatencySamples, targetLatency);
+
+        for (int i = 0; i < stemCount; ++i) {
+          const int desiredDelay = juce::jmax(
+              0, targetLatency - stemLatencies[static_cast<size_t>(i)]);
+          auto &delay = stemPitchDelayLines[static_cast<size_t>(i)];
+          if (delay.getDelaySamples() != desiredDelay) {
+            delay.setDelay(desiredDelay);
+            ++diagRoutingDelayChanges;
+          }
         }
 
-        if (stemRoutingTempBuffer.getNumSamples() < numSamples)
-          stemRoutingTempBuffer.setSize(2, numSamples, false, false, true);
+        if (stemRoutingTempBuffer.getNumSamples() != processingInputSamples)
+          stemRoutingTempBuffer.setSize(2, processingInputSamples, false, false,
+                                        true);
 
         buffer.clear();
         for (int i = 0; i < stemCount; ++i) {
           stemRoutingTempBuffer.clear();
           juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
-                                                numSamples);
+                                                processingInputSamples);
           stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
-          const bool pitchShiftable =
-              stemPitchShiftStates[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed);
-          if (timeProcessActive && pitchShiftable) {
+          if (timeProcessActive &&
+              stemNeedsProcessing[static_cast<size_t>(i)]) {
             auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
-              proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
-            proc.setTempoRatio(playbackTempoRatioActive);
-            proc.process(stemRoutingTempBuffer);
-          } else if (routingPitchLatencySamples > 0) {
+              proc.prepare(playbackSampleRate, processingInputSamples, 2);
+            PitchShiftProcessor::ProcessStats procStats;
+            proc.process(stemRoutingTempBuffer, numSamples, &procStats);
+            diagTimeProcessedPaths += 1;
+            diagTimePaddedFrames += procStats.paddedFrames;
+            diagTimeReceivedFrames += procStats.receivedFrames;
+            diagTimeReceiveCalls += procStats.receiveCalls;
+            diagTimeMaxReceiveFrames =
+                juce::jmax(diagTimeMaxReceiveFrames,
+                           procStats.maxReceiveFrames);
+            diagTimeFifoBeforeFrames += procStats.fifoAvailableBeforeFrames;
+            diagTimeFifoAfterFrames += procStats.fifoAvailableAfterFrames;
+          }
+          if (timeProcessActive &&
+              stemPitchDelayLines[static_cast<size_t>(i)].getDelaySamples() > 0) {
             stemPitchDelayLines[static_cast<size_t>(i)].process(
                 stemRoutingTempBuffer);
           }
@@ -461,11 +564,21 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             (pitchActiveSemiTones != 0) ||
             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
         usedSeparatedMix = useSeparatedMix;
+        diagTimeProcessActive =
+            useSeparatedMix &&
+            ((pitchActiveSemiTones != 0) ||
+             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0));
 
         if (useSeparatedMix) {
+          const bool tempoTimeProcessActive =
+              !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+          const int separatedMixInputSamples =
+              tempoTimeProcessActive ? timeProcessInputSamples : numSamples;
+          diagTimeInputSamples = separatedMixInputSamples;
+          sourceAdvanceSamples = separatedMixInputSamples;
           mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
-                             stemPitchShiftStates.data(), stemCount, numSamples,
-                             numChannels);
+                             stemPitchShiftStates.data(), stemCount,
+                             separatedMixInputSamples, numChannels);
         } else {
           // MixerAudioSource will call getNextAudioBlock on all StemTracks, apply
           // their internal volumes, and sum into `buffer`.
@@ -481,7 +594,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                     playbackSampleRate
               : 0.0;
       songCurrentPositionSeconds.store(currentSec, std::memory_order_relaxed);
-      globalSamplePosition.fetch_add(numSamples, std::memory_order_relaxed);
+      globalSamplePosition.fetch_add(sourceAdvanceSamples,
+                                     std::memory_order_relaxed);
+      diagSourceAdvanceSamples = sourceAdvanceSamples;
     } else {
       const auto state = getTransportState();
       if (state == TransportState::paused) {
@@ -512,7 +627,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               : 0.0;
       diagnostics.pushEvent({juce::Time::currentTimeMillis() * 1.0, blockMs,
                              budgetMs, lockWaitMs, stemCount,
-                             blockMs > budgetMs, isPlaying});
+                             blockMs > budgetMs, isPlaying,
+                             playbackTempoRatioActive, diagSourceAdvanceSamples,
+                             diagTimeInputSamples, diagTimeProcessedPaths,
+                             diagTimePaddedFrames, diagTimeReceivedFrames,
+                             diagPitchSemitones, diagPitchUpActive,
+                             diagTempoUpActive, diagComboUpActive,
+                             diagPitchChanged, diagTempoChanged,
+                             diagRoutingActive, diagTimeProcessActive,
+                             diagTimeReceiveCalls, diagTimeMaxReceiveFrames,
+                             diagTimeFifoBeforeFrames, diagTimeFifoAfterFrames,
+                             diagTimeTargetLatencySamples,
+                             diagTimeDelayChanges,
+                             diagRoutingTargetLatencySamples,
+                             diagRoutingDelayChanges});
     }
   } else {
     // No song loaded — sin bus de entrada física: silencio (los parámetros
@@ -597,8 +725,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool timeProcessActive =
         (pitchActiveSemiTones != 0) ||
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+    StemMixEngine::RenderStats mixStats;
     mixEngine.renderToOutput(buffer, timeProcessActive, fadeStart, fadeEnd,
-                             windowFadeStart, windowFadeEnd);
+                             windowFadeStart, windowFadeEnd, &mixStats);
+    diagTimeProcessedPaths += mixStats.processedPaths;
+    diagTimePaddedFrames += mixStats.paddedFrames;
+    diagTimeReceivedFrames += mixStats.receivedFrames;
+    diagTimeReceiveCalls += mixStats.receiveCalls;
+    diagTimeMaxReceiveFrames =
+        juce::jmax(diagTimeMaxReceiveFrames, mixStats.maxReceiveFrames);
+    diagTimeFifoBeforeFrames += mixStats.fifoAvailableBeforeFrames;
+    diagTimeFifoAfterFrames += mixStats.fifoAvailableAfterFrames;
+    diagTimeTargetLatencySamples =
+        juce::jmax(diagTimeTargetLatencySamples, mixStats.targetLatencySamples);
+    diagTimeDelayChanges += mixStats.delayLineChanges;
   } else {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
@@ -1123,6 +1263,7 @@ void MTControlsAudioProcessor::playSong() {
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
+  tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
   metronome.syncPhaseForTimeSeconds(
       songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
@@ -1145,6 +1286,7 @@ void MTControlsAudioProcessor::stopSong() {
   arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
   seekTargetSeconds.store(start, std::memory_order_relaxed);
   seekPending.store(true, std::memory_order_release);
+  tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
   globalSamplePosition.store(
       static_cast<juce::int64>(start * playbackSampleRate),
       std::memory_order_relaxed);
@@ -1974,6 +2116,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   loadedSongBpm = 120.0;
   playbackTempoBpm.store(120.0, std::memory_order_relaxed);
   playbackTempoRatioActive = 1.0;
+  tempoInputSampleCarry.store(0.0, std::memory_order_relaxed);
   loadedSongKey.clear();
   loadedSongTitle.clear();
   songStartSeconds.store(0.0, std::memory_order_relaxed);

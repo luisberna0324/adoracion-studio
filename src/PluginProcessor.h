@@ -207,6 +207,7 @@ private:
   int pitchActiveSemiTones = 0;
   std::atomic<double> playbackTempoBpm{120.0};
   double playbackTempoRatioActive = 1.0;
+  std::atomic<double> tempoInputSampleCarry{0.0};
   std::atomic<bool> songCrossfadeActive{false};
   std::atomic<float> songCrossfadeProgress{1.0f};
   std::atomic<float> songCrossfadeIncomingGain{1.0f};
