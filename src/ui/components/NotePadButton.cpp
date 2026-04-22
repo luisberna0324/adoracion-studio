@@ -24,7 +24,9 @@ void NotePadButton::paint(juce::Graphics& g) {
     g.drawRoundedRectangle(bounds, radius, 1.0f);
 
     g.setColour(active ? UITheme::onAccent : UITheme::textPrimary);
-    g.setFont(juce::Font(juce::FontOptions(18.0f).withStyle("Bold")));
+    const float fontSize = juce::jlimit(13.0f, 20.0f,
+                                        static_cast<float>(getHeight()) * 0.26f);
+    g.setFont(juce::Font(juce::FontOptions(fontSize).withStyle("Bold")));
     g.drawFittedText(noteName, getLocalBounds(), juce::Justification::centred, 1);
 }
 

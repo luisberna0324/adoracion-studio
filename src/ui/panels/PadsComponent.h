@@ -26,10 +26,10 @@ public:
     void mouseDown(const juce::MouseEvent&) override;
 
     void refreshThemeColours();
+    void setResponsiveProfile(ResponsiveLayoutProfile profile);
 
 private:
   static constexpr int kNoteCount = 12;
-  static constexpr int kPadSize = 70;
 
   MTControlsAudioProcessor &processor;
   std::array<std::unique_ptr<NotePadButton>, kNoteCount> notePads;
@@ -49,6 +49,7 @@ private:
   juce::Rectangle<int> presetCardBounds;
   juce::String presetTitle{"Light Ambient"};
   juce::String presetSubtitle{"Loading..."};
+  ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
 
     void timerCallback() override;
     void startPadsLoadingAsync();

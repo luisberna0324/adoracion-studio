@@ -4,6 +4,9 @@
 #include "../../data/Localization.h"
 #include "../../data/SongData.h"
 
+#include <algorithm>
+#include <map>
+
 class SettingsPanel::RoutingRow final : public juce::Component {
 public:
   RoutingRow(const juce::String &categoryName, const int outputChannels,
@@ -639,29 +642,62 @@ void SettingsPanel::refreshDeviceOptions() {
       currentDevice != nullptr ? currentDevice->getName() : juce::String{};
 
   auto &deviceTypes = deviceManager->getAvailableDeviceTypes();
+  struct RankedOption {
+    DeviceOption option;
+    int score = 0;
+  };
+  std::map<juce::String, RankedOption> bestByDeviceName;
+
   for (auto *ioType : deviceTypes) {
     if (ioType == nullptr)
       continue;
-    ioType->scanForDevices();
+
     const juce::String typeName = ioType->getTypeName();
     const auto outputs = ioType->getDeviceNames(false);
+    const int defaultIndex = ioType->getDefaultDeviceIndex(false);
     for (int i = 0; i < outputs.size(); ++i) {
-      const auto name = outputs[i];
-      if (name.isNotEmpty())
-        deviceOptions.push_back({typeName, name});
+      const auto name = outputs[i].trim();
+      if (name.isEmpty())
+        continue;
+
+      int score = 0;
+      if (typeName.equalsIgnoreCase(currentType))
+        score += 2;
+      if (i == defaultIndex)
+        score += 1;
+
+      const auto key = name.toLowerCase();
+      auto it = bestByDeviceName.find(key);
+      if (it == bestByDeviceName.end() || score > it->second.score) {
+        bestByDeviceName[key] = RankedOption{{typeName, name}, score};
+      } else if (score == it->second.score &&
+                 typeName.compareIgnoreCase(it->second.option.typeName) < 0) {
+        it->second.option = {typeName, name};
+      }
     }
   }
+
+  for (const auto &entry : bestByDeviceName)
+    deviceOptions.push_back(entry.second.option);
+
+  std::sort(deviceOptions.begin(), deviceOptions.end(),
+            [](const DeviceOption &a, const DeviceOption &b) {
+              const auto nameCmp = a.deviceName.compareIgnoreCase(b.deviceName);
+              if (nameCmp != 0)
+                return nameCmp < 0;
+              return a.typeName.compareIgnoreCase(b.typeName) < 0;
+            });
 
   int selectedId = 0;
   for (size_t i = 0; i < deviceOptions.size(); ++i) {
     const auto &opt = deviceOptions[i];
-    const bool includeType = deviceOptions.size() > 1 &&
-                             opt.typeName.isNotEmpty();
+    const bool includeType = opt.typeName.isNotEmpty();
     const juce::String label =
         includeType ? (opt.typeName + " - " + opt.deviceName) : opt.deviceName;
     const int itemId = static_cast<int>(i) + 1;
     deviceBox.addItem(label, itemId);
-    if (opt.typeName == currentType && opt.deviceName == currentName)
+    if (opt.deviceName.equalsIgnoreCase(currentName) &&
+        (selectedId == 0 || opt.typeName.equalsIgnoreCase(currentType)))
       selectedId = itemId;
   }
 
@@ -679,6 +715,17 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
     return;
 
   const auto &opt = deviceOptions[static_cast<size_t>(optionIndex)];
+  auto *currentDevice = deviceManager->getCurrentAudioDevice();
+  const juce::String currentType = deviceManager->getCurrentAudioDeviceType();
+  const juce::String currentName =
+      currentDevice != nullptr ? currentDevice->getName() : juce::String{};
+  if (currentType.equalsIgnoreCase(opt.typeName) &&
+      currentName.equalsIgnoreCase(opt.deviceName)) {
+    refreshDeviceOptions();
+    refreshRoutingForDevice();
+    return;
+  }
+
   deviceManager->setCurrentAudioDeviceType(opt.typeName, false);
   if (deviceManager->getCurrentAudioDeviceType() != opt.typeName) {
     juce::AlertWindow::showMessageBoxAsync(

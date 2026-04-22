@@ -47,6 +47,9 @@ constexpr int kCompactBreakpointH = 700;
 constexpr int kLargeBreakpointW = 1680;
 constexpr int kLargeBreakpointH = 900;
 constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
+constexpr juce::int64 kAudioDevicePollIntervalMs = 1000;
+constexpr juce::int64 kAudioDeviceMissingGraceMs = 3000;
+constexpr juce::int64 kAudioDeviceFallbackRetryMs = 12000;
 
 #ifndef MTCONTROLS_API_BASE_URL
 #define MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app"
@@ -101,6 +104,85 @@ juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx) {
   if (typeName.isEmpty() || deviceName.isEmpty())
     return {};
   return typeName + "|" + deviceName;
+}
+
+bool deviceNameLooksBuiltIn(const juce::String &name) {
+  const auto lowered = name.trim().toLowerCase();
+  return lowered.contains("built-in") || lowered.contains("built in") ||
+         lowered.contains("internal") || lowered.contains("default");
+}
+
+bool applyOutputDeviceSelection(juce::AudioDeviceManager &manager,
+                                const juce::String &typeName,
+                                const juce::String &outputName) {
+  if (typeName.isEmpty() || outputName.isEmpty())
+    return false;
+
+  manager.setCurrentAudioDeviceType(typeName, false);
+  if (!manager.getCurrentAudioDeviceType().equalsIgnoreCase(typeName))
+    return false;
+
+  juce::AudioDeviceManager::AudioDeviceSetup setup;
+  manager.getAudioDeviceSetup(setup);
+  setup.outputDeviceName = outputName;
+  setup.inputDeviceName = {};
+  setup.useDefaultInputChannels = false;
+  setup.inputChannels.clear();
+  setup.useDefaultOutputChannels = true;
+  return manager.setAudioDeviceSetup(setup, false).isEmpty();
+}
+
+bool fallbackToBuiltInOrDefaultOutput(juce::AudioDeviceManager &manager) {
+  struct Candidate {
+    juce::String typeName;
+    juce::String deviceName;
+    int score = 0;
+  };
+
+  std::vector<Candidate> candidates;
+  const auto currentType = manager.getCurrentAudioDeviceType();
+  const auto &deviceTypes = manager.getAvailableDeviceTypes();
+  for (auto *ioType : deviceTypes) {
+    if (ioType == nullptr)
+      continue;
+
+    const auto typeName = ioType->getTypeName();
+    const auto outputs = ioType->getDeviceNames(false);
+    const int defaultIdx = ioType->getDefaultDeviceIndex(false);
+
+    for (int i = 0; i < outputs.size(); ++i) {
+      const auto outputName = outputs[i].trim();
+      if (outputName.isEmpty())
+        continue;
+
+      int score = 0;
+      if (typeName.equalsIgnoreCase(currentType))
+        score += 2;
+      if (i == defaultIdx)
+        score += 3;
+      if (deviceNameLooksBuiltIn(outputName))
+        score += 4;
+
+      candidates.push_back({typeName, outputName, score});
+    }
+  }
+
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &a, const Candidate &b) {
+              if (a.score != b.score)
+                return a.score > b.score;
+              const int typeCmp = a.typeName.compareIgnoreCase(b.typeName);
+              if (typeCmp != 0)
+                return typeCmp < 0;
+              return a.deviceName.compareIgnoreCase(b.deviceName) < 0;
+            });
+
+  for (const auto &candidate : candidates) {
+    if (applyOutputDeviceSelection(manager, candidate.typeName,
+                                   candidate.deviceName))
+      return true;
+  }
+  return false;
 }
 
 #if JucePlugin_Build_Standalone
@@ -772,19 +854,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   setSize(authW, authH);
   setResizable(false, false);
   setResizeLimits(authW, authH, authW, authH);
-  juce::MessageManager::callAsync(
-      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
-       authW, authH] {
-        if (safe == nullptr)
-          return;
-        if (auto *top = safe->getTopLevelComponent()) {
-          auto bounds = top->getBounds();
-          bounds.setSize(authW, authH);
-          if (auto *display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(bounds))
-            bounds.setCentre(display->userArea.getCentre());
-          top->setBounds(bounds);
-        }
-      });
 
   showWelcomeOnlyMode();
   initializeWelcomeModal();
@@ -805,6 +874,32 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
         if (safe != nullptr)
           hideStandaloneOptionsButton(safe.getComponent());
       });
+#endif
+}
+
+void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
+#if JucePlugin_Build_Standalone
+  if (initialStandaloneWindowCentered)
+    return;
+
+  auto *top = getTopLevelComponent();
+  if (top == nullptr || top == this)
+    return;
+
+  auto &displays = juce::Desktop::getInstance().getDisplays();
+  const auto *display = displays.getDisplayForRect(top->getBounds());
+  if (display == nullptr)
+    display = displays.getPrimaryDisplay();
+  if (display == nullptr)
+    return;
+
+  auto bounds = top->getBounds();
+  const int w = juce::jmax(1, bounds.getWidth());
+  const int h = juce::jmax(1, bounds.getHeight());
+  bounds.setSize(w, h);
+  bounds.setCentre(display->userArea.getCentre());
+  top->setBounds(bounds);
+  initialStandaloneWindowCentered = true;
 #endif
 }
 
@@ -839,6 +934,8 @@ void MTControlsAudioProcessorEditor::applyResponsiveLayoutProfile(
     bar->setResponsiveProfile(profile);
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
     grid->setResponsiveProfile(profile);
+  if (padsComponent != nullptr)
+    padsComponent->setResponsiveProfile(profile);
 }
 
 void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
@@ -868,6 +965,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   if (mainUiInitialized)
     return;
+
+  {
+    const auto audioCtx = getStandaloneAudioContext();
+    const auto nowMs = juce::Time::currentTimeMillis();
+    nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
+    missingAudioDeviceSinceMs = 0;
+    nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+
+    if (audioCtx.manager != nullptr &&
+        audioCtx.manager->getCurrentAudioDevice() == nullptr) {
+      missingAudioDeviceSinceMs = nowMs;
+    }
+  }
 
   if (topBar != nullptr && waveformBar != nullptr && channelGridPanel != nullptr &&
       songListPanel != nullptr && setlistHandlePanel != nullptr) {
@@ -899,22 +1009,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           });
     } else {
       setSize(w, h);
-      juce::MessageManager::callAsync(
-          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-               this),
-           w, h] {
-            if (safe == nullptr)
-              return;
-            if (auto *top = safe->getTopLevelComponent()) {
-              auto bounds = top->getBounds();
-              bounds.setSize(w, h);
-              if (auto *display =
-                      juce::Desktop::getInstance().getDisplays().getDisplayForRect(
-                          bounds))
-                bounds.setCentre(display->userArea.getCentre());
-              top->setBounds(bounds);
-            }
-          });
     }
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
@@ -1308,6 +1402,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
   padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel);
+  padsComponent->setResponsiveProfile(resolveResponsiveLayoutProfile());
   padsComponent->setVisible(false);
   addChildComponent(*padsComponent);
 
@@ -2068,6 +2163,29 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   if (!mainUiInitialized) {
     return;
   }
+
+  const auto nowMs = juce::Time::currentTimeMillis();
+  if (nowMs >= nextAudioDeviceFallbackPollMs) {
+    nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
+    const auto audioCtx = getStandaloneAudioContext();
+    if (audioCtx.manager != nullptr) {
+      if (audioCtx.manager->getCurrentAudioDevice() != nullptr) {
+        missingAudioDeviceSinceMs = 0;
+        nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+      } else {
+        if (missingAudioDeviceSinceMs <= 0)
+          missingAudioDeviceSinceMs = nowMs;
+
+        const bool missingLongEnough =
+            (nowMs - missingAudioDeviceSinceMs) >= kAudioDeviceMissingGraceMs;
+        if (missingLongEnough && nowMs >= nextAudioDeviceFallbackAttemptMs) {
+          fallbackToBuiltInOrDefaultOutput(*audioCtx.manager);
+          nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceFallbackRetryMs;
+        }
+      }
+    }
+  }
+
   evaluateReauthPolicy();
   if (!mainUiInitialized)
     return;
@@ -2186,18 +2304,27 @@ void MTControlsAudioProcessorEditor::resized() {
   auto rightChannelsArea = mainArea.reduced(contentInset);
 
   if (padsHandlePanel) {
-    constexpr int kHandleH = 22;
-    constexpr int kPadsH   = 280;
-    constexpr int kPadsW   = 584; // 484 (grid) + 90 (strip) + 4 (margin) + 6 (padding)
+    int handleH = 22;
+    int padsH = 280;
+    int padsW = 584; // base width for standard profile
+    if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
+      handleH = 20;
+      padsH = 250;
+      padsW = 518;
+    } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
+      handleH = 24;
+      padsH = 320;
+      padsW = 640;
+    }
 
-    const int totalPadsH = isPadsCollapsed ? kHandleH : kHandleH + kPadsH;
+    const int totalPadsH = isPadsCollapsed ? handleH : handleH + padsH;
     auto padsBar = rightChannelsArea.removeFromBottom(totalPadsH);
 
-    padsHandlePanel->setBounds(padsBar.removeFromTop(kHandleH));
+    padsHandlePanel->setBounds(padsBar.removeFromTop(handleH));
 
     if (!isPadsCollapsed && padsComponent) {
-      const int padsW = juce::jmin(kPadsW, padsBar.getWidth());
-      padsComponent->setBounds(padsBar.withWidth(padsW));
+      const int boundedPadsW = juce::jmin(padsW, padsBar.getWidth());
+      padsComponent->setBounds(padsBar.withWidth(boundedPadsW));
     }
   }
 

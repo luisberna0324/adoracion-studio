@@ -62,6 +62,8 @@ PadsComponent::~PadsComponent() {
 }
 
 void PadsComponent::paint(juce::Graphics& g) {
+    const bool compact = (responsiveProfile == ResponsiveLayoutProfile::Compact);
+    const bool large = (responsiveProfile == ResponsiveLayoutProfile::Large);
     auto bounds = getLocalBounds().toFloat().reduced(0.5f);
     g.setColour(UITheme::panelDark);
     g.fillRoundedRectangle(bounds, 8.0f);
@@ -89,66 +91,80 @@ void PadsComponent::paint(juce::Graphics& g) {
         g.setGradientFill(artGrad);
         g.fillRoundedRectangle(art.toFloat(), 7.0f);
         g.setColour(juce::Colours::white.withAlpha(0.92f));
-        g.setFont(juce::FontOptions(28.0f).withStyle("Bold").withKerningFactor(0.05f));
+        const float artFont = compact ? 22.0f : (large ? 30.0f : 28.0f);
+        g.setFont(juce::FontOptions(artFont).withStyle("Bold").withKerningFactor(0.05f));
         g.drawFittedText("LA", art, juce::Justification::centred, 1);
 
         const auto titleArea = content.removeFromTop(content.getHeight() / 2 + 4);
         g.setColour(UITheme::textPrimary);
-        g.setFont(juce::FontOptions(17.0f).withStyle("Bold"));
+        const float titleFont = compact ? 15.0f : (large ? 18.0f : 17.0f);
+        g.setFont(juce::FontOptions(titleFont).withStyle("Bold"));
         g.drawFittedText(presetTitle, titleArea,
                          juce::Justification::centredLeft, 1);
 
         g.setColour(UITheme::textSecondary.withAlpha(subtitleAlpha));
-        g.setFont(juce::FontOptions(12.0f));
+        const float subtitleFont = compact ? 11.0f : 12.0f;
+        g.setFont(juce::FontOptions(subtitleFont));
         g.drawFittedText(presetSubtitle, content,
                          juce::Justification::centredLeft, 1);
     }
 }
 
 void PadsComponent::resized() {
-    // Channel strip: standard layout is 90 px wide, anchored to right edge
-    constexpr int kStripW = 90;
-    constexpr int kStripRightInset = 8;
-    constexpr int kStripLeftGap = 10;
-    channelStrip->setBounds(getWidth() - kStripW - kStripRightInset, 16, kStripW,
-                            getHeight() - 32);
+    const bool compact = (responsiveProfile == ResponsiveLayoutProfile::Compact);
+    const bool large = (responsiveProfile == ResponsiveLayoutProfile::Large);
+    const int basePadSize = compact ? 62 : (large ? 78 : 70);
+    const int gridInset = compact ? 12 : (large ? 18 : 16);
+    const int stripW = compact ? 78 : (large ? 98 : 90);
+    const int stripRightInset = compact ? 6 : 8;
+    const int stripLeftGap = compact ? 8 : (large ? 12 : 10);
+    const int stripTop = compact ? 12 : 16;
+    const int stripBottomInset = compact ? 24 : 32;
+    const int bottomRowHeight = compact ? 56 : (large ? 68 : 64);
+    const int bottomRowGap = compact ? 8 : 10;
+    const int powerW = compact ? 58 : 64;
+    const int rowGap = compact ? 8 : 10;
 
-    auto gridArea = getLocalBounds().reduced(16);
-    gridArea.removeFromRight(kStripW + kStripLeftGap);
-    constexpr int kBottomRowHeight = 64;
-    constexpr int kBottomRowGap = 10;
+    channelStrip->setBounds(getWidth() - stripW - stripRightInset, stripTop,
+                            stripW, juce::jmax(40, getHeight() - stripBottomInset));
+    channelStrip->setLayoutScale(compact ? 0.9f : (large ? 1.06f : 1.0f));
+
+    auto gridArea = getLocalBounds().reduced(gridInset);
+    gridArea.removeFromRight(stripW + stripLeftGap);
     auto padsArea = gridArea;
-    auto bottomRow = padsArea.removeFromBottom(kBottomRowHeight);
-    padsArea.removeFromBottom(kBottomRowGap);
+    auto bottomRow = padsArea.removeFromBottom(bottomRowHeight);
+    padsArea.removeFromBottom(bottomRowGap);
 
     constexpr int kCols = 6;
     constexpr int kRows = 2;
-    const int contentW = (kCols * kPadSize);
-    const int contentH = (kRows * kPadSize);
-    const int extraW = juce::jmax(0, padsArea.getWidth() - contentW);
-    const int gapX = juce::jmax(8, extraW / juce::jmax(1, kCols - 1));
+    const int minGapX = compact ? 6 : (large ? 10 : 8);
+    const int maxPadSizeForWidth =
+        juce::jmax(36, (padsArea.getWidth() - (minGapX * (kCols - 1))) / kCols);
+    const int padSize = juce::jmin(basePadSize, maxPadSizeForWidth);
+    const int contentW = (kCols * padSize);
+    const int contentH = (kRows * padSize);
+    const int availableGapX = juce::jmax(0, padsArea.getWidth() - contentW);
+    const int gapX = (kCols > 1) ? (availableGapX / (kCols - 1)) : 0;
+
     // Keep rows visually tight/symmetric; avoid oversized vertical gaps.
-    const int maxRowGap = 14;
-    const int minRowGap = 8;
-    const int gapY = juce::jlimit(minRowGap, maxRowGap,
-                                  padsArea.getHeight() - contentH);
+    const int maxRowGap = compact ? 12 : (large ? 16 : 14);
+    const int availableGapY = juce::jmax(0, padsArea.getHeight() - contentH);
+    const int gapY = juce::jmin(maxRowGap, availableGapY);
     const int gridW = contentW + ((kCols - 1) * gapX);
     const int startX = padsArea.getX() + juce::jmax(0, (padsArea.getWidth() - gridW) / 2);
-    const int topInset = 2;
+    const int topInset = compact ? 1 : 2;
     const int startY = padsArea.getY() + topInset;
 
     for (int row = 0; row < kRows; ++row) {
         for (int col = 0; col < kCols; ++col) {
-            const int x = startX + col * (kPadSize + gapX);
-            const int y = startY + row * (kPadSize + gapY);
-            notePads[row * kCols + col]->setBounds(x, y, kPadSize, kPadSize);
+            const int x = startX + col * (padSize + gapX);
+            const int y = startY + row * (padSize + gapY);
+            notePads[row * kCols + col]->setBounds(x, y, padSize, padSize);
         }
     }
 
-    constexpr int kPowerW = 64;
-    constexpr int kRowGap = 10;
-    powerBtn.setBounds(bottomRow.removeFromLeft(kPowerW));
-    bottomRow.removeFromLeft(kRowGap);
+    powerBtn.setBounds(bottomRow.removeFromLeft(powerW));
+    bottomRow.removeFromLeft(rowGap);
     presetCardBounds = bottomRow;
 }
 
@@ -185,6 +201,14 @@ void PadsComponent::refreshThemeColours() {
     }
     for (auto& pad : notePads) pad->repaint();
     powerBtn.repaint();
+    repaint();
+}
+
+void PadsComponent::setResponsiveProfile(const ResponsiveLayoutProfile profile) {
+    if (responsiveProfile == profile)
+        return;
+    responsiveProfile = profile;
+    resized();
     repaint();
 }
 

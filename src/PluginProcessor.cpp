@@ -1849,8 +1849,13 @@ bool MTControlsAudioProcessor::isPadsPackLoaded() const noexcept {
 }
 
 juce::String MTControlsAudioProcessor::getPadsPackStatusText() const {
-  const juce::SpinLock::ScopedLockType lock(padsStateLock);
-  return padsPackStatusText;
+  const juce::SpinLock::ScopedTryLockType lock(padsStateLock);
+  if (lock.isLocked())
+    return padsPackStatusText;
+
+  if (padsPackLoaded.load(std::memory_order_relaxed))
+    return "Loaded";
+  return "Loading...";
 }
 
 void MTControlsAudioProcessor::setFadeActive(bool shouldFadeOut) noexcept {

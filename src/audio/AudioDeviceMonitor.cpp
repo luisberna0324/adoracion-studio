@@ -2,51 +2,55 @@
 
 namespace {
 juce::String makeKey(const juce::String &typeName, const juce::String &deviceName) {
-  return typeName + "|" + deviceName;
+  return typeName.trim().toLowerCase() + "|" + deviceName.trim().toLowerCase();
 }
 } // namespace
 
 AudioDeviceMonitor::AudioDeviceMonitor(juce::AudioDeviceManager &managerRef)
     : deviceManager(managerRef) {
   deviceManager.addChangeListener(this);
-  startTimer(2000);
+  triggerAsyncUpdate();
 }
 
 AudioDeviceMonitor::~AudioDeviceMonitor() {
-  stopTimer();
+  cancelPendingUpdate();
   deviceManager.removeChangeListener(this);
 }
 
 void AudioDeviceMonitor::changeListenerCallback(juce::ChangeBroadcaster *) {
+  triggerAsyncUpdate();
+}
+
+void AudioDeviceMonitor::handleAsyncUpdate() {
   scanAndDiff();
 }
 
-void AudioDeviceMonitor::timerCallback() { scanAndDiff(); }
-
 void AudioDeviceMonitor::scanAndDiff() {
   const auto &deviceTypes = deviceManager.getAvailableDeviceTypes();
+  auto *activeDevice = deviceManager.getCurrentAudioDevice();
+  const juce::String activeType = deviceManager.getCurrentAudioDeviceType();
+  const juce::String activeName =
+      activeDevice != nullptr ? activeDevice->getName().trim() : juce::String{};
+  const int activeOutputs =
+      activeDevice != nullptr ? activeDevice->getOutputChannelNames().size() : 0;
 
   std::map<juce::String, DeviceInfo> current;
 
   for (auto *ioType : deviceTypes) {
     if (ioType == nullptr)
       continue;
-    ioType->scanForDevices();
     const juce::String typeName = ioType->getTypeName();
     const juce::StringArray outputNames = ioType->getDeviceNames(false);
 
     for (int i = 0; i < outputNames.size(); ++i) {
-      const auto &devName = outputNames[i];
+      const auto devName = outputNames[i].trim();
       if (devName.isEmpty())
         continue;
 
       int numOut = 0;
-      {
-        std::unique_ptr<juce::AudioIODevice> dev(
-            ioType->createDevice({}, devName));
-        if (dev != nullptr)
-          numOut = dev->getOutputChannelNames().size();
-      }
+      if (typeName.equalsIgnoreCase(activeType) &&
+          devName.equalsIgnoreCase(activeName))
+        numOut = juce::jmax(0, activeOutputs);
 
       DeviceInfo info;
       info.name = devName;

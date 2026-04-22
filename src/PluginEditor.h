@@ -23,6 +23,7 @@ public:
   void paint(juce::Graphics &) override;
   void resized() override;
   bool keyPressed(const juce::KeyPress &key) override;
+  void parentHierarchyChanged() override;
 
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
@@ -89,6 +90,10 @@ private:
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
   bool isPadsCollapsed = true;
   bool songLoadBusy = false;
+  bool initialStandaloneWindowCentered = false;
+  juce::int64 nextAudioDeviceFallbackPollMs = 0;
+  juce::int64 missingAudioDeviceSinceMs = 0;
+  juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,

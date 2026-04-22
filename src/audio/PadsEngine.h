@@ -47,6 +47,8 @@ private:
     double position = 0.0;
     double increment = 1.0;
     float gain = 0.0f;
+    float fadeOutStartGain = 0.0f;
+    float fadeOutProgress = 0.0f;
   };
 
   std::array<NoteSample, kNoteCount> noteSamples;
@@ -61,7 +63,9 @@ private:
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);
   void updateVoiceIncrement(Voice &voice);
-  void fadeOutAllExcept(int noteIndex);
+  static void beginFadeOut(Voice &voice);
+  void fadeOutAllActive();
+  Voice *findBestVoiceForTrigger();
   bool hasActiveVoices() const noexcept;
   void renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffer);
 };

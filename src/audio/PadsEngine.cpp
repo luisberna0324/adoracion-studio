@@ -9,16 +9,21 @@ namespace {
 bool isTokenChar(const juce::juce_wchar c) {
   return juce::CharacterFunctions::isLetterOrDigit(c) || c == '#';
 }
+
+float smoothstep(const float t) {
+  const float clamped = juce::jlimit(0.0f, 1.0f, t);
+  return clamped * clamped * (3.0f - 2.0f * clamped);
+}
 } // namespace
 
 void PadsEngine::prepare(const double sampleRate, const int maxBlockSize) {
   outputSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
   maxBlock = juce::jmax(0, maxBlockSize);
-  // Slightly longer ramps avoid abrupt perceived jumps when switching/toggling pads.
+  // Ramps tuned for ambient note transitions with audible overlap.
   fadeInSamples = juce::jmax(
-      1, static_cast<int>(std::llround(outputSampleRate * 0.14)));
+      1, static_cast<int>(std::llround(outputSampleRate * 0.18)));
   fadeOutSamples = juce::jmax(
-      1, static_cast<int>(std::llround(outputSampleRate * 0.32)));
+      1, static_cast<int>(std::llround(outputSampleRate * 1.10)));
 }
 
 void PadsEngine::releaseResources() { stopAll(); }
@@ -28,7 +33,7 @@ void PadsEngine::setEnabled(const bool shouldEnable) noexcept {
   if (!shouldEnable) {
     for (auto &voice : voices) {
       if (voice.state != VoiceState::stopped)
-        voice.state = VoiceState::fadingOut;
+        beginFadeOut(voice);
     }
   }
 }
@@ -153,14 +158,37 @@ void PadsEngine::updateVoiceIncrement(Voice &voice) {
   voice.increment = (sample.sourceSampleRate / outputSampleRate) * octaveRatio;
 }
 
-void PadsEngine::fadeOutAllExcept(const int noteIndex) {
+void PadsEngine::beginFadeOut(Voice &voice) {
+  if (voice.state == VoiceState::stopped)
+    return;
+  voice.fadeOutStartGain = juce::jlimit(0.0f, 1.0f, voice.gain);
+  voice.fadeOutProgress = 0.0f;
+  voice.state = VoiceState::fadingOut;
+}
+
+void PadsEngine::fadeOutAllActive() {
   for (auto &voice : voices) {
     if (voice.state == VoiceState::stopped)
       continue;
-    if (voice.noteIndex == noteIndex)
-      continue;
-    voice.state = VoiceState::fadingOut;
+    beginFadeOut(voice);
   }
+}
+
+PadsEngine::Voice *PadsEngine::findBestVoiceForTrigger() {
+  for (auto &voice : voices) {
+    if (voice.state == VoiceState::stopped)
+      return &voice;
+  }
+
+  Voice *best = nullptr;
+  float lowestGain = std::numeric_limits<float>::max();
+  for (auto &voice : voices) {
+    if (voice.gain < lowestGain) {
+      lowestGain = voice.gain;
+      best = &voice;
+    }
+  }
+  return best;
 }
 
 void PadsEngine::triggerNote(const int noteIndex, const int octave) {
@@ -171,27 +199,32 @@ void PadsEngine::triggerNote(const int noteIndex, const int octave) {
   if (!noteSamples[static_cast<size_t>(noteIndex)].valid)
     return;
 
-  auto &voice = voices[static_cast<size_t>(noteIndex)];
-  if (voice.state == VoiceState::playing || voice.state == VoiceState::fadingIn) {
-    voice.state = VoiceState::fadingOut;
-    return;
-  }
+  fadeOutAllActive();
 
-  fadeOutAllExcept(noteIndex);
-  voice.noteIndex = noteIndex;
-  voice.octave = juce::jlimit(-3, 3, octave);
-  voice.position = 0.0;
-  voice.gain = 0.0f;
-  voice.state = VoiceState::fadingIn;
-  updateVoiceIncrement(voice);
+  auto *voice = findBestVoiceForTrigger();
+  if (voice == nullptr)
+    return;
+
+  voice->noteIndex = noteIndex;
+  voice->octave = juce::jlimit(-3, 3, octave);
+  voice->position = 0.0;
+  voice->gain = 0.0f;
+  voice->fadeOutStartGain = 0.0f;
+  voice->fadeOutProgress = 0.0f;
+  voice->state = VoiceState::fadingIn;
+  updateVoiceIncrement(*voice);
 }
 
 void PadsEngine::stopNote(const int noteIndex) {
   if (!juce::isPositiveAndBelow(noteIndex, kNoteCount))
     return;
-  auto &voice = voices[static_cast<size_t>(noteIndex)];
-  if (voice.state != VoiceState::stopped)
-    voice.state = VoiceState::fadingOut;
+  for (auto &voice : voices) {
+    if (voice.state == VoiceState::stopped)
+      continue;
+    if (voice.noteIndex != noteIndex)
+      continue;
+    beginFadeOut(voice);
+  }
 }
 
 void PadsEngine::stopAll() {
@@ -202,6 +235,8 @@ void PadsEngine::stopAll() {
     voice.noteIndex = -1;
     voice.octave = 0;
     voice.increment = 1.0;
+    voice.fadeOutStartGain = 0.0f;
+    voice.fadeOutProgress = 0.0f;
   }
   outputLevel.store(0.0f, std::memory_order_relaxed);
 }
@@ -258,10 +293,14 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
       if (voice.gain >= 0.999f)
         voice.state = VoiceState::playing;
     } else if (voice.state == VoiceState::fadingOut) {
-      voice.gain = juce::jmax(0.0f, voice.gain - outStep);
-      if (voice.gain <= 0.0001f) {
+      voice.fadeOutProgress = juce::jmin(1.0f, voice.fadeOutProgress + outStep);
+      const float fadeShape = smoothstep(voice.fadeOutProgress);
+      voice.gain = juce::jmax(0.0f, voice.fadeOutStartGain * (1.0f - fadeShape));
+      if (voice.fadeOutProgress >= 0.999f || voice.gain <= 0.0001f) {
         voice.state = VoiceState::stopped;
         voice.gain = 0.0f;
+        voice.fadeOutStartGain = 0.0f;
+        voice.fadeOutProgress = 0.0f;
         break;
       }
     }

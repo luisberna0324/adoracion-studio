@@ -7,7 +7,8 @@
 #include <vector>
 
 /** Observa enumeracion de dispositivos de audio; no modifica el dispositivo activo. */
-class AudioDeviceMonitor : public juce::ChangeListener, private juce::Timer {
+class AudioDeviceMonitor : public juce::ChangeListener,
+                           private juce::AsyncUpdater {
 public:
   struct DeviceInfo {
     juce::String name;
@@ -25,7 +26,7 @@ public:
   void changeListenerCallback(juce::ChangeBroadcaster *) override;
 
 private:
-  void timerCallback() override;
+  void handleAsyncUpdate() override;
   void scanAndDiff();
 
   juce::AudioDeviceManager &deviceManager;
