@@ -180,13 +180,15 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   themeLabel.setFont(juce::FontOptions(12.0f));
   generalPage.addAndMakeVisible(themeLabel);
 
-  themeBox.addItem(L10n::tr("Clasico", "Classic"),
-                   static_cast<int>(ThemePreset::Default));
   themeBox.addItem(L10n::tr("Verde Noche", "Night Green"),
                    static_cast<int>(ThemePreset::Spotify));
   themeBox.addItem(L10n::tr("Ambar Estudio", "Studio Amber"),
                    static_cast<int>(ThemePreset::Ableton));
-  themeBox.setSelectedId(static_cast<int>(current));
+  const int selectedThemeId =
+      current == ThemePreset::Ableton
+          ? static_cast<int>(ThemePreset::Ableton)
+          : static_cast<int>(ThemePreset::Spotify);
+  themeBox.setSelectedId(selectedThemeId, juce::dontSendNotification);
   themeBox.setJustificationType(juce::Justification::centredLeft);
   generalPage.addAndMakeVisible(themeBox);
 

@@ -90,10 +90,14 @@ private:
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
   bool isPadsCollapsed = true;
   bool songLoadBusy = false;
+  bool deferredStartupSongLoadPending = false;
+  int deferredStartupSongIndex = -1;
+  juce::int64 deferredStartupSongLoadAtMs = 0;
   bool initialStandaloneWindowCentered = false;
   juce::int64 nextAudioDeviceFallbackPollMs = 0;
   juce::int64 missingAudioDeviceSinceMs = 0;
   juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
+  juce::Rectangle<int> padsDrawerBackgroundBounds;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,

@@ -225,10 +225,10 @@ void SongListPanel::refreshLanguageTexts() { repaint(); }
 
 void SongListPanel::paint(juce::Graphics &g) {
   const auto bounds = getLocalBounds().toFloat();
-  g.setColour(UITheme::cardBg);
+  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
   g.fillRoundedRectangle(bounds, 6.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.75f));
-  g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.86f));
+  g.drawRoundedRectangle(bounds.reduced(0.5f), 6.0f, 1.0f);
 
   g.setColour(UITheme::textPrimary);
   g.setFont(juce::FontOptions(18.0f));
@@ -378,6 +378,8 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                static_cast<float>(artRect.getCentreY()), 1.2f);
 
     c.removeFromLeft(8);
+    constexpr int optionsRightInset = 12;
+    c.removeFromRight(optionsRightInset);
     auto optionsRect = c.removeFromRight(18);
     juce::Rectangle<int> autoPlayBadgeRect;
     if (rowData.autoPlayNext)
@@ -618,6 +620,8 @@ juce::Rectangle<int> SongListPanel::ListContent::optionsButtonBoundsForRow(
   c.removeFromLeft(24);
   c.removeFromLeft(40);
   c.removeFromLeft(8);
+  constexpr int optionsRightInset = 12;
+  c.removeFromRight(optionsRightInset);
   auto optionsRect = c.removeFromRight(18);
   return optionsRect;
 }

@@ -27,3 +27,6 @@ Thumbs.db
 *.tmp
 # Artifacts
 dist/
+web/node_modules/
+web/.next/
+web/out/

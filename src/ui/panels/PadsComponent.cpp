@@ -65,9 +65,9 @@ void PadsComponent::paint(juce::Graphics& g) {
     const bool compact = (responsiveProfile == ResponsiveLayoutProfile::Compact);
     const bool large = (responsiveProfile == ResponsiveLayoutProfile::Large);
     auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour(UITheme::panelDark);
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.24f));
     g.fillRoundedRectangle(bounds, 8.0f);
-    g.setColour(UITheme::cardBorder);
+    g.setColour(UITheme::cardBorder.withAlpha(0.88f));
     g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
 
     if (!presetCardBounds.isEmpty()) {

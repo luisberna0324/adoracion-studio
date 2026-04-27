@@ -164,32 +164,42 @@ void ChannelGridPanel::timerCallback() {
 }
 
 void ChannelGridPanel::layoutHeaderAndViewport() {
-  auto r = getLocalBounds();
+  const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
+  auto r = getLocalBounds().reduced(panelPad);
   const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
-                          ? 30
-                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 36
-                                                                                 : 34);
+                          ? 34
+                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 42
+                                                                                 : 38);
   auto header = r.removeFromTop(headerH);
 
-  const int leftW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 216 : 264;
-  const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 62 : 70;
-  auto leftArea = header.removeFromLeft(leftW);
-  auto nudgeButtonsArea = leftArea.removeFromRight(nudgeBtnW * 2);
-  nudgeHintLabel.setBounds(leftArea.reduced(6, responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8));
-  nudgeHintLabel.setFont(juce::FontOptions(responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.0f : 10.0f));
-  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW).reduced(2, responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 5));
-  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW).reduced(2, responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 5));
+  auto headerContent = header.reduced(
+      10, responsiveProfile == ResponsiveLayoutProfile::Compact ? 5 : 6);
+  const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 66 : 78;
+  const int nudgeGap = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
+  auto titleArea = headerContent.removeFromLeft(
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 124 : 150);
+  nudgeHintLabel.setBounds(titleArea);
+  nudgeHintLabel.setFont(juce::FontOptions(
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.0f : 10.5f));
+
+  auto nudgeButtonsArea =
+      headerContent.removeFromLeft((nudgeBtnW * 2) + nudgeGap);
+  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
+  nudgeButtonsArea.removeFromLeft(nudgeGap);
+  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
+
   if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
     applyRoutingButton.setVisible(true);
     routingHintLabel.setVisible(true);
-    applyRoutingButton.setBounds(header.removeFromRight(96).reduced(4, 5));
-    header.removeFromRight(6);
-    routingHintLabel.setBounds(header.reduced(4, 6));
+    applyRoutingButton.setBounds(headerContent.removeFromRight(96));
+    headerContent.removeFromRight(8);
+    routingHintLabel.setBounds(headerContent);
   } else {
     applyRoutingButton.setVisible(false);
     routingHintLabel.setVisible(false);
   }
 
+  r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
   viewport.setBounds(r);
 }
 
@@ -509,7 +519,30 @@ void ChannelGridPanel::refreshThemeColours() {
 }
 
 void ChannelGridPanel::paint(juce::Graphics &g) {
-  g.fillAll(UITheme::cardBg);
+  const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
+  g.fillRoundedRectangle(bounds, 8.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.86f));
+  g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
+
+  const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
+  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
+                          ? 34
+                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 42
+                                                                                 : 38);
+  auto headerArea = getLocalBounds().reduced(panelPad);
+  auto headerBounds = headerArea.removeFromTop(headerH).toFloat();
+  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f)
+                  .withAlpha(0.96f));
+  g.fillRoundedRectangle(headerBounds, 6.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.44f));
+  g.drawRoundedRectangle(headerBounds.reduced(0.5f), 6.0f, 1.0f);
+
+  const float dividerY = static_cast<float>(panelPad + headerH);
+  g.setColour(UITheme::cardBorder.withAlpha(0.30f));
+  g.drawLine(bounds.getX() + 10.0f, dividerY + 6.0f,
+             bounds.getRight() - 10.0f, dividerY + 6.0f, 1.0f);
+
   if (slots.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.85f));
     g.setFont(juce::FontOptions(12.0f));
@@ -527,9 +560,9 @@ void ChannelGridPanel::resized() {
   // Mantener altura estable: actualmente el ruteo por canal esta oculto.
   const bool gridShowsRouting = false;
 
-  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
-  const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 3 : 4;
-  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10;
+  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 12;
+  const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 5 : 8;
+  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
   const auto baseLayout = ChannelStripCard::Layout{};
   const int baseCellW = baseLayout.width + 2;
   const int maxColumnsAtBase =

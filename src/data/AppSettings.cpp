@@ -16,6 +16,15 @@ constexpr const char *kRoutingChannelKey = "channel";
 constexpr const char *kRoutingWidthKey = "width";
 constexpr const char *kPadsPackKey = "padsPack";
 constexpr const char *kAssetsBootstrapKey = "assetsBootstrap";
+constexpr int kDeprecatedClassicThemeId = 1;
+constexpr int kNightGreenThemeId = 2;
+constexpr int kStudioAmberThemeId = 3;
+
+int normalizeThemePresetId(const int rawId) {
+  if (rawId == kDeprecatedClassicThemeId)
+    return kNightGreenThemeId;
+  return juce::jlimit(kNightGreenThemeId, kStudioAmberThemeId, rawId);
+}
 
 int getCategoryIndexForName(const juce::String &category) {
   const auto needle = category.trim();
@@ -298,16 +307,19 @@ void AppSettings::setLayoutMode(const AppLayoutMode mode) {
 int AppSettings::getThemePresetId() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())
-    return 1;
+    return kNightGreenThemeId;
 
   const auto parsed = juce::JSON::parse(f);
   if (const auto *o = parsed.getDynamicObject()) {
     if (o->hasProperty("themePresetId")) {
-      const int id = static_cast<int>(o->getProperty("themePresetId"));
-      return juce::jlimit(1, 3, id);
+      const int rawId = static_cast<int>(o->getProperty("themePresetId"));
+      const int normalizedId = normalizeThemePresetId(rawId);
+      if (normalizedId != rawId)
+        setThemePresetId(normalizedId);
+      return normalizedId;
     }
   }
-  return 1;
+  return kNightGreenThemeId;
 }
 
 void AppSettings::setThemePresetId(const int presetId) {
@@ -319,7 +331,7 @@ void AppSettings::setThemePresetId(const int presetId) {
 
   if (auto *o = root.getDynamicObject()) {
     o->setProperty("version", 6);
-    o->setProperty("themePresetId", juce::jlimit(1, 3, presetId));
+    o->setProperty("themePresetId", normalizeThemePresetId(presetId));
   }
 
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
