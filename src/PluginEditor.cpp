@@ -342,6 +342,16 @@ bool hasValidAccessBySubscriptionState(const juce::String &subscriptionStatus,
   return false;
 }
 
+bool canUseSnapshotForLocalBootstrap(const PersistedSessionSnapshot &snap) {
+  if (!snap.allowed ||
+      !hasValidAccessBySubscriptionState(snap.subscriptionStatus, snap.plan))
+    return false;
+
+  const auto nowMs = juce::Time::currentTimeMillis();
+  const auto ageMs = nowMs - snap.lastOnlineValidationMs;
+  return snap.lastOnlineValidationMs > 0 && ageMs >= 0 && ageMs <= kMaxOfflineMs;
+}
+
 juce::String buildStableDeviceId() {
   juce::String raw = juce::SystemStats::getUniqueDeviceID().trim();
   if (raw.isEmpty()) {
@@ -855,17 +865,33 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   setResizable(false, false);
   setResizeLimits(authW, authH, authW, authH);
 
-  showWelcomeOnlyMode();
-  initializeWelcomeModal();
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
-  {
-    PersistedSessionSnapshot bootSnap;
-    if (SessionPersistence::load(bootSnap))
-      lastOnlineValidationMs = bootSnap.lastOnlineValidationMs;
+  PersistedSessionSnapshot bootSnap;
+  const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
+  const bool canFastBootFromSnapshot =
+      hasBootSnapshot && canUseSnapshotForLocalBootstrap(bootSnap);
+  if (hasBootSnapshot)
+    lastOnlineValidationMs = bootSnap.lastOnlineValidationMs;
+
+  initializeWelcomeModal();
+
+  if (canFastBootFromSnapshot) {
+    SessionAuthLogger::write(
+        "PluginEditor ctor: local session snapshot accepted, entering UI before "
+        "online validation");
+    applyPersistedSnapshotToActive(bootSnap);
+    lastSuccessfulLoginMs =
+        juce::jmax(lastSuccessfulLoginMs, bootSnap.lastOnlineValidationMs);
+    AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+    initializeMainUi();
+  } else {
+    showWelcomeOnlyMode();
   }
+
   tryResumeSessionAsync();
-  startTimerHz(12);
+  if (!mainUiInitialized)
+    startTimerHz(12);
 
 #if JucePlugin_Build_Standalone
   juce::MessageManager::callAsync(
@@ -1296,7 +1322,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   songListRaw->setOnSongActivated(
-      [loadSong](const ImportedSongData &song, int songIndex) {
+      [this, loadSong](const ImportedSongData &song, int songIndex) {
+        deferredStartupSongLoadPending = false;
+        deferredStartupSongIndex = -1;
+        deferredStartupSongLoadAtMs = 0;
         (void)loadSong(song, songIndex);
       });
 
@@ -1319,13 +1348,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   {
+    deferredStartupSongLoadPending = false;
+    deferredStartupSongIndex = -1;
+    deferredStartupSongLoadAtMs = 0;
     const auto lastSelectedSongId = AppSettings::getLastSelectedSongId();
     if (lastSelectedSongId.isNotEmpty()) {
       const int index = songListRaw != nullptr
                             ? songListRaw->getSongIndexById(lastSelectedSongId)
                             : -1;
-      if (index >= 0)
-        loadSongByIndex(index);
+      if (index >= 0) {
+        deferredStartupSongLoadPending = true;
+        deferredStartupSongIndex = index;
+        deferredStartupSongLoadAtMs = juce::Time::currentTimeMillis() + 350;
+        SessionAuthLogger::write(
+            "initializeMainUi: deferred startup song load index=" +
+            juce::String(index));
+      }
     }
   }
 
@@ -1790,6 +1828,9 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   reauthLoginInProgress = false;
   hideReauthPromptModal();
   authExpectedState.clear();
+  deferredStartupSongLoadPending = false;
+  deferredStartupSongIndex = -1;
+  deferredStartupSongLoadAtMs = 0;
   {
     const juce::ScopedLock lock(authCallbackLock);
     pendingAuthCallbackUrl.clear();
@@ -2009,15 +2050,52 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
 void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
     const bool success, const bool validatedOnline, PersistedSessionSnapshot snapshot,
     const juce::String &welcomeError, const bool clearSnapshotFile) {
-  if (mainUiInitialized) {
-    SessionAuthLogger::write(
-        "applySessionResumeOnMessageThread: skipped (mainUiInitialized already)");
-    return;
-  }
   if (authExpectedState.isNotEmpty()) {
     SessionAuthLogger::write(
         "applySessionResumeOnMessageThread: skipped (user started web login, "
         "authExpectedState set)");
+    return;
+  }
+
+  if (mainUiInitialized) {
+    if (clearSnapshotFile) {
+      SessionAuthLogger::write(
+          "applySessionResumeOnMessageThread: online validation denied active UI, "
+          "logging out");
+      handleLogout();
+      if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+        if (welcomeError.isNotEmpty())
+          modal->setStatusText(welcomeError, true);
+        else
+          modal->resetStatusToDefault();
+      }
+      return;
+    }
+
+    if (!success) {
+      SessionAuthLogger::write(
+          "applySessionResumeOnMessageThread: active UI kept after background "
+          "validation failure welcomeError=" +
+          welcomeError);
+      return;
+    }
+
+    SessionAuthLogger::write(
+        juce::String("applySessionResumeOnMessageThread: active UI session "
+                     "refreshed validatedOnline=") +
+        juce::String(static_cast<int>(validatedOnline)));
+    applyPersistedSnapshotToActive(snapshot);
+    if (validatedOnline) {
+      SessionPersistence::save(snapshot);
+      lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
+      lastOnlineValidationMs = snapshot.lastOnlineValidationMs;
+      AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+    }
+    reauthGraceDeadlineMs = 0;
+    AppSettings::setReauthGraceDeadlineMs(0);
+    reauthPromptDismissed = false;
+    reauthLoginInProgress = false;
+    hideReauthPromptModal();
     return;
   }
 
@@ -2127,7 +2205,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
 }
 
 void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
-  currentThemeId = juce::jlimit(1, 3, presetId);
+  currentThemeId = juce::jlimit(2, 3, presetId);
   AppSettings::setThemePresetId(currentThemeId);
   applyTheme(static_cast<ThemePreset>(currentThemeId));
   if (refreshTopBarTheme)
@@ -2176,6 +2254,22 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  if (deferredStartupSongLoadPending && !songLoadBusy &&
+      nowMs >= deferredStartupSongLoadAtMs) {
+    const int index = deferredStartupSongIndex;
+    deferredStartupSongLoadPending = false;
+    deferredStartupSongIndex = -1;
+    deferredStartupSongLoadAtMs = 0;
+
+    if (songListPanelRaw != nullptr && loadSongByIndexAction &&
+        juce::isPositiveAndBelow(index, songListPanelRaw->getSongCount())) {
+      SessionAuthLogger::write(
+          "timerCallback: running deferred startup song load index=" +
+          juce::String(index));
+      loadSongByIndexAction(index, false);
+    }
+  }
+
   if (nowMs >= nextAudioDeviceFallbackPollMs) {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
@@ -2255,6 +2349,15 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
 
 void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
   drawStudioBackground(g, getLocalBounds().toFloat());
+
+  if (mainUiInitialized && !padsDrawerBackgroundBounds.isEmpty()) {
+    const auto drawer = padsDrawerBackgroundBounds.toFloat().reduced(0.5f);
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.14f)
+                    .withAlpha(0.92f));
+    g.fillRoundedRectangle(drawer, 8.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.52f));
+    g.drawRoundedRectangle(drawer, 8.0f, 1.0f);
+  }
 }
 
 void MTControlsAudioProcessorEditor::resized() {
@@ -2274,26 +2377,26 @@ void MTControlsAudioProcessorEditor::resized() {
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;
   int waveformExpandedH = kDefaultWaveformExpandedH;
-  float setlistRatio = 0.35f;
-  int setlistMinW = 280;
-  int setlistMaxW = 460;
+  float setlistRatio = 0.30f;
+  int setlistMinW = 388;
+  int setlistMaxW = 430;
   int contentInset = 8;
 
   if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
     topBarH = 54;
     waveformH = kCompactWaveformH;
     waveformExpandedH = kCompactWaveformExpandedH;
-    setlistRatio = 0.32f;
-    setlistMinW = 220;
+    setlistRatio = 0.31f;
+    setlistMinW = 300;
     setlistMaxW = 360;
     contentInset = 6;
   } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
     topBarH = 62;
     waveformH = kLargeWaveformH;
     waveformExpandedH = kDefaultWaveformExpandedH;
-    setlistRatio = 0.36f;
-    setlistMinW = 320;
-    setlistMaxW = 520;
+    setlistRatio = 0.28f;
+    setlistMinW = 420;
+    setlistMaxW = 460;
     contentInset = 9;
   }
 
@@ -2303,7 +2406,7 @@ void MTControlsAudioProcessorEditor::resized() {
   waveformBar->setBounds(waveformArea);
 
   auto mainArea = area;
-  constexpr int handleW = 28;
+  constexpr int handleW = 14;
   int setlistWidth =
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
@@ -2312,18 +2415,23 @@ void MTControlsAudioProcessorEditor::resized() {
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
-  auto rightChannelsArea = mainArea.reduced(contentInset);
+  auto rightChannelsArea = mainArea;
+  rightChannelsArea.removeFromLeft(2);
+  rightChannelsArea.removeFromTop(contentInset);
+  rightChannelsArea.removeFromRight(contentInset);
+  rightChannelsArea.removeFromBottom(contentInset);
+  padsDrawerBackgroundBounds = {};
 
   if (padsHandlePanel) {
-    int handleH = 22;
+    int handleH = 16;
     int padsH = 280;
     int padsW = 584; // base width for standard profile
     if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
-      handleH = 20;
+      handleH = 14;
       padsH = 250;
       padsW = 518;
     } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
-      handleH = 24;
+      handleH = 18;
       padsH = 320;
       padsW = 640;
     }
@@ -2334,6 +2442,7 @@ void MTControlsAudioProcessorEditor::resized() {
     padsHandlePanel->setBounds(padsBar.removeFromTop(handleH));
 
     if (!isPadsCollapsed && padsComponent) {
+      padsDrawerBackgroundBounds = padsBar;
       const int boundedPadsW = juce::jmin(padsW, padsBar.getWidth());
       padsComponent->setBounds(padsBar.withWidth(boundedPadsW));
     }
@@ -2346,10 +2455,15 @@ void MTControlsAudioProcessorEditor::resized() {
     songListPanel->setBounds({});
   } else {
     songListPanel->setVisible(true);
-    songListPanel->setBounds(leftSetlistArea.reduced(contentInset));
+    auto setlistBounds = leftSetlistArea;
+    setlistBounds.removeFromLeft(contentInset);
+    setlistBounds.removeFromTop(contentInset);
+    setlistBounds.removeFromBottom(contentInset);
+    setlistBounds.removeFromRight(3);
+    songListPanel->setBounds(setlistBounds);
   }
 
-  setlistHandlePanel->setBounds(handleArea.reduced(2, 8));
+  setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
 
   if (reauthPromptModal != nullptr) {
