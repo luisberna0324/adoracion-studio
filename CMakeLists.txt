@@ -121,6 +121,8 @@ target_sources(MTControls
     PRIVATE
         src/PluginEditor.cpp
         src/PluginEditor.h
+        src/PluginEditorSupport.cpp
+        src/PluginEditorSupport.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
         src/MetronomeEngine.cpp
@@ -157,6 +159,8 @@ target_sources(MTControls
         src/data/AssetBootstrapManager.h
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
+        src/data/LocalAuthCallbackServer.cpp
+        src/data/LocalAuthCallbackServer.h
         src/data/SessionAuthLogger.cpp
         src/data/SessionAuthLogger.h
         src/data/SessionPersistence.cpp
@@ -208,8 +212,12 @@ target_sources(MTControls
         src/ui/components/PowerButton.h
         src/ui/components/PadsHandlePanel.cpp
         src/ui/components/PadsHandlePanel.h
+        src/ui/components/ReauthPromptModal.cpp
+        src/ui/components/ReauthPromptModal.h
         src/ui/panels/PadsComponent.cpp
         src/ui/panels/PadsComponent.h
+        src/ui/components/WelcomeModal.cpp
+        src/ui/components/WelcomeModal.h
 )
 
 target_compile_definitions(MTControls
