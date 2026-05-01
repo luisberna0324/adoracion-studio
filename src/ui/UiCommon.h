@@ -4,6 +4,7 @@
 
 enum class ThemePreset { Default = 1, Spotify, Ableton };
 enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
+enum class AppFontWeight { Regular = 0, Medium, SemiBold, Bold };
 
 struct UITheme {
   static juce::Colour appBg;
@@ -28,8 +29,10 @@ struct UITheme {
 
 juce::String formatTimeSeconds(double seconds);
 void applyTheme(ThemePreset preset);
+juce::Font makeAppFont(float size, AppFontWeight weight = AppFontWeight::Regular);
 
 enum class IconGlyph {
+  ArrowLeft,
   Prev,
   SeekBack,
   Play,
@@ -42,8 +45,14 @@ enum class IconGlyph {
   FadeIn,
   Pencil,
   Settings,
+  Search,
+  Clock,
+  MusicNote,
+  Waveform,
   More,
   Add,
+  Check,
+  Remove,
   Metronome,
   /** Cuadrado (maximizar ventana). */
   WindowMaximize,

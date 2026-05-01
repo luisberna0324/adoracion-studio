@@ -313,9 +313,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *songListRaw = songListImpl.get();
   songListPanel = std::move(songListImpl);
   songListPanelRaw = songListRaw;
-  songListRaw->setOnSetlistNameChanged([this](const juce::String &name) {
+  songListRaw->setOnSetlistNameChanged([this, channelGridRaw](const juce::String &name) {
     if (setlistHandlePanel)
       setlistHandlePanel->setTitle(name);
+    if (channelGridRaw != nullptr)
+      channelGridRaw->refreshLibraryFromStorage();
   });
 
   struct SongLoadUiScope {
@@ -521,9 +523,50 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       return;
     if (!juce::isPositiveAndBelow(index, songListRaw->getSongCount()))
       return;
-    if (loadSongByIndex(index) && autoPlay)
+    if (!loadSongByIndex(index))
+      return;
+
+    songListRaw->setSelectedSongIndex(index);
+    if (autoPlay)
       p.playSong();
   };
+
+  channelGridRaw->setOnLibrarySongLoadRequested(
+      [this, songListRaw, loadSong](const ImportedSongData &song, int songIndex) {
+        juce::ignoreUnused(songIndex);
+        deferredStartupSongLoadPending = false;
+        deferredStartupSongIndex = -1;
+        deferredStartupSongLoadAtMs = 0;
+        const int setlistIndex =
+            songListRaw != nullptr ? songListRaw->getSongIndexById(song.id) : -1;
+        const int indexForState = setlistIndex >= 0 ? setlistIndex : -1;
+        (void)loadSong(song, indexForState);
+      });
+  channelGridRaw->setOnLibraryAddSongRequested(
+      [channelGridRaw, songListRaw](const juce::StringArray &songIds) {
+        if (songIds.isEmpty())
+          return;
+        const auto snapshot = SongLibraryStore::loadLibrarySnapshot();
+        if (!snapshot.activeSetlistId.isEmpty()) {
+          for (const auto &songId : songIds) {
+            if (songId.isEmpty())
+              continue;
+            SongLibraryStore::addSongToSetlist(snapshot.activeSetlistId, songId);
+          }
+        }
+        if (songListRaw != nullptr)
+          songListRaw->refreshFromStorageView();
+        if (channelGridRaw != nullptr)
+          channelGridRaw->refreshLibraryFromStorage();
+      });
+  channelGridRaw->setOnLibraryImportRequested([channelGridRaw, songListRaw] {
+    if (songListRaw != nullptr)
+      songListRaw->openSongImportWizardFromExternal();
+    if (songListRaw != nullptr)
+      songListRaw->refreshFromStorageView();
+    if (channelGridRaw != nullptr)
+      channelGridRaw->refreshLibraryFromStorage();
+  });
 
   {
     deferredStartupSongLoadPending = false;
@@ -1388,6 +1431,8 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
   applyTheme(static_cast<ThemePreset>(currentThemeId));
   if (refreshTopBarTheme)
     refreshTopBarTheme();
+  if (songListPanelRaw != nullptr)
+    songListPanelRaw->refreshThemeColours();
   if (songLoadOverlay != nullptr)
     songLoadOverlay->refreshThemeColours();
   repaint();
@@ -1482,6 +1527,10 @@ void MTControlsAudioProcessorEditor::timerCallback() {
                                 currentLoadedSong.id.isNotEmpty();
     songListPanelRaw->setNowPlayingSong(
         hasPlayingSong ? currentLoadedSong.id : juce::String(), hasPlayingSong);
+    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
+      grid->setLibraryNowPlayingSong(
+          hasPlayingSong ? currentLoadedSong.id : juce::String(), hasPlayingSong);
+    }
   }
 
   if (wasSongPlaying && !isPlayingNow && songListPanelRaw != nullptr &&
@@ -1492,11 +1541,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
         endSec > startSec && lastObservedSongPositionSec >= (endSec - 0.12);
     const bool wrappedToStart = currentPosSec <= (startSec + 0.12);
 
-    if (reachedSongEnd && wrappedToStart &&
-        songListPanelRaw->isAutoPlayNextEnabledForSong(currentLoadedSong.id)) {
-      const int currentIndex =
-          songListPanelRaw->getSongIndexById(currentLoadedSong.id);
-      const int nextIndex = currentIndex + 1;
+    if (reachedSongEnd && wrappedToStart) {
+      const int nextIndex =
+          songListPanelRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
       if (juce::isPositiveAndBelow(nextIndex, songListPanelRaw->getSongCount()) &&
           loadSongByIndexAction) {
         loadSongByIndexAction(nextIndex, true);

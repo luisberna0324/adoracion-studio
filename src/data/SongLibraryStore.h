@@ -72,6 +72,9 @@ public:
   static bool updateStemVolumeForActiveSetlist(const juce::String &songId,
                                                const juce::String &stemId,
                                                float volume);
+  static bool updateStemVolumesForActiveSetlist(
+      const juce::String &songId,
+      const std::vector<std::pair<juce::String, float>> &stemVolumes);
   static bool updateStemGainForActiveSetlist(const juce::String &songId,
                                              const juce::String &stemId,
                                              float gain);

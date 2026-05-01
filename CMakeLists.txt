@@ -115,6 +115,10 @@ juce_add_binary_data(MTControlsAssets
     SOURCES
         assets/logoPlayWorship.jpeg
         assets/pwLogoSinFondo.png
+        assets/fonts/InterRegular.ttf
+        assets/fonts/InterMedium.ttf
+        assets/fonts/InterSemiBold.ttf
+        assets/fonts/InterBold.ttf
 )
 
 target_sources(MTControls
@@ -186,12 +190,20 @@ target_sources(MTControls
         src/ui/components/SongLoadProgressOverlay.h
         src/ui/components/StereoVUMeter.cpp
         src/ui/components/StereoVUMeter.h
+        src/ui/components/SearchField.cpp
+        src/ui/components/SearchField.h
+        src/ui/components/SetlistSongsHeaderPanel.cpp
+        src/ui/components/SetlistSongsHeaderPanel.h
+        src/ui/components/WorkspaceTabsBar.cpp
+        src/ui/components/WorkspaceTabsBar.h
         src/ui/components/WaveformRowComponent.cpp
         src/ui/components/WaveformRowComponent.h
         src/ui/components/MetronomePanel.cpp
         src/ui/components/MetronomePanel.h
         src/ui/panels/ChannelGridPanel.cpp
         src/ui/panels/ChannelGridPanel.h
+        src/ui/panels/LibraryCatalogPanel.cpp
+        src/ui/panels/LibraryCatalogPanel.h
         src/ui/panels/MixerFaderPanel.cpp
         src/ui/panels/MixerFaderPanel.h
         src/ui/panels/SettingsPanel.cpp

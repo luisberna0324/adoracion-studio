@@ -97,6 +97,7 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   nudgeHintLabel.setText("Volumen stems", juce::dontSendNotification);
   nudgeHintLabel.setJustificationType(juce::Justification::centredLeft);
   nudgeHintLabel.setFont(juce::FontOptions(10.0f));
+  nudgeHintLabel.setVisible(false);
   addAndMakeVisible(nudgeHintLabel);
 
   routingHintLabel.setJustificationType(juce::Justification::centredLeft);
@@ -134,11 +135,13 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   viewport.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::all);
   addAndMakeVisible(viewport);
 
-  startTimerHz(2);
+  lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
+  startTimerHz(timerHz);
   refreshThemeColours();
 }
 
 ChannelGridPanel::~ChannelGridPanel() {
+  flushPendingVolumePersistence();
   nudgeUpButton.setLookAndFeel(nullptr);
   nudgeDownButton.setLookAndFeel(nullptr);
 }
@@ -152,14 +155,51 @@ void ChannelGridPanel::setResponsiveProfile(
   repaint();
 }
 
-void ChannelGridPanel::timerCallback() {
-  syncMetronomeVirtualSlotFromProcessor();
+void ChannelGridPanel::setOnLibrarySongLoadRequested(
+    std::function<void(const ImportedSongData &, int)> cb) {
+  onLibrarySongLoadRequested = std::move(cb);
+}
 
-  const int n = processor.getAvailableOutputChannelCount();
-  if (n != lastSeenOutputChannelCount) {
-    lastSeenOutputChannelCount = n;
-    if (!slots.empty())
-      refreshStemRoutingVisibility();
+void ChannelGridPanel::setOnLibraryAddSongRequested(
+    std::function<void(const juce::StringArray &)> cb) {
+  onLibraryAddSongRequested = std::move(cb);
+}
+
+void ChannelGridPanel::setOnLibraryImportRequested(std::function<void()> cb) {
+  onLibraryImportRequested = std::move(cb);
+}
+
+void ChannelGridPanel::refreshLibraryFromStorage() {
+  // La biblioteca se resolvio en el panel lateral (SongListPanel).
+}
+
+void ChannelGridPanel::setLibraryNowPlayingSong(const juce::String &songId,
+                                                const bool isPlaying) {
+  juce::ignoreUnused(songId, isPlaying);
+}
+
+void ChannelGridPanel::timerCallback() {
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  const bool hasPendingVolumeWrites =
+      hasPendingMasterVolumeWrite || !pendingStemVolumeWrites.empty();
+  if (hasPendingVolumeWrites &&
+      (nowMs - lastVolumeInteractionMs) >= volumePersistenceDebounceMs) {
+    flushPendingVolumePersistence();
+  }
+
+  // Run slow background checks at the previous cadence (2 Hz).
+  ++slowTickCounter;
+  const int slowDivider = juce::jmax(1, timerHz / slowTaskHz);
+  if (slowTickCounter >= slowDivider) {
+    slowTickCounter = 0;
+    syncMetronomeVirtualSlotFromProcessor();
+
+    const int n = processor.getAvailableOutputChannelCount();
+    if (n != lastSeenOutputChannelCount) {
+      lastSeenOutputChannelCount = n;
+      if (!slots.empty())
+        refreshStemRoutingVisibility();
+    }
   }
 }
 
@@ -167,26 +207,33 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
   const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
   auto r = getLocalBounds().reduced(panelPad);
   const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
-                          ? 34
-                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 42
+                          ? 38
+                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46
                                                                                  : 38);
   auto header = r.removeFromTop(headerH);
 
   auto headerContent = header.reduced(
-      10, responsiveProfile == ResponsiveLayoutProfile::Compact ? 5 : 6);
+      10, responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 7);
   const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 66 : 78;
   const int nudgeGap = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
-  auto titleArea = headerContent.removeFromLeft(
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 124 : 150);
-  nudgeHintLabel.setBounds(titleArea);
+  const int gridPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 8;
+  const int masterAlignedX = panelPad + gridPad + 1;
+  nudgeHintLabel.setBounds({});
   nudgeHintLabel.setFont(juce::FontOptions(
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.0f : 10.5f));
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 10.5f : 11.5f));
+  nudgeHintLabel.setVisible(false);
 
   auto nudgeButtonsArea =
-      headerContent.removeFromLeft((nudgeBtnW * 2) + nudgeGap);
+      juce::Rectangle<int>(masterAlignedX, headerContent.getY(),
+                           (nudgeBtnW * 2) + nudgeGap, headerContent.getHeight());
   nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
   nudgeButtonsArea.removeFromLeft(nudgeGap);
   nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
+
+  const int routingLeft = nudgeDownButton.getRight() + 12;
+  if (routingLeft > headerContent.getX())
+    headerContent.removeFromLeft(juce::jmin(headerContent.getWidth(),
+                                            routingLeft - headerContent.getX()));
 
   if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
     applyRoutingButton.setVisible(true);
@@ -199,7 +246,7 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
     routingHintLabel.setVisible(false);
   }
 
-  r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
+  r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 6);
   viewport.setBounds(r);
 }
 
@@ -315,6 +362,7 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
 }
 
 void ChannelGridPanel::setSong(const ImportedSongData &song) {
+  flushPendingVolumePersistence();
   routingDraftActive = false;
   metronomeVirtualSlotIndex = -1;
   slots.clear();
@@ -395,9 +443,8 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->getStrip().setOnVolumeChanged(
         [this, stemIndex, stemId](float value) {
       processor.setStemVolume(stemIndex, value);
-      if (currentSongId.isNotEmpty())
-        SongLibraryStore::updateStemVolumeForActiveSetlist(currentSongId,
-                                                           stemId, value);
+      if (currentSongId.isNotEmpty() && stemId.isNotEmpty())
+        queueStemVolumePersistence(stemId, value);
     });
     slot->getStrip().setOnGainChanged(
         [this, stemIndex, stemId](float value) {
@@ -465,15 +512,51 @@ void ChannelGridPanel::nudgeFaders(float delta) {
     if (currentSongId.isNotEmpty() &&
         i < static_cast<int>(slotStemIds.size()) &&
         slotStemIds[static_cast<size_t>(i)].isNotEmpty()) {
-      SongLibraryStore::updateStemVolumeForActiveSetlist(
-          currentSongId, slotStemIds[static_cast<size_t>(i)], next);
+      queueStemVolumePersistence(slotStemIds[static_cast<size_t>(i)], next);
     }
+  }
+}
+
+void ChannelGridPanel::queueStemVolumePersistence(const juce::String &stemId,
+                                                  const float volume) {
+  if (stemId.isEmpty())
+    return;
+  pendingStemVolumeWrites[stemId] = juce::jlimit(0.0f, 1.0f, volume);
+  lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
+}
+
+void ChannelGridPanel::queueMasterVolumePersistence(const float volume) {
+  pendingMasterVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
+  hasPendingMasterVolumeWrite = true;
+  lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
+}
+
+void ChannelGridPanel::flushPendingVolumePersistence() {
+  if (currentSongId.isEmpty()) {
+    pendingStemVolumeWrites.clear();
+    hasPendingMasterVolumeWrite = false;
+    return;
+  }
+
+  if (!pendingStemVolumeWrites.empty()) {
+    std::vector<std::pair<juce::String, float>> batched;
+    batched.reserve(pendingStemVolumeWrites.size());
+    for (const auto &entry : pendingStemVolumeWrites)
+      batched.emplace_back(entry.first, entry.second);
+    SongLibraryStore::updateStemVolumesForActiveSetlist(currentSongId, batched);
+    pendingStemVolumeWrites.clear();
+  }
+
+  if (hasPendingMasterVolumeWrite) {
+    SongLibraryStore::updateMasterVolumeForActiveSetlist(currentSongId,
+                                                         pendingMasterVolumeValue);
+    hasPendingMasterVolumeWrite = false;
   }
 }
 
 void ChannelGridPanel::refreshThemeColours() {
   nudgeHintLabel.setColour(juce::Label::textColourId,
-                           UITheme::textSecondary.withAlpha(0.8f));
+                           UITheme::textPrimary.withAlpha(0.92f));
 
   nudgeUpButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   nudgeUpButton.setColour(juce::TextButton::buttonOnColourId,
@@ -525,23 +608,44 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::cardBorder.withAlpha(0.86f));
   g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
 
-  const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
-  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
-                          ? 34
-                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 42
-                                                                                 : 38);
+  const int panelPad =
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
   auto headerArea = getLocalBounds().reduced(panelPad);
-  auto headerBounds = headerArea.removeFromTop(headerH).toFloat();
-  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f)
-                  .withAlpha(0.96f));
-  g.fillRoundedRectangle(headerBounds, 6.0f);
+  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
+                          ? 38
+                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46
+                                                                                 : 38);
+  auto mixerHeaderBounds = headerArea.removeFromTop(headerH).toFloat();
+  g.setColour(
+      UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f).withAlpha(0.96f));
+  g.fillRoundedRectangle(mixerHeaderBounds, 6.0f);
   g.setColour(UITheme::cardBorder.withAlpha(0.44f));
-  g.drawRoundedRectangle(headerBounds.reduced(0.5f), 6.0f, 1.0f);
+  g.drawRoundedRectangle(mixerHeaderBounds.reduced(0.5f), 6.0f, 1.0f);
 
-  const float dividerY = static_cast<float>(panelPad + headerH);
-  g.setColour(UITheme::cardBorder.withAlpha(0.30f));
-  g.drawLine(bounds.getX() + 10.0f, dividerY + 6.0f,
-             bounds.getRight() - 10.0f, dividerY + 6.0f, 1.0f);
+  const auto upBounds = nudgeUpButton.getBounds();
+  const auto downBounds = nudgeDownButton.getBounds();
+  const float verticalSeparatorX = static_cast<float>(
+      juce::jmax(upBounds.getRight(), downBounds.getRight()) + 8);
+  const float verticalTop = mixerHeaderBounds.getY() + 8.0f;
+  const float verticalBottom = mixerHeaderBounds.getBottom() - 8.0f;
+  const auto separatorBase =
+      UITheme::cardBorder.interpolatedWith(UITheme::accent, 0.24f);
+  const auto separatorLight = UITheme::accentSoft.withAlpha(0.32f);
+  g.setColour(separatorBase.withAlpha(0.62f));
+  g.drawLine(verticalSeparatorX, verticalTop, verticalSeparatorX, verticalBottom,
+             1.0f);
+  g.setColour(separatorLight);
+  g.drawLine(verticalSeparatorX + 1.0f, verticalTop + 1.0f,
+             verticalSeparatorX + 1.0f, verticalBottom - 1.0f, 0.7f);
+
+  const auto viewportBounds = viewport.getBounds();
+  const float separatorY = static_cast<float>(viewportBounds.getY() - 3);
+  g.setColour(separatorBase.withAlpha(0.66f));
+  g.drawLine(mixerHeaderBounds.getX() + 2.0f, separatorY,
+             mixerHeaderBounds.getRight() - 2.0f, separatorY, 0.95f);
+  g.setColour(separatorLight.withAlpha(0.65f));
+  g.drawLine(mixerHeaderBounds.getX() + 2.0f, separatorY + 1.0f,
+             mixerHeaderBounds.getRight() - 2.0f, separatorY + 1.0f, 0.6f);
 
   if (slots.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.85f));
@@ -549,7 +653,7 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
     g.drawFittedText(
         L10n::tr("Doble click en una cancion\ndel setlist",
                  "Double-click a song\nfrom setlist"),
-        viewport.getBounds(), juce::Justification::centred, 2);
+        viewportBounds, juce::Justification::centred, 2);
   }
 }
 
@@ -560,9 +664,9 @@ void ChannelGridPanel::resized() {
   // Mantener altura estable: actualmente el ruteo por canal esta oculto.
   const bool gridShowsRouting = false;
 
-  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 12;
-  const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 5 : 8;
-  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
+  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 8;
+  const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 6;
+  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10;
   const auto baseLayout = ChannelStripCard::Layout{};
   const int baseCellW = baseLayout.width + 2;
   const int maxColumnsAtBase =
@@ -633,8 +737,7 @@ void ChannelGridPanel::addMasterSlot() {
   strip.setOnVolumeChanged([this](float value) {
     processor.setMasterVolume(value);
     if (currentSongId.isNotEmpty())
-      SongLibraryStore::updateMasterVolumeForActiveSetlist(currentSongId,
-                                                           value);
+      queueMasterVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
     processor.setMasterGain(value);

@@ -238,6 +238,33 @@ bool SongLibraryStore::updateStemVolumeForActiveSetlist(
                             });
 }
 
+bool SongLibraryStore::updateStemVolumesForActiveSetlist(
+    const juce::String &songId,
+    const std::vector<std::pair<juce::String, float>> &stemVolumes) {
+  if (stemVolumes.empty())
+    return true;
+
+  return updateActiveSetlistItem(
+      songId, [&stemVolumes](SetlistItem &item, const ImportedSongData &) {
+        for (const auto &entry : stemVolumes) {
+          const auto &stemId = entry.first;
+          if (stemId.isEmpty())
+            continue;
+
+          auto it = std::find_if(
+              item.mix.stems.begin(), item.mix.stems.end(),
+              [&stemId](const StemMixSnapshot &mix) { return mix.stemId == stemId; });
+          if (it == item.mix.stems.end()) {
+            StemMixSnapshot mix;
+            mix.stemId = stemId;
+            item.mix.stems.push_back(mix);
+            it = std::prev(item.mix.stems.end());
+          }
+          it->volume = juce::jlimit(0.0f, 1.0f, entry.second);
+        }
+      });
+}
+
 bool SongLibraryStore::updateStemGainForActiveSetlist(
     const juce::String &songId, const juce::String &stemId, float gain) {
   return updateStemMixValue(songId, stemId,
