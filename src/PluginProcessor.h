@@ -67,6 +67,9 @@ public:
   void setSongArrangement(const SongArrangementSnapshot &arrangement,
                           bool isCustomArrangement);
   void requestArrangementPartJump(int partIndex);
+  void toggleArrangementPartLoop(int partIndex);
+  void clearArrangementPartLoop() noexcept;
+  int getArrangementPartLoopIndex() const noexcept;
   int getPendingArrangementPartJumpIndex() const noexcept;
   bool isCustomArrangementActive() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
@@ -244,6 +247,7 @@ private:
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
+  std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
   
   // Custom hybrid transport state

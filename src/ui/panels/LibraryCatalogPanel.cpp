@@ -240,17 +240,37 @@ void LibraryCatalogPanel::FooterActionButton::paintButton(juce::Graphics &g,
   else if (isMouseOverButton)
     fill = fill.brighter(0.05f);
 
-  g.setColour(fill);
-  g.fillRoundedRectangle(area, 12.0f);
+  if (isEnabled() && isButtonDown)
+    area = area.withSizeKeepingCentre(area.getWidth() * 0.985f,
+                                      area.getHeight() * 0.985f);
 
-  const auto buttonText = count > 0
-                              ? L10n::tr("Agregar", "Add") + " (" +
-                                    juce::String(count) + ")"
-                              : L10n::tr("Selecciona canciones", "Select songs");
+  g.setColour(fill);
+  g.fillRoundedRectangle(area, 10.0f);
+
+  const auto buttonText =
+      count > 0
+          ? L10n::tr("Agregar al setlist", "Add to setlist") + " (" +
+                juce::String(count) + ")"
+          : L10n::tr("Agregar al setlist", "Add to setlist");
+
+  const auto contentArea = area.reduced(12.0f, 0.0f);
+  const auto font = makeAppFont(14.0f, AppFontWeight::SemiBold);
+  const float plusSize = 16.0f;
+  const float textWidth = font.getStringWidthFloat(buttonText);
+  const float groupWidth = plusSize + 8.0f + textWidth;
+  const float startX = contentArea.getCentreX() - groupWidth * 0.5f;
+  const float centerY = contentArea.getCentreY();
+
   g.setColour(UITheme::onAccent.withAlpha(isEnabled() ? 1.0f : 0.78f));
-  g.setFont(makeAppFont(15.0f, AppFontWeight::Bold));
-  g.drawFittedText(buttonText, getLocalBounds().reduced(12, 0),
-                   juce::Justification::centred, 1);
+  g.fillRoundedRectangle(startX + (plusSize * 0.5f) - 1.0f, centerY - 6.0f, 2.0f,
+                         12.0f, 0.8f);
+  g.fillRoundedRectangle(startX, centerY - 1.0f, plusSize, 2.0f, 0.8f);
+
+  g.setFont(font);
+  g.drawText(buttonText,
+             juce::Rectangle<float>(startX + plusSize + 8.0f, centerY - 12.0f,
+                                    textWidth, 24.0f),
+             juce::Justification::centredLeft);
 }
 
 LibraryCatalogPanel::ChipsRow::ChipsRow(
@@ -513,6 +533,20 @@ void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event)
       onOptionsRequested(rowIndex, menuBounds);
     return;
   }
+}
+
+void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
+    const juce::MouseEvent &event) {
+  const auto point = event.position.toInt();
+  const int rowIndex = rowIndexAt(point);
+  if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
+    return;
+
+  if (toggleBoundsForIndex(rowIndex).contains(point))
+    return;
+  if (const auto menuBounds = menuBoundsForIndex(rowIndex);
+      menuBounds.contains(point))
+    return;
 
   if (onLoadRequested)
     onLoadRequested(rowIndex);
@@ -532,6 +566,15 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   menuButton.setTooltip(L10n::tr("Opciones del panel", "Panel options"));
   menuButton.onClick = [this] { openHeaderMenu(); };
   addAndMakeVisible(menuButton);
+
+  importSongsButton.setTooltip(
+      L10n::tr("Importar canciones nuevas a la biblioteca",
+               "Import new songs to the library"));
+  importSongsButton.onClick = [this] {
+    if (onImportRequested)
+      onImportRequested();
+  };
+  addAndMakeVisible(importSongsButton);
 
   searchField.setPlaceholderText(L10n::tr("Buscar cancion...", "Search song..."));
   searchField.setIconGlyph(IconGlyph::Search);
@@ -579,6 +622,10 @@ LibraryCatalogPanel::~LibraryCatalogPanel() = default;
 
 void LibraryCatalogPanel::setOnSongLoadRequested(SongLoadRequested cb) {
   onSongLoadRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnSongEditRequested(SongEditRequested cb) {
+  onSongEditRequested = std::move(cb);
 }
 
 void LibraryCatalogPanel::setOnAddSongsToSetlist(AddSongsRequested cb) {
@@ -659,6 +706,12 @@ void LibraryCatalogPanel::refreshThemeColours() {
   backButton.setStyle(false, juce::Colours::white);
   menuButton.setStyle(false, juce::Colours::white);
   searchField.refreshThemeColours();
+  importSongsButton.setColour(juce::TextButton::buttonColourId,
+                              UITheme::accent.withAlpha(0.90f));
+  importSongsButton.setColour(juce::TextButton::buttonOnColourId,
+                              UITheme::accentSoft.withAlpha(0.95f));
+  importSongsButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
+  importSongsButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   repaint();
 }
 
@@ -682,15 +735,18 @@ void LibraryCatalogPanel::resized() {
   int headerHeight = bounds.getHeight() < 560 ? 56 : 64;
   int sectionGap = bounds.getHeight() < 560 ? 10 : 14;
   int searchHeight = bounds.getHeight() < 560 ? 36 : 40;
-  int footerButtonHeight = bounds.getHeight() < 560 ? 40 : 44;
+  int importButtonHeight = bounds.getHeight() < 560 ? 38 : 42;
+  int searchToImportGap = bounds.getHeight() < 560 ? 8 : 10;
+  int footerButtonHeight = bounds.getHeight() < 560 ? 42 : 44;
   int footerTopGap = bounds.getHeight() < 560 ? 8 : 10;
   int footerBottomInset = bounds.getHeight() < 560 ? 10 : 12;
   int footerHeight = footerTopGap + footerButtonHeight + footerBottomInset;
-  int footerHorizontalInset = bounds.getWidth() < 360 ? 12 : 16;
+  int footerHorizontalInset = kCatalogItemSideInset;
   constexpr int minContentHeight = 120;
 
   int estimatedContentHeight = bounds.getHeight() - topPadding - headerHeight -
-                               searchHeight - footerHeight - (sectionGap * 2);
+                               searchHeight - searchToImportGap -
+                               importButtonHeight - footerHeight - (sectionGap * 2);
   if (estimatedContentHeight < minContentHeight) {
     int deficit = minContentHeight - estimatedContentHeight;
     const auto consumeDeficit = [&deficit](int &value, const int minValue) {
@@ -704,6 +760,8 @@ void LibraryCatalogPanel::resized() {
     consumeDeficit(footerTopGap, 6);
     consumeDeficit(footerBottomInset, 8);
     footerHeight = footerTopGap + footerButtonHeight + footerBottomInset;
+    consumeDeficit(importButtonHeight, 34);
+    consumeDeficit(searchToImportGap, 6);
     consumeDeficit(searchHeight, 44);
     consumeDeficit(headerHeight, 44);
     consumeDeficit(sectionGap, 6);
@@ -734,6 +792,9 @@ void LibraryCatalogPanel::resized() {
       headerCenterColumn.getWidth(), subtitleHeight);
 
   area.removeFromTop(sectionGap);
+  importSongsButton.setBounds(
+      area.removeFromTop(importButtonHeight).reduced(kCatalogItemSideInset, 0));
+  area.removeFromTop(searchToImportGap);
   searchField.setBounds(
       area.removeFromTop(searchHeight).reduced(kCatalogItemSideInset, 0));
 
@@ -811,7 +872,7 @@ void LibraryCatalogPanel::rebuildRows() {
               return compareWithinGroup(a, b);
             });
 
-  content.setRows(visibleRows, pendingSelectedSongIds, getWidth() < 320);
+  content.setRows(visibleRows, pendingSelectedSongIds, false);
   content.setNowPlayingSong(nowPlayingSongId, playbackActive);
   refreshFooterState();
   updateContentSize();
@@ -841,6 +902,8 @@ void LibraryCatalogPanel::refreshFooterState() {
 
 void LibraryCatalogPanel::refreshTexts() {
   searchField.setPlaceholderText(L10n::tr("Buscar cancion...", "Search song..."));
+  importSongsButton.setButtonText(
+      L10n::tr("+ Importar canciones", "+ Import songs"));
 }
 
 void LibraryCatalogPanel::openHeaderMenu() {
@@ -921,7 +984,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
   menu.addItem(1, L10n::tr("Ver detalles", "View details"));
   menu.addItem(2, L10n::tr("Escuchar preview", "Listen preview"));
   menu.addItem(3, L10n::tr("Ver stems", "View stems"));
-  menu.addItem(4, L10n::tr("Editar metadata", "Edit metadata"));
+  menu.addItem(4, L10n::tr("Editar cancion", "Edit song"));
   if (item.inSetlist)
     menu.addSeparator();
   if (item.inSetlist)
@@ -930,7 +993,15 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
   menu.showMenuAsync(
       juce::PopupMenu::Options().withTargetScreenArea(localAreaToGlobal(targetBounds)),
       [this, rowIndex](int result) {
-        if (result >= 1 && result <= 4 && onSongLoadRequested != nullptr &&
+        if (result == 4 && onSongEditRequested != nullptr &&
+            juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size()))) {
+          const auto &targetItem = visibleRows[static_cast<size_t>(rowIndex)];
+          if (targetItem.songId.isNotEmpty())
+            onSongEditRequested(targetItem.songId);
+          return;
+        }
+
+        if (result >= 1 && result <= 3 && onSongLoadRequested != nullptr &&
             juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size()))) {
           const auto &targetItem = visibleRows[static_cast<size_t>(rowIndex)];
           if (juce::isPositiveAndBelow(targetItem.songIndex,

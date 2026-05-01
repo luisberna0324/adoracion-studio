@@ -246,10 +246,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setSeekCallback([&p](double targetSeconds) {
     p.seekSongTo(targetSeconds);
   });
-  waveformBarRaw->setOnArrangementPartJumpRequest(
-      [&p](int partIndex) { p.requestArrangementPartJump(partIndex); });
+  waveformBarRaw->setOnArrangementPartJumpRequest([&p](int partIndex) {
+    const int activeLoopPartIndex = p.getArrangementPartLoopIndex();
+    if (activeLoopPartIndex >= 0 && activeLoopPartIndex != partIndex)
+      p.clearArrangementPartLoop();
+    p.requestArrangementPartJump(partIndex);
+  });
+  waveformBarRaw->setOnArrangementPartLoopToggleRequest(
+      [&p](int partIndex) { p.toggleArrangementPartLoop(partIndex); });
   waveformBarRaw->setPendingArrangementPartProvider(
       [&p] { return p.getPendingArrangementPartJumpIndex(); });
+  waveformBarRaw->setActiveArrangementLoopPartProvider(
+      [&p] { return p.getArrangementPartLoopIndex(); });
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
     isWaveformExpanded = expanded;
     resized();

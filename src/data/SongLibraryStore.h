@@ -67,6 +67,8 @@ public:
                                 int toIndex);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
+  static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
+                         const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
                                   SongMixSnapshot &outMix);
   static bool updateStemVolumeForActiveSetlist(const juce::String &songId,

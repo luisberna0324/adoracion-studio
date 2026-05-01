@@ -431,6 +431,8 @@ SongListPanel::SongListPanel() {
     showSongsSubview(true);
   });
   libraryCatalogPanel.setOnImportRequested([this] { openSongImportWizard(); });
+  libraryCatalogPanel.setOnSongEditRequested(
+      [this](const juce::String &songId) { openSongEditWizard(songId); });
   libraryCatalogPanel.setOnBackRequested([this] { showSongsSubview(true); });
   addAndMakeVisible(libraryCatalogPanel);
   setlistsContent = std::make_unique<SetlistsContent>();
@@ -2486,7 +2488,103 @@ void SongListPanel::openSongImportWizard() {
 
   if (auto *window = options.launchAsync()) {
     window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 780, 580);
+    window->centreAroundComponent(centerTarget, 860, 640);
+  }
+}
+
+void SongListPanel::openSongEditWizard(const juce::String &songId) {
+  const auto trimmedSongId = songId.trim();
+  if (trimmedSongId.isEmpty())
+    return;
+
+  ImportedSongData baseSong;
+  bool found = false;
+  for (const auto &song : librarySongs) {
+    if (song.id == trimmedSongId) {
+      baseSong = song;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    const auto snapshotSongs = SongLibraryStore::loadSongs();
+    for (const auto &song : snapshotSongs) {
+      if (song.id == trimmedSongId) {
+        baseSong = song;
+        found = true;
+        break;
+      }
+    }
+  }
+  if (!found)
+    return;
+
+  auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  auto *centerTarget =
+      editor != nullptr ? static_cast<juce::Component *>(editor)
+                        : static_cast<juce::Component *>(this);
+
+  juce::DialogWindow::LaunchOptions options;
+  options.dialogTitle = L10n::tr("Editar cancion", "Edit Song");
+  options.dialogBackgroundColour = UITheme::appBg;
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = true;
+  options.componentToCentreAround = centerTarget;
+
+  auto *panel = new SongImportWizardComponent(
+      [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
+                                               juce::String &errorMessage,
+                                               const SongImportProgressFn &progress) {
+        if (safeThis == nullptr) {
+          errorMessage = L10n::tr("La vista de edicion ya no esta disponible.",
+                                  "Edit UI is no longer available.");
+          return false;
+        }
+
+        song.id = editedSongId;
+        juce::String updateError;
+        const bool success =
+            SongLibraryStore::updateSong(std::move(song), &updateError, progress);
+        if (!success) {
+          errorMessage = updateError.isNotEmpty()
+                             ? updateError
+                             : L10n::tr("No se pudo actualizar la cancion.",
+                                        "Couldn't update the song.");
+          return false;
+        }
+
+        safeThis->refreshFromStorage();
+
+        const auto shouldReloadLiveSong =
+            editedSongId == safeThis->selectedSongId ||
+            editedSongId == safeThis->nowPlayingSongId;
+
+        if (!shouldReloadLiveSong || safeThis->onSongActivated == nullptr)
+          return true;
+
+        const auto allSongs = SongLibraryStore::loadSongs();
+        const auto it =
+            std::find_if(allSongs.begin(), allSongs.end(),
+                         [&editedSongId](const ImportedSongData &candidate) {
+                           return candidate.id == editedSongId;
+                         });
+        if (it == allSongs.end())
+          return true;
+
+        const int indexForSetlist = safeThis->getSongIndexById(editedSongId);
+        safeThis->onSongActivated(*it, indexForSetlist >= 0 ? indexForSetlist : -1);
+        return true;
+      },
+      AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
+      baseSong);
+  panel->refreshThemeColours();
+  options.content.setOwned(panel);
+
+  if (auto *window = options.launchAsync()) {
+    window->setResizable(true, true);
+    window->centreAroundComponent(centerTarget, 860, 640);
   }
 }
 

@@ -163,6 +163,7 @@ private:
   class SetlistsContent;
 
   void openSongImportWizard();
+  void openSongEditWizard(const juce::String &songId);
   void openSetlistManager();
   void openHeaderMenu();
   void openAddFromLibraryMenu();

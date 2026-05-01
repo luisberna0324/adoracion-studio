@@ -15,6 +15,7 @@ class LibraryCatalogPanel final : public juce::Component {
 public:
   using SongLoadRequested =
       std::function<void(const ImportedSongData &, int songIndex)>;
+  using SongEditRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using ImportRequested = std::function<void()>;
   using BackRequested = std::function<void()>;
@@ -23,6 +24,7 @@ public:
   ~LibraryCatalogPanel() override;
 
   void setOnSongLoadRequested(SongLoadRequested cb);
+  void setOnSongEditRequested(SongEditRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnImportRequested(ImportRequested cb);
   void setOnBackRequested(BackRequested cb);
@@ -145,6 +147,7 @@ private:
     void mouseMove(const juce::MouseEvent &event) override;
     void mouseExit(const juce::MouseEvent &event) override;
     void mouseUp(const juce::MouseEvent &event) override;
+    void mouseDoubleClick(const juce::MouseEvent &event) override;
 
   private:
     std::vector<CatalogItem> rows;
@@ -189,6 +192,7 @@ private:
   std::unique_ptr<ChipsRow> chipsRow;
   juce::Viewport contentViewport;
   CatalogContent content;
+  juce::TextButton importSongsButton{"+ Importar canciones"};
   FooterActionButton confirmButton;
   juce::Rectangle<int> headerTitleBounds;
   juce::Rectangle<int> headerSubtitleBounds;
@@ -207,6 +211,7 @@ private:
   SortMode sortMode = SortMode::TitleAsc;
 
   SongLoadRequested onSongLoadRequested;
+  SongEditRequested onSongEditRequested;
   AddSongsRequested onAddSongsToSetlist;
   ImportRequested onImportRequested;
   BackRequested onBackRequested;

@@ -19,7 +19,9 @@ public:
       const SongArrangementSnapshot &, bool isCustomArrangement)>;
   using ArrangementResetCallback = std::function<void()>;
   using ArrangementPartJumpRequestCallback = std::function<void(int)>;
+  using ArrangementPartLoopToggleRequestCallback = std::function<void(int)>;
   using PendingArrangementPartProvider = std::function<int()>;
+  using ActiveArrangementLoopPartProvider = std::function<int()>;
 
   WaveformBar();
 
@@ -34,7 +36,11 @@ public:
   void setOnArrangementChanged(ArrangementChangedCallback cb);
   void setOnArrangementReset(ArrangementResetCallback cb);
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
+  void setOnArrangementPartLoopToggleRequest(
+      ArrangementPartLoopToggleRequestCallback cb);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
+  void setActiveArrangementLoopPartProvider(
+      ActiveArrangementLoopPartProvider cb);
   void refreshThemeColours();
 
   void paint(juce::Graphics &g) override;
@@ -89,7 +95,9 @@ private:
   ArrangementChangedCallback onArrangementChanged;
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
+  ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
   PendingArrangementPartProvider pendingArrangementPartProvider;
+  ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   juce::TextButton editButton;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   double songBpm = 0.0;
@@ -111,6 +119,8 @@ private:
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
   std::vector<PartOverlayBounds> partOverlayBounds;
+  int pendingJumpDoubleClickPartIndex = -1;
+  double pendingJumpDoubleClickDispatchAtMs = 0.0;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
@@ -160,4 +170,7 @@ private:
   void deleteArrangementPart(int partIndex);
   void notifyArrangementChanged(bool isCustom);
   void resetArrangementToDefault();
+  void scheduleDeferredPartJumpFromDoubleClick(int partIndex);
+  void cancelDeferredPartJumpFromDoubleClick();
+  void flushDeferredPartJumpFromDoubleClickIfDue(bool force = false);
 };

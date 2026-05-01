@@ -41,6 +41,29 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
   }
   return true;
 }
+
+const ImportedStemData *findStemById(const ImportedSongData &song,
+                                     const juce::String &stemId) {
+  if (stemId.isEmpty())
+    return nullptr;
+  const auto it =
+      std::find_if(song.stems.begin(), song.stems.end(),
+                   [&stemId](const ImportedStemData &stem) {
+                     return stem.stemId == stemId;
+                   });
+  if (it == song.stems.end())
+    return nullptr;
+  return &(*it);
+}
+
+bool fileIsInsideDirectory(const juce::File &file, const juce::File &directory) {
+  if (!file.existsAsFile() || !directory.exists())
+    return false;
+  auto dirPath = directory.getFullPathName();
+  if (!dirPath.endsWithChar(juce::File::getSeparatorChar()))
+    dirPath << juce::File::getSeparatorString();
+  return file.getFullPathName().startsWithIgnoreCase(dirPath);
+}
 } // namespace
 
 std::vector<ImportedSongData> SongLibraryStore::loadSongs() {
@@ -192,6 +215,321 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
   if (saved && onProgress)
     onProgress(0.96, L10n::tr("Cancion guardada", "Song saved"));
   return saved;
+}
+
+bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMessage,
+                                  const SongImportProgressFn &onProgress) {
+  song.id = song.id.trim();
+  if (song.id.isEmpty()) {
+    if (errorMessage != nullptr) {
+      *errorMessage = L10n::tr("No se pudo identificar la cancion a editar.",
+                               "Couldn't identify the song to edit.");
+    }
+    return false;
+  }
+
+  if (onProgress) {
+    onProgress(0.02,
+               L10n::tr("Preparando actualizacion…", "Preparing update…"));
+  }
+
+  auto library = loadLibrary();
+  auto songIt =
+      std::find_if(library.songs.begin(), library.songs.end(),
+                   [&song](const ImportedSongData &candidate) {
+                     return candidate.id == song.id;
+                   });
+  if (songIt == library.songs.end()) {
+    if (errorMessage != nullptr) {
+      *errorMessage = L10n::tr("La cancion ya no existe en la biblioteca.",
+                               "Song no longer exists in the library.");
+    }
+    return false;
+  }
+
+  const auto previousSong = *songIt;
+  ensureSongHasStemIds(song);
+
+  song.title = song.title.trim();
+  song.artist = song.artist.trim();
+  song.key = song.key.trim();
+  song.timeSignature = song.timeSignature.trim();
+  if (song.fileType.trim().isEmpty()) {
+    song.fileType = previousSong.fileType.trim().isNotEmpty()
+                        ? previousSong.fileType.trim()
+                        : "Multitrack ALAC";
+  }
+  if (song.createdMs <= 0)
+    song.createdMs = previousSong.createdMs;
+
+  std::vector<ImportedStemData> includedStems;
+  includedStems.reserve(song.stems.size());
+  for (auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    stem.displayName = stem.displayName.trim();
+    stem.category = stem.category.trim();
+    if (stem.stemId.isEmpty())
+      stem.stemId = juce::Uuid().toString();
+    if (stem.fileName.trim().isEmpty()) {
+      const auto sourceFile = juce::File(stem.sourcePath);
+      if (sourceFile.existsAsFile())
+        stem.fileName = sourceFile.getFileName();
+      else {
+        const auto storedFile = juce::File(stem.storedPath);
+        if (storedFile.existsAsFile())
+          stem.fileName = storedFile.getFileName();
+      }
+    }
+    includedStems.push_back(std::move(stem));
+  }
+  song.stems = std::move(includedStems);
+
+  if (song.stems.empty()) {
+    if (errorMessage != nullptr) {
+      *errorMessage = L10n::tr("Debes dejar al menos un stem cargado.",
+                               "At least one stem must remain loaded.");
+    }
+    return false;
+  }
+
+  bool stemsChanged = song.stems.size() != previousSong.stems.size();
+
+  const auto mapStemProgress = [&onProgress](const double t,
+                                             const juce::String &phase) {
+    if (onProgress)
+      onProgress(0.04 + 0.72 * juce::jlimit(0.0, 1.0, t), phase);
+  };
+
+  auto audioRoot = getAudioRoot();
+  auto songDir = audioRoot.getChildFile(song.id);
+  const auto tempSuffix = juce::Uuid().toString().substring(0, 8);
+  auto stageDir = audioRoot.getChildFile(song.id + "_edit_stage_" + tempSuffix);
+  auto backupDir = audioRoot.getChildFile(song.id + "_edit_backup_" + tempSuffix);
+  stageDir.createDirectory();
+  if (!stageDir.isDirectory()) {
+    if (errorMessage != nullptr) {
+      *errorMessage = L10n::tr("No se pudo crear la carpeta temporal de edición.",
+                               "Couldn't create temporary edit folder.");
+    }
+    return false;
+  }
+
+  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
+  const int stemTotal = static_cast<int>(song.stems.size());
+  const int denom = juce::jmax(1, stemTotal);
+
+  auto failWithCleanup = [&](const juce::String &msg) {
+    if (stageDir.exists())
+      stageDir.deleteRecursively();
+    if (backupDir.existsAsFile() || backupDir.exists())
+      backupDir.deleteRecursively();
+    if (errorMessage != nullptr)
+      *errorMessage = msg;
+    return false;
+  };
+
+  int stemDone = 0;
+  for (auto &stem : song.stems) {
+    if (onProgress) {
+      const double frac =
+          static_cast<double>(stemDone) / static_cast<double>(denom);
+      mapStemProgress(
+          frac, L10n::tr(juce::String("Procesando: ") + stem.displayName,
+                         juce::String("Processing: ") + stem.displayName));
+    }
+
+    const auto legalStemId = juce::File::createLegalFileName(stem.stemId);
+    if (legalStemId.isEmpty())
+      return failWithCleanup("Invalid stem id while updating song.");
+
+    juce::File sourceFile;
+    const auto fromStored = juce::File(stem.storedPath);
+    if (fromStored.existsAsFile())
+      sourceFile = fromStored;
+    if (!sourceFile.existsAsFile()) {
+      const auto fromSource = juce::File(stem.sourcePath);
+      if (fromSource.existsAsFile())
+        sourceFile = fromSource;
+    }
+    if (!sourceFile.existsAsFile()) {
+      if (const auto *previousStem = findStemById(previousSong, stem.stemId)) {
+        const auto previousStored = juce::File(previousStem->storedPath);
+        if (previousStored.existsAsFile())
+          sourceFile = previousStored;
+        if (!sourceFile.existsAsFile()) {
+          const auto previousSource = juce::File(previousStem->sourcePath);
+          if (previousSource.existsAsFile())
+            sourceFile = previousSource;
+        }
+      }
+    }
+    if (!sourceFile.existsAsFile())
+      return failWithCleanup("Stem source file not found: " + stem.sourcePath);
+
+    const auto *previousStem = findStemById(previousSong, stem.stemId);
+    if (previousStem == nullptr) {
+      stemsChanged = true;
+    } else {
+      const auto prevStored = juce::File(previousStem->storedPath);
+      const auto prevSource = juce::File(previousStem->sourcePath);
+      const bool matchesPrevStored =
+          prevStored.existsAsFile() &&
+          sourceFile.getFullPathName()
+              .equalsIgnoreCase(prevStored.getFullPathName());
+      const bool matchesPrevSource =
+          prevSource.existsAsFile() &&
+          sourceFile.getFullPathName()
+              .equalsIgnoreCase(prevSource.getFullPathName());
+      if (!matchesPrevStored && !matchesPrevSource)
+        stemsChanged = true;
+    }
+
+    const auto srcExtension = sourceFile.getFileExtension();
+    const auto targetExtension =
+        stemOptimizationEnabled ? juce::String(kStoredStemExtension)
+                                : (srcExtension.isNotEmpty() ? srcExtension
+                                                             : juce::String(".wav"));
+    const auto stagedFile = stageDir.getChildFile(legalStemId + targetExtension);
+    if (stagedFile.existsAsFile())
+      stagedFile.deleteFile();
+
+    const bool sourceFromCurrentSongDir =
+        fileIsInsideDirectory(sourceFile, songDir);
+    const auto srcPathLower = sourceFile.getFullPathName().toLowerCase();
+    const bool isPrimeSource =
+        srcPathLower.contains("/library/containers/com.loopcommunity.primemac/");
+    const bool alreadyPrimeStemInTargetFormat =
+        sourceFile.hasFileExtension(
+            juce::String(kStoredStemExtension).substring(1)) &&
+        sourceFile.getFileNameWithoutExtension().equalsIgnoreCase(legalStemId);
+
+    if (!stemOptimizationEnabled) {
+      if (!sourceFile.copyFileTo(stagedFile))
+        return failWithCleanup("Failed copying stem '" + stem.displayName + "'.");
+    } else if (sourceFromCurrentSongDir &&
+               sourceFile.hasFileExtension(
+                   juce::String(kStoredStemExtension).substring(1))) {
+      if (!sourceFile.copyFileTo(stagedFile))
+        return failWithCleanup("Failed copying existing stem '" +
+                               stem.displayName + "'.");
+    } else if (isPrimeSource && alreadyPrimeStemInTargetFormat) {
+      if (!sourceFile.copyFileTo(stagedFile))
+        return failWithCleanup("Failed copying local library stem '" +
+                               stem.displayName + "'.");
+    } else {
+      juce::String convertError;
+      if (!convertStemToStorageFormat(sourceFile, stagedFile, convertError))
+        return failWithCleanup("Failed converting stem '" + stem.displayName +
+                               "': " + convertError);
+      stemsChanged = true;
+    }
+
+    if (!stagedFile.existsAsFile()) {
+      return failWithCleanup("Converted stem file wasn't created: " +
+                             stagedFile.getFullPathName());
+    }
+
+    stem.fileName = stagedFile.getFileName();
+    stem.storedPath =
+        songDir.getChildFile(stagedFile.getFileName()).getFullPathName();
+    if (stem.sourcePath.trim().isEmpty())
+      stem.sourcePath = sourceFile.getFullPathName();
+
+    ++stemDone;
+    mapStemProgress(
+        static_cast<double>(stemDone) / static_cast<double>(denom),
+        L10n::tr(juce::String("Listo: ") + stem.displayName,
+                 juce::String("Done: ") + stem.displayName));
+  }
+
+  if (onProgress)
+    onProgress(0.80,
+               L10n::tr("Aplicando cambios en audio…", "Applying audio changes…"));
+
+  const bool hadSongDir = songDir.exists();
+  if (hadSongDir) {
+    if (!songDir.moveFileTo(backupDir))
+      return failWithCleanup("Couldn't stage existing song audio directory.");
+  }
+
+  if (!stageDir.moveFileTo(songDir)) {
+    if (hadSongDir && backupDir.exists()) {
+      backupDir.moveFileTo(songDir);
+    }
+    return failWithCleanup("Couldn't move staged audio into song directory.");
+  }
+
+  *songIt = song;
+
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  for (auto &setlist : library.setlists) {
+    bool setlistChanged = false;
+    for (auto &item : setlist.items) {
+      if (item.songId != song.id)
+        continue;
+      bool itemChanged = false;
+      item.mix = reconcileMixForSong(item.mix, song, itemChanged);
+      item.arrangement = reconcileArrangementForSong(item.arrangement, song,
+                                                     itemChanged);
+      const auto defaultArrangement = createDefaultArrangementForSong(song);
+      if (!item.arrangementCustomized &&
+          !arrangementsEqual(item.arrangement, defaultArrangement)) {
+        item.arrangementCustomized = true;
+        itemChanged = true;
+      }
+      if (itemChanged) {
+        item.updatedMs = now;
+        setlistChanged = true;
+      }
+    }
+    if (setlistChanged)
+      setlist.updatedMs = now;
+  }
+
+  if (onProgress)
+    onProgress(0.86, L10n::tr("Guardando cambios…", "Saving changes…"));
+
+  const bool saved = saveLibrary(library);
+  if (!saved) {
+    if (songDir.exists())
+      songDir.deleteRecursively();
+    if (hadSongDir && backupDir.exists())
+      backupDir.moveFileTo(songDir);
+    if (errorMessage != nullptr) {
+      *errorMessage = L10n::tr("No se pudo guardar la canción editada.",
+                               "Couldn't persist edited song.");
+    }
+    return false;
+  }
+
+  if (backupDir.exists())
+    backupDir.deleteRecursively();
+
+  if (stemsChanged) {
+    if (onProgress) {
+      onProgress(0.90, L10n::tr("Generando forma de onda…",
+                                "Generating waveform preview…"));
+    }
+    const auto waveformPhase = L10n::tr("Generando forma de onda…",
+                                        "Generating waveform preview…");
+    auto bins = buildMixedWaveformBins(
+        song, 1400, [&onProgress, &waveformPhase](const double wf01) {
+          if (onProgress)
+            onProgress(0.90 + 0.09 * juce::jlimit(0.0, 1.0, wf01),
+                       waveformPhase);
+        });
+    if (bins.empty()) {
+      getWaveformCacheDir().getChildFile(song.id + ".bin").deleteFile();
+    } else {
+      saveWaveformCache(song.id, bins);
+    }
+  }
+
+  if (onProgress)
+    onProgress(1.0, L10n::tr("Cancion actualizada", "Song updated"));
+
+  return true;
 }
 
 bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,

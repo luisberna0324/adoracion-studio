@@ -82,6 +82,8 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
 
   editButton.setVisible(hasLoadedSong);
   editButton.setEnabled(hasLoadedSong);
+  if (!hasLoadedSong)
+    cancelDeferredPartJumpFromDoubleClick();
   resized();
   repaint();
 }
@@ -98,6 +100,7 @@ void WaveformBar::setArrangement(
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
+  cancelDeferredPartJumpFromDoubleClick();
   repaint();
 }
 
@@ -140,9 +143,19 @@ void WaveformBar::setOnArrangementPartJumpRequest(
   onArrangementPartJumpRequest = std::move(cb);
 }
 
+void WaveformBar::setOnArrangementPartLoopToggleRequest(
+    ArrangementPartLoopToggleRequestCallback cb) {
+  onArrangementPartLoopToggleRequest = std::move(cb);
+}
+
 void WaveformBar::setPendingArrangementPartProvider(
     PendingArrangementPartProvider cb) {
   pendingArrangementPartProvider = std::move(cb);
+}
+
+void WaveformBar::setActiveArrangementLoopPartProvider(
+    ActiveArrangementLoopPartProvider cb) {
+  activeArrangementLoopPartProvider = std::move(cb);
 }
 
 void WaveformBar::refreshThemeColours() {
@@ -701,9 +714,17 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
                                static_cast<int>(arrangement.parts.size()))) {
     selectedPartIndex = hit.partIndex;
     if (isEditingArrangement()) {
+      cancelDeferredPartJumpFromDoubleClick();
       openPartActionMenu(hit.partIndex);
-    } else if (onArrangementPartJumpRequest) {
-      onArrangementPartJumpRequest(hit.partIndex);
+    } else {
+      const int clicks = event.getNumberOfClicks();
+      if (clicks >= 3) {
+        cancelDeferredPartJumpFromDoubleClick();
+        if (onArrangementPartLoopToggleRequest)
+          onArrangementPartLoopToggleRequest(hit.partIndex);
+      } else if (clicks == 2) {
+        scheduleDeferredPartJumpFromDoubleClick(hit.partIndex);
+      }
     }
     repaint();
   }
@@ -757,7 +778,48 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
   applyZoom(1.0f + magnifyAmount, anchor);
 }
 
-void WaveformBar::timerCallback() { repaint(); }
+void WaveformBar::timerCallback() {
+  flushDeferredPartJumpFromDoubleClickIfDue();
+  repaint();
+}
+
+void WaveformBar::scheduleDeferredPartJumpFromDoubleClick(const int partIndex) {
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangement.parts.size()))) {
+    cancelDeferredPartJumpFromDoubleClick();
+    return;
+  }
+
+  pendingJumpDoubleClickPartIndex = partIndex;
+  const double timeoutMs = juce::jlimit(
+      140.0, 260.0, static_cast<double>(juce::MouseEvent::getDoubleClickTimeout()));
+  pendingJumpDoubleClickDispatchAtMs =
+      juce::Time::getMillisecondCounterHiRes() + timeoutMs;
+}
+
+void WaveformBar::cancelDeferredPartJumpFromDoubleClick() {
+  pendingJumpDoubleClickPartIndex = -1;
+  pendingJumpDoubleClickDispatchAtMs = 0.0;
+}
+
+void WaveformBar::flushDeferredPartJumpFromDoubleClickIfDue(const bool force) {
+  if (!juce::isPositiveAndBelow(pendingJumpDoubleClickPartIndex,
+                                static_cast<int>(arrangement.parts.size()))) {
+    cancelDeferredPartJumpFromDoubleClick();
+    return;
+  }
+
+  if (!force) {
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    if (nowMs < pendingJumpDoubleClickDispatchAtMs)
+      return;
+  }
+
+  const int partIndex = pendingJumpDoubleClickPartIndex;
+  cancelDeferredPartJumpFromDoubleClick();
+  if (onArrangementPartJumpRequest != nullptr)
+    onArrangementPartJumpRequest(partIndex);
+}
 
 void WaveformBar::handleSeek(float x) {
   const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
@@ -1300,6 +1362,8 @@ void WaveformBar::drawArrangementOverlay(
   const bool editing = isEditingArrangement();
   const int pendingJumpPartIndex =
       pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+  const int activeLoopPartIndex =
+      activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
 
   float pendingPulse = 0.0f;
   if (pendingJumpPartIndex >= 0) {
@@ -1331,7 +1395,8 @@ void WaveformBar::drawArrangementOverlay(
 
   for (const auto &overlay : partOverlayBounds) {
     const bool selected = editing && (overlay.partIndex == selectedPartIndex);
-    const bool pendingJump = overlay.partIndex == pendingJumpPartIndex;
+    const bool loopActive = overlay.partIndex == activeLoopPartIndex;
+    const bool pendingJump = !loopActive && overlay.partIndex == pendingJumpPartIndex;
     if (!juce::isPositiveAndBelow(overlay.partIndex,
                                   static_cast<int>(arrangement.parts.size())))
       continue;
@@ -1350,6 +1415,26 @@ void WaveformBar::drawArrangementOverlay(
       g.fillRoundedRectangle(overlay.body, 2.5f);
       g.setColour(juce::Colours::white.withAlpha(0.78f));
       g.drawRoundedRectangle(overlay.body, 2.5f, 1.05f);
+    }
+
+    if (loopActive) {
+      g.setColour(UITheme::accent.withAlpha(0.98f));
+      g.drawRoundedRectangle(overlay.body.reduced(0.6f), 2.5f, 2.2f);
+
+      const float badgeW = 36.0f;
+      const float badgeH = 13.0f;
+      if (overlay.body.getWidth() >= (badgeW + 16.0f) &&
+          overlay.body.getHeight() >= (badgeH + 8.0f)) {
+        const juce::Rectangle<float> badge(overlay.body.getRight() - badgeW - 4.0f,
+                                           overlay.body.getY() + 4.0f, badgeW,
+                                           badgeH);
+        g.setColour(UITheme::accent);
+        g.fillRoundedRectangle(badge, badgeH * 0.5f);
+        g.setColour(UITheme::onAccent);
+        g.setFont(juce::FontOptions(9.0f).withStyle("Bold"));
+        g.drawFittedText("LOOP", badge.toNearestInt(),
+                         juce::Justification::centred, 1);
+      }
     }
 
     const auto partName =
