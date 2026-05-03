@@ -19,6 +19,10 @@ constexpr float kPartHandleHitWidth = 7.0f;
 constexpr float kViewportHandleHitWidth = 9.0f;
 constexpr double kPartAnchorAttachThresholdSec = 0.55;
 constexpr double kPartAnchorReleaseThresholdSec = 1.00;
+constexpr int kSnapModeBarId = 1;
+constexpr int kSnapModeBeatId = 2;
+constexpr int kSnapModeHalfBeatId = 3;
+constexpr int kSnapModeFreeId = 4;
 
 juce::String formatSeconds(double seconds) {
   if (seconds < 0.0)
@@ -44,6 +48,10 @@ juce::Colour partColorOrFallback(const SongArrangementPartSnapshot &part,
 
 WaveformBar::WaveformBar() {
   editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
+  editButton.setTooltip(
+      L10n::tr(
+          "Arrastra para ajustar; usa el selector para compas/beat/libre (Option/Alt = libre temporal)",
+          "Drag snaps to grid; use the selector for bar/beat/free (hold Option/Alt for temporary free move)"));
   editButton.setClickingTogglesState(true);
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
@@ -61,6 +69,34 @@ WaveformBar::WaveformBar() {
     repaint();
   };
   addAndMakeVisible(editButton);
+
+  snapModeBox.addItem(L10n::tr("Compas", "Bar"), kSnapModeBarId);
+  snapModeBox.addItem(L10n::tr("Beat", "Beat"), kSnapModeBeatId);
+  snapModeBox.addItem(L10n::tr("1/2 Beat", "1/2 Beat"), kSnapModeHalfBeatId);
+  snapModeBox.addItem(L10n::tr("Libre", "Free"), kSnapModeFreeId);
+  snapModeBox.setJustificationType(juce::Justification::centredLeft);
+  snapModeBox.setTooltip(
+      L10n::tr("Modo de ajuste al mover secciones", "Section move snap mode"));
+  snapModeBox.setSelectedId(kSnapModeBeatId, juce::dontSendNotification);
+  snapModeBox.onChange = [this] {
+    const int selectedId = snapModeBox.getSelectedId();
+    switch (selectedId) {
+    case kSnapModeBarId:
+      snapMode = SnapMode::Bar;
+      break;
+    case kSnapModeHalfBeatId:
+      snapMode = SnapMode::HalfBeat;
+      break;
+    case kSnapModeFreeId:
+      snapMode = SnapMode::Free;
+      break;
+    case kSnapModeBeatId:
+    default:
+      snapMode = SnapMode::Beat;
+      break;
+    }
+  };
+  addAndMakeVisible(snapModeBox);
 
   rebuildSectionAddButtons();
 
@@ -166,6 +202,11 @@ void WaveformBar::refreshThemeColours() {
                        UITheme::textPrimary);
   editButton.setColour(juce::TextButton::textColourOnId,
                        UITheme::textPrimary);
+  snapModeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+  snapModeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  snapModeBox.setColour(juce::ComboBox::outlineColourId,
+                        UITheme::cardBorder.withAlpha(0.75f));
+  snapModeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
 
   for (auto &btn : sectionAddButtons) {
     btn->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
@@ -236,11 +277,14 @@ void WaveformBar::resized() {
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   auto toolbarBounds = getEditToolbarBounds(localBounds).toNearestInt();
   const int editButtonW = 72;
+  const int snapModeBoxW = 132;
   const bool hasLoadedSong = !waveformBins.empty();
 
   if (!hasLoadedSong) {
     editButton.setVisible(false);
     editButton.setEnabled(false);
+    snapModeBox.setVisible(false);
+    snapModeBox.setEnabled(false);
     for (auto &btn : sectionAddButtons) {
       btn->setVisible(false);
       btn->setEnabled(false);
@@ -255,6 +299,16 @@ void WaveformBar::resized() {
   if (editing) {
     auto right = toolbarBounds.removeFromRight(editButtonW).reduced(1);
     editButton.setBounds(right);
+    toolbarBounds.removeFromRight(6);
+
+    auto left =
+        toolbarBounds.removeFromLeft(juce::jmin(snapModeBoxW,
+                                                juce::jmax(92, toolbarBounds.getWidth() / 3)))
+            .reduced(1);
+    snapModeBox.setBounds(left);
+    snapModeBox.setVisible(true);
+    snapModeBox.setEnabled(true);
+    toolbarBounds.removeFromLeft(6);
 
     auto buttonsArea = toolbarBounds.reduced(0, 1);
     const int buttonGap = 4;
@@ -293,6 +347,8 @@ void WaveformBar::resized() {
     btn->setVisible(false);
     btn->setEnabled(false);
   }
+  snapModeBox.setVisible(false);
+  snapModeBox.setEnabled(false);
 
   auto floating = mainWaveBodyBounds.toNearestInt();
   if (floating.getWidth() > 4 && floating.getHeight() > 4) {
@@ -309,6 +365,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
+  arrangementDragPendingCommit = false;
 
   const auto bounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(bounds);
@@ -490,7 +547,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 
   const double pointerSec =
       windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
-  const double deltaSec = snapSeconds(pointerSec - dragAnchorSourceSec);
+  const bool bypassSnap = isSnapBypassed(event.mods);
+  const double deltaSec =
+      snapSeconds(pointerSec - dragAnchorSourceSec, bypassSnap);
 
   struct AnchorBoundaryResult {
     bool found = false;
@@ -520,8 +579,14 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   };
 
   const auto applyStickyAnchorToEdge =
-      [this, &findNearestBoundary](const double candidateEdgeSec,
-                                   const bool edgeIsStart) -> double {
+      [this, &findNearestBoundary, bypassSnap](const double candidateEdgeSec,
+                                               const bool edgeIsStart) -> double {
+    if (bypassSnap) {
+      dragAnchorActive = false;
+      dragAnchoredBoundarySec = 0.0;
+      return candidateEdgeSec;
+    }
+
     if (dragAnchorActive && dragAnchorEdgeIsStart == edgeIsStart) {
       if (std::abs(candidateEdgeSec - dragAnchoredBoundarySec) <=
           kPartAnchorReleaseThresholdSec) {
@@ -553,12 +618,12 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     duration = juce::jmin(duration, songLength);
 
     const double maxStart = juce::jmax(0.0, songLength - duration);
-    double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec);
+    double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec, bypassSnap);
     nextStart = juce::jlimit(0.0, maxStart, nextStart);
 
     double nextEnd = juce::jlimit(nextStart, songLength, nextStart + duration);
 
-    if (dragAnchorActive) {
+    if (!bypassSnap && dragAnchorActive) {
       const double activeEdge = dragAnchorEdgeIsStart ? nextStart : nextEnd;
       if (std::abs(activeEdge - dragAnchoredBoundarySec) <=
           kPartAnchorReleaseThresholdSec) {
@@ -571,7 +636,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
       }
     }
 
-    if (!dragAnchorActive) {
+    if (!bypassSnap && !dragAnchorActive) {
       const auto startAnchor =
           findNearestBoundary(nextStart, kPartAnchorAttachThresholdSec);
       const auto endAnchor =
@@ -604,9 +669,10 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     part.startSec = nextStart;
     part.endSec = nextEnd;
   } else if (dragMode == DragMode::resizePartLeft) {
-    double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec);
+    double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec, bypassSnap);
     nextStart = applyStickyAnchorToEdge(nextStart, true);
-    const double maxStart = juce::jmax(0.0, dragOriginPartEndSec - kMinPartDurationSec);
+    const double maxStart =
+        juce::jmax(0.0, dragOriginPartEndSec - kMinPartDurationSec);
     part.startSec = juce::jlimit(0.0, maxStart, nextStart);
     part.endSec = dragOriginPartEndSec;
 
@@ -616,7 +682,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
       dragAnchoredBoundarySec = 0.0;
     }
   } else if (dragMode == DragMode::resizePartRight) {
-    double nextEnd = snapSeconds(dragOriginPartEndSec + deltaSec);
+    double nextEnd = snapSeconds(dragOriginPartEndSec + deltaSec, bypassSnap);
     nextEnd = applyStickyAnchorToEdge(nextEnd, false);
     const double minEnd = dragOriginPartStartSec + kMinPartDurationSec;
     part.startSec = dragOriginPartStartSec;
@@ -644,16 +710,26 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 
   selectedPartIndex = partIndex;
   customArrangement = true;
-  notifyArrangementChanged(true);
+  arrangementDragPendingCommit = true;
   repaint();
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &) {
+  const bool wasArrangementDrag =
+      dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
+      dragMode == DragMode::resizePartRight;
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
+  if (wasArrangementDrag && arrangementDragPendingCommit) {
+    arrangementDragPendingCommit = false;
+    notifyArrangementChanged(true);
+    repaint();
+  } else {
+    arrangementDragPendingCommit = false;
+  }
   setMouseCursor(juce::MouseCursor::NormalCursor);
 }
 
@@ -895,12 +971,40 @@ double WaveformBar::getBarDurationSeconds() const {
   return (60.0 / songBpm) * static_cast<double>(songBeatsPerBar);
 }
 
-double WaveformBar::snapSeconds(const double seconds) const {
+double WaveformBar::getSnapStepSeconds() const {
+  const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double barDurationSec = getBarDurationSeconds();
+
+  switch (snapMode) {
+  case SnapMode::Bar:
+    return barDurationSec > 0.0
+               ? barDurationSec
+               : (beatDurationSec > 0.0 ? beatDurationSec : kPartSnapSeconds);
+  case SnapMode::HalfBeat:
+    return beatDurationSec > 0.0 ? (beatDurationSec * 0.5)
+                                 : (kPartSnapSeconds * 0.5);
+  case SnapMode::Free:
+    return 0.0;
+  case SnapMode::Beat:
+  default:
+    return beatDurationSec > 0.0 ? beatDurationSec : kPartSnapSeconds;
+  }
+}
+
+bool WaveformBar::isSnapBypassed(const juce::ModifierKeys &mods) const {
+  return snapMode == SnapMode::Free || mods.isAltDown();
+}
+
+double WaveformBar::snapSeconds(const double seconds,
+                                const bool bypassSnap) const {
   if (!std::isfinite(seconds))
     return 0.0;
+  if (bypassSnap)
+    return seconds;
 
-  const double barDurationSec = getBarDurationSeconds();
-  const double snapStepSec = barDurationSec > 0.0 ? barDurationSec : kPartSnapSeconds;
+  const double snapStepSec = getSnapStepSeconds();
+  if (snapStepSec <= 0.0 || !std::isfinite(snapStepSec))
+    return seconds;
   return std::round(seconds / snapStepSec) * snapStepSec;
 }
 
@@ -1297,7 +1401,6 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
       if (barDurationSec > 0.0) {
         const double visibleStartSec = songLength * windowStart;
         const double visibleEndSec = songLength * (windowStart + windowSpan);
-
         int64_t firstBar = static_cast<int64_t>(
             std::ceil((visibleStartSec - 1.0e-9) / barDurationSec));
         if (firstBar < 0)

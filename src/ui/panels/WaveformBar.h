@@ -56,6 +56,8 @@ public:
   void mouseMagnify(const juce::MouseEvent &, float magnifyAmount) override;
 
 private:
+  enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
+
   enum class DragMode {
     none,
     seek,
@@ -99,7 +101,9 @@ private:
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   juce::TextButton editButton;
+  juce::ComboBox snapModeBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
+  SnapMode snapMode = SnapMode::Beat;
   double songBpm = 0.0;
   int songBeatsPerBar = 4;
   float viewportStart = 0.0f;
@@ -121,13 +125,16 @@ private:
   std::vector<PartOverlayBounds> partOverlayBounds;
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
+  bool arrangementDragPendingCommit = false;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
   double getSongLengthSeconds() const;
   double getBarDurationSeconds() const;
-  double snapSeconds(double seconds) const;
+  double getSnapStepSeconds() const;
+  bool isSnapBypassed(const juce::ModifierKeys &mods) const;
+  double snapSeconds(double seconds, bool bypassSnap = false) const;
   void normalizeArrangement(bool sortByStart);
   int findPartIndexById(const juce::String &id) const;
   bool isEditingArrangement() const;
