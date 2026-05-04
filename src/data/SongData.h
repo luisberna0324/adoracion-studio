@@ -19,18 +19,6 @@ struct ImportedStemData {
   int channels = 0;
 };
 
-struct ImportedSongData {
-  juce::String id;
-  juce::String title;
-  juce::String artist;
-  int bpm = 0;
-  juce::String key;
-  juce::String timeSignature;
-  juce::String fileType;
-  int64_t createdMs = 0;
-  std::vector<ImportedStemData> stems;
-};
-
 struct SongArrangementPartSnapshot {
   juce::String id;
   juce::String name;
@@ -43,6 +31,19 @@ struct SongArrangementSnapshot {
   std::vector<SongArrangementPartSnapshot> parts;
 };
 
+struct ImportedSongData {
+  juce::String id;
+  juce::String title;
+  juce::String artist;
+  int bpm = 0;
+  juce::String key;
+  juce::String timeSignature;
+  juce::String fileType;
+  int64_t createdMs = 0;
+  std::vector<ImportedStemData> stems;
+  SongArrangementSnapshot arrangement;
+};
+
 extern const std::array<const char *, 19> kTrackCategories;
 extern const std::array<const char *, 14> kSongSectionSuggestions;
 
@@ -52,6 +53,11 @@ int stemPriorityForStripOrder(const ImportedStemData &stem);
 bool isStemPitchShiftable(const ImportedStemData &stem);
 juce::String makeRandomArrangementPartColor();
 bool isArrangementPartColorValid(const juce::String &value);
+juce::String canonicalArrangementSectionName(const juce::String &name);
+bool isKnownArrangementSectionName(const juce::String &name);
+juce::String standardArrangementPartColorForName(const juce::String &name);
+juce::String fallbackArrangementPartColorForName(const juce::String &name);
+juce::String arrangementPartDisplayLabelForName(const juce::String &name);
 double estimateSongLengthSeconds(const ImportedSongData &song);
 std::vector<float> buildMixedWaveformBins(
     const ImportedSongData &song, int binCount = 1400,

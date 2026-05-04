@@ -60,8 +60,36 @@ enum class IconGlyph {
   WindowRestore
 };
 
+enum class SvgIconName {
+  SkipBack,
+  Rewind,
+  Play,
+  Pause,
+  Square,
+  FastForward,
+  SkipForward,
+  FadeIn,
+  FadeOut,
+  Settings,
+  Search,
+  Plus,
+  Check,
+  Minus,
+  MoreVertical,
+  Clock,
+  Music,
+  AudioWaveform,
+  Metronome,
+  Maximize,
+  Copy,
+  Repeat,
+  CornerDownRight
+};
+
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                    IconGlyph glyph, juce::Colour colour, float stroke = 1.7f);
+bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
+                 SvgIconName icon, juce::Colour colour);
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 
 /** Busca la ventana JUCE contenedora (Standalone / host) y alterna maximizado. */

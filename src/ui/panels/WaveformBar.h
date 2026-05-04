@@ -75,7 +75,13 @@ private:
     juce::Rectangle<float> leftHandle;
     juce::Rectangle<float> rightHandle;
     juce::Rectangle<float> deleteButton;
+    juce::Rectangle<float> loopButton;
+    juce::Rectangle<float> loopIcon;
+    juce::Rectangle<float> jumpButton;
+    juce::Rectangle<float> jumpIcon;
     bool showsDeleteButton = false;
+    bool showsLoopButton = false;
+    bool showsJumpButton = false;
   };
 
   struct PartHitResult {
@@ -83,6 +89,8 @@ private:
     bool leftEdge = false;
     bool rightEdge = false;
     bool deleteButton = false;
+    bool loopButton = false;
+    bool jumpButton = false;
   };
 
   void timerCallback() override;
@@ -101,9 +109,10 @@ private:
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   juce::TextButton editButton;
+  juce::Label snapModeLabel;
   juce::ComboBox snapModeBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
-  SnapMode snapMode = SnapMode::Beat;
+  SnapMode snapMode = SnapMode::Bar;
   double songBpm = 0.0;
   int songBeatsPerBar = 4;
   float viewportStart = 0.0f;
@@ -123,6 +132,9 @@ private:
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
   std::vector<PartOverlayBounds> partOverlayBounds;
+  int hoveredActionPartIndex = -1;
+  int hoveredLoopPartIndex = -1;
+  int hoveredJumpPartIndex = -1;
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;

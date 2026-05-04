@@ -398,7 +398,7 @@ SongListPanel::SongListPanel() {
   });
   addAndMakeVisible(setlistSearchField);
 
-  songsHeaderPanel.setOnAddClicked([this] { showLibraryView(true); });
+  songsHeaderPanel.setOnAddSongsClicked([this] { openLibraryBrowser(); });
   songsHeaderPanel.setOnSongsClicked([this] { listViewport.setViewPosition(0, 0); });
   addAndMakeVisible(songsHeaderPanel);
 
@@ -514,6 +514,7 @@ SongListPanel::SongListPanel() {
         makeAutoPlayNextMarkKey(activeSetlistId, songId));
     refreshFromStorage();
   });
+  listContent.setOnAddSongsRequested([this] { openAddFromLibraryMenu(); });
   refreshThemeColours();
   refreshFromStorage();
 }
@@ -659,8 +660,7 @@ void SongListPanel::refreshLanguageTexts() {
       L10n::tr("+ Crear setlist", "+ Create setlist"));
   setlistSearchField.setPlaceholderText(
       L10n::tr("Buscar setlist...", "Search setlist..."));
-  songsHeaderPanel.setAddText(
-      L10n::tr("Agregar al setlist", "Add to setlist"));
+  songsHeaderPanel.refreshLanguageTexts();
   libraryCatalogPanel.refreshLanguageTexts();
   refreshFromStorage();
 }
@@ -983,6 +983,9 @@ void SongListPanel::openHeaderMenu() {
           refreshFromStorage();
         });
   } else {
+    menu.addItem(L10n::tr("Biblioteca", "Library"),
+                 [this] { openLibraryBrowser(); });
+    menu.addSeparator();
     menu.addItem(L10n::tr("Setlists...", "Setlists..."),
                  [this] { showSetlistsView(); });
     menu.addSeparator();
@@ -993,7 +996,14 @@ void SongListPanel::openHeaderMenu() {
       juce::PopupMenu::Options().withTargetComponent(headerMenuButton));
 }
 
+void SongListPanel::openLibraryBrowser() {
+  libraryCatalogPanel.setHeaderMode(LibraryCatalogPanel::HeaderMode::Library);
+  showLibraryView(true);
+}
+
 void SongListPanel::openAddFromLibraryMenu() {
+  libraryCatalogPanel.setHeaderMode(
+      LibraryCatalogPanel::HeaderMode::SetlistTarget);
   showLibraryView(true);
 }
 
@@ -1208,23 +1218,18 @@ void SongListPanel::ListContent::setOnSongRemoveRequested(
   onSongRemoveRequested = std::move(cb);
 }
 
+void SongListPanel::ListContent::setOnAddSongsRequested(
+    std::function<void()> cb) {
+  onAddSongsRequested = std::move(cb);
+}
+
 int SongListPanel::ListContent::getPreferredHeight() const {
-  if (songs.empty())
-    return 88;
-  return rowStart + static_cast<int>(songs.size()) * (rowHeight + rowGap);
+  const int songCount = static_cast<int>(songs.size());
+  const int rowsHeight = rowStart + songCount * (rowHeight + rowGap);
+  return juce::jmax(88, rowsHeight + rowHeight + rowGap);
 }
 
 void SongListPanel::ListContent::paint(juce::Graphics &g) {
-  if (songs.empty()) {
-    g.setColour(UITheme::textSecondary.withAlpha(0.88f));
-    g.setFont(makeAppFont(12.0f, AppFontWeight::Regular));
-    g.drawFittedText(L10n::tr("Aun no hay canciones en este setlist.",
-                              "No songs in this setlist yet."),
-                     getLocalBounds().reduced(10),
-                     juce::Justification::centred, 2);
-    return;
-  }
-
   const bool hasActiveDrag =
       isDragging && juce::isPositiveAndBelow(dragSourceIndex,
                                              static_cast<int>(songs.size()));
@@ -1365,6 +1370,45 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                  0.58f);
   }
 
+  if (songs.empty()) {
+    g.setColour(UITheme::textSecondary.withAlpha(0.88f));
+    g.setFont(makeAppFont(12.0f, AppFontWeight::Regular));
+    g.drawFittedText(L10n::tr("Aun no hay canciones en este setlist.",
+                              "No songs in this setlist yet."),
+                     getLocalBounds().withTrimmedBottom(rowHeight + rowGap).reduced(10),
+                     juce::Justification::centred, 2);
+  }
+
+  const auto addRow = addSongsRowBounds();
+  const bool addRowHovered = addRow.contains(getMouseXYRelative());
+  const auto addStroke =
+      UITheme::cardBorder.interpolatedWith(UITheme::accent, addRowHovered ? 0.56f : 0.36f)
+          .withAlpha(addRowHovered ? 0.86f : 0.62f);
+  const auto addFill = UITheme::panelDark
+                           .interpolatedWith(UITheme::cardBg, addRowHovered ? 0.20f : 0.14f)
+                           .withAlpha(0.96f);
+  g.setColour(addFill);
+  g.fillRoundedRectangle(addRow.toFloat(), 12.0f);
+
+  juce::Path addBorder;
+  addBorder.addRoundedRectangle(addRow.toFloat().reduced(0.5f), 12.0f);
+  juce::Path dashedBorder;
+  const float dashLengths[] = {5.0f, 4.0f};
+  juce::PathStrokeType(1.2f).createDashedStroke(dashedBorder, addBorder, dashLengths, 2);
+  g.setColour(addStroke);
+  g.strokePath(dashedBorder, juce::PathStrokeType(1.0f));
+
+  const auto center = addRow.getCentre().toFloat();
+  const auto plusColour = UITheme::accent.withAlpha(addRowHovered ? 0.96f : 0.88f);
+  drawSvgIcon(g,
+              juce::Rectangle<float>(center.x - 9.0f, center.y - 14.0f, 18.0f, 18.0f),
+              SvgIconName::Plus, plusColour);
+  g.setColour(UITheme::textSecondary.withAlpha(addRowHovered ? 0.96f : 0.90f));
+  g.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
+  g.drawFittedText(
+      L10n::tr("Agregar canciones desde biblioteca", "Add songs from library"),
+      addRow.withTrimmedTop(22).reduced(10, 0), juce::Justification::centred, 1);
+
   if (hasActiveDrag) {
     const int dragTop = juce::roundToInt(dragMouseY - dragRowOffsetY);
     const int clampedTop =
@@ -1399,6 +1443,8 @@ void SongListPanel::ListContent::mouseDown(const juce::MouseEvent &event) {
   dragMouseY = event.position.y;
 
   const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
+  if (idx < 0 && addSongsRowBounds().contains(event.position.toInt()))
+    return;
   if (!juce::isPositiveAndBelow(idx, static_cast<int>(songs.size())))
     return;
 
@@ -1439,6 +1485,12 @@ void SongListPanel::ListContent::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
+  if (addSongsRowBounds().contains(event.position.toInt())) {
+    if (onAddSongsRequested)
+      onAddSongsRequested();
+    return;
+  }
+
   if (pendingActionsMenuRow >= 0) {
     const int row = pendingActionsMenuRow;
     pendingActionsMenuRow = -1;
@@ -1485,6 +1537,12 @@ void SongListPanel::ListContent::mouseDoubleClick(
     const juce::MouseEvent &event) {
   if (didDragSinceMouseDown) {
     didDragSinceMouseDown = false;
+    return;
+  }
+
+  if (addSongsRowBounds().contains(event.position.toInt())) {
+    if (onAddSongsRequested)
+      onAddSongsRequested();
     return;
   }
 
@@ -1567,6 +1625,12 @@ int SongListPanel::ListContent::insertionLineY(int insertionIndex) const {
   if (idx >= count)
     return rowStart + (count - 1) * step + rowHeight;
   return rowStart + idx * step - (rowGap / 2);
+}
+
+juce::Rectangle<int> SongListPanel::ListContent::addSongsRowBounds() const {
+  const int top = rowStart + static_cast<int>(songs.size()) * (rowHeight + rowGap);
+  return juce::Rectangle<int>(rowSideInset, top, getWidth() - (rowSideInset * 2),
+                              rowHeight);
 }
 
 juce::Rectangle<int> SongListPanel::ListContent::optionsButtonBoundsForRow(
@@ -2688,8 +2752,8 @@ void SongListPanel::applyModeVisibility() {
 
   editSetlistButton.setEnabled(false);
   headerMenuButton.setEnabled(hasActiveSetlist);
-  songsHeaderPanel.setAddEnabled(hasActiveSetlist &&
-                                 songsSubview == SongsSubview::SetlistSongs);
+  songsHeaderPanel.setActionsEnabled(hasActiveSetlist &&
+                                     songsSubview == SongsSubview::SetlistSongs);
   createSetlistButton.setEnabled(!showSongs);
   setlistSearchField.setEnabled(!showSongs);
   backButton.setEnabled(true);

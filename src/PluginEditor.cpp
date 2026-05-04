@@ -268,7 +268,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                  bool isCustomArrangement) {
         if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
           return;
-        SongLibraryStore::updateArrangementForActiveSetlist(
+        SongLibraryStore::updateSongArrangement(
             currentLoadedSong.id, arrangement, isCustomArrangement);
         // Las partes son marcadores visuales/editables y no deben alterar
         // el flujo de reproduccion normal de la cancion.
@@ -277,12 +277,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return;
-    SongLibraryStore::resetArrangementForActiveSetlist(currentLoadedSong.id);
+    SongLibraryStore::resetSongArrangement(currentLoadedSong.id);
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
-    if (SongLibraryStore::getActiveSetlistArrangement(currentLoadedSong.id,
-                                                      arrangement,
-                                                      isCustomArrangement)) {
+    if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,
+                                             isCustomArrangement)) {
       p.setSongArrangement(arrangement, false);
     }
   });
@@ -499,8 +498,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                   loadedSong.timeSignature);
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
-    if (!SongLibraryStore::getActiveSetlistArrangement(
-            loadedSong.id, arrangement, isCustomArrangement)) {
+    if (!SongLibraryStore::getSongArrangement(loadedSong.id, arrangement,
+                                              isCustomArrangement)) {
       arrangement.parts.clear();
       isCustomArrangement = false;
     }

@@ -56,11 +56,15 @@ void ChannelStripLookAndFeel::drawLinearSlider(
 
   // Track (Recessed Groove)
   const float trackWidth = 3.0f;
-  const float trackX = x + (width * 0.5f) - (trackWidth * 0.5f);
+  const auto fx = static_cast<float>(x);
+  const auto fy = static_cast<float>(y);
+  const auto fw = static_cast<float>(width);
+  const auto fh = static_cast<float>(height);
+  const float trackX = fx + (fw * 0.5f) - (trackWidth * 0.5f);
   const float thumbHeight = 24.0f;
   const float thumbInset = thumbHeight * 0.5f;
-  const float trackY = y + thumbInset;
-  const float trackHeight = height - (thumbInset * 2.0f);
+  const float trackY = fy + thumbInset;
+  const float trackHeight = fh - (thumbInset * 2.0f);
 
   g.setColour(juce::Colours::black.withAlpha(0.2f));
   g.fillRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 1.5f);
@@ -70,8 +74,8 @@ void ChannelStripLookAndFeel::drawLinearSlider(
   g.drawRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 1.5f, 1.0f);
 
   // Thumb
-  const float thumbWidth = width - 4.0f;
-  const float thumbX = x + 2.0f;
+  const float thumbWidth = fw - 4.0f;
+  const float thumbX = fx + 2.0f;
   const float thumbY = juce::jlimit(static_cast<float>(y),
                                     static_cast<float>(y + height) - thumbHeight,
                                     sliderPos - thumbInset);
@@ -96,31 +100,60 @@ void ChannelStripLookAndFeel::drawLinearSlider(
 
 void ChannelStripLookAndFeel::drawButtonBackground(juce::Graphics &g,
                                                    juce::Button &button,
-                                                   const juce::Colour &,
+                                                   const juce::Colour &backgroundColour,
                                                    bool isMouseOverButton,
                                                    bool isButtonDown) {
-  auto bounds = button.getLocalBounds().toFloat();
-  auto fill = UITheme::cardBg;
+  auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
+  const bool isEnabled = button.isEnabled();
+  const bool isToggled = button.getToggleState();
+  auto fill = isToggled ? button.findColour(juce::TextButton::buttonOnColourId)
+                        : backgroundColour;
   const bool isMute = button.getComponentID() == "muteButton";
+  const bool isSolo = button.getComponentID() == "soloButton";
 
-  if (isMouseOverButton)
-    fill = UITheme::cardBgHover;
-  if (isButtonDown || button.getToggleState())
-    fill = UITheme::cardBgPressed;
+  if (fill.isTransparent())
+    fill = isToggled ? UITheme::cardBgPressed : UITheme::cardBg;
 
-  if (isMute && button.getToggleState()) {
+  if (isButtonDown)
+    fill = fill.interpolatedWith(UITheme::cardBgPressed, 0.42f);
+  else if (isMouseOverButton)
+    fill = fill.interpolatedWith(UITheme::cardBgHover, 0.32f);
+
+  if (isSolo && isToggled) {
+    fill = UITheme::accentSoft;
+    if (isMouseOverButton)
+      fill = fill.brighter(0.08f);
+  } else if (isMute && isToggled) {
     fill = UITheme::accentMuted;
     if (isMouseOverButton)
       fill = UITheme::accentMuted.brighter(0.08f);
   }
 
-  g.setColour(fill);
-  g.fillRoundedRectangle(bounds, 3.0f);
+  if (!isEnabled)
+    fill = fill.withMultipliedAlpha(0.48f);
 
-  g.setColour(UITheme::cardBorder.darker(0.16f));
-  g.drawRoundedRectangle(bounds, 3.0f, 1.0f);
+  const float radius = juce::jlimit(3.0f, 6.0f, bounds.getHeight() * 0.16f);
+
+  g.setColour(fill);
+  g.fillRoundedRectangle(bounds, radius);
+
+  const auto topSheen =
+      isEnabled ? juce::Colours::white.withAlpha(isMouseOverButton ? 0.10f : 0.06f)
+                : juce::Colours::white.withAlpha(0.03f);
+  g.setColour(topSheen);
+  g.drawHorizontalLine(static_cast<int>(bounds.getY() + 1.0f),
+                       bounds.getX() + radius,
+                       bounds.getRight() - radius);
+
+  const auto border = (isToggled ? fill.contrasting(0.22f) : UITheme::cardBorder)
+                          .withMultipliedAlpha(isEnabled ? 0.86f : 0.42f);
+  g.setColour(border);
+  g.drawRoundedRectangle(bounds, radius, 1.0f);
 }
 
-juce::Font ChannelStripLookAndFeel::getTextButtonFont(juce::TextButton &, int) {
-  return juce::Font(juce::FontOptions(9.0f).withKerningFactor(0.12f));
+juce::Font ChannelStripLookAndFeel::getTextButtonFont(juce::TextButton &,
+                                                      int buttonHeight) {
+  const auto px =
+      juce::jlimit(9.0f, 13.0f, static_cast<float>(buttonHeight) * 0.43f);
+  return makeAppFont(px, AppFontWeight::SemiBold);
 }

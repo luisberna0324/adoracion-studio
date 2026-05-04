@@ -33,7 +33,11 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
   for (size_t i = 0; i < a.parts.size(); ++i) {
     const auto &lhs = a.parts[i];
     const auto &rhs = b.parts[i];
+    if (lhs.id != rhs.id)
+      return false;
     if (lhs.name != rhs.name)
+      return false;
+    if (lhs.color != rhs.color)
       return false;
     if (!nearlyEqual(lhs.startSec, rhs.startSec) ||
         !nearlyEqual(lhs.endSec, rhs.endSec))
@@ -292,6 +296,13 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     }
     return false;
   }
+
+  if (song.arrangement.parts.empty() && !previousSong.arrangement.parts.empty())
+    song.arrangement = previousSong.arrangement;
+  bool arrangementChanged = false;
+  song.arrangement =
+      reconcileArrangementForSong(song.arrangement, song, arrangementChanged);
+  juce::ignoreUnused(arrangementChanged);
 
   bool stemsChanged = song.stems.size() != previousSong.stems.size();
 
@@ -657,73 +668,82 @@ bool SongLibraryStore::updateMasterMuteForActiveSetlist(
   });
 }
 
-bool SongLibraryStore::getActiveSetlistArrangement(
+bool SongLibraryStore::getSongArrangement(
     const juce::String &songId, SongArrangementSnapshot &outArrangement,
     bool &outIsCustomArrangement) {
   if (songId.isEmpty())
     return false;
+
   auto library = loadLibrary();
-  ensureDefaultSetlist(library);
-  auto *setlist = findSetlistById(library, library.activeSetlistId);
-  if (setlist == nullptr)
-    return false;
-  const auto *song = findSongById(library.songs, songId);
-  if (song == nullptr)
-    return false;
-
-  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
-                         [&songId](const SetlistItem &item) {
-                           return item.songId == songId;
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&songId](const ImportedSongData &song) {
+                           return song.id == songId;
                          });
-  bool changed = false;
-  if (it == setlist->items.end()) {
-    setlist->items.push_back(createSetlistItem(*song));
-    it = std::prev(setlist->items.end());
-    changed = true;
-  } else {
-    it->arrangement =
-        reconcileArrangementForSong(it->arrangement, *song, changed);
-    const auto defaultArrangement = createDefaultArrangementForSong(*song);
-    if (!it->arrangementCustomized &&
-        !arrangementsEqual(it->arrangement, defaultArrangement)) {
-      it->arrangementCustomized = true;
-      changed = true;
-    }
-  }
+  if (it == library.songs.end())
+    return false;
 
-  outArrangement = it->arrangement;
-  outIsCustomArrangement = it->arrangementCustomized;
-  if (changed) {
-    const auto now = juce::Time::getCurrentTime().toMilliseconds();
-    it->updatedMs = now;
-    setlist->updatedMs = now;
+  bool changed = false;
+  auto normalized = reconcileArrangementForSong(it->arrangement, *it, changed);
+  const bool arrangementChanged =
+      changed || !arrangementsEqual(it->arrangement, normalized);
+  if (arrangementChanged) {
+    it->arrangement = normalized;
     saveLibrary(library);
   }
+
+  outArrangement = arrangementChanged ? it->arrangement : normalized;
+  outIsCustomArrangement = !outArrangement.parts.empty();
   return true;
+}
+
+bool SongLibraryStore::updateSongArrangement(
+    const juce::String &songId, const SongArrangementSnapshot &arrangement,
+    const bool isCustomArrangement) {
+  if (songId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&songId](const ImportedSongData &song) {
+                           return song.id == songId;
+                         });
+  if (it == library.songs.end())
+    return false;
+
+  bool changed = false;
+  auto normalized = reconcileArrangementForSong(arrangement, *it, changed);
+  if (!isCustomArrangement)
+    normalized = createDefaultArrangementForSong(*it);
+
+  const bool arrangementChanged =
+      changed || !arrangementsEqual(it->arrangement, normalized);
+  if (!arrangementChanged)
+    return true;
+
+  it->arrangement = std::move(normalized);
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::resetSongArrangement(const juce::String &songId) {
+  SongArrangementSnapshot emptyArrangement;
+  return updateSongArrangement(songId, emptyArrangement, false);
+}
+
+bool SongLibraryStore::getActiveSetlistArrangement(
+    const juce::String &songId, SongArrangementSnapshot &outArrangement,
+    bool &outIsCustomArrangement) {
+  return getSongArrangement(songId, outArrangement, outIsCustomArrangement);
 }
 
 bool SongLibraryStore::updateArrangementForActiveSetlist(
     const juce::String &songId, const SongArrangementSnapshot &arrangement,
     const bool isCustomArrangement) {
-  return updateActiveSetlistItem(
-      songId,
-      [&arrangement, isCustomArrangement](SetlistItem &item,
-                                          const ImportedSongData &song) {
-        bool changed = false;
-        item.arrangement =
-            reconcileArrangementForSong(arrangement, song, changed);
-        juce::ignoreUnused(changed);
-        item.arrangementCustomized = isCustomArrangement;
-      });
+  return updateSongArrangement(songId, arrangement, isCustomArrangement);
 }
 
 bool SongLibraryStore::resetArrangementForActiveSetlist(
     const juce::String &songId) {
-  return updateActiveSetlistItem(
-      songId, [](SetlistItem &item, const ImportedSongData &song) {
-        item.arrangement = createDefaultArrangementForSong(song);
-        item.arrangementCustomized = false;
-      });
+  return resetSongArrangement(songId);
 }
 
 bool SongLibraryStore::saveWaveformCache(const juce::String &songId,
@@ -764,6 +784,7 @@ std::vector<float> SongLibraryStore::loadWaveformCache(
 LibraryState SongLibraryStore::loadLibrary() {
   LibraryState library;
   bool needsSave = false;
+  std::vector<juce::String> songsMissingArrangement;
 
   const auto dbFile = getDbFile();
   if (!dbFile.existsAsFile()) {
@@ -783,9 +804,20 @@ LibraryState SongLibraryStore::loadLibrary() {
   if (songsArray != nullptr) {
     library.songs.reserve(static_cast<size_t>(songsArray->size()));
     for (const auto &songVar : *songsArray) {
-      auto song = songFromVar(songVar);
+      bool songChanged = false;
+      auto song = songFromVar(songVar, songChanged);
+      if (songChanged)
+        needsSave = true;
       if (ensureSongHasStemIds(song))
         needsSave = true;
+      bool hasSongArrangement = false;
+      if (auto *songObj = songVar.getDynamicObject()) {
+        hasSongArrangement = songObj->hasProperty("arrangement");
+      }
+      if (!hasSongArrangement && song.id.isNotEmpty()) {
+        songsMissingArrangement.push_back(song.id);
+        needsSave = true;
+      }
       library.songs.push_back(std::move(song));
     }
   }
@@ -816,6 +848,56 @@ LibraryState SongLibraryStore::loadLibrary() {
         library.setlists.empty() ? juce::String()
                                  : library.setlists.front().id;
     needsSave = true;
+  }
+
+  // Migracion legacy: si la cancion no tenia arrangement propio,
+  // promover arrangement desde setlists (prioridad: setlist activo).
+  if (!songsMissingArrangement.empty()) {
+    auto *activeSetlist = findSetlistById(library, library.activeSetlistId);
+
+    for (const auto &songId : songsMissingArrangement) {
+      auto songIt =
+          std::find_if(library.songs.begin(), library.songs.end(),
+                       [&songId](const ImportedSongData &song) {
+                         return song.id == songId;
+                       });
+      if (songIt == library.songs.end())
+        continue;
+
+      SongArrangementSnapshot selectedLegacy;
+      bool foundLegacy = false;
+      auto tryPickFromSetlist = [&](const SetlistData &setlist) {
+        for (const auto &item : setlist.items) {
+          if (item.songId != songId || item.arrangement.parts.empty())
+            continue;
+          selectedLegacy = item.arrangement;
+          foundLegacy = true;
+          return;
+        }
+      };
+
+      if (activeSetlist != nullptr)
+        tryPickFromSetlist(*activeSetlist);
+      if (!foundLegacy) {
+        for (const auto &setlist : library.setlists) {
+          if (activeSetlist != nullptr && setlist.id == activeSetlist->id)
+            continue;
+          tryPickFromSetlist(setlist);
+          if (foundLegacy)
+            break;
+        }
+      }
+      if (!foundLegacy)
+        continue;
+
+      bool changed = false;
+      auto normalized =
+          reconcileArrangementForSong(selectedLegacy, *songIt, changed);
+      if (changed || !arrangementsEqual(songIt->arrangement, normalized)) {
+        songIt->arrangement = std::move(normalized);
+        needsSave = true;
+      }
+    }
   }
 
   if (needsSave)
@@ -1114,10 +1196,12 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   for (const auto &stem : song.stems)
     stemVars.add(stemToVar(stem));
   obj->setProperty("stems", juce::var(stemVars));
+  obj->setProperty("arrangement", arrangementToVar(song.arrangement));
   return juce::var(obj);
 }
 
-ImportedSongData SongLibraryStore::songFromVar(const juce::var &v) {
+ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
+                                               bool &changed) {
   ImportedSongData song;
   auto *obj = v.getDynamicObject();
   if (obj == nullptr)
@@ -1137,6 +1221,11 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v) {
     song.stems.reserve(static_cast<size_t>(stemsArray->size()));
     for (const auto &stemVar : *stemsArray)
       song.stems.push_back(stemFromVar(stemVar));
+  }
+
+  if (obj->hasProperty("arrangement")) {
+    song.arrangement =
+        arrangementFromVar(obj->getProperty("arrangement"), &song, changed);
   }
 
   return song;
@@ -1284,8 +1373,11 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
       part.name = part.name.trim();
       changed = true;
     }
-    if (!isArrangementPartColorValid(part.color)) {
-      part.color = makeRandomArrangementPartColor();
+    auto targetColour = standardArrangementPartColorForName(part.name);
+    if (targetColour.isEmpty())
+      targetColour = fallbackArrangementPartColorForName(part.name);
+    if (part.color != targetColour) {
+      part.color = targetColour;
       changed = true;
     }
 

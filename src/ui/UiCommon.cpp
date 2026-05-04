@@ -2,6 +2,7 @@
 #include "BinaryData.h"
 
 #include <cmath>
+#include <map>
 
 juce::Colour UITheme::appBg = juce::Colour::fromRGB(50, 46, 43); // #322E2B
 juce::Colour UITheme::appBgTop = juce::Colour::fromRGB(56, 52, 49); // #383431
@@ -137,6 +138,94 @@ juce::Font makeAppFont(const float size, const AppFontWeight weight) {
   return juce::Font(options);
 }
 
+namespace {
+struct SvgIconData {
+  const void *data = nullptr;
+  int size = 0;
+};
+
+SvgIconData getSvgIconData(const SvgIconName icon) {
+  switch (icon) {
+  case SvgIconName::SkipBack:
+    return {BinaryData::skip_back_svg, BinaryData::skip_back_svgSize};
+  case SvgIconName::Rewind:
+    return {BinaryData::rewind_svg, BinaryData::rewind_svgSize};
+  case SvgIconName::Play:
+    return {BinaryData::play_svg, BinaryData::play_svgSize};
+  case SvgIconName::Pause:
+    return {BinaryData::pause_svg, BinaryData::pause_svgSize};
+  case SvgIconName::Square:
+    return {BinaryData::square_svg, BinaryData::square_svgSize};
+  case SvgIconName::FastForward:
+    return {BinaryData::fast_forward_svg, BinaryData::fast_forward_svgSize};
+  case SvgIconName::SkipForward:
+    return {BinaryData::skip_forward_svg, BinaryData::skip_forward_svgSize};
+  case SvgIconName::FadeIn:
+    return {BinaryData::fade_in_svg, BinaryData::fade_in_svgSize};
+  case SvgIconName::FadeOut:
+    return {BinaryData::fade_out_svg, BinaryData::fade_out_svgSize};
+  case SvgIconName::Settings:
+    return {BinaryData::settings_svg, BinaryData::settings_svgSize};
+  case SvgIconName::Search:
+    return {BinaryData::search_svg, BinaryData::search_svgSize};
+  case SvgIconName::Plus:
+    return {BinaryData::plus_svg, BinaryData::plus_svgSize};
+  case SvgIconName::Check:
+    return {BinaryData::check_svg, BinaryData::check_svgSize};
+  case SvgIconName::Minus:
+    return {BinaryData::minus_svg, BinaryData::minus_svgSize};
+  case SvgIconName::MoreVertical:
+    return {BinaryData::more_vertical_svg, BinaryData::more_vertical_svgSize};
+  case SvgIconName::Clock:
+    return {BinaryData::clock_svg, BinaryData::clock_svgSize};
+  case SvgIconName::Music:
+    return {BinaryData::music_svg, BinaryData::music_svgSize};
+  case SvgIconName::AudioWaveform:
+    return {BinaryData::audio_waveform_svg, BinaryData::audio_waveform_svgSize};
+  case SvgIconName::Metronome:
+    return {BinaryData::metronome_svg, BinaryData::metronome_svgSize};
+  case SvgIconName::Maximize:
+    return {BinaryData::maximize_svg, BinaryData::maximize_svgSize};
+  case SvgIconName::Copy:
+    return {BinaryData::copy_svg, BinaryData::copy_svgSize};
+  case SvgIconName::Repeat:
+    return {BinaryData::repeat_svg, BinaryData::repeat_svgSize};
+  case SvgIconName::CornerDownRight:
+    return {BinaryData::corner_down_right_svg, BinaryData::corner_down_right_svgSize};
+  }
+  return {};
+}
+} // namespace
+
+bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
+                 const SvgIconName icon, const juce::Colour colour) {
+  using CacheKey = std::pair<int, juce::uint32>;
+  static std::map<CacheKey, std::unique_ptr<juce::Drawable>> iconCache;
+
+  const CacheKey key{static_cast<int>(icon), colour.getARGB()};
+  auto it = iconCache.find(key);
+  if (it == iconCache.end()) {
+    const auto data = getSvgIconData(icon);
+    if (data.data == nullptr || data.size <= 0)
+      return false;
+
+    auto drawable =
+        juce::Drawable::createFromImageData(data.data,
+                                            static_cast<size_t>(data.size));
+    if (drawable == nullptr)
+      return false;
+
+    drawable->replaceColour(juce::Colours::black, colour);
+    it = iconCache.emplace(key, std::move(drawable)).first;
+  }
+
+  if (it->second == nullptr)
+    return false;
+
+  it->second->drawWithin(g, area, juce::RectanglePlacement::centred, 1.0f);
+  return true;
+}
+
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                    IconGlyph glyph, juce::Colour colour, float stroke) {
   juce::ignoreUnused(stroke);
@@ -145,15 +234,17 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
 
   switch (glyph) {
   case IconGlyph::ArrowLeft: {
-    const float midY = area.getCentreY();
-    const float leftX = area.getX() + area.getWidth() * 0.20f;
-    const float rightX = area.getRight() - area.getWidth() * 0.12f;
-    juce::Path path;
-    path.startNewSubPath(rightX, area.getY() + area.getHeight() * 0.12f);
-    path.lineTo(leftX, midY);
-    path.lineTo(rightX, area.getBottom() - area.getHeight() * 0.12f);
-    g.strokePath(path, juce::PathStrokeType(2.4f, juce::PathStrokeType::curved,
-                                            juce::PathStrokeType::rounded));
+    const auto a = area.expanded(area.getWidth() * 0.12f, area.getHeight() * 0.12f);
+    const float midY = a.getCentreY();
+    const float leftX = a.getX() + a.getWidth() * 0.26f;
+    const float rightX = a.getRight() - a.getWidth() * 0.12f;
+    juce::Path chevron;
+    chevron.startNewSubPath(rightX, a.getY() + a.getHeight() * 0.14f);
+    chevron.lineTo(leftX, midY);
+    chevron.lineTo(rightX, a.getBottom() - a.getHeight() * 0.14f);
+    g.strokePath(chevron, juce::PathStrokeType(
+                              2.9f, juce::PathStrokeType::curved,
+                              juce::PathStrokeType::rounded));
     break;
   }
   case IconGlyph::Play: {

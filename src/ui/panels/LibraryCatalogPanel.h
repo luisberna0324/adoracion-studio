@@ -13,6 +13,8 @@
 
 class LibraryCatalogPanel final : public juce::Component {
 public:
+  enum class HeaderMode { SetlistTarget = 0, Library };
+
   using SongLoadRequested =
       std::function<void(const ImportedSongData &, int songIndex)>;
   using SongEditRequested = std::function<void(const juce::String &songId)>;
@@ -30,6 +32,7 @@ public:
   void setOnBackRequested(BackRequested cb);
 
   void setActiveSetlistId(const juce::String &setlistId);
+  void setHeaderMode(HeaderMode mode);
   void setNowPlayingSong(const juce::String &songId, bool isPlaying);
   void refreshFromStorage();
   void refreshLanguageTexts();
@@ -136,7 +139,7 @@ private:
 
     void setRows(std::vector<CatalogItem> rows,
                  const juce::StringArray &selectedSongIds,
-                 bool hideOptionsButtons);
+                 bool hideOptionsButtons, bool allowSelection);
     void setNowPlayingSong(const juce::String &songId, bool isPlaying);
     void setOnLoadRequested(LoadCallback cb);
     void setOnToggleRequested(ToggleCallback cb);
@@ -156,6 +159,7 @@ private:
     int hoveredRowIndex = -1;
     bool playbackActive = false;
     bool hideOptionsButtons = false;
+    bool selectionEnabled = true;
     LoadCallback onLoadRequested;
     ToggleCallback onToggleRequested;
     OptionsCallback onOptionsRequested;
@@ -204,6 +208,7 @@ private:
   juce::StringArray pendingSelectedSongIds;
   juce::String activeSetlistId;
   juce::String activeSetlistName;
+  HeaderMode headerMode = HeaderMode::SetlistTarget;
   juce::String selectedSongId;
   juce::String nowPlayingSongId;
   bool playbackActive = false;

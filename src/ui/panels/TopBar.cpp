@@ -88,11 +88,12 @@ int semitoneDelta(int from, int to) {
 }
 } // namespace
 
-TopBar::IconButton::IconButton(juce::String name, IconGlyph g, bool primary)
-    : juce::Button(std::move(name)), glyph(g), isPrimary(primary) {}
+TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
+                               bool primary)
+    : juce::Button(std::move(name)), icon(iconToUse), isPrimary(primary) {}
 
-void TopBar::IconButton::setGlyph(IconGlyph g) {
-  glyph = g;
+void TopBar::IconButton::setIcon(SvgIconName iconToUse) {
+  icon = iconToUse;
   repaint();
 }
 
@@ -110,30 +111,56 @@ void TopBar::IconButton::setPulseAmount(float amount, bool downbeat) {
 void TopBar::IconButton::paintButton(juce::Graphics &gr,
                                      bool isMouseOverButton,
                                      bool isButtonDown) {
-  auto b = getLocalBounds().toFloat();
-  juce::Colour fill = isPrimary ? UITheme::accent : UITheme::cardBg;
-  if (isMouseOverButton)
-    fill = fill.brighter(0.06f);
-  if (isButtonDown || getToggleState())
+  auto b = getLocalBounds().toFloat().reduced(0.5f);
+  const bool active = isButtonDown || getToggleState();
+
+  juce::Colour fill =
+      isPrimary
+          ? UITheme::accent
+          : UITheme::cardBg.interpolatedWith(UITheme::cardBgHover, 0.28f);
+  if (active)
     fill = isPrimary ? UITheme::accentSoft : UITheme::cardBgPressed;
+  else if (isMouseOverButton)
+    fill = fill.brighter(isPrimary ? 0.08f : 0.10f);
+
   if (pulseAmount > 0.001f) {
     const auto pulseColour =
         pulseDownbeat ? UITheme::accentSoft : UITheme::accent;
     fill = fill.interpolatedWith(pulseColour, 0.25f + (pulseAmount * 0.35f));
   }
 
-  gr.setColour(fill);
-  gr.fillRoundedRectangle(b, 6.0f);
-  gr.setColour(UITheme::cardBorder.withAlpha(0.72f));
-  gr.drawRoundedRectangle(b, 6.0f, 1.0f);
-  drawIconGlyph(gr, b, glyph,
-                isPrimary ? UITheme::onAccent : UITheme::textPrimary);
+  gr.setColour(juce::Colours::black.withAlpha(isPrimary ? 0.24f : 0.18f));
+  gr.fillRoundedRectangle(b.translated(0.0f, isPrimary ? 2.0f : 1.4f), 7.0f);
 
-  if (badgeText.isNotEmpty()) {
+  gr.setColour(fill);
+  gr.fillRoundedRectangle(b, 7.0f);
+
+  gr.setColour(juce::Colours::white.withAlpha(isPrimary ? 0.16f : 0.08f));
+  gr.drawHorizontalLine(static_cast<int>(b.getY() + 1.0f), b.getX() + 8.0f,
+                        b.getRight() - 8.0f);
+
+  const auto border =
+      isPrimary ? UITheme::accentSoft.withAlpha(active ? 0.88f : 0.70f)
+                : UITheme::cardBorder.brighter(isMouseOverButton ? 0.18f : 0.08f)
+                      .withAlpha(0.82f);
+  gr.setColour(border);
+  gr.drawRoundedRectangle(b, 7.0f, isPrimary ? 1.25f : 1.0f);
+
+  const bool hasBadge = badgeText.isNotEmpty();
+  const auto iconColour = isPrimary ? UITheme::onAccent : UITheme::textPrimary;
+  const float iconSize = hasBadge ? 20.0f : 24.0f;
+  auto iconArea = b.withSizeKeepingCentre(iconSize, iconSize);
+  if (hasBadge)
+    iconArea.translate(0.0f, -4.0f);
+
+  if (!drawSvgIcon(gr, iconArea, icon, iconColour))
+    drawIconGlyph(gr, iconArea, IconGlyph::More, iconColour);
+
+  if (hasBadge) {
     gr.setColour(isPrimary ? UITheme::onAccent.withAlpha(0.92f)
                            : UITheme::textSecondary.withAlpha(0.88f));
-    gr.setFont(juce::FontOptions(9.0f).withKerningFactor(0.04f));
-    gr.drawFittedText(badgeText, getLocalBounds().withTrimmedTop(24),
+    gr.setFont(makeAppFont(9.0f, AppFontWeight::SemiBold));
+    gr.drawFittedText(badgeText, getLocalBounds().withTrimmedTop(28),
                       juce::Justification::centredTop, 1);
   }
 }
@@ -144,15 +171,15 @@ void TopBar::ClickableLabel::mouseDown(const juce::MouseEvent &) {
 }
 
 TopBar::TopBar(MTControlsAudioProcessor &processorRef)
-    : prevButton("prev", IconGlyph::Prev),
-      seekBackButton("seekBack", IconGlyph::SeekBack),
-      playButton("play", IconGlyph::Play, true),
-      stopButton("stop", IconGlyph::Stop),
-      seekForwardButton("seekForward", IconGlyph::SeekForward),
-      nextButton("next", IconGlyph::Next, true),
-      fadeButton("fade", IconGlyph::FadeOut),
-      windowModeButton("windowMode", IconGlyph::WindowMaximize),
-      settingsButton("settings", IconGlyph::Settings),
+    : prevButton("prev", SvgIconName::SkipBack),
+      seekBackButton("seekBack", SvgIconName::Rewind),
+      playButton("play", SvgIconName::Play, true),
+      stopButton("stop", SvgIconName::Square),
+      seekForwardButton("seekForward", SvgIconName::FastForward),
+      nextButton("next", SvgIconName::SkipForward, true),
+      fadeButton("fade", SvgIconName::FadeOut),
+      windowModeButton("windowMode", SvgIconName::Maximize),
+      settingsButton("settings", SvgIconName::Settings),
       processor(processorRef) {
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
@@ -165,8 +192,6 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
   activeKeyLabel = L10n::tr("Tono", "Key");
   applyResponsiveTypography();
-  seekBackButton.setBadgeText("-5s");
-  seekForwardButton.setBadgeText("+5s");
   seekBackButton.setTooltip(
       L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
   seekForwardButton.setTooltip(
@@ -217,8 +242,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     clearFadeIfActive();
     toggleTopLevelWindowMaximised(this);
     const bool maxed = isTopLevelWindowMaximised(this);
-    windowModeButton.setGlyph(maxed ? IconGlyph::WindowRestore
-                                    : IconGlyph::WindowMaximize);
+    windowModeButton.setIcon(maxed ? SvgIconName::Copy : SvgIconName::Maximize);
     lastTopLevelMaximised = maxed;
   };
   settingsButton.onClick = [this] {
@@ -496,8 +520,7 @@ void TopBar::timerCallback() {
   const bool maxed = isTopLevelWindowMaximised(this);
   if (maxed != lastTopLevelMaximised) {
     lastTopLevelMaximised = maxed;
-    windowModeButton.setGlyph(maxed ? IconGlyph::WindowRestore
-                                    : IconGlyph::WindowMaximize);
+    windowModeButton.setIcon(maxed ? SvgIconName::Copy : SvgIconName::Maximize);
   }
 
   const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
@@ -1087,9 +1110,10 @@ void TopBar::refreshFromProviders() {
   }
 
   const bool playing = playingProvider ? playingProvider() : false;
-  playButton.setGlyph(playing ? IconGlyph::Pause : IconGlyph::Play);
+  playButton.setIcon(playing ? SvgIconName::Pause : SvgIconName::Play);
   const bool fadeOutActive = processor.isFadeActive();
-  fadeButton.setGlyph(fadeOutActive ? IconGlyph::FadeIn : IconGlyph::FadeOut);
+  fadeButton.setIcon(fadeOutActive ? SvgIconName::FadeIn
+                                   : SvgIconName::FadeOut);
   fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
   metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
                                    juce::dontSendNotification);

@@ -18,16 +18,15 @@ public:
 
   SetlistSongsHeaderPanel();
 
-  void setAddText(const juce::String &text);
+  void refreshLanguageTexts();
   void setSummary(const Summary &nextSummary);
 
-  void setOnAddClicked(std::function<void()> cb);
+  void setOnAddSongsClicked(std::function<void()> cb);
   void setOnDurationClicked(std::function<void()> cb);
   void setOnSongsClicked(std::function<void()> cb);
   void setOnBpmClicked(std::function<void()> cb);
 
-  void setAddEnabled(bool enabled);
-  juce::Rectangle<int> getAddButtonScreenBounds() const;
+  void setActionsEnabled(bool enabled);
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -39,25 +38,25 @@ public:
 
 private:
   void updateHoverState(juce::Point<int> p);
+  bool isAddActionEnabled() const;
   int blockIndexAt(juce::Point<int> p) const;
   bool isBlockClickable(int index) const;
   void triggerBlock(int index);
 
-  juce::String addText;
   Summary summary;
 
-  std::function<void()> onAddClicked;
+  std::function<void()> onAddSongsClicked;
   std::function<void()> onDurationClicked;
   std::function<void()> onSongsClicked;
   std::function<void()> onBpmClicked;
 
-  bool addEnabled = true;
-  bool addHovered = false;
-  bool addPressed = false;
+  bool actionsEnabled = true;
+  bool hoveredAddAction = false;
+  bool pressedAddAction = false;
   int hoveredBlock = -1;
   int pressedBlock = -1;
 
-  juce::Rectangle<int> addButtonBounds;
+  juce::Rectangle<int> addSongsButtonBounds;
   juce::Rectangle<int> metricsPanelBounds;
   std::array<juce::Rectangle<int>, 3> metricBlockBounds;
 };

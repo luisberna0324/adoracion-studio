@@ -113,6 +113,109 @@ juce::String formatDurationHMSLocal(const double totalSeconds) {
   return juce::String::formatted("%02d:%02d:%02d", hh, mm, ss);
 }
 
+struct ContextActionItem {
+  juce::String label;
+  bool enabled = true;
+  bool emphasized = false;
+  bool destructive = false;
+  std::function<void()> onTrigger;
+};
+
+class ContextActionChip final : public juce::Button {
+public:
+  explicit ContextActionChip(ContextActionItem actionItem)
+      : juce::Button(actionItem.label), action(std::move(actionItem)) {
+    setEnabled(action.enabled);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  }
+
+  void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                   bool isButtonDown) override {
+    auto bounds = getLocalBounds().toFloat();
+    auto fill = UITheme::cardBgHover;
+    if (action.emphasized)
+      fill = fill.interpolatedWith(UITheme::accentSoft, 0.22f);
+    if (action.destructive)
+      fill = fill.interpolatedWith(UITheme::accentMuted, 0.30f);
+    if (isMouseOverButton)
+      fill = fill.brighter(0.06f);
+    if (isButtonDown)
+      fill = fill.darker(0.05f);
+    if (!isEnabled())
+      fill = fill.withAlpha(0.56f);
+
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, 12.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.65f));
+    g.drawRoundedRectangle(bounds, 12.0f, 1.0f);
+
+    auto textColour = action.destructive ? UITheme::onAccent : UITheme::textPrimary;
+    if (!isEnabled())
+      textColour = UITheme::textSecondary.withAlpha(0.72f);
+    g.setColour(textColour);
+    g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
+    g.drawFittedText(action.label, getLocalBounds().reduced(10, 0),
+                     juce::Justification::centredLeft, 1);
+  }
+
+  void trigger() const {
+    if (action.onTrigger)
+      action.onTrigger();
+  }
+
+private:
+  ContextActionItem action;
+};
+
+class ContextActionsPopover final : public juce::Component {
+public:
+  explicit ContextActionsPopover(std::vector<ContextActionItem> actions) {
+    for (auto &action : actions) {
+      auto chip = std::make_unique<ContextActionChip>(std::move(action));
+      auto *chipPtr = chip.get();
+      chipPtr->onClick = [chipPtr, this] {
+        chipPtr->trigger();
+        closeSelf();
+      };
+      addAndMakeVisible(*chip);
+      chips.push_back(std::move(chip));
+    }
+  }
+
+  int preferredHeight() const {
+    if (chips.empty())
+      return 58;
+    return 18 + static_cast<int>(chips.size()) * 34 +
+           (static_cast<int>(chips.size()) - 1) * 8 + 18;
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat().reduced(8.0f);
+    g.setColour(UITheme::cardBg.withAlpha(0.98f));
+    g.fillRoundedRectangle(b, 10.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.86f));
+    g.drawRoundedRectangle(b, 10.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(18, 18);
+    for (auto &chip : chips) {
+      chip->setBounds(area.removeFromTop(34));
+      area.removeFromTop(8);
+    }
+  }
+
+private:
+  std::vector<std::unique_ptr<ContextActionChip>> chips;
+
+  void closeSelf() {
+    if (auto *callout = findParentComponentOfClass<juce::CallOutBox>()) {
+      callout->exitModalState(0);
+      callout->setVisible(false);
+    }
+  }
+};
+
 } // namespace
 
 LibraryCatalogPanel::IconButton::IconButton(const juce::String &name,
@@ -154,8 +257,11 @@ void LibraryCatalogPanel::IconButton::paintButton(juce::Graphics &g,
     g.drawRoundedRectangle(area.reduced(0.5f), 10.0f, filledStyle ? 1.0f : 0.9f);
   }
 
-  drawIconGlyph(g, area.reduced(8.0f), glyph, glyphColour.withAlpha(isEnabled() ? 1.0f : 0.45f),
-                1.6f);
+  const bool isBack = glyph == IconGlyph::ArrowLeft;
+  const auto iconArea = isBack ? area.reduced(6.0f) : area.reduced(8.0f);
+  const float stroke = isBack ? 2.1f : 1.6f;
+  drawIconGlyph(g, iconArea, glyph,
+                glyphColour.withAlpha(isEnabled() ? 1.0f : 0.45f), stroke);
 }
 
 LibraryCatalogPanel::FilterChipButton::FilterChipButton(const juce::String &name,
@@ -303,10 +409,12 @@ void LibraryCatalogPanel::ChipsRow::resized() {
 
 void LibraryCatalogPanel::CatalogContent::setRows(std::vector<CatalogItem> nextRows,
                                                   const juce::StringArray &nextSelectedSongIds,
-                                                  const bool nextHideOptionsButtons) {
+                                                  const bool nextHideOptionsButtons,
+                                                  const bool allowSelection) {
   rows = std::move(nextRows);
   selectedSongIds = nextSelectedSongIds;
   hideOptionsButtons = nextHideOptionsButtons;
+  selectionEnabled = allowSelection;
   repaint();
 }
 
@@ -352,6 +460,8 @@ LibraryCatalogPanel::CatalogContent::itemBoundsForIndex(const int index) const {
 
 juce::Rectangle<int>
 LibraryCatalogPanel::CatalogContent::toggleBoundsForIndex(const int index) const {
+  if (!selectionEnabled)
+    return {};
   auto row = itemBoundsForIndex(index).reduced(16, 8);
   const int buttonSize = 32;
   return {row.getX(), row.getCentreY() - buttonSize / 2, buttonSize, buttonSize};
@@ -408,7 +518,8 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     else if (nowPlaying)
       border = UITheme::accent.withAlpha(0.80f);
 
-    const float rowAlpha = alreadyAdded ? 0.75f : 1.0f;
+    const bool dimAlreadyAdded = selectionEnabled;
+    const float rowAlpha = (dimAlreadyAdded && alreadyAdded) ? 0.75f : 1.0f;
     auto rowRect = rowBounds.toFloat();
     if (hovered)
       rowRect = rowRect.withSizeKeepingCentre(rowRect.getWidth() * 0.995f, rowRect.getHeight() * 0.995f);
@@ -425,19 +536,19 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     auto contentArea = rowBounds.reduced(16, 8);
     const auto toggleBounds = toggleBoundsForIndex(i);
-    auto toggleArea = toggleBounds.toFloat();
-
-    g.setColour(alreadyAdded ? UITheme::accent.withAlpha(0.12f)
-                             : pendingSelected ? UITheme::accent.withAlpha(0.18f)
-                                               : juce::Colours::transparentBlack);
-    g.fillEllipse(toggleArea);
-    g.setColour(alreadyAdded ? UITheme::accent.withAlpha(0.70f) : UITheme::accent);
-    g.drawEllipse(toggleArea.reduced(1.0f), 2.0f);
-    drawIconGlyph(g, toggleArea.reduced(7.0f),
-                  (alreadyAdded || pendingSelected) ? IconGlyph::Check : IconGlyph::Add,
-                  UITheme::accent, 1.9f);
-
-    contentArea.removeFromLeft(toggleBounds.getWidth() + 12);
+    if (!toggleBounds.isEmpty()) {
+      auto toggleArea = toggleBounds.toFloat();
+      g.setColour(alreadyAdded ? UITheme::accent.withAlpha(0.12f)
+                               : pendingSelected ? UITheme::accent.withAlpha(0.18f)
+                                                 : juce::Colours::transparentBlack);
+      g.fillEllipse(toggleArea);
+      g.setColour(alreadyAdded ? UITheme::accent.withAlpha(0.70f) : UITheme::accent);
+      g.drawEllipse(toggleArea.reduced(1.0f), 2.0f);
+      drawIconGlyph(g, toggleArea.reduced(7.0f),
+                    (alreadyAdded || pendingSelected) ? IconGlyph::Check : IconGlyph::Add,
+                    UITheme::accent, 1.9f);
+      contentArea.removeFromLeft(toggleBounds.getWidth() + 12);
+    }
     auto accentBar =
         juce::Rectangle<int>(contentArea.getX(), rowBounds.getCentreY() - 20, 4, 40);
     g.setColour(accentColourForToken(item.key, item.dominantCategory, item.songId)
@@ -522,7 +633,8 @@ void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event)
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
     return;
 
-  if (toggleBoundsForIndex(rowIndex).contains(point)) {
+  if (const auto toggleBounds = toggleBoundsForIndex(rowIndex);
+      !toggleBounds.isEmpty() && toggleBounds.contains(point)) {
     if (onToggleRequested)
       onToggleRequested(rowIndex);
     return;
@@ -542,7 +654,8 @@ void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
     return;
 
-  if (toggleBoundsForIndex(rowIndex).contains(point))
+  if (const auto toggleBounds = toggleBoundsForIndex(rowIndex);
+      !toggleBounds.isEmpty() && toggleBounds.contains(point))
     return;
   if (const auto menuBounds = menuBoundsForIndex(rowIndex);
       menuBounds.contains(point))
@@ -650,6 +763,17 @@ void LibraryCatalogPanel::setActiveSetlistId(const juce::String &setlistId) {
   refreshFromStorage();
 }
 
+void LibraryCatalogPanel::setHeaderMode(const HeaderMode mode) {
+  if (headerMode == mode)
+    return;
+  headerMode = mode;
+  if (headerMode == HeaderMode::Library)
+    pendingSelectedSongIds.clear();
+  refreshFooterState();
+  rebuildRows();
+  repaint(headerTitleBounds.getUnion(headerSubtitleBounds));
+}
+
 void LibraryCatalogPanel::setNowPlayingSong(const juce::String &songId,
                                             const bool isPlaying) {
   nowPlayingSongId = songId;
@@ -740,7 +864,9 @@ void LibraryCatalogPanel::resized() {
   int footerButtonHeight = bounds.getHeight() < 560 ? 42 : 44;
   int footerTopGap = bounds.getHeight() < 560 ? 8 : 10;
   int footerBottomInset = bounds.getHeight() < 560 ? 10 : 12;
-  int footerHeight = footerTopGap + footerButtonHeight + footerBottomInset;
+  const bool showFooterAction = headerMode == HeaderMode::SetlistTarget;
+  int footerHeight =
+      showFooterAction ? (footerTopGap + footerButtonHeight + footerBottomInset) : 0;
   int footerHorizontalInset = kCatalogItemSideInset;
   constexpr int minContentHeight = 120;
 
@@ -802,11 +928,17 @@ void LibraryCatalogPanel::resized() {
   contentViewport.setBounds(area);
   updateContentSize();
 
-  footerArea.removeFromTop(footerTopGap);
-  footerArea.removeFromBottom(footerBottomInset);
-  confirmButton.setBounds(footerArea.withTrimmedLeft(footerHorizontalInset)
-                              .withTrimmedRight(footerHorizontalInset)
-                              .withHeight(footerButtonHeight));
+  if (showFooterAction) {
+    confirmButton.setVisible(true);
+    footerArea.removeFromTop(footerTopGap);
+    footerArea.removeFromBottom(footerBottomInset);
+    confirmButton.setBounds(footerArea.withTrimmedLeft(footerHorizontalInset)
+                                .withTrimmedRight(footerHorizontalInset)
+                                .withHeight(footerButtonHeight));
+  } else {
+    confirmButton.setVisible(false);
+    confirmButton.setBounds({});
+  }
 }
 
 void LibraryCatalogPanel::rebuildRows() {
@@ -836,7 +968,10 @@ void LibraryCatalogPanel::rebuildRows() {
     visibleRows.push_back(std::move(item));
   }
 
-  const auto selectionPriority = [](const CatalogItem &item) {
+  const bool prioritizeNotInSetlist = headerMode == HeaderMode::SetlistTarget;
+  const auto selectionPriority = [prioritizeNotInSetlist](const CatalogItem &item) {
+    if (!prioritizeNotInSetlist)
+      return 0;
     return item.inSetlist ? 1 : 0;
   };
 
@@ -872,7 +1007,8 @@ void LibraryCatalogPanel::rebuildRows() {
               return compareWithinGroup(a, b);
             });
 
-  content.setRows(visibleRows, pendingSelectedSongIds, false);
+  const bool allowSelection = headerMode == HeaderMode::SetlistTarget;
+  content.setRows(visibleRows, pendingSelectedSongIds, false, allowSelection);
   content.setNowPlayingSong(nowPlayingSongId, playbackActive);
   refreshFooterState();
   updateContentSize();
@@ -890,9 +1026,17 @@ void LibraryCatalogPanel::refreshFilterButtonStates() {
 }
 
 void LibraryCatalogPanel::refreshFooterState() {
+  if (headerMode == HeaderMode::Library) {
+    confirmButton.setCount(0);
+    confirmButton.setEnabled(false);
+    confirmButton.setVisible(false);
+    return;
+  }
+
   const int pendingCount = pendingSelectedSongIds.size();
   confirmButton.setCount(pendingCount);
   confirmButton.setEnabled(pendingCount > 0 && activeSetlistId.isNotEmpty());
+  confirmButton.setVisible(true);
   confirmButton.setTooltip(
       pendingCount > 0 ? L10n::tr("Agregar canciones seleccionadas",
                                   "Add selected songs")
@@ -922,7 +1066,8 @@ void LibraryCatalogPanel::openHeaderMenu() {
                sortMode == SortMode::BpmDesc);
   menu.addSeparator();
   menu.addItem(7, L10n::tr("Limpiar seleccion", "Clear selection"),
-               pendingSelectedSongIds.size() > 0);
+               headerMode == HeaderMode::SetlistTarget &&
+                   pendingSelectedSongIds.size() > 0);
 
   menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&menuButton),
                      [this](int result) {
@@ -978,39 +1123,56 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                                       juce::Rectangle<int> targetBounds) {
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size())))
     return;
-  const auto &item = visibleRows[static_cast<size_t>(rowIndex)];
+  auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
+  const auto runPreview = [safeThis, rowIndex] {
+    if (safeThis == nullptr || safeThis->onSongLoadRequested == nullptr ||
+        !juce::isPositiveAndBelow(rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+      return;
+    const auto &targetItem = safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+    if (!juce::isPositiveAndBelow(targetItem.songIndex,
+                                  static_cast<int>(safeThis->librarySongs.size())))
+      return;
+    safeThis->onSongLoadRequested(
+        safeThis->librarySongs[static_cast<size_t>(targetItem.songIndex)],
+        targetItem.songIndex);
+  };
 
-  juce::PopupMenu menu;
-  menu.addItem(1, L10n::tr("Ver detalles", "View details"));
-  menu.addItem(2, L10n::tr("Escuchar preview", "Listen preview"));
-  menu.addItem(3, L10n::tr("Ver stems", "View stems"));
-  menu.addItem(4, L10n::tr("Editar cancion", "Edit song"));
-  if (item.inSetlist)
-    menu.addSeparator();
-  if (item.inSetlist)
-    menu.addItem(5, L10n::tr("Ya agregada", "Already added"), false, true);
+  std::vector<ContextActionItem> actions;
+  actions.push_back({L10n::tr("Ver detalles", "View details"), true, false, false,
+                     runPreview});
+  actions.push_back({L10n::tr("Escuchar preview", "Listen preview"), true, true, false,
+                     runPreview});
+  actions.push_back({L10n::tr("Ver stems", "View stems"), true, false, false,
+                     runPreview});
+  actions.push_back({L10n::tr("Editar cancion", "Edit song"), true, false, false,
+                     [safeThis, rowIndex] {
+                       if (safeThis == nullptr ||
+                           safeThis->onSongEditRequested == nullptr ||
+                           !juce::isPositiveAndBelow(
+                               rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+                         return;
+                       const auto &targetItem =
+                           safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+                       if (targetItem.songId.isNotEmpty())
+                         safeThis->onSongEditRequested(targetItem.songId);
+                     }});
+  auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
+  panel->setSize(228, panel->preferredHeight());
 
-  menu.showMenuAsync(
-      juce::PopupMenu::Options().withTargetScreenArea(localAreaToGlobal(targetBounds)),
-      [this, rowIndex](int result) {
-        if (result == 4 && onSongEditRequested != nullptr &&
-            juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size()))) {
-          const auto &targetItem = visibleRows[static_cast<size_t>(rowIndex)];
-          if (targetItem.songId.isNotEmpty())
-            onSongEditRequested(targetItem.songId);
-          return;
-        }
-
-        if (result >= 1 && result <= 3 && onSongLoadRequested != nullptr &&
-            juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size()))) {
-          const auto &targetItem = visibleRows[static_cast<size_t>(rowIndex)];
-          if (juce::isPositiveAndBelow(targetItem.songIndex,
-                                       static_cast<int>(librarySongs.size())))
-            onSongLoadRequested(
-                librarySongs[static_cast<size_t>(targetItem.songIndex)],
-                targetItem.songIndex);
-        }
-      });
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  juce::Component *parentComp = editor != nullptr
+                                    ? static_cast<juce::Component *>(editor)
+                                    : static_cast<juce::Component *>(this);
+  const auto anchorInPanel = getLocalArea(&content, targetBounds.expanded(2));
+  const auto anchor = parentComp->getLocalArea(this, anchorInPanel);
+  auto &callout =
+      juce::CallOutBox::launchAsynchronously(std::move(panel), anchor, parentComp);
+  auto fitRightArea = parentComp->getLocalBounds();
+  fitRightArea.setX(anchor.getRight() + 2);
+  fitRightArea.setWidth(parentComp->getWidth() - fitRightArea.getX());
+  if (fitRightArea.getWidth() > 24)
+    callout.updatePosition(anchor, fitRightArea);
+  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
 }
 
 void LibraryCatalogPanel::togglePendingSelection(const int rowIndex) {
@@ -1080,10 +1242,15 @@ int LibraryCatalogPanel::usageCountForSongId(const juce::String &songId) const {
 }
 
 juce::String LibraryCatalogPanel::titleTextForActiveSetlist() const {
+  if (headerMode == HeaderMode::Library)
+    return L10n::tr("Biblioteca", "Library");
   return L10n::tr("Agregar a: ", "Add to: ") + activeSetlistName;
 }
 
 juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
+  if (headerMode == HeaderMode::Library)
+    return L10n::tr("Explora y agrega canciones", "Browse and add songs");
+
   double totalSeconds = 0.0;
   for (const auto &song : librarySongs) {
     if (!activeSetlistSongIds.contains(song.id))

@@ -327,7 +327,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           juce::isPositiveAndBelow(loopPartIndex,
                                    static_cast<int>(arrangementParts.size()));
 
+      bool loopPartEngaged = false;
       if (loopPartActive) {
+        const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
+        loopPartEngaged =
+            blockStartSec >= loopPart.startSec && blockStartSec < loopPart.endSec;
+      }
+
+      if (loopPartEngaged) {
         const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
         windowStartSec = loopPart.startSec;
         windowEndSec = loopPart.endSec;

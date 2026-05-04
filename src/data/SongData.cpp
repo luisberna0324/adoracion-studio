@@ -1,6 +1,8 @@
 #include "SongData.h"
+#include "Localization.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <utility>
 
@@ -166,6 +168,113 @@ bool isArrangementPartColorValid(const juce::String &value) {
     return false;
   const auto parsed = juce::Colour::fromString(value);
   return parsed.getAlpha() > 0;
+}
+
+namespace {
+struct ArrangementSectionStyle {
+  const char *canonicalName = nullptr;
+  const char *spanishLabel = nullptr;
+  const char *englishLabel = nullptr;
+  const char *colour = nullptr;
+  std::initializer_list<const char *> aliases;
+};
+
+const std::array<ArrangementSectionStyle, 14> kArrangementSectionStyles = {{
+    {"Intro", "Intro", "Intro", "ffB66A8A", {"intro", "introduccion", "introduction"}},
+    {"Verse", "Verso", "Verse", "ff8A7A68", {"verse", "verso"}},
+    {"Pre-Chorus", "Pre-Coro", "Pre-Chorus", "ff5E8F76",
+     {"prechorus", "pre-coro", "precoro", "prechorus", "pre"}},
+    {"Chorus", "Coro", "Chorus", "ff6FA36D", {"chorus", "coro"}},
+    {"Post-Chorus", "Post-Coro", "Post-Chorus", "ff7D8F6B",
+     {"postchorus", "post-coro", "postcoro"}},
+    {"Bridge", "Puente", "Bridge", "ff7D74A8", {"bridge", "puente"}},
+    {"Instrumental", "Instrumental", "Instrumental", "ffA8895E",
+     {"instrumental", "instrument"}},
+    {"Solo", "Solo", "Solo", "ffB88455", {"solo"}},
+    {"Breakdown", "Breakdown", "Breakdown", "ff8A6B6B", {"breakdown", "break"}},
+    {"Interlude", "Interlude", "Interlude", "ff6E9A91",
+     {"interlude", "interludio"}},
+    {"Tag", "Tag", "Tag", "ff9A7FA8", {"tag"}},
+    {"Vamp", "Vamp", "Vamp", "ff7F9B67", {"vamp"}},
+    {"Outro", "Outro", "Outro", "ff92786D", {"outro", "salida"}},
+    {"Ending", "Final", "Ending", "ff9B5E75", {"ending", "final"}},
+}};
+
+juce::String normalizeArrangementSectionToken(juce::String name) {
+  auto text = name.trim().toLowerCase();
+  while (text.isNotEmpty()) {
+    const auto ch = text[text.length() - 1];
+    if (!juce::CharacterFunctions::isDigit(ch))
+      break;
+    text = text.dropLastCharacters(1).trimEnd();
+  }
+
+  juce::String normalized;
+  normalized.preallocateBytes(text.getNumBytesAsUTF8());
+  for (int i = 0; i < text.length(); ++i) {
+    const auto ch = text[i];
+    if (juce::CharacterFunctions::isLetterOrDigit(ch))
+      normalized << juce::String::charToString(ch);
+  }
+  return normalized;
+}
+
+const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &name) {
+  const auto token = normalizeArrangementSectionToken(name);
+  if (token.isEmpty())
+    return nullptr;
+
+  for (const auto &style : kArrangementSectionStyles) {
+    if (token == normalizeArrangementSectionToken(style.canonicalName))
+      return &style;
+    for (const auto *alias : style.aliases) {
+      if (token == normalizeArrangementSectionToken(alias))
+        return &style;
+    }
+  }
+  return nullptr;
+}
+} // namespace
+
+juce::String canonicalArrangementSectionName(const juce::String &name) {
+  if (const auto *style = findArrangementSectionStyle(name))
+    return style->canonicalName;
+  return {};
+}
+
+bool isKnownArrangementSectionName(const juce::String &name) {
+  return findArrangementSectionStyle(name) != nullptr;
+}
+
+juce::String standardArrangementPartColorForName(const juce::String &name) {
+  if (const auto *style = findArrangementSectionStyle(name))
+    return style->colour;
+  return {};
+}
+
+juce::String fallbackArrangementPartColorForName(const juce::String &name) {
+  auto token = normalizeArrangementSectionToken(name);
+  if (token.isEmpty())
+    token = "part";
+
+  uint32_t hash = 2166136261u;
+  for (int i = 0; i < token.length(); ++i) {
+    hash ^= static_cast<uint32_t>(token[i]);
+    hash *= 16777619u;
+  }
+
+  const float hue = static_cast<float>(hash % 360u) / 360.0f;
+  const float saturation = 0.48f + (static_cast<float>((hash >> 8) % 24u) / 100.0f);
+  const float brightness = 0.62f + (static_cast<float>((hash >> 16) % 18u) / 100.0f);
+  return juce::Colour::fromHSV(hue, saturation, brightness, 1.0f).toString();
+}
+
+juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
+  if (const auto *style = findArrangementSectionStyle(name))
+    return L10n::tr(style->spanishLabel, style->englishLabel);
+
+  const auto trimmed = name.trim();
+  return trimmed.isNotEmpty() ? trimmed : L10n::tr("Parte", "Part");
 }
 
 double estimateSongLengthSeconds(const ImportedSongData &song) {

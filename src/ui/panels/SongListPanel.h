@@ -118,6 +118,7 @@ private:
     void setOnSongsReordered(std::function<void(int, int)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
     void setOnSongRemoveRequested(std::function<void(int)> cb);
+    void setOnAddSongsRequested(std::function<void()> cb);
     int getPreferredHeight() const;
 
     void paint(juce::Graphics &g) override;
@@ -138,6 +139,7 @@ private:
     int insertionIndexAtY(int y) const;
     int rowTopAtIndex(int index) const;
     int insertionLineY(int insertionIndex) const;
+    juce::Rectangle<int> addSongsRowBounds() const;
     juce::Rectangle<int> optionsButtonBoundsForRow(
         const juce::Rectangle<int> &rowBounds) const;
     void showActionsMenuForRow(int rowIndex);
@@ -147,6 +149,7 @@ private:
     std::function<void(int, int)> onSongsReordered;
     std::function<void(int)> onAutoPlayNextToggled;
     std::function<void(int)> onSongRemoveRequested;
+    std::function<void()> onAddSongsRequested;
     juce::Point<float> mouseDownPosition;
     bool dragCandidate = false;
     bool isDragging = false;
@@ -166,6 +169,7 @@ private:
   void openSongEditWizard(const juce::String &songId);
   void openSetlistManager();
   void openHeaderMenu();
+  void openLibraryBrowser();
   void openAddFromLibraryMenu();
   void openSetlistOptionsMenu(const juce::String &setlistId,
                               juce::Rectangle<int> targetArea);

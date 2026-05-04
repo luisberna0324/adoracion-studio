@@ -30,8 +30,9 @@ ChannelStripCard::ChannelStripCard(
   soloButton.setClickingTogglesState(true);
   soloButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   soloButton.setColour(juce::TextButton::textColourOnId,
-                       UITheme::textPrimary.darker(0.18f));
+                       UITheme::onAccent);
   soloButton.setLookAndFeel(&lookAndFeel);
+  soloButton.setComponentID("soloButton");
   addAndMakeVisible(soloButton);
 
   muteButton.setButtonText("M");
@@ -275,12 +276,9 @@ void ChannelStripCard::refreshThemeColours() {
   gainLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
 
   soloButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
-  soloButton.setColour(juce::TextButton::textColourOnId,
-                       UITheme::textPrimary.darker(0.18f));
+  soloButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   soloButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
-  soloButton.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
-  soloButton.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
+  soloButton.setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
 
   muteButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   muteButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);

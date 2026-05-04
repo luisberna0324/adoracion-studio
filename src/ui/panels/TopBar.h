@@ -37,9 +37,10 @@ public:
 private:
   class IconButton final : public juce::Button {
   public:
-    IconButton(juce::String name, IconGlyph g, bool primary = false);
+    IconButton(juce::String name, SvgIconName iconToUse,
+               bool primary = false);
 
-    void setGlyph(IconGlyph g);
+    void setIcon(SvgIconName iconToUse);
     void setBadgeText(juce::String text);
     void setPulseAmount(float amount, bool downbeat);
 
@@ -47,7 +48,7 @@ private:
                      bool isButtonDown) override;
 
   private:
-    IconGlyph glyph;
+    SvgIconName icon;
     juce::String badgeText;
     bool isPrimary = false;
     float pulseAmount = 0.0f;
@@ -75,7 +76,7 @@ private:
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
   juce::TextButton bpmSegmentButton;
-  IconButton metroToggleButton{"metroToggle", IconGlyph::Metronome};
+  IconButton metroToggleButton{"metroToggle", SvgIconName::Metronome};
 
   std::function<void()> onPlayPause;
   std::function<void()> onStop;

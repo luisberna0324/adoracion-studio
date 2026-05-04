@@ -95,6 +95,13 @@ public:
                                                float gain);
   static bool updateMasterMuteForActiveSetlist(const juce::String &songId,
                                                bool muted);
+  static bool getSongArrangement(const juce::String &songId,
+                                 SongArrangementSnapshot &outArrangement,
+                                 bool &outIsCustomArrangement);
+  static bool updateSongArrangement(const juce::String &songId,
+                                    const SongArrangementSnapshot &arrangement,
+                                    bool isCustomArrangement);
+  static bool resetSongArrangement(const juce::String &songId);
   static bool getActiveSetlistArrangement(const juce::String &songId,
                                           SongArrangementSnapshot &outArrangement,
                                           bool &outIsCustomArrangement);
@@ -122,7 +129,7 @@ private:
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);
-  static ImportedSongData songFromVar(const juce::var &v);
+  static ImportedSongData songFromVar(const juce::var &v, bool &changed);
   static bool ensureSongHasStemIds(ImportedSongData &song);
   static bool setlistExists(const LibraryState &library,
                             const juce::String &setlistId);

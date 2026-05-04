@@ -1,42 +1,11 @@
 #include "SetlistSongsHeaderPanel.h"
 #include "../../data/Localization.h"
 
-namespace {
-
-void drawPlus(juce::Graphics &g, const juce::Rectangle<float> &r,
-              const juce::Colour colour) {
-  g.setColour(colour);
-  const float cx = r.getCentreX();
-  const float cy = r.getCentreY();
-  g.fillRoundedRectangle(cx - 1.0f, cy - 6.0f, 2.0f, 12.0f, 0.8f);
-  g.fillRoundedRectangle(cx - 6.0f, cy - 1.0f, 12.0f, 2.0f, 0.8f);
-}
-
-void drawCaretDown(juce::Graphics &g, const juce::Rectangle<float> &r,
-                   const juce::Colour colour) {
-  g.setColour(colour);
-  juce::Path p;
-  p.startNewSubPath(r.getX(), r.getY() + 1.0f);
-  p.lineTo(r.getRight(), r.getY() + 1.0f);
-  p.lineTo(r.getCentreX(), r.getBottom() - 1.0f);
-  p.closeSubPath();
-  g.fillPath(p);
-}
-
-} // namespace
-
-SetlistSongsHeaderPanel::SetlistSongsHeaderPanel()
-    : addText(L10n::tr("Agregar al setlist", "Add to setlist")) {
+SetlistSongsHeaderPanel::SetlistSongsHeaderPanel() {
   metricBlockBounds.fill({});
 }
 
-void SetlistSongsHeaderPanel::setAddText(const juce::String &text) {
-  const auto next = text.trim();
-  if (next == addText)
-    return;
-  addText = next;
-  repaint(addButtonBounds);
-}
+void SetlistSongsHeaderPanel::refreshLanguageTexts() { repaint(); }
 
 void SetlistSongsHeaderPanel::setSummary(const Summary &nextSummary) {
   if (summary.duration == nextSummary.duration &&
@@ -47,8 +16,8 @@ void SetlistSongsHeaderPanel::setSummary(const Summary &nextSummary) {
   repaint(metricsPanelBounds);
 }
 
-void SetlistSongsHeaderPanel::setOnAddClicked(std::function<void()> cb) {
-  onAddClicked = std::move(cb);
+void SetlistSongsHeaderPanel::setOnAddSongsClicked(std::function<void()> cb) {
+  onAddSongsClicked = std::move(cb);
 }
 
 void SetlistSongsHeaderPanel::setOnDurationClicked(std::function<void()> cb) {
@@ -63,72 +32,66 @@ void SetlistSongsHeaderPanel::setOnBpmClicked(std::function<void()> cb) {
   onBpmClicked = std::move(cb);
 }
 
-void SetlistSongsHeaderPanel::setAddEnabled(const bool enabled) {
-  if (addEnabled == enabled)
+void SetlistSongsHeaderPanel::setActionsEnabled(const bool enabled) {
+  if (actionsEnabled == enabled)
     return;
-  addEnabled = enabled;
-  addPressed = false;
-  repaint(addButtonBounds);
-}
-
-juce::Rectangle<int> SetlistSongsHeaderPanel::getAddButtonScreenBounds() const {
-  return localAreaToGlobal(addButtonBounds);
+  actionsEnabled = enabled;
+  pressedAddAction = false;
+  repaint();
 }
 
 void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
-  auto addFill = UITheme::accent;
-  if (!addEnabled)
-    addFill = addFill.withMultipliedSaturation(0.20f).withAlpha(0.45f);
-  else if (addPressed)
-    addFill = addFill.darker(0.18f);
-  else if (addHovered)
-    addFill = addFill.brighter(0.07f);
+  auto actionRect = addSongsButtonBounds.toFloat().reduced(0.5f);
+  const bool enabled = isAddActionEnabled();
+  auto fill = UITheme::accent.withAlpha(0.20f);
+  if (!enabled)
+    fill = fill.withMultipliedAlpha(0.45f);
+  else if (pressedAddAction)
+    fill = UITheme::accent.withAlpha(0.28f);
+  else if (hoveredAddAction)
+    fill = UITheme::accent.withAlpha(0.24f);
 
-  auto addRect = addButtonBounds.toFloat();
-  if (addEnabled && addPressed)
-    addRect = addRect.withSizeKeepingCentre(addRect.getWidth() * 0.98f,
-                                            addRect.getHeight() * 0.98f);
+  if (enabled && pressedAddAction)
+    actionRect = actionRect.withSizeKeepingCentre(actionRect.getWidth() * 0.985f,
+                                                  actionRect.getHeight() * 0.985f);
 
-  g.setColour(addFill);
-  g.fillRoundedRectangle(addRect, 10.0f);
+  g.setColour(juce::Colours::black.withAlpha(0.15f));
+  g.fillRoundedRectangle(actionRect.translated(0.0f, 1.4f), 10.0f);
+  g.setColour(fill);
+  g.fillRoundedRectangle(actionRect, 10.0f);
 
-  const auto buttonTextColour =
-      UITheme::onAccent.withAlpha(addEnabled ? 1.0f : 0.7f);
-  const auto content = addRect.reduced(12.0f, 0.0f);
-  const float plusSize = 16.0f;
-  const float caretSize = 12.0f;
-  const auto font = makeAppFont(14.0f, AppFontWeight::SemiBold);
+  g.setColour(UITheme::accent.withAlpha(hoveredAddAction ? 0.92f : 0.78f));
+  g.drawRoundedRectangle(actionRect, 10.0f, hoveredAddAction ? 1.4f : 1.2f);
 
-  const float textWidth = font.getStringWidthFloat(addText);
-  const float addGroupWidth = plusSize + 8.0f + textWidth + 8.0f + caretSize;
-  const float addStartX = content.getCentreX() - addGroupWidth * 0.5f;
-  const float addCenterY = content.getCentreY();
+  const auto textColour = UITheme::textPrimary.withAlpha(enabled ? 1.0f : 0.66f);
+  const auto iconColour = UITheme::accent.withAlpha(enabled ? 0.98f : 0.54f);
+  const auto label = L10n::tr("Biblioteca", "Library");
+  const auto font = makeAppFont(13.5f, AppFontWeight::SemiBold);
+  const float textWidth = font.getStringWidthFloat(label);
+  constexpr float iconSize = 17.0f;
+  constexpr float iconGap = 8.0f;
+  const float actionGroupWidth = iconSize + iconGap + textWidth;
+  const float actionStartX = actionRect.getCentreX() - (actionGroupWidth * 0.5f);
+  const float actionCenterY = actionRect.getCentreY();
+  drawSvgIcon(g,
+              juce::Rectangle<float>(actionStartX, actionCenterY - (iconSize * 0.5f),
+                                     iconSize, iconSize),
+              SvgIconName::Music, iconColour);
 
-  drawPlus(g,
-           juce::Rectangle<float>(addStartX, addCenterY - plusSize * 0.5f, plusSize,
-                                  plusSize),
-           buttonTextColour);
-
-  g.setColour(buttonTextColour);
+  g.setColour(textColour);
   g.setFont(font);
-  g.drawText(addText,
-             juce::Rectangle<float>(addStartX + plusSize + 8.0f,
-                                    addCenterY - 12.0f, textWidth, 24.0f),
-             juce::Justification::centred);
-
-  drawCaretDown(g,
-                juce::Rectangle<float>(addStartX + plusSize + 8.0f + textWidth + 8.0f,
-                                       addCenterY - caretSize * 0.5f, caretSize,
-                                       caretSize),
-                buttonTextColour.withAlpha(0.7f));
+  g.drawText(label,
+             juce::Rectangle<float>(actionStartX + iconSize + iconGap,
+                                    actionCenterY - 12.0f, textWidth, 24.0f),
+             juce::Justification::centredLeft);
 
   const auto panel = metricsPanelBounds.toFloat();
-  g.setColour(juce::Colour::fromRGB(28, 28, 30));
+  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.18f));
   g.fillRoundedRectangle(panel, 12.0f);
-  g.setColour(juce::Colours::white.withAlpha(0.05f));
+  g.setColour(juce::Colours::white.withAlpha(0.035f));
   g.drawRoundedRectangle(panel, 12.0f, 1.0f);
 
-  g.setColour(juce::Colours::white.withAlpha(0.08f));
+  g.setColour(juce::Colours::white.withAlpha(0.055f));
   for (int i = 0; i < 2; ++i) {
     const auto &left = metricBlockBounds[static_cast<size_t>(i)];
     const float x = static_cast<float>(left.getRight());
@@ -139,9 +102,9 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
 
   const bool hideLabels = getWidth() < 320;
   const bool valuesOnly = getWidth() < 280;
-  const auto labelColour = juce::Colour::fromRGB(138, 138, 138);
-  constexpr float metricsIconSize = 36.0f;
-  constexpr int iconTextGap = 8;
+  const auto labelColour = UITheme::textSecondary.withAlpha(0.76f);
+  constexpr float metricsIconSize = 20.0f;
+  constexpr int iconTextGap = 9;
 
   const std::array<juce::String, 3> labels = {
       L10n::tr("Duracion total", "Total duration"),
@@ -156,9 +119,9 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
     auto block = metricBlockBounds[static_cast<size_t>(i)].reduced(8, 5);
     const bool clickable = isBlockClickable(i);
     const bool hovered = hoveredBlock == i && clickable;
-    const auto iconGlyph = (i == 0) ? IconGlyph::Clock
-                         : (i == 1) ? IconGlyph::MusicNote
-                                    : IconGlyph::Waveform;
+    const auto iconName = (i == 0) ? SvgIconName::Clock
+                        : (i == 1) ? SvgIconName::Music
+                                   : SvgIconName::AudioWaveform;
 
     if (hovered) {
       g.setColour(UITheme::cardBgHover.withAlpha(0.12f));
@@ -181,11 +144,11 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
       const float startX = static_cast<float>(block.getCentreX()) - (groupWidth * 0.5f);
       const float centerY = static_cast<float>(block.getCentreY());
 
-      drawIconGlyph(
-          g,
-          juce::Rectangle<float>(startX, centerY - (metricsIconSize * 0.5f),
-                                 metricsIconSize, metricsIconSize),
-          iconGlyph, labelColour.withAlpha(0.95f), 1.45f);
+      drawSvgIcon(g,
+                  juce::Rectangle<float>(startX,
+                                         centerY - (metricsIconSize * 0.5f),
+                                         metricsIconSize, metricsIconSize),
+                  iconName, labelColour.withAlpha(0.95f));
 
       g.setColour(UITheme::textPrimary);
       g.setFont(valueFont);
@@ -212,11 +175,11 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
         valueRow.toFloat().getCentreX() - (groupWidth * 0.5f);
     const float centerY = valueRow.toFloat().getCentreY();
 
-    drawIconGlyph(
-        g,
-        juce::Rectangle<float>(startX, centerY - (metricsIconSize * 0.5f),
-                               metricsIconSize, metricsIconSize),
-        iconGlyph, labelColour.withAlpha(0.95f), 1.45f);
+    drawSvgIcon(g,
+                juce::Rectangle<float>(startX,
+                                       centerY - (metricsIconSize * 0.5f),
+                                       metricsIconSize, metricsIconSize),
+                iconName, labelColour.withAlpha(0.95f));
 
     g.setColour(UITheme::textPrimary);
     g.setFont(valueFont);
@@ -231,9 +194,9 @@ void SetlistSongsHeaderPanel::resized() {
   auto area = getLocalBounds();
   constexpr int sideInset = 12;
   area = area.reduced(sideInset, 0);
-  addButtonBounds = area.removeFromTop(44);
+  addSongsButtonBounds = area.removeFromTop(44);
   area.removeFromTop(12);
-  metricsPanelBounds = area.removeFromTop(56);
+  metricsPanelBounds = area.removeFromTop(54);
 
   const int blockWidth = metricsPanelBounds.getWidth() / 3;
   for (int i = 0; i < 3; ++i) {
@@ -250,8 +213,8 @@ void SetlistSongsHeaderPanel::mouseMove(const juce::MouseEvent &event) {
 }
 
 void SetlistSongsHeaderPanel::mouseExit(const juce::MouseEvent &) {
-  const bool changed = addHovered || hoveredBlock >= 0;
-  addHovered = false;
+  const bool changed = hoveredAddAction || hoveredBlock >= 0;
+  hoveredAddAction = false;
   hoveredBlock = -1;
   if (changed)
     repaint();
@@ -260,45 +223,50 @@ void SetlistSongsHeaderPanel::mouseExit(const juce::MouseEvent &) {
 
 void SetlistSongsHeaderPanel::mouseDown(const juce::MouseEvent &event) {
   const auto p = event.position.toInt();
-  addPressed = addEnabled && addButtonBounds.contains(p);
+  pressedAddAction = isAddActionEnabled() && addSongsButtonBounds.contains(p);
   pressedBlock = blockIndexAt(p);
   repaint();
 }
 
 void SetlistSongsHeaderPanel::mouseUp(const juce::MouseEvent &event) {
   const auto p = event.position.toInt();
-  const bool fireAdd = addPressed && addEnabled && addButtonBounds.contains(p);
+  const bool fireAction = pressedAddAction && isAddActionEnabled() &&
+                          addSongsButtonBounds.contains(p);
   const int releasedBlock = blockIndexAt(p);
   const bool fireBlock = (pressedBlock >= 0 && releasedBlock == pressedBlock &&
                           isBlockClickable(releasedBlock));
 
-  addPressed = false;
+  pressedAddAction = false;
   pressedBlock = -1;
   updateHoverState(p);
   repaint();
 
-  if (fireAdd && onAddClicked)
-    onAddClicked();
+  if (fireAction)
+    onAddSongsClicked();
   if (fireBlock)
     triggerBlock(releasedBlock);
 }
 
 void SetlistSongsHeaderPanel::updateHoverState(const juce::Point<int> p) {
-  const bool nextAddHovered = addEnabled && addButtonBounds.contains(p);
+  const bool nextHoveredAdd = isAddActionEnabled() && addSongsButtonBounds.contains(p);
   const int nextHoveredBlock = blockIndexAt(p);
 
-  if (addHovered == nextAddHovered && hoveredBlock == nextHoveredBlock)
+  if (hoveredAddAction == nextHoveredAdd && hoveredBlock == nextHoveredBlock)
     return;
 
-  addHovered = nextAddHovered;
+  hoveredAddAction = nextHoveredAdd;
   hoveredBlock = nextHoveredBlock;
 
-  if (addHovered || (hoveredBlock >= 0 && isBlockClickable(hoveredBlock)))
+  if (hoveredAddAction || (hoveredBlock >= 0 && isBlockClickable(hoveredBlock)))
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
   else
     setMouseCursor(juce::MouseCursor::NormalCursor);
 
   repaint();
+}
+
+bool SetlistSongsHeaderPanel::isAddActionEnabled() const {
+  return actionsEnabled && static_cast<bool>(onAddSongsClicked);
 }
 
 int SetlistSongsHeaderPanel::blockIndexAt(const juce::Point<int> p) const {

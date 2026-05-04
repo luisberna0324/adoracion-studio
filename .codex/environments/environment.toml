@@ -9,3 +9,8 @@ script = ""
 name = "Ejecutar"
 icon = "run"
 command = "cmake --build build -j && open build/MTControls_artefacts/Standalone/Adoracion\\ Estudio.app"
+
+[[actions]]
+name = "Ejecutar"
+icon = "run"
+command = "cmake --build build -j4; open build/MTControls_artefacts/Standalone/PlayWorship.app"
