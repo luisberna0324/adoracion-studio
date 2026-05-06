@@ -47,6 +47,13 @@ cmake --preset windows-release
 cmake --build --preset windows-release
 ```
 
+Windows 32-bit (x86):
+
+```bash
+cmake --preset windows-x86-release
+cmake --build --preset windows-x86-release
+```
+
 ## Instaladores (MVP)
 
 ### macOS (PKG installer)
@@ -70,12 +77,14 @@ Genera el build y luego empaqueta el instalador `.exe`:
 ```powershell
 cmake --preset windows-release
 cmake --build --preset windows-release
-.\scripts\package_windows_installer.ps1 -Version 1.2.3
+.\scripts\package_windows_installer.ps1 -Version 1.2.3 -Architecture x64
+.\scripts\package_windows_installer.ps1 -Version 1.2.3 -Architecture x86
 ```
 
 Salida esperada:
 
-`dist/playworship-windows-installer-1.2.3.exe`
+- `dist/playworship-windows-installer-1.2.3-x64.exe`
+- `dist/playworship-windows-installer-1.2.3-x86.exe`
 
 ### iOS
 
@@ -103,7 +112,7 @@ cmake --build build -j
 
 ## CI (idea)
 
-- Windows: GitHub Actions con `windows-latest` + preset `windows-release`
+- Windows: GitHub Actions con `windows-latest` + presets `windows-release` (x64) y `windows-x86-release` (x86)
 - macOS: GitHub Actions con `macos-latest` + preset `macos-release`
 - iOS: generar proyecto Xcode con preset `ios-release` (requiere signing para build/run)
 
@@ -117,9 +126,11 @@ Entradas relevantes:
 Assets publicados cuando `publish_release=true`:
 
 - `MTControls-macos-standalone-<semver>.zip`
-- `MTControls-windows-standalone-<semver>.zip`
+- `MTControls-windows-x64-standalone-<semver>.zip`
+- `MTControls-windows-x86-standalone-<semver>.zip`
 - `playworship-macos-installer-<semver>.pkg` (si `publish_installers=true`)
-- `playworship-windows-installer-<semver>.exe` (si `publish_installers=true`)
+- `playworship-windows-installer-<semver>-x64.exe` (si `publish_installers=true`)
+- `playworship-windows-installer-<semver>-x86.exe` (si `publish_installers=true`)
 
 ## Siguiente foco
 

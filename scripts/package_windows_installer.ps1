@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
-    [string]$StandaloneDir = "build/windows-release/MTControls_artefacts/Release/Standalone",
+    [ValidateSet("x64", "x86")]
+    [string]$Architecture = "x64",
+    [string]$StandaloneDir = "",
     [string]$OutputDir = "dist",
     [string]$IssFile = "packaging/windows/MTControls.iss",
     [string]$FfmpegExe = $env:MTCONTROLS_FFMPEG_BIN_WINDOWS,
@@ -9,6 +11,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($StandaloneDir)) {
+    $StandaloneDir = if ($Architecture -eq "x86") {
+        "build/windows-x86-release/MTControls_artefacts/Release/Standalone"
+    } else {
+        "build/windows-release/MTControls_artefacts/Release/Standalone"
+    }
+}
 
 if (!(Test-Path -LiteralPath $IssFile)) {
     throw "Inno Setup script not found: $IssFile"
@@ -72,13 +82,14 @@ if ([string]::IsNullOrWhiteSpace($iscc)) {
     }
 }
 
-$outputBaseFilename = "playworship-windows-installer-$Version"
+$outputBaseFilename = "playworship-windows-installer-$Version-$Architecture"
 $exeName = $exe.Name
 $installerIconFile = Join-Path $repoRoot "assets/icons/app-icon.ico"
 $hasInstallerIcon = Test-Path -LiteralPath $installerIconFile
 
 $args = @(
   "/DAppVersion=$Version",
+  "/DInstallerArch=$Architecture",
   "/DSourceDir=$standaloneFull",
   "/DOutputDir=$outputFull",
   "/DOutputBaseFilename=$outputBaseFilename",

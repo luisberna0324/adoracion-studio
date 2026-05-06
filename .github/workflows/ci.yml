@@ -218,9 +218,19 @@ jobs:
           if-no-files-found: error
 
   build-windows:
-    name: Build Windows artifact
+    name: Build Windows artifacts
     needs: prepare
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            preset: windows-release
+            build_dir: windows-release
+          - arch: x86
+            preset: windows-x86-release
+            build_dir: windows-x86-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -239,35 +249,36 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
-        run: cmake --preset windows-release
+        run: cmake --preset ${{ matrix.preset }}
 
       - name: Build (Windows)
-        run: cmake --build --preset windows-release
+        run: cmake --build --preset ${{ matrix.preset }}
 
-      - name: Upload Standalone (Windows)
+      - name: Upload Standalone (Windows ${{ matrix.arch }})
         uses: actions/upload-artifact@v4
         with:
-          name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
-          path: build/windows-release/MTControls_artefacts/Release/Standalone
+          name: MTControls-windows-${{ matrix.arch }}-standalone-${{ needs.prepare.outputs.semver }}
+          path: build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone
           if-no-files-found: error
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
-      - name: Package installer (Windows)
+      - name: Package installer (Windows ${{ matrix.arch }})
         shell: pwsh
         run: |
           ./scripts/package_windows_installer.ps1 `
             -Version "${{ needs.prepare.outputs.semver }}" `
-            -StandaloneDir "build/windows-release/MTControls_artefacts/Release/Standalone" `
+            -Architecture "${{ matrix.arch }}" `
+            -StandaloneDir "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone" `
             -OutputDir "dist" `
             -IssFile "packaging/windows/MTControls.iss"
 
-      - name: Upload installer (Windows)
+      - name: Upload installer (Windows ${{ matrix.arch }})
         uses: actions/upload-artifact@v4
         with:
-          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
-          path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}.exe
+          name: playworship-windows-installer-${{ matrix.arch }}-${{ needs.prepare.outputs.semver }}
+          path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}-${{ matrix.arch }}.exe
           if-no-files-found: error
 
   build-linux:
@@ -395,11 +406,17 @@ jobs:
           name: MTControls-macos-standalone-${{ needs.prepare.outputs.semver }}
           path: dist/macos
 
-      - name: Download Windows artifact
+      - name: Download Windows artifact (x64)
         uses: actions/download-artifact@v4
         with:
-          name: MTControls-windows-standalone-${{ needs.prepare.outputs.semver }}
-          path: dist/windows
+          name: MTControls-windows-x64-standalone-${{ needs.prepare.outputs.semver }}
+          path: dist/windows-x64
+
+      - name: Download Windows artifact (x86)
+        uses: actions/download-artifact@v4
+        with:
+          name: MTControls-windows-x86-standalone-${{ needs.prepare.outputs.semver }}
+          path: dist/windows-x86
 
       - name: Download Linux artifact
         uses: actions/download-artifact@v4
@@ -413,10 +430,16 @@ jobs:
           name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
           path: release-assets
 
-      - name: Download Windows installer
+      - name: Download Windows installer (x64)
         uses: actions/download-artifact@v4
         with:
-          name: playworship-windows-installer-${{ needs.prepare.outputs.semver }}
+          name: playworship-windows-installer-x64-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Windows installer (x86)
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-windows-installer-x86-${{ needs.prepare.outputs.semver }}
           path: release-assets
 
       - name: Download Linux installer
@@ -434,7 +457,8 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           (cd dist && zip -r "../release-assets/MTControls-macos-standalone-${SEMVER}.zip" macos)
-          (cd dist && zip -r "../release-assets/MTControls-windows-standalone-${SEMVER}.zip" windows)
+          (cd dist && zip -r "../release-assets/MTControls-windows-x64-standalone-${SEMVER}.zip" windows-x64)
+          (cd dist && zip -r "../release-assets/MTControls-windows-x86-standalone-${SEMVER}.zip" windows-x86)
           (cd dist && zip -r "../release-assets/MTControls-linux-standalone-${SEMVER}.zip" linux)
 
       - name: Create or update GitHub release
@@ -447,15 +471,18 @@ jobs:
           SEMVER="${{ needs.prepare.outputs.semver }}"
           PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
           MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
-          WIN_ZIP="release-assets/MTControls-windows-standalone-${SEMVER}.zip"
+          WIN_X64_ZIP="release-assets/MTControls-windows-x64-standalone-${SEMVER}.zip"
+          WIN_X86_ZIP="release-assets/MTControls-windows-x86-standalone-${SEMVER}.zip"
           LINUX_ZIP="release-assets/MTControls-linux-standalone-${SEMVER}.zip"
           MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.pkg"
-          WIN_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}.exe"
+          WIN_X64_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x64.exe"
+          WIN_X86_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x86.exe"
           LINUX_INSTALLER="release-assets/playworship_${SEMVER}_amd64.deb"
-          ASSETS=("${MAC_ZIP}" "${WIN_ZIP}" "${LINUX_ZIP}" "${MAC_INSTALLER}" "${WIN_INSTALLER}")
+          ASSETS=("${MAC_ZIP}" "${WIN_X64_ZIP}" "${WIN_X86_ZIP}" "${LINUX_ZIP}" "${MAC_INSTALLER}" "${WIN_X64_INSTALLER}" "${WIN_X86_INSTALLER}")
 
           [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
-          [[ -f "${WIN_INSTALLER}" ]] || { echo "Missing Windows installer: ${WIN_INSTALLER}" >&2; exit 1; }
+          [[ -f "${WIN_X64_INSTALLER}" ]] || { echo "Missing Windows x64 installer: ${WIN_X64_INSTALLER}" >&2; exit 1; }
+          [[ -f "${WIN_X86_INSTALLER}" ]] || { echo "Missing Windows x86 installer: ${WIN_X86_INSTALLER}" >&2; exit 1; }
           if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
             [[ -f "${LINUX_INSTALLER}" ]] || { echo "Missing Linux installer: ${LINUX_INSTALLER}" >&2; exit 1; }
             ASSETS+=("${LINUX_INSTALLER}")
