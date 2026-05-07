@@ -1,5 +1,4 @@
 #include "SongLibraryStore.h"
-#include "AppSettings.h"
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
 
@@ -326,7 +325,9 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     return false;
   }
 
-  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
+  // Encoder optimization flow temporarily disabled:
+  // keep raw stems to avoid conversion failures during import/update.
+  constexpr bool stemOptimizationEnabled = false;
   const int stemTotal = static_cast<int>(song.stems.size());
   const int denom = juce::jmax(1, stemTotal);
 
@@ -402,6 +403,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
                                 : (srcExtension.isNotEmpty() ? srcExtension
                                                              : juce::String(".wav"));
     const auto stagedFile = stageDir.getChildFile(legalStemId + targetExtension);
+    juce::File stagedOutput = stagedFile;
     if (stagedFile.existsAsFile())
       stagedFile.deleteFile();
 
@@ -430,20 +432,31 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
                                stem.displayName + "'.");
     } else {
       juce::String convertError;
-      if (!convertStemToStorageFormat(sourceFile, stagedFile, convertError))
-        return failWithCleanup("Failed converting stem '" + stem.displayName +
-                               "': " + convertError);
-      stemsChanged = true;
+      if (!convertStemToStorageFormat(sourceFile, stagedFile, convertError)) {
+        const auto fallbackExtension =
+            srcExtension.isNotEmpty() ? srcExtension : juce::String(".wav");
+        stagedOutput = stageDir.getChildFile(legalStemId + fallbackExtension);
+        if (stagedOutput.existsAsFile())
+          stagedOutput.deleteFile();
+        if (!sourceFile.copyFileTo(stagedOutput)) {
+          return failWithCleanup("Failed converting stem '" + stem.displayName +
+                                 "' and fallback copy also failed: " +
+                                 convertError);
+        }
+        stemsChanged = true;
+      } else {
+        stemsChanged = true;
+      }
     }
 
-    if (!stagedFile.existsAsFile()) {
+    if (!stagedOutput.existsAsFile()) {
       return failWithCleanup("Converted stem file wasn't created: " +
-                             stagedFile.getFullPathName());
+                             stagedOutput.getFullPathName());
     }
 
-    stem.fileName = stagedFile.getFileName();
+    stem.fileName = stagedOutput.getFileName();
     stem.storedPath =
-        songDir.getChildFile(stagedFile.getFileName()).getFullPathName();
+        songDir.getChildFile(stagedOutput.getFileName()).getFullPathName();
     if (stem.sourcePath.trim().isEmpty())
       stem.sourcePath = sourceFile.getFullPathName();
 
@@ -1061,7 +1074,9 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     return false;
   };
 
-  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
+  // Encoder optimization flow temporarily disabled:
+  // keep raw stems to avoid conversion failures during import/update.
+  constexpr bool stemOptimizationEnabled = false;
 
   int stemsToCopy = 0;
   for (const auto &s : song.stems) {
@@ -1103,6 +1118,7 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
                                 : (srcExtension.isNotEmpty() ? srcExtension
                                                              : juce::String(".wav"));
     const auto dst = songDir.getChildFile(legalStemId + targetExtension);
+    juce::File outputFile = dst;
     const auto srcPathLower = src.getFullPathName().toLowerCase();
     const bool isPrimeSource =
         srcPathLower.contains("/library/containers/com.loopcommunity.primemac/");
@@ -1122,17 +1138,26 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
         return failImport("Failed copying local library stem '" +
                           stem.displayName + "'.");
     } else {
-      if (!convertStemToStorageFormat(src, dst, errorMessage))
-        return failImport("Failed converting stem '" + stem.displayName + "': " +
-                          errorMessage);
+      juce::String convertError;
+      if (!convertStemToStorageFormat(src, dst, convertError)) {
+        const auto fallbackExtension =
+            srcExtension.isNotEmpty() ? srcExtension : juce::String(".wav");
+        outputFile = songDir.getChildFile(legalStemId + fallbackExtension);
+        if (outputFile.existsAsFile())
+          outputFile.deleteFile();
+        if (!src.copyFileTo(outputFile)) {
+          return failImport("Failed converting stem '" + stem.displayName +
+                            "' and fallback copy also failed: " + convertError);
+        }
+      }
     }
 
-    if (!dst.existsAsFile())
+    if (!outputFile.existsAsFile())
       return failImport("Converted stem file wasn't created: " +
-                        dst.getFullPathName());
+                        outputFile.getFullPathName());
 
-    stem.storedPath = dst.getFullPathName();
-    stem.fileName = dst.getFileName();
+    stem.storedPath = outputFile.getFullPathName();
+    stem.fileName = outputFile.getFileName();
     ++stemDone;
     if (onProgress) {
       const double frac =
