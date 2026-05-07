@@ -28,6 +28,21 @@ on:
         required: true
         default: true
         type: boolean
+      publish_to_downloads_repo:
+        description: "Publicar release en repo publico de descargas (owner/repo)"
+        required: true
+        default: false
+        type: boolean
+      downloads_repo:
+        description: "Repo destino para releases publicas (ej: tu-org/playworship-downloads)"
+        required: false
+        default: "luisberna0324/adoracion-studio-downloads"
+        type: string
+      create_tag_if_missing:
+        description: "Crear y pushear tag en este repo si no existe"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -46,6 +61,8 @@ jobs:
       tag_exists: ${{ steps.resolve.outputs.tag_exists }}
       publish_release: ${{ steps.resolve.outputs.publish_release }}
       publish_installers: ${{ steps.resolve.outputs.publish_installers }}
+      target_release_repo: ${{ steps.resolve.outputs.target_release_repo }}
+      create_tag_if_missing: ${{ steps.resolve.outputs.create_tag_if_missing }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,6 +117,21 @@ jobs:
             return 1
           }
 
+          normalize_repo_input() {
+            local raw="$1"
+            raw="$(trim "${raw}")"
+            raw="$(strip_wrapping_quotes "${raw}")"
+            raw="${raw#https://github.com/}"
+            raw="${raw#http://github.com/}"
+            raw="${raw#github.com/}"
+            raw="${raw%.git}"
+            if [[ "${raw}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+              printf '%s' "${raw}"
+              return 0
+            fi
+            return 1
+          }
+
           REF_INPUT="$(trim "${{ inputs.ref }}")"
           if [[ -z "${REF_INPUT}" ]]; then
             REF_INPUT="main"
@@ -108,6 +140,9 @@ jobs:
           VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
           PUBLISH_INPUT="${{ inputs.publish_release }}"
           PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
+          PUBLISH_TO_DOWNLOADS_INPUT="${{ inputs.publish_to_downloads_repo }}"
+          DOWNLOADS_REPO_RAW="$(trim "${{ inputs.downloads_repo }}")"
+          CREATE_TAG_INPUT="${{ inputs.create_tag_if_missing }}"
 
           if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
             echo "Debes indicar al menos 'tag' o 'version'." >&2
@@ -157,12 +192,30 @@ jobs:
             RELEASE_REF="${TAG}"
           fi
 
+          TARGET_RELEASE_REPO="${{ github.repository }}"
+          if [[ "${PUBLISH_TO_DOWNLOADS_INPUT}" == "true" ]]; then
+            if [[ -z "${DOWNLOADS_REPO_RAW}" ]]; then
+              echo "Debes indicar 'downloads_repo' cuando publish_to_downloads_repo=true." >&2
+              exit 1
+            fi
+            if ! TARGET_RELEASE_REPO="$(normalize_repo_input "${DOWNLOADS_REPO_RAW}")"; then
+              echo "downloads_repo invalido '${DOWNLOADS_REPO_RAW}'. Formato esperado: owner/repo." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "${CREATE_TAG_INPUT}" != "true" && "${CREATE_TAG_INPUT}" != "false" ]]; then
+            CREATE_TAG_INPUT="true"
+          fi
+
           echo "release_ref=${RELEASE_REF}" >> "${GITHUB_OUTPUT}"
           echo "semver=${SEMVER}" >> "${GITHUB_OUTPUT}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "tag_exists=${TAG_EXISTS}" >> "${GITHUB_OUTPUT}"
           echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
           echo "publish_installers=${PUBLISH_INSTALLERS_INPUT}" >> "${GITHUB_OUTPUT}"
+          echo "target_release_repo=${TARGET_RELEASE_REPO}" >> "${GITHUB_OUTPUT}"
+          echo "create_tag_if_missing=${CREATE_TAG_INPUT}" >> "${GITHUB_OUTPUT}"
 
   build-macos:
     name: Build macOS artifact
@@ -392,8 +445,13 @@ jobs:
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
           TAG_EXISTS="${{ needs.prepare.outputs.tag_exists }}"
+          CREATE_TAG="${{ needs.prepare.outputs.create_tag_if_missing }}"
 
           if [[ "${TAG_EXISTS}" != "true" ]]; then
+            if [[ "${CREATE_TAG}" != "true" ]]; then
+              echo "El tag ${TAG} no existe y create_tag_if_missing=false." >&2
+              exit 1
+            fi
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "${TAG}" -m "Release ${TAG}"
@@ -463,13 +521,25 @@ jobs:
 
       - name: Create or update GitHub release
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
           SEMVER="${{ needs.prepare.outputs.semver }}"
           PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
+          SOURCE_REPO="${{ github.repository }}"
+          TARGET_REPO="${{ needs.prepare.outputs.target_release_repo }}"
+          RELEASE_REF="${{ needs.prepare.outputs.release_ref }}"
+
+          if [[ "${TARGET_REPO}" == "${SOURCE_REPO}" ]]; then
+            export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
+          else
+            if [[ -z "${{ secrets.DOWNLOADS_REPO_TOKEN }}" ]]; then
+              echo "Falta secret DOWNLOADS_REPO_TOKEN para publicar en ${TARGET_REPO}." >&2
+              exit 1
+            fi
+            export GH_TOKEN="${{ secrets.DOWNLOADS_REPO_TOKEN }}"
+          fi
+
           MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
           WIN_X64_ZIP="release-assets/MTControls-windows-x64-standalone-${SEMVER}.zip"
           WIN_X86_ZIP="release-assets/MTControls-windows-x86-standalone-${SEMVER}.zip"
@@ -488,12 +558,43 @@ jobs:
             ASSETS+=("${LINUX_INSTALLER}")
           fi
 
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "Release ${TAG}"
+            echo
+            echo "Source repo: ${SOURCE_REPO}"
+            echo
+            if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+              PREV_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -Fvx "${TAG}" | head -n1 || true)"
+              if [[ -n "${PREV_TAG}" ]]; then
+                echo "Changes since ${PREV_TAG}:"
+                git log --no-merges --pretty='- %s (%h)' "${PREV_TAG}..${TAG}" || true
+              else
+                echo "Changes:"
+                git log --no-merges --pretty='- %s (%h)' -n 30 "${TAG}" || true
+              fi
+            else
+              echo "Changes:"
+              git log --no-merges --pretty='- %s (%h)' -n 30 "${RELEASE_REF}" || true
+            fi
+          } > "${NOTES_FILE}"
+
+          if gh release view "${TAG}" -R "${TARGET_REPO}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${ASSETS[@]}" --clobber -R "${TARGET_REPO}"
+            gh release edit "${TAG}" -R "${TARGET_REPO}" --notes-file "${NOTES_FILE}" --title "${TAG}"
           else
-            gh release create "${TAG}" \
-              "${ASSETS[@]}" \
-              --title "${TAG}" \
-              --target "${{ needs.prepare.outputs.release_ref }}" \
-              --generate-notes
+            if [[ "${TARGET_REPO}" == "${SOURCE_REPO}" ]]; then
+              gh release create "${TAG}" \
+                "${ASSETS[@]}" \
+                --title "${TAG}" \
+                --target "${RELEASE_REF}" \
+                --notes-file "${NOTES_FILE}" \
+                -R "${TARGET_REPO}"
+            else
+              gh release create "${TAG}" \
+                "${ASSETS[@]}" \
+                --title "${TAG}" \
+                --notes-file "${NOTES_FILE}" \
+                -R "${TARGET_REPO}"
+            fi
           fi
