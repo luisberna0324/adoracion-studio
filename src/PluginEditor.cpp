@@ -425,21 +425,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       pitchShiftMask.push_back(isStemPitchShiftable(loadedStem));
     }
 
-    pushLoadUi(0.0, L10n::tr("Preparando pistas…", "Preparing tracks…"));
+    pushLoadUi(0.0, L10n::tr(u8"Preparando pistas...", u8"Preparing tracks..."));
 
     const bool loaded = p.loadSongStems(
         stemPaths, song.title, song.key, static_cast<double>(song.bpm),
         [&pushLoadUi](double stemPhase01) {
           pushLoadUi(0.55 * stemPhase01,
-                     L10n::tr("Leyendo audio de las pistas…",
-                              "Reading stem audio…"));
+                     L10n::tr(u8"Leyendo audio de las pistas...",
+                              u8"Reading stem audio..."));
         });
 
     if (!loaded) {
       juce::AlertWindow::showMessageBoxAsync(
           juce::AlertWindow::WarningIcon,
           L10n::tr("Error de carga", "Load error"),
-          L10n::tr("No se pudieron cargar los stems de esta cancion.",
+          L10n::tr(u8"No se pudieron cargar los stems de esta canción.",
                    "Couldn't load audio stems for this song."));
       waveformBarRaw->setWaveformBins({});
       waveformBarRaw->setSongRhythm(0.0, {});
@@ -490,21 +490,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
     if (cachedBins.empty()) {
-      pushLoadUi(0.58, L10n::tr("Generando vista de forma de onda…",
-                                "Generating waveform preview…"));
+      pushLoadUi(0.58, L10n::tr(u8"Generando vista de forma de onda...",
+                                u8"Generating waveform preview..."));
       cachedBins = buildMixedWaveformBins(
           loadedSong, 1400, [&pushLoadUi](const double wf01) {
             pushLoadUi(0.58 + 0.40 * wf01,
-                       L10n::tr("Generando vista de forma de onda…",
-                                "Generating waveform preview…"));
+                       L10n::tr(u8"Generando vista de forma de onda...",
+                                u8"Generating waveform preview..."));
           });
       SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins);
     } else {
-      pushLoadUi(0.98, L10n::tr("Cargando forma de onda en caché…",
-                                "Loading cached waveform…"));
+      pushLoadUi(0.98, L10n::tr(u8"Cargando forma de onda en caché...",
+                                u8"Loading cached waveform..."));
     }
 
-    pushLoadUi(1.0, L10n::tr("Finalizando…", "Finishing…"));
+    pushLoadUi(1.0, L10n::tr(u8"Finalizando...", u8"Finishing..."));
     waveformBarRaw->setWaveformBins(std::move(cachedBins));
     waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
                                   loadedSong.timeSignature);
@@ -1007,7 +1007,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   if (!mainUiInitialized)
     return;
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Configuracion", "Settings");
+  options.dialogTitle = L10n::tr(u8"Configuración", "Settings");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -1244,7 +1244,7 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
   }
 
   if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
-    modal->setStatusText(L10n::tr("Comprobando sesion...", "Checking session..."),
+    modal->setStatusText(L10n::tr(u8"Comprobando sesión...", "Checking session..."),
                          false);
     modal->setChecking(true);
   }
@@ -1282,7 +1282,7 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
           juce::String(snap.lastOnlineValidationMs) + " nowMs=" +
           juce::String(nowMs));
       welcomeError =
-          L10n::tr("Se requiere conexion para validar la suscripcion.",
+          L10n::tr(u8"Se requiere conexión para validar la suscripción.",
                    "An internet connection is required to validate your subscription.");
       clearSnapshot = false;
       return false;
@@ -1345,7 +1345,7 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
             fr.errorMessage);
         clearSnapshot = true;
         welcomeError =
-            L10n::tr("Sesion expirada. Vuelve a iniciar sesion.",
+            L10n::tr(u8"Sesión expirada. Vuelve a iniciar sesión.",
                      "Session expired. Please sign in again.");
       }
     }

@@ -104,7 +104,7 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   routingHintLabel.setFont(juce::FontOptions(11.0f));
   routingHintLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   routingHintLabel.setText(
-      "Routing sugerido automaticamente — puedes ajustarlo antes de aplicar",
+      "Routing sugerido automaticamente --- puedes ajustarlo antes de aplicar",
       juce::dontSendNotification);
   routingHintLabel.setVisible(false);
   addAndMakeVisible(routingHintLabel);
@@ -679,7 +679,7 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
     g.setColour(UITheme::textSecondary.withAlpha(0.85f));
     g.setFont(juce::FontOptions(12.0f));
     g.drawFittedText(
-        L10n::tr("Doble click en una cancion\ndel setlist",
+        L10n::tr(u8"Doble click en una canción\ndel setlist",
                  "Double-click a song\nfrom setlist"),
         viewportBounds, juce::Justification::centred, 2);
   }

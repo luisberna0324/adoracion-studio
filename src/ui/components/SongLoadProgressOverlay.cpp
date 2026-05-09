@@ -5,7 +5,7 @@ SongLoadProgressOverlay::SongLoadProgressOverlay()
     : progressBar(progressValue) {
   progressBar.setPercentageDisplay(true);
   addAndMakeVisible(progressBar);
-  titleLabel.setText(L10n::tr("Cargando canción", "Loading song"),
+  titleLabel.setText(L10n::tr(u8"Cargando canción", u8"Loading song"),
                      juce::dontSendNotification);
   titleLabel.setJustificationType(juce::Justification::centredLeft);
   titleLabel.setFont(

@@ -133,13 +133,13 @@ WaveformBar::WaveformBar() {
   snapModeLabel.setInterceptsMouseClicks(false, false);
   addAndMakeVisible(snapModeLabel);
 
-  snapModeBox.addItem(L10n::tr("Compas", "Bar"), kSnapModeBarId);
+  snapModeBox.addItem(L10n::tr(u8"Compás", "Bar"), kSnapModeBarId);
   snapModeBox.addItem(L10n::tr("Beat", "Beat"), kSnapModeBeatId);
   snapModeBox.addItem(L10n::tr("1/2 Beat", "1/2 Beat"), kSnapModeHalfBeatId);
   snapModeBox.addItem(L10n::tr("Libre", "Free"), kSnapModeFreeId);
   snapModeBox.setJustificationType(juce::Justification::centredLeft);
   snapModeBox.setTooltip(
-      L10n::tr("Modo de ajuste al mover secciones", "Section move snap mode"));
+      L10n::tr(u8"Modo de ajuste al mover secciónes", "Section move snap mode"));
   snapModeBox.setSelectedId(kSnapModeBarId, juce::dontSendNotification);
   snapModeBox.onChange = [this] {
     const int selectedId = snapModeBox.getSelectedId();
@@ -315,7 +315,7 @@ void WaveformBar::paint(juce::Graphics &g) {
   if (waveformBins.empty()) {
     g.setColour(UITheme::cardBg.withAlpha(0.55f));
     g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText(L10n::tr("Doble click en una cancion para cargar waveform",
+    g.drawFittedText(L10n::tr(u8"Doble click en una canción para cargar waveform",
                               "Double-click a song to load stems waveform"),
                      mainWaveBodyBounds.toNearestInt().reduced(20),
                      juce::Justification::centred, 2);
@@ -2156,7 +2156,7 @@ void WaveformBar::confirmDeleteArrangementPart(const int partIndex) {
 
   const auto partName = arrangement.parts[static_cast<size_t>(partIndex)].name;
   auto *dialog = new juce::AlertWindow(L10n::tr("Eliminar parte", "Delete part"),
-                                       L10n::tr("Se eliminara \"", "This will delete \"") +
+                                       L10n::tr(u8"Se eliminará \"", "This will delete \"") +
                                            partName +
                                            L10n::tr("\". Confirmas?", "\". Confirm?"),
                                        juce::AlertWindow::WarningIcon);

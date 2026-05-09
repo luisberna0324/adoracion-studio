@@ -247,15 +247,15 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
   }
 
   if (onProgress)
-    onProgress(0.84, L10n::tr("Actualizando biblioteca…",
-                              "Updating library…"));
+    onProgress(0.84, L10n::tr(u8"Actualizando biblioteca...",
+                              u8"Updating library..."));
   auto library = loadLibrary();
   ensureSongHasStemIds(song);
   library.songs.push_back(song);
   ensureDefaultSetlist(library);
   addSongToActiveSetlist(library, song);
   if (onProgress)
-    onProgress(0.92, L10n::tr("Guardando cambios…", "Saving changes…"));
+    onProgress(0.92, L10n::tr(u8"Guardando cambios...", u8"Saving changes..."));
   const bool saved = saveLibrary(library);
   if (!saved && errorMessage != nullptr && localError.isEmpty())
     *errorMessage = "Couldn't persist song metadata.";
@@ -263,7 +263,7 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
     SessionAuthLogger::write("[SongImportStore] appendSong failed: saveLibrary=false");
   }
   if (saved && onProgress)
-    onProgress(0.96, L10n::tr("Cancion guardada", "Song saved"));
+    onProgress(0.96, L10n::tr(u8"Canción guardada", "Song saved"));
   if (saved) {
     SessionAuthLogger::write("[SongImportStore] appendSong saved id=" + song.id);
   }
@@ -275,7 +275,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   song.id = song.id.trim();
   if (song.id.isEmpty()) {
     if (errorMessage != nullptr) {
-      *errorMessage = L10n::tr("No se pudo identificar la cancion a editar.",
+      *errorMessage = L10n::tr(u8"No se pudo identificar la canción a editar.",
                                "Couldn't identify the song to edit.");
     }
     return false;
@@ -283,7 +283,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
 
   if (onProgress) {
     onProgress(0.02,
-               L10n::tr("Preparando actualizacion…", "Preparing update…"));
+               L10n::tr(u8"Preparando actualización...", u8"Preparing update..."));
   }
 
   auto library = loadLibrary();
@@ -294,7 +294,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
                    });
   if (songIt == library.songs.end()) {
     if (errorMessage != nullptr) {
-      *errorMessage = L10n::tr("La cancion ya no existe en la biblioteca.",
+      *errorMessage = L10n::tr(u8"La canción ya no existe en la biblioteca.",
                                "Song no longer exists in the library.");
     }
     return false;
@@ -369,7 +369,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   stageDir.createDirectory();
   if (!stageDir.isDirectory()) {
     if (errorMessage != nullptr) {
-      *errorMessage = L10n::tr("No se pudo crear la carpeta temporal de edición.",
+      *errorMessage = L10n::tr(u8"No se pudo crear la carpeta temporal de edición.",
                                "Couldn't create temporary edit folder.");
     }
     return false;
@@ -519,7 +519,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
 
   if (onProgress)
     onProgress(0.80,
-               L10n::tr("Aplicando cambios en audio…", "Applying audio changes…"));
+               L10n::tr(u8"Aplicando cambios en audio...", u8"Applying audio changes..."));
 
   const bool hadSongDir = songDir.exists();
   if (hadSongDir) {
@@ -562,7 +562,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   }
 
   if (onProgress)
-    onProgress(0.86, L10n::tr("Guardando cambios…", "Saving changes…"));
+    onProgress(0.86, L10n::tr(u8"Guardando cambios...", u8"Saving changes..."));
 
   const bool saved = saveLibrary(library);
   if (!saved) {
@@ -571,7 +571,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     if (hadSongDir && backupDir.exists())
       backupDir.moveFileTo(songDir);
     if (errorMessage != nullptr) {
-      *errorMessage = L10n::tr("No se pudo guardar la canción editada.",
+      *errorMessage = L10n::tr(u8"No se pudo guardar la canción editada.",
                                "Couldn't persist edited song.");
     }
     return false;
@@ -582,11 +582,11 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
 
   if (stemsChanged) {
     if (onProgress) {
-      onProgress(0.90, L10n::tr("Generando forma de onda…",
-                                "Generating waveform preview…"));
+      onProgress(0.90, L10n::tr(u8"Generando forma de onda...",
+                                u8"Generating waveform preview..."));
     }
-    const auto waveformPhase = L10n::tr("Generando forma de onda…",
-                                        "Generating waveform preview…");
+    const auto waveformPhase = L10n::tr(u8"Generando forma de onda...",
+                                        u8"Generating waveform preview...");
     auto bins = buildMixedWaveformBins(
         song, 1400, [&onProgress, &waveformPhase](const double wf01) {
           if (onProgress)
@@ -601,7 +601,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   }
 
   if (onProgress)
-    onProgress(1.0, L10n::tr("Cancion actualizada", "Song updated"));
+    onProgress(1.0, L10n::tr(u8"Canción actualizada", "Song updated"));
 
   return true;
 }
@@ -1140,8 +1140,8 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
   int stemDone = 0;
 
   if (onProgress)
-    onProgress(0.0, L10n::tr("Preparando carpeta de la cancion…",
-                              "Preparing song folder…"));
+    onProgress(0.0, L10n::tr(u8"Preparando carpeta de la canción...",
+                              u8"Preparing song folder..."));
 
   for (auto &stem : song.stems) {
     if (!stem.include || stem.sourcePath.isEmpty())

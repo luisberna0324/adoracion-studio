@@ -107,8 +107,8 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
   constexpr int iconTextGap = 9;
 
   const std::array<juce::String, 3> labels = {
-      L10n::tr("Duracion total", "Total duration"),
-      L10n::tr("Canciones", "Songs"),
+      L10n::tr(u8"Duración total", "Total duration"),
+      L10n::tr(u8"Canciónes", "Songs"),
       L10n::tr("Prom. BPM", "Avg. BPM")};
   const std::array<juce::String, 3> values = {
       summary.duration,

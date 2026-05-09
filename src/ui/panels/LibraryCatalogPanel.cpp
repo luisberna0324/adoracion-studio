@@ -18,7 +18,7 @@ const std::array<juce::Colour, 5> kSongAccentPalette = {
 
 juce::String normalizedTitle(const ImportedSongData &song) {
   return song.title.isNotEmpty() ? song.title
-                                 : L10n::tr("Cancion sin titulo", "Untitled Song");
+                                 : L10n::tr(u8"Canción sin título", "Untitled Song");
 }
 
 juce::String toSentenceCase(const juce::String &text) {
@@ -487,7 +487,7 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
   if (rows.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.92f));
     g.setFont(makeAppFont(16.0f, AppFontWeight::Medium));
-    g.drawFittedText(L10n::tr("No encontramos canciones con esa busqueda.",
+    g.drawFittedText(L10n::tr(u8"No encontramos canciónes con esa busqueda.",
                               "No songs matched that search."),
                      getLocalBounds().reduced(18, 32), juce::Justification::centred, 3);
     return;
@@ -589,9 +589,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                      juce::Justification::centredLeft, 1);
 
     const auto metadataText =
-        (item.key.isNotEmpty() ? item.key : "-") + " • " +
-        (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM • " +
-        juce::String(item.stemCount) + " stems • " + formatDurationMMSS(item.durationSeconds);
+        (item.key.isNotEmpty() ? item.key : "-") + u8" • " +
+        (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM" + u8" • " +
+        juce::String(item.stemCount) + " stems" + u8" • " + formatDurationMMSS(item.durationSeconds);
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));
     g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
     g.drawFittedText(metadataText, metaArea, juce::Justification::centredLeft, 1);
@@ -667,7 +667,7 @@ void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
 
 LibraryCatalogPanel::LibraryCatalogPanel() {
   backButton.setStyle(false, juce::Colours::white);
-  backButton.setTooltip(L10n::tr("Volver a canciones del setlist",
+  backButton.setTooltip(L10n::tr(u8"Volver a canciónes del setlist",
                                  "Back to setlist songs"));
   backButton.onClick = [this] {
     if (onBackRequested)
@@ -676,12 +676,12 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   addAndMakeVisible(backButton);
 
   menuButton.setStyle(false, juce::Colours::white);
-  menuButton.setTooltip(L10n::tr("Opciones del panel", "Panel options"));
+  menuButton.setTooltip(L10n::tr(u8"Opciónes del panel", "Panel options"));
   menuButton.onClick = [this] { openHeaderMenu(); };
   addAndMakeVisible(menuButton);
 
   importSongsButton.setTooltip(
-      L10n::tr("Importar canciones nuevas a la biblioteca",
+      L10n::tr(u8"Importar canciónes nuevas a la biblioteca",
                "Import new songs to the library"));
   importSongsButton.onClick = [this] {
     if (onImportRequested)
@@ -689,12 +689,12 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   };
   addAndMakeVisible(importSongsButton);
 
-  searchField.setPlaceholderText(L10n::tr("Buscar cancion...", "Search song..."));
+  searchField.setPlaceholderText(L10n::tr(u8"Buscar canción...", "Search song..."));
   searchField.setIconGlyph(IconGlyph::Search);
   searchField.editor().setName(
-      L10n::tr("Buscar cancion en biblioteca", "Search song in library"));
+      L10n::tr(u8"Buscar canción en biblioteca", "Search song in library"));
   searchField.editor().setTooltip(
-      L10n::tr("Buscar cancion en biblioteca", "Search song in library"));
+      L10n::tr(u8"Buscar canción en biblioteca", "Search song in library"));
   searchField.setOnTextChange([this](const juce::String &) { rebuildRows(); });
   addAndMakeVisible(searchField);
 
@@ -721,7 +721,7 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   addAndMakeVisible(contentViewport);
 
   confirmButton.setTooltip(
-      L10n::tr("Agregar canciones seleccionadas", "Add selected songs"));
+      L10n::tr(u8"Agregar canciónes seleccionadas", "Add selected songs"));
   confirmButton.onClick = [this] { commitPendingSelection(); };
   addAndMakeVisible(confirmButton);
 
@@ -1042,27 +1042,27 @@ void LibraryCatalogPanel::refreshFooterState() {
   confirmButton.setEnabled(pendingCount > 0 && activeSetlistId.isNotEmpty());
   confirmButton.setVisible(true);
   confirmButton.setTooltip(
-      pendingCount > 0 ? L10n::tr("Agregar canciones seleccionadas",
+      pendingCount > 0 ? L10n::tr(u8"Agregar canciónes seleccionadas",
                                   "Add selected songs")
-                       : L10n::tr("Selecciona al menos una cancion",
+                       : L10n::tr(u8"Selecciona al menos una canción",
                                   "Select at least one song"));
 }
 
 void LibraryCatalogPanel::refreshTexts() {
-  searchField.setPlaceholderText(L10n::tr("Buscar cancion...", "Search song..."));
+  searchField.setPlaceholderText(L10n::tr(u8"Buscar canción...", "Search song..."));
   importSongsButton.setButtonText(
-      L10n::tr("+ Importar canciones", "+ Import songs"));
+      L10n::tr(u8"+ Importar canciónes", "+ Import songs"));
 }
 
 void LibraryCatalogPanel::openHeaderMenu() {
   juce::PopupMenu menu;
-  menu.addItem(1, L10n::tr("Importar canciones", "Import songs"));
+  menu.addItem(1, L10n::tr(u8"Importar canciónes", "Import songs"));
   menu.addSeparator();
   menu.addItem(2, L10n::tr("Ordenar A-Z", "Sort A-Z"), true,
                sortMode == SortMode::TitleAsc);
   menu.addItem(3, L10n::tr("Ordenar Z-A", "Sort Z-A"), true,
                sortMode == SortMode::TitleDesc);
-  menu.addItem(4, L10n::tr("Mas recientes", "Most recent"), true,
+  menu.addItem(4, L10n::tr(u8"Más recientes", "Most recent"), true,
                sortMode == SortMode::RecentFirst);
   menu.addItem(5, L10n::tr("BPM ascendente", "BPM ascending"), true,
                sortMode == SortMode::BpmAsc);
@@ -1095,11 +1095,11 @@ void LibraryCatalogPanel::openHeaderMenu() {
 void LibraryCatalogPanel::openAdvancedFilterMenu() {
   juce::PopupMenu menu;
   menu.addSectionHeader(L10n::tr("Orden", "Sorting"));
-  menu.addItem(10, L10n::tr("Titulo A-Z", "Title A-Z"), true,
+  menu.addItem(10, L10n::tr(u8"Título A-Z", "Title A-Z"), true,
                sortMode == SortMode::TitleAsc);
-  menu.addItem(11, L10n::tr("Titulo Z-A", "Title Z-A"), true,
+  menu.addItem(11, L10n::tr(u8"Título Z-A", "Title Z-A"), true,
                sortMode == SortMode::TitleDesc);
-  menu.addItem(12, L10n::tr("Mas recientes", "Most recent"), true,
+  menu.addItem(12, L10n::tr(u8"Más recientes", "Most recent"), true,
                sortMode == SortMode::RecentFirst);
   menu.addItem(13, L10n::tr("BPM ascendente", "BPM ascending"), true,
                sortMode == SortMode::BpmAsc);
@@ -1129,7 +1129,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
     return;
   auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
   std::vector<ContextActionItem> actions;
-  actions.push_back({L10n::tr("Editar cancion", "Edit song"), true, false, false,
+  actions.push_back({L10n::tr(u8"Editar canción", "Edit song"), true, false, false,
                      [safeThis, rowIndex] {
                        if (safeThis == nullptr ||
                            safeThis->onSongEditRequested == nullptr ||
@@ -1141,7 +1141,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                        if (targetItem.songId.isNotEmpty())
                          safeThis->onSongEditRequested(targetItem.songId);
                      }});
-  actions.push_back({L10n::tr("Eliminar cancion", "Delete song"), true, false, false,
+  actions.push_back({L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
                      [safeThis, rowIndex] {
                        if (safeThis == nullptr ||
                            safeThis->onSongDeleteRequested == nullptr ||
@@ -1246,7 +1246,7 @@ juce::String LibraryCatalogPanel::titleTextForActiveSetlist() const {
 
 juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
   if (headerMode == HeaderMode::Library)
-    return L10n::tr("Explora y agrega canciones", "Browse and add songs");
+    return L10n::tr(u8"Explora y agrega canciónes", "Browse and add songs");
 
   double totalSeconds = 0.0;
   for (const auto &song : librarySongs) {
@@ -1256,6 +1256,6 @@ juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
   }
 
   return juce::String(activeSetlistSongIds.size()) + " " +
-         L10n::tr("canciones actuales", "current songs") + " • " +
+         L10n::tr(u8"canciónes actuales", "current songs") + u8" • " +
          formatDurationHMSLocal(totalSeconds);
 }
