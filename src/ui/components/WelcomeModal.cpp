@@ -90,7 +90,7 @@ WelcomeModal::WelcomeModal() {
   clearLabelBg(title);
 
   subtitle.setText(
-      L10n::tr("Inicia sesion para continuar con tu biblioteca y setlists.",
+      L10n::tr(u8"Inicia sesión para continuar con tu biblioteca y setlists.",
                "Sign in to continue with your library and setlists."),
       juce::dontSendNotification);
   subtitle.setJustificationType(juce::Justification::centred);
@@ -128,7 +128,7 @@ WelcomeModal::WelcomeModal() {
   addAndMakeVisible(loginButton);
 
   moreInfoButton.setButtonText(
-      L10n::tr("Mas informacion", "More information"));
+      L10n::tr(u8"Más información", "More information"));
   moreInfoButton.setLookAndFeel(secondaryLaf.get());
   moreInfoButton.setColour(juce::TextButton::buttonColourId,
                            juce::Colours::transparentWhite);

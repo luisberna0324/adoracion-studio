@@ -388,8 +388,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
     if (onMidiLearnRequested)
       onMidiLearnRequested(targetId);
-    midiStatusLabel.setText(L10n::tr("Esperando mensaje MIDI CC…",
-                                     "Waiting for MIDI CC message…"),
+    midiStatusLabel.setText(L10n::tr(u8"Esperando mensaje MIDI CC...",
+                                     u8"Waiting for MIDI CC message..."),
                             juce::dontSendNotification);
   };
   midiPage.addAndMakeVisible(midiLearnButton);
@@ -582,7 +582,7 @@ void SettingsPanel::refreshThemeColours() {
 }
 
 void SettingsPanel::applyLanguageTexts() {
-  title.setText(L10n::tr("Configuracion", "Settings"),
+  title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
@@ -599,7 +599,7 @@ void SettingsPanel::applyLanguageTexts() {
       L10n::tr("Importar desde disco local", "Import from local disk"),
                            juce::dontSendNotification);
   primeImportToggle.setButtonText(
-      L10n::tr("Habilitar importacion desde disco local",
+      L10n::tr(u8"Habilitar importación desde disco local",
                "Enable import from local disk"));
   stemOptimizationLabel.setText(
       L10n::tr("Optimizacion de stems (deshabilitada)",
@@ -611,10 +611,10 @@ void SettingsPanel::applyLanguageTexts() {
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
-  padsCrossfadeBox.changeItemText(1, L10n::tr("Rapido (1s)", "Fast (1s)"));
+  padsCrossfadeBox.changeItemText(1, L10n::tr(u8"Rápido (1s)", "Fast (1s)"));
   padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
   padsCrossfadeBox.changeItemText(3, L10n::tr("Largo (5s)", "Long (5s)"));
-  sessionSectionLabel.setText(L10n::tr("Sesion", "Session"),
+  sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
   sessionEmailLabel.setText("Email", juce::dontSendNotification);
@@ -643,13 +643,13 @@ void SettingsPanel::applyLanguageTexts() {
       juce::dontSendNotification);
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
-  actionLogoutLabel.setText(L10n::tr("Cerrar sesion en esta aplicacion",
+  actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
                                      "Sign out on this app"),
                             juce::dontSendNotification);
-  actionInfoLabel.setText(L10n::tr("Saber mas", "More information"),
+  actionInfoLabel.setText(L10n::tr(u8"Saber más", "More information"),
                           juce::dontSendNotification);
-  logoutButton.setButtonText(L10n::tr("Cerrar sesion", "Sign out"));
-  infoLinkButton.setButtonText(L10n::tr("Saber mas", "More information"));
+  logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
+  infoLinkButton.setButtonText(L10n::tr(u8"Saber más", "More information"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
   midiTargetLabel.setText(L10n::tr("Control objetivo", "Target control"),

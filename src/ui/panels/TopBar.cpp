@@ -213,7 +213,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
   seekForwardButton.setTooltip(
       L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
-  nextButton.setTooltip(L10n::tr("Siguiente cancion", "Next song"));
+  nextButton.setTooltip(L10n::tr(u8"Siguiente canción", "Next song"));
   midiLearnButton.setTooltip(L10n::tr("MIDI Learn", "MIDI Learn"));
   midiLearnButton.setBadgeText({});
   timeDisplay.onClick = [this] { showSongWindowPopover(); };

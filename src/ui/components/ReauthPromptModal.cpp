@@ -10,14 +10,14 @@ constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/"
 } // namespace
 
 ReauthPromptModal::ReauthPromptModal() {
-  title.setText(L10n::tr("Renovar sesion", "Renew session"),
+  title.setText(L10n::tr(u8"Renovar sesión", "Renew session"),
                 juce::dontSendNotification);
   title.setJustificationType(juce::Justification::centred);
   title.setFont(juce::FontOptions(20.0f).withStyle("Bold"));
   addAndMakeVisible(title);
 
   message.setText(
-      L10n::tr("Para continuar con seguridad, necesitamos que vuelvas a iniciar sesion.",
+      L10n::tr(u8"Para continuar con seguridad, necesitamos que vuelvas a iniciar sesión.",
                "To continue securely, please sign in again."),
       juce::dontSendNotification);
   message.setJustificationType(juce::Justification::centred);
@@ -59,7 +59,7 @@ ReauthPromptModal::ReauthPromptModal() {
   };
   addAndMakeVisible(loginNowButton);
 
-  laterButton.setButtonText(L10n::tr("Mas tarde", "Later"));
+  laterButton.setButtonText(L10n::tr(u8"Más tarde", "Later"));
   laterButton.onClick = [this] {
     if (onLater)
       onLater();
@@ -67,7 +67,7 @@ ReauthPromptModal::ReauthPromptModal() {
   addAndMakeVisible(laterButton);
 
   infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
-  infoLink.setButtonText(L10n::tr("Mas informacion", "More information"));
+  infoLink.setButtonText(L10n::tr(u8"Más información", "More information"));
   infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
                    juce::Justification::centred);
   addAndMakeVisible(infoLink);
@@ -109,7 +109,7 @@ void ReauthPromptModal::setStatusText(const juce::String &text, bool isError) {
 }
 
 void ReauthPromptModal::showWaitingForCallback() {
-  setStatusText(L10n::tr("Esperando autenticacion en el navegador...",
+  setStatusText(L10n::tr(u8"Esperando autenticación en el navegador...",
                          "Waiting for browser authentication..."),
                 false);
   loginNowButton.setEnabled(false);

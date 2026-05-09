@@ -24,7 +24,7 @@ public:
       fileName = L10n::tr("Stem sin archivo", "Stem with no file");
 
     fileLabel.setText(fileName, juce::dontSendNotification);
-    fileLabel.setFont(juce::FontOptions(12.0f));
+    fileLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
     addAndMakeVisible(fileLabel);
 
     displayNameEditor.setText(stem.displayName, juce::dontSendNotification);
@@ -123,20 +123,20 @@ public:
 
     auto textArea = area.reduced(8, 5);
     g.setColour(UITheme::textPrimary);
-    g.setFont(juce::FontOptions(12.5f));
+    g.setFont(makeAppFont(12.5f, AppFontWeight::Medium));
     g.drawFittedText(song.title.isNotEmpty()
                          ? song.title
-                         : L10n::tr("Cancion sin titulo", "Untitled Song"),
+                         : L10n::tr(u8"Canción sin título", "Untitled Song"),
                      textArea.removeFromTop(16),
                      juce::Justification::centredLeft, 1);
 
     g.setColour(UITheme::textSecondary);
-    g.setFont(juce::FontOptions(10.0f));
+    g.setFont(makeAppFont(10.0f, AppFontWeight::Regular));
     juce::String meta;
     if (song.artist.isNotEmpty())
-      meta << song.artist << " • ";
-    if (song.bpm > 0)
-      meta << juce::String(song.bpm) << " BPM • ";
+      meta << song.artist << u8" • ";
+      if (song.bpm > 0)
+        meta << juce::String(song.bpm) << " BPM" << u8" • ";
     meta << juce::String(static_cast<int>(song.tracks.size())) << " "
          << L10n::tr("stems", "stems");
     g.drawFittedText(meta, textArea, juce::Justification::centredLeft, 1);
@@ -151,11 +151,11 @@ class SongImportWizardComponent::StemListRowComponent final
 public:
   explicit StemListRowComponent(SongImportWizardComponent &ownerIn)
       : owner(ownerIn) {
-    titleLabel.setFont(juce::FontOptions(12.5f));
+    titleLabel.setFont(makeAppFont(12.5f, AppFontWeight::Medium));
     titleLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(titleLabel);
 
-    metaLabel.setFont(juce::FontOptions(10.0f));
+    metaLabel.setFont(makeAppFont(10.0f, AppFontWeight::Regular));
     metaLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(metaLabel);
 
@@ -195,12 +195,12 @@ public:
 
     juce::String meta = stem.category.isNotEmpty() ? stem.category : "Other";
     if (stem.sampleRate > 0)
-      meta << " • " << stem.sampleRate << " Hz";
+      meta << u8" • " << stem.sampleRate << " Hz";
     if (stem.channels > 0)
-      meta << " • " << stem.channels << " "
+      meta << u8" • " << stem.channels << " "
            << L10n::tr("canales", "channels");
     if (stem.fromExistingSong)
-      meta << " • " << L10n::tr("existente", "existing");
+      meta << u8" • " << L10n::tr("existente", "existing");
     metaLabel.setText(meta, juce::dontSendNotification);
     removeButton.setEnabled(true);
   }
@@ -276,94 +276,94 @@ SongImportWizardComponent::SongImportWizardComponent(
   setSize(820, 620);
 
   titleLabel.setText(mode == Mode::Edit
-                         ? L10n::tr("Editar cancion", "Edit song")
-                         : L10n::tr("Agregar cancion", "Add Song"),
+                         ? L10n::tr(u8"Editar canción", "Edit song")
+                         : L10n::tr(u8"Agregar canción", "Add Song"),
                      juce::dontSendNotification);
-  titleLabel.setFont(juce::FontOptions(30.0f));
+  titleLabel.setFont(makeAppFont(30.0f, AppFontWeight::Bold));
   addAndMakeVisible(titleLabel);
 
-  subtitleLabel.setFont(juce::FontOptions(14.0f));
+  subtitleLabel.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
   addAndMakeVisible(subtitleLabel);
 
   stemsSectionLabel.setText(L10n::tr("Stems", "Stems"),
                             juce::dontSendNotification);
-  stemsSectionLabel.setFont(juce::FontOptions(12.0f));
+  stemsSectionLabel.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   stemsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(stemsSectionLabel);
 
   primeSectionLabel.setText(
       L10n::tr("Importar desde disco local", "Import from local disk"),
       juce::dontSendNotification);
-  primeSectionLabel.setFont(juce::FontOptions(12.0f));
+  primeSectionLabel.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   primeSectionLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(primeSectionLabel);
 
   primeStatusLabel.setText(L10n::tr("Listo", "Ready"),
                            juce::dontSendNotification);
-  primeStatusLabel.setFont(juce::FontOptions(10.0f));
+  primeStatusLabel.setFont(makeAppFont(10.0f, AppFontWeight::Regular));
   primeStatusLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(primeStatusLabel);
 
-  infoSectionLabel.setText(L10n::tr("Info de cancion", "Song Info"),
+  infoSectionLabel.setText(L10n::tr(u8"Info de canción", "Song Info"),
                            juce::dontSendNotification);
-  infoSectionLabel.setFont(juce::FontOptions(12.0f));
+  infoSectionLabel.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   infoSectionLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(infoSectionLabel);
 
-  songTitleLabel.setText(L10n::tr("Titulo", "Title"),
+  songTitleLabel.setText(L10n::tr(u8"Título", "Title"),
                          juce::dontSendNotification);
-  songTitleLabel.setFont(juce::FontOptions(11.0f));
+  songTitleLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   songTitleLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(songTitleLabel);
 
   artistLabel.setText(L10n::tr("Artista", "Artist"),
                       juce::dontSendNotification);
-  artistLabel.setFont(juce::FontOptions(11.0f));
+  artistLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   artistLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(artistLabel);
 
   bpmLabel.setText("BPM", juce::dontSendNotification);
-  bpmLabel.setFont(juce::FontOptions(11.0f));
+  bpmLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   bpmLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(bpmLabel);
 
   keyLabel.setText(L10n::tr("Tono", "Key"), juce::dontSendNotification);
-  keyLabel.setFont(juce::FontOptions(11.0f));
+  keyLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   keyLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(keyLabel);
 
-  timeSignatureLabel.setText(L10n::tr("Compas", "Time"),
+  timeSignatureLabel.setText(L10n::tr(u8"Compás", "Time"),
                              juce::dontSendNotification);
-  timeSignatureLabel.setFont(juce::FontOptions(11.0f));
+  timeSignatureLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   timeSignatureLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(timeSignatureLabel);
 
   mapFileHeader.setText(L10n::tr("Archivo", "File"),
                         juce::dontSendNotification);
-  mapFileHeader.setFont(juce::FontOptions(11.0f));
+  mapFileHeader.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
   mapFileHeader.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(mapFileHeader);
 
   mapNameHeader.setText(L10n::tr("Nombre visible", "Display name"),
                         juce::dontSendNotification);
-  mapNameHeader.setFont(juce::FontOptions(11.0f));
+  mapNameHeader.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
   mapNameHeader.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(mapNameHeader);
 
-  mapCategoryHeader.setText(L10n::tr("Categoria", "Category"),
+  mapCategoryHeader.setText(L10n::tr(u8"Categoría", "Category"),
                             juce::dontSendNotification);
-  mapCategoryHeader.setFont(juce::FontOptions(11.0f));
+  mapCategoryHeader.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
   mapCategoryHeader.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(mapCategoryHeader);
 
   mapLoadHeader.setText(L10n::tr("Cargar", "Load"),
                         juce::dontSendNotification);
-  mapLoadHeader.setFont(juce::FontOptions(11.0f));
+  mapLoadHeader.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
   mapLoadHeader.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(mapLoadHeader);
 
   configureTextEditor(songTitleEditor,
-                      L10n::tr("Titulo de cancion", "Song title"));
+                      L10n::tr(u8"Título de canción", "Song title"));
   configureTextEditor(artistEditor, L10n::tr("Artista", "Artist"));
   configureTextEditor(bpmEditor, "BPM");
   bpmEditor.setInputRestrictions(3, "0123456789");
@@ -384,12 +384,12 @@ SongImportWizardComponent::SongImportWizardComponent(
   addAndMakeVisible(keyBox);
   addAndMakeVisible(timeSignatureBox);
 
-  addFilesButton.setButtonText(L10n::tr("Agregar stems…", "Add stems…"));
+  addFilesButton.setButtonText(L10n::tr(u8"Agregar stems...", u8"Add stems..."));
   addFilesButton.onClick = [this] { openStemChooser(false); };
   addAndMakeVisible(addFilesButton);
 
   replaceFilesButton.setButtonText(
-      L10n::tr("Reemplazar stems…", "Replace stems…"));
+      L10n::tr(u8"Reemplazar stems...", u8"Replace stems..."));
   replaceFilesButton.onClick = [this] { openStemChooser(true); };
   addAndMakeVisible(replaceFilesButton);
 
@@ -414,6 +414,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   selectedFilesLabel.setText(
       L10n::tr("No hay stems seleccionados", "No stems selected"),
       juce::dontSendNotification);
+  selectedFilesLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   addAndMakeVisible(selectedFilesLabel);
 
   stemImportListModel = std::make_unique<StemImportListModel>(*this);
@@ -437,7 +438,7 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   cancelButton.setButtonText(L10n::tr("Cancelar", "Cancel"));
   cancelButton.onClick = [this] { closeDialog(); };
-  backButton.setButtonText(L10n::tr("Atras", "Back"));
+  backButton.setButtonText(L10n::tr(u8"Atrás", "Back"));
   backButton.onClick = [this] {
     if (currentStep == Step::Import)
       return;
@@ -448,7 +449,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   submitButton.setButtonText(mode == Mode::Edit
                                  ? L10n::tr("Guardar cambios",
                                             "Save changes")
-                                 : L10n::tr("Guardar cancion",
+                                 : L10n::tr(u8"Guardar canción",
                                             "Save song"));
   submitButton.onClick = [this] { submitSong(); };
 
@@ -522,7 +523,7 @@ void SongImportWizardComponent::refreshThemeColours() {
   }
   primeStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
 
-  applyEditorTheme(songTitleEditor, L10n::tr("Titulo de cancion", "Song title"));
+  applyEditorTheme(songTitleEditor, L10n::tr(u8"Título de canción", "Song title"));
   applyEditorTheme(artistEditor, L10n::tr("Artista", "Artist"));
   applyEditorTheme(bpmEditor, "BPM");
 
@@ -948,7 +949,7 @@ void SongImportWizardComponent::reloadPrimeSongs() {
 
   if (!PrimeLibrarySource::isSupportedOnCurrentPlatform()) {
     primeStatusLabel.setText(
-        L10n::tr("La importacion de disco local solo esta disponible en macOS.",
+        L10n::tr(u8"La importación de disco local solo esta disponible en macOS.",
                  "Local disk import is available only on macOS."),
         juce::dontSendNotification);
     return;
@@ -961,7 +962,7 @@ void SongImportWizardComponent::reloadPrimeSongs() {
   if (primeSongs.empty()) {
     primeStatusLabel.setText(
         error.isNotEmpty() ? error
-                           : L10n::tr("No hay canciones disponibles para importar.",
+                           : L10n::tr(u8"No hay canciónes disponibles para importar.",
                                       "No songs available to import."),
         juce::dontSendNotification);
     return;
@@ -969,14 +970,14 @@ void SongImportWizardComponent::reloadPrimeSongs() {
 
   primeStatusLabel.setText(
       juce::String(static_cast<int>(primeSongs.size())) + " " +
-          L10n::tr("canciones disponibles.", "songs available."),
+          L10n::tr(u8"canciónes disponibles.", "songs available."),
       juce::dontSendNotification);
 }
 
 void SongImportWizardComponent::useSelectedPrimeSong() {
   const int row = primeSongsList.getSelectedRow();
   if (!juce::isPositiveAndBelow(row, static_cast<int>(primeSongs.size()))) {
-    primeStatusLabel.setText(L10n::tr("Primero selecciona una cancion.",
+    primeStatusLabel.setText(L10n::tr(u8"Primero selecciona una canción.",
                                       "Select a song first."),
                              juce::dontSendNotification);
     return;
@@ -1056,13 +1057,13 @@ void SongImportWizardComponent::updateSummaryText() {
   const auto excluded = static_cast<int>(stems.size()) - static_cast<int>(included);
 
   juce::StringArray lines;
-  lines.add(mode == Mode::Edit ? L10n::tr("Modo: Edicion", "Mode: Edit")
-                               : L10n::tr("Modo: Importacion", "Mode: Import"));
-  lines.add(L10n::tr("Cancion: ", "Song: ") + songTitleEditor.getText().trim());
+  lines.add(mode == Mode::Edit ? L10n::tr(u8"Modo: Edición", "Mode: Edit")
+                               : L10n::tr(u8"Modo: Importación", "Mode: Import"));
+  lines.add(L10n::tr(u8"Canción: ", "Song: ") + songTitleEditor.getText().trim());
   lines.add(L10n::tr("Artista: ", "Artist: ") + artistEditor.getText().trim());
   lines.add("BPM: " + bpmEditor.getText().trim() + "   " +
             L10n::tr("Tono: ", "Key: ") + keyBox.getText() + "   " +
-            L10n::tr("Compas: ", "Time: ") + timeSignatureBox.getText());
+            L10n::tr(u8"Compás: ", "Time: ") + timeSignatureBox.getText());
   lines.add(L10n::tr("Tipo de archivo: ", "File type: ") + "Multitrack ALAC");
   lines.add(L10n::tr("Stems a cargar: ", "Stems to load: ") +
             juce::String(static_cast<int>(included)) + " / " +
@@ -1138,7 +1139,7 @@ bool SongImportWizardComponent::validateStepImport() {
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Stems no disponibles", "Stems unavailable"),
-        L10n::tr("No se encontraron archivos de audio válidos para importar.",
+        L10n::tr(u8"No se encontraron archivos de audio válidos para importar.",
                  "No valid audio files were found for import."));
     return false;
   }
@@ -1149,8 +1150,8 @@ bool SongImportWizardComponent::validateStepMetadata() {
   if (songTitleEditor.getText().trim().isEmpty()) {
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
-        L10n::tr("Falta el titulo", "Missing song title"),
-        L10n::tr("Agrega un titulo de cancion antes de continuar.",
+        L10n::tr(u8"Falta el título", "Missing song title"),
+        L10n::tr(u8"Agrega un título de canción antes de continuar.",
                  "Add a song title before continuing."));
     return false;
   }
@@ -1256,8 +1257,8 @@ void SongImportWizardComponent::submitSong() {
   addAndMakeVisible(overlay);
   overlay.refreshThemeColours();
   overlay.setTitleText(mode == Mode::Edit
-                           ? L10n::tr("Actualizando cancion", "Updating song")
-                           : L10n::tr("Importando cancion", "Importing song"));
+                           ? L10n::tr(u8"Actualizando canción", "Updating song")
+                           : L10n::tr(u8"Importando canción", "Importing song"));
   overlay.setAlwaysOnTop(true);
   overlay.setBounds(getLocalBounds());
   overlay.setVisible(true);
@@ -1306,10 +1307,10 @@ void SongImportWizardComponent::submitSong() {
         juce::AlertWindow::WarningIcon,
         mode == Mode::Edit
             ? L10n::tr("Error al actualizar", "Update error")
-            : L10n::tr("Error de importacion", "Import error"),
+            : L10n::tr(u8"Error de importación", "Import error"),
         errorMessage.isNotEmpty()
             ? errorMessage
-            : L10n::tr("No se pudo guardar la cancion seleccionada.",
+            : L10n::tr(u8"No se pudo guardar la canción seleccionada.",
                        "Couldn't save the selected song."));
     return;
   }
@@ -1336,10 +1337,10 @@ void SongImportWizardComponent::changeStep(const Step step) {
 juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
   switch (step) {
   case Step::Import:
-    return L10n::tr("Paso 1/4 - Importacion de stems",
+    return L10n::tr(u8"Paso 1/4 - Importación de stems",
                     "Step 1/4 - Import stems");
   case Step::Metadata:
-    return L10n::tr("Paso 2/4 - Metadatos de la cancion",
+    return L10n::tr(u8"Paso 2/4 - Metadatos de la canción",
                     "Step 2/4 - Song metadata");
   case Step::Mapping:
     return L10n::tr("Paso 3/4 - Mapeo de stems y categorias",
@@ -1347,9 +1348,9 @@ juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
   case Step::Review:
   default:
     return mode == Mode::Edit
-               ? L10n::tr("Paso 4/4 - Confirmar edicion",
+               ? L10n::tr(u8"Paso 4/4 - Confirmar edición",
                           "Step 4/4 - Confirm update")
-               : L10n::tr("Paso 4/4 - Confirmar importacion",
+               : L10n::tr(u8"Paso 4/4 - Confirmar importación",
                           "Step 4/4 - Confirm import");
   }
 }
@@ -1363,6 +1364,7 @@ void SongImportWizardComponent::closeDialog() {
 
 void SongImportWizardComponent::applyEditorTheme(
     juce::TextEditor &editor, const juce::String &placeholder) {
+  editor.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
   editor.setTextToShowWhenEmpty(placeholder,
                                 UITheme::textSecondary.withAlpha(0.6f));
   editor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);

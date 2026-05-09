@@ -260,13 +260,13 @@ public:
       g.setFont(makeAppFont(11.6f, AppFontWeight::Medium));
       g.drawFittedText(
           juce::String(rows[i].songCount) + " " +
-              L10n::tr("canciones", "songs").toUpperCase(),
+              L10n::tr(u8"canciónes", "songs").toUpperCase(),
           artistRect, juce::Justification::centredLeft, 1);
 
       g.setColour(UITheme::textSecondary.withAlpha(0.76f));
       g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
       g.drawFittedText(
-          L10n::tr("Duracion ", "Duration ") +
+          L10n::tr(u8"Duración ", "Duration ") +
               formatDurationHMS(rows[i].totalDurationSeconds),
           metaRect, juce::Justification::centredLeft, 1);
 
@@ -447,7 +447,7 @@ SongListPanel::SongListPanel() {
     if (it != librarySongs.end())
       songTitle = it->title.trim();
     if (songTitle.isEmpty())
-      songTitle = L10n::tr("(Sin titulo)", "(Untitled)");
+      songTitle = L10n::tr(u8"(Sin título)", "(Untitled)");
 
     const auto confirmText = L10n::tr(
         juce::String("Eliminar \"") + songTitle +
@@ -458,7 +458,7 @@ SongListPanel::SongListPanel() {
     juce::AlertWindow::showAsync(
         juce::MessageBoxOptions()
             .withIconType(juce::MessageBoxIconType::WarningIcon)
-            .withTitle(L10n::tr("Eliminar cancion", "Delete song"))
+            .withTitle(L10n::tr(u8"Eliminar canción", "Delete song"))
             .withMessage(confirmText)
             .withButton(L10n::tr("Eliminar", "Delete"))
             .withButton(L10n::tr("Cancelar", "Cancel")),
@@ -1009,7 +1009,7 @@ void SongListPanel::openHeaderMenu() {
     menu.addItem(L10n::tr("Crear setlist", "Create setlist"),
                  [this] { createSetlist(); });
     menu.addSeparator();
-    menu.addItem(L10n::tr("Importar cancion", "Import song"),
+    menu.addItem(L10n::tr(u8"Importar canción", "Import song"),
                  [this] { openSongImportWizard(); });
     menu.addItem(
         L10n::tr("Limpiar busqueda", "Clear search"),
@@ -1125,7 +1125,7 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
   juce::AlertWindow::showOkCancelBox(
       juce::AlertWindow::WarningIcon,
       L10n::tr("Eliminar setlist", "Delete setlist"),
-      L10n::tr("Eliminar este setlist? Esto no quitara canciones de la biblioteca.",
+      L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                "Delete this setlist? This won't remove songs from the library."),
       L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
       juce::ModalCallbackFunction::create([this, setlistId](int result) {
@@ -1376,10 +1376,10 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
         artistRect, juce::Justification::centredLeft, 1);
     g.setColour(UITheme::textSecondary.withAlpha(0.76f));
     g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
-    const auto detail = (rowData.key.isNotEmpty() ? rowData.key : "-") + " • " +
+    const auto detail = (rowData.key.isNotEmpty() ? rowData.key : "-") + u8" • " +
                         (rowData.bpm > 0 ? juce::String(rowData.bpm) : "--") +
-                        " BPM • " + juce::String(rowData.stemCount) + " stems" +
-                        " • " + formatDurationMMSS(rowData.durationSeconds);
+                        " BPM" + u8" • " + juce::String(rowData.stemCount) + " stems" +
+                        u8" • " + formatDurationMMSS(rowData.durationSeconds);
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
 
     drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(20.0f, 20.0f),
@@ -1410,7 +1410,7 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
   if (songs.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.88f));
     g.setFont(makeAppFont(12.0f, AppFontWeight::Regular));
-    g.drawFittedText(L10n::tr("Aun no hay canciones en este setlist.",
+    g.drawFittedText(L10n::tr(u8"Aun no hay canciónes en este setlist.",
                               "No songs in this setlist yet."),
                      getLocalBounds().withTrimmedBottom(rowHeight + rowGap).reduced(10),
                      juce::Justification::centred, 2);
@@ -1443,7 +1443,7 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
   g.setColour(UITheme::textSecondary.withAlpha(addRowHovered ? 0.96f : 0.90f));
   g.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
   g.drawFittedText(
-      L10n::tr("Agregar canciones desde biblioteca", "Add songs from library"),
+      L10n::tr(u8"Agregar canciónes desde biblioteca", "Add songs from library"),
       addRow.withTrimmedTop(22).reduced(10, 0), juce::Justification::centred, 1);
 
   if (hasActiveDrag) {
@@ -1854,7 +1854,7 @@ public:
     songsViewport.setScrollBarThickness(1);
     addAndMakeVisible(songsViewport);
 
-    addSongButton.setButtonText(L10n::tr("Agregar cancion", "Add Song"));
+    addSongButton.setButtonText(L10n::tr(u8"Agregar canción", "Add Song"));
     addSongButton.onClick = [this] { showAddSongMenu(); };
     addAndMakeVisible(addSongButton);
 
@@ -1992,7 +1992,7 @@ private:
         g.setColour(UITheme::textSecondary);
         g.setFont(juce::FontOptions(9.0f));
         g.drawFittedText(juce::String(rows[i].songCount) + " " +
-                             L10n::tr("canciones", "songs"),
+                             L10n::tr(u8"canciónes", "songs"),
                          textArea,
                          juce::Justification::centredLeft, 1);
 
@@ -2114,7 +2114,7 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText(L10n::tr("Aun no hay canciones.", "No songs yet."),
+        g.drawFittedText(L10n::tr(u8"Aun no hay canciónes.", "No songs yet."),
                          getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
@@ -2288,18 +2288,18 @@ private:
 
     juce::String meta;
     if (song.artist.isNotEmpty())
-      meta << song.artist << " • ";
-    if (song.key.isNotEmpty())
-      meta << song.key << " • ";
-    if (song.bpm > 0)
-      meta << juce::String(song.bpm) << " BPM • ";
+      meta << song.artist << u8" • ";
+      if (song.key.isNotEmpty())
+        meta << song.key << u8" • ";
+      if (song.bpm > 0)
+        meta << juce::String(song.bpm) << " BPM" << u8" • ";
     meta << juce::String(includedStems) << " stems";
 
     SongsListContent::SongRow row;
     row.songId = song.id;
     row.title = song.title.isNotEmpty()
                     ? song.title
-                    : L10n::tr("Cancion sin titulo", "Untitled Song");
+                    : L10n::tr(u8"Canción sin título", "Untitled Song");
     row.meta = meta;
     return row;
   }
@@ -2381,7 +2381,7 @@ private:
         continue;
       menu.addItem(song.title.isNotEmpty()
                        ? song.title
-                       : L10n::tr("Cancion sin titulo", "Untitled Song"),
+                       : L10n::tr(u8"Canción sin título", "Untitled Song"),
                    [this, id = song.id] {
                      SongLibraryStore::addSongToSetlist(selectedSetlistId, id);
                      dirty = true;
@@ -2389,7 +2389,7 @@ private:
                    });
     }
     if (menu.getNumItems() == 0) {
-      menu.addItem(L10n::tr("No hay canciones disponibles",
+      menu.addItem(L10n::tr(u8"No hay canciónes disponibles",
                             "No songs available"),
                    false, false, nullptr);
     }
@@ -2450,7 +2450,7 @@ private:
     juce::AlertWindow::showOkCancelBox(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Eliminar setlist", "Delete setlist"),
-        L10n::tr("Eliminar este setlist? Esto no quitara canciones de la biblioteca.",
+        L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
         L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
         juce::ModalCallbackFunction::create([this, id](int result) {
@@ -2529,7 +2529,7 @@ void SongListPanel::openSongImportWizard() {
                         : static_cast<juce::Component *>(this);
 
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Importar cancion", "Import Song");
+  options.dialogTitle = L10n::tr(u8"Importar canción", "Import Song");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -2542,7 +2542,7 @@ void SongListPanel::openSongImportWizard() {
           SessionAuthLogger::write(
               "[SongImport] abort: SongListPanel no longer available");
           errorMessage =
-              L10n::tr("La vista de importacion ya no esta disponible.",
+              L10n::tr(u8"La vista de importación ya no esta disponible.",
                        "Import UI is no longer available.");
           return false;
         }
@@ -2570,27 +2570,27 @@ void SongListPanel::openSongImportWizard() {
             "[SongImport] appendSong ok, refreshing storage and waveform cache");
 
         if (progress)
-          progress(0.97, L10n::tr("Actualizando lista de canciones…",
-                                  "Refreshing song list…"));
+          progress(0.97, L10n::tr(u8"Actualizando lista de canciónes...",
+                                  u8"Refreshing song list..."));
         const auto allSongs = SongLibraryStore::loadSongs();
         if (!allSongs.empty()) {
           const auto &saved = allSongs.back();
           if (progress)
-            progress(0.98, L10n::tr("Generando vista de forma de onda…",
-                                    "Generating waveform preview…"));
+            progress(0.98, L10n::tr(u8"Generando vista de forma de onda...",
+                                    u8"Generating waveform preview..."));
           auto bins = buildMixedWaveformBins(
               saved, 1400,
               [&progress](const double wf01) {
                 if (progress)
                   progress(0.98 + 0.02 * juce::jlimit(0.0, 1.0, wf01),
-                           L10n::tr("Generando vista de forma de onda…",
-                                    "Generating waveform preview…"));
+                           L10n::tr(u8"Generando vista de forma de onda...",
+                                    u8"Generating waveform preview..."));
               });
           SongLibraryStore::saveWaveformCache(saved.id, bins);
         }
 
         if (progress)
-          progress(1.0, L10n::tr("Importacion completa", "Import complete"));
+          progress(1.0, L10n::tr(u8"Importación completa", "Import complete"));
 
         safeThis->refreshFromStorage();
         SessionAuthLogger::write("[SongImport] import flow completed successfully");
@@ -2640,7 +2640,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
                         : static_cast<juce::Component *>(this);
 
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr("Editar cancion", "Edit Song");
+  options.dialogTitle = L10n::tr(u8"Editar canción", "Edit Song");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -2652,7 +2652,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
                                                juce::String &errorMessage,
                                                const SongImportProgressFn &progress) {
         if (safeThis == nullptr) {
-          errorMessage = L10n::tr("La vista de edicion ya no esta disponible.",
+          errorMessage = L10n::tr(u8"La vista de edición ya no esta disponible.",
                                   "Edit UI is no longer available.");
           return false;
         }
@@ -2664,7 +2664,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         if (!success) {
           errorMessage = updateError.isNotEmpty()
                              ? updateError
-                             : L10n::tr("No se pudo actualizar la cancion.",
+                             : L10n::tr(u8"No se pudo actualizar la canción.",
                                         "Couldn't update the song.");
           return false;
         }
@@ -2969,7 +2969,7 @@ void SongListPanel::refreshFromStorage() {
       rows.push_back({order++,
                       toSentenceCase(song.title.isNotEmpty()
                                          ? song.title
-                                         : L10n::tr("Cancion sin titulo",
+                                         : L10n::tr(u8"Canción sin título",
                                                     "Untitled Song")),
                       song.artist.trim().toUpperCase(),
                       song.key,
