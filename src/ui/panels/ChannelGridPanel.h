@@ -31,6 +31,9 @@ public:
   void setOnLibraryAddSongRequested(
       std::function<void(const juce::StringArray &)> cb);
   void setOnLibraryImportRequested(std::function<void()> cb);
+  void setMidiLearnActive(bool active);
+  void setMidiLearnPendingTarget(int targetId);
+  void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
 
   /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
   void beginAutomaticRoutingDraft();
@@ -70,7 +73,10 @@ private:
   std::function<void(const ImportedSongData &, int)> onLibrarySongLoadRequested;
   std::function<void(const juce::StringArray &)> onLibraryAddSongRequested;
   std::function<void()> onLibraryImportRequested;
+  std::function<void(int)> onMidiLearnTargetSelected;
   juce::String currentSongId;
+  bool midiLearnActive = false;
+  int midiLearnPendingTargetId = -1;
 
   bool routingDraftActive = false;
   std::vector<int> pendingOutputBySlotIndex;

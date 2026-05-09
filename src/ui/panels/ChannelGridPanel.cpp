@@ -169,6 +169,31 @@ void ChannelGridPanel::setOnLibraryImportRequested(std::function<void()> cb) {
   onLibraryImportRequested = std::move(cb);
 }
 
+void ChannelGridPanel::setMidiLearnActive(const bool active) {
+  midiLearnActive = active;
+  if (!midiLearnActive)
+    midiLearnPendingTargetId = -1;
+  for (auto &slot : slots) {
+    auto &strip = slot->getStrip();
+    const bool canLearn = strip.hasMidiLearnTarget(processor.midiTargetMasterVolume) ||
+                          strip.hasMidiLearnTarget(processor.midiTargetMasterMute);
+    strip.setMidiLearnSelectable(midiLearnActive && canLearn);
+  }
+  setMidiLearnPendingTarget(midiLearnPendingTargetId);
+}
+
+void ChannelGridPanel::setMidiLearnPendingTarget(const int targetId) {
+  midiLearnPendingTargetId = targetId;
+  for (auto &slot : slots) {
+    auto &strip = slot->getStrip();
+    strip.setMidiLearnPending(strip.hasMidiLearnTarget(targetId));
+  }
+}
+
+void ChannelGridPanel::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
+  onMidiLearnTargetSelected = std::move(cb);
+}
+
 void ChannelGridPanel::refreshLibraryFromStorage() {
   // La biblioteca se resolvio en el panel lateral (SongListPanel).
 }
@@ -467,6 +492,9 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
         SongLibraryStore::updateStemSoloForActiveSetlist(currentSongId, stemId,
                                                          soloed);
     });
+    slot->getStrip().setMidiLearnTargetIds(-1, -1);
+    slot->getStrip().setMidiLearnSelectable(false);
+    slot->getStrip().setMidiLearnPending(false);
     content.addAndMakeVisible(*slot);
     adjustableStems.push_back(isAdjustable);
     clickGuideStems.push_back(isClickGuide);
@@ -749,6 +777,14 @@ void ChannelGridPanel::addMasterSlot() {
     if (currentSongId.isNotEmpty())
       SongLibraryStore::updateMasterMuteForActiveSetlist(currentSongId, muted);
   });
+  strip.setMidiLearnTargetIds(processor.midiTargetMasterVolume,
+                              processor.midiTargetMasterMute);
+  strip.setOnMidiLearnTargetSelected([this](const int targetId) {
+    if (onMidiLearnTargetSelected)
+      onMidiLearnTargetSelected(targetId);
+  });
+  strip.setMidiLearnSelectable(midiLearnActive);
+  strip.setMidiLearnPending(strip.hasMidiLearnTarget(midiLearnPendingTargetId));
   strip.refreshThemeColours();
 
   content.addAndMakeVisible(*slot);
@@ -787,6 +823,9 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setOnSoloChanged([this](bool soloed) {
     processor.setMetronomeSolo(soloed);
   });
+  strip.setMidiLearnTargetIds(-1, -1);
+  strip.setMidiLearnSelectable(false);
+  strip.setMidiLearnPending(false);
   strip.refreshThemeColours();
 
   content.addAndMakeVisible(*slot);

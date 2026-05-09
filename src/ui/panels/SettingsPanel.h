@@ -22,6 +22,19 @@ public:
   using RoutingDefaultsChanged =
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
+  struct MidiTargetOption {
+    int id = -1;
+    juce::String name;
+  };
+  struct MidiBindingView {
+    int targetId = -1;
+    int midiChannel = 1;
+    int ccNumber = 0;
+    juce::String mode;
+  };
+  using MidiLearnRequested = std::function<void(int targetId)>;
+  using MidiClearRequested = std::function<void(int targetId)>;
+  using MidiBindingsProvider = std::function<std::vector<MidiBindingView>()>;
 
   struct SessionSummary {
     juce::String uid;
@@ -48,9 +61,15 @@ public:
                 std::vector<CategoryRoutingDefaults> routingDefaults,
                 int availableOutputChannels,
                 RoutingDefaultsChanged routingCb,
+                std::vector<MidiTargetOption> midiTargets,
+                MidiBindingsProvider midiBindingsProvider,
+                MidiLearnRequested midiLearnCb,
+                MidiClearRequested midiClearCb,
                 juce::AudioDeviceManager *deviceManagerToUse,
                 int maxInputChannels,
                 int maxOutputChannels);
+
+  void refreshMidiBindings();
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -75,6 +94,7 @@ private:
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtTop};
   juce::Component generalPage;
   juce::Component routingPage;
+  juce::Component midiPage;
   juce::Label deviceLabel;
   juce::ComboBox deviceBox;
   juce::Label themeLabel;
@@ -111,6 +131,12 @@ private:
   juce::Label routingSectionLabel;
   juce::Viewport routingViewport;
   juce::Component routingContent;
+  juce::Label midiTargetLabel;
+  juce::ComboBox midiTargetBox;
+  juce::Label midiBindingLabel;
+  juce::Label midiStatusLabel;
+  juce::TextButton midiLearnButton{"MIDI Learn"};
+  juce::TextButton midiClearButton{"Quitar"};
   ThemeChanged onThemeChanged;
   LanguageChanged onLanguageChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
@@ -120,6 +146,10 @@ private:
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
+  std::vector<MidiTargetOption> midiTargetOptions;
+  MidiBindingsProvider getMidiBindings;
+  MidiLearnRequested onMidiLearnRequested;
+  MidiClearRequested onMidiClearRequested;
   std::vector<CategoryRoutingDefaults> routingDefaults;
   int availableOutputChannels = 2;
   std::vector<std::unique_ptr<RoutingRow>> routingRows;
@@ -138,6 +168,7 @@ private:
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
   void layoutRoutingPage();
+  void layoutMidiPage();
   void applyLanguageTexts();
   static juce::String formatIsoDateTime(const juce::String &isoDateTime);
 };

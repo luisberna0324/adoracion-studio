@@ -70,6 +70,9 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
     const juce::SpinLock::ScopedLockType lock(padsStateLock);
     padsPackStatusText = "Not loaded";
   }
+  midiBindings = AppSettings::getMidiBindings();
+  for (auto &value : midiLastCcValues)
+    value = -1;
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
@@ -164,8 +167,9 @@ bool MTControlsAudioProcessor::isBusesLayoutSupported(
 }
 
 void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
-                                            juce::MidiBuffer &) {
+                                            juce::MidiBuffer &midiMessages) {
   juce::ScopedNoDenormals noDenormals;
+  processMidiMapping(midiMessages);
 
   // --- Diagnostics: overall block start time ---
   const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
@@ -890,13 +894,346 @@ const juce::String MTControlsAudioProcessor::getName() const {
   return JucePlugin_Name;
 }
 
-bool MTControlsAudioProcessor::acceptsMidi() const { return false; }
+bool MTControlsAudioProcessor::acceptsMidi() const { return true; }
 
 bool MTControlsAudioProcessor::producesMidi() const { return false; }
 
 bool MTControlsAudioProcessor::isMidiEffect() const { return false; }
 
 double MTControlsAudioProcessor::getTailLengthSeconds() const { return 0.0; }
+
+bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
+  if (targetId >= midiTargetPadsNoteBase &&
+      targetId < midiTargetPadsNoteBase + 12)
+    return true;
+  if (targetId >= midiTargetStemVolumeBase &&
+      targetId < midiTargetStemVolumeBase + 8)
+    return true;
+  return targetId >= midiTargetMasterVolume &&
+         targetId <= midiTargetPadsVolume;
+}
+
+MidiBindingMode
+MTControlsAudioProcessor::defaultModeForTarget(const int targetId) noexcept {
+  if (targetId == midiTargetMasterVolume || targetId == midiTargetMetronomeVolume ||
+      targetId == midiTargetPadsVolume ||
+      (targetId >= midiTargetStemVolumeBase &&
+       targetId < midiTargetStemVolumeBase + 8)) {
+    return MidiBindingMode::Absolute;
+  }
+  if (targetId >= midiTargetPadsNoteBase &&
+      targetId < midiTargetPadsNoteBase + 12) {
+    return MidiBindingMode::Toggle;
+  }
+  return MidiBindingMode::Toggle;
+}
+
+juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
+  switch (targetId) {
+  case midiTargetMasterVolume:
+    return "Master Volume";
+  case midiTargetMasterMute:
+    return "Master Mute";
+  case midiTargetTransportPlayPause:
+    return "Transport Play/Pause";
+  case midiTargetTransportStop:
+    return "Transport Stop";
+  case midiTargetMetronomeEnabled:
+    return "Metronome Enabled";
+  case midiTargetMetronomeVolume:
+    return "Metronome Volume";
+  case midiTargetMetronomeMute:
+    return "Metronome Mute";
+  case midiTargetTransportPrevSong:
+    return "Transport Prev Song";
+  case midiTargetTransportSeekBack:
+    return "Transport Seek Back";
+  case midiTargetTransportSeekForward:
+    return "Transport Seek Forward";
+  case midiTargetTransportNextSong:
+    return "Transport Next Song";
+  case midiTargetTransportFadeToggle:
+    return "Transport Fade Toggle";
+  case midiTargetPadsPower:
+    return "Pads Power";
+  case midiTargetPadsVolume:
+    return "Pads Volume";
+  default:
+    break;
+  }
+  if (targetId >= midiTargetPadsNoteBase &&
+      targetId < midiTargetPadsNoteBase + 12) {
+    static constexpr const char *kPadNames[] = {"C",  "C#", "D",  "D#", "E", "F",
+                                                 "F#", "G",  "G#", "A",  "A#", "B"};
+    const int idx = targetId - midiTargetPadsNoteBase;
+    return "Pads Note " + juce::String(kPadNames[idx]);
+  }
+  if (targetId >= midiTargetStemVolumeBase &&
+      targetId < midiTargetStemVolumeBase + 8) {
+    const int stemOneBased = targetId - midiTargetStemVolumeBase + 1;
+    return "Stem " + juce::String(stemOneBased) + " Volume";
+  }
+  return {};
+}
+
+std::vector<MTControlsAudioProcessor::MidiTargetDescriptor>
+MTControlsAudioProcessor::getMidiTargets() const {
+  std::vector<MidiTargetDescriptor> out;
+  out.push_back({midiTargetMasterVolume, midiTargetNameForId(midiTargetMasterVolume),
+                 defaultModeForTarget(midiTargetMasterVolume)});
+  out.push_back({midiTargetMasterMute, midiTargetNameForId(midiTargetMasterMute),
+                 defaultModeForTarget(midiTargetMasterMute)});
+  out.push_back(
+      {midiTargetTransportPlayPause, midiTargetNameForId(midiTargetTransportPlayPause),
+       defaultModeForTarget(midiTargetTransportPlayPause)});
+  out.push_back({midiTargetTransportStop, midiTargetNameForId(midiTargetTransportStop),
+                 defaultModeForTarget(midiTargetTransportStop)});
+  out.push_back(
+      {midiTargetMetronomeEnabled, midiTargetNameForId(midiTargetMetronomeEnabled),
+       defaultModeForTarget(midiTargetMetronomeEnabled)});
+  out.push_back(
+      {midiTargetMetronomeVolume, midiTargetNameForId(midiTargetMetronomeVolume),
+       defaultModeForTarget(midiTargetMetronomeVolume)});
+  out.push_back({midiTargetMetronomeMute, midiTargetNameForId(midiTargetMetronomeMute),
+                 defaultModeForTarget(midiTargetMetronomeMute)});
+  out.push_back(
+      {midiTargetTransportPrevSong, midiTargetNameForId(midiTargetTransportPrevSong),
+       defaultModeForTarget(midiTargetTransportPrevSong)});
+  out.push_back(
+      {midiTargetTransportSeekBack, midiTargetNameForId(midiTargetTransportSeekBack),
+       defaultModeForTarget(midiTargetTransportSeekBack)});
+  out.push_back(
+      {midiTargetTransportSeekForward,
+       midiTargetNameForId(midiTargetTransportSeekForward),
+       defaultModeForTarget(midiTargetTransportSeekForward)});
+  out.push_back(
+      {midiTargetTransportNextSong, midiTargetNameForId(midiTargetTransportNextSong),
+       defaultModeForTarget(midiTargetTransportNextSong)});
+  out.push_back(
+      {midiTargetTransportFadeToggle,
+       midiTargetNameForId(midiTargetTransportFadeToggle),
+       defaultModeForTarget(midiTargetTransportFadeToggle)});
+  out.push_back(
+      {midiTargetPadsPower, midiTargetNameForId(midiTargetPadsPower),
+       defaultModeForTarget(midiTargetPadsPower)});
+  out.push_back(
+      {midiTargetPadsVolume, midiTargetNameForId(midiTargetPadsVolume),
+       defaultModeForTarget(midiTargetPadsVolume)});
+  for (int i = 0; i < 12; ++i) {
+    const int targetId = midiTargetPadsNoteBase + i;
+    out.push_back(
+        {targetId, midiTargetNameForId(targetId), defaultModeForTarget(targetId)});
+  }
+  for (int i = 0; i < 8; ++i) {
+    const int targetId = midiTargetStemVolumeBase + i;
+    out.push_back(
+        {targetId, midiTargetNameForId(targetId), defaultModeForTarget(targetId)});
+  }
+  return out;
+}
+
+std::vector<MTControlsAudioProcessor::MidiBinding>
+MTControlsAudioProcessor::getMidiBindings() const {
+  const juce::ScopedLock lock(midiBindingsLock);
+  return midiBindings;
+}
+
+void MTControlsAudioProcessor::setMidiBinding(const MidiBinding &binding) {
+  if (!isMidiTargetValid(binding.targetId))
+    return;
+  const int safeChannel = juce::jlimit(1, 16, binding.midiChannel);
+  const int safeCc = juce::jlimit(0, 127, binding.ccNumber);
+
+  const juce::ScopedLock lock(midiBindingsLock);
+  midiBindings.erase(
+      std::remove_if(midiBindings.begin(), midiBindings.end(),
+                     [&binding](const MidiBinding &current) {
+                       return current.targetId == binding.targetId ||
+                              (current.midiChannel == binding.midiChannel &&
+                               current.ccNumber == binding.ccNumber);
+                     }),
+      midiBindings.end());
+  MidiBinding next = binding;
+  next.midiChannel = safeChannel;
+  next.ccNumber = safeCc;
+  midiBindings.push_back(next);
+}
+
+void MTControlsAudioProcessor::clearMidiBindingForTarget(const int targetId) {
+  const juce::ScopedLock lock(midiBindingsLock);
+  midiBindings.erase(
+      std::remove_if(midiBindings.begin(), midiBindings.end(),
+                     [targetId](const MidiBinding &current) {
+                       return current.targetId == targetId;
+                     }),
+      midiBindings.end());
+}
+
+void MTControlsAudioProcessor::beginMidiLearnForTarget(const int targetId) {
+  midiLearnTargetId.store(isMidiTargetValid(targetId) ? targetId : -1,
+                          std::memory_order_release);
+}
+
+bool MTControlsAudioProcessor::consumePendingMidiLearnBinding(
+    MidiBinding &outBinding) {
+  const int targetId = midiLearnPendingTargetId.exchange(-1, std::memory_order_acq_rel);
+  if (targetId < 0)
+    return false;
+  outBinding.targetId = targetId;
+  outBinding.midiChannel =
+      juce::jlimit(1, 16, midiLearnPendingChannel.load(std::memory_order_relaxed));
+  outBinding.ccNumber =
+      juce::jlimit(0, 127, midiLearnPendingCc.load(std::memory_order_relaxed));
+  outBinding.mode = static_cast<MidiBindingMode>(
+      juce::jlimit(0, 2, midiLearnPendingMode.load(std::memory_order_relaxed)));
+  return true;
+}
+
+bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
+  const int command = midiPendingUiCommand.exchange(0, std::memory_order_acq_rel);
+  if (command == 0)
+    return false;
+  outCommand = command;
+  return true;
+}
+
+void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
+                                                     const int ccValue,
+                                                     const MidiBindingMode mode) {
+  const float normalized =
+      juce::jlimit(0.0f, 1.0f, static_cast<float>(ccValue) / 127.0f);
+  const bool high = ccValue >= 64;
+
+  if (targetId == midiTargetMasterVolume) {
+    setMasterVolume(normalized);
+    return;
+  }
+  if (targetId == midiTargetMetronomeVolume) {
+    setMetronomeVolume(normalized);
+    return;
+  }
+  if (targetId == midiTargetPadsVolume) {
+    setPadsVolume(normalized);
+    return;
+  }
+  if (targetId >= midiTargetStemVolumeBase &&
+      targetId < midiTargetStemVolumeBase + 8) {
+    const int stemIndex = targetId - midiTargetStemVolumeBase;
+    setStemVolume(stemIndex, normalized);
+    return;
+  }
+
+  if (targetId >= midiTargetPadsNoteBase &&
+      targetId < midiTargetPadsNoteBase + 12) {
+    const int noteIndex = targetId - midiTargetPadsNoteBase;
+    if (mode == MidiBindingMode::Momentary) {
+      if (high)
+        triggerPadNote(noteIndex, 0);
+      else
+        stopPadNote(noteIndex);
+    } else if (high) {
+      triggerPadNote(noteIndex, 0);
+    }
+    return;
+  }
+
+  if (mode == MidiBindingMode::Momentary) {
+    if (targetId == midiTargetMasterMute)
+      setMasterMute(high);
+    else if (targetId == midiTargetMetronomeEnabled)
+      setMetronomeEnabled(high);
+    else if (targetId == midiTargetMetronomeMute)
+      setMetronomeMuted(high);
+    else if (targetId == midiTargetPadsPower)
+      setPadsEnabled(high);
+    else if (targetId == midiTargetTransportStop && high)
+      stopSong();
+    return;
+  }
+
+  if (targetId == midiTargetMasterMute)
+    setMasterMute(!isMasterMuted());
+  else if (targetId == midiTargetMetronomeEnabled)
+    setMetronomeEnabled(!isMetronomeEnabled());
+  else if (targetId == midiTargetMetronomeMute)
+    setMetronomeMuted(!isMetronomeMuted());
+  else if (targetId == midiTargetTransportPlayPause)
+    toggleSongPlayPause();
+  else if (targetId == midiTargetTransportStop)
+    stopSong();
+  else if (targetId == midiTargetTransportSeekBack)
+    seekSongRelative(-5.0);
+  else if (targetId == midiTargetTransportSeekForward)
+    seekSongRelative(5.0);
+  else if (targetId == midiTargetTransportFadeToggle) {
+    setFadeStopsPlayback(false);
+    setFadeActive(!isFadeActive());
+  } else if (targetId == midiTargetPadsPower) {
+    setPadsEnabled(!isPadsEnabled());
+  } else if (targetId == midiTargetTransportPrevSong) {
+    midiPendingUiCommand.store(midiUiCommandPrevSong, std::memory_order_release);
+  } else if (targetId == midiTargetTransportNextSong) {
+    midiPendingUiCommand.store(midiUiCommandNextSong, std::memory_order_release);
+  }
+}
+
+void MTControlsAudioProcessor::processMidiMapping(
+    const juce::MidiBuffer &midiMessages) {
+  if (midiMessages.isEmpty())
+    return;
+
+  std::vector<MidiBinding> currentBindings;
+  {
+    const juce::ScopedLock lock(midiBindingsLock);
+    currentBindings = midiBindings;
+  }
+
+  for (const auto metadata : midiMessages) {
+    const auto msg = metadata.getMessage();
+    if (!msg.isController())
+      continue;
+    const int channel = msg.getChannel();
+    const int cc = msg.getControllerNumber();
+    const int value = msg.getControllerValue();
+
+    const int learnTarget = midiLearnTargetId.exchange(-1, std::memory_order_acq_rel);
+    if (isMidiTargetValid(learnTarget)) {
+      MidiBinding learned;
+      learned.targetId = learnTarget;
+      learned.midiChannel = channel;
+      learned.ccNumber = cc;
+      learned.mode = defaultModeForTarget(learnTarget);
+      setMidiBinding(learned);
+      midiLearnPendingChannel.store(channel, std::memory_order_relaxed);
+      midiLearnPendingCc.store(cc, std::memory_order_relaxed);
+      midiLearnPendingMode.store(static_cast<int>(learned.mode),
+                                 std::memory_order_relaxed);
+      midiLearnPendingTargetId.store(learnTarget, std::memory_order_release);
+      currentBindings = getMidiBindings();
+    }
+
+    for (const auto &binding : currentBindings) {
+      if (binding.midiChannel != channel || binding.ccNumber != cc)
+        continue;
+
+      const int index = binding.targetId;
+      const int safeIndex = juce::jlimit(0, static_cast<int>(midiLastCcValues.size()) - 1,
+                                         index);
+      const int previous = midiLastCcValues[static_cast<size_t>(safeIndex)];
+      midiLastCcValues[static_cast<size_t>(safeIndex)] = value;
+      if (binding.mode != MidiBindingMode::Absolute) {
+        const bool prevHigh = previous >= 64;
+        const bool nowHigh = value >= 64;
+        if (!prevHigh && nowHigh)
+          applyMidiBindingValue(binding.targetId, value, binding.mode);
+        else if (binding.mode == MidiBindingMode::Momentary && prevHigh && !nowHigh)
+          applyMidiBindingValue(binding.targetId, value, binding.mode);
+      } else {
+        applyMidiBindingValue(binding.targetId, value, binding.mode);
+      }
+    }
+  }
+}
 
 int MTControlsAudioProcessor::getNumPrograms() { return 1; }
 

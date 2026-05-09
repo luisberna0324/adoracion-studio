@@ -4,7 +4,7 @@
 #include <JuceHeader.h>
 #include <functional>
 
-class NotePadButton : public juce::Component {
+class NotePadButton : public juce::Component, private juce::Timer {
 public:
     NotePadButton(const juce::String& noteName, int noteIndex);
 
@@ -16,6 +16,8 @@ public:
 
     void setActive(bool active);
     bool isActive() const { return active; }
+    void setMidiLearnSelectable(bool selectable);
+    void setMidiLearnPending(bool pending);
 
     const juce::String& getNoteName() const { return noteName; }
     int getNoteIndex() const { return noteIndex; }
@@ -29,8 +31,13 @@ private:
     bool hovered = false;
     bool pressed = false;
     bool active = false;
+    bool midiLearnSelectable = false;
+    bool midiLearnPending = false;
     std::function<void()> onPressed;
     std::function<void()> onReleased;
+
+    void timerCallback() override;
+    void updateMidiLearnBlinkTimer();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NotePadButton)
 };

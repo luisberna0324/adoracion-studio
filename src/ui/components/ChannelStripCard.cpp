@@ -3,6 +3,14 @@
 #include <cmath>
 #include <utility>
 
+namespace {
+float midiLearnBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
+  return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
+}
+} // namespace
+
 ChannelStripCard::ChannelStripCard(
     const juce::String &channelName, ChannelStripLookAndFeel &lookAndFeelRef,
     StereoVUMeter::LevelProvider levelProvider, bool isCompact)
@@ -46,14 +54,30 @@ ChannelStripCard::ChannelStripCard(
   powerButton.setVisible(false);
 
   volSlider.onValueChange = [this] {
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
+        onMidiLearnTargetSelected(midiVolumeTargetId);
+      return;
+    }
     if (onVolumeChanged)
       onVolumeChanged(static_cast<float>(volSlider.getValue()));
+  };
+  volSlider.onDragStart = [this] {
+    if (!midiLearnSelectable)
+      return;
+    if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
+      onMidiLearnTargetSelected(midiVolumeTargetId);
   };
   gainKnob.onValueChange = [this] {
     if (onGainChanged)
       onGainChanged(static_cast<float>(gainKnob.getValue()));
   };
   muteButton.onClick = [this] {
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiMuteTargetId >= 0)
+        onMidiLearnTargetSelected(midiMuteTargetId);
+      return;
+    }
     if (onMuteChanged)
       onMuteChanged(muteButton.getToggleState());
   };
@@ -88,6 +112,20 @@ void ChannelStripCard::paint(juce::Graphics &g) {
       9.5f, 12.0f, static_cast<float>(layout.channelBandHeight) * 0.70f);
   g.setFont(juce::FontOptions(bandFontSize).withStyle("Bold").withKerningFactor(0.05f));
   g.drawFittedText(name, band.toNearestInt(), juce::Justification::centred, 1);
+
+  if (midiLearnSelectable) {
+    const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+    const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+    auto outline = getLocalBounds().toFloat().reduced(1.5f);
+    const float pendingBlink = midiLearnPending ? midiLearnBlinkStrength() : 1.0f;
+    g.setColour((midiLearnPending ? pendingColour : selectableColour)
+                    .withAlpha(0.50f + (0.45f * pendingBlink)));
+    g.drawRoundedRectangle(outline, 5.5f, midiLearnPending ? (1.6f + (1.0f * pendingBlink)) : 1.4f);
+    if (midiLearnPending) {
+      g.setColour(pendingColour.withAlpha(0.10f + (0.18f * pendingBlink)));
+      g.fillRoundedRectangle(outline.reduced(2.0f), 4.5f);
+    }
+  }
 }
 
 void ChannelStripCard::resized() {
@@ -307,6 +345,47 @@ void ChannelStripCard::setOnSoloChanged(std::function<void(bool)> cb) {
 
 void ChannelStripCard::setOnPowerToggled(std::function<void(bool)> cb) {
   onPowerToggled = std::move(cb);
+}
+
+void ChannelStripCard::setMidiLearnTargetIds(const int volumeTargetId,
+                                             const int muteTargetId) {
+  midiVolumeTargetId = volumeTargetId;
+  midiMuteTargetId = muteTargetId;
+}
+
+void ChannelStripCard::setMidiLearnSelectable(const bool selectable) {
+  midiLearnSelectable = selectable;
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ChannelStripCard::setMidiLearnPending(const bool pending) {
+  midiLearnPending = pending;
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ChannelStripCard::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
+  onMidiLearnTargetSelected = std::move(cb);
+}
+
+bool ChannelStripCard::hasMidiLearnTarget(const int targetId) const {
+  return targetId >= 0 &&
+         (midiVolumeTargetId == targetId || midiMuteTargetId == targetId);
+}
+
+void ChannelStripCard::timerCallback() {
+  repaint();
+}
+
+void ChannelStripCard::updateMidiLearnBlinkTimer() {
+  const bool shouldBlink = midiLearnSelectable && midiLearnPending;
+  if (shouldBlink) {
+    if (!isTimerRunning())
+      startTimerHz(24);
+  } else if (isTimerRunning()) {
+    stopTimer();
+  }
 }
 
 void ChannelStripCard::configureLabel(juce::Label &label,

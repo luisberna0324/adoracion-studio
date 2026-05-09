@@ -180,6 +180,8 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::clock_svg, BinaryData::clock_svgSize};
   case SvgIconName::Music:
     return {BinaryData::music_svg, BinaryData::music_svgSize};
+  case SvgIconName::Midi:
+    return {BinaryData::midi_svg, BinaryData::midi_svgSize};
   case SvgIconName::AudioWaveform:
     return {BinaryData::audio_waveform_svg, BinaryData::audio_waveform_svgSize};
   case SvgIconName::Metronome:

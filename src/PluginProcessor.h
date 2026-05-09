@@ -6,6 +6,7 @@
 #include "StemTrack.h"
 #include "audio/PadsEngine.h"
 #include "data/SongData.h"
+#include "data/AppSettings.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/StemOutputRouter.h"
@@ -148,10 +149,41 @@ public:
   float getPadsOutputLevel() const noexcept;
   bool isPadsPackLoaded() const noexcept;
   juce::String getPadsPackStatusText() const;
+  struct MidiTargetDescriptor {
+    int id = -1;
+    juce::String name;
+    MidiBindingMode mode = MidiBindingMode::Absolute;
+  };
+  using MidiBinding = MidiBindingSetting;
+  std::vector<MidiTargetDescriptor> getMidiTargets() const;
+  std::vector<MidiBinding> getMidiBindings() const;
+  void setMidiBinding(const MidiBinding &binding);
+  void clearMidiBindingForTarget(int targetId);
+  void beginMidiLearnForTarget(int targetId);
+  bool consumePendingMidiLearnBinding(MidiBinding &outBinding);
+  bool consumePendingMidiUiCommand(int &outCommand);
 
   static constexpr const char *inputGainId = "inputGain";
   static constexpr const char *mixId = "mix";
   static constexpr const char *bypassId = "bypass";
+  static constexpr int midiTargetMasterVolume = 0;
+  static constexpr int midiTargetMasterMute = 1;
+  static constexpr int midiTargetTransportPlayPause = 2;
+  static constexpr int midiTargetTransportStop = 3;
+  static constexpr int midiTargetMetronomeEnabled = 4;
+  static constexpr int midiTargetMetronomeVolume = 5;
+  static constexpr int midiTargetMetronomeMute = 6;
+  static constexpr int midiTargetTransportPrevSong = 7;
+  static constexpr int midiTargetTransportSeekBack = 8;
+  static constexpr int midiTargetTransportSeekForward = 9;
+  static constexpr int midiTargetTransportNextSong = 10;
+  static constexpr int midiTargetTransportFadeToggle = 11;
+  static constexpr int midiTargetPadsPower = 20;
+  static constexpr int midiTargetPadsVolume = 21;
+  static constexpr int midiTargetStemVolumeBase = 100;
+  static constexpr int midiTargetPadsNoteBase = 200;
+  static constexpr int midiUiCommandPrevSong = 1;
+  static constexpr int midiUiCommandNextSong = 2;
 
 private:
   static constexpr int maxStemCount = 64;
@@ -238,6 +270,15 @@ private:
   juce::String loadedSongKey;
   juce::String loadedSongTitle;
   std::atomic<bool> songLoaded{false};
+  mutable juce::CriticalSection midiBindingsLock;
+  std::vector<MidiBinding> midiBindings;
+  std::array<int, 512> midiLastCcValues{};
+  std::atomic<int> midiLearnTargetId{-1};
+  std::atomic<int> midiLearnPendingTargetId{-1};
+  std::atomic<int> midiLearnPendingChannel{1};
+  std::atomic<int> midiLearnPendingCc{0};
+  std::atomic<int> midiLearnPendingMode{0};
+  std::atomic<int> midiPendingUiCommand{0};
 
   struct ArrangementRuntimePart {
     double startSec = 0.0;
@@ -285,6 +326,11 @@ private:
   double getArrangementStartSeconds() const noexcept;
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;
+  void processMidiMapping(const juce::MidiBuffer &midiMessages);
+  static bool isMidiTargetValid(int targetId) noexcept;
+  static MidiBindingMode defaultModeForTarget(int targetId) noexcept;
+  static juce::String midiTargetNameForId(int targetId);
+  void applyMidiBindingValue(int targetId, int ccValue, MidiBindingMode mode);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessor)
 };

@@ -13,6 +13,7 @@ class SongLoadProgressOverlay;
 class PadsComponent;
 class PadsHandlePanel;
 class LocalAuthCallbackServer;
+class SettingsPanel;
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
                                        private juce::Timer {
@@ -78,6 +79,7 @@ private:
   juce::CriticalSection authCallbackLock;
   int authCallbackPort = 0;
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
+  juce::Component::SafePointer<SettingsPanel> settingsPanelRaw;
   juce::int64 lastSuccessfulLoginMs = 0;
   /** Espejo del snapshot; ultima validacion online exitosa (login web o validate-access). */
   juce::int64 lastOnlineValidationMs = 0;
@@ -89,6 +91,8 @@ private:
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
   bool isPadsCollapsed = true;
+  bool midiLearnActive = false;
+  int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
   bool deferredStartupSongLoadPending = false;
   int deferredStartupSongIndex = -1;

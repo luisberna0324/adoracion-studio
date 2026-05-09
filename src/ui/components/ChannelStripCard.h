@@ -8,7 +8,7 @@
 
 #include <functional>
 
-class ChannelStripCard : public juce::Component {
+class ChannelStripCard : public juce::Component, private juce::Timer {
 public:
   struct Layout {
     int width = 90;
@@ -78,6 +78,11 @@ public:
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
   void setOnPowerToggled(std::function<void(bool)> cb);
+  void setMidiLearnTargetIds(int volumeTargetId, int muteTargetId);
+  void setMidiLearnSelectable(bool selectable);
+  void setMidiLearnPending(bool pending);
+  void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+  bool hasMidiLearnTarget(int targetId) const;
 
 private:
   Layout baseLayout;
@@ -108,6 +113,14 @@ private:
   bool gainVisible = true;
   bool powerVisible = false;
   bool muteAlignedToFader = false;
+  bool midiLearnSelectable = false;
+  bool midiLearnPending = false;
+  int midiVolumeTargetId = -1;
+  int midiMuteTargetId = -1;
+  std::function<void(int)> onMidiLearnTargetSelected;
+
+  void timerCallback() override;
+  void updateMidiLearnBlinkTimer();
 
   void configureLabel(juce::Label &label, const juce::String &text, float size,
                       float kerning, bool uppercase);

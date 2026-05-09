@@ -291,6 +291,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
   channelGridRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
+  channelGridRaw->setOnMidiLearnTargetSelected([this, &p, topBarRaw](const int targetId) {
+    if (!midiLearnActive || targetId < 0)
+      return;
+    midiLearnPendingTargetId = targetId;
+    p.beginMidiLearnForTarget(targetId);
+    if (topBarRaw != nullptr)
+      topBarRaw->setMidiLearnPendingTarget(targetId);
+    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+      grid->setMidiLearnPendingTarget(targetId);
+    if (padsComponent != nullptr)
+      padsComponent->setMidiLearnPendingTarget(targetId);
+  });
 
   p.getAudioDeviceBridge().setOnDeviceConnected(
       [&p, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
@@ -656,6 +668,37 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [this](juce::Rectangle<int> anchor, juce::Component *parent) {
         showSettings(anchor, parent);
       });
+  topBarRaw->setOnMidiLearnModeChanged([this, &p](const bool active) {
+    midiLearnActive = active;
+    if (!midiLearnActive) {
+      midiLearnPendingTargetId = -1;
+      p.beginMidiLearnForTarget(-1);
+    }
+    if (auto *bar = dynamic_cast<TopBar *>(topBar.get())) {
+      bar->setMidiLearnActive(midiLearnActive);
+      bar->setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    }
+    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
+      grid->setMidiLearnActive(midiLearnActive);
+      grid->setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    }
+    if (padsComponent != nullptr) {
+      padsComponent->setMidiLearnActive(midiLearnActive);
+      padsComponent->setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    }
+  });
+  topBarRaw->setOnMidiLearnTargetSelected([this, &p, channelGridRaw](const int targetId) {
+    if (!midiLearnActive || targetId < 0)
+      return;
+    midiLearnPendingTargetId = targetId;
+    p.beginMidiLearnForTarget(targetId);
+    if (channelGridRaw != nullptr)
+      channelGridRaw->setMidiLearnPendingTarget(targetId);
+    if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
+      bar->setMidiLearnPendingTarget(targetId);
+    if (padsComponent != nullptr)
+      padsComponent->setMidiLearnPendingTarget(targetId);
+  });
 
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
@@ -668,6 +711,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
   padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel);
+  padsComponent->setOnMidiLearnTargetSelected([this, &p, topBarRaw, channelGridRaw](const int targetId) {
+    if (!midiLearnActive || targetId < 0)
+      return;
+    midiLearnPendingTargetId = targetId;
+    p.beginMidiLearnForTarget(targetId);
+    if (topBarRaw != nullptr)
+      topBarRaw->setMidiLearnPendingTarget(targetId);
+    if (channelGridRaw != nullptr)
+      channelGridRaw->setMidiLearnPendingTarget(targetId);
+    if (padsComponent != nullptr)
+      padsComponent->setMidiLearnPendingTarget(targetId);
+  });
   padsComponent->setResponsiveProfile(resolveResponsiveLayoutProfile());
   padsComponent->setVisible(false);
   addChildComponent(*padsComponent);
@@ -712,6 +767,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   }
   if (welcomeModal)
     welcomeModal->setVisible(false);
+
+  midiLearnActive = false;
+  midiLearnPendingTargetId = -1;
+  topBarRaw->setMidiLearnActive(false);
+  topBarRaw->setMidiLearnPendingTarget(-1);
+  channelGridRaw->setMidiLearnActive(false);
+  channelGridRaw->setMidiLearnPendingTarget(-1);
+  padsComponent->setMidiLearnActive(false);
+  padsComponent->setMidiLearnPendingTarget(-1);
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
@@ -999,6 +1063,30 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
+      [&proc]() {
+        std::vector<SettingsPanel::MidiTargetOption> out;
+        for (const auto &target : proc.getMidiTargets())
+          out.push_back({target.id, target.name});
+        return out;
+      }(),
+      [&proc]() {
+        std::vector<SettingsPanel::MidiBindingView> out;
+        for (const auto &binding : proc.getMidiBindings()) {
+          juce::String modeText = "absolute";
+          if (binding.mode == MidiBindingMode::Toggle)
+            modeText = "toggle";
+          else if (binding.mode == MidiBindingMode::Momentary)
+            modeText = "momentary";
+          out.push_back({binding.targetId, binding.midiChannel, binding.ccNumber,
+                         modeText});
+        }
+        return out;
+      },
+      [&proc](const int targetId) { proc.beginMidiLearnForTarget(targetId); },
+      [&proc](const int targetId) {
+        proc.clearMidiBindingForTarget(targetId);
+        AppSettings::setMidiBindings(proc.getMidiBindings());
+      },
       audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
   panel->setSize(760, 620);
   panel->refreshThemeColours();
@@ -1006,6 +1094,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 
   if (auto *window = options.launchAsync()) {
     settingsWindow = window;
+    settingsPanelRaw = panel;
     window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
   }
 }
@@ -1039,6 +1128,7 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     settingsWindow->setVisible(false);
     settingsWindow->exitModalState(0);
     settingsWindow = nullptr;
+    settingsPanelRaw = nullptr;
   }
 
   if (localAuthServer != nullptr)
@@ -1526,6 +1616,27 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     return;
 
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  MTControlsAudioProcessor::MidiBinding learnedBinding;
+  if (processorRef.consumePendingMidiLearnBinding(learnedBinding)) {
+    AppSettings::setMidiBindings(processorRef.getMidiBindings());
+    midiLearnPendingTargetId = -1;
+    if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
+      bar->setMidiLearnPendingTarget(-1);
+    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+      grid->setMidiLearnPendingTarget(-1);
+    if (padsComponent != nullptr)
+      padsComponent->setMidiLearnPendingTarget(-1);
+  }
+  int midiUiCommand = 0;
+  if (processorRef.consumePendingMidiUiCommand(midiUiCommand)) {
+    if (midiUiCommand == MTControlsAudioProcessor::midiUiCommandPrevSong) {
+      if (prevSongAction)
+        prevSongAction();
+    } else if (midiUiCommand == MTControlsAudioProcessor::midiUiCommandNextSong) {
+      if (nextSongAction)
+        nextSongAction();
+    }
+  }
   const bool isPlayingNow = processorRef.isSongPlaying();
   const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
 
@@ -1572,6 +1683,7 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
     localAuthServer->stop();
   localAuthServer.reset();
   songLoadOverlay.reset();
+  settingsPanelRaw = nullptr;
   loadSongByIndexAction = {};
   songListPanelRaw = nullptr;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
