@@ -1,6 +1,7 @@
 #include "SongLibraryStore.h"
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
+#include "SessionAuthLogger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -191,12 +192,19 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
 
 bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMessage,
                                    const SongImportProgressFn &onProgress) {
+  SessionAuthLogger::write(
+      "[SongImportStore] appendSong begin title=\"" + song.title.trim() +
+      "\" id=" + song.id + " stems=" +
+      juce::String(static_cast<int>(song.stems.size())));
   juce::String localError;
   const auto mapStemProgress = [&onProgress](double t, const juce::String &s) {
     if (onProgress)
       onProgress(0.02 + 0.78 * juce::jlimit(0.0, 1.0, t), s);
   };
   if (!copyStemFiles(song, localError, mapStemProgress)) {
+    SessionAuthLogger::write(
+        "[SongImportStore] appendSong failed in copyStemFiles error=\"" +
+        localError + "\"");
     if (errorMessage != nullptr)
       *errorMessage = localError;
     return false;
@@ -215,8 +223,14 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
   const bool saved = saveLibrary(library);
   if (!saved && errorMessage != nullptr && localError.isEmpty())
     *errorMessage = "Couldn't persist song metadata.";
+  if (!saved) {
+    SessionAuthLogger::write("[SongImportStore] appendSong failed: saveLibrary=false");
+  }
   if (saved && onProgress)
     onProgress(0.96, L10n::tr("Cancion guardada", "Song saved"));
+  if (saved) {
+    SessionAuthLogger::write("[SongImportStore] appendSong saved id=" + song.id);
+  }
   return saved;
 }
 
@@ -1068,8 +1082,11 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
 
   auto songDir = getAudioRoot().getChildFile(song.id);
   songDir.createDirectory();
+  SessionAuthLogger::write("[SongImportStore] copyStemFiles begin id=" + song.id +
+                           " dir=" + songDir.getFullPathName());
   auto failImport = [&songDir, &errorMessage](const juce::String &msg) {
     errorMessage = msg;
+    SessionAuthLogger::write("[SongImportStore] copyStemFiles failed: " + msg);
     songDir.deleteRecursively();
     return false;
   };
@@ -1107,6 +1124,9 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     const juce::File src(stem.sourcePath);
     if (!src.existsAsFile())
       return failImport("Stem source file not found: " + stem.sourcePath);
+    SessionAuthLogger::write("[SongImportStore] stem begin id=" + stem.stemId +
+                             " name=\"" + stem.displayName + "\" src=" +
+                             src.getFullPathName());
 
     const auto legalStemId = juce::File::createLegalFileName(stem.stemId);
     if (legalStemId.isEmpty())
@@ -1158,6 +1178,9 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
 
     stem.storedPath = outputFile.getFullPathName();
     stem.fileName = outputFile.getFileName();
+    SessionAuthLogger::write(
+        "[SongImportStore] stem done id=" + stem.stemId + " dst=" +
+        stem.storedPath);
     ++stemDone;
     if (onProgress) {
       const double frac =
@@ -1168,6 +1191,8 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     }
   }
 
+  SessionAuthLogger::write("[SongImportStore] copyStemFiles complete id=" + song.id +
+                           " copied=" + juce::String(stemDone));
   return true;
 }
 

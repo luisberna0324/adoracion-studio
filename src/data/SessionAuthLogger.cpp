@@ -1,5 +1,6 @@
 #include "SessionAuthLogger.h"
 
+#include <cstdio>
 #include <memory>
 
 namespace {
@@ -88,6 +89,10 @@ void write(const juce::String &message) {
   ensureLoggerLocked();
 
   const auto prefixed = juce::String("[SessionAuth] ") + message;
+
+  const auto line = prefixed + "\n";
+  std::fputs(line.toRawUTF8(), stderr);
+  std::fflush(stderr);
 
   // Consola: stderr / depurador (macOS: fputs a stderr). En Debug, FileLogger ya
   // hace DBG() en logMessage; evitamos duplicar la misma linea.

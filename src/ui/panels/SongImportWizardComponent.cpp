@@ -1,6 +1,7 @@
 #include "SongImportWizardComponent.h"
 
 #include "../../data/Localization.h"
+#include "../../data/SessionAuthLogger.h"
 #include "../UiCommon.h"
 #include "../components/SongLoadProgressOverlay.h"
 
@@ -1234,9 +1235,17 @@ void SongImportWizardComponent::submitSong() {
     return;
 
   if (!onSubmit) {
+    SessionAuthLogger::write(
+        "[SongImportUI] submitSong ignored: missing onSubmit callback");
     closeDialog();
     return;
   }
+
+  SessionAuthLogger::write(
+      "[SongImportUI] submitSong begin mode=" +
+      juce::String(mode == Mode::Edit ? "edit" : "import") + " title=\"" +
+      songTitleEditor.getText().trim() + "\" stems=" +
+      juce::String(static_cast<int>(stems.size())));
 
   submitButton.setEnabled(false);
   backButton.setEnabled(false);
@@ -1259,15 +1268,31 @@ void SongImportWizardComponent::submitSong() {
       mm->runDispatchLoopUntil(14);
   };
 
+  int lastLoggedPct = -5;
+  juce::String lastLoggedPhase;
   const SongImportProgressFn report =
-      [&overlay, pumpUi](const double progress01, const juce::String &phase) {
+      [&overlay, pumpUi, &lastLoggedPct, &lastLoggedPhase](
+          const double progress01, const juce::String &phase) {
         overlay.setProgress(juce::jlimit(0.0, 1.0, progress01));
         overlay.setPhaseText(phase);
+        const int pct =
+            static_cast<int>(std::round(100.0 * juce::jlimit(0.0, 1.0, progress01)));
+        if (phase != lastLoggedPhase || pct >= (lastLoggedPct + 5)) {
+          lastLoggedPhase = phase;
+          lastLoggedPct = pct;
+          SessionAuthLogger::write(
+              "[SongImportUI] progress " + juce::String(pct) + "% phase=\"" +
+              phase + "\"");
+        }
         pumpUi();
       };
 
   juce::String errorMessage;
   const bool ok = onSubmit(buildSongData(), errorMessage, report);
+
+  SessionAuthLogger::write(
+      "[SongImportUI] submitSong finished ok=" + juce::String(ok ? "true" : "false") +
+      (errorMessage.isNotEmpty() ? " error=\"" + errorMessage + "\"" : ""));
 
   removeChildComponent(&overlay);
 

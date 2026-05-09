@@ -18,6 +18,16 @@ download_file() {
   /usr/bin/curl -fL --retry 3 --connect-timeout 15 --max-time 180 "$url" -o "$dest"
 }
 
+ensure_user_writable_dir() {
+  local path="$1"
+  if [[ -z "$path" ]]; then
+    return 1
+  fi
+  /bin/mkdir -p "$path"
+  /usr/sbin/chown -R "$CONSOLE_USER":staff "$path" 2>/dev/null || true
+  /bin/chmod -R u+rwX,go-rwx "$path" 2>/dev/null || true
+}
+
 CONSOLE_USER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)"
 if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" ]]; then
   log "No console user available; skipping asset bootstrap."
@@ -30,13 +40,15 @@ if [[ -z "$USER_HOME" || ! -d "$USER_HOME" ]]; then
   exit 0
 fi
 
-ASSETS_ROOT="$USER_HOME/Library/MTControls/Assets"
+MTCONTROLS_ROOT="$USER_HOME/Library/MTControls"
+ASSETS_ROOT="$MTCONTROLS_ROOT/Assets"
 ENCODER_DIR="$ASSETS_ROOT/encoder"
 PADS_DIR="$ASSETS_ROOT/pads/RomanVizcaino"
 TMP_DIR="/tmp/mtcontrols-assets-bootstrap"
 
+ensure_user_writable_dir "$MTCONTROLS_ROOT"
 mkdir -p "$ENCODER_DIR" "$PADS_DIR" "$TMP_DIR"
-chown -R "$CONSOLE_USER":staff "$ASSETS_ROOT" 2>/dev/null || true
+ensure_user_writable_dir "$ASSETS_ROOT"
 log "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."
 
 ENCODER_PATH="$ENCODER_DIR/ffmpeg"
@@ -47,6 +59,7 @@ if [[ ! -f "$ENCODER_PATH" ]]; then
     /bin/mv -f "$ENCODER_TMP" "$ENCODER_PATH"
     /bin/chmod +x "$ENCODER_PATH"
     /usr/sbin/chown "$CONSOLE_USER":staff "$ENCODER_PATH" 2>/dev/null || true
+    ensure_user_writable_dir "$MTCONTROLS_ROOT"
   else
     log "Failed downloading encoder; app will retry at runtime."
   fi
@@ -65,6 +78,7 @@ if (( PAD_COUNT < 12 )); then
     /bin/mkdir -p "$PADS_DIR"
     /usr/bin/unzip -o -q "$PADS_ZIP" -d "$PADS_DIR"
     /usr/sbin/chown -R "$CONSOLE_USER":staff "$PADS_DIR" 2>/dev/null || true
+    ensure_user_writable_dir "$MTCONTROLS_ROOT"
 
     PAD_COUNT="$(/usr/bin/find "$PADS_DIR" -type f \( -name '*.mp3' -o -name '*.wav' -o -name '*.aif' -o -name '*.aiff' \) 2>/dev/null | /usr/bin/wc -l | /usr/bin/xargs)"
     if [[ -z "$PAD_COUNT" || "$PAD_COUNT" -lt 12 ]]; then
@@ -75,6 +89,7 @@ if (( PAD_COUNT < 12 )); then
   fi
 fi
 
+ensure_user_writable_dir "$MTCONTROLS_ROOT"
 log "Proceso de recursos iniciales finalizado. / Initial resource bootstrap completed."
 
 exit 0

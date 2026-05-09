@@ -4,6 +4,7 @@
 #include "../../PluginEditor.h"
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
+#include "../../data/SessionAuthLogger.h"
 
 #include <algorithm>
 #include <array>
@@ -2502,23 +2503,35 @@ void SongListPanel::openSongImportWizard() {
       [safeThis](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
         if (safeThis == nullptr) {
+          SessionAuthLogger::write(
+              "[SongImport] abort: SongListPanel no longer available");
           errorMessage =
               L10n::tr("La vista de importacion ya no esta disponible.",
                        "Import UI is no longer available.");
           return false;
         }
 
+        SessionAuthLogger::write(
+            "[SongImport] appendSong begin title=\"" + song.title.trim() +
+            "\" id=" + song.id + " stems=" +
+            juce::String(static_cast<int>(song.stems.size())));
+
         juce::String importError;
         const bool success =
             SongLibraryStore::appendSong(std::move(song), &importError, progress);
 
         if (!success) {
+          SessionAuthLogger::write("[SongImport] appendSong failed error=\"" +
+                                   importError + "\"");
           errorMessage = importError.isNotEmpty() ? importError
                                                   : L10n::tr(
                                                         "No se pudo guardar la cancion importada.",
                                                         "Couldn't persist the imported song.");
           return false;
         }
+
+        SessionAuthLogger::write(
+            "[SongImport] appendSong ok, refreshing storage and waveform cache");
 
         if (progress)
           progress(0.97, L10n::tr("Actualizando lista de canciones…",
@@ -2544,6 +2557,7 @@ void SongListPanel::openSongImportWizard() {
           progress(1.0, L10n::tr("Importacion completa", "Import complete"));
 
         safeThis->refreshFromStorage();
+        SessionAuthLogger::write("[SongImport] import flow completed successfully");
         return true;
       },
       AppSettings::getPrimeImportEnabled());

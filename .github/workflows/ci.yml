@@ -8,16 +8,15 @@ on:
         required: true
         default: main
         type: string
-      tag:
-        description: "Tag semver opcional (ej: v1.2.3)"
-        required: false
-        default: ""
-        type: string
-      version:
-        description: "Version semver opcional (ej: 1.2.3)"
-        required: false
-        default: ""
-        type: string
+      release_kind:
+        description: "Tipo de incremento semver desde el ultimo tag estable vX.Y.Z"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
       publish_release:
         description: "Publicar GitHub Release con los artefactos"
         required: true
@@ -64,85 +63,57 @@ jobs:
             printf '%s' "${value}"
           }
 
-          strip_wrapping_quotes() {
-            local value="$1"
-            if [[ ${#value} -ge 2 ]]; then
-              if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
-                value="${value:1:${#value}-2}"
-              elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
-                value="${value:1:${#value}-2}"
-              fi
-            fi
-            printf '%s' "${value}"
-          }
-
-          normalize_version_input() {
-            local raw="$1"
-            raw="$(trim "${raw}")"
-            raw="$(strip_wrapping_quotes "${raw}")"
-            raw="${raw#refs/tags/}"
-            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              printf '%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-              return 0
-            fi
-            return 1
-          }
-
-          normalize_tag_input() {
-            local raw="$1"
-            raw="$(trim "${raw}")"
-            raw="$(strip_wrapping_quotes "${raw}")"
-            raw="${raw#refs/tags/}"
-            if [[ "${raw}" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-              printf 'v%s.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-              return 0
-            fi
-            return 1
-          }
-
           REF_INPUT="$(trim "${{ inputs.ref }}")"
           if [[ -z "${REF_INPUT}" ]]; then
             REF_INPUT="main"
           fi
-          TAG_INPUT_RAW="$(trim "${{ inputs.tag }}")"
-          VERSION_INPUT_RAW="$(trim "${{ inputs.version }}")"
+          RELEASE_KIND_INPUT="$(trim "${{ inputs.release_kind }}")"
           PUBLISH_INPUT="${{ inputs.publish_release }}"
           PUBLISH_INSTALLERS_INPUT="${{ inputs.publish_installers }}"
 
-          if [[ -z "${TAG_INPUT_RAW}" && -z "${VERSION_INPUT_RAW}" ]]; then
-            echo "Debes indicar al menos 'tag' o 'version'." >&2
+          if [[ "${RELEASE_KIND_INPUT}" != "major" && "${RELEASE_KIND_INPUT}" != "minor" && "${RELEASE_KIND_INPUT}" != "patch" ]]; then
+            echo "release_kind invalido '${RELEASE_KIND_INPUT}'. Valores permitidos: major|minor|patch." >&2
             exit 1
           fi
 
-          if [[ -n "${TAG_INPUT_RAW}" ]]; then
-            if ! TAG_FROM_INPUT="$(normalize_tag_input "${TAG_INPUT_RAW}")"; then
-              echo "Tag invalido '${TAG_INPUT_RAW}'. Formato esperado: vMAJOR.MINOR.PATCH (o MAJOR.MINOR.PATCH)." >&2
-              exit 1
-            fi
-            VERSION_FROM_TAG="${TAG_FROM_INPUT#v}"
+          git fetch --tags --force origin
+          LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
+          if [[ -z "${LATEST_TAG}" ]]; then
+            BASE_MAJOR=0
+            BASE_MINOR=0
+            BASE_PATCH=0
+          elif [[ "${LATEST_TAG}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            BASE_MAJOR="${BASH_REMATCH[1]}"
+            BASE_MINOR="${BASH_REMATCH[2]}"
+            BASE_PATCH="${BASH_REMATCH[3]}"
           else
-            TAG_FROM_INPUT=""
-            VERSION_FROM_TAG=""
-          fi
-
-          if [[ -n "${VERSION_INPUT_RAW}" ]]; then
-            if ! VERSION_INPUT="$(normalize_version_input "${VERSION_INPUT_RAW}")"; then
-              echo "Version invalida '${VERSION_INPUT_RAW}'. Formato esperado: MAJOR.MINOR.PATCH (o vMAJOR.MINOR.PATCH)." >&2
-              exit 1
-            fi
-          else
-            VERSION_INPUT=""
-          fi
-
-          if [[ -n "${VERSION_INPUT}" && -n "${VERSION_FROM_TAG}" && "${VERSION_INPUT}" != "${VERSION_FROM_TAG}" ]]; then
-            echo "Inconsistencia: tag=${TAG_FROM_INPUT} y version=${VERSION_INPUT} no coinciden." >&2
+            echo "Ultimo tag semver invalido '${LATEST_TAG}'. Se esperaba formato vMAJOR.MINOR.PATCH." >&2
             exit 1
           fi
 
-          if [[ -n "${VERSION_INPUT}" ]]; then
-            SEMVER="${VERSION_INPUT}"
-          else
-            SEMVER="${VERSION_FROM_TAG}"
+          NEXT_MAJOR="${BASE_MAJOR}"
+          NEXT_MINOR="${BASE_MINOR}"
+          NEXT_PATCH="${BASE_PATCH}"
+
+          case "${RELEASE_KIND_INPUT}" in
+            major)
+              NEXT_MAJOR=$((BASE_MAJOR + 1))
+              NEXT_MINOR=0
+              NEXT_PATCH=0
+              ;;
+            minor)
+              NEXT_MINOR=$((BASE_MINOR + 1))
+              NEXT_PATCH=0
+              ;;
+            patch)
+              NEXT_PATCH=$((BASE_PATCH + 1))
+              ;;
+          esac
+
+          SEMVER="${NEXT_MAJOR}.${NEXT_MINOR}.${NEXT_PATCH}"
+          if [[ "${SEMVER}" == "0.0.0" ]]; then
+            echo "Semver calculado invalido: ${SEMVER}" >&2
+            exit 1
           fi
 
           TAG="v${SEMVER}"
