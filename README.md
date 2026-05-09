@@ -122,9 +122,6 @@ Entradas relevantes:
 
 - `publish_release`: publica (o actualiza) GitHub Release.
 - `publish_installers` (default `true`): genera/publica instaladores `pkg` y `exe`.
-- `publish_to_downloads_repo` (default `false`): publica la release en otro repo (ideal para distribucion publica).
-- `downloads_repo`: repo destino en formato `owner/repo` (por ejemplo `tu-org/playworship-downloads`).
-- `create_tag_if_missing` (default `true`): crea y pushea el tag semver si aun no existe en este repo privado.
 
 Assets publicados cuando `publish_release=true`:
 
@@ -134,24 +131,6 @@ Assets publicados cuando `publish_release=true`:
 - `playworship-macos-installer-<semver>.pkg` (si `publish_installers=true`)
 - `playworship-windows-installer-<semver>-x64.exe` (si `publish_installers=true`)
 - `playworship-windows-installer-<semver>-x86.exe` (si `publish_installers=true`)
-
-### Opcion 3: Repo publico de descargas (codigo privado)
-
-1. Crea un repo publico para releases, por ejemplo: `tu-org/playworship-downloads`.
-2. En este repo privado, agrega el secret:
-   - `DOWNLOADS_REPO_TOKEN`: PAT con permisos `repo` sobre el repo de descargas.
-3. Ejecuta `Build Artifacts` con:
-   - `ref`: branch/SHA origen (ej: `main`)
-   - `version` o `tag` (ej: `1.2.3` o `v1.2.3`)
-   - `publish_release=true`
-   - `publish_to_downloads_repo=true`
-   - `downloads_repo=tu-org/playworship-downloads`
-   - `create_tag_if_missing=true`
-
-Resultado:
-- Si el tag no existe, se crea en el repo privado.
-- Se compilan artefactos/instaladores.
-- Se crea/actualiza la release `vX.Y.Z` en el repo publico de descargas con assets y notas de cambios.
 
 ## Siguiente foco
 
