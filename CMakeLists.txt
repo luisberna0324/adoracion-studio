@@ -62,9 +62,6 @@ if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "JUCE_DIR does not point to a JUCE checkout: ${JUCE_DIR}")
 endif()
 
-add_executable(test_app test.cpp)
-target_compile_options(test_app PRIVATE /utf-8)
-
 add_subdirectory("${JUCE_DIR}" JUCE)
 
 FetchContent_Declare(
@@ -276,6 +273,7 @@ target_compile_definitions(MTControls
 if (WIN32)
     target_compile_definitions(MTControls
         PRIVATE
+            JUCE_ASIO=1
             WINVER=0x0A00
             _WIN32_WINNT=0x0A00
             # DirectWrite color glyph APIs used by JUCE require at least Windows 10 RS3 SDK surface.

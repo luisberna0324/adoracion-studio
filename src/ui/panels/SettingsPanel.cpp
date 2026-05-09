@@ -16,7 +16,8 @@ public:
         availableOutputChannels(juce::jmax(1, outputChannels)),
         current(defaults) {
     categoryLabel.setText(categoryName, juce::dontSendNotification);
-    categoryLabel.setFont(juce::FontOptions(11.5f));
+    categoryLabel.setFont(juce::FontOptions(13.0f));
+    categoryLabel.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(categoryLabel);
 
     modeBox.addItem("Mono", 1);
@@ -45,25 +46,33 @@ public:
   }
 
   void resized() override {
-    auto r = getLocalBounds().reduced(4, 2);
-    auto nameCol = r.removeFromLeft(120);
-    auto modeCol = r.removeFromLeft(90);
+    auto r = getLocalBounds().reduced(0, 4);
+    
+    // El componente de AudioDeviceSelectorComponent de JUCE usa una proporción
+    // para sus etiquetas (usualmente un tercio del ancho o un máximo).
+    // Usamos un ancho fijo mayor para que los ComboBoxes queden alineados.
+    auto nameCol = r.removeFromLeft(220); 
+    auto modeCol = r.removeFromLeft(110);
+    r.removeFromLeft(16);
+    
     categoryLabel.setBounds(nameCol);
-    modeBox.setBounds(modeCol.reduced(6, 0));
-    channelBox.setBounds(r.reduced(4, 0));
+    modeBox.setBounds(modeCol);
+    
+    auto channelCol = r.removeFromLeft(juce::jmin(260, r.getWidth()));
+    channelBox.setBounds(channelCol);
   }
 
   void refreshThemeColours() {
     categoryLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-    modeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
+    modeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
     modeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
     modeBox.setColour(juce::ComboBox::outlineColourId,
-                      UITheme::cardBorder.withAlpha(0.7f));
+                      UITheme::cardBorder.withAlpha(0.65f));
     modeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-    channelBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
+    channelBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
     channelBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
     channelBox.setColour(juce::ComboBox::outlineColourId,
-                         UITheme::cardBorder.withAlpha(0.7f));
+                         UITheme::cardBorder.withAlpha(0.65f));
     channelBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   }
 
@@ -155,11 +164,18 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
-  juce::ignoreUnused(closeCb, maxInputChannels, maxOutputChannels,
-                     stemOptimizationEnabled);
+  juce::ignoreUnused(closeCb, stemOptimizationEnabled);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
   addAndMakeVisible(title);
+
+  if (deviceManager != nullptr) {
+    audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
+        *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, false, false, true, false);
+    audioSetupComp->setItemHeight(24);
+    routingPage.addAndMakeVisible(audioSetupComp.get());
+    deviceManager->addChangeListener(this);
+  }
 
   tabs.addTab(L10n::tr("General", "General"), UITheme::cardBg, &generalPage,
               false);
@@ -169,22 +185,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   tabs.setTabBarDepth(30);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
     if (newIndex == 1) {
-      refreshDeviceOptions();
       refreshRoutingForDevice();
     }
   };
   addAndMakeVisible(tabs);
-
-  deviceLabel.setJustificationType(juce::Justification::centredLeft);
-  deviceLabel.setFont(juce::FontOptions(11.0f));
-  routingPage.addAndMakeVisible(deviceLabel);
-
-  deviceBox.onChange = [this] {
-    const int id = deviceBox.getSelectedId();
-    if (id > 0)
-      applyDeviceSelection(id - 1);
-  };
-  routingPage.addAndMakeVisible(deviceBox);
 
   themeLabel.setJustificationType(juce::Justification::centredLeft);
   themeLabel.setFont(juce::FontOptions(12.0f));
@@ -452,7 +456,6 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     routingRows.push_back(std::move(row));
   }
 
-  refreshDeviceOptions();
   refreshRoutingForDevice();
   if (midiTargetBox.getNumItems() > 0)
     midiTargetBox.setSelectedId(1, juce::dontSendNotification);
@@ -492,12 +495,6 @@ void SettingsPanel::refreshThemeColours() {
                  UITheme::cardBorder.withAlpha(0.7f));
   tabs.setColour(juce::TabbedButtonBar::frontOutlineColourId,
                  UITheme::cardBorder);
-  deviceLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  deviceBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
-  deviceBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  deviceBox.setColour(juce::ComboBox::outlineColourId,
-                      UITheme::cardBorder.withAlpha(0.7f));
-  deviceBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   themeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
   themeBox.setColour(juce::ComboBox::outlineColourId,
@@ -587,7 +584,6 @@ void SettingsPanel::applyLanguageTexts() {
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
   tabs.setTabName(2, "MIDI");
-  deviceLabel.setText(L10n::tr("Interfaz", "Device"), juce::dontSendNotification);
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
@@ -730,22 +726,29 @@ juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
 
 void SettingsPanel::layoutRoutingPage() {
   auto area = routingPage.getLocalBounds().reduced(4);
-  routingSectionLabel.setBounds(area.removeFromTop(22));
-  area.removeFromTop(8);
-  auto deviceRow = area.removeFromTop(26);
-  deviceLabel.setBounds(deviceRow.removeFromLeft(70));
-  deviceBox.setBounds(deviceRow);
-  area.removeFromTop(8);
-  routingViewport.setBounds(area);
-  const int rowH = 28;
-  int y = 0;
-  const int contentW = juce::jmax(1, routingViewport.getWidth() - 6);
-  for (auto &rowComp : routingRows) {
-    rowComp->setBounds(2, y, contentW, rowH);
-    y += rowH + 4;
+
+  if (audioSetupComp != nullptr) {
+    auto audioArea = area.removeFromTop(270);
+    audioSetupComp->setBounds(audioArea.reduced(20, 0));
+    area.removeFromTop(16);
   }
-  routingContent.setSize(contentW + 4,
-                         juce::jmax(y + 2, routingViewport.getHeight()));
+
+  auto labelArea = area.removeFromTop(22);
+  routingSectionLabel.setBounds(labelArea.reduced(20, 0)); // Alineado con la lista
+  
+  area.removeFromTop(8);
+  
+  auto listArea = area.reduced(20, 0); // Mismo margen que el audioSetupComp
+  routingViewport.setBounds(listArea);
+  
+  const int rowH = 36;
+  int y = 0;
+  const int contentW = juce::jmax(1, routingViewport.getWidth() - 16);
+  for (auto &rowComp : routingRows) {
+    rowComp->setBounds(0, y, contentW, rowH);
+    y += rowH;
+  }
+  routingContent.setSize(contentW, juce::jmax(y + 2, routingViewport.getHeight()));
 }
 
 void SettingsPanel::layoutMidiPage() {
@@ -787,139 +790,15 @@ void SettingsPanel::refreshMidiBindings() {
       juce::dontSendNotification);
 }
 
-void SettingsPanel::refreshDeviceOptions() {
-  deviceOptions.clear();
-  deviceBox.clear(juce::dontSendNotification);
-
-  if (deviceManager == nullptr) {
-    deviceBox.addItem(L10n::tr("Audio no disponible", "Audio unavailable"), 1);
-    deviceBox.setSelectedId(1, juce::dontSendNotification);
-    return;
-  }
-
-  auto *currentDevice = deviceManager->getCurrentAudioDevice();
-  const juce::String currentType = deviceManager->getCurrentAudioDeviceType();
-  const juce::String currentName =
-      currentDevice != nullptr ? currentDevice->getName() : juce::String{};
-
-  auto &deviceTypes = deviceManager->getAvailableDeviceTypes();
-  struct RankedOption {
-    DeviceOption option;
-    int score = 0;
-  };
-  std::map<juce::String, RankedOption> bestByDeviceName;
-
-  for (auto *ioType : deviceTypes) {
-    if (ioType == nullptr)
-      continue;
-
-    const juce::String typeName = ioType->getTypeName();
-    const auto outputs = ioType->getDeviceNames(false);
-    const int defaultIndex = ioType->getDefaultDeviceIndex(false);
-    for (int i = 0; i < outputs.size(); ++i) {
-      const auto name = outputs[i].trim();
-      if (name.isEmpty())
-        continue;
-
-      int score = 0;
-      if (typeName.equalsIgnoreCase(currentType))
-        score += 2;
-      if (i == defaultIndex)
-        score += 1;
-
-      const auto key = name.toLowerCase();
-      auto it = bestByDeviceName.find(key);
-      if (it == bestByDeviceName.end() || score > it->second.score) {
-        bestByDeviceName[key] = RankedOption{{typeName, name}, score};
-      } else if (score == it->second.score &&
-                 typeName.compareIgnoreCase(it->second.option.typeName) < 0) {
-        it->second.option = {typeName, name};
-      }
-    }
-  }
-
-  for (const auto &entry : bestByDeviceName)
-    deviceOptions.push_back(entry.second.option);
-
-  std::sort(deviceOptions.begin(), deviceOptions.end(),
-            [](const DeviceOption &a, const DeviceOption &b) {
-              const auto nameCmp = a.deviceName.compareIgnoreCase(b.deviceName);
-              if (nameCmp != 0)
-                return nameCmp < 0;
-              return a.typeName.compareIgnoreCase(b.typeName) < 0;
-            });
-
-  int selectedId = 0;
-  for (size_t i = 0; i < deviceOptions.size(); ++i) {
-    const auto &opt = deviceOptions[i];
-    const bool includeType = opt.typeName.isNotEmpty();
-    const juce::String label =
-        includeType ? (opt.typeName + " - " + opt.deviceName) : opt.deviceName;
-    const int itemId = static_cast<int>(i) + 1;
-    deviceBox.addItem(label, itemId);
-    if (opt.deviceName.equalsIgnoreCase(currentName) &&
-        (selectedId == 0 || opt.typeName.equalsIgnoreCase(currentType)))
-      selectedId = itemId;
-  }
-
-  if (selectedId > 0)
-    deviceBox.setSelectedId(selectedId, juce::dontSendNotification);
-  else if (deviceBox.getNumItems() > 0)
-    deviceBox.setSelectedId(1, juce::dontSendNotification);
+SettingsPanel::~SettingsPanel() {
+  if (deviceManager != nullptr)
+    deviceManager->removeChangeListener(this);
 }
 
-void SettingsPanel::applyDeviceSelection(const int optionIndex) {
-  if (deviceManager == nullptr)
-    return;
-  if (!juce::isPositiveAndBelow(optionIndex,
-                                static_cast<int>(deviceOptions.size())))
-    return;
-
-  const auto &opt = deviceOptions[static_cast<size_t>(optionIndex)];
-  auto *currentDevice = deviceManager->getCurrentAudioDevice();
-  const juce::String currentType = deviceManager->getCurrentAudioDeviceType();
-  const juce::String currentName =
-      currentDevice != nullptr ? currentDevice->getName() : juce::String{};
-  if (currentType.equalsIgnoreCase(opt.typeName) &&
-      currentName.equalsIgnoreCase(opt.deviceName)) {
-    refreshDeviceOptions();
+void SettingsPanel::changeListenerCallback(juce::ChangeBroadcaster* source) {
+  if (source == deviceManager) {
     refreshRoutingForDevice();
-    return;
   }
-
-  deviceManager->setCurrentAudioDeviceType(opt.typeName, true);
-  if (deviceManager->getCurrentAudioDeviceType() != opt.typeName) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
-        L10n::tr("No se pudo cambiar el driver de audio",
-                 "Couldn't switch audio driver"),
-        L10n::tr("No se pudo aplicar el driver de audio seleccionado.",
-                 "The selected audio driver couldn't be applied."));
-    refreshDeviceOptions();
-    refreshRoutingForDevice();
-    return;
-  }
-
-  juce::AudioDeviceManager::AudioDeviceSetup setup;
-  deviceManager->getAudioDeviceSetup(setup);
-  setup.outputDeviceName = opt.deviceName;
-  setup.inputDeviceName = {};
-  setup.useDefaultInputChannels = false;
-  setup.inputChannels.clear();
-  setup.useDefaultOutputChannels = true;
-
-  const auto setupError = deviceManager->setAudioDeviceSetup(setup, true);
-  if (setupError.isNotEmpty()) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
-        L10n::tr("No se pudo cambiar la interfaz de audio",
-                 "Couldn't switch audio interface"),
-        setupError);
-  }
-
-  refreshDeviceOptions();
-  refreshRoutingForDevice();
-  setRoutingDefaultsLocal(routingDefaults);
 }
 
 void SettingsPanel::refreshRoutingForDevice() {

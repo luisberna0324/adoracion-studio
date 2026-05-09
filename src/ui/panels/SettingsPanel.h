@@ -9,8 +9,11 @@
 #include <utility>
 #include <vector>
 
-class SettingsPanel final : public juce::Component {
+class SettingsPanel final : public juce::Component, public juce::ChangeListener {
 public:
+  ~SettingsPanel() override;
+
+  void changeListenerCallback(juce::ChangeBroadcaster* source) override;
   using ThemeChanged = std::function<void(ThemePreset)>;
   using LanguageChanged = std::function<void(AppLanguage)>;
   using ExpandLaunchChanged = std::function<void(bool)>;
@@ -95,8 +98,7 @@ private:
   juce::Component generalPage;
   juce::Component routingPage;
   juce::Component midiPage;
-  juce::Label deviceLabel;
-  juce::ComboBox deviceBox;
+  std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
   juce::Label themeLabel;
   juce::ComboBox themeBox;
   juce::Label languageLabel;
@@ -156,14 +158,7 @@ private:
   std::vector<size_t> routingRowCategoryIndices;
   juce::AudioDeviceManager *deviceManager = nullptr;
   juce::String currentDeviceKey;
-  struct DeviceOption {
-    juce::String typeName;
-    juce::String deviceName;
-  };
-  std::vector<DeviceOption> deviceOptions;
 
-  void refreshDeviceOptions();
-  void applyDeviceSelection(int optionIndex);
   void refreshRoutingForDevice();
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
