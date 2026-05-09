@@ -18,6 +18,8 @@ public:
   void process(juce::AudioBuffer<float> &buffer);
 
 private:
+  void configureQualitySettings();
+  void refreshLatencyFromSettings();
   void primeLatency();
 
   soundtouch::SoundTouch soundtouch;

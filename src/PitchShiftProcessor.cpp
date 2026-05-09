@@ -26,6 +26,7 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
   soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
   soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
+  configureQualitySettings();
   soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
   soundtouch.setTempo(static_cast<float>(tempoRatio));
   soundtouch.setRate(1.0f);
@@ -54,10 +55,7 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   pitchSemiTones = semitones;
   if (prepared) {
     soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-    soundtouch.clear();
-    outputFifo.clear();
-    outputReadPos = 0;
-    primeLatency();
+    refreshLatencyFromSettings();
   }
 }
 
@@ -67,11 +65,9 @@ void PitchShiftProcessor::setTempoRatio(double ratio) {
     return;
   tempoRatio = normalized;
   if (prepared) {
+    configureQualitySettings();
     soundtouch.setTempo(static_cast<float>(tempoRatio));
-    soundtouch.clear();
-    outputFifo.clear();
-    outputReadPos = 0;
-    primeLatency();
+    refreshLatencyFromSettings();
   }
 }
 
@@ -181,5 +177,58 @@ void PitchShiftProcessor::primeLatency() {
   if (latencySamples > 0 && currentChannels > 0) {
     outputFifo.resize(static_cast<size_t>(latencySamples * currentChannels),
                       0.0f);
+  }
+}
+
+void PitchShiftProcessor::configureQualitySettings() {
+  const bool slowingDown = tempoRatio < 0.999;
+  const bool heavyStretch = tempoRatio < 0.85;
+  const int sequenceMs = heavyStretch ? 95 : (slowingDown ? 82 : 46);
+  const int seekWindowMs = heavyStretch ? 35 : (slowingDown ? 28 : 18);
+  const int overlapMs = heavyStretch ? 12 : (slowingDown ? 10 : 8);
+
+  // Favor quality over CPU while stretching down tempo in live playback.
+  soundtouch.setSetting(SETTING_USE_QUICKSEEK, 0);
+  soundtouch.setSetting(SETTING_SEQUENCE_MS, sequenceMs);
+  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, seekWindowMs);
+  soundtouch.setSetting(SETTING_OVERLAP_MS, overlapMs);
+}
+
+void PitchShiftProcessor::refreshLatencyFromSettings() {
+  int updatedLatency = soundtouch.getSetting(SETTING_INITIAL_LATENCY);
+  if (updatedLatency < 0)
+    updatedLatency = 0;
+  if (updatedLatency == latencySamples)
+    return;
+
+  if (currentChannels <= 0) {
+    latencySamples = updatedLatency;
+    return;
+  }
+
+  const int deltaSamples = updatedLatency - latencySamples;
+  latencySamples = updatedLatency;
+
+  if (deltaSamples > 0) {
+    const size_t padCount =
+        static_cast<size_t>(deltaSamples * currentChannels);
+    outputFifo.insert(
+        outputFifo.begin() + static_cast<std::ptrdiff_t>(outputReadPos),
+        padCount, 0.0f);
+    return;
+  }
+
+  const size_t availableToSkip =
+      outputFifo.size() > outputReadPos ? (outputFifo.size() - outputReadPos)
+                                        : 0u;
+  const size_t skipCount =
+      std::min(static_cast<size_t>((-deltaSamples) * currentChannels),
+               availableToSkip);
+  outputReadPos += skipCount;
+  if (outputReadPos > outputFifo.size() / 2) {
+    outputFifo.erase(outputFifo.begin(), outputFifo.begin() +
+                                            static_cast<std::ptrdiff_t>(
+                                                outputReadPos));
+    outputReadPos = 0;
   }
 }

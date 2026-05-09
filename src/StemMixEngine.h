@@ -41,17 +41,23 @@ private:
 
   void ensureBuffers(int numChannels, int numSamples);
   void applyFade(juce::AudioBuffer<float> &buffer, float start, float end);
-  void updateLatencyDelays(int latencySamples);
+  void updateLatencyDelays(int melodicLatency, int percussionLatency,
+                           int dryLatency);
 
   juce::AudioBuffer<float> stemMixBuffer;
   juce::AudioBuffer<float> stemTempBuffer;
   juce::AudioBuffer<float> percussionBuffer;
   juce::AudioBuffer<float> dryBuffer;
 
-  PitchShiftProcessor pitchShift;
+  PitchShiftProcessor pitchShiftMelodic;
+  PitchShiftProcessor tempoShiftPercussion;
+  PitchShiftProcessor tempoShiftGuide;
+  SimpleDelayLine pitchDelayMelodic;
   SimpleDelayLine pitchDelayPercussion;
   SimpleDelayLine pitchDelayGuide;
-  int lastLatencySamples = 0;
+  int lastMelodicDelaySamples = 0;
+  int lastPercussionDelaySamples = 0;
+  int lastGuideDelaySamples = 0;
 
   double currentSampleRate = 0.0;
   int currentBlockSize = 0;

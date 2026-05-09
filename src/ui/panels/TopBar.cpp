@@ -710,7 +710,8 @@ void TopBar::timerCallback() {
 }
 
 void TopBar::updateBpmDisplay() {
-  const int bpm = static_cast<int>(std::round(processor.getMetronomeBpm()));
+  const int bpm =
+      static_cast<int>(std::round(processor.getPlaybackTempoBpm()));
   const auto arrow =
       juce::String::charToString(static_cast<juce::juce_wchar>(0x25BC));
   bpmSegmentButton.setButtonText(
@@ -731,14 +732,14 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
 void TopBar::setBpmAbsolute(double bpm) {
   if (bpm <= 0.0)
     return;
-  processor.setMetronomeBpm(bpm);
+  processor.setPlaybackTempoBpm(bpm);
   updateBpmDisplay();
 }
 
 void TopBar::adjustBpm(double delta) {
   const auto mods = juce::ModifierKeys::getCurrentModifiers();
   const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0) : delta;
-  setBpmAbsolute(processor.getMetronomeBpm() + step);
+  setBpmAbsolute(processor.getPlaybackTempoBpm() + step);
 }
 
 void TopBar::registerTap() {
@@ -890,7 +891,7 @@ void TopBar::showMetronomePopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getMetronomeBpm(); }, timeSignature);
+      [this] { return processor.getPlaybackTempoBpm(); }, timeSignature);
   panel->setSize(180, 120);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr

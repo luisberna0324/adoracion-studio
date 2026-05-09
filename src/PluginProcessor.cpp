@@ -430,28 +430,43 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         const bool timeProcessActive =
             (pitchActiveSemiTones != 0) ||
             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+        const bool tempoActive =
+            !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+        std::array<int, maxStemCount> stemProcessLatencies{};
+        std::array<bool, maxStemCount> stemNeedsTimeProcess{};
         int targetLatency = 0;
         if (timeProcessActive) {
           for (int i = 0; i < stemCount; ++i) {
+            const size_t stemIndex = static_cast<size_t>(i);
             const bool pitchShiftable =
-                stemPitchShiftStates[static_cast<size_t>(i)].load(
+                stemPitchShiftStates[stemIndex].load(
                     std::memory_order_relaxed);
-            if (!pitchShiftable)
+            const bool shouldProcess = tempoActive || pitchShiftable;
+            stemNeedsTimeProcess[stemIndex] = shouldProcess;
+            if (!shouldProcess)
               continue;
-            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+            auto &proc = stemPitchProcessors[stemIndex];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
               proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
+            proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
-            targetLatency = proc.getLatencySamples();
-            break;
+            stemProcessLatencies[stemIndex] = proc.getLatencySamples();
+            targetLatency =
+                juce::jmax(targetLatency, stemProcessLatencies[stemIndex]);
           }
         }
 
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
-          for (auto &delay : stemPitchDelayLines)
-            delay.setDelay(targetLatency);
+        }
+        for (int i = 0; i < stemCount; ++i) {
+          const size_t stemIndex = static_cast<size_t>(i);
+          const int desiredDelay =
+              juce::jmax(0, routingPitchLatencySamples -
+                                stemProcessLatencies[stemIndex]);
+          auto &delay = stemPitchDelayLines[stemIndex];
+          if (delay.getDelaySamples() != desiredDelay)
+            delay.setDelay(desiredDelay);
         }
 
         if (stemRoutingTempBuffer.getNumSamples() < numSamples)
@@ -462,23 +477,25 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           stemRoutingTempBuffer.clear();
           juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
                                                 numSamples);
-          stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
+          const size_t stemIndex = static_cast<size_t>(i);
+          stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
           const bool pitchShiftable =
-              stemPitchShiftStates[static_cast<size_t>(i)].load(
+              stemPitchShiftStates[stemIndex].load(
                   std::memory_order_relaxed);
-          if (timeProcessActive && pitchShiftable) {
-            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+          if (timeProcessActive && stemNeedsTimeProcess[stemIndex]) {
+            auto &proc = stemPitchProcessors[stemIndex];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
               proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
+            proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
             proc.process(stemRoutingTempBuffer);
-          } else if (routingPitchLatencySamples > 0) {
-            stemPitchDelayLines[static_cast<size_t>(i)].process(
-                stemRoutingTempBuffer);
+          }
+          if (timeProcessActive &&
+              stemPitchDelayLines[stemIndex].getDelaySamples() > 0) {
+            stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
           }
           int assignedWidth = juce::jlimit(
-              1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
+              1, 2, stemOutputWidths[stemIndex].load(
                         std::memory_order_relaxed));
           if (numChannels < 2)
             assignedWidth = 1;
@@ -487,8 +504,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               1, numChannels - (assignedWidth >= 2 ? 1 : 0));
           const int assignedChannelOneBased = juce::jlimit(
               1, maxBaseChannel,
-              stemOutputChannels[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed));
+              stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
           const int outputIndex =
               juce::jlimit(0, juce::jmax(0, numChannels - 1),
                            assignedChannelOneBased - 1);
