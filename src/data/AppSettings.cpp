@@ -16,6 +16,7 @@ constexpr const char *kRoutingChannelKey = "channel";
 constexpr const char *kRoutingWidthKey = "width";
 constexpr const char *kPadsPackKey = "padsPack";
 constexpr const char *kAssetsBootstrapKey = "assetsBootstrap";
+constexpr const char *kMidiBindingsKey = "midiBindings";
 constexpr int kDeprecatedClassicThemeId = 1;
 constexpr int kNightGreenThemeId = 2;
 constexpr int kStudioAmberThemeId = 3;
@@ -612,6 +613,81 @@ void AppSettings::setAssetsBootstrapState(const AssetsBootstrapState &state) {
   if (auto *o = root.getDynamicObject()) {
     o->setProperty("version", 13);
     o->setProperty(kAssetsBootstrapKey, juce::var(assetsObj));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+std::vector<MidiBindingSetting> AppSettings::getMidiBindings() {
+  std::vector<MidiBindingSetting> out;
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return out;
+
+  const auto parsed = juce::JSON::parse(f);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr || !root->hasProperty(kMidiBindingsKey))
+    return out;
+
+  const auto bindingsVar = root->getProperty(kMidiBindingsKey);
+  const auto *arr = bindingsVar.getArray();
+  if (arr == nullptr)
+    return out;
+
+  for (const auto &entryVar : *arr) {
+    const auto *entryObj = entryVar.getDynamicObject();
+    if (entryObj == nullptr)
+      continue;
+
+    MidiBindingSetting binding;
+    binding.targetId = static_cast<int>(entryObj->getProperty("targetId"));
+    binding.midiChannel =
+        juce::jlimit(1, 16, static_cast<int>(entryObj->getProperty("midiChannel")));
+    binding.ccNumber =
+        juce::jlimit(0, 127, static_cast<int>(entryObj->getProperty("ccNumber")));
+    const auto modeText =
+        entryObj->getProperty("mode").toString().trim().toLowerCase();
+    if (modeText == "toggle")
+      binding.mode = MidiBindingMode::Toggle;
+    else if (modeText == "momentary")
+      binding.mode = MidiBindingMode::Momentary;
+    else
+      binding.mode = MidiBindingMode::Absolute;
+    if (binding.targetId >= 0)
+      out.push_back(binding);
+  }
+
+  return out;
+}
+
+void AppSettings::setMidiBindings(
+    const std::vector<MidiBindingSetting> &bindings) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  juce::Array<juce::var> bindingsArray;
+  for (const auto &binding : bindings) {
+    if (binding.targetId < 0)
+      continue;
+    auto *entryObj = new juce::DynamicObject();
+    entryObj->setProperty("targetId", binding.targetId);
+    entryObj->setProperty("midiChannel", juce::jlimit(1, 16, binding.midiChannel));
+    entryObj->setProperty("ccNumber", juce::jlimit(0, 127, binding.ccNumber));
+    juce::String modeText = "absolute";
+    if (binding.mode == MidiBindingMode::Toggle)
+      modeText = "toggle";
+    else if (binding.mode == MidiBindingMode::Momentary)
+      modeText = "momentary";
+    entryObj->setProperty("mode", modeText);
+    bindingsArray.add(juce::var(entryObj));
+  }
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 14);
+    o->setProperty(kMidiBindingsKey, juce::var(bindingsArray));
   }
 
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));

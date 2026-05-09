@@ -27,6 +27,9 @@ public:
 
     void refreshThemeColours();
     void setResponsiveProfile(ResponsiveLayoutProfile profile);
+    void setMidiLearnActive(bool active);
+    void setMidiLearnPendingTarget(int targetId);
+    void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
 
 private:
   static constexpr int kNoteCount = 12;
@@ -41,6 +44,9 @@ private:
   int currentOctave = 0;
   int activeNoteIndex = -1;
   bool padsPoweredOn = true;
+  bool midiLearnActive = false;
+  int midiLearnPendingTargetId = -1;
+  std::function<void(int)> onMidiLearnTargetSelected;
   std::array<bool, kNoteCount> qwertyWasDown{};
   std::atomic<bool> padsLoading{false};
   float loadingBeatPhase = 0.0f;

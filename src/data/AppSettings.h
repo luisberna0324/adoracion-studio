@@ -27,6 +27,15 @@ struct AssetsBootstrapState {
   juce::int64 updatedAtMs = 0;
 };
 
+enum class MidiBindingMode { Absolute = 0, Toggle = 1, Momentary = 2 };
+
+struct MidiBindingSetting {
+  int targetId = -1;
+  int midiChannel = 1; // 1..16
+  int ccNumber = 0;    // 0..127
+  MidiBindingMode mode = MidiBindingMode::Absolute;
+};
+
 enum class AppLanguage { Spanish = 0, English = 1 };
 enum class AppLayoutMode { Auto = 0, Compact = 1, Standard = 2, Large = 3 };
 enum class PadsCrossfadePreset { Fast = 0, Medium = 1, Long = 2 };
@@ -76,6 +85,8 @@ public:
   static void setPadsPackSettings(const PadsPackSettings &settings);
   static AssetsBootstrapState getAssetsBootstrapState();
   static void setAssetsBootstrapState(const AssetsBootstrapState &state);
+  static std::vector<MidiBindingSetting> getMidiBindings();
+  static void setMidiBindings(const std::vector<MidiBindingSetting> &bindings);
 
 private:
   static juce::File getSettingsFile();

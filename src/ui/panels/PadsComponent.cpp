@@ -9,6 +9,13 @@ constexpr const char* kNoteNames[] = {
 constexpr char kQwertyKeys[] = {
     'z', 's', 'x', 'd', 'c', 'v', 'g', 'b', 'h', 'n', 'j', 'm'
 };
+
+float midiLearnBlinkStrength() {
+    const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    const double pulse =
+        0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
+    return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
+}
 } // namespace
 
 PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
@@ -44,6 +51,11 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
         [this](float value) { processor.setPadsVolume(value); });
     channelStrip->setOnGainChanged(
         [this](float value) { processor.setPadsGain(value); });
+    channelStrip->setMidiLearnTargetIds(processor.midiTargetPadsVolume, -1);
+    channelStrip->setOnMidiLearnTargetSelected([this](const int targetId) {
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(targetId);
+    });
     addAndMakeVisible(*channelStrip);
 
     processor.refreshPadsRoutingFromSettings();
@@ -107,6 +119,17 @@ void PadsComponent::paint(juce::Graphics& g) {
         g.setFont(juce::FontOptions(subtitleFont));
         g.drawFittedText(presetSubtitle, content,
                          juce::Justification::centredLeft, 1);
+    }
+
+    if (midiLearnActive) {
+        const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+        const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+        auto powerFrame = powerBtn.getBounds().toFloat().reduced(1.0f);
+        const bool powerPending = (midiLearnPendingTargetId == processor.midiTargetPadsPower);
+        const float blink = powerPending ? midiLearnBlinkStrength() : 1.0f;
+        g.setColour((powerPending ? pendingColour : selectableColour)
+                        .withAlpha(0.54f + (0.40f * blink)));
+        g.drawRoundedRectangle(powerFrame, 7.0f, powerPending ? (1.5f + (0.9f * blink)) : 1.2f);
     }
 }
 
@@ -235,6 +258,9 @@ void PadsComponent::timerCallback() {
         presetSubtitle = status;
         repaint();
     }
+
+    if (midiLearnActive && midiLearnPendingTargetId >= 0)
+        repaint();
 }
 
 void PadsComponent::startPadsLoadingAsync() {
@@ -260,6 +286,13 @@ void PadsComponent::stopPadsLoadingThread() {
 }
 
 void PadsComponent::onPadPressed(int noteIndex) {
+    if (midiLearnActive) {
+        const int targetId = processor.midiTargetPadsNoteBase +
+                             juce::jlimit(0, kNoteCount - 1, noteIndex);
+        if (onMidiLearnTargetSelected)
+            onMidiLearnTargetSelected(targetId);
+        return;
+    }
     if (padsLoading.load(std::memory_order_relaxed)) {
         presetSubtitle = "Loading pads...";
         return;
@@ -302,6 +335,12 @@ void PadsComponent::onPadReleased(int noteIndex) {
 }
 
 void PadsComponent::applyPowerState(bool on) {
+    if (midiLearnActive) {
+        if (onMidiLearnTargetSelected)
+            onMidiLearnTargetSelected(processor.midiTargetPadsPower);
+        powerBtn.setPoweredOn(padsPoweredOn);
+        return;
+    }
     padsPoweredOn = on;
     processor.setPadsEnabled(on);
     const bool interactionEnabled = on;
@@ -319,4 +358,31 @@ void PadsComponent::applyPowerState(bool on) {
     if (channelStrip) {
         channelStrip->setMuteState(!on);
     }
+}
+
+void PadsComponent::setMidiLearnActive(const bool active) {
+    midiLearnActive = active;
+    if (!midiLearnActive)
+        midiLearnPendingTargetId = -1;
+    for (int i = 0; i < kNoteCount; ++i)
+        notePads[static_cast<size_t>(i)]->setMidiLearnSelectable(midiLearnActive);
+    if (channelStrip != nullptr)
+        channelStrip->setMidiLearnSelectable(midiLearnActive);
+    setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    repaint();
+}
+
+void PadsComponent::setMidiLearnPendingTarget(const int targetId) {
+    midiLearnPendingTargetId = targetId;
+    for (int i = 0; i < kNoteCount; ++i) {
+        const int noteTargetId = processor.midiTargetPadsNoteBase + i;
+        notePads[static_cast<size_t>(i)]->setMidiLearnPending(noteTargetId == targetId);
+    }
+    if (channelStrip != nullptr)
+        channelStrip->setMidiLearnPending(channelStrip->hasMidiLearnTarget(targetId));
+    repaint();
+}
+
+void PadsComponent::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
+    onMidiLearnTargetSelected = std::move(cb);
 }

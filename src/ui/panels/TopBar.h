@@ -27,11 +27,16 @@ public:
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
+  void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
+  void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+  void setMidiLearnActive(bool active);
+  void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
 
   void refreshThemeColours();
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
 
 private:
@@ -72,6 +77,7 @@ private:
   /** Maximizar / restaurar ventana (Standalone y hosts que usen ResizableWindow). */
   IconButton windowModeButton;
   IconButton settingsButton;
+  IconButton midiLearnButton;
 
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
@@ -87,6 +93,10 @@ private:
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
+  std::function<void(bool)> onMidiLearnModeChanged;
+  std::function<void(int)> onMidiLearnTargetSelected;
+  bool midiLearnActive = false;
+  int midiLearnPendingTargetId = -1;
 
   std::function<bool()> playingProvider;
   std::function<double()> positionProvider;

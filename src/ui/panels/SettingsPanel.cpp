@@ -132,6 +132,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
                              RoutingDefaultsChanged routingCb,
+                             std::vector<MidiTargetOption> midiTargets,
+                             MidiBindingsProvider midiBindingsProvider,
+                             MidiLearnRequested midiLearnCb,
+                             MidiClearRequested midiClearCb,
                              juce::AudioDeviceManager *deviceManagerToUse,
                              int maxInputChannels,
                              int maxOutputChannels)
@@ -144,6 +148,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
+      midiTargetOptions(std::move(midiTargets)),
+      getMidiBindings(std::move(midiBindingsProvider)),
+      onMidiLearnRequested(std::move(midiLearnCb)),
+      onMidiClearRequested(std::move(midiClearCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
@@ -157,6 +165,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
               false);
   tabs.addTab(L10n::tr("Ruteo", "Routing"), UITheme::cardBg, &routingPage,
               false);
+  tabs.addTab("MIDI", UITheme::cardBg, &midiPage, false);
   tabs.setTabBarDepth(30);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
     if (newIndex == 1) {
@@ -358,6 +367,43 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingViewport.setScrollBarThickness(2);
   routingPage.addAndMakeVisible(routingViewport);
 
+  midiTargetLabel.setJustificationType(juce::Justification::centredLeft);
+  midiTargetLabel.setFont(juce::FontOptions(12.0f));
+  midiPage.addAndMakeVisible(midiTargetLabel);
+  for (size_t i = 0; i < midiTargetOptions.size(); ++i)
+    midiTargetBox.addItem(midiTargetOptions[i].name, static_cast<int>(i) + 1);
+  midiTargetBox.onChange = [this] { refreshMidiBindings(); };
+  midiPage.addAndMakeVisible(midiTargetBox);
+
+  midiBindingLabel.setJustificationType(juce::Justification::centredLeft);
+  midiBindingLabel.setFont(juce::FontOptions(12.0f));
+  midiPage.addAndMakeVisible(midiBindingLabel);
+  midiStatusLabel.setJustificationType(juce::Justification::centredLeft);
+  midiStatusLabel.setFont(juce::FontOptions(12.0f));
+  midiPage.addAndMakeVisible(midiStatusLabel);
+  midiLearnButton.onClick = [this] {
+    const int selected = midiTargetBox.getSelectedId();
+    if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size())))
+      return;
+    const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
+    if (onMidiLearnRequested)
+      onMidiLearnRequested(targetId);
+    midiStatusLabel.setText(L10n::tr("Esperando mensaje MIDI CC…",
+                                     "Waiting for MIDI CC message…"),
+                            juce::dontSendNotification);
+  };
+  midiPage.addAndMakeVisible(midiLearnButton);
+  midiClearButton.onClick = [this] {
+    const int selected = midiTargetBox.getSelectedId();
+    if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size())))
+      return;
+    const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
+    if (onMidiClearRequested)
+      onMidiClearRequested(targetId);
+    refreshMidiBindings();
+  };
+  midiPage.addAndMakeVisible(midiClearButton);
+
   themeBox.onChange = [this] {
     const auto id = themeBox.getSelectedId();
     if (id <= 0 || !onThemeChanged)
@@ -408,6 +454,9 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
 
   refreshDeviceOptions();
   refreshRoutingForDevice();
+  if (midiTargetBox.getNumItems() > 0)
+    midiTargetBox.setSelectedId(1, juce::dontSendNotification);
+  refreshMidiBindings();
   tabs.setCurrentTabIndex(0);
   applyLanguageTexts();
   refreshThemeColours();
@@ -430,6 +479,7 @@ void SettingsPanel::resized() {
 
   layoutGeneralPage();
   layoutRoutingPage();
+  layoutMidiPage();
 }
 
 void SettingsPanel::refreshThemeColours() {
@@ -513,6 +563,19 @@ void SettingsPanel::refreshThemeColours() {
                          juce::Colour::fromRGB(148, 54, 54));
   logoutButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  midiTargetLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  midiBindingLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  midiStatusLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  midiTargetBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+  midiTargetBox.setColour(juce::ComboBox::outlineColourId,
+                          UITheme::cardBorder.withAlpha(0.65f));
+  midiTargetBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  midiTargetBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  midiLearnButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  midiLearnButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  midiClearButton.setColour(juce::TextButton::buttonColourId,
+                            juce::Colour::fromRGB(102, 60, 60));
+  midiClearButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   for (auto &row : routingRows)
     row->refreshThemeColours();
   repaint();
@@ -523,6 +586,7 @@ void SettingsPanel::applyLanguageTexts() {
                 juce::dontSendNotification);
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
+  tabs.setTabName(2, "MIDI");
   deviceLabel.setText(L10n::tr("Interfaz", "Device"), juce::dontSendNotification);
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
@@ -588,6 +652,12 @@ void SettingsPanel::applyLanguageTexts() {
   infoLinkButton.setButtonText(L10n::tr("Saber mas", "More information"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
+  midiTargetLabel.setText(L10n::tr("Control objetivo", "Target control"),
+                          juce::dontSendNotification);
+  midiBindingLabel.setText(L10n::tr("Binding actual", "Current binding"),
+                           juce::dontSendNotification);
+  midiLearnButton.setButtonText(L10n::tr("Aprender", "Learn"));
+  midiClearButton.setButtonText(L10n::tr("Quitar", "Clear"));
 }
 
 void SettingsPanel::layoutGeneralPage() {
@@ -676,6 +746,45 @@ void SettingsPanel::layoutRoutingPage() {
   }
   routingContent.setSize(contentW + 4,
                          juce::jmax(y + 2, routingViewport.getHeight()));
+}
+
+void SettingsPanel::layoutMidiPage() {
+  auto area = midiPage.getLocalBounds().reduced(8);
+  auto targetRow = area.removeFromTop(28);
+  midiTargetLabel.setBounds(targetRow.removeFromLeft(160));
+  midiTargetBox.setBounds(targetRow);
+  area.removeFromTop(14);
+  auto bindingRow = area.removeFromTop(24);
+  midiBindingLabel.setBounds(bindingRow.removeFromLeft(160));
+  midiStatusLabel.setBounds(bindingRow);
+  area.removeFromTop(16);
+  auto actions = area.removeFromTop(30);
+  midiLearnButton.setBounds(actions.removeFromLeft(130));
+  actions.removeFromLeft(10);
+  midiClearButton.setBounds(actions.removeFromLeft(130));
+}
+
+void SettingsPanel::refreshMidiBindings() {
+  const int selected = midiTargetBox.getSelectedId();
+  if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size()))) {
+    midiStatusLabel.setText("-", juce::dontSendNotification);
+    return;
+  }
+  const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
+  const auto bindings = getMidiBindings ? getMidiBindings() : std::vector<MidiBindingView>{};
+  const auto it = std::find_if(bindings.begin(), bindings.end(),
+                               [targetId](const MidiBindingView &binding) {
+                                 return binding.targetId == targetId;
+                               });
+  if (it == bindings.end()) {
+    midiStatusLabel.setText(L10n::tr("Sin asignar", "Unassigned"),
+                            juce::dontSendNotification);
+    return;
+  }
+  midiStatusLabel.setText(
+      "Ch " + juce::String(it->midiChannel) + " - CC " + juce::String(it->ccNumber) +
+          " (" + it->mode + ")",
+      juce::dontSendNotification);
 }
 
 void SettingsPanel::refreshDeviceOptions() {

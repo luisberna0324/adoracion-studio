@@ -84,7 +84,7 @@ juce_add_plugin(MTControls
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
     IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT FALSE
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
@@ -136,6 +136,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/more_vertical.svg
         assets/ui-icons/clock.svg
         assets/ui-icons/music.svg
+        assets/ui-icons/midi.svg
         assets/ui-icons/audio_waveform.svg
         assets/ui-icons/metronome.svg
         assets/ui-icons/maximize.svg

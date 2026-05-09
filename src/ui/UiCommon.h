@@ -78,6 +78,7 @@ enum class SvgIconName {
   MoreVertical,
   Clock,
   Music,
+  Midi,
   AudioWaveform,
   Metronome,
   Maximize,
