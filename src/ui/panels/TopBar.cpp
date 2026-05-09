@@ -93,6 +93,13 @@ float midiLearnBlinkStrength() {
       0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
   return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
 }
+
+float midiLearnSoftBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse =
+      0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
+  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
@@ -157,6 +164,8 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   const auto iconColour = isPrimary ? UITheme::onAccent : UITheme::textPrimary;
   const float iconSize = hasBadge ? 20.0f : 24.0f;
   auto iconArea = b.withSizeKeepingCentre(iconSize, iconSize);
+  if (icon == SvgIconName::Midi)
+    iconArea = b.reduced(6.0f, 14.0f);
   if (hasBadge)
     iconArea.translate(0.0f, -4.0f);
 
@@ -441,11 +450,14 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
                                                                        const int targetId) {
       const auto frameBounds = comp.getBounds().toFloat().reduced(1.0f);
       const bool pending = (midiLearnPendingTargetId == targetId);
-      const float blink = pending ? midiLearnBlinkStrength() : 1.0f;
+      const float blink = pending ? midiLearnBlinkStrength()
+                                  : midiLearnSoftBlinkStrength();
       g.setColour((pending ? pendingColour : selectableColour)
-                      .withAlpha(0.54f + (0.40f * blink)));
+                      .withAlpha(pending ? (0.54f + (0.40f * blink))
+                                         : (0.52f + (0.20f * blink))));
       g.drawRoundedRectangle(frameBounds, 7.0f,
-                             pending ? (1.5f + (0.9f * blink)) : 1.2f);
+                             pending ? (1.5f + (0.9f * blink))
+                                     : (1.0f + (0.35f * blink)));
     };
     drawLearnFrame(prevButton, processor.midiTargetTransportPrevSong);
     drawLearnFrame(seekBackButton, processor.midiTargetTransportSeekBack);
@@ -693,7 +705,7 @@ void TopBar::timerCallback() {
       processor.isMetronomeEnabled() ? beatFlash : 0.0f,
       lastBeatWasDownbeat);
 
-  if (midiLearnActive && midiLearnPendingTargetId >= 0)
+  if (midiLearnActive)
     repaint();
 }
 

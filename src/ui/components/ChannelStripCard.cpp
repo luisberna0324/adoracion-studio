@@ -9,6 +9,12 @@ float midiLearnBlinkStrength() {
   const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
   return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
 }
+
+float midiLearnSoftBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
+  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
 } // namespace
 
 ChannelStripCard::ChannelStripCard(
@@ -117,10 +123,14 @@ void ChannelStripCard::paint(juce::Graphics &g) {
     const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
     const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
     auto outline = getLocalBounds().toFloat().reduced(1.5f);
-    const float pendingBlink = midiLearnPending ? midiLearnBlinkStrength() : 1.0f;
+    const float pendingBlink = midiLearnPending ? midiLearnBlinkStrength()
+                                                : midiLearnSoftBlinkStrength();
     g.setColour((midiLearnPending ? pendingColour : selectableColour)
-                    .withAlpha(0.50f + (0.45f * pendingBlink)));
-    g.drawRoundedRectangle(outline, 5.5f, midiLearnPending ? (1.6f + (1.0f * pendingBlink)) : 1.4f);
+                    .withAlpha(midiLearnPending ? (0.50f + (0.45f * pendingBlink))
+                                                : (0.50f + (0.20f * pendingBlink))));
+    g.drawRoundedRectangle(outline, 5.5f,
+                           midiLearnPending ? (1.6f + (1.0f * pendingBlink))
+                                            : (1.0f + (0.35f * pendingBlink)));
     if (midiLearnPending) {
       g.setColour(pendingColour.withAlpha(0.10f + (0.18f * pendingBlink)));
       g.fillRoundedRectangle(outline.reduced(2.0f), 4.5f);
@@ -379,7 +389,7 @@ void ChannelStripCard::timerCallback() {
 }
 
 void ChannelStripCard::updateMidiLearnBlinkTimer() {
-  const bool shouldBlink = midiLearnSelectable && midiLearnPending;
+  const bool shouldBlink = midiLearnSelectable;
   if (shouldBlink) {
     if (!isTimerRunning())
       startTimerHz(24);

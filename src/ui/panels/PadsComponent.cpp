@@ -16,6 +16,13 @@ float midiLearnBlinkStrength() {
         0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
     return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
 }
+
+float midiLearnSoftBlinkStrength() {
+    const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+    const double pulse =
+        0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
+    return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
 } // namespace
 
 PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
@@ -126,10 +133,14 @@ void PadsComponent::paint(juce::Graphics& g) {
         const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
         auto powerFrame = powerBtn.getBounds().toFloat().reduced(1.0f);
         const bool powerPending = (midiLearnPendingTargetId == processor.midiTargetPadsPower);
-        const float blink = powerPending ? midiLearnBlinkStrength() : 1.0f;
+        const float blink = powerPending ? midiLearnBlinkStrength()
+                                         : midiLearnSoftBlinkStrength();
         g.setColour((powerPending ? pendingColour : selectableColour)
-                        .withAlpha(0.54f + (0.40f * blink)));
-        g.drawRoundedRectangle(powerFrame, 7.0f, powerPending ? (1.5f + (0.9f * blink)) : 1.2f);
+                        .withAlpha(powerPending ? (0.54f + (0.40f * blink))
+                                                : (0.52f + (0.20f * blink))));
+        g.drawRoundedRectangle(powerFrame, 7.0f,
+                               powerPending ? (1.5f + (0.9f * blink))
+                                            : (1.0f + (0.35f * blink)));
     }
 }
 
@@ -259,7 +270,7 @@ void PadsComponent::timerCallback() {
         repaint();
     }
 
-    if (midiLearnActive && midiLearnPendingTargetId >= 0)
+    if (midiLearnActive)
         repaint();
 }
 
