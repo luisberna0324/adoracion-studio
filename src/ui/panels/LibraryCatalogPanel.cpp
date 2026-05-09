@@ -741,6 +741,10 @@ void LibraryCatalogPanel::setOnSongEditRequested(SongEditRequested cb) {
   onSongEditRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnSongDeleteRequested(SongDeleteRequested cb) {
+  onSongDeleteRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnAddSongsToSetlist(AddSongsRequested cb) {
   onAddSongsToSetlist = std::move(cb);
 }
@@ -1124,26 +1128,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size())))
     return;
   auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
-  const auto runPreview = [safeThis, rowIndex] {
-    if (safeThis == nullptr || safeThis->onSongLoadRequested == nullptr ||
-        !juce::isPositiveAndBelow(rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-      return;
-    const auto &targetItem = safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-    if (!juce::isPositiveAndBelow(targetItem.songIndex,
-                                  static_cast<int>(safeThis->librarySongs.size())))
-      return;
-    safeThis->onSongLoadRequested(
-        safeThis->librarySongs[static_cast<size_t>(targetItem.songIndex)],
-        targetItem.songIndex);
-  };
-
   std::vector<ContextActionItem> actions;
-  actions.push_back({L10n::tr("Ver detalles", "View details"), true, false, false,
-                     runPreview});
-  actions.push_back({L10n::tr("Escuchar preview", "Listen preview"), true, true, false,
-                     runPreview});
-  actions.push_back({L10n::tr("Ver stems", "View stems"), true, false, false,
-                     runPreview});
   actions.push_back({L10n::tr("Editar cancion", "Edit song"), true, false, false,
                      [safeThis, rowIndex] {
                        if (safeThis == nullptr ||
@@ -1155,6 +1140,18 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                            safeThis->visibleRows[static_cast<size_t>(rowIndex)];
                        if (targetItem.songId.isNotEmpty())
                          safeThis->onSongEditRequested(targetItem.songId);
+                     }});
+  actions.push_back({L10n::tr("Eliminar cancion", "Delete song"), true, false, false,
+                     [safeThis, rowIndex] {
+                       if (safeThis == nullptr ||
+                           safeThis->onSongDeleteRequested == nullptr ||
+                           !juce::isPositiveAndBelow(
+                               rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+                         return;
+                       const auto &targetItem =
+                           safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+                       if (targetItem.songId.isNotEmpty())
+                         safeThis->onSongDeleteRequested(targetItem.songId);
                      }});
   auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
   panel->setSize(228, panel->preferredHeight());

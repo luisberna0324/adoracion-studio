@@ -18,6 +18,7 @@ public:
   using SongLoadRequested =
       std::function<void(const ImportedSongData &, int songIndex)>;
   using SongEditRequested = std::function<void(const juce::String &songId)>;
+  using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using ImportRequested = std::function<void()>;
   using BackRequested = std::function<void()>;
@@ -27,6 +28,7 @@ public:
 
   void setOnSongLoadRequested(SongLoadRequested cb);
   void setOnSongEditRequested(SongEditRequested cb);
+  void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnImportRequested(ImportRequested cb);
   void setOnBackRequested(BackRequested cb);
@@ -217,6 +219,7 @@ private:
 
   SongLoadRequested onSongLoadRequested;
   SongEditRequested onSongEditRequested;
+  SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
   ImportRequested onImportRequested;
   BackRequested onBackRequested;

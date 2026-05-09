@@ -63,6 +63,7 @@ public:
                                const juce::String &songId);
   static bool removeSongFromSetlist(const juce::String &setlistId,
                                     const juce::String &songId);
+  static bool deleteSong(const juce::String &songId);
   static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
                                 int toIndex);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,

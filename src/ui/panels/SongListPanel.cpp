@@ -434,6 +434,42 @@ SongListPanel::SongListPanel() {
   libraryCatalogPanel.setOnImportRequested([this] { openSongImportWizard(); });
   libraryCatalogPanel.setOnSongEditRequested(
       [this](const juce::String &songId) { openSongEditWizard(songId); });
+  libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
+    const auto trimmedSongId = songId.trim();
+    if (trimmedSongId.isEmpty())
+      return;
+    juce::String songTitle;
+    const auto it =
+        std::find_if(librarySongs.begin(), librarySongs.end(),
+                     [&trimmedSongId](const ImportedSongData &song) {
+                       return song.id == trimmedSongId;
+                     });
+    if (it != librarySongs.end())
+      songTitle = it->title.trim();
+    if (songTitle.isEmpty())
+      songTitle = L10n::tr("(Sin titulo)", "(Untitled)");
+
+    const auto confirmText = L10n::tr(
+        juce::String("Eliminar \"") + songTitle +
+            "\" de la biblioteca? Esta accion no se puede deshacer.",
+        juce::String("Delete \"") + songTitle +
+            "\" from the library? This action can't be undone.");
+
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions()
+            .withIconType(juce::MessageBoxIconType::WarningIcon)
+            .withTitle(L10n::tr("Eliminar cancion", "Delete song"))
+            .withMessage(confirmText)
+            .withButton(L10n::tr("Eliminar", "Delete"))
+            .withButton(L10n::tr("Cancelar", "Cancel")),
+        [this, trimmedSongId](const int result) {
+          if (result != 1)
+            return;
+          SongLibraryStore::deleteSong(trimmedSongId);
+          selectedSongId = {};
+          refreshFromStorage();
+        });
+  });
   libraryCatalogPanel.setOnBackRequested([this] { showSongsSubview(true); });
   addAndMakeVisible(libraryCatalogPanel);
   setlistsContent = std::make_unique<SetlistsContent>();

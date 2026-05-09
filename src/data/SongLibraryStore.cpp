@@ -171,6 +171,42 @@ bool SongLibraryStore::removeSongFromSetlist(const juce::String &setlistId,
   return saveLibrary(library);
 }
 
+bool SongLibraryStore::deleteSong(const juce::String &songId) {
+  const auto trimmedSongId = songId.trim();
+  if (trimmedSongId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  auto songIt =
+      std::find_if(library.songs.begin(), library.songs.end(),
+                   [&trimmedSongId](const ImportedSongData &song) {
+                     return song.id == trimmedSongId;
+                   });
+  if (songIt == library.songs.end())
+    return false;
+
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  library.songs.erase(songIt);
+  for (auto &setlist : library.setlists) {
+    const auto before = setlist.items.size();
+    setlist.items.erase(
+        std::remove_if(setlist.items.begin(), setlist.items.end(),
+                       [&trimmedSongId](const SetlistItem &item) {
+                         return item.songId == trimmedSongId;
+                       }),
+        setlist.items.end());
+    if (setlist.items.size() != before)
+      setlist.updatedMs = now;
+  }
+
+  if (!saveLibrary(library))
+    return false;
+
+  getWaveformCacheDir().getChildFile(trimmedSongId + ".bin").deleteFile();
+  getAudioRoot().getChildFile(trimmedSongId).deleteRecursively();
+  return true;
+}
+
 bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
                                         int fromIndex, int toIndex) {
   auto library = loadLibrary();
