@@ -7,6 +7,11 @@
 #include <limits>
 
 namespace {
+constexpr double kMinPlaybackTempoBpm = 20.0;
+constexpr double kMaxPlaybackTempoBpm = 300.0;
+constexpr double kMinPlaybackTempoRatio = 0.75;
+constexpr double kMaxPlaybackTempoRatio = 2.0;
+
 juce::String buildDeviceKeyFromManager(juce::AudioDeviceManager &manager) {
   auto *currentDevice = manager.getCurrentAudioDevice();
   const juce::String typeName = manager.getCurrentAudioDeviceType();
@@ -155,6 +160,23 @@ void MTControlsAudioProcessor::releaseResources() {
     track->releaseResources();
 }
 
+void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
+  for (int i = 0; i < maxStemCount; ++i) {
+    stemPitchProcessors[static_cast<size_t>(i)].reset();
+    stemPitchDelayLines[static_cast<size_t>(i)].reset();
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].reset();
+    outgoingStemPitchDelayLines[static_cast<size_t>(i)].reset();
+  }
+  routingPitchLatencySamples = 0;
+  outgoingRoutingPitchLatencySamples = 0;
+}
+
+void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
+  mixEngine.reset();
+  outgoingMixEngine.reset();
+  flushRoutingTimeProcessors();
+}
+
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
   const auto input = layouts.getMainInputChannelSet();
@@ -201,8 +223,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
       outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
-      routingPitchLatencySamples = 0;
-      outgoingRoutingPitchLatencySamples = 0;
+      flushRoutingTimeProcessors();
     }
     if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive)) {
       playbackTempoRatioActive = targetTempoRatio;
@@ -229,6 +250,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const juce::int64 seekSamples = static_cast<juce::int64>(seekTarget * playbackSampleRate);
       for (auto& track : stemTracks)
         track->setNextReadPosition(seekSamples);
+
+      // Seeking changes source position abruptly: flush all time-domain
+      // processors so no stale pre-seek audio survives in different groups.
+      flushAllTimeProcessingState();
+
       globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
@@ -1445,7 +1471,9 @@ bool MTControlsAudioProcessor::loadSongStems(
                              std::memory_order_relaxed);
     const double normalizedSongBpm =
         songBpm > 0.0 ? songBpm : 120.0;
-    loadedSongBpm = juce::jlimit(20.0, 300.0, normalizedSongBpm);
+    loadedSongBpm =
+        juce::jlimit(kMinPlaybackTempoBpm, kMaxPlaybackTempoBpm,
+                     normalizedSongBpm);
     playbackTempoBpm.store(loadedSongBpm.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
     setMetronomeBpm(playbackTempoBpm.load(std::memory_order_relaxed));
@@ -2348,7 +2376,21 @@ double MTControlsAudioProcessor::getMetronomeBpm() const noexcept {
 }
 
 void MTControlsAudioProcessor::setPlaybackTempoBpm(double bpm) noexcept {
-  const double normalized = juce::jlimit(20.0, 300.0, bpm);
+  const double rawOriginalBpm = loadedSongBpm.load(std::memory_order_relaxed);
+  double minBpm = kMinPlaybackTempoBpm;
+  double maxBpm = kMaxPlaybackTempoBpm;
+
+  if (rawOriginalBpm > 0.0) {
+    const double originalBpm = juce::jmax(kMinPlaybackTempoBpm, rawOriginalBpm);
+    minBpm = juce::jmax(kMinPlaybackTempoBpm,
+                        originalBpm * kMinPlaybackTempoRatio);
+    maxBpm = juce::jmin(kMaxPlaybackTempoBpm,
+                        originalBpm * kMaxPlaybackTempoRatio);
+    if (maxBpm < minBpm)
+      maxBpm = minBpm;
+  }
+
+  const double normalized = juce::jlimit(minBpm, maxBpm, bpm);
   playbackTempoBpm.store(normalized, std::memory_order_relaxed);
   setMetronomeBpm(normalized);
 }
@@ -2522,11 +2564,14 @@ int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
 }
 
 double MTControlsAudioProcessor::getPlaybackTempoRatio() const noexcept {
-  const double originalBpm = juce::jmax(
-      20.0, loadedSongBpm.load(std::memory_order_relaxed));
-  const double playbackBpm = juce::jmax(
-      20.0, playbackTempoBpm.load(std::memory_order_relaxed));
-  return juce::jlimit(0.5, 2.0, playbackBpm / originalBpm);
+  const double originalBpm =
+      juce::jmax(kMinPlaybackTempoBpm,
+                 loadedSongBpm.load(std::memory_order_relaxed));
+  const double playbackBpm =
+      juce::jmax(kMinPlaybackTempoBpm,
+                 playbackTempoBpm.load(std::memory_order_relaxed));
+  return juce::jlimit(kMinPlaybackTempoRatio, kMaxPlaybackTempoRatio,
+                      playbackBpm / originalBpm);
 }
 
 int MTControlsAudioProcessor::findArrangementPartIndexForSourceTime(

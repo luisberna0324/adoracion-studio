@@ -321,6 +321,8 @@ private:
                             const juce::String &sourcePathForSettings,
                             bool persistSettings);
   static juce::String buildPadsPackHash(const juce::Array<juce::File> &files);
+  void flushRoutingTimeProcessors() noexcept;
+  void flushAllTimeProcessingState() noexcept;
   double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
   double getArrangementStartSeconds() const noexcept;

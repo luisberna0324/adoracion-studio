@@ -113,13 +113,13 @@ void StemMixEngine::setPitchSemiTones(int semitones) {
     return;
   pitchSemiTones = semitones;
   pitchShiftMelodic.setPitchSemiTones(semitones);
-  lastMelodicDelaySamples = -1;
-  lastPercussionDelaySamples = -1;
-  lastGuideDelaySamples = -1;
+  // Keep stem groups sample-aligned after abrupt key changes by flushing
+  // all time processors and delay lines in this engine.
+  reset();
 }
 
 void StemMixEngine::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  const double normalized = juce::jlimit(0.75, 2.0, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
   tempoRatio = normalized;

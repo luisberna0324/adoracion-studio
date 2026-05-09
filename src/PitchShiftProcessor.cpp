@@ -55,12 +55,14 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   pitchSemiTones = semitones;
   if (prepared) {
     soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-    refreshLatencyFromSettings();
+    // Pitch changes should feel immediate to the user. Flush time-domain
+    // history so old-pitch frames don't continue leaking after a key change.
+    reset();
   }
 }
 
 void PitchShiftProcessor::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  const double normalized = juce::jlimit(0.75, 2.0, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
   tempoRatio = normalized;
