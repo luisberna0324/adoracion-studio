@@ -643,12 +643,12 @@ void SettingsPanel::applyLanguageTexts() {
       juce::dontSendNotification);
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
-  actionLogoutLabel.setText(L10n::tr("Salir de la aplicacion", "Logout from application"),
+  actionLogoutLabel.setText(L10n::tr("Cerrar sesion en esta aplicacion",
+                                     "Sign out on this app"),
                             juce::dontSendNotification);
   actionInfoLabel.setText(L10n::tr("Saber mas", "More information"),
                           juce::dontSendNotification);
-  logoutButton.setButtonText(
-      L10n::tr("Salir de la aplicacion", "Logout from application"));
+  logoutButton.setButtonText(L10n::tr("Cerrar sesion", "Sign out"));
   infoLinkButton.setButtonText(L10n::tr("Saber mas", "More information"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
@@ -887,7 +887,7 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
     return;
   }
 
-  deviceManager->setCurrentAudioDeviceType(opt.typeName, false);
+  deviceManager->setCurrentAudioDeviceType(opt.typeName, true);
   if (deviceManager->getCurrentAudioDeviceType() != opt.typeName) {
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
@@ -908,7 +908,7 @@ void SettingsPanel::applyDeviceSelection(const int optionIndex) {
   setup.inputChannels.clear();
   setup.useDefaultOutputChannels = true;
 
-  const auto setupError = deviceManager->setAudioDeviceSetup(setup, false);
+  const auto setupError = deviceManager->setAudioDeviceSetup(setup, true);
   if (setupError.isNotEmpty()) {
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
