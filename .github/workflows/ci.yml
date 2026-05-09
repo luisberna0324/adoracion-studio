@@ -165,13 +165,6 @@ jobs:
       - name: Build (macOS)
         run: cmake --build --preset macos-release
 
-      - name: Upload Standalone (macOS)
-        uses: actions/upload-artifact@v4
-        with:
-          name: MTControls-macos-standalone-${{ needs.prepare.outputs.semver }}
-          path: build/macos-release/MTControls_artefacts/Release/Standalone
-          if-no-files-found: error
-
       - name: Package PKG installer (macOS)
         env:
           SEMVER: ${{ needs.prepare.outputs.semver }}
@@ -224,13 +217,6 @@ jobs:
 
       - name: Build (Windows)
         run: cmake --build --preset ${{ matrix.preset }}
-
-      - name: Upload Standalone (Windows ${{ matrix.arch }})
-        uses: actions/upload-artifact@v4
-        with:
-          name: MTControls-windows-${{ matrix.arch }}-standalone-${{ needs.prepare.outputs.semver }}
-          path: build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone
-          if-no-files-found: error
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -317,13 +303,6 @@ jobs:
           [[ -f "${FFMPEG_PATH}" ]] || { echo "Bundled ffmpeg missing: ${FFMPEG_PATH}" >&2; exit 1; }
           echo "Bundled ffmpeg found: ${FFMPEG_PATH}"
 
-      - name: Upload Standalone (Linux)
-        uses: actions/upload-artifact@v4
-        with:
-          name: MTControls-linux-standalone-${{ needs.prepare.outputs.semver }}
-          path: build/linux-release/MTControls_artefacts/Release/Standalone
-          if-no-files-found: error
-
       - name: Package installer (Linux)
         if: needs.prepare.outputs.publish_installers == 'true'
         env:
@@ -371,30 +350,6 @@ jobs:
             git push origin "${TAG}"
           fi
 
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: MTControls-macos-standalone-${{ needs.prepare.outputs.semver }}
-          path: dist/macos
-
-      - name: Download Windows artifact (x64)
-        uses: actions/download-artifact@v4
-        with:
-          name: MTControls-windows-x64-standalone-${{ needs.prepare.outputs.semver }}
-          path: dist/windows-x64
-
-      - name: Download Windows artifact (x86)
-        uses: actions/download-artifact@v4
-        with:
-          name: MTControls-windows-x86-standalone-${{ needs.prepare.outputs.semver }}
-          path: dist/windows-x86
-
-      - name: Download Linux artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: MTControls-linux-standalone-${{ needs.prepare.outputs.semver }}
-          path: dist/linux
-
       - name: Download macOS installer
         uses: actions/download-artifact@v4
         with:
@@ -420,18 +375,6 @@ jobs:
           name: playworship-linux-installer-${{ needs.prepare.outputs.semver }}
           path: release-assets
 
-      - name: Package release assets
-        shell: bash
-        env:
-          SEMVER: ${{ needs.prepare.outputs.semver }}
-        run: |
-          set -euo pipefail
-          mkdir -p release-assets
-          (cd dist && zip -r "../release-assets/MTControls-macos-standalone-${SEMVER}.zip" macos)
-          (cd dist && zip -r "../release-assets/MTControls-windows-x64-standalone-${SEMVER}.zip" windows-x64)
-          (cd dist && zip -r "../release-assets/MTControls-windows-x86-standalone-${SEMVER}.zip" windows-x86)
-          (cd dist && zip -r "../release-assets/MTControls-linux-standalone-${SEMVER}.zip" linux)
-
       - name: Create or update GitHub release
         shell: bash
         env:
@@ -441,15 +384,11 @@ jobs:
           TAG="${{ needs.prepare.outputs.tag }}"
           SEMVER="${{ needs.prepare.outputs.semver }}"
           PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
-          MAC_ZIP="release-assets/MTControls-macos-standalone-${SEMVER}.zip"
-          WIN_X64_ZIP="release-assets/MTControls-windows-x64-standalone-${SEMVER}.zip"
-          WIN_X86_ZIP="release-assets/MTControls-windows-x86-standalone-${SEMVER}.zip"
-          LINUX_ZIP="release-assets/MTControls-linux-standalone-${SEMVER}.zip"
           MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.pkg"
           WIN_X64_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x64.exe"
           WIN_X86_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x86.exe"
           LINUX_INSTALLER="release-assets/playworship_${SEMVER}_amd64.deb"
-          ASSETS=("${MAC_ZIP}" "${WIN_X64_ZIP}" "${WIN_X86_ZIP}" "${LINUX_ZIP}" "${MAC_INSTALLER}" "${WIN_X64_INSTALLER}" "${WIN_X86_INSTALLER}")
+          ASSETS=("${MAC_INSTALLER}" "${WIN_X64_INSTALLER}" "${WIN_X86_INSTALLER}")
 
           [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
           [[ -f "${WIN_X64_INSTALLER}" ]] || { echo "Missing Windows x64 installer: ${WIN_X64_INSTALLER}" >&2; exit 1; }
