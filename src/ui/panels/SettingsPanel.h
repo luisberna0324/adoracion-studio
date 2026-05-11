@@ -96,6 +96,7 @@ private:
   juce::Label title;
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtTop};
   juce::Component generalPage;
+  juce::Component audioPage;
   juce::Component routingPage;
   juce::Component midiPage;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
@@ -162,6 +163,7 @@ private:
   void refreshRoutingForDevice();
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
+  void layoutAudioPage();
   void layoutRoutingPage();
   void layoutMidiPage();
   void applyLanguageTexts();
