@@ -47,10 +47,6 @@ public:
 
   void resized() override {
     auto r = getLocalBounds().reduced(0, 4);
-    
-    // El componente de AudioDeviceSelectorComponent de JUCE usa una proporción
-    // para sus etiquetas (usualmente un tercio del ancho o un máximo).
-    // Usamos un ancho fijo mayor para que los ComboBoxes queden alineados.
     auto nameCol = r.removeFromLeft(220); 
     auto modeCol = r.removeFromLeft(110);
     r.removeFromLeft(16);
@@ -172,19 +168,20 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   if (deviceManager != nullptr) {
     audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
         *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, false, false, true, false);
-    audioSetupComp->setItemHeight(24);
-    routingPage.addAndMakeVisible(audioSetupComp.get());
+    audioPage.addAndMakeVisible(audioSetupComp.get());
     deviceManager->addChangeListener(this);
   }
 
   tabs.addTab(L10n::tr("General", "General"), UITheme::cardBg, &generalPage,
+              false);
+  tabs.addTab(L10n::tr(u8"Audio", "Audio"), UITheme::cardBg, &audioPage,
               false);
   tabs.addTab(L10n::tr("Ruteo", "Routing"), UITheme::cardBg, &routingPage,
               false);
   tabs.addTab("MIDI", UITheme::cardBg, &midiPage, false);
   tabs.setTabBarDepth(30);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
-    if (newIndex == 1) {
+    if (newIndex == 2) {
       refreshRoutingForDevice();
     }
   };
@@ -481,6 +478,7 @@ void SettingsPanel::resized() {
   tabs.setBounds(area);
 
   layoutGeneralPage();
+  layoutAudioPage();
   layoutRoutingPage();
   layoutMidiPage();
 }
@@ -582,8 +580,9 @@ void SettingsPanel::applyLanguageTexts() {
   title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
   tabs.setTabName(0, L10n::tr("General", "General"));
-  tabs.setTabName(1, L10n::tr("Ruteo", "Routing"));
-  tabs.setTabName(2, "MIDI");
+  tabs.setTabName(1, L10n::tr(u8"Audio", "Audio"));
+  tabs.setTabName(2, L10n::tr("Ruteo", "Routing"));
+  tabs.setTabName(3, "MIDI");
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
@@ -724,21 +723,20 @@ juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
   return parsed.formatted("%Y-%m-%d %H:%M");
 }
 
+void SettingsPanel::layoutAudioPage() {
+  if (audioSetupComp != nullptr) {
+    audioSetupComp->setBounds(audioPage.getLocalBounds().reduced(8));
+  }
+}
+
 void SettingsPanel::layoutRoutingPage() {
   auto area = routingPage.getLocalBounds().reduced(4);
-
-  if (audioSetupComp != nullptr) {
-    auto audioArea = area.removeFromTop(270);
-    audioSetupComp->setBounds(audioArea.reduced(20, 0));
-    area.removeFromTop(16);
-  }
-
   auto labelArea = area.removeFromTop(22);
-  routingSectionLabel.setBounds(labelArea.reduced(20, 0)); // Alineado con la lista
+  routingSectionLabel.setBounds(labelArea.reduced(20, 0));
   
   area.removeFromTop(8);
   
-  auto listArea = area.reduced(20, 0); // Mismo margen que el audioSetupComp
+  auto listArea = area.reduced(20, 0);
   routingViewport.setBounds(listArea);
   
   const int rowH = 36;
