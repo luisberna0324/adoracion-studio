@@ -645,6 +645,12 @@ std::vector<MidiBindingSetting> AppSettings::getMidiBindings() {
         juce::jlimit(1, 16, static_cast<int>(entryObj->getProperty("midiChannel")));
     binding.ccNumber =
         juce::jlimit(0, 127, static_cast<int>(entryObj->getProperty("ccNumber")));
+    const auto sourceTypeText =
+        entryObj->getProperty("sourceType").toString().trim().toLowerCase();
+    if (sourceTypeText == "note")
+      binding.sourceType = MidiBindingSourceType::Note;
+    else
+      binding.sourceType = MidiBindingSourceType::CC;
     const auto modeText =
         entryObj->getProperty("mode").toString().trim().toLowerCase();
     if (modeText == "toggle")
@@ -676,6 +682,10 @@ void AppSettings::setMidiBindings(
     entryObj->setProperty("targetId", binding.targetId);
     entryObj->setProperty("midiChannel", juce::jlimit(1, 16, binding.midiChannel));
     entryObj->setProperty("ccNumber", juce::jlimit(0, 127, binding.ccNumber));
+    entryObj->setProperty("sourceType",
+                          binding.sourceType == MidiBindingSourceType::Note
+                              ? juce::var("note")
+                              : juce::var("cc"));
     juce::String modeText = "absolute";
     if (binding.mode == MidiBindingMode::Toggle)
       modeText = "toggle";
@@ -686,7 +696,7 @@ void AppSettings::setMidiBindings(
   }
 
   if (auto *o = root.getDynamicObject()) {
-    o->setProperty("version", 14);
+    o->setProperty("version", 15);
     o->setProperty(kMidiBindingsKey, juce::var(bindingsArray));
   }
 

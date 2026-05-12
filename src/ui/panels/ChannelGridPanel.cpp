@@ -7,6 +7,25 @@
 #include "../../data/SongLibraryStore.h"
 
 #include <algorithm>
+#include <cmath>
+
+namespace {
+float midiLearnBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds *
+                                              juce::MathConstants<double>::twoPi *
+                                              2.4));
+  return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
+}
+
+float midiLearnSoftBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds *
+                                              juce::MathConstants<double>::twoPi *
+                                              1.1));
+  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
+} // namespace
 
 class ChannelGridPanel::StripSlot : public juce::Component {
 public:
@@ -109,7 +128,16 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   routingHintLabel.setVisible(false);
   addAndMakeVisible(routingHintLabel);
 
-  applyRoutingButton.onClick = [this] { applyRoutingDraft(); };
+  applyRoutingButton.onClick = [this] {
+    if (midiLearnActive) {
+      midiLearnPendingTargetId = processor.midiTargetMixerApplyRouting;
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(processor.midiTargetMixerApplyRouting);
+      repaint();
+      return;
+    }
+    applyRoutingDraft();
+  };
   applyRoutingButton.setVisible(false);
   applyRoutingButton.setColour(juce::TextButton::buttonColourId,
                                UITheme::accent.withAlpha(0.9f));
@@ -118,13 +146,31 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
 
   nudgeUpButton.setClickingTogglesState(false);
   nudgeUpButton.setLookAndFeel(&lookAndFeel);
-  nudgeUpButton.onClick = [this] { nudgeFaders(nudgeStep); };
+  nudgeUpButton.onClick = [this] {
+    if (midiLearnActive) {
+      midiLearnPendingTargetId = processor.midiTargetMixerNudgeUp;
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(processor.midiTargetMixerNudgeUp);
+      repaint();
+      return;
+    }
+    nudgeFaders(nudgeStep);
+  };
   nudgeUpButton.setTooltip("Sube todos los stems (excepto master/click/guia)");
   addAndMakeVisible(nudgeUpButton);
 
   nudgeDownButton.setClickingTogglesState(false);
   nudgeDownButton.setLookAndFeel(&lookAndFeel);
-  nudgeDownButton.onClick = [this] { nudgeFaders(-nudgeStep); };
+  nudgeDownButton.onClick = [this] {
+    if (midiLearnActive) {
+      midiLearnPendingTargetId = processor.midiTargetMixerNudgeDown;
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(processor.midiTargetMixerNudgeDown);
+      repaint();
+      return;
+    }
+    nudgeFaders(-nudgeStep);
+  };
   nudgeDownButton.setTooltip(
       "Baja todos los stems (excepto master/click/guia)");
   addAndMakeVisible(nudgeDownButton);
@@ -175,24 +221,39 @@ void ChannelGridPanel::setMidiLearnActive(const bool active) {
     midiLearnPendingTargetId = -1;
   for (auto &slot : slots) {
     auto &strip = slot->getStrip();
-    const bool canLearn = strip.hasMidiLearnTarget(processor.midiTargetMasterVolume) ||
-                          strip.hasMidiLearnTarget(processor.midiTargetMasterMute);
+    const bool canLearn = strip.hasAnyMidiLearnTarget();
     strip.setMidiLearnSelectable(midiLearnActive && canLearn);
   }
   setMidiLearnPendingTarget(midiLearnPendingTargetId);
+  repaint();
 }
 
 void ChannelGridPanel::setMidiLearnPendingTarget(const int targetId) {
   midiLearnPendingTargetId = targetId;
   for (auto &slot : slots) {
     auto &strip = slot->getStrip();
-    strip.setMidiLearnPending(strip.hasMidiLearnTarget(targetId));
+    strip.setMidiLearnPendingTarget(targetId);
   }
+  repaint();
+}
+
+void ChannelGridPanel::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+  midiLearnBindingLabelProvider = std::move(cb);
+  for (auto &slot : slots)
+    slot->getStrip().setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+  repaint();
 }
 
 void ChannelGridPanel::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
   onMidiLearnTargetSelected = std::move(cb);
 }
+
+void ChannelGridPanel::triggerMidiNudgeUp() { nudgeFaders(nudgeStep); }
+
+void ChannelGridPanel::triggerMidiNudgeDown() { nudgeFaders(-nudgeStep); }
+
+void ChannelGridPanel::triggerMidiApplyRouting() { applyRoutingDraft(); }
 
 void ChannelGridPanel::refreshLibraryFromStorage() {
   // La biblioteca se resolvio en el panel lateral (SongListPanel).
@@ -204,6 +265,9 @@ void ChannelGridPanel::setLibraryNowPlayingSong(const juce::String &songId,
 }
 
 void ChannelGridPanel::timerCallback() {
+  syncMasterSlotFromProcessor();
+  syncStemSlotsFromProcessor();
+
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   const bool hasPendingVolumeWrites =
       hasPendingMasterVolumeWrite || !pendingStemVolumeWrites.empty();
@@ -389,6 +453,7 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
 void ChannelGridPanel::setSong(const ImportedSongData &song) {
   flushPendingVolumePersistence();
   routingDraftActive = false;
+  masterSlotIndex = -1;
   metronomeVirtualSlotIndex = -1;
   slots.clear();
   adjustableStems.clear();
@@ -492,9 +557,19 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
         SongLibraryStore::updateStemSoloForActiveSetlist(currentSongId, stemId,
                                                          soloed);
     });
-    slot->getStrip().setMidiLearnTargetIds(-1, -1);
+    slot->getStrip().setMidiLearnTargetIds(
+        processor.midiTargetStemVolumeBase + stemIndex,
+        processor.midiTargetStemGainBase + stemIndex,
+        processor.midiTargetStemMuteBase + stemIndex,
+        processor.midiTargetStemSoloBase + stemIndex, -1);
+    slot->getStrip().setMidiLearnBindingLabelProvider(
+        midiLearnBindingLabelProvider);
+    slot->getStrip().setOnMidiLearnTargetSelected([this](const int targetId) {
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(targetId);
+    });
     slot->getStrip().setMidiLearnSelectable(false);
-    slot->getStrip().setMidiLearnPending(false);
+    slot->getStrip().setMidiLearnPendingTarget(-1);
     content.addAndMakeVisible(*slot);
     adjustableStems.push_back(isAdjustable);
     clickGuideStems.push_back(isClickGuide);
@@ -511,6 +586,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   }
 
   lastSeenOutputChannelCount = processor.getAvailableOutputChannelCount();
+  setMidiLearnActive(midiLearnActive);
   resized();
   repaint();
 }
@@ -685,6 +761,72 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
   }
 }
 
+void ChannelGridPanel::paintOverChildren(juce::Graphics &g) {
+  if (!midiLearnActive)
+    return;
+
+  const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+  const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+  auto drawLearnFrame = [this, &g, selectableColour, pendingColour](
+                            juce::Component &component,
+                            const int targetId) {
+    if (!component.isVisible() || targetId < 0)
+      return;
+    const auto frameBounds = component.getBounds().toFloat().reduced(1.0f);
+    const bool pending = (midiLearnPendingTargetId == targetId);
+    const juce::String label =
+        (pending && midiLearnBindingLabelProvider != nullptr)
+            ? midiLearnBindingLabelProvider(targetId).trim()
+            : juce::String{};
+    const bool assigned = pending && label.isNotEmpty();
+    const float blink =
+        assigned
+            ? 1.0f
+            : (pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength());
+    const auto frameColour =
+        assigned ? selectableColour : (pending ? pendingColour : selectableColour);
+    g.setColour(frameColour.withAlpha(assigned
+                                          ? 0.22f
+                                          : (pending ? (0.20f + (0.16f * blink))
+                                                     : (0.14f + (0.06f * blink)))));
+    g.fillRoundedRectangle(frameBounds, 7.0f);
+    g.setColour(frameColour.withAlpha(assigned
+                                          ? 0.88f
+                                          : (pending ? (0.54f + (0.40f * blink))
+                                                     : (0.52f + (0.20f * blink)))));
+    g.drawRoundedRectangle(frameBounds, 7.0f,
+                           assigned ? 1.9f
+                                    : (pending ? (1.5f + (0.9f * blink))
+                                               : (1.0f + (0.35f * blink))));
+
+    if (!assigned)
+      return;
+
+    const juce::Font labelFont(
+        juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
+    const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
+    const float textWidth =
+        static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+    const float pillW =
+        juce::jlimit(22.0f, textBounds.getWidth(), textWidth + 14.0f);
+    const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
+    auto pill = juce::Rectangle<float>(pillW, pillH).withCentre(textBounds.getCentre());
+    g.setColour(juce::Colours::black.withAlpha(0.56f));
+    g.fillRoundedRectangle(pill, pillH * 0.45f);
+    g.setColour(selectableColour.withAlpha(0.90f));
+    g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+    g.setColour(UITheme::textPrimary);
+    g.setFont(labelFont);
+    g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred,
+                     1);
+  };
+
+  drawLearnFrame(nudgeUpButton, processor.midiTargetMixerNudgeUp);
+  drawLearnFrame(nudgeDownButton, processor.midiTargetMixerNudgeDown);
+  if (applyRoutingButton.isVisible())
+    drawLearnFrame(applyRoutingButton, processor.midiTargetMixerApplyRouting);
+}
+
 void ChannelGridPanel::resized() {
   layoutHeaderAndViewport();
 
@@ -743,6 +885,7 @@ void ChannelGridPanel::resized() {
 }
 
 void ChannelGridPanel::addMasterSlot() {
+  masterSlotIndex = static_cast<int>(slots.size());
   auto slot = std::make_unique<StripSlot>(
       "MASTER", lookAndFeel,
       [this] {
@@ -778,13 +921,15 @@ void ChannelGridPanel::addMasterSlot() {
       SongLibraryStore::updateMasterMuteForActiveSetlist(currentSongId, muted);
   });
   strip.setMidiLearnTargetIds(processor.midiTargetMasterVolume,
-                              processor.midiTargetMasterMute);
+                              processor.midiTargetMasterGain,
+                              processor.midiTargetMasterMute, -1, -1);
+  strip.setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
   strip.setOnMidiLearnTargetSelected([this](const int targetId) {
     if (onMidiLearnTargetSelected)
       onMidiLearnTargetSelected(targetId);
   });
   strip.setMidiLearnSelectable(midiLearnActive);
-  strip.setMidiLearnPending(strip.hasMidiLearnTarget(midiLearnPendingTargetId));
+  strip.setMidiLearnPendingTarget(midiLearnPendingTargetId);
   strip.refreshThemeColours();
 
   content.addAndMakeVisible(*slot);
@@ -823,9 +968,17 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setOnSoloChanged([this](bool soloed) {
     processor.setMetronomeSolo(soloed);
   });
-  strip.setMidiLearnTargetIds(-1, -1);
+  strip.setMidiLearnTargetIds(
+      processor.midiTargetMetronomeVolume, processor.midiTargetMetronomeGain,
+      processor.midiTargetMetronomeMute, processor.midiTargetMetronomeSolo,
+      -1);
+  strip.setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+  strip.setOnMidiLearnTargetSelected([this](const int targetId) {
+    if (onMidiLearnTargetSelected)
+      onMidiLearnTargetSelected(targetId);
+  });
   strip.setMidiLearnSelectable(false);
-  strip.setMidiLearnPending(false);
+  strip.setMidiLearnPendingTarget(-1);
   strip.refreshThemeColours();
 
   content.addAndMakeVisible(*slot);
@@ -835,6 +988,18 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   clickGuideStems.push_back(true);
   slotStemIndices.push_back(-2);
   slotStemIds.push_back({});
+}
+
+void ChannelGridPanel::syncMasterSlotFromProcessor() {
+  if (!juce::isPositiveAndBelow(masterSlotIndex, static_cast<int>(slots.size())))
+    return;
+
+  auto &strip = slots[static_cast<size_t>(masterSlotIndex)]->getStrip();
+  if (!strip.isMouseButtonDown()) {
+    strip.setVolume(processor.getMasterVolume());
+    strip.setGain(processor.getMasterGain());
+  }
+  strip.setMuteState(processor.isMasterMuted());
 }
 
 void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
@@ -850,4 +1015,26 @@ void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
   }
   strip.setMuteState(processor.isMetronomeMuted());
   strip.setSoloState(processor.isMetronomeSolo());
+}
+
+void ChannelGridPanel::syncStemSlotsFromProcessor() {
+  for (size_t i = 0; i < slots.size(); ++i) {
+    if (static_cast<int>(i) == masterSlotIndex ||
+        static_cast<int>(i) == metronomeVirtualSlotIndex) {
+      continue;
+    }
+
+    const int stemIndex =
+        i < slotStemIndices.size() ? slotStemIndices[i] : -1;
+    if (stemIndex < 0)
+      continue;
+
+    auto &strip = slots[i]->getStrip();
+    if (!strip.isMouseButtonDown()) {
+      strip.setVolume(processor.getStemVolume(stemIndex));
+      strip.setGain(processor.getStemGain(stemIndex));
+    }
+    strip.setMuteState(processor.isStemMuted(stemIndex));
+    strip.setSoloState(processor.isStemSoloed(stemIndex));
+  }
 }

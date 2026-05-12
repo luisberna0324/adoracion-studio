@@ -2,6 +2,36 @@
 
 #include <algorithm>
 
+namespace {
+struct TempoQualitySettings {
+  int profileId = 0;
+  int sequenceMs = 82;
+  int seekWindowMs = 28;
+  int overlapMs = 10;
+};
+
+TempoQualitySettings tempoQualitySettingsForRatio(
+    const double ratio, const PitchShiftProcessor::ContentType contentType) {
+  const bool slowingDown = ratio < 0.999;
+
+  if (contentType == PitchShiftProcessor::ContentType::Percussive) {
+    // Percussive material needs tighter transient tracking to avoid
+    // double-hit/flam artifacts while stretching down tempo.
+    if (ratio < 0.88)
+      return {3, 58, 14, 6};
+    if (slowingDown)
+      return {4, 50, 13, 6};
+    return {5, 40, 10, 6};
+  }
+
+  if (ratio < 0.85)
+    return {0, 95, 35, 12}; // Heavy slow-down melodic profile.
+  if (slowingDown)
+    return {1, 82, 28, 10}; // Moderate slow-down melodic profile.
+  return {2, 46, 18, 8};    // Normal/speed-up melodic profile.
+}
+} // namespace
+
 void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
                                   int numChannels) {
   currentSampleRate = sampleRate;
@@ -65,11 +95,31 @@ void PitchShiftProcessor::setTempoRatio(double ratio) {
   const double normalized = juce::jlimit(0.75, 2.0, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
+  const int previousProfile =
+      tempoQualitySettingsForRatio(tempoRatio, contentType).profileId;
+  const int nextProfile =
+      tempoQualitySettingsForRatio(normalized, contentType).profileId;
   tempoRatio = normalized;
   if (prepared) {
     configureQualitySettings();
     soundtouch.setTempo(static_cast<float>(tempoRatio));
-    refreshLatencyFromSettings();
+    // Crossing between stretch profiles changes SoundTouch windowing strategy.
+    // Flush pipeline so old-profile frames don't drift against other stems.
+    if (previousProfile != nextProfile)
+      reset();
+    else
+      refreshLatencyFromSettings();
+  }
+}
+
+void PitchShiftProcessor::setContentType(const ContentType type) {
+  if (contentType == type)
+    return;
+  contentType = type;
+  if (prepared) {
+    configureQualitySettings();
+    // Windowing changes should apply immediately and without stale tails.
+    reset();
   }
 }
 
@@ -183,17 +233,13 @@ void PitchShiftProcessor::primeLatency() {
 }
 
 void PitchShiftProcessor::configureQualitySettings() {
-  const bool slowingDown = tempoRatio < 0.999;
-  const bool heavyStretch = tempoRatio < 0.85;
-  const int sequenceMs = heavyStretch ? 95 : (slowingDown ? 82 : 46);
-  const int seekWindowMs = heavyStretch ? 35 : (slowingDown ? 28 : 18);
-  const int overlapMs = heavyStretch ? 12 : (slowingDown ? 10 : 8);
+  const auto settings = tempoQualitySettingsForRatio(tempoRatio, contentType);
 
   // Favor quality over CPU while stretching down tempo in live playback.
   soundtouch.setSetting(SETTING_USE_QUICKSEEK, 0);
-  soundtouch.setSetting(SETTING_SEQUENCE_MS, sequenceMs);
-  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, seekWindowMs);
-  soundtouch.setSetting(SETTING_OVERLAP_MS, overlapMs);
+  soundtouch.setSetting(SETTING_SEQUENCE_MS, settings.sequenceMs);
+  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, settings.seekWindowMs);
+  soundtouch.setSetting(SETTING_OVERLAP_MS, settings.overlapMs);
 }
 
 void PitchShiftProcessor::refreshLatencyFromSettings() {

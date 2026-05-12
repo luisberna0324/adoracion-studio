@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <fstream>
 
 /**
@@ -14,8 +15,9 @@
  * A background JUCE thread drains the ring buffer every 500ms and appends
  * rows to a rotating CSV file under ~/Library/Logs/MTControls/.
  *
- * CSV columns:
- *   wall_ms, block_ms, budget_ms, overrun, lock_wait_ms, stem_count, is_playing
+ * CSV files:
+ *   1) audio_<ts>.csv       : block-level performance
+ *   2) audio_stems_<ts>.csv : per-stem timing snapshots (latency + delay)
  */
 class AudioDiagnostics {
 public:
@@ -27,6 +29,26 @@ public:
     int stemCount = 0;
     bool overrun = false;     // blockMs > budgetMs
     bool isPlaying = false;
+  };
+
+  struct StemTimingEvent {
+    static constexpr int kMaxStemMetrics = 64;
+
+    double wallMs = 0.0;
+    double tempoRatio = 1.0;
+    int pitchSemiTones = 0;
+    int stemCount = 0;
+    int targetLatencySamples = 0;
+    bool routingActive = false;
+    bool timeProcessActive = false;
+    bool tempoActive = false;
+    std::array<int16_t, kMaxStemMetrics> processLatencySamples{};
+    std::array<int16_t, kMaxStemMetrics> delaySamples{};
+    // Bit flags per stem:
+    //  bit0 = processed
+    //  bit1 = pitchShiftable
+    //  bit2 = percussive content profile
+    std::array<uint8_t, kMaxStemMetrics> flags{};
   };
 
   AudioDiagnostics() = default;
@@ -49,6 +71,20 @@ public:
     head.store(nextIdx, std::memory_order_release);
   }
 
+  void pushStemTimingEvent(const StemTimingEvent &ev) noexcept {
+    if (!active.load(std::memory_order_relaxed))
+      return;
+
+    const int writeIdx = stemHead.load(std::memory_order_relaxed);
+    const int nextIdx = (writeIdx + 1) & kStemMask;
+
+    if (nextIdx == stemTail.load(std::memory_order_acquire))
+      return; // Ring buffer full — drop event rather than block.
+
+    stemEvents[static_cast<size_t>(writeIdx)] = ev;
+    stemHead.store(nextIdx, std::memory_order_release);
+  }
+
   // ---------------------------------------------------------------------------
   // Called from the UI / message thread
   // ---------------------------------------------------------------------------
@@ -59,11 +95,17 @@ public:
     const auto ts = juce::Time::getCurrentTime()
                         .formatted("%Y%m%d_%H%M%S");
     logFile = logDirectory.getChildFile("audio_" + ts + ".csv");
+    stemLogFile = logDirectory.getChildFile("audio_stems_" + ts + ".csv");
 
     // Write CSV header
     if (auto stream = logFile.createOutputStream()) {
       stream->writeText(
           "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,is_playing\n",
+          false, false, nullptr);
+    }
+    if (auto stream = stemLogFile.createOutputStream()) {
+      stream->writeText(
+          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples\n",
           false, false, nullptr);
     }
 
@@ -98,10 +140,15 @@ public:
 private:
   static constexpr int kSize = 512;
   static constexpr int kMask = kSize - 1;
+  static constexpr int kStemSize = 128;
+  static constexpr int kStemMask = kStemSize - 1;
 
   std::array<DiagEvent, kSize> events{};
   std::atomic<int> head{0};
   std::atomic<int> tail{0};
+  std::array<StemTimingEvent, kStemSize> stemEvents{};
+  std::atomic<int> stemHead{0};
+  std::atomic<int> stemTail{0};
   std::atomic<bool> active{false};
 
   // Cumulative stats (updated by flush thread only)
@@ -111,8 +158,14 @@ private:
   std::atomic<double> totalBlockMs{0.0};
 
   juce::File logFile;
+  juce::File stemLogFile;
 
   void flushPending() {
+    flushBlockEvents();
+    flushStemTimingEvents();
+  }
+
+  void flushBlockEvents() {
     const int tailIdx = tail.load(std::memory_order_relaxed);
     const int headIdx = head.load(std::memory_order_acquire);
 
@@ -155,6 +208,51 @@ private:
     }
 
     tail.store(headIdx, std::memory_order_release);
+  }
+
+  void flushStemTimingEvents() {
+    const int tailIdx = stemTail.load(std::memory_order_relaxed);
+    const int headIdx = stemHead.load(std::memory_order_acquire);
+
+    if (tailIdx == headIdx)
+      return;
+
+    std::ofstream out(stemLogFile.getFullPathName().toStdString(),
+                      std::ios::app | std::ios::binary);
+    if (!out.is_open())
+      return;
+
+    int idx = tailIdx;
+    while (idx != headIdx) {
+      const auto &ev = stemEvents[static_cast<size_t>(idx)];
+      const int clampedStemCount =
+          juce::jlimit(0, StemTimingEvent::kMaxStemMetrics, ev.stemCount);
+      for (int stemIndex = 0; stemIndex < clampedStemCount; ++stemIndex) {
+        const uint8_t flags = ev.flags[static_cast<size_t>(stemIndex)];
+        const int processed = (flags & 0x1u) ? 1 : 0;
+        const int pitchShiftable = (flags & 0x2u) ? 1 : 0;
+        const int contentType = (flags & 0x4u) ? 1 : 0; // 0=melodic, 1=percussive
+
+        out << static_cast<int64_t>(ev.wallMs) << ","
+            << juce::String(ev.tempoRatio, 6).toStdString() << ","
+            << ev.pitchSemiTones << ","
+            << (ev.routingActive ? "1" : "0") << ","
+            << (ev.timeProcessActive ? "1" : "0") << ","
+            << (ev.tempoActive ? "1" : "0") << ","
+            << clampedStemCount << ","
+            << ev.targetLatencySamples << ","
+            << stemIndex << ","
+            << processed << ","
+            << pitchShiftable << ","
+            << contentType << ","
+            << ev.processLatencySamples[static_cast<size_t>(stemIndex)] << ","
+            << ev.delaySamples[static_cast<size_t>(stemIndex)] << "\n";
+      }
+
+      idx = (idx + 1) & kStemMask;
+    }
+
+    stemTail.store(headIdx, std::memory_order_release);
   }
 
   class FlushThread : public juce::Thread {

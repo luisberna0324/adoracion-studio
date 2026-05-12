@@ -2,14 +2,18 @@
 
 #include <JuceHeader.h>
 #include <SoundTouch.h>
+#include <cstdint>
 #include <vector>
 
 class PitchShiftProcessor {
 public:
+  enum class ContentType : uint8_t { Melodic = 0, Percussive = 1 };
+
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
   void setPitchSemiTones(int semitones);
   void setTempoRatio(double ratio);
+  void setContentType(ContentType type);
   int getPitchSemiTones() const noexcept;
   double getTempoRatio() const noexcept;
   int getLatencySamples() const noexcept;
@@ -32,6 +36,7 @@ private:
   int currentChannels = 0;
   int pitchSemiTones = 0;
   double tempoRatio = 1.0;
+  ContentType contentType = ContentType::Melodic;
   int latencySamples = 0;
   bool prepared = false;
 };

@@ -4,6 +4,22 @@ StandaloneAudioDeviceBridge::StandaloneAudioDeviceBridge()
     : audioDeviceMonitor(audioDeviceManager) {
   juce::String err = audioDeviceManager.initialise(0, 0, nullptr, true);
   juce::ignoreUnused(err);
+
+  // Fallback UX: if there are MIDI input devices detected but none enabled yet,
+  // enable them so MIDI Learn works out of the box on first launch.
+  const auto midiInputs = juce::MidiInput::getAvailableDevices();
+  bool hasEnabledInput = false;
+  for (const auto &dev : midiInputs) {
+    if (audioDeviceManager.isMidiInputDeviceEnabled(dev.identifier)) {
+      hasEnabledInput = true;
+      break;
+    }
+  }
+  if (!hasEnabledInput) {
+    for (const auto &dev : midiInputs)
+      audioDeviceManager.setMidiInputDeviceEnabled(dev.identifier, true);
+  }
+
   syncMonitorCallbacks();
 }
 

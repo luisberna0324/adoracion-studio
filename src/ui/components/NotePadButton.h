@@ -18,6 +18,7 @@ public:
     bool isActive() const { return active; }
     void setMidiLearnSelectable(bool selectable);
     void setMidiLearnPending(bool pending);
+    void setMidiLearnAssignedLabel(const juce::String& label);
 
     const juce::String& getNoteName() const { return noteName; }
     int getNoteIndex() const { return noteIndex; }
@@ -33,6 +34,7 @@ private:
     bool active = false;
     bool midiLearnSelectable = false;
     bool midiLearnPending = false;
+    juce::String midiLearnAssignedLabel;
     std::function<void()> onPressed;
     std::function<void()> onReleased;
 

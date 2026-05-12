@@ -37,7 +37,20 @@ ChannelStripCard::ChannelStripCard(
   addAndMakeVisible(volSlider);
   addAndMakeVisible(meter);
 
+  volSlider.onPointerDown = [this] {
+    if (!midiLearnSelectable)
+      return;
+    if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
+      onMidiLearnTargetSelected(midiVolumeTargetId);
+  };
+
   configureKnob(gainKnob, 1.0);
+  gainKnob.onPointerDown = [this] {
+    if (!midiLearnSelectable)
+      return;
+    if (onMidiLearnTargetSelected && midiGainTargetId >= 0)
+      onMidiLearnTargetSelected(midiGainTargetId);
+  };
   configureLabel(gainLabel, "GAIN", 7.5f, 0.08f, true);
 
   soloButton.setButtonText("S");
@@ -60,6 +73,8 @@ ChannelStripCard::ChannelStripCard(
   powerButton.setVisible(false);
 
   volSlider.onValueChange = [this] {
+    if (suppressVolumeCallback)
+      return;
     if (midiLearnSelectable) {
       if (onMidiLearnTargetSelected && midiVolumeTargetId >= 0)
         onMidiLearnTargetSelected(midiVolumeTargetId);
@@ -75,8 +90,19 @@ ChannelStripCard::ChannelStripCard(
       onMidiLearnTargetSelected(midiVolumeTargetId);
   };
   gainKnob.onValueChange = [this] {
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiGainTargetId >= 0)
+        onMidiLearnTargetSelected(midiGainTargetId);
+      return;
+    }
     if (onGainChanged)
       onGainChanged(static_cast<float>(gainKnob.getValue()));
+  };
+  gainKnob.onDragStart = [this] {
+    if (!midiLearnSelectable)
+      return;
+    if (onMidiLearnTargetSelected && midiGainTargetId >= 0)
+      onMidiLearnTargetSelected(midiGainTargetId);
   };
   muteButton.onClick = [this] {
     if (midiLearnSelectable) {
@@ -88,10 +114,21 @@ ChannelStripCard::ChannelStripCard(
       onMuteChanged(muteButton.getToggleState());
   };
   soloButton.onClick = [this] {
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiSoloTargetId >= 0)
+        onMidiLearnTargetSelected(midiSoloTargetId);
+      return;
+    }
     if (onSoloChanged)
       onSoloChanged(soloButton.getToggleState());
   };
   powerButton.setOnToggled([this](bool poweredOn) {
+    if (midiLearnSelectable) {
+      if (onMidiLearnTargetSelected && midiPowerTargetId >= 0)
+        onMidiLearnTargetSelected(midiPowerTargetId);
+      powerButton.setPoweredOn(!poweredOn);
+      return;
+    }
     if (onPowerToggled)
       onPowerToggled(poweredOn);
   });
@@ -122,18 +159,79 @@ void ChannelStripCard::paint(juce::Graphics &g) {
   if (midiLearnSelectable) {
     const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
     const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
-    auto outline = getLocalBounds().toFloat().reduced(1.5f);
-    const float pendingBlink = midiLearnPending ? midiLearnBlinkStrength()
-                                                : midiLearnSoftBlinkStrength();
-    g.setColour((midiLearnPending ? pendingColour : selectableColour)
-                    .withAlpha(midiLearnPending ? (0.50f + (0.45f * pendingBlink))
-                                                : (0.50f + (0.20f * pendingBlink))));
-    g.drawRoundedRectangle(outline, 5.5f,
-                           midiLearnPending ? (1.6f + (1.0f * pendingBlink))
-                                            : (1.0f + (0.35f * pendingBlink)));
-    if (midiLearnPending) {
-      g.setColour(pendingColour.withAlpha(0.10f + (0.18f * pendingBlink)));
-      g.fillRoundedRectangle(outline.reduced(2.0f), 4.5f);
+    auto drawLearnState = [this, &g, selectableColour,
+                           pendingColour](juce::Rectangle<float> area,
+                                          const int targetId) {
+      if (targetId < 0 || area.getWidth() <= 2.0f || area.getHeight() <= 2.0f)
+        return;
+
+      const bool pending = (midiLearnPendingTargetId == targetId);
+      const auto label = (pending && midiLearnBindingLabelProvider != nullptr)
+                             ? midiLearnBindingLabelProvider(targetId).trim()
+                             : juce::String{};
+      const bool assigned = pending && label.isNotEmpty();
+      const float blink = assigned
+                              ? 1.0f
+                              : (pending ? midiLearnBlinkStrength()
+                                         : midiLearnSoftBlinkStrength());
+      const auto colour =
+          assigned ? selectableColour
+                   : (pending ? pendingColour : selectableColour);
+      auto overlay = area.reduced(1.0f);
+      const float radius = juce::jlimit(4.0f, 7.5f,
+                                        juce::jmin(overlay.getWidth(),
+                                                   overlay.getHeight()) *
+                                            0.18f);
+
+      g.setColour(colour.withAlpha(assigned ? 0.22f
+                                            : (pending ? (0.20f + (0.16f * blink))
+                                                       : (0.13f + (0.06f * blink)))));
+      g.fillRoundedRectangle(overlay, radius);
+      g.setColour(colour.withAlpha(assigned ? 0.88f
+                                            : (pending ? (0.54f + (0.40f * blink))
+                                                       : (0.52f + (0.20f * blink)))));
+      g.drawRoundedRectangle(overlay, radius,
+                             assigned ? 1.9f
+                                      : (pending ? (1.5f + (0.9f * blink))
+                                                 : (1.0f + (0.35f * blink))));
+
+      if (!assigned)
+        return;
+
+      const juce::Font labelFont(
+          juce::FontOptions(10.5f).withStyle("Bold").withKerningFactor(0.03f));
+      const auto labelArea = overlay.reduced(4.0f, 4.0f);
+      const float textWidth =
+          static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+      const float pillW = juce::jlimit(20.0f, labelArea.getWidth(),
+                                       textWidth + 12.0f);
+      const float pillH = juce::jlimit(12.0f, labelArea.getHeight(), 16.0f);
+      const auto pill = juce::Rectangle<float>(pillW, pillH)
+                            .withCentre(labelArea.getCentre());
+      g.setColour(juce::Colours::black.withAlpha(0.58f));
+      g.fillRoundedRectangle(pill, pillH * 0.45f);
+      g.setColour(selectableColour.withAlpha(0.90f));
+      g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(labelFont);
+      g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred,
+                       1);
+    };
+
+    if (midiVolumeTargetId >= 0) {
+      drawLearnState(volSlider.getBounds().toFloat(), midiVolumeTargetId);
+    }
+    if (midiGainTargetId >= 0 && gainKnob.isVisible()) {
+      drawLearnState(gainKnob.getBounds().toFloat(), midiGainTargetId);
+    }
+    if (midiMuteTargetId >= 0 && muteButton.isVisible()) {
+      drawLearnState(muteButton.getBounds().toFloat(), midiMuteTargetId);
+    }
+    if (midiSoloTargetId >= 0 && soloButton.isVisible()) {
+      drawLearnState(soloButton.getBounds().toFloat(), midiSoloTargetId);
+    }
+    if (midiPowerTargetId >= 0 && powerButton.isVisible()) {
+      drawLearnState(powerButton.getBounds().toFloat(), midiPowerTargetId);
     }
   }
 }
@@ -253,7 +351,9 @@ void ChannelStripCard::setLayoutScale(float scale) {
 }
 
 void ChannelStripCard::setVolume(float volume) {
+  suppressVolumeCallback = true;
   volSlider.setValue(volume, juce::dontSendNotification);
+  suppressVolumeCallback = false;
 }
 
 void ChannelStripCard::setGain(float gain) {
@@ -358,19 +458,34 @@ void ChannelStripCard::setOnPowerToggled(std::function<void(bool)> cb) {
 }
 
 void ChannelStripCard::setMidiLearnTargetIds(const int volumeTargetId,
-                                             const int muteTargetId) {
+                                             const int gainTargetId,
+                                             const int muteTargetId,
+                                             const int soloTargetId,
+                                             const int powerTargetId) {
   midiVolumeTargetId = volumeTargetId;
+  midiGainTargetId = gainTargetId;
   midiMuteTargetId = muteTargetId;
+  midiSoloTargetId = soloTargetId;
+  midiPowerTargetId = powerTargetId;
 }
 
 void ChannelStripCard::setMidiLearnSelectable(const bool selectable) {
   midiLearnSelectable = selectable;
+  if (!midiLearnSelectable)
+    midiLearnPendingTargetId = -1;
   updateMidiLearnBlinkTimer();
   repaint();
 }
 
-void ChannelStripCard::setMidiLearnPending(const bool pending) {
-  midiLearnPending = pending;
+void ChannelStripCard::setMidiLearnPendingTarget(const int targetId) {
+  midiLearnPendingTargetId = hasMidiLearnTarget(targetId) ? targetId : -1;
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ChannelStripCard::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+  midiLearnBindingLabelProvider = std::move(cb);
   updateMidiLearnBlinkTimer();
   repaint();
 }
@@ -381,7 +496,15 @@ void ChannelStripCard::setOnMidiLearnTargetSelected(std::function<void(int)> cb)
 
 bool ChannelStripCard::hasMidiLearnTarget(const int targetId) const {
   return targetId >= 0 &&
-         (midiVolumeTargetId == targetId || midiMuteTargetId == targetId);
+         (midiVolumeTargetId == targetId || midiGainTargetId == targetId ||
+          midiMuteTargetId == targetId || midiSoloTargetId == targetId ||
+          midiPowerTargetId == targetId);
+}
+
+bool ChannelStripCard::hasAnyMidiLearnTarget() const {
+  return midiVolumeTargetId >= 0 || midiGainTargetId >= 0 ||
+         midiMuteTargetId >= 0 || midiSoloTargetId >= 0 ||
+         midiPowerTargetId >= 0;
 }
 
 void ChannelStripCard::timerCallback() {

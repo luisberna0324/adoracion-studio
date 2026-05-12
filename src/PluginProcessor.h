@@ -155,8 +155,16 @@ public:
     MidiBindingMode mode = MidiBindingMode::Absolute;
   };
   using MidiBinding = MidiBindingSetting;
+  struct MidiInputProbe {
+    juce::int64 timestampMs = 0;
+    int channel = 0;
+    int data1 = -1;
+    int data2 = -1;
+    int type = 0; // 1=CC, 2=NoteOn, 3=NoteOff, 4=Other
+  };
   std::vector<MidiTargetDescriptor> getMidiTargets() const;
   std::vector<MidiBinding> getMidiBindings() const;
+  MidiInputProbe getLastMidiInputProbe() const noexcept;
   void setMidiBinding(const MidiBinding &binding);
   void clearMidiBindingForTarget(int targetId);
   void beginMidiLearnForTarget(int targetId);
@@ -178,15 +186,52 @@ public:
   static constexpr int midiTargetTransportSeekForward = 9;
   static constexpr int midiTargetTransportNextSong = 10;
   static constexpr int midiTargetTransportFadeToggle = 11;
+  static constexpr int midiTargetMasterGain = 12;
+  static constexpr int midiTargetUiWindowModeToggle = 13;
+  static constexpr int midiTargetUiSettingsToggle = 14;
+  static constexpr int midiTargetUiSongWindowPopover = 15;
+  static constexpr int midiTargetUiKeyPopover = 16;
+  static constexpr int midiTargetUiMetronomePopover = 17;
+  static constexpr int midiTargetSongStartMinus = 18;
+  static constexpr int midiTargetSongStartPlus = 19;
   static constexpr int midiTargetPadsPower = 20;
   static constexpr int midiTargetPadsVolume = 21;
+  static constexpr int midiTargetPadsGain = 22;
+  static constexpr int midiTargetSongEndMinus = 23;
+  static constexpr int midiTargetSongEndPlus = 24;
+  static constexpr int midiTargetSongFadeMinus = 25;
+  static constexpr int midiTargetSongFadePlus = 26;
+  static constexpr int midiTargetTempoDown = 27;
+  static constexpr int midiTargetTempoUp = 28;
+  static constexpr int midiTargetPitchDown = 29;
+  static constexpr int midiTargetPitchUp = 30;
+  static constexpr int midiTargetMetronomeGain = 31;
+  static constexpr int midiTargetMetronomeSolo = 32;
+  static constexpr int midiTargetMixerNudgeUp = 33;
+  static constexpr int midiTargetMixerNudgeDown = 34;
+  static constexpr int midiTargetMixerApplyRouting = 35;
+  static constexpr int midiTargetWaveformEditToggle = 36;
   static constexpr int midiTargetStemVolumeBase = 100;
+  static constexpr int midiTargetStemGainBase = 300;
+  static constexpr int midiTargetStemMuteBase = 400;
+  static constexpr int midiTargetStemSoloBase = 500;
   static constexpr int midiTargetPadsNoteBase = 200;
   static constexpr int midiUiCommandPrevSong = 1;
   static constexpr int midiUiCommandNextSong = 2;
+  static constexpr int midiUiCommandToggleWindowMode = 3;
+  static constexpr int midiUiCommandToggleSettings = 4;
+  static constexpr int midiUiCommandShowSongWindowPopover = 5;
+  static constexpr int midiUiCommandShowKeyPopover = 6;
+  static constexpr int midiUiCommandShowMetronomePopover = 7;
+  static constexpr int midiUiCommandMixerNudgeUp = 8;
+  static constexpr int midiUiCommandMixerNudgeDown = 9;
+  static constexpr int midiUiCommandMixerApplyRouting = 10;
+  static constexpr int midiUiCommandWaveformEditToggle = 11;
 
 private:
   static constexpr int maxStemCount = 64;
+  static constexpr int midiSourceKinds = 2; // CC + Note
+  static constexpr int midiSourceStateSlots = midiSourceKinds * 16 * 128;
   enum class TransportState : int { stopped = 0, playing, paused };
 
   juce::AudioProcessorValueTreeState apvts;
@@ -272,13 +317,20 @@ private:
   std::atomic<bool> songLoaded{false};
   mutable juce::CriticalSection midiBindingsLock;
   std::vector<MidiBinding> midiBindings;
-  std::array<int, 512> midiLastCcValues{};
+  std::array<int, midiSourceStateSlots> midiLastSourceValues{};
   std::atomic<int> midiLearnTargetId{-1};
   std::atomic<int> midiLearnPendingTargetId{-1};
   std::atomic<int> midiLearnPendingChannel{1};
+  std::atomic<int> midiLearnPendingSourceType{
+      static_cast<int>(MidiBindingSourceType::CC)};
   std::atomic<int> midiLearnPendingCc{0};
   std::atomic<int> midiLearnPendingMode{0};
   std::atomic<int> midiPendingUiCommand{0};
+  std::atomic<juce::int64> midiLastMessageMs{0};
+  std::atomic<int> midiLastMessageChannel{0};
+  std::atomic<int> midiLastMessageData1{-1};
+  std::atomic<int> midiLastMessageData2{-1};
+  std::atomic<int> midiLastMessageType{0};
 
   struct ArrangementRuntimePart {
     double startSec = 0.0;
@@ -313,6 +365,8 @@ private:
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;
+  int stemTimingSnapshotDecimator = 0;
+  static constexpr int kStemTimingSnapshotEveryBlocks = 20;
 
   void clearLoadedSongState();
   void removeAllStemSources();
@@ -329,6 +383,8 @@ private:
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;
   void processMidiMapping(const juce::MidiBuffer &midiMessages);
+  static int midiSourceStateIndex(MidiBindingSourceType sourceType, int channel,
+                                  int data1) noexcept;
   static bool isMidiTargetValid(int targetId) noexcept;
   static MidiBindingMode defaultModeForTarget(int targetId) noexcept;
   static juce::String midiTargetNameForId(int targetId);

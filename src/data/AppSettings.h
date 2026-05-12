@@ -28,11 +28,13 @@ struct AssetsBootstrapState {
 };
 
 enum class MidiBindingMode { Absolute = 0, Toggle = 1, Momentary = 2 };
+enum class MidiBindingSourceType { CC = 0, Note = 1 };
 
 struct MidiBindingSetting {
   int targetId = -1;
   int midiChannel = 1; // 1..16
-  int ccNumber = 0;    // 0..127
+  int ccNumber = 0;    // 0..127 (CC number o Note number segun sourceType)
+  MidiBindingSourceType sourceType = MidiBindingSourceType::CC;
   MidiBindingMode mode = MidiBindingMode::Absolute;
 };
 

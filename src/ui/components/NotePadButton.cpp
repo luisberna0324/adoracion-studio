@@ -43,14 +43,30 @@ void NotePadButton::paint(juce::Graphics& g) {
     if (midiLearnSelectable) {
         const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
         const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
-        const float pendingBlink = midiLearnPending ? midiLearnBlinkStrength()
-                                                    : midiLearnSoftBlinkStrength();
-        g.setColour((midiLearnPending ? pendingColour : selectableColour)
-                        .withAlpha(midiLearnPending ? (0.52f + (0.43f * pendingBlink))
-                                                    : (0.50f + (0.20f * pendingBlink))));
+        const bool assigned =
+            midiLearnPending && midiLearnAssignedLabel.trim().isNotEmpty();
+        const float pendingBlink = assigned
+                                       ? 1.0f
+                                       : (midiLearnPending ? midiLearnBlinkStrength()
+                                                          : midiLearnSoftBlinkStrength());
+        const auto frameColour =
+            assigned ? selectableColour
+                     : (midiLearnPending ? pendingColour : selectableColour);
+        g.setColour(frameColour.withAlpha(assigned
+                                              ? 0.22f
+                                              : (midiLearnPending
+                                                     ? (0.20f + (0.16f * pendingBlink))
+                                                     : (0.13f + (0.06f * pendingBlink)))));
+        g.fillRoundedRectangle(bounds.reduced(1.0f), radius - 1.0f);
+        g.setColour(frameColour.withAlpha(assigned
+                                              ? 0.88f
+                                              : (midiLearnPending
+                                                     ? (0.52f + (0.43f * pendingBlink))
+                                                     : (0.50f + (0.20f * pendingBlink)))));
         g.drawRoundedRectangle(bounds.reduced(1.0f), radius - 1.0f,
-                               midiLearnPending ? (1.5f + (0.9f * pendingBlink))
-                                               : (1.0f + (0.35f * pendingBlink)));
+                               assigned ? 1.9f
+                                        : (midiLearnPending ? (1.5f + (0.9f * pendingBlink))
+                                                           : (1.0f + (0.35f * pendingBlink))));
     }
 
     g.setColour(active ? UITheme::onAccent : UITheme::textPrimary);
@@ -58,6 +74,28 @@ void NotePadButton::paint(juce::Graphics& g) {
                                         static_cast<float>(getHeight()) * 0.26f);
     g.setFont(juce::Font(juce::FontOptions(fontSize).withStyle("Bold")));
     g.drawFittedText(noteName, getLocalBounds(), juce::Justification::centred, 1);
+
+    if (midiLearnSelectable && midiLearnPending &&
+        midiLearnAssignedLabel.trim().isNotEmpty()) {
+        const juce::String label = midiLearnAssignedLabel.trim();
+        const juce::Font labelFont(
+            juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
+        const auto textBounds = bounds.reduced(5.0f, 5.0f);
+        const float textWidth =
+            static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+        const float pillW = juce::jlimit(22.0f, textBounds.getWidth(),
+                                         textWidth + 12.0f);
+        const float pillH = juce::jlimit(12.0f, textBounds.getHeight(), 18.0f);
+        auto pill = juce::Rectangle<float>(pillW, pillH)
+                        .withCentre(textBounds.getCentre());
+        g.setColour(juce::Colours::black.withAlpha(0.58f));
+        g.fillRoundedRectangle(pill, pillH * 0.45f);
+        g.setColour(juce::Colour::fromRGB(78, 170, 255).withAlpha(0.90f));
+        g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+        g.setColour(UITheme::textPrimary);
+        g.setFont(labelFont);
+        g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred, 1);
+    }
 }
 
 void NotePadButton::mouseDown(const juce::MouseEvent&) {
@@ -98,6 +136,11 @@ void NotePadButton::setMidiLearnSelectable(const bool selectable) {
 void NotePadButton::setMidiLearnPending(const bool pending) {
     midiLearnPending = pending;
     updateMidiLearnBlinkTimer();
+    repaint();
+}
+
+void NotePadButton::setMidiLearnAssignedLabel(const juce::String& label) {
+    midiLearnAssignedLabel = label;
     repaint();
 }
 

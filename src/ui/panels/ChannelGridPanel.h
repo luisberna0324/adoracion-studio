@@ -33,7 +33,11 @@ public:
   void setOnLibraryImportRequested(std::function<void()> cb);
   void setMidiLearnActive(bool active);
   void setMidiLearnPendingTarget(int targetId);
+  void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+  void triggerMidiNudgeUp();
+  void triggerMidiNudgeDown();
+  void triggerMidiApplyRouting();
 
   /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
   void beginAutomaticRoutingDraft();
@@ -42,6 +46,7 @@ public:
   void refreshStemRoutingVisibility();
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
 
 private:
@@ -51,7 +56,9 @@ private:
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
   void addMetronomeVirtualSlot();
+  void syncMasterSlotFromProcessor();
   void syncMetronomeVirtualSlotFromProcessor();
+  void syncStemSlotsFromProcessor();
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
   void queueMasterVolumePersistence(float volume);
   void flushPendingVolumePersistence();
@@ -74,6 +81,7 @@ private:
   std::function<void(const juce::StringArray &)> onLibraryAddSongRequested;
   std::function<void()> onLibraryImportRequested;
   std::function<void(int)> onMidiLearnTargetSelected;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
   juce::String currentSongId;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
@@ -86,6 +94,7 @@ private:
   double lastVolumeInteractionMs = 0.0;
   int slowTickCounter = 0;
   int lastSeenOutputChannelCount = -1;
+  int masterSlotIndex = -1;
   int metronomeVirtualSlotIndex = -1;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   const float nudgeStep = 0.05f;

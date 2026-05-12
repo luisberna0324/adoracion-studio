@@ -1,4 +1,5 @@
 #include "WaveformBar.h"
+#include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
 
 #include <algorithm>
@@ -24,6 +25,19 @@ constexpr int kSnapModeBarId = 1;
 constexpr int kSnapModeBeatId = 2;
 constexpr int kSnapModeHalfBeatId = 3;
 constexpr int kSnapModeFreeId = 4;
+constexpr int kMidiTargetWaveformEdit = MTControlsAudioProcessor::midiTargetWaveformEditToggle;
+
+float midiLearnBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
+  return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
+}
+
+float midiLearnSoftBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
+  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
 
 juce::String formatSeconds(double seconds) {
   if (seconds < 0.0)
@@ -108,6 +122,15 @@ WaveformBar::WaveformBar() {
   editButton.setClickingTogglesState(true);
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
+    if (midiLearnActive) {
+      editButton.setToggleState(!editButton.getToggleState(),
+                                juce::dontSendNotification);
+      midiLearnPendingTargetId = kMidiTargetWaveformEdit;
+      if (onMidiLearnTargetSelected)
+        onMidiLearnTargetSelected(kMidiTargetWaveformEdit);
+      repaint();
+      return;
+    }
     const bool editing = editButton.getToggleState();
     if (!editing) {
       snapMode = SnapMode::Bar;
@@ -262,6 +285,34 @@ void WaveformBar::setActiveArrangementLoopPartProvider(
   activeArrangementLoopPartProvider = std::move(cb);
 }
 
+void WaveformBar::setMidiLearnActive(const bool active) {
+  midiLearnActive = active;
+  if (!midiLearnActive)
+    midiLearnPendingTargetId = -1;
+  repaint();
+}
+
+void WaveformBar::setMidiLearnPendingTarget(const int targetId) {
+  midiLearnPendingTargetId = targetId;
+  repaint();
+}
+
+void WaveformBar::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+  midiLearnBindingLabelProvider = std::move(cb);
+  repaint();
+}
+
+void WaveformBar::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
+  onMidiLearnTargetSelected = std::move(cb);
+}
+
+void WaveformBar::triggerEditToggleFromMidi() {
+  if (!editButton.isVisible() || !editButton.isEnabled() || midiLearnActive)
+    return;
+  editButton.triggerClick();
+}
+
 void WaveformBar::refreshThemeColours() {
   editButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   editButton.setColour(juce::TextButton::buttonOnColourId,
@@ -325,10 +376,10 @@ void WaveformBar::paint(juce::Graphics &g) {
       g.setColour(UITheme::cardBorder.withAlpha(0.7f));
       g.drawRoundedRectangle(miniMapBounds, 4.0f, 1.0f);
     }
-    g.setColour(UITheme::accent);
-    g.fillRect(0.0f, 0.0f, 2.0f, bounds.getHeight());
-    return;
-  }
+  g.setColour(UITheme::accent);
+  g.fillRect(0.0f, 0.0f, 2.0f, bounds.getHeight());
+  return;
+}
 
   const auto window = getVisibleWindow();
   drawWaveform(g, mainWaveBodyBounds, window.first, window.second,
@@ -340,6 +391,59 @@ void WaveformBar::paint(juce::Graphics &g) {
 
   if (miniMapBounds.getWidth() > 2.0f && miniMapBounds.getHeight() > 2.0f)
     drawMiniMap(g, miniMapBounds);
+}
+
+void WaveformBar::paintOverChildren(juce::Graphics &g) {
+  if (!midiLearnActive || !editButton.isVisible())
+    return;
+
+  const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+  const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+  const bool pending = midiLearnPendingTargetId == kMidiTargetWaveformEdit;
+  const juce::String label =
+      (pending && midiLearnBindingLabelProvider != nullptr)
+          ? midiLearnBindingLabelProvider(kMidiTargetWaveformEdit).trim()
+          : juce::String{};
+  const bool assigned = pending && label.isNotEmpty();
+  const float blink =
+      assigned ? 1.0f
+               : (pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength());
+  const auto frameColour =
+      assigned ? selectableColour : (pending ? pendingColour : selectableColour);
+  const auto frameBounds = editButton.getBounds().toFloat().reduced(1.0f);
+  g.setColour(frameColour.withAlpha(assigned
+                                        ? 0.22f
+                                        : (pending ? (0.20f + (0.16f * blink))
+                                                   : (0.14f + (0.06f * blink)))));
+  g.fillRoundedRectangle(frameBounds, 7.0f);
+  g.setColour(frameColour.withAlpha(assigned
+                                        ? 0.88f
+                                        : (pending ? (0.54f + (0.40f * blink))
+                                                   : (0.52f + (0.20f * blink)))));
+  g.drawRoundedRectangle(frameBounds, 7.0f,
+                         assigned ? 1.9f
+                                  : (pending ? (1.5f + (0.9f * blink))
+                                             : (1.0f + (0.35f * blink))));
+
+  if (!assigned)
+    return;
+
+  const juce::Font labelFont(
+      juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
+  const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
+  const float textWidth =
+      static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+  const float pillW =
+      juce::jlimit(22.0f, textBounds.getWidth(), textWidth + 14.0f);
+  const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
+  auto pill = juce::Rectangle<float>(pillW, pillH).withCentre(textBounds.getCentre());
+  g.setColour(juce::Colours::black.withAlpha(0.56f));
+  g.fillRoundedRectangle(pill, pillH * 0.45f);
+  g.setColour(selectableColour.withAlpha(0.90f));
+  g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+  g.setColour(UITheme::textPrimary);
+  g.setFont(labelFont);
+  g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred, 1);
 }
 
 void WaveformBar::resized() {
@@ -442,6 +546,15 @@ void WaveformBar::resized() {
 }
 
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
+  if (midiLearnActive) {
+    juce::ignoreUnused(event);
+    midiLearnPendingTargetId = kMidiTargetWaveformEdit;
+    if (onMidiLearnTargetSelected)
+      onMidiLearnTargetSelected(kMidiTargetWaveformEdit);
+    repaint();
+    return;
+  }
+
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragAnchorActive = false;
@@ -583,6 +696,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
+  if (midiLearnActive)
+    return;
+
   const auto bounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(bounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -823,6 +939,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &) {
+  if (midiLearnActive)
+    return;
+
   const bool wasArrangementDrag =
       dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
       dragMode == DragMode::resizePartRight;
@@ -842,6 +961,18 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseMove(const juce::MouseEvent &event) {
+  if (midiLearnActive) {
+    if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
+        hoveredJumpPartIndex >= 0) {
+      hoveredActionPartIndex = -1;
+      hoveredLoopPartIndex = -1;
+      hoveredJumpPartIndex = -1;
+      repaint();
+    }
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+    return;
+  }
+
   juce::MouseCursor nextCursor = juce::MouseCursor::NormalCursor;
   int nextHoveredActionPartIndex = -1;
   int nextHoveredLoopPartIndex = -1;
@@ -911,6 +1042,9 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (midiLearnActive)
+    return;
+
   const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   if (!mainWaveBodyBounds.contains(event.position))
@@ -936,6 +1070,9 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
+  if (midiLearnActive)
+    return;
+
   const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   const auto seekRulerBounds = getSeekRulerBounds(mainWaveBounds);
@@ -962,6 +1099,9 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
+  if (midiLearnActive)
+    return;
+
   if (magnifyAmount == 0.0f)
     return;
 

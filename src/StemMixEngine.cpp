@@ -65,16 +65,20 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   currentChannels = numChannels;
 
   pitchShiftMelodic.prepare(sampleRate, samplesPerBlock, numChannels);
+  pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
   pitchShiftMelodic.reset();
   pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
   pitchShiftMelodic.setTempoRatio(tempoRatio);
 
   tempoShiftPercussion.prepare(sampleRate, samplesPerBlock, numChannels);
+  tempoShiftPercussion.setContentType(
+      PitchShiftProcessor::ContentType::Percussive);
   tempoShiftPercussion.reset();
   tempoShiftPercussion.setPitchSemiTones(0);
   tempoShiftPercussion.setTempoRatio(tempoRatio);
 
   tempoShiftGuide.prepare(sampleRate, samplesPerBlock, numChannels);
+  tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
   tempoShiftGuide.reset();
   tempoShiftGuide.setPitchSemiTones(0);
   tempoShiftGuide.setTempoRatio(tempoRatio);
@@ -229,6 +233,7 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
         pitchShiftMelodic.getNumChannels() != numChannels) {
       pitchShiftMelodic.prepare(currentSampleRate, currentBlockSize,
                                 numChannels);
+      pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
       pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
       pitchShiftMelodic.setTempoRatio(tempoRatio);
     }
@@ -236,12 +241,15 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
         tempoShiftPercussion.getNumChannels() != numChannels) {
       tempoShiftPercussion.prepare(currentSampleRate, currentBlockSize,
                                    numChannels);
+      tempoShiftPercussion.setContentType(
+          PitchShiftProcessor::ContentType::Percussive);
       tempoShiftPercussion.setPitchSemiTones(0);
       tempoShiftPercussion.setTempoRatio(tempoRatio);
     }
     if (!tempoShiftGuide.isPrepared() ||
         tempoShiftGuide.getNumChannels() != numChannels) {
       tempoShiftGuide.prepare(currentSampleRate, currentBlockSize, numChannels);
+      tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
       tempoShiftGuide.setPitchSemiTones(0);
       tempoShiftGuide.setTempoRatio(tempoRatio);
     }

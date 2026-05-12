@@ -29,6 +29,7 @@ public:
     void setResponsiveProfile(ResponsiveLayoutProfile profile);
     void setMidiLearnActive(bool active);
     void setMidiLearnPendingTarget(int targetId);
+    void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
     void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
 
 private:
@@ -46,6 +47,7 @@ private:
   bool padsPoweredOn = true;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(int)> onMidiLearnTargetSelected;
   std::array<bool, kNoteCount> qwertyWasDown{};
   std::atomic<bool> padsLoading{false};

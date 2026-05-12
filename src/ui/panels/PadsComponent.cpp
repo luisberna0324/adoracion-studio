@@ -58,7 +58,9 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
         [this](float value) { processor.setPadsVolume(value); });
     channelStrip->setOnGainChanged(
         [this](float value) { processor.setPadsGain(value); });
-    channelStrip->setMidiLearnTargetIds(processor.midiTargetPadsVolume, -1);
+    channelStrip->setMidiLearnTargetIds(processor.midiTargetPadsVolume,
+                                        processor.midiTargetPadsGain, -1, -1,
+                                        -1);
     channelStrip->setOnMidiLearnTargetSelected([this](const int targetId) {
       if (onMidiLearnTargetSelected)
         onMidiLearnTargetSelected(targetId);
@@ -133,14 +135,51 @@ void PadsComponent::paint(juce::Graphics& g) {
         const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
         auto powerFrame = powerBtn.getBounds().toFloat().reduced(1.0f);
         const bool powerPending = (midiLearnPendingTargetId == processor.midiTargetPadsPower);
-        const float blink = powerPending ? midiLearnBlinkStrength()
-                                         : midiLearnSoftBlinkStrength();
-        g.setColour((powerPending ? pendingColour : selectableColour)
-                        .withAlpha(powerPending ? (0.54f + (0.40f * blink))
-                                                : (0.52f + (0.20f * blink))));
+        const juce::String label = (powerPending && midiLearnBindingLabelProvider != nullptr)
+                                       ? midiLearnBindingLabelProvider(processor.midiTargetPadsPower).trim()
+                                       : juce::String{};
+        const bool assigned = powerPending && label.isNotEmpty();
+        const float blink = assigned
+                                ? 1.0f
+                                : (powerPending ? midiLearnBlinkStrength()
+                                                : midiLearnSoftBlinkStrength());
+        const auto frameColour =
+            assigned ? selectableColour
+                     : (powerPending ? pendingColour : selectableColour);
+        g.setColour(frameColour.withAlpha(assigned
+                                              ? 0.22f
+                                              : (powerPending ? (0.20f + (0.16f * blink))
+                                                              : (0.13f + (0.06f * blink)))));
+        g.fillRoundedRectangle(powerFrame, 7.0f);
+        g.setColour(frameColour.withAlpha(assigned
+                                              ? 0.88f
+                                              : (powerPending ? (0.54f + (0.40f * blink))
+                                                              : (0.52f + (0.20f * blink)))));
         g.drawRoundedRectangle(powerFrame, 7.0f,
-                               powerPending ? (1.5f + (0.9f * blink))
-                                            : (1.0f + (0.35f * blink)));
+                               assigned ? 1.9f
+                                        : (powerPending ? (1.5f + (0.9f * blink))
+                                                        : (1.0f + (0.35f * blink))));
+
+        if (assigned) {
+            const juce::Font labelFont(
+                juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
+            const auto textBounds = powerFrame.reduced(4.0f, 4.0f);
+            const float textWidth =
+                static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+            const float pillW = juce::jlimit(18.0f, textBounds.getWidth(),
+                                             textWidth + 11.0f);
+            const float pillH = juce::jlimit(11.0f, textBounds.getHeight(), 15.0f);
+            const auto pill = juce::Rectangle<float>(pillW, pillH)
+                                  .withCentre(textBounds.getCentre());
+            g.setColour(juce::Colours::black.withAlpha(0.58f));
+            g.fillRoundedRectangle(pill, pillH * 0.45f);
+            g.setColour(selectableColour.withAlpha(0.90f));
+            g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+            g.setColour(UITheme::textPrimary);
+            g.setFont(labelFont);
+            g.drawFittedText(label, pill.toNearestInt(),
+                             juce::Justification::centred, 1);
+        }
     }
 }
 
@@ -270,6 +309,17 @@ void PadsComponent::timerCallback() {
         repaint();
     }
 
+    if (channelStrip != nullptr && !channelStrip->isMouseButtonDown()) {
+        channelStrip->setVolume(processor.getPadsVolume());
+        channelStrip->setGain(processor.getPadsGain());
+    }
+
+    if (!midiLearnActive) {
+        const bool runtimePadsEnabled = processor.isPadsEnabled();
+        if (runtimePadsEnabled != padsPoweredOn)
+            applyPowerState(runtimePadsEnabled);
+    }
+
     if (midiLearnActive)
         repaint();
 }
@@ -387,11 +437,24 @@ void PadsComponent::setMidiLearnPendingTarget(const int targetId) {
     midiLearnPendingTargetId = targetId;
     for (int i = 0; i < kNoteCount; ++i) {
         const int noteTargetId = processor.midiTargetPadsNoteBase + i;
-        notePads[static_cast<size_t>(i)]->setMidiLearnPending(noteTargetId == targetId);
+        const bool pending = (noteTargetId == targetId);
+        notePads[static_cast<size_t>(i)]->setMidiLearnPending(pending);
+        notePads[static_cast<size_t>(i)]->setMidiLearnAssignedLabel(
+            pending && midiLearnBindingLabelProvider != nullptr
+                ? midiLearnBindingLabelProvider(noteTargetId).trim()
+                : juce::String{});
     }
     if (channelStrip != nullptr)
-        channelStrip->setMidiLearnPending(channelStrip->hasMidiLearnTarget(targetId));
+        channelStrip->setMidiLearnPendingTarget(targetId);
     repaint();
+}
+
+void PadsComponent::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+    midiLearnBindingLabelProvider = std::move(cb);
+    if (channelStrip != nullptr)
+        channelStrip->setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+    setMidiLearnPendingTarget(midiLearnPendingTargetId);
 }
 
 void PadsComponent::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
