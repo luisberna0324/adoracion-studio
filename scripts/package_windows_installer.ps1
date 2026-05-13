@@ -7,7 +7,9 @@ param(
     [string]$OutputDir = "dist",
     [string]$IssFile = "packaging/windows/MTControls.iss",
     [string]$FfmpegExe = $env:MTCONTROLS_FFMPEG_BIN_WINDOWS,
-    [switch]$RequireFfmpeg
+    [switch]$RequireFfmpeg,
+    [string]$VcRedistExe = $env:MTCONTROLS_VC_REDIST_EXE,
+    [switch]$SkipVcRedist
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +74,28 @@ if (-not $ffmpegAlreadyBundled) {
     Write-Warning "ffmpeg.exe was not found/bundled. Installer will be generated without ffmpeg (runtime bootstrap will download it)."
 }
 
+$vcRedistForInstaller = ""
+if (-not $SkipVcRedist) {
+    if (-not [string]::IsNullOrWhiteSpace($VcRedistExe)) {
+        if (!(Test-Path -LiteralPath $VcRedistExe)) {
+            throw "Configured VC redist not found: $VcRedistExe"
+        }
+        $vcRedistForInstaller = (Resolve-Path -LiteralPath $VcRedistExe).Path
+    } else {
+        $vcArch = if ($Architecture -eq "x86") { "x86" } else { "x64" }
+        $vcRedistUrl = "https://aka.ms/vs/17/release/vc_redist.$vcArch.exe"
+        $depsDir = Join-Path $env:TEMP "mtcontrols-installer-deps"
+        New-Item -ItemType Directory -Force -Path $depsDir | Out-Null
+        $downloadedVcRedist = Join-Path $depsDir "vc_redist.$vcArch.exe"
+        Write-Host "Downloading VC++ redistributable ($vcArch) from $vcRedistUrl"
+        Invoke-WebRequest -Uri $vcRedistUrl -OutFile $downloadedVcRedist -UseBasicParsing -TimeoutSec 180
+        if (!(Test-Path -LiteralPath $downloadedVcRedist)) {
+            throw "Couldn't download VC++ redistributable from $vcRedistUrl"
+        }
+        $vcRedistForInstaller = $downloadedVcRedist
+    }
+}
+
 $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($iscc)) {
     $defaultIscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
@@ -98,6 +122,13 @@ $args = @(
 
 if ($hasInstallerIcon) {
   $args += "/DInstallerIconFile=$installerIconFile"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($vcRedistForInstaller)) {
+  $args += "/DVcRedistFile=$vcRedistForInstaller"
+  Write-Host "Bundled VC++ redistributable -> $vcRedistForInstaller"
+} else {
+  Write-Warning "VC++ redistributable was skipped. Installer won't include automatic runtime fix for MSVCP140.dll."
 }
 
 $args += $issFull

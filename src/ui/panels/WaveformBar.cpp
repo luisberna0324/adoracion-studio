@@ -229,6 +229,12 @@ void WaveformBar::setTransportProviders(PositionProvider positionCb,
   lengthProvider = std::move(lengthCb);
 }
 
+void WaveformBar::setSongWindowProviders(SongWindowProvider startCb,
+                                         SongWindowProvider endCb) {
+  songWindowStartProvider = std::move(startCb);
+  songWindowEndProvider = std::move(endCb);
+}
+
 void WaveformBar::setSeekCallback(SeekCallback cb) { onSeekTo = std::move(cb); }
 
 void WaveformBar::setOnEditToggle(EditToggleCallback cb) {
@@ -1153,6 +1159,18 @@ double WaveformBar::getSongLengthSeconds() const {
   return lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
 }
 
+std::pair<double, double> WaveformBar::getPlayableRangeSeconds() const {
+  const double songLength = getSongLengthSeconds();
+  if (songLength <= 0.0)
+    return {0.0, 0.0};
+
+  double startSec = songWindowStartProvider ? songWindowStartProvider() : 0.0;
+  double endSec = songWindowEndProvider ? songWindowEndProvider() : songLength;
+  endSec = juce::jlimit(0.0, songLength, endSec);
+  startSec = juce::jlimit(0.0, endSec, startSec);
+  return {startSec, endSec};
+}
+
 double WaveformBar::getBarDurationSeconds() const {
   if (songBpm <= 0.0 || songBeatsPerBar <= 0)
     return 0.0;
@@ -1612,6 +1630,35 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       (progressRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
   const float playheadX = bounds.getX() + (playheadRatio * bounds.getWidth());
 
+  float playableStartRatio = 0.0f;
+  float playableEndRatio = 1.0f;
+  bool showPlayableWindow = false;
+  if (lengthProvider && songWindowStartProvider && songWindowEndProvider) {
+    const double songLength = juce::jmax(0.0, lengthProvider());
+    if (songLength > 0.0) {
+      double startSec = songWindowStartProvider();
+      double endSec = songWindowEndProvider();
+      endSec = juce::jlimit(0.0, songLength, endSec);
+      startSec = juce::jlimit(0.0, endSec, startSec);
+      playableStartRatio =
+          static_cast<float>(juce::jlimit(0.0, 1.0, startSec / songLength));
+      playableEndRatio =
+          static_cast<float>(juce::jlimit(0.0, 1.0, endSec / songLength));
+      showPlayableWindow =
+          playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
+    }
+  }
+
+  const float playableStartNorm = juce::jlimit(
+      0.0f, 1.0f,
+      (playableStartRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+  const float playableEndNorm = juce::jlimit(
+      0.0f, 1.0f,
+      (playableEndRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+  const float playableStartX =
+      bounds.getX() + playableStartNorm * bounds.getWidth();
+  const float playableEndX = bounds.getX() + playableEndNorm * bounds.getWidth();
+
   g.setColour(juce::Colours::white.withAlpha(0.22f));
   const float centerDashes[] = {2.0f, 4.0f};
   g.drawDashedLine({bounds.getX(), midY, bounds.getRight(), midY},
@@ -1635,6 +1682,20 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       lineColour = juce::Colours::white.withAlpha(0.92f);
     g.setColour(lineColour);
     g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
+  }
+
+  if (showPlayableWindow) {
+    g.setColour(juce::Colours::black.withAlpha(0.34f));
+    if (playableStartX > bounds.getX())
+      g.fillRect(bounds.withRight(playableStartX));
+    if (playableEndX < bounds.getRight())
+      g.fillRect(bounds.withLeft(playableEndX));
+
+    g.setColour(UITheme::accent.withAlpha(0.82f));
+    g.drawLine(playableStartX, bounds.getY(), playableStartX, bounds.getBottom(), 1.25f);
+    g.drawLine(playableEndX, bounds.getY(), playableEndX, bounds.getBottom(), 1.25f);
+
+    juce::ignoreUnused(showGrid);
   }
 
   g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
@@ -2044,8 +2105,9 @@ void WaveformBar::openPartActionMenu(const int partIndex) {
 }
 
 void WaveformBar::addArrangementPart(const juce::String &preferredName) {
-  const double songLength = getSongLengthSeconds();
-  if (songLength <= 0.0)
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double playableLength = playableEndSec - playableStartSec;
+  if (playableLength < kMinPartDurationSec)
     return;
 
   juce::String nextName = preferredName.trim();
@@ -2065,14 +2127,19 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
     startSec = arrangement.parts.back().endSec;
   }
 
-  startSec = juce::jlimit(0.0, songLength, snapSeconds(startSec));
-  double endSec = juce::jmin(songLength, startSec + juce::jmax(8.0, kMinPartDurationSec));
+  startSec =
+      juce::jlimit(playableStartSec, playableEndSec, snapSeconds(startSec));
+  if ((playableEndSec - startSec) < kMinPartDurationSec)
+    startSec = juce::jmax(playableStartSec, playableEndSec - kMinPartDurationSec);
+
+  double endSec =
+      juce::jmin(playableEndSec, startSec + juce::jmax(8.0, kMinPartDurationSec));
   endSec = snapSeconds(endSec);
-  endSec = juce::jlimit(0.0, songLength, endSec);
+  endSec = juce::jlimit(playableStartSec, playableEndSec, endSec);
   if ((endSec - startSec) < kMinPartDurationSec) {
-    endSec = juce::jmin(songLength, startSec + kMinPartDurationSec);
+    endSec = juce::jmin(playableEndSec, startSec + kMinPartDurationSec);
     if ((endSec - startSec) < kMinPartDurationSec)
-      startSec = juce::jmax(0.0, endSec - kMinPartDurationSec);
+      startSec = juce::jmax(playableStartSec, endSec - kMinPartDurationSec);
   }
 
   SongArrangementPartSnapshot part;
@@ -2095,8 +2162,27 @@ void WaveformBar::duplicateArrangementPart(const int partIndex) {
   if (!juce::isPositiveAndBelow(partIndex,
                                 static_cast<int>(arrangement.parts.size())))
     return;
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double playableLength = playableEndSec - playableStartSec;
+  if (playableLength < kMinPartDurationSec)
+    return;
 
   auto copy = arrangement.parts[static_cast<size_t>(partIndex)];
+  const double desiredDuration = juce::jlimit(
+      kMinPartDurationSec, playableLength,
+      juce::jmax(kMinPartDurationSec, copy.endSec - copy.startSec));
+
+  double startSec =
+      juce::jlimit(playableStartSec, playableEndSec, copy.startSec);
+  if ((playableEndSec - startSec) < desiredDuration)
+    startSec = juce::jmax(playableStartSec, playableEndSec - desiredDuration);
+  double endSec = juce::jmin(playableEndSec, startSec + desiredDuration);
+
+  if ((endSec - startSec) < kMinPartDurationSec)
+    return;
+
+  copy.startSec = startSec;
+  copy.endSec = endSec;
   copy.id = juce::Uuid().toString();
   const auto originalName = copy.name.trim();
   if (originalName.isEmpty())

@@ -22,6 +22,7 @@
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
 #include <algorithm>
+#include <cmath>
 #include <thread>
 
 using namespace PluginEditorSupport;
@@ -49,6 +50,10 @@ void ensureStandaloneMidiInputsEnabled(juce::AudioDeviceManager &manager) {
   SessionAuthLogger::write(
       "ensureStandaloneMidiInputsEnabled: enabled " +
       juce::String(inputs.size()) + " MIDI input device(s)");
+}
+
+bool nearlyEqualSongWindowValue(const double a, const double b) {
+  return std::abs(a - b) <= 0.001;
 }
 } // namespace
 
@@ -293,6 +298,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setTransportProviders(
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongLengthSeconds(); });
+  waveformBarRaw->setSongWindowProviders(
+      [&p] { return p.getSongStartSeconds(); },
+      [&p] { return p.getSongEndSeconds(); });
   waveformBarRaw->setSeekCallback([&p](double targetSeconds) {
     p.seekSongTo(targetSeconds);
   });
@@ -424,6 +432,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                    this](const ImportedSongData &song, int songIndex) -> bool {
     if (songLoadBusy)
       return false;
+    maybePersistSongWindowForActiveSong();
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, songLoadOverlay.get()};
 
@@ -519,6 +528,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
       currentLoadedSong = ImportedSongData{};
+      resetTrackedSongWindow();
       return false;
     }
 
@@ -551,10 +561,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       }
     }
 
+    SongWindowSnapshot windowSnapshot;
+    bool isCustomWindow = false;
+    if (SongLibraryStore::getActiveSetlistSongWindow(loadedSong.id, windowSnapshot,
+                                                      isCustomWindow) &&
+        isCustomWindow) {
+      p.setSongStartSeconds(windowSnapshot.startSec);
+      p.setSongEndSeconds(windowSnapshot.endSec);
+      p.setSongFadeOutSeconds(windowSnapshot.fadeOutSec);
+    }
+
     currentLoadedSong = loadedSong;
     hasCurrentLoadedSong = true;
     AppSettings::setLastSelectedSongId(currentLoadedSong.id);
     applyRoutingDefaultsToSong(currentLoadedSong);
+    trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
+                    p.getSongEndSeconds(), p.getSongFadeOutSeconds());
 
     channelGridRaw->setSong(loadedSong);
     currentSongIndex = songIndex;
@@ -1688,6 +1710,67 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   processorRef.refreshPadsRoutingFromSettings();
 }
 
+void MTControlsAudioProcessorEditor::resetTrackedSongWindow() {
+  trackedSongWindowSongId.clear();
+  trackedSongWindowStartSec = 0.0;
+  trackedSongWindowEndSec = 0.0;
+  trackedSongWindowFadeSec = 0.0;
+  hasTrackedSongWindow = false;
+}
+
+void MTControlsAudioProcessorEditor::trackSongWindow(
+    const juce::String &songId, const double startSec, const double endSec,
+    const double fadeSec) {
+  trackedSongWindowSongId = songId;
+  trackedSongWindowStartSec = startSec;
+  trackedSongWindowEndSec = endSec;
+  trackedSongWindowFadeSec = fadeSec;
+  hasTrackedSongWindow = songId.isNotEmpty();
+}
+
+void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
+  if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty()) {
+    resetTrackedSongWindow();
+    return;
+  }
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const auto songId = currentLoadedSong.id;
+  const double startSec = processorRef.getSongStartSeconds();
+  const double endSec = processorRef.getSongEndSeconds();
+  const double fadeSec = processorRef.getSongFadeOutSeconds();
+
+  if (!hasTrackedSongWindow || trackedSongWindowSongId != songId) {
+    trackSongWindow(songId, startSec, endSec, fadeSec);
+    return;
+  }
+
+  if (nearlyEqualSongWindowValue(startSec, trackedSongWindowStartSec) &&
+      nearlyEqualSongWindowValue(endSec, trackedSongWindowEndSec) &&
+      nearlyEqualSongWindowValue(fadeSec, trackedSongWindowFadeSec)) {
+    return;
+  }
+
+  SongWindowSnapshot snapshot;
+  snapshot.startSec = startSec;
+  snapshot.endSec = endSec;
+  snapshot.fadeOutSec = fadeSec;
+
+  const double songLength = juce::jmax(0.0, processorRef.getSongLengthSeconds());
+  const bool isDefaultWindow =
+      nearlyEqualSongWindowValue(startSec, 0.0) &&
+      nearlyEqualSongWindowValue(endSec, songLength) &&
+      nearlyEqualSongWindowValue(fadeSec, juce::jmin(1.0, songLength));
+
+  if (!SongLibraryStore::updateSongWindowForActiveSetlist(songId, snapshot,
+                                                           !isDefaultWindow)) {
+    SessionAuthLogger::write(
+        "[SongWindow] Failed to persist setlist song window for songId=" + songId);
+  }
+
+  trackSongWindow(songId, startSec, endSec, fadeSec);
+}
+
 void MTControlsAudioProcessorEditor::timerCallback() {
   const auto callbackUrl = consumePendingAuthCallbackUrl();
   if (callbackUrl.isNotEmpty()) {
@@ -1810,6 +1893,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
       break;
     }
   }
+
+  maybePersistSongWindowForActiveSong();
+
   const bool isPlayingNow = processorRef.isSongPlaying();
   const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
 

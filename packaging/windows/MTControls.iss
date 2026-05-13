@@ -21,6 +21,9 @@
 #ifndef InstallerIconFile
   #define InstallerIconFile ""
 #endif
+#ifndef VcRedistFile
+  #define VcRedistFile ""
+#endif
 
 [Setup]
 AppId={{B96A1AA6-ADF8-45BB-90D5-9F7CC1D309B9}
@@ -60,12 +63,18 @@ Name: "firewallexception"; Description: "Agregar excepcion de firewall para {#Ap
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "bootstrap-assets.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+#if VcRedistFile != ""
+Source: "{#VcRedistFile}"; DestDir: "{tmp}"; DestName: "vc_redist.exe"; Flags: deleteafterinstall ignoreversion
+#endif
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
+#if VcRedistFile != ""
+Filename: "{cmd}"; Parameters: "/C ""{tmp}\vc_redist.exe"" /install /quiet /norestart || exit /b 0"; StatusMsg: "Instalando Microsoft Visual C++ Runtime... / Installing Microsoft Visual C++ Runtime..."; Flags: runhidden waituntilterminated
+#endif
 Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\bootstrap-assets.ps1"" || exit /b 0"; StatusMsg: "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."; Flags: runhidden nowait
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Inbound)"" dir=in action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Outbound)"" dir=out action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception

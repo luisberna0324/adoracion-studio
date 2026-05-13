@@ -46,6 +46,11 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
   return true;
 }
 
+bool windowsEqual(const SongWindowSnapshot &a, const SongWindowSnapshot &b) {
+  return nearlyEqual(a.startSec, b.startSec) && nearlyEqual(a.endSec, b.endSec) &&
+         nearlyEqual(a.fadeOutSec, b.fadeOutSec);
+}
+
 const ImportedStemData *findStemById(const ImportedSongData &song,
                                      const juce::String &stemId) {
   if (stemId.isEmpty())
@@ -731,6 +736,81 @@ bool SongLibraryStore::updateMasterMuteForActiveSetlist(
   });
 }
 
+bool SongLibraryStore::getActiveSetlistSongWindow(
+    const juce::String &songId, SongWindowSnapshot &outWindow,
+    bool &outIsCustomWindow) {
+  if (songId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+
+  bool changed = false;
+  if (it == setlist->items.end()) {
+    setlist->items.push_back(createSetlistItem(*song));
+    it = std::prev(setlist->items.end());
+    changed = true;
+  } else {
+    it->window = reconcileWindowForSong(it->window, *song, changed);
+    const auto defaultWindow = createDefaultWindowForSong(*song);
+    if (!it->windowCustomized) {
+      if (!windowsEqual(it->window, defaultWindow)) {
+        it->window = defaultWindow;
+        changed = true;
+      }
+    } else if (windowsEqual(it->window, defaultWindow)) {
+      it->windowCustomized = false;
+      changed = true;
+    }
+  }
+
+  outWindow = it->window;
+  outIsCustomWindow = it->windowCustomized;
+  if (changed) {
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    it->updatedMs = now;
+    setlist->updatedMs = now;
+    saveLibrary(library);
+  }
+  return true;
+}
+
+bool SongLibraryStore::updateSongWindowForActiveSetlist(
+    const juce::String &songId, const SongWindowSnapshot &window,
+    const bool isCustomWindow) {
+  return updateActiveSetlistItem(
+      songId, [&window, isCustomWindow](SetlistItem &item,
+                                        const ImportedSongData &song) {
+        bool changed = false;
+        auto next = reconcileWindowForSong(window, song, changed);
+        const auto defaultWindow = createDefaultWindowForSong(song);
+        if (!isCustomWindow || windowsEqual(next, defaultWindow)) {
+          item.window = defaultWindow;
+          item.windowCustomized = false;
+          return;
+        }
+        item.window = std::move(next);
+        item.windowCustomized = true;
+      });
+}
+
+bool SongLibraryStore::resetSongWindowForActiveSetlist(
+    const juce::String &songId) {
+  SongWindowSnapshot defaultWindow;
+  return updateSongWindowForActiveSetlist(songId, defaultWindow, false);
+}
+
 bool SongLibraryStore::getSongArrangement(
     const juce::String &songId, SongArrangementSnapshot &outArrangement,
     bool &outIsCustomArrangement) {
@@ -1384,6 +1464,8 @@ SetlistItem SongLibraryStore::createSetlistItem(const ImportedSongData &song) {
   SetlistItem item;
   item.songId = song.id;
   item.mix = createDefaultMixForSong(song);
+  item.window = createDefaultWindowForSong(song);
+  item.windowCustomized = false;
   item.arrangement = createDefaultArrangementForSong(song);
   item.arrangementCustomized = false;
   item.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
@@ -1403,6 +1485,16 @@ SongMixSnapshot SongLibraryStore::createDefaultMixForSong(
     mix.stems.push_back(std::move(stemMix));
   }
   return mix;
+}
+
+SongWindowSnapshot SongLibraryStore::createDefaultWindowForSong(
+    const ImportedSongData &song) {
+  SongWindowSnapshot window;
+  const double songLength = juce::jmax(0.0, estimateSongLengthSeconds(song));
+  window.startSec = 0.0;
+  window.endSec = songLength;
+  window.fadeOutSec = juce::jmin(1.0, songLength);
+  return window;
 }
 
 SongArrangementSnapshot SongLibraryStore::createDefaultArrangementForSong(
@@ -1436,6 +1528,37 @@ SongMixSnapshot SongLibraryStore::reconcileMixForSong(
   if (nextStems.size() != out.stems.size())
     changed = true;
   out.stems = std::move(nextStems);
+  return out;
+}
+
+SongWindowSnapshot SongLibraryStore::reconcileWindowForSong(
+    const SongWindowSnapshot &window, const ImportedSongData &song,
+    bool &changed) {
+  SongWindowSnapshot out = window;
+  const double songLength = juce::jmax(0.0, estimateSongLengthSeconds(song));
+
+  const auto originalStart = out.startSec;
+  const auto originalEnd = out.endSec;
+  const auto originalFade = out.fadeOutSec;
+
+  if (!std::isfinite(out.startSec))
+    out.startSec = 0.0;
+  if (!std::isfinite(out.endSec))
+    out.endSec = songLength;
+  if (!std::isfinite(out.fadeOutSec))
+    out.fadeOutSec = 0.0;
+
+  out.endSec = juce::jlimit(0.0, songLength, out.endSec);
+  out.startSec = juce::jlimit(0.0, out.endSec, out.startSec);
+  out.fadeOutSec =
+      juce::jlimit(0.0, juce::jmax(0.0, out.endSec - out.startSec), out.fadeOutSec);
+
+  if (!nearlyEqual(originalStart, out.startSec) ||
+      !nearlyEqual(originalEnd, out.endSec) ||
+      !nearlyEqual(originalFade, out.fadeOutSec)) {
+    changed = true;
+  }
+
   return out;
 }
 
@@ -1536,6 +1659,29 @@ bool SongLibraryStore::normalizeLegacyMix(SongMixSnapshot &mix) {
   for (auto &stem : mix.stems)
     stem.gain = 1.0f;
   return true;
+}
+
+juce::var SongLibraryStore::windowToVar(const SongWindowSnapshot &window) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("startSec", window.startSec);
+  obj->setProperty("endSec", window.endSec);
+  obj->setProperty("fadeOutSec", window.fadeOutSec);
+  return juce::var(obj);
+}
+
+SongWindowSnapshot SongLibraryStore::windowFromVar(
+    const juce::var &v, const ImportedSongData *song, bool &changed) {
+  SongWindowSnapshot window;
+  auto *obj = v.getDynamicObject();
+  if (obj != nullptr) {
+    window.startSec = static_cast<double>(obj->getProperty("startSec"));
+    window.endSec = static_cast<double>(obj->getProperty("endSec"));
+    if (obj->hasProperty("fadeOutSec"))
+      window.fadeOutSec = static_cast<double>(obj->getProperty("fadeOutSec"));
+  }
+  if (song != nullptr)
+    window = reconcileWindowForSong(window, *song, changed);
+  return window;
 }
 
 juce::var SongLibraryStore::arrangementPartToVar(
@@ -1697,6 +1843,10 @@ juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("songId", item.songId);
   obj->setProperty("mix", mixToVar(item.mix));
+  if (item.windowCustomized) {
+    obj->setProperty("songWindow", windowToVar(item.window));
+    obj->setProperty("windowCustomized", true);
+  }
   if (item.arrangementCustomized) {
     obj->setProperty("arrangement", arrangementToVar(item.arrangement));
     obj->setProperty("arrangementCustomized", true);
@@ -1715,6 +1865,15 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
   item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
   if (song != nullptr)
+    item.window = createDefaultWindowForSong(*song);
+  if (obj->hasProperty("songWindow")) {
+    item.window = windowFromVar(obj->getProperty("songWindow"), song, changed);
+    item.windowCustomized = true;
+  }
+  if (obj->hasProperty("windowCustomized"))
+    item.windowCustomized =
+        static_cast<bool>(obj->getProperty("windowCustomized"));
+  if (song != nullptr)
     item.arrangement = createDefaultArrangementForSong(*song);
   if (obj->hasProperty("arrangement")) {
     item.arrangement = arrangementFromVar(obj->getProperty("arrangement"), song,
@@ -1725,6 +1884,16 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
     item.arrangementCustomized =
         static_cast<bool>(obj->getProperty("arrangementCustomized"));
   if (song != nullptr) {
+    const auto defaultWindow = createDefaultWindowForSong(*song);
+    if (!item.windowCustomized) {
+      if (!windowsEqual(item.window, defaultWindow))
+        changed = true;
+      item.window = defaultWindow;
+    } else if (windowsEqual(item.window, defaultWindow)) {
+      item.windowCustomized = false;
+      changed = true;
+    }
+
     const auto defaultArrangement = createDefaultArrangementForSong(*song);
     if (!item.arrangementCustomized &&
         !arrangementsEqual(item.arrangement, defaultArrangement)) {
@@ -1819,6 +1988,17 @@ bool SongLibraryStore::updateActiveSetlistItem(
 
   bool changed = false;
   it->mix = reconcileMixForSong(it->mix, *song, changed);
+  it->window = reconcileWindowForSong(it->window, *song, changed);
+  const auto defaultWindow = createDefaultWindowForSong(*song);
+  if (!it->windowCustomized) {
+    if (!windowsEqual(it->window, defaultWindow)) {
+      it->window = defaultWindow;
+      changed = true;
+    }
+  } else if (windowsEqual(it->window, defaultWindow)) {
+    it->windowCustomized = false;
+    changed = true;
+  }
   it->arrangement =
       reconcileArrangementForSong(it->arrangement, *song, changed);
   const auto defaultArrangement = createDefaultArrangementForSong(*song);

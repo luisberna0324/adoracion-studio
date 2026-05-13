@@ -24,9 +24,17 @@ struct SongMixSnapshot {
   std::vector<StemMixSnapshot> stems;
 };
 
+struct SongWindowSnapshot {
+  double startSec = 0.0;
+  double endSec = 0.0;
+  double fadeOutSec = 0.0;
+};
+
 struct SetlistItem {
   juce::String songId;
   SongMixSnapshot mix;
+  SongWindowSnapshot window;
+  bool windowCustomized = false;
   SongArrangementSnapshot arrangement;
   bool arrangementCustomized = false;
   int64_t updatedMs = 0;
@@ -96,6 +104,13 @@ public:
                                                float gain);
   static bool updateMasterMuteForActiveSetlist(const juce::String &songId,
                                                bool muted);
+  static bool getActiveSetlistSongWindow(const juce::String &songId,
+                                         SongWindowSnapshot &outWindow,
+                                         bool &outIsCustomWindow);
+  static bool updateSongWindowForActiveSetlist(
+      const juce::String &songId, const SongWindowSnapshot &window,
+      bool isCustomWindow);
+  static bool resetSongWindowForActiveSetlist(const juce::String &songId);
   static bool getSongArrangement(const juce::String &songId,
                                  SongArrangementSnapshot &outArrangement,
                                  bool &outIsCustomArrangement);
@@ -141,15 +156,24 @@ private:
                                       const juce::String &setlistId);
   static SetlistItem createSetlistItem(const ImportedSongData &song);
   static SongMixSnapshot createDefaultMixForSong(const ImportedSongData &song);
+  static SongWindowSnapshot createDefaultWindowForSong(
+      const ImportedSongData &song);
   static SongArrangementSnapshot
   createDefaultArrangementForSong(const ImportedSongData &song);
   static SongMixSnapshot reconcileMixForSong(const SongMixSnapshot &mix,
                                              const ImportedSongData &song,
                                              bool &changed);
+  static SongWindowSnapshot reconcileWindowForSong(
+      const SongWindowSnapshot &window, const ImportedSongData &song,
+      bool &changed);
   static SongArrangementSnapshot reconcileArrangementForSong(
       const SongArrangementSnapshot &arrangement, const ImportedSongData &song,
       bool &changed);
   static bool normalizeLegacyMix(SongMixSnapshot &mix);
+  static juce::var windowToVar(const SongWindowSnapshot &window);
+  static SongWindowSnapshot windowFromVar(const juce::var &v,
+                                          const ImportedSongData *song,
+                                          bool &changed);
   static juce::var arrangementPartToVar(
       const SongArrangementPartSnapshot &part);
   static SongArrangementPartSnapshot arrangementPartFromVar(const juce::var &v);

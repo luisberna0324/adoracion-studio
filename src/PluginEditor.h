@@ -102,6 +102,11 @@ private:
   juce::int64 missingAudioDeviceSinceMs = 0;
   juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
   juce::Rectangle<int> padsDrawerBackgroundBounds;
+  juce::String trackedSongWindowSongId;
+  double trackedSongWindowStartSec = 0.0;
+  double trackedSongWindowEndSec = 0.0;
+  double trackedSongWindowFadeSec = 0.0;
+  bool hasTrackedSongWindow = false;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
@@ -113,6 +118,10 @@ private:
   void updateResponsiveLayoutProfile();
   void initializeMainUi();
   void initializeWelcomeModal();
+  void resetTrackedSongWindow();
+  void trackSongWindow(const juce::String &songId, double startSec,
+                       double endSec, double fadeSec);
+  void maybePersistSongWindowForActiveSong();
   void launchExternalLogin();
   void completeBootstrapLogin(const juce::String &callbackUrl);
   void handleLogout();

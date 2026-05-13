@@ -13,6 +13,7 @@ class WaveformBar final : public juce::Component, private juce::Timer {
 public:
   using PositionProvider = std::function<double()>;
   using LengthProvider = std::function<double()>;
+  using SongWindowProvider = std::function<double()>;
   using SeekCallback = std::function<void(double)>;
   using EditToggleCallback = std::function<void(bool)>;
   using ArrangementChangedCallback = std::function<void(
@@ -31,6 +32,8 @@ public:
   void setSongRhythm(double bpm, const juce::String &timeSignature);
   void setTransportProviders(PositionProvider positionCb,
                              LengthProvider lengthCb);
+  void setSongWindowProviders(SongWindowProvider startCb,
+                              SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
   void setOnEditToggle(EditToggleCallback cb);
   void setOnArrangementChanged(ArrangementChangedCallback cb);
@@ -106,6 +109,8 @@ private:
   std::vector<float> waveformBins;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
+  SongWindowProvider songWindowStartProvider;
+  SongWindowProvider songWindowEndProvider;
   SeekCallback onSeekTo;
   EditToggleCallback onEditToggle;
   ArrangementChangedCallback onArrangementChanged;
@@ -153,6 +158,7 @@ private:
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
   double getSongLengthSeconds() const;
+  std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;
   double getSnapStepSeconds() const;
   bool isSnapBypassed(const juce::ModifierKeys &mods) const;
