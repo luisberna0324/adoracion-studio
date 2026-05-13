@@ -2,6 +2,36 @@
 
 #include <algorithm>
 
+namespace {
+struct TempoQualitySettings {
+  int profileId = 0;
+  int sequenceMs = 82;
+  int seekWindowMs = 28;
+  int overlapMs = 10;
+};
+
+TempoQualitySettings tempoQualitySettingsForRatio(
+    const double ratio, const PitchShiftProcessor::ContentType contentType) {
+  const bool slowingDown = ratio < 0.999;
+
+  if (contentType == PitchShiftProcessor::ContentType::Percussive) {
+    // Percussive material needs tighter transient tracking to avoid
+    // double-hit/flam artifacts while stretching down tempo.
+    if (ratio < 0.88)
+      return {3, 58, 14, 6};
+    if (slowingDown)
+      return {4, 50, 13, 6};
+    return {5, 40, 10, 6};
+  }
+
+  if (ratio < 0.85)
+    return {0, 95, 35, 12}; // Heavy slow-down melodic profile.
+  if (slowingDown)
+    return {1, 82, 28, 10}; // Moderate slow-down melodic profile.
+  return {2, 46, 18, 8};    // Normal/speed-up melodic profile.
+}
+} // namespace
+
 void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
                                   int numChannels) {
   currentSampleRate = sampleRate;
@@ -26,6 +56,7 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
   soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
   soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
+  configureQualitySettings();
   soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
   soundtouch.setTempo(static_cast<float>(tempoRatio));
   soundtouch.setRate(1.0f);
@@ -54,24 +85,41 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   pitchSemiTones = semitones;
   if (prepared) {
     soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-    soundtouch.clear();
-    outputFifo.clear();
-    outputReadPos = 0;
-    primeLatency();
+    // Pitch changes should feel immediate to the user. Flush time-domain
+    // history so old-pitch frames don't continue leaking after a key change.
+    reset();
   }
 }
 
 void PitchShiftProcessor::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  const double normalized = juce::jlimit(0.75, 2.0, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
+  const int previousProfile =
+      tempoQualitySettingsForRatio(tempoRatio, contentType).profileId;
+  const int nextProfile =
+      tempoQualitySettingsForRatio(normalized, contentType).profileId;
   tempoRatio = normalized;
   if (prepared) {
+    configureQualitySettings();
     soundtouch.setTempo(static_cast<float>(tempoRatio));
-    soundtouch.clear();
-    outputFifo.clear();
-    outputReadPos = 0;
-    primeLatency();
+    // Crossing between stretch profiles changes SoundTouch windowing strategy.
+    // Flush pipeline so old-profile frames don't drift against other stems.
+    if (previousProfile != nextProfile)
+      reset();
+    else
+      refreshLatencyFromSettings();
+  }
+}
+
+void PitchShiftProcessor::setContentType(const ContentType type) {
+  if (contentType == type)
+    return;
+  contentType = type;
+  if (prepared) {
+    configureQualitySettings();
+    // Windowing changes should apply immediately and without stale tails.
+    reset();
   }
 }
 
@@ -181,5 +229,54 @@ void PitchShiftProcessor::primeLatency() {
   if (latencySamples > 0 && currentChannels > 0) {
     outputFifo.resize(static_cast<size_t>(latencySamples * currentChannels),
                       0.0f);
+  }
+}
+
+void PitchShiftProcessor::configureQualitySettings() {
+  const auto settings = tempoQualitySettingsForRatio(tempoRatio, contentType);
+
+  // Favor quality over CPU while stretching down tempo in live playback.
+  soundtouch.setSetting(SETTING_USE_QUICKSEEK, 0);
+  soundtouch.setSetting(SETTING_SEQUENCE_MS, settings.sequenceMs);
+  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, settings.seekWindowMs);
+  soundtouch.setSetting(SETTING_OVERLAP_MS, settings.overlapMs);
+}
+
+void PitchShiftProcessor::refreshLatencyFromSettings() {
+  int updatedLatency = soundtouch.getSetting(SETTING_INITIAL_LATENCY);
+  if (updatedLatency < 0)
+    updatedLatency = 0;
+  if (updatedLatency == latencySamples)
+    return;
+
+  if (currentChannels <= 0) {
+    latencySamples = updatedLatency;
+    return;
+  }
+
+  const int deltaSamples = updatedLatency - latencySamples;
+  latencySamples = updatedLatency;
+
+  if (deltaSamples > 0) {
+    const size_t padCount =
+        static_cast<size_t>(deltaSamples * currentChannels);
+    outputFifo.insert(
+        outputFifo.begin() + static_cast<std::ptrdiff_t>(outputReadPos),
+        padCount, 0.0f);
+    return;
+  }
+
+  const size_t availableToSkip =
+      outputFifo.size() > outputReadPos ? (outputFifo.size() - outputReadPos)
+                                        : 0u;
+  const size_t skipCount =
+      std::min(static_cast<size_t>((-deltaSamples) * currentChannels),
+               availableToSkip);
+  outputReadPos += skipCount;
+  if (outputReadPos > outputFifo.size() / 2) {
+    outputFifo.erase(outputFifo.begin(), outputFifo.begin() +
+                                            static_cast<std::ptrdiff_t>(
+                                                outputReadPos));
+    outputReadPos = 0;
   }
 }

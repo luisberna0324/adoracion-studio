@@ -1,4 +1,5 @@
 #include "WaveformBar.h"
+#include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
 
 #include <algorithm>
@@ -262,6 +263,34 @@ void WaveformBar::setActiveArrangementLoopPartProvider(
   activeArrangementLoopPartProvider = std::move(cb);
 }
 
+void WaveformBar::setMidiLearnActive(const bool active) {
+  midiLearnActive = active;
+  if (!midiLearnActive)
+    midiLearnPendingTargetId = -1;
+  repaint();
+}
+
+void WaveformBar::setMidiLearnPendingTarget(const int targetId) {
+  midiLearnPendingTargetId = targetId;
+  repaint();
+}
+
+void WaveformBar::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+  midiLearnBindingLabelProvider = std::move(cb);
+  repaint();
+}
+
+void WaveformBar::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
+  onMidiLearnTargetSelected = std::move(cb);
+}
+
+void WaveformBar::triggerEditToggleFromMidi() {
+  if (!editButton.isVisible() || !editButton.isEnabled() || midiLearnActive)
+    return;
+  editButton.triggerClick();
+}
+
 void WaveformBar::refreshThemeColours() {
   editButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   editButton.setColour(juce::TextButton::buttonOnColourId,
@@ -325,10 +354,10 @@ void WaveformBar::paint(juce::Graphics &g) {
       g.setColour(UITheme::cardBorder.withAlpha(0.7f));
       g.drawRoundedRectangle(miniMapBounds, 4.0f, 1.0f);
     }
-    g.setColour(UITheme::accent);
-    g.fillRect(0.0f, 0.0f, 2.0f, bounds.getHeight());
-    return;
-  }
+  g.setColour(UITheme::accent);
+  g.fillRect(0.0f, 0.0f, 2.0f, bounds.getHeight());
+  return;
+}
 
   const auto window = getVisibleWindow();
   drawWaveform(g, mainWaveBodyBounds, window.first, window.second,
@@ -340,6 +369,10 @@ void WaveformBar::paint(juce::Graphics &g) {
 
   if (miniMapBounds.getWidth() > 2.0f && miniMapBounds.getHeight() > 2.0f)
     drawMiniMap(g, miniMapBounds);
+}
+
+void WaveformBar::paintOverChildren(juce::Graphics &g) {
+  juce::ignoreUnused(g);
 }
 
 void WaveformBar::resized() {
@@ -583,6 +616,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
+  if (midiLearnActive)
+    return;
+
   const auto bounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(bounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -823,6 +859,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &) {
+  if (midiLearnActive)
+    return;
+
   const bool wasArrangementDrag =
       dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
       dragMode == DragMode::resizePartRight;
@@ -842,6 +881,18 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseMove(const juce::MouseEvent &event) {
+  if (midiLearnActive) {
+    if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
+        hoveredJumpPartIndex >= 0) {
+      hoveredActionPartIndex = -1;
+      hoveredLoopPartIndex = -1;
+      hoveredJumpPartIndex = -1;
+      repaint();
+    }
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+    return;
+  }
+
   juce::MouseCursor nextCursor = juce::MouseCursor::NormalCursor;
   int nextHoveredActionPartIndex = -1;
   int nextHoveredLoopPartIndex = -1;
@@ -911,6 +962,9 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (midiLearnActive)
+    return;
+
   const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   if (!mainWaveBodyBounds.contains(event.position))
@@ -936,6 +990,9 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
+  if (midiLearnActive)
+    return;
+
   const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   const auto seekRulerBounds = getSeekRulerBounds(mainWaveBounds);
@@ -962,6 +1019,9 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
+  if (midiLearnActive)
+    return;
+
   if (magnifyAmount == 0.0f)
     return;
 

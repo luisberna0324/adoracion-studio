@@ -29,9 +29,15 @@ public:
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+  void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
   void setMidiLearnActive(bool active);
   void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
+  void triggerWindowModeToggleFromMidi();
+  void triggerSettingsFromMidi();
+  void triggerSongWindowPopoverFromMidi();
+  void triggerKeyPopoverFromMidi();
+  void triggerMetronomePopoverFromMidi();
 
   void refreshThemeColours();
 
@@ -44,6 +50,7 @@ private:
   public:
     IconButton(juce::String name, SvgIconName iconToUse,
                bool primary = false);
+    std::function<void()> onPointerDown;
 
     void setIcon(SvgIconName iconToUse);
     void setBadgeText(juce::String text);
@@ -51,6 +58,9 @@ private:
 
     void paintButton(juce::Graphics &gr, bool isMouseOverButton,
                      bool isButtonDown) override;
+
+  protected:
+    void mouseDown(const juce::MouseEvent &event) override;
 
   private:
     SvgIconName icon;
@@ -95,6 +105,7 @@ private:
       onSettingsWithAnchor;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
 
@@ -134,5 +145,7 @@ private:
   void showMetronomePopover();
   void showKeyPopover();
   void showSongWindowPopover();
+  void toggleWindowMode();
+  void openSettingsPanel();
   void refreshFromProviders();
 };

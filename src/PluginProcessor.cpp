@@ -7,6 +7,25 @@
 #include <limits>
 
 namespace {
+constexpr double kMinPlaybackTempoBpm = 20.0;
+constexpr double kMaxPlaybackTempoBpm = 300.0;
+constexpr double kMinPlaybackTempoRatio = 0.75;
+constexpr double kMaxPlaybackTempoRatio = 2.0;
+
+int tempoQualityProfileForRatio(const double ratio) {
+  if (ratio < 0.85)
+    return 0; // Heavy slow-down profile.
+  if (ratio < 0.999)
+    return 1; // Moderate slow-down profile.
+  return 2;   // Normal/speed-up profile.
+}
+
+PitchShiftProcessor::ContentType stemContentTypeForPitchShiftable(
+    const bool pitchShiftable) {
+  return pitchShiftable ? PitchShiftProcessor::ContentType::Melodic
+                        : PitchShiftProcessor::ContentType::Percussive;
+}
+
 juce::String buildDeviceKeyFromManager(juce::AudioDeviceManager &manager) {
   auto *currentDevice = manager.getCurrentAudioDevice();
   const juce::String typeName = manager.getCurrentAudioDeviceType();
@@ -71,7 +90,7 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
     padsPackStatusText = "Not loaded";
   }
   midiBindings = AppSettings::getMidiBindings();
-  for (auto &value : midiLastCcValues)
+  for (auto &value : midiLastSourceValues)
     value = -1;
 }
 
@@ -108,11 +127,15 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     const int width = stemOutputRoutingState.getStemOutputWidth(i);
     stemOutputWidths[static_cast<size_t>(i)].store(width, std::memory_order_relaxed);
     stemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
+    stemPitchProcessors[static_cast<size_t>(i)].setContentType(
+        PitchShiftProcessor::ContentType::Melodic);
     stemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
     stemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
     stemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
     stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
     outgoingStemPitchProcessors[static_cast<size_t>(i)].prepare(sampleRate, samplesPerBlock, 2);
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].setContentType(
+        PitchShiftProcessor::ContentType::Melodic);
     outgoingStemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
     outgoingStemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
@@ -153,6 +176,23 @@ void MTControlsAudioProcessor::releaseResources() {
     track->releaseResources();
   for (auto &track : outgoingStemTracks)
     track->releaseResources();
+}
+
+void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
+  for (int i = 0; i < maxStemCount; ++i) {
+    stemPitchProcessors[static_cast<size_t>(i)].reset();
+    stemPitchDelayLines[static_cast<size_t>(i)].reset();
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].reset();
+    outgoingStemPitchDelayLines[static_cast<size_t>(i)].reset();
+  }
+  routingPitchLatencySamples = 0;
+  outgoingRoutingPitchLatencySamples = 0;
+}
+
+void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
+  mixEngine.reset();
+  outgoingMixEngine.reset();
+  flushRoutingTimeProcessors();
 }
 
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
@@ -201,15 +241,28 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
       outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
-      routingPitchLatencySamples = 0;
-      outgoingRoutingPitchLatencySamples = 0;
+      flushRoutingTimeProcessors();
     }
     if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive)) {
+      const double previousTempoRatio = playbackTempoRatioActive;
       playbackTempoRatioActive = targetTempoRatio;
       mixEngine.setTempoRatio(playbackTempoRatioActive);
       outgoingMixEngine.setTempoRatio(playbackTempoRatioActive);
-      routingPitchLatencySamples = 0;
-      outgoingRoutingPitchLatencySamples = 0;
+      const bool crossedUnity =
+          (previousTempoRatio < 1.0 && playbackTempoRatioActive >= 1.0) ||
+          (previousTempoRatio > 1.0 && playbackTempoRatioActive <= 1.0);
+      const bool profileChanged =
+          tempoQualityProfileForRatio(previousTempoRatio) !=
+          tempoQualityProfileForRatio(playbackTempoRatioActive);
+
+      // With pitch active, tempo profile jumps can leave per-stem queues with
+      // stale timing history. Hard-resync to keep percussion aligned.
+      if (pitchActiveSemiTones != 0 && (crossedUnity || profileChanged)) {
+        flushAllTimeProcessingState();
+      } else {
+        routingPitchLatencySamples = 0;
+        outgoingRoutingPitchLatencySamples = 0;
+      }
     }
 
     // --- Diagnostics: measure time until lock is acquired ---
@@ -229,6 +282,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const juce::int64 seekSamples = static_cast<juce::int64>(seekTarget * playbackSampleRate);
       for (auto& track : stemTracks)
         track->setNextReadPosition(seekSamples);
+
+      // Seeking changes source position abruptly: flush all time-domain
+      // processors so no stale pre-seek audio survives in different groups.
+      flushAllTimeProcessingState();
+
       globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
@@ -430,28 +488,88 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         const bool timeProcessActive =
             (pitchActiveSemiTones != 0) ||
             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+        const bool tempoActive =
+            !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+        std::array<int, maxStemCount> stemProcessLatencies{};
+        std::array<bool, maxStemCount> stemNeedsTimeProcess{};
+        std::array<bool, maxStemCount> stemPitchShiftableFlags{};
         int targetLatency = 0;
         if (timeProcessActive) {
           for (int i = 0; i < stemCount; ++i) {
+            const size_t stemIndex = static_cast<size_t>(i);
             const bool pitchShiftable =
-                stemPitchShiftStates[static_cast<size_t>(i)].load(
+                stemPitchShiftStates[stemIndex].load(
                     std::memory_order_relaxed);
-            if (!pitchShiftable)
+            stemPitchShiftableFlags[stemIndex] = pitchShiftable;
+            const bool shouldProcess = tempoActive || pitchShiftable;
+            stemNeedsTimeProcess[stemIndex] = shouldProcess;
+            if (!shouldProcess)
               continue;
-            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+            auto &proc = stemPitchProcessors[stemIndex];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
               proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
+            proc.setContentType(
+                stemContentTypeForPitchShiftable(pitchShiftable));
+            proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
-            targetLatency = proc.getLatencySamples();
-            break;
+            stemProcessLatencies[stemIndex] = proc.getLatencySamples();
+            targetLatency =
+                juce::jmax(targetLatency, stemProcessLatencies[stemIndex]);
           }
         }
 
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
-          for (auto &delay : stemPitchDelayLines)
-            delay.setDelay(targetLatency);
+        }
+        for (int i = 0; i < stemCount; ++i) {
+          const size_t stemIndex = static_cast<size_t>(i);
+          const int desiredDelay =
+              juce::jmax(0, routingPitchLatencySamples -
+                                stemProcessLatencies[stemIndex]);
+          auto &delay = stemPitchDelayLines[stemIndex];
+          if (delay.getDelaySamples() != desiredDelay)
+            delay.setDelay(desiredDelay);
+        }
+
+        if (++stemTimingSnapshotDecimator >=
+            kStemTimingSnapshotEveryBlocks) {
+          stemTimingSnapshotDecimator = 0;
+
+          AudioDiagnostics::StemTimingEvent stemTimingEvent;
+          stemTimingEvent.wallMs =
+              static_cast<double>(juce::Time::currentTimeMillis());
+          stemTimingEvent.tempoRatio = playbackTempoRatioActive;
+          stemTimingEvent.pitchSemiTones = pitchActiveSemiTones;
+          stemTimingEvent.stemCount = juce::jlimit(
+              0, AudioDiagnostics::StemTimingEvent::kMaxStemMetrics,
+              stemCount);
+          stemTimingEvent.targetLatencySamples = routingPitchLatencySamples;
+          stemTimingEvent.routingActive = true;
+          stemTimingEvent.timeProcessActive = timeProcessActive;
+          stemTimingEvent.tempoActive = tempoActive;
+
+          for (int i = 0; i < stemTimingEvent.stemCount; ++i) {
+            const size_t stemIndex = static_cast<size_t>(i);
+            const int latency = stemProcessLatencies[stemIndex];
+            const int delay = stemPitchDelayLines[stemIndex].getDelaySamples();
+            stemTimingEvent.processLatencySamples[stemIndex] =
+                static_cast<int16_t>(
+                    juce::jlimit(-32768, 32767, latency));
+            stemTimingEvent.delaySamples[stemIndex] =
+                static_cast<int16_t>(
+                    juce::jlimit(-32768, 32767, delay));
+
+            uint8_t flags = 0;
+            if (stemNeedsTimeProcess[stemIndex])
+              flags |= 0x1u;
+            if (stemPitchShiftableFlags[stemIndex])
+              flags |= 0x2u;
+            if (!stemPitchShiftableFlags[stemIndex] && tempoActive)
+              flags |= 0x4u;
+            stemTimingEvent.flags[stemIndex] = flags;
+          }
+
+          diagnostics.pushStemTimingEvent(stemTimingEvent);
         }
 
         if (stemRoutingTempBuffer.getNumSamples() < numSamples)
@@ -462,23 +580,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           stemRoutingTempBuffer.clear();
           juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
                                                 numSamples);
-          stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
+          const size_t stemIndex = static_cast<size_t>(i);
+          stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
           const bool pitchShiftable =
-              stemPitchShiftStates[static_cast<size_t>(i)].load(
+              stemPitchShiftStates[stemIndex].load(
                   std::memory_order_relaxed);
-          if (timeProcessActive && pitchShiftable) {
-            auto &proc = stemPitchProcessors[static_cast<size_t>(i)];
+          if (timeProcessActive && stemNeedsTimeProcess[stemIndex]) {
+            auto &proc = stemPitchProcessors[stemIndex];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
               proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setPitchSemiTones(pitchActiveSemiTones);
+            proc.setContentType(
+                stemContentTypeForPitchShiftable(pitchShiftable));
+            proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
             proc.process(stemRoutingTempBuffer);
-          } else if (routingPitchLatencySamples > 0) {
-            stemPitchDelayLines[static_cast<size_t>(i)].process(
-                stemRoutingTempBuffer);
+          }
+          if (timeProcessActive &&
+              stemPitchDelayLines[stemIndex].getDelaySamples() > 0) {
+            stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
           }
           int assignedWidth = juce::jlimit(
-              1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
+              1, 2, stemOutputWidths[stemIndex].load(
                         std::memory_order_relaxed));
           if (numChannels < 2)
             assignedWidth = 1;
@@ -487,8 +609,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               1, numChannels - (assignedWidth >= 2 ? 1 : 0));
           const int assignedChannelOneBased = juce::jlimit(
               1, maxBaseChannel,
-              stemOutputChannels[static_cast<size_t>(i)].load(
-                  std::memory_order_relaxed));
+              stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
           const int outputIndex =
               juce::jlimit(0, juce::jmax(0, numChannels - 1),
                            assignedChannelOneBased - 1);
@@ -902,23 +1023,77 @@ bool MTControlsAudioProcessor::isMidiEffect() const { return false; }
 
 double MTControlsAudioProcessor::getTailLengthSeconds() const { return 0.0; }
 
+int MTControlsAudioProcessor::midiSourceStateIndex(
+    const MidiBindingSourceType sourceType, const int channel,
+    const int data1) noexcept {
+  const int sourceIndex =
+      sourceType == MidiBindingSourceType::Note ? 1 : 0;
+  const int channelIndex = juce::jlimit(1, 16, channel) - 1;
+  const int dataIndex = juce::jlimit(0, 127, data1);
+  return (sourceIndex * 16 * 128) + (channelIndex * 128) + dataIndex;
+}
+
 bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
   if (targetId >= midiTargetPadsNoteBase &&
       targetId < midiTargetPadsNoteBase + 12)
     return true;
   if (targetId >= midiTargetStemVolumeBase &&
-      targetId < midiTargetStemVolumeBase + 8)
+      targetId < midiTargetStemVolumeBase + maxStemCount)
     return true;
-  return targetId >= midiTargetMasterVolume &&
-         targetId <= midiTargetPadsVolume;
+  if (targetId >= midiTargetStemGainBase &&
+      targetId < midiTargetStemGainBase + maxStemCount)
+    return true;
+  if (targetId >= midiTargetStemMuteBase &&
+      targetId < midiTargetStemMuteBase + maxStemCount)
+    return true;
+  if (targetId >= midiTargetStemSoloBase &&
+      targetId < midiTargetStemSoloBase + maxStemCount)
+    return true;
+  switch (targetId) {
+  case midiTargetMasterVolume:
+  case midiTargetMasterMute:
+  case midiTargetTransportPlayPause:
+  case midiTargetTransportStop:
+  case midiTargetTransportPrevSong:
+  case midiTargetTransportSeekBack:
+  case midiTargetTransportSeekForward:
+  case midiTargetTransportNextSong:
+  case midiTargetTransportFadeToggle:
+  case midiTargetMasterGain:
+  case midiTargetSongStartMinus:
+  case midiTargetSongStartPlus:
+  case midiTargetPadsPower:
+  case midiTargetPadsVolume:
+  case midiTargetPadsGain:
+  case midiTargetSongEndMinus:
+  case midiTargetSongEndPlus:
+  case midiTargetSongFadeMinus:
+  case midiTargetSongFadePlus:
+  case midiTargetTempoDown:
+  case midiTargetTempoUp:
+  case midiTargetPitchDown:
+  case midiTargetPitchUp:
+  case midiTargetMetronomeMute:
+  case midiTargetMetronomeSolo:
+  case midiTargetMixerNudgeUp:
+  case midiTargetMixerNudgeDown:
+  case midiTargetMixerApplyRouting:
+    return true;
+  default:
+    return false;
+  }
 }
 
 MidiBindingMode
 MTControlsAudioProcessor::defaultModeForTarget(const int targetId) noexcept {
-  if (targetId == midiTargetMasterVolume || targetId == midiTargetMetronomeVolume ||
-      targetId == midiTargetPadsVolume ||
+  if (targetId == midiTargetMasterVolume || targetId == midiTargetMasterGain ||
+      targetId == midiTargetMetronomeVolume ||
+      targetId == midiTargetMetronomeGain || targetId == midiTargetPadsVolume ||
+      targetId == midiTargetPadsGain ||
       (targetId >= midiTargetStemVolumeBase &&
-       targetId < midiTargetStemVolumeBase + 8)) {
+       targetId < midiTargetStemVolumeBase + maxStemCount) ||
+      (targetId >= midiTargetStemGainBase &&
+       targetId < midiTargetStemGainBase + maxStemCount)) {
     return MidiBindingMode::Absolute;
   }
   if (targetId >= midiTargetPadsNoteBase &&
@@ -932,6 +1107,8 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
   switch (targetId) {
   case midiTargetMasterVolume:
     return "Master Volume";
+  case midiTargetMasterGain:
+    return "Master Gain";
   case midiTargetMasterMute:
     return "Master Mute";
   case midiTargetTransportPlayPause:
@@ -954,10 +1131,52 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
     return "Transport Next Song";
   case midiTargetTransportFadeToggle:
     return "Transport Fade Toggle";
+  case midiTargetUiWindowModeToggle:
+    return "UI Window Maximize/Restore";
+  case midiTargetUiSettingsToggle:
+    return "UI Open Settings";
+  case midiTargetUiSongWindowPopover:
+    return "UI Open Song Window";
+  case midiTargetUiKeyPopover:
+    return "UI Open Key Selector";
+  case midiTargetUiMetronomePopover:
+    return "UI Open Metronome Panel";
+  case midiTargetSongStartMinus:
+    return "Song Start -1s";
+  case midiTargetSongStartPlus:
+    return "Song Start +1s";
+  case midiTargetSongEndMinus:
+    return "Song End -1s";
+  case midiTargetSongEndPlus:
+    return "Song End +1s";
+  case midiTargetSongFadeMinus:
+    return "Song Fade -1s";
+  case midiTargetSongFadePlus:
+    return "Song Fade +1s";
+  case midiTargetTempoDown:
+    return "Tempo -1 BPM";
+  case midiTargetTempoUp:
+    return "Tempo +1 BPM";
+  case midiTargetPitchDown:
+    return "Pitch -1 Semitone";
+  case midiTargetPitchUp:
+    return "Pitch +1 Semitone";
+  case midiTargetMetronomeGain:
+    return "Metronome Gain";
+  case midiTargetMetronomeSolo:
+    return "Metronome Solo";
+  case midiTargetMixerNudgeUp:
+    return "Mixer Nudge Up";
+  case midiTargetMixerNudgeDown:
+    return "Mixer Nudge Down";
+  case midiTargetMixerApplyRouting:
+    return "Mixer Apply Routing";
   case midiTargetPadsPower:
     return "Pads Power";
   case midiTargetPadsVolume:
     return "Pads Volume";
+  case midiTargetPadsGain:
+    return "Pads Gain";
   default:
     break;
   }
@@ -969,9 +1188,24 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
     return "Pads Note " + juce::String(kPadNames[idx]);
   }
   if (targetId >= midiTargetStemVolumeBase &&
-      targetId < midiTargetStemVolumeBase + 8) {
+      targetId < midiTargetStemVolumeBase + maxStemCount) {
     const int stemOneBased = targetId - midiTargetStemVolumeBase + 1;
     return "Stem " + juce::String(stemOneBased) + " Volume";
+  }
+  if (targetId >= midiTargetStemGainBase &&
+      targetId < midiTargetStemGainBase + maxStemCount) {
+    const int stemOneBased = targetId - midiTargetStemGainBase + 1;
+    return "Stem " + juce::String(stemOneBased) + " Gain";
+  }
+  if (targetId >= midiTargetStemMuteBase &&
+      targetId < midiTargetStemMuteBase + maxStemCount) {
+    const int stemOneBased = targetId - midiTargetStemMuteBase + 1;
+    return "Stem " + juce::String(stemOneBased) + " Mute";
+  }
+  if (targetId >= midiTargetStemSoloBase &&
+      targetId < midiTargetStemSoloBase + maxStemCount) {
+    const int stemOneBased = targetId - midiTargetStemSoloBase + 1;
+    return "Stem " + juce::String(stemOneBased) + " Solo";
   }
   return {};
 }
@@ -979,55 +1213,52 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
 std::vector<MTControlsAudioProcessor::MidiTargetDescriptor>
 MTControlsAudioProcessor::getMidiTargets() const {
   std::vector<MidiTargetDescriptor> out;
-  out.push_back({midiTargetMasterVolume, midiTargetNameForId(midiTargetMasterVolume),
-                 defaultModeForTarget(midiTargetMasterVolume)});
-  out.push_back({midiTargetMasterMute, midiTargetNameForId(midiTargetMasterMute),
-                 defaultModeForTarget(midiTargetMasterMute)});
-  out.push_back(
-      {midiTargetTransportPlayPause, midiTargetNameForId(midiTargetTransportPlayPause),
-       defaultModeForTarget(midiTargetTransportPlayPause)});
-  out.push_back({midiTargetTransportStop, midiTargetNameForId(midiTargetTransportStop),
-                 defaultModeForTarget(midiTargetTransportStop)});
-  out.push_back(
-      {midiTargetMetronomeEnabled, midiTargetNameForId(midiTargetMetronomeEnabled),
-       defaultModeForTarget(midiTargetMetronomeEnabled)});
-  out.push_back(
-      {midiTargetMetronomeVolume, midiTargetNameForId(midiTargetMetronomeVolume),
-       defaultModeForTarget(midiTargetMetronomeVolume)});
-  out.push_back({midiTargetMetronomeMute, midiTargetNameForId(midiTargetMetronomeMute),
-                 defaultModeForTarget(midiTargetMetronomeMute)});
-  out.push_back(
-      {midiTargetTransportPrevSong, midiTargetNameForId(midiTargetTransportPrevSong),
-       defaultModeForTarget(midiTargetTransportPrevSong)});
-  out.push_back(
-      {midiTargetTransportSeekBack, midiTargetNameForId(midiTargetTransportSeekBack),
-       defaultModeForTarget(midiTargetTransportSeekBack)});
-  out.push_back(
-      {midiTargetTransportSeekForward,
-       midiTargetNameForId(midiTargetTransportSeekForward),
-       defaultModeForTarget(midiTargetTransportSeekForward)});
-  out.push_back(
-      {midiTargetTransportNextSong, midiTargetNameForId(midiTargetTransportNextSong),
-       defaultModeForTarget(midiTargetTransportNextSong)});
-  out.push_back(
-      {midiTargetTransportFadeToggle,
-       midiTargetNameForId(midiTargetTransportFadeToggle),
-       defaultModeForTarget(midiTargetTransportFadeToggle)});
-  out.push_back(
-      {midiTargetPadsPower, midiTargetNameForId(midiTargetPadsPower),
-       defaultModeForTarget(midiTargetPadsPower)});
-  out.push_back(
-      {midiTargetPadsVolume, midiTargetNameForId(midiTargetPadsVolume),
-       defaultModeForTarget(midiTargetPadsVolume)});
+  auto addTarget = [&out](const int targetId) {
+    out.push_back({targetId, midiTargetNameForId(targetId),
+                   defaultModeForTarget(targetId)});
+  };
+
+  addTarget(midiTargetMasterVolume);
+  addTarget(midiTargetMasterGain);
+  addTarget(midiTargetMasterMute);
+  addTarget(midiTargetMetronomeMute);
+  addTarget(midiTargetMetronomeSolo);
+
+  addTarget(midiTargetTransportPlayPause);
+  addTarget(midiTargetTransportStop);
+  addTarget(midiTargetTransportPrevSong);
+  addTarget(midiTargetTransportSeekBack);
+  addTarget(midiTargetTransportSeekForward);
+  addTarget(midiTargetTransportNextSong);
+  addTarget(midiTargetTransportFadeToggle);
+  addTarget(midiTargetTempoDown);
+  addTarget(midiTargetTempoUp);
+  addTarget(midiTargetPitchDown);
+  addTarget(midiTargetPitchUp);
+  addTarget(midiTargetSongStartMinus);
+  addTarget(midiTargetSongStartPlus);
+  addTarget(midiTargetSongEndMinus);
+  addTarget(midiTargetSongEndPlus);
+  addTarget(midiTargetSongFadeMinus);
+  addTarget(midiTargetSongFadePlus);
+
+  addTarget(midiTargetMixerNudgeUp);
+  addTarget(midiTargetMixerNudgeDown);
+  addTarget(midiTargetMixerApplyRouting);
+
+  addTarget(midiTargetPadsPower);
+  addTarget(midiTargetPadsVolume);
+  addTarget(midiTargetPadsGain);
   for (int i = 0; i < 12; ++i) {
     const int targetId = midiTargetPadsNoteBase + i;
-    out.push_back(
-        {targetId, midiTargetNameForId(targetId), defaultModeForTarget(targetId)});
+    addTarget(targetId);
   }
-  for (int i = 0; i < 8; ++i) {
-    const int targetId = midiTargetStemVolumeBase + i;
-    out.push_back(
-        {targetId, midiTargetNameForId(targetId), defaultModeForTarget(targetId)});
+
+  for (int i = 0; i < maxStemCount; ++i) {
+    addTarget(midiTargetStemVolumeBase + i);
+    addTarget(midiTargetStemGainBase + i);
+    addTarget(midiTargetStemMuteBase + i);
+    addTarget(midiTargetStemSoloBase + i);
   }
   return out;
 }
@@ -1038,24 +1269,42 @@ MTControlsAudioProcessor::getMidiBindings() const {
   return midiBindings;
 }
 
+MTControlsAudioProcessor::MidiInputProbe
+MTControlsAudioProcessor::getLastMidiInputProbe() const noexcept {
+  MidiInputProbe probe;
+  probe.timestampMs = midiLastMessageMs.load(std::memory_order_relaxed);
+  probe.channel = midiLastMessageChannel.load(std::memory_order_relaxed);
+  probe.data1 = midiLastMessageData1.load(std::memory_order_relaxed);
+  probe.data2 = midiLastMessageData2.load(std::memory_order_relaxed);
+  probe.type = midiLastMessageType.load(std::memory_order_relaxed);
+  return probe;
+}
+
 void MTControlsAudioProcessor::setMidiBinding(const MidiBinding &binding) {
   if (!isMidiTargetValid(binding.targetId))
     return;
   const int safeChannel = juce::jlimit(1, 16, binding.midiChannel);
-  const int safeCc = juce::jlimit(0, 127, binding.ccNumber);
+  const int safeData1 = juce::jlimit(0, 127, binding.ccNumber);
+  const auto safeSourceType =
+      binding.sourceType == MidiBindingSourceType::Note
+          ? MidiBindingSourceType::Note
+          : MidiBindingSourceType::CC;
 
   const juce::ScopedLock lock(midiBindingsLock);
   midiBindings.erase(
       std::remove_if(midiBindings.begin(), midiBindings.end(),
-                     [&binding](const MidiBinding &current) {
-                       return current.targetId == binding.targetId ||
-                              (current.midiChannel == binding.midiChannel &&
-                               current.ccNumber == binding.ccNumber);
+                     [bindingTarget = binding.targetId, safeSourceType,
+                      safeChannel, safeData1](const MidiBinding &current) {
+                       return current.targetId == bindingTarget ||
+                              (current.sourceType == safeSourceType &&
+                               current.midiChannel == safeChannel &&
+                               current.ccNumber == safeData1);
                      }),
       midiBindings.end());
   MidiBinding next = binding;
+  next.sourceType = safeSourceType;
   next.midiChannel = safeChannel;
-  next.ccNumber = safeCc;
+  next.ccNumber = safeData1;
   midiBindings.push_back(next);
 }
 
@@ -1072,6 +1321,8 @@ void MTControlsAudioProcessor::clearMidiBindingForTarget(const int targetId) {
 void MTControlsAudioProcessor::beginMidiLearnForTarget(const int targetId) {
   midiLearnTargetId.store(isMidiTargetValid(targetId) ? targetId : -1,
                           std::memory_order_release);
+  if (targetId < 0)
+    midiLearnPendingTargetId.store(-1, std::memory_order_release);
 }
 
 bool MTControlsAudioProcessor::consumePendingMidiLearnBinding(
@@ -1082,6 +1333,8 @@ bool MTControlsAudioProcessor::consumePendingMidiLearnBinding(
   outBinding.targetId = targetId;
   outBinding.midiChannel =
       juce::jlimit(1, 16, midiLearnPendingChannel.load(std::memory_order_relaxed));
+  outBinding.sourceType = static_cast<MidiBindingSourceType>(juce::jlimit(
+      0, 1, midiLearnPendingSourceType.load(std::memory_order_relaxed)));
   outBinding.ccNumber =
       juce::jlimit(0, 127, midiLearnPendingCc.load(std::memory_order_relaxed));
   outBinding.mode = static_cast<MidiBindingMode>(
@@ -1100,26 +1353,42 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
 void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
                                                      const int ccValue,
                                                      const MidiBindingMode mode) {
+  if (!isMidiTargetValid(targetId))
+    return;
+
   const float normalized =
       juce::jlimit(0.0f, 1.0f, static_cast<float>(ccValue) / 127.0f);
   const bool high = ccValue >= 64;
+  const auto queueUiCommand = [this](const int commandId) {
+    midiPendingUiCommand.store(commandId, std::memory_order_release);
+  };
 
   if (targetId == midiTargetMasterVolume) {
     setMasterVolume(normalized);
     return;
   }
-  if (targetId == midiTargetMetronomeVolume) {
-    setMetronomeVolume(normalized);
+  if (targetId == midiTargetMasterGain) {
+    setMasterGain(normalized * 2.0f);
     return;
   }
   if (targetId == midiTargetPadsVolume) {
     setPadsVolume(normalized);
     return;
   }
+  if (targetId == midiTargetPadsGain) {
+    setPadsGain(normalized * 2.0f);
+    return;
+  }
   if (targetId >= midiTargetStemVolumeBase &&
-      targetId < midiTargetStemVolumeBase + 8) {
+      targetId < midiTargetStemVolumeBase + maxStemCount) {
     const int stemIndex = targetId - midiTargetStemVolumeBase;
     setStemVolume(stemIndex, normalized);
+    return;
+  }
+  if (targetId >= midiTargetStemGainBase &&
+      targetId < midiTargetStemGainBase + maxStemCount) {
+    const int stemIndex = targetId - midiTargetStemGainBase;
+    setStemGain(stemIndex, normalized * 2.0f);
     return;
   }
 
@@ -1140,23 +1409,63 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   if (mode == MidiBindingMode::Momentary) {
     if (targetId == midiTargetMasterMute)
       setMasterMute(high);
-    else if (targetId == midiTargetMetronomeEnabled)
-      setMetronomeEnabled(high);
     else if (targetId == midiTargetMetronomeMute)
       setMetronomeMuted(high);
+    else if (targetId == midiTargetMetronomeSolo)
+      setMetronomeSolo(high);
     else if (targetId == midiTargetPadsPower)
       setPadsEnabled(high);
+    else if (targetId >= midiTargetStemMuteBase &&
+             targetId < midiTargetStemMuteBase + maxStemCount)
+      setStemMute(targetId - midiTargetStemMuteBase, high);
+    else if (targetId >= midiTargetStemSoloBase &&
+             targetId < midiTargetStemSoloBase + maxStemCount)
+      setStemSolo(targetId - midiTargetStemSoloBase, high);
     else if (targetId == midiTargetTransportStop && high)
       stopSong();
+    else if (targetId == midiTargetTransportSeekBack && high)
+      seekSongRelative(-5.0);
+    else if (targetId == midiTargetTransportSeekForward && high)
+      seekSongRelative(5.0);
+    else if (targetId == midiTargetTransportPrevSong && high)
+      queueUiCommand(midiUiCommandPrevSong);
+    else if (targetId == midiTargetTransportNextSong && high)
+      queueUiCommand(midiUiCommandNextSong);
+    else if (targetId == midiTargetMixerNudgeUp && high)
+      queueUiCommand(midiUiCommandMixerNudgeUp);
+    else if (targetId == midiTargetMixerNudgeDown && high)
+      queueUiCommand(midiUiCommandMixerNudgeDown);
+    else if (targetId == midiTargetMixerApplyRouting && high)
+      queueUiCommand(midiUiCommandMixerApplyRouting);
+    else if (targetId == midiTargetSongStartMinus && high)
+      setSongStartSeconds(getSongStartSeconds() - 1.0);
+    else if (targetId == midiTargetSongStartPlus && high)
+      setSongStartSeconds(getSongStartSeconds() + 1.0);
+    else if (targetId == midiTargetSongEndMinus && high)
+      setSongEndSeconds(getSongEndSeconds() - 1.0);
+    else if (targetId == midiTargetSongEndPlus && high)
+      setSongEndSeconds(getSongEndSeconds() + 1.0);
+    else if (targetId == midiTargetSongFadeMinus && high)
+      setSongFadeOutSeconds(getSongFadeOutSeconds() - 1.0);
+    else if (targetId == midiTargetSongFadePlus && high)
+      setSongFadeOutSeconds(getSongFadeOutSeconds() + 1.0);
+    else if (targetId == midiTargetTempoDown && high)
+      setPlaybackTempoBpm(getPlaybackTempoBpm() - 1.0);
+    else if (targetId == midiTargetTempoUp && high)
+      setPlaybackTempoBpm(getPlaybackTempoBpm() + 1.0);
+    else if (targetId == midiTargetPitchDown && high)
+      setPitchSemiTones(getPitchSemiTones() - 1);
+    else if (targetId == midiTargetPitchUp && high)
+      setPitchSemiTones(getPitchSemiTones() + 1);
     return;
   }
 
   if (targetId == midiTargetMasterMute)
     setMasterMute(!isMasterMuted());
-  else if (targetId == midiTargetMetronomeEnabled)
-    setMetronomeEnabled(!isMetronomeEnabled());
   else if (targetId == midiTargetMetronomeMute)
     setMetronomeMuted(!isMetronomeMuted());
+  else if (targetId == midiTargetMetronomeSolo)
+    setMetronomeSolo(!isMetronomeSolo());
   else if (targetId == midiTargetTransportPlayPause)
     toggleSongPlayPause();
   else if (targetId == midiTargetTransportStop)
@@ -1170,12 +1479,66 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
     setFadeActive(!isFadeActive());
   } else if (targetId == midiTargetPadsPower) {
     setPadsEnabled(!isPadsEnabled());
+  } else if (targetId >= midiTargetStemMuteBase &&
+             targetId < midiTargetStemMuteBase + maxStemCount) {
+    const int stemIndex = targetId - midiTargetStemMuteBase;
+    setStemMute(stemIndex, !isStemMuted(stemIndex));
+  } else if (targetId >= midiTargetStemSoloBase &&
+             targetId < midiTargetStemSoloBase + maxStemCount) {
+    const int stemIndex = targetId - midiTargetStemSoloBase;
+    setStemSolo(stemIndex, !isStemSoloed(stemIndex));
   } else if (targetId == midiTargetTransportPrevSong) {
-    midiPendingUiCommand.store(midiUiCommandPrevSong, std::memory_order_release);
+    queueUiCommand(midiUiCommandPrevSong);
   } else if (targetId == midiTargetTransportNextSong) {
-    midiPendingUiCommand.store(midiUiCommandNextSong, std::memory_order_release);
+    queueUiCommand(midiUiCommandNextSong);
+  } else if (targetId == midiTargetMixerNudgeUp) {
+    queueUiCommand(midiUiCommandMixerNudgeUp);
+  } else if (targetId == midiTargetMixerNudgeDown) {
+    queueUiCommand(midiUiCommandMixerNudgeDown);
+  } else if (targetId == midiTargetMixerApplyRouting) {
+    queueUiCommand(midiUiCommandMixerApplyRouting);
+  } else if (targetId == midiTargetSongStartMinus) {
+    setSongStartSeconds(getSongStartSeconds() - 1.0);
+  } else if (targetId == midiTargetSongStartPlus) {
+    setSongStartSeconds(getSongStartSeconds() + 1.0);
+  } else if (targetId == midiTargetSongEndMinus) {
+    setSongEndSeconds(getSongEndSeconds() - 1.0);
+  } else if (targetId == midiTargetSongEndPlus) {
+    setSongEndSeconds(getSongEndSeconds() + 1.0);
+  } else if (targetId == midiTargetSongFadeMinus) {
+    setSongFadeOutSeconds(getSongFadeOutSeconds() - 1.0);
+  } else if (targetId == midiTargetSongFadePlus) {
+    setSongFadeOutSeconds(getSongFadeOutSeconds() + 1.0);
+  } else if (targetId == midiTargetTempoDown) {
+    setPlaybackTempoBpm(getPlaybackTempoBpm() - 1.0);
+  } else if (targetId == midiTargetTempoUp) {
+    setPlaybackTempoBpm(getPlaybackTempoBpm() + 1.0);
+  } else if (targetId == midiTargetPitchDown) {
+    setPitchSemiTones(getPitchSemiTones() - 1);
+  } else if (targetId == midiTargetPitchUp) {
+    setPitchSemiTones(getPitchSemiTones() + 1);
   }
 }
+
+namespace {
+bool isContinuousMidiTargetId(const int targetId) {
+  if (targetId == MTControlsAudioProcessor::midiTargetMasterVolume ||
+      targetId == MTControlsAudioProcessor::midiTargetMasterGain ||
+      targetId == MTControlsAudioProcessor::midiTargetMetronomeVolume ||
+      targetId == MTControlsAudioProcessor::midiTargetMetronomeGain ||
+      targetId == MTControlsAudioProcessor::midiTargetPadsVolume ||
+      targetId == MTControlsAudioProcessor::midiTargetPadsGain)
+    return true;
+
+  if (targetId >= MTControlsAudioProcessor::midiTargetStemVolumeBase &&
+      targetId < MTControlsAudioProcessor::midiTargetStemVolumeBase + 64)
+    return true;
+  if (targetId >= MTControlsAudioProcessor::midiTargetStemGainBase &&
+      targetId < MTControlsAudioProcessor::midiTargetStemGainBase + 64)
+    return true;
+  return false;
+}
+} // namespace
 
 void MTControlsAudioProcessor::processMidiMapping(
     const juce::MidiBuffer &midiMessages) {
@@ -1190,22 +1553,62 @@ void MTControlsAudioProcessor::processMidiMapping(
 
   for (const auto metadata : midiMessages) {
     const auto msg = metadata.getMessage();
-    if (!msg.isController())
-      continue;
     const int channel = msg.getChannel();
-    const int cc = msg.getControllerNumber();
-    const int value = msg.getControllerValue();
+    const bool isController = msg.isController();
+    const bool isNoteOn = msg.isNoteOn(false);
+    const bool isNoteOff = msg.isNoteOff(true);
+    int probeType = 4;
+    int probeData1 = -1;
+    int probeData2 = -1;
+    if (isController) {
+      probeType = 1;
+      probeData1 = msg.getControllerNumber();
+      probeData2 = msg.getControllerValue();
+    } else if (isNoteOn) {
+      probeType = 2;
+      probeData1 = msg.getNoteNumber();
+      probeData2 = msg.getVelocity();
+    } else if (isNoteOff) {
+      probeType = 3;
+      probeData1 = msg.getNoteNumber();
+      probeData2 = msg.getVelocity();
+    }
+    midiLastMessageMs.store(juce::Time::currentTimeMillis(),
+                            std::memory_order_relaxed);
+    midiLastMessageChannel.store(channel, std::memory_order_relaxed);
+    midiLastMessageData1.store(probeData1, std::memory_order_relaxed);
+    midiLastMessageData2.store(probeData2, std::memory_order_relaxed);
+    midiLastMessageType.store(probeType, std::memory_order_relaxed);
+
+    MidiBindingSourceType sourceType = MidiBindingSourceType::CC;
+    int sourceData1 = -1;
+    int sourceValue = 0;
+    if (isController) {
+      sourceType = MidiBindingSourceType::CC;
+      sourceData1 = msg.getControllerNumber();
+      sourceValue = msg.getControllerValue();
+    } else if (isNoteOn || isNoteOff) {
+      sourceType = MidiBindingSourceType::Note;
+      sourceData1 = msg.getNoteNumber();
+      sourceValue = isNoteOn ? msg.getVelocity() : 0;
+    }
+
+    if (sourceData1 < 0)
+      continue;
 
     const int learnTarget = midiLearnTargetId.exchange(-1, std::memory_order_acq_rel);
     if (isMidiTargetValid(learnTarget)) {
       MidiBinding learned;
       learned.targetId = learnTarget;
       learned.midiChannel = channel;
-      learned.ccNumber = cc;
+      learned.sourceType = sourceType;
+      learned.ccNumber = sourceData1;
       learned.mode = defaultModeForTarget(learnTarget);
       setMidiBinding(learned);
       midiLearnPendingChannel.store(channel, std::memory_order_relaxed);
-      midiLearnPendingCc.store(cc, std::memory_order_relaxed);
+      midiLearnPendingSourceType.store(static_cast<int>(sourceType),
+                                       std::memory_order_relaxed);
+      midiLearnPendingCc.store(sourceData1, std::memory_order_relaxed);
       midiLearnPendingMode.store(static_cast<int>(learned.mode),
                                  std::memory_order_relaxed);
       midiLearnPendingTargetId.store(learnTarget, std::memory_order_release);
@@ -1213,24 +1616,39 @@ void MTControlsAudioProcessor::processMidiMapping(
     }
 
     for (const auto &binding : currentBindings) {
-      if (binding.midiChannel != channel || binding.ccNumber != cc)
+      if (binding.sourceType != sourceType || binding.midiChannel != channel ||
+          binding.ccNumber != sourceData1)
         continue;
 
-      const int index = binding.targetId;
-      const int safeIndex = juce::jlimit(0, static_cast<int>(midiLastCcValues.size()) - 1,
-                                         index);
-      const int previous = midiLastCcValues[static_cast<size_t>(safeIndex)];
-      midiLastCcValues[static_cast<size_t>(safeIndex)] = value;
-      if (binding.mode != MidiBindingMode::Absolute) {
-        const bool prevHigh = previous >= 64;
-        const bool nowHigh = value >= 64;
-        if (!prevHigh && nowHigh)
-          applyMidiBindingValue(binding.targetId, value, binding.mode);
-        else if (binding.mode == MidiBindingMode::Momentary && prevHigh && !nowHigh)
-          applyMidiBindingValue(binding.targetId, value, binding.mode);
-      } else {
-        applyMidiBindingValue(binding.targetId, value, binding.mode);
+      if (binding.mode == MidiBindingMode::Absolute ||
+          isContinuousMidiTargetId(binding.targetId)) {
+        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
+        continue;
       }
+
+      if (binding.sourceType == MidiBindingSourceType::Note) {
+        if (binding.mode == MidiBindingMode::Toggle) {
+          if (isNoteOn)
+            applyMidiBindingValue(binding.targetId, 127, binding.mode);
+        } else if (binding.mode == MidiBindingMode::Momentary) {
+          if (isNoteOn)
+            applyMidiBindingValue(binding.targetId, 127, binding.mode);
+          else if (isNoteOff)
+            applyMidiBindingValue(binding.targetId, 0, binding.mode);
+        }
+        continue;
+      }
+
+      const int stateIndex =
+          midiSourceStateIndex(binding.sourceType, channel, sourceData1);
+      const int previous = midiLastSourceValues[static_cast<size_t>(stateIndex)];
+      midiLastSourceValues[static_cast<size_t>(stateIndex)] = sourceValue;
+      const bool prevHigh = previous >= 64;
+      const bool nowHigh = sourceValue >= 64;
+      if (!prevHigh && nowHigh)
+        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
+      else if (binding.mode == MidiBindingMode::Momentary && prevHigh && !nowHigh)
+        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
     }
   }
 }
@@ -1429,7 +1847,9 @@ bool MTControlsAudioProcessor::loadSongStems(
                              std::memory_order_relaxed);
     const double normalizedSongBpm =
         songBpm > 0.0 ? songBpm : 120.0;
-    loadedSongBpm = juce::jlimit(20.0, 300.0, normalizedSongBpm);
+    loadedSongBpm =
+        juce::jlimit(kMinPlaybackTempoBpm, kMaxPlaybackTempoBpm,
+                     normalizedSongBpm);
     playbackTempoBpm.store(loadedSongBpm.load(std::memory_order_relaxed),
                            std::memory_order_relaxed);
     setMetronomeBpm(playbackTempoBpm.load(std::memory_order_relaxed));
@@ -2332,7 +2752,21 @@ double MTControlsAudioProcessor::getMetronomeBpm() const noexcept {
 }
 
 void MTControlsAudioProcessor::setPlaybackTempoBpm(double bpm) noexcept {
-  const double normalized = juce::jlimit(20.0, 300.0, bpm);
+  const double rawOriginalBpm = loadedSongBpm.load(std::memory_order_relaxed);
+  double minBpm = kMinPlaybackTempoBpm;
+  double maxBpm = kMaxPlaybackTempoBpm;
+
+  if (rawOriginalBpm > 0.0) {
+    const double originalBpm = juce::jmax(kMinPlaybackTempoBpm, rawOriginalBpm);
+    minBpm = juce::jmax(kMinPlaybackTempoBpm,
+                        originalBpm * kMinPlaybackTempoRatio);
+    maxBpm = juce::jmin(kMaxPlaybackTempoBpm,
+                        originalBpm * kMaxPlaybackTempoRatio);
+    if (maxBpm < minBpm)
+      maxBpm = minBpm;
+  }
+
+  const double normalized = juce::jlimit(minBpm, maxBpm, bpm);
   playbackTempoBpm.store(normalized, std::memory_order_relaxed);
   setMetronomeBpm(normalized);
 }
@@ -2472,6 +2906,8 @@ void MTControlsAudioProcessor::resetStemControls(
       stemOutputWidths[static_cast<size_t>(i)].store(
           stemOutputRoutingState.getStemOutputWidth(i), std::memory_order_relaxed);
       stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
+      stemPitchProcessors[static_cast<size_t>(i)].setContentType(
+          PitchShiftProcessor::ContentType::Melodic);
       stemPitchProcessors[static_cast<size_t>(i)].reset();
     }
   }
@@ -2493,6 +2929,10 @@ void MTControlsAudioProcessor::setStemPitchShiftMask(
     const bool canPitch = i < limit ? mask[static_cast<size_t>(i)] : true;
     stemPitchShiftStates[static_cast<size_t>(i)].store(
         canPitch, std::memory_order_relaxed);
+    const auto contentType = stemContentTypeForPitchShiftable(canPitch);
+    stemPitchProcessors[static_cast<size_t>(i)].setContentType(contentType);
+    outgoingStemPitchProcessors[static_cast<size_t>(i)].setContentType(
+        contentType);
   }
 }
 
@@ -2506,11 +2946,14 @@ int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
 }
 
 double MTControlsAudioProcessor::getPlaybackTempoRatio() const noexcept {
-  const double originalBpm = juce::jmax(
-      20.0, loadedSongBpm.load(std::memory_order_relaxed));
-  const double playbackBpm = juce::jmax(
-      20.0, playbackTempoBpm.load(std::memory_order_relaxed));
-  return juce::jlimit(0.5, 2.0, playbackBpm / originalBpm);
+  const double originalBpm =
+      juce::jmax(kMinPlaybackTempoBpm,
+                 loadedSongBpm.load(std::memory_order_relaxed));
+  const double playbackBpm =
+      juce::jmax(kMinPlaybackTempoBpm,
+                 playbackTempoBpm.load(std::memory_order_relaxed));
+  return juce::jlimit(kMinPlaybackTempoRatio, kMaxPlaybackTempoRatio,
+                      playbackBpm / originalBpm);
 }
 
 int MTControlsAudioProcessor::findArrangementPartIndexForSourceTime(

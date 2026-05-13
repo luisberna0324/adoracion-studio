@@ -256,7 +256,7 @@ void MetronomePanel::setSongBpm(double bpm) {
   if (bpm <= 0.0)
     return;
   manualOverride = false;
-  processor.setMetronomeBpm(bpm);
+  processor.setPlaybackTempoBpm(bpm);
   updateBpmDisplay();
 }
 
@@ -283,7 +283,7 @@ void MetronomePanel::showPopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getMetronomeBpm(); });
+      [this] { return processor.getPlaybackTempoBpm(); });
   panel->setSize(180, 120);
   panel->refreshThemeColours();
 
@@ -300,21 +300,22 @@ void MetronomePanel::refreshFromProcessor() {
 
 void MetronomePanel::updateBpmDisplay() {
   bpmButton.setBpmText(
-      juce::String(static_cast<int>(std::round(processor.getMetronomeBpm()))));
+      juce::String(
+          static_cast<int>(std::round(processor.getPlaybackTempoBpm()))));
 }
 
 void MetronomePanel::setBpmAbsolute(double bpm) {
   if (bpm <= 0.0)
     return;
   manualOverride = true;
-  processor.setMetronomeBpm(bpm);
+  processor.setPlaybackTempoBpm(bpm);
   updateBpmDisplay();
 }
 
 void MetronomePanel::adjustBpm(double delta) {
   const auto mods = juce::ModifierKeys::getCurrentModifiers();
   const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0) : delta;
-  setBpmAbsolute(processor.getMetronomeBpm() + step);
+  setBpmAbsolute(processor.getPlaybackTempoBpm() + step);
 }
 
 void MetronomePanel::registerTap() {

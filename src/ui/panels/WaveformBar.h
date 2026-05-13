@@ -41,9 +41,15 @@ public:
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
+  void setMidiLearnActive(bool active);
+  void setMidiLearnPendingTarget(int targetId);
+  void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
+  void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+  void triggerEditToggleFromMidi();
   void refreshThemeColours();
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
   void mouseDown(const juce::MouseEvent &event) override;
   void mouseDrag(const juce::MouseEvent &event) override;
@@ -138,6 +144,10 @@ private:
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;
+  bool midiLearnActive = false;
+  int midiLearnPendingTargetId = -1;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
+  std::function<void(int)> onMidiLearnTargetSelected;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);

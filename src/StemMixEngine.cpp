@@ -64,47 +64,75 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   currentBlockSize = samplesPerBlock;
   currentChannels = numChannels;
 
-  pitchShift.prepare(sampleRate, samplesPerBlock, numChannels);
-  pitchShift.reset();
-  pitchShift.setPitchSemiTones(pitchSemiTones);
-  pitchShift.setTempoRatio(tempoRatio);
+  pitchShiftMelodic.prepare(sampleRate, samplesPerBlock, numChannels);
+  pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
+  pitchShiftMelodic.reset();
+  pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
+  pitchShiftMelodic.setTempoRatio(tempoRatio);
+
+  tempoShiftPercussion.prepare(sampleRate, samplesPerBlock, numChannels);
+  tempoShiftPercussion.setContentType(
+      PitchShiftProcessor::ContentType::Percussive);
+  tempoShiftPercussion.reset();
+  tempoShiftPercussion.setPitchSemiTones(0);
+  tempoShiftPercussion.setTempoRatio(tempoRatio);
+
+  tempoShiftGuide.prepare(sampleRate, samplesPerBlock, numChannels);
+  tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
+  tempoShiftGuide.reset();
+  tempoShiftGuide.setPitchSemiTones(0);
+  tempoShiftGuide.setTempoRatio(tempoRatio);
 
   stemMixBuffer.setSize(numChannels, samplesPerBlock);
   stemTempBuffer.setSize(numChannels, samplesPerBlock);
   percussionBuffer.setSize(numChannels, samplesPerBlock);
   dryBuffer.setSize(numChannels, samplesPerBlock);
 
+  pitchDelayMelodic.prepare(numChannels, kMaxPitchLatencySamples);
   pitchDelayPercussion.prepare(numChannels, kMaxPitchLatencySamples);
   pitchDelayGuide.prepare(numChannels, kMaxPitchLatencySamples);
-  lastLatencySamples = 0;
+  lastMelodicDelaySamples = 0;
+  lastPercussionDelaySamples = 0;
+  lastGuideDelaySamples = 0;
 }
 
 void StemMixEngine::reset() {
-  pitchShift.reset();
+  pitchShiftMelodic.reset();
+  tempoShiftPercussion.reset();
+  tempoShiftGuide.reset();
   stemMixBuffer.clear();
   stemTempBuffer.clear();
   percussionBuffer.clear();
   dryBuffer.clear();
+  pitchDelayMelodic.reset();
   pitchDelayPercussion.reset();
   pitchDelayGuide.reset();
-  lastLatencySamples = 0;
+  lastMelodicDelaySamples = 0;
+  lastPercussionDelaySamples = 0;
+  lastGuideDelaySamples = 0;
 }
 
 void StemMixEngine::setPitchSemiTones(int semitones) {
   if (pitchSemiTones == semitones)
     return;
   pitchSemiTones = semitones;
-  pitchShift.setPitchSemiTones(semitones);
-  lastLatencySamples = 0;
+  pitchShiftMelodic.setPitchSemiTones(semitones);
+  // Keep stem groups sample-aligned after abrupt key changes by flushing
+  // all time processors and delay lines in this engine.
+  reset();
 }
 
 void StemMixEngine::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.5, 2.0, ratio);
+  const double normalized = juce::jlimit(0.75, 2.0, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
   tempoRatio = normalized;
-  pitchShift.setTempoRatio(tempoRatio);
-  lastLatencySamples = 0;
+  pitchShiftMelodic.setTempoRatio(tempoRatio);
+  tempoShiftPercussion.setTempoRatio(tempoRatio);
+  tempoShiftGuide.setTempoRatio(tempoRatio);
+  lastMelodicDelaySamples = -1;
+  lastPercussionDelaySamples = -1;
+  lastGuideDelaySamples = -1;
 }
 
 void StemMixEngine::ensureBuffers(int numChannels, int numSamples) {
@@ -130,13 +158,30 @@ void StemMixEngine::applyFade(juce::AudioBuffer<float> &buffer, float start,
   }
 }
 
-void StemMixEngine::updateLatencyDelays(int latencySamples) {
-  const int clamped = juce::jmax(0, latencySamples);
-  if (clamped == lastLatencySamples)
-    return;
-  lastLatencySamples = clamped;
-  pitchDelayPercussion.setDelay(clamped);
-  pitchDelayGuide.setDelay(clamped);
+void StemMixEngine::updateLatencyDelays(int melodicLatency, int percussionLatency,
+                                        int dryLatency) {
+  const int clampedMelodic = juce::jmax(0, melodicLatency);
+  const int clampedPercussion = juce::jmax(0, percussionLatency);
+  const int clampedDry = juce::jmax(0, dryLatency);
+  const int maxLatency =
+      juce::jmax(clampedMelodic, juce::jmax(clampedPercussion, clampedDry));
+
+  const int melodicDelay = maxLatency - clampedMelodic;
+  const int percussionDelay = maxLatency - clampedPercussion;
+  const int dryDelay = maxLatency - clampedDry;
+
+  if (melodicDelay != lastMelodicDelaySamples) {
+    pitchDelayMelodic.setDelay(melodicDelay);
+    lastMelodicDelaySamples = melodicDelay;
+  }
+  if (percussionDelay != lastPercussionDelaySamples) {
+    pitchDelayPercussion.setDelay(percussionDelay);
+    lastPercussionDelaySamples = percussionDelay;
+  }
+  if (dryDelay != lastGuideDelaySamples) {
+    pitchDelayGuide.setDelay(dryDelay);
+    lastGuideDelaySamples = dryDelay;
+  }
 }
 
 void StemMixEngine::mixStems(
@@ -182,14 +227,49 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
   applyFade(percussionBuffer, instrumentFadeStart, instrumentFadeEnd);
 
   if (timeProcessActive) {
-    if (!pitchShift.isPrepared() || pitchShift.getNumChannels() != numChannels)
-      pitchShift.prepare(currentSampleRate, currentBlockSize, numChannels);
-    pitchShift.process(stemMixBuffer);
-    updateLatencyDelays(pitchShift.getLatencySamples());
+    const bool tempoActive = !juce::approximatelyEqual(tempoRatio, 1.0);
+
+    if (!pitchShiftMelodic.isPrepared() ||
+        pitchShiftMelodic.getNumChannels() != numChannels) {
+      pitchShiftMelodic.prepare(currentSampleRate, currentBlockSize,
+                                numChannels);
+      pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
+      pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
+      pitchShiftMelodic.setTempoRatio(tempoRatio);
+    }
+    if (!tempoShiftPercussion.isPrepared() ||
+        tempoShiftPercussion.getNumChannels() != numChannels) {
+      tempoShiftPercussion.prepare(currentSampleRate, currentBlockSize,
+                                   numChannels);
+      tempoShiftPercussion.setContentType(
+          PitchShiftProcessor::ContentType::Percussive);
+      tempoShiftPercussion.setPitchSemiTones(0);
+      tempoShiftPercussion.setTempoRatio(tempoRatio);
+    }
+    if (!tempoShiftGuide.isPrepared() ||
+        tempoShiftGuide.getNumChannels() != numChannels) {
+      tempoShiftGuide.prepare(currentSampleRate, currentBlockSize, numChannels);
+      tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
+      tempoShiftGuide.setPitchSemiTones(0);
+      tempoShiftGuide.setTempoRatio(tempoRatio);
+    }
+
+    pitchShiftMelodic.process(stemMixBuffer);
+    if (tempoActive) {
+      tempoShiftPercussion.process(percussionBuffer);
+      tempoShiftGuide.process(dryBuffer);
+    }
+
+    const int melodicLatency = pitchShiftMelodic.getLatencySamples();
+    const int percussionLatency =
+        tempoActive ? tempoShiftPercussion.getLatencySamples() : 0;
+    const int dryLatency = tempoActive ? tempoShiftGuide.getLatencySamples() : 0;
+    updateLatencyDelays(melodicLatency, percussionLatency, dryLatency);
+    pitchDelayMelodic.process(stemMixBuffer);
     pitchDelayPercussion.process(percussionBuffer);
     pitchDelayGuide.process(dryBuffer);
   } else {
-    updateLatencyDelays(0);
+    updateLatencyDelays(0, 0, 0);
   }
 
   output.clear();

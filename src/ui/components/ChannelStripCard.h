@@ -52,6 +52,7 @@ public:
   ~ChannelStripCard() override;
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
 
   const juce::String &getChannelName() const;
@@ -78,13 +79,28 @@ public:
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
   void setOnPowerToggled(std::function<void(bool)> cb);
-  void setMidiLearnTargetIds(int volumeTargetId, int muteTargetId);
+  void setMidiLearnTargetIds(int volumeTargetId, int gainTargetId,
+                             int muteTargetId, int soloTargetId,
+                             int powerTargetId);
   void setMidiLearnSelectable(bool selectable);
-  void setMidiLearnPending(bool pending);
+  void setMidiLearnPendingTarget(int targetId);
+  void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   bool hasMidiLearnTarget(int targetId) const;
+  bool hasAnyMidiLearnTarget() const;
 
 private:
+  class LearnAwareSlider final : public juce::Slider {
+  public:
+    std::function<void()> onPointerDown;
+
+    void mouseDown(const juce::MouseEvent &event) override {
+      juce::Slider::mouseDown(event);
+      if (onPointerDown)
+        onPointerDown();
+    }
+  };
+
   Layout baseLayout;
   Layout layout;
   float layoutScale = 1.0f;
@@ -94,8 +110,8 @@ private:
   juce::Label volLabel;
   juce::Label gainLabel;
 
-  juce::Slider volSlider;
-  juce::Slider gainKnob;
+  LearnAwareSlider volSlider;
+  LearnAwareSlider gainKnob;
   PowerButton powerButton;
   StereoVUMeter meter;
   juce::TextButton soloButton;
@@ -114,9 +130,14 @@ private:
   bool powerVisible = false;
   bool muteAlignedToFader = false;
   bool midiLearnSelectable = false;
-  bool midiLearnPending = false;
+  int midiLearnPendingTargetId = -1;
   int midiVolumeTargetId = -1;
+  int midiGainTargetId = -1;
   int midiMuteTargetId = -1;
+  int midiSoloTargetId = -1;
+  int midiPowerTargetId = -1;
+  bool suppressVolumeCallback = false;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(int)> onMidiLearnTargetSelected;
 
   void timerCallback() override;
