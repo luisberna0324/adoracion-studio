@@ -45,28 +45,22 @@ void NotePadButton::paint(juce::Graphics& g) {
         const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
         const bool assigned =
             midiLearnPending && midiLearnAssignedLabel.trim().isNotEmpty();
-        const float pendingBlink = assigned
-                                       ? 1.0f
-                                       : (midiLearnPending ? midiLearnBlinkStrength()
-                                                          : midiLearnSoftBlinkStrength());
+        const float pendingBlink =
+            midiLearnPending ? midiLearnBlinkStrength()
+                            : midiLearnSoftBlinkStrength();
         const auto frameColour =
             assigned ? selectableColour
                      : (midiLearnPending ? pendingColour : selectableColour);
-        g.setColour(frameColour.withAlpha(assigned
-                                              ? 0.22f
-                                              : (midiLearnPending
-                                                     ? (0.20f + (0.16f * pendingBlink))
-                                                     : (0.13f + (0.06f * pendingBlink)))));
+        g.setColour(frameColour.withAlpha(
+            midiLearnPending ? (0.20f + (0.16f * pendingBlink))
+                            : (0.13f + (0.06f * pendingBlink))));
         g.fillRoundedRectangle(bounds.reduced(1.0f), radius - 1.0f);
-        g.setColour(frameColour.withAlpha(assigned
-                                              ? 0.88f
-                                              : (midiLearnPending
-                                                     ? (0.52f + (0.43f * pendingBlink))
-                                                     : (0.50f + (0.20f * pendingBlink)))));
+        g.setColour(frameColour.withAlpha(
+            midiLearnPending ? (0.52f + (0.43f * pendingBlink))
+                            : (0.50f + (0.20f * pendingBlink))));
         g.drawRoundedRectangle(bounds.reduced(1.0f), radius - 1.0f,
-                               assigned ? 1.9f
-                                        : (midiLearnPending ? (1.5f + (0.9f * pendingBlink))
-                                                           : (1.0f + (0.35f * pendingBlink))));
+                               midiLearnPending ? (1.5f + (0.9f * pendingBlink))
+                                              : (1.0f + (0.35f * pendingBlink)));
     }
 
     g.setColour(active ? UITheme::onAccent : UITheme::textPrimary);

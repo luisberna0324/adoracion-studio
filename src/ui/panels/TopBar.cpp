@@ -261,31 +261,13 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     if (midiLearnActive)
       armLearnTarget(processor.midiTargetTransportFadeToggle);
   };
-  metroToggleButton.onPointerDown = [this, armLearnTarget] {
-    if (midiLearnActive)
-      armLearnTarget(processor.midiTargetMetronomeEnabled);
-  };
-  windowModeButton.onPointerDown = [this, armLearnTarget] {
-    if (midiLearnActive)
-      armLearnTarget(processor.midiTargetUiWindowModeToggle);
-  };
-  settingsButton.onPointerDown = [this, armLearnTarget] {
-    if (midiLearnActive)
-      armLearnTarget(processor.midiTargetUiSettingsToggle);
-  };
 
   timeDisplay.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      armLearnTarget(processor.midiTargetUiSongWindowPopover);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     showSongWindowPopover();
   };
   keyDisplay.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      armLearnTarget(processor.midiTargetUiKeyPopover);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     showKeyPopover();
   };
 
@@ -355,17 +337,11 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     refreshFromProviders();
   };
   windowModeButton.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      armLearnTarget(processor.midiTargetUiWindowModeToggle);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     toggleWindowMode();
   };
   settingsButton.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      armLearnTarget(processor.midiTargetUiSettingsToggle);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     openSettingsPanel();
   };
   midiLearnButton.setClickingTogglesState(true);
@@ -378,19 +354,11 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     repaint();
   };
   bpmSegmentButton.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      armLearnTarget(processor.midiTargetUiMetronomePopover);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     showMetronomePopover();
   };
   metroToggleButton.onClick = [this, armLearnTarget] {
-    if (midiLearnActive) {
-      metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
-                                       juce::dontSendNotification);
-      armLearnTarget(processor.midiTargetMetronomeEnabled);
-      return;
-    }
+    juce::ignoreUnused(armLearnTarget);
     processor.setMetronomeEnabled(metroToggleButton.getToggleState());
   };
   startTimerHz(20);
@@ -523,25 +491,19 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
               ? midiLearnBindingLabelProvider(targetId).trim()
               : juce::String{};
       const bool assigned = pending && label.isNotEmpty();
-      const float blink = assigned ? 1.0f
-                                   : (pending ? midiLearnBlinkStrength()
-                                              : midiLearnSoftBlinkStrength());
+      const float blink = pending ? midiLearnBlinkStrength()
+                                  : midiLearnSoftBlinkStrength();
       const auto frameColour = assigned ? selectableColour
                                         : (pending ? pendingColour
                                                    : selectableColour);
-      g.setColour(frameColour.withAlpha(assigned
-                                            ? 0.22f
-                                            : (pending ? (0.20f + (0.16f * blink))
-                                                       : (0.14f + (0.06f * blink)))));
+      g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
+                                                : (0.14f + (0.06f * blink))));
       g.fillRoundedRectangle(frameBounds, 7.0f);
-      g.setColour(frameColour.withAlpha(assigned
-                                            ? 0.88f
-                                            : (pending ? (0.54f + (0.40f * blink))
-                                                       : (0.52f + (0.20f * blink)))));
+      g.setColour(frameColour.withAlpha(pending ? (0.54f + (0.40f * blink))
+                                                : (0.52f + (0.20f * blink))));
       g.drawRoundedRectangle(frameBounds, 7.0f,
-                             assigned ? 1.9f
-                                      : (pending ? (1.5f + (0.9f * blink))
-                                                 : (1.0f + (0.35f * blink))));
+                             pending ? (1.5f + (0.9f * blink))
+                                     : (1.0f + (0.35f * blink)));
 
       if (!assigned)
         return;
@@ -571,13 +533,6 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
     drawLearnFrame(seekForwardButton, processor.midiTargetTransportSeekForward);
     drawLearnFrame(nextButton, processor.midiTargetTransportNextSong);
     drawLearnFrame(fadeButton, processor.midiTargetTransportFadeToggle);
-    drawLearnFrame(metroToggleButton, processor.midiTargetMetronomeEnabled);
-    drawLearnFrame(windowModeButton, processor.midiTargetUiWindowModeToggle);
-    drawLearnFrame(settingsButton, processor.midiTargetUiSettingsToggle);
-    drawLearnFrame(timeDisplay, processor.midiTargetUiSongWindowPopover);
-    drawLearnFrame(keyDisplay, processor.midiTargetUiKeyPopover);
-    if (bpmSegmentButton.isVisible())
-      drawLearnFrame(bpmSegmentButton, processor.midiTargetUiMetronomePopover);
 
   }
 }

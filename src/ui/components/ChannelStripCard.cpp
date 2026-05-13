@@ -155,85 +155,72 @@ void ChannelStripCard::paint(juce::Graphics &g) {
       9.5f, 12.0f, static_cast<float>(layout.channelBandHeight) * 0.70f);
   g.setFont(juce::FontOptions(bandFontSize).withStyle("Bold").withKerningFactor(0.05f));
   g.drawFittedText(name, band.toNearestInt(), juce::Justification::centred, 1);
+}
 
-  if (midiLearnSelectable) {
-    const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
-    const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
-    auto drawLearnState = [this, &g, selectableColour,
-                           pendingColour](juce::Rectangle<float> area,
-                                          const int targetId) {
-      if (targetId < 0 || area.getWidth() <= 2.0f || area.getHeight() <= 2.0f)
-        return;
+void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
+  if (!midiLearnSelectable)
+    return;
 
-      const bool pending = (midiLearnPendingTargetId == targetId);
-      const auto label = (pending && midiLearnBindingLabelProvider != nullptr)
-                             ? midiLearnBindingLabelProvider(targetId).trim()
-                             : juce::String{};
-      const bool assigned = pending && label.isNotEmpty();
-      const float blink = assigned
-                              ? 1.0f
-                              : (pending ? midiLearnBlinkStrength()
-                                         : midiLearnSoftBlinkStrength());
-      const auto colour =
-          assigned ? selectableColour
-                   : (pending ? pendingColour : selectableColour);
-      auto overlay = area.reduced(1.0f);
-      const float radius = juce::jlimit(4.0f, 7.5f,
-                                        juce::jmin(overlay.getWidth(),
-                                                   overlay.getHeight()) *
-                                            0.18f);
+  const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+  const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+  auto drawLearnState = [this, &g, selectableColour,
+                         pendingColour](juce::Rectangle<float> area,
+                                        const int targetId) {
+    if (targetId < 0 || area.getWidth() <= 2.0f || area.getHeight() <= 2.0f)
+      return;
 
-      g.setColour(colour.withAlpha(assigned ? 0.22f
-                                            : (pending ? (0.20f + (0.16f * blink))
-                                                       : (0.13f + (0.06f * blink)))));
-      g.fillRoundedRectangle(overlay, radius);
-      g.setColour(colour.withAlpha(assigned ? 0.88f
-                                            : (pending ? (0.54f + (0.40f * blink))
-                                                       : (0.52f + (0.20f * blink)))));
-      g.drawRoundedRectangle(overlay, radius,
-                             assigned ? 1.9f
-                                      : (pending ? (1.5f + (0.9f * blink))
-                                                 : (1.0f + (0.35f * blink))));
+    const bool pending = (midiLearnPendingTargetId == targetId);
+    const juce::String label =
+        (pending && midiLearnBindingLabelProvider != nullptr)
+            ? midiLearnBindingLabelProvider(targetId).trim()
+            : juce::String{};
+    const bool assigned = pending && label.isNotEmpty();
+    const float blink = pending ? midiLearnBlinkStrength()
+                                : midiLearnSoftBlinkStrength();
+    const auto frameColour = assigned ? selectableColour
+                                      : (pending ? pendingColour
+                                                 : selectableColour);
+    const auto frameBounds = area.reduced(1.0f);
+    g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
+                                              : (0.14f + (0.06f * blink))));
+    g.fillRoundedRectangle(frameBounds, 7.0f);
+    g.setColour(frameColour.withAlpha(pending ? (0.54f + (0.40f * blink))
+                                              : (0.52f + (0.20f * blink))));
+    g.drawRoundedRectangle(frameBounds, 7.0f,
+                           pending ? (1.5f + (0.9f * blink))
+                                   : (1.0f + (0.35f * blink)));
 
-      if (!assigned)
-        return;
+    if (!assigned)
+      return;
 
-      const juce::Font labelFont(
-          juce::FontOptions(10.5f).withStyle("Bold").withKerningFactor(0.03f));
-      const auto labelArea = overlay.reduced(4.0f, 4.0f);
-      const float textWidth =
-          static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
-      const float pillW = juce::jlimit(20.0f, labelArea.getWidth(),
-                                       textWidth + 12.0f);
-      const float pillH = juce::jlimit(12.0f, labelArea.getHeight(), 16.0f);
-      const auto pill = juce::Rectangle<float>(pillW, pillH)
-                            .withCentre(labelArea.getCentre());
-      g.setColour(juce::Colours::black.withAlpha(0.58f));
-      g.fillRoundedRectangle(pill, pillH * 0.45f);
-      g.setColour(selectableColour.withAlpha(0.90f));
-      g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
-      g.setColour(UITheme::textPrimary);
-      g.setFont(labelFont);
-      g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred,
-                       1);
-    };
+    const juce::Font labelFont(
+        juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
+    const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
+    const float textWidth =
+        static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
+    const float pillW =
+        juce::jlimit(22.0f, textBounds.getWidth(), textWidth + 14.0f);
+    const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
+    auto pill = juce::Rectangle<float>(pillW, pillH).withCentre(textBounds.getCentre());
+    g.setColour(juce::Colours::black.withAlpha(0.56f));
+    g.fillRoundedRectangle(pill, pillH * 0.45f);
+    g.setColour(selectableColour.withAlpha(0.90f));
+    g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
+    g.setColour(UITheme::textPrimary);
+    g.setFont(labelFont);
+    g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred, 1);
+  };
 
-    if (midiVolumeTargetId >= 0) {
-      drawLearnState(volSlider.getBounds().toFloat(), midiVolumeTargetId);
-    }
-    if (midiGainTargetId >= 0 && gainKnob.isVisible()) {
-      drawLearnState(gainKnob.getBounds().toFloat(), midiGainTargetId);
-    }
-    if (midiMuteTargetId >= 0 && muteButton.isVisible()) {
-      drawLearnState(muteButton.getBounds().toFloat(), midiMuteTargetId);
-    }
-    if (midiSoloTargetId >= 0 && soloButton.isVisible()) {
-      drawLearnState(soloButton.getBounds().toFloat(), midiSoloTargetId);
-    }
-    if (midiPowerTargetId >= 0 && powerButton.isVisible()) {
-      drawLearnState(powerButton.getBounds().toFloat(), midiPowerTargetId);
-    }
-  }
+  if (midiVolumeTargetId >= 0)
+    drawLearnState(volSlider.getBounds().toFloat(), midiVolumeTargetId);
+  if (midiGainTargetId >= 0 && gainKnob.isVisible())
+    drawLearnState(gainKnob.getBounds().toFloat(), midiGainTargetId);
+  if (midiMuteTargetId >= 0 && muteButton.isVisible())
+    drawLearnState(muteButton.getBounds().toFloat(), midiMuteTargetId);
+  if (midiSoloTargetId >= 0 && soloButton.isVisible())
+    drawLearnState(soloButton.getBounds().toFloat(), midiSoloTargetId);
+  if (midiPowerTargetId >= 0 && powerButton.isVisible())
+    drawLearnState(powerButton.getBounds().toFloat(), midiPowerTargetId);
 }
 
 void ChannelStripCard::resized() {

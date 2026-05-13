@@ -1054,20 +1054,12 @@ bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
   case midiTargetMasterMute:
   case midiTargetTransportPlayPause:
   case midiTargetTransportStop:
-  case midiTargetMetronomeEnabled:
-  case midiTargetMetronomeVolume:
-  case midiTargetMetronomeMute:
   case midiTargetTransportPrevSong:
   case midiTargetTransportSeekBack:
   case midiTargetTransportSeekForward:
   case midiTargetTransportNextSong:
   case midiTargetTransportFadeToggle:
   case midiTargetMasterGain:
-  case midiTargetUiWindowModeToggle:
-  case midiTargetUiSettingsToggle:
-  case midiTargetUiSongWindowPopover:
-  case midiTargetUiKeyPopover:
-  case midiTargetUiMetronomePopover:
   case midiTargetSongStartMinus:
   case midiTargetSongStartPlus:
   case midiTargetPadsPower:
@@ -1081,12 +1073,11 @@ bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
   case midiTargetTempoUp:
   case midiTargetPitchDown:
   case midiTargetPitchUp:
-  case midiTargetMetronomeGain:
+  case midiTargetMetronomeMute:
   case midiTargetMetronomeSolo:
   case midiTargetMixerNudgeUp:
   case midiTargetMixerNudgeDown:
   case midiTargetMixerApplyRouting:
-  case midiTargetWaveformEditToggle:
     return true;
   default:
     return false;
@@ -1180,8 +1171,6 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
     return "Mixer Nudge Down";
   case midiTargetMixerApplyRouting:
     return "Mixer Apply Routing";
-  case midiTargetWaveformEditToggle:
-    return "Waveform Edit Toggle";
   case midiTargetPadsPower:
     return "Pads Power";
   case midiTargetPadsVolume:
@@ -1232,9 +1221,6 @@ MTControlsAudioProcessor::getMidiTargets() const {
   addTarget(midiTargetMasterVolume);
   addTarget(midiTargetMasterGain);
   addTarget(midiTargetMasterMute);
-  addTarget(midiTargetMetronomeEnabled);
-  addTarget(midiTargetMetronomeVolume);
-  addTarget(midiTargetMetronomeGain);
   addTarget(midiTargetMetronomeMute);
   addTarget(midiTargetMetronomeSolo);
 
@@ -1256,12 +1242,6 @@ MTControlsAudioProcessor::getMidiTargets() const {
   addTarget(midiTargetSongFadeMinus);
   addTarget(midiTargetSongFadePlus);
 
-  addTarget(midiTargetUiWindowModeToggle);
-  addTarget(midiTargetUiSettingsToggle);
-  addTarget(midiTargetUiSongWindowPopover);
-  addTarget(midiTargetUiKeyPopover);
-  addTarget(midiTargetUiMetronomePopover);
-  addTarget(midiTargetWaveformEditToggle);
   addTarget(midiTargetMixerNudgeUp);
   addTarget(midiTargetMixerNudgeDown);
   addTarget(midiTargetMixerApplyRouting);
@@ -1373,6 +1353,9 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
 void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
                                                      const int ccValue,
                                                      const MidiBindingMode mode) {
+  if (!isMidiTargetValid(targetId))
+    return;
+
   const float normalized =
       juce::jlimit(0.0f, 1.0f, static_cast<float>(ccValue) / 127.0f);
   const bool high = ccValue >= 64;
@@ -1386,14 +1369,6 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   }
   if (targetId == midiTargetMasterGain) {
     setMasterGain(normalized * 2.0f);
-    return;
-  }
-  if (targetId == midiTargetMetronomeVolume) {
-    setMetronomeVolume(normalized);
-    return;
-  }
-  if (targetId == midiTargetMetronomeGain) {
-    setMetronomeGain(normalized * 2.0f);
     return;
   }
   if (targetId == midiTargetPadsVolume) {
@@ -1434,8 +1409,6 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   if (mode == MidiBindingMode::Momentary) {
     if (targetId == midiTargetMasterMute)
       setMasterMute(high);
-    else if (targetId == midiTargetMetronomeEnabled)
-      setMetronomeEnabled(high);
     else if (targetId == midiTargetMetronomeMute)
       setMetronomeMuted(high);
     else if (targetId == midiTargetMetronomeSolo)
@@ -1458,24 +1431,12 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
       queueUiCommand(midiUiCommandPrevSong);
     else if (targetId == midiTargetTransportNextSong && high)
       queueUiCommand(midiUiCommandNextSong);
-    else if (targetId == midiTargetUiWindowModeToggle && high)
-      queueUiCommand(midiUiCommandToggleWindowMode);
-    else if (targetId == midiTargetUiSettingsToggle && high)
-      queueUiCommand(midiUiCommandToggleSettings);
-    else if (targetId == midiTargetUiSongWindowPopover && high)
-      queueUiCommand(midiUiCommandShowSongWindowPopover);
-    else if (targetId == midiTargetUiKeyPopover && high)
-      queueUiCommand(midiUiCommandShowKeyPopover);
-    else if (targetId == midiTargetUiMetronomePopover && high)
-      queueUiCommand(midiUiCommandShowMetronomePopover);
     else if (targetId == midiTargetMixerNudgeUp && high)
       queueUiCommand(midiUiCommandMixerNudgeUp);
     else if (targetId == midiTargetMixerNudgeDown && high)
       queueUiCommand(midiUiCommandMixerNudgeDown);
     else if (targetId == midiTargetMixerApplyRouting && high)
       queueUiCommand(midiUiCommandMixerApplyRouting);
-    else if (targetId == midiTargetWaveformEditToggle && high)
-      queueUiCommand(midiUiCommandWaveformEditToggle);
     else if (targetId == midiTargetSongStartMinus && high)
       setSongStartSeconds(getSongStartSeconds() - 1.0);
     else if (targetId == midiTargetSongStartPlus && high)
@@ -1501,8 +1462,6 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
 
   if (targetId == midiTargetMasterMute)
     setMasterMute(!isMasterMuted());
-  else if (targetId == midiTargetMetronomeEnabled)
-    setMetronomeEnabled(!isMetronomeEnabled());
   else if (targetId == midiTargetMetronomeMute)
     setMetronomeMuted(!isMetronomeMuted());
   else if (targetId == midiTargetMetronomeSolo)
@@ -1532,24 +1491,12 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
     queueUiCommand(midiUiCommandPrevSong);
   } else if (targetId == midiTargetTransportNextSong) {
     queueUiCommand(midiUiCommandNextSong);
-  } else if (targetId == midiTargetUiWindowModeToggle) {
-    queueUiCommand(midiUiCommandToggleWindowMode);
-  } else if (targetId == midiTargetUiSettingsToggle) {
-    queueUiCommand(midiUiCommandToggleSettings);
-  } else if (targetId == midiTargetUiSongWindowPopover) {
-    queueUiCommand(midiUiCommandShowSongWindowPopover);
-  } else if (targetId == midiTargetUiKeyPopover) {
-    queueUiCommand(midiUiCommandShowKeyPopover);
-  } else if (targetId == midiTargetUiMetronomePopover) {
-    queueUiCommand(midiUiCommandShowMetronomePopover);
   } else if (targetId == midiTargetMixerNudgeUp) {
     queueUiCommand(midiUiCommandMixerNudgeUp);
   } else if (targetId == midiTargetMixerNudgeDown) {
     queueUiCommand(midiUiCommandMixerNudgeDown);
   } else if (targetId == midiTargetMixerApplyRouting) {
     queueUiCommand(midiUiCommandMixerApplyRouting);
-  } else if (targetId == midiTargetWaveformEditToggle) {
-    queueUiCommand(midiUiCommandWaveformEditToggle);
   } else if (targetId == midiTargetSongStartMinus) {
     setSongStartSeconds(getSongStartSeconds() - 1.0);
   } else if (targetId == midiTargetSongStartPlus) {

@@ -139,26 +139,19 @@ void PadsComponent::paint(juce::Graphics& g) {
                                        ? midiLearnBindingLabelProvider(processor.midiTargetPadsPower).trim()
                                        : juce::String{};
         const bool assigned = powerPending && label.isNotEmpty();
-        const float blink = assigned
-                                ? 1.0f
-                                : (powerPending ? midiLearnBlinkStrength()
-                                                : midiLearnSoftBlinkStrength());
+        const float blink = powerPending ? midiLearnBlinkStrength()
+                                         : midiLearnSoftBlinkStrength();
         const auto frameColour =
             assigned ? selectableColour
                      : (powerPending ? pendingColour : selectableColour);
-        g.setColour(frameColour.withAlpha(assigned
-                                              ? 0.22f
-                                              : (powerPending ? (0.20f + (0.16f * blink))
-                                                              : (0.13f + (0.06f * blink)))));
+        g.setColour(frameColour.withAlpha(powerPending ? (0.20f + (0.16f * blink))
+                                                       : (0.13f + (0.06f * blink))));
         g.fillRoundedRectangle(powerFrame, 7.0f);
-        g.setColour(frameColour.withAlpha(assigned
-                                              ? 0.88f
-                                              : (powerPending ? (0.54f + (0.40f * blink))
-                                                              : (0.52f + (0.20f * blink)))));
+        g.setColour(frameColour.withAlpha(powerPending ? (0.54f + (0.40f * blink))
+                                                       : (0.52f + (0.20f * blink))));
         g.drawRoundedRectangle(powerFrame, 7.0f,
-                               assigned ? 1.9f
-                                        : (powerPending ? (1.5f + (0.9f * blink))
-                                                        : (1.0f + (0.35f * blink))));
+                               powerPending ? (1.5f + (0.9f * blink))
+                                            : (1.0f + (0.35f * blink)));
 
         if (assigned) {
             const juce::Font labelFont(

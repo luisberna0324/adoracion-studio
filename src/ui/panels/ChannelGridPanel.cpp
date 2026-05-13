@@ -780,24 +780,17 @@ void ChannelGridPanel::paintOverChildren(juce::Graphics &g) {
             : juce::String{};
     const bool assigned = pending && label.isNotEmpty();
     const float blink =
-        assigned
-            ? 1.0f
-            : (pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength());
+        pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength();
     const auto frameColour =
         assigned ? selectableColour : (pending ? pendingColour : selectableColour);
-    g.setColour(frameColour.withAlpha(assigned
-                                          ? 0.22f
-                                          : (pending ? (0.20f + (0.16f * blink))
-                                                     : (0.14f + (0.06f * blink)))));
+    g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
+                                              : (0.14f + (0.06f * blink))));
     g.fillRoundedRectangle(frameBounds, 7.0f);
-    g.setColour(frameColour.withAlpha(assigned
-                                          ? 0.88f
-                                          : (pending ? (0.54f + (0.40f * blink))
-                                                     : (0.52f + (0.20f * blink)))));
+    g.setColour(frameColour.withAlpha(pending ? (0.54f + (0.40f * blink))
+                                              : (0.52f + (0.20f * blink))));
     g.drawRoundedRectangle(frameBounds, 7.0f,
-                           assigned ? 1.9f
-                                    : (pending ? (1.5f + (0.9f * blink))
-                                               : (1.0f + (0.35f * blink))));
+                           pending ? (1.5f + (0.9f * blink))
+                                   : (1.0f + (0.35f * blink)));
 
     if (!assigned)
       return;
@@ -968,10 +961,8 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setOnSoloChanged([this](bool soloed) {
     processor.setMetronomeSolo(soloed);
   });
-  strip.setMidiLearnTargetIds(
-      processor.midiTargetMetronomeVolume, processor.midiTargetMetronomeGain,
-      processor.midiTargetMetronomeMute, processor.midiTargetMetronomeSolo,
-      -1);
+  strip.setMidiLearnTargetIds(-1, -1, processor.midiTargetMetronomeMute,
+                              processor.midiTargetMetronomeSolo, -1);
   strip.setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
   strip.setOnMidiLearnTargetSelected([this](const int targetId) {
     if (onMidiLearnTargetSelected)
