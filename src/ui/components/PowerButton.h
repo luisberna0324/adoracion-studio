@@ -4,7 +4,7 @@
 #include <JuceHeader.h>
 #include <functional>
 
-class PowerButton : public juce::Component {
+class PowerButton : public juce::Component, public juce::SettableTooltipClient {
 public:
     PowerButton();
 

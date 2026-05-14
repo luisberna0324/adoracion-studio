@@ -153,7 +153,6 @@ private:
     juce::Point<float> mouseDownPosition;
     bool dragCandidate = false;
     bool isDragging = false;
-    bool didDragSinceMouseDown = false;
     int dragSourceIndex = -1;
     int dragInsertionIndex = -1;
     int pendingActionsMenuRow = -1;

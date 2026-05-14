@@ -13,7 +13,6 @@
 #include "ui/components/PadsHandlePanel.h"
 #include "ui/components/ReauthPromptModal.h"
 #include "ui/components/SetlistHandlePanel.h"
-#include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/components/WelcomeModal.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
@@ -23,7 +22,17 @@
 #include "ui/panels/WaveformBar.h"
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <thread>
+
+#if JUCE_WINDOWS
+#include <windows.h>
+#include <psapi.h>
+#elif JUCE_MAC || JUCE_IOS
+#include <mach/mach.h>
+#elif JUCE_LINUX || JUCE_BSD
+#include <unistd.h>
+#endif
 
 using namespace PluginEditorSupport;
 
@@ -55,6 +64,41 @@ void ensureStandaloneMidiInputsEnabled(juce::AudioDeviceManager &manager) {
 bool nearlyEqualSongWindowValue(const double a, const double b) {
   return std::abs(a - b) <= 0.001;
 }
+
+double getCurrentProcessMemoryUsageMb() noexcept {
+#if JUCE_WINDOWS
+  PROCESS_MEMORY_COUNTERS_EX counters{};
+  if (GetProcessMemoryInfo(
+          GetCurrentProcess(),
+          reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&counters),
+          static_cast<DWORD>(sizeof(counters))) != FALSE) {
+    return static_cast<double>(counters.WorkingSetSize) / (1024.0 * 1024.0);
+  }
+  return 0.0;
+#elif JUCE_MAC || JUCE_IOS
+  mach_task_basic_info info{};
+  mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+  if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                reinterpret_cast<task_info_t>(&info), &count) ==
+      KERN_SUCCESS) {
+    return static_cast<double>(info.resident_size) / (1024.0 * 1024.0);
+  }
+  return 0.0;
+#elif JUCE_LINUX || JUCE_BSD
+  std::ifstream statm("/proc/self/statm");
+  long totalPages = 0;
+  long residentPages = 0;
+  if (statm >> totalPages >> residentPages) {
+    juce::ignoreUnused(totalPages);
+    const auto pageBytes = static_cast<double>(::sysconf(_SC_PAGESIZE));
+    if (pageBytes > 0.0)
+      return (static_cast<double>(residentPages) * pageBytes) / (1024.0 * 1024.0);
+  }
+  return 0.0;
+#else
+  return 0.0;
+#endif
+}
 } // namespace
 
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
@@ -65,6 +109,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
                            SessionAuthLogger::getLogFile().getFullPathName());
   currentThemeId = AppSettings::getThemePresetId();
   applyTheme(static_cast<ThemePreset>(currentThemeId));
+  totalSystemMemoryMb = juce::jmax(1, juce::SystemStats::getMemorySizeInMegabytes());
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
@@ -219,8 +264,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
   }
 
-  if (topBar != nullptr && waveformBar != nullptr && channelGridPanel != nullptr &&
-      songListPanel != nullptr && setlistHandlePanel != nullptr) {
+  if (topBar != nullptr && waveformBar != nullptr &&
+      channelGridPanel != nullptr && songListPanel != nullptr &&
+      setlistHandlePanel != nullptr) {
     topBar->setVisible(true);
     waveformBar->setVisible(true);
     channelGridPanel->setVisible(true);
@@ -253,12 +299,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
     if (!autoSetlistCollapseInitialized) {
-      isSetlistCollapsed =
-          (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact);
+      isSetlistCollapsed = false;
       autoSetlistCollapseInitialized = true;
     }
     mainUiInitialized = true;
     resized();
+    updateSystemUsageMetrics();
     return;
   }
 
@@ -420,11 +466,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   struct SongLoadUiScope {
     bool &busy;
-    SongLoadProgressOverlay *overlay;
+    WaveformBar *waveformBar;
     ~SongLoadUiScope() {
       busy = false;
-      if (overlay != nullptr)
-        overlay->setVisible(false);
+      if (waveformBar != nullptr)
+        waveformBar->clearSongLoadingState();
     }
   };
 
@@ -434,22 +480,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       return false;
     maybePersistSongWindowForActiveSong();
     songLoadBusy = true;
-    SongLoadUiScope loadUiScope{songLoadBusy, songLoadOverlay.get()};
+    SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
     auto pumpUi = [] {
       if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
         mm->runDispatchLoopUntil(14);
     };
 
-    auto pushLoadUi = [this, pumpUi](double overall01, const juce::String &phase) {
-      if (songLoadOverlay == nullptr)
+    auto pushLoadUi = [waveformBarRaw, pumpUi](double overall01,
+                                               const juce::String &phase) {
+      if (waveformBarRaw == nullptr)
         return;
-      songLoadOverlay->setProgress(overall01);
-      songLoadOverlay->setPhaseText(phase);
-      if (!songLoadOverlay->isVisible()) {
-        songLoadOverlay->setVisible(true);
-        songLoadOverlay->toFront(false);
-      }
+      waveformBarRaw->setSongLoadingState(true, overall01, phase);
       pumpUi();
     };
 
@@ -614,10 +656,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   songListRaw->setOnSongActivated(
-      [this, loadSong](const ImportedSongData &song, int songIndex) {
+      [this, loadSong, &p](const ImportedSongData &song, int songIndex) {
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
         deferredStartupSongLoadAtMs = 0;
+        if (p.isSongPlaying())
+          p.stopSong();
         (void)loadSong(song, songIndex);
       });
 
@@ -644,11 +688,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   channelGridRaw->setOnLibrarySongLoadRequested(
-      [this, songListRaw, loadSong](const ImportedSongData &song, int songIndex) {
+      [this, songListRaw, loadSong, &p](const ImportedSongData &song,
+                                        int songIndex) {
         juce::ignoreUnused(songIndex);
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
         deferredStartupSongLoadAtMs = 0;
+        if (p.isSongPlaying())
+          p.stopSong();
         const int setlistIndex =
             songListRaw != nullptr ? songListRaw->getSongIndexById(song.id) : -1;
         const int indexForState = setlistIndex >= 0 ? setlistIndex : -1;
@@ -833,6 +880,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   padsHandlePanel = std::make_unique<PadsHandlePanel>();
   padsHandlePanel->setCollapsed(isPadsCollapsed);
+  padsComponent->setVisible(!isPadsCollapsed);
   padsHandlePanel->onToggle = [this] {
     isPadsCollapsed = !isPadsCollapsed;
     padsHandlePanel->setCollapsed(isPadsCollapsed);
@@ -846,10 +894,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
-
-  songLoadOverlay = std::make_unique<SongLoadProgressOverlay>();
-  addChildComponent(*songLoadOverlay);
-  songLoadOverlay->setVisible(false);
 
   if (reauthPromptModal == nullptr) {
     auto prompt = std::make_unique<ReauthPromptModal>();
@@ -894,8 +938,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   setSize(w, h);
   applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
   if (!autoSetlistCollapseInitialized) {
-    isSetlistCollapsed =
-        (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact);
+    isSetlistCollapsed = false;
     autoSetlistCollapseInitialized = true;
   }
 
@@ -916,6 +959,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   startTimerHz(20);
   mainUiInitialized = true;
   resized();
+  updateSystemUsageMetrics();
 }
 
 void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
@@ -1679,8 +1723,6 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
     refreshTopBarTheme();
   if (songListPanelRaw != nullptr)
     songListPanelRaw->refreshThemeColours();
-  if (songLoadOverlay != nullptr)
-    songLoadOverlay->refreshThemeColours();
   repaint();
 }
 
@@ -1771,6 +1813,38 @@ void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
   trackSongWindow(songId, startSec, endSec, fadeSec);
 }
 
+void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
+  if (!mainUiInitialized)
+    return;
+
+  auto *topBarRaw = dynamic_cast<TopBar *>(topBar.get());
+  if (topBarRaw == nullptr)
+    return;
+
+  const auto audioCtx = getStandaloneAudioContext();
+  double rawAudioCpu01 = 0.0;
+  if (audioCtx.manager != nullptr)
+    rawAudioCpu01 = juce::jlimit(0.0, 1.0, audioCtx.manager->getCpuUsage());
+
+  const double rawProcessMemoryMb = getCurrentProcessMemoryUsageMb();
+  if (smoothedProcessMemoryMb <= 0.0) {
+    smoothedProcessMemoryMb = juce::jmax(0.0, rawProcessMemoryMb);
+  } else if (rawProcessMemoryMb > 0.0) {
+    smoothedProcessMemoryMb +=
+        (rawProcessMemoryMb - smoothedProcessMemoryMb) * 0.14;
+  }
+
+  smoothedAudioCpuUsage01 += (rawAudioCpu01 - smoothedAudioCpuUsage01) * 0.22;
+
+  const int totalMemoryMb = juce::jmax(
+      1, totalSystemMemoryMb > 0 ? totalSystemMemoryMb
+                                 : juce::SystemStats::getMemorySizeInMegabytes());
+  const double memoryUsage01 = juce::jlimit(
+      0.0, 1.0, smoothedProcessMemoryMb / static_cast<double>(totalMemoryMb));
+
+  topBarRaw->setSystemUsage(smoothedAudioCpuUsage01, memoryUsage01);
+}
+
 void MTControlsAudioProcessorEditor::timerCallback() {
   const auto callbackUrl = consumePendingAuthCallbackUrl();
   if (callbackUrl.isNotEmpty()) {
@@ -1829,8 +1903,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   MTControlsAudioProcessor::MidiBinding learnedBinding;
   if (processorRef.consumePendingMidiLearnBinding(learnedBinding)) {
     AppSettings::setMidiBindings(processorRef.getMidiBindings());
-    midiLearnPendingTargetId =
-        midiLearnActive ? learnedBinding.targetId : -1;
+    juce::ignoreUnused(learnedBinding);
+    midiLearnPendingTargetId = -1;
     if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
       bar->setMidiLearnPendingTarget(midiLearnPendingTargetId);
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
@@ -1895,6 +1969,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   maybePersistSongWindowForActiveSong();
+  updateSystemUsageMetrics();
 
   const bool isPlayingNow = processorRef.isSongPlaying();
   const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
@@ -1941,7 +2016,6 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   if (localAuthServer)
     localAuthServer->stop();
   localAuthServer.reset();
-  songLoadOverlay.reset();
   settingsPanelRaw = nullptr;
   loadSongByIndexAction = {};
   songListPanelRaw = nullptr;
@@ -2027,17 +2101,42 @@ void MTControlsAudioProcessorEditor::resized() {
 
   if (padsHandlePanel) {
     int handleH = 16;
-    int padsH = 280;
     int padsW = 584; // base width for standard profile
     if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
       handleH = 14;
-      padsH = 250;
       padsW = 518;
     } else if (responsiveLayoutProfile == ResponsiveLayoutProfile::Large) {
       handleH = 18;
-      padsH = 320;
       padsW = 640;
     }
+
+    const bool compact = responsiveLayoutProfile == ResponsiveLayoutProfile::Compact;
+    const bool large = responsiveLayoutProfile == ResponsiveLayoutProfile::Large;
+    const int boundedPadsW = juce::jmin(padsW, rightChannelsArea.getWidth());
+
+    // Match panel height to real Pads content to avoid excess vertical space.
+    constexpr int kCols = 6;
+    constexpr int kRows = 2;
+    const int basePadSize = compact ? 62 : (large ? 78 : 70);
+    const int gridInset = compact ? 12 : (large ? 18 : 16);
+    const int stripW = compact ? 78 : (large ? 98 : 90);
+    const int stripRightInset = compact ? 6 : 8;
+    const int stripLeftGap = compact ? 8 : (large ? 12 : 10);
+    const int minGapX = compact ? 6 : (large ? 10 : 8);
+    const int targetGapY = compact ? 6 : (large ? 10 : 8);
+    const int bottomRowHeight = compact ? 56 : (large ? 68 : 64);
+    const int bottomRowGap = compact ? 2 : (large ? 4 : 3);
+
+    const int padsUsableWidth = juce::jmax(
+        120, boundedPadsW - (2 * gridInset) - stripRightInset - stripW - stripLeftGap);
+    const int maxPadSizeForWidth = juce::jmax(
+        36, (padsUsableWidth - (minGapX * (kCols - 1))) / kCols);
+    const int padSize = juce::jmin(basePadSize, maxPadSizeForWidth);
+    const int padsGridHeight = (kRows * padSize) + ((kRows - 1) * targetGapY);
+    const int extraContainerAir = compact ? 10 : (large ? 16 : 14);
+    const int padsH = juce::jmax(
+        190, (2 * gridInset) + padsGridHeight + bottomRowGap + bottomRowHeight +
+                 extraContainerAir);
 
     const int totalPadsH = isPadsCollapsed ? handleH : handleH + padsH;
     auto padsBar = rightChannelsArea.removeFromBottom(totalPadsH);
@@ -2046,7 +2145,6 @@ void MTControlsAudioProcessorEditor::resized() {
 
     if (!isPadsCollapsed && padsComponent) {
       padsDrawerBackgroundBounds = padsBar;
-      const int boundedPadsW = juce::jmin(padsW, padsBar.getWidth());
       padsComponent->setBounds(padsBar.withWidth(boundedPadsW));
     }
   }
@@ -2075,11 +2173,6 @@ void MTControlsAudioProcessorEditor::resized() {
     reauthPromptModal->toFront(false);
   }
 
-  if (songLoadOverlay != nullptr) {
-    songLoadOverlay->setBounds(getLocalBounds());
-    if (songLoadOverlay->isVisible())
-      songLoadOverlay->toFront(false);
-  }
 }
 
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
@@ -2087,21 +2180,36 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
     return true;
 
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const auto keyCode = key.getKeyCode();
+  const auto modifiers = key.getModifiers();
+  const bool altDown = modifiers.isAltDown();
 
-  if (key == juce::KeyPress::spaceKey) {
+  if (keyCode == juce::KeyPress::spaceKey) {
+    if (altDown) {
+      processorRef.stopSong();
+      return true;
+    }
     processorRef.toggleSongPlayPause();
     return true;
   }
 
-  if (key == juce::KeyPress::leftKey) {
-    if (prevSongAction)
-      prevSongAction();
+  if (keyCode == juce::KeyPress::leftKey) {
+    if (altDown) {
+      if (prevSongAction)
+        prevSongAction();
+    } else {
+      processorRef.seekSongRelative(-5.0);
+    }
     return true;
   }
 
-  if (key == juce::KeyPress::rightKey) {
-    if (nextSongAction)
-      nextSongAction();
+  if (keyCode == juce::KeyPress::rightKey) {
+    if (altDown) {
+      if (nextSongAction)
+        nextSongAction();
+    } else {
+      processorRef.seekSongRelative(5.0);
+    }
     return true;
   }
 

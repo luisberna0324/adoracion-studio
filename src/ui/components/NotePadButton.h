@@ -4,7 +4,9 @@
 #include <JuceHeader.h>
 #include <functional>
 
-class NotePadButton : public juce::Component, private juce::Timer {
+class NotePadButton : public juce::Component,
+                      public juce::SettableTooltipClient,
+                      private juce::Timer {
 public:
     NotePadButton(const juce::String& noteName, int noteIndex);
 
@@ -40,6 +42,7 @@ private:
 
     void timerCallback() override;
     void updateMidiLearnBlinkTimer();
+    void refreshMidiTooltip();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NotePadButton)
 };

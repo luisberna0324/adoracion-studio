@@ -50,7 +50,6 @@ private:
   MuteProvider isMuted;
 
   float levelL = 0.0f;
-  float currentDb = -100.0f;
   double holdUntilL = 0.0;
 
   void timerCallback() override;

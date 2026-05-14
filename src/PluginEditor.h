@@ -9,7 +9,6 @@
 class TopBar;
 class SetlistHandlePanel;
 class SongListPanel;
-class SongLoadProgressOverlay;
 class PadsComponent;
 class PadsHandlePanel;
 class LocalAuthCallbackServer;
@@ -87,10 +86,9 @@ private:
   bool reauthPromptDismissed = false;
   bool reauthLoginInProgress = false;
   std::unique_ptr<juce::Component> reauthPromptModal;
-  std::unique_ptr<SongLoadProgressOverlay> songLoadOverlay;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
-  bool isPadsCollapsed = true;
+  bool isPadsCollapsed = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
@@ -107,6 +105,9 @@ private:
   double trackedSongWindowEndSec = 0.0;
   double trackedSongWindowFadeSec = 0.0;
   bool hasTrackedSongWindow = false;
+  double smoothedAudioCpuUsage01 = 0.0;
+  double smoothedProcessMemoryMb = 0.0;
+  int totalSystemMemoryMb = 0;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
@@ -122,6 +123,7 @@ private:
   void trackSongWindow(const juce::String &songId, double startSec,
                        double endSec, double fadeSec);
   void maybePersistSongWindowForActiveSong();
+  void updateSystemUsageMetrics();
   void launchExternalLogin();
   void completeBootstrapLogin(const juce::String &callbackUrl);
   void handleLogout();

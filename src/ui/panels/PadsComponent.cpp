@@ -23,6 +23,16 @@ float midiLearnSoftBlinkStrength() {
         0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
     return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
 }
+
+juce::String withMidiAssignmentTooltip(const juce::String& baseText,
+                                       const juce::String& midiCode) {
+    const auto trimmedCode = midiCode.trim();
+    if (trimmedCode.isEmpty())
+        return baseText;
+    if (baseText.trim().isEmpty())
+        return "MIDI: " + trimmedCode;
+    return baseText + " | MIDI: " + trimmedCode;
+}
 } // namespace
 
 PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
@@ -37,6 +47,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     octaveCtrl.setOnOctaveChanged([this](int oct) { currentOctave = oct; });
 
     powerBtn.setOnToggled([this](bool on) { applyPowerState(on); });
+    powerBtn.setTooltip("Pads power");
     addAndMakeVisible(powerBtn);
 
     channelStrip = std::make_unique<ChannelStripCard>(
@@ -72,6 +83,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     lastPackReady = processor.isPadsPackLoaded();
 
     applyPowerState(true);
+    refreshMidiLearnTooltips();
     setWantsKeyboardFocus(true);
     startPadsLoadingAsync();
     startTimerHz(30);
@@ -135,15 +147,9 @@ void PadsComponent::paint(juce::Graphics& g) {
         const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
         auto powerFrame = powerBtn.getBounds().toFloat().reduced(1.0f);
         const bool powerPending = (midiLearnPendingTargetId == processor.midiTargetPadsPower);
-        const juce::String label = (powerPending && midiLearnBindingLabelProvider != nullptr)
-                                       ? midiLearnBindingLabelProvider(processor.midiTargetPadsPower).trim()
-                                       : juce::String{};
-        const bool assigned = powerPending && label.isNotEmpty();
         const float blink = powerPending ? midiLearnBlinkStrength()
                                          : midiLearnSoftBlinkStrength();
-        const auto frameColour =
-            assigned ? selectableColour
-                     : (powerPending ? pendingColour : selectableColour);
+        const auto frameColour = powerPending ? pendingColour : selectableColour;
         g.setColour(frameColour.withAlpha(powerPending ? (0.20f + (0.16f * blink))
                                                        : (0.13f + (0.06f * blink))));
         g.fillRoundedRectangle(powerFrame, 7.0f);
@@ -152,27 +158,6 @@ void PadsComponent::paint(juce::Graphics& g) {
         g.drawRoundedRectangle(powerFrame, 7.0f,
                                powerPending ? (1.5f + (0.9f * blink))
                                             : (1.0f + (0.35f * blink)));
-
-        if (assigned) {
-            const juce::Font labelFont(
-                juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
-            const auto textBounds = powerFrame.reduced(4.0f, 4.0f);
-            const float textWidth =
-                static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
-            const float pillW = juce::jlimit(18.0f, textBounds.getWidth(),
-                                             textWidth + 11.0f);
-            const float pillH = juce::jlimit(11.0f, textBounds.getHeight(), 15.0f);
-            const auto pill = juce::Rectangle<float>(pillW, pillH)
-                                  .withCentre(textBounds.getCentre());
-            g.setColour(juce::Colours::black.withAlpha(0.58f));
-            g.fillRoundedRectangle(pill, pillH * 0.45f);
-            g.setColour(selectableColour.withAlpha(0.90f));
-            g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
-            g.setColour(UITheme::textPrimary);
-            g.setFont(labelFont);
-            g.drawFittedText(label, pill.toNearestInt(),
-                             juce::Justification::centred, 1);
-        }
     }
 }
 
@@ -184,19 +169,18 @@ void PadsComponent::resized() {
     const int stripW = compact ? 78 : (large ? 98 : 90);
     const int stripRightInset = compact ? 6 : 8;
     const int stripLeftGap = compact ? 8 : (large ? 12 : 10);
-    const int stripTop = compact ? 12 : 16;
-    const int stripBottomInset = compact ? 24 : 32;
     const int bottomRowHeight = compact ? 56 : (large ? 68 : 64);
-    const int bottomRowGap = compact ? 8 : 10;
+    const int preferredPadGap = compact ? 8 : (large ? 12 : 10);
+    const int bottomRowGap = preferredPadGap;
     const int powerW = compact ? 58 : 64;
     const int rowGap = compact ? 8 : 10;
-
-    channelStrip->setBounds(getWidth() - stripW - stripRightInset, stripTop,
-                            stripW, juce::jmax(40, getHeight() - stripBottomInset));
     channelStrip->setLayoutScale(compact ? 0.9f : (large ? 1.06f : 1.0f));
 
-    auto gridArea = getLocalBounds().reduced(gridInset);
-    gridArea.removeFromRight(stripW + stripLeftGap);
+    auto contentArea = getLocalBounds().reduced(gridInset);
+    contentArea.removeFromRight(stripRightInset);
+    auto stripArea = contentArea.removeFromRight(stripW);
+    auto gridArea = contentArea;
+    gridArea.removeFromRight(stripLeftGap);
     auto padsArea = gridArea;
     auto bottomRow = padsArea.removeFromBottom(bottomRowHeight);
     padsArea.removeFromBottom(bottomRowGap);
@@ -204,22 +188,24 @@ void PadsComponent::resized() {
     constexpr int kCols = 6;
     constexpr int kRows = 2;
     const int minGapX = compact ? 6 : (large ? 10 : 8);
+    const int maxGapX = compact ? 12 : (large ? 16 : 14);
     const int maxPadSizeForWidth =
         juce::jmax(36, (padsArea.getWidth() - (minGapX * (kCols - 1))) / kCols);
     const int padSize = juce::jmin(basePadSize, maxPadSizeForWidth);
     const int contentW = (kCols * padSize);
     const int contentH = (kRows * padSize);
     const int availableGapX = juce::jmax(0, padsArea.getWidth() - contentW);
-    const int gapX = (kCols > 1) ? (availableGapX / (kCols - 1)) : 0;
+    const int rawGapX = (kCols > 1) ? (availableGapX / (kCols - 1)) : 0;
+    const int gapX = juce::jlimit(minGapX, maxGapX, rawGapX);
 
-    // Keep rows visually tight/symmetric; avoid oversized vertical gaps.
-    const int maxRowGap = compact ? 12 : (large ? 16 : 14);
+    // Keep visual rhythm consistent between horizontal and vertical spacing.
     const int availableGapY = juce::jmax(0, padsArea.getHeight() - contentH);
-    const int gapY = juce::jmin(maxRowGap, availableGapY);
+    const int gapY = juce::jmin(preferredPadGap, availableGapY);
     const int gridW = contentW + ((kCols - 1) * gapX);
+    const int gridH = contentH + ((kRows - 1) * gapY);
     const int startX = padsArea.getX() + juce::jmax(0, (padsArea.getWidth() - gridW) / 2);
-    const int topInset = compact ? 1 : 2;
-    const int startY = padsArea.getY() + topInset;
+    const int startY = padsArea.getY() +
+                       juce::jmax(0, (padsArea.getHeight() - gridH) / 2);
 
     for (int row = 0; row < kRows; ++row) {
         for (int col = 0; col < kCols; ++col) {
@@ -232,6 +218,11 @@ void PadsComponent::resized() {
     powerBtn.setBounds(bottomRow.removeFromLeft(powerW));
     bottomRow.removeFromLeft(rowGap);
     presetCardBounds = bottomRow;
+
+    const int stripTop = juce::jmax(gridArea.getY(), startY - (compact ? 2 : 3));
+    const int stripBottom = juce::jmin(gridArea.getBottom(), presetCardBounds.getBottom());
+    channelStrip->setBounds(stripArea.getX(), stripTop, stripArea.getWidth(),
+                            juce::jmax(40, stripBottom - stripTop));
 }
 
 bool PadsComponent::keyPressed(const juce::KeyPress& key) {
@@ -423,6 +414,7 @@ void PadsComponent::setMidiLearnActive(const bool active) {
     if (channelStrip != nullptr)
         channelStrip->setMidiLearnSelectable(midiLearnActive);
     setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    refreshMidiLearnTooltips();
     repaint();
 }
 
@@ -433,12 +425,13 @@ void PadsComponent::setMidiLearnPendingTarget(const int targetId) {
         const bool pending = (noteTargetId == targetId);
         notePads[static_cast<size_t>(i)]->setMidiLearnPending(pending);
         notePads[static_cast<size_t>(i)]->setMidiLearnAssignedLabel(
-            pending && midiLearnBindingLabelProvider != nullptr
+            midiLearnBindingLabelProvider != nullptr
                 ? midiLearnBindingLabelProvider(noteTargetId).trim()
                 : juce::String{});
     }
     if (channelStrip != nullptr)
         channelStrip->setMidiLearnPendingTarget(targetId);
+    refreshMidiLearnTooltips();
     repaint();
 }
 
@@ -448,8 +441,17 @@ void PadsComponent::setMidiLearnBindingLabelProvider(
     if (channelStrip != nullptr)
         channelStrip->setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
     setMidiLearnPendingTarget(midiLearnPendingTargetId);
+    refreshMidiLearnTooltips();
 }
 
 void PadsComponent::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
     onMidiLearnTargetSelected = std::move(cb);
+}
+
+void PadsComponent::refreshMidiLearnTooltips() {
+    const juce::String midiCode =
+        midiLearnBindingLabelProvider != nullptr
+            ? midiLearnBindingLabelProvider(processor.midiTargetPadsPower).trim()
+            : juce::String{};
+    powerBtn.setTooltip(withMidiAssignmentTooltip("Pads power", midiCode));
 }

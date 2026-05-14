@@ -142,6 +142,7 @@ private:
 
   void timerCallback() override;
   void updateMidiLearnBlinkTimer();
+  void refreshMidiLearnTooltips();
 
   void configureLabel(juce::Label &label, const juce::String &text, float size,
                       float kerning, bool uppercase);

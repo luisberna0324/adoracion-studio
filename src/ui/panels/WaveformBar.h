@@ -50,6 +50,9 @@ public:
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   void triggerEditToggleFromMidi();
   void refreshThemeColours();
+  void setSongLoadingState(bool active, double progress01,
+                           const juce::String &phaseText);
+  void clearSongLoadingState();
 
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
@@ -153,6 +156,11 @@ private:
   int midiLearnPendingTargetId = -1;
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(int)> onMidiLearnTargetSelected;
+  bool songLoadingActive = false;
+  double songLoadingProgress01 = 0.0;
+  juce::String songLoadingPhaseText;
+  double songLoadingShownAtMs = 0.0;
+  double songLoadingHideAfterMs = 0.0;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);

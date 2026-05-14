@@ -226,6 +226,8 @@ target_sources(MTControls
         src/ui/components/MetronomePanel.h
         src/ui/panels/ChannelGridPanel.cpp
         src/ui/panels/ChannelGridPanel.h
+        src/ui/panels/BottomStatusBar.cpp
+        src/ui/panels/BottomStatusBar.h
         src/ui/panels/LibraryCatalogPanel.cpp
         src/ui/panels/LibraryCatalogPanel.h
         src/ui/panels/MixerFaderPanel.cpp

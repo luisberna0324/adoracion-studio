@@ -100,6 +100,18 @@ float midiLearnSoftBlinkStrength() {
       0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
   return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
 }
+
+constexpr const char *kMidiBaseTooltipProperty = "midiBaseTooltip";
+
+juce::String withMidiAssignmentTooltip(const juce::String &baseText,
+                                       const juce::String &midiCode) {
+  const auto trimmedCode = midiCode.trim();
+  if (trimmedCode.isEmpty())
+    return baseText;
+  if (baseText.trim().isEmpty())
+    return "MIDI: " + trimmedCode;
+  return baseText + " | MIDI: " + trimmedCode;
+}
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
@@ -213,14 +225,21 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
+  configureDisplay(systemUsageDisplay, "CPU: 0.0%\nMEM: 0.0%");
+  systemUsageDisplay.setInterceptsMouseClicks(false, false);
+  systemUsageDisplay.setMouseCursor(juce::MouseCursor::NormalCursor);
   activeKeyLabel = L10n::tr("Tono", "Key");
   applyResponsiveTypography();
-  seekBackButton.setTooltip(
-      L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
-  seekForwardButton.setTooltip(
-      L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
-  nextButton.setTooltip(L10n::tr(u8"Siguiente canción", "Next song"));
-  midiLearnButton.setTooltip(L10n::tr("MIDI Learn", "MIDI Learn"));
+  setBaseTooltip(prevButton, L10n::tr(u8"Canción anterior", "Previous song"));
+  setBaseTooltip(
+      seekBackButton, L10n::tr("Retroceder 5 segundos", "Seek back 5 seconds"));
+  setBaseTooltip(playButton, L10n::tr("Reproducir / Pausar", "Play / Pause"));
+  setBaseTooltip(stopButton, L10n::tr("Detener", "Stop"));
+  setBaseTooltip(
+      seekForwardButton, L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
+  setBaseTooltip(nextButton, L10n::tr(u8"Siguiente canción", "Next song"));
+  setBaseTooltip(fadeButton, L10n::tr("Fade out", "Fade out"));
+  setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
   midiLearnButton.setBadgeText({});
   configureMetronomeControls();
 
@@ -361,6 +380,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     juce::ignoreUnused(armLearnTarget);
     processor.setMetronomeEnabled(metroToggleButton.getToggleState());
   };
+  refreshMidiLearnTooltips();
   startTimerHz(20);
 }
 
@@ -412,6 +432,7 @@ void TopBar::setOnMidiLearnTargetSelected(std::function<void(int)> cb) {
 void TopBar::setMidiLearnBindingLabelProvider(
     std::function<juce::String(int)> cb) {
   midiLearnBindingLabelProvider = std::move(cb);
+  refreshMidiLearnTooltips();
   repaint();
 }
 
@@ -420,11 +441,13 @@ void TopBar::setMidiLearnActive(const bool active) {
   if (!midiLearnActive)
     midiLearnPendingTargetId = -1;
   midiLearnButton.setToggleState(midiLearnActive, juce::dontSendNotification);
+  refreshMidiLearnTooltips();
   repaint();
 }
 
 void TopBar::setMidiLearnPendingTarget(const int targetId) {
   midiLearnPendingTargetId = targetId;
+  refreshMidiLearnTooltips();
   repaint();
 }
 
@@ -435,6 +458,52 @@ void TopBar::setResponsiveProfile(const ResponsiveLayoutProfile profile) {
   applyResponsiveTypography();
   resized();
   repaint();
+}
+
+void TopBar::setSystemUsage(const double cpuUsage01, const double memoryUsage01) {
+  const double nextCpu = juce::jlimit(0.0, 1.0, cpuUsage01);
+  const double nextMem = juce::jlimit(0.0, 1.0, memoryUsage01);
+
+  const bool changed = std::abs(lastCpuUsage01 - nextCpu) > 0.001 ||
+                       std::abs(lastMemoryUsage01 - nextMem) > 0.001;
+  if (!changed)
+    return;
+
+  lastCpuUsage01 = nextCpu;
+  lastMemoryUsage01 = nextMem;
+
+  const auto nextText =
+      "CPU: " + juce::String(nextCpu * 100.0, 1) + "%\nMEM: " +
+      juce::String(nextMem * 100.0, 1) + "%";
+  if (systemUsageDisplay.getText() != nextText)
+    systemUsageDisplay.setText(nextText, juce::dontSendNotification);
+}
+
+void TopBar::setBaseTooltip(IconButton &button, const juce::String &text) {
+  button.getProperties().set(kMidiBaseTooltipProperty, text);
+  button.setTooltip(text);
+}
+
+void TopBar::refreshMidiLearnTooltips() {
+  auto apply = [this](IconButton &button, const int targetId) {
+    const auto baseText = button.getProperties()
+                              .getWithDefault(kMidiBaseTooltipProperty, juce::var())
+                              .toString();
+    if (targetId < 0 || midiLearnBindingLabelProvider == nullptr) {
+      button.setTooltip(baseText);
+      return;
+    }
+    const auto midiCode = midiLearnBindingLabelProvider(targetId).trim();
+    button.setTooltip(withMidiAssignmentTooltip(baseText, midiCode));
+  };
+
+  apply(prevButton, processor.midiTargetTransportPrevSong);
+  apply(seekBackButton, processor.midiTargetTransportSeekBack);
+  apply(playButton, processor.midiTargetTransportPlayPause);
+  apply(stopButton, processor.midiTargetTransportStop);
+  apply(seekForwardButton, processor.midiTargetTransportSeekForward);
+  apply(nextButton, processor.midiTargetTransportNextSong);
+  apply(fadeButton, processor.midiTargetTransportFadeToggle);
 }
 
 void TopBar::triggerWindowModeToggleFromMidi() { toggleWindowMode(); }
@@ -456,6 +525,10 @@ void TopBar::refreshThemeColours() {
   keyDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
   keyDisplay.setColour(juce::Label::outlineColourId,
                        UITheme::cardBorder.withAlpha(0.55f));
+  systemUsageDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  systemUsageDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
+  systemUsageDisplay.setColour(juce::Label::outlineColourId,
+                               UITheme::cardBorder.withAlpha(0.55f));
   bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
   bpmSegmentButton.setColour(juce::TextButton::buttonOnColourId,
                              UITheme::accentSoft);
@@ -486,16 +559,9 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
                                           const int targetId) {
       const auto frameBounds = comp.getBounds().toFloat().reduced(1.0f);
       const bool pending = (midiLearnPendingTargetId == targetId);
-      const juce::String label =
-          (pending && midiLearnBindingLabelProvider != nullptr)
-              ? midiLearnBindingLabelProvider(targetId).trim()
-              : juce::String{};
-      const bool assigned = pending && label.isNotEmpty();
       const float blink = pending ? midiLearnBlinkStrength()
                                   : midiLearnSoftBlinkStrength();
-      const auto frameColour = assigned ? selectableColour
-                                        : (pending ? pendingColour
-                                                   : selectableColour);
+      const auto frameColour = pending ? pendingColour : selectableColour;
       g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
                                                 : (0.14f + (0.06f * blink))));
       g.fillRoundedRectangle(frameBounds, 7.0f);
@@ -504,27 +570,6 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
       g.drawRoundedRectangle(frameBounds, 7.0f,
                              pending ? (1.5f + (0.9f * blink))
                                      : (1.0f + (0.35f * blink)));
-
-      if (!assigned)
-        return;
-
-      const juce::Font labelFont(
-          juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
-      const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
-      const float textWidth =
-          static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
-      const float pillW = juce::jlimit(22.0f, textBounds.getWidth(),
-                                       textWidth + 14.0f);
-      const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
-      auto pill = juce::Rectangle<float>(pillW, pillH)
-                      .withCentre(textBounds.getCentre());
-      g.setColour(juce::Colours::black.withAlpha(0.56f));
-      g.fillRoundedRectangle(pill, pillH * 0.45f);
-      g.setColour(selectableColour.withAlpha(0.90f));
-      g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
-      g.setColour(UITheme::textPrimary);
-      g.setFont(labelFont);
-      g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred, 1);
     };
     drawLearnFrame(prevButton, processor.midiTargetTransportPrevSong);
     drawLearnFrame(seekBackButton, processor.midiTargetTransportSeekBack);
@@ -545,6 +590,8 @@ void TopBar::resized() {
   int metroTotalW = 110;
   int metroIconW = 44;
   int timeWidth = 120;
+  int usageWidth = 92;
+  int minUsageWidth = 72;
 
   if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
     y = 8;
@@ -554,6 +601,8 @@ void TopBar::resized() {
     metroTotalW = 92;
     metroIconW = 38;
     timeWidth = 96;
+    usageWidth = 84;
+    minUsageWidth = 68;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
     y = 10;
     square = 46;
@@ -562,6 +611,8 @@ void TopBar::resized() {
     metroTotalW = 114;
     metroIconW = 46;
     timeWidth = 128;
+    usageWidth = 102;
+    minUsageWidth = 80;
   }
 
   int x = 12;
@@ -579,9 +630,20 @@ void TopBar::resized() {
   placeSquare(nextButton);
   placeSquare(fadeButton);
 
-  const int rightPadding = 12;
-  const int fixedButtonsW = (3 * square) + (2 * gap);
   const int transportW = x;
+  const int rightPadding = 12;
+  const int minFixedButtonsW = (3 * square) + (2 * gap);
+  const int availableAfterTransport = getWidth() - rightPadding - transportW - 8;
+  bool showSystemUsage = true;
+  const int maxUsageWidth =
+      availableAfterTransport - minFixedButtonsW - gap;
+  if (maxUsageWidth < minUsageWidth) {
+    showSystemUsage = false;
+  } else {
+    usageWidth = juce::jmin(usageWidth, juce::jmax(minUsageWidth, maxUsageWidth));
+  }
+  const int fixedButtonsW =
+      minFixedButtonsW + (showSystemUsage ? (usageWidth + gap) : 0);
   const int availableDynamicW =
       getWidth() - rightPadding - transportW - fixedButtonsW - 8;
 
@@ -621,8 +683,15 @@ void TopBar::resized() {
   timeDisplay.setVisible(showTime);
   keyDisplay.setVisible(showKey);
   bpmSegmentButton.setVisible(showBpmText);
+  systemUsageDisplay.setVisible(showSystemUsage);
 
   int rightX = getWidth() - 12;
+  if (showSystemUsage) {
+    systemUsageDisplay.setBounds(rightX - usageWidth, y - 2, usageWidth, square);
+    rightX -= usageWidth + gap;
+  } else {
+    systemUsageDisplay.setBounds({});
+  }
   settingsButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
   windowModeButton.setBounds(rightX - square, y - 2, square, square);
@@ -658,6 +727,7 @@ void TopBar::resized() {
           static_cast<juce::Component *>(&bpmSegmentButton),
           static_cast<juce::Component *>(&metroToggleButton),
           static_cast<juce::Component *>(&keyDisplay),
+          static_cast<juce::Component *>(&systemUsageDisplay),
           static_cast<juce::Component *>(&windowModeButton),
           static_cast<juce::Component *>(&settingsButton)}) {
       c->setTopLeftPosition(c->getX() + shift, c->getY());
@@ -691,15 +761,20 @@ void TopBar::openSettingsPanel() {
 void TopBar::applyResponsiveTypography() {
   float displayFont = 13.0f;
   float keyFont = 15.0f;
+  float usageFont = 12.5f;
   if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
     displayFont = 11.5f;
     keyFont = 13.0f;
+    usageFont = 11.5f;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
     displayFont = 13.5f;
     keyFont = 15.5f;
+    usageFont = 13.0f;
   }
   timeDisplay.setFont(juce::FontOptions(displayFont));
   keyDisplay.setFont(juce::FontOptions(keyFont).withStyle("Bold"));
+  systemUsageDisplay.setFont(makeAppFont(usageFont, AppFontWeight::SemiBold));
+  systemUsageDisplay.setJustificationType(juce::Justification::centred);
 }
 
 void TopBar::configureDisplay(juce::Label &label, const juce::String &text) {

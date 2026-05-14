@@ -1,0 +1,12 @@
+pid=32475
+app=PlayWorship
+interval_sec=1
+duration_sec=12
+sample_every_sec=6
+output=/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/profile_PlayWorship_20260513_234026
+Profiling started. Press Ctrl+C to stop early.
+Done.
+CSV: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/profile_PlayWorship_20260513_234026/metrics.csv
+Samples: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/profile_PlayWorship_20260513_234026/samples
+Summary: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/profile_PlayWorship_20260513_234026/summary.txt
+Stack summary: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/profile_PlayWorship_20260513_234026/stack_summary.txt

@@ -25,6 +25,7 @@ constexpr int kSnapModeBarId = 1;
 constexpr int kSnapModeBeatId = 2;
 constexpr int kSnapModeHalfBeatId = 3;
 constexpr int kSnapModeFreeId = 4;
+constexpr double kSongLoadingMinVisibleMs = 180.0;
 
 juce::String formatSeconds(double seconds) {
   if (seconds < 0.0)
@@ -323,6 +324,38 @@ void WaveformBar::refreshThemeColours() {
   repaint();
 }
 
+void WaveformBar::setSongLoadingState(const bool active,
+                                      const double progress01,
+                                      const juce::String &phaseText) {
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  if (active && !songLoadingActive) {
+    songLoadingShownAtMs = nowMs;
+    songLoadingHideAfterMs = 0.0;
+  }
+  songLoadingActive = active;
+  songLoadingProgress01 = juce::jlimit(0.0, 1.0, progress01);
+  songLoadingPhaseText = phaseText;
+  repaint();
+}
+
+void WaveformBar::clearSongLoadingState() {
+  if (!songLoadingActive && songLoadingHideAfterMs <= 0.0)
+    return;
+
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  const double elapsedMs = nowMs - songLoadingShownAtMs;
+  if (songLoadingActive && elapsedMs < kSongLoadingMinVisibleMs) {
+    songLoadingHideAfterMs = songLoadingShownAtMs + kSongLoadingMinVisibleMs;
+    return;
+  }
+
+  songLoadingActive = false;
+  songLoadingHideAfterMs = 0.0;
+  songLoadingProgress01 = 0.0;
+  songLoadingPhaseText.clear();
+  repaint();
+}
+
 void WaveformBar::paint(juce::Graphics &g) {
   const auto bounds = getLocalBounds().toFloat();
   if (bounds.getWidth() < 2.0f)
@@ -349,10 +382,18 @@ void WaveformBar::paint(juce::Graphics &g) {
 
   if (waveformBins.empty()) {
     g.setColour(UITheme::cardBg.withAlpha(0.55f));
-    g.setFont(juce::FontOptions(12.0f));
-    g.drawFittedText(L10n::tr(u8"Doble click en una canción para cargar waveform",
-                              "Double-click a song to load stems waveform"),
-                     mainWaveBodyBounds.toNearestInt().reduced(20),
+    g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
+    juce::String emptyText =
+        L10n::tr(u8"Doble click en una canción para cargar waveform",
+                 "Double-click a song to load stems waveform");
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
+      const int percent = static_cast<int>(
+          std::round(juce::jlimit(0.0, 1.0, songLoadingProgress01) * 100.0));
+      emptyText = L10n::tr(u8"Cargando canción...", "Loading song...") + " " +
+                  juce::String(percent) + "%";
+    }
+    g.drawFittedText(emptyText,
+                     mainWaveBodyBounds.toNearestInt().reduced(18),
                      juce::Justification::centred, 2);
     if (miniMapBounds.getHeight() > 0.0f) {
       g.setColour(UITheme::cardBg.withAlpha(0.45f));
@@ -481,6 +522,9 @@ void WaveformBar::resized() {
 }
 
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragAnchorActive = false;
@@ -622,6 +666,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (midiLearnActive)
     return;
 
@@ -865,6 +912,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (midiLearnActive)
     return;
 
@@ -887,6 +937,11 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseMove(const juce::MouseEvent &event) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+    return;
+  }
+
   if (midiLearnActive) {
     if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
         hoveredJumpPartIndex >= 0) {
@@ -957,6 +1012,9 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseExit(const juce::MouseEvent &) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
       hoveredJumpPartIndex >= 0) {
     hoveredActionPartIndex = -1;
@@ -968,6 +1026,9 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (midiLearnActive)
     return;
 
@@ -996,6 +1057,9 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (midiLearnActive)
     return;
 
@@ -1025,6 +1089,9 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0)
+    return;
+
   if (midiLearnActive)
     return;
 
@@ -1049,6 +1116,13 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
 }
 
 void WaveformBar::timerCallback() {
+  if (songLoadingHideAfterMs > 0.0 &&
+      juce::Time::getMillisecondCounterHiRes() >= songLoadingHideAfterMs) {
+    songLoadingActive = false;
+    songLoadingHideAfterMs = 0.0;
+    songLoadingProgress01 = 0.0;
+    songLoadingPhaseText.clear();
+  }
   flushDeferredPartJumpFromDoubleClickIfDue();
   repaint();
 }
@@ -1616,7 +1690,10 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
 
   float progressRatio = 0.0f;
-  if (positionProvider && lengthProvider) {
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
+    progressRatio =
+        static_cast<float>(juce::jlimit(0.0, 1.0, songLoadingProgress01));
+  } else if (positionProvider && lengthProvider) {
     const double songLength = juce::jmax(0.0, lengthProvider());
     if (songLength > 0.0) {
       const double songPosition = juce::jmax(0.0, positionProvider());

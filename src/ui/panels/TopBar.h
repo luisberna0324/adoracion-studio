@@ -33,6 +33,7 @@ public:
   void setMidiLearnActive(bool active);
   void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
+  void setSystemUsage(double cpuUsage01, double memoryUsage01);
   void triggerWindowModeToggleFromMidi();
   void triggerSettingsFromMidi();
   void triggerSongWindowPopoverFromMidi();
@@ -91,6 +92,7 @@ private:
 
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
+  juce::Label systemUsageDisplay;
   juce::TextButton bpmSegmentButton;
   IconButton metroToggleButton{"metroToggle", SvgIconName::Metronome};
 
@@ -128,6 +130,8 @@ private:
   bool lastBeatWasDownbeat = true;
   bool lastMetronomeEnabled = false;
   bool lastTopLevelMaximised = false;
+  double lastCpuUsage01 = -1.0;
+  double lastMemoryUsage01 = -1.0;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   int beatsPerBar = 4;
   juce::String timeSignature = "4/4";
@@ -148,4 +152,6 @@ private:
   void toggleWindowMode();
   void openSettingsPanel();
   void refreshFromProviders();
+  void setBaseTooltip(IconButton &button, const juce::String &text);
+  void refreshMidiLearnTooltips();
 };

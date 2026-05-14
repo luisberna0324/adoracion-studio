@@ -276,6 +276,9 @@ public:
   }
 
   void mouseUp(const juce::MouseEvent &event) override {
+    if (event.mods.isPopupMenu())
+      return;
+
     const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
     if (!juce::isPositiveAndBelow(idx, static_cast<int>(rows.size())))
       return;
@@ -289,19 +292,13 @@ public:
       }
       return;
     }
-  }
-
-  void mouseDoubleClick(const juce::MouseEvent &event) override {
-    const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
-    if (!juce::isPositiveAndBelow(idx, static_cast<int>(rows.size())))
-      return;
-
-    const auto rowBounds = rowBoundsAt(idx);
-    if (optionsButtonBoundsForRow(rowBounds).contains(event.position.toInt()))
-      return;
 
     if (onSetlistChosen)
       onSetlistChosen(rows[static_cast<size_t>(idx)].id);
+  }
+
+  void mouseDoubleClick(const juce::MouseEvent &event) override {
+    juce::ignoreUnused(event);
   }
 
 private:
@@ -1472,7 +1469,6 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
 void SongListPanel::ListContent::mouseDown(const juce::MouseEvent &event) {
   dragCandidate = false;
   isDragging = false;
-  didDragSinceMouseDown = false;
   dragSourceIndex = -1;
   dragInsertionIndex = -1;
   pendingActionsMenuRow = -1;
@@ -1515,13 +1511,15 @@ void SongListPanel::ListContent::mouseDrag(const juce::MouseEvent &event) {
   }
 
   isDragging = true;
-  didDragSinceMouseDown = true;
   dragMouseY = event.position.y;
   dragInsertionIndex = insertionIndexAtY(juce::roundToInt(event.position.y));
   repaint();
 }
 
 void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
+  if (event.mods.isPopupMenu())
+    return;
+
   if (addSongsRowBounds().contains(event.position.toInt())) {
     if (onAddSongsRequested)
       onAddSongsRequested();
@@ -1542,7 +1540,6 @@ void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
   }
 
   if (!dragCandidate) {
-    didDragSinceMouseDown = false;
     return;
   }
 
@@ -1559,6 +1556,15 @@ void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
 
     if (onSongsReordered && dragSourceIndex != toIndex)
       onSongsReordered(dragSourceIndex, toIndex);
+  } else if (juce::isPositiveAndBelow(dragSourceIndex,
+                                      static_cast<int>(songs.size()))) {
+    const int releaseRow = rowIndexAtY(juce::roundToInt(event.position.y));
+    if (releaseRow == dragSourceIndex) {
+      for (int i = 0; i < static_cast<int>(songs.size()); ++i)
+        songs[static_cast<size_t>(i)].isSelected = (i == dragSourceIndex);
+      if (onSongActivated)
+        onSongActivated(songs[static_cast<size_t>(dragSourceIndex)].songIndex);
+    }
   }
 
   dragCandidate = false;
@@ -1572,32 +1578,7 @@ void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
 
 void SongListPanel::ListContent::mouseDoubleClick(
     const juce::MouseEvent &event) {
-  if (didDragSinceMouseDown) {
-    didDragSinceMouseDown = false;
-    return;
-  }
-
-  if (addSongsRowBounds().contains(event.position.toInt())) {
-    if (onAddSongsRequested)
-      onAddSongsRequested();
-    return;
-  }
-
-  const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
-  if (!juce::isPositiveAndBelow(idx, static_cast<int>(songs.size())))
-    return;
-  const auto rowBounds =
-      juce::Rectangle<int>(rowSideInset, rowTopAtIndex(idx),
-                           getWidth() - (rowSideInset * 2), rowHeight);
-  if (optionsButtonBoundsForRow(rowBounds).contains(event.position.toInt()))
-    return;
-
-  for (int i = 0; i < static_cast<int>(songs.size()); ++i)
-    songs[static_cast<size_t>(i)].isSelected = (i == idx);
-  repaint();
-
-  if (onSongActivated)
-    onSongActivated(songs[static_cast<size_t>(idx)].songIndex);
+  juce::ignoreUnused(event);
 }
 
 void SongListPanel::ListContent::mouseMove(const juce::MouseEvent &event) {

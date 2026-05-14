@@ -24,7 +24,6 @@ StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
 
 void StereoVUMeter::paint(juce::Graphics &g) {
   auto bounds = getLocalBounds().toFloat();
-  const auto valueRect = bounds.removeFromTop(12.0f);
   const float trackH =
       juce::jmax(0.0f, bounds.getHeight() - layout.peakLedSize - layout.gap);
   const auto scaleRect = juce::Rectangle<float>(
@@ -41,15 +40,6 @@ void StereoVUMeter::paint(juce::Graphics &g) {
   };
   static constexpr Mark marks[] = {
       {0.0f, "0"}, {-12.0f, "-12"}, {-24.0f, "-24"}, {-48.0f, "-48"}};
-
-  const float shownDb = juce::jlimit(-100.0f, 6.0f, currentDb);
-  const juce::String dbText =
-      shownDb <= -99.95f ? juce::String("-inf dB")
-                         : juce::String(shownDb, 1) + " dB";
-  g.setColour(UITheme::textSecondary.withAlpha(0.9f));
-  g.setFont(juce::FontOptions(8.0f));
-  g.drawFittedText(dbText, valueRect.toNearestInt(), juce::Justification::centred,
-                   1);
 
   g.setFont(juce::FontOptions(6.0f));
   for (const auto &mark : marks) {
@@ -150,9 +140,6 @@ void StereoVUMeter::timerCallback() {
   }
 
   const float targetL = linearToNorm(juce::jmax(inputL, inputR));
-  currentDb =
-      juce::Decibels::gainToDecibels(juce::jmax(0.00001f, juce::jmax(inputL, inputR)),
-                                     -100.0f);
 
   const auto smooth = [](float current, float target) {
     const float coeff = target > current ? 0.2f : 0.06f;

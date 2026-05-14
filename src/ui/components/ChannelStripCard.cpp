@@ -15,6 +15,16 @@ float midiLearnSoftBlinkStrength() {
   const double pulse = 0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
   return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
 }
+
+juce::String withMidiAssignmentTooltip(const juce::String &baseText,
+                                       const juce::String &midiCode) {
+  const auto trimmedCode = midiCode.trim();
+  if (trimmedCode.isEmpty())
+    return baseText;
+  if (baseText.trim().isEmpty())
+    return "MIDI: " + trimmedCode;
+  return baseText + " | MIDI: " + trimmedCode;
+}
 } // namespace
 
 ChannelStripCard::ChannelStripCard(
@@ -170,16 +180,9 @@ void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
       return;
 
     const bool pending = (midiLearnPendingTargetId == targetId);
-    const juce::String label =
-        (pending && midiLearnBindingLabelProvider != nullptr)
-            ? midiLearnBindingLabelProvider(targetId).trim()
-            : juce::String{};
-    const bool assigned = pending && label.isNotEmpty();
     const float blink = pending ? midiLearnBlinkStrength()
                                 : midiLearnSoftBlinkStrength();
-    const auto frameColour = assigned ? selectableColour
-                                      : (pending ? pendingColour
-                                                 : selectableColour);
+    const auto frameColour = pending ? pendingColour : selectableColour;
     const auto frameBounds = area.reduced(1.0f);
     g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
                                               : (0.14f + (0.06f * blink))));
@@ -189,26 +192,6 @@ void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
     g.drawRoundedRectangle(frameBounds, 7.0f,
                            pending ? (1.5f + (0.9f * blink))
                                    : (1.0f + (0.35f * blink)));
-
-    if (!assigned)
-      return;
-
-    const juce::Font labelFont(
-        juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
-    const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
-    const float textWidth =
-        static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
-    const float pillW =
-        juce::jlimit(22.0f, textBounds.getWidth(), textWidth + 14.0f);
-    const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
-    auto pill = juce::Rectangle<float>(pillW, pillH).withCentre(textBounds.getCentre());
-    g.setColour(juce::Colours::black.withAlpha(0.56f));
-    g.fillRoundedRectangle(pill, pillH * 0.45f);
-    g.setColour(selectableColour.withAlpha(0.90f));
-    g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
-    g.setColour(UITheme::textPrimary);
-    g.setFont(labelFont);
-    g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred, 1);
   };
 
   if (midiVolumeTargetId >= 0)
@@ -454,6 +437,8 @@ void ChannelStripCard::setMidiLearnTargetIds(const int volumeTargetId,
   midiMuteTargetId = muteTargetId;
   midiSoloTargetId = soloTargetId;
   midiPowerTargetId = powerTargetId;
+  refreshMidiLearnTooltips();
+  repaint();
 }
 
 void ChannelStripCard::setMidiLearnSelectable(const bool selectable) {
@@ -467,12 +452,14 @@ void ChannelStripCard::setMidiLearnSelectable(const bool selectable) {
 void ChannelStripCard::setMidiLearnPendingTarget(const int targetId) {
   midiLearnPendingTargetId = hasMidiLearnTarget(targetId) ? targetId : -1;
   updateMidiLearnBlinkTimer();
+  refreshMidiLearnTooltips();
   repaint();
 }
 
 void ChannelStripCard::setMidiLearnBindingLabelProvider(
     std::function<juce::String(int)> cb) {
   midiLearnBindingLabelProvider = std::move(cb);
+  refreshMidiLearnTooltips();
   updateMidiLearnBlinkTimer();
   repaint();
 }
@@ -506,6 +493,24 @@ void ChannelStripCard::updateMidiLearnBlinkTimer() {
   } else if (isTimerRunning()) {
     stopTimer();
   }
+}
+
+void ChannelStripCard::refreshMidiLearnTooltips() {
+  auto tooltipForTarget = [this](const int targetId,
+                                 const juce::String &baseText) {
+    if (targetId < 0 || midiLearnBindingLabelProvider == nullptr)
+      return juce::String{};
+    const auto midiCode = midiLearnBindingLabelProvider(targetId).trim();
+    if (midiCode.isEmpty())
+      return juce::String{};
+    return withMidiAssignmentTooltip(baseText, midiCode);
+  };
+
+  volSlider.setTooltip(tooltipForTarget(midiVolumeTargetId, "Volume"));
+  gainKnob.setTooltip(tooltipForTarget(midiGainTargetId, "Gain"));
+  muteButton.setTooltip(tooltipForTarget(midiMuteTargetId, "Mute"));
+  soloButton.setTooltip(tooltipForTarget(midiSoloTargetId, "Solo"));
+  powerButton.setTooltip(tooltipForTarget(midiPowerTargetId, "Power"));
 }
 
 void ChannelStripCard::configureLabel(juce::Label &label,
