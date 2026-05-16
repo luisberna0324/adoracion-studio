@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class SongListPanel final : public juce::Component, private juce::Timer {
@@ -98,6 +99,7 @@ private:
     int order = 0;
     juce::String title;
     juce::String artist;
+    juce::String artworkPath;
     juce::String key;
     int bpm = 0;
     int stemCount = 0;
@@ -159,6 +161,7 @@ private:
     int hoveredRow = -1;
     float dragRowOffsetY = 0.0f;
     float dragMouseY = 0.0f;
+    std::unordered_map<std::string, juce::Image> artworkCache;
   };
 
   class SetlistManagerPanel;

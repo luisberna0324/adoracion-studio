@@ -1196,6 +1196,7 @@ void SongListPanel::refreshSongsHeaderSummary() {
 
 void SongListPanel::ListContent::setSongs(std::vector<SongRow> rows) {
   songs = std::move(rows);
+  artworkCache.clear();
   dragCandidate = false;
   isDragging = false;
   dragSourceIndex = -1;
@@ -1317,34 +1318,64 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                            showPlayingState ? 1.5f : 1.0f);
 
     auto c = row.reduced(16, 8);
-    auto accentRect =
-        juce::Rectangle<int>(c.getX(), row.getCentreY() - 20, 4, 40);
-    c.removeFromLeft(4);
-    c.removeFromLeft(12);
+    auto optionsHitArea = c.removeFromRight(34);
+    c.removeFromRight(2);
 
-    const auto accentColour = kSetlistAccentPalette[static_cast<size_t>(rowIndex) %
-                                                    kSetlistAccentPalette.size()];
-    g.setColour(accentColour.withAlpha(0.92f));
-    g.fillRoundedRectangle(accentRect.toFloat(), 2.0f);
+    constexpr int artworkSize = 48;
+    auto artworkArea = juce::Rectangle<int>(
+        c.getX(),
+        c.getY() + juce::jmax(0, (c.getHeight() - artworkSize) / 2), artworkSize,
+        artworkSize);
 
-    auto orderBadge = c.removeFromLeft(20);
-    if (showPlayingState) {
-      drawIconGlyph(g, orderBadge.toFloat().withSizeKeepingCentre(18.0f, 18.0f),
-                    IconGlyph::Play, playingStateColour.withAlpha(0.95f), 1.4f);
-    } else if (showNextState) {
-      drawIconGlyph(g, orderBadge.toFloat().withSizeKeepingCentre(18.0f, 18.0f),
-                    IconGlyph::Next, nextStateColour.withAlpha(0.95f), 1.35f);
-    } else {
-      g.setColour(UITheme::textSecondary.withAlpha(0.88f));
-      g.setFont(makeAppFont(16.0f, AppFontWeight::Medium));
-      g.drawText(juce::String(rowData.order), orderBadge,
-                 juce::Justification::centred);
+    juce::Image artworkImage;
+    const auto artworkKey = rowData.artworkPath.trim().toStdString();
+    if (!artworkKey.empty()) {
+      auto it = artworkCache.find(artworkKey);
+      if (it == artworkCache.end()) {
+        const juce::File artworkFile(rowData.artworkPath.trim());
+        juce::Image loaded;
+        if (artworkFile.existsAsFile())
+          loaded = juce::ImageFileFormat::loadFrom(artworkFile);
+        it = artworkCache.emplace(artworkKey, std::move(loaded)).first;
+      }
+      artworkImage = it->second;
     }
 
-    c.removeFromLeft(12);
-    auto dragHitArea = c.removeFromRight(40);
-    c.removeFromRight(4);
-    auto optionsHitArea = c.removeFromRight(40);
+    g.setColour(UITheme::cardBgHover.withAlpha(0.9f * fillAlpha));
+    g.fillRoundedRectangle(artworkArea.toFloat(), 8.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.72f * fillAlpha));
+    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 8.0f, 1.0f);
+
+    if (artworkImage.isValid()) {
+      g.drawImageWithin(artworkImage, artworkArea.getX(), artworkArea.getY(),
+                        artworkArea.getWidth(), artworkArea.getHeight(),
+                        juce::RectanglePlacement::centred |
+                            juce::RectanglePlacement::onlyReduceInSize);
+    } else {
+      juce::String placeholder = rowData.title.trim();
+      placeholder = placeholder.isNotEmpty()
+                        ? placeholder.substring(0, 1).toUpperCase()
+                        : "?";
+      g.setColour(UITheme::textSecondary.withAlpha(0.88f * fillAlpha));
+      g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
+    }
+
+    c.removeFromLeft(artworkSize + 12);
+
+    if (showPlayingState) {
+      const auto stateArea =
+          juce::Rectangle<int>(c.getX(), c.getY(), 16, c.getHeight());
+      drawIconGlyph(g, stateArea.toFloat().withSizeKeepingCentre(14.0f, 14.0f),
+                    IconGlyph::Play, playingStateColour.withAlpha(0.95f), 1.35f);
+      c.removeFromLeft(20);
+    } else if (showNextState) {
+      const auto stateArea =
+          juce::Rectangle<int>(c.getX(), c.getY(), 16, c.getHeight());
+      drawIconGlyph(g, stateArea.toFloat().withSizeKeepingCentre(14.0f, 14.0f),
+                    IconGlyph::Next, nextStateColour.withAlpha(0.95f), 1.30f);
+      c.removeFromLeft(20);
+    }
     constexpr int titleHeight = 18;
     constexpr int artistHeight = 14;
     constexpr int metaHeight = 13;
@@ -1381,14 +1412,6 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
 
     drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(20.0f, 20.0f),
                   IconGlyph::More, UITheme::textSecondary.withAlpha(0.95f), 1.4f);
-
-    g.setColour(UITheme::textSecondary.withAlpha(0.78f));
-    const auto d = dragHitArea.toFloat().withSizeKeepingCentre(20.0f, 20.0f);
-    const float x = d.getCentreX();
-    const float y = d.getCentreY();
-    g.drawLine(x - 5.8f, y - 4.6f, x + 5.8f, y - 4.6f, 1.7f);
-    g.drawLine(x - 5.8f, y, x + 5.8f, y, 1.7f);
-    g.drawLine(x - 5.8f, y + 4.6f, x + 5.8f, y + 4.6f, 1.7f);
   };
 
   for (size_t i = 0; i < songs.size(); ++i) {
@@ -1654,13 +1677,7 @@ juce::Rectangle<int> SongListPanel::ListContent::addSongsRowBounds() const {
 juce::Rectangle<int> SongListPanel::ListContent::optionsButtonBoundsForRow(
     const juce::Rectangle<int> &rowBounds) const {
   auto c = rowBounds.reduced(16, 8);
-  c.removeFromLeft(4);
-  c.removeFromLeft(12);
-  c.removeFromLeft(20);
-  c.removeFromLeft(12);
-  c.removeFromRight(40);
-  c.removeFromRight(4);
-  auto optionsRect = c.removeFromRight(40);
+  auto optionsRect = c.removeFromRight(34);
   return optionsRect;
 }
 
@@ -2953,6 +2970,7 @@ void SongListPanel::refreshFromStorage() {
                                          : L10n::tr(u8"Canción sin título",
                                                     "Untitled Song")),
                       song.artist.trim().toUpperCase(),
+                      song.artworkPath.trim(),
                       song.key,
                       song.bpm,
                       includedStems,

@@ -194,6 +194,8 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::repeat_svg, BinaryData::repeat_svgSize};
   case SvgIconName::CornerDownRight:
     return {BinaryData::corner_down_right_svg, BinaryData::corner_down_right_svgSize};
+  case SvgIconName::ImageEdit:
+    return {BinaryData::image_edit_svg, BinaryData::image_edit_svgSize};
   }
   return {};
 }

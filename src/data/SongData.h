@@ -39,6 +39,8 @@ struct ImportedSongData {
   juce::String key;
   juce::String timeSignature;
   juce::String fileType;
+  juce::String artworkPath;
+  juce::String artworkSource;
   int64_t createdMs = 0;
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;
@@ -50,6 +52,7 @@ extern const std::array<const char *, 14> kSongSectionSuggestions;
 juce::String makeDisplayNameFromFile(const juce::File &file);
 juce::String suggestCategoryFromFilename(const juce::String &filename);
 int stemPriorityForStripOrder(const ImportedStemData &stem);
+void sortStemsForStripOrder(std::vector<ImportedStemData> &stems);
 bool isStemPitchShiftable(const ImportedStemData &stem);
 juce::String makeRandomArrangementPartColor();
 bool isArrangementPartColorValid(const juce::String &value);

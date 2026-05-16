@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "AppSettings.h"
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
 #include "SessionAuthLogger.h"
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -72,6 +74,192 @@ bool fileIsInsideDirectory(const juce::File &file, const juce::File &directory) 
   if (!dirPath.endsWithChar(juce::File::getSeparatorChar()))
     dirPath << juce::File::getSeparatorString();
   return file.getFullPathName().startsWithIgnoreCase(dirPath);
+}
+
+juce::String normalizeArtworkExtension(const juce::String &extension) {
+  auto ext = extension.trim().toLowerCase();
+  if (ext.isEmpty())
+    return ".jpg";
+  if (!ext.startsWithChar('.'))
+    ext = "." + ext;
+  if (ext == ".jpeg")
+    return ".jpg";
+  if (ext == ".jpg" || ext == ".png" || ext == ".webp")
+    return ext;
+  return ".jpg";
+}
+
+juce::String inferArtworkExtensionFromSource(const juce::String &source) {
+  auto clean = source.upToFirstOccurrenceOf("?", false, false)
+                   .upToFirstOccurrenceOf("#", false, false);
+  const juce::File asFile(clean);
+  return normalizeArtworkExtension(asFile.getFileExtension());
+}
+
+void clearArtworkFilesInDirectory(const juce::File &directory) {
+  if (!directory.isDirectory())
+    return;
+  const auto files =
+      directory.findChildFiles(juce::File::findFiles, false, "artwork.*");
+  for (const auto &file : files) {
+    if (file.existsAsFile())
+      file.deleteFile();
+  }
+}
+
+bool copyArtworkIntoDirectory(const juce::File &sourceFile,
+                              const juce::File &directory,
+                              juce::String &outArtworkPath) {
+  if (!sourceFile.existsAsFile())
+    return false;
+  clearArtworkFilesInDirectory(directory);
+  const auto ext =
+      normalizeArtworkExtension(sourceFile.getFileExtension());
+  const auto target = directory.getChildFile("artwork" + ext);
+  if (target.existsAsFile())
+    target.deleteFile();
+  if (!sourceFile.copyFileTo(target))
+    return false;
+  outArtworkPath = target.getFullPathName();
+  return true;
+}
+
+bool downloadArtworkIntoDirectory(const juce::String &url,
+                                  const juce::File &directory,
+                                  juce::String &outArtworkPath) {
+  if (url.trim().isEmpty())
+    return false;
+
+  juce::URL artworkUrl(url.trim());
+  auto options = juce::URL::InputStreamOptions(
+                     juce::URL::ParameterHandling::inAddress)
+                     .withExtraHeaders("User-Agent: Mozilla/5.0\r\n")
+                     .withConnectionTimeoutMs(8000)
+                     .withHttpRequestCmd("GET");
+  auto stream = artworkUrl.createInputStream(options);
+  if (stream == nullptr)
+    return false;
+
+  juce::MemoryBlock bytes;
+  stream->readIntoMemoryBlock(bytes);
+  if (bytes.getSize() == 0)
+    return false;
+
+  clearArtworkFilesInDirectory(directory);
+  const auto ext = inferArtworkExtensionFromSource(url);
+  const auto target = directory.getChildFile("artwork" + ext);
+  if (target.existsAsFile())
+    target.deleteFile();
+  if (!target.replaceWithData(bytes.getData(), bytes.getSize()))
+    return false;
+
+  outArtworkPath = target.getFullPathName();
+  return true;
+}
+
+bool persistSongArtwork(ImportedSongData &song, const juce::File &targetDirectory,
+                        const ImportedSongData *previousSong,
+                        juce::String &errorMessage) {
+  song.artworkSource = song.artworkSource.trim();
+  if (song.artworkSource.isEmpty()) {
+    song.artworkPath.clear();
+    clearArtworkFilesInDirectory(targetDirectory);
+    return true;
+  }
+
+  if (song.artworkSource.startsWithIgnoreCase("manual:")) {
+    const auto manualPath = song.artworkSource.fromFirstOccurrenceOf(
+        "manual:", false, false);
+    const juce::File manualFile(manualPath);
+    if (copyArtworkIntoDirectory(manualFile, targetDirectory, song.artworkPath))
+      return true;
+
+    // Si la ruta manual original ya no existe, intentamos conservar la artwork
+    // previa de esta canción (misma fuente).
+    if (previousSong != nullptr &&
+        previousSong->artworkSource.trim() == song.artworkSource.trim()) {
+      const juce::File prevArtwork(previousSong->artworkPath);
+      if (copyArtworkIntoDirectory(prevArtwork, targetDirectory, song.artworkPath))
+        return true;
+    }
+
+    errorMessage = "Artwork file not found: " + manualPath;
+    return false;
+  }
+
+  if (previousSong != nullptr &&
+      previousSong->artworkSource.trim() == song.artworkSource.trim()) {
+    const juce::File prevArtwork(previousSong->artworkPath);
+    if (copyArtworkIntoDirectory(prevArtwork, targetDirectory, song.artworkPath))
+      return true;
+  }
+
+  if (downloadArtworkIntoDirectory(song.artworkSource, targetDirectory,
+                                   song.artworkPath)) {
+    return true;
+  }
+
+  // No bloqueamos el guardado si no se pudo descargar artwork remoto.
+  song.artworkPath.clear();
+  errorMessage.clear();
+  return true;
+}
+
+bool repairArtworkPathForSong(ImportedSongData &song) {
+  const auto songId = song.id.trim();
+  song.artworkPath = song.artworkPath.trim();
+  if (songId.isEmpty()) {
+    if (song.artworkPath.isNotEmpty() &&
+        !juce::File(song.artworkPath).existsAsFile()) {
+      song.artworkPath.clear();
+      return true;
+    }
+    return false;
+  }
+
+  auto songDir =
+      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+          .getChildFile("MTControls")
+          .getChildFile("audio")
+          .getChildFile(songId);
+
+  if (song.artworkPath.isNotEmpty()) {
+    const juce::File configured(song.artworkPath);
+    if (configured.existsAsFile()) {
+      const auto inSongDir =
+          songDir.getChildFile(configured.getFileName()).getFullPathName();
+      if (!song.artworkPath.equalsIgnoreCase(inSongDir) &&
+          juce::File(inSongDir).existsAsFile()) {
+        song.artworkPath = inSongDir;
+        return true;
+      }
+      return false;
+    }
+
+    const auto fallbackByName =
+        songDir.getChildFile(configured.getFileName());
+    if (fallbackByName.existsAsFile()) {
+      song.artworkPath = fallbackByName.getFullPathName();
+      return true;
+    }
+  }
+
+  const auto discovered =
+      songDir.findChildFiles(juce::File::findFiles, false, "artwork.*");
+  if (!discovered.isEmpty()) {
+    const auto detectedPath = discovered.getFirst().getFullPathName();
+    if (!song.artworkPath.equalsIgnoreCase(detectedPath)) {
+      song.artworkPath = detectedPath;
+      return true;
+    }
+    return false;
+  }
+
+  if (song.artworkPath.isNotEmpty()) {
+    song.artworkPath.clear();
+    return true;
+  }
+  return false;
 }
 } // namespace
 
@@ -256,6 +444,7 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
                               u8"Updating library..."));
   auto library = loadLibrary();
   ensureSongHasStemIds(song);
+  sortStemsForStripOrder(song.stems);
   library.songs.push_back(song);
   ensureDefaultSetlist(library);
   addSongToActiveSetlist(library, song);
@@ -342,6 +531,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     includedStems.push_back(std::move(stem));
   }
   song.stems = std::move(includedStems);
+  sortStemsForStripOrder(song.stems);
 
   if (song.stems.empty()) {
     if (errorMessage != nullptr) {
@@ -380,9 +570,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     return false;
   }
 
-  // Encoder optimization flow temporarily disabled:
-  // keep raw stems to avoid conversion failures during import/update.
-  constexpr bool stemOptimizationEnabled = false;
+  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
   const int stemTotal = static_cast<int>(song.stems.size());
   const int denom = juce::jmax(1, stemTotal);
 
@@ -522,6 +710,12 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
                  juce::String("Done: ") + stem.displayName));
   }
 
+  {
+    juce::String artworkError;
+    if (!persistSongArtwork(song, stageDir, &previousSong, artworkError))
+      return failWithCleanup(artworkError);
+  }
+
   if (onProgress)
     onProgress(0.80,
                L10n::tr(u8"Aplicando cambios en audio...", u8"Applying audio changes..."));
@@ -538,6 +732,14 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     }
     return failWithCleanup("Couldn't move staged audio into song directory.");
   }
+
+  if (song.artworkPath.trim().isNotEmpty()) {
+    const auto stagedArtworkFile =
+        juce::File(song.artworkPath.trim()).getFileName();
+    if (stagedArtworkFile.isNotEmpty())
+      song.artworkPath = songDir.getChildFile(stagedArtworkFile).getFullPathName();
+  }
+  juce::ignoreUnused(repairArtworkPathForSong(song));
 
   *songIt = song;
 
@@ -980,6 +1182,8 @@ LibraryState SongLibraryStore::loadLibrary() {
         needsSave = true;
       if (ensureSongHasStemIds(song))
         needsSave = true;
+      if (repairArtworkPathForSong(song))
+        needsSave = true;
       bool hasSongArrangement = false;
       if (auto *songObj = songVar.getDynamicObject()) {
         hasSongArrangement = songObj->hasProperty("arrangement");
@@ -1126,32 +1330,7 @@ juce::File SongLibraryStore::getWaveformCacheDir() {
 }
 
 juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
-  const auto managed = AssetBootstrapManager::getEncoderBinaryPath();
-  if (managed.existsAsFile())
-    return managed;
-
-  const auto executable =
-      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
-  if (!executable.existsAsFile())
-    return {};
-
-#if JUCE_MAC
-  // Standalone app bundle: <App>.app/Contents/MacOS/<binary>
-  const auto macOSDir = executable.getParentDirectory();
-  const auto resourcesDir = macOSDir.getSiblingFile("Resources");
-  const auto bundled = resourcesDir.getChildFile("ffmpeg").getChildFile("ffmpeg");
-  if (bundled.existsAsFile())
-    return bundled;
-#elif JUCE_WINDOWS
-  // Standalone app folder: <app>/ffmpeg/ffmpeg.exe
-  const auto bundled = executable.getParentDirectory()
-                           .getChildFile("ffmpeg")
-                           .getChildFile("ffmpeg.exe");
-  if (bundled.existsAsFile())
-    return bundled;
-#endif
-
-  return {};
+  return AssetBootstrapManager::getAvailableEncoderBinary();
 }
 
 bool SongLibraryStore::convertStemToStorageFormat(
@@ -1234,9 +1413,7 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     return false;
   };
 
-  // Encoder optimization flow temporarily disabled:
-  // keep raw stems to avoid conversion failures during import/update.
-  constexpr bool stemOptimizationEnabled = false;
+  const bool stemOptimizationEnabled = AppSettings::getStemOptimizationEnabled();
 
   int stemsToCopy = 0;
   for (const auto &s : song.stems) {
@@ -1334,6 +1511,12 @@ bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &error
     }
   }
 
+  {
+    juce::String artworkError;
+    if (!persistSongArtwork(song, songDir, nullptr, artworkError))
+      return failImport(artworkError);
+  }
+
   SessionAuthLogger::write("[SongImportStore] copyStemFiles complete id=" + song.id +
                            " copied=" + juce::String(stemDone));
   return true;
@@ -1382,6 +1565,8 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("key", song.key);
   obj->setProperty("timeSignature", song.timeSignature);
   obj->setProperty("fileType", song.fileType);
+  obj->setProperty("artworkPath", song.artworkPath);
+  obj->setProperty("artworkSource", song.artworkSource);
   obj->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
 
   juce::Array<juce::var> stemVars;
@@ -1407,6 +1592,8 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.key = obj->getProperty("key").toString();
   song.timeSignature = obj->getProperty("timeSignature").toString();
   song.fileType = obj->getProperty("fileType").toString();
+  song.artworkPath = obj->getProperty("artworkPath").toString();
+  song.artworkSource = obj->getProperty("artworkSource").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
 
   auto *stemsArray = obj->getProperty("stems").getArray();
@@ -1426,10 +1613,20 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
 
 bool SongLibraryStore::ensureSongHasStemIds(ImportedSongData &song) {
   bool changed = false;
+  std::unordered_set<std::string> seenStemIds;
+  seenStemIds.reserve(song.stems.size());
   for (auto &stem : song.stems) {
-    if (stem.stemId.isEmpty()) {
+    const auto normalized = stem.stemId.trim();
+    const bool missingId = normalized.isEmpty();
+    const bool duplicatedId =
+        !missingId &&
+        !seenStemIds.insert(normalized.toStdString()).second;
+    if (missingId || duplicatedId) {
       stem.stemId = juce::Uuid().toString();
       changed = true;
+      seenStemIds.insert(stem.stemId.toStdString());
+    } else {
+      stem.stemId = normalized;
     }
   }
   return changed;

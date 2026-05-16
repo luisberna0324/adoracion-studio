@@ -1,5 +1,7 @@
 #include "SongImportWizardComponent.h"
 
+#include "../../data/AppSettings.h"
+#include "../../data/AssetBootstrapManager.h"
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../UiCommon.h"
@@ -9,6 +11,8 @@
 #include <cmath>
 #include <memory>
 #include <utility>
+#include <set>
+#include <thread>
 
 class SongImportWizardComponent::MappingRow final : public juce::Component {
 public:
@@ -135,8 +139,8 @@ public:
     juce::String meta;
     if (song.artist.isNotEmpty())
       meta << song.artist << u8" • ";
-      if (song.bpm > 0)
-        meta << juce::String(song.bpm) << " BPM" << u8" • ";
+    if (song.bpm > 0)
+      meta << juce::String(song.bpm) << " BPM" << u8" • ";
     meta << juce::String(static_cast<int>(song.tracks.size())) << " "
          << L10n::tr("stems", "stems");
     g.drawFittedText(meta, textArea, juce::Justification::centredLeft, 1);
@@ -264,6 +268,74 @@ private:
   SongImportWizardComponent &owner;
 };
 
+class SongImportWizardComponent::SecuenciasResultListModel final
+    : public juce::ListBoxModel {
+public:
+  explicit SecuenciasResultListModel(SongImportWizardComponent &ownerIn)
+      : owner(ownerIn) {}
+
+  int getNumRows() override {
+    return static_cast<int>(owner.secuenciasResults.size());
+  }
+
+  void selectedRowsChanged(int row) override {
+    owner.secuenciasSelectedRow = row;
+    owner.fetchSecuenciasDetailForSelected();
+  }
+
+  void paintListBoxItem(int row, juce::Graphics &g, int width, int height,
+                        bool rowIsSelected) override {
+    if (!juce::isPositiveAndBelow(row,
+                                  static_cast<int>(owner.secuenciasResults.size())))
+      return;
+
+    const auto &song = owner.secuenciasResults[static_cast<size_t>(row)];
+    auto area = juce::Rectangle<int>(0, 0, width, height).reduced(4, 4);
+    g.setColour(rowIsSelected ? UITheme::accent.withAlpha(0.22f)
+                              : UITheme::cardBgHover.withAlpha(0.9f));
+    g.fillRoundedRectangle(area.toFloat(), 6.0f);
+    g.setColour((rowIsSelected ? UITheme::accent : UITheme::cardBorder)
+                    .withAlpha(0.75f));
+    g.drawRoundedRectangle(area.toFloat(), 6.0f, 1.0f);
+
+    auto imageArea = area.removeFromLeft(48).reduced(4);
+    auto image = owner.getCachedArtwork(song.artworkUrl);
+    if (image.isValid()) {
+      g.drawImageWithin(image, imageArea.getX(), imageArea.getY(),
+                        imageArea.getWidth(), imageArea.getHeight(),
+                        juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize);
+    } else {
+      owner.requestArtworkAsync(song.artworkUrl);
+      g.setColour(UITheme::cardBorder.withAlpha(0.5f));
+      g.fillRoundedRectangle(imageArea.toFloat(), 4.0f);
+      g.setColour(UITheme::textSecondary.withAlpha(0.65f));
+      g.setFont(makeAppFont(9.0f, AppFontWeight::SemiBold));
+      g.drawFittedText("IMG", imageArea, juce::Justification::centred, 1);
+    }
+
+    auto textArea = area.reduced(8, 4);
+    g.setColour(UITheme::textPrimary);
+    g.setFont(makeAppFont(12.5f, AppFontWeight::SemiBold));
+    g.drawFittedText(song.title.isNotEmpty() ? song.title : L10n::tr("Canción", "Song"),
+                     textArea.removeFromTop(18), juce::Justification::centredLeft, 1);
+
+    juce::String meta;
+    if (song.artist.isNotEmpty())
+      meta << song.artist;
+    if (song.album.isNotEmpty())
+      meta << (meta.isNotEmpty() ? " • " : "") << song.album;
+    if (song.originalKey.isNotEmpty())
+      meta << (meta.isNotEmpty() ? " • " : "") << L10n::tr("Tono ", "Key ") << song.originalKey;
+
+    g.setColour(UITheme::textSecondary);
+    g.setFont(makeAppFont(10.0f, AppFontWeight::Regular));
+    g.drawFittedText(meta, textArea, juce::Justification::centredLeft, 1);
+  }
+
+private:
+  SongImportWizardComponent &owner;
+};
+
 SongImportWizardComponent::SongImportWizardComponent(
     std::function<bool(ImportedSongData, juce::String &,
                        const SongImportProgressFn &)>
@@ -384,6 +456,103 @@ SongImportWizardComponent::SongImportWizardComponent(
   addAndMakeVisible(keyBox);
   addAndMakeVisible(timeSignatureBox);
 
+  songTitleEditor.onTextChange = [this] {
+    if (suppressTitleAutocomplete || currentStep != Step::Metadata)
+      return;
+
+    secuenciasSearchToken++;
+    const auto localToken = secuenciasSearchToken;
+    selectedSongDetail.reset();
+    secuenciasDetailLabel.setText({}, juce::dontSendNotification);
+
+    const auto text = songTitleEditor.getText().trim();
+    if (text.length() < 2) {
+      secuenciasResults.clear();
+      secuenciasStatusLabel.setText(
+          L10n::tr("Escribe al menos 2 caracteres", "Type at least 2 characters"),
+          juce::dontSendNotification);
+      secuenciasList.updateContent();
+      secuenciasList.selectRow(-1);
+      secuenciasList.setVisible(false);
+      return;
+    }
+
+    secuenciasStatusLabel.setText(L10n::tr("Buscando...", "Searching..."),
+                                  juce::dontSendNotification);
+    secuenciasList.setVisible(true);
+    auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+    juce::Timer::callAfterDelay(500, [safeThis, localToken] {
+      if (safeThis == nullptr)
+        return;
+      if (safeThis->secuenciasSearchToken != localToken)
+        return;
+      safeThis->triggerSecuenciasSearch();
+    });
+  };
+
+  secuenciasListModel = std::make_unique<SecuenciasResultListModel>(*this);
+  secuenciasList.setModel(secuenciasListModel.get());
+  secuenciasList.setRowHeight(54);
+  secuenciasList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
+  secuenciasList.setColour(juce::ListBox::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.7f));
+  addAndMakeVisible(secuenciasList);
+  secuenciasList.setVisible(false);
+
+  secuenciasStatusLabel.setText(
+      L10n::tr("Busca una canción para autocompletar metadata",
+               "Search a song to auto-fill metadata"),
+      juce::dontSendNotification);
+  secuenciasStatusLabel.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
+  addAndMakeVisible(secuenciasStatusLabel);
+
+  secuenciasDetailLabel.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
+  secuenciasDetailLabel.setJustificationType(juce::Justification::topLeft);
+  secuenciasDetailLabel.setMinimumHorizontalScale(0.9f);
+  addAndMakeVisible(secuenciasDetailLabel);
+
+  secuenciasArtworkPreview.setImage(juce::Image(), juce::RectanglePlacement::centred);
+  secuenciasArtworkPreview.setInterceptsMouseClicks(false, false);
+  addAndMakeVisible(secuenciasArtworkPreview);
+
+  secuenciasArtworkCaption.setText({}, juce::dontSendNotification);
+  secuenciasArtworkCaption.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
+  secuenciasArtworkCaption.setJustificationType(juce::Justification::centredTop);
+  addAndMakeVisible(secuenciasArtworkCaption);
+
+  clearSongSearchButton.setButtonText(L10n::tr("Limpiar", "Clear"));
+  clearSongSearchButton.onClick = [this] {
+    ++secuenciasSearchToken;
+    setMetadataReadOnlyFromLocal(false);
+    suppressTitleAutocomplete = true;
+    songTitleEditor.clear();
+    artistEditor.clear();
+    bpmEditor.clear();
+    keyBox.setSelectedId(1, juce::dontSendNotification);
+    timeSignatureBox.setSelectedId(1, juce::dontSendNotification);
+    suppressTitleAutocomplete = false;
+
+    selectedArtworkUrl.clear();
+    secuenciasArtworkPreview.setImage(juce::Image(),
+                                      juce::RectanglePlacement::centred);
+    secuenciasArtworkCaption.setText({}, juce::dontSendNotification);
+    secuenciasDetailLabel.setText({}, juce::dontSendNotification);
+    selectedSongDetail.reset();
+    secuenciasSelectedRow = -1;
+    secuenciasResults.clear();
+    secuenciasList.updateContent();
+    secuenciasList.selectRow(-1);
+    secuenciasList.setVisible(false);
+    secuenciasStatusLabel.setText(
+        L10n::tr("Busca una canción para autocompletar metadata",
+                 "Search a song to auto-fill metadata"),
+        juce::dontSendNotification);
+    resized();
+    repaint();
+  };
+  addAndMakeVisible(clearSongSearchButton);
+  setMetadataReadOnlyFromLocal(false);
+
   addFilesButton.setButtonText(L10n::tr(u8"Agregar stems...", u8"Add stems..."));
   addFilesButton.onClick = [this] { openStemChooser(false); };
   addAndMakeVisible(addFilesButton);
@@ -424,6 +593,9 @@ SongImportWizardComponent::SongImportWizardComponent(
   stemsList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
   stemsList.setColour(juce::ListBox::outlineColourId,
                       UITheme::cardBorder.withAlpha(0.7f));
+  secuenciasList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
+  secuenciasList.setColour(juce::ListBox::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.7f));
   addAndMakeVisible(stemsList);
 
   mapViewport.setViewedComponent(&mapContent, false);
@@ -440,7 +612,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   cancelButton.onClick = [this] { closeDialog(); };
   backButton.setButtonText(L10n::tr(u8"Atrás", "Back"));
   backButton.onClick = [this] {
-    if (currentStep == Step::Import)
+    if (currentStep == Step::Metadata)
       return;
     changeStep(static_cast<Step>(static_cast<int>(currentStep) - 1));
   };
@@ -464,7 +636,7 @@ SongImportWizardComponent::SongImportWizardComponent(
     reloadPrimeSongs();
   }
 
-  changeStep(Step::Import);
+  changeStep(Step::Metadata);
 }
 
 SongImportWizardComponent::~SongImportWizardComponent() = default;
@@ -475,6 +647,19 @@ void SongImportWizardComponent::paint(juce::Graphics &g) {
   g.fillRoundedRectangle(b, 8.0f);
   g.setColour(UITheme::cardBorder.withAlpha(0.8f));
   g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
+}
+
+void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
+  if (currentStep != Step::Metadata || artworkOverlayButtonBounds.isEmpty())
+    return;
+
+  auto area = artworkOverlayButtonBounds.toFloat();
+  auto bg = UITheme::accent.withAlpha(artworkOverlayHovered ? 0.95f : 0.82f);
+  g.setColour(bg);
+  g.fillEllipse(area);
+  g.setColour(UITheme::cardBorder.withAlpha(0.8f));
+  g.drawEllipse(area, 1.0f);
+  drawSvgIcon(g, area.reduced(6.0f), SvgIconName::ImageEdit, UITheme::onAccent);
 }
 
 void SongImportWizardComponent::resized() {
@@ -511,6 +696,31 @@ void SongImportWizardComponent::resized() {
   layoutStepReview(content);
 }
 
+void SongImportWizardComponent::mouseMove(const juce::MouseEvent &event) {
+  const bool nextHovered =
+      currentStep == Step::Metadata &&
+      artworkOverlayButtonBounds.contains(event.getPosition());
+  if (nextHovered != artworkOverlayHovered) {
+    artworkOverlayHovered = nextHovered;
+    repaint(artworkOverlayButtonBounds.expanded(2));
+  }
+}
+
+void SongImportWizardComponent::mouseExit(const juce::MouseEvent &) {
+  if (!artworkOverlayHovered)
+    return;
+  artworkOverlayHovered = false;
+  repaint(artworkOverlayButtonBounds.expanded(2));
+}
+
+void SongImportWizardComponent::mouseUp(const juce::MouseEvent &event) {
+  if (currentStep != Step::Metadata)
+    return;
+  if (!artworkOverlayButtonBounds.contains(event.getPosition()))
+    return;
+  openArtworkChooser();
+}
+
 void SongImportWizardComponent::refreshThemeColours() {
   titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -518,7 +728,8 @@ void SongImportWizardComponent::refreshThemeColours() {
        {&stemsSectionLabel, &primeSectionLabel, &infoSectionLabel,
         &songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
         &timeSignatureLabel, &mapFileHeader, &mapNameHeader, &mapCategoryHeader,
-        &mapLoadHeader}) {
+        &mapLoadHeader, &secuenciasStatusLabel,
+        &secuenciasDetailLabel, &secuenciasArtworkCaption}) {
     label->setColour(juce::Label::textColourId, UITheme::textSecondary);
   }
   primeStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -531,6 +742,9 @@ void SongImportWizardComponent::refreshThemeColours() {
   stemsList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
   stemsList.setColour(juce::ListBox::outlineColourId,
                       UITheme::cardBorder.withAlpha(0.7f));
+  secuenciasList.setColour(juce::ListBox::backgroundColourId, UITheme::cardBg);
+  secuenciasList.setColour(juce::ListBox::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.7f));
   for (int row = 0; row < static_cast<int>(stems.size()); ++row) {
     if (auto *rowComp = dynamic_cast<StemListRowComponent *>(
             stemsList.getComponentForRowNumber(row))) {
@@ -550,6 +764,7 @@ void SongImportWizardComponent::refreshThemeColours() {
   styleSecondaryButton(replaceFilesButton);
   styleSecondaryButton(refreshPrimeButton);
   stylePrimaryButton(usePrimeSongButton);
+  styleSecondaryButton(clearSongSearchButton);
   styleSecondaryButton(cancelButton);
   styleSecondaryButton(backButton);
   stylePrimaryButton(nextButton);
@@ -575,33 +790,19 @@ void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
 }
 
 void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
-  const bool visible = currentStep == Step::Import;
-  const bool showPrime = visible && primeImportEnabled && mode == Mode::Import;
+  const bool visible = currentStep == Step::Stems;
   const bool showReplace = visible && mode == Mode::Edit;
 
   for (auto *c :
        {static_cast<juce::Component *>(&addFilesButton),
         static_cast<juce::Component *>(&replaceFilesButton),
-        static_cast<juce::Component *>(&refreshPrimeButton),
-        static_cast<juce::Component *>(&usePrimeSongButton),
-        static_cast<juce::Component *>(&primeSongsList),
-        static_cast<juce::Component *>(&primeSectionLabel),
-        static_cast<juce::Component *>(&primeStatusLabel),
         static_cast<juce::Component *>(&selectedFilesLabel),
         static_cast<juce::Component *>(&stemsList),
         static_cast<juce::Component *>(&stemsSectionLabel)}) {
-    const bool isPrimeControl =
-        c == static_cast<juce::Component *>(&refreshPrimeButton) ||
-        c == static_cast<juce::Component *>(&usePrimeSongButton) ||
-        c == static_cast<juce::Component *>(&primeSongsList) ||
-        c == static_cast<juce::Component *>(&primeSectionLabel) ||
-        c == static_cast<juce::Component *>(&primeStatusLabel);
     const bool isReplaceButton =
         c == static_cast<juce::Component *>(&replaceFilesButton);
 
-    if (isPrimeControl)
-      c->setVisible(showPrime);
-    else if (isReplaceButton)
+    if (isReplaceButton)
       c->setVisible(showReplace);
     else
       c->setVisible(visible);
@@ -612,21 +813,6 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
 
   const int sectionLabelH = 18;
   const int rowGap = 8;
-
-  if (showPrime) {
-    auto primeHeader = bounds.removeFromTop(sectionLabelH);
-    primeSectionLabel.setBounds(primeHeader.removeFromLeft(170));
-    auto primeButtons = primeHeader.removeFromRight(258);
-    refreshPrimeButton.setBounds(primeButtons.removeFromLeft(122));
-    primeButtons.removeFromLeft(8);
-    usePrimeSongButton.setBounds(primeButtons.removeFromLeft(128));
-
-    bounds.removeFromTop(4);
-    primeSongsList.setBounds(bounds.removeFromTop(118));
-    bounds.removeFromTop(2);
-    primeStatusLabel.setBounds(bounds.removeFromTop(18));
-    bounds.removeFromTop(10);
-  }
 
   auto stemsHeader = bounds.removeFromTop(sectionLabelH);
   stemsSectionLabel.setBounds(stemsHeader.removeFromLeft(220));
@@ -642,13 +828,13 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
   bounds.removeFromTop(4);
   selectedFilesLabel.setBounds(bounds.removeFromTop(18));
   bounds.removeFromTop(6);
-  stemsList.setBounds(bounds.removeFromTop(
-      juce::jmax(150, bounds.getHeight() - (showPrime ? 0 : 16))));
+  stemsList.setBounds(bounds.removeFromTop(juce::jmax(150, bounds.getHeight() - 16)));
   juce::ignoreUnused(rowGap);
 }
 
 void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == Step::Metadata;
+  const bool showPrime = visible && primeImportEnabled && mode == Mode::Import;
   for (auto *c : {static_cast<juce::Component *>(&infoSectionLabel),
                   static_cast<juce::Component *>(&songTitleLabel),
                   static_cast<juce::Component *>(&artistLabel),
@@ -659,49 +845,112 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&artistEditor),
                   static_cast<juce::Component *>(&bpmEditor),
                   static_cast<juce::Component *>(&keyBox),
-                  static_cast<juce::Component *>(&timeSignatureBox)}) {
+                  static_cast<juce::Component *>(&timeSignatureBox),
+                  static_cast<juce::Component *>(&secuenciasStatusLabel),
+                  static_cast<juce::Component *>(&secuenciasDetailLabel),
+                  static_cast<juce::Component *>(&secuenciasArtworkPreview),
+                  static_cast<juce::Component *>(&secuenciasArtworkCaption),
+                  static_cast<juce::Component *>(&clearSongSearchButton),
+                  static_cast<juce::Component *>(&refreshPrimeButton),
+                  static_cast<juce::Component *>(&usePrimeSongButton),
+                  static_cast<juce::Component *>(&primeSongsList),
+                  static_cast<juce::Component *>(&primeSectionLabel),
+                  static_cast<juce::Component *>(&primeStatusLabel)}) {
+    const bool isPrimeControl =
+        c == static_cast<juce::Component *>(&refreshPrimeButton) ||
+        c == static_cast<juce::Component *>(&usePrimeSongButton) ||
+        c == static_cast<juce::Component *>(&primeSongsList) ||
+        c == static_cast<juce::Component *>(&primeSectionLabel) ||
+        c == static_cast<juce::Component *>(&primeStatusLabel);
+    if (isPrimeControl) {
+      c->setVisible(showPrime);
+      continue;
+    }
     c->setVisible(visible);
   }
-  if (!visible)
+  secuenciasList.setVisible(visible && !secuenciasResults.empty());
+  if (!visible) {
+    artworkOverlayButtonBounds = {};
     return;
+  }
 
   const int sectionLabelH = 18;
   const int fieldLabelH = 16;
   const int fieldH = 30;
-  const int rowGap = 8;
+
+  if (showPrime) {
+    auto primeHeader = bounds.removeFromTop(sectionLabelH);
+    primeSectionLabel.setBounds(primeHeader.removeFromLeft(190));
+    auto primeButtons = primeHeader.removeFromRight(258);
+    refreshPrimeButton.setBounds(primeButtons.removeFromLeft(122));
+    primeButtons.removeFromLeft(8);
+    usePrimeSongButton.setBounds(primeButtons.removeFromLeft(128));
+
+    bounds.removeFromTop(4);
+    primeSongsList.setBounds(bounds.removeFromTop(118));
+    bounds.removeFromTop(2);
+    primeStatusLabel.setBounds(bounds.removeFromTop(18));
+    bounds.removeFromTop(10);
+  }
 
   infoSectionLabel.setBounds(bounds.removeFromTop(sectionLabelH));
   bounds.removeFromTop(8);
 
-  auto infoArea = bounds;
-  const int leftW =
-      juce::jlimit(250, 360, static_cast<int>(infoArea.getWidth() * 0.52f));
-  auto left = infoArea.removeFromLeft(leftW);
-  auto right = infoArea;
+  auto body = bounds;
+  auto left = body.removeFromLeft(juce::jlimit(360, 560, (body.getWidth() * 65) / 100));
+  body.removeFromLeft(14);
+  auto right = body;
 
   auto labelRow = left.removeFromTop(fieldLabelH);
   songTitleLabel.setBounds(labelRow);
-  songTitleEditor.setBounds(left.removeFromTop(fieldH));
-  left.removeFromTop(rowGap);
+  auto titleRow = left.removeFromTop(fieldH);
+  auto clearArea = titleRow.removeFromRight(92);
+  clearSongSearchButton.setBounds(clearArea);
+  titleRow.removeFromRight(8);
+  songTitleEditor.setBounds(titleRow);
 
+  // Dropdown de sugerencias en overlay: no desplaza otros campos.
+  if (!secuenciasResults.empty()) {
+    const int listH = juce::jmin(220, 8 + (int)secuenciasResults.size() * secuenciasList.getRowHeight());
+    secuenciasList.setBounds(songTitleEditor.getX(), songTitleEditor.getBottom() + 4,
+                             songTitleEditor.getWidth(), listH);
+    secuenciasList.toFront(false);
+  }
+
+  left.removeFromTop(10);
   labelRow = left.removeFromTop(fieldLabelH);
   artistLabel.setBounds(labelRow);
   artistEditor.setBounds(left.removeFromTop(fieldH));
 
-  auto rightRow = right.removeFromTop(fieldLabelH + fieldH);
+  left.removeFromTop(10);
+  auto row = left.removeFromTop(fieldLabelH + fieldH);
   const int gap = 10;
-  const int colW = (rightRow.getWidth() - (2 * gap)) / 3;
-  auto col = rightRow.removeFromLeft(colW);
+  const int colW = (row.getWidth() - (2 * gap)) / 3;
+
+  auto col = row.removeFromLeft(colW);
   bpmLabel.setBounds(col.removeFromTop(fieldLabelH));
   bpmEditor.setBounds(col.removeFromTop(fieldH));
-  rightRow.removeFromLeft(gap);
-  col = rightRow.removeFromLeft(colW);
+
+  row.removeFromLeft(gap);
+  col = row.removeFromLeft(colW);
   keyLabel.setBounds(col.removeFromTop(fieldLabelH));
   keyBox.setBounds(col.removeFromTop(fieldH));
-  rightRow.removeFromLeft(gap);
-  col = rightRow.removeFromLeft(colW);
+
+  row.removeFromLeft(gap);
+  col = row.removeFromLeft(colW);
   timeSignatureLabel.setBounds(col.removeFromTop(fieldLabelH));
   timeSignatureBox.setBounds(col.removeFromTop(fieldH));
+
+  left.removeFromTop(10);
+  secuenciasStatusLabel.setBounds(left.removeFromTop(16));
+  left.removeFromTop(4);
+  secuenciasDetailLabel.setBounds(left.removeFromTop(40));
+
+  auto artworkBounds = right.removeFromTop(260);
+  secuenciasArtworkPreview.setBounds(artworkBounds);
+  artworkOverlayButtonBounds = artworkBounds.withSizeKeepingCentre(44, 44);
+  right.removeFromTop(8);
+  secuenciasArtworkCaption.setBounds(right.removeFromTop(36));
 }
 
 void SongImportWizardComponent::layoutStepMapping(juce::Rectangle<int> bounds) {
@@ -761,8 +1010,20 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
 
 void SongImportWizardComponent::handleSelectedStemFiles(
     const juce::Array<juce::File> &files, const bool replaceCurrent) {
-  if (replaceCurrent)
+  if (replaceCurrent) {
     stems.clear();
+  } else {
+    // Si solo hay placeholders remotos (sin archivo real), al agregar stems
+    // locales evitamos mezclar referencias de otra carga.
+    const bool hasOnlyPlaceholderStems =
+        !stems.empty() &&
+        std::all_of(stems.begin(), stems.end(), [](const StemDraft &stem) {
+          return stem.sourcePath.trim().isEmpty() &&
+                 stem.storedPath.trim().isEmpty() && !stem.file.existsAsFile();
+        });
+    if (hasOnlyPlaceholderStems)
+      stems.clear();
+  }
   if (files.isEmpty()) {
     updateSelectedFilesText();
     rebuildMappingRows();
@@ -815,6 +1076,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 }
 
 void SongImportWizardComponent::preloadFromExistingSong() {
+  setMetadataReadOnlyFromLocal(false);
   songTitleEditor.setText(initialSong.title, juce::dontSendNotification);
   artistEditor.setText(initialSong.artist, juce::dontSendNotification);
   bpmEditor.setText(initialSong.bpm > 0 ? juce::String(initialSong.bpm)
@@ -825,6 +1087,35 @@ void SongImportWizardComponent::preloadFromExistingSong() {
   if (initialSong.timeSignature.isNotEmpty()) {
     timeSignatureBox.setText(initialSong.timeSignature,
                              juce::dontSendNotification);
+  }
+
+  selectedArtworkUrl = initialSong.artworkSource.trim();
+  juce::Image persistedArtwork;
+  if (initialSong.artworkPath.trim().isNotEmpty()) {
+    const juce::File artworkFile(initialSong.artworkPath.trim());
+    if (artworkFile.existsAsFile())
+      persistedArtwork = juce::ImageFileFormat::loadFrom(artworkFile);
+  }
+  if (persistedArtwork.isValid()) {
+    if (selectedArtworkUrl.trim().isEmpty())
+      selectedArtworkUrl = "manual:" + initialSong.artworkPath.trim();
+    secuenciasArtworkPreview.setImage(persistedArtwork,
+                                      juce::RectanglePlacement::centred);
+    secuenciasArtworkCaption.setText(
+        L10n::tr("Imagen guardada", "Saved image"),
+        juce::dontSendNotification);
+  } else if (selectedArtworkUrl.startsWithIgnoreCase("http")) {
+    secuenciasArtworkPreview.setImage(juce::Image(),
+                                      juce::RectanglePlacement::centred);
+    secuenciasArtworkCaption.setText(
+        L10n::tr("Artwork remoto", "Remote artwork"),
+        juce::dontSendNotification);
+    requestArtworkAsync(selectedArtworkUrl);
+  } else {
+    selectedArtworkUrl.clear();
+    secuenciasArtworkPreview.setImage(juce::Image(),
+                                      juce::RectanglePlacement::centred);
+    secuenciasArtworkCaption.setText({}, juce::dontSendNotification);
   }
 
   stems.clear();
@@ -993,6 +1284,11 @@ void SongImportWizardComponent::applyPrimeSong(const size_t index) {
     return;
 
   const auto &song = primeSongs[index];
+  setMetadataReadOnlyFromLocal(true);
+  // Mantener el campo de titulo editable para permitir busqueda de artwork
+  // sin desbloquear el resto de metadata importada desde disco local.
+  songTitleEditor.setReadOnly(false);
+  suppressTitleAutocomplete = true;
   songTitleEditor.setText(song.title, juce::dontSendNotification);
   artistEditor.setText(song.artist, juce::dontSendNotification);
   bpmEditor.setText(song.bpm > 0 ? juce::String(song.bpm) : juce::String(),
@@ -1001,6 +1297,19 @@ void SongImportWizardComponent::applyPrimeSong(const size_t index) {
     keyBox.setText(song.key, juce::dontSendNotification);
   if (song.timeSignature.isNotEmpty())
     timeSignatureBox.setText(song.timeSignature, juce::dontSendNotification);
+  suppressTitleAutocomplete = false;
+  selectedArtworkUrl.clear();
+  secuenciasArtworkPreview.setImage(juce::Image(),
+                                    juce::RectanglePlacement::centred);
+  secuenciasArtworkCaption.setText({}, juce::dontSendNotification);
+
+  secuenciasResults.clear();
+  secuenciasList.updateContent();
+  secuenciasList.selectRow(-1);
+  secuenciasList.setVisible(false);
+  secuenciasStatusLabel.setText(L10n::tr("Buscando...", "Searching..."),
+                                juce::dontSendNotification);
+  triggerSecuenciasSearch();
 
   stems.clear();
   stems.reserve(song.tracks.size());
@@ -1064,7 +1373,9 @@ void SongImportWizardComponent::updateSummaryText() {
   lines.add("BPM: " + bpmEditor.getText().trim() + "   " +
             L10n::tr("Tono: ", "Key: ") + keyBox.getText() + "   " +
             L10n::tr(u8"Compás: ", "Time: ") + timeSignatureBox.getText());
-  lines.add(L10n::tr("Tipo de archivo: ", "File type: ") + "Multitrack ALAC");
+  lines.add(L10n::tr("Tipo de archivo: ", "File type: ") +
+            (stems.empty() ? juce::String("remote-reference")
+                           : juce::String("Multitrack ALAC")));
   lines.add(L10n::tr("Stems a cargar: ", "Stems to load: ") +
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
@@ -1095,13 +1406,13 @@ void SongImportWizardComponent::updateSummaryText() {
 
 void SongImportWizardComponent::goToNextStep() {
   switch (currentStep) {
-  case Step::Import:
-    if (!validateStepImport())
-      return;
-    changeStep(Step::Metadata);
-    return;
   case Step::Metadata:
     if (!validateStepMetadata())
+      return;
+    changeStep(Step::Stems);
+    return;
+  case Step::Stems:
+    if (!validateStepImport())
       return;
     changeStep(Step::Mapping);
     return;
@@ -1117,13 +1428,8 @@ void SongImportWizardComponent::goToNextStep() {
 }
 
 bool SongImportWizardComponent::validateStepImport() {
-  if (stems.empty()) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon, L10n::tr("Faltan stems", "Missing stems"),
-        L10n::tr("Selecciona al menos un archivo stem antes de continuar.",
-                 "Select at least one stem file before continuing."));
-    return false;
-  }
+  if (stems.empty())
+    return true;
 
   const bool hasAnyRealSource =
       std::any_of(stems.begin(), stems.end(), [](const StemDraft &stem) {
@@ -1160,6 +1466,9 @@ bool SongImportWizardComponent::validateStepMetadata() {
 
 bool SongImportWizardComponent::validateStepMapping() {
   syncMappingsToDrafts();
+  if (stems.empty())
+    return true;
+
   const bool hasAnyLoaded =
       std::any_of(stems.begin(), stems.end(),
                   [](const StemDraft &stem) { return stem.include; });
@@ -1167,8 +1476,8 @@ bool SongImportWizardComponent::validateStepMapping() {
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
         L10n::tr("No hay stems seleccionados", "No stems selected"),
-        L10n::tr("Activa al menos un stem para cargar.",
-                 "Enable at least one stem to load."));
+        L10n::tr("Activa al menos un stem para cargar o deja la lista vacía para metadata-only.",
+                 "Enable at least one stem or leave the list empty for metadata-only."));
     return false;
   }
   return true;
@@ -1186,18 +1495,26 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.bpm = bpmEditor.getText().getIntValue();
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
-  song.fileType = "Multitrack ALAC";
+  song.fileType = stems.empty() ? "remote-reference" : "Multitrack ALAC";
+  song.artworkSource = selectedArtworkUrl.trim();
+  if (song.artworkSource.isEmpty())
+    song.artworkPath.clear();
   if (song.createdMs <= 0)
     song.createdMs = juce::Time::getCurrentTime().toMilliseconds();
 
   song.stems.clear();
   song.stems.reserve(stems.size());
+  std::set<juce::String> usedStemIds;
   for (const auto &stem : stems) {
     if (!stem.include)
       continue;
 
     ImportedStemData data;
-    data.stemId = stem.stemId.isNotEmpty() ? stem.stemId : juce::Uuid().toString();
+    auto candidateStemId = stem.stemId.trim();
+    if (candidateStemId.isEmpty() || usedStemIds.count(candidateStemId) > 0)
+      candidateStemId = juce::Uuid().toString();
+    data.stemId = candidateStemId;
+    usedStemIds.insert(data.stemId);
     data.displayName = stem.displayName.trim();
     if (data.displayName.isEmpty())
       data.displayName = makeDisplayNameFromFile(stem.file);
@@ -1228,6 +1545,8 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
     song.stems.push_back(std::move(data));
   }
 
+  sortStemsForStripOrder(song.stems);
+
   return song;
 }
 
@@ -1247,6 +1566,96 @@ void SongImportWizardComponent::submitSong() {
       juce::String(mode == Mode::Edit ? "edit" : "import") + " title=\"" +
       songTitleEditor.getText().trim() + "\" stems=" +
       juce::String(static_cast<int>(stems.size())));
+
+  auto songData = buildSongData();
+  bool temporarilyDisableOptimization = false;
+
+  const bool optimizationEnabled = AppSettings::getStemOptimizationEnabled();
+  const bool hasLocalStemsToStore = std::any_of(
+      songData.stems.begin(), songData.stems.end(),
+      [](const ImportedStemData &stem) {
+        return stem.include &&
+               (stem.sourcePath.trim().isNotEmpty() ||
+                stem.storedPath.trim().isNotEmpty());
+      });
+
+  if (optimizationEnabled && hasLocalStemsToStore) {
+    const auto availableEncoder = AssetBootstrapManager::getAvailableEncoderBinary();
+    const bool encoderReadyLocally =
+        availableEncoder.existsAsFile() && availableEncoder.getSize() > 0;
+
+    if (!encoderReadyLocally) {
+      juce::AlertWindow prompt(
+          L10n::tr("Descargar encoder", "Download encoder"),
+          L10n::tr(
+              u8"No se encontró el encoder para optimizar almacenamiento.\n\n"
+              u8"¿Deseas descargarlo ahora?",
+              "Encoder for storage optimization wasn't found.\n\n"
+              "Do you want to download it now?"),
+          juce::AlertWindow::QuestionIcon);
+      prompt.addButton(L10n::tr("Descargar", "Download"), 1);
+      prompt.addButton(L10n::tr("Continuar sin optimizar", "Continue without optimization"),
+                       2);
+      prompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
+
+      const int decision = prompt.runModalLoop();
+      if (decision == 0)
+        return;
+
+      if (decision == 2) {
+        temporarilyDisableOptimization = true;
+      } else {
+        SongLoadProgressOverlay downloadOverlay;
+        addAndMakeVisible(downloadOverlay);
+        downloadOverlay.refreshThemeColours();
+        downloadOverlay.setTitleText(
+            L10n::tr("Descargando encoder", "Downloading encoder"));
+        downloadOverlay.setPhaseText(
+            L10n::tr("Preparando descarga...", "Preparing download..."));
+        downloadOverlay.setProgress(0.0);
+        downloadOverlay.setAlwaysOnTop(true);
+        downloadOverlay.setBounds(getLocalBounds());
+        downloadOverlay.setVisible(true);
+        downloadOverlay.toFront(true);
+
+        auto pumpUi = [] {
+          if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+            mm->runDispatchLoopUntil(14);
+        };
+
+        juce::String bootstrapError;
+        const bool encoderReady = AssetBootstrapManager::ensureEncoderReady(
+            &bootstrapError,
+            [&downloadOverlay, &pumpUi](double progress01, const juce::String &phase) {
+              downloadOverlay.setProgress(juce::jlimit(0.0, 1.0, progress01));
+              if (phase.isNotEmpty())
+                downloadOverlay.setPhaseText(
+                    L10n::tr("Descargando encoder...", "Downloading encoder..."));
+              pumpUi();
+            });
+
+        removeChildComponent(&downloadOverlay);
+
+        if (!encoderReady) {
+          juce::AlertWindow failedPrompt(
+              L10n::tr("No se pudo descargar encoder",
+                       "Couldn't download encoder"),
+              (bootstrapError.isNotEmpty() ? bootstrapError + "\n\n" : juce::String()) +
+                  L10n::tr("¿Deseas continuar sin optimización de almacenamiento?",
+                           "Do you want to continue without storage optimization?"),
+              juce::AlertWindow::WarningIcon);
+          failedPrompt.addButton(
+              L10n::tr("Continuar sin optimizar", "Continue without optimization"),
+              1);
+          failedPrompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
+
+          if (failedPrompt.runModalLoop() != 1)
+            return;
+          temporarilyDisableOptimization = true;
+        }
+      }
+    }
+  }
 
   submitButton.setEnabled(false);
   backButton.setEnabled(false);
@@ -1288,8 +1697,24 @@ void SongImportWizardComponent::submitSong() {
         pumpUi();
       };
 
+  struct OptimizationOverrideScope final {
+    bool restore = false;
+    bool previous = false;
+    ~OptimizationOverrideScope() {
+      if (restore)
+        AppSettings::setStemOptimizationEnabled(previous);
+    }
+  };
+
+  OptimizationOverrideScope optimizationScope;
+  if (temporarilyDisableOptimization && optimizationEnabled) {
+    optimizationScope.restore = true;
+    optimizationScope.previous = optimizationEnabled;
+    AppSettings::setStemOptimizationEnabled(false);
+  }
+
   juce::String errorMessage;
-  const bool ok = onSubmit(buildSongData(), errorMessage, report);
+  const bool ok = onSubmit(std::move(songData), errorMessage, report);
 
   SessionAuthLogger::write(
       "[SongImportUI] submitSong finished ok=" + juce::String(ok ? "true" : "false") +
@@ -1320,14 +1745,14 @@ void SongImportWizardComponent::submitSong() {
 
 void SongImportWizardComponent::changeStep(const Step step) {
   currentStep = static_cast<Step>(
-      juce::jlimit(static_cast<int>(Step::Import), static_cast<int>(Step::Review),
+      juce::jlimit(static_cast<int>(Step::Metadata), static_cast<int>(Step::Review),
                    static_cast<int>(step)));
 
   subtitleLabel.setText(stepSubtitle(currentStep), juce::dontSendNotification);
   if (currentStep == Step::Review)
     updateSummaryText();
 
-  backButton.setVisible(currentStep != Step::Import);
+  backButton.setVisible(currentStep != Step::Metadata);
   nextButton.setVisible(currentStep != Step::Review);
   submitButton.setVisible(currentStep == Step::Review);
   resized();
@@ -1336,12 +1761,12 @@ void SongImportWizardComponent::changeStep(const Step step) {
 
 juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
   switch (step) {
-  case Step::Import:
-    return L10n::tr(u8"Paso 1/4 - Importación de stems",
-                    "Step 1/4 - Import stems");
   case Step::Metadata:
-    return L10n::tr(u8"Paso 2/4 - Metadatos de la canción",
-                    "Step 2/4 - Song metadata");
+    return L10n::tr(u8"Paso 1/4 - Metadatos de la canción",
+                    "Step 1/4 - Song metadata");
+  case Step::Stems:
+    return L10n::tr(u8"Paso 2/4 - Importación de stems",
+                    "Step 2/4 - Import stems");
   case Step::Mapping:
     return L10n::tr("Paso 3/4 - Mapeo de stems y categorias",
                     "Step 3/4 - Map stems and categories");
@@ -1385,4 +1810,287 @@ void SongImportWizardComponent::styleSecondaryButton(juce::TextButton &button) {
   button.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
   button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
+}
+
+void SongImportWizardComponent::setMetadataReadOnlyFromLocal(
+    const bool shouldBeReadOnly) {
+  metadataReadOnlyFromLocal = shouldBeReadOnly;
+  songTitleEditor.setReadOnly(shouldBeReadOnly);
+  artistEditor.setReadOnly(shouldBeReadOnly);
+  bpmEditor.setReadOnly(shouldBeReadOnly);
+  keyBox.setEnabled(!shouldBeReadOnly);
+  timeSignatureBox.setEnabled(!shouldBeReadOnly);
+}
+
+void SongImportWizardComponent::openArtworkChooser() {
+  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  artworkChooser = std::make_unique<juce::FileChooser>(
+      L10n::tr("Selecciona imagen", "Select image"),
+      juce::File::getSpecialLocation(juce::File::userPicturesDirectory),
+      "*.png;*.jpg;*.jpeg;*.webp");
+
+  const auto flags = juce::FileBrowserComponent::openMode |
+                     juce::FileBrowserComponent::canSelectFiles;
+  artworkChooser->launchAsync(flags, [safeThis](const juce::FileChooser &chooser) {
+    if (safeThis == nullptr)
+      return;
+    const auto file = chooser.getResult();
+    if (!file.existsAsFile()) {
+      safeThis->artworkChooser.reset();
+      return;
+    }
+
+    const auto image = juce::ImageFileFormat::loadFrom(file);
+    if (image.isValid()) {
+      safeThis->selectedArtworkUrl = "manual:" + file.getFullPathName();
+      safeThis->secuenciasArtworkPreview.setImage(
+          image, juce::RectanglePlacement::centred);
+      safeThis->secuenciasArtworkCaption.setText(
+          L10n::tr("Imagen manual", "Manual image"),
+          juce::dontSendNotification);
+    }
+    safeThis->artworkChooser.reset();
+  });
+}
+
+
+juce::Image SongImportWizardComponent::getCachedArtwork(const juce::String &url) const {
+  if (url.trim().isEmpty())
+    return {};
+
+  const juce::ScopedLock sl(artworkLock);
+  auto it = artworkCache.find(url.toStdString());
+  if (it == artworkCache.end())
+    return {};
+  return it->second;
+}
+
+void SongImportWizardComponent::requestArtworkAsync(const juce::String &url) {
+  const auto trimmed = url.trim();
+  if (trimmed.isEmpty())
+    return;
+
+  const auto key = trimmed.toStdString();
+  {
+    const juce::ScopedLock sl(artworkLock);
+    if (artworkCache.find(key) != artworkCache.end())
+      return;
+    if (artworkInFlight.find(key) != artworkInFlight.end())
+      return;
+    artworkInFlight.insert(key);
+  }
+
+  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  std::thread([safeThis, trimmed, key] {
+    juce::Image loaded;
+    juce::URL artworkUrl(trimmed);
+    auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                       .withExtraHeaders("User-Agent: Mozilla/5.0\r\n")
+                       .withConnectionTimeoutMs(7000)
+                       .withHttpRequestCmd("GET");
+    if (auto stream = artworkUrl.createInputStream(options)) {
+      juce::MemoryBlock bytes;
+      stream->readIntoMemoryBlock(bytes);
+      if (bytes.getSize() > 0)
+        loaded = juce::ImageFileFormat::loadFrom(bytes.getData(), bytes.getSize());
+    }
+
+    juce::MessageManager::callAsync([safeThis, loaded, key] {
+      if (safeThis == nullptr)
+        return;
+      {
+        const juce::ScopedLock sl(safeThis->artworkLock);
+        safeThis->artworkInFlight.erase(key);
+        if (loaded.isValid())
+          safeThis->artworkCache[key] = loaded;
+      }
+      safeThis->secuenciasList.repaint();
+      if (safeThis->selectedArtworkUrl.toStdString() == key && loaded.isValid())
+        safeThis->secuenciasArtworkPreview.setImage(
+            loaded, juce::RectanglePlacement::centred);
+    });
+  }).detach();
+}
+
+void SongImportWizardComponent::triggerSecuenciasSearch() {
+  const auto query = songTitleEditor.getText().trim();
+  if (query.length() < 2)
+    return;
+
+  const int requestId = ++latestSearchRequestId;
+  secuenciasClient.searchSongs(query, 1,
+                               [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+                                requestId](std::vector<SongSearchResult> results,
+                                           SecuenciasError err) {
+                                 if (safeThis == nullptr)
+                                   return;
+                                 if (requestId != safeThis->latestSearchRequestId)
+                                   return;
+                                 safeThis->handleSecuenciasResult(results, err);
+                               });
+}
+
+void SongImportWizardComponent::handleSecuenciasResult(
+    const std::vector<SongSearchResult> &results, const SecuenciasError &err) {
+  selectedSongDetail.reset();
+  secuenciasSelectedRow = -1;
+  secuenciasDetailLabel.setText({}, juce::dontSendNotification);
+
+  if (err.type != SecuenciasError::Type::None) {
+    secuenciasResults.clear();
+    secuenciasList.updateContent();
+    secuenciasList.selectRow(-1);
+    secuenciasList.setVisible(false);
+    secuenciasStatusLabel.setText(
+        L10n::tr("Sin resultados en línea. Puedes ingresar metadata manualmente.",
+                 "No online results. You can continue with manual metadata."),
+        juce::dontSendNotification);
+    return;
+  }
+
+  secuenciasResults = results;
+  secuenciasList.updateContent();
+  secuenciasList.setVisible(!secuenciasResults.empty());
+  resized();
+
+  for (size_t i = 0; i < secuenciasResults.size() && i < 10; ++i)
+    requestArtworkAsync(secuenciasResults[i].artworkUrl);
+
+  if (secuenciasResults.empty()) {
+    secuenciasStatusLabel.setText(
+        L10n::tr("No encontramos coincidencias. Continúa con ingreso manual.",
+                 "No matches found. Continue with manual entry."),
+        juce::dontSendNotification);
+    return;
+  }
+
+  secuenciasStatusLabel.setText(
+      juce::String(static_cast<int>(secuenciasResults.size())) + " " +
+          L10n::tr("coincidencias", "matches") +
+          L10n::tr(". Selecciona una canción.", ". Select a song."),
+      juce::dontSendNotification);
+  secuenciasList.selectRow(-1);
+}
+
+void SongImportWizardComponent::fetchSecuenciasDetailForSelected() {
+  if (!juce::isPositiveAndBelow(secuenciasSelectedRow,
+                                static_cast<int>(secuenciasResults.size()))) {
+    selectedSongDetail.reset();
+    return;
+  }
+
+  const auto selected =
+      secuenciasResults[static_cast<size_t>(secuenciasSelectedRow)];
+
+  selectedArtworkUrl = selected.artworkUrl;
+  secuenciasArtworkCaption.setText(
+      selected.artist.isNotEmpty() ? selected.artist : selected.title,
+      juce::dontSendNotification);
+  if (const auto image = getCachedArtwork(selected.artworkUrl); image.isValid())
+    secuenciasArtworkPreview.setImage(image, juce::RectanglePlacement::centred);
+  else {
+    secuenciasArtworkPreview.setImage(juce::Image(), juce::RectanglePlacement::centred);
+    requestArtworkAsync(selected.artworkUrl);
+  }
+
+  applySecuenciasMetadata(selected, nullptr);
+
+  secuenciasDetailLabel.setText(L10n::tr("Cargando detalle técnico...",
+                                         "Loading technical details..."),
+                                juce::dontSendNotification);
+
+  const int requestId = ++latestDetailRequestId;
+  secuenciasClient.getSongDetails(
+      selected.songId, 15,
+      [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+       requestId, selected](SongDetail detail, SecuenciasError err) {
+        if (safeThis == nullptr)
+          return;
+        if (requestId != safeThis->latestDetailRequestId)
+          return;
+        if (err.type != SecuenciasError::Type::None) {
+          safeThis->selectedSongDetail.reset();
+          safeThis->secuenciasDetailLabel.setText(
+              L10n::tr("Detalle no disponible. Puedes usar metadata básica.",
+                       "Detail unavailable. You can still use basic metadata."),
+              juce::dontSendNotification);
+          return;
+        }
+
+        safeThis->selectedSongDetail = detail;
+        juce::StringArray names;
+        for (size_t i = 0; i < detail.tracks.size() && i < 8; ++i)
+          names.add(detail.tracks[i].name);
+
+        juce::String info =
+            "BPM " + juce::String(static_cast<int>(std::round(detail.bpm))) +
+            " • " + L10n::tr("Duración", "Duration") + " " +
+            juce::String(static_cast<int>(std::round(detail.durationSeconds))) + "s";
+        if (names.size() > 0)
+          info << " • " << L10n::tr("Tracks", "Tracks") << ": "
+               << names.joinIntoString(", ");
+
+        safeThis->secuenciasDetailLabel.setText(info, juce::dontSendNotification);
+        safeThis->applySecuenciasMetadata(selected, &detail);
+      });
+}
+
+void SongImportWizardComponent::applySecuenciasMetadata(const SongSearchResult &result,
+                                                         const SongDetail *detail) {
+  if (metadataReadOnlyFromLocal) {
+    secuenciasStatusLabel.setText(
+        L10n::tr("Artwork aplicado. Metadata de canción local permanece en solo lectura.",
+                 "Artwork applied. Local song metadata remains read-only."),
+        juce::dontSendNotification);
+
+    secuenciasResults.clear();
+    secuenciasList.updateContent();
+    secuenciasList.selectRow(-1);
+    secuenciasList.setVisible(false);
+    resized();
+    return;
+  }
+
+  setMetadataReadOnlyFromLocal(false);
+  suppressTitleAutocomplete = true;
+  songTitleEditor.setText(result.title, juce::dontSendNotification);
+  suppressTitleAutocomplete = false;
+
+  if (artistEditor.getText().trim().isEmpty() || result.artist.isNotEmpty())
+    artistEditor.setText(result.artist, juce::dontSendNotification);
+
+  if (detail != nullptr && detail->bpm > 0.0)
+    bpmEditor.setText(juce::String(static_cast<int>(std::round(detail->bpm))),
+                      juce::dontSendNotification);
+
+  if (result.originalKey.isNotEmpty())
+    keyBox.setText(result.originalKey, juce::dontSendNotification);
+
+  if (stems.empty() && detail != nullptr && !detail->tracks.empty()) {
+    for (const auto &track : detail->tracks) {
+      StemDraft draft;
+      draft.file = juce::File();
+      draft.sourcePath.clear();
+      draft.storedPath.clear();
+      draft.stemId = track.stemId.isNotEmpty() ? track.stemId : juce::Uuid().toString();
+      draft.displayName = track.name.isNotEmpty() ? track.name : L10n::tr("Track", "Track");
+      draft.category = track.isClickOrGuide ? (track.name.containsIgnoreCase("click") ? "Click" : "Cues") : "Other";
+      draft.fromExistingSong = false;
+      draft.include = true;
+      stems.push_back(std::move(draft));
+    }
+    updateSelectedFilesText();
+    rebuildMappingRows();
+  }
+
+  secuenciasStatusLabel.setText(
+      L10n::tr("Metadata aplicada. Puedes editarla manualmente.",
+               "Metadata applied. You can edit it manually."),
+      juce::dontSendNotification);
+
+  secuenciasResults.clear();
+  secuenciasList.updateContent();
+  secuenciasList.selectRow(-1);
+  secuenciasList.setVisible(false);
+  resized();
 }

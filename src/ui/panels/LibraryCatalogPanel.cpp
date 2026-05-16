@@ -11,11 +11,6 @@ namespace {
 
 constexpr int kCatalogItemSideInset = 10;
 
-const std::array<juce::Colour, 5> kSongAccentPalette = {
-    juce::Colour::fromString("ff5EEAD4"), juce::Colour::fromString("ffFACC15"),
-    juce::Colour::fromString("ffA855F7"), juce::Colour::fromString("ffF472B6"),
-    juce::Colour::fromString("ff22C55E")};
-
 juce::String normalizedTitle(const ImportedSongData &song) {
   return song.title.isNotEmpty() ? song.title
                                  : L10n::tr(u8"Canción sin título", "Untitled Song");
@@ -88,20 +83,6 @@ bool looksLikeWorshipSong(const ImportedSongData &song) {
                           {"ador", "worship", "gloria", "gracia", "jesus",
                            "dios", "holy", "praise", "bethel", "hillsong",
                            "elevation", "planetshakers", "miel san marcos"});
-}
-
-juce::Colour accentColourForToken(const juce::String &key,
-                                  const juce::String &category,
-                                  const juce::String &songId) {
-  juce::String token = key.trim();
-  if (token.isEmpty())
-    token = category.trim();
-  if (token.isEmpty())
-    token = songId;
-  size_t hash = 0;
-  for (int i = 0; i < token.length(); ++i)
-    hash = (hash * 131u) + static_cast<size_t>(token[i]);
-  return kSongAccentPalette[hash % kSongAccentPalette.size()];
 }
 
 juce::String formatDurationHMSLocal(const double totalSeconds) {
@@ -415,6 +396,7 @@ void LibraryCatalogPanel::CatalogContent::setRows(std::vector<CatalogItem> nextR
   selectedSongIds = nextSelectedSongIds;
   hideOptionsButtons = nextHideOptionsButtons;
   selectionEnabled = allowSelection;
+  artworkCache.clear();
   repaint();
 }
 
@@ -549,13 +531,46 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                     UITheme::accent, 1.9f);
       contentArea.removeFromLeft(toggleBounds.getWidth() + 12);
     }
-    auto accentBar =
-        juce::Rectangle<int>(contentArea.getX(), rowBounds.getCentreY() - 20, 4, 40);
-    g.setColour(accentColourForToken(item.key, item.dominantCategory, item.songId)
-                    .withAlpha(rowAlpha));
-    g.fillRoundedRectangle(accentBar.toFloat(), 2.0f);
-    contentArea.removeFromLeft(4);
-    contentArea.removeFromLeft(12);
+    constexpr int artworkSize = 48;
+    auto artworkArea = juce::Rectangle<int>(
+        contentArea.getX(),
+        contentArea.getY() + juce::jmax(0, (contentArea.getHeight() - artworkSize) / 2),
+        artworkSize, artworkSize);
+
+    juce::Image artworkImage;
+    const auto artworkKey = item.artworkPath.trim().toStdString();
+    if (!artworkKey.empty()) {
+      auto it = artworkCache.find(artworkKey);
+      if (it == artworkCache.end()) {
+        const juce::File artworkFile(item.artworkPath.trim());
+        juce::Image loaded;
+        if (artworkFile.existsAsFile())
+          loaded = juce::ImageFileFormat::loadFrom(artworkFile);
+        it = artworkCache.emplace(artworkKey, std::move(loaded)).first;
+      }
+      artworkImage = it->second;
+    }
+
+    g.setColour(UITheme::cardBgHover.withAlpha(0.9f * rowAlpha));
+    g.fillRoundedRectangle(artworkArea.toFloat(), 8.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.72f * rowAlpha));
+    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 8.0f, 1.0f);
+
+    if (artworkImage.isValid()) {
+      g.drawImageWithin(artworkImage, artworkArea.getX(), artworkArea.getY(),
+                        artworkArea.getWidth(), artworkArea.getHeight(),
+                        juce::RectanglePlacement::centred |
+                            juce::RectanglePlacement::onlyReduceInSize);
+    } else {
+      juce::String placeholder = item.title.trim();
+      placeholder = placeholder.isNotEmpty() ? placeholder.substring(0, 1).toUpperCase()
+                                             : "?";
+      g.setColour(UITheme::textSecondary.withAlpha(0.88f * rowAlpha));
+      g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
+    }
+
+    contentArea.removeFromLeft(artworkSize + 12);
 
     const auto menuBounds = menuBoundsForIndex(i);
     if (!menuBounds.isEmpty())
@@ -961,6 +976,7 @@ void LibraryCatalogPanel::rebuildRows() {
     item.artist = normalizedArtist(song);
     item.key = song.key;
     item.dominantCategory = dominantCategoryForSong(song);
+    item.artworkPath = song.artworkPath.trim();
     item.durationSeconds = estimateSongLengthSeconds(song);
     item.createdMs = song.createdMs;
     item.bpm = song.bpm;

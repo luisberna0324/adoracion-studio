@@ -530,11 +530,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       }
     }
 
-    std::stable_sort(resolvedStems.begin(), resolvedStems.end(),
-                     [](const ImportedStemData &a, const ImportedStemData &b) {
-                       return stemPriorityForStripOrder(a) <
-                              stemPriorityForStripOrder(b);
-                     });
+    sortStemsForStripOrder(resolvedStems);
 
     for (const auto &loadedStem : resolvedStems) {
       const int stemPriority = stemPriorityForStripOrder(loadedStem);

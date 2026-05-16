@@ -3,11 +3,16 @@
 #include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/SecuenciasClient.h"
 #include <JuceHeader.h>
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <vector>
+#include <optional>
+#include <unordered_map>
+#include <unordered_set>
 
 class SongImportWizardComponent final : public juce::Component {
 public:
@@ -22,11 +27,15 @@ public:
   ~SongImportWizardComponent() override;
 
   void paint(juce::Graphics &g) override;
+  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void mouseMove(const juce::MouseEvent &event) override;
+  void mouseExit(const juce::MouseEvent &event) override;
+  void mouseUp(const juce::MouseEvent &event) override;
   void refreshThemeColours();
 
 private:
-  enum class Step { Import = 0, Metadata, Mapping, Review };
+  enum class Step { Metadata = 0, Stems, Mapping, Review };
 
   struct StemDraft {
     juce::File file;
@@ -46,6 +55,7 @@ private:
   class PrimeSongListModel;
   class StemImportListModel;
   class StemListRowComponent;
+  class SecuenciasResultListModel;
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder);
@@ -81,14 +91,26 @@ private:
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
 
+  void triggerSecuenciasSearch();
+  void handleSecuenciasResult(const std::vector<SongSearchResult>& results, const SecuenciasError& err);
+  void fetchSecuenciasDetailForSelected();
+  void applySecuenciasMetadata(const SongSearchResult& result, const SongDetail* detail);
+  void setMetadataReadOnlyFromLocal(bool shouldBeReadOnly);
+  void openArtworkChooser();
+
+  juce::Image getCachedArtwork(const juce::String &url) const;
+  void requestArtworkAsync(const juce::String &url);
+
+
   std::function<bool(ImportedSongData, juce::String &,
                      const SongImportProgressFn &)>
       onSubmit;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;
-  Step currentStep = Step::Import;
+  Step currentStep = Step::Metadata;
   std::unique_ptr<juce::FileChooser> stemChooser;
+  std::unique_ptr<juce::FileChooser> artworkChooser;
   std::vector<StemDraft> stems;
   std::vector<std::unique_ptr<MappingRow>> mappingRows;
   std::vector<PrimeSongData> primeSongs;
@@ -133,5 +155,29 @@ private:
   juce::TextButton backButton;
   juce::TextButton nextButton;
   juce::TextButton submitButton;
+  juce::TextButton clearSongSearchButton;
+
+  SecuenciasClient secuenciasClient;
+  std::unique_ptr<SecuenciasResultListModel> secuenciasListModel;
+  int secuenciasSearchToken = 0;
+  int latestSearchRequestId = 0;
+  int latestDetailRequestId = 0;
+  bool suppressTitleAutocomplete = false;
+  mutable juce::CriticalSection artworkLock;
+  std::unordered_map<std::string, juce::Image> artworkCache;
+  std::unordered_set<std::string> artworkInFlight;
+  std::vector<SongSearchResult> secuenciasResults;
+  std::optional<SongDetail> selectedSongDetail;
+  int secuenciasSelectedRow = -1;
+  juce::String selectedArtworkUrl;
+  bool metadataReadOnlyFromLocal = false;
+  bool artworkOverlayHovered = false;
+  juce::Rectangle<int> artworkOverlayButtonBounds;
+
+  juce::Label secuenciasStatusLabel;
+  juce::ImageComponent secuenciasArtworkPreview;
+  juce::Label secuenciasArtworkCaption;
+  juce::Label secuenciasDetailLabel;
+  juce::ListBox secuenciasList;
 
 };

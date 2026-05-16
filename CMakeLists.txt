@@ -143,6 +143,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/copy.svg
         assets/ui-icons/repeat.svg
         assets/ui-icons/corner_down_right.svg
+        assets/ui-icons/image_edit.svg
 )
 
 target_sources(MTControls
@@ -193,6 +194,8 @@ target_sources(MTControls
         src/data/SessionAuthLogger.h
         src/data/SessionPersistence.cpp
         src/data/SessionPersistence.h
+        src/data/SecuenciasClient.cpp
+        src/data/SecuenciasClient.h
         src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h

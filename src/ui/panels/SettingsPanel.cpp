@@ -172,7 +172,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
-  juce::ignoreUnused(closeCb, stemOptimizationEnabled);
+  juce::ignoreUnused(closeCb);
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
   addAndMakeVisible(title);
@@ -270,13 +270,12 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(stemOptimizationLabel);
 
   stemOptimizationToggle.setClickingTogglesState(true);
-  stemOptimizationToggle.setToggleState(false,
+  stemOptimizationToggle.setToggleState(stemOptimizationEnabled,
                                         juce::dontSendNotification);
   stemOptimizationToggle.onClick = [this] {
     if (onStemOptimizationChanged)
       onStemOptimizationChanged(stemOptimizationToggle.getToggleState());
   };
-  stemOptimizationToggle.setEnabled(false);
   generalPage.addAndMakeVisible(stemOptimizationToggle);
 
   padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
@@ -713,12 +712,12 @@ void SettingsPanel::applyLanguageTexts() {
       L10n::tr(u8"Habilitar importación desde disco local",
                "Enable import from local disk"));
   stemOptimizationLabel.setText(
-      L10n::tr("Optimizacion de stems (deshabilitada)",
-               "Stem optimization (disabled)"),
+      L10n::tr("Optimizacion de stems",
+               "Stem optimization"),
       juce::dontSendNotification);
   stemOptimizationToggle.setButtonText(
-      L10n::tr("Temporalmente deshabilitado",
-               "Temporarily disabled"));
+      L10n::tr("Convertir stems para ahorrar almacenamiento",
+               "Convert stems to save storage"));
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);

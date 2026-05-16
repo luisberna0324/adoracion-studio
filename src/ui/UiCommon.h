@@ -84,7 +84,8 @@ enum class SvgIconName {
   Maximize,
   Copy,
   Repeat,
-  CornerDownRight
+  CornerDownRight,
+  ImageEdit
 };
 
 void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,

@@ -9,6 +9,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 class LibraryCatalogPanel final : public juce::Component {
@@ -67,6 +68,7 @@ private:
     juce::String artist;
     juce::String key;
     juce::String dominantCategory;
+    juce::String artworkPath;
     double durationSeconds = 0.0;
     int64_t createdMs = 0;
     int bpm = 0;
@@ -158,6 +160,7 @@ private:
     std::vector<CatalogItem> rows;
     juce::StringArray selectedSongIds;
     juce::String nowPlayingSongId;
+    std::unordered_map<std::string, juce::Image> artworkCache;
     int hoveredRowIndex = -1;
     bool playbackActive = false;
     bool hideOptionsButtons = false;

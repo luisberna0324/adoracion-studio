@@ -50,6 +50,38 @@ juce::File AssetBootstrapManager::getEncoderBinaryPath() {
 #endif
 }
 
+juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
+  const auto managed = getEncoderBinaryPath();
+  if (managed.existsAsFile() && managed.getSize() > 0)
+    return managed;
+
+  const auto executable =
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+  if (!executable.existsAsFile())
+    return {};
+
+#if JUCE_MAC
+  const auto macOSDir = executable.getParentDirectory();
+  const auto resourcesDir = macOSDir.getSiblingFile("Resources");
+  const auto bundled = resourcesDir.getChildFile("ffmpeg").getChildFile("ffmpeg");
+  if (bundled.existsAsFile() && bundled.getSize() > 0)
+    return bundled;
+#elif JUCE_WINDOWS
+  const auto bundled = executable.getParentDirectory()
+                          .getChildFile("ffmpeg")
+                          .getChildFile("ffmpeg.exe");
+  if (bundled.existsAsFile() && bundled.getSize() > 0)
+    return bundled;
+#else
+  const auto bundled =
+      executable.getParentDirectory().getChildFile("ffmpeg").getChildFile("ffmpeg");
+  if (bundled.existsAsFile() && bundled.getSize() > 0)
+    return bundled;
+#endif
+
+  return {};
+}
+
 juce::File AssetBootstrapManager::getPadsPackDirectory() {
   auto dir = getAssetsRootDirectory().getChildFile("pads").getChildFile("RomanVizcaino");
   dir.createDirectory();
@@ -58,7 +90,9 @@ juce::File AssetBootstrapManager::getPadsPackDirectory() {
 
 bool AssetBootstrapManager::downloadFile(const juce::String &url,
                                          const juce::File &destination,
-                                         juce::String &errorMessage) {
+                                         juce::String &errorMessage,
+                                         const ProgressFn &progress,
+                                         const juce::String &phaseText) {
   const juce::URL remote(url);
   const auto options =
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
@@ -84,6 +118,13 @@ bool AssetBootstrapManager::downloadFile(const juce::String &url,
 
   constexpr int kChunkSize = 64 * 1024;
   juce::HeapBlock<char> buffer(static_cast<size_t>(kChunkSize));
+  const auto totalBytes = input->getTotalLength();
+  juce::int64 downloadedBytes = 0;
+  double fallbackProgress = 0.0;
+
+  if (progress)
+    progress(0.0, phaseText);
+
   while (!input->isExhausted()) {
     const auto bytesRead = input->read(buffer.getData(), kChunkSize);
     if (bytesRead < 0) {
@@ -92,10 +133,23 @@ bool AssetBootstrapManager::downloadFile(const juce::String &url,
     }
     if (bytesRead == 0)
       break;
-    if (!out.write(buffer.getData(), bytesRead)) {
+    downloadedBytes += bytesRead;
+    if (!out.write(buffer.getData(), static_cast<size_t>(bytesRead))) {
       errorMessage = "Error while writing downloaded file: " +
                      destination.getFullPathName();
       return false;
+    }
+
+    if (progress) {
+      double p = 0.0;
+      if (totalBytes > 0)
+        p = static_cast<double>(downloadedBytes) /
+            static_cast<double>(totalBytes);
+      else {
+        fallbackProgress = juce::jmin(0.97, fallbackProgress + 0.015);
+        p = fallbackProgress;
+      }
+      progress(juce::jlimit(0.0, 1.0, p), phaseText);
     }
   }
 
@@ -104,6 +158,9 @@ bool AssetBootstrapManager::downloadFile(const juce::String &url,
     errorMessage = "Downloaded file is empty: " + destination.getFileName();
     return false;
   }
+
+  if (progress)
+    progress(1.0, phaseText);
 
   return true;
 }
@@ -179,19 +236,30 @@ void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
   AppSettings::setAssetsBootstrapState(state);
 }
 
-bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage) {
-  auto encoder = getEncoderBinaryPath();
+bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
+                                               const ProgressFn &progress) {
+  auto encoder = getAvailableEncoderBinary();
   juce::String localError;
 
   if (encoder.existsAsFile() && encoder.getSize() > 0) {
+    if (progress)
+      progress(1.0, "Encoder ready");
     persistState("Ready", AppSettings::getAssetsBootstrapState().padsStatus, {});
     return true;
   }
 
+  encoder = getEncoderBinaryPath();
+  if (progress)
+    progress(0.02, "Preparing encoder download");
   persistState("Downloading", AppSettings::getAssetsBootstrapState().padsStatus,
                {});
   auto temp = encoder.getSiblingFile(encoder.getFileName() + ".download");
-  if (!downloadFile(buildEncoderUrl(), temp, localError)) {
+  if (!downloadFile(buildEncoderUrl(), temp, localError,
+                    [progress](double p, const juce::String &phase) {
+                      if (progress)
+                        progress(0.05 + (0.90 * juce::jlimit(0.0, 1.0, p)), phase);
+                    },
+                    "Downloading encoder")) {
     persistState("Error", AppSettings::getAssetsBootstrapState().padsStatus,
                  localError);
     if (errorMessage != nullptr)
@@ -201,6 +269,8 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage) {
 
   if (encoder.existsAsFile())
     encoder.deleteFile();
+  if (progress)
+    progress(0.96, "Installing encoder");
   if (!temp.moveFileTo(encoder)) {
     localError = "Couldn't move downloaded encoder into final location.";
     temp.deleteFile();
@@ -215,6 +285,8 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage) {
   encoder.setExecutePermission(true);
 #endif
 
+  if (progress)
+    progress(1.0, "Encoder ready");
   persistState("Ready", AppSettings::getAssetsBootstrapState().padsStatus, {});
   return true;
 }

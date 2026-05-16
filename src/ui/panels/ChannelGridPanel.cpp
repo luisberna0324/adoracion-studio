@@ -476,11 +476,6 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     if (stem.include)
       orderedStems.push_back(&stem);
   }
-  std::stable_sort(orderedStems.begin(), orderedStems.end(),
-                   [](const ImportedStemData *a, const ImportedStemData *b) {
-                     return stemPriorityForStripOrder(*a) <
-                            stemPriorityForStripOrder(*b);
-                   });
 
   const bool hasRealClickStem = std::any_of(
       orderedStems.begin(), orderedStems.end(),

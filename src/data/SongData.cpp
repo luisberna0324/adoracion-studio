@@ -143,6 +143,17 @@ int stemPriorityForStripOrder(const ImportedStemData &stem) {
   return 2;
 }
 
+void sortStemsForStripOrder(std::vector<ImportedStemData> &stems) {
+  if (stems.size() <= 1)
+    return;
+
+  std::stable_sort(
+      stems.begin(), stems.end(),
+      [](const ImportedStemData &a, const ImportedStemData &b) {
+        return stemPriorityForStripOrder(a) < stemPriorityForStripOrder(b);
+      });
+}
+
 bool isStemPitchShiftable(const ImportedStemData &stem) {
   const auto category = stem.category.trim();
   if (category.isEmpty())

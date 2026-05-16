@@ -321,6 +321,135 @@ jobs:
           path: dist/playworship_${{ needs.prepare.outputs.semver }}_amd64.deb
           if-no-files-found: error
 
+  publish-gcs:
+    name: Upload installers to GCS
+    needs:
+      - prepare
+      - build-macos
+      - build-windows
+      - build-linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate GCS secrets
+        shell: bash
+        env:
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "${GCS_BUCKET}" ]] || { echo "Missing required secret: GCS_BUCKET" >&2; exit 1; }
+          [[ -n "${GCP_SA_KEY}" ]] || { echo "Missing required secret: GCP_SA_KEY" >&2; exit 1; }
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Download macOS installer
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Windows installer (x64)
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-windows-installer-x64-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Windows installer (x86)
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-windows-installer-x86-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Download Linux installer
+        if: needs.prepare.outputs.publish_installers == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: playworship-linux-installer-${{ needs.prepare.outputs.semver }}
+          path: release-assets
+
+      - name: Upload installers + retain latest 3 versions
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+          PUBLISH_INSTALLERS: ${{ needs.prepare.outputs.publish_installers }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          PREFIX="${GCS_PREFIX:-installers}"
+          BASE_URI="gs://${GCS_BUCKET}/${PREFIX}"
+          VERSION_DIR="v${SEMVER}"
+
+          MAC_LOCAL="release-assets/playworship-macos-installer-${SEMVER}.pkg"
+          WIN_X64_LOCAL="release-assets/playworship-windows-installer-${SEMVER}-x64.exe"
+          WIN_X86_LOCAL="release-assets/playworship-windows-installer-${SEMVER}-x86.exe"
+          LINUX_LOCAL="release-assets/playworship_${SEMVER}_amd64.deb"
+
+          [[ -f "${MAC_LOCAL}" ]] || { echo "Missing macOS installer: ${MAC_LOCAL}" >&2; exit 1; }
+          [[ -f "${WIN_X64_LOCAL}" ]] || { echo "Missing Windows x64 installer: ${WIN_X64_LOCAL}" >&2; exit 1; }
+          [[ -f "${WIN_X86_LOCAL}" ]] || { echo "Missing Windows x86 installer: ${WIN_X86_LOCAL}" >&2; exit 1; }
+          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+            [[ -f "${LINUX_LOCAL}" ]] || { echo "Missing Linux installer: ${LINUX_LOCAL}" >&2; exit 1; }
+          fi
+
+          upload_installer() {
+            local platform="$1"
+            local local_file="$2"
+            local filename
+            filename="$(basename "${local_file}")"
+            local target_dir="${BASE_URI}/${platform}/${VERSION_DIR}"
+            gsutil cp "${local_file}" "${target_dir}/${filename}"
+          }
+
+          retain_latest_three() {
+            local platform="$1"
+            local platform_base="${BASE_URI}/${platform}/"
+            local dirs_raw=""
+            dirs_raw="$(gsutil ls "${platform_base}" 2>/dev/null || true)"
+            if [[ -z "${dirs_raw}" ]]; then
+              return 0
+            fi
+
+            mapfile -t version_dirs < <(printf '%s\n' "${dirs_raw}" | sed -nE 's#^(gs://.*/v[0-9]+\.[0-9]+\.[0-9]+/)$#\1#p')
+            local count="${#version_dirs[@]}"
+            if (( count <= 3 )); then
+              return 0
+            fi
+
+            mapfile -t sorted_dirs < <(
+              for dir in "${version_dirs[@]}"; do
+                ver="${dir%/}"
+                ver="${ver##*/}"
+                printf '%s\t%s\n' "${ver#v}" "${dir}"
+              done | sort -t$'\t' -k1,1V | cut -f2
+            )
+
+            local delete_count=$((count - 3))
+            for ((i = 0; i < delete_count; ++i)); do
+              gsutil -m rm -r "${sorted_dirs[$i]}"
+            done
+          }
+
+          upload_installer "macos" "${MAC_LOCAL}"
+          upload_installer "windows" "${WIN_X64_LOCAL}"
+          upload_installer "windows" "${WIN_X86_LOCAL}"
+          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+            upload_installer "linux" "${LINUX_LOCAL}"
+          fi
+
+          retain_latest_three "macos"
+          retain_latest_three "windows"
+          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+            retain_latest_three "linux"
+          fi
+
   publish:
     if: needs.prepare.outputs.publish_release == 'true'
     name: Publish GitHub Release
