@@ -33,6 +33,7 @@ struct SongWindowSnapshot {
 struct SetlistItem {
   juce::String songId;
   SongMixSnapshot mix;
+  int pitchSemitones = 0;
   SongWindowSnapshot window;
   bool windowCustomized = false;
   SongArrangementSnapshot arrangement;
@@ -104,6 +105,10 @@ public:
                                                float gain);
   static bool updateMasterMuteForActiveSetlist(const juce::String &songId,
                                                bool muted);
+  static bool getActiveSetlistPitchSemitones(const juce::String &songId,
+                                             int &outSemitones);
+  static bool updatePitchSemitonesForActiveSetlist(const juce::String &songId,
+                                                   int semitones);
   static bool getActiveSetlistSongWindow(const juce::String &songId,
                                          SongWindowSnapshot &outWindow,
                                          bool &outIsCustomWindow);

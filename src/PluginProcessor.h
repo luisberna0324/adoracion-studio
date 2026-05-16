@@ -278,7 +278,7 @@ private:
   juce::AudioBuffer<float> padsRenderBuffer;
   std::atomic<bool> padsEnabledState{true};
   std::atomic<float> padsVolume{1.0f};
-  std::atomic<float> padsGain{1.0f};
+  std::atomic<float> padsGain{0.75f};
   std::atomic<bool> padsMuted{false};
   std::atomic<int> padsOutputChannel{1};
   std::atomic<int> padsOutputWidth{1};

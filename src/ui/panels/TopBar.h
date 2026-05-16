@@ -4,6 +4,7 @@
 #include <JuceHeader.h>
 #include <deque>
 #include <functional>
+#include "../../data/SongLibraryStore.h"
 
 class MTControlsAudioProcessor;
 
@@ -22,7 +23,8 @@ public:
   void setTransportProviders(std::function<bool()> playingProviderFn,
                              std::function<double()> positionProviderFn,
                              std::function<double()> lengthProviderFn,
-                             std::function<juce::String()> keyProviderFn);
+                             std::function<juce::String()> keyProviderFn,
+                             std::function<juce::String()> songIdProviderFn);
 
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
@@ -115,12 +117,14 @@ private:
   std::function<double()> positionProvider;
   std::function<double()> lengthProvider;
   std::function<juce::String()> keyProvider;
+  std::function<juce::String()> songIdProvider;
   MTControlsAudioProcessor &processor;
   juce::String lastSongTitle;
   juce::String lastKeyToken;
   juce::String activeKeyLabel;
   int baseKeySemitone = 0;
   int activeKeySemitone = 0;
+  int activePitchDelta = 0;
   bool hasKey = false;
   std::deque<double> tapTimes;
   double lastTickTime = 0.0;

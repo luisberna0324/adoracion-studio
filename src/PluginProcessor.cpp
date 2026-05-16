@@ -942,6 +942,19 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       if (!juce::approximatelyEqual(padsOutputGain, 1.0f))
         padsRenderBuffer.applyGain(padsOutputGain);
 
+      // Gentle safety clipper on pads bus to tame hot transients.
+      {
+        constexpr float kDrive = 1.35f;
+        const float norm = std::tanh(kDrive);
+        for (int ch = 0; ch < padsRenderBuffer.getNumChannels(); ++ch) {
+          auto *dst = padsRenderBuffer.getWritePointer(ch);
+          for (int i = 0; i < numSamples; ++i) {
+            const float x = dst[i];
+            dst[i] = std::tanh(x * kDrive) / norm;
+          }
+        }
+      }
+
       int outputWidth = juce::jlimit(1, 2, padsOutputWidth.load(std::memory_order_relaxed));
       if (numChannels < 2)
         outputWidth = 1;
@@ -2656,7 +2669,7 @@ float MTControlsAudioProcessor::getPadsVolume() const noexcept {
 }
 
 void MTControlsAudioProcessor::setPadsGain(const float gainValue) noexcept {
-  padsGain.store(juce::jlimit(0.0f, 2.0f, gainValue),
+  padsGain.store(juce::jlimit(0.0f, 1.2f, gainValue),
                  std::memory_order_relaxed);
 }
 

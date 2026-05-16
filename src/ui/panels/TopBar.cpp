@@ -2,6 +2,7 @@
 
 #include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
+#include "../../data/SongLibraryStore.h"
 
 #include <cmath>
 #include <iterator>
@@ -404,11 +405,13 @@ void TopBar::setTransportCallbacks(
 void TopBar::setTransportProviders(std::function<bool()> playingProviderFn,
                                    std::function<double()> positionProviderFn,
                                    std::function<double()> lengthProviderFn,
-                                   std::function<juce::String()> keyProviderFn) {
+                                   std::function<juce::String()> keyProviderFn,
+                                   std::function<juce::String()> songIdProviderFn) {
   playingProvider = std::move(playingProviderFn);
   positionProvider = std::move(positionProviderFn);
   lengthProvider = std::move(lengthProviderFn);
   keyProvider = std::move(keyProviderFn);
+  songIdProvider = std::move(songIdProviderFn);
   refreshFromProviders();
 }
 
@@ -1153,8 +1156,11 @@ void TopBar::showKeyPopover() {
         activeKeySemitone = normalizeSemitone(semitone);
         activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
         keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
-        processor.setPitchSemiTones(
-            semitoneDelta(baseKeySemitone, activeKeySemitone));
+        activePitchDelta = semitoneDelta(baseKeySemitone, activeKeySemitone);
+        processor.setPitchSemiTones(activePitchDelta);
+        const auto songId = songIdProvider ? songIdProvider() : juce::String{};
+        if (songId.isNotEmpty())
+          SongLibraryStore::updatePitchSemitonesForActiveSetlist(songId, activePitchDelta);
       });
 
   panel->setSize(480, 56);
@@ -1174,9 +1180,9 @@ void TopBar::showSongWindowPopover() {
     SongWindowPopover(MTControlsAudioProcessor &processorRef,
                       const bool readOnlyArrangement)
         : processor(processorRef), arrangementReadOnly(readOnlyArrangement) {
-      configureRow(startLabel, startMinus, startValue, startPlus,
+      configureRow(startLabel, startMinus, startEditor, startPlus,
                    L10n::tr("Inicio", "Start"));
-      configureRow(endLabel, endMinus, endValue, endPlus,
+      configureRow(endLabel, endMinus, endEditor, endPlus,
                    L10n::tr("Fin", "End"));
       configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus,
                    L10n::tr("Salida", "Fade out"));
@@ -1187,6 +1193,10 @@ void TopBar::showSongWindowPopover() {
       endPlus.onClick = [this] { adjustEnd(stepSeconds()); };
       fadeMinus.onClick = [this] { adjustFade(-stepSeconds()); };
       fadePlus.onClick = [this] { adjustFade(stepSeconds()); };
+      startEditor.onReturnKey = [this] { submitStartEditor(); };
+      startEditor.onFocusLost = [this] { submitStartEditor(); };
+      endEditor.onReturnKey = [this] { submitEndEditor(); };
+      endEditor.onFocusLost = [this] { submitEndEditor(); };
 
       for (auto *btn : {&startMinus, &startPlus, &endMinus, &endPlus,
                         &fadeMinus, &fadePlus}) {
@@ -1212,6 +1222,10 @@ void TopBar::showSongWindowPopover() {
                          juce::dontSendNotification);
       endValue.setText(formatTimeSeconds(processor.getSongEndSeconds()),
                        juce::dontSendNotification);
+      startEditor.setText(formatTimeSeconds(processor.getSongStartSeconds()),
+                          juce::dontSendNotification);
+      endEditor.setText(formatTimeSeconds(processor.getSongEndSeconds()),
+                        juce::dontSendNotification);
       const int fadeSecs =
           static_cast<int>(std::round(processor.getSongFadeOutSeconds()));
       fadeValue.setText(juce::String(fadeSecs) + " " + L10n::tr("seg", "sec"),
@@ -1231,6 +1245,18 @@ void TopBar::showSongWindowPopover() {
                          UITheme::cardBorder.withAlpha(0.65f));
         value->setJustificationType(juce::Justification::centred);
         value->setFont(juce::FontOptions(12.0f));
+      }
+      for (auto *editor : {&startEditor, &endEditor}) {
+        editor->setColour(juce::TextEditor::backgroundColourId,
+                          UITheme::cardBgHover);
+        editor->setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+        editor->setColour(juce::TextEditor::outlineColourId,
+                          UITheme::cardBorder.withAlpha(0.65f));
+        editor->setColour(juce::TextEditor::focusedOutlineColourId,
+                          UITheme::accent.withAlpha(0.75f));
+        editor->setColour(juce::CaretComponent::caretColourId,
+                          UITheme::textPrimary);
+        editor->setJustification(juce::Justification::centred);
       }
       for (auto *btn : {&startMinus, &startPlus, &endMinus, &endPlus,
                         &fadeMinus, &fadePlus}) {
@@ -1257,10 +1283,10 @@ void TopBar::showSongWindowPopover() {
     void resized() override {
       auto area = getLocalBounds().reduced(12);
       const int rowH = 28;
-      layoutRow(area.removeFromTop(rowH), startLabel, startMinus, startValue,
+      layoutRow(area.removeFromTop(rowH), startLabel, startMinus, startEditor,
                 startPlus);
       area.removeFromTop(8);
-      layoutRow(area.removeFromTop(rowH), endLabel, endMinus, endValue,
+      layoutRow(area.removeFromTop(rowH), endLabel, endMinus, endEditor,
                 endPlus);
       area.removeFromTop(8);
       layoutRow(area.removeFromTop(rowH), fadeLabel, fadeMinus, fadeValue,
@@ -1278,6 +1304,7 @@ void TopBar::showSongWindowPopover() {
     juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
         fadePlus;
     juce::Label startValue, endValue, fadeValue;
+    juce::TextEditor startEditor, endEditor;
     juce::Label arrangementInfoLabel;
 
     void configureRow(juce::Label &label, juce::TextButton &minus,
@@ -1294,6 +1321,21 @@ void TopBar::showSongWindowPopover() {
       addAndMakeVisible(value);
     }
 
+    void configureRow(juce::Label &label, juce::TextButton &minus,
+                      juce::TextEditor &editor, juce::TextButton &plus,
+                      const juce::String &text) {
+      label.setText(text, juce::dontSendNotification);
+      addAndMakeVisible(label);
+
+      minus.setButtonText("-");
+      plus.setButtonText("+");
+      addAndMakeVisible(minus);
+      addAndMakeVisible(plus);
+
+      editor.setInputRestrictions(8, "0123456789:");
+      addAndMakeVisible(editor);
+    }
+
     void layoutRow(juce::Rectangle<int> row, juce::Label &label,
                    juce::TextButton &minus, juce::Label &value,
                    juce::TextButton &plus) {
@@ -1303,6 +1345,33 @@ void TopBar::showSongWindowPopover() {
       minus.setBounds(row.removeFromLeft(btnW));
       plus.setBounds(row.removeFromRight(btnW));
       value.setBounds(row);
+    }
+
+    void layoutRow(juce::Rectangle<int> row, juce::Label &label,
+                   juce::TextButton &minus, juce::TextEditor &editor,
+                   juce::TextButton &plus) {
+      const int labelW = 60;
+      const int btnW = 28;
+      label.setBounds(row.removeFromLeft(labelW));
+      minus.setBounds(row.removeFromLeft(btnW));
+      plus.setBounds(row.removeFromRight(btnW));
+      editor.setBounds(row);
+    }
+
+    double parseTimeText(const juce::String &text) const {
+      const auto cleaned = text.trim();
+      if (cleaned.isEmpty())
+        return -1.0;
+      if (!cleaned.containsChar(':'))
+        return cleaned.getDoubleValue();
+      const auto mins = cleaned.upToFirstOccurrenceOf(":", false, false).trim();
+      const auto secs =
+          cleaned.fromFirstOccurrenceOf(":", false, false).trim();
+      const auto m = mins.getDoubleValue();
+      const auto s = secs.getDoubleValue();
+      if (m < 0.0 || s < 0.0)
+        return -1.0;
+      return (m * 60.0) + s;
     }
 
     double stepSeconds() const {
@@ -1322,6 +1391,20 @@ void TopBar::showSongWindowPopover() {
 
     void adjustFade(double delta) {
       processor.setSongFadeOutSeconds(processor.getSongFadeOutSeconds() + delta);
+      refreshValues();
+    }
+
+    void submitStartEditor() {
+      const double secs = parseTimeText(startEditor.getText());
+      if (secs >= 0.0)
+        processor.setSongStartSeconds(secs);
+      refreshValues();
+    }
+
+    void submitEndEditor() {
+      const double secs = parseTimeText(endEditor.getText());
+      if (secs >= 0.0)
+        processor.setSongEndSeconds(secs);
       refreshValues();
     }
   };
@@ -1381,7 +1464,13 @@ void TopBar::refreshFromProviders() {
         activeKeyLabel = keyText.isNotEmpty() ? keyText : L10n::tr("Tono", "Key");
       }
       hasKey = true;
-      processor.setPitchSemiTones(0);
+      activePitchDelta = 0;
+      const auto songId = songIdProvider ? songIdProvider() : juce::String{};
+      if (songId.isNotEmpty())
+        SongLibraryStore::getActiveSetlistPitchSemitones(songId, activePitchDelta);
+      activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
+      activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
+      processor.setPitchSemiTones(activePitchDelta);
     } else if (keyText != lastKeyToken) {
       // Metadata key text may refresh asynchronously; keep user-selected
       // transposition and only refresh labels/base reference.
@@ -1404,8 +1493,8 @@ void TopBar::refreshFromProviders() {
     if (activeKeyLabel.isEmpty())
       activeKeyLabel = L10n::tr("Tono", "Key");
     keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
-    processor.setPitchSemiTones(
-        semitoneDelta(baseKeySemitone, activeKeySemitone));
+    activePitchDelta = semitoneDelta(baseKeySemitone, activeKeySemitone);
+    processor.setPitchSemiTones(activePitchDelta);
   }
 
   const bool playing = playingProvider ? playingProvider() : false;

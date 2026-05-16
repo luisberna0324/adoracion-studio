@@ -736,6 +736,33 @@ bool SongLibraryStore::updateMasterMuteForActiveSetlist(
   });
 }
 
+bool SongLibraryStore::getActiveSetlistPitchSemitones(
+    const juce::String &songId, int &outSemitones) {
+  if (songId.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end())
+    return false;
+  outSemitones = juce::jlimit(-12, 12, it->pitchSemitones);
+  return true;
+}
+
+bool SongLibraryStore::updatePitchSemitonesForActiveSetlist(
+    const juce::String &songId, int semitones) {
+  return updateActiveSetlistItem(
+      songId, [semitones](SetlistItem &item, const ImportedSongData &) {
+        item.pitchSemitones = juce::jlimit(-12, 12, semitones);
+      });
+}
+
 bool SongLibraryStore::getActiveSetlistSongWindow(
     const juce::String &songId, SongWindowSnapshot &outWindow,
     bool &outIsCustomWindow) {
@@ -1843,6 +1870,7 @@ juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("songId", item.songId);
   obj->setProperty("mix", mixToVar(item.mix));
+  obj->setProperty("pitchSemitones", item.pitchSemitones);
   if (item.windowCustomized) {
     obj->setProperty("songWindow", windowToVar(item.window));
     obj->setProperty("windowCustomized", true);
@@ -1864,6 +1892,9 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   item.songId = obj->getProperty("songId").toString();
   item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
   item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
+  if (obj->hasProperty("pitchSemitones"))
+    item.pitchSemitones = juce::jlimit(
+        -12, 12, static_cast<int>(obj->getProperty("pitchSemitones")));
   if (song != nullptr)
     item.window = createDefaultWindowForSong(*song);
   if (obj->hasProperty("songWindow")) {

@@ -333,7 +333,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.isSongPlaying(); },
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongEndSeconds(); },
-      [&p] { return p.getLoadedSongKey(); });
+      [&p] { return p.getLoadedSongKey(); },
+      [this] { return currentLoadedSong.id; });
   topBarRaw->setMidiLearnBindingLabelProvider(midiLearnBindingLabelForTarget);
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
