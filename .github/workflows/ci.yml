@@ -455,9 +455,7 @@ jobs:
     name: Publish GitHub Release
     needs:
       - prepare
-      - build-macos
-      - build-windows
-      - build-linux
+      - publish-gcs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -479,60 +477,86 @@ jobs:
             git push origin "${TAG}"
           fi
 
-      - name: Download macOS installer
-        uses: actions/download-artifact@v4
-        with:
-          name: playworship-macos-installer-${{ needs.prepare.outputs.semver }}
-          path: release-assets
-
-      - name: Download Windows installer (x64)
-        uses: actions/download-artifact@v4
-        with:
-          name: playworship-windows-installer-x64-${{ needs.prepare.outputs.semver }}
-          path: release-assets
-
-      - name: Download Windows installer (x86)
-        uses: actions/download-artifact@v4
-        with:
-          name: playworship-windows-installer-x86-${{ needs.prepare.outputs.semver }}
-          path: release-assets
-
-      - name: Download Linux installer
-        if: needs.prepare.outputs.publish_installers == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: playworship-linux-installer-${{ needs.prepare.outputs.semver }}
-          path: release-assets
-
-      - name: Create or update GitHub release
+      - name: Create GitHub release (without binary assets)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ needs.prepare.outputs.tag }}"
-          SEMVER="${{ needs.prepare.outputs.semver }}"
-          PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
-          MAC_INSTALLER="release-assets/playworship-macos-installer-${SEMVER}.pkg"
-          WIN_X64_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x64.exe"
-          WIN_X86_INSTALLER="release-assets/playworship-windows-installer-${SEMVER}-x86.exe"
-          LINUX_INSTALLER="release-assets/playworship_${SEMVER}_amd64.deb"
-          ASSETS=("${MAC_INSTALLER}" "${WIN_X64_INSTALLER}" "${WIN_X86_INSTALLER}")
 
-          [[ -f "${MAC_INSTALLER}" ]] || { echo "Missing macOS installer: ${MAC_INSTALLER}" >&2; exit 1; }
-          [[ -f "${WIN_X64_INSTALLER}" ]] || { echo "Missing Windows x64 installer: ${WIN_X64_INSTALLER}" >&2; exit 1; }
-          [[ -f "${WIN_X86_INSTALLER}" ]] || { echo "Missing Windows x86 installer: ${WIN_X86_INSTALLER}" >&2; exit 1; }
-          if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
-            [[ -f "${LINUX_INSTALLER}" ]] || { echo "Missing Linux installer: ${LINUX_INSTALLER}" >&2; exit 1; }
-            ASSETS+=("${LINUX_INSTALLER}")
-          fi
-
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" "${ASSETS[@]}" --clobber
-          else
+          if ! gh release view "${TAG}" >/dev/null 2>&1; then
             gh release create "${TAG}" \
-              "${ASSETS[@]}" \
               --title "${TAG}" \
               --target "${{ needs.prepare.outputs.release_ref }}" \
               --generate-notes
           fi
+
+      - name: Add GCS links to release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ needs.prepare.outputs.tag }}"
+          SEMVER="${{ needs.prepare.outputs.semver }}"
+          PUBLISH_INSTALLERS="${{ needs.prepare.outputs.publish_installers }}"
+          PREFIX="${GCS_PREFIX:-installers}"
+
+          if [[ -z "${GCS_BUCKET}" ]]; then
+            echo "GCS_BUCKET is empty; skipping bucket links in release notes."
+            exit 0
+          fi
+
+          VERSION_DIR="v${SEMVER}"
+          BASE_HTTPS="https://storage.googleapis.com/${GCS_BUCKET}/${PREFIX}"
+          BASE_GS="gs://${GCS_BUCKET}/${PREFIX}"
+
+          MAC_URL="${BASE_HTTPS}/macos/${VERSION_DIR}/playworship-macos-installer-${SEMVER}.pkg"
+          WIN_X64_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x64.exe"
+          WIN_X86_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x86.exe"
+          LINUX_URL="${BASE_HTTPS}/linux/${VERSION_DIR}/playworship_${SEMVER}_amd64.deb"
+
+          marker_start="<!-- bucket-links:start -->"
+          marker_end="<!-- bucket-links:end -->"
+          links_md="$(mktemp)"
+          current_body="$(mktemp)"
+          cleaned_body="$(mktemp)"
+          merged_body="$(mktemp)"
+
+          {
+            echo "${marker_start}"
+            echo "## Descargas en Bucket"
+            echo
+            echo "- Directorio versionado (GCS URI): \`${BASE_GS}\`"
+            echo "- Carpeta de esta versión (GCS URI): \`${BASE_GS}/macos/${VERSION_DIR}\`, \`${BASE_GS}/windows/${VERSION_DIR}\`, \`${BASE_GS}/linux/${VERSION_DIR}\`"
+            echo "- Carpeta base (HTTP): ${BASE_HTTPS}/"
+            echo
+            echo "### Enlaces directos"
+            echo "- macOS (.pkg): ${MAC_URL}"
+            echo "- Windows x64 (.exe): ${WIN_X64_URL}"
+            echo "- Windows x86 (.exe): ${WIN_X86_URL}"
+            if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
+              echo "- Linux (.deb): ${LINUX_URL}"
+            fi
+            echo "${marker_end}"
+          } > "${links_md}"
+
+          gh release view "${TAG}" --json body -q .body > "${current_body}" || true
+
+          awk -v start="${marker_start}" -v end="${marker_end}" '
+            $0 ~ start {inblock=1; next}
+            $0 ~ end {inblock=0; next}
+            !inblock {print}
+          ' "${current_body}" > "${cleaned_body}"
+
+          cp "${cleaned_body}" "${merged_body}"
+          if [[ -s "${merged_body}" ]]; then
+            printf "\n\n" >> "${merged_body}"
+          fi
+          cat "${links_md}" >> "${merged_body}"
+
+          gh release edit "${TAG}" --notes-file "${merged_body}"
