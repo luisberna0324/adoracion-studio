@@ -74,6 +74,7 @@ private:
     int bpm = 0;
     int stemCount = 0;
     int setlistUsageCount = 0;
+    juce::Colour accentColour = UITheme::accent;
     bool inSetlist = false;
     bool isNowPlaying = false;
   };

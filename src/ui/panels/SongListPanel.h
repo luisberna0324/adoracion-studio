@@ -109,6 +109,7 @@ private:
     bool isSelected = false;
     int songIndex = -1;
     double durationSeconds = 0.0;
+    juce::Colour accentColour = UITheme::accent;
   };
 
   class ListContent : public juce::Component {

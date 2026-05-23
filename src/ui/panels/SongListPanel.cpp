@@ -19,11 +19,22 @@ juce::String makeAutoPlayNextMarkKey(const juce::String &setlistId,
   return setlistId + "|" + songId;
 }
 
-const std::array<juce::Colour, 8> kSetlistAccentPalette = {
-    juce::Colour::fromRGB(129, 214, 98),  juce::Colour::fromRGB(251, 208, 70),
-    juce::Colour::fromRGB(172, 121, 255), juce::Colour::fromRGB(125, 165, 255),
-    juce::Colour::fromRGB(153, 225, 125), juce::Colour::fromRGB(255, 170, 95),
-    juce::Colour::fromRGB(237, 122, 205), juce::Colour::fromRGB(118, 227, 222)};
+juce::Colour colourfulAccentFromStableId(const juce::String &id) {
+  if (id.isEmpty())
+    return UITheme::accent;
+  const auto hash = std::hash<std::string>{}(id.toStdString());
+  const float hue = static_cast<float>(hash % 360) / 360.0f;
+  const float saturation = 0.78f + (static_cast<float>((hash >> 9) % 16) / 100.0f);
+  const float brightness = 0.88f + (static_cast<float>((hash >> 15) % 10) / 100.0f);
+  return juce::Colour::fromHSV(
+      juce::jlimit(0.0f, 1.0f, hue),
+      juce::jlimit(0.0f, 1.0f, saturation),
+      juce::jlimit(0.0f, 1.0f, brightness), 1.0f);
+}
+
+juce::Colour songAccentFromId(const juce::String &songId) {
+  return colourfulAccentFromStableId(songId);
+}
 
 juce::String toCapitalCase(const juce::String &text) {
   const auto normalized = text.trim().toLowerCase();
@@ -227,8 +238,9 @@ public:
       c.removeFromLeft(4);
       c.removeFromLeft(10);
 
-      const auto accentColour =
-          kSetlistAccentPalette[i % kSetlistAccentPalette.size()];
+      const auto accentKey =
+          rows[i].id.isNotEmpty() ? rows[i].id : rows[i].name;
+      const auto accentColour = colourfulAccentFromStableId(accentKey);
       g.setColour(accentColour.withAlpha(0.92f));
       g.fillRoundedRectangle(accentRect.toFloat(), 2.0f);
 
@@ -1302,6 +1314,21 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
     g.setColour(rowFill.withAlpha(fillAlpha));
     g.fillRoundedRectangle(row.toFloat(), 12.0f);
 
+    const auto stateBarColour = showPlayingState
+                                    ? playingStateColour.withAlpha(0.96f)
+                                    : showNextState
+                                          ? nextStateColour.withAlpha(0.95f)
+                                          : rowData.accentColour.withAlpha(
+                                                showSelectedState ? 0.94f : 0.86f);
+    const auto stateBar = juce::Rectangle<float>(
+        static_cast<float>(row.getX()), static_cast<float>(row.getY()), 5.0f,
+        static_cast<float>(row.getHeight()));
+    g.saveState();
+    g.reduceClipRegion(rowPath);
+    g.setColour(stateBarColour);
+    g.fillRect(stateBar);
+    g.restoreState();
+
     const auto borderColour = showPlayingState
                                   ? playingStateColour.withAlpha(
                                         juce::jlimit(0.0f, 1.0f,
@@ -1314,10 +1341,12 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                                               : UITheme::cardBorder.withAlpha(
                                                     borderAlpha * 0.42f);
     g.setColour(borderColour);
-    g.drawRoundedRectangle(row.toFloat(), 12.0f,
-                           showPlayingState ? 1.5f : 1.0f);
+    const float borderThickness = showPlayingState ? 1.5f : 1.0f;
+    g.drawRoundedRectangle(row.toFloat().reduced(borderThickness * 0.5f),
+                           12.0f - (borderThickness * 0.5f), borderThickness);
 
     auto c = row.reduced(16, 8);
+    c.removeFromLeft(6);
     auto optionsHitArea = c.removeFromRight(34);
     c.removeFromRight(2);
 
@@ -2979,7 +3008,8 @@ void SongListPanel::refreshFromStorage() {
                       isPlaybackActive && song.id == nowPlayingSongId,
                       song.id == selectedSongId,
                       rowIndex,
-                      estimateSongLengthSeconds(song)});
+                      estimateSongLengthSeconds(song),
+                      songAccentFromId(song.id)});
     }
   }
 

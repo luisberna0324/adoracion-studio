@@ -11,6 +11,19 @@ namespace {
 
 constexpr int kCatalogItemSideInset = 10;
 
+juce::Colour songAccentFromId(const juce::String &songId) {
+  if (songId.isEmpty())
+    return UITheme::accent;
+  const auto hash = std::hash<std::string>{}(songId.toStdString());
+  const float hue = static_cast<float>(hash % 360) / 360.0f;
+  const float saturation = 0.78f + (static_cast<float>((hash >> 9) % 16) / 100.0f);
+  const float brightness = 0.88f + (static_cast<float>((hash >> 15) % 10) / 100.0f);
+  return juce::Colour::fromHSV(
+      juce::jlimit(0.0f, 1.0f, hue),
+      juce::jlimit(0.0f, 1.0f, saturation),
+      juce::jlimit(0.0f, 1.0f, brightness), 1.0f);
+}
+
 juce::String normalizedTitle(const ImportedSongData &song) {
   return song.title.isNotEmpty() ? song.title
                                  : L10n::tr(u8"Canción sin título", "Untitled Song");
@@ -513,10 +526,22 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     g.setColour(fill.withAlpha(rowAlpha));
     g.fillRoundedRectangle(rowRect, 12.0f);
+    const auto stateBarColour =
+        nowPlaying ? UITheme::accent.withAlpha(0.98f)
+                   : item.accentColour.brighter(0.08f).withAlpha(0.98f);
+    const auto stateBar = juce::Rectangle<float>(rowBounds.getX(), rowBounds.getY(),
+                                                 7.0f, rowBounds.getHeight());
+    g.saveState();
+    g.reduceClipRegion(rowPath);
+    g.setColour(stateBarColour.withAlpha(rowAlpha));
+    g.fillRect(stateBar);
+    g.restoreState();
+
     g.setColour(border.withAlpha(rowAlpha));
     g.drawRoundedRectangle(rowRect.reduced(0.5f), 12.0f, nowPlaying ? 1.5f : 1.0f);
 
     auto contentArea = rowBounds.reduced(16, 8);
+    contentArea.removeFromLeft(6);
     const auto toggleBounds = toggleBoundsForIndex(i);
     if (!toggleBounds.isEmpty()) {
       auto toggleArea = toggleBounds.toFloat();
@@ -981,6 +1006,7 @@ void LibraryCatalogPanel::rebuildRows() {
     item.createdMs = song.createdMs;
     item.bpm = song.bpm;
     item.stemCount = stemCountForSong(song);
+    item.accentColour = songAccentFromId(song.id);
     item.setlistUsageCount = usageCountForSongId(song.id);
     item.inSetlist = item.songId.isNotEmpty() && activeSetlistSongIds.contains(item.songId);
     item.isNowPlaying =
