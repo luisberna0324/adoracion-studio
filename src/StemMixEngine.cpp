@@ -123,7 +123,7 @@ void StemMixEngine::setPitchSemiTones(int semitones) {
 }
 
 void StemMixEngine::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.75, 2.0, ratio);
+  const double normalized = juce::jlimit(0.80, 1.25, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
   tempoRatio = normalized;

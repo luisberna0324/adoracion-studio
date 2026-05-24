@@ -1,0 +1,12 @@
+pid=544
+app=PlayWorship
+interval_sec=2
+duration_sec=12
+sample_every_sec=0
+output=./perf/profile_PlayWorship_20260523_204046
+Profiling started. Press Ctrl+C to stop early.
+Done.
+CSV: ./perf/profile_PlayWorship_20260523_204046/metrics.csv
+Samples: ./perf/profile_PlayWorship_20260523_204046/samples
+Summary: ./perf/profile_PlayWorship_20260523_204046/summary.txt
+Stack summary: ./perf/profile_PlayWorship_20260523_204046/stack_summary.txt

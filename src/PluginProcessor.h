@@ -83,6 +83,8 @@ public:
   double getMetronomeBpm() const noexcept;
   void setPlaybackTempoBpm(double bpm) noexcept;
   double getPlaybackTempoBpm() const noexcept;
+  double getMinPlaybackTempoBpm() const noexcept;
+  double getMaxPlaybackTempoBpm() const noexcept;
   double getOriginalSongBpm() const noexcept;
   void setMetronomeBeatsPerBar(int beats) noexcept;
   void setMetronomeVolume(float volume) noexcept;
@@ -259,6 +261,22 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
+  enum class RoutingHybridGroup : uint8_t {
+    Melodic = 0,
+    Percussive = 1,
+    Guide = 2,
+    Count = 3
+  };
+  static constexpr int routingHybridGroupCount =
+      static_cast<int>(RoutingHybridGroup::Count);
+  std::array<PitchShiftProcessor, routingHybridGroupCount>
+      routingGroupPitchProcessors;
+  std::array<SimpleDelayLine, routingHybridGroupCount> routingGroupDelayLines;
+  std::array<int, routingHybridGroupCount> routingGroupDelaySamples{0, 0, 0};
+  std::array<int, routingHybridGroupCount> routingGroupOutputChannels{0, 0, 0};
+  std::array<int, routingHybridGroupCount> routingGroupOutputWidths{2, 2, 2};
+  std::array<juce::AudioBuffer<float>, routingHybridGroupCount>
+      routingGroupMixBuffers;
   std::array<PitchShiftProcessor, maxStemCount> stemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
   std::array<PitchShiftProcessor, maxStemCount> outgoingStemPitchProcessors;
@@ -359,9 +377,19 @@ private:
   float fadeGain = 1.0f;
   const double fadeDurationSec = 2.0;
   std::atomic<bool> fadeStopsPlayback{true};
+  bool wasTransportPlayingLastBlock = false;
+  double pendingTempoRatioRequested = 1.0;
+  bool hasPendingTempoRuntimeChange = false;
+  int tempoDebounceRemainingSamples = 0;
+  int overrunGuardScore = 0;
+  bool cpuGuardActive = false;
   int routingPitchLatencySamples = 0;
   int outgoingRoutingPitchLatencySamples = 0;
   static constexpr int kMaxRoutingPitchLatencySamples = 65536;
+  static constexpr int kTempoRuntimeDebounceMs = 140;
+  static constexpr int kTempoRuntimeDebounceMsCpuGuard = 220;
+  static constexpr int kCpuGuardScoreEnable = 12;
+  static constexpr int kCpuGuardScoreDisable = 3;
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;
@@ -377,6 +405,9 @@ private:
   static juce::String buildPadsPackHash(const juce::Array<juce::File> &files);
   void flushRoutingTimeProcessors() noexcept;
   void flushAllTimeProcessingState() noexcept;
+  void applyTempoRatioImmediate(double targetTempoRatio,
+                                bool hardResync) noexcept;
+  void updateCpuGuardState(bool isPlaying, bool blockOverrun) noexcept;
   double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
   double getArrangementStartSeconds() const noexcept;

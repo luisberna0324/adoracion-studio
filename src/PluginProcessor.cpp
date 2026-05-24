@@ -9,21 +9,25 @@
 namespace {
 constexpr double kMinPlaybackTempoBpm = 20.0;
 constexpr double kMaxPlaybackTempoBpm = 300.0;
-constexpr double kMinPlaybackTempoRatio = 0.75;
-constexpr double kMaxPlaybackTempoRatio = 2.0;
-
-int tempoQualityProfileForRatio(const double ratio) {
-  if (ratio < 0.85)
-    return 0; // Heavy slow-down profile.
-  if (ratio < 0.999)
-    return 1; // Moderate slow-down profile.
-  return 2;   // Normal/speed-up profile.
-}
+constexpr double kMinPlaybackTempoRatio = 0.80;
+constexpr double kMaxPlaybackTempoRatio = 1.25;
 
 PitchShiftProcessor::ContentType stemContentTypeForPitchShiftable(
     const bool pitchShiftable) {
   return pitchShiftable ? PitchShiftProcessor::ContentType::Melodic
                         : PitchShiftProcessor::ContentType::Percussive;
+}
+
+enum class RoutingStemProcessingMode : uint8_t {
+  Bypass = 0,
+  Group = 1,
+  Dedicated = 2
+};
+
+int routingGroupIndexForStem(const bool isClickGuide, const bool pitchShiftable) {
+  if (isClickGuide)
+    return 2; // Guide
+  return pitchShiftable ? 0 : 1; // Melodic / Percussive
 }
 
 juce::String buildDeviceKeyFromManager(juce::AudioDeviceManager &manager) {
@@ -92,6 +96,7 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   midiBindings = AppSettings::getMidiBindings();
   for (auto &value : midiLastSourceValues)
     value = -1;
+  PitchShiftProcessor::setGlobalCpuGuardEnabled(false);
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
@@ -141,6 +146,27 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
   }
+  for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+       ++groupIndex) {
+    auto &groupProc =
+        routingGroupPitchProcessors[static_cast<size_t>(groupIndex)];
+    groupProc.prepare(sampleRate, samplesPerBlock, 2);
+    const auto contentType =
+        groupIndex == 0 ? PitchShiftProcessor::ContentType::Melodic
+                        : PitchShiftProcessor::ContentType::Percussive;
+    groupProc.setContentType(contentType);
+    groupProc.setPitchSemiTones(groupIndex == 0 ? pitchActiveSemiTones : 0);
+    groupProc.setTempoRatio(playbackTempoRatioActive);
+
+    auto &groupDelay = routingGroupDelayLines[static_cast<size_t>(groupIndex)];
+    groupDelay.prepare(2, kMaxRoutingPitchLatencySamples);
+    groupDelay.setDelay(0);
+    routingGroupDelaySamples[static_cast<size_t>(groupIndex)] = 0;
+    routingGroupOutputChannels[static_cast<size_t>(groupIndex)] = 0;
+    routingGroupOutputWidths[static_cast<size_t>(groupIndex)] = 2;
+    routingGroupMixBuffers[static_cast<size_t>(groupIndex)].setSize(
+        2, samplesPerBlock);
+  }
   routingPitchLatencySamples = 0;
   outgoingRoutingPitchLatencySamples = 0;
 
@@ -185,6 +211,12 @@ void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
     outgoingStemPitchProcessors[static_cast<size_t>(i)].reset();
     outgoingStemPitchDelayLines[static_cast<size_t>(i)].reset();
   }
+  for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+       ++groupIndex) {
+    routingGroupPitchProcessors[static_cast<size_t>(groupIndex)].reset();
+    routingGroupDelayLines[static_cast<size_t>(groupIndex)].reset();
+    routingGroupDelaySamples[static_cast<size_t>(groupIndex)] = 0;
+  }
   routingPitchLatencySamples = 0;
   outgoingRoutingPitchLatencySamples = 0;
 }
@@ -193,6 +225,50 @@ void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
   mixEngine.reset();
   outgoingMixEngine.reset();
   flushRoutingTimeProcessors();
+}
+
+void MTControlsAudioProcessor::applyTempoRatioImmediate(
+    const double targetTempoRatio, const bool hardResync) noexcept {
+  const double normalized =
+      juce::jlimit(kMinPlaybackTempoRatio, kMaxPlaybackTempoRatio,
+                   targetTempoRatio);
+  if (juce::approximatelyEqual(normalized, playbackTempoRatioActive))
+    return;
+
+  playbackTempoRatioActive = normalized;
+  mixEngine.setTempoRatio(playbackTempoRatioActive);
+  outgoingMixEngine.setTempoRatio(playbackTempoRatioActive);
+  routingPitchLatencySamples = 0;
+  outgoingRoutingPitchLatencySamples = 0;
+  if (hardResync)
+    flushAllTimeProcessingState();
+}
+
+void MTControlsAudioProcessor::updateCpuGuardState(const bool isPlaying,
+                                                   const bool blockOverrun) noexcept {
+  if (isPlaying) {
+    if (blockOverrun)
+      overrunGuardScore = juce::jmin(64, overrunGuardScore + 4);
+    else
+      overrunGuardScore = juce::jmax(0, overrunGuardScore - 1);
+  } else {
+    overrunGuardScore = juce::jmax(0, overrunGuardScore - 2);
+  }
+
+  bool nextCpuGuard = cpuGuardActive;
+  if (!cpuGuardActive && overrunGuardScore >= kCpuGuardScoreEnable)
+    nextCpuGuard = true;
+  else if (cpuGuardActive && overrunGuardScore <= kCpuGuardScoreDisable)
+    nextCpuGuard = false;
+
+  if (nextCpuGuard == cpuGuardActive)
+    return;
+
+  cpuGuardActive = nextCpuGuard;
+  PitchShiftProcessor::setGlobalCpuGuardEnabled(cpuGuardActive);
+  hasPendingTempoRuntimeChange = true;
+  tempoDebounceRemainingSamples = 0;
+  flushAllTimeProcessingState();
 }
 
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
@@ -234,6 +310,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
     const bool isPlaying = getTransportState() == TransportState::playing;
+    if (!isPlaying && wasTransportPlayingLastBlock)
+      flushAllTimeProcessingState();
+    wasTransportPlayingLastBlock = isPlaying;
     const int targetPitch =
         pitchTargetSemiTones.load(std::memory_order_relaxed);
     const double targetTempoRatio = getPlaybackTempoRatio();
@@ -243,25 +322,40 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
       flushRoutingTimeProcessors();
     }
-    if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive)) {
-      const double previousTempoRatio = playbackTempoRatioActive;
-      playbackTempoRatioActive = targetTempoRatio;
-      mixEngine.setTempoRatio(playbackTempoRatioActive);
-      outgoingMixEngine.setTempoRatio(playbackTempoRatioActive);
-      const bool crossedUnity =
-          (previousTempoRatio < 1.0 && playbackTempoRatioActive >= 1.0) ||
-          (previousTempoRatio > 1.0 && playbackTempoRatioActive <= 1.0);
-      const bool profileChanged =
-          tempoQualityProfileForRatio(previousTempoRatio) !=
-          tempoQualityProfileForRatio(playbackTempoRatioActive);
+    if (!isPlaying) {
+      hasPendingTempoRuntimeChange = false;
+      tempoDebounceRemainingSamples = 0;
+      pendingTempoRatioRequested = targetTempoRatio;
+      if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive))
+        applyTempoRatioImmediate(targetTempoRatio, true);
+    } else {
+      const int debounceMs = cpuGuardActive ? kTempoRuntimeDebounceMsCpuGuard
+                                            : kTempoRuntimeDebounceMs;
+      const int debounceSamples = playbackSampleRate > 0.0
+                                      ? juce::jmax(
+                                            numSamples,
+                                            static_cast<int>(std::round(
+                                                playbackSampleRate *
+                                                (static_cast<double>(debounceMs) /
+                                                 1000.0))))
+                                      : numSamples;
 
-      // With pitch active, tempo profile jumps can leave per-stem queues with
-      // stale timing history. Hard-resync to keep percussion aligned.
-      if (pitchActiveSemiTones != 0 && (crossedUnity || profileChanged)) {
-        flushAllTimeProcessingState();
-      } else {
-        routingPitchLatencySamples = 0;
-        outgoingRoutingPitchLatencySamples = 0;
+      if (!hasPendingTempoRuntimeChange ||
+          !juce::approximatelyEqual(targetTempoRatio, pendingTempoRatioRequested)) {
+        pendingTempoRatioRequested = targetTempoRatio;
+        hasPendingTempoRuntimeChange = true;
+        tempoDebounceRemainingSamples = debounceSamples;
+      } else if (tempoDebounceRemainingSamples > 0) {
+        tempoDebounceRemainingSamples =
+            juce::jmax(0, tempoDebounceRemainingSamples - numSamples);
+      }
+
+      if (hasPendingTempoRuntimeChange && tempoDebounceRemainingSamples <= 0) {
+        if (!juce::approximatelyEqual(pendingTempoRatioRequested,
+                                      playbackTempoRatioActive)) {
+          applyTempoRatioImmediate(pendingTempoRatioRequested, true);
+        }
+        hasPendingTempoRuntimeChange = false;
       }
     }
 
@@ -491,44 +585,156 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         const bool tempoActive =
             !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
         std::array<int, maxStemCount> stemProcessLatencies{};
+        std::array<int, maxStemCount> stemAssignedOutputIndices{};
+        std::array<int, maxStemCount> stemAssignedWidths{};
         std::array<bool, maxStemCount> stemNeedsTimeProcess{};
         std::array<bool, maxStemCount> stemPitchShiftableFlags{};
+        std::array<bool, maxStemCount> stemGuideFlags{};
+        std::array<int, maxStemCount> stemGroupIndices{};
+        std::array<RoutingStemProcessingMode, maxStemCount> stemProcessModes{};
+
+        std::array<bool, routingHybridGroupCount> groupHasRoute{};
+        std::array<bool, routingHybridGroupCount> groupActive{};
+        std::array<bool, routingHybridGroupCount> groupNeedsTimeProcess{};
+        std::array<int, routingHybridGroupCount> groupProcessLatencies{};
+
         int targetLatency = 0;
-        if (timeProcessActive) {
-          for (int i = 0; i < stemCount; ++i) {
-            const size_t stemIndex = static_cast<size_t>(i);
-            const bool pitchShiftable =
-                stemPitchShiftStates[stemIndex].load(
-                    std::memory_order_relaxed);
-            stemPitchShiftableFlags[stemIndex] = pitchShiftable;
-            const bool shouldProcess = tempoActive || pitchShiftable;
-            stemNeedsTimeProcess[stemIndex] = shouldProcess;
-            if (!shouldProcess)
-              continue;
-            auto &proc = stemPitchProcessors[stemIndex];
-            if (!proc.isPrepared() || proc.getNumChannels() != 2)
-              proc.prepare(playbackSampleRate, numSamples, 2);
-            proc.setContentType(
-                stemContentTypeForPitchShiftable(pitchShiftable));
-            proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
-            proc.setTempoRatio(playbackTempoRatioActive);
-            stemProcessLatencies[stemIndex] = proc.getLatencySamples();
-            targetLatency =
-                juce::jmax(targetLatency, stemProcessLatencies[stemIndex]);
+
+        for (int i = 0; i < stemCount; ++i) {
+          const size_t stemIndex = static_cast<size_t>(i);
+          const bool isClickGuide =
+              stemClickGuideStates[stemIndex].load(std::memory_order_relaxed);
+          const bool rawPitchShiftable =
+              stemPitchShiftStates[stemIndex].load(std::memory_order_relaxed);
+          const bool pitchShiftable = rawPitchShiftable && !isClickGuide;
+          stemPitchShiftableFlags[stemIndex] = pitchShiftable;
+          stemGuideFlags[stemIndex] = isClickGuide;
+
+          int assignedWidth = juce::jlimit(
+              1, 2, stemOutputWidths[stemIndex].load(std::memory_order_relaxed));
+          if (numChannels < 2)
+            assignedWidth = 1;
+          const int maxBaseChannel =
+              juce::jmax(1, numChannels - (assignedWidth >= 2 ? 1 : 0));
+          const int assignedChannelOneBased = juce::jlimit(
+              1, maxBaseChannel,
+              stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
+          const int outputIndex =
+              juce::jlimit(0, juce::jmax(0, numChannels - 1),
+                           assignedChannelOneBased - 1);
+
+          stemAssignedWidths[stemIndex] = assignedWidth;
+          stemAssignedOutputIndices[stemIndex] = outputIndex;
+
+          const int groupIndex =
+              routingGroupIndexForStem(isClickGuide, pitchShiftable);
+          stemGroupIndices[stemIndex] = groupIndex;
+
+          const bool shouldProcess =
+              timeProcessActive && (tempoActive || pitchShiftable);
+          stemNeedsTimeProcess[stemIndex] = shouldProcess;
+
+          if (!shouldProcess) {
+            stemProcessModes[stemIndex] = RoutingStemProcessingMode::Bypass;
+            continue;
           }
+
+          if (!groupHasRoute[static_cast<size_t>(groupIndex)]) {
+            groupHasRoute[static_cast<size_t>(groupIndex)] = true;
+            routingGroupOutputChannels[static_cast<size_t>(groupIndex)] =
+                outputIndex;
+            routingGroupOutputWidths[static_cast<size_t>(groupIndex)] =
+                assignedWidth;
+          }
+
+          const bool sameRouteAsGroup =
+              routingGroupOutputChannels[static_cast<size_t>(groupIndex)] ==
+                  outputIndex &&
+              routingGroupOutputWidths[static_cast<size_t>(groupIndex)] ==
+                  assignedWidth;
+
+          if (sameRouteAsGroup) {
+            stemProcessModes[stemIndex] = RoutingStemProcessingMode::Group;
+            groupActive[static_cast<size_t>(groupIndex)] = true;
+            groupNeedsTimeProcess[static_cast<size_t>(groupIndex)] = true;
+            continue;
+          }
+
+          stemProcessModes[stemIndex] = RoutingStemProcessingMode::Dedicated;
+          auto &proc = stemPitchProcessors[stemIndex];
+          if (!proc.isPrepared() || proc.getNumChannels() != 2)
+            proc.prepare(playbackSampleRate, numSamples, 2);
+          proc.setContentType(
+              stemContentTypeForPitchShiftable(pitchShiftable));
+          proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
+          proc.setTempoRatio(playbackTempoRatioActive);
+          stemProcessLatencies[stemIndex] = proc.getLatencySamples();
+          targetLatency =
+              juce::jmax(targetLatency, stemProcessLatencies[stemIndex]);
         }
 
-        if (targetLatency != routingPitchLatencySamples) {
-          routingPitchLatencySamples = targetLatency;
+        for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+             ++groupIndex) {
+          if (!groupActive[static_cast<size_t>(groupIndex)])
+            continue;
+          auto &groupProc =
+              routingGroupPitchProcessors[static_cast<size_t>(groupIndex)];
+          if (!groupProc.isPrepared() || groupProc.getNumChannels() != 2)
+            groupProc.prepare(playbackSampleRate, numSamples, 2);
+          const auto contentType =
+              groupIndex == 0 ? PitchShiftProcessor::ContentType::Melodic
+                              : PitchShiftProcessor::ContentType::Percussive;
+          groupProc.setContentType(contentType);
+          groupProc.setPitchSemiTones(groupIndex == 0 ? pitchActiveSemiTones : 0);
+          groupProc.setTempoRatio(playbackTempoRatioActive);
+          groupProcessLatencies[static_cast<size_t>(groupIndex)] =
+              groupProc.getLatencySamples();
+          targetLatency = juce::jmax(
+              targetLatency, groupProcessLatencies[static_cast<size_t>(groupIndex)]);
         }
+
+        const int nextTargetLatencySamples =
+            timeProcessActive ? targetLatency : 0;
+        if (!timeProcessActive) {
+          routingPitchLatencySamples = 0;
+        } else {
+          // Keep latency floor stable while transport is running so delay lines
+          // don't shrink mid-playback and create stretch artifacts.
+          routingPitchLatencySamples =
+              juce::jmax(routingPitchLatencySamples, nextTargetLatencySamples);
+        }
+
         for (int i = 0; i < stemCount; ++i) {
           const size_t stemIndex = static_cast<size_t>(i);
           const int desiredDelay =
-              juce::jmax(0, routingPitchLatencySamples -
-                                stemProcessLatencies[stemIndex]);
+              (!timeProcessActive ||
+               stemProcessModes[stemIndex] == RoutingStemProcessingMode::Group)
+                  ? 0
+                  : juce::jmax(0, routingPitchLatencySamples -
+                                      stemProcessLatencies[stemIndex]);
           auto &delay = stemPitchDelayLines[stemIndex];
           if (delay.getDelaySamples() != desiredDelay)
             delay.setDelay(desiredDelay);
+        }
+
+        for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+             ++groupIndex) {
+          const int desiredDelay =
+              (timeProcessActive &&
+               groupActive[static_cast<size_t>(groupIndex)])
+                  ? juce::jmax(
+                        0, routingPitchLatencySamples -
+                               groupProcessLatencies[static_cast<size_t>(
+                                   groupIndex)])
+                  : 0;
+          auto &groupDelay =
+              routingGroupDelayLines[static_cast<size_t>(groupIndex)];
+          if (routingGroupDelaySamples[static_cast<size_t>(groupIndex)] !=
+              desiredDelay) {
+            groupDelay.setDelay(desiredDelay);
+            routingGroupDelaySamples[static_cast<size_t>(groupIndex)] =
+                desiredDelay;
+          }
         }
 
         if (++stemTimingSnapshotDecimator >=
@@ -550,8 +756,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
           for (int i = 0; i < stemTimingEvent.stemCount; ++i) {
             const size_t stemIndex = static_cast<size_t>(i);
-            const int latency = stemProcessLatencies[stemIndex];
-            const int delay = stemPitchDelayLines[stemIndex].getDelaySamples();
+            int latency = stemProcessLatencies[stemIndex];
+            int delay = stemPitchDelayLines[stemIndex].getDelaySamples();
+            if (stemProcessModes[stemIndex] == RoutingStemProcessingMode::Group) {
+              const int groupIndex = stemGroupIndices[stemIndex];
+              latency = groupProcessLatencies[static_cast<size_t>(groupIndex)];
+              delay =
+                  routingGroupDelaySamples[static_cast<size_t>(groupIndex)];
+            }
             stemTimingEvent.processLatencySamples[stemIndex] =
                 static_cast<int16_t>(
                     juce::jlimit(-32768, 32767, latency));
@@ -566,6 +778,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               flags |= 0x2u;
             if (!stemPitchShiftableFlags[stemIndex] && tempoActive)
               flags |= 0x4u;
+            if (stemGuideFlags[stemIndex])
+              flags |= 0x8u;
+            if (stemProcessModes[stemIndex] == RoutingStemProcessingMode::Group)
+              flags |= 0x10u;
+            if (stemProcessModes[stemIndex] ==
+                RoutingStemProcessingMode::Dedicated)
+              flags |= 0x20u;
             stemTimingEvent.flags[stemIndex] = flags;
           }
 
@@ -575,6 +794,15 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (stemRoutingTempBuffer.getNumSamples() < numSamples)
           stemRoutingTempBuffer.setSize(2, numSamples, false, false, true);
 
+        for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+             ++groupIndex) {
+          auto &groupBuffer =
+              routingGroupMixBuffers[static_cast<size_t>(groupIndex)];
+          if (groupBuffer.getNumSamples() < numSamples)
+            groupBuffer.setSize(2, numSamples, false, false, true);
+          groupBuffer.clear();
+        }
+
         buffer.clear();
         for (int i = 0; i < stemCount; ++i) {
           stemRoutingTempBuffer.clear();
@@ -582,10 +810,19 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                 numSamples);
           const size_t stemIndex = static_cast<size_t>(i);
           stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
-          const bool pitchShiftable =
-              stemPitchShiftStates[stemIndex].load(
-                  std::memory_order_relaxed);
-          if (timeProcessActive && stemNeedsTimeProcess[stemIndex]) {
+
+          if (stemProcessModes[stemIndex] == RoutingStemProcessingMode::Group) {
+            auto &groupBuffer = routingGroupMixBuffers[static_cast<size_t>(
+                stemGroupIndices[stemIndex])];
+            for (int ch = 0; ch < 2; ++ch)
+              groupBuffer.addFrom(ch, 0, stemRoutingTempBuffer, ch, 0,
+                                  numSamples);
+            continue;
+          }
+
+          const bool pitchShiftable = stemPitchShiftableFlags[stemIndex];
+          if (stemProcessModes[stemIndex] == RoutingStemProcessingMode::Dedicated &&
+              stemNeedsTimeProcess[stemIndex]) {
             auto &proc = stemPitchProcessors[stemIndex];
             if (!proc.isPrepared() || proc.getNumChannels() != 2)
               proc.prepare(playbackSampleRate, numSamples, 2);
@@ -595,26 +832,38 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             proc.setTempoRatio(playbackTempoRatioActive);
             proc.process(stemRoutingTempBuffer);
           }
+
           if (timeProcessActive &&
               stemPitchDelayLines[stemIndex].getDelaySamples() > 0) {
             stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
           }
-          int assignedWidth = juce::jlimit(
-              1, 2, stemOutputWidths[stemIndex].load(
-                        std::memory_order_relaxed));
-          if (numChannels < 2)
-            assignedWidth = 1;
-
-          const int maxBaseChannel = juce::jmax(
-              1, numChannels - (assignedWidth >= 2 ? 1 : 0));
-          const int assignedChannelOneBased = juce::jlimit(
-              1, maxBaseChannel,
-              stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
-          const int outputIndex =
-              juce::jlimit(0, juce::jmax(0, numChannels - 1),
-                           assignedChannelOneBased - 1);
           stemOutputRouter.routeStemToOutputChannels(
-              stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
+              stemRoutingTempBuffer,
+              stemAssignedOutputIndices[stemIndex],
+              stemAssignedWidths[stemIndex], buffer);
+        }
+
+        for (int groupIndex = 0; groupIndex < routingHybridGroupCount;
+             ++groupIndex) {
+          if (!groupActive[static_cast<size_t>(groupIndex)])
+            continue;
+          auto &groupBuffer =
+              routingGroupMixBuffers[static_cast<size_t>(groupIndex)];
+          auto &groupProc =
+              routingGroupPitchProcessors[static_cast<size_t>(groupIndex)];
+          auto &groupDelay =
+              routingGroupDelayLines[static_cast<size_t>(groupIndex)];
+          if (groupNeedsTimeProcess[static_cast<size_t>(groupIndex)])
+            groupProc.process(groupBuffer);
+          if (timeProcessActive &&
+              routingGroupDelaySamples[static_cast<size_t>(groupIndex)] > 0)
+            groupDelay.process(groupBuffer);
+
+          stemOutputRouter.routeStemToOutputChannels(
+              groupBuffer,
+              routingGroupOutputChannels[static_cast<size_t>(groupIndex)],
+              routingGroupOutputWidths[static_cast<size_t>(groupIndex)],
+              buffer);
         }
         usedSeparatedMix = false;
       } else {
@@ -648,6 +897,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       songCurrentPositionSeconds.store(currentSec, std::memory_order_relaxed);
       globalSamplePosition.fetch_add(numSamples, std::memory_order_relaxed);
     } else {
+      routingPitchLatencySamples = 0;
+      outgoingRoutingPitchLatencySamples = 0;
       const auto state = getTransportState();
       if (state == TransportState::paused) {
         const double currentSec =
@@ -675,11 +926,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           playbackSampleRate > 0.0
               ? (static_cast<double>(numSamples) / playbackSampleRate) * 1000.0
               : 0.0;
+      const bool overrun = blockMs > budgetMs;
+      updateCpuGuardState(isPlaying, overrun);
       diagnostics.pushEvent({juce::Time::currentTimeMillis() * 1.0, blockMs,
                              budgetMs, lockWaitMs, stemCount,
-                             blockMs > budgetMs, isPlaying});
+                             overrun, isPlaying});
     }
   } else {
+    wasTransportPlayingLastBlock = false;
     // No song loaded — sin bus de entrada física: silencio (los parámetros
     // inputGain/mix/bypass siguen existiendo por compatibilidad de estado).
     songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
@@ -2788,6 +3042,31 @@ double MTControlsAudioProcessor::getPlaybackTempoBpm() const noexcept {
   return playbackTempoBpm.load(std::memory_order_relaxed);
 }
 
+double MTControlsAudioProcessor::getMinPlaybackTempoBpm() const noexcept {
+  const double rawOriginalBpm = loadedSongBpm.load(std::memory_order_relaxed);
+  if (rawOriginalBpm > 0.0) {
+    const double originalBpm = juce::jmax(kMinPlaybackTempoBpm, rawOriginalBpm);
+    return juce::jmax(kMinPlaybackTempoBpm,
+                      originalBpm * kMinPlaybackTempoRatio);
+  }
+  return kMinPlaybackTempoBpm;
+}
+
+double MTControlsAudioProcessor::getMaxPlaybackTempoBpm() const noexcept {
+  const double rawOriginalBpm = loadedSongBpm.load(std::memory_order_relaxed);
+  if (rawOriginalBpm > 0.0) {
+    const double originalBpm = juce::jmax(kMinPlaybackTempoBpm, rawOriginalBpm);
+    double maxBpm = juce::jmin(kMaxPlaybackTempoBpm,
+                               originalBpm * kMaxPlaybackTempoRatio);
+    const double minBpm = juce::jmax(kMinPlaybackTempoBpm,
+                                     originalBpm * kMinPlaybackTempoRatio);
+    if (maxBpm < minBpm)
+      maxBpm = minBpm;
+    return maxBpm;
+  }
+  return kMaxPlaybackTempoBpm;
+}
+
 double MTControlsAudioProcessor::getOriginalSongBpm() const noexcept {
   return loadedSongBpm.load(std::memory_order_relaxed);
 }
@@ -2859,6 +3138,12 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   loadedSongBpm = 120.0;
   playbackTempoBpm.store(120.0, std::memory_order_relaxed);
   playbackTempoRatioActive = 1.0;
+  pendingTempoRatioRequested = 1.0;
+  hasPendingTempoRuntimeChange = false;
+  tempoDebounceRemainingSamples = 0;
+  overrunGuardScore = 0;
+  cpuGuardActive = false;
+  PitchShiftProcessor::setGlobalCpuGuardEnabled(false);
   loadedSongKey.clear();
   loadedSongTitle.clear();
   songStartSeconds.store(0.0, std::memory_order_relaxed);
@@ -2882,6 +3167,12 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
   routingPitchLatencySamples = 0;
   outgoingRoutingPitchLatencySamples = 0;
+  for (auto &delay : routingGroupDelayLines)
+    delay.reset();
+  for (auto &processor : routingGroupPitchProcessors)
+    processor.reset();
+  for (auto &groupDelay : routingGroupDelaySamples)
+    groupDelay = 0;
   for (auto &delay : stemPitchDelayLines)
     delay.reset();
   for (auto &processor : stemPitchProcessors)

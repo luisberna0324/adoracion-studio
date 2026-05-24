@@ -1,8 +1,14 @@
 #include "PitchShiftProcessor.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace {
+constexpr double kMinTempoRatio = 0.80;
+constexpr double kMaxTempoRatio = 1.25;
+std::atomic<bool> gCpuGuardEnabled{false};
+std::atomic<uint32_t> gQualityVersion{1};
+
 struct TempoQualitySettings {
   int profileId = 0;
   int sequenceMs = 82;
@@ -32,6 +38,17 @@ TempoQualitySettings tempoQualitySettingsForRatio(
 }
 } // namespace
 
+void PitchShiftProcessor::setGlobalCpuGuardEnabled(const bool enabled) noexcept {
+  const bool previous = gCpuGuardEnabled.exchange(enabled, std::memory_order_relaxed);
+  if (previous == enabled)
+    return;
+  gQualityVersion.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool PitchShiftProcessor::isGlobalCpuGuardEnabled() noexcept {
+  return gCpuGuardEnabled.load(std::memory_order_relaxed);
+}
+
 void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
                                   int numChannels) {
   currentSampleRate = sampleRate;
@@ -56,6 +73,7 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
   soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
   soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
+  appliedQualityVersion = gQualityVersion.load(std::memory_order_relaxed);
   configureQualitySettings();
   soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
   soundtouch.setTempo(static_cast<float>(tempoRatio));
@@ -92,7 +110,8 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
 }
 
 void PitchShiftProcessor::setTempoRatio(double ratio) {
-  const double normalized = juce::jlimit(0.75, 2.0, ratio);
+  ensureQualitySettingsCurrent();
+  const double normalized = juce::jlimit(kMinTempoRatio, kMaxTempoRatio, ratio);
   if (juce::approximatelyEqual(tempoRatio, normalized))
     return;
   const int previousProfile =
@@ -113,6 +132,7 @@ void PitchShiftProcessor::setTempoRatio(double ratio) {
 }
 
 void PitchShiftProcessor::setContentType(const ContentType type) {
+  ensureQualitySettingsCurrent();
   if (contentType == type)
     return;
   contentType = type;
@@ -140,6 +160,7 @@ int PitchShiftProcessor::getNumChannels() const noexcept {
 bool PitchShiftProcessor::isPrepared() const noexcept { return prepared; }
 
 void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
+  ensureQualitySettingsCurrent();
   if (!prepared || currentChannels <= 0)
     return;
   if (pitchSemiTones == 0 && juce::approximatelyEqual(tempoRatio, 1.0))
@@ -234,12 +255,27 @@ void PitchShiftProcessor::primeLatency() {
 
 void PitchShiftProcessor::configureQualitySettings() {
   const auto settings = tempoQualitySettingsForRatio(tempoRatio, contentType);
+  const bool cpuGuard = isGlobalCpuGuardEnabled();
+
+  int sequenceMs = settings.sequenceMs;
+  int seekWindowMs = settings.seekWindowMs;
+  int overlapMs = settings.overlapMs;
+  int quickSeek = 0;
+
+  if (cpuGuard) {
+    // CPU guard trades some quality for lower runtime spikes during heavy
+    // stretch operations.
+    quickSeek = 1;
+    sequenceMs = juce::jmax(28, sequenceMs - (contentType == ContentType::Percussive ? 12 : 24));
+    seekWindowMs = juce::jmax(8, seekWindowMs - (contentType == ContentType::Percussive ? 4 : 10));
+    overlapMs = juce::jmax(4, overlapMs - 2);
+  }
 
   // Favor quality over CPU while stretching down tempo in live playback.
-  soundtouch.setSetting(SETTING_USE_QUICKSEEK, 0);
-  soundtouch.setSetting(SETTING_SEQUENCE_MS, settings.sequenceMs);
-  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, settings.seekWindowMs);
-  soundtouch.setSetting(SETTING_OVERLAP_MS, settings.overlapMs);
+  soundtouch.setSetting(SETTING_USE_QUICKSEEK, quickSeek);
+  soundtouch.setSetting(SETTING_SEQUENCE_MS, sequenceMs);
+  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, seekWindowMs);
+  soundtouch.setSetting(SETTING_OVERLAP_MS, overlapMs);
 }
 
 void PitchShiftProcessor::refreshLatencyFromSettings() {
@@ -279,4 +315,15 @@ void PitchShiftProcessor::refreshLatencyFromSettings() {
                                                 outputReadPos));
     outputReadPos = 0;
   }
+}
+
+void PitchShiftProcessor::ensureQualitySettingsCurrent() {
+  if (!prepared)
+    return;
+  const uint32_t globalVersion = gQualityVersion.load(std::memory_order_relaxed);
+  if (globalVersion == appliedQualityVersion)
+    return;
+  appliedQualityVersion = globalVersion;
+  configureQualitySettings();
+  refreshLatencyFromSettings();
 }

@@ -890,9 +890,12 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
 }
 
 void TopBar::setBpmAbsolute(double bpm) {
-  if (bpm <= 0.0)
+  const double minBpm = processor.getMinPlaybackTempoBpm();
+  const double maxBpm = processor.getMaxPlaybackTempoBpm();
+  const double clampedBpm = juce::jlimit(minBpm, maxBpm, bpm);
+  if (clampedBpm <= 0.0)
     return;
-  processor.setPlaybackTempoBpm(bpm);
+  processor.setPlaybackTempoBpm(clampedBpm);
   updateBpmDisplay();
 }
 
@@ -929,11 +932,15 @@ void TopBar::showMetronomePopover() {
                      std::function<void(double)> onSetBpmCb,
                      std::function<void(double)> onAdjustBpmCb,
                      std::function<double()> bpmProviderCb,
+                     std::function<double()> minBpmProviderCb,
+                     std::function<double()> maxBpmProviderCb,
                      const juce::String &timeSig)
         : onTap(std::move(onTapCb)), onTimeSig(std::move(onTimeSigCb)),
           onSetBpm(std::move(onSetBpmCb)),
           onAdjustBpm(std::move(onAdjustBpmCb)),
-          bpmProvider(std::move(bpmProviderCb)) {
+          bpmProvider(std::move(bpmProviderCb)),
+          minBpmProvider(std::move(minBpmProviderCb)),
+          maxBpmProvider(std::move(maxBpmProviderCb)) {
       tapButton.setButtonText("TAP");
       tapButton.onClick = [this] {
         if (onTap)
@@ -973,6 +980,21 @@ void TopBar::showMetronomePopover() {
       bpmEditor.setJustification(juce::Justification::centred);
       bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
       bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
+      bpmEditor.onTextChange = [this] {
+        const auto text = bpmEditor.getText().trim();
+        if (text.isEmpty())
+          return;
+        const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+        const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+        const double parsed = text.getDoubleValue();
+        const double clamped = juce::jlimit(minBpm, maxBpm, parsed);
+        if (!juce::approximatelyEqual(parsed, clamped)) {
+          bpmEditor.setText(
+              juce::String(static_cast<int>(std::round(clamped))),
+              juce::dontSendNotification);
+          bpmEditor.moveCaretToEnd();
+        }
+      };
       addAndMakeVisible(bpmEditor);
       applyTheme();
       syncBpmEditor();
@@ -1007,6 +1029,8 @@ void TopBar::showMetronomePopover() {
     std::function<void(double)> onSetBpm;
     std::function<void(double)> onAdjustBpm;
     std::function<double()> bpmProvider;
+    std::function<double()> minBpmProvider;
+    std::function<double()> maxBpmProvider;
 
     void applyTheme() {
       for (auto *btn : {&tapButton, &minusButton, &plusButton}) {
@@ -1031,15 +1055,23 @@ void TopBar::showMetronomePopover() {
     void syncBpmEditor() {
       if (!bpmProvider)
         return;
-      bpmEditor.setText(
-          juce::String(static_cast<int>(std::round(bpmProvider()))),
-          juce::dontSendNotification);
+      const double current = bpmProvider();
+      const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+      const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+      const double clamped = juce::jlimit(minBpm, maxBpm, current);
+      bpmEditor.setText(juce::String(static_cast<int>(std::round(clamped))),
+                        juce::dontSendNotification);
+      minusButton.setEnabled(clamped > (minBpm + 0.001));
+      plusButton.setEnabled(clamped < (maxBpm - 0.001));
     }
 
     void submitBpmEditor() {
       if (!onSetBpm)
         return;
-      const double bpm = bpmEditor.getText().trim().getDoubleValue();
+      const double parsed = bpmEditor.getText().trim().getDoubleValue();
+      const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+      const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+      const double bpm = juce::jlimit(minBpm, maxBpm, parsed);
       if (bpm > 0.0)
         onSetBpm(bpm);
       syncBpmEditor();
@@ -1051,7 +1083,10 @@ void TopBar::showMetronomePopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getPlaybackTempoBpm(); }, timeSignature);
+      [this] { return processor.getPlaybackTempoBpm(); },
+      [this] { return processor.getMinPlaybackTempoBpm(); },
+      [this] { return processor.getMaxPlaybackTempoBpm(); },
+      timeSignature);
   panel->setSize(180, 120);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr

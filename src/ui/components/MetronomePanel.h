@@ -43,12 +43,15 @@ public:
     using BpmSetCallback = std::function<void(double)>;
     using BpmAdjustCallback = std::function<void(double)>;
     using BpmProvider = std::function<double()>;
+    using BpmLimitProvider = std::function<double()>;
 
     MetronomePopover(const juce::String &timeSig, TapCallback onTapCb,
                      TimeSignatureCallback onTimeSigCb,
                      BpmSetCallback onBpmSetCb,
                      BpmAdjustCallback onBpmAdjustCb,
-                     BpmProvider bpmProviderCb);
+                     BpmProvider bpmProviderCb,
+                     BpmLimitProvider minBpmProviderCb,
+                     BpmLimitProvider maxBpmProviderCb);
 
     void refreshThemeColours();
     void paint(juce::Graphics &g) override;
@@ -66,6 +69,8 @@ public:
     BpmSetCallback onBpmSet;
     BpmAdjustCallback onBpmAdjust;
     BpmProvider bpmProvider;
+    BpmLimitProvider minBpmProvider;
+    BpmLimitProvider maxBpmProvider;
 
     void syncBpmEditor();
     void submitBpmEditor();

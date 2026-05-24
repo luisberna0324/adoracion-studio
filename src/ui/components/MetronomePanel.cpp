@@ -105,12 +105,15 @@ void MetronomePanel::MetronomeIconButton::paintButton(juce::Graphics &g,
 MetronomePanel::MetronomePopover::MetronomePopover(
     const juce::String &timeSig, TapCallback onTapCb,
     TimeSignatureCallback onTimeSigCb, BpmSetCallback onBpmSetCb,
-    BpmAdjustCallback onBpmAdjustCb, BpmProvider bpmProviderCb)
+    BpmAdjustCallback onBpmAdjustCb, BpmProvider bpmProviderCb,
+    BpmLimitProvider minBpmProviderCb, BpmLimitProvider maxBpmProviderCb)
     : onTap(std::move(onTapCb)),
       onTimeSignatureChanged(std::move(onTimeSigCb)),
       onBpmSet(std::move(onBpmSetCb)),
       onBpmAdjust(std::move(onBpmAdjustCb)),
-      bpmProvider(std::move(bpmProviderCb)) {
+      bpmProvider(std::move(bpmProviderCb)),
+      minBpmProvider(std::move(minBpmProviderCb)),
+      maxBpmProvider(std::move(maxBpmProviderCb)) {
   tapButton.setButtonText("TAP");
   tapButton.setViewportIgnoreDragFlag(true);
   tapButton.onClick = [this] {
@@ -153,6 +156,20 @@ MetronomePanel::MetronomePopover::MetronomePopover(
   bpmEditor.setJustification(juce::Justification::centred);
   bpmEditor.onReturnKey = [this] { submitBpmEditor(); };
   bpmEditor.onFocusLost = [this] { submitBpmEditor(); };
+  bpmEditor.onTextChange = [this] {
+    const auto text = bpmEditor.getText().trim();
+    if (text.isEmpty())
+      return;
+    const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+    const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+    const double parsed = text.getDoubleValue();
+    const double clamped = juce::jlimit(minBpm, maxBpm, parsed);
+    if (!juce::approximatelyEqual(parsed, clamped)) {
+      bpmEditor.setText(juce::String(static_cast<int>(std::round(clamped))),
+                        juce::dontSendNotification);
+      bpmEditor.moveCaretToEnd();
+    }
+  };
   addAndMakeVisible(bpmEditor);
 
   syncBpmEditor();
@@ -219,15 +236,24 @@ void MetronomePanel::MetronomePopover::resized() {
 void MetronomePanel::MetronomePopover::syncBpmEditor() {
   if (!bpmProvider)
     return;
-  bpmEditor.setText(juce::String(static_cast<int>(std::round(bpmProvider()))),
+  const double current = bpmProvider();
+  const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+  const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+  const double clamped = juce::jlimit(minBpm, maxBpm, current);
+  bpmEditor.setText(juce::String(static_cast<int>(std::round(clamped))),
                     juce::dontSendNotification);
+  minusButton.setEnabled(clamped > (minBpm + 0.001));
+  plusButton.setEnabled(clamped < (maxBpm - 0.001));
 }
 
 void MetronomePanel::MetronomePopover::submitBpmEditor() {
   const auto text = bpmEditor.getText().trim();
   if (text.isEmpty() || !onBpmSet)
     return;
-  const double bpm = text.getDoubleValue();
+  const double parsed = text.getDoubleValue();
+  const double minBpm = minBpmProvider ? minBpmProvider() : 20.0;
+  const double maxBpm = maxBpmProvider ? maxBpmProvider() : 300.0;
+  const double bpm = juce::jlimit(minBpm, maxBpm, parsed);
   if (bpm > 0.0)
     onBpmSet(bpm);
   syncBpmEditor();
@@ -283,7 +309,9 @@ void MetronomePanel::showPopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getPlaybackTempoBpm(); });
+      [this] { return processor.getPlaybackTempoBpm(); },
+      [this] { return processor.getMinPlaybackTempoBpm(); },
+      [this] { return processor.getMaxPlaybackTempoBpm(); });
   panel->setSize(180, 120);
   panel->refreshThemeColours();
 
@@ -305,10 +333,13 @@ void MetronomePanel::updateBpmDisplay() {
 }
 
 void MetronomePanel::setBpmAbsolute(double bpm) {
-  if (bpm <= 0.0)
+  const double minBpm = processor.getMinPlaybackTempoBpm();
+  const double maxBpm = processor.getMaxPlaybackTempoBpm();
+  const double clampedBpm = juce::jlimit(minBpm, maxBpm, bpm);
+  if (clampedBpm <= 0.0)
     return;
   manualOverride = true;
-  processor.setPlaybackTempoBpm(bpm);
+  processor.setPlaybackTempoBpm(clampedBpm);
   updateBpmDisplay();
 }
 

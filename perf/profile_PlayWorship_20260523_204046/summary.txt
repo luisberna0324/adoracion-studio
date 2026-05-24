@@ -1,0 +1,6 @@
+samples=7
+cpu_avg=129.90%
+cpu_p95=192.00%
+cpu_max=192.00%
+mem_avg=399.14MB
+mem_max=797.48MB

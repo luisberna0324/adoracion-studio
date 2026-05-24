@@ -9,6 +9,9 @@ class PitchShiftProcessor {
 public:
   enum class ContentType : uint8_t { Melodic = 0, Percussive = 1 };
 
+  static void setGlobalCpuGuardEnabled(bool enabled) noexcept;
+  static bool isGlobalCpuGuardEnabled() noexcept;
+
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
   void setPitchSemiTones(int semitones);
@@ -25,6 +28,7 @@ private:
   void configureQualitySettings();
   void refreshLatencyFromSettings();
   void primeLatency();
+  void ensureQualitySettingsCurrent();
 
   soundtouch::SoundTouch soundtouch;
   std::vector<float> interleavedInput;
@@ -39,4 +43,5 @@ private:
   ContentType contentType = ContentType::Melodic;
   int latencySamples = 0;
   bool prepared = false;
+  uint32_t appliedQualityVersion = 0;
 };
