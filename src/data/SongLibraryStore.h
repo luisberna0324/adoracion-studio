@@ -155,8 +155,6 @@ private:
   static bool setlistExists(const LibraryState &library,
                             const juce::String &setlistId);
   static void ensureDefaultSetlist(LibraryState &library);
-  static void addSongToActiveSetlist(LibraryState &library,
-                                     const ImportedSongData &song);
   static SetlistData *findSetlistById(LibraryState &library,
                                       const juce::String &setlistId);
   static SetlistItem createSetlistItem(const ImportedSongData &song);

@@ -11,6 +11,7 @@
 
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
+  using PlayingProvider = std::function<bool()>;
   using PositionProvider = std::function<double()>;
   using LengthProvider = std::function<double()>;
   using SongWindowProvider = std::function<double()>;
@@ -31,7 +32,8 @@ public:
                       bool isCustomArrangement);
   void setSongRhythm(double bpm, const juce::String &timeSignature);
   void setTransportProviders(PositionProvider positionCb,
-                             LengthProvider lengthCb);
+                             LengthProvider lengthCb,
+                             PlayingProvider playingCb = {});
   void setSongWindowProviders(SongWindowProvider startCb,
                               SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
@@ -110,6 +112,7 @@ private:
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
 
   std::vector<float> waveformBins;
+  PlayingProvider playingProvider;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
   SongWindowProvider songWindowStartProvider;
@@ -122,6 +125,7 @@ private:
   ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  juce::TextButton followButton;
   juce::TextButton editButton;
   juce::Label snapModeLabel;
   juce::ComboBox snapModeBox;
@@ -161,10 +165,17 @@ private:
   juce::String songLoadingPhaseText;
   double songLoadingShownAtMs = 0.0;
   double songLoadingHideAfterMs = 0.0;
+  bool followPlaybackEnabled = false;
+  double followSuspendedUntilMs = 0.0;
+  bool followPendingJumpWasActive = false;
+  bool followLastSongProgressValid = false;
+  float followLastSongProgressRatio = 0.0f;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
+  bool isFollowTrackingActive() const;
+  bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;

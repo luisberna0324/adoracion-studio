@@ -16,6 +16,11 @@ class MTControlsAudioProcessor;
 
 class ChannelGridPanel final : public juce::Component, private juce::Timer {
 public:
+  enum class GuideSourceMode {
+    SongGuide = 0,
+    DynamicBySections
+  };
+
   ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                    MTControlsAudioProcessor &processorRef);
   ~ChannelGridPanel() override;
@@ -38,6 +43,8 @@ public:
   void triggerMidiNudgeUp();
   void triggerMidiNudgeDown();
   void triggerMidiApplyRouting();
+  void setGuideSourceMode(GuideSourceMode mode);
+  GuideSourceMode getGuideSourceMode() const noexcept { return guideSourceMode; }
 
   /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
   void beginAutomaticRoutingDraft();
@@ -62,12 +69,15 @@ private:
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
   void queueMasterVolumePersistence(float volume);
   void flushPendingVolumePersistence();
+  void showGuideSourcePopover(juce::Component *anchorComponent);
+  void applyGuideSourceModeToVisibleGuideSlots();
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
   juce::Label nudgeHintLabel;
   juce::TextButton nudgeUpButton{"VOL +"};
   juce::TextButton nudgeDownButton{"VOL -"};
+  juce::ToggleButton dynamicGuideToggle;
   juce::Label routingHintLabel;
   juce::TextButton applyRoutingButton{"Aplicar"};
   juce::Viewport viewport;
@@ -75,6 +85,7 @@ private:
   std::vector<std::unique_ptr<StripSlot>> slots;
   std::vector<bool> adjustableStems;
   std::vector<bool> clickGuideStems;
+  std::vector<bool> guideStems;
   std::vector<int> slotStemIndices;
   std::vector<juce::String> slotStemIds;
   std::function<void(const ImportedSongData &, int)> onLibrarySongLoadRequested;
@@ -88,6 +99,7 @@ private:
 
   bool routingDraftActive = false;
   std::vector<int> pendingOutputBySlotIndex;
+  std::map<int, bool> guideStemMuteBeforeDynamicByStemIndex;
   std::map<juce::String, float> pendingStemVolumeWrites;
   bool hasPendingMasterVolumeWrite = false;
   float pendingMasterVolumeValue = 1.0f;
@@ -96,6 +108,7 @@ private:
   int lastSeenOutputChannelCount = -1;
   int masterSlotIndex = -1;
   int metronomeVirtualSlotIndex = -1;
+  GuideSourceMode guideSourceMode = GuideSourceMode::SongGuide;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   const float nudgeStep = 0.05f;
   static constexpr double volumePersistenceDebounceMs = 120.0;

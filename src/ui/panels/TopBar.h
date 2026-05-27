@@ -47,6 +47,7 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
   class IconButton final : public juce::Button {

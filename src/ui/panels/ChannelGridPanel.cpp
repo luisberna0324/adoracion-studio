@@ -6,6 +6,7 @@
 #include "../../data/Localization.h"
 #include "../../data/SongLibraryStore.h"
 
+#include <array>
 #include <algorithm>
 #include <cmath>
 
@@ -25,6 +26,57 @@ float midiLearnSoftBlinkStrength() {
                                               1.1));
   return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
 }
+
+juce::String guideSourceModeLabel(const ChannelGridPanel::GuideSourceMode mode) {
+  switch (mode) {
+  case ChannelGridPanel::GuideSourceMode::DynamicBySections:
+    return L10n::tr(u8"Guía dinámica", "Dynamic guide");
+  case ChannelGridPanel::GuideSourceMode::SongGuide:
+  default:
+    return L10n::tr(u8"Guía original", "Original guide");
+  }
+}
+
+juce::String guideSourceModeDescription(const ChannelGridPanel::GuideSourceMode mode) {
+  switch (mode) {
+  case ChannelGridPanel::GuideSourceMode::DynamicBySections:
+    return L10n::tr(u8"Generada desde secciones", "Generated from sections");
+  case ChannelGridPanel::GuideSourceMode::SongGuide:
+  default:
+    return L10n::tr(u8"Incluida en la canción", "Embedded in song");
+  }
+}
+
+class GuideSettingsButton final : public juce::Button {
+public:
+  GuideSettingsButton() : juce::Button("guideSettings") {}
+
+  void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                   bool isButtonDown) override {
+    auto b = getLocalBounds().toFloat().reduced(0.5f);
+    auto fill = UITheme::cardBgHover.withAlpha(0.78f);
+    if (getToggleState())
+      fill = UITheme::accent.withAlpha(0.90f);
+    if (isMouseOverButton)
+      fill = fill.brighter(0.08f);
+    if (isButtonDown)
+      fill = fill.darker(0.08f);
+
+    const float radius = juce::jmax(3.0f, b.getWidth() * 0.24f);
+    g.setColour(juce::Colours::black.withAlpha(0.20f));
+    g.fillRoundedRectangle(b.translated(0.0f, 1.0f), radius);
+    g.setColour(fill);
+    g.fillRoundedRectangle(b, radius);
+    g.setColour(UITheme::cardBorder.withAlpha(0.70f));
+    g.drawRoundedRectangle(b, radius, 1.0f);
+
+    const auto iconArea = b.reduced(3.0f);
+    const auto iconColour = getToggleState() ? UITheme::onAccent
+                                             : UITheme::textPrimary;
+    if (!drawSvgIcon(g, iconArea, SvgIconName::Settings, iconColour))
+      drawIconGlyph(g, iconArea, IconGlyph::Settings, iconColour, 1.4f);
+  }
+};
 } // namespace
 
 class ChannelGridPanel::StripSlot : public juce::Component {
@@ -34,8 +86,16 @@ public:
       : strip(std::make_unique<ChannelStripCard>(std::move(groupName), lnf,
                                                  std::move(levelProvider),
                                                  false)),
+        guideSettingsButton(std::make_unique<GuideSettingsButton>()),
         outputChannelLabel({}, "Canal") {
     addAndMakeVisible(*strip);
+    addAndMakeVisible(*guideSettingsButton);
+    guideSettingsButton->setVisible(false);
+    guideSettingsButton->setViewportIgnoreDragFlag(true);
+    guideSettingsButton->onClick = [this] {
+      if (onGuideSettingsRequested != nullptr && guideSettingsButton->isVisible())
+        onGuideSettingsRequested(*guideSettingsButton);
+    };
     outputChannelLabel.setJustificationType(juce::Justification::centred);
     outputChannelLabel.setFont(juce::FontOptions(10.0f));
     outputChannelLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -51,28 +111,46 @@ public:
   }
 
   void resized() override {
+    juce::Rectangle<int> stripBounds;
     if (!showOutputRouting) {
       const int cardW = strip->getLayout().width;
       const int cardH = strip->getLayout().height;
       const int cardX = (getWidth() - cardW) / 2;
-      strip->setBounds(cardX, 4, cardW, cardH);
-      return;
+      stripBounds = {cardX, 4, cardW, cardH};
+      strip->setBounds(stripBounds);
+    } else {
+      const int topInset = 4;
+      const int controlH = 20;
+      const int gap = 2;
+      const int controlW = getWidth() - 12;
+      const int controlX = 6;
+      outputChannelLabel.setBounds(controlX, topInset, controlW, 14);
+      outputChannelSelector.setBounds(controlX,
+                                      outputChannelLabel.getBottom() + gap,
+                                      controlW, controlH);
+
+      const int cardW = strip->getLayout().width;
+      const int cardH = strip->getLayout().height;
+      const int cardX = (getWidth() - cardW) / 2;
+      const int cardY = outputChannelSelector.getBottom() + 4;
+      stripBounds = {cardX, cardY, cardW, cardH};
+      strip->setBounds(stripBounds);
     }
 
-    const int topInset = 4;
-    const int controlH = 20;
-    const int gap = 2;
-    const int controlW = getWidth() - 12;
-    const int controlX = 6;
-    outputChannelLabel.setBounds(controlX, topInset, controlW, 14);
-    outputChannelSelector.setBounds(controlX, outputChannelLabel.getBottom() + gap,
-                                    controlW, controlH);
-
-    const int cardW = strip->getLayout().width;
-    const int cardH = strip->getLayout().height;
-    const int cardX = (getWidth() - cardW) / 2;
-    const int cardY = outputChannelSelector.getBottom() + 4;
-    strip->setBounds(cardX, cardY, cardW, cardH);
+    if (guideSettingsButton->isVisible()) {
+      const auto &l = strip->getLayout();
+      const int buttonSize = juce::jlimit(14, 22, l.soloHeight + 1);
+      const int buttonX = stripBounds.getX() + juce::jmax(6, l.paddingX - 2);
+      const int buttonsTopY = stripBounds.getY() + l.height -
+                              l.channelBandHeight - l.buttonToBandGap -
+                              l.soloHeight;
+      const int buttonY = juce::jmax(stripBounds.getY() + 8,
+                                     buttonsTopY - buttonSize - 6);
+      guideSettingsButton->setBounds(buttonX, buttonY, buttonSize, buttonSize);
+      guideSettingsButton->toFront(false);
+    } else {
+      guideSettingsButton->setBounds({});
+    }
   }
 
   void setOutputOptions(const juce::StringArray &names, const int selectedChannel) {
@@ -95,6 +173,24 @@ public:
     onOutputChannelChanged = std::move(callback);
   }
 
+  void setGuideSettingsVisible(const bool visible) {
+    guideSettingsButton->setVisible(visible);
+    resized();
+  }
+
+  void setGuideSettingsActive(const bool active) {
+    guideSettingsButton->setToggleState(active, juce::dontSendNotification);
+  }
+
+  void setGuideSettingsTooltip(const juce::String &tooltip) {
+    guideSettingsButton->setTooltip(tooltip);
+  }
+
+  void setOnGuideSettingsRequested(
+      std::function<void(juce::Component &)> callback) {
+    onGuideSettingsRequested = std::move(callback);
+  }
+
   void setStripScale(const float scale) {
     strip->setLayoutScale(scale);
     resized();
@@ -104,9 +200,11 @@ public:
 
 private:
   std::unique_ptr<ChannelStripCard> strip;
+  std::unique_ptr<GuideSettingsButton> guideSettingsButton;
   juce::Label outputChannelLabel;
   juce::ComboBox outputChannelSelector;
   std::function<void(int)> onOutputChannelChanged;
+  std::function<void(juce::Component &)> onGuideSettingsRequested;
   bool showOutputRouting = true;
 };
 
@@ -174,6 +272,8 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   nudgeDownButton.setTooltip(
       "Baja todos los stems (excepto master/click/guia)");
   addAndMakeVisible(nudgeDownButton);
+
+  dynamicGuideToggle.setVisible(false);
 
   viewport.setViewedComponent(&content, false);
   viewport.setScrollBarsShown(true, false, false, false);
@@ -255,6 +355,70 @@ void ChannelGridPanel::triggerMidiNudgeDown() { nudgeFaders(-nudgeStep); }
 
 void ChannelGridPanel::triggerMidiApplyRouting() { applyRoutingDraft(); }
 
+void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode) {
+  if (guideSourceMode == mode)
+    return;
+
+  if (mode == GuideSourceMode::DynamicBySections) {
+    guideStemMuteBeforeDynamicByStemIndex.clear();
+    for (size_t i = 0; i < slots.size(); ++i) {
+      const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
+      if (!isGuideStem)
+        continue;
+      const int stemIndex =
+          i < slotStemIndices.size() ? slotStemIndices[i] : -1;
+      if (stemIndex < 0)
+        continue;
+      const bool wasMuted = processor.isStemMuted(stemIndex);
+      guideStemMuteBeforeDynamicByStemIndex[stemIndex] = wasMuted;
+      if (!wasMuted) {
+        processor.setStemMute(stemIndex, true);
+        slots[i]->getStrip().setMuteState(true);
+      }
+    }
+  } else {
+    for (size_t i = 0; i < slots.size(); ++i) {
+      const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
+      if (!isGuideStem)
+        continue;
+      const int stemIndex =
+          i < slotStemIndices.size() ? slotStemIndices[i] : -1;
+      if (stemIndex < 0)
+        continue;
+      const auto it = guideStemMuteBeforeDynamicByStemIndex.find(stemIndex);
+      if (it != guideStemMuteBeforeDynamicByStemIndex.end()) {
+        processor.setStemMute(stemIndex, it->second);
+        slots[i]->getStrip().setMuteState(it->second);
+      }
+    }
+    guideStemMuteBeforeDynamicByStemIndex.clear();
+  }
+
+  guideSourceMode = mode;
+  dynamicGuideToggle.setToggleState(
+      guideSourceMode == GuideSourceMode::DynamicBySections,
+      juce::dontSendNotification);
+  applyGuideSourceModeToVisibleGuideSlots();
+}
+
+void ChannelGridPanel::applyGuideSourceModeToVisibleGuideSlots() {
+  const bool dynamicSelected =
+      guideSourceMode == GuideSourceMode::DynamicBySections;
+  const auto modeLabel = guideSourceModeLabel(guideSourceMode);
+  const auto modeDescription = guideSourceModeDescription(guideSourceMode);
+  for (size_t i = 0; i < slots.size(); ++i) {
+    const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
+    if (!isGuideStem)
+      continue;
+    const auto tooltip = L10n::tr(u8"Fuente de guía: ",
+                                  "Guide source: ") +
+                         modeLabel + " (" + modeDescription + ")";
+    slots[i]->setGuideSettingsActive(dynamicSelected);
+    slots[i]->setGuideSettingsTooltip(tooltip);
+  }
+  dynamicGuideToggle.setToggleState(dynamicSelected, juce::dontSendNotification);
+}
+
 void ChannelGridPanel::refreshLibraryFromStorage() {
   // La biblioteca se resolvio en el panel lateral (SongListPanel).
 }
@@ -262,6 +426,127 @@ void ChannelGridPanel::refreshLibraryFromStorage() {
 void ChannelGridPanel::setLibraryNowPlayingSong(const juce::String &songId,
                                                 const bool isPlaying) {
   juce::ignoreUnused(songId, isPlaying);
+}
+
+void ChannelGridPanel::showGuideSourcePopover(juce::Component *anchorComponent) {
+  if (anchorComponent == nullptr)
+    return;
+
+  class ModeChip final : public juce::Button {
+  public:
+    explicit ModeChip(juce::String labelText)
+        : juce::Button(labelText), label(std::move(labelText)) {}
+
+    void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                     bool isButtonDown) override {
+      auto b = getLocalBounds().toFloat();
+      auto fill = getToggleState() ? UITheme::accent : UITheme::cardBgHover;
+      if (isMouseOverButton)
+        fill = fill.brighter(0.06f);
+      if (isButtonDown)
+        fill = fill.darker(0.05f);
+      g.setColour(fill);
+      const float radius = b.getHeight() * 0.50f;
+      g.fillRoundedRectangle(b, radius);
+      g.setColour(UITheme::cardBorder.withAlpha(0.62f));
+      g.drawRoundedRectangle(b, radius, 1.0f);
+      g.setColour(getToggleState() ? UITheme::onAccent : UITheme::textPrimary);
+      g.setFont(juce::FontOptions(12.0f));
+      g.drawFittedText(label, getLocalBounds(), juce::Justification::centred, 1);
+    }
+
+  private:
+    juce::String label;
+  };
+
+  class GuideSourcePopover final : public juce::Component {
+  public:
+    GuideSourcePopover(
+        const GuideSourceMode activeMode,
+        std::function<void(GuideSourceMode)> onSelectCallback)
+        : onSelect(std::move(onSelectCallback)) {
+      title.setText(L10n::tr(u8"Tipo de guía", "Guide source"),
+                    juce::dontSendNotification);
+      title.setJustificationType(juce::Justification::centred);
+      title.setColour(juce::Label::textColourId, UITheme::textSecondary);
+      title.setFont(juce::FontOptions(11.0f));
+      addAndMakeVisible(title);
+
+      const std::array<GuideSourceMode, 2> modes = {
+          GuideSourceMode::SongGuide, GuideSourceMode::DynamicBySections};
+      chips.reserve(modes.size());
+      for (size_t i = 0; i < modes.size(); ++i) {
+        auto chip =
+            std::make_unique<ModeChip>(guideSourceModeLabel(modes[i]));
+        chip->setClickingTogglesState(true);
+        chip->setToggleState(modes[i] == activeMode, juce::dontSendNotification);
+        chip->setTooltip(guideSourceModeDescription(modes[i]));
+        chip->onClick = [this, i, modes] {
+          setActiveIndex(static_cast<int>(i));
+          if (onSelect)
+            onSelect(modes[i]);
+        };
+        addAndMakeVisible(*chip);
+        chips.push_back(std::move(chip));
+      }
+    }
+
+    void paint(juce::Graphics &g) override {
+      auto b = getLocalBounds().toFloat();
+      g.setColour(UITheme::cardBg);
+      g.fillRoundedRectangle(b, 8.0f);
+      g.setColour(UITheme::cardBorder);
+      g.drawRoundedRectangle(b, 8.0f, 1.0f);
+    }
+
+    void resized() override {
+      auto area = getLocalBounds().reduced(12, 10);
+      title.setBounds(area.removeFromTop(18));
+      area.removeFromTop(8);
+
+      const int count = static_cast<int>(chips.size());
+      const int gap = 6;
+      const int chipH = 28;
+      const int totalGap = gap * juce::jmax(0, count - 1);
+      const int chipW = juce::jmax(56, (area.getWidth() - totalGap) / count);
+      int x = area.getX();
+      const int y = area.getY();
+      for (auto &chip : chips) {
+        chip->setBounds(x, y, chipW, chipH);
+        x += chipW + gap;
+      }
+    }
+
+  private:
+    juce::Label title;
+    std::vector<std::unique_ptr<ModeChip>> chips;
+    std::function<void(GuideSourceMode)> onSelect;
+
+    void setActiveIndex(const int index) {
+      for (int i = 0; i < static_cast<int>(chips.size()); ++i) {
+        chips[static_cast<size_t>(i)]->setToggleState(
+            i == index, juce::dontSendNotification);
+      }
+    }
+  };
+
+  auto safe = juce::Component::SafePointer<ChannelGridPanel>(this);
+  auto panel = std::make_unique<GuideSourcePopover>(
+      guideSourceMode, [safe](const GuideSourceMode mode) {
+        if (safe != nullptr)
+          safe->setGuideSourceMode(mode);
+      });
+  panel->setSize(302, 74);
+
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  juce::Component *parentComp = editor != nullptr
+                                    ? static_cast<juce::Component *>(editor)
+                                    : static_cast<juce::Component *>(this);
+  const auto anchor =
+      parentComp->getLocalArea(anchorComponent, anchorComponent->getLocalBounds());
+  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel), anchor,
+                                                         parentComp);
+  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
 }
 
 void ChannelGridPanel::timerCallback() {
@@ -453,11 +738,13 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
 void ChannelGridPanel::setSong(const ImportedSongData &song) {
   flushPendingVolumePersistence();
   routingDraftActive = false;
+  guideStemMuteBeforeDynamicByStemIndex.clear();
   masterSlotIndex = -1;
   metronomeVirtualSlotIndex = -1;
   slots.clear();
   adjustableStems.clear();
   clickGuideStems.clear();
+  guideStems.clear();
   slotStemIndices.clear();
   slotStemIds.clear();
   pendingOutputBySlotIndex.clear();
@@ -505,6 +792,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     const int stemPriority = stemPriorityForStripOrder(stem);
     const bool isAdjustable = stemPriority > 1;
     const bool isClickGuide = stemPriority <= 1;
+    const bool isGuideStem = stemPriority == 1;
     const size_t slotIndex = slots.size();
 
     auto slot = std::make_unique<StripSlot>(
@@ -521,6 +809,10 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->setShowOutputRouting(showStemRouting);
     slot->setOnOutputChannelChanged(
         [this, slotIndex](const int ch) { onStemOutputComboChanged(slotIndex, ch); });
+    slot->setGuideSettingsVisible(false);
+    slot->setGuideSettingsActive(false);
+    slot->setGuideSettingsTooltip({});
+    slot->setOnGuideSettingsRequested({});
     slot->getStrip().setVolume(processor.getStemVolume(stemIndex));
     slot->getStrip().setGain(processor.getStemGain(stemIndex));
     slot->getStrip().setMuteState(processor.isStemMuted(stemIndex));
@@ -568,6 +860,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     content.addAndMakeVisible(*slot);
     adjustableStems.push_back(isAdjustable);
     clickGuideStems.push_back(isClickGuide);
+    guideStems.push_back(isGuideStem);
     slotStemIndices.push_back(stemIndex);
     slotStemIds.push_back(stemId);
     slots.push_back(std::move(slot));
@@ -581,6 +874,12 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   }
 
   lastSeenOutputChannelCount = processor.getAvailableOutputChannelCount();
+  applyGuideSourceModeToVisibleGuideSlots();
+  dynamicGuideToggle.setVisible(false);
+  if (guideSourceMode == GuideSourceMode::DynamicBySections) {
+    setGuideSourceMode(GuideSourceMode::SongGuide);
+    setGuideSourceMode(GuideSourceMode::DynamicBySections);
+  }
   setMidiLearnActive(midiLearnActive);
   resized();
   repaint();
@@ -721,10 +1020,8 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::cardBorder.withAlpha(0.44f));
   g.drawRoundedRectangle(mixerHeaderBounds.reduced(0.5f), 6.0f, 1.0f);
 
-  const auto upBounds = nudgeUpButton.getBounds();
-  const auto downBounds = nudgeDownButton.getBounds();
-  const float verticalSeparatorX = static_cast<float>(
-      juce::jmax(upBounds.getRight(), downBounds.getRight()) + 8);
+  const float verticalSeparatorX =
+      static_cast<float>(nudgeDownButton.getRight() + 6);
   const float verticalTop = mixerHeaderBounds.getY() + 8.0f;
   const float verticalBottom = mixerHeaderBounds.getBottom() - 8.0f;
   const auto separatorBase =
@@ -890,6 +1187,7 @@ void ChannelGridPanel::addMasterSlot() {
   strip.setGainVisible(true);
   strip.setMuteAlignedToFader(true);
   slot->setShowOutputRouting(false);
+  slot->setGuideSettingsVisible(false);
   strip.setVolume(processor.getMasterVolume());
   strip.setGain(processor.getMasterGain());
   strip.setMuteState(processor.isMasterMuted());
@@ -924,6 +1222,7 @@ void ChannelGridPanel::addMasterSlot() {
   slots.push_back(std::move(slot));
   adjustableStems.push_back(false);
   clickGuideStems.push_back(false);
+  guideStems.push_back(false);
   slotStemIndices.push_back(-1);
   slotStemIds.push_back({});
 }
@@ -939,6 +1238,7 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
   strip.setMuteAlignedToFader(true);
   slot->setShowOutputRouting(false);
+  slot->setGuideSettingsVisible(false);
 
   strip.setVolume(processor.getMetronomeVolume());
   strip.setGain(processor.getMetronomeGain());
@@ -972,6 +1272,7 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   slots.push_back(std::move(slot));
   adjustableStems.push_back(false);
   clickGuideStems.push_back(true);
+  guideStems.push_back(false);
   slotStemIndices.push_back(-2);
   slotStemIds.push_back({});
 }

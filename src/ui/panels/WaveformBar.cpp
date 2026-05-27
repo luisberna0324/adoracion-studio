@@ -10,7 +10,7 @@
 namespace {
 constexpr double kMinPartDurationSec = 0.25;
 constexpr double kPartSnapSeconds = 0.1;
-constexpr float kMinViewportSpan = 1.0f / 24.0f;
+constexpr float kMinViewportSpan = 1.0f / 18.0f;
 constexpr float kEditToolbarHeight = 24.0f;
 constexpr float kEditToolbarBottomGap = 6.0f;
 constexpr float kSeekRulerHeight = 28.0f;
@@ -26,6 +26,78 @@ constexpr int kSnapModeBeatId = 2;
 constexpr int kSnapModeHalfBeatId = 3;
 constexpr int kSnapModeFreeId = 4;
 constexpr double kSongLoadingMinVisibleMs = 180.0;
+constexpr double kFollowSuspendAfterManualViewportMs = 2500.0;
+constexpr float kFollowEnabledViewportSpan = 0.25f;
+constexpr float kFollowCenterRatio = 0.5f;
+constexpr float kFollowSmoothFactor = 0.25f;
+constexpr float kPlayheadHeadHeight = 9.5f;
+constexpr float kPlayheadHeadHalfWidth = 5.8f;
+constexpr float kPlayheadHeadInsetY = 1.5f;
+constexpr float kPlayheadNeckHalfWidth = 1.5f;
+
+float snapToPixelCenter(const float value) {
+  return std::floor(value) + 0.5f;
+}
+
+juce::Colour playheadPrimaryColour() {
+  return UITheme::accent;
+}
+
+juce::Colour playheadShadowColour() {
+  return UITheme::accent.darker(0.85f);
+}
+
+void drawPlayheadNeedle(juce::Graphics &g, const juce::Rectangle<float> &bounds,
+                        float x, const bool drawHead, const bool headAtBottom,
+                        const float alpha = 1.0f) {
+  if (bounds.getWidth() <= 1.0f || bounds.getHeight() <= 1.0f)
+    return;
+
+  x = snapToPixelCenter(x);
+  const auto coreColour = playheadPrimaryColour().withAlpha(alpha);
+  const auto shadowColour = playheadShadowColour().withAlpha(0.9f * alpha);
+
+  const float headBottom = headAtBottom
+                               ? (bounds.getBottom() - kPlayheadHeadInsetY)
+                               : juce::jmin(bounds.getBottom() - 1.0f,
+                                            bounds.getY() + kPlayheadHeadInsetY +
+                                                kPlayheadHeadHeight);
+  const float headTop = juce::jmax(bounds.getY() + 1.0f, headBottom - kPlayheadHeadHeight);
+  const float lineStartY =
+      (drawHead && !headAtBottom) ? (headBottom - 0.5f) : (bounds.getY() + 1.0f);
+  const float lineEndY =
+      (drawHead && headAtBottom) ? (headTop + 0.5f) : bounds.getBottom();
+
+  g.setColour(shadowColour.withAlpha(0.26f * alpha));
+  g.drawLine(x - 1.0f, lineStartY, x - 1.0f, lineEndY, 1.0f);
+  g.drawLine(x + 1.0f, lineStartY, x + 1.0f, lineEndY, 1.0f);
+  g.setColour(shadowColour.withAlpha(0.78f * alpha));
+  g.drawLine(x, lineStartY, x, lineEndY, 2.0f);
+  g.setColour(coreColour);
+  g.drawLine(x, lineStartY, x, lineEndY, 1.05f);
+
+  if (!drawHead || (headBottom - headTop) < 5.0f)
+    return;
+
+  const float halfWidth = juce::jmin(kPlayheadHeadHalfWidth, bounds.getWidth() * 0.24f);
+  const float neckHalfWidth = juce::jmin(kPlayheadNeckHalfWidth, halfWidth - 1.0f);
+  const float shoulderY = headTop + ((headBottom - headTop) * 0.60f);
+  const float shoulderInset = juce::jmax(1.0f, halfWidth * 0.22f);
+
+  juce::Path head;
+  head.startNewSubPath(x - halfWidth, headTop + 0.7f);
+  head.lineTo(x + halfWidth, headTop + 0.7f);
+  head.lineTo(x + (halfWidth - shoulderInset), shoulderY);
+  head.lineTo(x + neckHalfWidth, headBottom);
+  head.lineTo(x - neckHalfWidth, headBottom);
+  head.lineTo(x - (halfWidth - shoulderInset), shoulderY);
+  head.closeSubPath();
+
+  g.setColour(shadowColour.withAlpha(0.78f * alpha));
+  g.fillPath(head, juce::AffineTransform::translation(0.0f, 0.6f));
+  g.setColour(coreColour);
+  g.fillPath(head);
+}
 
 juce::String formatSeconds(double seconds) {
   if (seconds < 0.0)
@@ -102,6 +174,44 @@ juce::String abbreviatedArrangementLabel(const juce::String &label) {
 } // namespace
 
 WaveformBar::WaveformBar() {
+  followButton.setButtonText(L10n::tr("SEGUIR", "FOLLOW"));
+  followButton.setClickingTogglesState(true);
+  followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
+  followButton.setTooltip(
+      L10n::tr("Auto centra la vista en la reproducción", "Auto-follow playback"));
+  followButton.setViewportIgnoreDragFlag(true);
+  followButton.onClick = [this] {
+    followPlaybackEnabled = followButton.getToggleState();
+    if (followPlaybackEnabled) {
+      followPendingJumpWasActive = false;
+      followLastSongProgressValid = false;
+      followSuspendedUntilMs = 0.0;
+      float targetRatio = 0.0f;
+      bool hasTargetRatio = getPendingJumpProgressRatio(targetRatio);
+      if (!hasTargetRatio && positionProvider != nullptr && lengthProvider != nullptr) {
+        const double length = juce::jmax(0.0, lengthProvider());
+        if (length > 0.0) {
+          const double pos = juce::jmax(0.0, positionProvider());
+          targetRatio = static_cast<float>(juce::jlimit(0.0, 1.0, pos / length));
+          hasTargetRatio = true;
+        }
+      }
+      if (!hasTargetRatio) {
+        const auto window = getVisibleWindow();
+        targetRatio = juce::jlimit(0.0f, 1.0f, window.first + (window.second * 0.5f));
+      }
+
+      const float span =
+          juce::jlimit(kMinViewportSpan, 1.0f, kFollowEnabledViewportSpan);
+      setVisibleWindow(targetRatio - (span * 0.5f), span);
+    } else {
+      followPendingJumpWasActive = false;
+      followLastSongProgressValid = false;
+      setVisibleWindow(0.0f, 1.0f);
+    }
+  };
+  addAndMakeVisible(followButton);
+
   editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
   editButton.setTooltip(
       L10n::tr(
@@ -225,9 +335,11 @@ void WaveformBar::setSongRhythm(const double bpm,
 }
 
 void WaveformBar::setTransportProviders(PositionProvider positionCb,
-                                        LengthProvider lengthCb) {
+                                        LengthProvider lengthCb,
+                                        PlayingProvider playingCb) {
   positionProvider = std::move(positionCb);
   lengthProvider = std::move(lengthCb);
+  playingProvider = std::move(playingCb);
 }
 
 void WaveformBar::setSongWindowProviders(SongWindowProvider startCb,
@@ -299,6 +411,13 @@ void WaveformBar::triggerEditToggleFromMidi() {
 }
 
 void WaveformBar::refreshThemeColours() {
+  followButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  followButton.setColour(juce::TextButton::buttonOnColourId,
+                         UITheme::accent.withAlpha(0.95f));
+  followButton.setColour(juce::TextButton::textColourOffId,
+                         UITheme::textPrimary);
+  followButton.setColour(juce::TextButton::textColourOnId,
+                         UITheme::onAccent);
   editButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   editButton.setColour(juce::TextButton::buttonOnColourId,
                        UITheme::cardBgPressed);
@@ -428,11 +547,15 @@ void WaveformBar::resized() {
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   auto toolbarBounds = getEditToolbarBounds(localBounds).toNearestInt();
   const int editButtonW = 72;
+  const int followButtonW = 86;
+  const int followGap = 6;
   const int snapModeGroupW = 186;
   const int snapModeLabelW = 56;
   const bool hasLoadedSong = !waveformBins.empty();
 
   if (!hasLoadedSong) {
+    followButton.setVisible(false);
+    followButton.setEnabled(false);
     editButton.setVisible(false);
     editButton.setEnabled(false);
     snapModeLabel.setVisible(false);
@@ -446,14 +569,31 @@ void WaveformBar::resized() {
     return;
   }
 
+  followButton.setVisible(true);
+  followButton.setEnabled(true);
+  followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
+  followButton.setButtonText(L10n::tr("SEGUIR", "FOLLOW"));
   editButton.setVisible(true);
   editButton.setEnabled(true);
   const bool editing = isEditingArrangement();
 
+  auto placeBottomWaveControls = [&]() {
+    auto floating = mainWaveBodyBounds.toNearestInt();
+    if (floating.getWidth() > 4 && floating.getHeight() > 4) {
+      const int controlH = 26;
+      auto bottomControls = floating.removeFromBottom(controlH);
+      bottomControls = bottomControls.reduced(2, 1);
+      editButton.setBounds(bottomControls.removeFromRight(editButtonW).reduced(1));
+      bottomControls.removeFromRight(followGap);
+      followButton.setBounds(
+          bottomControls.removeFromRight(followButtonW).reduced(1));
+      return true;
+    }
+    return false;
+  };
+
   if (editing) {
-    auto right = toolbarBounds.removeFromRight(editButtonW).reduced(1);
-    editButton.setBounds(right);
-    toolbarBounds.removeFromRight(6);
+    placeBottomWaveControls();
 
     auto leftGroup =
         toolbarBounds.removeFromLeft(
@@ -512,12 +652,10 @@ void WaveformBar::resized() {
   snapModeBox.setVisible(false);
   snapModeBox.setEnabled(false);
 
-  auto floating = mainWaveBodyBounds.toNearestInt();
-  if (floating.getWidth() > 4 && floating.getHeight() > 4) {
-    editButton.setBounds(
-        floating.removeFromTop(28).removeFromRight(editButtonW).reduced(1));
-  } else {
+  if (!placeBottomWaveControls()) {
     editButton.setBounds(toolbarBounds.removeFromRight(editButtonW).reduced(1));
+    toolbarBounds.removeFromRight(followGap);
+    followButton.setBounds(toolbarBounds.removeFromRight(followButtonW).reduced(1));
   }
 }
 
@@ -541,6 +679,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (miniMapBounds.getWidth() > 2.0f && miniMapBounds.contains(event.position)) {
     if (event.mods.isPopupMenu())
       return;
+
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
 
     const auto viewportBounds = getViewportBoundsInMiniMap(miniMapBounds);
     const float normalized = juce::jlimit(
@@ -688,6 +829,8 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   if (dragMode == DragMode::panViewport ||
       dragMode == DragMode::resizeViewportLeft ||
       dragMode == DragMode::resizeViewportRight) {
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
     if (dragMode == DragMode::panViewport)
       setMouseCursor(juce::MouseCursor::DraggingHandCursor);
     else
@@ -1084,6 +1227,8 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
   const float intensity = juce::jlimit(1.0f, 3.5f, 1.0f + std::abs(dir) * 2.4f);
   const float step = 1.06f * intensity;
+  followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                           kFollowSuspendAfterManualViewportMs;
   applyZoom(dir > 0.0f ? step : 1.0f / step, anchor);
 }
 
@@ -1112,17 +1257,80 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                          (event.position.x - mainWaveBodyBounds.getX()) /
                              mainWaveBodyBounds.getWidth())
           : 0.5f;
+  followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                           kFollowSuspendAfterManualViewportMs;
   applyZoom(1.0f + magnifyAmount, anchor);
 }
 
 void WaveformBar::timerCallback() {
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+
   if (songLoadingHideAfterMs > 0.0 &&
-      juce::Time::getMillisecondCounterHiRes() >= songLoadingHideAfterMs) {
+      nowMs >= songLoadingHideAfterMs) {
     songLoadingActive = false;
     songLoadingHideAfterMs = 0.0;
     songLoadingProgress01 = 0.0;
     songLoadingPhaseText.clear();
   }
+
+  const bool isPlayingNow = playingProvider ? playingProvider() : false;
+  float pendingJumpRatio = 0.0f;
+  const bool hasPendingJumpRatio = getPendingJumpProgressRatio(pendingJumpRatio);
+  const bool followJumpJustExecuted =
+      followPendingJumpWasActive && !hasPendingJumpRatio &&
+      followPlaybackEnabled && !isEditingArrangement() && isPlayingNow &&
+      dragMode != DragMode::panViewport &&
+      dragMode != DragMode::resizeViewportLeft &&
+      dragMode != DragMode::resizeViewportRight;
+
+  bool hasSongProgress = false;
+  float songProgress = 0.0f;
+  if (positionProvider != nullptr && lengthProvider != nullptr) {
+    const double songLength = juce::jmax(0.0, lengthProvider());
+    if (songLength > 0.0) {
+      const double songPosSec = juce::jmax(0.0, positionProvider());
+      songProgress =
+          static_cast<float>(juce::jlimit(0.0, 1.0, songPosSec / songLength));
+      hasSongProgress = true;
+    }
+  }
+
+  if ((isFollowTrackingActive() || followJumpJustExecuted) && hasSongProgress) {
+    auto window = getVisibleWindow();
+    const float start = window.first;
+    const float span = window.second;
+    const float targetStart = songProgress - (kFollowCenterRatio * span);
+
+    bool followDiscontinuity = false;
+    if (followLastSongProgressValid) {
+      const float delta = std::abs(songProgress - followLastSongProgressRatio);
+      const float threshold = juce::jmax(0.05f, span * 0.45f);
+      const bool wrappedBackwards =
+          songProgress < (followLastSongProgressRatio - 0.0015f);
+      followDiscontinuity = wrappedBackwards || (delta >= threshold);
+    }
+
+    if (!nearlyEqual(targetStart, start, 0.0001)) {
+      if (followJumpJustExecuted || followDiscontinuity)
+        setVisibleWindow(targetStart, span);
+      else {
+        const float smoothedStart =
+            start + ((targetStart - start) * kFollowSmoothFactor);
+        setVisibleWindow(smoothedStart, span);
+      }
+    }
+  }
+
+  followPendingJumpWasActive = followPlaybackEnabled && !isEditingArrangement() &&
+                               isPlayingNow && hasPendingJumpRatio;
+  if (followPlaybackEnabled && !isEditingArrangement() && isPlayingNow &&
+      hasSongProgress) {
+    followLastSongProgressRatio = songProgress;
+    followLastSongProgressValid = true;
+  } else {
+    followLastSongProgressValid = false;
+  }
+
   flushDeferredPartJumpFromDoubleClickIfDue();
   repaint();
 }
@@ -1227,6 +1435,39 @@ void WaveformBar::applyZoom(float factor, float anchorRatio) {
   const float anchorSource = viewportStart + (anchorRatio * oldSpan);
   const float newStart = anchorSource - (anchorRatio * newSpan);
   setVisibleWindow(newStart, newSpan);
+}
+
+bool WaveformBar::isFollowTrackingActive() const {
+  if (!followPlaybackEnabled || isEditingArrangement())
+    return false;
+  if (dragMode == DragMode::panViewport ||
+      dragMode == DragMode::resizeViewportLeft ||
+      dragMode == DragMode::resizeViewportRight)
+    return false;
+  if (playingProvider == nullptr || !playingProvider())
+    return false;
+  const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  return nowMs >= followSuspendedUntilMs;
+}
+
+bool WaveformBar::getPendingJumpProgressRatio(float &ratioOut) const {
+  if (pendingArrangementPartProvider == nullptr || lengthProvider == nullptr)
+    return false;
+
+  const int pendingPartIndex = pendingArrangementPartProvider();
+  if (!juce::isPositiveAndBelow(pendingPartIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    return false;
+
+  const double songLength = juce::jmax(0.0, lengthProvider());
+  if (songLength <= 0.0)
+    return false;
+
+  const double targetSec = juce::jlimit(
+      0.0, songLength,
+      arrangement.parts[static_cast<size_t>(pendingPartIndex)].startSec);
+  ratioOut = static_cast<float>(juce::jlimit(0.0, 1.0, targetSec / songLength));
+  return true;
 }
 
 double WaveformBar::getSongLengthSeconds() const {
@@ -1690,6 +1931,8 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
 
   float progressRatio = 0.0f;
+  float pendingTravelRatio = 0.0f;
+  bool showPendingTravelSeek = false;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
     progressRatio =
         static_cast<float>(juce::jlimit(0.0, 1.0, songLoadingProgress01));
@@ -1699,13 +1942,27 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       const double songPosition = juce::jmax(0.0, positionProvider());
       progressRatio = static_cast<float>(
           juce::jlimit(0.0, 1.0, songPosition / songLength));
+      pendingTravelRatio = progressRatio;
+    }
+  }
+
+  if (followPlaybackEnabled && !isEditingArrangement() && playingProvider != nullptr &&
+      playingProvider()) {
+    float pendingRatio = 0.0f;
+    if (getPendingJumpProgressRatio(pendingRatio)) {
+      progressRatio = pendingRatio;
+      showPendingTravelSeek = !songLoadingActive &&
+                              songLoadingHideAfterMs <= 0.0 &&
+                              positionProvider != nullptr &&
+                              lengthProvider != nullptr;
     }
   }
 
   const float playheadRatio = juce::jlimit(
       0.0f, 1.0f,
       (progressRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
-  const float playheadX = bounds.getX() + (playheadRatio * bounds.getWidth());
+  const float playheadX = snapToPixelCenter(
+      bounds.getX() + (playheadRatio * bounds.getWidth()));
 
   float playableStartRatio = 0.0f;
   float playableEndRatio = 1.0f;
@@ -1733,8 +1990,9 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       0.0f, 1.0f,
       (playableEndRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
   const float playableStartX =
-      bounds.getX() + playableStartNorm * bounds.getWidth();
-  const float playableEndX = bounds.getX() + playableEndNorm * bounds.getWidth();
+      snapToPixelCenter(bounds.getX() + playableStartNorm * bounds.getWidth());
+  const float playableEndX = snapToPixelCenter(
+      bounds.getX() + playableEndNorm * bounds.getWidth());
 
   g.setColour(juce::Colours::white.withAlpha(0.22f));
   const float centerDashes[] = {2.0f, 4.0f};
@@ -1779,8 +2037,18 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
 
   if (showPlayhead) {
-    g.setColour(UITheme::accent);
-    g.drawLine(playheadX, bounds.getY(), playheadX, bounds.getBottom(), 1.4f);
+    drawPlayheadNeedle(g, bounds, playheadX, false, false, 1.0f);
+
+    if (showPendingTravelSeek) {
+      const float pendingTravelNorm = juce::jlimit(
+          0.0f, 1.0f, (pendingTravelRatio - windowStart) /
+                           juce::jmax(0.0001f, windowSpan));
+      const float pendingTravelX = snapToPixelCenter(
+          bounds.getX() + (pendingTravelNorm * bounds.getWidth()));
+      g.setColour(juce::Colours::white.withAlpha(0.62f));
+      g.drawLine(pendingTravelX, bounds.getY(), pendingTravelX,
+                 bounds.getBottom(), 1.0f);
+    }
   }
 }
 
@@ -1870,7 +2138,8 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
       const int tickCount = 12;
       for (int i = 0; i <= tickCount; ++i) {
         const float ratio = static_cast<float>(i) / static_cast<float>(tickCount);
-        const float x = bounds.getX() + ratio * bounds.getWidth();
+        const float x =
+            snapToPixelCenter(bounds.getX() + ratio * bounds.getWidth());
         const bool major = (i % 2) == 0;
         g.setColour(juce::Colours::white.withAlpha(major ? 0.56f : 0.35f));
         g.drawLine(x, topY, x, major ? majorBottom : minorBottom,
@@ -1882,14 +2151,37 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
   if (positionProvider && lengthProvider) {
     const double length = juce::jmax(0.0, lengthProvider());
     if (length > 0.0) {
-      const double position = juce::jmax(0.0, positionProvider());
-      const float progress = static_cast<float>(juce::jlimit(0.0, 1.0, position / length));
+      double position = juce::jmax(0.0, positionProvider());
+      double pendingTravelPosition = position;
+      bool showPendingTravelSeek = false;
+      if (followPlaybackEnabled && !isEditingArrangement() &&
+          playingProvider != nullptr && playingProvider()) {
+        float pendingRatio = 0.0f;
+        if (getPendingJumpProgressRatio(pendingRatio)) {
+          position = static_cast<double>(pendingRatio) * length;
+          showPendingTravelSeek = true;
+        }
+      }
+      const float progress =
+          static_cast<float>(juce::jlimit(0.0, 1.0, position / length));
       const float playheadNorm =
-          (progress - windowStart) / juce::jmax(0.0001f, windowSpan);
-      if (playheadNorm >= 0.0f && playheadNorm <= 1.0f) {
-        const float x = bounds.getX() + playheadNorm * bounds.getWidth();
-        g.setColour(UITheme::accent.withAlpha(0.95f));
-        g.drawLine(x, bounds.getY() + 1.0f, x, bounds.getBottom() - 1.0f, 1.2f);
+          juce::jlimit(0.0f, 1.0f, (progress - windowStart) /
+                                         juce::jmax(0.0001f, windowSpan));
+      const float x = snapToPixelCenter(
+          bounds.getX() + playheadNorm * bounds.getWidth());
+      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, true, true, 0.96f);
+
+      if (showPendingTravelSeek) {
+        const float pendingTravelRatio = static_cast<float>(
+            juce::jlimit(0.0, 1.0, pendingTravelPosition / length));
+        const float pendingTravelNorm = juce::jlimit(
+            0.0f, 1.0f, (pendingTravelRatio - windowStart) /
+                             juce::jmax(0.0001f, windowSpan));
+        const float pendingTravelX = snapToPixelCenter(
+            bounds.getX() + (pendingTravelNorm * bounds.getWidth()));
+        g.setColour(juce::Colours::white.withAlpha(0.62f));
+        g.drawLine(pendingTravelX, bounds.getY() + 1.0f, pendingTravelX,
+                   bounds.getBottom() - 1.0f, 1.0f);
       }
     }
   }
@@ -1903,9 +2195,10 @@ void WaveformBar::drawArrangementOverlay(
       pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
   const int activeLoopPartIndex =
       activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+  const bool showPendingJumpSectionHighlight = !followPlaybackEnabled;
 
   float pendingPulse = 0.0f;
-  if (pendingJumpPartIndex >= 0) {
+  if (showPendingJumpSectionHighlight && pendingJumpPartIndex >= 0) {
     if (songBpm > 0.0 && positionProvider != nullptr) {
       const double currentSec = juce::jmax(0.0, positionProvider());
       const double beats = (currentSec * songBpm) / 60.0;
@@ -1945,7 +2238,8 @@ void WaveformBar::drawArrangementOverlay(
   for (const auto &overlay : partOverlayBounds) {
     const bool selected = editing && (overlay.partIndex == selectedPartIndex);
     const bool loopActive = overlay.partIndex == activeLoopPartIndex;
-    const bool pendingJump = !loopActive && overlay.partIndex == pendingJumpPartIndex;
+    const bool pendingJump = showPendingJumpSectionHighlight && !loopActive &&
+                             overlay.partIndex == pendingJumpPartIndex;
     if (!juce::isPositiveAndBelow(overlay.partIndex,
                                   static_cast<int>(arrangement.parts.size())))
       continue;
@@ -2116,12 +2410,32 @@ void WaveformBar::drawMiniMap(juce::Graphics &g,
   if (positionProvider && lengthProvider) {
     const double length = juce::jmax(0.0, lengthProvider());
     if (length > 0.0) {
-      const double current = juce::jmax(0.0, positionProvider());
+      double current = juce::jmax(0.0, positionProvider());
+      double pendingTravelPosition = current;
+      bool showPendingTravelSeek = false;
+      if (followPlaybackEnabled && !isEditingArrangement() &&
+          playingProvider != nullptr && playingProvider()) {
+        float pendingRatio = 0.0f;
+        if (getPendingJumpProgressRatio(pendingRatio)) {
+          current = static_cast<double>(pendingRatio) * length;
+          showPendingTravelSeek = true;
+        }
+      }
       const float progress =
           static_cast<float>(juce::jlimit(0.0, 1.0, current / length));
-      const float x = miniMapBounds.getX() + progress * miniMapBounds.getWidth();
-      g.setColour(UITheme::accent);
-      g.drawLine(x, miniMapBounds.getY(), x, miniMapBounds.getBottom(), 1.2f);
+      const float x = snapToPixelCenter(
+          miniMapBounds.getX() + progress * miniMapBounds.getWidth());
+      drawPlayheadNeedle(g, miniMapBounds, x, false, false, 0.95f);
+
+      if (showPendingTravelSeek) {
+        const float pendingTravelRatio = static_cast<float>(
+            juce::jlimit(0.0, 1.0, pendingTravelPosition / length));
+        const float pendingX = snapToPixelCenter(
+            miniMapBounds.getX() + pendingTravelRatio * miniMapBounds.getWidth());
+        g.setColour(juce::Colours::white.withAlpha(0.62f));
+        g.drawLine(pendingX, miniMapBounds.getY(), pendingX,
+                   miniMapBounds.getBottom(), 0.95f);
+      }
     }
   }
 

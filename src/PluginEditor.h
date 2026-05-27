@@ -99,6 +99,7 @@ private:
   juce::int64 nextAudioDeviceFallbackPollMs = 0;
   juce::int64 missingAudioDeviceSinceMs = 0;
   juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
+  juce::String lastObservedAudioDeviceKey;
   juce::Rectangle<int> padsDrawerBackgroundBounds;
   juce::String trackedSongWindowSongId;
   double trackedSongWindowStartSec = 0.0;

@@ -164,11 +164,21 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #if JucePlugin_Build_Standalone
-  if (initialStandaloneWindowCentered)
-    return;
-
   auto *top = getTopLevelComponent();
   if (top == nullptr || top == this)
+    return;
+
+#if JUCE_MAC
+  if (auto *window = dynamic_cast<juce::TopLevelWindow *>(top);
+      window != nullptr && !window->isUsingNativeTitleBar()) {
+    window->setUsingNativeTitleBar(true);
+    top = getTopLevelComponent();
+    if (top == nullptr || top == this)
+      return;
+  }
+#endif
+
+  if (initialStandaloneWindowCentered)
     return;
 
   auto &displays = juce::Desktop::getInstance().getDisplays();
@@ -257,10 +267,17 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     missingAudioDeviceSinceMs = 0;
     nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+    lastObservedAudioDeviceKey = getCurrentDeviceKey(audioCtx);
 
-    if (audioCtx.manager != nullptr &&
-        audioCtx.manager->getCurrentAudioDevice() == nullptr) {
-      missingAudioDeviceSinceMs = nowMs;
+    if (audioCtx.manager != nullptr) {
+      if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+          currentDevice != nullptr) {
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+      } else {
+        missingAudioDeviceSinceMs = nowMs;
+      }
     }
   }
 
@@ -344,7 +361,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
       [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongLengthSeconds(); });
+      [&p] { return p.getSongLengthSeconds(); },
+      [&p] { return p.isSongPlaying(); });
   waveformBarRaw->setSongWindowProviders(
       [&p] { return p.getSongStartSeconds(); },
       [&p] { return p.getSongEndSeconds(); });
@@ -430,15 +448,37 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           padsComponent->setMidiLearnPendingTarget(targetId);
       });
 
+  const auto safeEditor =
+      juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   p.getAudioDeviceBridge().setOnDeviceConnected(
-      [&p, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
-        if (!info.isMultichannel)
+      [safeEditor](const AudioDeviceMonitor::DeviceInfo &info) {
+        juce::ignoreUnused(info);
+        if (safeEditor == nullptr)
           return;
-        p.getAudioDeviceBridge().setAvailableOutputChannelCount(
-            juce::jmax(2, info.numOutputChannels));
-        p.refreshPadsRoutingFromSettings();
-        if (channelGridRaw != nullptr)
-          channelGridRaw->refreshStemRoutingVisibility();
+
+        auto *editor = safeEditor.getComponent();
+        if (editor == nullptr)
+          return;
+
+        auto &processorRef =
+            static_cast<MTControlsAudioProcessor &>(editor->processor);
+        const auto audioCtx = PluginEditorSupport::getStandaloneAudioContext();
+        if (audioCtx.manager == nullptr)
+          return;
+
+        if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+            currentDevice != nullptr) {
+          processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+              juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+        }
+
+        processorRef.refreshPadsRoutingFromSettings();
+        if (editor->hasCurrentLoadedSong)
+          editor->applyRoutingDefaultsToSong(editor->currentLoadedSong);
+        if (auto *grid = dynamic_cast<ChannelGridPanel *>(
+                editor->channelGridPanel.get())) {
+          grid->refreshStemRoutingVisibility();
+        }
       });
 
   refreshTopBarTheme = [this, topBarRaw, waveformBarRaw, channelGridRaw] {
@@ -1875,10 +1915,27 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
     if (audioCtx.manager != nullptr) {
-      if (audioCtx.manager->getCurrentAudioDevice() != nullptr) {
+      auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+      const juce::String currentDeviceKey = getCurrentDeviceKey(audioCtx);
+      if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+          currentDevice != nullptr) {
+        processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
         missingAudioDeviceSinceMs = 0;
         nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+
+        if (currentDeviceKey.isNotEmpty() &&
+            currentDeviceKey != lastObservedAudioDeviceKey) {
+          lastObservedAudioDeviceKey = currentDeviceKey;
+          processorRef.refreshPadsRoutingFromSettings();
+          if (hasCurrentLoadedSong)
+            applyRoutingDefaultsToSong(currentLoadedSong);
+          if (auto *grid =
+                  dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+            grid->refreshStemRoutingVisibility();
+        }
       } else {
+        lastObservedAudioDeviceKey.clear();
         if (missingAudioDeviceSinceMs <= 0)
           missingAudioDeviceSinceMs = nowMs;
 

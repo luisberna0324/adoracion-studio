@@ -447,7 +447,6 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
   sortStemsForStripOrder(song.stems);
   library.songs.push_back(song);
   ensureDefaultSetlist(library);
-  addSongToActiveSetlist(library, song);
   if (onProgress)
     onProgress(0.92, L10n::tr(u8"Guardando cambios...", u8"Saving changes..."));
   const bool saved = saveLibrary(library);
@@ -830,14 +829,11 @@ bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,
   if (song == nullptr)
     return false;
 
+  if (it == setlist->items.end())
+    return false;
+
   bool changed = false;
-  if (it == setlist->items.end()) {
-    setlist->items.push_back(createSetlistItem(*song));
-    it = std::prev(setlist->items.end());
-    changed = true;
-  } else {
-    it->mix = reconcileMixForSong(it->mix, *song, changed);
-  }
+  it->mix = reconcileMixForSong(it->mix, *song, changed);
 
   outMix = it->mix;
   if (changed) {
@@ -985,23 +981,20 @@ bool SongLibraryStore::getActiveSetlistSongWindow(
                            return item.songId == songId;
                          });
 
+  if (it == setlist->items.end())
+    return false;
+
   bool changed = false;
-  if (it == setlist->items.end()) {
-    setlist->items.push_back(createSetlistItem(*song));
-    it = std::prev(setlist->items.end());
-    changed = true;
-  } else {
-    it->window = reconcileWindowForSong(it->window, *song, changed);
-    const auto defaultWindow = createDefaultWindowForSong(*song);
-    if (!it->windowCustomized) {
-      if (!windowsEqual(it->window, defaultWindow)) {
-        it->window = defaultWindow;
-        changed = true;
-      }
-    } else if (windowsEqual(it->window, defaultWindow)) {
-      it->windowCustomized = false;
+  it->window = reconcileWindowForSong(it->window, *song, changed);
+  const auto defaultWindow = createDefaultWindowForSong(*song);
+  if (!it->windowCustomized) {
+    if (!windowsEqual(it->window, defaultWindow)) {
+      it->window = defaultWindow;
       changed = true;
     }
+  } else if (windowsEqual(it->window, defaultWindow)) {
+    it->windowCustomized = false;
+    changed = true;
   }
 
   outWindow = it->window;
@@ -1658,21 +1651,6 @@ void SongLibraryStore::ensureDefaultSetlist(LibraryState &library) {
   library.activeSetlistId = library.setlists.front().id;
 }
 
-void SongLibraryStore::addSongToActiveSetlist(LibraryState &library,
-                                             const ImportedSongData &song) {
-  if (library.setlists.empty())
-    ensureDefaultSetlist(library);
-  auto *setlist = findSetlistById(library, library.activeSetlistId);
-  if (setlist == nullptr && !library.setlists.empty()) {
-    library.activeSetlistId = library.setlists.front().id;
-    setlist = &library.setlists.front();
-  }
-  if (setlist == nullptr)
-    return;
-  setlist->items.push_back(createSetlistItem(song));
-  setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
-}
-
 SetlistData *SongLibraryStore::findSetlistById(LibraryState &library,
                                               const juce::String &setlistId) {
   if (setlistId.isEmpty())
@@ -2209,10 +2187,8 @@ bool SongLibraryStore::updateActiveSetlistItem(
                          [&songId](const SetlistItem &item) {
                            return item.songId == songId;
                          });
-  if (it == setlist->items.end()) {
-    setlist->items.push_back(createSetlistItem(*song));
-    it = std::prev(setlist->items.end());
-  }
+  if (it == setlist->items.end())
+    return false;
 
   bool changed = false;
   it->mix = reconcileMixForSong(it->mix, *song, changed);

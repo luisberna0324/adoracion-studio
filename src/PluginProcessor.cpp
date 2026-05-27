@@ -2213,6 +2213,7 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
         arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
 
     if (playing) {
+      // En reproduccion, queda en cola y se ejecuta al final de la seccion actual.
       if (pendingPartIndex == partIndex) {
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
         return;
@@ -2252,10 +2253,21 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
       return;
     }
 
+    const auto &loopPart = arrangementParts[static_cast<size_t>(partIndex)];
+    const bool isPlayingNow =
+        getTransportState() == TransportState::playing;
+    const double currentSec =
+        songCurrentPositionSeconds.load(std::memory_order_relaxed);
+    const bool alreadyInsideLoopRange =
+        currentSec >= loopPart.startSec && currentSec < loopPart.endSec;
+
     arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
-    // No hacemos seek ni play automático: el loop queda armado y entra
-    // en efecto cuando el transporte llegue al rango de la sección.
+    // En reproducción, si el transporte está fuera de la sección objetivo,
+    // dejamos un salto en cola para garantizar que el loop entre también en
+    // modo Follow sin intervención manual.
+    if (isPlayingNow && !alreadyInsideLoopRange)
+      arrangementPendingJumpPartIndex.store(partIndex, std::memory_order_relaxed);
   }
 }
 

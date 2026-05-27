@@ -113,6 +113,14 @@ juce::String withMidiAssignmentTooltip(const juce::String &baseText,
     return "MIDI: " + trimmedCode;
   return baseText + " | MIDI: " + trimmedCode;
 }
+
+constexpr bool shouldShowWindowModeButton() {
+#if JucePlugin_Build_Standalone && JUCE_MAC
+  return false;
+#else
+  return true;
+#endif
+}
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
@@ -223,6 +231,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
         &settingsButton, &midiLearnButton}) {
     addAndMakeVisible(*btn);
   }
+  windowModeButton.setVisible(shouldShowWindowModeButton());
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
@@ -373,9 +382,8 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       onMidiLearnModeChanged(midiLearnActive);
     repaint();
   };
-  bpmSegmentButton.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
-    showMetronomePopover();
+  bpmSegmentButton.onClick = [] {
+    // Tempo popover intentionally disabled; keep tempo logic intact.
   };
   metroToggleButton.onClick = [this, armLearnTarget] {
     juce::ignoreUnused(armLearnTarget);
@@ -517,7 +525,9 @@ void TopBar::triggerSongWindowPopoverFromMidi() { showSongWindowPopover(); }
 
 void TopBar::triggerKeyPopoverFromMidi() { showKeyPopover(); }
 
-void TopBar::triggerMetronomePopoverFromMidi() { showMetronomePopover(); }
+void TopBar::triggerMetronomePopoverFromMidi() {
+  // Tempo popover intentionally disabled; keep tempo logic intact.
+}
 
 void TopBar::refreshThemeColours() {
   timeDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
@@ -635,7 +645,10 @@ void TopBar::resized() {
 
   const int transportW = x;
   const int rightPadding = 12;
-  const int minFixedButtonsW = (3 * square) + (2 * gap);
+  const bool showWindowButton = shouldShowWindowModeButton();
+  const int fixedButtonCount = showWindowButton ? 3 : 2;
+  const int minFixedButtonsW =
+      (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
   const int availableAfterTransport = getWidth() - rightPadding - transportW - 8;
   bool showSystemUsage = true;
   const int maxUsageWidth =
@@ -687,6 +700,7 @@ void TopBar::resized() {
   keyDisplay.setVisible(showKey);
   bpmSegmentButton.setVisible(showBpmText);
   systemUsageDisplay.setVisible(showSystemUsage);
+  windowModeButton.setVisible(showWindowButton);
 
   int rightX = getWidth() - 12;
   if (showSystemUsage) {
@@ -697,8 +711,12 @@ void TopBar::resized() {
   }
   settingsButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
-  windowModeButton.setBounds(rightX - square, y - 2, square, square);
-  rightX -= square + gap;
+  if (showWindowButton) {
+    windowModeButton.setBounds(rightX - square, y - 2, square, square);
+    rightX -= square + gap;
+  } else {
+    windowModeButton.setBounds({});
+  }
   midiLearnButton.setBounds(rightX - square, y - 2, square, square);
   rightX -= square + gap;
 
@@ -725,17 +743,25 @@ void TopBar::resized() {
 
   if (showTime && timeDisplay.getX() < x + 8) {
     const int shift = (x + 8) - timeDisplay.getX();
-    for (auto *c :
-         {static_cast<juce::Component *>(&timeDisplay),
-          static_cast<juce::Component *>(&bpmSegmentButton),
-          static_cast<juce::Component *>(&metroToggleButton),
-          static_cast<juce::Component *>(&keyDisplay),
-          static_cast<juce::Component *>(&systemUsageDisplay),
-          static_cast<juce::Component *>(&windowModeButton),
-          static_cast<juce::Component *>(&settingsButton)}) {
-      c->setTopLeftPosition(c->getX() + shift, c->getY());
-    }
+    auto shiftIfVisible = [shift](juce::Component &comp) {
+      if (!comp.isVisible())
+        return;
+      comp.setTopLeftPosition(comp.getX() + shift, comp.getY());
+    };
+    shiftIfVisible(timeDisplay);
+    shiftIfVisible(bpmSegmentButton);
+    shiftIfVisible(metroToggleButton);
+    shiftIfVisible(keyDisplay);
+    shiftIfVisible(systemUsageDisplay);
+    shiftIfVisible(windowModeButton);
+    shiftIfVisible(settingsButton);
   }
+}
+
+void TopBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (!event.mods.isLeftButtonDown())
+    return;
+  toggleWindowMode();
 }
 
 void TopBar::clearFadeIfActive() {
@@ -793,9 +819,7 @@ void TopBar::configureDisplay(juce::Label &label, const juce::String &text) {
 }
 
 void TopBar::configureMetronomeControls() {
-  const auto arrow =
-      juce::String::charToString(static_cast<juce::juce_wchar>(0x25BC));
-  bpmSegmentButton.setButtonText(juce::String("120 ") + arrow);
+  bpmSegmentButton.setButtonText("120");
   bpmSegmentButton.setViewportIgnoreDragFlag(true);
   bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
   bpmSegmentButton.setColour(juce::TextButton::buttonOnColourId,
@@ -815,10 +839,12 @@ void TopBar::configureMetronomeControls() {
 void TopBar::timerCallback() {
   refreshFromProviders();
 
-  const bool maxed = isTopLevelWindowMaximised(this);
-  if (maxed != lastTopLevelMaximised) {
-    lastTopLevelMaximised = maxed;
-    windowModeButton.setIcon(maxed ? SvgIconName::Copy : SvgIconName::Maximize);
+  if (windowModeButton.isVisible()) {
+    const bool maxed = isTopLevelWindowMaximised(this);
+    if (maxed != lastTopLevelMaximised) {
+      lastTopLevelMaximised = maxed;
+      windowModeButton.setIcon(maxed ? SvgIconName::Copy : SvgIconName::Maximize);
+    }
   }
 
   const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
@@ -872,10 +898,7 @@ void TopBar::timerCallback() {
 void TopBar::updateBpmDisplay() {
   const int bpm =
       static_cast<int>(std::round(processor.getPlaybackTempoBpm()));
-  const auto arrow =
-      juce::String::charToString(static_cast<juce::juce_wchar>(0x25BC));
-  bpmSegmentButton.setButtonText(
-      (bpm > 0 ? juce::String(bpm) : "120") + " " + arrow);
+  bpmSegmentButton.setButtonText(bpm > 0 ? juce::String(bpm) : "120");
 }
 
 void TopBar::applyTimeSignature(const juce::String &sigText) {

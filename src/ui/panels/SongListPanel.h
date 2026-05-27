@@ -119,6 +119,7 @@ private:
     void setSelectedSongId(const juce::String &songId);
     void setOnSongActivated(std::function<void(int)> cb);
     void setOnSongsReordered(std::function<void(int, int)> cb);
+    void setOnDragStateChanged(std::function<void(bool)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
     void setOnSongRemoveRequested(std::function<void(int)> cb);
     void setOnAddSongsRequested(std::function<void()> cb);
@@ -150,6 +151,7 @@ private:
     std::vector<SongRow> songs;
     std::function<void(int)> onSongActivated;
     std::function<void(int, int)> onSongsReordered;
+    std::function<void(bool)> onDragStateChanged;
     std::function<void(int)> onAutoPlayNextToggled;
     std::function<void(int)> onSongRemoveRequested;
     std::function<void()> onAddSongsRequested;

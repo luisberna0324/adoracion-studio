@@ -523,6 +523,11 @@ SongListPanel::SongListPanel() {
       refreshFromStorage();
     }
   });
+  listContent.setOnDragStateChanged([this](const bool dragging) {
+    listViewport.setScrollOnDragMode(
+        dragging ? juce::Viewport::ScrollOnDragMode::never
+                 : juce::Viewport::ScrollOnDragMode::all);
+  });
   listContent.setOnAutoPlayNextToggled([this](int songIndex) {
     if (!juce::isPositiveAndBelow(songIndex,
                                   static_cast<int>(activeSongIndices.size())))
@@ -1207,6 +1212,7 @@ void SongListPanel::refreshSongsHeaderSummary() {
 }
 
 void SongListPanel::ListContent::setSongs(std::vector<SongRow> rows) {
+  const bool wasDragging = isDragging;
   songs = std::move(rows);
   artworkCache.clear();
   dragCandidate = false;
@@ -1215,6 +1221,8 @@ void SongListPanel::ListContent::setSongs(std::vector<SongRow> rows) {
   dragInsertionIndex = -1;
   pendingActionsMenuRow = -1;
   hoveredRow = -1;
+  if (wasDragging && onDragStateChanged)
+    onDragStateChanged(false);
   repaint();
 }
 
@@ -1253,6 +1261,11 @@ void SongListPanel::ListContent::setOnSongActivated(
 void SongListPanel::ListContent::setOnSongsReordered(
     std::function<void(int, int)> cb) {
   onSongsReordered = std::move(cb);
+}
+
+void SongListPanel::ListContent::setOnDragStateChanged(
+    std::function<void(bool)> cb) {
+  onDragStateChanged = std::move(cb);
 }
 
 void SongListPanel::ListContent::setOnAutoPlayNextToggled(
@@ -1556,13 +1569,22 @@ void SongListPanel::ListContent::mouseDrag(const juce::MouseEvent &event) {
                                                   static_cast<int>(songs.size())))
     return;
 
-  constexpr float dragStartDistancePx = 4.0f;
-  if (!isDragging &&
-      event.position.getDistanceFrom(mouseDownPosition) < dragStartDistancePx) {
-    return;
+  if (!isDragging) {
+    const bool isTouchInput = event.source.isTouch();
+    const float minDragDistancePx = isTouchInput ? 9.0f : 4.0f;
+    const float dragDistance =
+        event.position.getDistanceFrom(mouseDownPosition);
+    const bool enoughDistance = dragDistance >= minDragDistancePx;
+
+    // Keep touch drag responsive while still filtering tiny scroll jitter.
+    if (!enoughDistance)
+      return;
   }
 
+  const bool wasDragging = isDragging;
   isDragging = true;
+  if (!wasDragging && onDragStateChanged)
+    onDragStateChanged(true);
   dragMouseY = event.position.y;
   dragInsertionIndex = insertionIndexAtY(juce::roundToInt(event.position.y));
   repaint();
@@ -1625,6 +1647,8 @@ void SongListPanel::ListContent::mouseUp(const juce::MouseEvent &event) {
   dragInsertionIndex = -1;
   dragRowOffsetY = 0.0f;
   dragMouseY = 0.0f;
+  if (onDragStateChanged)
+    onDragStateChanged(false);
   repaint();
 }
 
