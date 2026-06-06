@@ -4,12 +4,13 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/package_macos_dmg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>] [--ffmpeg-bin <path>]
+  scripts/package_macos_dmg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>] [--ffmpeg-bin <path>] [--guides-zip <file>]
 
 Defaults:
   --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone
   --output-dir dist
   --ffmpeg-bin third_party/ffmpeg/macos/ffmpeg (or MTCONTROLS_FFMPEG_BIN_MACOS env, optional)
+  --guides-zip assets/guides/guides-en-es.zip (or MTCONTROLS_GUIDES_ZIP_MACOS env, optional)
 EOF
 }
 
@@ -17,6 +18,7 @@ VERSION=""
 STANDALONE_DIR="build/macos-release/MTControls_artefacts/Release/Standalone"
 OUTPUT_DIR="dist"
 FFMPEG_BIN="${MTCONTROLS_FFMPEG_BIN_MACOS:-}"
+GUIDES_ZIP="${MTCONTROLS_GUIDES_ZIP_MACOS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ffmpeg-bin)
       FFMPEG_BIN="${2:-}"
+      shift 2
+      ;;
+    --guides-zip)
+      GUIDES_ZIP="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -79,6 +85,9 @@ if [[ -z "${FFMPEG_BIN}" ]]; then
     FFMPEG_BIN="third_party/ffmpeg/macos/ffmpeg"
   fi
 fi
+if [[ -z "${GUIDES_ZIP}" && -f "assets/guides/guides-en-es.zip" ]]; then
+  GUIDES_ZIP="assets/guides/guides-en-es.zip"
+fi
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -104,6 +113,20 @@ if [[ -n "${FFMPEG_BIN}" && -f "${FFMPEG_BIN}" ]]; then
   done < <(find "${STAGE_DIR}" -maxdepth 1 -type d -name "*.app" -print0)
 else
   echo "ffmpeg binary not provided; installer will bootstrap encoder at runtime."
+fi
+
+if [[ -n "${GUIDES_ZIP}" ]]; then
+  if [[ ! -f "${GUIDES_ZIP}" ]]; then
+    echo "Guides zip not found: ${GUIDES_ZIP}" >&2
+    exit 1
+  fi
+  while IFS= read -r -d '' app_path; do
+    guides_dir="${app_path}/Contents/Resources/guides"
+    mkdir -p "${guides_dir}"
+    cp -f "${GUIDES_ZIP}" "${guides_dir}/guides-en-es.zip"
+  done < <(find "${STAGE_DIR}" -maxdepth 1 -type d -name "*.app" -print0)
+else
+  echo "guides-en-es.zip not provided; dynamic guide assets may fail to bootstrap."
 fi
 
 ln -s /Applications "${STAGE_DIR}/Applications"

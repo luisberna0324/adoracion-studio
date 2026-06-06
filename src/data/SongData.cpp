@@ -245,6 +245,25 @@ const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &n
   }
   return nullptr;
 }
+
+juce::String countDisplayWordForName(const juce::String &name) {
+  const auto token = normalizeArrangementSectionToken(name);
+  if (token == "1" || token == "one" || token == "uno")
+    return L10n::tr("Uno", "One");
+  if (token == "2" || token == "two" || token == "dos")
+    return L10n::tr("Dos", "Two");
+  if (token == "3" || token == "three" || token == "tres")
+    return L10n::tr("Tres", "Three");
+  if (token == "4" || token == "four" || token == "cuatro")
+    return L10n::tr("Cuatro", "Four");
+  if (token == "5" || token == "five" || token == "cinco")
+    return L10n::tr("Cinco", "Five");
+  if (token == "6" || token == "six" || token == "seis")
+    return L10n::tr("Seis", "Six");
+  if (token == "7" || token == "seven" || token == "siete")
+    return L10n::tr("Siete", "Seven");
+  return {};
+}
 } // namespace
 
 juce::String canonicalArrangementSectionName(const juce::String &name) {
@@ -281,6 +300,11 @@ juce::String fallbackArrangementPartColorForName(const juce::String &name) {
 }
 
 juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
+  if (const auto countWord = countDisplayWordForName(name);
+      countWord.isNotEmpty()) {
+    return countWord;
+  }
+
   if (const auto *style = findArrangementSectionStyle(name))
     return L10n::tr(style->spanishLabel, style->englishLabel);
 

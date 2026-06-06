@@ -12,10 +12,14 @@ public:
   static juce::File getEncoderBinaryPath();
   static juce::File getAvailableEncoderBinary();
   static juce::File getPadsPackDirectory();
+  static juce::File getGuidesRootDirectory();
+  static juce::File getGuidesLanguageSectionsDirectory(const juce::String &languageCode);
+  static juce::File getGuidesLanguageCuesDirectory(const juce::String &languageCode);
 
   static bool ensureEncoderReady(juce::String *errorMessage = nullptr,
                                  const ProgressFn &progress = {});
   static bool ensurePadsPackReady(juce::String *errorMessage = nullptr);
+  static bool ensureGuidesPackReady(juce::String *errorMessage = nullptr);
 
 private:
   static bool downloadFile(const juce::String &url, const juce::File &destination,

@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/package_macos_pkg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>] [--identifier <bundle-id>]
+  scripts/package_macos_pkg.sh --version <semver> [--standalone-dir <dir>] [--output-dir <dir>] [--identifier <bundle-id>] [--guides-zip <file>]
 
 Defaults:
   --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone
@@ -17,6 +17,7 @@ VERSION=""
 STANDALONE_DIR="build/macos-release/MTControls_artefacts/Release/Standalone"
 OUTPUT_DIR="dist"
 IDENTIFIER="com.multitracks.playworship"
+GUIDES_ZIP="${MTCONTROLS_GUIDES_ZIP_MACOS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --identifier)
       IDENTIFIER="${2:-}"
+      shift 2
+      ;;
+    --guides-zip)
+      GUIDES_ZIP="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -96,6 +101,21 @@ if [[ -z "${APP_PATH}" ]]; then
 fi
 
 cp -R "${APP_PATH}" "${STAGE_ROOT}/"
+
+if [[ -z "${GUIDES_ZIP}" && -f "assets/guides/guides-en-es.zip" ]]; then
+  GUIDES_ZIP="assets/guides/guides-en-es.zip"
+fi
+if [[ -n "${GUIDES_ZIP}" ]]; then
+  if [[ ! -f "${GUIDES_ZIP}" ]]; then
+    echo "Guides zip not found: ${GUIDES_ZIP}" >&2
+    exit 1
+  fi
+  APP_BUNDLE_PATH="${STAGE_ROOT}/$(basename "${APP_PATH}")"
+  GUIDES_DIR="${APP_BUNDLE_PATH}/Contents/Resources/guides"
+  mkdir -p "${GUIDES_DIR}"
+  cp -f "${GUIDES_ZIP}" "${GUIDES_DIR}/guides-en-es.zip"
+fi
+
 cp -f "${POSTINSTALL_SCRIPT}" "${SCRIPTS_DIR}/postinstall"
 chmod +x "${SCRIPTS_DIR}/postinstall"
 

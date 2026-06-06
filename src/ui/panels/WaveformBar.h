@@ -65,6 +65,7 @@ public:
   void mouseMove(const juce::MouseEvent &event) override;
   void mouseExit(const juce::MouseEvent &event) override;
   void mouseDoubleClick(const juce::MouseEvent &event) override;
+  bool keyPressed(const juce::KeyPress &key) override;
   void mouseWheelMove(const juce::MouseEvent &event,
                       const juce::MouseWheelDetails &wheel) override;
   void mouseMagnify(const juce::MouseEvent &, float magnifyAmount) override;
@@ -78,6 +79,7 @@ private:
     movePart,
     resizePartLeft,
     resizePartRight,
+    selectParts,
     panViewport,
     resizeViewportLeft,
     resizeViewportRight
@@ -107,6 +109,12 @@ private:
     bool jumpButton = false;
   };
 
+  struct DragPartOrigin {
+    juce::String id;
+    double startSec = 0.0;
+    double endSec = 0.0;
+  };
+
   void timerCallback() override;
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
@@ -129,6 +137,7 @@ private:
   juce::TextButton editButton;
   juce::Label snapModeLabel;
   juce::ComboBox snapModeBox;
+  juce::TextButton sectionMenuButton;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   SnapMode snapMode = SnapMode::Bar;
   double songBpm = 0.0;
@@ -138,8 +147,10 @@ private:
   SongArrangementSnapshot arrangement;
   bool customArrangement = false;
   int selectedPartIndex = -1;
+  std::vector<juce::String> selectedPartIds;
   DragMode dragMode = DragMode::none;
   juce::String activeDragPartId;
+  std::vector<DragPartOrigin> dragPartOrigins;
   double dragOriginPartStartSec = 0.0;
   double dragOriginPartEndSec = 0.0;
   double dragAnchorSourceSec = 0.0;
@@ -149,6 +160,10 @@ private:
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
+  juce::Point<float> selectionDragStart;
+  juce::Point<float> selectionDragCurrent;
+  std::vector<juce::String> selectionDragBaseIds;
+  bool selectionDragAdditive = false;
   std::vector<PartOverlayBounds> partOverlayBounds;
   int hoveredActionPartIndex = -1;
   int hoveredLoopPartIndex = -1;
@@ -184,6 +199,14 @@ private:
   double snapSeconds(double seconds, bool bypassSnap = false) const;
   void normalizeArrangement(bool sortByStart);
   int findPartIndexById(const juce::String &id) const;
+  bool isPartSelected(int partIndex) const;
+  void pruneSelectedPartIds();
+  void setSingleSelectedPart(int partIndex);
+  void togglePartSelection(int partIndex);
+  void ensurePartSelectedForDrag(int partIndex);
+  void captureDragPartOrigins();
+  juce::Rectangle<float> getSelectionDragBounds() const;
+  void updateSelectionFromDragBounds();
   bool isEditingArrangement() const;
   juce::Rectangle<float>
   getEditToolbarBounds(const juce::Rectangle<float> &bounds) const;
@@ -215,13 +238,14 @@ private:
   void drawMiniMap(juce::Graphics &g,
                    const juce::Rectangle<float> &miniMapBounds) const;
   void rebuildSectionAddButtons();
-  void openPartActionMenu(int partIndex);
   void addArrangementPart(const juce::String &preferredName = {});
+  void addCountSequenceParts(int firstCount, int lastCount);
+  void addUtilityCuePart(const juce::String &cueName);
   void duplicateArrangementPart(int partIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
-  void confirmDeleteArrangementPart(int partIndex);
   void deleteArrangementPart(int partIndex);
+  void deleteSelectedArrangementParts();
   void notifyArrangementChanged(bool isCustom);
   void resetArrangementToDefault();
   void scheduleDeferredPartJumpFromDoubleClick(int partIndex);

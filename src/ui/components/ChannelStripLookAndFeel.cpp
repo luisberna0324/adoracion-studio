@@ -106,47 +106,55 @@ void ChannelStripLookAndFeel::drawButtonBackground(juce::Graphics &g,
   auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
   const bool isEnabled = button.isEnabled();
   const bool isToggled = button.getToggleState();
-  auto fill = isToggled ? button.findColour(juce::TextButton::buttonOnColourId)
-                        : backgroundColour;
   const bool isMute = button.getComponentID() == "muteButton";
   const bool isSolo = button.getComponentID() == "soloButton";
 
-  if (fill.isTransparent())
-    fill = isToggled ? UITheme::cardBgPressed : UITheme::cardBg;
+  auto fill = juce::Colour::fromRGB(35, 35, 35);
+  auto border = juce::Colour::fromRGB(17, 17, 17);
+  auto shadow = juce::Colours::black.withAlpha(0.24f);
+  auto highlight = juce::Colours::white.withAlpha(0.04f);
+  if (!backgroundColour.isTransparent())
+    fill = backgroundColour.interpolatedWith(fill, 0.58f);
 
-  if (isButtonDown)
-    fill = fill.interpolatedWith(UITheme::cardBgPressed, 0.42f);
-  else if (isMouseOverButton)
-    fill = fill.interpolatedWith(UITheme::cardBgHover, 0.32f);
-
+  if (isToggled) {
+    fill = juce::Colour::fromRGB(42, 209, 90);
+    border = juce::Colour::fromRGB(84, 238, 122);
+    highlight = juce::Colours::white.withAlpha(0.12f);
+  }
   if (isSolo && isToggled) {
-    fill = UITheme::accentSoft;
-    if (isMouseOverButton)
-      fill = fill.brighter(0.08f);
+    fill = juce::Colour::fromRGB(42, 209, 90);
+    border = juce::Colour::fromRGB(84, 238, 122);
   } else if (isMute && isToggled) {
     fill = UITheme::accentMuted;
-    if (isMouseOverButton)
-      fill = UITheme::accentMuted.brighter(0.08f);
+    border = fill.brighter(0.20f);
+    highlight = juce::Colours::white.withAlpha(0.10f);
   }
 
-  if (!isEnabled)
+  if (!isToggled && isMouseOverButton)
+    fill = juce::Colour::fromRGB(43, 43, 43);
+  else if (isToggled && isMouseOverButton)
+    fill = fill.brighter(0.05f);
+
+  if (isButtonDown)
+    fill = fill.darker(0.12f);
+
+  if (!isEnabled) {
     fill = fill.withMultipliedAlpha(0.48f);
+    border = border.withMultipliedAlpha(0.42f);
+    shadow = shadow.withMultipliedAlpha(0.40f);
+    highlight = highlight.withMultipliedAlpha(0.40f);
+  }
 
   const float radius = juce::jlimit(3.0f, 6.0f, bounds.getHeight() * 0.16f);
 
+  g.setColour(shadow);
+  g.fillRoundedRectangle(bounds.translated(0.0f, 1.0f), radius);
   g.setColour(fill);
   g.fillRoundedRectangle(bounds, radius);
-
-  const auto topSheen =
-      isEnabled ? juce::Colours::white.withAlpha(isMouseOverButton ? 0.10f : 0.06f)
-                : juce::Colours::white.withAlpha(0.03f);
-  g.setColour(topSheen);
+  g.setColour(highlight);
   g.drawHorizontalLine(static_cast<int>(bounds.getY() + 1.0f),
                        bounds.getX() + radius,
                        bounds.getRight() - radius);
-
-  const auto border = (isToggled ? fill.contrasting(0.22f) : UITheme::cardBorder)
-                          .withMultipliedAlpha(isEnabled ? 0.86f : 0.42f);
   g.setColour(border);
   g.drawRoundedRectangle(bounds, radius, 1.0f);
 }

@@ -2,6 +2,7 @@
 
 #include "../../audio/RoutingSuggestionEngine.h"
 #include "../components/ChannelStripCard.h"
+#include "../components/ClickDivisionPanel.h"
 #include "../../PluginProcessor.h"
 #include "../../data/Localization.h"
 #include "../../data/SongLibraryStore.h"
@@ -84,8 +85,9 @@ public:
   StripSlot(juce::String groupName, ChannelStripLookAndFeel &lnf,
             StereoVUMeter::LevelProvider levelProvider)
       : strip(std::make_unique<ChannelStripCard>(std::move(groupName), lnf,
-                                                 std::move(levelProvider),
-                                                 false)),
+                                                 levelProvider, false)),
+        stripLookAndFeel(lnf),
+        divisionLevelProvider(std::move(levelProvider)),
         guideSettingsButton(std::make_unique<GuideSettingsButton>()),
         outputChannelLabel({}, "Canal") {
     addAndMakeVisible(*strip);
@@ -113,7 +115,8 @@ public:
   void resized() override {
     juce::Rectangle<int> stripBounds;
     if (!showOutputRouting) {
-      const int cardW = strip->getLayout().width;
+      const int cardW = isDivisionPanelVisible() ? getDivisionPanelWidth()
+                                                 : strip->getLayout().width;
       const int cardH = strip->getLayout().height;
       const int cardX = (getWidth() - cardW) / 2;
       stripBounds = {cardX, 4, cardW, cardH};
@@ -137,6 +140,10 @@ public:
       strip->setBounds(stripBounds);
     }
 
+    strip->setVisible(!isDivisionPanelVisible());
+    outputChannelLabel.setVisible(showOutputRouting);
+    outputChannelSelector.setVisible(showOutputRouting);
+
     if (guideSettingsButton->isVisible()) {
       const auto &l = strip->getLayout();
       const int buttonSize = juce::jlimit(14, 22, l.soloHeight + 1);
@@ -150,6 +157,11 @@ public:
       guideSettingsButton->toFront(false);
     } else {
       guideSettingsButton->setBounds({});
+    }
+
+    if (divisionPanel != nullptr && divisionPanel->isVisible()) {
+      divisionPanel->setBounds(stripBounds);
+      divisionPanel->toFront(false);
     }
   }
 
@@ -192,20 +204,105 @@ public:
   }
 
   void setStripScale(const float scale) {
+    stripScale = scale;
     strip->setLayoutScale(scale);
+    if (divisionPanel != nullptr)
+      divisionPanel->setLayoutScale(scale);
     resized();
+  }
+
+  int getPreferredWidth() const {
+    return (isDivisionPanelVisible() ? getDivisionPanelWidth()
+                                     : strip->getLayout().width) +
+           2;
+  }
+
+  void setDivisionPanelVisible(const bool visible) {
+    if (visible && divisionPanel == nullptr) {
+      divisionPanel = std::make_unique<ClickDivisionPanel>(
+          stripLookAndFeel, divisionLevelProvider);
+      divisionPanel->setLayoutScale(stripScale);
+      addAndMakeVisible(*divisionPanel);
+    }
+
+    if (divisionPanel != nullptr)
+      divisionPanel->setVisible(visible);
+
+    resized();
+  }
+
+  void setDivision(const int division) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setDivision(division);
+  }
+
+  void setDivisionVolume(const float volume) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setVolume(volume);
+  }
+
+  void setDivisionPowerOn(const bool enabled) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setPowerOn(enabled);
+  }
+
+  void setDivisionMuteState(const bool muted) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setMuteState(muted);
+  }
+
+  void setDivisionSoloState(const bool soloed) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setSoloState(soloed);
+  }
+
+  void setOnDivisionChanged(std::function<void(int)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnDivisionChanged(std::move(callback));
+  }
+
+  void setOnDivisionVolumeChanged(std::function<void(float)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnVolumeChanged(std::move(callback));
+  }
+
+  void setOnDivisionPowerChanged(std::function<void(bool)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnPowerChanged(std::move(callback));
+  }
+
+  void setOnDivisionMuteChanged(std::function<void(bool)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnMuteChanged(std::move(callback));
+  }
+
+  void setOnDivisionSoloChanged(std::function<void(bool)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnSoloChanged(std::move(callback));
   }
 
   ChannelStripCard &getStrip() { return *strip; }
 
 private:
+  bool isDivisionPanelVisible() const {
+    return divisionPanel != nullptr && divisionPanel->isVisible();
+  }
+
+  int getDivisionPanelWidth() const {
+    return strip->getLayout().width;
+  }
+
   std::unique_ptr<ChannelStripCard> strip;
+  ChannelStripLookAndFeel &stripLookAndFeel;
+  StereoVUMeter::LevelProvider divisionLevelProvider;
   std::unique_ptr<GuideSettingsButton> guideSettingsButton;
+  std::unique_ptr<ClickDivisionPanel> divisionPanel;
   juce::Label outputChannelLabel;
   juce::ComboBox outputChannelSelector;
   std::function<void(int)> onOutputChannelChanged;
   std::function<void(juce::Component &)> onGuideSettingsRequested;
   bool showOutputRouting = true;
+  float stripScale = 1.0f;
 };
 
 ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
@@ -216,6 +313,13 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
   nudgeHintLabel.setFont(juce::FontOptions(10.0f));
   nudgeHintLabel.setVisible(false);
   addAndMakeVisible(nudgeHintLabel);
+
+  guideWarningLabel.setJustificationType(juce::Justification::centredLeft);
+  guideWarningLabel.setFont(juce::FontOptions(10.0f));
+  guideWarningLabel.setColour(juce::Label::textColourId,
+                              juce::Colour::fromRGB(235, 194, 95));
+  guideWarningLabel.setVisible(false);
+  addAndMakeVisible(guideWarningLabel);
 
   routingHintLabel.setJustificationType(juce::Justification::centredLeft);
   routingHintLabel.setFont(juce::FontOptions(11.0f));
@@ -359,46 +463,27 @@ void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode) {
   if (guideSourceMode == mode)
     return;
 
-  if (mode == GuideSourceMode::DynamicBySections) {
-    guideStemMuteBeforeDynamicByStemIndex.clear();
-    for (size_t i = 0; i < slots.size(); ++i) {
-      const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
-      if (!isGuideStem)
-        continue;
-      const int stemIndex =
-          i < slotStemIndices.size() ? slotStemIndices[i] : -1;
-      if (stemIndex < 0)
-        continue;
-      const bool wasMuted = processor.isStemMuted(stemIndex);
-      guideStemMuteBeforeDynamicByStemIndex[stemIndex] = wasMuted;
-      if (!wasMuted) {
-        processor.setStemMute(stemIndex, true);
-        slots[i]->getStrip().setMuteState(true);
-      }
-    }
-  } else {
-    for (size_t i = 0; i < slots.size(); ++i) {
-      const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
-      if (!isGuideStem)
-        continue;
-      const int stemIndex =
-          i < slotStemIndices.size() ? slotStemIndices[i] : -1;
-      if (stemIndex < 0)
-        continue;
-      const auto it = guideStemMuteBeforeDynamicByStemIndex.find(stemIndex);
-      if (it != guideStemMuteBeforeDynamicByStemIndex.end()) {
-        processor.setStemMute(stemIndex, it->second);
-        slots[i]->getStrip().setMuteState(it->second);
-      }
-    }
-    guideStemMuteBeforeDynamicByStemIndex.clear();
-  }
-
   guideSourceMode = mode;
   dynamicGuideToggle.setToggleState(
       guideSourceMode == GuideSourceMode::DynamicBySections,
       juce::dontSendNotification);
   applyGuideSourceModeToVisibleGuideSlots();
+  if (onGuideSourceModeChanged != nullptr)
+    onGuideSourceModeChanged(guideSourceMode);
+}
+
+void ChannelGridPanel::setOnGuideSourceModeChanged(
+    std::function<void(GuideSourceMode)> cb) {
+  onGuideSourceModeChanged = std::move(cb);
+}
+
+void ChannelGridPanel::setGuideWarningMessage(
+    const juce::String &warningMessage) {
+  const auto trimmed = warningMessage.trim();
+  guideWarningLabel.setText(trimmed, juce::dontSendNotification);
+  guideWarningLabel.setVisible(trimmed.isNotEmpty());
+  resized();
+  repaint();
 }
 
 void ChannelGridPanel::applyGuideSourceModeToVisibleGuideSlots() {
@@ -406,15 +491,13 @@ void ChannelGridPanel::applyGuideSourceModeToVisibleGuideSlots() {
       guideSourceMode == GuideSourceMode::DynamicBySections;
   const auto modeLabel = guideSourceModeLabel(guideSourceMode);
   const auto modeDescription = guideSourceModeDescription(guideSourceMode);
-  for (size_t i = 0; i < slots.size(); ++i) {
-    const bool isGuideStem = i < guideStems.size() ? guideStems[i] : false;
-    if (!isGuideStem)
-      continue;
-    const auto tooltip = L10n::tr(u8"Fuente de guía: ",
-                                  "Guide source: ") +
+  if (juce::isPositiveAndBelow(dynamicGuideVirtualSlotIndex,
+                               static_cast<int>(slots.size()))) {
+    const auto tooltip = L10n::tr(u8"Fuente de guía: ", "Guide source: ") +
                          modeLabel + " (" + modeDescription + ")";
-    slots[i]->setGuideSettingsActive(dynamicSelected);
-    slots[i]->setGuideSettingsTooltip(tooltip);
+    auto &slot = slots[static_cast<size_t>(dynamicGuideVirtualSlotIndex)];
+    slot->setGuideSettingsActive(dynamicSelected);
+    slot->setGuideSettingsTooltip(tooltip);
   }
   dynamicGuideToggle.setToggleState(dynamicSelected, juce::dontSendNotification);
 }
@@ -551,11 +634,14 @@ void ChannelGridPanel::showGuideSourcePopover(juce::Component *anchorComponent) 
 
 void ChannelGridPanel::timerCallback() {
   syncMasterSlotFromProcessor();
+  syncDivisionSlotFromProcessor();
+  syncDynamicGuideVirtualSlotFromProcessor();
   syncStemSlotsFromProcessor();
 
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   const bool hasPendingVolumeWrites =
-      hasPendingMasterVolumeWrite || !pendingStemVolumeWrites.empty();
+      hasPendingMasterVolumeWrite || hasPendingDynamicGuideVolumeWrite ||
+      !pendingStemVolumeWrites.empty();
   if (hasPendingVolumeWrites &&
       (nowMs - lastVolumeInteractionMs) >= volumePersistenceDebounceMs) {
     flushPendingVolumePersistence();
@@ -596,6 +682,10 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
   nudgeHintLabel.setFont(juce::FontOptions(
       responsiveProfile == ResponsiveLayoutProfile::Compact ? 10.5f : 11.5f));
   nudgeHintLabel.setVisible(false);
+  guideWarningLabel.setFont(
+      juce::FontOptions(responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.5f
+                                                                              : 10.5f));
+  guideWarningLabel.setVisible(guideWarningLabel.getText().isNotEmpty());
 
   auto nudgeButtonsArea =
       juce::Rectangle<int>(masterAlignedX, headerContent.getY(),
@@ -620,7 +710,18 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
     routingHintLabel.setVisible(false);
   }
 
+  if (guideWarningLabel.isVisible()) {
+    auto warningArea = viewport.getBounds().withTop(header.getBottom() + 2);
+    warningArea.setHeight(
+        responsiveProfile == ResponsiveLayoutProfile::Compact ? 16 : 18);
+    guideWarningLabel.setBounds(warningArea.reduced(10, 0));
+  } else {
+    guideWarningLabel.setBounds({});
+  }
+
   r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 6);
+  if (guideWarningLabel.isVisible())
+    r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 18 : 20);
   viewport.setBounds(r);
 }
 
@@ -739,8 +840,11 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   flushPendingVolumePersistence();
   routingDraftActive = false;
   guideStemMuteBeforeDynamicByStemIndex.clear();
+  hasPendingDynamicGuideVolumeWrite = false;
   masterSlotIndex = -1;
+  divisionSlotIndex = -1;
   metronomeVirtualSlotIndex = -1;
+  dynamicGuideVirtualSlotIndex = -1;
   slots.clear();
   adjustableStems.clear();
   clickGuideStems.clear();
@@ -754,6 +858,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   currentSongId = song.id;
 
   addMasterSlot();
+  addDivisionSlot();
 
   const bool showStemRouting = false;
 
@@ -771,6 +876,11 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
       });
   if (!orderedStems.empty() && !hasRealClickStem)
     addMetronomeVirtualSlot();
+  bool dynamicGuideSlotAdded = false;
+  if (!orderedStems.empty() && !hasRealClickStem) {
+    addDynamicGuideVirtualSlot();
+    dynamicGuideSlotAdded = true;
+  }
 
   for (const auto *stemPtr : orderedStems) {
     if (stemPtr == nullptr)
@@ -864,7 +974,15 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slotStemIndices.push_back(stemIndex);
     slotStemIds.push_back(stemId);
     slots.push_back(std::move(slot));
+
+    if (!dynamicGuideSlotAdded && stemPriority == 0) {
+      addDynamicGuideVirtualSlot();
+      dynamicGuideSlotAdded = true;
+    }
   }
+
+  if (!orderedStems.empty() && !dynamicGuideSlotAdded)
+    addDynamicGuideVirtualSlot();
 
   pendingOutputBySlotIndex.assign(slots.size(), 1);
   for (size_t i = 0; i < slots.size(); ++i) {
@@ -875,11 +993,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
   lastSeenOutputChannelCount = processor.getAvailableOutputChannelCount();
   applyGuideSourceModeToVisibleGuideSlots();
-  dynamicGuideToggle.setVisible(false);
-  if (guideSourceMode == GuideSourceMode::DynamicBySections) {
-    setGuideSourceMode(GuideSourceMode::SongGuide);
-    setGuideSourceMode(GuideSourceMode::DynamicBySections);
-  }
+  dynamicGuideToggle.setVisible(dynamicGuideVirtualSlotIndex >= 0);
   setMidiLearnActive(midiLearnActive);
   resized();
   repaint();
@@ -929,10 +1043,31 @@ void ChannelGridPanel::queueMasterVolumePersistence(const float volume) {
   lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
 }
 
+void ChannelGridPanel::queueDynamicGuideVolumePersistence(const float volume) {
+  pendingDynamicGuideVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
+  hasPendingDynamicGuideVolumeWrite = true;
+  lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
+}
+
+void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
+  if (currentSongId.isEmpty())
+    return;
+
+  DynamicGuideMixSnapshot mix;
+  mix.volume = processor.getDynamicGuideVolume();
+  mix.gain = processor.getDynamicGuideGain();
+  mix.mute = processor.isDynamicGuideMuted();
+  mix.solo = processor.isDynamicGuideSolo();
+  mix.outputChannel = processor.getDynamicGuideOutputChannel();
+  mix.outputWidth = processor.getDynamicGuideOutputWidth();
+  SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
+}
+
 void ChannelGridPanel::flushPendingVolumePersistence() {
   if (currentSongId.isEmpty()) {
     pendingStemVolumeWrites.clear();
     hasPendingMasterVolumeWrite = false;
+    hasPendingDynamicGuideVolumeWrite = false;
     return;
   }
 
@@ -950,11 +1085,25 @@ void ChannelGridPanel::flushPendingVolumePersistence() {
                                                          pendingMasterVolumeValue);
     hasPendingMasterVolumeWrite = false;
   }
+
+  if (hasPendingDynamicGuideVolumeWrite) {
+    DynamicGuideMixSnapshot mix;
+    mix.volume = pendingDynamicGuideVolumeValue;
+    mix.gain = processor.getDynamicGuideGain();
+    mix.mute = processor.isDynamicGuideMuted();
+    mix.solo = processor.isDynamicGuideSolo();
+    mix.outputChannel = processor.getDynamicGuideOutputChannel();
+    mix.outputWidth = processor.getDynamicGuideOutputWidth();
+    SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
+    hasPendingDynamicGuideVolumeWrite = false;
+  }
 }
 
 void ChannelGridPanel::refreshThemeColours() {
   nudgeHintLabel.setColour(juce::Label::textColourId,
                            UITheme::textPrimary.withAlpha(0.92f));
+  guideWarningLabel.setColour(juce::Label::textColourId,
+                              juce::Colour::fromRGB(235, 194, 95));
 
   nudgeUpButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   nudgeUpButton.setColour(juce::TextButton::buttonOnColourId,
@@ -984,6 +1133,12 @@ void ChannelGridPanel::refreshThemeColours() {
       continue;
     }
     if (stemIndex == -2) {
+      strip.setCardBgColour(UITheme::cardBgClickGuide);
+      strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
+      strip.refreshThemeColours();
+      continue;
+    }
+    if (stemIndex == -3) {
       strip.setCardBgColour(UITheme::cardBgClickGuide);
       strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
       strip.refreshThemeColours();
@@ -1150,22 +1305,26 @@ void ChannelGridPanel::resized() {
 
   const auto stripLayout =
       slots.empty() ? baseLayout : slots.front()->getStrip().getLayout();
-  const int cellW = stripLayout.width + 2;
-  const int columns =
-      juce::jmax(1, (contentWidth - (pad * 2) + gapX) / (cellW + gapX));
-  const int rows = (visibleSlots + columns - 1) / columns;
   const int cellH = stripLayout.height + (gridShowsRouting ? 34 : 8);
 
-  for (size_t i = 0; i < slots.size(); ++i) {
-    const int row = static_cast<int>(i) / columns;
-    const int col = static_cast<int>(i) % columns;
-    const int x = pad + (col * (cellW + gapX));
-    const int y = pad + (row * (cellH + gapY));
-    slots[i]->setBounds(x, y, cellW, cellH);
+  int x = pad;
+  int y = pad;
+  int rows = visibleSlots > 0 ? 1 : 0;
+  const int rightEdge = juce::jmax(pad + 1, contentWidth - pad);
+  for (auto &slot : slots) {
+    const int slotW = juce::jmax(stripLayout.width + 2, slot->getPreferredWidth());
+    if (x > pad && x + slotW > rightEdge) {
+      x = pad;
+      y += cellH + gapY;
+      ++rows;
+    }
+
+    slot->setBounds(x, y, slotW, cellH);
+    x += slotW + gapX;
   }
 
-  const int neededH =
-      pad + (rows * cellH) + (juce::jmax(0, rows - 1) * gapY) + pad;
+  const int neededH = pad + (rows * cellH) +
+                      (juce::jmax(0, rows - 1) * gapY) + pad;
   content.setSize(contentWidth, juce::jmax(viewport.getHeight(), neededH));
 }
 
@@ -1227,6 +1386,50 @@ void ChannelGridPanel::addMasterSlot() {
   slotStemIds.push_back({});
 }
 
+void ChannelGridPanel::addDivisionSlot() {
+  divisionSlotIndex = static_cast<int>(slots.size());
+  auto slot = std::make_unique<StripSlot>(
+      "DIV", lookAndFeel,
+      [this] {
+        float left = 0.0f;
+        float right = 0.0f;
+        processor.getMetronomeMeterLevels(left, right);
+        return std::pair<float, float>{left, right};
+      });
+
+  slot->setShowOutputRouting(false);
+  slot->setGuideSettingsVisible(false);
+  slot->setDivisionPanelVisible(true);
+  slot->setDivision(processor.getClickDivision());
+  slot->setDivisionVolume(processor.getMetronomeVolume());
+  slot->setDivisionPowerOn(processor.isClickDivisionEnabled());
+  slot->setDivisionMuteState(processor.isMetronomeMuted());
+  slot->setDivisionSoloState(processor.isMetronomeSolo());
+  slot->setOnDivisionChanged([this](const int division) {
+    processor.setClickDivision(division);
+  });
+  slot->setOnDivisionVolumeChanged([this](const float volume) {
+    processor.setMetronomeVolume(volume);
+  });
+  slot->setOnDivisionMuteChanged([this](const bool muted) {
+    processor.setMetronomeMuted(muted);
+  });
+  slot->setOnDivisionSoloChanged([this](const bool soloed) {
+    processor.setMetronomeSolo(soloed);
+  });
+  slot->getStrip().setMidiLearnTargetIds(-1, -1, -1, -1, -1);
+  slot->getStrip().setMidiLearnSelectable(false);
+  slot->getStrip().setMidiLearnPendingTarget(-1);
+
+  content.addAndMakeVisible(*slot);
+  slots.push_back(std::move(slot));
+  adjustableStems.push_back(false);
+  clickGuideStems.push_back(false);
+  guideStems.push_back(false);
+  slotStemIndices.push_back(-4);
+  slotStemIds.push_back({});
+}
+
 void ChannelGridPanel::addMetronomeVirtualSlot() {
   auto slot = std::make_unique<StripSlot>(
       "CLICK", lookAndFeel,
@@ -1277,6 +1480,72 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   slotStemIds.push_back({});
 }
 
+void ChannelGridPanel::addDynamicGuideVirtualSlot() {
+  auto slot = std::make_unique<StripSlot>(
+      "GUIDE DYN", lookAndFeel,
+      [this] {
+        float left = 0.0f;
+        float right = 0.0f;
+        processor.getDynamicGuideMeterLevels(left, right);
+        return std::pair<float, float>{left, right};
+      });
+  auto &strip = slot->getStrip();
+  strip.setCardBgColour(UITheme::cardBgClickGuide);
+  strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
+  strip.setMuteAlignedToFader(true);
+  slot->setShowOutputRouting(false);
+  slot->setOutputOptions(processor.getAvailableOutputChannelNames(),
+                         processor.getDynamicGuideOutputChannel());
+  slot->setOnOutputChannelChanged([this](const int channel) {
+    processor.setDynamicGuideOutputRouting(channel,
+                                           processor.getDynamicGuideOutputWidth());
+    persistDynamicGuideMixForCurrentSong();
+  });
+  slot->setGuideSettingsVisible(false);
+  slot->setGuideSettingsActive(false);
+  slot->setGuideSettingsTooltip({});
+  slot->setOnGuideSettingsRequested({});
+
+  strip.setVolume(processor.getDynamicGuideVolume());
+  strip.setGain(processor.getDynamicGuideGain());
+  strip.setMuteState(processor.isDynamicGuideMuted());
+  strip.setSoloState(processor.isDynamicGuideSolo());
+  strip.setOnVolumeChanged([this](float value) {
+    processor.setDynamicGuideVolume(value);
+    queueDynamicGuideVolumePersistence(value);
+  });
+  strip.setOnGainChanged([this](float value) {
+    processor.setDynamicGuideGain(value);
+    persistDynamicGuideMixForCurrentSong();
+  });
+  strip.setOnMuteChanged([this](bool muted) {
+    processor.setDynamicGuideMuted(muted);
+    persistDynamicGuideMixForCurrentSong();
+  });
+  strip.setOnSoloChanged([this](bool soloed) {
+    processor.setDynamicGuideSolo(soloed);
+    persistDynamicGuideMixForCurrentSong();
+  });
+  strip.setMidiLearnTargetIds(-1, -1, -1, -1, -1);
+  strip.setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+  strip.setOnMidiLearnTargetSelected([this](const int targetId) {
+    if (onMidiLearnTargetSelected)
+      onMidiLearnTargetSelected(targetId);
+  });
+  strip.setMidiLearnSelectable(false);
+  strip.setMidiLearnPendingTarget(-1);
+  strip.refreshThemeColours();
+
+  content.addAndMakeVisible(*slot);
+  dynamicGuideVirtualSlotIndex = static_cast<int>(slots.size());
+  slots.push_back(std::move(slot));
+  adjustableStems.push_back(false);
+  clickGuideStems.push_back(true);
+  guideStems.push_back(false);
+  slotStemIndices.push_back(-3);
+  slotStemIds.push_back({});
+}
+
 void ChannelGridPanel::syncMasterSlotFromProcessor() {
   if (!juce::isPositiveAndBelow(masterSlotIndex, static_cast<int>(slots.size())))
     return;
@@ -1287,6 +1556,23 @@ void ChannelGridPanel::syncMasterSlotFromProcessor() {
     strip.setGain(processor.getMasterGain());
   }
   strip.setMuteState(processor.isMasterMuted());
+}
+
+void ChannelGridPanel::syncDivisionSlotFromProcessor() {
+  if (!juce::isPositiveAndBelow(divisionSlotIndex,
+                                static_cast<int>(slots.size())))
+    return;
+
+  slots[static_cast<size_t>(divisionSlotIndex)]->setDivision(
+      processor.getClickDivision());
+  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionVolume(
+      processor.getMetronomeVolume());
+  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionPowerOn(
+      processor.isClickDivisionEnabled());
+  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionMuteState(
+      processor.isMetronomeMuted());
+  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionSoloState(
+      processor.isMetronomeSolo());
 }
 
 void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
@@ -1304,10 +1590,26 @@ void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
   strip.setSoloState(processor.isMetronomeSolo());
 }
 
+void ChannelGridPanel::syncDynamicGuideVirtualSlotFromProcessor() {
+  if (!juce::isPositiveAndBelow(dynamicGuideVirtualSlotIndex,
+                                static_cast<int>(slots.size())))
+    return;
+
+  auto &strip =
+      slots[static_cast<size_t>(dynamicGuideVirtualSlotIndex)]->getStrip();
+  if (!strip.isMouseButtonDown()) {
+    strip.setVolume(processor.getDynamicGuideVolume());
+    strip.setGain(processor.getDynamicGuideGain());
+  }
+  strip.setMuteState(processor.isDynamicGuideMuted());
+  strip.setSoloState(processor.isDynamicGuideSolo());
+}
+
 void ChannelGridPanel::syncStemSlotsFromProcessor() {
   for (size_t i = 0; i < slots.size(); ++i) {
     if (static_cast<int>(i) == masterSlotIndex ||
-        static_cast<int>(i) == metronomeVirtualSlotIndex) {
+        static_cast<int>(i) == metronomeVirtualSlotIndex ||
+        static_cast<int>(i) == dynamicGuideVirtualSlotIndex) {
       continue;
     }
 

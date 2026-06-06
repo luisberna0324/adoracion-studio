@@ -6,20 +6,30 @@ PowerButton::PowerButton() {
 
 void PowerButton::paint(juce::Graphics& g) {
     auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    const float diameter = juce::jmin(bounds.getWidth(), bounds.getHeight());
-    const auto circle = juce::Rectangle<float>(diameter, diameter)
-                            .withCentre(bounds.getCentre());
+    const auto button = bounds.reduced(1.0f);
+    const float radius = juce::jlimit(4.0f, 8.0f, button.getHeight() * 0.22f);
 
-    const juce::Colour bg = on ? UITheme::accent.withAlpha(0.16f)
-                               : (hovered ? UITheme::cardBgHover : UITheme::cardBg);
-    g.setColour(bg);
-    g.fillEllipse(circle);
+    auto fill = on ? juce::Colour::fromRGB(42, 209, 90)
+                   : juce::Colour::fromRGB(35, 35, 35);
+    if (hovered)
+        fill = fill.brighter(on ? 0.05f : 0.08f);
 
-    g.setColour(UITheme::cardBorder);
-    g.drawEllipse(circle, 1.0f);
+    if (on) {
+        g.setColour(juce::Colour::fromRGB(42, 209, 90).withAlpha(0.22f));
+        g.fillRoundedRectangle(button.expanded(3.0f), radius + 3.0f);
+    }
 
-    drawPowerIcon(g, circle.reduced(diameter * 0.22f),
-                  on ? UITheme::accent : UITheme::textSecondary);
+    g.setColour(juce::Colours::black.withAlpha(0.24f));
+    g.fillRoundedRectangle(button.translated(0.0f, 1.0f), radius);
+    g.setColour(fill);
+    g.fillRoundedRectangle(button, radius);
+    g.setColour(on ? juce::Colour::fromRGB(84, 238, 122)
+                   : juce::Colour::fromRGB(17, 17, 17));
+    g.drawRoundedRectangle(button, radius, 1.0f);
+
+    drawPowerIcon(g, button.reduced(button.getWidth() * 0.23f,
+                                    button.getHeight() * 0.18f),
+                  on ? juce::Colours::black : juce::Colour::fromRGB(184, 184, 184));
 }
 
 void PowerButton::drawPowerIcon(juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colour) {

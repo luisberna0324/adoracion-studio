@@ -1,8 +1,10 @@
 #include "WaveformBar.h"
 #include "../../PluginProcessor.h"
+#include "../../audio/DynamicGuideEngine.h"
 #include "../../data/Localization.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -30,6 +32,7 @@ constexpr double kFollowSuspendAfterManualViewportMs = 2500.0;
 constexpr float kFollowEnabledViewportSpan = 0.25f;
 constexpr float kFollowCenterRatio = 0.5f;
 constexpr float kFollowSmoothFactor = 0.25f;
+constexpr float kWheelPanSensitivity = 0.22f;
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
 constexpr float kPlayheadHeadInsetY = 1.5f;
@@ -124,22 +127,108 @@ juce::Colour partColorOrFallback(const SongArrangementPartSnapshot &part,
   return UITheme::accent;
 }
 
-juce::String normalizedDisplayGroupKey(const juce::String &name) {
-  const auto canonical = canonicalArrangementSectionName(name);
-  auto text = canonical.isNotEmpty() ? canonical : arrangementPartDisplayLabelForName(name);
-  text = text.trim().toLowerCase();
-  while (text.isNotEmpty() &&
-         juce::CharacterFunctions::isDigit(text[text.length() - 1]))
-    text = text.dropLastCharacters(1).trimEnd();
-
-  juce::String key;
-  key.preallocateBytes(text.getNumBytesAsUTF8());
-  for (int i = 0; i < text.length(); ++i) {
-    const auto ch = text[i];
-    if (juce::CharacterFunctions::isLetterOrDigit(ch))
-      key << juce::String::charToString(ch);
+int countValueFromSectionName(const juce::String &name) {
+  auto token = name.trim().toLowerCase();
+  while (token.isNotEmpty()) {
+    const auto ch = token[token.length() - 1];
+    if (!juce::CharacterFunctions::isDigit(ch))
+      break;
+    token = token.dropLastCharacters(1).trimEnd();
   }
-  return key.isNotEmpty() ? key : "part";
+
+  juce::String normalized;
+  normalized.preallocateBytes(token.getNumBytesAsUTF8());
+  for (int i = 0; i < token.length(); ++i) {
+    const auto ch = token[i];
+    if (juce::CharacterFunctions::isLetterOrDigit(ch))
+      normalized << juce::String::charToString(ch);
+  }
+
+  token = normalized.isNotEmpty() ? normalized : name.trim().toLowerCase();
+  if (token == "1" || token == "one" || token == "uno")
+    return 1;
+  if (token == "2" || token == "two" || token == "dos")
+    return 2;
+  if (token == "3" || token == "three" || token == "tres")
+    return 3;
+  if (token == "4" || token == "four" || token == "cuatro")
+    return 4;
+  if (token == "5" || token == "five" || token == "cinco")
+    return 5;
+  if (token == "6" || token == "six" || token == "seis")
+    return 6;
+  if (token == "7" || token == "seven" || token == "siete")
+    return 7;
+  return 0;
+}
+
+bool isCountSectionName(const juce::String &name) {
+  return countValueFromSectionName(name) > 0;
+}
+
+struct UtilityCueSuggestion {
+  const char *key = nullptr;
+  const char *spanishLabel = nullptr;
+  const char *englishLabel = nullptr;
+};
+
+const std::array<UtilityCueSuggestion, 17> kUtilityCueSuggestions = {{
+    {"Build", "Sube intensidad", "Build"},
+    {"Slowly Build", "Sube lento", "Slowly Build"},
+    {"Breakdown", "Baja intensidad", "Breakdown"},
+    {"Hold", "Sostener", "Hold"},
+    {"Softly", "Suave", "Softly"},
+    {"Break", "Pausa", "Break"},
+    {"All In", "Toda la banda", "All In"},
+    {"Drums", "Batería", "Drums"},
+    {"Drums In", "Entra batería", "Drums In"},
+    {"Bass", "Bajo", "Bass"},
+    {"Guitar", "Guitarra", "Guitar"},
+    {"Keys", "Teclado", "Keys"},
+    {"Key Change Up", "Sube tono", "Key Change Up"},
+    {"Key Change Down", "Baja tono", "Key Change Down"},
+    {"Big Ending", "Final grande", "Big Ending"},
+    {"Last Time", "Última vez", "Last Time"},
+    {"A Capella", "A capella", "A Capella"},
+}};
+
+juce::String utilityCueDisplayLabelForName(const juce::String &name) {
+  const auto key = DynamicGuideEngine::normalizeSectionKey(name);
+  for (const auto &cue : kUtilityCueSuggestions) {
+    if (key == DynamicGuideEngine::normalizeSectionKey(cue.key))
+      return L10n::tr(cue.spanishLabel, cue.englishLabel);
+  }
+  return {};
+}
+
+bool isUtilityCueSectionName(const juce::String &name) {
+  return utilityCueDisplayLabelForName(name).isNotEmpty();
+}
+
+int sectionVariantLimitForName(const juce::String &name) {
+  const auto canonical = canonicalArrangementSectionName(name);
+  if (canonical == "Chorus" || canonical == "Pre-Chorus" ||
+      canonical == "Bridge")
+    return 4;
+  if (canonical == "Verse")
+    return 6;
+  return 0;
+}
+
+juce::String sectionVariantName(const juce::String &name, const int variant) {
+  const auto canonical = canonicalArrangementSectionName(name);
+  const auto baseName = canonical.isNotEmpty() ? canonical : name.trim();
+  if (variant <= 1)
+    return baseName;
+  return baseName + " " + juce::String(variant);
+}
+
+juce::String sectionVariantDisplayLabel(const juce::String &name,
+                                        const int variant) {
+  auto label = arrangementPartDisplayLabelForName(sectionVariantName(name, 1));
+  if (variant > 1)
+    label << " " << variant;
+  return label;
 }
 
 juce::String abbreviatedArrangementLabel(const juce::String &label) {
@@ -171,9 +260,349 @@ juce::String abbreviatedArrangementLabel(const juce::String &label) {
 
   return trimmed.substring(0, juce::jmin(4, trimmed.length()));
 }
+
+juce::String countWordLabel(const int value) {
+  switch (value) {
+  case 1:
+    return L10n::tr("Uno", "One");
+  case 2:
+    return L10n::tr("Dos", "Two");
+  case 3:
+    return L10n::tr("Tres", "Three");
+  case 4:
+    return L10n::tr("Cuatro", "Four");
+  case 5:
+    return L10n::tr("Cinco", "Five");
+  case 6:
+    return L10n::tr("Seis", "Six");
+  case 7:
+    return L10n::tr("Siete", "Seven");
+  default:
+    break;
+  }
+  return juce::String(value);
+}
+
+class CountChip final : public juce::Button {
+public:
+  CountChip(const int valueIn, juce::String labelIn)
+      : juce::Button("countChip"), value(valueIn),
+        displayLabel(std::move(labelIn)) {}
+
+  void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                   bool isButtonDown) override {
+    auto b = getLocalBounds().toFloat();
+    auto fill = getToggleState() ? UITheme::accent : UITheme::cardBgHover;
+    if (isMouseOverButton)
+      fill = fill.brighter(0.06f);
+    if (isButtonDown)
+      fill = fill.darker(0.05f);
+
+    const float radius = juce::jmax(4.0f, b.getHeight() * 0.42f);
+    g.setColour(fill);
+    g.fillRoundedRectangle(b, radius);
+    g.setColour(UITheme::cardBorder.withAlpha(0.62f));
+    g.drawRoundedRectangle(b, radius, 1.0f);
+    g.setColour(getToggleState() ? UITheme::onAccent : UITheme::textPrimary);
+    g.setFont(juce::FontOptions(12.0f));
+    g.drawFittedText("+ " + displayLabel, getLocalBounds(),
+                     juce::Justification::centred, 1);
+  }
+
+  int getValue() const noexcept { return value; }
+
+private:
+  int value = 1;
+  juce::String displayLabel;
+};
+
+class CountPickerPopover final : public juce::Component {
+public:
+  explicit CountPickerPopover(std::function<void(int)> onSelectCountCallback,
+                              std::function<void()> onAddOneToFourCallback)
+      : onSelectCount(std::move(onSelectCountCallback)),
+        onAddOneToFour(std::move(onAddOneToFourCallback)) {
+    title.setText(L10n::tr("Cuenta intermedia", "Intermediate count"),
+                  juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    title.setFont(juce::FontOptions(11.0f));
+    addAndMakeVisible(title);
+
+    addOneToFourChip =
+        std::make_unique<CountChip>(0, L10n::tr("1, 2, 3, 4", "1, 2, 3, 4"));
+    addOneToFourChip->setTooltip(
+        L10n::tr("Agregar cuatro cuentas (medio compás cada una)",
+                 "Add four count sections (half a bar each)"));
+    addOneToFourChip->onClick = [this] {
+      if (onAddOneToFour != nullptr)
+        onAddOneToFour();
+    };
+    addAndMakeVisible(*addOneToFourChip);
+
+    chips.reserve(7);
+    for (int value = 1; value <= 7; ++value) {
+      const auto displayLabel = countWordLabel(value);
+      auto chip = std::make_unique<CountChip>(value, displayLabel);
+      chip->setClickingTogglesState(true);
+      chip->setTooltip(L10n::tr("Agregar cuenta ", "Add count ") +
+                       displayLabel);
+      chip->onClick = [this, value] {
+        if (onSelectCount != nullptr)
+          onSelectCount(value);
+      };
+      addAndMakeVisible(*chip);
+      chips.push_back(std::move(chip));
+    }
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(b, 8.0f);
+    g.setColour(UITheme::cardBorder);
+    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12, 10);
+    title.setBounds(area.removeFromTop(18));
+    area.removeFromTop(8);
+    if (addOneToFourChip != nullptr)
+      addOneToFourChip->setBounds(area.removeFromTop(28));
+    area.removeFromTop(8);
+
+    constexpr int kCols = 4;
+    const int gap = 6;
+    const int chipH = 28;
+    const int totalGap = gap * (kCols - 1);
+    const int chipW = juce::jmax(52, (area.getWidth() - totalGap) / kCols);
+
+    for (size_t i = 0; i < chips.size(); ++i) {
+      const int idx = static_cast<int>(i);
+      const int row = idx / kCols;
+      const int col = idx % kCols;
+      const int x = area.getX() + col * (chipW + gap);
+      const int y = area.getY() + row * (chipH + gap);
+      chips[i]->setBounds(x, y, chipW, chipH);
+    }
+  }
+
+private:
+  juce::Label title;
+  std::unique_ptr<CountChip> addOneToFourChip;
+  std::vector<std::unique_ptr<CountChip>> chips;
+  std::function<void(int)> onSelectCount;
+  std::function<void()> onAddOneToFour;
+};
+
+class SectionVariantPopover final : public juce::Component {
+public:
+  SectionVariantPopover(juce::String sectionNameIn, const int variantLimit,
+                        std::function<void(juce::String)> onSelectSectionCallback)
+      : sectionName(std::move(sectionNameIn)),
+        onSelectSection(std::move(onSelectSectionCallback)) {
+    title.setText(arrangementPartDisplayLabelForName(sectionName),
+                  juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    title.setFont(juce::FontOptions(11.0f));
+    addAndMakeVisible(title);
+
+    const int limit = juce::jmax(1, variantLimit);
+    chips.reserve(static_cast<size_t>(limit));
+    for (int variant = 1; variant <= limit; ++variant) {
+      const auto label = sectionVariantDisplayLabel(sectionName, variant);
+      auto chip = std::make_unique<CountChip>(variant, label);
+      chip->setTooltip(L10n::tr("Agregar ", "Add ") + label);
+      chip->onClick = [this, variant] {
+        if (onSelectSection != nullptr)
+          onSelectSection(sectionVariantName(sectionName, variant));
+      };
+      addAndMakeVisible(*chip);
+      chips.push_back(std::move(chip));
+    }
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(b, 8.0f);
+    g.setColour(UITheme::cardBorder);
+    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12, 10);
+    title.setBounds(area.removeFromTop(18));
+    area.removeFromTop(8);
+
+    constexpr int kCols = 2;
+    const int gap = 6;
+    const int chipH = 28;
+    const int totalGap = gap * (kCols - 1);
+    const int chipW = juce::jmax(92, (area.getWidth() - totalGap) / kCols);
+
+    for (size_t i = 0; i < chips.size(); ++i) {
+      const int idx = static_cast<int>(i);
+      const int row = idx / kCols;
+      const int col = idx % kCols;
+      const int x = area.getX() + col * (chipW + gap);
+      const int y = area.getY() + row * (chipH + gap);
+      chips[i]->setBounds(x, y, chipW, chipH);
+    }
+  }
+
+private:
+  juce::String sectionName;
+  juce::Label title;
+  std::vector<std::unique_ptr<CountChip>> chips;
+  std::function<void(juce::String)> onSelectSection;
+};
+
+class SectionPickerPopover final : public juce::Component {
+public:
+  explicit SectionPickerPopover(
+      std::function<void(juce::String)> onSelectSectionCallback)
+      : onSelectSection(std::move(onSelectSectionCallback)) {
+    title.setText(L10n::tr("Agregar sección", "Add section"),
+                  juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    title.setFont(juce::FontOptions(11.0f));
+    addAndMakeVisible(title);
+
+    for (const auto *section : kSongSectionSuggestions) {
+      const juce::String sectionName =
+          section != nullptr ? juce::String(section) : juce::String("Part");
+      const int limit = sectionVariantLimitForName(sectionName);
+      const int variants = juce::jmax(1, limit);
+      for (int variant = 1; variant <= variants; ++variant) {
+        const auto label = sectionVariantDisplayLabel(sectionName, variant);
+        auto chip = std::make_unique<CountChip>(variant, label);
+        chip->setTooltip(L10n::tr("Agregar ", "Add ") + label);
+        chip->onClick = [this, sectionName, variant] {
+          if (onSelectSection != nullptr)
+            onSelectSection(sectionVariantName(sectionName, variant));
+        };
+        addAndMakeVisible(*chip);
+        chips.push_back(std::move(chip));
+      }
+    }
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(b, 8.0f);
+    g.setColour(UITheme::cardBorder);
+    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12, 10);
+    title.setBounds(area.removeFromTop(18));
+    area.removeFromTop(8);
+
+    constexpr int kCols = 3;
+    const int gap = 6;
+    const int chipH = 28;
+    const int totalGap = gap * (kCols - 1);
+    const int chipW = juce::jmax(92, (area.getWidth() - totalGap) / kCols);
+
+    for (size_t i = 0; i < chips.size(); ++i) {
+      const int idx = static_cast<int>(i);
+      const int row = idx / kCols;
+      const int col = idx % kCols;
+      const int x = area.getX() + col * (chipW + gap);
+      const int y = area.getY() + row * (chipH + gap);
+      chips[i]->setBounds(x, y, chipW, chipH);
+    }
+  }
+
+  static int getPreferredHeight() {
+    int chipCount = 0;
+    for (const auto *section : kSongSectionSuggestions) {
+      const juce::String sectionName =
+          section != nullptr ? juce::String(section) : juce::String("Part");
+      chipCount += juce::jmax(1, sectionVariantLimitForName(sectionName));
+    }
+    constexpr int kCols = 3;
+    const int rows = (chipCount + kCols - 1) / kCols;
+    return 44 + (rows * 28) + (juce::jmax(0, rows - 1) * 6);
+  }
+
+private:
+  juce::Label title;
+  std::vector<std::unique_ptr<CountChip>> chips;
+  std::function<void(juce::String)> onSelectSection;
+};
+
+class UtilityCuePopover final : public juce::Component {
+public:
+  explicit UtilityCuePopover(std::function<void(juce::String)> onSelectCueCallback)
+      : onSelectCue(std::move(onSelectCueCallback)) {
+    title.setText(L10n::tr("Utilidades de guía", "Guide utilities"),
+                  juce::dontSendNotification);
+    title.setJustificationType(juce::Justification::centred);
+    title.setColour(juce::Label::textColourId, UITheme::textSecondary);
+    title.setFont(juce::FontOptions(11.0f));
+    addAndMakeVisible(title);
+
+    chips.reserve(kUtilityCueSuggestions.size());
+    for (size_t i = 0; i < kUtilityCueSuggestions.size(); ++i) {
+      const auto &cue = kUtilityCueSuggestions[i];
+      const auto label = L10n::tr(cue.spanishLabel, cue.englishLabel);
+      auto chip = std::make_unique<CountChip>(static_cast<int>(i), label);
+      chip->setTooltip(L10n::tr("Agregar utilidad ", "Add utility ") + label);
+      chip->onClick = [this, key = juce::String(cue.key)] {
+        if (onSelectCue != nullptr)
+          onSelectCue(key);
+      };
+      addAndMakeVisible(*chip);
+      chips.push_back(std::move(chip));
+    }
+  }
+
+  void paint(juce::Graphics &g) override {
+    auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(b, 8.0f);
+    g.setColour(UITheme::cardBorder);
+    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12, 10);
+    title.setBounds(area.removeFromTop(18));
+    area.removeFromTop(8);
+
+    constexpr int kCols = 2;
+    const int gap = 6;
+    const int chipH = 28;
+    const int totalGap = gap * (kCols - 1);
+    const int chipW = juce::jmax(118, (area.getWidth() - totalGap) / kCols);
+    for (size_t i = 0; i < chips.size(); ++i) {
+      const int idx = static_cast<int>(i);
+      const int row = idx / kCols;
+      const int col = idx % kCols;
+      const int x = area.getX() + col * (chipW + gap);
+      const int y = area.getY() + row * (chipH + gap);
+      chips[i]->setBounds(x, y, chipW, chipH);
+    }
+  }
+
+private:
+  juce::Label title;
+  std::vector<std::unique_ptr<CountChip>> chips;
+  std::function<void(juce::String)> onSelectCue;
+};
 } // namespace
 
 WaveformBar::WaveformBar() {
+  setWantsKeyboardFocus(true);
+  setMouseClickGrabsKeyboardFocus(true);
+
   followButton.setButtonText(L10n::tr("SEGUIR", "FOLLOW"));
   followButton.setClickingTogglesState(true);
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
@@ -239,6 +668,31 @@ WaveformBar::WaveformBar() {
     repaint();
   };
   addAndMakeVisible(editButton);
+
+  sectionMenuButton.setButtonText("+ " + L10n::tr("Sección", "Section"));
+  sectionMenuButton.setTooltip(L10n::tr("Agregar sección", "Add section"));
+  sectionMenuButton.setViewportIgnoreDragFlag(true);
+  sectionMenuButton.onClick = [this] {
+    auto safe = juce::Component::SafePointer<WaveformBar>(this);
+    auto panel = std::make_unique<SectionPickerPopover>(
+        [safe](juce::String sectionName) {
+          if (safe != nullptr)
+            safe->addArrangementPart(sectionName);
+        });
+    panel->setSize(336, SectionPickerPopover::getPreferredHeight());
+
+    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+    juce::Component *parentComp = editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this);
+    const auto anchor =
+        parentComp->getLocalArea(&sectionMenuButton,
+                                 sectionMenuButton.getLocalBounds());
+    auto &callout = juce::CallOutBox::launchAsynchronously(
+        std::move(panel), anchor, parentComp);
+    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  };
+  addAndMakeVisible(sectionMenuButton);
 
   snapModeLabel.setText(L10n::tr("Ajuste", "Grid"), juce::dontSendNotification);
   snapModeLabel.setJustificationType(juce::Justification::centredRight);
@@ -306,10 +760,13 @@ void WaveformBar::setArrangement(
     const bool isCustomArrangement) {
   arrangement = arrangementSnapshot;
   customArrangement = isCustomArrangement;
+  selectedPartIndex = -1;
+  selectedPartIds.clear();
   normalizeArrangement(true);
 
   dragMode = DragMode::none;
   activeDragPartId.clear();
+  dragPartOrigins.clear();
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
@@ -425,6 +882,14 @@ void WaveformBar::refreshThemeColours() {
                        UITheme::textPrimary);
   editButton.setColour(juce::TextButton::textColourOnId,
                        UITheme::textPrimary);
+  sectionMenuButton.setColour(juce::TextButton::buttonColourId,
+                              UITheme::cardBgHover);
+  sectionMenuButton.setColour(juce::TextButton::buttonOnColourId,
+                              UITheme::cardBgPressed);
+  sectionMenuButton.setColour(juce::TextButton::textColourOffId,
+                              UITheme::textPrimary);
+  sectionMenuButton.setColour(juce::TextButton::textColourOnId,
+                              UITheme::textPrimary);
   snapModeLabel.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
   snapModeLabel.setColour(juce::Label::textColourId,
                           UITheme::textSecondary.withAlpha(0.95f));
@@ -538,7 +1003,17 @@ void WaveformBar::paint(juce::Graphics &g) {
 }
 
 void WaveformBar::paintOverChildren(juce::Graphics &g) {
-  juce::ignoreUnused(g);
+  if (dragMode != DragMode::selectParts)
+    return;
+
+  const auto selectionBounds = getSelectionDragBounds();
+  if (selectionBounds.getWidth() < 2.0f || selectionBounds.getHeight() < 2.0f)
+    return;
+
+  g.setColour(UITheme::accent.withAlpha(0.16f));
+  g.fillRoundedRectangle(selectionBounds, 4.0f);
+  g.setColour(UITheme::accent.withAlpha(0.82f));
+  g.drawRoundedRectangle(selectionBounds, 4.0f, 1.4f);
 }
 
 void WaveformBar::resized() {
@@ -562,6 +1037,8 @@ void WaveformBar::resized() {
     snapModeLabel.setEnabled(false);
     snapModeBox.setVisible(false);
     snapModeBox.setEnabled(false);
+    sectionMenuButton.setVisible(false);
+    sectionMenuButton.setEnabled(false);
     for (auto &btn : sectionAddButtons) {
       btn->setVisible(false);
       btn->setEnabled(false);
@@ -627,22 +1104,53 @@ void WaveformBar::resized() {
     if (!widths.empty())
       totalWidth += buttonGap * (static_cast<int>(widths.size()) - 1);
 
-    int x = buttonsArea.getX();
-    if (buttonsArea.getWidth() > totalWidth)
-      x += (buttonsArea.getWidth() - totalWidth) / 2;
+    const bool compactSections = buttonsArea.getWidth() <= totalWidth;
+    sectionMenuButton.setVisible(compactSections);
+    sectionMenuButton.setEnabled(compactSections);
 
-    for (size_t i = 0; i < sectionAddButtons.size(); ++i) {
-      const int width = widths[i];
-      const bool fits = (x + width) <= buttonsArea.getRight();
-      sectionAddButtons[i]->setBounds(x, buttonsArea.getY(), width,
-                                      buttonsArea.getHeight());
-      sectionAddButtons[i]->setVisible(fits);
-      sectionAddButtons[i]->setEnabled(fits);
-      x += width + buttonGap;
+    if (compactSections) {
+      const int actionCount = static_cast<int>(sectionAddButtons.size());
+      const int fixedStart = juce::jmax(0, actionCount - 2);
+      const int sectionMenuW = 96;
+      int x = buttonsArea.getX();
+      sectionMenuButton.setBounds(x, buttonsArea.getY(), sectionMenuW,
+                                  buttonsArea.getHeight());
+      x += sectionMenuW + buttonGap;
+
+      for (int i = 0; i < actionCount; ++i) {
+        auto &button = sectionAddButtons[static_cast<size_t>(i)];
+        if (i < fixedStart) {
+          button->setVisible(false);
+          button->setEnabled(false);
+          continue;
+        }
+        const int width =
+            juce::jlimit(70, 102, 20 + (button->getButtonText().length() * 7));
+        const bool fits = (x + width) <= buttonsArea.getRight();
+        button->setBounds(x, buttonsArea.getY(), width, buttonsArea.getHeight());
+        button->setVisible(fits);
+        button->setEnabled(fits);
+        x += width + buttonGap;
+      }
+    } else {
+      int x = buttonsArea.getX();
+      if (buttonsArea.getWidth() > totalWidth)
+        x += (buttonsArea.getWidth() - totalWidth) / 2;
+
+      for (size_t i = 0; i < sectionAddButtons.size(); ++i) {
+        const int width = widths[i];
+        sectionAddButtons[i]->setBounds(x, buttonsArea.getY(), width,
+                                        buttonsArea.getHeight());
+        sectionAddButtons[i]->setVisible(true);
+        sectionAddButtons[i]->setEnabled(true);
+        x += width + buttonGap;
+      }
     }
     return;
   }
 
+  sectionMenuButton.setVisible(false);
+  sectionMenuButton.setEnabled(false);
   for (auto &btn : sectionAddButtons) {
     btn->setVisible(false);
     btn->setEnabled(false);
@@ -665,6 +1173,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 
   dragMode = DragMode::none;
   activeDragPartId.clear();
+  dragPartOrigins.clear();
+  selectionDragAdditive = false;
+  selectionDragBaseIds.clear();
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
@@ -740,7 +1251,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     if (juce::isPositiveAndBelow(actionHit.partIndex,
                                  static_cast<int>(arrangement.parts.size())) &&
         actionHit.loopButton) {
-      selectedPartIndex = actionHit.partIndex;
+      setSingleSelectedPart(actionHit.partIndex);
       cancelDeferredPartJumpFromDoubleClick();
       if (onArrangementPartLoopToggleRequest)
         onArrangementPartLoopToggleRequest(actionHit.partIndex);
@@ -751,7 +1262,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     if (juce::isPositiveAndBelow(actionHit.partIndex,
                                  static_cast<int>(arrangement.parts.size())) &&
         actionHit.jumpButton) {
-      selectedPartIndex = actionHit.partIndex;
+      setSingleSelectedPart(actionHit.partIndex);
       cancelDeferredPartJumpFromDoubleClick();
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(actionHit.partIndex);
@@ -765,24 +1276,34 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     const auto hit = hitTestArrangementPart(event.position);
     if (juce::isPositiveAndBelow(hit.partIndex,
                                  static_cast<int>(arrangement.parts.size()))) {
-      selectedPartIndex = hit.partIndex;
       if (hit.deleteButton) {
-        confirmDeleteArrangementPart(hit.partIndex);
+        setSingleSelectedPart(hit.partIndex);
+        deleteArrangementPart(hit.partIndex);
         repaint();
         return;
       }
       const auto &part = arrangement.parts[static_cast<size_t>(hit.partIndex)];
+
+      const bool multiSelectGesture =
+          event.mods.isShiftDown() || event.mods.isCommandDown() ||
+          event.mods.isCtrlDown();
+      if (multiSelectGesture && !hit.leftEdge && !hit.rightEdge &&
+          !event.mods.isPopupMenu()) {
+        togglePartSelection(hit.partIndex);
+        repaint();
+        return;
+      }
+
+      if (!hit.leftEdge && !hit.rightEdge)
+        ensurePartSelectedForDrag(hit.partIndex);
+      else
+        setSingleSelectedPart(hit.partIndex);
+
       activeDragPartId = part.id;
       dragOriginPartStartSec = part.startSec;
       dragOriginPartEndSec = part.endSec;
       dragAnchorSourceSec =
           windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
-
-      if (event.mods.isPopupMenu()) {
-        openPartActionMenu(hit.partIndex);
-        repaint();
-        return;
-      }
 
       if (hit.leftEdge)
         dragMode = DragMode::resizePartLeft;
@@ -791,12 +1312,35 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       else
         dragMode = DragMode::movePart;
 
+      if (dragMode == DragMode::movePart)
+        captureDragPartOrigins();
+      else
+        dragPartOrigins.clear();
+
       if (dragMode == DragMode::resizePartLeft ||
           dragMode == DragMode::resizePartRight)
         setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
       else
         setMouseCursor(juce::MouseCursor::DraggingHandCursor);
 
+      repaint();
+      return;
+    }
+
+    if (!event.mods.isPopupMenu()) {
+      const bool additive =
+          event.mods.isShiftDown() || event.mods.isCommandDown() ||
+          event.mods.isCtrlDown();
+      if (!additive) {
+        selectedPartIds.clear();
+        selectedPartIndex = -1;
+      }
+      dragMode = DragMode::selectParts;
+      selectionDragStart = event.position;
+      selectionDragCurrent = event.position;
+      selectionDragAdditive = additive;
+      selectionDragBaseIds = additive ? selectedPartIds : std::vector<juce::String>{};
+      setMouseCursor(juce::MouseCursor::CrosshairCursor);
       repaint();
       return;
     }
@@ -864,6 +1408,16 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     return;
   }
 
+  if (dragMode == DragMode::selectParts) {
+    if (!isEditingArrangement())
+      return;
+    selectionDragCurrent = event.position;
+    updateSelectionFromDragBounds();
+    setMouseCursor(juce::MouseCursor::CrosshairCursor);
+    repaint();
+    return;
+  }
+
   if (dragMode != DragMode::movePart && dragMode != DragMode::resizePartLeft &&
       dragMode != DragMode::resizePartRight)
     return;
@@ -890,6 +1444,50 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   const bool bypassSnap = isSnapBypassed(event.mods);
   const double deltaSec =
       snapSeconds(pointerSec - dragAnchorSourceSec, bypassSnap);
+
+  if (dragMode == DragMode::movePart && dragPartOrigins.size() > 1) {
+    double minStart = std::numeric_limits<double>::max();
+    double maxEnd = 0.0;
+    for (const auto &origin : dragPartOrigins) {
+      minStart = juce::jmin(minStart, origin.startSec);
+      maxEnd = juce::jmax(maxEnd, origin.endSec);
+    }
+
+    if (dragPartOrigins.empty())
+      return;
+
+    double appliedDelta = deltaSec;
+    appliedDelta = juce::jmax(appliedDelta, -minStart);
+    appliedDelta = juce::jmin(appliedDelta, songLength - maxEnd);
+
+    bool changed = false;
+    for (const auto &origin : dragPartOrigins) {
+      const int idx = findPartIndexById(origin.id);
+      if (!juce::isPositiveAndBelow(idx,
+                                    static_cast<int>(arrangement.parts.size())))
+        continue;
+
+      auto &part = arrangement.parts[static_cast<size_t>(idx)];
+      const double previousStart = part.startSec;
+      const double previousEnd = part.endSec;
+      part.startSec = juce::jlimit(0.0, songLength, origin.startSec + appliedDelta);
+      part.endSec = juce::jlimit(0.0, songLength, origin.endSec + appliedDelta);
+      if ((part.endSec - part.startSec) < kMinPartDurationSec)
+        part.endSec = juce::jmin(songLength, part.startSec + kMinPartDurationSec);
+
+      changed = changed || !nearlyEqual(previousStart, part.startSec) ||
+                !nearlyEqual(previousEnd, part.endSec);
+    }
+
+    if (!changed)
+      return;
+
+    selectedPartIndex = partIndex;
+    customArrangement = true;
+    arrangementDragPendingCommit = true;
+    repaint();
+    return;
+  }
 
   struct AnchorBoundaryResult {
     bool found = false;
@@ -1049,6 +1647,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     return;
 
   selectedPartIndex = partIndex;
+  pruneSelectedPartIds();
   customArrangement = true;
   arrangementDragPendingCommit = true;
   repaint();
@@ -1064,8 +1663,10 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   const bool wasArrangementDrag =
       dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
       dragMode == DragMode::resizePartRight;
+  const bool wasSelectionDrag = dragMode == DragMode::selectParts;
   dragMode = DragMode::none;
   activeDragPartId.clear();
+  dragPartOrigins.clear();
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
@@ -1076,6 +1677,8 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   } else {
     arrangementDragPendingCommit = false;
   }
+  if (wasSelectionDrag)
+    repaint();
   setMouseCursor(juce::MouseCursor::NormalCursor);
 }
 
@@ -1184,10 +1787,9 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
   const auto hit = hitTestArrangementPart(event.position);
   if (juce::isPositiveAndBelow(hit.partIndex,
                                static_cast<int>(arrangement.parts.size()))) {
-    selectedPartIndex = hit.partIndex;
+    setSingleSelectedPart(hit.partIndex);
     if (isEditingArrangement()) {
       cancelDeferredPartJumpFromDoubleClick();
-      openPartActionMenu(hit.partIndex);
     } else {
       const int clicks = event.getNumberOfClicks();
       if (clicks >= 2) {
@@ -1196,6 +1798,19 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
     }
     repaint();
   }
+}
+
+bool WaveformBar::keyPressed(const juce::KeyPress &key) {
+  if (!isEditingArrangement())
+    return false;
+
+  if (key == juce::KeyPress::deleteKey ||
+      key == juce::KeyPress::backspaceKey) {
+    deleteSelectedArrangementParts();
+    return true;
+  }
+
+  return false;
 }
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
@@ -1213,6 +1828,21 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
   const bool onSeekRuler = seekRulerBounds.contains(event.position);
   if (!onWaveBody && !onSeekRuler)
     return;
+
+  const float absDx = std::abs(wheel.deltaX);
+  const float absDy = std::abs(wheel.deltaY);
+  const bool horizontalPanGesture = absDx > 0.0f && absDx > (absDy * 1.05f);
+  if (horizontalPanGesture) {
+    const auto window = getVisibleWindow();
+    const float intensity = juce::jlimit(1.0f, 3.0f, 1.0f + (absDx * 2.0f));
+    const float deltaStart =
+        -wheel.deltaX * intensity * juce::jmax(kMinViewportSpan, window.second) *
+        kWheelPanSensitivity;
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
+    setVisibleWindow(window.first + deltaStart, window.second);
+    return;
+  }
 
   const float dir = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
   if (dir == 0.0f)
@@ -1559,8 +2189,18 @@ void WaveformBar::normalizeArrangement(const bool sortByStart) {
         part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
     }
 
-    part.startSec = snapSeconds(part.startSec);
-    part.endSec = snapSeconds(part.endSec);
+    const bool isCountSection =
+        isCountSectionName(part.name) || isUtilityCueSectionName(part.name);
+    const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+    if (isCountSection && beatDurationSec > 0.0) {
+      const double snappedStart =
+          std::round(part.startSec / beatDurationSec) * beatDurationSec;
+      part.startSec = snappedStart;
+      part.endSec = snappedStart + beatDurationSec;
+    } else {
+      part.startSec = snapSeconds(part.startSec);
+      part.endSec = snapSeconds(part.endSec);
+    }
 
     part.startSec = juce::jlimit(0.0, songLength, part.startSec);
     part.endSec = juce::jlimit(0.0, songLength, part.endSec);
@@ -1585,9 +2225,18 @@ void WaveformBar::normalizeArrangement(const bool sortByStart) {
   if (selectedId.isNotEmpty())
     selectedPartIndex = findPartIndexById(selectedId);
 
+  pruneSelectedPartIds();
+
   if (!juce::isPositiveAndBelow(selectedPartIndex,
                                 static_cast<int>(arrangement.parts.size()))) {
     selectedPartIndex = arrangement.parts.empty() ? -1 : 0;
+  }
+
+  if (selectedPartIds.empty() && juce::isPositiveAndBelow(
+                                     selectedPartIndex,
+                                     static_cast<int>(arrangement.parts.size()))) {
+    selectedPartIds.push_back(
+        arrangement.parts[static_cast<size_t>(selectedPartIndex)].id);
   }
 }
 
@@ -1599,6 +2248,145 @@ int WaveformBar::findPartIndexById(const juce::String &id) const {
       return static_cast<int>(i);
   }
   return -1;
+}
+
+bool WaveformBar::isPartSelected(const int partIndex) const {
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    return false;
+
+  const auto &id = arrangement.parts[static_cast<size_t>(partIndex)].id;
+  if (id.isEmpty())
+    return partIndex == selectedPartIndex;
+
+  return std::find(selectedPartIds.begin(), selectedPartIds.end(), id) !=
+         selectedPartIds.end();
+}
+
+void WaveformBar::pruneSelectedPartIds() {
+  selectedPartIds.erase(
+      std::remove_if(selectedPartIds.begin(), selectedPartIds.end(),
+                     [this](const juce::String &id) {
+                       return findPartIndexById(id) < 0;
+                     }),
+      selectedPartIds.end());
+}
+
+void WaveformBar::setSingleSelectedPart(const int partIndex) {
+  selectedPartIndex = partIndex;
+  selectedPartIds.clear();
+  if (juce::isPositiveAndBelow(partIndex,
+                               static_cast<int>(arrangement.parts.size()))) {
+    auto id = arrangement.parts[static_cast<size_t>(partIndex)].id;
+    if (id.isEmpty()) {
+      id = juce::Uuid().toString();
+      arrangement.parts[static_cast<size_t>(partIndex)].id = id;
+    }
+    selectedPartIds.push_back(id);
+  }
+}
+
+void WaveformBar::togglePartSelection(const int partIndex) {
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    return;
+
+  auto id = arrangement.parts[static_cast<size_t>(partIndex)].id;
+  if (id.isEmpty()) {
+    id = juce::Uuid().toString();
+    arrangement.parts[static_cast<size_t>(partIndex)].id = id;
+  }
+
+  const auto it = std::find(selectedPartIds.begin(), selectedPartIds.end(), id);
+  if (it != selectedPartIds.end()) {
+    selectedPartIds.erase(it);
+    if (selectedPartIndex == partIndex)
+      selectedPartIndex = selectedPartIds.empty()
+                              ? -1
+                              : findPartIndexById(selectedPartIds.back());
+    return;
+  }
+
+  selectedPartIds.push_back(id);
+  selectedPartIndex = partIndex;
+}
+
+void WaveformBar::ensurePartSelectedForDrag(const int partIndex) {
+  if (isPartSelected(partIndex)) {
+    selectedPartIndex = partIndex;
+    return;
+  }
+  setSingleSelectedPart(partIndex);
+}
+
+void WaveformBar::captureDragPartOrigins() {
+  dragPartOrigins.clear();
+  pruneSelectedPartIds();
+
+  if (selectedPartIds.empty() && juce::isPositiveAndBelow(
+                                     selectedPartIndex,
+                                     static_cast<int>(arrangement.parts.size()))) {
+    selectedPartIds.push_back(
+        arrangement.parts[static_cast<size_t>(selectedPartIndex)].id);
+  }
+
+  for (const auto &id : selectedPartIds) {
+    const int idx = findPartIndexById(id);
+    if (!juce::isPositiveAndBelow(idx,
+                                  static_cast<int>(arrangement.parts.size())))
+      continue;
+    const auto &part = arrangement.parts[static_cast<size_t>(idx)];
+    dragPartOrigins.push_back({part.id, part.startSec, part.endSec});
+  }
+}
+
+juce::Rectangle<float> WaveformBar::getSelectionDragBounds() const {
+  const auto x = juce::jmin(selectionDragStart.x, selectionDragCurrent.x);
+  const auto y = juce::jmin(selectionDragStart.y, selectionDragCurrent.y);
+  const auto right = juce::jmax(selectionDragStart.x, selectionDragCurrent.x);
+  const auto bottom = juce::jmax(selectionDragStart.y, selectionDragCurrent.y);
+  return {x, y, right - x, bottom - y};
+}
+
+void WaveformBar::updateSelectionFromDragBounds() {
+  const auto bounds = getLocalBounds().toFloat();
+  const auto mainWaveBounds = getMainWaveBounds(bounds);
+  const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
+  rebuildPartOverlayBounds(mainWaveBodyBounds);
+
+  auto selectionBounds = getSelectionDragBounds();
+  if (selectionBounds.getWidth() < 2.0f && selectionBounds.getHeight() < 2.0f)
+    return;
+
+  selectionBounds = selectionBounds.getIntersection(mainWaveBodyBounds);
+  std::vector<juce::String> nextSelection =
+      selectionDragAdditive ? selectionDragBaseIds : std::vector<juce::String>{};
+
+  const auto addId = [&nextSelection](const juce::String &id) {
+    if (id.isEmpty())
+      return;
+    if (std::find(nextSelection.begin(), nextSelection.end(), id) ==
+        nextSelection.end())
+      nextSelection.push_back(id);
+  };
+
+  for (const auto &overlay : partOverlayBounds) {
+    if (!juce::isPositiveAndBelow(overlay.partIndex,
+                                  static_cast<int>(arrangement.parts.size())))
+      continue;
+    if (!overlay.body.intersects(selectionBounds))
+      continue;
+
+    auto &part = arrangement.parts[static_cast<size_t>(overlay.partIndex)];
+    if (part.id.isEmpty())
+      part.id = juce::Uuid().toString();
+    addId(part.id);
+  }
+
+  selectedPartIds = std::move(nextSelection);
+  pruneSelectedPartIds();
+  selectedPartIndex =
+      selectedPartIds.empty() ? -1 : findPartIndexById(selectedPartIds.back());
 }
 
 bool WaveformBar::isEditingArrangement() const {
@@ -2225,18 +3013,8 @@ void WaveformBar::drawArrangementOverlay(
     }
   }
 
-  std::map<juce::String, int> sectionTotals;
-  std::map<juce::String, int> sectionSeen;
-  std::map<int, int> sectionOccurrenceByIndex;
-  for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
-    const auto key = normalizedDisplayGroupKey(arrangement.parts[static_cast<size_t>(i)].name);
-    ++sectionTotals[key];
-    sectionOccurrenceByIndex[i] = ++sectionSeen[key];
-  }
-  sectionSeen.clear();
-
   for (const auto &overlay : partOverlayBounds) {
-    const bool selected = editing && (overlay.partIndex == selectedPartIndex);
+    const bool selected = editing && isPartSelected(overlay.partIndex);
     const bool loopActive = overlay.partIndex == activeLoopPartIndex;
     const bool pendingJump = showPendingJumpSectionHighlight && !loopActive &&
                              overlay.partIndex == pendingJumpPartIndex;
@@ -2270,11 +3048,14 @@ void WaveformBar::drawArrangementOverlay(
     g.setColour(sectionColour.withAlpha(separatorAlpha));
     g.drawLine(separatorX, lane.getY() + 2.0f, separatorX,
                lane.getBottom() - 2.0f, separatorThickness);
-    const auto groupKey = normalizedDisplayGroupKey(part.name);
-    const int occurrence = sectionOccurrenceByIndex[overlay.partIndex];
     auto partName = arrangementPartDisplayLabelForName(part.name);
-    if (sectionTotals[groupKey] > 1)
-      partName << " " << occurrence;
+    if (const int countValue = countValueFromSectionName(part.name);
+        countValue > 0) {
+      partName = countWordLabel(countValue);
+    } else if (const auto utilityLabel = utilityCueDisplayLabelForName(part.name);
+               utilityLabel.isNotEmpty()) {
+      partName = utilityLabel;
+    }
 
     auto textArea = overlay.body.toNearestInt().reduced(6, 4);
     if (overlay.body.getWidth() >= 18.0f && textArea.getHeight() >= 13) {
@@ -2445,54 +3226,117 @@ void WaveformBar::drawMiniMap(juce::Graphics &g,
 
 void WaveformBar::rebuildSectionAddButtons() {
   sectionAddButtons.clear();
-  sectionAddButtons.reserve(kSongSectionSuggestions.size());
+  sectionAddButtons.reserve(kSongSectionSuggestions.size() + 2);
 
   for (const auto *section : kSongSectionSuggestions) {
     auto btn = std::make_unique<juce::TextButton>();
     const juce::String sectionName = section != nullptr
                                          ? juce::String(section)
                                          : L10n::tr("Parte", "Part");
-    btn->setButtonText("+ " + sectionName);
-    btn->setTooltip(L10n::tr("Agregar ", "Add ") + sectionName);
+    const auto displayName = arrangementPartDisplayLabelForName(sectionName);
+    btn->setButtonText("+ " + displayName);
+    btn->setTooltip(L10n::tr("Agregar ", "Add ") + displayName);
     btn->setViewportIgnoreDragFlag(true);
-    btn->onClick = [this, sectionName] { addArrangementPart(sectionName); };
+    auto *buttonPtr = btn.get();
+    btn->onClick = [this, sectionName, buttonPtr] {
+      const int variantLimit = sectionVariantLimitForName(sectionName);
+      if (variantLimit <= 0) {
+        addArrangementPart(sectionName);
+        return;
+      }
+
+      auto safe = juce::Component::SafePointer<WaveformBar>(this);
+      auto panel = std::make_unique<SectionVariantPopover>(
+          sectionName, variantLimit,
+          [safe](juce::String selectedSectionName) {
+            if (safe != nullptr)
+              safe->addArrangementPart(selectedSectionName);
+          });
+
+      const int rows = (variantLimit + 1) / 2;
+      panel->setSize(250, 44 + (rows * 28) + (juce::jmax(0, rows - 1) * 6));
+
+      auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+      juce::Component *parentComp = editor != nullptr
+                                        ? static_cast<juce::Component *>(editor)
+                                        : static_cast<juce::Component *>(this);
+      const auto anchor =
+          parentComp->getLocalArea(buttonPtr, buttonPtr->getLocalBounds());
+      auto &callout = juce::CallOutBox::launchAsynchronously(
+          std::move(panel), anchor, parentComp);
+      callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    };
     addAndMakeVisible(*btn);
     btn->setVisible(isEditingArrangement());
     sectionAddButtons.push_back(std::move(btn));
   }
-}
 
-void WaveformBar::openPartActionMenu(const int partIndex) {
-  if (!juce::isPositiveAndBelow(partIndex,
-                                static_cast<int>(arrangement.parts.size())))
-    return;
+  auto countBtn = std::make_unique<juce::TextButton>();
+  const auto countLabel = L10n::tr("Cuenta", "Count");
+  auto *countBtnPtr = countBtn.get();
+  countBtn->setButtonText("+ " + countLabel);
+  countBtn->setTooltip(L10n::tr("Agregar cuenta intermedia", "Add intermediate count"));
+  countBtn->setViewportIgnoreDragFlag(true);
+  countBtn->onClick = [this, countBtnPtr] {
+    auto safe = juce::Component::SafePointer<WaveformBar>(this);
+    auto panel = std::make_unique<CountPickerPopover>(
+        [safe](const int selectedCount) {
+          if (safe == nullptr || selectedCount < 1 || selectedCount > 7)
+            return;
+          safe->addCountSequenceParts(selectedCount, selectedCount);
+        },
+        [safe] {
+          if (safe == nullptr)
+            return;
+          safe->addCountSequenceParts(1, 4);
+        });
+    panel->setSize(302, 144);
 
-  auto safe = juce::Component::SafePointer<WaveformBar>(this);
-  juce::PopupMenu menu;
-  menu.addItem(L10n::tr("Duplicar parte", "Duplicate part"), [safe, partIndex] {
-    if (safe != nullptr)
-      safe->duplicateArrangementPart(partIndex);
-  });
-  menu.addItem(L10n::tr("Renombrar parte", "Rename part"), [safe, partIndex] {
-    if (safe != nullptr)
-      safe->renameArrangementPart(partIndex);
-  });
-  menu.addItem(L10n::tr("Editar rango", "Edit range"), [safe, partIndex] {
-    if (safe != nullptr)
-      safe->editArrangementPartRange(partIndex);
-  });
-  menu.addItem(L10n::tr("Eliminar parte", "Delete part"),
-               arrangement.parts.size() > 1, false,
-               [safe, partIndex] {
-                 if (safe != nullptr)
-                   safe->confirmDeleteArrangementPart(partIndex);
-               });
-  menu.addSeparator();
-  menu.addItem(L10n::tr("Resetear arreglo", "Reset arrangement"), [safe] {
-    if (safe != nullptr)
-      safe->resetArrangementToDefault();
-  });
-  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+    juce::Component *parentComp = editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this);
+    const auto anchor =
+        parentComp->getLocalArea(countBtnPtr, countBtnPtr->getLocalBounds());
+    auto &callout = juce::CallOutBox::launchAsynchronously(
+        std::move(panel), anchor, parentComp);
+    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  };
+  addAndMakeVisible(*countBtn);
+  countBtn->setVisible(isEditingArrangement());
+  sectionAddButtons.push_back(std::move(countBtn));
+
+  auto utilityBtn = std::make_unique<juce::TextButton>();
+  auto *utilityBtnPtr = utilityBtn.get();
+  utilityBtn->setButtonText("+ " + L10n::tr("Utilidad", "Utility"));
+  utilityBtn->setTooltip(L10n::tr("Agregar utilidad de guía",
+                                  "Add guide utility"));
+  utilityBtn->setViewportIgnoreDragFlag(true);
+  utilityBtn->onClick = [this, utilityBtnPtr] {
+    auto safe = juce::Component::SafePointer<WaveformBar>(this);
+    auto panel = std::make_unique<UtilityCuePopover>(
+        [safe](juce::String cueName) {
+          if (safe != nullptr)
+            safe->addUtilityCuePart(cueName);
+        });
+    constexpr int kCols = 2;
+    const int rows =
+        (static_cast<int>(kUtilityCueSuggestions.size()) + kCols - 1) / kCols;
+    panel->setSize(326, 44 + (rows * 28) + (juce::jmax(0, rows - 1) * 6));
+
+    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+    juce::Component *parentComp = editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this);
+    const auto anchor =
+        parentComp->getLocalArea(utilityBtnPtr, utilityBtnPtr->getLocalBounds());
+    auto &callout = juce::CallOutBox::launchAsynchronously(
+        std::move(panel), anchor, parentComp);
+    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  };
+  addAndMakeVisible(*utilityBtn);
+  utilityBtn->setVisible(isEditingArrangement());
+  sectionAddButtons.push_back(std::move(utilityBtn));
 }
 
 void WaveformBar::addArrangementPart(const juce::String &preferredName) {
@@ -2543,7 +3387,106 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   part.endSec = endSec;
 
   arrangement.parts.push_back(std::move(part));
-  selectedPartIndex = static_cast<int>(arrangement.parts.size()) - 1;
+  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::addCountSequenceParts(const int firstCount,
+                                        const int lastCount) {
+  if (firstCount <= 0 || lastCount < firstCount)
+    return;
+
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double playableLength = playableEndSec - playableStartSec;
+  if (playableLength < kMinPartDurationSec)
+    return;
+
+  const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double oneCountDurationSec =
+      juce::jmax(kMinPartDurationSec,
+                 beatDurationSec > 0.0 ? beatDurationSec : 0.5);
+
+  double cursorSec = playableStartSec;
+  if (juce::isPositiveAndBelow(selectedPartIndex,
+                               static_cast<int>(arrangement.parts.size()))) {
+    cursorSec = arrangement.parts[static_cast<size_t>(selectedPartIndex)].endSec;
+  } else if (!arrangement.parts.empty()) {
+    cursorSec = arrangement.parts.back().endSec;
+  }
+
+  cursorSec = juce::jlimit(playableStartSec, playableEndSec, snapSeconds(cursorSec));
+
+  int lastInsertedIndex = -1;
+  for (int count = firstCount; count <= lastCount; ++count) {
+    const double startSec = cursorSec;
+    double endSec = juce::jmin(playableEndSec, startSec + oneCountDurationSec);
+    if ((endSec - startSec) < kMinPartDurationSec)
+      break;
+
+    SongArrangementPartSnapshot part;
+    part.id = juce::Uuid().toString();
+    part.name = juce::String(count);
+    part.color = standardArrangementPartColorForName(part.name);
+    if (part.color.isEmpty())
+      part.color = fallbackArrangementPartColorForName(part.name);
+    part.startSec = startSec;
+    part.endSec = endSec;
+
+    arrangement.parts.push_back(std::move(part));
+    lastInsertedIndex = static_cast<int>(arrangement.parts.size()) - 1;
+    cursorSec = endSec;
+  }
+
+  if (lastInsertedIndex < 0)
+    return;
+
+  setSingleSelectedPart(lastInsertedIndex);
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
+  const auto normalizedCue = DynamicGuideEngine::normalizeSectionKey(cueName);
+  if (normalizedCue.isEmpty())
+    return;
+
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double playableLength = playableEndSec - playableStartSec;
+  if (playableLength < kMinPartDurationSec)
+    return;
+
+  const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double cueDurationSec =
+      juce::jmax(kMinPartDurationSec,
+                 beatDurationSec > 0.0 ? beatDurationSec : 0.5);
+
+  double startSec = playableStartSec;
+  if (juce::isPositiveAndBelow(selectedPartIndex,
+                               static_cast<int>(arrangement.parts.size()))) {
+    startSec = arrangement.parts[static_cast<size_t>(selectedPartIndex)].endSec;
+  } else if (!arrangement.parts.empty()) {
+    startSec = arrangement.parts.back().endSec;
+  }
+  startSec = juce::jlimit(playableStartSec, playableEndSec, snapSeconds(startSec));
+  if ((playableEndSec - startSec) < kMinPartDurationSec)
+    startSec = juce::jmax(playableStartSec, playableEndSec - kMinPartDurationSec);
+
+  double endSec = juce::jmin(playableEndSec, startSec + cueDurationSec);
+  if ((endSec - startSec) < kMinPartDurationSec)
+    return;
+
+  SongArrangementPartSnapshot part;
+  part.id = juce::Uuid().toString();
+  part.name = cueName.trim();
+  part.color = fallbackArrangementPartColorForName(part.name);
+  part.startSec = startSec;
+  part.endSec = endSec;
+
+  arrangement.parts.push_back(std::move(part));
+  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;
   notifyArrangementChanged(true);
   repaint();
@@ -2586,7 +3529,7 @@ void WaveformBar::duplicateArrangementPart(const int partIndex) {
   if (copy.color.isEmpty())
     copy.color = fallbackArrangementPartColorForName(copy.name);
   arrangement.parts.push_back(std::move(copy));
-  selectedPartIndex = static_cast<int>(arrangement.parts.size()) - 1;
+  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;
   notifyArrangementChanged(true);
   repaint();
@@ -2618,7 +3561,7 @@ void WaveformBar::renameArrangementPart(const int partIndex) {
         const auto nextName = dialog->getTextEditorContents("name").trim();
         safe->arrangement.parts[static_cast<size_t>(partIndex)].name =
             nextName.isEmpty() ? L10n::tr("Parte", "Part") : nextName;
-        safe->selectedPartIndex = partIndex;
+        safe->setSingleSelectedPart(partIndex);
         safe->customArrangement = true;
         safe->notifyArrangementChanged(true);
         safe->repaint();
@@ -2673,40 +3616,10 @@ void WaveformBar::editArrangementPartRange(const int partIndex) {
         auto &editedPart = safe->arrangement.parts[static_cast<size_t>(partIndex)];
         editedPart.startSec = start;
         editedPart.endSec = end;
-        safe->selectedPartIndex = partIndex;
+        safe->setSingleSelectedPart(partIndex);
         safe->customArrangement = true;
         safe->notifyArrangementChanged(true);
         safe->repaint();
-      }),
-      true);
-}
-
-void WaveformBar::confirmDeleteArrangementPart(const int partIndex) {
-  if (!juce::isPositiveAndBelow(partIndex,
-                                static_cast<int>(arrangement.parts.size())))
-    return;
-
-  if (arrangement.parts.size() <= 1) {
-    resetArrangementToDefault();
-    return;
-  }
-
-  const auto partName = arrangement.parts[static_cast<size_t>(partIndex)].name;
-  auto *dialog = new juce::AlertWindow(L10n::tr("Eliminar parte", "Delete part"),
-                                       L10n::tr(u8"Se eliminará \"", "This will delete \"") +
-                                           partName +
-                                           L10n::tr("\". Confirmas?", "\". Confirm?"),
-                                       juce::AlertWindow::WarningIcon);
-  dialog->addButton(L10n::tr("Cancelar", "Cancel"), 0);
-  dialog->addButton(L10n::tr("Eliminar", "Delete"), 1);
-
-  auto safe = juce::Component::SafePointer<WaveformBar>(this);
-  dialog->enterModalState(
-      true,
-      juce::ModalCallbackFunction::create([safe, partIndex](int result) {
-        if (result != 1 || safe == nullptr)
-          return;
-        safe->deleteArrangementPart(partIndex);
       }),
       true);
 }
@@ -2722,8 +3635,46 @@ void WaveformBar::deleteArrangementPart(const int partIndex) {
   }
 
   arrangement.parts.erase(arrangement.parts.begin() + partIndex);
-  selectedPartIndex =
-      juce::jlimit(0, static_cast<int>(arrangement.parts.size()) - 1, partIndex);
+  setSingleSelectedPart(
+      juce::jlimit(0, static_cast<int>(arrangement.parts.size()) - 1, partIndex));
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::deleteSelectedArrangementParts() {
+  if (arrangement.parts.empty())
+    return;
+
+  pruneSelectedPartIds();
+  std::vector<juce::String> idsToDelete = selectedPartIds;
+  if (idsToDelete.empty() && juce::isPositiveAndBelow(
+                                 selectedPartIndex,
+                                 static_cast<int>(arrangement.parts.size()))) {
+    idsToDelete.push_back(
+        arrangement.parts[static_cast<size_t>(selectedPartIndex)].id);
+  }
+
+  if (idsToDelete.empty())
+    return;
+
+  if (idsToDelete.size() >= arrangement.parts.size()) {
+    resetArrangementToDefault();
+    return;
+  }
+
+  const auto shouldDelete = [&idsToDelete](const SongArrangementPartSnapshot &part) {
+    return std::find(idsToDelete.begin(), idsToDelete.end(), part.id) !=
+           idsToDelete.end();
+  };
+
+  int fallbackIndex = selectedPartIndex;
+  arrangement.parts.erase(
+      std::remove_if(arrangement.parts.begin(), arrangement.parts.end(), shouldDelete),
+      arrangement.parts.end());
+  fallbackIndex = juce::jlimit(0, static_cast<int>(arrangement.parts.size()) - 1,
+                               fallbackIndex);
+  setSingleSelectedPart(fallbackIndex);
   customArrangement = true;
   notifyArrangementChanged(true);
   repaint();
@@ -2740,6 +3691,7 @@ void WaveformBar::resetArrangementToDefault() {
 
   customArrangement = false;
   selectedPartIndex = -1;
+  selectedPartIds.clear();
   hoveredActionPartIndex = -1;
   hoveredLoopPartIndex = -1;
   hoveredJumpPartIndex = -1;
