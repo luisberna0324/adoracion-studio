@@ -243,6 +243,9 @@ public:
   static constexpr int midiTargetMixerNudgeDown = 34;
   static constexpr int midiTargetMixerApplyRouting = 35;
   static constexpr int midiTargetWaveformEditToggle = 36;
+  static constexpr int midiTargetClickDynDivisionQuarter = 37;
+  static constexpr int midiTargetClickDynDivisionEighth = 38;
+  static constexpr int midiTargetClickDynDivisionSixteenth = 39;
   static constexpr int midiTargetStemVolumeBase = 100;
   static constexpr int midiTargetStemGainBase = 300;
   static constexpr int midiTargetStemMuteBase = 400;

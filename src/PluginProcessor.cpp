@@ -1380,11 +1380,15 @@ bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
   case midiTargetTempoUp:
   case midiTargetPitchDown:
   case midiTargetPitchUp:
+  case midiTargetMetronomeEnabled:
   case midiTargetMetronomeMute:
   case midiTargetMetronomeSolo:
   case midiTargetMixerNudgeUp:
   case midiTargetMixerNudgeDown:
   case midiTargetMixerApplyRouting:
+  case midiTargetClickDynDivisionQuarter:
+  case midiTargetClickDynDivisionEighth:
+  case midiTargetClickDynDivisionSixteenth:
     return true;
   default:
     return false;
@@ -1478,6 +1482,12 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
     return "Mixer Nudge Down";
   case midiTargetMixerApplyRouting:
     return "Mixer Apply Routing";
+  case midiTargetClickDynDivisionQuarter:
+    return "Click Dyn 1/4";
+  case midiTargetClickDynDivisionEighth:
+    return "Click Dyn 1/8";
+  case midiTargetClickDynDivisionSixteenth:
+    return "Click Dyn 1/16";
   case midiTargetPadsPower:
     return "Pads Power";
   case midiTargetPadsVolume:
@@ -1528,8 +1538,12 @@ MTControlsAudioProcessor::getMidiTargets() const {
   addTarget(midiTargetMasterVolume);
   addTarget(midiTargetMasterGain);
   addTarget(midiTargetMasterMute);
+  addTarget(midiTargetMetronomeEnabled);
   addTarget(midiTargetMetronomeMute);
   addTarget(midiTargetMetronomeSolo);
+  addTarget(midiTargetClickDynDivisionQuarter);
+  addTarget(midiTargetClickDynDivisionEighth);
+  addTarget(midiTargetClickDynDivisionSixteenth);
 
   addTarget(midiTargetTransportPlayPause);
   addTarget(midiTargetTransportStop);
@@ -1669,6 +1683,25 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   const auto queueUiCommand = [this](const int commandId) {
     midiPendingUiCommand.store(commandId, std::memory_order_release);
   };
+  const auto divisionBitForTarget = [](const int divisionTargetId) -> int {
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionQuarter)
+      return 0x01;
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionEighth)
+      return 0x02;
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionSixteenth)
+      return 0x04;
+    return 0;
+  };
+  const auto setClickDivisionBit = [this](const int bit, const bool enabled) {
+    if (bit == 0)
+      return;
+    const int current = getClickDivision() & 0x07;
+    const int next = enabled ? (current | bit) : (current & ~bit);
+    setClickDivision(next);
+  };
 
   if (targetId == midiTargetMasterVolume) {
     setMasterVolume(normalized);
@@ -1716,6 +1749,11 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   if (mode == MidiBindingMode::Momentary) {
     if (targetId == midiTargetMasterMute)
       setMasterMute(high);
+    else if (targetId == midiTargetMetronomeEnabled)
+      setMetronomeEnabled(high);
+    else if (const int divisionBit = divisionBitForTarget(targetId);
+             divisionBit != 0)
+      setClickDivisionBit(divisionBit, high);
     else if (targetId == midiTargetMetronomeMute)
       setMetronomeMuted(high);
     else if (targetId == midiTargetMetronomeSolo)
@@ -1769,6 +1807,11 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
 
   if (targetId == midiTargetMasterMute)
     setMasterMute(!isMasterMuted());
+  else if (targetId == midiTargetMetronomeEnabled)
+    setMetronomeEnabled(!isMetronomeEnabled());
+  else if (const int divisionBit = divisionBitForTarget(targetId);
+           divisionBit != 0)
+    setClickDivisionBit(divisionBit, (getClickDivision() & divisionBit) == 0);
   else if (targetId == midiTargetMetronomeMute)
     setMetronomeMuted(!isMetronomeMuted());
   else if (targetId == midiTargetMetronomeSolo)

@@ -29,6 +29,7 @@ public:
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
+  void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
   void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
@@ -108,6 +109,7 @@ private:
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
+  std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;
   std::function<juce::String(int)> midiLearnBindingLabelProvider;

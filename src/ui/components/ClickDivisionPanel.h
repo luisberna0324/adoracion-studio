@@ -7,7 +7,7 @@
 
 #include <functional>
 
-class ClickDivisionPanel : public juce::Component {
+class ClickDivisionPanel : public juce::Component, private juce::Timer {
 public:
   ClickDivisionPanel(ChannelStripLookAndFeel &lookAndFeel,
                      StereoVUMeter::LevelProvider levelProvider);
@@ -29,10 +29,25 @@ public:
   void setOnPowerChanged(std::function<void(bool)> cb);
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
+  void setMidiLearnTargetIds(int quarterTargetId, int eighthTargetId,
+                             int sixteenthTargetId, int muteTargetId,
+                             int soloTargetId);
+  void setMidiLearnSelectable(bool selectable);
+  void setMidiLearnPendingTarget(int targetId);
+  void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
+  void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   void setLayoutScale(float scale);
 
 private:
-  class DivisionButton final : public juce::TextButton {
+  class LearnAwareButton : public juce::TextButton {
+  public:
+    using juce::TextButton::TextButton;
+    std::function<void()> onPointerDown;
+
+    void mouseDown(const juce::MouseEvent &event) override;
+  };
+
+  class DivisionButton final : public LearnAwareButton {
   public:
     DivisionButton(const juce::String &label, int divisionValue);
 
@@ -44,8 +59,16 @@ private:
   };
 
   static int normalizeDivisionMask(int divisionMask) noexcept;
+  bool hasMidiLearnTarget(int targetId) const noexcept;
+  void selectMidiLearnTarget(int targetId);
+  void updateMidiLearnBlinkTimer();
+  void refreshMidiLearnTooltips();
+  void drawMidiLearnFrame(juce::Graphics &g, juce::Component &component,
+                          int targetId);
   void updateDivisionMaskFromButtons();
   void updateButtonStates();
+  void paintOverChildren(juce::Graphics &g) override;
+  void timerCallback() override;
 
   ChannelStripLookAndFeel &lookAndFeel;
   int currentDivisionMask = 1;
@@ -59,14 +82,23 @@ private:
   std::function<void(bool)> onPowerChanged;
   std::function<void(bool)> onMuteChanged;
   std::function<void(bool)> onSoloChanged;
+  std::function<void(int)> onMidiLearnTargetSelected;
+  std::function<juce::String(int)> midiLearnBindingLabelProvider;
+  int midiQuarterTargetId = -1;
+  int midiEighthTargetId = -1;
+  int midiSixteenthTargetId = -1;
+  int midiMuteTargetId = -1;
+  int midiSoloTargetId = -1;
+  int midiLearnPendingTargetId = -1;
+  bool midiLearnSelectable = false;
 
   std::unique_ptr<DivisionButton> btn14;
   std::unique_ptr<DivisionButton> btn18;
   std::unique_ptr<DivisionButton> btn116;
   std::unique_ptr<juce::Slider> volumeKnob;
   std::unique_ptr<StereoVUMeter> meter;
-  std::unique_ptr<juce::TextButton> soloButton;
-  std::unique_ptr<juce::TextButton> muteButton;
+  std::unique_ptr<LearnAwareButton> soloButton;
+  std::unique_ptr<LearnAwareButton> muteButton;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClickDivisionPanel)
 };

@@ -28,6 +28,14 @@ float midiLearnSoftBlinkStrength() {
   return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
 }
 
+bool clickDynMixControlStateEquals(const ClickDynMixSnapshot &a,
+                                   const ClickDynMixSnapshot &b) {
+  return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
+         juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
+         a.solo == b.solo && a.outputChannel == b.outputChannel &&
+         a.outputWidth == b.outputWidth;
+}
+
 juce::String guideSourceModeLabel(const ChannelGridPanel::GuideSourceMode mode) {
   switch (mode) {
   case ChannelGridPanel::GuideSourceMode::DynamicBySections:
@@ -282,6 +290,38 @@ public:
       divisionPanel->setOnSoloChanged(std::move(callback));
   }
 
+  void setDivisionMidiLearnTargetIds(const int quarterTargetId,
+                                     const int eighthTargetId,
+                                     const int sixteenthTargetId,
+                                     const int muteTargetId,
+                                     const int soloTargetId) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setMidiLearnTargetIds(quarterTargetId, eighthTargetId,
+                                           sixteenthTargetId, muteTargetId,
+                                           soloTargetId);
+  }
+
+  void setDivisionMidiLearnSelectable(const bool selectable) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setMidiLearnSelectable(selectable);
+  }
+
+  void setDivisionMidiLearnPendingTarget(const int targetId) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setMidiLearnPendingTarget(targetId);
+  }
+
+  void setDivisionMidiLearnBindingLabelProvider(
+      std::function<juce::String(int)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setMidiLearnBindingLabelProvider(std::move(callback));
+  }
+
+  void setOnDivisionMidiLearnTargetSelected(std::function<void(int)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnMidiLearnTargetSelected(std::move(callback));
+  }
+
   void refreshThemeColours() {
     strip->refreshThemeColours();
     if (divisionPanel != nullptr)
@@ -434,6 +474,7 @@ void ChannelGridPanel::setMidiLearnActive(const bool active) {
     auto &strip = slot->getStrip();
     const bool canLearn = strip.hasAnyMidiLearnTarget();
     strip.setMidiLearnSelectable(midiLearnActive && canLearn);
+    slot->setDivisionMidiLearnSelectable(midiLearnActive);
   }
   setMidiLearnPendingTarget(midiLearnPendingTargetId);
   repaint();
@@ -444,6 +485,7 @@ void ChannelGridPanel::setMidiLearnPendingTarget(const int targetId) {
   for (auto &slot : slots) {
     auto &strip = slot->getStrip();
     strip.setMidiLearnPendingTarget(targetId);
+    slot->setDivisionMidiLearnPendingTarget(targetId);
   }
   repaint();
 }
@@ -453,6 +495,8 @@ void ChannelGridPanel::setMidiLearnBindingLabelProvider(
   midiLearnBindingLabelProvider = std::move(cb);
   for (auto &slot : slots)
     slot->getStrip().setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+  for (auto &slot : slots)
+    slot->setDivisionMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
   repaint();
 }
 
@@ -644,6 +688,7 @@ void ChannelGridPanel::timerCallback() {
   syncDivisionSlotFromProcessor();
   syncDynamicGuideVirtualSlotFromProcessor();
   syncStemSlotsFromProcessor();
+  maybePersistClickDynMixStateChange();
 
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   const bool hasPendingVolumeWrites =
@@ -853,6 +898,8 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   routingDraftActive = false;
   guideStemMuteBeforeDynamicByStemIndex.clear();
   hasPendingDynamicGuideVolumeWrite = false;
+  hasPendingClickDynVolumeWrite = false;
+  hasLastObservedClickDynMix = false;
   masterSlotIndex = -1;
   divisionSlotIndex = -1;
   metronomeVirtualSlotIndex = -1;
@@ -871,6 +918,8 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
   addMasterSlot();
   addDivisionSlot();
+  lastObservedClickDynMix = makeCurrentClickDynMixSnapshot();
+  hasLastObservedClickDynMix = true;
 
   const bool showStemRouting = false;
 
@@ -1084,16 +1133,42 @@ void ChannelGridPanel::persistClickDynMixForCurrentSong() {
   if (currentSongId.isEmpty())
     return;
 
+  const auto mix = makeCurrentClickDynMixSnapshot();
+  SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, mix);
+  lastObservedClickDynMix = mix;
+  hasLastObservedClickDynMix = true;
+}
+
+ClickDynMixSnapshot ChannelGridPanel::makeCurrentClickDynMixSnapshot() const {
   ClickDynMixSnapshot mix;
   mix.divisionMask = processor.getClickDivision();
   mix.enabled = processor.isClickDivisionEnabled();
+  mix.metronomeEnabled = processor.isMetronomeEnabled();
   mix.volume = processor.getMetronomeVolume();
   mix.gain = processor.getMetronomeGain();
   mix.mute = processor.isMetronomeMuted();
   mix.solo = processor.isMetronomeSolo();
   mix.outputChannel = processor.getMetronomeOutputChannel();
   mix.outputWidth = processor.getMetronomeOutputWidth();
-  SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, mix);
+  return mix;
+}
+
+void ChannelGridPanel::maybePersistClickDynMixStateChange() {
+  if (currentSongId.isEmpty()) {
+    hasLastObservedClickDynMix = false;
+    return;
+  }
+
+  const auto current = makeCurrentClickDynMixSnapshot();
+  if (hasLastObservedClickDynMix &&
+      clickDynMixControlStateEquals(lastObservedClickDynMix, current)) {
+    lastObservedClickDynMix.volume = current.volume;
+    return;
+  }
+
+  SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, current);
+  lastObservedClickDynMix = current;
+  hasLastObservedClickDynMix = true;
 }
 
 void ChannelGridPanel::flushPendingVolumePersistence() {
@@ -1133,16 +1208,11 @@ void ChannelGridPanel::flushPendingVolumePersistence() {
   }
 
   if (hasPendingClickDynVolumeWrite) {
-    ClickDynMixSnapshot mix;
-    mix.divisionMask = processor.getClickDivision();
-    mix.enabled = processor.isClickDivisionEnabled();
+    auto mix = makeCurrentClickDynMixSnapshot();
     mix.volume = pendingClickDynVolumeValue;
-    mix.gain = processor.getMetronomeGain();
-    mix.mute = processor.isMetronomeMuted();
-    mix.solo = processor.isMetronomeSolo();
-    mix.outputChannel = processor.getMetronomeOutputChannel();
-    mix.outputWidth = processor.getMetronomeOutputWidth();
     SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, mix);
+    lastObservedClickDynMix = mix;
+    hasLastObservedClickDynMix = true;
     hasPendingClickDynVolumeWrite = false;
   }
 }
@@ -1474,6 +1544,18 @@ void ChannelGridPanel::addDivisionSlot() {
     processor.setMetronomeSolo(soloed);
     persistClickDynMixForCurrentSong();
   });
+  slot->setDivisionMidiLearnTargetIds(
+      processor.midiTargetClickDynDivisionQuarter,
+      processor.midiTargetClickDynDivisionEighth,
+      processor.midiTargetClickDynDivisionSixteenth,
+      processor.midiTargetMetronomeMute, processor.midiTargetMetronomeSolo);
+  slot->setDivisionMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
+  slot->setOnDivisionMidiLearnTargetSelected([this](const int targetId) {
+    if (onMidiLearnTargetSelected)
+      onMidiLearnTargetSelected(targetId);
+  });
+  slot->setDivisionMidiLearnSelectable(midiLearnActive);
+  slot->setDivisionMidiLearnPendingTarget(midiLearnPendingTargetId);
   slot->getStrip().setMidiLearnTargetIds(-1, -1, -1, -1, -1);
   slot->getStrip().setMidiLearnSelectable(false);
   slot->getStrip().setMidiLearnPendingTarget(-1);

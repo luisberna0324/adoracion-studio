@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../UiCommon.h"
+#include "../../data/SongLibraryStore.h"
 #include "../../data/SongData.h"
 #include <JuceHeader.h>
 
@@ -79,6 +80,8 @@ private:
   void queueClickDynVolumePersistence(float volume);
   void persistDynamicGuideMixForCurrentSong();
   void persistClickDynMixForCurrentSong();
+  void maybePersistClickDynMixStateChange();
+  ClickDynMixSnapshot makeCurrentClickDynMixSnapshot() const;
   void flushPendingVolumePersistence();
   void showGuideSourcePopover(juce::Component *anchorComponent);
   void applyGuideSourceModeToVisibleGuideSlots();
@@ -120,6 +123,8 @@ private:
   float pendingDynamicGuideVolumeValue = 1.0f;
   bool hasPendingClickDynVolumeWrite = false;
   float pendingClickDynVolumeValue = 1.0f;
+  bool hasLastObservedClickDynMix = false;
+  ClickDynMixSnapshot lastObservedClickDynMix;
   double lastVolumeInteractionMs = 0.0;
   int slowTickCounter = 0;
   int lastSeenOutputChannelCount = -1;

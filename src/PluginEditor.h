@@ -106,6 +106,8 @@ private:
   double trackedSongWindowEndSec = 0.0;
   double trackedSongWindowFadeSec = 0.0;
   bool hasTrackedSongWindow = false;
+  bool hasTrackedClickDynMetronomeEnabled = false;
+  bool trackedClickDynMetronomeEnabled = false;
   double smoothedAudioCpuUsage01 = 0.0;
   double smoothedProcessMemoryMb = 0.0;
   int totalSystemMemoryMb = 0;
@@ -124,6 +126,9 @@ private:
   void trackSongWindow(const juce::String &songId, double startSec,
                        double endSec, double fadeSec);
   void maybePersistSongWindowForActiveSong();
+  void persistClickDynMetronomeEnabledForActiveSong(bool enabled);
+  void trackClickDynMetronomeEnabled(bool enabled);
+  void maybePersistClickDynMetronomeEnabledForActiveSong();
   void updateSystemUsageMetrics();
   void launchExternalLogin();
   void completeBootstrapLogin(const juce::String &callbackUrl);

@@ -290,6 +290,10 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     if (midiLearnActive)
       armLearnTarget(processor.midiTargetTransportFadeToggle);
   };
+  metroToggleButton.onPointerDown = [this, armLearnTarget] {
+    if (midiLearnActive)
+      armLearnTarget(processor.midiTargetMetronomeEnabled);
+  };
 
   timeDisplay.onClick = [this, armLearnTarget] {
     juce::ignoreUnused(armLearnTarget);
@@ -386,8 +390,16 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     // Tempo popover intentionally disabled; keep tempo logic intact.
   };
   metroToggleButton.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
-    processor.setMetronomeEnabled(metroToggleButton.getToggleState());
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetMetronomeEnabled);
+      metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
+                                       juce::dontSendNotification);
+      return;
+    }
+    const bool enabled = metroToggleButton.getToggleState();
+    processor.setMetronomeEnabled(enabled);
+    if (onMetronomeEnabledChanged)
+      onMetronomeEnabledChanged(enabled);
   };
   refreshMidiLearnTooltips();
   startTimerHz(20);
@@ -430,6 +442,10 @@ void TopBar::setOnSettings(std::function<void()> cb) {
 void TopBar::setOnSettingsWithAnchor(
     std::function<void(juce::Rectangle<int>, juce::Component *)> cb) {
   onSettingsWithAnchor = std::move(cb);
+}
+
+void TopBar::setOnMetronomeEnabledChanged(std::function<void(bool)> cb) {
+  onMetronomeEnabledChanged = std::move(cb);
 }
 
 void TopBar::setOnMidiLearnModeChanged(std::function<void(bool)> cb) {
@@ -515,6 +531,7 @@ void TopBar::refreshMidiLearnTooltips() {
   apply(seekForwardButton, processor.midiTargetTransportSeekForward);
   apply(nextButton, processor.midiTargetTransportNextSong);
   apply(fadeButton, processor.midiTargetTransportFadeToggle);
+  apply(metroToggleButton, processor.midiTargetMetronomeEnabled);
 }
 
 void TopBar::triggerWindowModeToggleFromMidi() { toggleWindowMode(); }
@@ -591,6 +608,7 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
     drawLearnFrame(seekForwardButton, processor.midiTargetTransportSeekForward);
     drawLearnFrame(nextButton, processor.midiTargetTransportNextSong);
     drawLearnFrame(fadeButton, processor.midiTargetTransportFadeToggle);
+    drawLearnFrame(metroToggleButton, processor.midiTargetMetronomeEnabled);
 
   }
 }

@@ -353,6 +353,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getSongEndSeconds(); },
       [&p] { return p.getLoadedSongKey(); },
       [this] { return currentLoadedSong.id; });
+  topBarRaw->setOnMetronomeEnabledChanged([this](const bool enabled) {
+    persistClickDynMetronomeEnabledForActiveSong(enabled);
+  });
   topBarRaw->setMidiLearnBindingLabelProvider(midiLearnBindingLabelForTarget);
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
@@ -568,6 +571,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     maybePersistSongWindowForActiveSong();
     if (channelGridRaw != nullptr)
       channelGridRaw->flushPendingPersistenceNow();
+    p.setMetronomeEnabled(false);
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
@@ -785,6 +789,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
     waveformBarRaw->setTempoMap(loadedSong.tempoMap);
+    p.setMetronomeOutputRouting(clickDynMix.outputChannel,
+                                clickDynMix.outputWidth);
+    p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
+    trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     p.setSongArrangement(arrangement, false);
     p.setArrangementEditingActive(false);
     return true;
@@ -1908,6 +1916,49 @@ void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
   trackSongWindow(songId, startSec, endSec, fadeSec);
 }
 
+void MTControlsAudioProcessorEditor::persistClickDynMetronomeEnabledForActiveSong(
+    const bool enabled) {
+  if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+    return;
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  ClickDynMixSnapshot mix;
+  mix.divisionMask = processorRef.getClickDivision();
+  mix.enabled = processorRef.isClickDivisionEnabled();
+  mix.metronomeEnabled = enabled;
+  mix.volume = processorRef.getMetronomeVolume();
+  mix.gain = processorRef.getMetronomeGain();
+  mix.mute = processorRef.isMetronomeMuted();
+  mix.solo = processorRef.isMetronomeSolo();
+  mix.outputChannel = processorRef.getMetronomeOutputChannel();
+  mix.outputWidth = processorRef.getMetronomeOutputWidth();
+  SongLibraryStore::updateClickDynMixForActiveSetlist(currentLoadedSong.id, mix);
+  trackClickDynMetronomeEnabled(enabled);
+}
+
+void MTControlsAudioProcessorEditor::trackClickDynMetronomeEnabled(
+    const bool enabled) {
+  trackedClickDynMetronomeEnabled = enabled;
+  hasTrackedClickDynMetronomeEnabled = true;
+}
+
+void MTControlsAudioProcessorEditor::
+    maybePersistClickDynMetronomeEnabledForActiveSong() {
+  if (songLoadBusy || !hasCurrentLoadedSong || currentLoadedSong.id.isEmpty()) {
+    hasTrackedClickDynMetronomeEnabled = false;
+    return;
+  }
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const bool enabled = processorRef.isMetronomeEnabled();
+  if (hasTrackedClickDynMetronomeEnabled &&
+      trackedClickDynMetronomeEnabled == enabled) {
+    return;
+  }
+
+  persistClickDynMetronomeEnabledForActiveSong(enabled);
+}
+
 void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
   if (!mainUiInitialized)
     return;
@@ -2102,6 +2153,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   maybePersistSongWindowForActiveSong();
+  maybePersistClickDynMetronomeEnabledForActiveSong();
   updateSystemUsageMetrics();
 
   const bool isPlayingNow = processorRef.isSongPlaying();

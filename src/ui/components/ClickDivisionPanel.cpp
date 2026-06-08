@@ -7,11 +7,40 @@
 
 namespace {
 constexpr float cardCornerRadius = 4.0f;
+
+float midiLearnBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse =
+      0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 2.4));
+  return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
+}
+
+float midiLearnSoftBlinkStrength() {
+  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
+  const double pulse =
+      0.5 + (0.5 * std::sin(seconds * juce::MathConstants<double>::twoPi * 1.1));
+  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
+}
+
+juce::String withMidiAssignmentTooltip(const juce::String &baseText,
+                                       const juce::String &midiCode) {
+  const auto trimmed = midiCode.trim();
+  if (trimmed.isEmpty())
+    return baseText;
+  return baseText + " | MIDI: " + trimmed;
+}
 } // namespace
+
+void ClickDivisionPanel::LearnAwareButton::mouseDown(
+    const juce::MouseEvent &event) {
+  juce::TextButton::mouseDown(event);
+  if (onPointerDown)
+    onPointerDown();
+}
 
 ClickDivisionPanel::DivisionButton::DivisionButton(
     const juce::String &buttonLabel, int value)
-    : juce::TextButton(buttonLabel), divisionValue(value) {
+    : LearnAwareButton(buttonLabel), divisionValue(value) {
   setMouseCursor(juce::MouseCursor::PointingHandCursor);
   setClickingTogglesState(true);
   setButtonText(buttonLabel);
@@ -32,8 +61,8 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   volumeKnob = std::make_unique<juce::Slider>();
   meter = std::make_unique<StereoVUMeter>(
       std::move(levelProvider), [this] { return muted; });
-  soloButton = std::make_unique<juce::TextButton>("S");
-  muteButton = std::make_unique<juce::TextButton>("M");
+  soloButton = std::make_unique<LearnAwareButton>("S");
+  muteButton = std::make_unique<LearnAwareButton>("M");
 
   for (auto *button : {btn14.get(), btn18.get(), btn116.get()}) {
     button->setLookAndFeel(&lookAndFeel);
@@ -41,9 +70,18 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
     button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
     button->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
     button->setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
-    button->onClick = [this] { updateDivisionMaskFromButtons(); };
+    button->onClick = [this] {
+      if (midiLearnSelectable) {
+        updateButtonStates();
+        return;
+      }
+      updateDivisionMaskFromButtons();
+    };
     addAndMakeVisible(button);
   }
+  btn14->onPointerDown = [this] { selectMidiLearnTarget(midiQuarterTargetId); };
+  btn18->onPointerDown = [this] { selectMidiLearnTarget(midiEighthTargetId); };
+  btn116->onPointerDown = [this] { selectMidiLearnTarget(midiSixteenthTargetId); };
 
   volumeKnob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
   volumeKnob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -65,7 +103,12 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   soloButton->setColour(juce::TextButton::textColourOffId,
                         UITheme::textPrimary);
   soloButton->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  soloButton->onPointerDown = [this] { selectMidiLearnTarget(midiSoloTargetId); };
   soloButton->onClick = [this] {
+    if (midiLearnSelectable) {
+      updateButtonStates();
+      return;
+    }
     soloed = soloButton->getToggleState();
     updateButtonStates();
     if (onSoloChanged)
@@ -79,7 +122,12 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   muteButton->setColour(juce::TextButton::textColourOffId,
                         UITheme::textPrimary);
   muteButton->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  muteButton->onPointerDown = [this] { selectMidiLearnTarget(midiMuteTargetId); };
   muteButton->onClick = [this] {
+    if (midiLearnSelectable) {
+      updateButtonStates();
+      return;
+    }
     muted = muteButton->getToggleState();
     updateButtonStates();
     if (onMuteChanged)
@@ -245,6 +293,47 @@ void ClickDivisionPanel::setOnSoloChanged(std::function<void(bool)> cb) {
   onSoloChanged = std::move(cb);
 }
 
+void ClickDivisionPanel::setMidiLearnTargetIds(
+    const int quarterTargetId, const int eighthTargetId,
+    const int sixteenthTargetId, const int muteTargetId,
+    const int soloTargetId) {
+  midiQuarterTargetId = quarterTargetId;
+  midiEighthTargetId = eighthTargetId;
+  midiSixteenthTargetId = sixteenthTargetId;
+  midiMuteTargetId = muteTargetId;
+  midiSoloTargetId = soloTargetId;
+  refreshMidiLearnTooltips();
+  repaint();
+}
+
+void ClickDivisionPanel::setMidiLearnSelectable(const bool selectable) {
+  midiLearnSelectable = selectable;
+  if (!midiLearnSelectable)
+    midiLearnPendingTargetId = -1;
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ClickDivisionPanel::setMidiLearnPendingTarget(const int targetId) {
+  midiLearnPendingTargetId = hasMidiLearnTarget(targetId) ? targetId : -1;
+  updateMidiLearnBlinkTimer();
+  refreshMidiLearnTooltips();
+  repaint();
+}
+
+void ClickDivisionPanel::setMidiLearnBindingLabelProvider(
+    std::function<juce::String(int)> cb) {
+  midiLearnBindingLabelProvider = std::move(cb);
+  refreshMidiLearnTooltips();
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ClickDivisionPanel::setOnMidiLearnTargetSelected(
+    std::function<void(int)> cb) {
+  onMidiLearnTargetSelected = std::move(cb);
+}
+
 void ClickDivisionPanel::setLayoutScale(float scale) {
   const float nextScale = juce::jlimit(0.82f, 1.4f, scale);
   if (std::abs(nextScale - layoutScale) < 0.001f)
@@ -291,6 +380,88 @@ void ClickDivisionPanel::refreshThemeColours() {
                           UITheme::textPrimary);
     muteButton->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   }
+  repaint();
+}
+
+bool ClickDivisionPanel::hasMidiLearnTarget(const int targetId) const noexcept {
+  return targetId >= 0 &&
+         (targetId == midiQuarterTargetId || targetId == midiEighthTargetId ||
+          targetId == midiSixteenthTargetId || targetId == midiMuteTargetId ||
+          targetId == midiSoloTargetId);
+}
+
+void ClickDivisionPanel::selectMidiLearnTarget(const int targetId) {
+  if (!midiLearnSelectable || !hasMidiLearnTarget(targetId))
+    return;
+  midiLearnPendingTargetId = targetId;
+  if (onMidiLearnTargetSelected)
+    onMidiLearnTargetSelected(targetId);
+  updateMidiLearnBlinkTimer();
+  repaint();
+}
+
+void ClickDivisionPanel::updateMidiLearnBlinkTimer() {
+  if (midiLearnSelectable) {
+    if (!isTimerRunning())
+      startTimerHz(24);
+  } else if (isTimerRunning()) {
+    stopTimer();
+  }
+}
+
+void ClickDivisionPanel::refreshMidiLearnTooltips() {
+  auto tooltipForTarget = [this](const int targetId, const juce::String &baseText) {
+    if (targetId < 0 || midiLearnBindingLabelProvider == nullptr)
+      return baseText;
+    return withMidiAssignmentTooltip(baseText,
+                                     midiLearnBindingLabelProvider(targetId));
+  };
+
+  if (btn14 != nullptr)
+    btn14->setTooltip(tooltipForTarget(midiQuarterTargetId, "CLICK DYN 1/4"));
+  if (btn18 != nullptr)
+    btn18->setTooltip(tooltipForTarget(midiEighthTargetId, "CLICK DYN 1/8"));
+  if (btn116 != nullptr)
+    btn116->setTooltip(
+        tooltipForTarget(midiSixteenthTargetId, "CLICK DYN 1/16"));
+  if (muteButton != nullptr)
+    muteButton->setTooltip(tooltipForTarget(midiMuteTargetId, "CLICK DYN Mute"));
+  if (soloButton != nullptr)
+    soloButton->setTooltip(tooltipForTarget(midiSoloTargetId, "CLICK DYN Solo"));
+}
+
+void ClickDivisionPanel::drawMidiLearnFrame(juce::Graphics &g,
+                                            juce::Component &component,
+                                            const int targetId) {
+  if (!midiLearnSelectable || targetId < 0 || !component.isVisible())
+    return;
+
+  const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
+  const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
+  const auto frameBounds = component.getBounds().toFloat().reduced(1.0f);
+  const bool pending = midiLearnPendingTargetId == targetId;
+  const float blink =
+      pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength();
+  const auto frameColour = pending ? pendingColour : selectableColour;
+  g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
+                                            : (0.14f + (0.06f * blink))));
+  g.fillRoundedRectangle(frameBounds, 5.0f);
+  g.setColour(frameColour.withAlpha(pending ? (0.54f + (0.40f * blink))
+                                            : (0.52f + (0.20f * blink))));
+  g.drawRoundedRectangle(frameBounds, 5.0f,
+                         pending ? (1.4f + (0.8f * blink))
+                                 : (1.0f + (0.3f * blink)));
+}
+
+void ClickDivisionPanel::paintOverChildren(juce::Graphics &g) {
+  drawMidiLearnFrame(g, *btn14, midiQuarterTargetId);
+  drawMidiLearnFrame(g, *btn18, midiEighthTargetId);
+  drawMidiLearnFrame(g, *btn116, midiSixteenthTargetId);
+  drawMidiLearnFrame(g, *muteButton, midiMuteTargetId);
+  drawMidiLearnFrame(g, *soloButton, midiSoloTargetId);
+}
+
+void ClickDivisionPanel::timerCallback() {
   repaint();
 }
 

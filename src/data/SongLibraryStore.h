@@ -42,6 +42,7 @@ struct DynamicGuideMixSnapshot {
 struct ClickDynMixSnapshot {
   int divisionMask = 1;
   bool enabled = true;
+  bool metronomeEnabled = false;
   float volume = 1.0f;
   float gain = 1.0f;
   bool mute = false;

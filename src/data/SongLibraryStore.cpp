@@ -94,6 +94,7 @@ ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
 bool clickDynMixesEqual(const ClickDynMixSnapshot &a,
                         const ClickDynMixSnapshot &b) {
   return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
+         a.metronomeEnabled == b.metronomeEnabled &&
          juce::approximatelyEqual(a.volume, b.volume) &&
          juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
          a.solo == b.solo && a.outputChannel == b.outputChannel &&
@@ -2295,6 +2296,7 @@ juce::var SongLibraryStore::clickDynMixToVar(const ClickDynMixSnapshot &mix) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("divisionMask", normalized.divisionMask);
   obj->setProperty("enabled", normalized.enabled);
+  obj->setProperty("metronomeEnabled", normalized.metronomeEnabled);
   obj->setProperty("volume", normalized.volume);
   obj->setProperty("gain", normalized.gain);
   obj->setProperty("mute", normalized.mute);
@@ -2315,6 +2317,9 @@ ClickDynMixSnapshot SongLibraryStore::clickDynMixFromVar(const juce::var &v,
     out.divisionMask = static_cast<int>(obj->getProperty("divisionMask"));
   if (obj->hasProperty("enabled"))
     out.enabled = static_cast<bool>(obj->getProperty("enabled"));
+  if (obj->hasProperty("metronomeEnabled"))
+    out.metronomeEnabled =
+        static_cast<bool>(obj->getProperty("metronomeEnabled"));
   if (obj->hasProperty("volume"))
     out.volume = static_cast<float>(obj->getProperty("volume"));
   if (obj->hasProperty("gain"))
