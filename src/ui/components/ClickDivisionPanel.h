@@ -15,6 +15,7 @@ public:
 
   void paint(juce::Graphics &g) override;
   void resized() override;
+  void refreshThemeColours();
 
   void setDivision(int division);
   int getDivision() const;
@@ -31,27 +32,23 @@ public:
   void setLayoutScale(float scale);
 
 private:
-  class DivisionButton final : public juce::Button {
+  class DivisionButton final : public juce::TextButton {
   public:
     DivisionButton(const juce::String &label, int divisionValue);
 
     void setSelected(bool selected);
     int getDivisionValue() const noexcept { return divisionValue; }
-    void paintButton(juce::Graphics &g, bool isMouseOverButton,
-                     bool isButtonDown) override;
 
   private:
-    juce::String label;
     int divisionValue = 1;
-    bool selected = false;
   };
 
-  static int normalizeDivision(int division) noexcept;
-  void selectDivision(int division);
+  static int normalizeDivisionMask(int divisionMask) noexcept;
+  void updateDivisionMaskFromButtons();
   void updateButtonStates();
 
   ChannelStripLookAndFeel &lookAndFeel;
-  int currentDivision = 1;
+  int currentDivisionMask = 1;
   bool powerOn = true;
   bool muted = false;
   bool soloed = false;

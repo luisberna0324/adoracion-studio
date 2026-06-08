@@ -53,6 +53,7 @@ public:
 
   /** Actualiza visibilidad de combos y nombres de canal tras cambio de interfaz / buffer. */
   void refreshStemRoutingVisibility();
+  void flushPendingPersistenceNow();
 
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
@@ -75,7 +76,9 @@ private:
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
   void queueMasterVolumePersistence(float volume);
   void queueDynamicGuideVolumePersistence(float volume);
+  void queueClickDynVolumePersistence(float volume);
   void persistDynamicGuideMixForCurrentSong();
+  void persistClickDynMixForCurrentSong();
   void flushPendingVolumePersistence();
   void showGuideSourcePopover(juce::Component *anchorComponent);
   void applyGuideSourceModeToVisibleGuideSlots();
@@ -115,6 +118,8 @@ private:
   float pendingMasterVolumeValue = 1.0f;
   bool hasPendingDynamicGuideVolumeWrite = false;
   float pendingDynamicGuideVolumeValue = 1.0f;
+  bool hasPendingClickDynVolumeWrite = false;
+  float pendingClickDynVolumeValue = 1.0f;
   double lastVolumeInteractionMs = 0.0;
   int slowTickCounter = 0;
   int lastSeenOutputChannelCount = -1;

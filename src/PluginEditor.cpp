@@ -2,6 +2,7 @@
 #include "PluginEditorSupport.h"
 #include "audio/AudioDeviceMonitor.h"
 #include "data/AppSettings.h"
+#include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
 #include "data/LocalAuthCallbackServer.h"
 #include "data/Localization.h"
@@ -410,6 +411,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       p.setSongArrangement(arrangement, false);
     }
   });
+  waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
+    if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+      return;
+    currentLoadedSong.tempoMap = tempoMap;
+    SongLibraryStore::updateSong(currentLoadedSong);
+  });
+  waveformBarRaw->setOnActiveTempoRegionChanged(
+      [&p](const SongTempoRegionSnapshot &region) {
+        p.setMetronomeBpm(region.bpm);
+        p.setMetronomeBeatsPerBar(
+            timeSignatureBeatsPerBar(region.timeSignature));
+      });
 
   auto channelGridImpl =
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
@@ -553,6 +566,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (songLoadBusy)
       return false;
     maybePersistSongWindowForActiveSong();
+    if (channelGridRaw != nullptr)
+      channelGridRaw->flushPendingPersistenceNow();
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
@@ -677,6 +692,20 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideOutputRouting(dynamicGuideMix.outputChannel,
                                    dynamicGuideMix.outputWidth);
 
+    ClickDynMixSnapshot clickDynMix;
+    if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
+                                                       clickDynMix)) {
+      clickDynMix = ClickDynMixSnapshot{};
+    }
+    p.setClickDivision(clickDynMix.divisionMask);
+    p.setClickDivisionEnabled(clickDynMix.enabled);
+    p.setMetronomeVolume(clickDynMix.volume);
+    p.setMetronomeGain(clickDynMix.gain);
+    p.setMetronomeMuted(clickDynMix.mute);
+    p.setMetronomeSolo(clickDynMix.solo);
+    p.setMetronomeOutputRouting(clickDynMix.outputChannel,
+                                clickDynMix.outputWidth);
+
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
       p.setMasterVolume(mixSnapshot.master.volume);
@@ -755,6 +784,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       isCustomArrangement = false;
     }
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
+    waveformBarRaw->setTempoMap(loadedSong.tempoMap);
     p.setSongArrangement(arrangement, false);
     p.setArrangementEditingActive(false);
     return true;
@@ -1300,6 +1330,31 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         else if (preset == PadsCrossfadePreset::Long)
           enginePreset = PadsEngine::CrossfadePreset::Long;
         processorRef.setPadsCrossfadePreset(enginePreset);
+      },
+      AppSettings::getMetronomeClickStyle(),
+      [this](const MetronomeClickStyle style) {
+        AppSettings::setMetronomeClickStyle(style);
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        const auto clickFolder = AssetBootstrapManager::getClicksPackDirectory();
+        juce::String error;
+        processorRef.loadMetronomeClickSamplesFromFolder(
+            clickFolder,
+            style == MetronomeClickStyle::Classic
+                ? "Classic"
+                : style == MetronomeClickStyle::Woodblock
+                      ? "Woodblock"
+                      : style == MetronomeClickStyle::Cowbell
+                            ? "Cowbell"
+                            : style == MetronomeClickStyle::Digital
+                                  ? "Digital"
+                                  : style == MetronomeClickStyle::Gentle
+                                        ? "Gentle"
+                                        : style == MetronomeClickStyle::Percussive
+                                              ? "Percussive"
+                                              : style == MetronomeClickStyle::Saw
+                                                    ? "Saw"
+            : "Blip",
+            &error);
       },
       [] {},
       SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,

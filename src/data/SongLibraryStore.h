@@ -39,6 +39,17 @@ struct DynamicGuideMixSnapshot {
   int outputWidth = 2;
 };
 
+struct ClickDynMixSnapshot {
+  int divisionMask = 1;
+  bool enabled = true;
+  float volume = 1.0f;
+  float gain = 1.0f;
+  bool mute = false;
+  bool solo = false;
+  int outputChannel = 1;
+  int outputWidth = 1;
+};
+
 enum class DynamicGuideTiming { OneBarEarly = 0 };
 enum class DynamicGuideMode { ReplaceOriginalGuide = 0 };
 enum class DynamicGuideLanguagePolicy { FollowAppLanguage = 0 };
@@ -65,6 +76,7 @@ struct SetlistItem {
   DynamicGuideSettings dynamicGuide;
   bool dynamicGuideCustomized = false;
   DynamicGuideMixSnapshot dynamicGuideMix;
+  ClickDynMixSnapshot clickDynMix;
   int64_t updatedMs = 0;
 };
 
@@ -168,6 +180,10 @@ public:
                                               DynamicGuideMixSnapshot &outMix);
   static bool updateDynamicGuideMixForActiveSetlist(
       const juce::String &songId, const DynamicGuideMixSnapshot &mix);
+  static bool getActiveSetlistClickDynMix(const juce::String &songId,
+                                          ClickDynMixSnapshot &outMix);
+  static bool updateClickDynMixForActiveSetlist(
+      const juce::String &songId, const ClickDynMixSnapshot &mix);
   static bool saveWaveformCache(const juce::String &songId,
                                 const std::vector<float> &bins);
   static std::vector<float> loadWaveformCache(const juce::String &songId);
@@ -222,12 +238,21 @@ private:
   static SongArrangementSnapshot arrangementFromVar(const juce::var &v,
                                                     const ImportedSongData *song,
                                                     bool &changed);
+  static juce::var tempoRegionToVar(const SongTempoRegionSnapshot &region);
+  static SongTempoRegionSnapshot tempoRegionFromVar(const juce::var &v);
+  static juce::var tempoMapToVar(const SongTempoMapSnapshot &tempoMap);
+  static SongTempoMapSnapshot tempoMapFromVar(const juce::var &v,
+                                              const ImportedSongData *song,
+                                              bool &changed);
   static juce::var dynamicGuideToVar(const DynamicGuideSettings &settings);
   static DynamicGuideSettings dynamicGuideFromVar(const juce::var &v,
                                                   bool &changed);
   static juce::var dynamicGuideMixToVar(const DynamicGuideMixSnapshot &mix);
   static DynamicGuideMixSnapshot dynamicGuideMixFromVar(const juce::var &v,
                                                         bool &changed);
+  static juce::var clickDynMixToVar(const ClickDynMixSnapshot &mix);
+  static ClickDynMixSnapshot clickDynMixFromVar(const juce::var &v,
+                                                bool &changed);
   static juce::var masterMixToVar(const MasterMixSnapshot &mix);
   static MasterMixSnapshot masterMixFromVar(const juce::var &v);
   static juce::var stemMixToVar(const StemMixSnapshot &mix);

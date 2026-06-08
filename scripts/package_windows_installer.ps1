@@ -8,6 +8,7 @@ param(
     [string]$IssFile = "packaging/windows/MTControls.iss",
     [string]$FfmpegExe = $env:MTCONTROLS_FFMPEG_BIN_WINDOWS,
     [string]$GuidesZip = $env:MTCONTROLS_GUIDES_ZIP_WINDOWS,
+    [string]$ClicksZip = $env:MTCONTROLS_CLICKS_ZIP_WINDOWS,
     [switch]$RequireFfmpeg,
     [string]$VcRedistExe = $env:MTCONTROLS_VC_REDIST_EXE,
     [switch]$SkipVcRedist
@@ -93,6 +94,26 @@ if (-not [string]::IsNullOrWhiteSpace($GuidesZip)) {
     Write-Host "Bundled dynamic guides zip -> $guidesDestDir\\guides-en-es.zip"
 } else {
     Write-Warning "guides-en-es.zip not found. Dynamic guide assets won't be bundled in this installer."
+}
+
+if ([string]::IsNullOrWhiteSpace($ClicksZip)) {
+    $defaultClicksZip = Join-Path $repoRoot "assets/clicks/clicks-pack.zip"
+    if (Test-Path -LiteralPath $defaultClicksZip) {
+        $ClicksZip = $defaultClicksZip
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ClicksZip)) {
+    if (!(Test-Path -LiteralPath $ClicksZip)) {
+        throw "Configured clicks zip not found: $ClicksZip"
+    }
+    $clicksDestDir = Join-Path $standaloneFull "installer"
+    New-Item -ItemType Directory -Force -Path $clicksDestDir | Out-Null
+    Copy-Item -LiteralPath $ClicksZip `
+        -Destination (Join-Path $clicksDestDir "clicks-pack.zip") -Force
+    Write-Host "Bundled click samples zip -> $clicksDestDir\\clicks-pack.zip"
+} else {
+    Write-Warning "clicks-pack.zip not found. Metronome click assets won't be bundled in this installer."
 }
 
 $vcRedistForInstaller = ""

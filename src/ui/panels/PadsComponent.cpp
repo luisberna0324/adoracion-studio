@@ -87,7 +87,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     refreshMidiLearnTooltips();
     setWantsKeyboardFocus(true);
     startPadsLoadingAsync();
-    startTimerHz(30);
+    startTimerHz(20);
 }
 
 PadsComponent::~PadsComponent() {

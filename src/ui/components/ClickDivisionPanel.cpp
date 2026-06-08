@@ -7,52 +7,20 @@
 
 namespace {
 constexpr float cardCornerRadius = 4.0f;
-const juce::Colour selectedDivisionColour{0xFFC8943A};
-
-juce::Colour inactiveButtonColour() {
-  return UITheme::panelDark.contrasting(0.04f);
-}
 } // namespace
 
 ClickDivisionPanel::DivisionButton::DivisionButton(
     const juce::String &buttonLabel, int value)
-    : juce::Button(buttonLabel), label(buttonLabel), divisionValue(value) {
+    : juce::TextButton(buttonLabel), divisionValue(value) {
   setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  setClickingTogglesState(true);
+  setButtonText(buttonLabel);
 }
 
 void ClickDivisionPanel::DivisionButton::setSelected(const bool shouldSelect) {
-  if (selected == shouldSelect)
+  if (getToggleState() == shouldSelect)
     return;
-  selected = shouldSelect;
-  repaint();
-}
-
-void ClickDivisionPanel::DivisionButton::paintButton(juce::Graphics &g,
-                                                     bool isMouseOverButton,
-                                                     bool isButtonDown) {
-  auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-  auto fill = selected ? selectedDivisionColour : inactiveButtonColour();
-  if (isMouseOverButton)
-    fill = selected ? fill.brighter(0.04f) : UITheme::cardBgHover;
-  if (isButtonDown)
-    fill = fill.darker(0.10f);
-
-  const float radius = 3.0f;
-  g.setColour(juce::Colours::black.withAlpha(0.28f));
-  g.fillRoundedRectangle(bounds.translated(0.0f, 1.0f), radius);
-  g.setColour(fill);
-  g.fillRoundedRectangle(bounds, radius);
-  g.setColour(selected ? selectedDivisionColour.brighter(0.20f)
-                       : UITheme::cardBorder);
-  g.drawRoundedRectangle(bounds, radius, 1.0f);
-
-  g.setColour(selected ? UITheme::onAccent : UITheme::textPrimary);
-  g.setFont(makeAppFont(juce::jlimit(10.5f, 13.0f,
-                                     bounds.getHeight() * 0.48f),
-                        selected ? AppFontWeight::Bold
-                                 : AppFontWeight::SemiBold));
-  g.drawFittedText(label, bounds.toNearestInt(), juce::Justification::centred,
-                   1);
+  setToggleState(shouldSelect, juce::dontSendNotification);
 }
 
 ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
@@ -68,9 +36,12 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   muteButton = std::make_unique<juce::TextButton>("M");
 
   for (auto *button : {btn14.get(), btn18.get(), btn116.get()}) {
-    button->onClick = [this, division = button->getDivisionValue()] {
-      selectDivision(division);
-    };
+    button->setLookAndFeel(&lookAndFeel);
+    button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+    button->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
+    button->setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+    button->onClick = [this] { updateDivisionMaskFromButtons(); };
     addAndMakeVisible(button);
   }
 
@@ -115,10 +86,17 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
       onMuteChanged(muted);
   };
   addAndMakeVisible(*muteButton);
+  refreshThemeColours();
   updateButtonStates();
 }
 
 ClickDivisionPanel::~ClickDivisionPanel() {
+  if (btn14 != nullptr)
+    btn14->setLookAndFeel(nullptr);
+  if (btn18 != nullptr)
+    btn18->setLookAndFeel(nullptr);
+  if (btn116 != nullptr)
+    btn116->setLookAndFeel(nullptr);
   if (volumeKnob != nullptr)
     volumeKnob->setLookAndFeel(nullptr);
   if (soloButton != nullptr)
@@ -144,8 +122,8 @@ void ClickDivisionPanel::paint(juce::Graphics &g) {
   g.setFont(makeAppFont(juce::jlimit(9.5f, 12.0f,
                                      static_cast<float>(bandH) * 0.70f),
                         AppFontWeight::Bold));
-  g.drawFittedText("DIV", footer.toNearestInt(), juce::Justification::centred,
-                   1);
+  g.drawFittedText("CLICK DYN", footer.toNearestInt(),
+                   juce::Justification::centred, 1);
 
   if (volumeKnob != nullptr) {
     const auto knobBounds = volumeKnob->getBounds();
@@ -219,16 +197,6 @@ void ClickDivisionPanel::resized() {
                         rowW - soloW - buttonGap, rowH);
 }
 
-void ClickDivisionPanel::setDivision(int division) {
-  division = normalizeDivision(division);
-  if (division == currentDivision)
-    return;
-  currentDivision = division;
-  updateButtonStates();
-}
-
-int ClickDivisionPanel::getDivision() const { return currentDivision; }
-
 void ClickDivisionPanel::setVolume(const float volume) {
   suppressVolumeCallback = true;
   volumeKnob->setValue(juce::jlimit(0.0f, 1.0f, volume),
@@ -286,24 +254,82 @@ void ClickDivisionPanel::setLayoutScale(float scale) {
   repaint();
 }
 
-int ClickDivisionPanel::normalizeDivision(const int division) noexcept {
-  return division >= 4 ? 4 : (division >= 2 ? 2 : 1);
+void ClickDivisionPanel::refreshThemeColours() {
+  if (btn14 != nullptr) {
+    btn14->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    btn14->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+    btn14->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
+    btn14->setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+  }
+  if (btn18 != nullptr) {
+    btn18->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    btn18->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+    btn18->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
+    btn18->setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+  }
+  if (btn116 != nullptr) {
+    btn116->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    btn116->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+    btn116->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
+    btn116->setColour(juce::TextButton::buttonOnColourId, UITheme::accentSoft);
+  }
+  if (soloButton != nullptr) {
+    soloButton->setColour(juce::TextButton::buttonColourId,
+                          UITheme::cardBgHover);
+    soloButton->setColour(juce::TextButton::buttonOnColourId,
+                          UITheme::accentSoft);
+    soloButton->setColour(juce::TextButton::textColourOffId,
+                          UITheme::textPrimary);
+    soloButton->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  }
+  if (muteButton != nullptr) {
+    muteButton->setColour(juce::TextButton::buttonColourId,
+                          UITheme::cardBgHover);
+    muteButton->setColour(juce::TextButton::buttonOnColourId,
+                          UITheme::accentMuted);
+    muteButton->setColour(juce::TextButton::textColourOffId,
+                          UITheme::textPrimary);
+    muteButton->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  }
+  repaint();
 }
 
-void ClickDivisionPanel::selectDivision(int division) {
-  division = normalizeDivision(division);
-  if (division == currentDivision)
+int ClickDivisionPanel::normalizeDivisionMask(const int divisionMask) noexcept {
+  return divisionMask & 0x07;
+}
+
+void ClickDivisionPanel::updateDivisionMaskFromButtons() {
+  int nextMask = 0;
+  if (btn14 != nullptr && btn14->getToggleState())
+    nextMask |= btn14->getDivisionValue();
+  if (btn18 != nullptr && btn18->getToggleState())
+    nextMask |= btn18->getDivisionValue();
+  if (btn116 != nullptr && btn116->getToggleState())
+    nextMask |= btn116->getDivisionValue();
+
+  nextMask = normalizeDivisionMask(nextMask);
+  if (nextMask == currentDivisionMask)
     return;
-  currentDivision = division;
+  currentDivisionMask = nextMask;
   updateButtonStates();
   if (onDivisionChanged)
-    onDivisionChanged(division);
+    onDivisionChanged(currentDivisionMask);
 }
 
+void ClickDivisionPanel::setDivision(const int divisionMask) {
+  const int normalized = normalizeDivisionMask(divisionMask);
+  if (normalized == currentDivisionMask)
+    return;
+  currentDivisionMask = normalized;
+  updateButtonStates();
+}
+
+int ClickDivisionPanel::getDivision() const { return currentDivisionMask; }
+
 void ClickDivisionPanel::updateButtonStates() {
-  btn14->setSelected(currentDivision == 1);
-  btn18->setSelected(currentDivision == 2);
-  btn116->setSelected(currentDivision == 4);
+  btn14->setSelected((currentDivisionMask & btn14->getDivisionValue()) != 0);
+  btn18->setSelected((currentDivisionMask & btn18->getDivisionValue()) != 0);
+  btn116->setSelected((currentDivisionMask & btn116->getDivisionValue()) != 0);
   soloButton->setToggleState(soloed, juce::dontSendNotification);
   muteButton->setToggleState(muted, juce::dontSendNotification);
   repaint();

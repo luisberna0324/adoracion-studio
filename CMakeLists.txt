@@ -55,6 +55,21 @@ if((NOT MTCONTROLS_GUIDES_PACK OR MTCONTROLS_GUIDES_PACK STREQUAL "") AND
         "Path to bundled EN/ES dynamic guides pack zip (guides-en-es.zip)"
         FORCE)
 endif()
+set(_mtcontrols_clicks_pack_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+    set(_mtcontrols_clicks_pack_default
+        "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+endif()
+set(MTCONTROLS_CLICKS_PACK "${_mtcontrols_clicks_pack_default}" CACHE FILEPATH
+    "Path to bundled click samples pack zip (clicks-pack.zip)")
+if((NOT MTCONTROLS_CLICKS_PACK OR MTCONTROLS_CLICKS_PACK STREQUAL "") AND
+   EXISTS "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+    set(MTCONTROLS_CLICKS_PACK
+        "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip"
+        CACHE FILEPATH
+        "Path to bundled click samples pack zip (clicks-pack.zip)"
+        FORCE)
+endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
@@ -405,6 +420,35 @@ if (TARGET MTControls_Standalone AND MTCONTROLS_GUIDES_PACK AND
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${MTCONTROLS_GUIDES_PACK}"
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/guides-en-es.zip"
+            VERBATIM)
+    endif()
+endif()
+
+if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
+    EXISTS "${MTCONTROLS_CLICKS_PACK}")
+    if (APPLE)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/clicks"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/clicks/clicks-pack.zip"
+            VERBATIM)
+    elseif (WIN32)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
+            VERBATIM)
+    elseif (UNIX)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
             VERBATIM)
     endif()
 endif()

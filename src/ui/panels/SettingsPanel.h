@@ -21,6 +21,8 @@ public:
   using PrimeImportChanged = std::function<void(bool)>;
   using StemOptimizationChanged = std::function<void(bool)>;
   using PadsCrossfadeChanged = std::function<void(PadsCrossfadePreset)>;
+  using MetronomeClickStyleChanged =
+      std::function<void(MetronomeClickStyle)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
   using RoutingDefaultsChanged =
@@ -46,6 +48,8 @@ public:
                 StemOptimizationChanged stemOptimizationCb,
                 PadsCrossfadePreset padsCrossfadePreset,
                 PadsCrossfadeChanged padsCrossfadeCb,
+                MetronomeClickStyle metronomeClickStyle,
+                MetronomeClickStyleChanged metronomeClickStyleCb,
                 CloseRequested closeCb,
                 SessionSummary sessionSummary,
                 LogoutRequested logoutCb,
@@ -93,6 +97,8 @@ private:
   juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
   juce::ComboBox padsCrossfadeBox;
+  juce::Label metronomeClickStyleLabel;
+  juce::ComboBox metronomeClickStyleBox;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;
@@ -122,6 +128,7 @@ private:
   PrimeImportChanged onPrimeImportChanged;
   StemOptimizationChanged onStemOptimizationChanged;
   PadsCrossfadeChanged onPadsCrossfadeChanged;
+  MetronomeClickStyleChanged onMetronomeClickStyleChanged;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;

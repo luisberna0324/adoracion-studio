@@ -109,25 +109,27 @@ void ChannelStripLookAndFeel::drawButtonBackground(juce::Graphics &g,
   const bool isMute = button.getComponentID() == "muteButton";
   const bool isSolo = button.getComponentID() == "soloButton";
 
-  auto fill = juce::Colour::fromRGB(35, 35, 35);
+  const auto offFill = backgroundColour.isTransparent()
+                           ? juce::Colour::fromRGB(35, 35, 35)
+                           : backgroundColour.interpolatedWith(
+                                 juce::Colour::fromRGB(35, 35, 35), 0.58f);
+  auto fill = offFill;
   auto border = juce::Colour::fromRGB(17, 17, 17);
   auto shadow = juce::Colours::black.withAlpha(0.24f);
   auto highlight = juce::Colours::white.withAlpha(0.04f);
-  if (!backgroundColour.isTransparent())
-    fill = backgroundColour.interpolatedWith(fill, 0.58f);
 
   if (isToggled) {
-    fill = juce::Colour::fromRGB(42, 209, 90);
-    border = juce::Colour::fromRGB(84, 238, 122);
+    fill = button.findColour(juce::TextButton::buttonOnColourId);
+    if (fill.isTransparent()) {
+      if (isMute)
+        fill = UITheme::accentMuted;
+      else if (isSolo)
+        fill = UITheme::accentSoft;
+      else
+        fill = UITheme::accent;
+    }
+    border = fill.brighter(isSolo ? 0.22f : 0.18f);
     highlight = juce::Colours::white.withAlpha(0.12f);
-  }
-  if (isSolo && isToggled) {
-    fill = juce::Colour::fromRGB(42, 209, 90);
-    border = juce::Colour::fromRGB(84, 238, 122);
-  } else if (isMute && isToggled) {
-    fill = UITheme::accentMuted;
-    border = fill.brighter(0.20f);
-    highlight = juce::Colours::white.withAlpha(0.10f);
   }
 
   if (!isToggled && isMouseOverButton)

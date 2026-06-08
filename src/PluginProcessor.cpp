@@ -24,6 +24,15 @@ int tempoQualityProfileForRatio(const double ratio) {
   return 2;   // Normal/speed-up profile.
 }
 
+int clickDivisionMaskToSubdivision(const int divisionMask) {
+  const int mask = divisionMask & 0x07;
+  if ((mask & 0x04) != 0)
+    return 4;
+  if ((mask & 0x02) != 0)
+    return 2;
+  return 1;
+}
+
 PitchShiftProcessor::ContentType stemContentTypeForPitchShiftable(
     const bool pitchShiftable) {
   return pitchShiftable ? PitchShiftProcessor::ContentType::Melodic
@@ -52,6 +61,32 @@ juce::File getPadsSourceFolderEmpirikFallback() {
              juce::File::SpecialLocationType::userHomeDirectory)
       .getChildFile("Downloads")
       .getChildFile("PADS CONTINUOS EMPIRIK");
+}
+
+juce::File getMetronomeClickSamplesFolder() {
+  return AssetBootstrapManager::getClicksPackDirectory();
+}
+
+juce::String metronomeClickStyleToName(MetronomeClickStyle style) {
+  switch (style) {
+  case MetronomeClickStyle::Woodblock:
+    return "Woodblock";
+  case MetronomeClickStyle::Cowbell:
+    return "Cowbell";
+  case MetronomeClickStyle::Digital:
+    return "Digital";
+  case MetronomeClickStyle::Gentle:
+    return "Gentle";
+  case MetronomeClickStyle::Percussive:
+    return "Percussive";
+  case MetronomeClickStyle::Saw:
+    return "Saw";
+  case MetronomeClickStyle::Blip:
+    return "Blip";
+  case MetronomeClickStyle::Classic:
+  default:
+    return "Classic";
+  }
 }
 
 PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
@@ -170,6 +205,15 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   midiBindings = AppSettings::getMidiBindings();
   for (auto &value : midiLastSourceValues)
     value = -1;
+  {
+    juce::String clickError;
+    if (AssetBootstrapManager::ensureClicksPackReady(&clickError)) {
+      const auto clickFolder = getMetronomeClickSamplesFolder();
+      loadMetronomeClickSamplesFromFolder(
+          clickFolder, metronomeClickStyleToName(AppSettings::getMetronomeClickStyle()),
+          &clickError);
+    }
+  }
   dynamicGuideLanguageCode.store(
       AppSettings::getLanguage() == AppLanguage::English ? 1 : 0,
       std::memory_order_relaxed);
@@ -1078,12 +1122,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     metronomeRenderBuffer.clear();
 
     const int activeStemCount = loadedStemCount.load(std::memory_order_relaxed);
-    const int clickStemIndex =
-        metronomeClickStemIndex.load(std::memory_order_relaxed);
-    const bool hasRealClickStem =
-        juce::isPositiveAndBelow(clickStemIndex, activeStemCount) &&
-        juce::isPositiveAndBelow(clickStemIndex, maxStemCount);
-
     bool anySoloActive = false;
     for (int i = 0; i < activeStemCount; ++i) {
       if (stemSoloStates[static_cast<size_t>(i)].load(
@@ -1103,22 +1141,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         metronomeOutputChannel.load(std::memory_order_relaxed);
     int outputWidth = metronomeOutputWidth.load(std::memory_order_relaxed);
 
-    if (hasRealClickStem) {
-      const auto idx = static_cast<size_t>(clickStemIndex);
-      effectiveVolume = stemVolumes[idx].load(std::memory_order_relaxed);
-      effectiveGain = stemGains[idx].load(std::memory_order_relaxed);
-      muted = stemMuteStates[idx].load(std::memory_order_relaxed);
-      soloed = stemSoloStates[idx].load(std::memory_order_relaxed);
-      outputChannelOneBased =
-          stemOutputChannels[idx].load(std::memory_order_relaxed);
-      outputWidth = stemOutputWidths[idx].load(std::memory_order_relaxed);
-    } else if (soloed) {
-      // Virtual click solo behaves like a regular solo source.
-      anySoloActive = true;
-    }
-
     effectiveVolume = juce::jlimit(0.0f, 1.0f, effectiveVolume);
-    effectiveGain = juce::jlimit(0.0f, 2.0f, effectiveGain);
+    effectiveGain = juce::jlimit(0.0f, 4.0f, effectiveGain);
 
     outputWidth = juce::jlimit(1, 2, outputWidth);
     if (numChannels < 2)
@@ -3184,7 +3208,7 @@ bool MTControlsAudioProcessor::isMetronomeMuted() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeGain(
     const float gainValue) noexcept {
-  metronomeGainState.store(juce::jlimit(0.0f, 2.0f, gainValue),
+  metronomeGainState.store(juce::jlimit(0.0f, 4.0f, gainValue),
                            std::memory_order_relaxed);
 }
 
@@ -3211,6 +3235,14 @@ void MTControlsAudioProcessor::setMetronomeOutputRouting(
 
   metronomeOutputChannel.store(normalizedChannel, std::memory_order_relaxed);
   metronomeOutputWidth.store(normalizedWidth, std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getMetronomeOutputChannel() const noexcept {
+  return metronomeOutputChannel.load(std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getMetronomeOutputWidth() const noexcept {
+  return metronomeOutputWidth.load(std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::setDynamicGuideVolume(
@@ -3280,12 +3312,28 @@ void MTControlsAudioProcessor::setMetronomeClickStemIndex(
                                 std::memory_order_relaxed);
 }
 
+bool MTControlsAudioProcessor::loadMetronomeClickSamplesFromFolder(
+    const juce::File &folder, const juce::String &style,
+    juce::String *errorMessage) {
+  return metronome.loadClickSamplesFromFolder(
+      folder, style, playbackFormatManager, errorMessage);
+}
+
+void MTControlsAudioProcessor::clearMetronomeClickSamples() noexcept {
+  metronome.clearClickSamples();
+}
+
+bool MTControlsAudioProcessor::hasMetronomeClickSamples() const noexcept {
+  return metronome.hasClickSamples();
+}
+
 void MTControlsAudioProcessor::setClickDivision(const int division) noexcept {
-  const int normalized = division >= 4 ? 4 : (division >= 2 ? 2 : 1);
+  const int normalized = division & 0x07;
   clickDivisionState.store(normalized, std::memory_order_relaxed);
-  metronome.setSubdivision(
-      clickDivisionEnabledState.load(std::memory_order_relaxed) ? normalized
-                                                                : 1);
+  const bool enabled =
+      clickDivisionEnabledState.load(std::memory_order_relaxed);
+  metronome.setDivisionMask(enabled ? normalized : 0);
+  metronome.setSubdivision(clickDivisionMaskToSubdivision(normalized));
 }
 
 int MTControlsAudioProcessor::getClickDivision() const noexcept {
@@ -3295,8 +3343,9 @@ int MTControlsAudioProcessor::getClickDivision() const noexcept {
 void MTControlsAudioProcessor::setClickDivisionEnabled(
     const bool enabled) noexcept {
   clickDivisionEnabledState.store(enabled, std::memory_order_relaxed);
-  metronome.setSubdivision(
-      enabled ? clickDivisionState.load(std::memory_order_relaxed) : 1);
+  const int division = clickDivisionState.load(std::memory_order_relaxed);
+  metronome.setDivisionMask(enabled ? division : 0);
+  metronome.setSubdivision(clickDivisionMaskToSubdivision(division));
 }
 
 bool MTControlsAudioProcessor::isClickDivisionEnabled() const noexcept {

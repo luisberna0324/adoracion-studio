@@ -402,7 +402,7 @@ void ChannelStripCard::refreshThemeColours() {
   muteButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   muteButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
   muteButton.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
+                       UITheme::accentMuted);
 
   repaint();
 }

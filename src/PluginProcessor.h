@@ -98,8 +98,15 @@ public:
   void setMetronomeSolo(bool soloed) noexcept;
   bool isMetronomeSolo() const noexcept;
   void setMetronomeOutputRouting(int outputChannel, int width) noexcept;
+  int getMetronomeOutputChannel() const noexcept;
+  int getMetronomeOutputWidth() const noexcept;
   void setMetronomeClickStemIndex(int stemIndexOrMinusOne) noexcept;
-  void setClickDivision(int division) noexcept;  // 1=1/4, 2=1/8, 4=1/16
+  bool loadMetronomeClickSamplesFromFolder(const juce::File &folder,
+                                           const juce::String &style,
+                                           juce::String *errorMessage = nullptr);
+  void clearMetronomeClickSamples() noexcept;
+  bool hasMetronomeClickSamples() const noexcept;
+  void setClickDivision(int division) noexcept;  // bitmask: 1=1/4, 2=1/8, 4=1/16
   int getClickDivision() const noexcept;
   void setClickDivisionEnabled(bool enabled) noexcept;
   bool isClickDivisionEnabled() const noexcept;
@@ -275,7 +282,7 @@ private:
   std::atomic<int> metronomeOutputChannel{1};
   std::atomic<int> metronomeOutputWidth{1};
   std::atomic<int> metronomeClickStemIndex{-1};
-  std::atomic<int> clickDivisionState{1};
+  std::atomic<int> clickDivisionState{1}; // bitmask: 1/4, 1/8, 1/16
   std::atomic<bool> clickDivisionEnabledState{true};
   std::atomic<float> dynamicGuideVolumeState{1.0f};
   std::atomic<float> dynamicGuideGainState{1.0f};

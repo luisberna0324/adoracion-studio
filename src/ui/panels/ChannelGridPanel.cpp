@@ -222,6 +222,7 @@ public:
       divisionPanel = std::make_unique<ClickDivisionPanel>(
           stripLookAndFeel, divisionLevelProvider);
       divisionPanel->setLayoutScale(stripScale);
+      divisionPanel->refreshThemeColours();
       addAndMakeVisible(*divisionPanel);
     }
 
@@ -279,6 +280,12 @@ public:
   void setOnDivisionSoloChanged(std::function<void(bool)> callback) {
     if (divisionPanel != nullptr)
       divisionPanel->setOnSoloChanged(std::move(callback));
+  }
+
+  void refreshThemeColours() {
+    strip->refreshThemeColours();
+    if (divisionPanel != nullptr)
+      divisionPanel->refreshThemeColours();
   }
 
   ChannelStripCard &getStrip() { return *strip; }
@@ -641,6 +648,7 @@ void ChannelGridPanel::timerCallback() {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   const bool hasPendingVolumeWrites =
       hasPendingMasterVolumeWrite || hasPendingDynamicGuideVolumeWrite ||
+      hasPendingClickDynVolumeWrite ||
       !pendingStemVolumeWrites.empty();
   if (hasPendingVolumeWrites &&
       (nowMs - lastVolumeInteractionMs) >= volumePersistenceDebounceMs) {
@@ -787,6 +795,10 @@ void ChannelGridPanel::refreshStemRoutingVisibility() {
   repaint();
 }
 
+void ChannelGridPanel::flushPendingPersistenceNow() {
+  flushPendingVolumePersistence();
+}
+
 void ChannelGridPanel::beginAutomaticRoutingDraft() {
   if (processor.getAvailableOutputChannelCount() <= 2)
     return;
@@ -874,12 +886,11 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
       [](const ImportedStemData *stemPtr) {
         return stemPtr != nullptr && stemPriorityForStripOrder(*stemPtr) == 0;
       });
-  if (!orderedStems.empty() && !hasRealClickStem)
-    addMetronomeVirtualSlot();
   bool dynamicGuideSlotAdded = false;
   if (!orderedStems.empty() && !hasRealClickStem) {
     addDynamicGuideVirtualSlot();
     dynamicGuideSlotAdded = true;
+    addMetronomeVirtualSlot();
   }
 
   for (const auto *stemPtr : orderedStems) {
@@ -1049,6 +1060,12 @@ void ChannelGridPanel::queueDynamicGuideVolumePersistence(const float volume) {
   lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
 }
 
+void ChannelGridPanel::queueClickDynVolumePersistence(const float volume) {
+  pendingClickDynVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
+  hasPendingClickDynVolumeWrite = true;
+  lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
+}
+
 void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
   if (currentSongId.isEmpty())
     return;
@@ -1063,11 +1080,28 @@ void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
   SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
 }
 
+void ChannelGridPanel::persistClickDynMixForCurrentSong() {
+  if (currentSongId.isEmpty())
+    return;
+
+  ClickDynMixSnapshot mix;
+  mix.divisionMask = processor.getClickDivision();
+  mix.enabled = processor.isClickDivisionEnabled();
+  mix.volume = processor.getMetronomeVolume();
+  mix.gain = processor.getMetronomeGain();
+  mix.mute = processor.isMetronomeMuted();
+  mix.solo = processor.isMetronomeSolo();
+  mix.outputChannel = processor.getMetronomeOutputChannel();
+  mix.outputWidth = processor.getMetronomeOutputWidth();
+  SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, mix);
+}
+
 void ChannelGridPanel::flushPendingVolumePersistence() {
   if (currentSongId.isEmpty()) {
     pendingStemVolumeWrites.clear();
     hasPendingMasterVolumeWrite = false;
     hasPendingDynamicGuideVolumeWrite = false;
+    hasPendingClickDynVolumeWrite = false;
     return;
   }
 
@@ -1097,6 +1131,20 @@ void ChannelGridPanel::flushPendingVolumePersistence() {
     SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
     hasPendingDynamicGuideVolumeWrite = false;
   }
+
+  if (hasPendingClickDynVolumeWrite) {
+    ClickDynMixSnapshot mix;
+    mix.divisionMask = processor.getClickDivision();
+    mix.enabled = processor.isClickDivisionEnabled();
+    mix.volume = pendingClickDynVolumeValue;
+    mix.gain = processor.getMetronomeGain();
+    mix.mute = processor.isMetronomeMuted();
+    mix.solo = processor.isMetronomeSolo();
+    mix.outputChannel = processor.getMetronomeOutputChannel();
+    mix.outputWidth = processor.getMetronomeOutputWidth();
+    SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, mix);
+    hasPendingClickDynVolumeWrite = false;
+  }
 }
 
 void ChannelGridPanel::refreshThemeColours() {
@@ -1123,25 +1171,26 @@ void ChannelGridPanel::refreshThemeColours() {
                             UITheme::textPrimary);
 
   for (size_t i = 0; i < slots.size(); ++i) {
-    auto &strip = slots[i]->getStrip();
+    auto &slot = *slots[i];
+    auto &strip = slot.getStrip();
     const int stemIndex =
         i < slotStemIndices.size() ? slotStemIndices[i] : -1;
     if (stemIndex == -1) {
       strip.setCardBgColour(UITheme::cardBgMaster);
       strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
-      strip.refreshThemeColours();
+      slot.refreshThemeColours();
       continue;
     }
     if (stemIndex == -2) {
       strip.setCardBgColour(UITheme::cardBgClickGuide);
       strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
-      strip.refreshThemeColours();
+      slot.refreshThemeColours();
       continue;
     }
     if (stemIndex == -3) {
       strip.setCardBgColour(UITheme::cardBgClickGuide);
       strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
-      strip.refreshThemeColours();
+      slot.refreshThemeColours();
       continue;
     }
     const bool isClickGuide =
@@ -1149,7 +1198,7 @@ void ChannelGridPanel::refreshThemeColours() {
     strip.setCardBgColour(isClickGuide ? UITheme::cardBgClickGuide
                                        : UITheme::cardBg);
     strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
-    strip.refreshThemeColours();
+    slot.refreshThemeColours();
   }
   repaint();
 }
@@ -1389,7 +1438,7 @@ void ChannelGridPanel::addMasterSlot() {
 void ChannelGridPanel::addDivisionSlot() {
   divisionSlotIndex = static_cast<int>(slots.size());
   auto slot = std::make_unique<StripSlot>(
-      "DIV", lookAndFeel,
+      "CLICK DYN", lookAndFeel,
       [this] {
         float left = 0.0f;
         float right = 0.0f;
@@ -1407,15 +1456,23 @@ void ChannelGridPanel::addDivisionSlot() {
   slot->setDivisionSoloState(processor.isMetronomeSolo());
   slot->setOnDivisionChanged([this](const int division) {
     processor.setClickDivision(division);
+    persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionVolumeChanged([this](const float volume) {
     processor.setMetronomeVolume(volume);
+    queueClickDynVolumePersistence(volume);
+  });
+  slot->setOnDivisionPowerChanged([this](const bool enabled) {
+    processor.setClickDivisionEnabled(enabled);
+    persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionMuteChanged([this](const bool muted) {
     processor.setMetronomeMuted(muted);
+    persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionSoloChanged([this](const bool soloed) {
     processor.setMetronomeSolo(soloed);
+    persistClickDynMixForCurrentSong();
   });
   slot->getStrip().setMidiLearnTargetIds(-1, -1, -1, -1, -1);
   slot->getStrip().setMidiLearnSelectable(false);
@@ -1449,15 +1506,19 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setSoloState(processor.isMetronomeSolo());
   strip.setOnVolumeChanged([this](float value) {
     processor.setMetronomeVolume(value);
+    queueClickDynVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
     processor.setMetronomeGain(value);
+    persistClickDynMixForCurrentSong();
   });
   strip.setOnMuteChanged([this](bool muted) {
     processor.setMetronomeMuted(muted);
+    persistClickDynMixForCurrentSong();
   });
   strip.setOnSoloChanged([this](bool soloed) {
     processor.setMetronomeSolo(soloed);
+    persistClickDynMixForCurrentSong();
   });
   strip.setMidiLearnTargetIds(-1, -1, processor.midiTargetMetronomeMute,
                               processor.midiTargetMetronomeSolo, -1);
@@ -1482,7 +1543,7 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
 
 void ChannelGridPanel::addDynamicGuideVirtualSlot() {
   auto slot = std::make_unique<StripSlot>(
-      "GUIDE DYN", lookAndFeel,
+      "GUIA DYN", lookAndFeel,
       [this] {
         float left = 0.0f;
         float right = 0.0f;

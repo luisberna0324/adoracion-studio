@@ -45,6 +45,31 @@ const std::array<const char *, 14> kSongSectionSuggestions = {{
     "Ending",
 }};
 
+int timeSignatureBeatsPerBar(const juce::String &timeSignature) {
+  const auto trimmed = timeSignature.trim();
+  int numerator = 4;
+  int denominator = 4;
+
+  if (trimmed.isNotEmpty()) {
+    const int slash = trimmed.indexOfChar('/');
+    if (slash > 0) {
+      numerator = trimmed.substring(0, slash).getIntValue();
+      denominator = trimmed.substring(slash + 1).getIntValue();
+    } else {
+      numerator = trimmed.getIntValue();
+    }
+  }
+
+  if (numerator <= 0)
+    numerator = 4;
+  if (denominator <= 0)
+    denominator = 4;
+
+  // This app measures the metronome and bar grid in quarter-note units.
+  // Convert the written meter so 6/8 becomes 3 quarter-note beats per bar.
+  return juce::jmax(1, (numerator * 4) / denominator);
+}
+
 juce::String makeDisplayNameFromFile(const juce::File &file) {
   auto name = file.getFileNameWithoutExtension().trim();
   if (name.isEmpty())

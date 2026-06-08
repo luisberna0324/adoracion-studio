@@ -834,6 +834,8 @@ void TopBar::configureMetronomeControls() {
   metroToggleButton.setClickingTogglesState(true);
   metroToggleButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
   addAndMakeVisible(metroToggleButton);
+  setBaseTooltip(metroToggleButton,
+                 L10n::tr(u8"Iniciar / detener metrónomo", "Start / stop metronome"));
 }
 
 void TopBar::timerCallback() {
@@ -887,6 +889,8 @@ void TopBar::timerCallback() {
   beatFlash = juce::jmax(0.0f, beatFlash - static_cast<float>(dt * 1.6));
   metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
                                    juce::dontSendNotification);
+  metroToggleButton.setBadgeText(processor.isMetronomeEnabled() ? "ON"
+                                                               : juce::String{});
   metroToggleButton.setPulseAmount(
       processor.isMetronomeEnabled() ? beatFlash : 0.0f,
       lastBeatWasDownbeat);
@@ -903,9 +907,9 @@ void TopBar::updateBpmDisplay() {
 
 void TopBar::applyTimeSignature(const juce::String &sigText) {
   timeSignature = sigText.trim();
-  const int numerator = timeSignature.upToFirstOccurrenceOf("/", false, false)
-                            .getIntValue();
-  beatsPerBar = numerator > 0 ? numerator : 4;
+  if (timeSignature.isEmpty())
+    timeSignature = "4/4";
+  beatsPerBar = timeSignatureBeatsPerBar(timeSignature);
   processor.setMetronomeBeatsPerBar(beatsPerBar);
   beatCounter = 0.0;
   lastBeatIndex = -1;
@@ -1528,4 +1532,6 @@ void TopBar::refreshFromProviders() {
   fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
   metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
                                    juce::dontSendNotification);
+  metroToggleButton.setBadgeText(processor.isMetronomeEnabled() ? "ON"
+                                                               : juce::String{});
 }

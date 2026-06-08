@@ -135,6 +135,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              StemOptimizationChanged stemOptimizationCb,
                              const PadsCrossfadePreset padsCrossfadePreset,
                              PadsCrossfadeChanged padsCrossfadeCb,
+                             const MetronomeClickStyle metronomeClickStyle,
+                             MetronomeClickStyleChanged metronomeClickStyleCb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
                              LogoutRequested logoutCb,
@@ -150,6 +152,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onPrimeImportChanged(std::move(primeImportCb)),
       onStemOptimizationChanged(std::move(stemOptimizationCb)),
       onPadsCrossfadeChanged(std::move(padsCrossfadeCb)),
+      onMetronomeClickStyleChanged(std::move(metronomeClickStyleCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
@@ -287,6 +290,30 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     onPadsCrossfadeChanged(preset);
   };
   generalPage.addAndMakeVisible(padsCrossfadeBox);
+
+  metronomeClickStyleLabel.setJustificationType(juce::Justification::centredLeft);
+  metronomeClickStyleLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(metronomeClickStyleLabel);
+
+  metronomeClickStyleBox.addItem("Classic", 1);
+  metronomeClickStyleBox.addItem("Woodblock", 2);
+  metronomeClickStyleBox.addItem("Cowbell", 3);
+  metronomeClickStyleBox.addItem("Digital", 4);
+  metronomeClickStyleBox.addItem("Gentle", 5);
+  metronomeClickStyleBox.addItem("Percussive", 6);
+  metronomeClickStyleBox.addItem("Saw", 7);
+  metronomeClickStyleBox.addItem("Blip", 8);
+  metronomeClickStyleBox.setSelectedId(
+      static_cast<int>(metronomeClickStyle) + 1, juce::dontSendNotification);
+  metronomeClickStyleBox.setJustificationType(juce::Justification::centredLeft);
+  metronomeClickStyleBox.onChange = [this] {
+    const int id = metronomeClickStyleBox.getSelectedId();
+    if (id <= 0 || !onMetronomeClickStyleChanged)
+      return;
+    onMetronomeClickStyleChanged(
+        static_cast<MetronomeClickStyle>(juce::jlimit(0, 7, id - 1)));
+  };
+  generalPage.addAndMakeVisible(metronomeClickStyleBox);
 
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
   sessionSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -491,6 +518,16 @@ void SettingsPanel::refreshThemeColours() {
                              UITheme::cardBorder.withAlpha(0.65f));
   padsCrossfadeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   padsCrossfadeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  metronomeClickStyleLabel.setColour(juce::Label::textColourId,
+                                     UITheme::textSecondary);
+  metronomeClickStyleBox.setColour(juce::ComboBox::backgroundColourId,
+                                   UITheme::cardBgHover);
+  metronomeClickStyleBox.setColour(juce::ComboBox::outlineColourId,
+                                   UITheme::cardBorder.withAlpha(0.65f));
+  metronomeClickStyleBox.setColour(juce::ComboBox::textColourId,
+                                   UITheme::textPrimary);
+  metronomeClickStyleBox.setColour(juce::ComboBox::arrowColourId,
+                                   UITheme::textPrimary);
   sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -550,9 +587,20 @@ void SettingsPanel::applyLanguageTexts() {
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
+  metronomeClickStyleLabel.setText(
+      L10n::tr("Estilo del click", "Click style"),
+      juce::dontSendNotification);
   padsCrossfadeBox.changeItemText(1, L10n::tr(u8"Rápido (1s)", "Fast (1s)"));
   padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
   padsCrossfadeBox.changeItemText(3, L10n::tr("Largo (5s)", "Long (5s)"));
+  metronomeClickStyleBox.changeItemText(1, "Classic");
+  metronomeClickStyleBox.changeItemText(2, "Woodblock");
+  metronomeClickStyleBox.changeItemText(3, "Cowbell");
+  metronomeClickStyleBox.changeItemText(4, "Digital");
+  metronomeClickStyleBox.changeItemText(5, "Gentle");
+  metronomeClickStyleBox.changeItemText(6, "Percussive");
+  metronomeClickStyleBox.changeItemText(7, "Saw");
+  metronomeClickStyleBox.changeItemText(8, "Blip");
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
@@ -622,6 +670,10 @@ void SettingsPanel::layoutGeneralPage() {
   auto padsCrossfadeRow = area.removeFromTop(26);
   padsCrossfadeLabel.setBounds(padsCrossfadeRow.removeFromLeft(160));
   padsCrossfadeBox.setBounds(padsCrossfadeRow);
+  area.removeFromTop(10);
+  auto metronomeStyleRow = area.removeFromTop(26);
+  metronomeClickStyleLabel.setBounds(metronomeStyleRow.removeFromLeft(160));
+  metronomeClickStyleBox.setBounds(metronomeStyleRow);
   area.removeFromTop(16);
   sessionSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);

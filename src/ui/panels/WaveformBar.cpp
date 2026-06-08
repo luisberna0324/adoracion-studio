@@ -283,6 +283,24 @@ juce::String countWordLabel(const int value) {
   return juce::String(value);
 }
 
+juce::Colour tempoRegionColourForIndex(const int index) {
+  static const std::array<juce::Colour, 8> colours = {
+      juce::Colour::fromRGB(74, 144, 226),  juce::Colour::fromRGB(245, 166, 35),
+      juce::Colour::fromRGB(126, 211, 33),  juce::Colour::fromRGB(189, 16, 224),
+      juce::Colour::fromRGB(80, 227, 194),  juce::Colour::fromRGB(248, 83, 112),
+      juce::Colour::fromRGB(184, 233, 134), juce::Colour::fromRGB(248, 231, 28)};
+  return colours[static_cast<size_t>(
+      juce::jmax(0, index) % static_cast<int>(colours.size()))];
+}
+
+juce::String tempoRegionDisplayLabel(const SongTempoRegionSnapshot &region,
+                                     const bool compact) {
+  const auto bpm = juce::String(region.bpm, 0);
+  if (compact)
+    return bpm + " " + region.timeSignature;
+  return bpm + " BPM " + region.timeSignature;
+}
+
 class CountChip final : public juce::Button {
 public:
   CountChip(const int valueIn, juce::String labelIn)
@@ -650,6 +668,7 @@ WaveformBar::WaveformBar() {
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
     const bool editing = editButton.getToggleState();
+    timelineViewMode = TimelineViewMode::GuideMap;
     if (!editing) {
       snapMode = SnapMode::Bar;
       snapModeBox.setSelectedId(kSnapModeBarId, juce::sendNotificationSync);
@@ -668,6 +687,29 @@ WaveformBar::WaveformBar() {
     repaint();
   };
   addAndMakeVisible(editButton);
+
+  auto configureViewButton = [this](juce::TextButton &button,
+                                    const juce::String &text,
+                                    TimelineViewMode mode) {
+    button.setButtonText(text);
+    button.setClickingTogglesState(true);
+    button.setViewportIgnoreDragFlag(true);
+    button.onClick = [this, mode] {
+      timelineViewMode = mode;
+      guideMapButton.setToggleState(timelineViewMode == TimelineViewMode::GuideMap,
+                                    juce::dontSendNotification);
+      tempoMapButton.setToggleState(timelineViewMode == TimelineViewMode::TempoMap,
+                                    juce::dontSendNotification);
+      updateTempoControlsFromSelection();
+      resized();
+      repaint();
+    };
+    addAndMakeVisible(button);
+  };
+  configureViewButton(guideMapButton, L10n::tr(u8"Mapa de guía", "Guide map"),
+                      TimelineViewMode::GuideMap);
+  configureViewButton(tempoMapButton, L10n::tr("Mapa de tempo", "Tempo map"),
+                      TimelineViewMode::TempoMap);
 
   sectionMenuButton.setButtonText("+ " + L10n::tr("Sección", "Section"));
   sectionMenuButton.setTooltip(L10n::tr("Agregar sección", "Add section"));
@@ -693,6 +735,47 @@ WaveformBar::WaveformBar() {
     callout.setDismissalMouseClicksAreAlwaysConsumed(true);
   };
   addAndMakeVisible(sectionMenuButton);
+
+  splitTempoRegionButton.setButtonText(L10n::tr("Agregar zona", "Add zone"));
+  splitTempoRegionButton.setViewportIgnoreDragFlag(true);
+  splitTempoRegionButton.onClick = [this] {
+    if (!juce::isPositiveAndBelow(selectedTempoRegionIndex,
+                                  static_cast<int>(tempoMap.regions.size())))
+      return;
+    const auto region = tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)];
+    const double splitAt = (region.startSec + region.endSec) * 0.5;
+    if ((splitAt - region.startSec) < kMinPartDurationSec ||
+        (region.endSec - splitAt) < kMinPartDurationSec)
+      return;
+    tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)].endSec = splitAt;
+    auto next = region;
+    next.id = juce::Uuid().toString();
+    next.startSec = splitAt;
+    tempoMap.regions.insert(tempoMap.regions.begin() + selectedTempoRegionIndex + 1,
+                            std::move(next));
+    selectTempoRegion(selectedTempoRegionIndex + 1);
+    notifyTempoMapChanged();
+  };
+  addAndMakeVisible(splitTempoRegionButton);
+
+  tempoBpmLabel.setText("BPM", juce::dontSendNotification);
+  tempoBpmLabel.setJustificationType(juce::Justification::centred);
+  addAndMakeVisible(tempoBpmLabel);
+  tempoBpmEditor.setInputRestrictions(6, "0123456789.");
+  tempoBpmEditor.setJustification(juce::Justification::centred);
+  tempoBpmEditor.setFont(makeAppFont(12.5f, AppFontWeight::SemiBold));
+  tempoBpmEditor.onReturnKey = [this] { applyTempoControlsToSelection(); };
+  tempoBpmEditor.onFocusLost = [this] { applyTempoControlsToSelection(); };
+  addAndMakeVisible(tempoBpmEditor);
+
+  tempoSignatureLabel.setText(L10n::tr(u8"Compás", "Meter"),
+                              juce::dontSendNotification);
+  tempoSignatureLabel.setJustificationType(juce::Justification::centred);
+  addAndMakeVisible(tempoSignatureLabel);
+  for (const auto *sig : {"2/4", "3/4", "4/4", "6/8"})
+    tempoSignatureBox.addItem(sig, tempoSignatureBox.getNumItems() + 1);
+  tempoSignatureBox.onChange = [this] { applyTempoControlsToSelection(); };
+  addAndMakeVisible(tempoSignatureBox);
 
   snapModeLabel.setText(L10n::tr("Ajuste", "Grid"), juce::dontSendNotification);
   snapModeLabel.setJustificationType(juce::Justification::centredRight);
@@ -730,7 +813,7 @@ WaveformBar::WaveformBar() {
   rebuildSectionAddButtons();
 
   refreshThemeColours();
-  startTimerHz(30);
+  startTimerHz(20);
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
@@ -777,16 +860,23 @@ void WaveformBar::setArrangement(
   repaint();
 }
 
+void WaveformBar::setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot) {
+  tempoMap = tempoMapSnapshot;
+  selectedTempoRegionIndex = tempoMap.regions.empty() ? -1 : 0;
+  lastAppliedTempoRegionIndex = -1;
+  normalizeTempoMap();
+  updateTempoControlsFromSelection();
+  repaint();
+}
+
 void WaveformBar::setSongRhythm(const double bpm,
                                 const juce::String &timeSignature) {
   songBpm = juce::jmax(0.0, bpm);
-
-  int numerator = timeSignature.trim()
-                      .upToFirstOccurrenceOf("/", false, false)
-                      .getIntValue();
-  if (numerator <= 0)
-    numerator = 4;
-  songBeatsPerBar = juce::jmax(1, numerator);
+  songTimeSignature = timeSignature.trim();
+  if (songTimeSignature.isEmpty())
+    songTimeSignature = "4/4";
+  songBeatsPerBar = timeSignatureBeatsPerBar(songTimeSignature);
+  normalizeTempoMap();
 
   repaint();
 }
@@ -827,6 +917,14 @@ void WaveformBar::setOnArrangementPartJumpRequest(
 void WaveformBar::setOnArrangementPartLoopToggleRequest(
     ArrangementPartLoopToggleRequestCallback cb) {
   onArrangementPartLoopToggleRequest = std::move(cb);
+}
+
+void WaveformBar::setOnTempoMapChanged(TempoMapChangedCallback cb) {
+  onTempoMapChanged = std::move(cb);
+}
+
+void WaveformBar::setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb) {
+  onActiveTempoRegionChanged = std::move(cb);
 }
 
 void WaveformBar::setPendingArrangementPartProvider(
@@ -882,6 +980,15 @@ void WaveformBar::refreshThemeColours() {
                        UITheme::textPrimary);
   editButton.setColour(juce::TextButton::textColourOnId,
                        UITheme::textPrimary);
+  for (auto *button : {&guideMapButton, &tempoMapButton}) {
+    button->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+    button->setColour(juce::TextButton::buttonOnColourId,
+                      UITheme::accent.withAlpha(0.95f));
+    button->setColour(juce::TextButton::textColourOffId,
+                      UITheme::textPrimary);
+    button->setColour(juce::TextButton::textColourOnId,
+                      UITheme::onAccent);
+  }
   sectionMenuButton.setColour(juce::TextButton::buttonColourId,
                               UITheme::cardBgHover);
   sectionMenuButton.setColour(juce::TextButton::buttonOnColourId,
@@ -898,6 +1005,33 @@ void WaveformBar::refreshThemeColours() {
   snapModeBox.setColour(juce::ComboBox::outlineColourId,
                         UITheme::cardBorder.withAlpha(0.75f));
   snapModeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  for (auto *label : {&tempoBpmLabel, &tempoSignatureLabel}) {
+    label->setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
+    label->setColour(juce::Label::textColourId, UITheme::textPrimary);
+  }
+  tempoBpmEditor.setColour(juce::TextEditor::backgroundColourId,
+                           UITheme::cardBgHover);
+  tempoBpmEditor.setColour(juce::TextEditor::textColourId,
+                           UITheme::textPrimary);
+  tempoBpmEditor.setColour(juce::TextEditor::outlineColourId,
+                           UITheme::cardBorder.withAlpha(0.75f));
+  tempoSignatureBox.setColour(juce::ComboBox::backgroundColourId,
+                              UITheme::cardBgHover);
+  tempoSignatureBox.setColour(juce::ComboBox::textColourId,
+                              UITheme::textPrimary);
+  tempoSignatureBox.setColour(juce::ComboBox::outlineColourId,
+                              UITheme::cardBorder.withAlpha(0.75f));
+  tempoSignatureBox.setColour(juce::ComboBox::arrowColourId,
+                              UITheme::textPrimary);
+  for (auto *button : {&splitTempoRegionButton}) {
+    button->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+    button->setColour(juce::TextButton::buttonOnColourId,
+                      UITheme::cardBgPressed);
+    button->setColour(juce::TextButton::textColourOffId,
+                      UITheme::textPrimary);
+    button->setColour(juce::TextButton::textColourOnId,
+                      UITheme::textPrimary);
+  }
 
   for (auto &btn : sectionAddButtons) {
     btn->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
@@ -993,7 +1127,10 @@ void WaveformBar::paint(juce::Graphics &g) {
   const auto window = getVisibleWindow();
   drawWaveform(g, mainWaveBodyBounds, window.first, window.second,
                isEditingArrangement(), true);
-  drawArrangementOverlay(g, mainWaveBodyBounds);
+  if (timelineViewMode == TimelineViewMode::TempoMap)
+    drawTempoOverlay(g, mainWaveBodyBounds);
+  else
+    drawArrangementOverlay(g, mainWaveBodyBounds);
 
   if (seekRulerBounds.getWidth() > 2.0f && seekRulerBounds.getHeight() > 2.0f)
     drawSeekRuler(g, seekRulerBounds, window.first, window.second);
@@ -1033,12 +1170,22 @@ void WaveformBar::resized() {
     followButton.setEnabled(false);
     editButton.setVisible(false);
     editButton.setEnabled(false);
+    guideMapButton.setVisible(false);
+    guideMapButton.setEnabled(false);
+    tempoMapButton.setVisible(false);
+    tempoMapButton.setEnabled(false);
     snapModeLabel.setVisible(false);
     snapModeLabel.setEnabled(false);
     snapModeBox.setVisible(false);
     snapModeBox.setEnabled(false);
     sectionMenuButton.setVisible(false);
     sectionMenuButton.setEnabled(false);
+    splitTempoRegionButton.setVisible(false);
+    splitTempoRegionButton.setEnabled(false);
+    tempoBpmLabel.setVisible(false);
+    tempoBpmEditor.setVisible(false);
+    tempoSignatureLabel.setVisible(false);
+    tempoSignatureBox.setVisible(false);
     for (auto &btn : sectionAddButtons) {
       btn->setVisible(false);
       btn->setEnabled(false);
@@ -1054,23 +1201,42 @@ void WaveformBar::resized() {
   editButton.setEnabled(true);
   const bool editing = isEditingArrangement();
 
-  auto placeBottomWaveControls = [&]() {
+  auto placeBottomWaveControls = [&](const bool includeFollow,
+                                     const bool includeViewButtons) {
     auto floating = mainWaveBodyBounds.toNearestInt();
     if (floating.getWidth() > 4 && floating.getHeight() > 4) {
       const int controlH = 26;
       auto bottomControls = floating.removeFromBottom(controlH);
       bottomControls = bottomControls.reduced(2, 1);
       editButton.setBounds(bottomControls.removeFromRight(editButtonW).reduced(1));
-      bottomControls.removeFromRight(followGap);
-      followButton.setBounds(
-          bottomControls.removeFromRight(followButtonW).reduced(1));
+      if (includeViewButtons) {
+        bottomControls.removeFromRight(followGap);
+        tempoMapButton.setBounds(bottomControls.removeFromRight(112).reduced(1));
+        bottomControls.removeFromRight(4);
+        guideMapButton.setBounds(bottomControls.removeFromRight(112).reduced(1));
+      }
+      if (includeFollow) {
+        bottomControls.removeFromRight(followGap);
+        followButton.setBounds(
+            bottomControls.removeFromRight(followButtonW).reduced(1));
+      }
       return true;
     }
     return false;
   };
 
   if (editing) {
-    placeBottomWaveControls();
+    placeBottomWaveControls(false, true);
+    followButton.setVisible(false);
+    followButton.setEnabled(false);
+    guideMapButton.setVisible(true);
+    guideMapButton.setEnabled(true);
+    tempoMapButton.setVisible(true);
+    tempoMapButton.setEnabled(true);
+    guideMapButton.setToggleState(timelineViewMode == TimelineViewMode::GuideMap,
+                                  juce::dontSendNotification);
+    tempoMapButton.setToggleState(timelineViewMode == TimelineViewMode::TempoMap,
+                                  juce::dontSendNotification);
 
     auto leftGroup =
         toolbarBounds.removeFromLeft(
@@ -1089,6 +1255,38 @@ void WaveformBar::resized() {
 
     auto buttonsArea = toolbarBounds.reduced(0, 1);
     const int buttonGap = 4;
+
+    const bool tempoMode = timelineViewMode == TimelineViewMode::TempoMap;
+    sectionMenuButton.setVisible(false);
+    sectionMenuButton.setEnabled(false);
+    for (auto &btn : sectionAddButtons) {
+      btn->setVisible(false);
+      btn->setEnabled(false);
+    }
+    splitTempoRegionButton.setVisible(false);
+    splitTempoRegionButton.setEnabled(false);
+    tempoBpmLabel.setVisible(false);
+    tempoBpmEditor.setVisible(false);
+    tempoSignatureLabel.setVisible(false);
+    tempoSignatureBox.setVisible(false);
+    if (tempoMode) {
+      int x = buttonsArea.getX();
+      const int h = buttonsArea.getHeight();
+      splitTempoRegionButton.setBounds(x, buttonsArea.getY(), 104, h);
+      splitTempoRegionButton.setVisible(true);
+      splitTempoRegionButton.setEnabled(selectedTempoRegionIndex >= 0);
+      x += 108;
+      tempoBpmLabel.setBounds(x, buttonsArea.getY(), 42, h);
+      tempoBpmEditor.setBounds(x + 44, buttonsArea.getY(), 78, h);
+      x += 128;
+      tempoSignatureLabel.setBounds(x, buttonsArea.getY(), 62, h);
+      tempoSignatureBox.setBounds(x + 64, buttonsArea.getY(), 78, h);
+      tempoBpmLabel.setVisible(true);
+      tempoBpmEditor.setVisible(true);
+      tempoSignatureLabel.setVisible(true);
+      tempoSignatureBox.setVisible(true);
+      return;
+    }
 
     std::vector<int> widths;
     widths.reserve(sectionAddButtons.size());
@@ -1149,6 +1347,16 @@ void WaveformBar::resized() {
     return;
   }
 
+  guideMapButton.setVisible(false);
+  guideMapButton.setEnabled(false);
+  tempoMapButton.setVisible(false);
+  tempoMapButton.setEnabled(false);
+  splitTempoRegionButton.setVisible(false);
+  splitTempoRegionButton.setEnabled(false);
+  tempoBpmLabel.setVisible(false);
+  tempoBpmEditor.setVisible(false);
+  tempoSignatureLabel.setVisible(false);
+  tempoSignatureBox.setVisible(false);
   sectionMenuButton.setVisible(false);
   sectionMenuButton.setEnabled(false);
   for (auto &btn : sectionAddButtons) {
@@ -1160,7 +1368,7 @@ void WaveformBar::resized() {
   snapModeBox.setVisible(false);
   snapModeBox.setEnabled(false);
 
-  if (!placeBottomWaveControls()) {
+  if (!placeBottomWaveControls(true, false)) {
     editButton.setBounds(toolbarBounds.removeFromRight(editButtonW).reduced(1));
     toolbarBounds.removeFromRight(followGap);
     followButton.setBounds(toolbarBounds.removeFromRight(followButtonW).reduced(1));
@@ -1180,6 +1388,8 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
   arrangementDragPendingCommit = false;
+  tempoDragPendingCommit = false;
+  activeDragTempoRegionIndex = -1;
 
   const auto bounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(bounds);
@@ -1244,6 +1454,43 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 
   if (!mainWaveBounds.contains(event.position))
     return;
+
+  if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap &&
+      mainWaveBodyBounds.contains(event.position)) {
+    const auto hit = hitTestTempoRegion(event.position);
+    if (juce::isPositiveAndBelow(hit.regionIndex,
+                                 static_cast<int>(tempoMap.regions.size()))) {
+      selectTempoRegion(hit.regionIndex);
+      if (hit.deleteButton) {
+        deleteTempoRegion(hit.regionIndex);
+        repaint();
+        return;
+      }
+      const auto &region =
+          tempoMap.regions[static_cast<size_t>(hit.regionIndex)];
+      activeDragTempoRegionIndex = hit.regionIndex;
+      dragOriginTempoStartSec = region.startSec;
+      dragOriginTempoEndSec = region.endSec;
+      dragAnchorSourceSec =
+          windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
+
+      if (hit.leftEdge)
+        dragMode = DragMode::resizeTempoRegionLeft;
+      else if (hit.rightEdge)
+        dragMode = DragMode::resizeTempoRegionRight;
+      else
+        dragMode = DragMode::moveTempoRegion;
+
+      if (dragMode == DragMode::resizeTempoRegionLeft ||
+          dragMode == DragMode::resizeTempoRegionRight)
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+      else
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+
+      repaint();
+      return;
+    }
+  }
 
   if (mainWaveBodyBounds.contains(event.position)) {
     rebuildPartOverlayBounds(mainWaveBodyBounds);
@@ -1414,6 +1661,86 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     selectionDragCurrent = event.position;
     updateSelectionFromDragBounds();
     setMouseCursor(juce::MouseCursor::CrosshairCursor);
+    repaint();
+    return;
+  }
+
+  if (dragMode == DragMode::moveTempoRegion ||
+      dragMode == DragMode::resizeTempoRegionLeft ||
+      dragMode == DragMode::resizeTempoRegionRight) {
+    if (!isEditingArrangement() || timelineViewMode != TimelineViewMode::TempoMap)
+      return;
+
+    if (dragMode == DragMode::moveTempoRegion)
+      setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    else
+      setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+
+    if (!juce::isPositiveAndBelow(activeDragTempoRegionIndex,
+                                  static_cast<int>(tempoMap.regions.size())))
+      return;
+
+    const double songLength = getSongLengthSeconds();
+    if (songLength <= 0.0)
+      return;
+
+    const double pointerSec =
+        windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
+    const bool bypassSnap = isSnapBypassed(event.mods);
+    const double deltaSec =
+        snapSeconds(pointerSec - dragAnchorSourceSec, bypassSnap);
+
+    auto &region =
+        tempoMap.regions[static_cast<size_t>(activeDragTempoRegionIndex)];
+    const double previousStart = region.startSec;
+    const double previousEnd = region.endSec;
+
+    if (dragMode == DragMode::moveTempoRegion) {
+      double duration = juce::jmax(kMinPartDurationSec,
+                                   dragOriginTempoEndSec -
+                                       dragOriginTempoStartSec);
+      duration = juce::jmin(duration, songLength);
+      const double maxStart = juce::jmax(0.0, songLength - duration);
+      const double nextStart =
+          juce::jlimit(0.0, maxStart,
+                       snapSeconds(dragOriginTempoStartSec + deltaSec,
+                                   bypassSnap));
+      region.startSec = nextStart;
+      region.endSec = juce::jlimit(nextStart, songLength, nextStart + duration);
+    } else if (dragMode == DragMode::resizeTempoRegionLeft) {
+      const double maxStart =
+          juce::jmax(0.0, dragOriginTempoEndSec - kMinPartDurationSec);
+      region.startSec =
+          juce::jlimit(0.0, maxStart,
+                       snapSeconds(dragOriginTempoStartSec + deltaSec,
+                                   bypassSnap));
+      region.endSec = dragOriginTempoEndSec;
+    } else if (dragMode == DragMode::resizeTempoRegionRight) {
+      const double minEnd = dragOriginTempoStartSec + kMinPartDurationSec;
+      region.startSec = dragOriginTempoStartSec;
+      region.endSec =
+          juce::jlimit(minEnd, songLength,
+                       snapSeconds(dragOriginTempoEndSec + deltaSec,
+                                   bypassSnap));
+    }
+
+    if (region.endSec < region.startSec)
+      std::swap(region.endSec, region.startSec);
+
+    if ((region.endSec - region.startSec) < kMinPartDurationSec) {
+      region.endSec =
+          juce::jmin(songLength, region.startSec + kMinPartDurationSec);
+      if ((region.endSec - region.startSec) < kMinPartDurationSec)
+        region.startSec = juce::jmax(0.0, region.endSec - kMinPartDurationSec);
+    }
+
+    if (nearlyEqual(previousStart, region.startSec) &&
+        nearlyEqual(previousEnd, region.endSec))
+      return;
+
+    selectedTempoRegionIndex = activeDragTempoRegionIndex;
+    tempoDragPendingCommit = true;
+    updateTempoControlsFromSelection();
     repaint();
     return;
   }
@@ -1663,10 +1990,15 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   const bool wasArrangementDrag =
       dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
       dragMode == DragMode::resizePartRight;
+  const bool wasTempoDrag =
+      dragMode == DragMode::moveTempoRegion ||
+      dragMode == DragMode::resizeTempoRegionLeft ||
+      dragMode == DragMode::resizeTempoRegionRight;
   const bool wasSelectionDrag = dragMode == DragMode::selectParts;
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragPartOrigins.clear();
+  activeDragTempoRegionIndex = -1;
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
@@ -1679,6 +2011,13 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   }
   if (wasSelectionDrag)
     repaint();
+  if (wasTempoDrag && tempoDragPendingCommit) {
+    tempoDragPendingCommit = false;
+    notifyTempoMapChanged();
+    repaint();
+  } else {
+    tempoDragPendingCommit = false;
+  }
   setMouseCursor(juce::MouseCursor::NormalCursor);
 }
 
@@ -1726,6 +2065,18 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
   } else if (seekRulerBounds.contains(event.position)) {
     nextCursor = juce::MouseCursor::PointingHandCursor;
   } else if (mainWaveBodyBounds.contains(event.position)) {
+    if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap) {
+      const auto hit = hitTestTempoRegion(event.position);
+      if (juce::isPositiveAndBelow(hit.regionIndex,
+                                   static_cast<int>(tempoMap.regions.size()))) {
+        if (hit.deleteButton)
+          nextCursor = juce::MouseCursor::PointingHandCursor;
+        else if (hit.leftEdge || hit.rightEdge)
+          nextCursor = juce::MouseCursor::LeftRightResizeCursor;
+        else
+          nextCursor = juce::MouseCursor::DraggingHandCursor;
+      }
+    } else {
     rebuildPartOverlayBounds(mainWaveBodyBounds);
     const auto hit = hitTestArrangementPart(event.position);
     if (juce::isPositiveAndBelow(hit.partIndex,
@@ -1743,6 +2094,7 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
         nextCursor = juce::MouseCursor::LeftRightResizeCursor;
       else if (isEditingArrangement())
         nextCursor = juce::MouseCursor::DraggingHandCursor;
+    }
     }
   }
 
@@ -1806,7 +2158,10 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
 
   if (key == juce::KeyPress::deleteKey ||
       key == juce::KeyPress::backspaceKey) {
-    deleteSelectedArrangementParts();
+    if (timelineViewMode == TimelineViewMode::TempoMap)
+      deleteTempoRegion(selectedTempoRegionIndex);
+    else
+      deleteSelectedArrangementParts();
     return true;
   }
 
@@ -1961,6 +2316,7 @@ void WaveformBar::timerCallback() {
     followLastSongProgressValid = false;
   }
 
+  updateActiveTempoRegionFromTransport();
   flushDeferredPartJumpFromDoubleClickIfDue();
   repaint();
 }
@@ -2510,6 +2866,45 @@ WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
     hit.jumpButton = bounds.showsJumpButton && bounds.jumpButton.contains(pos);
     if (hit.jumpButton)
       return hit;
+    return hit;
+  }
+  return {};
+}
+
+WaveformBar::TempoRegionHitResult
+WaveformBar::hitTestTempoRegion(const juce::Point<float> pos) const {
+  const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
+  const auto lane = getArrangementLaneBounds(getMainWaveBodyBounds(mainWaveBounds));
+  if (!lane.contains(pos))
+    return {};
+  for (int i = static_cast<int>(tempoMap.regions.size()) - 1; i >= 0; --i) {
+    const auto &region = tempoMap.regions[static_cast<size_t>(i)];
+    const float startX = sourceSecondsToWindowX(lane, region.startSec);
+    const float endX = sourceSecondsToWindowX(lane, region.endSec);
+    if (endX <= lane.getX() || startX >= lane.getRight())
+      continue;
+    auto body = lane.withX(juce::jmax(lane.getX(), startX))
+                    .withRight(juce::jmin(lane.getRight(), endX))
+                    .reduced(1.0f, 2.0f);
+    if (!body.contains(pos))
+      continue;
+    TempoRegionHitResult hit;
+    hit.regionIndex = i;
+    constexpr float deleteSize = 13.0f;
+    const bool showsDeleteButton =
+        tempoMap.regions.size() > 1 &&
+        body.getWidth() >= (deleteSize + 16.0f) &&
+        body.getHeight() >= (deleteSize + 8.0f);
+    if (showsDeleteButton) {
+      const auto deleteButton = juce::Rectangle<float>(
+          body.getRight() - deleteSize - 3.0f, body.getY() + 3.0f,
+          deleteSize, deleteSize);
+      hit.deleteButton = deleteButton.contains(pos);
+      if (hit.deleteButton)
+        return hit;
+    }
+    hit.leftEdge = std::abs(pos.x - body.getX()) <= kPartHandleHitWidth;
+    hit.rightEdge = std::abs(pos.x - body.getRight()) <= kPartHandleHitWidth;
     return hit;
   }
   return {};
@@ -3146,6 +3541,108 @@ void WaveformBar::drawArrangementOverlay(
   }
 }
 
+void WaveformBar::drawTempoOverlay(
+    juce::Graphics &g, const juce::Rectangle<float> &mainWaveBounds) {
+  const auto lane = getArrangementLaneBounds(mainWaveBounds);
+  if (lane.getWidth() <= 2.0f || lane.getHeight() <= 2.0f)
+    return;
+
+  const bool editing = isEditingArrangement();
+  for (int i = 0; i < static_cast<int>(tempoMap.regions.size()); ++i) {
+    const auto &region = tempoMap.regions[static_cast<size_t>(i)];
+    const auto regionColour = tempoRegionColourForIndex(i);
+    const float startX = sourceSecondsToWindowX(lane, region.startSec);
+    const float endX = sourceSecondsToWindowX(lane, region.endSec);
+    if (endX <= lane.getX() || startX >= lane.getRight())
+      continue;
+
+    auto body = lane.withX(juce::jmax(lane.getX(), startX))
+                    .withRight(juce::jmin(lane.getRight(), endX))
+                    .reduced(1.0f, 2.0f);
+    if (body.getWidth() < 2.0f)
+      continue;
+
+    const bool selected = editing && i == selectedTempoRegionIndex;
+    auto fill = regionColour.withAlpha(editing ? (selected ? 0.30f : 0.19f) : 0.16f);
+    g.setColour(fill);
+    g.fillRoundedRectangle(body, 2.5f);
+    g.setColour(regionColour.withAlpha(selected ? 0.95f : 0.72f));
+    g.drawRoundedRectangle(body, 2.5f, selected ? 1.6f : 1.0f);
+
+    const float separatorX = body.getX();
+    const float separatorThickness = selected ? 2.45f : 1.55f;
+    g.setColour(juce::Colours::black.withAlpha(0.28f));
+    g.drawLine(separatorX + 0.8f, lane.getY() + 2.0f, separatorX + 0.8f,
+               lane.getBottom() - 2.0f, separatorThickness + 0.9f);
+    g.setColour(regionColour.withAlpha(selected ? 0.98f : 0.78f));
+    g.drawLine(separatorX, lane.getY() + 2.0f, separatorX,
+               lane.getBottom() - 2.0f, separatorThickness);
+
+    if (editing) {
+      g.setColour((selected ? regionColour : UITheme::textSecondary)
+                      .withAlpha(selected ? 0.90f : 0.45f));
+      const float handleInset = 5.0f;
+      g.drawVerticalLine(static_cast<int>(std::round(body.getX())),
+                         body.getY() + handleInset,
+                         body.getBottom() - handleInset);
+      g.drawVerticalLine(static_cast<int>(std::round(body.getRight())),
+                         body.getY() + handleInset,
+                         body.getBottom() - handleInset);
+
+      constexpr float deleteSize = 13.0f;
+      const bool showsDeleteButton =
+          tempoMap.regions.size() > 1 &&
+          body.getWidth() >= (deleteSize + 16.0f) &&
+          body.getHeight() >= (deleteSize + 8.0f);
+      if (showsDeleteButton) {
+        const auto deleteButton = juce::Rectangle<float>(
+            body.getRight() - deleteSize - 3.0f, body.getY() + 3.0f,
+            deleteSize, deleteSize);
+        g.setColour(juce::Colours::white.withAlpha(selected ? 0.20f : 0.15f));
+        g.fillRoundedRectangle(deleteButton, 2.0f);
+        g.setColour(juce::Colours::white.withAlpha(selected ? 0.96f : 0.86f));
+        const auto db = deleteButton.reduced(3.2f, 3.2f);
+        g.drawLine(db.getX(), db.getY(), db.getRight(), db.getBottom(), 1.2f);
+        g.drawLine(db.getRight(), db.getY(), db.getX(), db.getBottom(), 1.2f);
+      }
+    }
+
+    if (body.getWidth() >= 18.0f) {
+      const bool compact = body.getWidth() < 92.0f;
+      auto visibleLabel = tempoRegionDisplayLabel(region, compact);
+      if (body.getWidth() < 52.0f)
+        visibleLabel = juce::String(region.bpm, 0);
+
+      const auto labelFont = makeAppFont(compact ? 9.4f : 10.8f,
+                                         AppFontWeight::SemiBold);
+      const float textWidth = labelFont.getStringWidthFloat(visibleLabel);
+      const float maxFlagWidth = juce::jmax(16.0f, body.getWidth() - 2.0f);
+      const float flagWidth = juce::jlimit(16.0f, maxFlagWidth, textWidth + 18.0f);
+      auto flag = juce::Rectangle<float>(separatorX, body.getY() + 1.0f,
+                                         flagWidth, 16.0f);
+      if (flag.getRight() > body.getRight() - 1.0f)
+        flag.setRight(body.getRight() - 1.0f);
+
+      const auto labelFill = regionColour.withAlpha(selected ? 0.96f : 0.88f);
+      g.setColour(juce::Colours::black.withAlpha(0.28f));
+      g.fillRect(flag.translated(0.8f, 1.0f));
+      g.setColour(labelFill);
+      g.fillRect(flag);
+      g.setColour(regionColour.brighter(0.18f)
+                      .withAlpha(selected ? 0.95f : 0.72f));
+      g.drawRect(flag, selected ? 1.2f : 0.8f);
+      g.setColour(juce::Colours::black.withAlpha(0.48f));
+      g.drawText(visibleLabel,
+                 flag.translated(0.7f, 0.8f).toNearestInt().reduced(4, 0),
+                 juce::Justification::centred, false);
+      g.setColour(juce::Colours::white.withAlpha(0.96f));
+      g.setFont(labelFont);
+      g.drawFittedText(visibleLabel, flag.toNearestInt().reduced(4, 0),
+                       juce::Justification::centred, 1);
+    }
+  }
+}
+
 void WaveformBar::drawMiniMap(juce::Graphics &g,
                               const juce::Rectangle<float> &miniMapBounds) const {
   if (miniMapBounds.getWidth() <= 2.0f || miniMapBounds.getHeight() <= 2.0f)
@@ -3701,4 +4198,127 @@ void WaveformBar::resetArrangementToDefault() {
     onArrangementReset();
   notifyArrangementChanged(false);
   repaint();
+}
+
+void WaveformBar::normalizeTempoMap() {
+  const double songLength = getSongLengthSeconds();
+  if (tempoMap.regions.empty() && songLength > 0.0) {
+    SongTempoRegionSnapshot region;
+    region.id = juce::Uuid().toString();
+    region.startSec = 0.0;
+    region.endSec = songLength;
+    region.bpm = songBpm > 0.0 ? songBpm : 120.0;
+    region.timeSignature = songTimeSignature;
+    region.clickDivision = ClickDivision::Quarter;
+    region.accentEnabled = true;
+    tempoMap.regions.push_back(std::move(region));
+  }
+
+  for (auto &region : tempoMap.regions) {
+    if (region.id.isEmpty())
+      region.id = juce::Uuid().toString();
+    region.startSec = juce::jmax(0.0, region.startSec);
+    if (songLength > 0.0)
+      region.endSec = juce::jlimit(region.startSec + kMinPartDurationSec,
+                                   songLength, region.endSec);
+    if (region.bpm <= 0.0)
+      region.bpm = songBpm > 0.0 ? songBpm : 120.0;
+    if (region.timeSignature.trim().isEmpty())
+      region.timeSignature = songTimeSignature;
+  }
+
+  std::sort(tempoMap.regions.begin(), tempoMap.regions.end(),
+            [](const auto &a, const auto &b) {
+              return a.startSec < b.startSec;
+            });
+  if (!juce::isPositiveAndBelow(selectedTempoRegionIndex,
+                                static_cast<int>(tempoMap.regions.size())))
+    selectedTempoRegionIndex = tempoMap.regions.empty() ? -1 : 0;
+}
+
+void WaveformBar::selectTempoRegion(const int regionIndex) {
+  if (!juce::isPositiveAndBelow(regionIndex,
+                                static_cast<int>(tempoMap.regions.size())))
+    return;
+  selectedTempoRegionIndex = regionIndex;
+  updateTempoControlsFromSelection();
+}
+
+void WaveformBar::updateTempoControlsFromSelection() {
+  const bool hasSelection =
+      juce::isPositiveAndBelow(selectedTempoRegionIndex,
+                               static_cast<int>(tempoMap.regions.size()));
+  tempoBpmEditor.setEnabled(hasSelection);
+  tempoSignatureBox.setEnabled(hasSelection);
+  if (!hasSelection)
+    return;
+
+  const auto &region = tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)];
+  tempoBpmEditor.setText(juce::String(region.bpm, 1),
+                         juce::dontSendNotification);
+  const auto signature = region.timeSignature.trim();
+  for (int i = 0; i < tempoSignatureBox.getNumItems(); ++i) {
+    if (tempoSignatureBox.getItemText(i) == signature) {
+      tempoSignatureBox.setSelectedItemIndex(i, juce::dontSendNotification);
+      break;
+    }
+  }
+}
+
+void WaveformBar::applyTempoControlsToSelection() {
+  if (!juce::isPositiveAndBelow(selectedTempoRegionIndex,
+                                static_cast<int>(tempoMap.regions.size())))
+    return;
+  auto &region = tempoMap.regions[static_cast<size_t>(selectedTempoRegionIndex)];
+  const double bpm = tempoBpmEditor.getText().getDoubleValue();
+  if (bpm > 0.0)
+    region.bpm = juce::jlimit(20.0, 300.0, bpm);
+  if (tempoSignatureBox.getSelectedItemIndex() >= 0)
+    region.timeSignature = tempoSignatureBox.getText().trim();
+  notifyTempoMapChanged();
+}
+
+void WaveformBar::deleteTempoRegion(const int regionIndex) {
+  if (!juce::isPositiveAndBelow(regionIndex,
+                                static_cast<int>(tempoMap.regions.size())))
+    return;
+
+  if (tempoMap.regions.size() <= 1)
+    return;
+
+  tempoMap.regions.erase(tempoMap.regions.begin() + regionIndex);
+  selectedTempoRegionIndex =
+      juce::jlimit(0, static_cast<int>(tempoMap.regions.size()) - 1,
+                   regionIndex);
+  activeDragTempoRegionIndex = -1;
+  tempoDragPendingCommit = false;
+  notifyTempoMapChanged();
+}
+
+void WaveformBar::notifyTempoMapChanged() {
+  normalizeTempoMap();
+  updateTempoControlsFromSelection();
+  lastAppliedTempoRegionIndex = -1;
+  updateActiveTempoRegionFromTransport();
+  if (onTempoMapChanged)
+    onTempoMapChanged(tempoMap);
+  repaint();
+}
+
+void WaveformBar::updateActiveTempoRegionFromTransport() {
+  if (tempoMap.regions.empty() || onActiveTempoRegionChanged == nullptr)
+    return;
+  const double pos = positionProvider != nullptr ? positionProvider() : 0.0;
+  int active = 0;
+  for (int i = 0; i < static_cast<int>(tempoMap.regions.size()); ++i) {
+    const auto &region = tempoMap.regions[static_cast<size_t>(i)];
+    if (pos >= region.startSec && pos < region.endSec) {
+      active = i;
+      break;
+    }
+  }
+  if (active == lastAppliedTempoRegionIndex)
+    return;
+  lastAppliedTempoRegionIndex = active;
+  onActiveTempoRegionChanged(tempoMap.regions[static_cast<size_t>(active)]);
 }

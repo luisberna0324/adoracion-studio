@@ -63,6 +63,10 @@ DynamicGuideMixSnapshot makeDefaultDynamicGuideMixSnapshot() {
   return {};
 }
 
+ClickDynMixSnapshot makeDefaultClickDynMixSnapshot() {
+  return {};
+}
+
 bool dynamicGuidesEqual(const DynamicGuideSettings &a,
                         const DynamicGuideSettings &b) {
   return a.enabled == b.enabled && a.timing == b.timing && a.mode == b.mode &&
@@ -73,6 +77,24 @@ bool dynamicGuidesEqual(const DynamicGuideSettings &a,
 bool dynamicGuideMixesEqual(const DynamicGuideMixSnapshot &a,
                             const DynamicGuideMixSnapshot &b) {
   return juce::approximatelyEqual(a.volume, b.volume) &&
+         juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
+         a.solo == b.solo && a.outputChannel == b.outputChannel &&
+         a.outputWidth == b.outputWidth;
+}
+
+ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
+  mix.divisionMask = mix.divisionMask & 0x07;
+  mix.volume = juce::jlimit(0.0f, 1.0f, mix.volume);
+  mix.gain = juce::jlimit(0.0f, 4.0f, mix.gain);
+  mix.outputChannel = juce::jmax(1, mix.outputChannel);
+  mix.outputWidth = juce::jlimit(1, 2, mix.outputWidth);
+  return mix;
+}
+
+bool clickDynMixesEqual(const ClickDynMixSnapshot &a,
+                        const ClickDynMixSnapshot &b) {
+  return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
+         juce::approximatelyEqual(a.volume, b.volume) &&
          juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
          a.solo == b.solo && a.outputChannel == b.outputChannel &&
          a.outputWidth == b.outputWidth;
@@ -1234,6 +1256,36 @@ bool SongLibraryStore::updateDynamicGuideMixForActiveSetlist(
       });
 }
 
+bool SongLibraryStore::getActiveSetlistClickDynMix(
+    const juce::String &songId, ClickDynMixSnapshot &outMix) {
+  if (songId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end())
+    return false;
+
+  outMix = normalizeClickDynMixSnapshot(it->clickDynMix);
+  return true;
+}
+
+bool SongLibraryStore::updateClickDynMixForActiveSetlist(
+    const juce::String &songId, const ClickDynMixSnapshot &mix) {
+  return updateActiveSetlistItem(
+      songId, [&mix](SetlistItem &item, const ImportedSongData &) {
+        item.clickDynMix = normalizeClickDynMixSnapshot(mix);
+      });
+}
+
 bool SongLibraryStore::saveWaveformCache(const juce::String &songId,
                                         const std::vector<float> &bins) {
   if (songId.isEmpty() || bins.empty())
@@ -1691,6 +1743,7 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
     stemVars.add(stemToVar(stem));
   obj->setProperty("stems", juce::var(stemVars));
   obj->setProperty("arrangement", arrangementToVar(song.arrangement));
+  obj->setProperty("tempoMap", tempoMapToVar(song.tempoMap));
   return juce::var(obj);
 }
 
@@ -1723,6 +1776,10 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
     song.arrangement =
         arrangementFromVar(obj->getProperty("arrangement"), &song, changed);
   }
+  if (obj->hasProperty("tempoMap"))
+    song.tempoMap = tempoMapFromVar(obj->getProperty("tempoMap"), &song, changed);
+  else
+    song.tempoMap = tempoMapFromVar({}, &song, changed);
 
   return song;
 }
@@ -1796,6 +1853,7 @@ SetlistItem SongLibraryStore::createSetlistItem(const ImportedSongData &song) {
   item.dynamicGuide = makeDefaultDynamicGuideSettings();
   item.dynamicGuideCustomized = false;
   item.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
+  item.clickDynMix = makeDefaultClickDynMixSnapshot();
   item.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return item;
 }
@@ -2070,6 +2128,93 @@ SongArrangementSnapshot SongLibraryStore::arrangementFromVar(
   return arrangement;
 }
 
+juce::var SongLibraryStore::tempoRegionToVar(
+    const SongTempoRegionSnapshot &region) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("id", region.id);
+  obj->setProperty("startSec", region.startSec);
+  obj->setProperty("endSec", region.endSec);
+  obj->setProperty("bpm", region.bpm);
+  obj->setProperty("timeSignature", region.timeSignature);
+  obj->setProperty("clickDivision", static_cast<int>(region.clickDivision));
+  obj->setProperty("accentEnabled", region.accentEnabled);
+  return juce::var(obj);
+}
+
+SongTempoRegionSnapshot SongLibraryStore::tempoRegionFromVar(
+    const juce::var &v) {
+  SongTempoRegionSnapshot region;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return region;
+  region.id = obj->getProperty("id").toString();
+  region.startSec = static_cast<double>(obj->getProperty("startSec"));
+  region.endSec = static_cast<double>(obj->getProperty("endSec"));
+  region.bpm = static_cast<double>(obj->getProperty("bpm"));
+  region.timeSignature = obj->getProperty("timeSignature").toString();
+  const int division = static_cast<int>(obj->getProperty("clickDivision"));
+  region.clickDivision =
+      division >= 4 ? ClickDivision::Sixteenth
+                    : (division >= 2 ? ClickDivision::Eighth
+                                     : ClickDivision::Quarter);
+  if (obj->hasProperty("accentEnabled"))
+    region.accentEnabled = static_cast<bool>(obj->getProperty("accentEnabled"));
+  return region;
+}
+
+juce::var SongLibraryStore::tempoMapToVar(
+    const SongTempoMapSnapshot &tempoMap) {
+  auto *obj = new juce::DynamicObject();
+  juce::Array<juce::var> regionsArray;
+  regionsArray.ensureStorageAllocated(static_cast<int>(tempoMap.regions.size()));
+  for (const auto &region : tempoMap.regions)
+    regionsArray.add(tempoRegionToVar(region));
+  obj->setProperty("regions", juce::var(regionsArray));
+  return juce::var(obj);
+}
+
+SongTempoMapSnapshot SongLibraryStore::tempoMapFromVar(
+    const juce::var &v, const ImportedSongData *song, bool &changed) {
+  SongTempoMapSnapshot tempoMap;
+  if (auto *obj = v.getDynamicObject()) {
+    if (auto *regionsArray = obj->getProperty("regions").getArray()) {
+      tempoMap.regions.reserve(static_cast<size_t>(regionsArray->size()));
+      for (const auto &regionVar : *regionsArray) {
+        auto region = tempoRegionFromVar(regionVar);
+        if (region.id.isEmpty())
+          region.id = juce::Uuid().toString();
+        if (region.bpm <= 0.0)
+          region.bpm = song != nullptr && song->bpm > 0 ? song->bpm : 120.0;
+        if (region.timeSignature.trim().isEmpty())
+          region.timeSignature =
+              song != nullptr && song->timeSignature.trim().isNotEmpty()
+                  ? song->timeSignature.trim()
+                  : "4/4";
+        if (region.endSec > region.startSec)
+          tempoMap.regions.push_back(std::move(region));
+      }
+    }
+  }
+
+  const double songLength = song != nullptr ? estimateSongLengthSeconds(*song) : 0.0;
+  if (tempoMap.regions.empty() && songLength > 0.0) {
+    SongTempoRegionSnapshot region;
+    region.id = juce::Uuid().toString();
+    region.startSec = 0.0;
+    region.endSec = songLength;
+    region.bpm = song != nullptr && song->bpm > 0 ? song->bpm : 120.0;
+    region.timeSignature =
+        song != nullptr && song->timeSignature.trim().isNotEmpty()
+            ? song->timeSignature.trim()
+            : "4/4";
+    region.clickDivision = ClickDivision::Quarter;
+    region.accentEnabled = true;
+    tempoMap.regions.push_back(std::move(region));
+    changed = true;
+  }
+  return tempoMap;
+}
+
 juce::var SongLibraryStore::dynamicGuideToVar(
     const DynamicGuideSettings &settings) {
   auto *obj = new juce::DynamicObject();
@@ -2141,6 +2286,55 @@ DynamicGuideMixSnapshot SongLibraryStore::dynamicGuideMixFromVar(
 
   const auto defaults = makeDefaultDynamicGuideMixSnapshot();
   if (!dynamicGuideMixesEqual(out, defaults))
+    changed = true;
+  return out;
+}
+
+juce::var SongLibraryStore::clickDynMixToVar(const ClickDynMixSnapshot &mix) {
+  const auto normalized = normalizeClickDynMixSnapshot(mix);
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("divisionMask", normalized.divisionMask);
+  obj->setProperty("enabled", normalized.enabled);
+  obj->setProperty("volume", normalized.volume);
+  obj->setProperty("gain", normalized.gain);
+  obj->setProperty("mute", normalized.mute);
+  obj->setProperty("solo", normalized.solo);
+  obj->setProperty("outputChannel", normalized.outputChannel);
+  obj->setProperty("outputWidth", normalized.outputWidth);
+  return juce::var(obj);
+}
+
+ClickDynMixSnapshot SongLibraryStore::clickDynMixFromVar(const juce::var &v,
+                                                         bool &changed) {
+  auto out = makeDefaultClickDynMixSnapshot();
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return out;
+
+  if (obj->hasProperty("divisionMask"))
+    out.divisionMask = static_cast<int>(obj->getProperty("divisionMask"));
+  if (obj->hasProperty("enabled"))
+    out.enabled = static_cast<bool>(obj->getProperty("enabled"));
+  if (obj->hasProperty("volume"))
+    out.volume = static_cast<float>(obj->getProperty("volume"));
+  if (obj->hasProperty("gain"))
+    out.gain = static_cast<float>(obj->getProperty("gain"));
+  if (obj->hasProperty("mute"))
+    out.mute = static_cast<bool>(obj->getProperty("mute"));
+  if (obj->hasProperty("solo"))
+    out.solo = static_cast<bool>(obj->getProperty("solo"));
+  if (obj->hasProperty("outputChannel"))
+    out.outputChannel = static_cast<int>(obj->getProperty("outputChannel"));
+  if (obj->hasProperty("outputWidth"))
+    out.outputWidth = static_cast<int>(obj->getProperty("outputWidth"));
+
+  const auto normalized = normalizeClickDynMixSnapshot(out);
+  if (!clickDynMixesEqual(out, normalized))
+    changed = true;
+  out = normalized;
+
+  const auto defaults = makeDefaultClickDynMixSnapshot();
+  if (!clickDynMixesEqual(out, defaults))
     changed = true;
   return out;
 }
@@ -2260,6 +2454,7 @@ juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
     obj->setProperty("dynamicGuideCustomized", true);
   }
   obj->setProperty("dynamicGuideMix", dynamicGuideMixToVar(item.dynamicGuideMix));
+  obj->setProperty("clickDynMix", clickDynMixToVar(item.clickDynMix));
   obj->setProperty("updatedMs", static_cast<juce::int64>(item.updatedMs));
   return juce::var(obj);
 }
@@ -2309,6 +2504,11 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
     item.dynamicGuideMix =
         dynamicGuideMixFromVar(obj->getProperty("dynamicGuideMix"), changed);
   }
+  item.clickDynMix = makeDefaultClickDynMixSnapshot();
+  if (obj->hasProperty("clickDynMix")) {
+    item.clickDynMix = clickDynMixFromVar(obj->getProperty("clickDynMix"),
+                                          changed);
+  }
   if (song != nullptr) {
     const auto defaultWindow = createDefaultWindowForSong(*song);
     if (!item.windowCustomized) {
@@ -2344,6 +2544,12 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
     normalizedGuideMix.outputWidth = juce::jlimit(1, 2, normalizedGuideMix.outputWidth);
     if (!dynamicGuideMixesEqual(item.dynamicGuideMix, normalizedGuideMix)) {
       item.dynamicGuideMix = normalizedGuideMix;
+      changed = true;
+    }
+    const auto normalizedClickDynMix =
+        normalizeClickDynMixSnapshot(item.clickDynMix);
+    if (!clickDynMixesEqual(item.clickDynMix, normalizedClickDynMix)) {
+      item.clickDynMix = normalizedClickDynMix;
       changed = true;
     }
   }
@@ -2469,6 +2675,14 @@ bool SongLibraryStore::updateActiveSetlistItem(
     normalizedGuideMix.outputWidth = juce::jlimit(1, 2, normalizedGuideMix.outputWidth);
     if (!dynamicGuideMixesEqual(it->dynamicGuideMix, normalizedGuideMix)) {
       it->dynamicGuideMix = normalizedGuideMix;
+      changed = true;
+    }
+  }
+  {
+    const auto normalizedClickDynMix =
+        normalizeClickDynMixSnapshot(it->clickDynMix);
+    if (!clickDynMixesEqual(it->clickDynMix, normalizedClickDynMix)) {
+      it->clickDynMix = normalizedClickDynMix;
       changed = true;
     }
   }

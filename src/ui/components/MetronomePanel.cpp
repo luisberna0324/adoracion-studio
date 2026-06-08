@@ -249,7 +249,7 @@ MetronomePanel::MetronomePanel(MTControlsAudioProcessor &processorRef)
   applyTimeSignature("4/4");
   refreshFromProcessor();
   refreshThemeColours();
-  startTimerHz(30);
+  startTimerHz(20);
 }
 
 void MetronomePanel::setSongBpm(double bpm) {
@@ -341,9 +341,9 @@ void MetronomePanel::registerTap() {
 
 void MetronomePanel::applyTimeSignature(const juce::String &sigText) {
   timeSignature = sigText.trim();
-  const int numerator =
-      timeSignature.upToFirstOccurrenceOf("/", false, false).getIntValue();
-  beatsPerBar = numerator > 0 ? numerator : 4;
+  if (timeSignature.isEmpty())
+    timeSignature = "4/4";
+  beatsPerBar = timeSignatureBeatsPerBar(timeSignature);
   processor.setMetronomeBeatsPerBar(beatsPerBar);
   beatCounter = 0.0;
   lastBeatIndex = -1;
