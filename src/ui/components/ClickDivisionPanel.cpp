@@ -58,7 +58,7 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   btn14 = std::make_unique<DivisionButton>("1/4", 1);
   btn18 = std::make_unique<DivisionButton>("1/8", 2);
   btn116 = std::make_unique<DivisionButton>("1/16", 4);
-  volumeKnob = std::make_unique<juce::Slider>();
+  volumeKnob = std::make_unique<LearnAwareSlider>();
   meter = std::make_unique<StereoVUMeter>(
       std::move(levelProvider), [this] { return muted; });
   soloButton = std::make_unique<LearnAwareButton>("S");
@@ -84,15 +84,23 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   btn116->onPointerDown = [this] { selectMidiLearnTarget(midiSixteenthTargetId); };
 
   volumeKnob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+  volumeKnob->setViewportIgnoreDragFlag(true);
   volumeKnob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
   volumeKnob->setRange(0.0, 1.0);
   volumeKnob->setValue(1.0, juce::dontSendNotification);
   volumeKnob->setLookAndFeel(&lookAndFeel);
+  volumeKnob->setMouseDragSensitivity(170);
   volumeKnob->onValueChange = [this] {
     if (suppressVolumeCallback)
       return;
     if (onVolumeChanged)
       onVolumeChanged(static_cast<float>(volumeKnob->getValue()));
+  };
+  volumeKnob->onDragEnd = [this] {
+    if (suppressVolumeCallback)
+      return;
+    if (onVolumeDragEnded)
+      onVolumeDragEnded(static_cast<float>(volumeKnob->getValue()));
   };
   addAndMakeVisible(*volumeKnob);
   addAndMakeVisible(*meter);
@@ -279,6 +287,10 @@ void ClickDivisionPanel::setOnDivisionChanged(std::function<void(int)> cb) {
 
 void ClickDivisionPanel::setOnVolumeChanged(std::function<void(float)> cb) {
   onVolumeChanged = std::move(cb);
+}
+
+void ClickDivisionPanel::setOnVolumeDragEnded(std::function<void(float)> cb) {
+  onVolumeDragEnded = std::move(cb);
 }
 
 void ClickDivisionPanel::setOnPowerChanged(std::function<void(bool)> cb) {

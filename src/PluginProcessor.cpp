@@ -6,7 +6,6 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <unordered_map>
 
 namespace {
 constexpr double kMinPlaybackTempoBpm = 20.0;
@@ -102,10 +101,24 @@ PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
   }
 }
 
-juce::String arrangementBaseSectionKey(const juce::String &partName) {
-  auto canonical = canonicalArrangementSectionName(partName);
-  if (canonical.isNotEmpty())
-    return DynamicGuideEngine::normalizeSectionKey(canonical);
+juce::String arrangementSectionKey(const juce::String &partName) {
+  const auto canonical = canonicalArrangementSectionName(partName);
+  if (canonical.isNotEmpty()) {
+    auto sectionKey = DynamicGuideEngine::normalizeSectionKey(canonical);
+    const auto normalizedName =
+        DynamicGuideEngine::normalizeSectionKey(partName);
+    int suffixStart = normalizedName.length();
+    while (suffixStart > 0 &&
+           juce::CharacterFunctions::isDigit(normalizedName[suffixStart - 1])) {
+      --suffixStart;
+    }
+    if (suffixStart > 0 && suffixStart < normalizedName.length() &&
+        juce::CharacterFunctions::isWhitespace(
+            normalizedName[suffixStart - 1])) {
+      sectionKey << " " << normalizedName.substring(suffixStart);
+    }
+    return sectionKey;
+  }
   return DynamicGuideEngine::normalizeSectionKey(partName);
 }
 
@@ -164,17 +177,6 @@ bool sectionTriggersOnEntry(const juce::String &sectionKey,
          isDynamicGuideUtilityCueKey(sectionName);
 }
 
-int sectionOccurrenceLimit(const juce::String &baseKey) {
-  if (baseKey == "chorus")
-    return 4;
-  if (baseKey == "pre chorus")
-    return 4;
-  if (baseKey == "bridge")
-    return 4;
-  if (baseKey == "verse")
-    return 6;
-  return 0;
-}
 } // namespace
 
 #if JucePlugin_Build_Standalone
@@ -562,6 +564,23 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
       }
 
+      const int loopPartIndex =
+          arrangementLoopPartIndex.load(std::memory_order_relaxed);
+      const bool loopPartActive =
+          juce::isPositiveAndBelow(loopPartIndex,
+                                   static_cast<int>(arrangementParts.size()));
+      bool loopPartEngaged = false;
+      double loopStartSec = 0.0;
+      double loopEndSec = 0.0;
+      if (loopPartActive) {
+        const auto &loopPart =
+            arrangementParts[static_cast<size_t>(loopPartIndex)];
+        loopStartSec = loopPart.startSec;
+        loopEndSec = loopPart.endSec;
+        loopPartEngaged =
+            blockStartSec >= loopStartSec && blockStartSec < loopEndSec;
+      }
+
       if (dynamicGuideAnnouncementsActive && !arrangementParts.empty()) {
         if (dynamicGuideAnnouncedByPart.size() != arrangementParts.size())
           dynamicGuideAnnouncedByPart.assign(arrangementParts.size(), false);
@@ -601,23 +620,15 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               blockStartSec + 0.001 >= part.startSec &&
               blockStartSec < part.endSec;
 
-          if (!arrangementEditingActive) {
-            if (playheadInsidePart &&
-                (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
-                 seekAppliedThisBlock)) {
-              const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
-              const bool shouldTriggerNow =
-                  enteredPlayback || seekAppliedThisBlock || triggerOnEntry ||
-                  !alreadyAnnounced;
-              if (shouldTriggerNow)
-                triggerPartAnnouncement(part);
-              dynamicGuideAnnouncedByPart[partIdx] = true;
-            }
-          } else if (playheadInsidePart && triggerOnEntry &&
-                     (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
-                      seekAppliedThisBlock)) {
-            // En modo edición, las cuentas se comportan igual que fuera de edición.
-            triggerPartAnnouncement(part);
+          if (playheadInsidePart &&
+              (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
+               seekAppliedThisBlock)) {
+            const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
+            const bool shouldTriggerNow =
+                enteredPlayback || seekAppliedThisBlock || triggerOnEntry ||
+                !alreadyAnnounced;
+            if (shouldTriggerNow)
+              triggerPartAnnouncement(part);
             dynamicGuideAnnouncedByPart[partIdx] = true;
           }
         }
@@ -628,6 +639,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           if (dynamicGuideAnnouncedByPart[i])
             continue;
           const auto &part = arrangementParts[i];
+          if (loopPartEngaged && part.startSec >= windowEndSec)
+            continue;
           const bool triggerOnEntry =
               sectionTriggersOnEntry(part.sectionKey, part.name);
           const double triggerTime =
@@ -649,23 +662,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         dynamicGuideWasPlaying = false;
       }
 
-      const int loopPartIndex =
-          arrangementLoopPartIndex.load(std::memory_order_relaxed);
-      const bool loopPartActive =
-          juce::isPositiveAndBelow(loopPartIndex,
-                                   static_cast<int>(arrangementParts.size()));
-
-      bool loopPartEngaged = false;
-      if (loopPartActive) {
-        const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
-        loopPartEngaged =
-            blockStartSec >= loopPart.startSec && blockStartSec < loopPart.endSec;
-      }
-
       if (loopPartEngaged) {
-        const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
-        windowStartSec = loopPart.startSec;
-        windowEndSec = loopPart.endSec;
+        windowStartSec = loopStartSec;
+        windowEndSec = loopEndSec;
         fadeOutSec = 0.0;
         arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
@@ -673,7 +672,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = loopPartIndex;
-          nextArrangementPartStartSec = loopPart.startSec;
+          nextArrangementPartStartSec = loopStartSec;
         }
       } else if (customArrangement && !arrangementParts.empty() &&
                  juce::isPositiveAndBelow(mappedPartIndex,
@@ -1116,7 +1115,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     stopSong();
   }
 
-  if (isMetronomeEnabled()) {
+  const bool metronomePlaybackActive =
+      isMetronomeEnabled() && getTransportState() == TransportState::playing;
+  if (metronomePlaybackActive) {
     if (metronomeRenderBuffer.getNumSamples() < numSamples)
       metronomeRenderBuffer.setSize(2, numSamples, false, false, true);
     metronomeRenderBuffer.clear();
@@ -2295,6 +2296,8 @@ void MTControlsAudioProcessor::playSong() {
   metronome.syncPhaseForTimeSeconds(
       songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
+  if (isMetronomeEnabled())
+    metronome.triggerImmediateClick();
 }
 
 void MTControlsAudioProcessor::pauseSong() {
@@ -2533,23 +2536,6 @@ void MTControlsAudioProcessor::setSongArrangement(
         });
   }
 
-  // Build section keys for dynamic guide matching. For repeated musical
-  // sections we derive numbered keys (e.g. "chorus 2") from occurrence order.
-  std::unordered_map<std::string, int> totalByBase;
-  for (auto &part : next) {
-    const auto countKey = arrangementCountSectionKey(part.name);
-    if (countKey.isNotEmpty())
-      continue;
-    auto baseKey = arrangementBaseSectionKey(part.name);
-    if (baseKey.isEmpty())
-      baseKey = DynamicGuideEngine::normalizeSectionKey(part.name);
-    if (baseKey.isEmpty())
-      continue;
-    if (sectionOccurrenceLimit(baseKey) > 0)
-      ++totalByBase[baseKey.toStdString()];
-  }
-
-  std::unordered_map<std::string, int> seenByBase;
   for (auto &part : next) {
     const auto countKey = arrangementCountSectionKey(part.name);
     if (countKey.isNotEmpty()) {
@@ -2557,26 +2543,7 @@ void MTControlsAudioProcessor::setSongArrangement(
       continue;
     }
 
-    auto baseKey = arrangementBaseSectionKey(part.name);
-    if (baseKey.isEmpty())
-      baseKey = DynamicGuideEngine::normalizeSectionKey(part.name);
-    if (baseKey.isEmpty()) {
-      part.sectionKey.clear();
-      continue;
-    }
-
-    const auto baseStd = baseKey.toStdString();
-    const int total = totalByBase.count(baseStd) > 0 ? totalByBase[baseStd] : 0;
-    const int limit = sectionOccurrenceLimit(baseKey);
-    if (limit > 0 && total > 1) {
-      const int occurrence = ++seenByBase[baseStd];
-      if (occurrence <= limit)
-        part.sectionKey = baseKey + " " + juce::String(occurrence);
-      else
-        part.sectionKey = baseKey;
-    } else {
-      part.sectionKey = baseKey;
-    }
+    part.sectionKey = arrangementSectionKey(part.name);
   }
 
   if (next.empty()) {
@@ -3179,12 +3146,13 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   metronome.setEnabled(enabled);
+  metronome.reset();
   if (enabled) {
-    metronome.reset();
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
     metronome.syncPhaseForTimeSeconds(currentSec);
-    metronome.triggerImmediateClick();
+    if (getTransportState() == TransportState::playing)
+      metronome.triggerImmediateClick();
   }
 }
 

@@ -275,6 +275,11 @@ public:
       divisionPanel->setOnVolumeChanged(std::move(callback));
   }
 
+  void setOnDivisionVolumeDragEnded(std::function<void(float)> callback) {
+    if (divisionPanel != nullptr)
+      divisionPanel->setOnVolumeDragEnded(std::move(callback));
+  }
+
   void setOnDivisionPowerChanged(std::function<void(bool)> callback) {
     if (divisionPanel != nullptr)
       divisionPanel->setOnPowerChanged(std::move(callback));
@@ -990,12 +995,18 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->getStrip().setOnVolumeChanged(
         [this, stemIndex, stemId](float value) {
       processor.setStemVolume(stemIndex, value);
+    });
+    slot->getStrip().setOnVolumeDragEnded(
+        [this, stemId](float value) {
       if (currentSongId.isNotEmpty() && stemId.isNotEmpty())
         queueStemVolumePersistence(stemId, value);
     });
     slot->getStrip().setOnGainChanged(
         [this, stemIndex, stemId](float value) {
       processor.setStemGain(stemIndex, value);
+    });
+    slot->getStrip().setOnGainDragEnded(
+        [this, stemId](float value) {
       if (currentSongId.isNotEmpty())
         SongLibraryStore::updateStemGainForActiveSetlist(currentSongId, stemId,
                                                          value);
@@ -1471,11 +1482,15 @@ void ChannelGridPanel::addMasterSlot() {
   strip.setMuteState(processor.isMasterMuted());
   strip.setOnVolumeChanged([this](float value) {
     processor.setMasterVolume(value);
+  });
+  strip.setOnVolumeDragEnded([this](float value) {
     if (currentSongId.isNotEmpty())
       queueMasterVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
     processor.setMasterGain(value);
+  });
+  strip.setOnGainDragEnded([this](float value) {
     if (currentSongId.isNotEmpty())
       SongLibraryStore::updateMasterGainForActiveSetlist(currentSongId, value);
   });
@@ -1530,6 +1545,8 @@ void ChannelGridPanel::addDivisionSlot() {
   });
   slot->setOnDivisionVolumeChanged([this](const float volume) {
     processor.setMetronomeVolume(volume);
+  });
+  slot->setOnDivisionVolumeDragEnded([this](const float volume) {
     queueClickDynVolumePersistence(volume);
   });
   slot->setOnDivisionPowerChanged([this](const bool enabled) {
@@ -1588,10 +1605,14 @@ void ChannelGridPanel::addMetronomeVirtualSlot() {
   strip.setSoloState(processor.isMetronomeSolo());
   strip.setOnVolumeChanged([this](float value) {
     processor.setMetronomeVolume(value);
+  });
+  strip.setOnVolumeDragEnded([this](float value) {
     queueClickDynVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
     processor.setMetronomeGain(value);
+  });
+  strip.setOnGainDragEnded([this](float) {
     persistClickDynMixForCurrentSong();
   });
   strip.setOnMuteChanged([this](bool muted) {
@@ -1655,10 +1676,14 @@ void ChannelGridPanel::addDynamicGuideVirtualSlot() {
   strip.setSoloState(processor.isDynamicGuideSolo());
   strip.setOnVolumeChanged([this](float value) {
     processor.setDynamicGuideVolume(value);
+  });
+  strip.setOnVolumeDragEnded([this](float value) {
     queueDynamicGuideVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
     processor.setDynamicGuideGain(value);
+  });
+  strip.setOnGainDragEnded([this](float) {
     persistDynamicGuideMixForCurrentSong();
   });
   strip.setOnMuteChanged([this](bool muted) {

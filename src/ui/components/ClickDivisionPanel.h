@@ -26,6 +26,7 @@ public:
   void setSoloState(bool soloed);
   void setOnDivisionChanged(std::function<void(int)> cb);
   void setOnVolumeChanged(std::function<void(float)> cb);
+  void setOnVolumeDragEnded(std::function<void(float)> cb);
   void setOnPowerChanged(std::function<void(bool)> cb);
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
@@ -79,6 +80,7 @@ private:
   bool suppressVolumeCallback = false;
   std::function<void(int)> onDivisionChanged;
   std::function<void(float)> onVolumeChanged;
+  std::function<void(float)> onVolumeDragEnded;
   std::function<void(bool)> onPowerChanged;
   std::function<void(bool)> onMuteChanged;
   std::function<void(bool)> onSoloChanged;
@@ -95,7 +97,24 @@ private:
   std::unique_ptr<DivisionButton> btn14;
   std::unique_ptr<DivisionButton> btn18;
   std::unique_ptr<DivisionButton> btn116;
-  std::unique_ptr<juce::Slider> volumeKnob;
+  class LearnAwareSlider final : public juce::Slider {
+  public:
+    std::function<void()> onPointerDown;
+    std::function<void()> onDragEnd;
+
+    void mouseDown(const juce::MouseEvent &event) override {
+      juce::Slider::mouseDown(event);
+      if (onPointerDown)
+        onPointerDown();
+    }
+
+    void mouseUp(const juce::MouseEvent &event) override {
+      juce::Slider::mouseUp(event);
+      if (onDragEnd)
+        onDragEnd();
+    }
+  };
+  std::unique_ptr<LearnAwareSlider> volumeKnob;
   std::unique_ptr<StereoVUMeter> meter;
   std::unique_ptr<LearnAwareButton> soloButton;
   std::unique_ptr<LearnAwareButton> muteButton;

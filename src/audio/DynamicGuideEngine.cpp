@@ -2,36 +2,48 @@
 
 #include <cctype>
 #include <limits>
-#include <unordered_set>
+#include <unordered_map>
 
 namespace {
 std::string toKeyString(const juce::String &text) {
   return text.toStdString();
 }
 
-std::vector<juce::String>
-deriveSectionKeysFromFilename(const juce::String &fileName) {
-  std::vector<juce::String> keys;
-  std::unordered_set<std::string> seen;
+struct SectionKeyCandidate {
+  juce::String key;
+  int priority = 0;
+};
+
+std::vector<SectionKeyCandidate>
+deriveSectionKeyCandidatesFromFilename(const juce::String &fileName) {
+  std::vector<SectionKeyCandidate> candidates;
+  std::unordered_map<std::string, size_t> candidateIndexByKey;
 
   auto label = fileName.trim();
   const int dash = label.indexOf(" - ");
   if (dash >= 0)
     label = label.substring(dash + 3).trim();
 
-  const auto pushKey = [&](const juce::String &candidate) {
+  const auto pushKey = [&](const juce::String &candidate, const int priority) {
     const auto key = DynamicGuideEngine::normalizeSectionKey(candidate);
     if (key.isEmpty())
       return;
     const auto asStd = toKeyString(key);
-    if (seen.insert(asStd).second)
-      keys.push_back(key);
+    if (const auto existing = candidateIndexByKey.find(asStd);
+        existing != candidateIndexByKey.end()) {
+      candidates[existing->second].priority =
+          juce::jmax(candidates[existing->second].priority, priority);
+      return;
+    }
+    candidateIndexByKey.emplace(asStd, candidates.size());
+    candidates.push_back({key, priority});
   };
 
-  pushKey(label);
+  pushKey(label, 10);
 
   const auto outside = label.upToFirstOccurrenceOf("(", false, false).trim();
-  pushKey(outside);
+  const bool hasParenthesizedAlias = label.containsChar('(');
+  pushKey(outside, hasParenthesizedAlias ? 40 : 30);
 
   int start = 0;
   while (start < label.length()) {
@@ -41,10 +53,18 @@ deriveSectionKeysFromFilename(const juce::String &fileName) {
     const int close = label.indexOfChar(open + 1, ')');
     if (close < 0)
       break;
-    pushKey(label.substring(open + 1, close).trim());
+    pushKey(label.substring(open + 1, close).trim(), 50);
     start = close + 1;
   }
 
+  return candidates;
+}
+
+std::vector<juce::String>
+deriveSectionKeysFromFilename(const juce::String &fileName) {
+  std::vector<juce::String> keys;
+  for (const auto &candidate : deriveSectionKeyCandidatesFromFilename(fileName))
+    keys.push_back(candidate.key);
   return keys;
 }
 } // namespace
@@ -72,6 +92,7 @@ bool DynamicGuideEngine::loadGuideDirectories(
     juce::String *errorMessage) {
   samplesByKey.clear();
   reset();
+  std::unordered_map<std::string, int> samplePriorityByKey;
 
   if (directories.empty()) {
     if (errorMessage != nullptr)
@@ -110,12 +131,20 @@ bool DynamicGuideEngine::loadGuideDirectories(
       sample->sampleRate =
           reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
 
-      const auto keys =
-          deriveSectionKeysFromFilename(file.getFileNameWithoutExtension());
-      if (keys.empty())
+      const auto candidates = deriveSectionKeyCandidatesFromFilename(
+          file.getFileNameWithoutExtension());
+      if (candidates.empty())
         continue;
-      for (const auto &key : keys)
-        samplesByKey[toKeyString(key)] = sample;
+      for (const auto &candidate : candidates) {
+        const auto key = toKeyString(candidate.key);
+        const auto existingPriority = samplePriorityByKey.find(key);
+        if (existingPriority != samplePriorityByKey.end() &&
+            existingPriority->second >= candidate.priority) {
+          continue;
+        }
+        samplesByKey[key] = sample;
+        samplePriorityByKey[key] = candidate.priority;
+      }
     }
   }
 

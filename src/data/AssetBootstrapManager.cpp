@@ -12,7 +12,8 @@ constexpr const char *kAssetsBaseUrl = "https://storage.googleapis.com/playworsh
 constexpr const char *kEncoderVersion = "2026-04-18-1";
 constexpr const char *kPadsVersion = "roman-v1";
 constexpr const char *kClicksVersion = "clicks-v1";
-constexpr const char *kGuidesVersion = "en-es-v1";
+constexpr const char *kGuidesVersion = "en-es-v2";
+constexpr const char *kGuidesVersionFileName = "pack-version.txt";
 
 juce::String buildEncoderUrl() {
 #if JUCE_WINDOWS
@@ -138,6 +139,12 @@ bool hasEnoughGuideSectionFiles(const juce::File &dir) noexcept {
   const auto files =
       dir.findChildFiles(juce::File::findFiles, false, "*.m4a;*.wav;*.aif;*.aiff;*.mp3");
   return files.size() >= 20;
+}
+
+bool hasCurrentGuidesVersion(const juce::File &guidesRoot) {
+  const auto versionFile = guidesRoot.getChildFile(kGuidesVersionFileName);
+  return versionFile.existsAsFile() &&
+         versionFile.loadFileAsString().trim() == kGuidesVersion;
 }
 } // namespace
 
@@ -525,8 +532,11 @@ bool AssetBootstrapManager::ensureGuidesPackReady(juce::String *errorMessage) {
   const auto enSections = guidesRoot.getChildFile("en").getChildFile("sections");
   const auto esSections = guidesRoot.getChildFile("es").getChildFile("sections");
 
-  if (hasEnoughGuideSectionFiles(enSections) && hasEnoughGuideSectionFiles(esSections))
+  if (hasEnoughGuideSectionFiles(enSections) &&
+      hasEnoughGuideSectionFiles(esSections) &&
+      hasCurrentGuidesVersion(guidesRoot)) {
     return true;
+  }
 
   const auto bundledZip = resolveBundledGuidesZipPath();
   if (!bundledZip.existsAsFile()) {
@@ -552,6 +562,14 @@ bool AssetBootstrapManager::ensureGuidesPackReady(juce::String *errorMessage) {
     return false;
   }
 
-  juce::ignoreUnused(kGuidesVersion);
+  if (!hasCurrentGuidesVersion(guidesRoot)) {
+    localError =
+        "Guides pack version mismatch after unpack. Expected " +
+        juce::String(kGuidesVersion) + ".";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
   return true;
 }

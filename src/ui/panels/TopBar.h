@@ -24,7 +24,9 @@ public:
                              std::function<double()> positionProviderFn,
                              std::function<double()> lengthProviderFn,
                              std::function<juce::String()> keyProviderFn,
-                             std::function<juce::String()> songIdProviderFn);
+                             std::function<juce::String()> songIdProviderFn,
+                             std::function<const ImportedSongData *()>
+                                 songProviderFn);
 
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
@@ -48,6 +50,7 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void mouseDown(const juce::MouseEvent &event) override;
   void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
@@ -121,14 +124,25 @@ private:
   std::function<double()> lengthProvider;
   std::function<juce::String()> keyProvider;
   std::function<juce::String()> songIdProvider;
+  std::function<const ImportedSongData *()> songProvider;
   MTControlsAudioProcessor &processor;
-  juce::String lastSongTitle;
+  juce::Rectangle<int> songInfoBounds;
+  juce::Image songArtwork;
+  juce::String songTitleText;
+  juce::String songArtistText;
+  juce::String lastSongId;
+  juce::String lastArtworkPath;
+  juce::Colour songAccentColour = UITheme::accent;
   juce::String lastKeyToken;
   juce::String activeKeyLabel;
   int baseKeySemitone = 0;
   int activeKeySemitone = 0;
   int activePitchDelta = 0;
   bool hasKey = false;
+  float songTitleFontSize = 13.0f;
+  float songArtistFontSize = 9.5f;
+  int songArtworkSize = 36;
+  int songCardHeight = 48;
   std::deque<double> tapTimes;
   double lastTickTime = 0.0;
   double beatCounter = 0.0;
@@ -159,6 +173,8 @@ private:
   void toggleWindowMode();
   void openSettingsPanel();
   void refreshFromProviders();
+  void paintSongInfoCard(juce::Graphics &g);
+  juce::Rectangle<int> getSongInfoAnchorBounds() const;
   void setBaseTooltip(IconButton &button, const juce::String &text);
   void refreshMidiLearnTooltips();
 };

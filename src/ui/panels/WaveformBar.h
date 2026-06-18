@@ -231,9 +231,12 @@ private:
   std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;
   double getSnapStepSeconds() const;
+  double getAnchorAttachThresholdSeconds() const;
+  double getAnchorReleaseThresholdSeconds() const;
   bool isSnapBypassed(const juce::ModifierKeys &mods) const;
   double snapSeconds(double seconds, bool bypassSnap = false) const;
-  void normalizeArrangement(bool sortByStart);
+  double snapSecondsForward(double seconds) const;
+  void normalizeArrangement(bool sortByStart, bool snapToGrid);
   int findPartIndexById(const juce::String &id) const;
   bool isPartSelected(int partIndex) const;
   void pruneSelectedPartIds();

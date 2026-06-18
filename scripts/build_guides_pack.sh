@@ -16,6 +16,7 @@ USAGE
 SOURCE_ROOT="${HOME}/Documents/proyectos/playworship"
 OUTPUT_ZIP="assets/guides/guides-en-es.zip"
 FFMPEG_BIN="ffmpeg"
+GUIDES_PACK_VERSION="en-es-v2"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -170,7 +171,6 @@ convert_category() {
     mapped="$(printf '%s' "$mapped" | sed -E 's/[Ss]alida/Outro/g')"
     if [[ "$mapped" != "$text" ]]; then
       add_variant_copy "$src_file" "$mapped"
-      add_variant_copy "$src_file" "$(printf '%s' "$mapped" | sed -E 's/[[:space:]]+[0-9]+$//')"
     fi
   }
 
@@ -181,19 +181,16 @@ convert_category() {
     local label
     label="$(extract_label "$base_name")"
     local label_no_paren
-    label_no_paren="$(printf '%s' "$label" | sed -E 's/[[:space:]]*\\([^)]*\\)//g; s/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+    label_no_paren="$(printf '%s' "$label" | sed -E 's/[[:space:]]*\([^)]*\)//g; s/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')"
     local paren_text
-    paren_text="$(printf '%s' "$label" | sed -nE 's/.*\\(([^)]*)\\).*/\\1/p' | head -n 1)"
+    paren_text="$(printf '%s' "$label" | sed -nE 's/.*\(([^)]*)\).*/\1/p' | head -n 1)"
 
     add_variant_copy "$file" "$label"
     add_variant_copy "$file" "$label_no_paren"
     if [[ -n "$paren_text" ]]; then
       add_variant_copy "$file" "$paren_text"
-      add_variant_copy "$file" "$(printf '%s' "$paren_text" | sed -E 's/[[:space:]]+[0-9]+$//')"
     fi
 
-    add_variant_copy "$file" "$(printf '%s' "$label_no_paren" | sed -E 's/[[:space:]]+[0-9]+$//')"
-    add_variant_copy "$file" "$(printf '%s' "$label_no_paren" | awk '{print $1}')"
     if [[ "$lang" == "es" && "$category" == "sections" ]]; then
       add_es_to_en_aliases "$file" "$label"
       add_es_to_en_aliases "$file" "$label_no_paren"
@@ -202,16 +199,8 @@ convert_category() {
       fi
     fi
   done < <(find "$src_dir" -type f \
-    \( -iname '*.wav' -o -iname '*.aif' -o -iname '*.aiff' -o -iname '*.mp3' -o -iname '*.m4a' \) -print0)
-
-  while IFS= read -r -d '' m4a_file; do
-    local key_name
-    key_name="$(basename "${m4a_file%.*}")"
-    local simple
-    simple="$(printf '%s' "$key_name" | sed -E 's/[[:space:]]*\\([^)]*\\)//g; s/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')"
-    add_variant_copy "$m4a_file" "$simple"
-    add_variant_copy "$m4a_file" "$(printf '%s' "$simple" | sed -E 's/[[:space:]]+[0-9]+$//')"
-  done < <(find "$dst_base" -type f -name '*.m4a' -print0)
+    \( -iname '*.wav' -o -iname '*.aif' -o -iname '*.aiff' -o -iname '*.mp3' -o -iname '*.m4a' \) \
+    -print0 | sort -z)
 
   if [[ "$category" == "sections" ]]; then
     ensure_canonical_key() {
@@ -227,6 +216,7 @@ convert_category() {
         match="$(find "$dst_base" -maxdepth 1 -type f -name '*.m4a' \
           | sed 's#^.*/##' \
           | grep -Ei "^${pattern}\\.m4a$" \
+          | sort \
           | head -n 1 || true)"
         if [[ -n "$match" && -f "$dst_base/$match" ]]; then
           cp -f "$dst_base/$match" "$canonical_file"
@@ -236,20 +226,28 @@ convert_category() {
       done
     }
 
-    ensure_canonical_key "intro" "intro($| .*)"
-    ensure_canonical_key "verse" "verse($| .*)" "verso($| .*)"
-    ensure_canonical_key "pre chorus" "pre chorus($| .*)" "pre coro($| .*)"
-    ensure_canonical_key "chorus" "chorus($| .*)" "coro($| .*)"
-    ensure_canonical_key "post chorus" "post chorus($| .*)" "post coro($| .*)"
-    ensure_canonical_key "bridge" "bridge($| .*)" "puente($| .*)"
-    ensure_canonical_key "instrumental" "instrumental($| .*)"
-    ensure_canonical_key "solo" "solo($| .*)"
-    ensure_canonical_key "breakdown" "breakdown($| .*)" "baja intensidad($| .*)"
-    ensure_canonical_key "interlude" "interlude($| .*)" "interludio($| .*)"
-    ensure_canonical_key "tag" "tag($| .*)" "repetir($| .*)"
-    ensure_canonical_key "vamp" "vamp($| .*)"
-    ensure_canonical_key "outro" "outro($| .*)"
-    ensure_canonical_key "ending" "ending($| .*)" "final($| .*)"
+    ensure_canonical_key "intro" "intro" "intro 1($| .*)"
+    ensure_canonical_key "verse" "verse" "verso" "verse 1($| .*)" "verso 1($| .*)"
+    ensure_canonical_key "pre chorus" "pre chorus" "pre coro" \
+      "pre chorus 1($| .*)" "pre coro 1($| .*)"
+    ensure_canonical_key "chorus" "chorus" "coro" \
+      "chorus 1($| .*)" "coro 1($| .*)"
+    ensure_canonical_key "post chorus" "post chorus" "post coro" \
+      "post chorus 1($| .*)" "post coro 1($| .*)"
+    ensure_canonical_key "bridge" "bridge" "puente" \
+      "bridge 1($| .*)" "puente 1($| .*)"
+    ensure_canonical_key "instrumental" "instrumental" "instrumental 1($| .*)"
+    ensure_canonical_key "solo" "solo" "solo 1($| .*)"
+    ensure_canonical_key "breakdown" "breakdown" "baja intensidad" \
+      "breakdown 1($| .*)" "baja intensidad 1($| .*)"
+    ensure_canonical_key "interlude" "interlude" "interludio" \
+      "interlude 1($| .*)" "interludio 1($| .*)"
+    ensure_canonical_key "tag" "tag" "repetir" \
+      "tag 1($| .*)" "repetir 1($| .*)"
+    ensure_canonical_key "vamp" "vamp" "vamp 1($| .*)"
+    ensure_canonical_key "outro" "outro" "outro 1($| .*)"
+    ensure_canonical_key "ending" "ending" "final" \
+      "ending 1($| .*)" "final 1($| .*)"
   fi
 }
 
@@ -274,9 +272,10 @@ done
 
 mkdir -p "$(dirname "$OUTPUT_ZIP")"
 rm -f "$OUTPUT_ZIP"
+printf '%s\n' "$GUIDES_PACK_VERSION" > "$TMP_DIR/pack-version.txt"
 (
   cd "$TMP_DIR"
-  /usr/bin/zip -qr "$OLDPWD/$OUTPUT_ZIP" en es
+  /usr/bin/zip -qr "$OLDPWD/$OUTPUT_ZIP" en es pack-version.txt
 )
 
 echo "Created guides pack: $OUTPUT_ZIP"

@@ -5,6 +5,8 @@
 
 namespace {
 constexpr const char *kAudioFilePattern = "*.m4a;*.wav;*.aif;*.aiff;*.mp3";
+constexpr float kEighthClickGainScale = 0.49f;
+constexpr float kSixteenthClickGainScale = 0.20f;
 
 juce::String sanitizeToken(juce::String text) {
   text = text.trim().toLowerCase();
@@ -362,19 +364,27 @@ bool MetronomeEngine::loadSampleFile(juce::File const &file,
 void MetronomeEngine::triggerClick(const ClickLayer layer,
                                    const bool mainBeat,
                                    const float triggerGain) noexcept {
+  const float layerGainScale = layer == ClickLayer::eighth
+                                   ? kEighthClickGainScale
+                                   : (layer == ClickLayer::sixteenth
+                                          ? kSixteenthClickGainScale
+                                          : 1.0f);
+  const float adjustedTriggerGain = triggerGain * layerGainScale;
   if (auto samples =
           std::atomic_load_explicit(&clickSamples, std::memory_order_acquire)) {
     if (auto *sampleToUse = selectSampleForTrigger(*samples, layer);
         sampleToUse != nullptr &&
-        triggerSampleClick(std::move(samples), sampleToUse, triggerGain)) {
+        triggerSampleClick(std::move(samples), sampleToUse,
+                           adjustedTriggerGain)) {
       if (layer != ClickLayer::downbeat)
         triggerSyntheticClick(layer, mainBeat,
-                              layer == ClickLayer::eighth ? 0.085f : 0.065f);
+                              (layer == ClickLayer::eighth ? 0.085f : 0.065f) *
+                                  layerGainScale);
       return;
     }
   }
 
-  triggerSyntheticClick(layer, mainBeat, triggerGain);
+  triggerSyntheticClick(layer, mainBeat, adjustedTriggerGain);
 }
 
 const MetronomeEngine::ClickSample *MetronomeEngine::selectSampleForTrigger(

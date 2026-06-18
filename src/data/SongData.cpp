@@ -255,6 +255,20 @@ juce::String normalizeArrangementSectionToken(juce::String name) {
   return normalized;
 }
 
+juce::String arrangementSectionVariantSuffix(const juce::String &name) {
+  const auto trimmed = name.trim();
+  int suffixStart = trimmed.length();
+  while (suffixStart > 0 &&
+         juce::CharacterFunctions::isDigit(trimmed[suffixStart - 1])) {
+    --suffixStart;
+  }
+  if (suffixStart <= 0 || suffixStart == trimmed.length() ||
+      !juce::CharacterFunctions::isWhitespace(trimmed[suffixStart - 1])) {
+    return {};
+  }
+  return trimmed.substring(suffixStart);
+}
+
 const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &name) {
   const auto token = normalizeArrangementSectionToken(name);
   if (token.isEmpty())
@@ -289,6 +303,7 @@ juce::String countDisplayWordForName(const juce::String &name) {
     return L10n::tr("Siete", "Seven");
   return {};
 }
+
 } // namespace
 
 juce::String canonicalArrangementSectionName(const juce::String &name) {
@@ -330,8 +345,14 @@ juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
     return countWord;
   }
 
-  if (const auto *style = findArrangementSectionStyle(name))
-    return L10n::tr(style->spanishLabel, style->englishLabel);
+  if (const auto *style = findArrangementSectionStyle(name)) {
+    auto label = L10n::tr(style->spanishLabel, style->englishLabel);
+    if (const auto variant = arrangementSectionVariantSuffix(name);
+        variant.isNotEmpty()) {
+      label << " " << variant;
+    }
+    return label;
+  }
 
   const auto trimmed = name.trim();
   return trimmed.isNotEmpty() ? trimmed : L10n::tr("Parte", "Part");

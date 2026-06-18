@@ -352,7 +352,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongEndSeconds(); },
       [&p] { return p.getLoadedSongKey(); },
-      [this] { return currentLoadedSong.id; });
+      [this] { return currentLoadedSong.id; },
+      [this]() -> const ImportedSongData * {
+        if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+          return nullptr;
+        return &currentLoadedSong;
+      });
   topBarRaw->setOnMetronomeEnabledChanged([this](const bool enabled) {
     persistClickDynMetronomeEnabledForActiveSong(enabled);
   });

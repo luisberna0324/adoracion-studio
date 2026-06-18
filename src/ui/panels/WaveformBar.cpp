@@ -21,8 +21,6 @@ constexpr float kMiniMapHeight = 24.0f;
 constexpr float kMiniMapGap = 10.0f;
 constexpr float kPartHandleHitWidth = 7.0f;
 constexpr float kViewportHandleHitWidth = 9.0f;
-constexpr double kPartAnchorAttachThresholdSec = 0.55;
-constexpr double kPartAnchorReleaseThresholdSec = 1.00;
 constexpr int kSnapModeBarId = 1;
 constexpr int kSnapModeBeatId = 2;
 constexpr int kSnapModeHalfBeatId = 3;
@@ -127,45 +125,6 @@ juce::Colour partColorOrFallback(const SongArrangementPartSnapshot &part,
   return UITheme::accent;
 }
 
-int countValueFromSectionName(const juce::String &name) {
-  auto token = name.trim().toLowerCase();
-  while (token.isNotEmpty()) {
-    const auto ch = token[token.length() - 1];
-    if (!juce::CharacterFunctions::isDigit(ch))
-      break;
-    token = token.dropLastCharacters(1).trimEnd();
-  }
-
-  juce::String normalized;
-  normalized.preallocateBytes(token.getNumBytesAsUTF8());
-  for (int i = 0; i < token.length(); ++i) {
-    const auto ch = token[i];
-    if (juce::CharacterFunctions::isLetterOrDigit(ch))
-      normalized << juce::String::charToString(ch);
-  }
-
-  token = normalized.isNotEmpty() ? normalized : name.trim().toLowerCase();
-  if (token == "1" || token == "one" || token == "uno")
-    return 1;
-  if (token == "2" || token == "two" || token == "dos")
-    return 2;
-  if (token == "3" || token == "three" || token == "tres")
-    return 3;
-  if (token == "4" || token == "four" || token == "cuatro")
-    return 4;
-  if (token == "5" || token == "five" || token == "cinco")
-    return 5;
-  if (token == "6" || token == "six" || token == "seis")
-    return 6;
-  if (token == "7" || token == "seven" || token == "siete")
-    return 7;
-  return 0;
-}
-
-bool isCountSectionName(const juce::String &name) {
-  return countValueFromSectionName(name) > 0;
-}
-
 struct UtilityCueSuggestion {
   const char *key = nullptr;
   const char *spanishLabel = nullptr;
@@ -199,10 +158,6 @@ juce::String utilityCueDisplayLabelForName(const juce::String &name) {
       return L10n::tr(cue.spanishLabel, cue.englishLabel);
   }
   return {};
-}
-
-bool isUtilityCueSectionName(const juce::String &name) {
-  return utilityCueDisplayLabelForName(name).isNotEmpty();
 }
 
 int sectionVariantLimitForName(const juce::String &name) {
@@ -336,27 +291,14 @@ private:
 
 class CountPickerPopover final : public juce::Component {
 public:
-  explicit CountPickerPopover(std::function<void(int)> onSelectCountCallback,
-                              std::function<void()> onAddOneToFourCallback)
-      : onSelectCount(std::move(onSelectCountCallback)),
-        onAddOneToFour(std::move(onAddOneToFourCallback)) {
+  explicit CountPickerPopover(std::function<void(int)> onSelectCountCallback)
+      : onSelectCount(std::move(onSelectCountCallback)) {
     title.setText(L10n::tr("Cuenta intermedia", "Intermediate count"),
                   juce::dontSendNotification);
     title.setJustificationType(juce::Justification::centred);
     title.setColour(juce::Label::textColourId, UITheme::textSecondary);
     title.setFont(juce::FontOptions(11.0f));
     addAndMakeVisible(title);
-
-    addOneToFourChip =
-        std::make_unique<CountChip>(0, L10n::tr("1, 2, 3, 4", "1, 2, 3, 4"));
-    addOneToFourChip->setTooltip(
-        L10n::tr("Agregar cuatro cuentas (medio compás cada una)",
-                 "Add four count sections (half a bar each)"));
-    addOneToFourChip->onClick = [this] {
-      if (onAddOneToFour != nullptr)
-        onAddOneToFour();
-    };
-    addAndMakeVisible(*addOneToFourChip);
 
     chips.reserve(7);
     for (int value = 1; value <= 7; ++value) {
@@ -386,9 +328,6 @@ public:
     auto area = getLocalBounds().reduced(12, 10);
     title.setBounds(area.removeFromTop(18));
     area.removeFromTop(8);
-    if (addOneToFourChip != nullptr)
-      addOneToFourChip->setBounds(area.removeFromTop(28));
-    area.removeFromTop(8);
 
     constexpr int kCols = 4;
     const int gap = 6;
@@ -408,10 +347,8 @@ public:
 
 private:
   juce::Label title;
-  std::unique_ptr<CountChip> addOneToFourChip;
   std::vector<std::unique_ptr<CountChip>> chips;
   std::function<void(int)> onSelectCount;
-  std::function<void()> onAddOneToFour;
 };
 
 class SectionVariantPopover final : public juce::Component {
@@ -845,7 +782,7 @@ void WaveformBar::setArrangement(
   customArrangement = isCustomArrangement;
   selectedPartIndex = -1;
   selectedPartIds.clear();
-  normalizeArrangement(true);
+  normalizeArrangement(true, false);
 
   dragMode = DragMode::none;
   activeDragPartId.clear();
@@ -1754,7 +1691,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   else
     setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
 
-  if (!isEditingArrangement() || !mainWaveBodyBounds.contains(event.position))
+  if (!isEditingArrangement() || mainWaveBodyBounds.getWidth() <= 2.0f)
     return;
 
   const int partIndex = findPartIndexById(activeDragPartId);
@@ -1769,8 +1706,10 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   const double pointerSec =
       windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
   const bool bypassSnap = isSnapBypassed(event.mods);
-  const double deltaSec =
-      snapSeconds(pointerSec - dragAnchorSourceSec, bypassSnap);
+  const double rawDeltaSec = pointerSec - dragAnchorSourceSec;
+  const double deltaSec = snapSeconds(rawDeltaSec, bypassSnap);
+  const double anchorAttachThresholdSec = getAnchorAttachThresholdSeconds();
+  const double anchorReleaseThresholdSec = getAnchorReleaseThresholdSeconds();
 
   if (dragMode == DragMode::movePart && dragPartOrigins.size() > 1) {
     double minStart = std::numeric_limits<double>::max();
@@ -1844,8 +1783,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   };
 
   const auto applyStickyAnchorToEdge =
-      [this, &findNearestBoundary, bypassSnap](const double candidateEdgeSec,
-                                               const bool edgeIsStart) -> double {
+      [this, &findNearestBoundary, bypassSnap, anchorAttachThresholdSec,
+       anchorReleaseThresholdSec](const double candidateEdgeSec,
+                                  const bool edgeIsStart) -> double {
     if (bypassSnap) {
       dragAnchorActive = false;
       dragAnchoredBoundarySec = 0.0;
@@ -1854,7 +1794,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 
     if (dragAnchorActive && dragAnchorEdgeIsStart == edgeIsStart) {
       if (std::abs(candidateEdgeSec - dragAnchoredBoundarySec) <=
-          kPartAnchorReleaseThresholdSec) {
+          anchorReleaseThresholdSec) {
         return dragAnchoredBoundarySec;
       }
       dragAnchorActive = false;
@@ -1862,7 +1802,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     }
 
     const auto nearest =
-        findNearestBoundary(candidateEdgeSec, kPartAnchorAttachThresholdSec);
+        findNearestBoundary(candidateEdgeSec, anchorAttachThresholdSec);
     if (nearest.found) {
       dragAnchorActive = true;
       dragAnchorEdgeIsStart = edgeIsStart;
@@ -1887,12 +1827,17 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     nextStart = juce::jlimit(0.0, maxStart, nextStart);
 
     double nextEnd = juce::jlimit(nextStart, songLength, nextStart + duration);
+    const double rawNextStart =
+        juce::jlimit(0.0, maxStart, dragOriginPartStartSec + rawDeltaSec);
+    const double rawNextEnd =
+        juce::jlimit(rawNextStart, songLength, rawNextStart + duration);
 
     if (!bypassSnap && dragAnchorActive) {
-      const double activeEdge = dragAnchorEdgeIsStart ? nextStart : nextEnd;
+      const double activeEdge = dragAnchorEdgeIsStart ? rawNextStart : rawNextEnd;
       if (std::abs(activeEdge - dragAnchoredBoundarySec) <=
-          kPartAnchorReleaseThresholdSec) {
-        const double offset = dragAnchoredBoundarySec - activeEdge;
+          anchorReleaseThresholdSec) {
+        const double snappedActiveEdge = dragAnchorEdgeIsStart ? nextStart : nextEnd;
+        const double offset = dragAnchoredBoundarySec - snappedActiveEdge;
         nextStart += offset;
         nextEnd += offset;
       } else {
@@ -1903,9 +1848,9 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 
     if (!bypassSnap && !dragAnchorActive) {
       const auto startAnchor =
-          findNearestBoundary(nextStart, kPartAnchorAttachThresholdSec);
+          findNearestBoundary(rawNextStart, anchorAttachThresholdSec);
       const auto endAnchor =
-          findNearestBoundary(nextEnd, kPartAnchorAttachThresholdSec);
+          findNearestBoundary(rawNextEnd, anchorAttachThresholdSec);
       if (startAnchor.found || endAnchor.found) {
         const bool anchorStart =
             !endAnchor.found ||
@@ -1916,8 +1861,8 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
         dragAnchoredBoundarySec =
             anchorStart ? startAnchor.boundarySec : endAnchor.boundarySec;
 
-        const double activeEdge = anchorStart ? nextStart : nextEnd;
-        const double offset = dragAnchoredBoundarySec - activeEdge;
+        const double snappedActiveEdge = anchorStart ? nextStart : nextEnd;
+        const double offset = dragAnchoredBoundarySec - snappedActiveEdge;
         nextStart += offset;
         nextEnd += offset;
       }
@@ -1935,7 +1880,10 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     part.endSec = nextEnd;
   } else if (dragMode == DragMode::resizePartLeft) {
     double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec, bypassSnap);
-    nextStart = applyStickyAnchorToEdge(nextStart, true);
+    const double anchoredStart =
+        applyStickyAnchorToEdge(dragOriginPartStartSec + rawDeltaSec, true);
+    if (dragAnchorActive && dragAnchorEdgeIsStart)
+      nextStart = anchoredStart;
     const double maxStart =
         juce::jmax(0.0, dragOriginPartEndSec - kMinPartDurationSec);
     part.startSec = juce::jlimit(0.0, maxStart, nextStart);
@@ -1948,7 +1896,10 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     }
   } else if (dragMode == DragMode::resizePartRight) {
     double nextEnd = snapSeconds(dragOriginPartEndSec + deltaSec, bypassSnap);
-    nextEnd = applyStickyAnchorToEdge(nextEnd, false);
+    const double anchoredEnd =
+        applyStickyAnchorToEdge(dragOriginPartEndSec + rawDeltaSec, false);
+    if (dragAnchorActive && !dragAnchorEdgeIsStart)
+      nextEnd = anchoredEnd;
     const double minEnd = dragOriginPartStartSec + kMinPartDurationSec;
     part.startSec = dragOriginPartStartSec;
     part.endSec = juce::jlimit(minEnd, songLength, nextEnd);
@@ -2498,6 +2449,22 @@ double WaveformBar::getSnapStepSeconds() const {
   }
 }
 
+double WaveformBar::getAnchorAttachThresholdSeconds() const {
+  const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double fallback = beatDurationSec > 0.0 ? beatDurationSec : 0.5;
+  const double snapStepSec = getSnapStepSeconds();
+  const double base = snapStepSec > 0.0 ? snapStepSec : fallback;
+  return juce::jlimit(0.06, 0.80, base * 0.35);
+}
+
+double WaveformBar::getAnchorReleaseThresholdSeconds() const {
+  const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double fallback = beatDurationSec > 0.0 ? beatDurationSec : 0.5;
+  const double snapStepSec = getSnapStepSeconds();
+  const double base = snapStepSec > 0.0 ? snapStepSec : fallback;
+  return juce::jlimit(0.10, 1.25, base * 0.65);
+}
+
 bool WaveformBar::isSnapBypassed(const juce::ModifierKeys &mods) const {
   return snapMode == SnapMode::Free || mods.isAltDown();
 }
@@ -2515,7 +2482,19 @@ double WaveformBar::snapSeconds(const double seconds,
   return std::round(seconds / snapStepSec) * snapStepSec;
 }
 
-void WaveformBar::normalizeArrangement(const bool sortByStart) {
+double WaveformBar::snapSecondsForward(const double seconds) const {
+  if (!std::isfinite(seconds))
+    return 0.0;
+
+  const double snapStepSec = getSnapStepSeconds();
+  if (snapStepSec <= 0.0 || !std::isfinite(snapStepSec))
+    return seconds;
+
+  return std::ceil((seconds - 1.0e-9) / snapStepSec) * snapStepSec;
+}
+
+void WaveformBar::normalizeArrangement(const bool sortByStart,
+                                       const bool snapToGrid) {
   const double songLength = getSongLengthSeconds();
   juce::String selectedId;
   if (juce::isPositiveAndBelow(selectedPartIndex,
@@ -2545,15 +2524,7 @@ void WaveformBar::normalizeArrangement(const bool sortByStart) {
         part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
     }
 
-    const bool isCountSection =
-        isCountSectionName(part.name) || isUtilityCueSectionName(part.name);
-    const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
-    if (isCountSection && beatDurationSec > 0.0) {
-      const double snappedStart =
-          std::round(part.startSec / beatDurationSec) * beatDurationSec;
-      part.startSec = snappedStart;
-      part.endSec = snappedStart + beatDurationSec;
-    } else {
+    if (snapToGrid) {
       part.startSec = snapSeconds(part.startSec);
       part.endSec = snapSeconds(part.endSec);
     }
@@ -2573,7 +2544,7 @@ void WaveformBar::normalizeArrangement(const bool sortByStart) {
         [](const SongArrangementPartSnapshot &a,
            const SongArrangementPartSnapshot &b) {
           if (nearlyEqual(a.startSec, b.startSec))
-            return a.endSec < b.endSec;
+            return false;
           return a.startSec < b.startSec;
         });
   }
@@ -3444,11 +3415,8 @@ void WaveformBar::drawArrangementOverlay(
     g.drawLine(separatorX, lane.getY() + 2.0f, separatorX,
                lane.getBottom() - 2.0f, separatorThickness);
     auto partName = arrangementPartDisplayLabelForName(part.name);
-    if (const int countValue = countValueFromSectionName(part.name);
-        countValue > 0) {
-      partName = countWordLabel(countValue);
-    } else if (const auto utilityLabel = utilityCueDisplayLabelForName(part.name);
-               utilityLabel.isNotEmpty()) {
+    if (const auto utilityLabel = utilityCueDisplayLabelForName(part.name);
+        utilityLabel.isNotEmpty()) {
       partName = utilityLabel;
     }
 
@@ -3781,13 +3749,8 @@ void WaveformBar::rebuildSectionAddButtons() {
           if (safe == nullptr || selectedCount < 1 || selectedCount > 7)
             return;
           safe->addCountSequenceParts(selectedCount, selectedCount);
-        },
-        [safe] {
-          if (safe == nullptr)
-            return;
-          safe->addCountSequenceParts(1, 4);
         });
-    panel->setSize(302, 144);
+    panel->setSize(302, 112);
 
     auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
     juce::Component *parentComp = editor != nullptr
@@ -3860,7 +3823,7 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   }
 
   startSec =
-      juce::jlimit(playableStartSec, playableEndSec, snapSeconds(startSec));
+      juce::jlimit(playableStartSec, playableEndSec, snapSecondsForward(startSec));
   if ((playableEndSec - startSec) < kMinPartDurationSec)
     startSec = juce::jmax(playableStartSec, playableEndSec - kMinPartDurationSec);
 
@@ -3901,9 +3864,12 @@ void WaveformBar::addCountSequenceParts(const int firstCount,
     return;
 
   const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double snapStepSec = getSnapStepSeconds();
   const double oneCountDurationSec =
       juce::jmax(kMinPartDurationSec,
-                 beatDurationSec > 0.0 ? beatDurationSec : 0.5);
+                 snapStepSec > 0.0
+                     ? snapStepSec
+                     : (beatDurationSec > 0.0 ? beatDurationSec : 0.5));
 
   double cursorSec = playableStartSec;
   if (juce::isPositiveAndBelow(selectedPartIndex,
@@ -3913,7 +3879,8 @@ void WaveformBar::addCountSequenceParts(const int firstCount,
     cursorSec = arrangement.parts.back().endSec;
   }
 
-  cursorSec = juce::jlimit(playableStartSec, playableEndSec, snapSeconds(cursorSec));
+  cursorSec =
+      juce::jlimit(playableStartSec, playableEndSec, snapSecondsForward(cursorSec));
 
   int lastInsertedIndex = -1;
   for (int count = firstCount; count <= lastCount; ++count) {
@@ -3956,9 +3923,12 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
     return;
 
   const double beatDurationSec = songBpm > 0.0 ? 60.0 / songBpm : 0.0;
+  const double snapStepSec = getSnapStepSeconds();
   const double cueDurationSec =
       juce::jmax(kMinPartDurationSec,
-                 beatDurationSec > 0.0 ? beatDurationSec : 0.5);
+                 snapStepSec > 0.0
+                     ? snapStepSec
+                     : (beatDurationSec > 0.0 ? beatDurationSec : 0.5));
 
   double startSec = playableStartSec;
   if (juce::isPositiveAndBelow(selectedPartIndex,
@@ -3967,7 +3937,8 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
   } else if (!arrangement.parts.empty()) {
     startSec = arrangement.parts.back().endSec;
   }
-  startSec = juce::jlimit(playableStartSec, playableEndSec, snapSeconds(startSec));
+  startSec =
+      juce::jlimit(playableStartSec, playableEndSec, snapSecondsForward(startSec));
   if ((playableEndSec - startSec) < kMinPartDurationSec)
     startSec = juce::jmax(playableStartSec, playableEndSec - kMinPartDurationSec);
 
@@ -4178,7 +4149,7 @@ void WaveformBar::deleteSelectedArrangementParts() {
 }
 
 void WaveformBar::notifyArrangementChanged(const bool isCustom) {
-  normalizeArrangement(true);
+  normalizeArrangement(true, false);
   if (onArrangementChanged)
     onArrangementChanged(arrangement, isCustom);
 }
