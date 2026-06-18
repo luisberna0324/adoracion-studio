@@ -99,12 +99,15 @@ private:
   juce::int64 nextAudioDeviceFallbackPollMs = 0;
   juce::int64 missingAudioDeviceSinceMs = 0;
   juce::int64 nextAudioDeviceFallbackAttemptMs = 0;
+  juce::String lastObservedAudioDeviceKey;
   juce::Rectangle<int> padsDrawerBackgroundBounds;
   juce::String trackedSongWindowSongId;
   double trackedSongWindowStartSec = 0.0;
   double trackedSongWindowEndSec = 0.0;
   double trackedSongWindowFadeSec = 0.0;
   bool hasTrackedSongWindow = false;
+  bool hasTrackedClickDynMetronomeEnabled = false;
+  bool trackedClickDynMetronomeEnabled = false;
   double smoothedAudioCpuUsage01 = 0.0;
   double smoothedProcessMemoryMb = 0.0;
   int totalSystemMemoryMb = 0;
@@ -123,6 +126,9 @@ private:
   void trackSongWindow(const juce::String &songId, double startSec,
                        double endSec, double fadeSec);
   void maybePersistSongWindowForActiveSong();
+  void persistClickDynMetronomeEnabledForActiveSong(bool enabled);
+  void trackClickDynMetronomeEnabled(bool enabled);
+  void maybePersistClickDynMetronomeEnabledForActiveSong();
   void updateSystemUsageMetrics();
   void launchExternalLogin();
   void completeBootstrapLogin(const juce::String &callbackUrl);

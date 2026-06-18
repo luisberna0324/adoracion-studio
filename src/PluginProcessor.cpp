@@ -3,6 +3,7 @@
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -11,6 +12,8 @@ constexpr double kMinPlaybackTempoBpm = 20.0;
 constexpr double kMaxPlaybackTempoBpm = 300.0;
 constexpr double kMinPlaybackTempoRatio = 0.75;
 constexpr double kMaxPlaybackTempoRatio = 2.0;
+constexpr const char *kDynamicGuideLoadWarningPrefix =
+    "__dynamic_guide_load_error__:";
 
 int tempoQualityProfileForRatio(const double ratio) {
   if (ratio < 0.85)
@@ -18,6 +21,15 @@ int tempoQualityProfileForRatio(const double ratio) {
   if (ratio < 0.999)
     return 1; // Moderate slow-down profile.
   return 2;   // Normal/speed-up profile.
+}
+
+int clickDivisionMaskToSubdivision(const int divisionMask) {
+  const int mask = divisionMask & 0x07;
+  if ((mask & 0x04) != 0)
+    return 4;
+  if ((mask & 0x02) != 0)
+    return 2;
+  return 1;
 }
 
 PitchShiftProcessor::ContentType stemContentTypeForPitchShiftable(
@@ -50,6 +62,32 @@ juce::File getPadsSourceFolderEmpirikFallback() {
       .getChildFile("PADS CONTINUOS EMPIRIK");
 }
 
+juce::File getMetronomeClickSamplesFolder() {
+  return AssetBootstrapManager::getClicksPackDirectory();
+}
+
+juce::String metronomeClickStyleToName(MetronomeClickStyle style) {
+  switch (style) {
+  case MetronomeClickStyle::Woodblock:
+    return "Woodblock";
+  case MetronomeClickStyle::Cowbell:
+    return "Cowbell";
+  case MetronomeClickStyle::Digital:
+    return "Digital";
+  case MetronomeClickStyle::Gentle:
+    return "Gentle";
+  case MetronomeClickStyle::Percussive:
+    return "Percussive";
+  case MetronomeClickStyle::Saw:
+    return "Saw";
+  case MetronomeClickStyle::Blip:
+    return "Blip";
+  case MetronomeClickStyle::Classic:
+  default:
+    return "Classic";
+  }
+}
+
 PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
     const PadsCrossfadePreset preset) {
   switch (preset) {
@@ -62,6 +100,83 @@ PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
     return PadsEngine::CrossfadePreset::Medium;
   }
 }
+
+juce::String arrangementSectionKey(const juce::String &partName) {
+  const auto canonical = canonicalArrangementSectionName(partName);
+  if (canonical.isNotEmpty()) {
+    auto sectionKey = DynamicGuideEngine::normalizeSectionKey(canonical);
+    const auto normalizedName =
+        DynamicGuideEngine::normalizeSectionKey(partName);
+    int suffixStart = normalizedName.length();
+    while (suffixStart > 0 &&
+           juce::CharacterFunctions::isDigit(normalizedName[suffixStart - 1])) {
+      --suffixStart;
+    }
+    if (suffixStart > 0 && suffixStart < normalizedName.length() &&
+        juce::CharacterFunctions::isWhitespace(
+            normalizedName[suffixStart - 1])) {
+      sectionKey << " " << normalizedName.substring(suffixStart);
+    }
+    return sectionKey;
+  }
+  return DynamicGuideEngine::normalizeSectionKey(partName);
+}
+
+juce::String arrangementCountSectionKey(const juce::String &partName) {
+  const auto key = DynamicGuideEngine::normalizeSectionKey(partName);
+  if (key.isEmpty())
+    return {};
+
+  bool allDigits = true;
+  for (int i = 0; i < key.length(); ++i) {
+    if (!juce::CharacterFunctions::isDigit(key[i])) {
+      allDigits = false;
+      break;
+    }
+  }
+  if (allDigits)
+    return key;
+
+  if (key == "one" || key == "uno")
+    return "1";
+  if (key == "two" || key == "dos")
+    return "2";
+  if (key == "three" || key == "tres")
+    return "3";
+  if (key == "four" || key == "cuatro")
+    return "4";
+  if (key == "five" || key == "cinco")
+    return "5";
+  if (key == "six" || key == "seis")
+    return "6";
+  if (key == "seven" || key == "siete")
+    return "7";
+  return {};
+}
+
+bool isDynamicGuideUtilityCueKey(const juce::String &rawKey) {
+  const auto key = DynamicGuideEngine::normalizeSectionKey(rawKey);
+  static const std::array<const char *, 26> kUtilityCueKeys = {{
+      "a capella", "ad lib", "all", "all in", "bass", "big", "big ending",
+      "break", "breakdown", "build", "drums", "drums in", "guitar", "hits",
+      "hold", "key", "key change down", "key change up", "keys", "last",
+      "last time", "slowly", "slowly build", "softly", "swell",
+      "worship freely"}};
+  for (const auto *candidate : kUtilityCueKeys) {
+    if (key == candidate)
+      return true;
+  }
+  return false;
+}
+
+bool sectionTriggersOnEntry(const juce::String &sectionKey,
+                            const juce::String &sectionName) {
+  return arrangementCountSectionKey(sectionKey).isNotEmpty() ||
+         arrangementCountSectionKey(sectionName).isNotEmpty() ||
+         isDynamicGuideUtilityCueKey(sectionKey) ||
+         isDynamicGuideUtilityCueKey(sectionName);
+}
+
 } // namespace
 
 #if JucePlugin_Build_Standalone
@@ -92,6 +207,20 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   midiBindings = AppSettings::getMidiBindings();
   for (auto &value : midiLastSourceValues)
     value = -1;
+  {
+    juce::String clickError;
+    if (AssetBootstrapManager::ensureClicksPackReady(&clickError)) {
+      const auto clickFolder = getMetronomeClickSamplesFolder();
+      loadMetronomeClickSamplesFromFolder(
+          clickFolder, metronomeClickStyleToName(AppSettings::getMetronomeClickStyle()),
+          &clickError);
+    }
+  }
+  dynamicGuideLanguageCode.store(
+      AppSettings::getLanguage() == AppLanguage::English ? 1 : 0,
+      std::memory_order_relaxed);
+  dynamicGuideEnabledState.store(dynamicGuideSettings.enabled,
+                                 std::memory_order_relaxed);
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
@@ -112,8 +241,10 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   stemRoutingTempBuffer.setSize(2, samplesPerBlock);
   metronomeRenderBuffer.setSize(2, samplesPerBlock);
   padsRenderBuffer.setSize(2, samplesPerBlock);
+  dynamicGuideRenderBuffer.setSize(2, samplesPerBlock);
   outgoingStemRenderBuffer.setSize(getTotalNumOutputChannels(), samplesPerBlock);
   padsEngine.prepare(sampleRate, samplesPerBlock);
+  dynamicGuideEngine.prepare(sampleRate);
   padsEngine.setEnabled(padsEnabledState.load(std::memory_order_relaxed));
   standaloneAudioDeviceBridge.setAvailableOutputChannelCount(getTotalNumOutputChannels());
   refreshPadsRoutingFromSettings();
@@ -121,6 +252,9 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   setMetronomeOutputRouting(
       metronomeOutputChannel.load(std::memory_order_relaxed),
       metronomeOutputWidth.load(std::memory_order_relaxed));
+  setDynamicGuideOutputRouting(
+      dynamicGuideOutputChannelState.load(std::memory_order_relaxed),
+      dynamicGuideOutputWidthState.load(std::memory_order_relaxed));
   for (int i = 0; i < maxStemCount; ++i) {
     const int channel = stemOutputRoutingState.getStemOutputChannel(i);
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
@@ -169,6 +303,7 @@ void MTControlsAudioProcessor::releaseResources() {
   mixEngine.reset();
   outgoingMixEngine.reset();
   padsEngine.releaseResources();
+  dynamicGuideEngine.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   mixerSource.releaseResources();
   outgoingMixerSource.releaseResources();
@@ -218,6 +353,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
        ++i)
     buffer.clear(i, 0, buffer.getNumSamples());
 
+  dynamicGuideMeterLevelLeft.store(0.0f, std::memory_order_relaxed);
+  dynamicGuideMeterLevelRight.store(0.0f, std::memory_order_relaxed);
+
   bool usedSeparatedMix = false;
   float windowFadeStart = 1.0f;
   float windowFadeEnd = 1.0f;
@@ -227,6 +365,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool transitionToNextArrangementPart = false;
   int nextArrangementPartIndex = -1;
   double nextArrangementPartStartSec = 0.0;
+  bool dynamicGuideShouldRender = false;
+  bool dynamicGuideAnnouncementsActive = false;
+  int dynamicGuideOutputChannelOneBased = 1;
+  int dynamicGuideOutputWidth = 2;
+  float dynamicGuideOutputGain = 1.0f;
+  bool dynamicGuideOutputAudible = false;
+  bool seekAppliedThisBlock = false;
 
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
@@ -234,6 +379,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
     const bool isPlaying = getTransportState() == TransportState::playing;
+    const bool dynamicGuideEnabled =
+        dynamicGuideEnabledState.load(std::memory_order_relaxed);
+    const bool arrangementEditingActive =
+        arrangementEditingActiveState.load(std::memory_order_relaxed);
+    dynamicGuideAnnouncementsActive = dynamicGuideEnabled;
     const int targetPitch =
         pitchTargetSemiTones.load(std::memory_order_relaxed);
     const double targetTempoRatio = getPlaybackTempoRatio();
@@ -291,6 +441,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
       metronome.syncPhaseForTimeSeconds(seekTarget);
+      seekAppliedThisBlock = true;
     }
 
     const int stemCount = static_cast<int>(stemTracks.size());
@@ -302,10 +453,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool virtualMetronomeSoloActive =
         !hasRealClickStem &&
         metronomeSoloState.load(std::memory_order_relaxed);
+    const bool dynamicGuideSoloActive =
+        dynamicGuideAnnouncementsActive &&
+        dynamicGuideSoloState.load(std::memory_order_relaxed);
 
     // Evaluate global solo state (includes virtual metronome solo when no real
     // click stem exists so stems mute and only click remains audible).
-    bool anySoloActive = virtualMetronomeSoloActive;
+    bool anySoloActive = virtualMetronomeSoloActive || dynamicGuideSoloActive;
     for (int i = 0; i < stemCount; ++i) {
       if (stemSoloStates[static_cast<size_t>(i)].load(
               std::memory_order_relaxed)) {
@@ -320,7 +474,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // Inject lock-free mix state into StemTracks and update UI meters
     for (int i = 0; i < stemCount; ++i) {
       auto& track = stemTracks[static_cast<size_t>(i)];
-      track->setMuted(stemMuteStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
+      track->setMuted(
+          stemMuteStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
       track->setSoloed(stemSoloStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
       track->setVolume(juce::jlimit(0.0f, 1.0f, stemVolumes[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
       track->setTrim(juce::jlimit(0.0f, 2.0f, stemGains[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
@@ -329,6 +484,31 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       // Update UI meter level (computed in the PREVIOUS getNextAudioBlock call)
       stemLevels[static_cast<size_t>(i)].store(isPlaying ? track->getMagnitude() : 0.0f,
                                                std::memory_order_relaxed);
+    }
+
+    if (dynamicGuideAnnouncementsActive) {
+      dynamicGuideOutputChannelOneBased =
+          dynamicGuideOutputChannelState.load(std::memory_order_relaxed);
+      dynamicGuideOutputWidth = juce::jlimit(
+          1, 2, dynamicGuideOutputWidthState.load(std::memory_order_relaxed));
+      if (numChannels < 2)
+        dynamicGuideOutputWidth = 1;
+      if (dynamicGuideOutputWidth >= 2 &&
+          dynamicGuideOutputChannelOneBased >= numChannels) {
+        dynamicGuideOutputChannelOneBased = juce::jmax(1, numChannels - 1);
+      }
+      dynamicGuideOutputGain =
+          juce::jlimit(0.0f, 1.0f,
+                       dynamicGuideVolumeState.load(std::memory_order_relaxed)) *
+          juce::jlimit(0.0f, 2.0f,
+                       dynamicGuideGainState.load(std::memory_order_relaxed));
+      const bool guideMuted =
+          dynamicGuideMutedState.load(std::memory_order_relaxed);
+      const bool guideSoloed =
+          dynamicGuideSoloState.load(std::memory_order_relaxed);
+      dynamicGuideOutputAudible = !guideMuted && (!anySoloActive || guideSoloed);
+      dynamicGuideShouldRender = dynamicGuideOutputAudible &&
+                                 dynamicGuideOutputGain > 0.0001f;
     }
 
     for (int i = stemCount; i < maxStemCount; ++i)
@@ -383,23 +563,108 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                             std::memory_order_relaxed);
         }
       }
+
       const int loopPartIndex =
           arrangementLoopPartIndex.load(std::memory_order_relaxed);
       const bool loopPartActive =
           juce::isPositiveAndBelow(loopPartIndex,
                                    static_cast<int>(arrangementParts.size()));
-
       bool loopPartEngaged = false;
+      double loopStartSec = 0.0;
+      double loopEndSec = 0.0;
       if (loopPartActive) {
-        const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
+        const auto &loopPart =
+            arrangementParts[static_cast<size_t>(loopPartIndex)];
+        loopStartSec = loopPart.startSec;
+        loopEndSec = loopPart.endSec;
         loopPartEngaged =
-            blockStartSec >= loopPart.startSec && blockStartSec < loopPart.endSec;
+            blockStartSec >= loopStartSec && blockStartSec < loopEndSec;
+      }
+
+      if (dynamicGuideAnnouncementsActive && !arrangementParts.empty()) {
+        if (dynamicGuideAnnouncedByPart.size() != arrangementParts.size())
+          dynamicGuideAnnouncedByPart.assign(arrangementParts.size(), false);
+
+        const bool wrappedBack =
+            dynamicGuideLastBlockStartSec >= 0.0 &&
+            blockStartSec + 0.02 < dynamicGuideLastBlockStartSec;
+        if (seekAppliedThisBlock || wrappedBack) {
+          std::fill(dynamicGuideAnnouncedByPart.begin(),
+                    dynamicGuideAnnouncedByPart.end(), false);
+          dynamicGuideLastPartIndex = -1;
+        }
+
+        const auto triggerPartAnnouncement = [this](const ArrangementRuntimePart &part) {
+          auto sectionKey = part.sectionKey.trim();
+          if (sectionKey.isEmpty())
+            sectionKey = DynamicGuideEngine::normalizeSectionKey(part.name);
+          if (sectionKey.isEmpty())
+            return;
+          if (!dynamicGuideEngine.triggerForSectionKey(sectionKey)) {
+            juce::String missing;
+            if (dynamicGuideEngine.consumeLastMissingSectionKey(missing)) {
+              const juce::SpinLock::ScopedLockType warningLock(dynamicGuideWarningLock);
+              dynamicGuideLastMissingSection = missing;
+            }
+          }
+        };
+
+        const bool enteredPlayback = isPlaying && !dynamicGuideWasPlaying;
+        if (juce::isPositiveAndBelow(mappedPartIndex,
+                                     static_cast<int>(arrangementParts.size()))) {
+          const auto partIdx = static_cast<size_t>(mappedPartIndex);
+          const auto &part = arrangementParts[partIdx];
+          const bool triggerOnEntry =
+              sectionTriggersOnEntry(part.sectionKey, part.name);
+          const bool playheadInsidePart =
+              blockStartSec + 0.001 >= part.startSec &&
+              blockStartSec < part.endSec;
+
+          if (playheadInsidePart &&
+              (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
+               seekAppliedThisBlock)) {
+            const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
+            const bool shouldTriggerNow =
+                enteredPlayback || seekAppliedThisBlock || triggerOnEntry ||
+                !alreadyAnnounced;
+            if (shouldTriggerNow)
+              triggerPartAnnouncement(part);
+            dynamicGuideAnnouncedByPart[partIdx] = true;
+          }
+        }
+
+        const double bpm = juce::jmax(1.0, getPlaybackTempoBpm());
+        const double oneBarSec = (60.0 / bpm) * 4.0;
+        for (size_t i = 0; i < arrangementParts.size(); ++i) {
+          if (dynamicGuideAnnouncedByPart[i])
+            continue;
+          const auto &part = arrangementParts[i];
+          if (loopPartEngaged && part.startSec >= windowEndSec)
+            continue;
+          const bool triggerOnEntry =
+              sectionTriggersOnEntry(part.sectionKey, part.name);
+          const double triggerTime =
+              arrangementEditingActive
+                  ? (triggerOnEntry ? part.startSec
+                                    : juce::jmax(0.0, part.startSec - oneBarSec))
+                  : (triggerOnEntry ? part.startSec
+                                    : juce::jmax(0.0, part.startSec - oneBarSec));
+          if (triggerTime >= blockStartSec && triggerTime < blockEndSec) {
+            triggerPartAnnouncement(part);
+            dynamicGuideAnnouncedByPart[i] = true;
+          }
+        }
+
+        dynamicGuideLastPartIndex = mappedPartIndex;
+        dynamicGuideLastBlockStartSec = blockStartSec;
+        dynamicGuideWasPlaying = true;
+      } else {
+        dynamicGuideWasPlaying = false;
       }
 
       if (loopPartEngaged) {
-        const auto &loopPart = arrangementParts[static_cast<size_t>(loopPartIndex)];
-        windowStartSec = loopPart.startSec;
-        windowEndSec = loopPart.endSec;
+        windowStartSec = loopStartSec;
+        windowEndSec = loopEndSec;
         fadeOutSec = 0.0;
         arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
@@ -407,7 +672,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = loopPartIndex;
-          nextArrangementPartStartSec = loopPart.startSec;
+          nextArrangementPartStartSec = loopStartSec;
         }
       } else if (customArrangement && !arrangementParts.empty() &&
                  juce::isPositiveAndBelow(mappedPartIndex,
@@ -648,6 +913,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       songCurrentPositionSeconds.store(currentSec, std::memory_order_relaxed);
       globalSamplePosition.fetch_add(numSamples, std::memory_order_relaxed);
     } else {
+      dynamicGuideWasPlaying = false;
       const auto state = getTransportState();
       if (state == TransportState::paused) {
         const double currentSec =
@@ -849,18 +1115,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     stopSong();
   }
 
-  if (isMetronomeEnabled()) {
+  const bool metronomePlaybackActive =
+      isMetronomeEnabled() && getTransportState() == TransportState::playing;
+  if (metronomePlaybackActive) {
     if (metronomeRenderBuffer.getNumSamples() < numSamples)
       metronomeRenderBuffer.setSize(2, numSamples, false, false, true);
     metronomeRenderBuffer.clear();
 
     const int activeStemCount = loadedStemCount.load(std::memory_order_relaxed);
-    const int clickStemIndex =
-        metronomeClickStemIndex.load(std::memory_order_relaxed);
-    const bool hasRealClickStem =
-        juce::isPositiveAndBelow(clickStemIndex, activeStemCount) &&
-        juce::isPositiveAndBelow(clickStemIndex, maxStemCount);
-
     bool anySoloActive = false;
     for (int i = 0; i < activeStemCount; ++i) {
       if (stemSoloStates[static_cast<size_t>(i)].load(
@@ -880,22 +1142,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         metronomeOutputChannel.load(std::memory_order_relaxed);
     int outputWidth = metronomeOutputWidth.load(std::memory_order_relaxed);
 
-    if (hasRealClickStem) {
-      const auto idx = static_cast<size_t>(clickStemIndex);
-      effectiveVolume = stemVolumes[idx].load(std::memory_order_relaxed);
-      effectiveGain = stemGains[idx].load(std::memory_order_relaxed);
-      muted = stemMuteStates[idx].load(std::memory_order_relaxed);
-      soloed = stemSoloStates[idx].load(std::memory_order_relaxed);
-      outputChannelOneBased =
-          stemOutputChannels[idx].load(std::memory_order_relaxed);
-      outputWidth = stemOutputWidths[idx].load(std::memory_order_relaxed);
-    } else if (soloed) {
-      // Virtual click solo behaves like a regular solo source.
-      anySoloActive = true;
-    }
-
     effectiveVolume = juce::jlimit(0.0f, 1.0f, effectiveVolume);
-    effectiveGain = juce::jlimit(0.0f, 2.0f, effectiveGain);
+    effectiveGain = juce::jlimit(0.0f, 4.0f, effectiveGain);
 
     outputWidth = juce::jlimit(1, 2, outputWidth);
     if (numChannels < 2)
@@ -912,11 +1160,23 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (!juce::approximatelyEqual(effectiveGain, 1.0f))
       metronomeRenderBuffer.applyGain(effectiveGain);
 
+    metronomeMeterLevelLeft.store(
+        metronomeRenderBuffer.getMagnitude(0, 0, numSamples),
+        std::memory_order_relaxed);
+    metronomeMeterLevelRight.store(
+        metronomeRenderBuffer.getMagnitude(
+            juce::jmin(1, metronomeRenderBuffer.getNumChannels() - 1), 0,
+            numSamples),
+        std::memory_order_relaxed);
+
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
     stemOutputRouter.routeStemToOutputChannels(metronomeRenderBuffer,
                                                outputIndex, outputWidth,
                                                buffer);
+  } else {
+    metronomeMeterLevelLeft.store(0.0f, std::memory_order_relaxed);
+    metronomeMeterLevelRight.store(0.0f, std::memory_order_relaxed);
   }
 
   if (padsPackLoaded.load(std::memory_order_relaxed)) {
@@ -983,6 +1243,41 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       stemOutputRouter.routeStemToOutputChannels(padsRenderBuffer, outputIndex,
                                                  outputWidth, buffer);
     }
+  }
+
+  if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive) {
+    if (dynamicGuideRenderBuffer.getNumSamples() < numSamples ||
+        dynamicGuideRenderBuffer.getNumChannels() < 2) {
+      dynamicGuideRenderBuffer.setSize(2, numSamples, false, false, true);
+    }
+    dynamicGuideRenderBuffer.clear();
+    dynamicGuideEngine.render(dynamicGuideRenderBuffer);
+    if (!juce::approximatelyEqual(dynamicGuideOutputGain, 1.0f))
+      dynamicGuideRenderBuffer.applyGain(dynamicGuideOutputGain);
+
+    const float meterLeft =
+        dynamicGuideRenderBuffer.getMagnitude(0, 0, numSamples);
+    float meterRight =
+        dynamicGuideRenderBuffer.getNumChannels() > 1
+            ? dynamicGuideRenderBuffer.getMagnitude(1, 0, numSamples)
+            : meterLeft;
+    if (dynamicGuideOutputWidth == 1)
+      meterRight = meterLeft;
+    dynamicGuideMeterLevelLeft.store(meterLeft, std::memory_order_relaxed);
+    dynamicGuideMeterLevelRight.store(meterRight, std::memory_order_relaxed);
+
+    int outputWidth = juce::jlimit(1, 2, dynamicGuideOutputWidth);
+    if (numChannels < 2)
+      outputWidth = 1;
+    int outputChannel = juce::jlimit(
+        1, juce::jmax(1, numChannels), dynamicGuideOutputChannelOneBased);
+    if (outputWidth >= 2 && outputChannel >= numChannels)
+      outputChannel = juce::jmax(1, numChannels - 1);
+    const int outputIndex = juce::jlimit(
+        0, juce::jmax(0, numChannels - 1), outputChannel - 1);
+    stemOutputRouter.routeStemToOutputChannels(dynamicGuideRenderBuffer,
+                                               outputIndex, outputWidth,
+                                               buffer);
   }
 
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
@@ -1086,11 +1381,15 @@ bool MTControlsAudioProcessor::isMidiTargetValid(const int targetId) noexcept {
   case midiTargetTempoUp:
   case midiTargetPitchDown:
   case midiTargetPitchUp:
+  case midiTargetMetronomeEnabled:
   case midiTargetMetronomeMute:
   case midiTargetMetronomeSolo:
   case midiTargetMixerNudgeUp:
   case midiTargetMixerNudgeDown:
   case midiTargetMixerApplyRouting:
+  case midiTargetClickDynDivisionQuarter:
+  case midiTargetClickDynDivisionEighth:
+  case midiTargetClickDynDivisionSixteenth:
     return true;
   default:
     return false;
@@ -1184,6 +1483,12 @@ juce::String MTControlsAudioProcessor::midiTargetNameForId(const int targetId) {
     return "Mixer Nudge Down";
   case midiTargetMixerApplyRouting:
     return "Mixer Apply Routing";
+  case midiTargetClickDynDivisionQuarter:
+    return "Click Dyn 1/4";
+  case midiTargetClickDynDivisionEighth:
+    return "Click Dyn 1/8";
+  case midiTargetClickDynDivisionSixteenth:
+    return "Click Dyn 1/16";
   case midiTargetPadsPower:
     return "Pads Power";
   case midiTargetPadsVolume:
@@ -1234,8 +1539,12 @@ MTControlsAudioProcessor::getMidiTargets() const {
   addTarget(midiTargetMasterVolume);
   addTarget(midiTargetMasterGain);
   addTarget(midiTargetMasterMute);
+  addTarget(midiTargetMetronomeEnabled);
   addTarget(midiTargetMetronomeMute);
   addTarget(midiTargetMetronomeSolo);
+  addTarget(midiTargetClickDynDivisionQuarter);
+  addTarget(midiTargetClickDynDivisionEighth);
+  addTarget(midiTargetClickDynDivisionSixteenth);
 
   addTarget(midiTargetTransportPlayPause);
   addTarget(midiTargetTransportStop);
@@ -1375,6 +1684,25 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   const auto queueUiCommand = [this](const int commandId) {
     midiPendingUiCommand.store(commandId, std::memory_order_release);
   };
+  const auto divisionBitForTarget = [](const int divisionTargetId) -> int {
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionQuarter)
+      return 0x01;
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionEighth)
+      return 0x02;
+    if (divisionTargetId ==
+        MTControlsAudioProcessor::midiTargetClickDynDivisionSixteenth)
+      return 0x04;
+    return 0;
+  };
+  const auto setClickDivisionBit = [this](const int bit, const bool enabled) {
+    if (bit == 0)
+      return;
+    const int current = getClickDivision() & 0x07;
+    const int next = enabled ? (current | bit) : (current & ~bit);
+    setClickDivision(next);
+  };
 
   if (targetId == midiTargetMasterVolume) {
     setMasterVolume(normalized);
@@ -1422,6 +1750,11 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   if (mode == MidiBindingMode::Momentary) {
     if (targetId == midiTargetMasterMute)
       setMasterMute(high);
+    else if (targetId == midiTargetMetronomeEnabled)
+      setMetronomeEnabled(high);
+    else if (const int divisionBit = divisionBitForTarget(targetId);
+             divisionBit != 0)
+      setClickDivisionBit(divisionBit, high);
     else if (targetId == midiTargetMetronomeMute)
       setMetronomeMuted(high);
     else if (targetId == midiTargetMetronomeSolo)
@@ -1475,6 +1808,11 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
 
   if (targetId == midiTargetMasterMute)
     setMasterMute(!isMasterMuted());
+  else if (targetId == midiTargetMetronomeEnabled)
+    setMetronomeEnabled(!isMetronomeEnabled());
+  else if (const int divisionBit = divisionBitForTarget(targetId);
+           divisionBit != 0)
+    setClickDivisionBit(divisionBit, (getClickDivision() & divisionBit) == 0);
   else if (targetId == midiTargetMetronomeMute)
     setMetronomeMuted(!isMetronomeMuted());
   else if (targetId == midiTargetMetronomeSolo)
@@ -1724,6 +2062,18 @@ void MTControlsAudioProcessor::getOutputMeterLevels(float &left,
   right = meterLevelRight.load(std::memory_order_relaxed);
 }
 
+void MTControlsAudioProcessor::getDynamicGuideMeterLevels(
+    float &left, float &right) const noexcept {
+  left = dynamicGuideMeterLevelLeft.load(std::memory_order_relaxed);
+  right = dynamicGuideMeterLevelRight.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::getMetronomeMeterLevels(
+    float &left, float &right) const noexcept {
+  left = metronomeMeterLevelLeft.load(std::memory_order_relaxed);
+  right = metronomeMeterLevelRight.load(std::memory_order_relaxed);
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout
 MTControlsAudioProcessor::createParameterLayout() {
   std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
@@ -1873,12 +2223,22 @@ bool MTControlsAudioProcessor::loadSongStems(
     }
     songLoaded.store(true, std::memory_order_relaxed);
     arrangementParts.clear();
-    arrangementParts.push_back({0.0, maxLengthSeconds});
+    ArrangementRuntimePart initialPart;
+    initialPart.id = "part-1";
+    initialPart.name = "Part";
+    initialPart.sectionKey = DynamicGuideEngine::normalizeSectionKey(initialPart.name);
+    initialPart.startSec = 0.0;
+    initialPart.endSec = maxLengthSeconds;
+    arrangementParts.push_back(std::move(initialPart));
     arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
     arrangementCustomActive.store(false, std::memory_order_relaxed);
     arrangementTotalLengthSeconds.store(maxLengthSeconds,
                                         std::memory_order_relaxed);
+    dynamicGuideAnnouncedByPart.assign(arrangementParts.size(), false);
+    dynamicGuideLastPartIndex = -1;
+    dynamicGuideLastBlockStartSec = -1.0;
+    dynamicGuideWasPlaying = false;
     pitchTargetSemiTones.store(0, std::memory_order_relaxed);
     setTransportState(wasPlayingBeforeLoad ? TransportState::playing
                                            : TransportState::stopped);
@@ -1936,6 +2296,8 @@ void MTControlsAudioProcessor::playSong() {
   metronome.syncPhaseForTimeSeconds(
       songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
+  if (isMetronomeEnabled())
+    metronome.triggerImmediateClick();
 }
 
 void MTControlsAudioProcessor::pauseSong() {
@@ -2150,7 +2512,17 @@ void MTControlsAudioProcessor::setSongArrangement(
       std::swap(start, end);
     if (songLength > 0.0 && (end - start) < kRuntimeMinPartDurationSec)
       continue;
-    next.push_back({start, end});
+    ArrangementRuntimePart runtimePart;
+    runtimePart.id = part.id.trim();
+    runtimePart.name = part.name.trim();
+    if (runtimePart.id.isEmpty())
+      runtimePart.id = juce::String("part-") + juce::String(static_cast<int>(next.size()) + 1);
+    if (runtimePart.name.isEmpty())
+      runtimePart.name = "Part";
+    runtimePart.sectionKey = DynamicGuideEngine::normalizeSectionKey(runtimePart.name);
+    runtimePart.startSec = start;
+    runtimePart.endSec = end;
+    next.push_back(std::move(runtimePart));
     totalLength += juce::jmax(0.0, end - start);
   }
 
@@ -2164,13 +2536,32 @@ void MTControlsAudioProcessor::setSongArrangement(
         });
   }
 
+  for (auto &part : next) {
+    const auto countKey = arrangementCountSectionKey(part.name);
+    if (countKey.isNotEmpty()) {
+      part.sectionKey = countKey;
+      continue;
+    }
+
+    part.sectionKey = arrangementSectionKey(part.name);
+  }
+
   if (next.empty()) {
-    next.push_back({0.0, songLength});
+    ArrangementRuntimePart runtimePart;
+    runtimePart.id = "part-1";
+    runtimePart.name = "Part";
+    runtimePart.sectionKey = DynamicGuideEngine::normalizeSectionKey(runtimePart.name);
+    runtimePart.startSec = 0.0;
+    runtimePart.endSec = songLength;
+    next.push_back(std::move(runtimePart));
     totalLength = songLength;
     isCustomArrangement = false;
   }
 
   arrangementParts = std::move(next);
+  dynamicGuideAnnouncedByPart.assign(arrangementParts.size(), false);
+  dynamicGuideLastPartIndex = -1;
+  dynamicGuideLastBlockStartSec = -1.0;
   arrangementTotalLengthSeconds.store(totalLength, std::memory_order_relaxed);
   arrangementCustomActive.store(isCustomArrangement, std::memory_order_relaxed);
   arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
@@ -2213,6 +2604,7 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
         arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
 
     if (playing) {
+      // En reproduccion, queda en cola y se ejecuta al final de la seccion actual.
       if (pendingPartIndex == partIndex) {
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
         return;
@@ -2252,10 +2644,21 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
       return;
     }
 
+    const auto &loopPart = arrangementParts[static_cast<size_t>(partIndex)];
+    const bool isPlayingNow =
+        getTransportState() == TransportState::playing;
+    const double currentSec =
+        songCurrentPositionSeconds.load(std::memory_order_relaxed);
+    const bool alreadyInsideLoopRange =
+        currentSec >= loopPart.startSec && currentSec < loopPart.endSec;
+
     arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
-    // No hacemos seek ni play automático: el loop queda armado y entra
-    // en efecto cuando el transporte llegue al rango de la sección.
+    // En reproducción, si el transporte está fuera de la sección objetivo,
+    // dejamos un salto en cola para garantizar que el loop entre también en
+    // modo Follow sin intervención manual.
+    if (isPlayingNow && !alreadyInsideLoopRange)
+      arrangementPendingJumpPartIndex.store(partIndex, std::memory_order_relaxed);
   }
 }
 
@@ -2743,12 +3146,13 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   metronome.setEnabled(enabled);
+  metronome.reset();
   if (enabled) {
-    metronome.reset();
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
     metronome.syncPhaseForTimeSeconds(currentSec);
-    metronome.triggerImmediateClick();
+    if (getTransportState() == TransportState::playing)
+      metronome.triggerImmediateClick();
   }
 }
 
@@ -2815,7 +3219,7 @@ bool MTControlsAudioProcessor::isMetronomeMuted() const noexcept {
 
 void MTControlsAudioProcessor::setMetronomeGain(
     const float gainValue) noexcept {
-  metronomeGainState.store(juce::jlimit(0.0f, 2.0f, gainValue),
+  metronomeGainState.store(juce::jlimit(0.0f, 4.0f, gainValue),
                            std::memory_order_relaxed);
 }
 
@@ -2844,6 +3248,71 @@ void MTControlsAudioProcessor::setMetronomeOutputRouting(
   metronomeOutputWidth.store(normalizedWidth, std::memory_order_relaxed);
 }
 
+int MTControlsAudioProcessor::getMetronomeOutputChannel() const noexcept {
+  return metronomeOutputChannel.load(std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getMetronomeOutputWidth() const noexcept {
+  return metronomeOutputWidth.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setDynamicGuideVolume(
+    const float volume) noexcept {
+  dynamicGuideVolumeState.store(juce::jlimit(0.0f, 1.0f, volume),
+                                std::memory_order_relaxed);
+}
+
+float MTControlsAudioProcessor::getDynamicGuideVolume() const noexcept {
+  return dynamicGuideVolumeState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setDynamicGuideGain(
+    const float gainValue) noexcept {
+  dynamicGuideGainState.store(juce::jlimit(0.0f, 2.0f, gainValue),
+                              std::memory_order_relaxed);
+}
+
+float MTControlsAudioProcessor::getDynamicGuideGain() const noexcept {
+  return dynamicGuideGainState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setDynamicGuideMuted(const bool muted) noexcept {
+  dynamicGuideMutedState.store(muted, std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isDynamicGuideMuted() const noexcept {
+  return dynamicGuideMutedState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setDynamicGuideSolo(const bool soloed) noexcept {
+  dynamicGuideSoloState.store(soloed, std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isDynamicGuideSolo() const noexcept {
+  return dynamicGuideSoloState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setDynamicGuideOutputRouting(
+    const int outputChannel, const int width) noexcept {
+  const int availableChannels = juce::jmax(1, getAvailableOutputChannelCount());
+  int normalizedWidth = juce::jlimit(1, 2, width);
+  int normalizedChannel = juce::jlimit(1, availableChannels, outputChannel);
+  if (normalizedWidth >= 2 && normalizedChannel >= availableChannels)
+    normalizedChannel = juce::jmax(1, availableChannels - 1);
+
+  dynamicGuideOutputChannelState.store(normalizedChannel,
+                                       std::memory_order_relaxed);
+  dynamicGuideOutputWidthState.store(normalizedWidth, std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getDynamicGuideOutputChannel() const noexcept {
+  return dynamicGuideOutputChannelState.load(std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getDynamicGuideOutputWidth() const noexcept {
+  return dynamicGuideOutputWidthState.load(std::memory_order_relaxed);
+}
+
 void MTControlsAudioProcessor::setMetronomeClickStemIndex(
     const int stemIndexOrMinusOne) noexcept {
   if (stemIndexOrMinusOne < 0 || stemIndexOrMinusOne >= maxStemCount) {
@@ -2852,6 +3321,46 @@ void MTControlsAudioProcessor::setMetronomeClickStemIndex(
   }
   metronomeClickStemIndex.store(stemIndexOrMinusOne,
                                 std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::loadMetronomeClickSamplesFromFolder(
+    const juce::File &folder, const juce::String &style,
+    juce::String *errorMessage) {
+  return metronome.loadClickSamplesFromFolder(
+      folder, style, playbackFormatManager, errorMessage);
+}
+
+void MTControlsAudioProcessor::clearMetronomeClickSamples() noexcept {
+  metronome.clearClickSamples();
+}
+
+bool MTControlsAudioProcessor::hasMetronomeClickSamples() const noexcept {
+  return metronome.hasClickSamples();
+}
+
+void MTControlsAudioProcessor::setClickDivision(const int division) noexcept {
+  const int normalized = division & 0x07;
+  clickDivisionState.store(normalized, std::memory_order_relaxed);
+  const bool enabled =
+      clickDivisionEnabledState.load(std::memory_order_relaxed);
+  metronome.setDivisionMask(enabled ? normalized : 0);
+  metronome.setSubdivision(clickDivisionMaskToSubdivision(normalized));
+}
+
+int MTControlsAudioProcessor::getClickDivision() const noexcept {
+  return clickDivisionState.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setClickDivisionEnabled(
+    const bool enabled) noexcept {
+  clickDivisionEnabledState.store(enabled, std::memory_order_relaxed);
+  const int division = clickDivisionState.load(std::memory_order_relaxed);
+  metronome.setDivisionMask(enabled ? division : 0);
+  metronome.setSubdivision(clickDivisionMaskToSubdivision(division));
+}
+
+bool MTControlsAudioProcessor::isClickDivisionEnabled() const noexcept {
+  return clickDivisionEnabledState.load(std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
@@ -2868,6 +3377,12 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   masterVolume.store(1.0f, std::memory_order_relaxed);
   masterGain.store(1.0f, std::memory_order_relaxed);
   masterMuted.store(false, std::memory_order_relaxed);
+  dynamicGuideVolumeState.store(1.0f, std::memory_order_relaxed);
+  dynamicGuideGainState.store(1.0f, std::memory_order_relaxed);
+  dynamicGuideMutedState.store(false, std::memory_order_relaxed);
+  dynamicGuideSoloState.store(false, std::memory_order_relaxed);
+  dynamicGuideOutputChannelState.store(1, std::memory_order_relaxed);
+  dynamicGuideOutputWidthState.store(2, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
   arrangementParts.clear();
@@ -2876,6 +3391,11 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
   arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
   arrangementTotalLengthSeconds.store(0.0, std::memory_order_relaxed);
+  dynamicGuideAnnouncedByPart.clear();
+  dynamicGuideLastBlockStartSec = -1.0;
+  dynamicGuideLastPartIndex = -1;
+  dynamicGuideWasPlaying = false;
+  dynamicGuideEngine.reset();
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   mixEngine.reset();
   metronome.reset();
@@ -2912,6 +3432,8 @@ void MTControlsAudioProcessor::resetStemControls(
                                                    std::memory_order_relaxed);
       stemClickGuideStates[static_cast<size_t>(i)].store(
           false, std::memory_order_relaxed);
+      stemGuideStates[static_cast<size_t>(i)].store(
+          false, std::memory_order_relaxed);
       stemPitchShiftStates[static_cast<size_t>(i)].store(
           true, std::memory_order_relaxed);
       stemOutputChannels[static_cast<size_t>(i)].store(
@@ -2935,6 +3457,80 @@ void MTControlsAudioProcessor::setStemClickGuideMask(
   }
 }
 
+void MTControlsAudioProcessor::setStemGuideMask(
+    const std::vector<bool> &mask) noexcept {
+  const int limit = juce::jmin(static_cast<int>(mask.size()), maxStemCount);
+  for (int i = 0; i < maxStemCount; ++i) {
+    const bool isGuideStem = i < limit ? mask[static_cast<size_t>(i)] : false;
+    stemGuideStates[static_cast<size_t>(i)].store(
+        isGuideStem, std::memory_order_relaxed);
+  }
+}
+
+void MTControlsAudioProcessor::setDynamicGuideSettings(
+    const DynamicGuideSettings &settings) {
+  {
+    const juce::SpinLock::ScopedLockType lock(dynamicGuideStateLock);
+    dynamicGuideSettings = settings;
+  }
+  dynamicGuideEnabledState.store(settings.enabled, std::memory_order_relaxed);
+  if (!settings.enabled) {
+    dynamicGuideEngine.reset();
+    return;
+  }
+  juce::String loadError;
+  if (!reloadDynamicGuideAssets(&loadError)) {
+    const juce::SpinLock::ScopedLockType warningLock(dynamicGuideWarningLock);
+    dynamicGuideLastMissingSection =
+        juce::String(kDynamicGuideLoadWarningPrefix) + loadError;
+  }
+}
+
+DynamicGuideSettings MTControlsAudioProcessor::getDynamicGuideSettings() const {
+  const juce::SpinLock::ScopedLockType lock(dynamicGuideStateLock);
+  return dynamicGuideSettings;
+}
+
+void MTControlsAudioProcessor::setDynamicGuideLanguage(const AppLanguage language) {
+  const int code = language == AppLanguage::English ? 1 : 0;
+  const int previous = dynamicGuideLanguageCode.exchange(code, std::memory_order_relaxed);
+  if (previous == code)
+    return;
+  juce::String loadError;
+  if (!reloadDynamicGuideAssets(&loadError)) {
+    const juce::SpinLock::ScopedLockType warningLock(dynamicGuideWarningLock);
+    dynamicGuideLastMissingSection =
+        juce::String(kDynamicGuideLoadWarningPrefix) + loadError;
+  }
+}
+
+void MTControlsAudioProcessor::setArrangementEditingActive(
+    const bool editingActive) noexcept {
+  const bool previous =
+      arrangementEditingActiveState.exchange(editingActive, std::memory_order_relaxed);
+  if (previous == editingActive)
+    return;
+
+  if (editingActive) {
+    dynamicGuideEngine.reset();
+    dynamicGuideWasPlaying = false;
+    dynamicGuideLastPartIndex = -1;
+    dynamicGuideLastBlockStartSec = -1.0;
+    std::fill(dynamicGuideAnnouncedByPart.begin(), dynamicGuideAnnouncedByPart.end(),
+              false);
+  }
+}
+
+bool MTControlsAudioProcessor::consumeDynamicGuideMissingSectionWarning(
+    juce::String &outSectionName) {
+  const juce::SpinLock::ScopedLockType lock(dynamicGuideWarningLock);
+  if (dynamicGuideLastMissingSection.isEmpty())
+    return false;
+  outSectionName = dynamicGuideLastMissingSection;
+  dynamicGuideLastMissingSection.clear();
+  return true;
+}
+
 void MTControlsAudioProcessor::setStemPitchShiftMask(
     const std::vector<bool> &mask) noexcept {
   const int limit = juce::jmin(static_cast<int>(mask.size()), maxStemCount);
@@ -2956,6 +3552,50 @@ void MTControlsAudioProcessor::setPitchSemiTones(
 
 int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
   return pitchTargetSemiTones.load(std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::reloadDynamicGuideAssets(juce::String *errorMessage) {
+  juce::String localError;
+  if (!AssetBootstrapManager::ensureGuidesPackReady(&localError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  const auto sectionsDir = AssetBootstrapManager::getGuidesLanguageSectionsDirectory(
+      currentDynamicGuideLanguageCode());
+  const auto cuesDir = AssetBootstrapManager::getGuidesLanguageCuesDirectory(
+      currentDynamicGuideLanguageCode());
+  if (!dynamicGuideEngine.loadGuideDirectories({sectionsDir, cuesDir},
+                                               playbackFormatManager,
+                                               &localError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  {
+    const juce::SpinLock::ScopedLockType warningLock(dynamicGuideWarningLock);
+    if (dynamicGuideLastMissingSection.startsWith(kDynamicGuideLoadWarningPrefix))
+      dynamicGuideLastMissingSection.clear();
+  }
+
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  return true;
+}
+
+juce::String MTControlsAudioProcessor::currentDynamicGuideLanguageCode() const noexcept {
+  return dynamicGuideLanguageCode.load(std::memory_order_relaxed) == 1 ? "en" : "es";
+}
+
+int MTControlsAudioProcessor::findFirstGuideStemIndex(const int stemCount) const noexcept {
+  const int limit = juce::jlimit(0, maxStemCount, stemCount);
+  for (int i = 0; i < limit; ++i) {
+    if (stemGuideStates[static_cast<size_t>(i)].load(std::memory_order_relaxed))
+      return i;
+  }
+  return -1;
 }
 
 double MTControlsAudioProcessor::getPlaybackTempoRatio() const noexcept {

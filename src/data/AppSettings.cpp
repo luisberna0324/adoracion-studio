@@ -17,6 +17,7 @@ constexpr const char *kRoutingWidthKey = "width";
 constexpr const char *kPadsPackKey = "padsPack";
 constexpr const char *kAssetsBootstrapKey = "assetsBootstrap";
 constexpr const char *kMidiBindingsKey = "midiBindings";
+constexpr const char *kMetronomeClickStyleKey = "metronomeClickStyle";
 constexpr int kDeprecatedClassicThemeId = 1;
 constexpr int kNightGreenThemeId = 2;
 constexpr int kStudioAmberThemeId = 3;
@@ -25,6 +26,47 @@ int normalizeThemePresetId(const int rawId) {
   if (rawId == kDeprecatedClassicThemeId)
     return kNightGreenThemeId;
   return juce::jlimit(kNightGreenThemeId, kStudioAmberThemeId, rawId);
+}
+
+juce::String metronomeClickStyleToString(const MetronomeClickStyle style) {
+  switch (style) {
+  case MetronomeClickStyle::Woodblock:
+    return "woodblock";
+  case MetronomeClickStyle::Cowbell:
+    return "cowbell";
+  case MetronomeClickStyle::Digital:
+    return "digital";
+  case MetronomeClickStyle::Gentle:
+    return "gentle";
+  case MetronomeClickStyle::Percussive:
+    return "percussive";
+  case MetronomeClickStyle::Saw:
+    return "saw";
+  case MetronomeClickStyle::Blip:
+    return "blip";
+  case MetronomeClickStyle::Classic:
+  default:
+    return "classic";
+  }
+}
+
+MetronomeClickStyle metronomeClickStyleFromString(const juce::String &raw) {
+  const auto text = raw.trim().toLowerCase();
+  if (text == "woodblock")
+    return MetronomeClickStyle::Woodblock;
+  if (text == "cowbell")
+    return MetronomeClickStyle::Cowbell;
+  if (text == "digital")
+    return MetronomeClickStyle::Digital;
+  if (text == "gentle")
+    return MetronomeClickStyle::Gentle;
+  if (text == "percussive")
+    return MetronomeClickStyle::Percussive;
+  if (text == "saw")
+    return MetronomeClickStyle::Saw;
+  if (text == "blip")
+    return MetronomeClickStyle::Blip;
+  return MetronomeClickStyle::Classic;
 }
 
 int getCategoryIndexForName(const juce::String &category) {
@@ -257,6 +299,35 @@ void AppSettings::setLanguage(const AppLanguage value) {
     o->setProperty("language",
                    value == AppLanguage::English ? juce::var("en")
                                                  : juce::var("es"));
+  }
+
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+MetronomeClickStyle AppSettings::getMetronomeClickStyle() {
+  const auto f = getSettingsFile();
+  if (!f.existsAsFile())
+    return kDefaultMetronomeClickStyle;
+
+  const auto parsed = juce::JSON::parse(f);
+  if (const auto *o = parsed.getDynamicObject()) {
+    if (o->hasProperty(kMetronomeClickStyleKey))
+      return metronomeClickStyleFromString(
+          o->getProperty(kMetronomeClickStyleKey).toString());
+  }
+  return kDefaultMetronomeClickStyle;
+}
+
+void AppSettings::setMetronomeClickStyle(const MetronomeClickStyle value) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+
+  if (auto *o = root.getDynamicObject()) {
+    o->setProperty("version", 13);
+    o->setProperty(kMetronomeClickStyleKey, metronomeClickStyleToString(value));
   }
 
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));

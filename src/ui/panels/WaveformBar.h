@@ -11,6 +11,7 @@
 
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
+  using PlayingProvider = std::function<bool()>;
   using PositionProvider = std::function<double()>;
   using LengthProvider = std::function<double()>;
   using SongWindowProvider = std::function<double()>;
@@ -21,6 +22,9 @@ public:
   using ArrangementResetCallback = std::function<void()>;
   using ArrangementPartJumpRequestCallback = std::function<void(int)>;
   using ArrangementPartLoopToggleRequestCallback = std::function<void(int)>;
+  using TempoMapChangedCallback = std::function<void(const SongTempoMapSnapshot &)>;
+  using ActiveTempoRegionCallback =
+      std::function<void(const SongTempoRegionSnapshot &)>;
   using PendingArrangementPartProvider = std::function<int()>;
   using ActiveArrangementLoopPartProvider = std::function<int()>;
 
@@ -29,9 +33,11 @@ public:
   void setWaveformBins(std::vector<float> bins);
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
                       bool isCustomArrangement);
+  void setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot);
   void setSongRhythm(double bpm, const juce::String &timeSignature);
   void setTransportProviders(PositionProvider positionCb,
-                             LengthProvider lengthCb);
+                             LengthProvider lengthCb,
+                             PlayingProvider playingCb = {});
   void setSongWindowProviders(SongWindowProvider startCb,
                               SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
@@ -41,6 +47,8 @@ public:
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
   void setOnArrangementPartLoopToggleRequest(
       ArrangementPartLoopToggleRequestCallback cb);
+  void setOnTempoMapChanged(TempoMapChangedCallback cb);
+  void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
@@ -63,12 +71,14 @@ public:
   void mouseMove(const juce::MouseEvent &event) override;
   void mouseExit(const juce::MouseEvent &event) override;
   void mouseDoubleClick(const juce::MouseEvent &event) override;
+  bool keyPressed(const juce::KeyPress &key) override;
   void mouseWheelMove(const juce::MouseEvent &event,
                       const juce::MouseWheelDetails &wheel) override;
   void mouseMagnify(const juce::MouseEvent &, float magnifyAmount) override;
 
 private:
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
+  enum class TimelineViewMode { GuideMap = 1, TempoMap };
 
   enum class DragMode {
     none,
@@ -76,6 +86,11 @@ private:
     movePart,
     resizePartLeft,
     resizePartRight,
+    selectTempoRegion,
+    moveTempoRegion,
+    resizeTempoRegionLeft,
+    resizeTempoRegionRight,
+    selectParts,
     panViewport,
     resizeViewportLeft,
     resizeViewportRight
@@ -105,11 +120,25 @@ private:
     bool jumpButton = false;
   };
 
+  struct TempoRegionHitResult {
+    int regionIndex = -1;
+    bool leftEdge = false;
+    bool rightEdge = false;
+    bool deleteButton = false;
+  };
+
+  struct DragPartOrigin {
+    juce::String id;
+    double startSec = 0.0;
+    double endSec = 0.0;
+  };
+
   void timerCallback() override;
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
 
   std::vector<float> waveformBins;
+  PlayingProvider playingProvider;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
   SongWindowProvider songWindowStartProvider;
@@ -120,24 +149,45 @@ private:
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
   ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
+  TempoMapChangedCallback onTempoMapChanged;
+  ActiveTempoRegionCallback onActiveTempoRegionChanged;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  juce::TextButton followButton;
   juce::TextButton editButton;
+  juce::TextButton guideMapButton;
+  juce::TextButton tempoMapButton;
   juce::Label snapModeLabel;
   juce::ComboBox snapModeBox;
+  juce::TextButton sectionMenuButton;
+  juce::TextButton splitTempoRegionButton;
+  juce::Label tempoBpmLabel;
+  juce::TextEditor tempoBpmEditor;
+  juce::Label tempoSignatureLabel;
+  juce::ComboBox tempoSignatureBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   SnapMode snapMode = SnapMode::Bar;
+  TimelineViewMode timelineViewMode = TimelineViewMode::GuideMap;
   double songBpm = 0.0;
+  juce::String songTimeSignature = "4/4";
   int songBeatsPerBar = 4;
   float viewportStart = 0.0f;
   float viewportSpan = 1.0f;
   SongArrangementSnapshot arrangement;
+  SongTempoMapSnapshot tempoMap;
   bool customArrangement = false;
   int selectedPartIndex = -1;
+  int selectedTempoRegionIndex = -1;
+  int lastAppliedTempoRegionIndex = -1;
+  std::vector<juce::String> selectedPartIds;
   DragMode dragMode = DragMode::none;
   juce::String activeDragPartId;
+  std::vector<DragPartOrigin> dragPartOrigins;
   double dragOriginPartStartSec = 0.0;
   double dragOriginPartEndSec = 0.0;
+  int activeDragTempoRegionIndex = -1;
+  double dragOriginTempoStartSec = 0.0;
+  double dragOriginTempoEndSec = 0.0;
   double dragAnchorSourceSec = 0.0;
   bool dragAnchorActive = false;
   bool dragAnchorEdgeIsStart = true;
@@ -145,6 +195,10 @@ private:
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
+  juce::Point<float> selectionDragStart;
+  juce::Point<float> selectionDragCurrent;
+  std::vector<juce::String> selectionDragBaseIds;
+  bool selectionDragAdditive = false;
   std::vector<PartOverlayBounds> partOverlayBounds;
   int hoveredActionPartIndex = -1;
   int hoveredLoopPartIndex = -1;
@@ -152,6 +206,7 @@ private:
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;
+  bool tempoDragPendingCommit = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
@@ -161,18 +216,36 @@ private:
   juce::String songLoadingPhaseText;
   double songLoadingShownAtMs = 0.0;
   double songLoadingHideAfterMs = 0.0;
+  bool followPlaybackEnabled = false;
+  double followSuspendedUntilMs = 0.0;
+  bool followPendingJumpWasActive = false;
+  bool followLastSongProgressValid = false;
+  float followLastSongProgressRatio = 0.0f;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
+  bool isFollowTrackingActive() const;
+  bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;
   double getSnapStepSeconds() const;
+  double getAnchorAttachThresholdSeconds() const;
+  double getAnchorReleaseThresholdSeconds() const;
   bool isSnapBypassed(const juce::ModifierKeys &mods) const;
   double snapSeconds(double seconds, bool bypassSnap = false) const;
-  void normalizeArrangement(bool sortByStart);
+  double snapSecondsForward(double seconds) const;
+  void normalizeArrangement(bool sortByStart, bool snapToGrid);
   int findPartIndexById(const juce::String &id) const;
+  bool isPartSelected(int partIndex) const;
+  void pruneSelectedPartIds();
+  void setSingleSelectedPart(int partIndex);
+  void togglePartSelection(int partIndex);
+  void ensurePartSelectedForDrag(int partIndex);
+  void captureDragPartOrigins();
+  juce::Rectangle<float> getSelectionDragBounds() const;
+  void updateSelectionFromDragBounds();
   bool isEditingArrangement() const;
   juce::Rectangle<float>
   getEditToolbarBounds(const juce::Rectangle<float> &bounds) const;
@@ -193,6 +266,7 @@ private:
   float sourceSecondsToWindowX(const juce::Rectangle<float> &windowBounds,
                                double sourceSeconds) const;
   PartHitResult hitTestArrangementPart(juce::Point<float> pos) const;
+  TempoRegionHitResult hitTestTempoRegion(juce::Point<float> pos) const;
   void rebuildPartOverlayBounds(const juce::Rectangle<float> &mainWaveBounds);
   void drawWaveform(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                     float windowStart, float windowSpan, bool showGrid,
@@ -201,18 +275,28 @@ private:
                      float windowStart, float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
                               const juce::Rectangle<float> &mainWaveBounds);
+  void drawTempoOverlay(juce::Graphics &g,
+                        const juce::Rectangle<float> &mainWaveBounds);
   void drawMiniMap(juce::Graphics &g,
                    const juce::Rectangle<float> &miniMapBounds) const;
   void rebuildSectionAddButtons();
-  void openPartActionMenu(int partIndex);
   void addArrangementPart(const juce::String &preferredName = {});
+  void addCountSequenceParts(int firstCount, int lastCount);
+  void addUtilityCuePart(const juce::String &cueName);
   void duplicateArrangementPart(int partIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
-  void confirmDeleteArrangementPart(int partIndex);
   void deleteArrangementPart(int partIndex);
+  void deleteSelectedArrangementParts();
   void notifyArrangementChanged(bool isCustom);
   void resetArrangementToDefault();
+  void normalizeTempoMap();
+  void selectTempoRegion(int regionIndex);
+  void updateTempoControlsFromSelection();
+  void applyTempoControlsToSelection();
+  void deleteTempoRegion(int regionIndex);
+  void notifyTempoMapChanged();
+  void updateActiveTempoRegionFromTransport();
   void scheduleDeferredPartJumpFromDoubleClick(int partIndex);
   void cancelDeferredPartJumpFromDoubleClick();
   void flushDeferredPartJumpFromDoubleClickIfDue(bool force = false);

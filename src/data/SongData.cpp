@@ -45,6 +45,31 @@ const std::array<const char *, 14> kSongSectionSuggestions = {{
     "Ending",
 }};
 
+int timeSignatureBeatsPerBar(const juce::String &timeSignature) {
+  const auto trimmed = timeSignature.trim();
+  int numerator = 4;
+  int denominator = 4;
+
+  if (trimmed.isNotEmpty()) {
+    const int slash = trimmed.indexOfChar('/');
+    if (slash > 0) {
+      numerator = trimmed.substring(0, slash).getIntValue();
+      denominator = trimmed.substring(slash + 1).getIntValue();
+    } else {
+      numerator = trimmed.getIntValue();
+    }
+  }
+
+  if (numerator <= 0)
+    numerator = 4;
+  if (denominator <= 0)
+    denominator = 4;
+
+  // This app measures the metronome and bar grid in quarter-note units.
+  // Convert the written meter so 6/8 becomes 3 quarter-note beats per bar.
+  return juce::jmax(1, (numerator * 4) / denominator);
+}
+
 juce::String makeDisplayNameFromFile(const juce::File &file) {
   auto name = file.getFileNameWithoutExtension().trim();
   if (name.isEmpty())
@@ -230,6 +255,20 @@ juce::String normalizeArrangementSectionToken(juce::String name) {
   return normalized;
 }
 
+juce::String arrangementSectionVariantSuffix(const juce::String &name) {
+  const auto trimmed = name.trim();
+  int suffixStart = trimmed.length();
+  while (suffixStart > 0 &&
+         juce::CharacterFunctions::isDigit(trimmed[suffixStart - 1])) {
+    --suffixStart;
+  }
+  if (suffixStart <= 0 || suffixStart == trimmed.length() ||
+      !juce::CharacterFunctions::isWhitespace(trimmed[suffixStart - 1])) {
+    return {};
+  }
+  return trimmed.substring(suffixStart);
+}
+
 const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &name) {
   const auto token = normalizeArrangementSectionToken(name);
   if (token.isEmpty())
@@ -245,6 +284,26 @@ const ArrangementSectionStyle *findArrangementSectionStyle(const juce::String &n
   }
   return nullptr;
 }
+
+juce::String countDisplayWordForName(const juce::String &name) {
+  const auto token = normalizeArrangementSectionToken(name);
+  if (token == "1" || token == "one" || token == "uno")
+    return L10n::tr("Uno", "One");
+  if (token == "2" || token == "two" || token == "dos")
+    return L10n::tr("Dos", "Two");
+  if (token == "3" || token == "three" || token == "tres")
+    return L10n::tr("Tres", "Three");
+  if (token == "4" || token == "four" || token == "cuatro")
+    return L10n::tr("Cuatro", "Four");
+  if (token == "5" || token == "five" || token == "cinco")
+    return L10n::tr("Cinco", "Five");
+  if (token == "6" || token == "six" || token == "seis")
+    return L10n::tr("Seis", "Six");
+  if (token == "7" || token == "seven" || token == "siete")
+    return L10n::tr("Siete", "Seven");
+  return {};
+}
+
 } // namespace
 
 juce::String canonicalArrangementSectionName(const juce::String &name) {
@@ -281,8 +340,19 @@ juce::String fallbackArrangementPartColorForName(const juce::String &name) {
 }
 
 juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
-  if (const auto *style = findArrangementSectionStyle(name))
-    return L10n::tr(style->spanishLabel, style->englishLabel);
+  if (const auto countWord = countDisplayWordForName(name);
+      countWord.isNotEmpty()) {
+    return countWord;
+  }
+
+  if (const auto *style = findArrangementSectionStyle(name)) {
+    auto label = L10n::tr(style->spanishLabel, style->englishLabel);
+    if (const auto variant = arrangementSectionVariantSuffix(name);
+        variant.isNotEmpty()) {
+      label << " " << variant;
+    }
+    return label;
+  }
 
   const auto trimmed = name.trim();
   return trimmed.isNotEmpty() ? trimmed : L10n::tr("Parte", "Part");

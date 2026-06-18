@@ -40,6 +40,36 @@ set(MTCONTROLS_FFMPEG_BIN_LINUX "${_mtcontrols_ffmpeg_linux_default}" CACHE FILE
     "Path to ffmpeg binary that will be bundled in the Linux build")
 set(MTCONTROLS_ASSETS_BASE_URL "https://storage.googleapis.com/playworship-assets" CACHE STRING
     "Base URL for remote asset bootstrap downloads")
+set(_mtcontrols_guides_pack_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/guides/guides-en-es.zip")
+    set(_mtcontrols_guides_pack_default
+        "${CMAKE_SOURCE_DIR}/assets/guides/guides-en-es.zip")
+endif()
+set(MTCONTROLS_GUIDES_PACK "${_mtcontrols_guides_pack_default}" CACHE FILEPATH
+    "Path to bundled EN/ES dynamic guides pack zip (guides-en-es.zip)")
+if((NOT MTCONTROLS_GUIDES_PACK OR MTCONTROLS_GUIDES_PACK STREQUAL "") AND
+   EXISTS "${CMAKE_SOURCE_DIR}/assets/guides/guides-en-es.zip")
+    set(MTCONTROLS_GUIDES_PACK
+        "${CMAKE_SOURCE_DIR}/assets/guides/guides-en-es.zip"
+        CACHE FILEPATH
+        "Path to bundled EN/ES dynamic guides pack zip (guides-en-es.zip)"
+        FORCE)
+endif()
+set(_mtcontrols_clicks_pack_default "")
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+    set(_mtcontrols_clicks_pack_default
+        "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+endif()
+set(MTCONTROLS_CLICKS_PACK "${_mtcontrols_clicks_pack_default}" CACHE FILEPATH
+    "Path to bundled click samples pack zip (clicks-pack.zip)")
+if((NOT MTCONTROLS_CLICKS_PACK OR MTCONTROLS_CLICKS_PACK STREQUAL "") AND
+   EXISTS "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip")
+    set(MTCONTROLS_CLICKS_PACK
+        "${CMAKE_SOURCE_DIR}/assets/clicks/clicks-pack.zip"
+        CACHE FILEPATH
+        "Path to bundled click samples pack zip (clicks-pack.zip)"
+        FORCE)
+endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
@@ -98,6 +128,8 @@ juce_add_plugin(MTControls
     BUNDLE_ID "com.multitracks.playworship"
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
+    BLUETOOTH_PERMISSION_ENABLED TRUE
+    BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
     # iOS: committed asset catalog includes LaunchImage.launchimage so JUCE omits LaunchScreen.storyboard.
     # The default storyboard leaves LaunchScreen.storyboardc unsigned; device install then fails (invalid bundle).
     CUSTOM_XCASSETS_FOLDER "assets/ios/Images.xcassets"
@@ -168,6 +200,8 @@ target_sources(MTControls
         src/StemBufferingSource.h
         src/audio/AudioDeviceMonitor.cpp
         src/audio/AudioDeviceMonitor.h
+        src/audio/DynamicGuideEngine.cpp
+        src/audio/DynamicGuideEngine.h
         src/audio/OutputChannelCatalog.cpp
         src/audio/OutputChannelCatalog.h
         src/audio/PadsEngine.cpp
@@ -209,6 +243,8 @@ target_sources(MTControls
         src/ui/UiCommon.h
         src/ui/components/ChannelStripCard.cpp
         src/ui/components/ChannelStripCard.h
+        src/ui/components/ClickDivisionPanel.cpp
+        src/ui/components/ClickDivisionPanel.h
         src/ui/components/ChannelStripLookAndFeel.cpp
         src/ui/components/ChannelStripLookAndFeel.h
         src/ui/components/SetlistHandlePanel.cpp
@@ -304,12 +340,22 @@ target_link_libraries(MTControls
 
 if (TARGET SoundTouch)
     target_compile_definitions(SoundTouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
+    if (MSVC)
+        target_compile_options(SoundTouch PRIVATE /w)
+    else()
+        target_compile_options(SoundTouch PRIVATE -w)
+    endif()
     target_link_libraries(MTControls PRIVATE SoundTouch)
-    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
 elseif (TARGET soundtouch)
     target_compile_definitions(soundtouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
+    if (MSVC)
+        target_compile_options(soundtouch PRIVATE /w)
+    else()
+        target_compile_options(soundtouch PRIVATE -w)
+    endif()
     target_link_libraries(MTControls PRIVATE soundtouch)
-    target_include_directories(MTControls PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
 endif()
@@ -345,6 +391,64 @@ if (TARGET MTControls_Standalone AND MTCONTROLS_BUNDLE_FFMPEG)
                 "${MTCONTROLS_FFMPEG_BIN_LINUX}"
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg"
             COMMAND chmod +x "$<TARGET_FILE_DIR:MTControls_Standalone>/ffmpeg/ffmpeg"
+            VERBATIM)
+    endif()
+endif()
+
+if (TARGET MTControls_Standalone AND MTCONTROLS_GUIDES_PACK AND
+    EXISTS "${MTCONTROLS_GUIDES_PACK}")
+    if (APPLE)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/guides"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_GUIDES_PACK}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/guides/guides-en-es.zip"
+            VERBATIM)
+    elseif (WIN32)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_GUIDES_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/guides-en-es.zip"
+            VERBATIM)
+    elseif (UNIX)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_GUIDES_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/guides-en-es.zip"
+            VERBATIM)
+    endif()
+endif()
+
+if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
+    EXISTS "${MTCONTROLS_CLICKS_PACK}")
+    if (APPLE)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/clicks"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/clicks/clicks-pack.zip"
+            VERBATIM)
+    elseif (WIN32)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
+            VERBATIM)
+    elseif (UNIX)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
             VERBATIM)
     endif()
 endif()

@@ -24,11 +24,14 @@ public:
                              std::function<double()> positionProviderFn,
                              std::function<double()> lengthProviderFn,
                              std::function<juce::String()> keyProviderFn,
-                             std::function<juce::String()> songIdProviderFn);
+                             std::function<juce::String()> songIdProviderFn,
+                             std::function<const ImportedSongData *()>
+                                 songProviderFn);
 
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
+  void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
   void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
@@ -47,6 +50,8 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void mouseDown(const juce::MouseEvent &event) override;
+  void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
   class IconButton final : public juce::Button {
@@ -107,6 +112,7 @@ private:
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
+  std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
@@ -118,14 +124,25 @@ private:
   std::function<double()> lengthProvider;
   std::function<juce::String()> keyProvider;
   std::function<juce::String()> songIdProvider;
+  std::function<const ImportedSongData *()> songProvider;
   MTControlsAudioProcessor &processor;
-  juce::String lastSongTitle;
+  juce::Rectangle<int> songInfoBounds;
+  juce::Image songArtwork;
+  juce::String songTitleText;
+  juce::String songArtistText;
+  juce::String lastSongId;
+  juce::String lastArtworkPath;
+  juce::Colour songAccentColour = UITheme::accent;
   juce::String lastKeyToken;
   juce::String activeKeyLabel;
   int baseKeySemitone = 0;
   int activeKeySemitone = 0;
   int activePitchDelta = 0;
   bool hasKey = false;
+  float songTitleFontSize = 13.0f;
+  float songArtistFontSize = 9.5f;
+  int songArtworkSize = 36;
+  int songCardHeight = 48;
   std::deque<double> tapTimes;
   double lastTickTime = 0.0;
   double beatCounter = 0.0;
@@ -156,6 +173,8 @@ private:
   void toggleWindowMode();
   void openSettingsPanel();
   void refreshFromProviders();
+  void paintSongInfoCard(juce::Graphics &g);
+  juce::Rectangle<int> getSongInfoAnchorBounds() const;
   void setBaseTooltip(IconButton &button, const juce::String &text);
   void refreshMidiLearnTooltips();
 };

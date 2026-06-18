@@ -11,6 +11,9 @@ constexpr const char *kAssetsBaseUrl = "https://storage.googleapis.com/playworsh
 
 constexpr const char *kEncoderVersion = "2026-04-18-1";
 constexpr const char *kPadsVersion = "roman-v1";
+constexpr const char *kClicksVersion = "clicks-v1";
+constexpr const char *kGuidesVersion = "en-es-v2";
+constexpr const char *kGuidesVersionFileName = "pack-version.txt";
 
 juce::String buildEncoderUrl() {
 #if JUCE_WINDOWS
@@ -28,6 +31,120 @@ juce::String buildEncoderUrl() {
 juce::String buildPadsZipUrl() {
   return juce::String(kAssetsBaseUrl) + "/pads/" + kPadsVersion +
          "/pads-pack.zip";
+}
+
+juce::File resolveBundledClicksZipPath() {
+  const auto executable =
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+
+  if (executable.existsAsFile()) {
+#if JUCE_MAC
+    const auto macOSDir = executable.getParentDirectory();
+    const auto resourcesDir = macOSDir.getSiblingFile("Resources");
+    const auto bundled =
+        resourcesDir.getChildFile("clicks").getChildFile("clicks-pack.zip");
+#elif JUCE_WINDOWS
+    const auto bundled = executable.getParentDirectory()
+                            .getChildFile("installer")
+                            .getChildFile("clicks-pack.zip");
+#else
+    const auto bundled = executable.getParentDirectory()
+                            .getChildFile("installer")
+                            .getChildFile("clicks-pack.zip");
+#endif
+    if (bundled.existsAsFile() && bundled.getSize() > 0)
+      return bundled;
+  }
+
+  auto findFromAncestor = [](juce::File dir) -> juce::File {
+    for (int depth = 0; depth < 8 && dir.exists(); ++depth) {
+      const auto candidate =
+          dir.getChildFile("assets").getChildFile("clicks").getChildFile("clicks-pack.zip");
+      if (candidate.existsAsFile() && candidate.getSize() > 0)
+        return candidate;
+      dir = dir.getParentDirectory();
+    }
+    return {};
+  };
+
+  if (const auto fromCwd =
+          findFromAncestor(juce::File::getCurrentWorkingDirectory());
+      fromCwd.existsAsFile()) {
+    return fromCwd;
+  }
+
+  if (executable.existsAsFile()) {
+    if (const auto fromExe = findFromAncestor(executable.getParentDirectory());
+        fromExe.existsAsFile()) {
+      return fromExe;
+    }
+  }
+
+  return {};
+}
+
+juce::File resolveBundledGuidesZipPath() {
+  const auto executable =
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+
+  if (executable.existsAsFile()) {
+#if JUCE_MAC
+    const auto macOSDir = executable.getParentDirectory();
+    const auto resourcesDir = macOSDir.getSiblingFile("Resources");
+    const auto bundled =
+        resourcesDir.getChildFile("guides").getChildFile("guides-en-es.zip");
+#elif JUCE_WINDOWS
+    const auto bundled = executable.getParentDirectory()
+                            .getChildFile("installer")
+                            .getChildFile("guides-en-es.zip");
+#else
+    const auto bundled = executable.getParentDirectory()
+                            .getChildFile("installer")
+                            .getChildFile("guides-en-es.zip");
+#endif
+    if (bundled.existsAsFile() && bundled.getSize() > 0)
+      return bundled;
+  }
+
+  auto findFromAncestor = [](juce::File dir) -> juce::File {
+    for (int depth = 0; depth < 8 && dir.exists(); ++depth) {
+      const auto candidate =
+          dir.getChildFile("assets").getChildFile("guides").getChildFile("guides-en-es.zip");
+      if (candidate.existsAsFile() && candidate.getSize() > 0)
+        return candidate;
+      dir = dir.getParentDirectory();
+    }
+    return {};
+  };
+
+  if (const auto fromCwd =
+          findFromAncestor(juce::File::getCurrentWorkingDirectory());
+      fromCwd.existsAsFile()) {
+    return fromCwd;
+  }
+
+  if (executable.existsAsFile()) {
+    if (const auto fromExe = findFromAncestor(executable.getParentDirectory());
+        fromExe.existsAsFile()) {
+      return fromExe;
+    }
+  }
+
+  return {};
+}
+
+bool hasEnoughGuideSectionFiles(const juce::File &dir) noexcept {
+  if (!dir.isDirectory())
+    return false;
+  const auto files =
+      dir.findChildFiles(juce::File::findFiles, false, "*.m4a;*.wav;*.aif;*.aiff;*.mp3");
+  return files.size() >= 20;
+}
+
+bool hasCurrentGuidesVersion(const juce::File &guidesRoot) {
+  const auto versionFile = guidesRoot.getChildFile(kGuidesVersionFileName);
+  return versionFile.existsAsFile() &&
+         versionFile.loadFileAsString().trim() == kGuidesVersion;
 }
 } // namespace
 
@@ -84,6 +201,38 @@ juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
 
 juce::File AssetBootstrapManager::getPadsPackDirectory() {
   auto dir = getAssetsRootDirectory().getChildFile("pads").getChildFile("RomanVizcaino");
+  dir.createDirectory();
+  return dir;
+}
+
+juce::File AssetBootstrapManager::getClicksPackDirectory() {
+  auto dir = getAssetsRootDirectory().getChildFile("clicks");
+  dir.createDirectory();
+  return dir;
+}
+
+juce::File AssetBootstrapManager::getGuidesRootDirectory() {
+  auto dir = getAssetsRootDirectory().getChildFile("guides");
+  dir.createDirectory();
+  return dir;
+}
+
+juce::File
+AssetBootstrapManager::getGuidesLanguageSectionsDirectory(const juce::String &languageCode) {
+  auto lang = languageCode.trim().toLowerCase();
+  if (lang != "en" && lang != "es")
+    lang = "en";
+  auto dir = getGuidesRootDirectory().getChildFile(lang).getChildFile("sections");
+  dir.createDirectory();
+  return dir;
+}
+
+juce::File
+AssetBootstrapManager::getGuidesLanguageCuesDirectory(const juce::String &languageCode) {
+  auto lang = languageCode.trim().toLowerCase();
+  if (lang != "en" && lang != "es")
+    lang = "en";
+  auto dir = getGuidesRootDirectory().getChildFile(lang).getChildFile("cues");
   dir.createDirectory();
   return dir;
 }
@@ -223,6 +372,14 @@ bool AssetBootstrapManager::hasEnoughPadAudioFiles(const juce::File &dir) noexce
   return files.size() >= 12;
 }
 
+bool AssetBootstrapManager::hasEnoughClickAudioFiles(const juce::File &dir) noexcept {
+  if (!dir.isDirectory())
+    return false;
+  const auto files =
+      dir.findChildFiles(juce::File::findFiles, true, "*.wav;*.aif;*.aiff;*.mp3");
+  return files.size() >= 12;
+}
+
 void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
                                          const juce::String &padsStatus,
                                          const juce::String &errorMessage) {
@@ -333,5 +490,86 @@ bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
   }
 
   persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Ready", {});
+  return true;
+}
+
+bool AssetBootstrapManager::ensureClicksPackReady(juce::String *errorMessage) {
+  const auto clicksDir = getClicksPackDirectory();
+  juce::String localError;
+
+  if (hasEnoughClickAudioFiles(clicksDir)) {
+    return true;
+  }
+
+  const auto bundledZip = resolveBundledClicksZipPath();
+  if (!bundledZip.existsAsFile()) {
+    localError = "Bundled clicks pack not found (assets/clicks/clicks-pack.zip).";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  if (!unpackZipToDirectory(bundledZip, clicksDir, localError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  if (!hasEnoughClickAudioFiles(clicksDir)) {
+    localError = "Clicks pack invalid after unpack: missing audio files.";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  juce::ignoreUnused(kClicksVersion);
+  return true;
+}
+
+bool AssetBootstrapManager::ensureGuidesPackReady(juce::String *errorMessage) {
+  juce::String localError;
+  auto guidesRoot = getGuidesRootDirectory();
+  const auto enSections = guidesRoot.getChildFile("en").getChildFile("sections");
+  const auto esSections = guidesRoot.getChildFile("es").getChildFile("sections");
+
+  if (hasEnoughGuideSectionFiles(enSections) &&
+      hasEnoughGuideSectionFiles(esSections) &&
+      hasCurrentGuidesVersion(guidesRoot)) {
+    return true;
+  }
+
+  const auto bundledZip = resolveBundledGuidesZipPath();
+  if (!bundledZip.existsAsFile()) {
+    localError =
+        "Bundled guides pack not found (installer/guides-en-es.zip).";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  if (!unpackZipToDirectory(bundledZip, guidesRoot, localError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  if (!hasEnoughGuideSectionFiles(enSections) ||
+      !hasEnoughGuideSectionFiles(esSections)) {
+    localError =
+        "Guides pack invalid after unpack: missing EN/ES section files.";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
+  if (!hasCurrentGuidesVersion(guidesRoot)) {
+    localError =
+        "Guides pack version mismatch after unpack. Expected " +
+        juce::String(kGuidesVersion) + ".";
+    if (errorMessage != nullptr)
+      *errorMessage = localError;
+    return false;
+  }
+
   return true;
 }

@@ -41,6 +41,16 @@ struct MidiBindingSetting {
 enum class AppLanguage { Spanish = 0, English = 1 };
 enum class AppLayoutMode { Auto = 0, Compact = 1, Standard = 2, Large = 3 };
 enum class PadsCrossfadePreset { Fast = 0, Medium = 1, Long = 2 };
+enum class MetronomeClickStyle {
+  Classic = 0,
+  Woodblock = 1,
+  Cowbell = 2,
+  Digital = 3,
+  Gentle = 4,
+  Percussive = 5,
+  Saw = 6,
+  Blip = 7
+};
 
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
@@ -52,6 +62,8 @@ public:
   static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
   static constexpr PadsCrossfadePreset kDefaultPadsCrossfadePreset =
       PadsCrossfadePreset::Medium;
+  static constexpr MetronomeClickStyle kDefaultMetronomeClickStyle =
+      MetronomeClickStyle::Classic;
 
   static bool getExpandWindowOnLaunch();
   static void setExpandWindowOnLaunch(bool value);
@@ -63,6 +75,8 @@ public:
   static void setPadsCrossfadePreset(PadsCrossfadePreset preset);
   static AppLanguage getLanguage();
   static void setLanguage(AppLanguage value);
+  static MetronomeClickStyle getMetronomeClickStyle();
+  static void setMetronomeClickStyle(MetronomeClickStyle value);
   static AppLayoutMode getLayoutMode();
   static void setLayoutMode(AppLayoutMode mode);
   static int getThemePresetId();

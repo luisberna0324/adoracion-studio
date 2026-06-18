@@ -31,6 +31,22 @@ struct SongArrangementSnapshot {
   std::vector<SongArrangementPartSnapshot> parts;
 };
 
+enum class ClickDivision { Quarter = 1, Eighth = 2, Sixteenth = 4 };
+
+struct SongTempoRegionSnapshot {
+  juce::String id;
+  double startSec = 0.0;
+  double endSec = 0.0;
+  double bpm = 120.0;
+  juce::String timeSignature = "4/4";
+  ClickDivision clickDivision = ClickDivision::Quarter;
+  bool accentEnabled = true;
+};
+
+struct SongTempoMapSnapshot {
+  std::vector<SongTempoRegionSnapshot> regions;
+};
+
 struct ImportedSongData {
   juce::String id;
   juce::String title;
@@ -44,10 +60,13 @@ struct ImportedSongData {
   int64_t createdMs = 0;
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;
+  SongTempoMapSnapshot tempoMap;
 };
 
 extern const std::array<const char *, 19> kTrackCategories;
 extern const std::array<const char *, 14> kSongSectionSuggestions;
+
+int timeSignatureBeatsPerBar(const juce::String &timeSignature);
 
 juce::String makeDisplayNameFromFile(const juce::File &file);
 juce::String suggestCategoryFromFilename(const juce::String &filename);

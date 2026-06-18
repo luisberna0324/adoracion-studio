@@ -75,7 +75,9 @@ public:
   void setCardBgColour(juce::Colour colour);
   void refreshThemeColours();
   void setOnVolumeChanged(std::function<void(float)> cb);
+  void setOnVolumeDragEnded(std::function<void(float)> cb);
   void setOnGainChanged(std::function<void(float)> cb);
+  void setOnGainDragEnded(std::function<void(float)> cb);
   void setOnMuteChanged(std::function<void(bool)> cb);
   void setOnSoloChanged(std::function<void(bool)> cb);
   void setOnPowerToggled(std::function<void(bool)> cb);
@@ -93,11 +95,18 @@ private:
   class LearnAwareSlider final : public juce::Slider {
   public:
     std::function<void()> onPointerDown;
+    std::function<void()> onDragEnd;
 
     void mouseDown(const juce::MouseEvent &event) override {
       juce::Slider::mouseDown(event);
       if (onPointerDown)
         onPointerDown();
+    }
+
+    void mouseUp(const juce::MouseEvent &event) override {
+      juce::Slider::mouseUp(event);
+      if (onDragEnd)
+        onDragEnd();
     }
   };
 
@@ -120,7 +129,9 @@ private:
   juce::Colour channelBandColour;
   juce::Colour channelBandTextColour;
   std::function<void(float)> onVolumeChanged;
+  std::function<void(float)> onVolumeDragEnded;
   std::function<void(float)> onGainChanged;
+  std::function<void(float)> onGainDragEnded;
   std::function<void(bool)> onMuteChanged;
   std::function<void(bool)> onSoloChanged;
   std::function<void(bool)> onPowerToggled;

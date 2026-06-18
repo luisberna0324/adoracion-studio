@@ -4,9 +4,11 @@ set -u
 ASSETS_BASE_URL="https://storage.googleapis.com/playworship-assets"
 ENCODER_VERSION="2026-04-18-1"
 PADS_VERSION="roman-v1"
+CLICKS_VERSION="clicks-v1"
 
 ENCODER_URL="$ASSETS_BASE_URL/encoder/macos/$ENCODER_VERSION/ffmpeg"
 PADS_ZIP_URL="$ASSETS_BASE_URL/pads/$PADS_VERSION/pads-pack.zip"
+CLICKS_ZIP_URL="$ASSETS_BASE_URL/clicks/$CLICKS_VERSION/clicks-pack.zip"
 
 log() {
   /bin/echo "[MTControls postinstall] $1"
@@ -44,12 +46,13 @@ MTCONTROLS_ROOT="$USER_HOME/Library/MTControls"
 ASSETS_ROOT="$MTCONTROLS_ROOT/Assets"
 ENCODER_DIR="$ASSETS_ROOT/encoder"
 PADS_DIR="$ASSETS_ROOT/pads/RomanVizcaino"
+CLICKS_DIR="$ASSETS_ROOT/clicks"
 TMP_DIR="/tmp/mtcontrols-assets-bootstrap"
 
 ensure_user_writable_dir "$MTCONTROLS_ROOT"
-mkdir -p "$ENCODER_DIR" "$PADS_DIR" "$TMP_DIR"
+mkdir -p "$ENCODER_DIR" "$PADS_DIR" "$CLICKS_DIR" "$TMP_DIR"
 ensure_user_writable_dir "$ASSETS_ROOT"
-log "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."
+log "Descargando recursos iniciales (encoder, pads y clicks)... / Downloading initial resources (encoder, pads and clicks)..."
 
 ENCODER_PATH="$ENCODER_DIR/ffmpeg"
 if [[ ! -f "$ENCODER_PATH" ]]; then
@@ -62,6 +65,30 @@ if [[ ! -f "$ENCODER_PATH" ]]; then
     ensure_user_writable_dir "$MTCONTROLS_ROOT"
   else
     log "Failed downloading encoder; app will retry at runtime."
+  fi
+fi
+
+CLICK_COUNT="$(/usr/bin/find "$CLICKS_DIR" -type f \( -name '*.wav' -o -name '*.mp3' -o -name '*.aif' -o -name '*.aiff' \) 2>/dev/null | /usr/bin/wc -l | /usr/bin/xargs)"
+if [[ -z "$CLICK_COUNT" ]]; then
+  CLICK_COUNT=0
+fi
+
+if (( CLICK_COUNT < 12 )); then
+  log "Descargando pack de clicks... / Downloading click pack..."
+  CLICKS_ZIP="$TMP_DIR/clicks-pack.zip"
+  if download_file "$CLICKS_ZIP_URL" "$CLICKS_ZIP"; then
+    /bin/rm -rf "$CLICKS_DIR"
+    /bin/mkdir -p "$CLICKS_DIR"
+    /usr/bin/unzip -o -q "$CLICKS_ZIP" -d "$CLICKS_DIR"
+    /usr/sbin/chown -R "$CONSOLE_USER":staff "$CLICKS_DIR" 2>/dev/null || true
+    ensure_user_writable_dir "$MTCONTROLS_ROOT"
+
+    CLICK_COUNT="$(/usr/bin/find "$CLICKS_DIR" -type f \( -name '*.wav' -o -name '*.mp3' -o -name '*.aif' -o -name '*.aiff' \) 2>/dev/null | /usr/bin/wc -l | /usr/bin/xargs)"
+    if [[ -z "$CLICK_COUNT" || "$CLICK_COUNT" -lt 12 ]]; then
+      log "Clicks package invalid after unzip; app will retry at runtime."
+    fi
+  else
+    log "Failed downloading click package; app will retry at runtime."
   fi
 fi
 

@@ -5,8 +5,10 @@
 #include "StemMixEngine.h"
 #include "StemTrack.h"
 #include "audio/PadsEngine.h"
+#include "audio/DynamicGuideEngine.h"
 #include "data/SongData.h"
 #include "data/AppSettings.h"
+#include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/StemOutputRouter.h"
@@ -46,6 +48,8 @@ public:
 
   juce::AudioProcessorValueTreeState &getValueTreeState();
   void getOutputMeterLevels(float &left, float &right) const;
+  void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
+  void getMetronomeMeterLevels(float &left, float &right) const noexcept;
   static juce::AudioProcessorValueTreeState::ParameterLayout
   createParameterLayout();
 
@@ -94,9 +98,37 @@ public:
   void setMetronomeSolo(bool soloed) noexcept;
   bool isMetronomeSolo() const noexcept;
   void setMetronomeOutputRouting(int outputChannel, int width) noexcept;
+  int getMetronomeOutputChannel() const noexcept;
+  int getMetronomeOutputWidth() const noexcept;
   void setMetronomeClickStemIndex(int stemIndexOrMinusOne) noexcept;
+  bool loadMetronomeClickSamplesFromFolder(const juce::File &folder,
+                                           const juce::String &style,
+                                           juce::String *errorMessage = nullptr);
+  void clearMetronomeClickSamples() noexcept;
+  bool hasMetronomeClickSamples() const noexcept;
+  void setClickDivision(int division) noexcept;  // bitmask: 1=1/4, 2=1/8, 4=1/16
+  int getClickDivision() const noexcept;
+  void setClickDivisionEnabled(bool enabled) noexcept;
+  bool isClickDivisionEnabled() const noexcept;
   void setStemClickGuideMask(const std::vector<bool> &mask) noexcept;
+  void setStemGuideMask(const std::vector<bool> &mask) noexcept;
   void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
+  void setDynamicGuideSettings(const DynamicGuideSettings &settings);
+  DynamicGuideSettings getDynamicGuideSettings() const;
+  void setDynamicGuideLanguage(AppLanguage language);
+  void setArrangementEditingActive(bool editingActive) noexcept;
+  bool consumeDynamicGuideMissingSectionWarning(juce::String &outSectionName);
+  void setDynamicGuideVolume(float volume) noexcept;
+  float getDynamicGuideVolume() const noexcept;
+  void setDynamicGuideGain(float gainValue) noexcept;
+  float getDynamicGuideGain() const noexcept;
+  void setDynamicGuideMuted(bool muted) noexcept;
+  bool isDynamicGuideMuted() const noexcept;
+  void setDynamicGuideSolo(bool soloed) noexcept;
+  bool isDynamicGuideSolo() const noexcept;
+  void setDynamicGuideOutputRouting(int outputChannel, int width) noexcept;
+  int getDynamicGuideOutputChannel() const noexcept;
+  int getDynamicGuideOutputWidth() const noexcept;
   void setPitchSemiTones(int semitoneDelta) noexcept;
   int getPitchSemiTones() const noexcept;
 
@@ -211,6 +243,9 @@ public:
   static constexpr int midiTargetMixerNudgeDown = 34;
   static constexpr int midiTargetMixerApplyRouting = 35;
   static constexpr int midiTargetWaveformEditToggle = 36;
+  static constexpr int midiTargetClickDynDivisionQuarter = 37;
+  static constexpr int midiTargetClickDynDivisionEighth = 38;
+  static constexpr int midiTargetClickDynDivisionSixteenth = 39;
   static constexpr int midiTargetStemVolumeBase = 100;
   static constexpr int midiTargetStemGainBase = 300;
   static constexpr int midiTargetStemMuteBase = 400;
@@ -239,6 +274,10 @@ private:
   juce::AudioBuffer<float> dryMixBuffer;
   std::atomic<float> meterLevelLeft{0.0f};
   std::atomic<float> meterLevelRight{0.0f};
+  std::atomic<float> dynamicGuideMeterLevelLeft{0.0f};
+  std::atomic<float> dynamicGuideMeterLevelRight{0.0f};
+  std::atomic<float> metronomeMeterLevelLeft{0.0f};
+  std::atomic<float> metronomeMeterLevelRight{0.0f};
   std::atomic<float> metronomeVolumeState{1.0f};
   std::atomic<bool> metronomeMutedState{false};
   std::atomic<float> metronomeGainState{1.0f};
@@ -246,6 +285,14 @@ private:
   std::atomic<int> metronomeOutputChannel{1};
   std::atomic<int> metronomeOutputWidth{1};
   std::atomic<int> metronomeClickStemIndex{-1};
+  std::atomic<int> clickDivisionState{1}; // bitmask: 1/4, 1/8, 1/16
+  std::atomic<bool> clickDivisionEnabledState{true};
+  std::atomic<float> dynamicGuideVolumeState{1.0f};
+  std::atomic<float> dynamicGuideGainState{1.0f};
+  std::atomic<bool> dynamicGuideMutedState{false};
+  std::atomic<bool> dynamicGuideSoloState{false};
+  std::atomic<int> dynamicGuideOutputChannelState{1};
+  std::atomic<int> dynamicGuideOutputWidthState{2};
 
   juce::AudioFormatManager playbackFormatManager;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
@@ -256,6 +303,7 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemMuteStates;
   std::array<std::atomic<bool>, maxStemCount> stemSoloStates;
   std::array<std::atomic<bool>, maxStemCount> stemClickGuideStates;
+  std::array<std::atomic<bool>, maxStemCount> stemGuideStates;
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
@@ -276,6 +324,7 @@ private:
   juce::AudioBuffer<float> stemRoutingTempBuffer;
   juce::AudioBuffer<float> metronomeRenderBuffer;
   juce::AudioBuffer<float> padsRenderBuffer;
+  juce::AudioBuffer<float> dynamicGuideRenderBuffer;
   std::atomic<bool> padsEnabledState{true};
   std::atomic<float> padsVolume{1.0f};
   std::atomic<float> padsGain{0.75f};
@@ -332,7 +381,23 @@ private:
   std::atomic<int> midiLastMessageData2{-1};
   std::atomic<int> midiLastMessageType{0};
 
+  DynamicGuideEngine dynamicGuideEngine;
+  mutable juce::SpinLock dynamicGuideStateLock;
+  std::atomic<bool> dynamicGuideEnabledState{false};
+  std::atomic<bool> arrangementEditingActiveState{false};
+  std::atomic<int> dynamicGuideLanguageCode{0}; // 0=es,1=en
+  DynamicGuideSettings dynamicGuideSettings;
+  std::vector<bool> dynamicGuideAnnouncedByPart;
+  double dynamicGuideLastBlockStartSec = -1.0;
+  int dynamicGuideLastPartIndex = -1;
+  bool dynamicGuideWasPlaying = false;
+  juce::String dynamicGuideLastMissingSection;
+  mutable juce::SpinLock dynamicGuideWarningLock;
+
   struct ArrangementRuntimePart {
+    juce::String id;
+    juce::String name;
+    juce::String sectionKey;
     double startSec = 0.0;
     double endSec = 0.0;
   };
@@ -375,6 +440,9 @@ private:
                             const juce::String &sourcePathForSettings,
                             bool persistSettings);
   static juce::String buildPadsPackHash(const juce::Array<juce::File> &files);
+  bool reloadDynamicGuideAssets(juce::String *errorMessage = nullptr);
+  juce::String currentDynamicGuideLanguageCode() const noexcept;
+  int findFirstGuideStemIndex(int stemCount) const noexcept;
   void flushRoutingTimeProcessors() noexcept;
   void flushAllTimeProcessingState() noexcept;
   double getPlaybackTempoRatio() const noexcept;

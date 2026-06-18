@@ -93,6 +93,12 @@ ChannelStripCard::ChannelStripCard(
     if (onVolumeChanged)
       onVolumeChanged(static_cast<float>(volSlider.getValue()));
   };
+  volSlider.onDragEnd = [this] {
+    if (suppressVolumeCallback)
+      return;
+    if (onVolumeDragEnded)
+      onVolumeDragEnded(static_cast<float>(volSlider.getValue()));
+  };
   volSlider.onDragStart = [this] {
     if (!midiLearnSelectable)
       return;
@@ -107,6 +113,12 @@ ChannelStripCard::ChannelStripCard(
     }
     if (onGainChanged)
       onGainChanged(static_cast<float>(gainKnob.getValue()));
+  };
+  gainKnob.onDragEnd = [this] {
+    if (midiLearnSelectable)
+      return;
+    if (onGainDragEnded)
+      onGainDragEnded(static_cast<float>(gainKnob.getValue()));
   };
   gainKnob.onDragStart = [this] {
     if (!midiLearnSelectable)
@@ -402,7 +414,7 @@ void ChannelStripCard::refreshThemeColours() {
   muteButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   muteButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
   muteButton.setColour(juce::TextButton::buttonOnColourId,
-                       UITheme::cardBgPressed);
+                       UITheme::accentMuted);
 
   repaint();
 }
@@ -411,8 +423,16 @@ void ChannelStripCard::setOnVolumeChanged(std::function<void(float)> cb) {
   onVolumeChanged = std::move(cb);
 }
 
+void ChannelStripCard::setOnVolumeDragEnded(std::function<void(float)> cb) {
+  onVolumeDragEnded = std::move(cb);
+}
+
 void ChannelStripCard::setOnGainChanged(std::function<void(float)> cb) {
   onGainChanged = std::move(cb);
+}
+
+void ChannelStripCard::setOnGainDragEnded(std::function<void(float)> cb) {
+  onGainDragEnded = std::move(cb);
 }
 
 void ChannelStripCard::setOnMuteChanged(std::function<void(bool)> cb) {

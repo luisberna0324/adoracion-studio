@@ -6,20 +6,34 @@ PowerButton::PowerButton() {
 
 void PowerButton::paint(juce::Graphics& g) {
     auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    const float diameter = juce::jmin(bounds.getWidth(), bounds.getHeight());
-    const auto circle = juce::Rectangle<float>(diameter, diameter)
-                            .withCentre(bounds.getCentre());
+    const auto button = bounds.reduced(1.0f);
+    const float radius = juce::jlimit(4.0f, 8.0f, button.getHeight() * 0.22f);
 
-    const juce::Colour bg = on ? UITheme::accent.withAlpha(0.16f)
-                               : (hovered ? UITheme::cardBgHover : UITheme::cardBg);
-    g.setColour(bg);
-    g.fillEllipse(circle);
+    const auto onFill = UITheme::accent;
+    const auto onGlow = UITheme::accentSoft.withAlpha(0.22f);
+    const auto offFill = UITheme::cardBg.interpolatedWith(UITheme::cardBgHover, 0.22f);
+    const auto onBorder = UITheme::accentSoft;
+    const auto offBorder = UITheme::cardBorder.brighter(0.08f);
 
-    g.setColour(UITheme::cardBorder);
-    g.drawEllipse(circle, 1.0f);
+    auto fill = on ? onFill : offFill;
+    if (hovered)
+        fill = fill.brighter(on ? 0.05f : 0.08f);
 
-    drawPowerIcon(g, circle.reduced(diameter * 0.22f),
-                  on ? UITheme::accent : UITheme::textSecondary);
+    if (on) {
+        g.setColour(onGlow);
+        g.fillRoundedRectangle(button.expanded(3.0f), radius + 3.0f);
+    }
+
+    g.setColour(juce::Colours::black.withAlpha(0.24f));
+    g.fillRoundedRectangle(button.translated(0.0f, 1.0f), radius);
+    g.setColour(fill);
+    g.fillRoundedRectangle(button, radius);
+    g.setColour(on ? onBorder : offBorder);
+    g.drawRoundedRectangle(button, radius, 1.0f);
+
+    drawPowerIcon(g, button.reduced(button.getWidth() * 0.23f,
+                                    button.getHeight() * 0.18f),
+                  on ? UITheme::onAccent : UITheme::textSecondary);
 }
 
 void PowerButton::drawPowerIcon(juce::Graphics& g, juce::Rectangle<float> area, juce::Colour colour) {

@@ -38,10 +38,11 @@ juce::String withMidiAssignmentTooltip(const juce::String& baseText,
 PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
     : processor(proc) {
     for (int i = 0; i < kNoteCount; ++i) {
-        notePads[i] = std::make_unique<NotePadButton>(kNoteNames[i], i);
-        notePads[i]->setOnPressed([this, i] { onPadPressed(i); });
-        notePads[i]->setOnReleased([this, i] { onPadReleased(i); });
-        addAndMakeVisible(*notePads[i]);
+        const auto index = static_cast<size_t>(i);
+        notePads[index] = std::make_unique<NotePadButton>(kNoteNames[index], i);
+        notePads[index]->setOnPressed([this, i] { onPadPressed(i); });
+        notePads[index]->setOnReleased([this, i] { onPadReleased(i); });
+        addAndMakeVisible(*notePads[index]);
     }
 
     octaveCtrl.setOnOctaveChanged([this](int oct) { currentOctave = oct; });
@@ -86,7 +87,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     refreshMidiLearnTooltips();
     setWantsKeyboardFocus(true);
     startPadsLoadingAsync();
-    startTimerHz(30);
+    startTimerHz(20);
 }
 
 PadsComponent::~PadsComponent() {
@@ -211,7 +212,8 @@ void PadsComponent::resized() {
         for (int col = 0; col < kCols; ++col) {
             const int x = startX + col * (padSize + gapX);
             const int y = startY + row * (padSize + gapY);
-            notePads[row * kCols + col]->setBounds(x, y, padSize, padSize);
+            const auto padIndex = static_cast<size_t>(row * kCols + col);
+            notePads[padIndex]->setBounds(x, y, padSize, padSize);
         }
     }
 

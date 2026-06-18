@@ -135,20 +135,14 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              StemOptimizationChanged stemOptimizationCb,
                              const PadsCrossfadePreset padsCrossfadePreset,
                              PadsCrossfadeChanged padsCrossfadeCb,
+                             const MetronomeClickStyle metronomeClickStyle,
+                             MetronomeClickStyleChanged metronomeClickStyleCb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
                              LogoutRequested logoutCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
                              RoutingDefaultsChanged routingCb,
-                             std::vector<MidiTargetOption> midiTargets,
-                             MidiBindingsProvider midiBindingsProvider,
-                             MidiLearnRequested midiLearnCb,
-                             MidiClearRequested midiClearCb,
-                             MidiBindingUpdated midiBindingUpdatedCb,
-                             MidiInputDevicesProvider midiInputDevicesProvider,
-                             MidiInputToggleRequested midiInputToggleCb,
-                             MidiInputProbeTextProvider midiProbeTextProvider,
                              juce::AudioDeviceManager *deviceManagerToUse,
                              int maxInputChannels,
                              int maxOutputChannels)
@@ -158,17 +152,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onPrimeImportChanged(std::move(primeImportCb)),
       onStemOptimizationChanged(std::move(stemOptimizationCb)),
       onPadsCrossfadeChanged(std::move(padsCrossfadeCb)),
+      onMetronomeClickStyleChanged(std::move(metronomeClickStyleCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
-      midiTargetOptions(std::move(midiTargets)),
-      getMidiBindings(std::move(midiBindingsProvider)),
-      onMidiLearnRequested(std::move(midiLearnCb)),
-      onMidiClearRequested(std::move(midiClearCb)),
-      onMidiBindingUpdated(std::move(midiBindingUpdatedCb)),
-      getMidiInputDevices(std::move(midiInputDevicesProvider)),
-      onMidiInputToggleRequested(std::move(midiInputToggleCb)),
-      getMidiProbeText(std::move(midiProbeTextProvider)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
@@ -191,7 +178,6 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
               false);
   tabs.addTab(L10n::tr("Ruteo", "Routing"), UITheme::cardBg, &routingPage,
               false);
-  tabs.addTab("MIDI", UITheme::cardBg, &midiPage, false);
   tabs.setTabBarDepth(30);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
     if (newIndex == 2) {
@@ -305,6 +291,30 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   generalPage.addAndMakeVisible(padsCrossfadeBox);
 
+  metronomeClickStyleLabel.setJustificationType(juce::Justification::centredLeft);
+  metronomeClickStyleLabel.setFont(juce::FontOptions(12.0f));
+  generalPage.addAndMakeVisible(metronomeClickStyleLabel);
+
+  metronomeClickStyleBox.addItem("Classic", 1);
+  metronomeClickStyleBox.addItem("Woodblock", 2);
+  metronomeClickStyleBox.addItem("Cowbell", 3);
+  metronomeClickStyleBox.addItem("Digital", 4);
+  metronomeClickStyleBox.addItem("Gentle", 5);
+  metronomeClickStyleBox.addItem("Percussive", 6);
+  metronomeClickStyleBox.addItem("Saw", 7);
+  metronomeClickStyleBox.addItem("Blip", 8);
+  metronomeClickStyleBox.setSelectedId(
+      static_cast<int>(metronomeClickStyle) + 1, juce::dontSendNotification);
+  metronomeClickStyleBox.setJustificationType(juce::Justification::centredLeft);
+  metronomeClickStyleBox.onChange = [this] {
+    const int id = metronomeClickStyleBox.getSelectedId();
+    if (id <= 0 || !onMetronomeClickStyleChanged)
+      return;
+    onMetronomeClickStyleChanged(
+        static_cast<MetronomeClickStyle>(juce::jlimit(0, 7, id - 1)));
+  };
+  generalPage.addAndMakeVisible(metronomeClickStyleBox);
+
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
   sessionSectionLabel.setFont(juce::FontOptions(14.0f));
   generalPage.addAndMakeVisible(sessionSectionLabel);
@@ -374,123 +384,14 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
   routingPage.addAndMakeVisible(routingSectionLabel);
-  routingMidiHintLabel.setJustificationType(juce::Justification::centredLeft);
-  routingMidiHintLabel.setFont(juce::FontOptions(12.0f));
-  routingPage.addAndMakeVisible(routingMidiHintLabel);
+  routingHintLabel.setJustificationType(juce::Justification::centredLeft);
+  routingHintLabel.setFont(juce::FontOptions(12.0f));
+  routingPage.addAndMakeVisible(routingHintLabel);
 
   routingViewport.setViewedComponent(&routingContent, false);
   routingViewport.setScrollBarsShown(true, false, false, false);
   routingViewport.setScrollBarThickness(2);
   routingPage.addAndMakeVisible(routingViewport);
-
-  midiConnectionsLabel.setJustificationType(juce::Justification::centredLeft);
-  midiConnectionsLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiConnectionsLabel);
-  midiInputDeviceBox.onChange = [this] { refreshMidiInputToggleForSelection(); };
-  midiPage.addAndMakeVisible(midiInputDeviceBox);
-  midiInputEnabledToggle.setClickingTogglesState(true);
-  midiInputEnabledToggle.onClick = [this] {
-    const int selected = midiInputDeviceBox.getSelectedId();
-    if (!juce::isPositiveAndBelow(selected - 1,
-                                  static_cast<int>(midiInputDevices.size())))
-      return;
-    const auto &device = midiInputDevices[static_cast<size_t>(selected - 1)];
-    if (onMidiInputToggleRequested != nullptr)
-      onMidiInputToggleRequested(device.identifier,
-                                 midiInputEnabledToggle.getToggleState());
-    refreshMidiInputDevices();
-    refreshMidiInputStatus();
-  };
-  midiPage.addAndMakeVisible(midiInputEnabledToggle);
-
-  midiTargetLabel.setJustificationType(juce::Justification::centredLeft);
-  midiTargetLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiTargetLabel);
-  midiInputStateLabel.setJustificationType(juce::Justification::centredLeft);
-  midiInputStateLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiInputStateLabel);
-  midiProbeStateLabel.setJustificationType(juce::Justification::centredLeft);
-  midiProbeStateLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiProbeStateLabel);
-  for (size_t i = 0; i < midiTargetOptions.size(); ++i)
-    midiTargetBox.addItem(midiTargetOptions[i].name, static_cast<int>(i) + 1);
-  midiTargetBox.onChange = [this] { refreshMidiBindings(); };
-  midiPage.addAndMakeVisible(midiTargetBox);
-
-  midiBindingLabel.setJustificationType(juce::Justification::centredLeft);
-  midiBindingLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiBindingLabel);
-  midiStatusLabel.setJustificationType(juce::Justification::centredLeft);
-  midiStatusLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiStatusLabel);
-  midiModeLabel.setJustificationType(juce::Justification::centredLeft);
-  midiModeLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiModeLabel);
-  midiModeBox.addItem("Absolute", 1);
-  midiModeBox.addItem("Toggle", 2);
-  midiModeBox.addItem("Momentary", 3);
-  midiModeBox.onChange = [this] {
-    const int selected = midiTargetBox.getSelectedId();
-    if (!juce::isPositiveAndBelow(selected - 1,
-                                  static_cast<int>(midiTargetOptions.size())))
-      return;
-    const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
-    const auto bindings =
-        getMidiBindings ? getMidiBindings() : std::vector<MidiBindingView>{};
-    const auto it = std::find_if(
-        bindings.begin(), bindings.end(),
-        [targetId](const MidiBindingView &binding) {
-          return binding.targetId == targetId;
-        });
-    if (it == bindings.end())
-      return;
-
-    MidiBindingView updated = *it;
-    const int modeId = midiModeBox.getSelectedId();
-    if (modeId == 2)
-      updated.mode = MidiBindingMode::Toggle;
-    else if (modeId == 3)
-      updated.mode = MidiBindingMode::Momentary;
-    else
-      updated.mode = MidiBindingMode::Absolute;
-
-    if (onMidiBindingUpdated != nullptr)
-      onMidiBindingUpdated(updated);
-    refreshMidiBindings();
-  };
-  midiPage.addAndMakeVisible(midiModeBox);
-  midiWarningLabel.setJustificationType(juce::Justification::centredLeft);
-  midiWarningLabel.setFont(juce::FontOptions(12.0f));
-  midiPage.addAndMakeVisible(midiWarningLabel);
-  midiLearnButton.onClick = [this] {
-    const int selected = midiTargetBox.getSelectedId();
-    if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size())))
-      return;
-    if (!midiLearnButton.isEnabled()) {
-      midiStatusLabel.setText(
-          L10n::tr("Habilita una entrada MIDI para aprender",
-                   "Enable a MIDI input to learn"),
-          juce::dontSendNotification);
-      return;
-    }
-    const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
-    if (onMidiLearnRequested)
-      onMidiLearnRequested(targetId);
-    midiStatusLabel.setText(L10n::tr(u8"Esperando mensaje MIDI CC/Note...",
-                                     u8"Waiting for MIDI CC/Note message..."),
-                            juce::dontSendNotification);
-  };
-  midiPage.addAndMakeVisible(midiLearnButton);
-  midiClearButton.onClick = [this] {
-    const int selected = midiTargetBox.getSelectedId();
-    if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size())))
-      return;
-    const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
-    if (onMidiClearRequested)
-      onMidiClearRequested(targetId);
-    refreshMidiBindings();
-  };
-  midiPage.addAndMakeVisible(midiClearButton);
 
   themeBox.onChange = [this] {
     const auto id = themeBox.getSelectedId();
@@ -541,15 +442,9 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   }
 
   refreshRoutingForDevice();
-  refreshMidiInputDevices();
-  if (midiTargetBox.getNumItems() > 0)
-    midiTargetBox.setSelectedId(1, juce::dontSendNotification);
-  refreshMidiInputStatus();
-  refreshMidiBindings();
   tabs.setCurrentTabIndex(0);
   applyLanguageTexts();
   refreshThemeColours();
-  startTimerHz(4);
 }
 
 void SettingsPanel::paint(juce::Graphics &g) {
@@ -570,7 +465,6 @@ void SettingsPanel::resized() {
   layoutGeneralPage();
   layoutAudioPage();
   layoutRoutingPage();
-  layoutMidiPage();
 }
 
 void SettingsPanel::refreshThemeColours() {
@@ -624,6 +518,16 @@ void SettingsPanel::refreshThemeColours() {
                              UITheme::cardBorder.withAlpha(0.65f));
   padsCrossfadeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   padsCrossfadeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  metronomeClickStyleLabel.setColour(juce::Label::textColourId,
+                                     UITheme::textSecondary);
+  metronomeClickStyleBox.setColour(juce::ComboBox::backgroundColourId,
+                                   UITheme::cardBgHover);
+  metronomeClickStyleBox.setColour(juce::ComboBox::outlineColourId,
+                                   UITheme::cardBorder.withAlpha(0.65f));
+  metronomeClickStyleBox.setColour(juce::ComboBox::textColourId,
+                                   UITheme::textPrimary);
+  metronomeClickStyleBox.setColour(juce::ComboBox::arrowColourId,
+                                   UITheme::textPrimary);
   sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -648,44 +552,7 @@ void SettingsPanel::refreshThemeColours() {
                          juce::Colour::fromRGB(148, 54, 54));
   logoutButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  routingMidiHintLabel.setColour(juce::Label::textColourId,
-                                 UITheme::textSecondary);
-  midiConnectionsLabel.setColour(juce::Label::textColourId,
-                                 UITheme::textSecondary);
-  midiTargetLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  midiInputStateLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  midiProbeStateLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  midiBindingLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  midiModeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  midiWarningLabel.setColour(juce::Label::textColourId, UITheme::accent);
-  midiStatusLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  midiInputDeviceBox.setColour(juce::ComboBox::backgroundColourId,
-                               UITheme::cardBgHover);
-  midiInputDeviceBox.setColour(juce::ComboBox::outlineColourId,
-                               UITheme::cardBorder.withAlpha(0.65f));
-  midiInputDeviceBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  midiInputDeviceBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-  midiTargetBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  midiTargetBox.setColour(juce::ComboBox::outlineColourId,
-                          UITheme::cardBorder.withAlpha(0.65f));
-  midiTargetBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  midiTargetBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-  midiModeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  midiModeBox.setColour(juce::ComboBox::outlineColourId,
-                        UITheme::cardBorder.withAlpha(0.65f));
-  midiModeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  midiModeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-  midiInputEnabledToggle.setColour(juce::ToggleButton::textColourId,
-                                   UITheme::textPrimary);
-  midiInputEnabledToggle.setColour(juce::ToggleButton::tickColourId,
-                                   UITheme::accent);
-  midiInputEnabledToggle.setColour(juce::ToggleButton::tickDisabledColourId,
-                                   UITheme::textSecondary);
-  midiLearnButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
-  midiLearnButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
-  midiClearButton.setColour(juce::TextButton::buttonColourId,
-                            juce::Colour::fromRGB(102, 60, 60));
-  midiClearButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  routingHintLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   for (auto &row : routingRows)
     row->refreshThemeColours();
   repaint();
@@ -697,7 +564,6 @@ void SettingsPanel::applyLanguageTexts() {
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr(u8"Audio", "Audio"));
   tabs.setTabName(2, L10n::tr("Ruteo", "Routing"));
-  tabs.setTabName(3, "MIDI");
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
@@ -721,9 +587,20 @@ void SettingsPanel::applyLanguageTexts() {
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
+  metronomeClickStyleLabel.setText(
+      L10n::tr("Estilo del click", "Click style"),
+      juce::dontSendNotification);
   padsCrossfadeBox.changeItemText(1, L10n::tr(u8"Rápido (1s)", "Fast (1s)"));
   padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
   padsCrossfadeBox.changeItemText(3, L10n::tr("Largo (5s)", "Long (5s)"));
+  metronomeClickStyleBox.changeItemText(1, "Classic");
+  metronomeClickStyleBox.changeItemText(2, "Woodblock");
+  metronomeClickStyleBox.changeItemText(3, "Cowbell");
+  metronomeClickStyleBox.changeItemText(4, "Digital");
+  metronomeClickStyleBox.changeItemText(5, "Gentle");
+  metronomeClickStyleBox.changeItemText(6, "Percussive");
+  metronomeClickStyleBox.changeItemText(7, "Saw");
+  metronomeClickStyleBox.changeItemText(8, "Blip");
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
@@ -762,24 +639,10 @@ void SettingsPanel::applyLanguageTexts() {
   infoLinkButton.setButtonText(L10n::tr(u8"Saber más", "More information"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
-  routingMidiHintLabel.setText(
-      L10n::tr("Estado MIDI abajo. Configura entradas en pestaña MIDI.",
-               "MIDI status below. Configure inputs in MIDI tab."),
+  routingHintLabel.setText(
+      L10n::tr("Define salidas por categoría para el dispositivo actual.",
+               "Set per-category outputs for the current device."),
       juce::dontSendNotification);
-  midiConnectionsLabel.setText(
-      L10n::tr("Conexión MIDI", "MIDI connection"),
-      juce::dontSendNotification);
-  midiTargetLabel.setText(L10n::tr("Control objetivo", "Target control"),
-                          juce::dontSendNotification);
-  midiBindingLabel.setText(L10n::tr("Binding actual", "Current binding"),
-                           juce::dontSendNotification);
-  midiModeLabel.setText(L10n::tr("Modo", "Mode"),
-                        juce::dontSendNotification);
-  midiInputEnabledToggle.setButtonText(
-      L10n::tr("Entrada habilitada", "Input enabled"));
-  midiLearnButton.setButtonText(L10n::tr("Aprender", "Learn"));
-  midiClearButton.setButtonText(L10n::tr("Quitar", "Clear"));
-  refreshMidiInputStatus();
 }
 
 void SettingsPanel::layoutGeneralPage() {
@@ -807,6 +670,10 @@ void SettingsPanel::layoutGeneralPage() {
   auto padsCrossfadeRow = area.removeFromTop(26);
   padsCrossfadeLabel.setBounds(padsCrossfadeRow.removeFromLeft(160));
   padsCrossfadeBox.setBounds(padsCrossfadeRow);
+  area.removeFromTop(10);
+  auto metronomeStyleRow = area.removeFromTop(26);
+  metronomeClickStyleLabel.setBounds(metronomeStyleRow.removeFromLeft(160));
+  metronomeClickStyleBox.setBounds(metronomeStyleRow);
   area.removeFromTop(16);
   sessionSectionLabel.setBounds(area.removeFromTop(24));
   area.removeFromTop(4);
@@ -864,7 +731,7 @@ void SettingsPanel::layoutRoutingPage() {
   
   area.removeFromTop(8);
   auto hintArea = area.removeFromBottom(24);
-  routingMidiHintLabel.setBounds(hintArea.reduced(20, 0));
+  routingHintLabel.setBounds(hintArea.reduced(20, 0));
   area.removeFromBottom(6);
   
   auto listArea = area.reduced(20, 0); // Mismo margen que el audioSetupComp
@@ -880,135 +747,7 @@ void SettingsPanel::layoutRoutingPage() {
   routingContent.setSize(contentW, juce::jmax(y + 2, routingViewport.getHeight()));
 }
 
-void SettingsPanel::layoutMidiPage() {
-  auto area = midiPage.getLocalBounds().reduced(8);
-  auto connectionLabelRow = area.removeFromTop(24);
-  midiConnectionsLabel.setBounds(connectionLabelRow);
-  auto connectionRow = area.removeFromTop(28);
-  midiInputDeviceBox.setBounds(connectionRow.removeFromLeft(
-      juce::jmax(200, connectionRow.getWidth() - 190)));
-  connectionRow.removeFromLeft(10);
-  midiInputEnabledToggle.setBounds(connectionRow.removeFromLeft(180));
-  area.removeFromTop(6);
-  auto inputRow = area.removeFromTop(24);
-  midiInputStateLabel.setBounds(inputRow);
-  auto probeRow = area.removeFromTop(24);
-  midiProbeStateLabel.setBounds(probeRow);
-  auto warningRow = area.removeFromTop(24);
-  midiWarningLabel.setBounds(warningRow);
-  area.removeFromTop(8);
-  auto targetRow = area.removeFromTop(28);
-  midiTargetLabel.setBounds(targetRow.removeFromLeft(160));
-  midiTargetBox.setBounds(targetRow);
-  area.removeFromTop(14);
-  auto bindingRow = area.removeFromTop(24);
-  midiBindingLabel.setBounds(bindingRow.removeFromLeft(160));
-  midiStatusLabel.setBounds(bindingRow);
-  area.removeFromTop(8);
-  auto modeRow = area.removeFromTop(28);
-  midiModeLabel.setBounds(modeRow.removeFromLeft(160));
-  midiModeBox.setBounds(modeRow.removeFromLeft(200));
-  area.removeFromTop(16);
-  auto actions = area.removeFromTop(30);
-  midiLearnButton.setBounds(actions.removeFromLeft(130));
-  actions.removeFromLeft(10);
-  midiClearButton.setBounds(actions.removeFromLeft(130));
-}
-
-void SettingsPanel::refreshMidiBindings() {
-  const int selected = midiTargetBox.getSelectedId();
-  if (!juce::isPositiveAndBelow(selected - 1, static_cast<int>(midiTargetOptions.size()))) {
-    midiStatusLabel.setText("-", juce::dontSendNotification);
-    midiModeBox.setEnabled(false);
-    return;
-  }
-  const int targetId = midiTargetOptions[static_cast<size_t>(selected - 1)].id;
-  const auto bindings = getMidiBindings ? getMidiBindings() : std::vector<MidiBindingView>{};
-  const auto it = std::find_if(bindings.begin(), bindings.end(),
-                               [targetId](const MidiBindingView &binding) {
-                                 return binding.targetId == targetId;
-                               });
-  if (it == bindings.end()) {
-    midiStatusLabel.setText(L10n::tr("Sin asignar", "Unassigned"),
-                            juce::dontSendNotification);
-    midiModeBox.setEnabled(false);
-    return;
-  }
-  const juce::String sourceText =
-      it->sourceType == MidiBindingSourceType::Note ? "Note" : "CC";
-  juce::String modeText = "absolute";
-  int modeId = 1;
-  if (it->mode == MidiBindingMode::Toggle) {
-    modeText = "toggle";
-    modeId = 2;
-  } else if (it->mode == MidiBindingMode::Momentary) {
-    modeText = "momentary";
-    modeId = 3;
-  }
-  midiModeBox.setEnabled(true);
-  midiModeBox.setSelectedId(modeId, juce::dontSendNotification);
-  midiStatusLabel.setText(
-      "Ch " + juce::String(it->midiChannel) + " - " + sourceText + " " +
-          juce::String(it->ccNumber) + " (" + modeText + ")",
-      juce::dontSendNotification);
-}
-
-void SettingsPanel::refreshMidiInputDevices() {
-  juce::String selectedIdentifier;
-  const int selected = midiInputDeviceBox.getSelectedId();
-  if (juce::isPositiveAndBelow(selected - 1,
-                               static_cast<int>(midiInputDevices.size()))) {
-    selectedIdentifier =
-        midiInputDevices[static_cast<size_t>(selected - 1)].identifier;
-  }
-
-  midiInputDevices =
-      getMidiInputDevices ? getMidiInputDevices() : std::vector<MidiInputDeviceView>{};
-  midiInputDeviceBox.clear(juce::dontSendNotification);
-  for (size_t i = 0; i < midiInputDevices.size(); ++i) {
-    midiInputDeviceBox.addItem(midiInputDevices[i].name,
-                               static_cast<int>(i) + 1);
-  }
-
-  int selectedId = 0;
-  if (selectedIdentifier.isNotEmpty()) {
-    for (size_t i = 0; i < midiInputDevices.size(); ++i) {
-      if (midiInputDevices[i].identifier == selectedIdentifier) {
-        selectedId = static_cast<int>(i) + 1;
-        break;
-      }
-    }
-  }
-  if (selectedId <= 0 && midiInputDeviceBox.getNumItems() > 0)
-    selectedId = 1;
-  if (selectedId > 0) {
-    midiInputDeviceBox.setSelectedId(selectedId, juce::dontSendNotification);
-  }
-  refreshMidiInputToggleForSelection();
-}
-
-void SettingsPanel::refreshMidiInputToggleForSelection() {
-  const int selected = midiInputDeviceBox.getSelectedId();
-  const bool validSelection =
-      juce::isPositiveAndBelow(selected - 1,
-                               static_cast<int>(midiInputDevices.size()));
-  midiInputEnabledToggle.setEnabled(validSelection);
-  if (!validSelection) {
-    midiInputEnabledToggle.setButtonText(
-        L10n::tr("Habilitar entrada", "Enable input"));
-    midiInputEnabledToggle.setToggleState(false, juce::dontSendNotification);
-    return;
-  }
-  const auto &device = midiInputDevices[static_cast<size_t>(selected - 1)];
-  midiInputEnabledToggle.setButtonText(
-      device.enabled ? L10n::tr("Entrada habilitada", "Input enabled")
-                     : L10n::tr("Habilitar entrada", "Enable input"));
-  midiInputEnabledToggle.setToggleState(device.enabled,
-                                        juce::dontSendNotification);
-}
-
 SettingsPanel::~SettingsPanel() {
-  stopTimer();
   if (deviceManager != nullptr)
     deviceManager->removeChangeListener(this);
 }
@@ -1016,79 +755,6 @@ SettingsPanel::~SettingsPanel() {
 void SettingsPanel::changeListenerCallback(juce::ChangeBroadcaster* source) {
   if (source == deviceManager) {
     refreshRoutingForDevice();
-    refreshMidiInputDevices();
-    refreshMidiInputStatus();
-  }
-}
-
-void SettingsPanel::timerCallback() {
-  refreshMidiInputStatus();
-}
-
-void SettingsPanel::refreshMidiInputStatus() {
-  if (getMidiInputDevices == nullptr) {
-    midiInputStateLabel.setText("-", juce::dontSendNotification);
-    midiWarningLabel.setText({}, juce::dontSendNotification);
-    midiLearnButton.setEnabled(false);
-    routingMidiHintLabel.setText(
-        L10n::tr("MIDI no disponible", "MIDI unavailable"),
-        juce::dontSendNotification);
-    return;
-  }
-
-  const auto inputs = getMidiInputDevices();
-  if (inputs.size() != midiInputDevices.size())
-    refreshMidiInputDevices();
-  int enabledCount = 0;
-  for (const auto &dev : inputs) {
-    if (dev.enabled)
-      ++enabledCount;
-  }
-
-  if (inputs.empty()) {
-    midiInputStateLabel.setText(
-        L10n::tr("MIDI IN: sin dispositivos detectados",
-                 "MIDI IN: no devices detected"),
-        juce::dontSendNotification);
-    midiProbeStateLabel.setText(
-        L10n::tr("Ultimo MIDI: sin señal", "Last MIDI: no signal"),
-        juce::dontSendNotification);
-    midiWarningLabel.setText(
-        L10n::tr("Conecta un dispositivo MIDI para usar Learn",
-                 "Connect a MIDI device to use Learn"),
-        juce::dontSendNotification);
-    midiLearnButton.setEnabled(false);
-    routingMidiHintLabel.setText(
-        L10n::tr("MIDI IN activos: 0 / 0", "Active MIDI IN: 0 / 0"),
-        juce::dontSendNotification);
-    return;
-  }
-
-  midiInputStateLabel.setText(
-      L10n::tr("MIDI IN activos: ", "Active MIDI IN: ") + juce::String(enabledCount) +
-          " / " + juce::String(inputs.size()),
-      juce::dontSendNotification);
-
-  const auto probeText = getMidiProbeText ? getMidiProbeText() : juce::String{};
-  midiProbeStateLabel.setText(
-      probeText.isNotEmpty()
-          ? (L10n::tr("Ultimo MIDI: ", "Last MIDI: ") + probeText)
-          : L10n::tr("Ultimo MIDI: sin señal", "Last MIDI: no signal"),
-      juce::dontSendNotification);
-  routingMidiHintLabel.setText(
-      L10n::tr("MIDI IN activos: ", "Active MIDI IN: ") +
-          juce::String(enabledCount) + " / " + juce::String(inputs.size()),
-      juce::dontSendNotification);
-
-  if (enabledCount <= 0) {
-    midiWarningLabel.setText(
-        L10n::tr("No hay entradas habilitadas. Activa al menos una.",
-                 "No inputs enabled. Turn on at least one."),
-        juce::dontSendNotification);
-    midiLearnButton.setEnabled(false);
-  } else {
-    midiWarningLabel.setText({}, juce::dontSendNotification);
-    midiLearnButton.setEnabled(true);
   }
 }
 

@@ -19,7 +19,9 @@ StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
                              MuteProvider muteProvider, bool isCompact)
     : layout(isCompact ? Layout::createCompact() : Layout{}),
       levels(std::move(levelProvider)), isMuted(std::move(muteProvider)) {
-  startTimerHz(60);
+  // 30 Hz is plenty for VU visual smoothing; 60 Hz caused idle CPU spikes
+  // when many VUs are present (one per stem).
+  startTimerHz(30);
 }
 
 void StereoVUMeter::paint(juce::Graphics &g) {
@@ -151,6 +153,15 @@ void StereoVUMeter::timerCallback() {
   const double now = juce::Time::getMillisecondCounterHiRes();
   if (targetL >= 0.985f)
     holdUntilL = now + 1500.0;
+
+  // Early-out: if level didn't change meaningfully and we're not in a hold
+  // window, skip the repaint. This dramatically reduces idle CPU when
+  // many VU meters are visible (e.g. one per stem in a 8-stem setlist).
+  const float delta = std::abs(levelL - lastPaintedLevelL);
+  const bool inHold = now < holdUntilL;
+  if (delta < 0.005f && !inHold)
+    return;
+  lastPaintedLevelL = levelL;
 
   repaint();
 }

@@ -2,6 +2,7 @@
 #include "PluginEditorSupport.h"
 #include "audio/AudioDeviceMonitor.h"
 #include "data/AppSettings.h"
+#include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
 #include "data/LocalAuthCallbackServer.h"
 #include "data/Localization.h"
@@ -164,11 +165,21 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #if JucePlugin_Build_Standalone
-  if (initialStandaloneWindowCentered)
-    return;
-
   auto *top = getTopLevelComponent();
   if (top == nullptr || top == this)
+    return;
+
+#if JUCE_MAC
+  if (auto *window = dynamic_cast<juce::TopLevelWindow *>(top);
+      window != nullptr && !window->isUsingNativeTitleBar()) {
+    window->setUsingNativeTitleBar(true);
+    top = getTopLevelComponent();
+    if (top == nullptr || top == this)
+      return;
+  }
+#endif
+
+  if (initialStandaloneWindowCentered)
     return;
 
   auto &displays = juce::Desktop::getInstance().getDisplays();
@@ -257,10 +268,17 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     missingAudioDeviceSinceMs = 0;
     nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+    lastObservedAudioDeviceKey = getCurrentDeviceKey(audioCtx);
 
-    if (audioCtx.manager != nullptr &&
-        audioCtx.manager->getCurrentAudioDevice() == nullptr) {
-      missingAudioDeviceSinceMs = nowMs;
+    if (audioCtx.manager != nullptr) {
+      if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+          currentDevice != nullptr) {
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+      } else {
+        missingAudioDeviceSinceMs = nowMs;
+      }
     }
   }
 
@@ -334,7 +352,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongEndSeconds(); },
       [&p] { return p.getLoadedSongKey(); },
-      [this] { return currentLoadedSong.id; });
+      [this] { return currentLoadedSong.id; },
+      [this]() -> const ImportedSongData * {
+        if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+          return nullptr;
+        return &currentLoadedSong;
+      });
+  topBarRaw->setOnMetronomeEnabledChanged([this](const bool enabled) {
+    persistClickDynMetronomeEnabledForActiveSong(enabled);
+  });
   topBarRaw->setMidiLearnBindingLabelProvider(midiLearnBindingLabelForTarget);
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
@@ -344,7 +370,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
       [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongLengthSeconds(); });
+      [&p] { return p.getSongLengthSeconds(); },
+      [&p] { return p.isSongPlaying(); });
   waveformBarRaw->setSongWindowProviders(
       [&p] { return p.getSongStartSeconds(); },
       [&p] { return p.getSongEndSeconds(); });
@@ -365,6 +392,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getArrangementPartLoopIndex(); });
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
     isWaveformExpanded = expanded;
+    auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+    processorRef.setArrangementEditingActive(expanded);
     resized();
     repaint();
   });
@@ -390,6 +419,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       p.setSongArrangement(arrangement, false);
     }
   });
+  waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
+    if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+      return;
+    currentLoadedSong.tempoMap = tempoMap;
+    SongLibraryStore::updateSong(currentLoadedSong);
+  });
+  waveformBarRaw->setOnActiveTempoRegionChanged(
+      [&p](const SongTempoRegionSnapshot &region) {
+        p.setMetronomeBpm(region.bpm);
+        p.setMetronomeBeatsPerBar(
+            timeSignatureBeatsPerBar(region.timeSignature));
+      });
 
   auto channelGridImpl =
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
@@ -413,6 +454,37 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (padsComponent != nullptr)
       padsComponent->setMidiLearnPendingTarget(targetId);
   });
+  channelGridRaw->setOnGuideSourceModeChanged(
+      [this, &p](const ChannelGridPanel::GuideSourceMode mode) {
+        DynamicGuideSettings settings = p.getDynamicGuideSettings();
+        settings.enabled =
+            mode == ChannelGridPanel::GuideSourceMode::DynamicBySections;
+        if (settings.enabled)
+          p.setDynamicGuideMuted(false);
+        p.setDynamicGuideSettings(settings);
+        if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+          return;
+        if (settings.enabled) {
+          SongLibraryStore::updateDynamicGuideForActiveSetlist(
+              currentLoadedSong.id, settings, true);
+          DynamicGuideMixSnapshot mix;
+          if (!SongLibraryStore::getActiveSetlistDynamicGuideMix(
+                  currentLoadedSong.id, mix)) {
+            mix = DynamicGuideMixSnapshot{};
+          }
+          mix.volume = p.getDynamicGuideVolume();
+          mix.gain = p.getDynamicGuideGain();
+          mix.mute = false;
+          mix.solo = p.isDynamicGuideSolo();
+          mix.outputChannel = p.getDynamicGuideOutputChannel();
+          mix.outputWidth = p.getDynamicGuideOutputWidth();
+          SongLibraryStore::updateDynamicGuideMixForActiveSetlist(
+              currentLoadedSong.id, mix);
+        } else {
+          SongLibraryStore::updateDynamicGuideForActiveSetlist(
+              currentLoadedSong.id, settings, true);
+        }
+      });
 
   waveformBarRaw->setOnMidiLearnTargetSelected(
       [this, &p, topBarRaw, channelGridRaw, waveformBarRaw](const int targetId) {
@@ -430,15 +502,37 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           padsComponent->setMidiLearnPendingTarget(targetId);
       });
 
+  const auto safeEditor =
+      juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   p.getAudioDeviceBridge().setOnDeviceConnected(
-      [&p, channelGridRaw](const AudioDeviceMonitor::DeviceInfo &info) {
-        if (!info.isMultichannel)
+      [safeEditor](const AudioDeviceMonitor::DeviceInfo &info) {
+        juce::ignoreUnused(info);
+        if (safeEditor == nullptr)
           return;
-        p.getAudioDeviceBridge().setAvailableOutputChannelCount(
-            juce::jmax(2, info.numOutputChannels));
-        p.refreshPadsRoutingFromSettings();
-        if (channelGridRaw != nullptr)
-          channelGridRaw->refreshStemRoutingVisibility();
+
+        auto *editor = safeEditor.getComponent();
+        if (editor == nullptr)
+          return;
+
+        auto &processorRef =
+            static_cast<MTControlsAudioProcessor &>(editor->processor);
+        const auto audioCtx = PluginEditorSupport::getStandaloneAudioContext();
+        if (audioCtx.manager == nullptr)
+          return;
+
+        if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+            currentDevice != nullptr) {
+          processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+              juce::jmax(1, currentDevice->getOutputChannelNames().size()));
+        }
+
+        processorRef.refreshPadsRoutingFromSettings();
+        if (editor->hasCurrentLoadedSong)
+          editor->applyRoutingDefaultsToSong(editor->currentLoadedSong);
+        if (auto *grid = dynamic_cast<ChannelGridPanel *>(
+                editor->channelGridPanel.get())) {
+          grid->refreshStemRoutingVisibility();
+        }
       });
 
   refreshTopBarTheme = [this, topBarRaw, waveformBarRaw, channelGridRaw] {
@@ -480,6 +574,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (songLoadBusy)
       return false;
     maybePersistSongWindowForActiveSong();
+    if (channelGridRaw != nullptr)
+      channelGridRaw->flushPendingPersistenceNow();
+    p.setMetronomeEnabled(false);
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
@@ -498,6 +595,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
+    std::vector<bool> guideMask;
     std::vector<bool> pitchShiftMask;
     int clickStemIndex = -1;
     ImportedSongData loadedSong = song;
@@ -540,7 +638,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       stemPaths.add(loadedStem.storedPath);
       loadedSong.stems.push_back(loadedStem);
       const bool isClickGuide = stemPriority <= 1;
+      const bool isGuideStem = stemPriority == 1;
       clickGuideMask.push_back(isClickGuide);
+      guideMask.push_back(isGuideStem);
       pitchShiftMask.push_back(isStemPitchShiftable(loadedStem));
     }
 
@@ -563,6 +663,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       waveformBarRaw->setWaveformBins({});
       waveformBarRaw->setSongRhythm(0.0, {});
       p.setStemClickGuideMask({});
+      p.setStemGuideMask({});
       p.setMetronomeClickStemIndex(-1);
       channelGridRaw->setSong(ImportedSongData{});
       hasCurrentLoadedSong = false;
@@ -572,8 +673,47 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
 
     p.setStemClickGuideMask(clickGuideMask);
+    p.setStemGuideMask(guideMask);
     p.setStemPitchShiftMask(pitchShiftMask);
     p.setMetronomeClickStemIndex(clickStemIndex);
+    p.setDynamicGuideLanguage(AppSettings::getLanguage());
+
+    DynamicGuideSettings dynamicGuideSettings;
+    bool dynamicGuideCustomized = false;
+    if (!SongLibraryStore::getActiveSetlistDynamicGuide(
+            loadedSong.id, dynamicGuideSettings, dynamicGuideCustomized)) {
+      dynamicGuideSettings = DynamicGuideSettings{};
+      dynamicGuideCustomized = false;
+    }
+    p.setDynamicGuideSettings(dynamicGuideSettings);
+
+    DynamicGuideMixSnapshot dynamicGuideMix;
+    if (!SongLibraryStore::getActiveSetlistDynamicGuideMix(loadedSong.id,
+                                                            dynamicGuideMix)) {
+      dynamicGuideMix = DynamicGuideMixSnapshot{};
+    }
+    if (dynamicGuideSettings.enabled && !dynamicGuideCustomized)
+      dynamicGuideMix.mute = false;
+    p.setDynamicGuideVolume(dynamicGuideMix.volume);
+    p.setDynamicGuideGain(dynamicGuideMix.gain);
+    p.setDynamicGuideMuted(dynamicGuideMix.mute);
+    p.setDynamicGuideSolo(dynamicGuideMix.solo);
+    p.setDynamicGuideOutputRouting(dynamicGuideMix.outputChannel,
+                                   dynamicGuideMix.outputWidth);
+
+    ClickDynMixSnapshot clickDynMix;
+    if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
+                                                       clickDynMix)) {
+      clickDynMix = ClickDynMixSnapshot{};
+    }
+    p.setClickDivision(clickDynMix.divisionMask);
+    p.setClickDivisionEnabled(clickDynMix.enabled);
+    p.setMetronomeVolume(clickDynMix.volume);
+    p.setMetronomeGain(clickDynMix.gain);
+    p.setMetronomeMuted(clickDynMix.mute);
+    p.setMetronomeSolo(clickDynMix.solo);
+    p.setMetronomeOutputRouting(clickDynMix.outputChannel,
+                                clickDynMix.outputWidth);
 
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
@@ -618,6 +758,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                     p.getSongEndSeconds(), p.getSongFadeOutSeconds());
 
     channelGridRaw->setSong(loadedSong);
+    channelGridRaw->setGuideSourceMode(
+        dynamicGuideSettings.enabled
+            ? ChannelGridPanel::GuideSourceMode::DynamicBySections
+            : ChannelGridPanel::GuideSourceMode::SongGuide);
+    channelGridRaw->setGuideWarningMessage({});
     currentSongIndex = songIndex;
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
@@ -648,7 +793,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       isCustomArrangement = false;
     }
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
+    waveformBarRaw->setTempoMap(loadedSong.tempoMap);
+    p.setMetronomeOutputRouting(clickDynMix.outputChannel,
+                                clickDynMix.outputWidth);
+    p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
+    trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     p.setSongArrangement(arrangement, false);
+    p.setArrangementEditingActive(false);
     return true;
   };
 
@@ -1160,7 +1311,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.useNativeTitleBar = true;
   options.resizable = false;
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
-  auto &midiManager = proc.getAudioDeviceBridge().getAudioDeviceManager();
   const auto routingDefaults = AppSettings::getRoutingDefaults();
   const auto audioCtx = getStandaloneAudioContext();
   auto *panel = new SettingsPanel(
@@ -1169,6 +1319,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       AppSettings::getLanguage(),
       [this](AppLanguage language) {
         AppSettings::setLanguage(language);
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        processorRef.setDynamicGuideLanguage(language);
         if (songListPanelRaw != nullptr)
           songListPanelRaw->refreshLanguageTexts();
         repaint();
@@ -1192,6 +1344,31 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
           enginePreset = PadsEngine::CrossfadePreset::Long;
         processorRef.setPadsCrossfadePreset(enginePreset);
       },
+      AppSettings::getMetronomeClickStyle(),
+      [this](const MetronomeClickStyle style) {
+        AppSettings::setMetronomeClickStyle(style);
+        auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+        const auto clickFolder = AssetBootstrapManager::getClicksPackDirectory();
+        juce::String error;
+        processorRef.loadMetronomeClickSamplesFromFolder(
+            clickFolder,
+            style == MetronomeClickStyle::Classic
+                ? "Classic"
+                : style == MetronomeClickStyle::Woodblock
+                      ? "Woodblock"
+                      : style == MetronomeClickStyle::Cowbell
+                            ? "Cowbell"
+                            : style == MetronomeClickStyle::Digital
+                                  ? "Digital"
+                                  : style == MetronomeClickStyle::Gentle
+                                        ? "Gentle"
+                                        : style == MetronomeClickStyle::Percussive
+                                              ? "Percussive"
+                                              : style == MetronomeClickStyle::Saw
+                                                    ? "Saw"
+            : "Blip",
+            &error);
+      },
       [] {},
       SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,
@@ -1210,72 +1387,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         processorRef.refreshPadsRoutingFromSettings();
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
-      },
-      [&proc]() {
-        std::vector<SettingsPanel::MidiTargetOption> out;
-        for (const auto &target : proc.getMidiTargets())
-          out.push_back({target.id, target.name});
-        return out;
-      }(),
-      [&proc]() {
-        std::vector<SettingsPanel::MidiBindingView> out;
-        for (const auto &binding : proc.getMidiBindings()) {
-          out.push_back({binding.targetId, binding.midiChannel,
-                         binding.ccNumber, binding.sourceType, binding.mode});
-        }
-        return out;
-      },
-      [&proc](const int targetId) { proc.beginMidiLearnForTarget(targetId); },
-      [&proc](const int targetId) {
-        proc.clearMidiBindingForTarget(targetId);
-        AppSettings::setMidiBindings(proc.getMidiBindings());
-      },
-      [&proc](const SettingsPanel::MidiBindingView &bindingView) {
-        MidiBindingSetting binding;
-        binding.targetId = bindingView.targetId;
-        binding.midiChannel = bindingView.midiChannel;
-        binding.ccNumber = bindingView.ccNumber;
-        binding.sourceType = bindingView.sourceType;
-        binding.mode = bindingView.mode;
-        proc.setMidiBinding(binding);
-        AppSettings::setMidiBindings(proc.getMidiBindings());
-      },
-      [&midiManager]() {
-        std::vector<SettingsPanel::MidiInputDeviceView> out;
-        const auto inputs = juce::MidiInput::getAvailableDevices();
-        out.reserve(static_cast<size_t>(inputs.size()));
-        for (const auto &device : inputs) {
-          out.push_back({device.identifier, device.name,
-                         midiManager.isMidiInputDeviceEnabled(
-                             device.identifier)});
-        }
-        return out;
-      },
-      [&midiManager](const juce::String &deviceId, const bool enabled) {
-        if (deviceId.isNotEmpty())
-          midiManager.setMidiInputDeviceEnabled(deviceId, enabled);
-      },
-      [&proc]() {
-        const auto probe = proc.getLastMidiInputProbe();
-        if (probe.timestampMs <= 0 || probe.channel <= 0)
-          return juce::String{};
-
-        const juce::String kind =
-            probe.type == 1 ? "CC"
-                            : probe.type == 2 ? "NoteOn"
-                                              : probe.type == 3 ? "NoteOff"
-                                                                : "Other";
-        const auto ageMs = juce::jmax<juce::int64>(
-            0, juce::Time::currentTimeMillis() - probe.timestampMs);
-        const double ageSec = static_cast<double>(ageMs) / 1000.0;
-
-        juce::String payload = "Ch " + juce::String(probe.channel) + " " + kind;
-        if (probe.data1 >= 0)
-          payload += " #" + juce::String(probe.data1);
-        if (probe.data2 >= 0)
-          payload += " val " + juce::String(probe.data2);
-        payload += " (" + juce::String(ageSec, 1) + "s)";
-        return payload;
       },
       audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
   panel->setSize(760, 620);
@@ -1810,6 +1921,49 @@ void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
   trackSongWindow(songId, startSec, endSec, fadeSec);
 }
 
+void MTControlsAudioProcessorEditor::persistClickDynMetronomeEnabledForActiveSong(
+    const bool enabled) {
+  if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+    return;
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  ClickDynMixSnapshot mix;
+  mix.divisionMask = processorRef.getClickDivision();
+  mix.enabled = processorRef.isClickDivisionEnabled();
+  mix.metronomeEnabled = enabled;
+  mix.volume = processorRef.getMetronomeVolume();
+  mix.gain = processorRef.getMetronomeGain();
+  mix.mute = processorRef.isMetronomeMuted();
+  mix.solo = processorRef.isMetronomeSolo();
+  mix.outputChannel = processorRef.getMetronomeOutputChannel();
+  mix.outputWidth = processorRef.getMetronomeOutputWidth();
+  SongLibraryStore::updateClickDynMixForActiveSetlist(currentLoadedSong.id, mix);
+  trackClickDynMetronomeEnabled(enabled);
+}
+
+void MTControlsAudioProcessorEditor::trackClickDynMetronomeEnabled(
+    const bool enabled) {
+  trackedClickDynMetronomeEnabled = enabled;
+  hasTrackedClickDynMetronomeEnabled = true;
+}
+
+void MTControlsAudioProcessorEditor::
+    maybePersistClickDynMetronomeEnabledForActiveSong() {
+  if (songLoadBusy || !hasCurrentLoadedSong || currentLoadedSong.id.isEmpty()) {
+    hasTrackedClickDynMetronomeEnabled = false;
+    return;
+  }
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const bool enabled = processorRef.isMetronomeEnabled();
+  if (hasTrackedClickDynMetronomeEnabled &&
+      trackedClickDynMetronomeEnabled == enabled) {
+    return;
+  }
+
+  persistClickDynMetronomeEnabledForActiveSong(enabled);
+}
+
 void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
   if (!mainUiInitialized)
     return;
@@ -1875,10 +2029,27 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
     if (audioCtx.manager != nullptr) {
-      if (audioCtx.manager->getCurrentAudioDevice() != nullptr) {
+      auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+      const juce::String currentDeviceKey = getCurrentDeviceKey(audioCtx);
+      if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
+          currentDevice != nullptr) {
+        processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
+            juce::jmax(1, currentDevice->getOutputChannelNames().size()));
         missingAudioDeviceSinceMs = 0;
         nextAudioDeviceFallbackAttemptMs = nowMs + kAudioDeviceMissingGraceMs;
+
+        if (currentDeviceKey.isNotEmpty() &&
+            currentDeviceKey != lastObservedAudioDeviceKey) {
+          lastObservedAudioDeviceKey = currentDeviceKey;
+          processorRef.refreshPadsRoutingFromSettings();
+          if (hasCurrentLoadedSong)
+            applyRoutingDefaultsToSong(currentLoadedSong);
+          if (auto *grid =
+                  dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+            grid->refreshStemRoutingVisibility();
+        }
       } else {
+        lastObservedAudioDeviceKey.clear();
         if (missingAudioDeviceSinceMs <= 0)
           missingAudioDeviceSinceMs = nowMs;
 
@@ -1910,8 +2081,6 @@ void MTControlsAudioProcessorEditor::timerCallback() {
       wave->setMidiLearnPendingTarget(midiLearnPendingTargetId);
     if (padsComponent != nullptr)
       padsComponent->setMidiLearnPendingTarget(midiLearnPendingTargetId);
-    if (settingsPanelRaw != nullptr)
-      settingsPanelRaw->refreshMidiBindings();
   }
   int midiUiCommand = 0;
   if (processorRef.consumePendingMidiUiCommand(midiUiCommand)) {
@@ -1965,7 +2134,31 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     }
   }
 
+  juce::String missingDynamicGuideSection;
+  if (processorRef.consumeDynamicGuideMissingSectionWarning(
+          missingDynamicGuideSection)) {
+    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
+      constexpr const char *kDynamicGuideLoadWarningPrefix =
+          "__dynamic_guide_load_error__:";
+      juce::String message;
+      if (missingDynamicGuideSection.startsWith(kDynamicGuideLoadWarningPrefix)) {
+        const auto detail =
+            missingDynamicGuideSection.fromFirstOccurrenceOf(
+                kDynamicGuideLoadWarningPrefix, false, false);
+        message = L10n::tr(u8"No se pudieron cargar los audios de guía dinámica: ",
+                           "Couldn't load dynamic guide audio: ") +
+                  detail;
+      } else {
+        message = L10n::tr(u8"Sin audio de guía para sección: ",
+                           "Missing guide audio for section: ") +
+                  missingDynamicGuideSection;
+      }
+      grid->setGuideWarningMessage(message);
+    }
+  }
+
   maybePersistSongWindowForActiveSong();
+  maybePersistClickDynMetronomeEnabledForActiveSong();
   updateSystemUsageMetrics();
 
   const bool isPlayingNow = processorRef.isSongPlaying();

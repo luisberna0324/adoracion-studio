@@ -10,49 +10,24 @@
 #include <vector>
 
 class SettingsPanel final : public juce::Component,
-                            public juce::ChangeListener,
-                            private juce::Timer {
+                            public juce::ChangeListener {
 public:
   ~SettingsPanel() override;
 
   void changeListenerCallback(juce::ChangeBroadcaster* source) override;
-  void timerCallback() override;
   using ThemeChanged = std::function<void(ThemePreset)>;
   using LanguageChanged = std::function<void(AppLanguage)>;
   using ExpandLaunchChanged = std::function<void(bool)>;
   using PrimeImportChanged = std::function<void(bool)>;
   using StemOptimizationChanged = std::function<void(bool)>;
   using PadsCrossfadeChanged = std::function<void(PadsCrossfadePreset)>;
+  using MetronomeClickStyleChanged =
+      std::function<void(MetronomeClickStyle)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
   using RoutingDefaultsChanged =
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
-  struct MidiTargetOption {
-    int id = -1;
-    juce::String name;
-  };
-  struct MidiBindingView {
-    int targetId = -1;
-    int midiChannel = 1;
-    int ccNumber = 0;
-    MidiBindingSourceType sourceType = MidiBindingSourceType::CC;
-    MidiBindingMode mode = MidiBindingMode::Absolute;
-  };
-  struct MidiInputDeviceView {
-    juce::String identifier;
-    juce::String name;
-    bool enabled = false;
-  };
-  using MidiLearnRequested = std::function<void(int targetId)>;
-  using MidiClearRequested = std::function<void(int targetId)>;
-  using MidiBindingUpdated = std::function<void(const MidiBindingView &)>;
-  using MidiBindingsProvider = std::function<std::vector<MidiBindingView>()>;
-  using MidiInputDevicesProvider =
-      std::function<std::vector<MidiInputDeviceView>()>;
-  using MidiInputToggleRequested =
-      std::function<void(const juce::String &deviceId, bool enabled)>;
-  using MidiInputProbeTextProvider = std::function<juce::String()>;
 
   struct SessionSummary {
     juce::String uid;
@@ -73,25 +48,17 @@ public:
                 StemOptimizationChanged stemOptimizationCb,
                 PadsCrossfadePreset padsCrossfadePreset,
                 PadsCrossfadeChanged padsCrossfadeCb,
+                MetronomeClickStyle metronomeClickStyle,
+                MetronomeClickStyleChanged metronomeClickStyleCb,
                 CloseRequested closeCb,
                 SessionSummary sessionSummary,
                 LogoutRequested logoutCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
                 int availableOutputChannels,
                 RoutingDefaultsChanged routingCb,
-                std::vector<MidiTargetOption> midiTargets,
-                MidiBindingsProvider midiBindingsProvider,
-                MidiLearnRequested midiLearnCb,
-                MidiClearRequested midiClearCb,
-                MidiBindingUpdated midiBindingUpdatedCb,
-                MidiInputDevicesProvider midiInputDevicesProvider,
-                MidiInputToggleRequested midiInputToggleCb,
-                MidiInputProbeTextProvider midiProbeTextProvider,
                 juce::AudioDeviceManager *deviceManagerToUse,
                 int maxInputChannels,
                 int maxOutputChannels);
-
-  void refreshMidiBindings();
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -117,7 +84,6 @@ private:
   juce::Component generalPage;
   juce::Component audioPage;
   juce::Component routingPage;
-  juce::Component midiPage;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
   juce::Label themeLabel;
   juce::ComboBox themeBox;
@@ -131,6 +97,8 @@ private:
   juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
   juce::ComboBox padsCrossfadeBox;
+  juce::Label metronomeClickStyleLabel;
+  juce::ComboBox metronomeClickStyleBox;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;
@@ -151,41 +119,19 @@ private:
       "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
   juce::TextButton logoutButton;
   juce::Label routingSectionLabel;
-  juce::Label routingMidiHintLabel;
+  juce::Label routingHintLabel;
   juce::Viewport routingViewport;
   juce::Component routingContent;
-  juce::Label midiTargetLabel;
-  juce::Label midiConnectionsLabel;
-  juce::ComboBox midiInputDeviceBox;
-  juce::ToggleButton midiInputEnabledToggle;
-  juce::Label midiInputStateLabel;
-  juce::Label midiProbeStateLabel;
-  juce::ComboBox midiTargetBox;
-  juce::Label midiBindingLabel;
-  juce::Label midiStatusLabel;
-  juce::Label midiModeLabel;
-  juce::ComboBox midiModeBox;
-  juce::Label midiWarningLabel;
-  juce::TextButton midiLearnButton{"MIDI Learn"};
-  juce::TextButton midiClearButton{"Quitar"};
   ThemeChanged onThemeChanged;
   LanguageChanged onLanguageChanged;
   ExpandLaunchChanged onExpandLaunchChanged;
   PrimeImportChanged onPrimeImportChanged;
   StemOptimizationChanged onStemOptimizationChanged;
   PadsCrossfadeChanged onPadsCrossfadeChanged;
+  MetronomeClickStyleChanged onMetronomeClickStyleChanged;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
-  std::vector<MidiTargetOption> midiTargetOptions;
-  MidiBindingsProvider getMidiBindings;
-  MidiLearnRequested onMidiLearnRequested;
-  MidiClearRequested onMidiClearRequested;
-  MidiBindingUpdated onMidiBindingUpdated;
-  MidiInputDevicesProvider getMidiInputDevices;
-  MidiInputToggleRequested onMidiInputToggleRequested;
-  MidiInputProbeTextProvider getMidiProbeText;
-  std::vector<MidiInputDeviceView> midiInputDevices;
   std::vector<CategoryRoutingDefaults> routingDefaults;
   int availableOutputChannels = 2;
   std::vector<std::unique_ptr<RoutingRow>> routingRows;
@@ -198,10 +144,6 @@ private:
   void layoutGeneralPage();
   void layoutAudioPage();
   void layoutRoutingPage();
-  void layoutMidiPage();
-  void refreshMidiInputDevices();
-  void refreshMidiInputToggleForSelection();
-  void refreshMidiInputStatus();
   void applyLanguageTexts();
   static juce::String formatIsoDateTime(const juce::String &isoDateTime);
 };
