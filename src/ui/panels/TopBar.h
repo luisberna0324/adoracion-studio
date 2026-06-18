@@ -78,11 +78,23 @@ private:
     bool pulseDownbeat = false;
   };
 
-  class ClickableLabel final : public juce::Label {
+  class RoundedLabel : public juce::Label {
+  public:
+    void paint(juce::Graphics &g) override;
+  };
+
+  class ClickableLabel final : public RoundedLabel {
   public:
     std::function<void()> onClick;
 
     void mouseDown(const juce::MouseEvent &) override;
+  };
+
+  class BpmSegmentButton final : public juce::Button {
+  public:
+    BpmSegmentButton();
+    void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                     bool isButtonDown) override;
   };
 
   IconButton prevButton;
@@ -99,8 +111,8 @@ private:
 
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
-  juce::Label systemUsageDisplay;
-  juce::TextButton bpmSegmentButton;
+  RoundedLabel systemUsageDisplay;
+  BpmSegmentButton bpmSegmentButton;
   IconButton metroToggleButton{"metroToggle", SvgIconName::Metronome};
 
   std::function<void()> onPlayPause;

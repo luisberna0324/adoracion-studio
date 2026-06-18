@@ -137,6 +137,36 @@ juce::Colour colourfulAccentFromStableId(const juce::String &id) {
                                juce::jlimit(0.0f, 1.0f, saturation),
                                juce::jlimit(0.0f, 1.0f, brightness), 1.0f);
 }
+
+juce::Path roundedControlPath(juce::Rectangle<float> bounds,
+                              const int connectedEdges,
+                              const float cornerRadius) {
+  const bool connectedLeft =
+      (connectedEdges & juce::Button::ConnectedOnLeft) != 0;
+  const bool connectedRight =
+      (connectedEdges & juce::Button::ConnectedOnRight) != 0;
+  const bool connectedTop =
+      (connectedEdges & juce::Button::ConnectedOnTop) != 0;
+  const bool connectedBottom =
+      (connectedEdges & juce::Button::ConnectedOnBottom) != 0;
+
+  if (connectedLeft)
+    bounds.setX(0.0f);
+  if (connectedRight)
+    bounds.setRight(bounds.getRight() + 0.5f);
+  if (connectedTop)
+    bounds.setY(0.0f);
+  if (connectedBottom)
+    bounds.setBottom(bounds.getBottom() + 0.5f);
+
+  juce::Path path;
+  path.addRoundedRectangle(
+      bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
+      cornerRadius, cornerRadius, !connectedLeft && !connectedTop,
+      !connectedRight && !connectedTop, !connectedLeft && !connectedBottom,
+      !connectedRight && !connectedBottom);
+  return path;
+}
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
@@ -169,6 +199,8 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
                                      bool isMouseOverButton,
                                      bool isButtonDown) {
   auto b = getLocalBounds().toFloat().reduced(0.5f);
+  const auto connectedEdges = getConnectedEdgeFlags();
+  const auto controlPath = roundedControlPath(b, connectedEdges, 7.0f);
   const bool active = isButtonDown || getToggleState();
 
   juce::Colour fill =
@@ -187,10 +219,13 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   }
 
   gr.setColour(juce::Colours::black.withAlpha(isPrimary ? 0.24f : 0.18f));
-  gr.fillRoundedRectangle(b.translated(0.0f, isPrimary ? 2.0f : 1.4f), 7.0f);
+  auto shadowPath = controlPath;
+  shadowPath.applyTransform(
+      juce::AffineTransform::translation(0.0f, isPrimary ? 2.0f : 1.4f));
+  gr.fillPath(shadowPath);
 
   gr.setColour(fill);
-  gr.fillRoundedRectangle(b, 7.0f);
+  gr.fillPath(controlPath);
 
   gr.setColour(juce::Colours::white.withAlpha(isPrimary ? 0.16f : 0.08f));
   gr.drawHorizontalLine(static_cast<int>(b.getY() + 1.0f), b.getX() + 8.0f,
@@ -201,7 +236,8 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
                 : UITheme::cardBorder.brighter(isMouseOverButton ? 0.18f : 0.08f)
                       .withAlpha(0.82f);
   gr.setColour(border);
-  gr.drawRoundedRectangle(b, 7.0f, isPrimary ? 1.25f : 1.0f);
+  gr.strokePath(controlPath,
+                juce::PathStrokeType(isPrimary ? 1.25f : 1.0f));
 
   const bool hasBadge = badgeText.isNotEmpty();
   const auto iconColour = isPrimary ? UITheme::onAccent : UITheme::textPrimary;
@@ -224,9 +260,58 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   }
 }
 
+void TopBar::RoundedLabel::paint(juce::Graphics &g) {
+  const auto b = getLocalBounds().toFloat().reduced(0.5f);
+  constexpr float cornerRadius = 7.0f;
+
+  g.setColour(findColour(juce::Label::backgroundColourId));
+  g.fillRoundedRectangle(b, cornerRadius);
+
+  g.setColour(juce::Colours::white.withAlpha(0.08f));
+  g.drawHorizontalLine(static_cast<int>(b.getY() + 1.0f), b.getX() + 8.0f,
+                       b.getRight() - 8.0f);
+
+  g.setColour(findColour(juce::Label::outlineColourId));
+  g.drawRoundedRectangle(b, cornerRadius, 1.0f);
+
+  g.setColour(findColour(juce::Label::textColourId)
+                  .withMultipliedAlpha(isEnabled() ? 1.0f : 0.5f));
+  g.setFont(getFont());
+  g.drawFittedText(getText(), getLocalBounds().reduced(5, 2),
+                   getJustificationType(), 2, 0.7f);
+}
+
 void TopBar::ClickableLabel::mouseDown(const juce::MouseEvent &) {
   if (onClick)
     onClick();
+}
+
+TopBar::BpmSegmentButton::BpmSegmentButton()
+    : juce::Button("bpmSegment") {}
+
+void TopBar::BpmSegmentButton::paintButton(juce::Graphics &g,
+                                           bool isMouseOverButton,
+                                           bool isButtonDown) {
+  auto b = getLocalBounds().toFloat().reduced(0.5f);
+  const auto path = roundedControlPath(b, getConnectedEdgeFlags(), 7.0f);
+  auto fill = isButtonDown ? UITheme::accentSoft : UITheme::accent;
+  if (isMouseOverButton && !isButtonDown)
+    fill = fill.brighter(0.08f);
+
+  g.setColour(juce::Colours::black.withAlpha(0.24f));
+  auto shadowPath = path;
+  shadowPath.applyTransform(juce::AffineTransform::translation(0.0f, 2.0f));
+  g.fillPath(shadowPath);
+
+  g.setColour(fill);
+  g.fillPath(path);
+  g.setColour(UITheme::accentSoft.withAlpha(0.70f));
+  g.strokePath(path, juce::PathStrokeType(1.25f));
+
+  g.setColour(UITheme::onAccent);
+  g.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
+  g.drawFittedText(getButtonText(), getLocalBounds().reduced(6, 2),
+                   juce::Justification::centred, 1);
 }
 
 TopBar::TopBar(MTControlsAudioProcessor &processorRef)
@@ -746,13 +831,15 @@ void TopBar::resized() {
     if (bpmVisible) {
       bpmSegmentButton.setVisible(true);
       bpmSegmentButton.setBounds(rightX - metroTotalW, metroY,
-                                 metroTotalW - metroIconW, 44);
-      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW, 44);
+                                 metroTotalW - metroIconW, square);
+      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW,
+                                  square);
       rightX -= metroTotalW + gap;
     } else {
       bpmSegmentButton.setVisible(false);
       bpmSegmentButton.setBounds({});
-      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW, 44);
+      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW,
+                                  square);
       rightX -= metroIconW + gap;
     }
 
