@@ -16,6 +16,20 @@ project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+option(MTCONTROLS_BUILD_TESTS "Build lightweight audio engine core tests" OFF)
+
+if(MTCONTROLS_BUILD_TESTS)
+    enable_testing()
+    add_executable(MTControlsAudioEngineCoreTests
+        tests/audio_engine_core_tests.cpp
+        src/audio/TransportClock.cpp
+        src/audio/TransportClock.h
+        src/audio/SectionScheduler.cpp
+        src/audio/SectionScheduler.h
+    )
+    target_include_directories(MTControlsAudioEngineCoreTests PRIVATE src)
+    add_test(NAME audio_engine_core COMMAND MTControlsAudioEngineCoreTests)
+endif()
 
 set(_mtcontrols_ffmpeg_macos_default "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/macos/ffmpeg")
@@ -212,6 +226,10 @@ target_sources(MTControls
         src/audio/SimpleDelayLine.h
         src/audio/StandaloneAudioDeviceBridge.cpp
         src/audio/StandaloneAudioDeviceBridge.h
+        src/audio/TransportClock.cpp
+        src/audio/TransportClock.h
+        src/audio/SectionScheduler.cpp
+        src/audio/SectionScheduler.h
         src/audio/StemOutputRouter.cpp
         src/audio/StemOutputRouter.h
         src/audio/StemOutputRoutingState.cpp

@@ -11,8 +11,10 @@
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
+#include "audio/SectionScheduler.h"
 #include "audio/StemOutputRouter.h"
 #include "audio/StemOutputRoutingState.h"
+#include "audio/TransportClock.h"
 #include <JuceHeader.h>
 #include <array>
 #include <functional>
@@ -408,7 +410,10 @@ private:
   std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
   
-  // Custom hybrid transport state
+  // Frame-based source of truth. The legacy atomics remain as UI mirrors
+  // during the incremental engine-v2 migration.
+  playworship::audio::TransportClock transportClock;
+  playworship::audio::SectionScheduler sectionScheduler;
   std::atomic<juce::int64> globalSamplePosition{0};
   std::atomic<juce::int64> requestedSeekPosition{-1};
   
@@ -448,6 +453,7 @@ private:
   double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
   double getArrangementStartSeconds() const noexcept;
+  void rebuildSectionScheduler() noexcept;
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;
   void processMidiMapping(const juce::MidiBuffer &midiMessages);
