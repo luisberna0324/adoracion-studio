@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
-    [ValidateSet("x64", "x86")]
+    [ValidateSet("x64")]
     [string]$Architecture = "x64",
     [string]$StandaloneDir = "",
     [string]$OutputDir = "dist",
@@ -17,11 +17,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($StandaloneDir)) {
-    $StandaloneDir = if ($Architecture -eq "x86") {
-        "build/windows-x86-release/MTControls_artefacts/Release/Standalone"
-    } else {
-        "build/windows-release/MTControls_artefacts/Release/Standalone"
-    }
+    $StandaloneDir = "build/windows-release/MTControls_artefacts/Release/Standalone"
 }
 
 if (!(Test-Path -LiteralPath $IssFile)) {
@@ -42,6 +38,15 @@ New-Item -ItemType Directory -Force -Path $outputFull | Out-Null
 $exe = Get-ChildItem -Path $standaloneFull -Filter *.exe -File | Select-Object -First 1
 if ($null -eq $exe) {
     throw "No .exe found in standalone directory: $standaloneFull"
+}
+
+$bungeeDll = Join-Path $standaloneFull "bungee.dll"
+$bungeeLicense = Join-Path $standaloneFull "ThirdPartyLicenses\Bungee-MPL-2.0.txt"
+if (!(Test-Path -LiteralPath $bungeeDll)) {
+    throw "Required Bungee runtime missing from Standalone output: $bungeeDll"
+}
+if (!(Test-Path -LiteralPath $bungeeLicense)) {
+    throw "Required Bungee license missing from Standalone output: $bungeeLicense"
 }
 
 $ffmpegDestDir = Join-Path $standaloneFull "ffmpeg"

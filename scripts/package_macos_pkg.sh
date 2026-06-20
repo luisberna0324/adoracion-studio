@@ -100,6 +100,19 @@ if [[ -z "${APP_PATH}" ]]; then
   exit 1
 fi
 
+[[ -f "${APP_PATH}/Contents/Frameworks/libbungee.dylib" ]] || {
+  echo "Required Bungee dylib missing from app bundle." >&2
+  exit 1
+}
+[[ -f "${APP_PATH}/Contents/Resources/ThirdPartyLicenses/Bungee-MPL-2.0.txt" ]] || {
+  echo "Required Bungee license missing from app bundle." >&2
+  exit 1
+}
+codesign --verify --deep --strict "${APP_PATH}" || {
+  echo "App bundle signature is invalid after bundling Bungee." >&2
+  exit 1
+}
+
 cp -R "${APP_PATH}" "${STAGE_ROOT}/"
 
 if [[ -z "${GUIDES_ZIP}" && -f "assets/guides/guides-en-es.zip" ]]; then

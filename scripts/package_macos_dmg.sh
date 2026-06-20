@@ -78,6 +78,20 @@ if [[ ! -d "${STANDALONE_DIR}" ]] || ! compgen -G "${STANDALONE_DIR}"/*.app >/de
   done
 fi
 
+APP_PATH="$(find "${STANDALONE_DIR}" -maxdepth 1 -type d -name '*.app' -print -quit)"
+[[ -f "${APP_PATH}/Contents/Frameworks/libbungee.dylib" ]] || {
+  echo "Required Bungee dylib missing from app bundle." >&2
+  exit 1
+}
+[[ -f "${APP_PATH}/Contents/Resources/ThirdPartyLicenses/Bungee-MPL-2.0.txt" ]] || {
+  echo "Required Bungee license missing from app bundle." >&2
+  exit 1
+}
+codesign --verify --deep --strict "${APP_PATH}" || {
+  echo "App bundle signature is invalid after bundling Bungee." >&2
+  exit 1
+}
+
 if [[ ! -d "${STANDALONE_DIR}" ]] || ! compgen -G "${STANDALONE_DIR}"/*.app >/dev/null; then
   echo "No .app found for Standalone packaging." >&2
   echo "Checked: ${STANDALONE_DIR}" >&2

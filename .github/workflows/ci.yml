@@ -156,6 +156,9 @@ jobs:
       - name: Install Ninja
         run: brew install ninja
 
+      - name: Bootstrap required Bungee SDK
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (macOS)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
@@ -164,6 +167,16 @@ jobs:
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
+
+      - name: Verify Bungee bundled (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/macos-release/MTControls_artefacts/Release/Standalone/PlayWorship.app"
+          test -f "${APP}/Contents/Frameworks/libbungee.dylib"
+          test -f "${APP}/Contents/Resources/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+          otool -L "${APP}/Contents/MacOS/PlayWorship" | grep -q "@rpath/libbungee.dylib"
+          codesign --verify --deep --strict "${APP}"
 
       - name: Package PKG installer (macOS)
         env:
@@ -206,9 +219,6 @@ jobs:
           - arch: x64
             preset: windows-release
             build_dir: windows-release
-          - arch: x86
-            preset: windows-x86-release
-            build_dir: windows-x86-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -223,6 +233,10 @@ jobs:
           path: third_party/JUCE
           fetch-depth: 1
 
+      - name: Bootstrap required Bungee SDK
+        shell: bash
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
@@ -231,6 +245,15 @@ jobs:
 
       - name: Build (Windows)
         run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Verify Bungee bundled (Windows)
+        shell: pwsh
+        run: |
+          $dir = "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone"
+          if (!(Test-Path "$dir/bungee.dll")) { throw "Missing bungee.dll" }
+          if (!(Test-Path "$dir/ThirdPartyLicenses/Bungee-MPL-2.0.txt")) {
+            throw "Missing Bungee license"
+          }
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -311,6 +334,9 @@ jobs:
           mv third_party/ffmpeg/linux/ffmpeg.bin third_party/ffmpeg/linux/ffmpeg
           chmod +x third_party/ffmpeg/linux/ffmpeg
 
+      - name: Bootstrap required Bungee SDK
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (Linux)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
@@ -323,6 +349,15 @@ jobs:
 
       - name: Build (Linux)
         run: cmake --build --preset linux-release
+
+      - name: Verify Bungee bundled (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="build/linux-release/MTControls_artefacts/Release/Standalone"
+          test -f "${DIR}/libbungee.so"
+          test -f "${DIR}/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+          LD_LIBRARY_PATH="${DIR}" ldd "${DIR}/PlayWorship" | grep -q "libbungee.so"
 
       - name: Verify ffmpeg bundled in Standalone (Linux)
         shell: bash
@@ -493,7 +528,6 @@ jobs:
 
           MAC_URL="${BASE_HTTPS}/macos/${VERSION_DIR}/playworship-macos-installer-${SEMVER}.pkg"
           WIN_X64_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x64.exe"
-          WIN_X86_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x86.exe"
           LINUX_URL="${BASE_HTTPS}/linux/${VERSION_DIR}/playworship_${SEMVER}_amd64.deb"
 
           marker_start="<!-- bucket-links:start -->"
@@ -514,7 +548,6 @@ jobs:
             echo "### Enlaces directos"
             echo "- macOS (.pkg): ${MAC_URL}"
             echo "- Windows x64 (.exe): ${WIN_X64_URL}"
-            echo "- Windows x86 (.exe): ${WIN_X86_URL}"
             if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
               echo "- Linux (.deb): ${LINUX_URL}"
             fi

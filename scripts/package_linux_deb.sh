@@ -26,6 +26,15 @@ done
 [[ -n "${VERSION}" ]] || usage
 [[ -n "${STANDALONE_DIR}" ]] || usage
 
+[[ -f "${STANDALONE_DIR}/libbungee.so" ]] || {
+    echo "Required Bungee runtime missing: ${STANDALONE_DIR}/libbungee.so" >&2
+    exit 1
+}
+[[ -f "${STANDALONE_DIR}/ThirdPartyLicenses/Bungee-MPL-2.0.txt" ]] || {
+    echo "Required Bungee license missing from Standalone output." >&2
+    exit 1
+}
+
 # Normalize version for debian (no leading v, lowercase)
 DEB_VERSION="${VERSION#v}"
 PKG_NAME="playworship"

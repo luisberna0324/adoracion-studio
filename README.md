@@ -36,6 +36,7 @@ set JUCE_DIR=C:\ruta\JUCE
 ### macOS
 
 ```bash
+bash scripts/bootstrap_bungee.sh
 cmake --preset macos-release
 cmake --build --preset macos-release
 ```
@@ -43,16 +44,12 @@ cmake --build --preset macos-release
 ### Windows
 
 ```bash
+bash scripts/bootstrap_bungee.sh
 cmake --preset windows-release
 cmake --build --preset windows-release
 ```
 
-Windows 32-bit (x86):
-
-```bash
-cmake --preset windows-x86-release
-cmake --build --preset windows-x86-release
-```
+Windows x86 no se distribuye porque Bungee 2.4.24 solo incluye runtime x64.
 
 ## Instaladores (MVP)
 
@@ -61,6 +58,7 @@ cmake --build --preset windows-x86-release
 Genera el build y luego empaqueta el instalador `.pkg`:
 
 ```bash
+bash scripts/bootstrap_bungee.sh
 cmake --preset macos-release
 cmake --build --preset macos-release
 bash scripts/package_macos_pkg.sh --version 1.2.3
@@ -78,17 +76,16 @@ Genera el build y luego empaqueta el instalador `.exe`:
 cmake --preset windows-release
 cmake --build --preset windows-release
 .\scripts\package_windows_installer.ps1 -Version 1.2.3 -Architecture x64
-.\scripts\package_windows_installer.ps1 -Version 1.2.3 -Architecture x86
 ```
 
 Salida esperada:
 
 - `dist/playworship-windows-installer-1.2.3-x64.exe`
-- `dist/playworship-windows-installer-1.2.3-x86.exe`
 
 ### iOS
 
 ```bash
+bash scripts/bootstrap_bungee.sh
 cmake --preset ios-release
 cmake --build --preset ios-release
 ```
@@ -106,13 +103,14 @@ open build/ios-release/MTControls.xcodeproj
 Si prefieres configurar sin presets:
 
 ```bash
+bash scripts/bootstrap_bungee.sh
 cmake -S . -B build -DJUCE_DIR=/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE
 cmake --build build -j
 ```
 
 ## CI (idea)
 
-- Windows: GitHub Actions con `windows-latest` + presets `windows-release` (x64) y `windows-x86-release` (x86)
+- Windows: GitHub Actions con `windows-latest` + preset `windows-release` (x64)
 - macOS: GitHub Actions con `macos-latest` + preset `macos-release`
 - iOS: generar proyecto Xcode con preset `ios-release` (requiere signing para build/run)
 
@@ -127,10 +125,8 @@ Assets publicados cuando `publish_release=true`:
 
 - `MTControls-macos-standalone-<semver>.zip`
 - `MTControls-windows-x64-standalone-<semver>.zip`
-- `MTControls-windows-x86-standalone-<semver>.zip`
 - `playworship-macos-installer-<semver>.pkg` (si `publish_installers=true`)
 - `playworship-windows-installer-<semver>-x64.exe` (si `publish_installers=true`)
-- `playworship-windows-installer-<semver>-x86.exe` (si `publish_installers=true`)
 
 ## Siguiente foco
 
