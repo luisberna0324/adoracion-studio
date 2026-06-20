@@ -42,8 +42,9 @@ Completed foundations:
 9. Click phase is re-anchored from the absolute frame clock every block.
 10. Dynamic-guide events are scheduled in frames and use pre-resolved integer
     trigger IDs instead of callback-time string normalization and map lookup.
-11. Bungee Basic 2.4.24 is the required pitch/tempo backend. Configure now
-    fails if its SDK or platform runtime is missing.
+11. Bungee Basic 2.4.24 is the required pitch/tempo backend on macOS, iOS,
+    Linux and Windows x64. Windows x86 intentionally retains SoundTouch
+    because the Bungee SDK has no Win32 runtime.
 12. Tempo consumes a dithered variable number of source frames per output
     block, avoiding long-term fractional drift.
 13. Melodic stems receive pitch plus tempo. Percussive, click and guide stems
@@ -73,9 +74,10 @@ Remaining architectural boundary:
 
 ## Bungee bootstrap
 
-Run `scripts/bootstrap_bungee.sh` before configuring. The bootstrap downloads
-the pinned SDK and MPL-2.0 license. Override the SDK location with
-`-DMTCONTROLS_BUNGEE_DIR=/path/to/bungee`.
+Run `scripts/bootstrap_bungee.sh` before configuring macOS, iOS, Linux or
+Windows x64. The bootstrap downloads the pinned SDK and MPL-2.0 license.
+Override the SDK location with `-DMTCONTROLS_BUNGEE_DIR=/path/to/bungee`.
+Windows x86 neither downloads nor links Bungee.
 
 Release bundles include and verify:
 
@@ -84,7 +86,9 @@ Release bundles include and verify:
 - `libbungee.so` on Linux;
 - `ThirdPartyLicenses/Bungee-MPL-2.0.txt`.
 
-Windows x86 is not distributed because Bungee 2.4.24 has no Win32 runtime.
+Windows x86 is distributed separately with the legacy SoundTouch backend.
+Its installer must not contain `bungee.dll`; Windows x64 remains the primary
+and recommended build.
 
 ## Diagnostics
 

@@ -17,8 +17,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 option(MTCONTROLS_BUILD_TESTS "Build lightweight audio engine core tests" OFF)
-set(MTCONTROLS_USE_BUNGEE ON CACHE BOOL
-    "Use Bungee Basic as the required pitch/tempo backend" FORCE)
+option(MTCONTROLS_USE_BUNGEE
+    "Use Bungee Basic as the pitch/tempo backend" ON)
 set(MTCONTROLS_BUNGEE_DIR "${CMAKE_SOURCE_DIR}/third_party/bungee" CACHE PATH
     "Path to the unpacked Bungee SDK")
 if(MTCONTROLS_BUNGEE_DIR STREQUAL "")
@@ -110,20 +110,33 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(soundtouch)
 
-set(MTCONTROLS_BUNGEE_AVAILABLE OFF)
-if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/include/bungee/Bungee.h" OR
-   NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/LICENSE" OR
-   NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/version.txt")
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(MTCONTROLS_USE_BUNGEE OFF CACHE BOOL
+        "Use Bungee Basic as the pitch/tempo backend" FORCE)
+    message(STATUS
+        "Audio backend: SoundTouch legacy (Windows x86; Bungee runtime unavailable)")
+elseif(NOT MTCONTROLS_USE_BUNGEE)
     message(FATAL_ERROR
-        "Bungee SDK is required. Run scripts/bootstrap_bungee.sh before configuring. "
-        "Expected SDK at: ${MTCONTROLS_BUNGEE_DIR}")
+        "Bungee is mandatory on this platform. "
+        "SoundTouch fallback is supported only for Windows x86.")
 endif()
-file(READ "${MTCONTROLS_BUNGEE_DIR}/version.txt" MTCONTROLS_BUNGEE_VERSION)
-string(STRIP "${MTCONTROLS_BUNGEE_VERSION}" MTCONTROLS_BUNGEE_VERSION)
-string(REGEX REPLACE "^v" "" MTCONTROLS_BUNGEE_VERSION
-    "${MTCONTROLS_BUNGEE_VERSION}")
 
+set(MTCONTROLS_BUNGEE_AVAILABLE OFF)
 if(MTCONTROLS_USE_BUNGEE)
+    if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/include/bungee/Bungee.h" OR
+       NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/LICENSE" OR
+       NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/version.txt")
+        message(FATAL_ERROR
+            "Bungee SDK is required. Run scripts/bootstrap_bungee.sh before configuring. "
+            "Expected SDK at: ${MTCONTROLS_BUNGEE_DIR}")
+    endif()
+    file(READ "${MTCONTROLS_BUNGEE_DIR}/version.txt"
+        MTCONTROLS_BUNGEE_VERSION)
+    string(STRIP "${MTCONTROLS_BUNGEE_VERSION}"
+        MTCONTROLS_BUNGEE_VERSION)
+    string(REGEX REPLACE "^v" "" MTCONTROLS_BUNGEE_VERSION
+        "${MTCONTROLS_BUNGEE_VERSION}")
+
     add_library(MTControlsBungee SHARED IMPORTED GLOBAL)
     target_include_directories(MTControlsBungee INTERFACE
         "${MTCONTROLS_BUNGEE_DIR}/include")
@@ -146,10 +159,6 @@ if(MTCONTROLS_USE_BUNGEE)
             IMPORTED_LOCATION
                 "${_mtcontrols_bungee_framework}/Versions/Current/bungee")
     elseif(WIN32)
-        if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-            message(FATAL_ERROR
-                "Bungee 2.4.24 provides Windows x64 only; Win32 builds are unsupported.")
-        endif()
         if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.dll" OR
            NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.lib")
             message(FATAL_ERROR "Bungee Windows x64 runtime/import library is missing.")
@@ -316,8 +325,6 @@ target_sources(MTControls
         src/StemBufferingSource.h
         src/audio/AudioDeviceMonitor.cpp
         src/audio/AudioDeviceMonitor.h
-        src/audio/BungeeProcessor.cpp
-        src/audio/BungeeProcessor.h
         src/audio/TimeStretchProcessor.h
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h
@@ -419,6 +426,12 @@ target_sources(MTControls
         src/ui/components/WelcomeModal.cpp
         src/ui/components/WelcomeModal.h
 )
+
+if(MTCONTROLS_BUNGEE_AVAILABLE)
+    target_sources(MTControls PRIVATE
+        src/audio/BungeeProcessor.cpp
+        src/audio/BungeeProcessor.h)
+endif()
 
 target_compile_definitions(MTControls
     PRIVATE

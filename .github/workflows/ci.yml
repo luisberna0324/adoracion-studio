@@ -219,6 +219,9 @@ jobs:
           - arch: x64
             preset: windows-release
             build_dir: windows-release
+          - arch: x86
+            preset: windows-x86-release
+            build_dir: windows-x86-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,6 +237,7 @@ jobs:
           fetch-depth: 1
 
       - name: Bootstrap required Bungee SDK
+        if: matrix.arch == 'x64'
         shell: bash
         run: bash scripts/bootstrap_bungee.sh
 
@@ -247,12 +251,29 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Verify Bungee bundled (Windows)
+        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
           $dir = "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone"
           if (!(Test-Path "$dir/bungee.dll")) { throw "Missing bungee.dll" }
           if (!(Test-Path "$dir/ThirdPartyLicenses/Bungee-MPL-2.0.txt")) {
             throw "Missing Bungee license"
+          }
+
+      - name: Verify legacy SoundTouch backend (Windows x86)
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          $dir = "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone"
+          $cache = "build/${{ matrix.build_dir }}/CMakeCache.txt"
+          if (!(Get-ChildItem -Path $dir -Filter *.exe -File | Select-Object -First 1)) {
+            throw "Missing Windows x86 standalone executable"
+          }
+          if (Test-Path "$dir/bungee.dll") {
+            throw "Windows x86 must not bundle the incompatible x64 Bungee runtime"
+          }
+          if (!(Select-String -Path $cache -Pattern '^MTCONTROLS_USE_BUNGEE:BOOL=OFF$' -Quiet)) {
+            throw "Windows x86 was not configured with the legacy SoundTouch backend"
           }
 
       - name: Install Inno Setup
@@ -528,6 +549,7 @@ jobs:
 
           MAC_URL="${BASE_HTTPS}/macos/${VERSION_DIR}/playworship-macos-installer-${SEMVER}.pkg"
           WIN_X64_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x64.exe"
+          WIN_X86_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x86.exe"
           LINUX_URL="${BASE_HTTPS}/linux/${VERSION_DIR}/playworship_${SEMVER}_amd64.deb"
 
           marker_start="<!-- bucket-links:start -->"
@@ -548,6 +570,7 @@ jobs:
             echo "### Enlaces directos"
             echo "- macOS (.pkg): ${MAC_URL}"
             echo "- Windows x64 (.exe): ${WIN_X64_URL}"
+            echo "- Windows x86 legado (.exe, SoundTouch): ${WIN_X86_URL}"
             if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
               echo "- Linux (.deb): ${LINUX_URL}"
             fi
