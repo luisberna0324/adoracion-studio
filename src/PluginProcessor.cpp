@@ -3782,8 +3782,9 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
         startFrame,
         playworship::audio::TransportClock::secondsToFrames(part.endSec,
                                                              sampleRate),
-        triggerOnEntry ? startFrame
-                       : juce::jmax<juce::int64>(0, startFrame - oneBarFrames),
+        triggerOnEntry
+            ? startFrame
+            : std::max<juce::int64>(0, startFrame - oneBarFrames),
         part.guideTriggerId,
         triggerOnEntry});
   }

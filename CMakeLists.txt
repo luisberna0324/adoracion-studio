@@ -512,8 +512,6 @@ if(MTCONTROLS_BUNGEE_AVAILABLE)
                 "$<TARGET_FILE:MTControls_Standalone>"
             COMMAND /usr/bin/codesign --force --sign -
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/libbungee.dylib"
-            COMMAND /usr/bin/codesign --force --sign -
-                "$<TARGET_BUNDLE_DIR:MTControls_Standalone>"
             VERBATIM)
     elseif(WIN32)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
@@ -655,4 +653,15 @@ if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
             VERBATIM)
     endif()
+endif()
+
+# This must remain the final macOS POST_BUILD command. All bundled resources
+# (Bungee, ffmpeg, guides and click packs) must be present before sealing the
+# app, otherwise codesign reports a missing or invalid sealed resource.
+if(TARGET MTControls_Standalone AND APPLE AND
+   NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_custom_command(TARGET MTControls_Standalone POST_BUILD
+        COMMAND /usr/bin/codesign --force --deep --sign -
+            "$<TARGET_BUNDLE_DIR:MTControls_Standalone>"
+        VERBATIM)
 endif()

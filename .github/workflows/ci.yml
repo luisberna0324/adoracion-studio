@@ -211,7 +211,9 @@ jobs:
   build-windows:
     name: Build Windows artifacts
     needs: prepare
-    runs-on: windows-latest
+    # windows-latest currently resolves to the VS 2026 image, which does not
+    # include a Visual Studio 2022 instance for our pinned CMake generator.
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
