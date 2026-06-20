@@ -269,6 +269,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
                                     realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
   dynamicGuideEngine.prepare(sampleRate);
+  metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
+  metronomeLatencyDelay.setDelay(0);
   padsEngine.setEnabled(padsEnabledState.load(std::memory_order_relaxed));
   standaloneAudioDeviceBridge.setAvailableOutputChannelCount(getTotalNumOutputChannels());
   refreshPadsRoutingFromSettings();
@@ -424,8 +426,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   float dynamicGuideOutputGain = 1.0f;
   bool dynamicGuideOutputAudible = false;
   bool seekAppliedThisBlock = false;
+  int stemOutputLatencyThisBlock = 0;
   int sourceFramesThisBlock = buffer.getNumSamples();
-  const auto audioBlockStartFrame = transportClock.getPositionFrames();
 
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
@@ -488,7 +490,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       transportClock.seek(seekSamples);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
-      metronome.syncPhaseForTimeSeconds(seekTarget);
+      syncMetronomeToSourceSeconds(seekTarget);
       seekAppliedThisBlock = true;
     }
 
@@ -828,6 +830,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
         }
+        stemOutputLatencyThisBlock = routingPitchLatencySamples;
         for (int i = 0; i < stemCount; ++i) {
           const size_t stemIndex = static_cast<size_t>(i);
           const int desiredDelay =
@@ -1067,6 +1070,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock,
                              fadeStart, fadeEnd, windowFadeStart,
                              windowFadeEnd);
+    stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
   } else {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
@@ -1181,11 +1185,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool metronomeAudible = !muted && (!anySoloActive || soloed);
     metronome.setVolume(effectiveVolume);
     metronome.setMuted(!metronomeAudible);
-    metronome.syncPhaseForTimeSeconds(
+    syncMetronomeToSourceSeconds(
         playworship::audio::TransportClock::framesToSeconds(
-            audioBlockStartFrame, playbackSampleRate) /
-        juce::jmax(kMinPlaybackTempoRatio, playbackTempoRatioActive));
+            transportClock.getPositionFrames() - sourceFramesThisBlock,
+            playbackSampleRate));
     metronome.process(metronomeRenderBuffer);
+    metronomeLatencyDelay.setDelay(stemOutputLatencyThisBlock);
+    metronomeLatencyDelay.process(metronomeRenderBuffer);
     if (!juce::approximatelyEqual(effectiveGain, 1.0f))
       metronomeRenderBuffer.applyGain(effectiveGain);
 
@@ -1319,7 +1325,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       globalSamplePosition.store(nextSamples, std::memory_order_relaxed);
       transportClock.seek(nextSamples);
     }
-    metronome.syncPhaseForTimeSeconds(nextArrangementPartStartSec);
+    syncMetronomeToSourceSeconds(nextArrangementPartStartSec);
   } else if (stopAtEnd) {
     juce::ignoreUnused(stopAtEndSec);
     // Al llegar al final de la ventana, detenemos y volvemos al inicio para
@@ -2360,7 +2366,7 @@ void MTControlsAudioProcessor::playSong() {
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
-  metronome.syncPhaseForTimeSeconds(
+  syncMetronomeToSourceSeconds(
       songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
   if (isMetronomeEnabled())
@@ -3232,7 +3238,7 @@ void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   if (enabled) {
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
-    metronome.syncPhaseForTimeSeconds(currentSec);
+    syncMetronomeToSourceSeconds(currentSec);
     if (getTransportState() == TransportState::playing)
       metronome.triggerImmediateClick();
   }
@@ -3730,6 +3736,15 @@ double MTControlsAudioProcessor::getPlaybackTempoRatio() const noexcept {
                  playbackTempoBpm.load(std::memory_order_relaxed));
   return juce::jlimit(kMinPlaybackTempoRatio, kMaxPlaybackTempoRatio,
                       playbackBpm / originalBpm);
+}
+
+void MTControlsAudioProcessor::syncMetronomeToSourceSeconds(
+    const double sourceSeconds) noexcept {
+  // The transport clock is expressed in source-song time, while the
+  // metronome advances in rendered/output time at playback BPM.
+  const double ratio =
+      juce::jmax(kMinPlaybackTempoRatio, getPlaybackTempoRatio());
+  metronome.syncPhaseForTimeSeconds(juce::jmax(0.0, sourceSeconds) / ratio);
 }
 
 int MTControlsAudioProcessor::findArrangementPartIndexForSourceTime(

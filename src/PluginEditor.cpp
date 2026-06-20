@@ -427,7 +427,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   });
   waveformBarRaw->setOnActiveTempoRegionChanged(
       [&p](const SongTempoRegionSnapshot &region) {
-        p.setMetronomeBpm(region.bpm);
+        const double originalBpm = juce::jmax(1.0, p.getOriginalSongBpm());
+        const double playbackRatio =
+            p.getPlaybackTempoBpm() / originalBpm;
+        p.setMetronomeBpm(region.bpm * playbackRatio);
         p.setMetronomeBeatsPerBar(
             timeSignatureBeatsPerBar(region.timeSignature));
       });

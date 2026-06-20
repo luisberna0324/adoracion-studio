@@ -93,6 +93,7 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   lastMelodicDelaySamples = 0;
   lastPercussionDelaySamples = 0;
   lastGuideDelaySamples = 0;
+  outputLatencySamples = 0;
 }
 
 void StemMixEngine::reset() {
@@ -110,6 +111,7 @@ void StemMixEngine::reset() {
   lastMelodicDelaySamples = 0;
   lastPercussionDelaySamples = 0;
   lastGuideDelaySamples = 0;
+  outputLatencySamples = 0;
 }
 
 void StemMixEngine::setPitchSemiTones(int semitones) {
@@ -160,6 +162,7 @@ void StemMixEngine::updateLatencyDelays(int melodicLatency, int percussionLatenc
   const int clampedDry = juce::jmax(0, dryLatency);
   const int maxLatency =
       juce::jmax(clampedMelodic, juce::jmax(clampedPercussion, clampedDry));
+  outputLatencySamples = maxLatency;
 
   const int melodicDelay = maxLatency - clampedMelodic;
   const int percussionDelay = maxLatency - clampedPercussion;

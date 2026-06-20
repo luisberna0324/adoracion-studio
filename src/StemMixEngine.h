@@ -25,6 +25,9 @@ public:
                       float fadeStart, float fadeEnd, float windowFadeStart,
                       float windowFadeEnd);
   int requiredInputFrames(int outputFrames) noexcept;
+  int getOutputLatencySamples() const noexcept {
+    return outputLatencySamples;
+  }
 
 private:
   class SimpleDelayLine {
@@ -65,6 +68,7 @@ private:
   int lastMelodicDelaySamples = 0;
   int lastPercussionDelaySamples = 0;
   int lastGuideDelaySamples = 0;
+  int outputLatencySamples = 0;
 
   double currentSampleRate = 0.0;
   int currentBlockSize = 0;

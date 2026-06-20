@@ -435,6 +435,7 @@ private:
   std::atomic<double> seekTargetSeconds{0.0};
 
   MetronomeEngine metronome;
+  SimpleDelayLine metronomeLatencyDelay;
 
   // Master fade (0..1) multiplier
   std::atomic<bool> fadeActive{false};
@@ -445,6 +446,7 @@ private:
   int routingPitchLatencySamples = 0;
   int outgoingRoutingPitchLatencySamples = 0;
   static constexpr int kMaxRoutingPitchLatencySamples = 65536;
+  void syncMetronomeToSourceSeconds(double sourceSeconds) noexcept;
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;

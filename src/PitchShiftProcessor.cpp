@@ -1,6 +1,7 @@
 #include "PitchShiftProcessor.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 struct TempoQualitySettings {
@@ -47,7 +48,9 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   outputSampleCount = 0;
   pitchTransitionFramesRemaining = 0;
   pitchTransitionFramesTotal = 0;
+  inputFrameRemainder = 0.0;
   maxBlockFrames = juce::jmax(0, samplesPerBlock);
+  maxInputFrames = (maxBlockFrames * 2) + 8;
 
   if (!prepared) {
     latencySamples = 0;
@@ -72,9 +75,9 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
   if (samplesPerBlock > 0 && currentChannels > 0) {
     interleavedInput.resize(
-        static_cast<size_t>(samplesPerBlock * currentChannels));
+        static_cast<size_t>(maxInputFrames * currentChannels));
     dryFallback.resize(
-        static_cast<size_t>(samplesPerBlock * currentChannels));
+        static_cast<size_t>(maxInputFrames * currentChannels));
     receiveBuffer.resize(
         static_cast<size_t>(samplesPerBlock * currentChannels * 2));
     const int fifoFrames =
@@ -163,59 +166,59 @@ void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
     return;
 
   const int numSamples = buffer.getNumSamples();
-  if (numSamples <= 0)
-    return;
-  if (numSamples > maxBlockFrames) {
-    buffer.clear();
-    return;
+  process(buffer, numSamples, buffer, numSamples);
+}
+
+int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
+                                 const int inputFrames,
+                                 juce::AudioBuffer<float> &output,
+                                 const int outputFrames) {
+  if (!prepared || inputFrames <= 0 || outputFrames <= 0 ||
+      inputFrames > maxInputFrames || outputFrames > maxBlockFrames ||
+      input.getNumChannels() < currentChannels ||
+      output.getNumChannels() < currentChannels) {
+    output.clear();
+    return 0;
   }
 
-  if (buffer.getNumChannels() != currentChannels) {
-    prepare(currentSampleRate, numSamples, buffer.getNumChannels());
+  if (pitchSemiTones == 0 && juce::approximatelyEqual(tempoRatio, 1.0)) {
+    for (int channel = 0; channel < currentChannels; ++channel)
+      output.copyFrom(channel, 0, input, channel, 0, outputFrames);
+    return outputFrames;
   }
 
-  const size_t requiredInputSize =
-      static_cast<size_t>(numSamples * currentChannels);
-  if (interleavedInput.size() < requiredInputSize) {
-    buffer.clear();
-    return;
-  }
-
-  for (int sample = 0; sample < numSamples; ++sample) {
+  for (int sample = 0; sample < inputFrames; ++sample) {
     const size_t base = static_cast<size_t>(sample * currentChannels);
-    for (int ch = 0; ch < currentChannels; ++ch)
-      interleavedInput[base + static_cast<size_t>(ch)] =
-          buffer.getSample(ch, sample);
+    for (int channel = 0; channel < currentChannels; ++channel)
+      interleavedInput[base + static_cast<size_t>(channel)] =
+          input.getSample(channel, sample);
   }
-  std::copy_n(interleavedInput.data(), requiredInputSize, dryFallback.data());
+  for (int sample = 0; sample < outputFrames; ++sample) {
+    const int sourceSample = juce::jlimit(
+        0, inputFrames - 1,
+        static_cast<int>((static_cast<int64_t>(sample) * inputFrames) /
+                         outputFrames));
+    const size_t outputBase =
+        static_cast<size_t>(sample * currentChannels);
+    for (int channel = 0; channel < currentChannels; ++channel)
+      dryFallback[outputBase + static_cast<size_t>(channel)] =
+          input.getSample(channel, sourceSample);
+  }
 
-  soundtouch.putSamples(interleavedInput.data(), numSamples);
-
-  const int framesNeeded = numSamples;
-  while (fifoFramesAvailable() < framesNeeded) {
-    const int maxFrames = static_cast<int>(
+  soundtouch.putSamples(interleavedInput.data(),
+                        static_cast<unsigned int>(inputFrames));
+  while (fifoFramesAvailable() < outputFrames) {
+    const int receiveCapacity = static_cast<int>(
         receiveBuffer.size() / static_cast<size_t>(currentChannels));
-    if (maxFrames <= 0)
-      break;
-
-    const int received = soundtouch.receiveSamples(receiveBuffer.data(),
-                                                   maxFrames);
+    const int received = static_cast<int>(soundtouch.receiveSamples(
+        receiveBuffer.data(), static_cast<unsigned int>(receiveCapacity)));
     if (received <= 0)
       break;
     fifoPush(receiveBuffer.data(), received);
   }
 
-  const int popped = fifoPop(interleavedInput.data(), framesNeeded);
-  if (popped < framesNeeded) {
-    const auto fallbackOffset =
-        static_cast<std::ptrdiff_t>(popped * currentChannels);
-    const auto fallbackEnd =
-        static_cast<std::ptrdiff_t>(framesNeeded * currentChannels);
-    std::copy(dryFallback.begin() + fallbackOffset,
-              dryFallback.begin() + fallbackEnd,
-              interleavedInput.begin() + fallbackOffset);
-  }
-  for (int sample = 0; sample < framesNeeded; ++sample) {
+  const int popped = fifoPop(interleavedInput.data(), outputFrames);
+  for (int sample = 0; sample < outputFrames; ++sample) {
     const size_t base = static_cast<size_t>(sample * currentChannels);
     float processedMix = 1.0f;
     if (pitchTransitionFramesRemaining > 0 &&
@@ -226,30 +229,28 @@ void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
            static_cast<float>(pitchTransitionFramesTotal));
       --pitchTransitionFramesRemaining;
     }
-    for (int ch = 0; ch < currentChannels; ++ch) {
-      const size_t index = base + static_cast<size_t>(ch);
-      const float processed = interleavedInput[index];
+    for (int channel = 0; channel < currentChannels; ++channel) {
+      const size_t index = base + static_cast<size_t>(channel);
       const float dry = dryFallback[index];
-      buffer.setSample(ch, sample,
+      const float processed =
+          sample < popped ? interleavedInput[index] : dry;
+      output.setSample(channel, sample,
                        dry + ((processed - dry) * processedMix));
     }
   }
+  return outputFrames;
 }
 
-int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
-                                 const int inputFrames,
-                                 juce::AudioBuffer<float> &output,
-                                 const int outputFrames) {
-  const int frames = juce::jmin(inputFrames, outputFrames);
-  const int channels =
-      juce::jmin(input.getNumChannels(), output.getNumChannels());
-  for (int channel = 0; channel < channels; ++channel) {
-    output.copyFrom(channel, 0, input, channel, 0, frames);
-    if (frames < outputFrames)
-      output.clear(channel, frames, outputFrames - frames);
-  }
-  process(output);
-  return outputFrames;
+int PitchShiftProcessor::requiredInputFrames(
+    const int outputFrames) noexcept {
+  if (outputFrames <= 0)
+    return 0;
+  const double exact =
+      (static_cast<double>(outputFrames) * tempoRatio) +
+      inputFrameRemainder;
+  const int frames = static_cast<int>(std::floor(exact));
+  inputFrameRemainder = exact - static_cast<double>(frames);
+  return juce::jlimit(1, maxInputFrames, frames);
 }
 
 void PitchShiftProcessor::primeLatency() {

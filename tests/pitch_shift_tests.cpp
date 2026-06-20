@@ -23,6 +23,11 @@ int main() {
   processor.setContentType(PitchShiftProcessor::ContentType::Melodic);
   processor.setPitchSemiTones(2);
   processor.setTempoRatio(0.9);
+  int plannedInputFrames = 0;
+  for (int blockIndex = 0; blockIndex < 1000; ++blockIndex)
+    plannedInputFrames += processor.requiredInputFrames(blockSize);
+  expect(plannedInputFrames == 460800,
+         "tempo input planning preserves source-time accuracy");
 
   juce::AudioBuffer<float> block(2, blockSize);
   double phase = 0.0;

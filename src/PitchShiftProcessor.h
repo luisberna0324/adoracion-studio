@@ -20,9 +20,7 @@ public:
   int getNumChannels() const noexcept;
   bool isPrepared() const noexcept;
   void process(juce::AudioBuffer<float> &buffer);
-  int requiredInputFrames(int outputFrames) noexcept {
-    return outputFrames;
-  }
+  int requiredInputFrames(int outputFrames) noexcept;
   int process(const juce::AudioBuffer<float> &input, int inputFrames,
               juce::AudioBuffer<float> &output, int outputFrames);
 
@@ -48,11 +46,13 @@ private:
   double currentSampleRate = 0.0;
   int currentChannels = 0;
   int maxBlockFrames = 0;
+  int maxInputFrames = 0;
   int pitchSemiTones = 0;
   double tempoRatio = 1.0;
   ContentType contentType = ContentType::Melodic;
   int latencySamples = 0;
   int pitchTransitionFramesRemaining = 0;
   int pitchTransitionFramesTotal = 0;
+  double inputFrameRemainder = 0.0;
   bool prepared = false;
 };
