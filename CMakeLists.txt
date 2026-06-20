@@ -162,6 +162,8 @@ if(MTCONTROLS_BUILD_TESTS)
         tests/pitch_shift_tests.cpp
         src/PitchShiftProcessor.cpp
         src/PitchShiftProcessor.h
+        src/audio/SimpleDelayLine.cpp
+        src/audio/SimpleDelayLine.h
     )
     target_include_directories(MTControlsPitchShiftTests PRIVATE src)
     target_compile_definitions(MTControlsPitchShiftTests

@@ -8,23 +8,23 @@ void StemMixEngine::SimpleDelayLine::prepare(int channels,
   delayBuffer.setSize(numChannels, juce::jmax(1, maxDelaySamples + 1));
   delayBuffer.clear();
   writePos = 0;
+  historySamples = 0;
 }
 
 void StemMixEngine::SimpleDelayLine::setDelay(int delaySamplesToUse) {
   delaySamples = juce::jlimit(0, maxDelaySamples, delaySamplesToUse);
-  delayBuffer.clear();
-  writePos = 0;
 }
 
 void StemMixEngine::SimpleDelayLine::reset() {
   delaySamples = 0;
   delayBuffer.clear();
   writePos = 0;
+  historySamples = 0;
 }
 
 void StemMixEngine::SimpleDelayLine::process(
     juce::AudioBuffer<float> &buffer, const int numSamples) {
-  if (delaySamples <= 0 || numChannels <= 0)
+  if (numChannels <= 0)
     return;
   const int bufferSize = delayBuffer.getNumSamples();
   if (bufferSize <= delaySamples || numSamples <= 0)
@@ -32,21 +32,24 @@ void StemMixEngine::SimpleDelayLine::process(
 
   int localWrite = writePos;
   for (int sample = 0; sample < numSamples; ++sample) {
-    int readPos = localWrite - delaySamples;
+    const int effectiveDelay = juce::jmin(delaySamples, historySamples);
+    int readPos = localWrite - effectiveDelay;
     if (readPos < 0)
       readPos += bufferSize;
 
     for (int ch = 0; ch < numChannels; ++ch) {
       auto *delayData = delayBuffer.getWritePointer(ch);
       auto *outData = buffer.getWritePointer(ch);
-      const float delayed = delayData[readPos];
-      delayData[localWrite] = outData[sample];
+      const float input = outData[sample];
+      const float delayed = effectiveDelay > 0 ? delayData[readPos] : input;
+      delayData[localWrite] = input;
       outData[sample] = delayed;
     }
 
     ++localWrite;
     if (localWrite >= bufferSize)
       localWrite = 0;
+    historySamples = juce::jmin(maxDelaySamples, historySamples + 1);
   }
 
   writePos = localWrite;

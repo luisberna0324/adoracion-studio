@@ -898,10 +898,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                   numSamples);
             stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
           }
-          if (timeProcessActive &&
-              stemPitchDelayLines[stemIndex].getDelaySamples() > 0) {
-            stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
-          }
+          // Always run the delay line, including at zero delay, so it retains
+          // enough history to engage latency compensation without a silent
+          // prefill gap when pitch processing is enabled or its latency moves.
+          stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
           int assignedWidth = juce::jlimit(
               1, 2, stemOutputWidths[stemIndex].load(
                         std::memory_order_relaxed));

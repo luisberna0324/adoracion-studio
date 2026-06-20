@@ -1,4 +1,5 @@
 #include "../src/PitchShiftProcessor.h"
+#include "../src/audio/SimpleDelayLine.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -60,6 +61,23 @@ int main() {
   }
   expect(audibleImmediatelyAfterPitchChange,
          "live pitch change preserves queued audio continuity");
+
+  SimpleDelayLine delay;
+  delay.prepare(2, 64);
+  juce::AudioBuffer<float> delayBlock(2, 32);
+  for (int sample = 0; sample < 32; ++sample) {
+    delayBlock.setSample(0, sample, static_cast<float>(sample + 1));
+    delayBlock.setSample(1, sample, static_cast<float>(sample + 1));
+  }
+  delay.process(delayBlock);
+  delay.setDelay(10);
+  for (int sample = 0; sample < 32; ++sample) {
+    delayBlock.setSample(0, sample, static_cast<float>(sample + 33));
+    delayBlock.setSample(1, sample, static_cast<float>(sample + 33));
+  }
+  delay.process(delayBlock);
+  expect(delayBlock.getSample(0, 0) == 23.0f,
+         "engaging latency compensation uses retained history");
 
   processor.reset();
   processor.setPitchSemiTones(0);

@@ -38,6 +38,7 @@ private:
 
   soundtouch::SoundTouch soundtouch;
   std::vector<float> interleavedInput;
+  std::vector<float> dryFallback;
   std::vector<float> receiveBuffer;
   std::vector<float> outputFifo;
   size_t outputReadPos = 0;
@@ -51,5 +52,7 @@ private:
   double tempoRatio = 1.0;
   ContentType contentType = ContentType::Melodic;
   int latencySamples = 0;
+  int pitchTransitionFramesRemaining = 0;
+  int pitchTransitionFramesTotal = 0;
   bool prepared = false;
 };

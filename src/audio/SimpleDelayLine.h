@@ -1,6 +1,6 @@
 #pragma once
 
-#include <JuceHeader.h>
+#include <juce_audio_basics/juce_audio_basics.h>
 
 class SimpleDelayLine {
 public:
@@ -16,4 +16,5 @@ private:
   int delaySamples = 0;
   int maxDelaySamples = 0;
   int numChannels = 0;
+  int historySamples = 0;
 };

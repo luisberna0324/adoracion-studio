@@ -41,6 +41,7 @@ private:
     int delaySamples = 0;
     int maxDelaySamples = 0;
     int numChannels = 0;
+    int historySamples = 0;
   };
 
   void ensureBuffers(int numChannels, int numSamples);

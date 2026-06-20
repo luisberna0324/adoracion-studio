@@ -39,11 +39,14 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   prepared = (currentSampleRate > 0.0 && currentChannels > 0);
 
   interleavedInput.clear();
+  dryFallback.clear();
   receiveBuffer.clear();
   outputFifo.clear();
   outputReadPos = 0;
   outputWritePos = 0;
   outputSampleCount = 0;
+  pitchTransitionFramesRemaining = 0;
+  pitchTransitionFramesTotal = 0;
   maxBlockFrames = juce::jmax(0, samplesPerBlock);
 
   if (!prepared) {
@@ -69,6 +72,8 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
   if (samplesPerBlock > 0 && currentChannels > 0) {
     interleavedInput.resize(
+        static_cast<size_t>(samplesPerBlock * currentChannels));
+    dryFallback.resize(
         static_cast<size_t>(samplesPerBlock * currentChannels));
     receiveBuffer.resize(
         static_cast<size_t>(samplesPerBlock * currentChannels * 2));
@@ -97,6 +102,9 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
     // SoundTouch supports continuous pitch updates. Keep its queued frames and
     // overlap history so changing key does not insert a silent re-prime gap.
     refreshLatencyFromSettings();
+    pitchTransitionFramesTotal =
+        juce::jmax(latencySamples, maxBlockFrames * 4);
+    pitchTransitionFramesRemaining = pitchTransitionFramesTotal;
   }
 }
 
@@ -179,6 +187,7 @@ void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
       interleavedInput[base + static_cast<size_t>(ch)] =
           buffer.getSample(ch, sample);
   }
+  std::copy_n(interleavedInput.data(), requiredInputSize, dryFallback.data());
 
   soundtouch.putSamples(interleavedInput.data(), numSamples);
 
@@ -198,17 +207,31 @@ void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
 
   const int popped = fifoPop(interleavedInput.data(), framesNeeded);
   if (popped < framesNeeded) {
-    std::fill(interleavedInput.begin() +
-                  static_cast<std::ptrdiff_t>(popped * currentChannels),
-              interleavedInput.begin() +
-                  static_cast<std::ptrdiff_t>(framesNeeded * currentChannels),
-              0.0f);
+    const auto fallbackOffset =
+        static_cast<std::ptrdiff_t>(popped * currentChannels);
+    const auto fallbackEnd =
+        static_cast<std::ptrdiff_t>(framesNeeded * currentChannels);
+    std::copy(dryFallback.begin() + fallbackOffset,
+              dryFallback.begin() + fallbackEnd,
+              interleavedInput.begin() + fallbackOffset);
   }
   for (int sample = 0; sample < framesNeeded; ++sample) {
     const size_t base = static_cast<size_t>(sample * currentChannels);
+    float processedMix = 1.0f;
+    if (pitchTransitionFramesRemaining > 0 &&
+        pitchTransitionFramesTotal > 0) {
+      processedMix =
+          1.0f -
+          (static_cast<float>(pitchTransitionFramesRemaining) /
+           static_cast<float>(pitchTransitionFramesTotal));
+      --pitchTransitionFramesRemaining;
+    }
     for (int ch = 0; ch < currentChannels; ++ch) {
+      const size_t index = base + static_cast<size_t>(ch);
+      const float processed = interleavedInput[index];
+      const float dry = dryFallback[index];
       buffer.setSample(ch, sample,
-                       interleavedInput[base + static_cast<size_t>(ch)]);
+                       dry + ((processed - dry) * processedMix));
     }
   }
 }
