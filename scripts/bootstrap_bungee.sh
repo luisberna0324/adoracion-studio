@@ -10,6 +10,33 @@ ARCHIVE="${TMPDIR:-/tmp}/bungee-v${VERSION}.tgz"
 URL="https://github.com/bungee-audio-stretch/bungee/releases/download/v${VERSION}/bungee-v${VERSION}.tgz"
 LICENSE_URL="https://raw.githubusercontent.com/bungee-audio-stretch/bungee/v${VERSION}/LICENSE"
 
+archive_targets() {
+  case "$(uname -s)" in
+    Darwin)
+      printf '%s\n' include version.txt apple-mac apple-ios
+      ;;
+    Linux)
+      case "$(uname -m)" in
+        arm64|aarch64)
+          printf '%s\n' include version.txt linux-aarch64
+          ;;
+        *)
+          printf '%s\n' include version.txt linux-x86_64
+          ;;
+      esac
+      ;;
+    MINGW*|MSYS*|CYGWIN*)
+      # The complete archive contains Apple framework symlinks. Windows tar
+      # cannot reliably create them, and the Windows build does not need them.
+      printf '%s\n' include version.txt windows-x86_64
+      ;;
+    *)
+      echo "Unsupported platform for Bungee bootstrap: $(uname -s)" >&2
+      return 1
+      ;;
+  esac
+}
+
 verify_sha256() {
   local expected="$1"
   local file="$2"
@@ -24,10 +51,15 @@ rm -rf "${DEST}"
 mkdir -p "${DEST}"
 curl -fL --retry 3 "${URL}" -o "${ARCHIVE}"
 verify_sha256 "${ARCHIVE_SHA256}" "${ARCHIVE}"
-tar -xzf "${ARCHIVE}" -C "${DEST}"
+TARGETS=()
+while IFS= read -r target; do
+  TARGETS+=("${target}")
+done < <(archive_targets)
+tar -xzf "${ARCHIVE}" -C "${DEST}" "${TARGETS[@]}"
 curl -fL --retry 3 "${LICENSE_URL}" -o "${DEST}/LICENSE"
 verify_sha256 "${LICENSE_SHA256}" "${DEST}/LICENSE"
 
 test -f "${DEST}/include/bungee/Bungee.h"
+test -f "${DEST}/version.txt"
 test -f "${DEST}/LICENSE"
-echo "Bungee ${VERSION} installed at ${DEST}"
+echo "Bungee ${VERSION} installed at ${DEST} (${TARGETS[*]})"
