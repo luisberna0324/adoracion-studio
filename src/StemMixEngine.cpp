@@ -114,9 +114,8 @@ void StemMixEngine::setPitchSemiTones(int semitones) {
     return;
   pitchSemiTones = semitones;
   pitchShiftMelodic.setPitchSemiTones(semitones);
-  // Keep stem groups sample-aligned after abrupt key changes by flushing
-  // all time processors and delay lines in this engine.
-  reset();
+  // Preserve processor and delay history. Resetting here forces the stretcher
+  // to re-prime and produces an audible dropout on every key change.
 }
 
 void StemMixEngine::setTempoRatio(double ratio) {

@@ -94,9 +94,9 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   pitchSemiTones = semitones;
   if (prepared) {
     soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-    // Pitch changes should feel immediate to the user. Flush time-domain
-    // history so old-pitch frames don't continue leaking after a key change.
-    reset();
+    // SoundTouch supports continuous pitch updates. Keep its queued frames and
+    // overlap history so changing key does not insert a silent re-prime gap.
+    refreshLatencyFromSettings();
   }
 }
 

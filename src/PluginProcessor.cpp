@@ -445,7 +445,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
       outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
-      flushRoutingTimeProcessors();
+      // Routing processors accept live pitch updates below. Do not flush their
+      // overlap/FIFO state: doing so inserts a re-prime silence.
     }
     if (!juce::approximatelyEqual(targetTempoRatio, playbackTempoRatioActive)) {
       const double previousTempoRatio = playbackTempoRatioActive;

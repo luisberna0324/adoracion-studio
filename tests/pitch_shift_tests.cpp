@@ -44,6 +44,23 @@ int main() {
   }
   expect(producedFiniteAudio, "pitch ring buffer eventually produces audio");
 
+  processor.setPitchSemiTones(-3);
+  bool audibleImmediatelyAfterPitchChange = false;
+  for (int iteration = 0; iteration < 3; ++iteration) {
+    for (int sample = 0; sample < blockSize; ++sample) {
+      const float value = static_cast<float>(std::sin(phase));
+      phase += 2.0 * 3.14159265358979323846 * 440.0 / 48000.0;
+      block.setSample(0, sample, value);
+      block.setSample(1, sample, value);
+    }
+    processor.process(block);
+    audibleImmediatelyAfterPitchChange =
+        audibleImmediatelyAfterPitchChange ||
+        block.getMagnitude(0, blockSize) > 1.0e-4f;
+  }
+  expect(audibleImmediatelyAfterPitchChange,
+         "live pitch change preserves queued audio continuity");
+
   processor.reset();
   processor.setPitchSemiTones(0);
   processor.setTempoRatio(1.0);
