@@ -20,7 +20,10 @@ void SectionScheduler::publish(
     const auto &source = sections[static_cast<std::size_t>(i)];
     next.sections[static_cast<std::size_t>(i)] = {
         std::max<Frame>(0, source.startFrame),
-        std::max(source.startFrame, source.endFrame)};
+        std::max(source.startFrame, source.endFrame),
+        source.guideTriggerFrame,
+        source.guideTriggerId,
+        source.triggerGuideOnEntry};
   }
   publishedIndex.store(writeIndex, std::memory_order_release);
 }
@@ -67,6 +70,30 @@ int SectionScheduler::findSection(const Frame frame) const noexcept {
     }
   }
   return nearest;
+}
+
+int SectionScheduler::findGuideTrigger(const Frame blockStart,
+                                       const int blockFrames) const noexcept {
+  if (blockFrames <= 0)
+    return -1;
+  const auto local = readSnapshot();
+  const Frame blockEnd = blockStart + blockFrames;
+  for (int i = 0; i < local.count; ++i) {
+    const Frame trigger =
+        local.sections[static_cast<std::size_t>(i)].guideTriggerFrame;
+    if (trigger >= blockStart && trigger < blockEnd)
+      return i;
+  }
+  return -1;
+}
+
+bool SectionScheduler::getSection(const int index,
+                                  Section &section) const noexcept {
+  const auto local = readSnapshot();
+  if (index < 0 || index >= local.count)
+    return false;
+  section = local.sections[static_cast<std::size_t>(index)];
+  return true;
 }
 
 SectionScheduler::BlockDecision SectionScheduler::evaluate(

@@ -33,9 +33,17 @@ void testTransportClock() {
 void testSectionScheduler() {
   using Scheduler = playworship::audio::SectionScheduler;
   Scheduler scheduler;
-  scheduler.publish({{0, 1000}, {1000, 2000}, {2000, 3000}});
+  scheduler.publish(
+      {{0, 1000, 0, 10, true},
+       {1000, 2000, 800, 11, false},
+       {2000, 3000, 1800, 12, false}});
 
   expect(scheduler.findSection(1500) == 1, "find current section");
+  expect(scheduler.findGuideTrigger(750, 100) == 1,
+         "guide trigger resolves without scanning arrangement strings");
+  Scheduler::Section section;
+  expect(scheduler.getSection(1, section) && section.guideTriggerId == 11,
+         "section snapshot carries pre-resolved guide data");
 
   auto decision = scheduler.evaluate(900, 200, true, -1, -1);
   expect(decision.transition && decision.targetSection == 1 &&

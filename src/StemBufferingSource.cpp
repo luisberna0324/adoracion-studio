@@ -30,19 +30,17 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
     buffer.setSize(numberOfChannels, bufferSizeNeeded);
     buffer.clear();
 
-    const juce::ScopedLock sl(bufferRangeLock);
-
-    bufferValidStart = 0;
-    bufferValidEnd = 0;
+    bufferValidStart.store(0, std::memory_order_relaxed);
+    bufferValidEnd.store(0, std::memory_order_relaxed);
 
     backgroundThread.addTimeSliceClient(this);
 
     do {
-      const juce::ScopedUnlock ul(bufferRangeLock);
       backgroundThread.moveToFrontOfQueue(this);
       juce::Thread::sleep(5);
     } while (prefillBuffer &&
-             (bufferValidEnd - bufferValidStart <
+             (bufferValidEnd.load(std::memory_order_acquire) -
+                  bufferValidStart.load(std::memory_order_acquire) <
               std::min((int)(newSampleRate / 4.0), buffer.getNumSamples() / 2)));
   }
 }
@@ -76,7 +74,12 @@ void StemBufferingSource::getNextAudioBlock(
     info.buffer->clear(info.startSample + validEnd, info.numSamples - validEnd);
 
   if (validStart < validEnd) {
-    const juce::ScopedLock sl(callbackLock);
+    if (!callbackLock.tryEnter()) {
+      info.clearActiveBufferRegion();
+      realtimeMissCount.fetch_add(1, std::memory_order_relaxed);
+      nextPlayPos += info.numSamples;
+      return;
+    }
     for (int chan = std::min(numberOfChannels, info.buffer->getNumChannels());
          --chan >= 0;) {
       jassert(buffer.getNumSamples() > 0);
@@ -100,6 +103,7 @@ void StemBufferingSource::getNextAudioBlock(
                               (validEnd - validStart) - initialSize);
       }
     }
+    callbackLock.exit();
   }
 
   nextPlayPos += info.numSamples;
@@ -157,64 +161,59 @@ juce::int64 StemBufferingSource::getNextReadPosition() const {
 }
 
 void StemBufferingSource::setNextReadPosition(juce::int64 newPosition) {
-  const juce::ScopedLock sl(bufferRangeLock);
-
   nextPlayPos = newPosition;
+  bufferValidStart.store(0, std::memory_order_release);
+  bufferValidEnd.store(0, std::memory_order_release);
   backgroundThread.moveToFrontOfQueue(this);
 }
 
 juce::Range<int>
 StemBufferingSource::getValidBufferRange(int numSamples) const {
-  const juce::ScopedLock sl(bufferRangeLock);
-
   const auto pos = nextPlayPos.load();
+  const auto validStart = bufferValidStart.load(std::memory_order_acquire);
+  const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
 
-  return {(int)(juce::jlimit(bufferValidStart, bufferValidEnd, pos) - pos),
-          (int)(juce::jlimit(bufferValidStart, bufferValidEnd,
-                             pos + numSamples) -
+  return {(int)(juce::jlimit(validStart, validEnd, pos) - pos),
+          (int)(juce::jlimit(validStart, validEnd, pos + numSamples) -
                 pos)};
 }
 
 bool StemBufferingSource::readNextBufferChunk() {
   juce::int64 newBVS, newBVE, sectionToReadStart, sectionToReadEnd;
 
-  {
-    const juce::ScopedLock sl(bufferRangeLock);
+  if (wasSourceLooping != isLooping()) {
+    wasSourceLooping = isLooping();
+    bufferValidStart.store(0, std::memory_order_release);
+    bufferValidEnd.store(0, std::memory_order_release);
+  }
 
-    if (wasSourceLooping != isLooping()) {
-      wasSourceLooping = isLooping();
-      bufferValidStart = 0;
-      bufferValidEnd = 0;
-    }
+  newBVS = std::max((juce::int64)0, nextPlayPos.load());
+  newBVE = newBVS + buffer.getNumSamples() - 4;
+  sectionToReadStart = 0;
+  sectionToReadEnd = 0;
+  const auto validStart = bufferValidStart.load(std::memory_order_acquire);
+  const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
 
-    newBVS = std::max((juce::int64)0, nextPlayPos.load());
-    newBVE = newBVS + buffer.getNumSamples() - 4;
-    sectionToReadStart = 0;
-    sectionToReadEnd = 0;
+  constexpr int maxChunkSize = 32768;
 
-    // CUSTOM FIX: Increased from 2048 to 32768 (around 0.74s)
-    // This allows sequential reads to be MUCH larger, reducing disk IOPS
-    // and thread switching thrashing from OS.
-    constexpr int maxChunkSize = 32768;
+  if (newBVS < validStart || newBVS >= validEnd) {
+    newBVE = std::min(newBVE, newBVS + (juce::int64)maxChunkSize);
 
-    if (newBVS < bufferValidStart || newBVS >= bufferValidEnd) {
-      newBVE = std::min(newBVE, newBVS + (juce::int64)maxChunkSize);
+    sectionToReadStart = newBVS;
+    sectionToReadEnd = newBVE;
 
-      sectionToReadStart = newBVS;
-      sectionToReadEnd = newBVE;
+    bufferValidStart.store(0, std::memory_order_release);
+    bufferValidEnd.store(0, std::memory_order_release);
+  } else if (std::abs((int)(newBVS - validStart)) > 512 ||
+             std::abs((int)(newBVE - validEnd)) > 512) {
+    newBVE = std::min(newBVE, validEnd + (juce::int64)maxChunkSize);
 
-      bufferValidStart = 0;
-      bufferValidEnd = 0;
-    } else if (std::abs((int)(newBVS - bufferValidStart)) > 512 ||
-               std::abs((int)(newBVE - bufferValidEnd)) > 512) {
-      newBVE = std::min(newBVE, bufferValidEnd + (juce::int64)maxChunkSize);
+    sectionToReadStart = validEnd;
+    sectionToReadEnd = newBVE;
 
-      sectionToReadStart = bufferValidEnd;
-      sectionToReadEnd = newBVE;
-
-      bufferValidStart = newBVS;
-      bufferValidEnd = std::min(bufferValidEnd, newBVE);
-    }
+    bufferValidStart.store(newBVS, std::memory_order_release);
+    bufferValidEnd.store(std::min(validEnd, newBVE),
+                         std::memory_order_release);
   }
 
   if (sectionToReadStart == sectionToReadEnd)
@@ -241,12 +240,8 @@ bool StemBufferingSource::readNextBufferChunk() {
                       0);
   }
 
-  {
-    const juce::ScopedLock sl2(bufferRangeLock);
-
-    bufferValidStart = newBVS;
-    bufferValidEnd = newBVE;
-  }
+  bufferValidStart.store(newBVS, std::memory_order_release);
+  bufferValidEnd.store(newBVE, std::memory_order_release);
 
   bufferReadyEvent.signal();
   return true;

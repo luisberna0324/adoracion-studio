@@ -1,10 +1,8 @@
 #include "StemTrack.h"
 
-StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader, double sampleRateToUse,
-                     int readAheadSamples) 
-    : readThread("StemReader") {
-  readThread.startThread(juce::Thread::Priority::high);
-
+StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
+                     juce::TimeSliceThread &sharedReadThread,
+                     double sampleRateToUse, int readAheadSamples) {
   // Transfer ownership of reader to AudioFormatReaderSource
   readerSource =
       std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
@@ -15,15 +13,10 @@ StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader, double sam
 
   // Wrap it in a BufferingAudioSource with a dedicated read-ahead buffer thread
   bufferingSource = std::make_unique<StemBufferingSource>(
-      resamplingSource.get(), readThread, false, readAheadSamples, 2);
+      resamplingSource.get(), sharedReadThread, false, readAheadSamples, 2);
 }
 
-StemTrack::~StemTrack() {
-  // Destroy the client first so it deregisters from the thread
-  bufferingSource.reset();
-  // Safely stop the thread
-  readThread.stopThread(2000);
-}
+StemTrack::~StemTrack() { bufferingSource.reset(); }
 
 void StemTrack::getNextAudioBlock(
     const juce::AudioSourceChannelInfo &bufferToFill) {

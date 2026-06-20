@@ -27,9 +27,72 @@ objects or allocations.
 
 ## Migration order
 
-1. Introduce the frame clock and section scheduler behind the existing API.
-2. Publish immutable render-session snapshots.
-3. Replace per-stem reader threads with a bounded shared worker pool.
-4. Replace callback locks with single-producer/single-consumer queues.
-5. Unify simple, separated and explicitly-routed rendering into one pipeline.
-6. Prepare pitch/tempo discontinuities and section jumps off the audio thread.
+Completed foundations:
+
+1. `TransportClock` is authoritative for playback position.
+2. `SectionScheduler` publishes triple-buffered frame snapshots.
+3. MIDI bindings use triple-buffered realtime snapshots.
+4. Per-stem reader threads were replaced by a bounded 2–4 worker pool.
+5. Streaming reads never wait: contention produces a measurable silent miss.
+6. Scratch audio buffers are preallocated up to 8192 frames.
+7. The SoundTouch fallback output FIFO is a fixed-capacity ring buffer;
+   callback-time `vector::insert`, `vector::erase` and resizing were removed.
+8. Simple and grouped stem rendering now share `StemMixEngine`; the legacy
+   `MixerAudioSource` path was removed.
+9. Click phase is re-anchored from the absolute frame clock every block.
+10. Dynamic-guide events are scheduled in frames and use pre-resolved integer
+    trigger IDs instead of callback-time string normalization and map lookup.
+11. Bungee Basic 2.4.24 is available as an experimental pitch/tempo backend;
+    SoundTouch remains the default until the worker-voice boundary is complete.
+12. Tempo consumes a dithered variable number of source frames per output
+    block, avoiding long-term fractional drift.
+13. Melodic stems receive pitch plus tempo. Percussive, click and guide stems
+    receive tempo with pitch fixed at unity.
+14. Source-frame transport drives sections, loops and seeks. The metronome
+    converts source time to playback time before phase synchronization.
+15. Callback scratch buffers are fixed-capacity; per-block `setSize()` calls
+    were removed from `processBlock` and `StemMixEngine`.
+16. Bungee stream construction and preparation occur in `prepareToPlay`, not
+    in the audio callback.
+
+Remaining architectural boundary:
+
+- Bungee synthesis is currently synchronous in the audio callback. The next
+  boundary is a prepared producer/consumer voice layer so synthesis and stream
+  replacement after discontinuities happen off-thread.
+- Bungee's streaming wrapper has no allocation-free reset operation. Current
+  realtime reset requests only clear PlayWorship mix/delay state; seek/loop
+  transitions still need pre-armed replacement voices to guarantee that no
+  old Bungee history reaches the new position.
+- Seek and loop targets invalidate the current streaming cache and wake the
+  reader pool, but do not yet maintain a second prefilled cache for guaranteed
+  gapless jumps.
+- Structural stem swaps suspend new callbacks, wait for the active callback to
+  leave, then publish the new deck. The callback no longer acquires
+  `stemListLock`.
+
+## Bungee bootstrap
+
+Run `scripts/bootstrap_bungee.sh`, then configure with
+`-DMTCONTROLS_USE_BUNGEE=ON`. Override the SDK location with
+`-DMTCONTROLS_BUNGEE_DIR=/path/to/bungee`.
+
+## Diagnostics
+
+`audio_*.csv` records callback duration, budget, structural lock misses and the
+cumulative streaming read-miss count. A streaming miss means the callback
+chose silence instead of waiting for a worker or disk read.
+
+The June 20, 2026 real-stem run (15 loaded stems, pitch active, click active,
+including two forward seeks) measured:
+
+- callback average: 0.347 ms;
+- callback p95: 0.537 ms;
+- callback maximum: 9.909 ms against an 11.610 ms budget;
+- overruns: 0;
+- streaming misses: 6.
+
+The macOS process-level sampler averaged 88.47% CPU versus the previous 79.42%
+reference. This is a resource regression even though the realtime callback met
+its deadline, so moving Bungee synthesis to worker voices remains mandatory
+before making this backend the final production path.

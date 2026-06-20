@@ -23,6 +23,9 @@ public:
 
   bool waitForNextAudioBlockReady(const juce::AudioSourceChannelInfo &info,
                                   juce::uint32 timeout);
+  juce::int64 getRealtimeMissCount() const noexcept {
+    return realtimeMissCount.load(std::memory_order_relaxed);
+  }
 
 private:
   juce::Range<int> getValidBufferRange(int numSamples) const;
@@ -36,10 +39,12 @@ private:
   juce::AudioBuffer<float> buffer;
   // Background-thread staging buffer to avoid holding the shared lock during disk reads.
   juce::AudioBuffer<float> readBuffer;
-  juce::CriticalSection callbackLock, bufferRangeLock;
+  juce::CriticalSection callbackLock;
   juce::WaitableEvent bufferReadyEvent;
-  juce::int64 bufferValidStart = 0, bufferValidEnd = 0;
+  std::atomic<juce::int64> bufferValidStart{0};
+  std::atomic<juce::int64> bufferValidEnd{0};
   std::atomic<juce::int64> nextPlayPos{0};
+  std::atomic<juce::int64> realtimeMissCount{0};
   double sampleRate = 0;
   bool wasSourceLooping = false, isPrepared = false;
   const bool prefillBuffer;

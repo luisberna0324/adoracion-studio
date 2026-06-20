@@ -16,7 +16,8 @@
  */
 class StemTrack : public juce::PositionableAudioSource {
 public:
-  StemTrack(std::unique_ptr<juce::AudioFormatReader> reader, double sampleRateToUse,
+  StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
+            juce::TimeSliceThread &sharedReadThread, double sampleRateToUse,
             int readAheadSamples = 262144);
   ~StemTrack() override;
 
@@ -53,9 +54,12 @@ public:
   }
 
   float getMagnitude() const noexcept { return currentMagnitude.load(std::memory_order_relaxed); }
+  juce::int64 getRealtimeReadMissCount() const noexcept {
+    return bufferingSource != nullptr ? bufferingSource->getRealtimeMissCount()
+                                      : 0;
+  }
 
 private:
-  juce::TimeSliceThread readThread;
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;
   std::unique_ptr<StemBufferingSource> bufferingSource;

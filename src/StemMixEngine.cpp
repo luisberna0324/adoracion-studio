@@ -23,15 +23,9 @@ void StemMixEngine::SimpleDelayLine::reset() {
 }
 
 void StemMixEngine::SimpleDelayLine::process(
-    juce::AudioBuffer<float> &buffer) {
+    juce::AudioBuffer<float> &buffer, const int numSamples) {
   if (delaySamples <= 0 || numChannels <= 0)
     return;
-
-  if (buffer.getNumChannels() != numChannels) {
-    prepare(buffer.getNumChannels(), maxDelaySamples);
-  }
-
-  const int numSamples = buffer.getNumSamples();
   const int bufferSize = delayBuffer.getNumSamples();
   if (bufferSize <= delaySamples || numSamples <= 0)
     return;
@@ -65,28 +59,30 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   currentChannels = numChannels;
 
   pitchShiftMelodic.prepare(sampleRate, samplesPerBlock, numChannels);
-  pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
+  pitchShiftMelodic.setContentType(TimeStretchProcessor::ContentType::Melodic);
   pitchShiftMelodic.reset();
   pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
   pitchShiftMelodic.setTempoRatio(tempoRatio);
 
   tempoShiftPercussion.prepare(sampleRate, samplesPerBlock, numChannels);
   tempoShiftPercussion.setContentType(
-      PitchShiftProcessor::ContentType::Percussive);
+      TimeStretchProcessor::ContentType::Percussive);
   tempoShiftPercussion.reset();
   tempoShiftPercussion.setPitchSemiTones(0);
   tempoShiftPercussion.setTempoRatio(tempoRatio);
 
   tempoShiftGuide.prepare(sampleRate, samplesPerBlock, numChannels);
-  tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
+  tempoShiftGuide.setContentType(TimeStretchProcessor::ContentType::Percussive);
   tempoShiftGuide.reset();
   tempoShiftGuide.setPitchSemiTones(0);
   tempoShiftGuide.setTempoRatio(tempoRatio);
 
-  stemMixBuffer.setSize(numChannels, samplesPerBlock);
-  stemTempBuffer.setSize(numChannels, samplesPerBlock);
-  percussionBuffer.setSize(numChannels, samplesPerBlock);
-  dryBuffer.setSize(numChannels, samplesPerBlock);
+  const int maxInputSamples = (samplesPerBlock * 2) + 8;
+  stemMixBuffer.setSize(numChannels, maxInputSamples);
+  stemTempBuffer.setSize(numChannels, maxInputSamples);
+  percussionBuffer.setSize(numChannels, maxInputSamples);
+  dryBuffer.setSize(numChannels, maxInputSamples);
+  processedBuffer.setSize(numChannels, samplesPerBlock);
 
   pitchDelayMelodic.prepare(numChannels, kMaxPitchLatencySamples);
   pitchDelayPercussion.prepare(numChannels, kMaxPitchLatencySamples);
@@ -104,6 +100,7 @@ void StemMixEngine::reset() {
   stemTempBuffer.clear();
   percussionBuffer.clear();
   dryBuffer.clear();
+  processedBuffer.clear();
   pitchDelayMelodic.reset();
   pitchDelayPercussion.reset();
   pitchDelayGuide.reset();
@@ -136,25 +133,21 @@ void StemMixEngine::setTempoRatio(double ratio) {
 }
 
 void StemMixEngine::ensureBuffers(int numChannels, int numSamples) {
-  if (numSamples > stemTempBuffer.getNumSamples() ||
-      numChannels != stemTempBuffer.getNumChannels()) {
-    stemTempBuffer.setSize(numChannels, numSamples, false, false, true);
-    stemMixBuffer.setSize(numChannels, numSamples, false, false, true);
-    percussionBuffer.setSize(numChannels, numSamples, false, false, true);
-    dryBuffer.setSize(numChannels, numSamples, false, false, true);
-  }
+  jassert(numChannels <= stemTempBuffer.getNumChannels());
+  jassert(numSamples <= stemTempBuffer.getNumSamples());
+  juce::ignoreUnused(numChannels, numSamples);
 }
 
-void StemMixEngine::applyFade(juce::AudioBuffer<float> &buffer, float start,
-                              float end) {
+void StemMixEngine::applyFade(juce::AudioBuffer<float> &buffer,
+                              const int numSamples, float start, float end) {
   if (juce::approximatelyEqual(start, 1.0f) &&
       juce::approximatelyEqual(end, 1.0f)) {
     return;
   }
   if (juce::approximatelyEqual(start, end)) {
-    buffer.applyGain(end);
+    buffer.applyGain(0, numSamples, end);
   } else {
-    buffer.applyGainRamp(0, buffer.getNumSamples(), start, end);
+    buffer.applyGainRamp(0, numSamples, start, end);
   }
 }
 
@@ -187,16 +180,16 @@ void StemMixEngine::updateLatencyDelays(int melodicLatency, int percussionLatenc
 void StemMixEngine::mixStems(
     const std::vector<std::unique_ptr<StemTrack>> &stems,
     const std::atomic<bool> *clickGuideStates,
-    const std::atomic<bool> *pitchShiftStates, int stemCount, int numSamples,
+    const std::atomic<bool> *pitchShiftStates, int stemCount, int inputSamples,
     int numChannels) {
-  ensureBuffers(numChannels, numSamples);
-  stemMixBuffer.clear();
-  percussionBuffer.clear();
-  dryBuffer.clear();
+  ensureBuffers(numChannels, inputSamples);
+  stemMixBuffer.clear(0, inputSamples);
+  percussionBuffer.clear(0, inputSamples);
+  dryBuffer.clear(0, inputSamples);
 
   for (int i = 0; i < stemCount; ++i) {
-    stemTempBuffer.clear();
-    juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, numSamples);
+    stemTempBuffer.clear(0, inputSamples);
+    juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, inputSamples);
     stems[static_cast<size_t>(i)]->getNextAudioBlock(info);
 
     const bool isClickGuide =
@@ -211,71 +204,94 @@ void StemMixEngine::mixStems(
                        : (pitchShiftable ? stemMixBuffer : percussionBuffer);
 
     for (int ch = 0; ch < numChannels; ++ch)
-      target.addFrom(ch, 0, stemTempBuffer, ch, 0, numSamples);
+      target.addFrom(ch, 0, stemTempBuffer, ch, 0, inputSamples);
+  }
+}
+
+void StemMixEngine::renderDirect(
+    const std::vector<std::unique_ptr<StemTrack>> &stems,
+    const int stemCount, juce::AudioBuffer<float> &output) {
+  const int numSamples = output.getNumSamples();
+  const int numChannels = output.getNumChannels();
+  ensureBuffers(numChannels, numSamples);
+  output.clear();
+  for (int i = 0; i < stemCount; ++i) {
+    stemTempBuffer.clear(0, numSamples);
+    juce::AudioSourceChannelInfo info(&stemTempBuffer, 0, numSamples);
+    stems[static_cast<size_t>(i)]->getNextAudioBlock(info);
+    for (int ch = 0; ch < numChannels; ++ch)
+      output.addFrom(ch, 0, stemTempBuffer, ch, 0, numSamples);
   }
 }
 
 void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
-                                   bool timeProcessActive, float fadeStart,
+                                   bool timeProcessActive,
+                                   const int inputSamples, float fadeStart,
                                    float fadeEnd, float windowFadeStart,
                                    float windowFadeEnd) {
   const int numSamples = output.getNumSamples();
   const int numChannels = output.getNumChannels();
   const float instrumentFadeStart = fadeStart * windowFadeStart;
   const float instrumentFadeEnd = fadeEnd * windowFadeEnd;
-  applyFade(stemMixBuffer, instrumentFadeStart, instrumentFadeEnd);
-  applyFade(percussionBuffer, instrumentFadeStart, instrumentFadeEnd);
+  output.clear();
 
   if (timeProcessActive) {
     const bool tempoActive = !juce::approximatelyEqual(tempoRatio, 1.0);
-
-    if (!pitchShiftMelodic.isPrepared() ||
-        pitchShiftMelodic.getNumChannels() != numChannels) {
-      pitchShiftMelodic.prepare(currentSampleRate, currentBlockSize,
-                                numChannels);
-      pitchShiftMelodic.setContentType(PitchShiftProcessor::ContentType::Melodic);
-      pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
-      pitchShiftMelodic.setTempoRatio(tempoRatio);
-    }
-    if (!tempoShiftPercussion.isPrepared() ||
-        tempoShiftPercussion.getNumChannels() != numChannels) {
-      tempoShiftPercussion.prepare(currentSampleRate, currentBlockSize,
-                                   numChannels);
-      tempoShiftPercussion.setContentType(
-          PitchShiftProcessor::ContentType::Percussive);
-      tempoShiftPercussion.setPitchSemiTones(0);
-      tempoShiftPercussion.setTempoRatio(tempoRatio);
-    }
-    if (!tempoShiftGuide.isPrepared() ||
-        tempoShiftGuide.getNumChannels() != numChannels) {
-      tempoShiftGuide.prepare(currentSampleRate, currentBlockSize, numChannels);
-      tempoShiftGuide.setContentType(PitchShiftProcessor::ContentType::Percussive);
-      tempoShiftGuide.setPitchSemiTones(0);
-      tempoShiftGuide.setTempoRatio(tempoRatio);
-    }
-
-    pitchShiftMelodic.process(stemMixBuffer);
-    if (tempoActive) {
-      tempoShiftPercussion.process(percussionBuffer);
-      tempoShiftGuide.process(dryBuffer);
-    }
 
     const int melodicLatency = pitchShiftMelodic.getLatencySamples();
     const int percussionLatency =
         tempoActive ? tempoShiftPercussion.getLatencySamples() : 0;
     const int dryLatency = tempoActive ? tempoShiftGuide.getLatencySamples() : 0;
     updateLatencyDelays(melodicLatency, percussionLatency, dryLatency);
-    pitchDelayMelodic.process(stemMixBuffer);
-    pitchDelayPercussion.process(percussionBuffer);
-    pitchDelayGuide.process(dryBuffer);
+
+    processedBuffer.clear(0, numSamples);
+    pitchShiftMelodic.process(stemMixBuffer, inputSamples, processedBuffer,
+                              numSamples);
+    pitchDelayMelodic.process(processedBuffer, numSamples);
+    applyFade(processedBuffer, numSamples, instrumentFadeStart,
+              instrumentFadeEnd);
+    for (int ch = 0; ch < numChannels; ++ch)
+      output.addFrom(ch, 0, processedBuffer, ch, 0, numSamples);
+
+    if (tempoActive) {
+      processedBuffer.clear(0, numSamples);
+      tempoShiftPercussion.process(percussionBuffer, inputSamples,
+                                   processedBuffer, numSamples);
+      pitchDelayPercussion.process(processedBuffer, numSamples);
+      applyFade(processedBuffer, numSamples, instrumentFadeStart,
+                instrumentFadeEnd);
+      for (int ch = 0; ch < numChannels; ++ch)
+        output.addFrom(ch, 0, processedBuffer, ch, 0, numSamples);
+
+      processedBuffer.clear(0, numSamples);
+      tempoShiftGuide.process(dryBuffer, inputSamples, processedBuffer,
+                              numSamples);
+      pitchDelayGuide.process(processedBuffer, numSamples);
+      for (int ch = 0; ch < numChannels; ++ch)
+        output.addFrom(ch, 0, processedBuffer, ch, 0, numSamples);
+    } else {
+      applyFade(percussionBuffer, numSamples, instrumentFadeStart,
+                instrumentFadeEnd);
+      for (int ch = 0; ch < numChannels; ++ch) {
+        output.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
+        output.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
+      }
+    }
+
   } else {
     updateLatencyDelays(0, 0, 0);
+    applyFade(stemMixBuffer, numSamples, instrumentFadeStart,
+              instrumentFadeEnd);
+    applyFade(percussionBuffer, numSamples, instrumentFadeStart,
+              instrumentFadeEnd);
+    for (int ch = 0; ch < numChannels; ++ch) {
+      output.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
+      output.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
+      output.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
+    }
   }
+}
 
-  output.clear();
-  for (int ch = 0; ch < numChannels; ++ch) {
-    output.addFrom(ch, 0, stemMixBuffer, ch, 0, numSamples);
-    output.addFrom(ch, 0, percussionBuffer, ch, 0, numSamples);
-    output.addFrom(ch, 0, dryBuffer, ch, 0, numSamples);
-  }
+int StemMixEngine::requiredInputFrames(const int outputFrames) noexcept {
+  return pitchShiftMelodic.requiredInputFrames(outputFrames);
 }

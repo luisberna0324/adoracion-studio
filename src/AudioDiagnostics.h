@@ -27,6 +27,7 @@ public:
     double budgetMs = 0.0;    // time budget = (samples / sampleRate) * 1000
     double lockWaitMs = 0.0;  // time spent waiting to acquire stemListLock
     int stemCount = 0;
+    int64_t streamingMisses = 0;
     bool overrun = false;     // blockMs > budgetMs
     bool isPlaying = false;
   };
@@ -100,7 +101,7 @@ public:
     // Write CSV header
     if (auto stream = logFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,is_playing\n",
+          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,streaming_misses,is_playing\n",
           false, false, nullptr);
     }
     if (auto stream = stemLogFile.createOutputStream()) {
@@ -187,6 +188,7 @@ private:
           << (ev.overrun ? "1" : "0") << ","
           << juce::String(ev.lockWaitMs, 3).toStdString() << ","
           << ev.stemCount << ","
+          << ev.streamingMisses << ","
           << (ev.isPlaying ? "1" : "0") << "\n";
 
       // Update cumulative stats

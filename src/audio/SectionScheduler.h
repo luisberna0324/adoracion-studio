@@ -18,6 +18,9 @@ public:
   struct Section {
     Frame startFrame = 0;
     Frame endFrame = 0;
+    Frame guideTriggerFrame = -1;
+    int guideTriggerId = -1;
+    bool triggerGuideOnEntry = false;
   };
 
   struct BlockDecision {
@@ -33,6 +36,8 @@ public:
 
   int size() const noexcept;
   int findSection(Frame frame) const noexcept;
+  int findGuideTrigger(Frame blockStart, int blockFrames) const noexcept;
+  bool getSection(int index, Section &section) const noexcept;
 
   BlockDecision evaluate(Frame blockStart, int blockFrames,
                          bool customArrangement, int pendingSection,
