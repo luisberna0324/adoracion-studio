@@ -537,10 +537,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
 
     if (dynamicGuideAnnouncementsActive) {
-      dynamicGuideOutputChannelOneBased =
-          dynamicGuideOutputChannelState.load(std::memory_order_relaxed);
-      dynamicGuideOutputWidth = juce::jlimit(
-          1, 2, dynamicGuideOutputWidthState.load(std::memory_order_relaxed));
+      dynamicGuideOutputChannelOneBased = getDynamicGuideOutputChannel();
+      dynamicGuideOutputWidth =
+          juce::jlimit(1, 2, getDynamicGuideOutputWidth());
       if (numChannels < 2)
         dynamicGuideOutputWidth = 1;
       if (dynamicGuideOutputWidth >= 2 &&
@@ -1167,9 +1166,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         metronomeGainState.load(std::memory_order_relaxed);
     bool muted = metronomeMutedState.load(std::memory_order_relaxed);
     bool soloed = metronomeSoloState.load(std::memory_order_relaxed);
-    int outputChannelOneBased =
-        metronomeOutputChannel.load(std::memory_order_relaxed);
-    int outputWidth = metronomeOutputWidth.load(std::memory_order_relaxed);
+    int outputChannelOneBased = getMetronomeOutputChannel();
+    int outputWidth = getMetronomeOutputWidth();
 
     effectiveVolume = juce::jlimit(0.0f, 1.0f, effectiveVolume);
     effectiveGain = juce::jlimit(0.0f, 4.0f, effectiveGain);
@@ -1195,14 +1193,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (!juce::approximatelyEqual(effectiveGain, 1.0f))
       metronomeRenderBuffer.applyGain(effectiveGain);
 
-    metronomeMeterLevelLeft.store(
-        metronomeRenderBuffer.getMagnitude(0, 0, numSamples),
-        std::memory_order_relaxed);
-    metronomeMeterLevelRight.store(
-        metronomeRenderBuffer.getMagnitude(
-            juce::jmin(1, metronomeRenderBuffer.getNumChannels() - 1), 0,
-            numSamples),
-        std::memory_order_relaxed);
+    const float metronomeMeterLeft =
+        metronomeRenderBuffer.getMagnitude(0, 0, numSamples);
+    const float metronomeMeterRight =
+        outputWidth >= 2
+            ? metronomeRenderBuffer.getMagnitude(
+                  juce::jmin(1, metronomeRenderBuffer.getNumChannels() - 1), 0,
+                  numSamples)
+            : 0.0f;
+    metronomeMeterLevelLeft.store(metronomeMeterLeft,
+                                  std::memory_order_relaxed);
+    metronomeMeterLevelRight.store(metronomeMeterRight,
+                                   std::memory_order_relaxed);
 
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
@@ -1289,7 +1291,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             ? dynamicGuideRenderBuffer.getMagnitude(1, 0, numSamples)
             : meterLeft;
     if (dynamicGuideOutputWidth == 1)
-      meterRight = meterLeft;
+      meterRight = 0.0f;
     dynamicGuideMeterLevelLeft.store(meterLeft, std::memory_order_relaxed);
     dynamicGuideMeterLevelRight.store(meterRight, std::memory_order_relaxed);
 
@@ -3337,10 +3339,24 @@ void MTControlsAudioProcessor::setMetronomeOutputRouting(
 }
 
 int MTControlsAudioProcessor::getMetronomeOutputChannel() const noexcept {
+  const int clickStemIndex =
+      metronomeClickStemIndex.load(std::memory_order_relaxed);
+  const int stemCount = loadedStemCount.load(std::memory_order_relaxed);
+  if (juce::isPositiveAndBelow(clickStemIndex, stemCount)) {
+    return stemOutputChannels[static_cast<size_t>(clickStemIndex)].load(
+        std::memory_order_relaxed);
+  }
   return metronomeOutputChannel.load(std::memory_order_relaxed);
 }
 
 int MTControlsAudioProcessor::getMetronomeOutputWidth() const noexcept {
+  const int clickStemIndex =
+      metronomeClickStemIndex.load(std::memory_order_relaxed);
+  const int stemCount = loadedStemCount.load(std::memory_order_relaxed);
+  if (juce::isPositiveAndBelow(clickStemIndex, stemCount)) {
+    return stemOutputWidths[static_cast<size_t>(clickStemIndex)].load(
+        std::memory_order_relaxed);
+  }
   return metronomeOutputWidth.load(std::memory_order_relaxed);
 }
 
@@ -3394,10 +3410,22 @@ void MTControlsAudioProcessor::setDynamicGuideOutputRouting(
 }
 
 int MTControlsAudioProcessor::getDynamicGuideOutputChannel() const noexcept {
+  const int guideStemIndex = findFirstGuideStemIndex(
+      loadedStemCount.load(std::memory_order_relaxed));
+  if (guideStemIndex >= 0) {
+    return stemOutputChannels[static_cast<size_t>(guideStemIndex)].load(
+        std::memory_order_relaxed);
+  }
   return dynamicGuideOutputChannelState.load(std::memory_order_relaxed);
 }
 
 int MTControlsAudioProcessor::getDynamicGuideOutputWidth() const noexcept {
+  const int guideStemIndex = findFirstGuideStemIndex(
+      loadedStemCount.load(std::memory_order_relaxed));
+  if (guideStemIndex >= 0) {
+    return stemOutputWidths[static_cast<size_t>(guideStemIndex)].load(
+        std::memory_order_relaxed);
+  }
   return dynamicGuideOutputWidthState.load(std::memory_order_relaxed);
 }
 
