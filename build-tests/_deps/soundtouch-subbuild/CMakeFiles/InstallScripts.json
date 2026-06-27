@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
