@@ -677,6 +677,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setStemPitchShiftMask(pitchShiftMask);
     p.setMetronomeClickStemIndex(clickStemIndex);
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
+    double savedTempoBpm = 0.0;
+    if (SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
+                                                   savedTempoBpm)) {
+      p.setPlaybackTempoBpm(savedTempoBpm);
+    }
 
     DynamicGuideSettings dynamicGuideSettings;
     bool dynamicGuideCustomized = false;

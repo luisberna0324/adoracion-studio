@@ -1009,6 +1009,37 @@ bool SongLibraryStore::updatePitchSemitonesForActiveSetlist(
       });
 }
 
+bool SongLibraryStore::getActiveSetlistTempoBpm(const juce::String &songId,
+                                                double &outBpm) {
+  if (songId.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, library.activeSetlistId);
+  if (setlist == nullptr)
+    return false;
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end() || it->tempoBpm <= 0.0)
+    return false;
+  outBpm = juce::jlimit(20.0, 300.0, it->tempoBpm);
+  return true;
+}
+
+bool SongLibraryStore::updateTempoBpmForActiveSetlist(
+    const juce::String &songId, double bpm) {
+  return updateActiveSetlistItem(
+      songId, [bpm](SetlistItem &item, const ImportedSongData &song) {
+        const double fallbackBpm = song.bpm > 0 ? static_cast<double>(song.bpm)
+                                                : 120.0;
+        const double normalized = bpm > 0.0 ? juce::jlimit(20.0, 300.0, bpm)
+                                            : fallbackBpm;
+        item.tempoBpm = normalized;
+      });
+}
+
 bool SongLibraryStore::getActiveSetlistSongWindow(
     const juce::String &songId, SongWindowSnapshot &outWindow,
     bool &outIsCustomWindow) {
@@ -2446,6 +2477,8 @@ juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
   obj->setProperty("songId", item.songId);
   obj->setProperty("mix", mixToVar(item.mix));
   obj->setProperty("pitchSemitones", item.pitchSemitones);
+  if (item.tempoBpm > 0.0)
+    obj->setProperty("tempoBpm", item.tempoBpm);
   if (item.windowCustomized) {
     obj->setProperty("songWindow", windowToVar(item.window));
     obj->setProperty("windowCustomized", true);
@@ -2476,6 +2509,10 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   if (obj->hasProperty("pitchSemitones"))
     item.pitchSemitones = juce::jlimit(
         -12, 12, static_cast<int>(obj->getProperty("pitchSemitones")));
+  if (obj->hasProperty("tempoBpm"))
+    item.tempoBpm =
+        juce::jlimit(20.0, 300.0,
+                     static_cast<double>(obj->getProperty("tempoBpm")));
   if (song != nullptr)
     item.window = createDefaultWindowForSong(*song);
   if (obj->hasProperty("songWindow")) {

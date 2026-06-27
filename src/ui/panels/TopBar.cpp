@@ -1135,6 +1135,10 @@ void TopBar::setBpmAbsolute(double bpm) {
   if (bpm <= 0.0)
     return;
   processor.setPlaybackTempoBpm(bpm);
+  const auto songId = songIdProvider ? songIdProvider() : juce::String{};
+  if (songId.isNotEmpty())
+    SongLibraryStore::updateTempoBpmForActiveSetlist(
+        songId, processor.getPlaybackTempoBpm());
   updateBpmDisplay();
 }
 
@@ -1743,6 +1747,13 @@ void TopBar::refreshFromProviders() {
       activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
       activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
       processor.setPitchSemiTones(activePitchDelta);
+      double savedTempoBpm = 0.0;
+      if (activeSongId.isNotEmpty() &&
+          SongLibraryStore::getActiveSetlistTempoBpm(activeSongId,
+                                                     savedTempoBpm)) {
+        processor.setPlaybackTempoBpm(savedTempoBpm);
+        updateBpmDisplay();
+      }
     } else if (keyText != lastKeyToken) {
       // Metadata key text may refresh asynchronously; keep user-selected
       // transposition and only refresh labels/base reference.

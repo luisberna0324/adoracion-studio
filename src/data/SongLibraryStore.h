@@ -70,6 +70,7 @@ struct SetlistItem {
   juce::String songId;
   SongMixSnapshot mix;
   int pitchSemitones = 0;
+  double tempoBpm = 0.0;
   SongWindowSnapshot window;
   bool windowCustomized = false;
   SongArrangementSnapshot arrangement;
@@ -149,6 +150,10 @@ public:
                                              int &outSemitones);
   static bool updatePitchSemitonesForActiveSetlist(const juce::String &songId,
                                                    int semitones);
+  static bool getActiveSetlistTempoBpm(const juce::String &songId,
+                                       double &outBpm);
+  static bool updateTempoBpmForActiveSetlist(const juce::String &songId,
+                                             double bpm);
   static bool getActiveSetlistSongWindow(const juce::String &songId,
                                          SongWindowSnapshot &outWindow,
                                          bool &outIsCustomWindow);
