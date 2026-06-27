@@ -1,0 +1,4 @@
+# Hashes of file build rules.
+51cbc39c8f1d279fc0f668865e4097f5 MTControls_artefacts/JuceLibraryCode/JuceHeader.h
+3d318459f408900c19ae08d2a74d7940 MTControls_artefacts/JuceLibraryCode/MTControls_Standalone/PkgInfo
+5eb7f8287d9974d81e98cbcc1c7ea3eb juce_binarydata_MTControlsAssets/JuceLibraryCode/BinaryData1.cpp

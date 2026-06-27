@@ -1,0 +1,12 @@
+# This is a generated file and its contents are an internal implementation detail.
+# The download step will be re-executed if anything in this file changes.
+# No other meaning or use of this file is supported.
+
+method=url
+command=/opt/homebrew/bin/cmake;-DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE;-P;/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/download-soundtouch-populate.cmake;COMMAND;/opt/homebrew/bin/cmake;-DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE;-P;/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/verify-soundtouch-populate.cmake;COMMAND;/opt/homebrew/bin/cmake;-DCMAKE_MESSAGE_LOG_LEVEL=VERBOSE;-P;/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/extract-soundtouch-populate.cmake
+source_dir=/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-src
+work_dir=/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps
+url(s)=https://gitlab.com/soundtouch/soundtouch/-/archive/2.3.1/soundtouch-2.3.1.tar.gz
+hash=
+      no_extract=
+

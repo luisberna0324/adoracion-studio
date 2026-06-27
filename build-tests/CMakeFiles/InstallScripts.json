@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/cmake_install.cmake",
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/JUCE/cmake_install.cmake",
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/JUCE/modules/cmake_install.cmake",
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/JUCE/extras/Build/cmake_install.cmake",
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/JUCE/extras/Build/juceaide/cmake_install.cmake",
+		"/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

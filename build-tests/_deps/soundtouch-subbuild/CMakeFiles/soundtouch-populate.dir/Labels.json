@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/soundtouch-populate"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/soundtouch-populate.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/soundtouch-populate-complete.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-build.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-configure.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-download.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-install.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-mkdir.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-patch.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-test.rule"
+		},
+		{
+			"file" : "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/soundtouch-populate-prefix/src/soundtouch-populate-stamp/soundtouch-populate-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"soundtouch-populate"
+		],
+		"name" : "soundtouch-populate"
+	}
+}

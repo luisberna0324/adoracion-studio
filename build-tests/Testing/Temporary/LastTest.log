@@ -1,0 +1,51 @@
+Start testing: Jun 20 16:18 -03
+----------------------------------------------------------
+1/3 Testing: audio_engine_core
+1/3 Test: audio_engine_core
+Command: "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/MTControlsAudioEngineCoreTests"
+Directory: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests
+"audio_engine_core" start time: Jun 20 16:18 -03
+Output:
+----------------------------------------------------------
+audio engine core tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"audio_engine_core" end time: Jun 20 16:18 -03
+"audio_engine_core" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/3 Testing: pitch_shift_ring_buffer
+2/3 Test: pitch_shift_ring_buffer
+Command: "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/MTControlsPitchShiftTests"
+Directory: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests
+"pitch_shift_ring_buffer" start time: Jun 20 16:18 -03
+Output:
+----------------------------------------------------------
+pitch shift ring buffer tests passed
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"pitch_shift_ring_buffer" end time: Jun 20 16:18 -03
+"pitch_shift_ring_buffer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/3 Testing: bungee_processor
+3/3 Test: bungee_processor
+Command: "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/MTControlsBungeeTests"
+Directory: /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests
+"bungee_processor" start time: Jun 20 16:18 -03
+Output:
+----------------------------------------------------------
+bungee processor tests passed
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"bungee_processor" end time: Jun 20 16:18 -03
+"bungee_processor" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Jun 20 16:18 -03
