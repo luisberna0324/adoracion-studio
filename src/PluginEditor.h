@@ -4,6 +4,7 @@
 #include "data/SessionPersistence.h"
 #include "data/SongData.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
+#include "update/UpdateService.h"
 #include <JuceHeader.h>
 
 class TopBar;
@@ -111,6 +112,10 @@ private:
   double smoothedAudioCpuUsage01 = 0.0;
   double smoothedProcessMemoryMb = 0.0;
   int totalSystemMemoryMb = 0;
+  std::unique_ptr<PlayWorshipUpdate::UpdateService> updateService;
+  std::unique_ptr<juce::AlertWindow> updateProgressWindow;
+  double updateProgressValue = 0.0;
+  juce::int64 nextUpdateCheckMs = 0;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
@@ -144,6 +149,10 @@ private:
       juce::int64 lastOnlineMs) const;
   void applyPersistedSnapshotToActive(const PersistedSessionSnapshot &snap);
   void saveSessionSnapshotToDisk();
+  void initializeUpdateService();
+  void maybeRunPeriodicUpdateCheck();
+  void showUpdateAvailablePrompt(PlayWorshipUpdate::UpdateManifest manifest);
+  void showUpdateProgress(const PlayWorshipUpdate::UpdateProgress &progress);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };

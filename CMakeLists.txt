@@ -73,6 +73,8 @@ endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
 set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
     "Base URL for PlayWorship backend/login frontend")
+set(MTCONTROLS_UPDATE_BASE_URL "" CACHE STRING
+    "Base URL for PlayWorship update manifest API. Empty disables auto-update checks.")
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
     "Minutes before forcing re-login in app (default: 5 days)")
 set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
@@ -295,6 +297,12 @@ target_sources(MTControls
         src/ui/panels/PadsComponent.h
         src/ui/components/WelcomeModal.cpp
         src/ui/components/WelcomeModal.h
+        src/update/UpdateCrypto.cpp
+        src/update/UpdateCrypto.h
+        src/update/UpdateManifest.cpp
+        src/update/UpdateManifest.h
+        src/update/UpdateService.cpp
+        src/update/UpdateService.h
 )
 
 target_compile_definitions(MTControls
@@ -304,6 +312,7 @@ target_compile_definitions(MTControls
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
+        MTCONTROLS_UPDATE_BASE_URL=\"${MTCONTROLS_UPDATE_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
@@ -337,6 +346,55 @@ target_link_libraries(MTControls
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+add_executable(PlayWorshipUpdater
+    tools/updater/PlayWorshipUpdater.cpp
+    src/update/UpdateCrypto.cpp
+    src/update/UpdateCrypto.h
+)
+
+target_link_libraries(PlayWorshipUpdater
+    PRIVATE
+        juce::juce_core
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags
+)
+
+if (MSVC)
+    target_compile_options(PlayWorshipUpdater PRIVATE /utf-8)
+endif()
+
+if (TARGET MTControls_Standalone)
+    add_dependencies(MTControls_Standalone PlayWorshipUpdater)
+    if (APPLE)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:PlayWorshipUpdater>"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/PlayWorshipUpdater"
+            COMMAND chmod +x "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/PlayWorshipUpdater"
+            VERBATIM)
+    elseif (WIN32)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/updater"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:PlayWorshipUpdater>"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/updater/PlayWorshipUpdater.exe"
+            VERBATIM)
+    else()
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/updater"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:PlayWorshipUpdater>"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/updater/PlayWorshipUpdater"
+            COMMAND chmod +x "$<TARGET_FILE_DIR:MTControls_Standalone>/updater/PlayWorshipUpdater"
+            VERBATIM)
+    endif()
+endif()
 
 if (TARGET SoundTouch)
     target_compile_definitions(SoundTouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)

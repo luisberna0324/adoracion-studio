@@ -323,6 +323,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     mainUiInitialized = true;
     resized();
     updateSystemUsageMetrics();
+    initializeUpdateService();
     return;
   }
 
@@ -1113,6 +1114,102 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   mainUiInitialized = true;
   resized();
   updateSystemUsageMetrics();
+  initializeUpdateService();
+}
+
+void MTControlsAudioProcessorEditor::initializeUpdateService() {
+#if JucePlugin_Build_Standalone
+  if (updateService != nullptr)
+    return;
+
+  PlayWorshipUpdate::UpdateServiceConfig config;
+  config.updateBaseUrl = MTCONTROLS_UPDATE_BASE_URL;
+  config.currentVersion = ProjectInfo::versionString;
+  config.channel = "stable";
+  if (config.updateBaseUrl.trim().isEmpty())
+    return;
+
+  updateService = std::make_unique<PlayWorshipUpdate::UpdateService>(config);
+  updateService->setCallbacks(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+          PlayWorshipUpdate::UpdateManifest manifest) mutable {
+        if (safe != nullptr)
+          safe->showUpdateAvailablePrompt(std::move(manifest));
+      },
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+          PlayWorshipUpdate::UpdateProgress progress) {
+        if (safe != nullptr)
+          safe->showUpdateProgress(progress);
+      },
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+          juce::String message) {
+        if (safe != nullptr) {
+          safe->updateProgressWindow.reset();
+          juce::AlertWindow::showMessageBoxAsync(
+              juce::AlertWindow::WarningIcon, "Actualizacion",
+              message.isNotEmpty() ? message
+                                   : "No se pudo completar la actualizacion.",
+              "OK", safe.getComponent());
+        }
+      });
+
+  nextUpdateCheckMs = juce::Time::currentTimeMillis() + 6 * 60 * 60 * 1000LL;
+  updateService->checkNow();
+#endif
+}
+
+void MTControlsAudioProcessorEditor::maybeRunPeriodicUpdateCheck() {
+#if JucePlugin_Build_Standalone
+  if (updateService == nullptr || updateService->isBusy())
+    return;
+
+  const auto nowMs = juce::Time::currentTimeMillis();
+  if (nextUpdateCheckMs <= 0 || nowMs < nextUpdateCheckMs)
+    return;
+
+  nextUpdateCheckMs = nowMs + 6 * 60 * 60 * 1000LL;
+  updateService->checkNow();
+#endif
+}
+
+void MTControlsAudioProcessorEditor::showUpdateAvailablePrompt(
+    PlayWorshipUpdate::UpdateManifest manifest) {
+  if (updateService == nullptr || updateService->isBusy())
+    return;
+
+  juce::String message = "Hay una nueva version de PlayWorship disponible: " +
+                         manifest.latestVersion + ".";
+  if (!manifest.releaseItems.isEmpty()) {
+    message << "\n\n";
+    for (int i = 0; i < juce::jmin(3, manifest.releaseItems.size()); ++i)
+      message << "- " << manifest.releaseItems[i] << "\n";
+  }
+
+  juce::AlertWindow::showOkCancelBox(
+      juce::AlertWindow::InfoIcon, "Actualizacion disponible", message,
+      manifest.mandatory ? "Actualizar" : "Actualizar ahora",
+      manifest.mandatory ? juce::String() : "Mas tarde", this,
+      juce::ModalCallbackFunction::create(
+          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
+           updateManifest = std::move(manifest)](int result) mutable {
+            if (safe != nullptr && result != 0 && safe->updateService != nullptr)
+              safe->updateService->downloadAndInstall(std::move(updateManifest));
+          }));
+}
+
+void MTControlsAudioProcessorEditor::showUpdateProgress(
+    const PlayWorshipUpdate::UpdateProgress &progress) {
+  updateProgressValue = progress.progress;
+  if (updateProgressWindow == nullptr) {
+    updateProgressWindow = std::make_unique<juce::AlertWindow>(
+        "Actualizando PlayWorship", progress.status, juce::AlertWindow::NoIcon);
+    updateProgressWindow->addProgressBarComponent(updateProgressValue);
+    updateProgressWindow->enterModalState(false, nullptr, false);
+    updateProgressWindow->setVisible(true);
+  }
+
+  updateProgressWindow->setMessage(progress.status);
+  updateProgressWindow->toFront(false);
 }
 
 void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
@@ -2014,6 +2111,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  maybeRunPeriodicUpdateCheck();
+
   if (deferredStartupSongLoadPending && !songLoadBusy &&
       nowMs >= deferredStartupSongLoadAtMs) {
     const int index = deferredStartupSongIndex;

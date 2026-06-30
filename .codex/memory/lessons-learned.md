@@ -16,3 +16,6 @@ repository. Update it when a task teaches something reusable.
 - The user wants the assistant to keep learning across conversations by
   updating repository memory files with reusable decisions, preferences,
   pitfalls, and validation knowledge.
+- For PlayWorship auto-updates, keep the in-app code lightweight and put file
+  replacement/rollback in the independent `PlayWorshipUpdater`; the main app
+  must not try to replace its own bundle/executable while running.

@@ -15,6 +15,9 @@
 - UI and layout: `src/PluginEditor.cpp`, `src/PluginEditor.h`
 - Audio engine and persistence-facing processor logic:
   `src/PluginProcessor.cpp`, `src/PluginProcessor.h`
+- Auto-update system:
+  `src/update/UpdateService.*`, `src/update/UpdateManifest.*`,
+  `src/update/UpdateCrypto.*`, `tools/updater/PlayWorshipUpdater.cpp`
 - Build configuration: `CMakeLists.txt`, `CMakePresets.json`
 - Packaging scripts: `scripts/`, `packaging/`
 - Assets: `assets/`
@@ -63,6 +66,19 @@ open "/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build/MT
 
 If the app bundle name differs in the active build tree, inspect
 `build/MTControls_artefacts/Standalone/` before launching.
+
+## Auto-update architecture
+
+- PlayWorship uses a lightweight in-app update coordinator plus an independent
+  `PlayWorshipUpdater` executable for transactional install/rollback.
+- `MTCONTROLS_UPDATE_BASE_URL` controls the update manifest API. Empty disables
+  update checks for local/dev builds.
+- The manifest endpoint is documented in `docs/update-system.md`.
+- Transactional packages are ZIPs: macOS should contain signed/notarized
+  `PlayWorship.app`; Windows should contain the replacement install payload.
+- The app validates package size and SHA-256 before launching the updater; the
+  updater re-validates SHA-256, extracts to staging, backs up the current install,
+  swaps payloads, relaunches, and rolls back if install or relaunch fails.
 
 ## Memory update policy
 
