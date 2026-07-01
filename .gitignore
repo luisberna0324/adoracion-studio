@@ -1,7 +1,9 @@
 # Build outputs
 build/
 build-ios/
+build-*/
 **/Builds/
+perf-bungee*/
 
 # JUCE generated / artifacts
 JuceLibraryCode/
@@ -30,3 +32,6 @@ dist/
 web/node_modules/
 web/.next/
 web/out/
+
+# Downloaded third-party SDKs (see scripts/bootstrap_bungee.sh)
+third_party/bungee/

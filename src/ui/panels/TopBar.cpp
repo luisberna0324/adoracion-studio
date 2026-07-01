@@ -487,9 +487,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       onMidiLearnModeChanged(midiLearnActive);
     repaint();
   };
-  bpmSegmentButton.onClick = [] {
-    // Tempo popover intentionally disabled; keep tempo logic intact.
-  };
+  bpmSegmentButton.onClick = [this] { showMetronomePopover(); };
   metroToggleButton.onClick = [this, armLearnTarget] {
     if (midiLearnActive) {
       armLearnTarget(processor.midiTargetMetronomeEnabled);
@@ -647,7 +645,7 @@ void TopBar::triggerSongWindowPopoverFromMidi() { showSongWindowPopover(); }
 void TopBar::triggerKeyPopoverFromMidi() { showKeyPopover(); }
 
 void TopBar::triggerMetronomePopoverFromMidi() {
-  // Tempo popover intentionally disabled; keep tempo logic intact.
+  showMetronomePopover();
 }
 
 void TopBar::refreshThemeColours() {

@@ -16,6 +16,15 @@ project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+option(MTCONTROLS_BUILD_TESTS "Build lightweight audio engine core tests" OFF)
+option(MTCONTROLS_USE_BUNGEE
+    "Use Bungee Basic as the pitch/tempo backend" ON)
+set(MTCONTROLS_BUNGEE_DIR "${CMAKE_SOURCE_DIR}/third_party/bungee" CACHE PATH
+    "Path to the unpacked Bungee SDK")
+if(MTCONTROLS_BUNGEE_DIR STREQUAL "")
+    set(MTCONTROLS_BUNGEE_DIR "${CMAKE_SOURCE_DIR}/third_party/bungee"
+        CACHE PATH "Path to the unpacked Bungee SDK" FORCE)
+endif()
 
 set(_mtcontrols_ffmpeg_macos_default "")
 if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/ffmpeg/macos/ffmpeg")
@@ -100,6 +109,122 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(soundtouch)
+
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(MTCONTROLS_USE_BUNGEE OFF CACHE BOOL
+        "Use Bungee Basic as the pitch/tempo backend" FORCE)
+    message(STATUS
+        "Audio backend: SoundTouch legacy (Windows x86; Bungee runtime unavailable)")
+elseif(NOT MTCONTROLS_USE_BUNGEE)
+    message(FATAL_ERROR
+        "Bungee is mandatory on this platform. "
+        "SoundTouch fallback is supported only for Windows x86.")
+endif()
+
+set(MTCONTROLS_BUNGEE_AVAILABLE OFF)
+if(MTCONTROLS_USE_BUNGEE)
+    if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/include/bungee/Bungee.h" OR
+       NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/LICENSE" OR
+       NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/version.txt")
+        message(FATAL_ERROR
+            "Bungee SDK is required. Run scripts/bootstrap_bungee.sh before configuring. "
+            "Expected SDK at: ${MTCONTROLS_BUNGEE_DIR}")
+    endif()
+    file(READ "${MTCONTROLS_BUNGEE_DIR}/version.txt"
+        MTCONTROLS_BUNGEE_VERSION)
+    string(STRIP "${MTCONTROLS_BUNGEE_VERSION}"
+        MTCONTROLS_BUNGEE_VERSION)
+    string(REGEX REPLACE "^v" "" MTCONTROLS_BUNGEE_VERSION
+        "${MTCONTROLS_BUNGEE_VERSION}")
+
+    add_library(MTControlsBungee SHARED IMPORTED GLOBAL)
+    target_include_directories(MTControlsBungee INTERFACE
+        "${MTCONTROLS_BUNGEE_DIR}/include")
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(_mtcontrols_bungee_framework
+            "${MTCONTROLS_BUNGEE_DIR}/apple-ios/bungee.framework")
+        if(NOT EXISTS "${_mtcontrols_bungee_framework}/bungee")
+            message(FATAL_ERROR "Bungee iOS framework is missing.")
+        endif()
+        set_target_properties(MTControlsBungee PROPERTIES
+            IMPORTED_LOCATION "${_mtcontrols_bungee_framework}/bungee")
+    elseif(APPLE)
+        set(_mtcontrols_bungee_framework
+            "${MTCONTROLS_BUNGEE_DIR}/apple-mac/bungee.framework")
+        if(NOT EXISTS "${_mtcontrols_bungee_framework}/Versions/Current/bungee")
+            message(FATAL_ERROR "Bungee macOS framework is missing.")
+        endif()
+        set_target_properties(MTControlsBungee PROPERTIES
+            IMPORTED_LOCATION
+                "${_mtcontrols_bungee_framework}/Versions/Current/bungee")
+    elseif(WIN32)
+        if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.dll" OR
+           NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.lib")
+            message(FATAL_ERROR "Bungee Windows x64 runtime/import library is missing.")
+        endif()
+        set_target_properties(MTControlsBungee PROPERTIES
+            IMPORTED_LOCATION
+                "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.dll"
+            IMPORTED_IMPLIB
+                "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.lib")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/linux-aarch64/libbungee.so")
+            message(FATAL_ERROR "Bungee Linux arm64 runtime is missing.")
+        endif()
+        set_target_properties(MTControlsBungee PROPERTIES
+            IMPORTED_LOCATION
+                "${MTCONTROLS_BUNGEE_DIR}/linux-aarch64/libbungee.so")
+    else()
+        if(NOT EXISTS "${MTCONTROLS_BUNGEE_DIR}/linux-x86_64/libbungee.so")
+            message(FATAL_ERROR "Bungee Linux x64 runtime is missing.")
+        endif()
+        set_target_properties(MTControlsBungee PROPERTIES
+            IMPORTED_LOCATION
+                "${MTCONTROLS_BUNGEE_DIR}/linux-x86_64/libbungee.so")
+    endif()
+    set(MTCONTROLS_BUNGEE_AVAILABLE ON)
+    message(STATUS "Bungee backend: required and enabled (${MTCONTROLS_BUNGEE_DIR})")
+endif()
+
+if(MTCONTROLS_BUILD_TESTS)
+    enable_testing()
+    add_executable(MTControlsAudioEngineCoreTests
+        tests/audio_engine_core_tests.cpp
+        src/audio/TransportClock.cpp
+        src/audio/TransportClock.h
+        src/audio/SectionScheduler.cpp
+        src/audio/SectionScheduler.h
+    )
+    target_include_directories(MTControlsAudioEngineCoreTests PRIVATE src)
+    add_test(NAME audio_engine_core COMMAND MTControlsAudioEngineCoreTests)
+
+    add_executable(MTControlsPitchShiftTests
+        tests/pitch_shift_tests.cpp
+        src/PitchShiftProcessor.cpp
+        src/PitchShiftProcessor.h
+        src/audio/SimpleDelayLine.cpp
+        src/audio/SimpleDelayLine.h
+    )
+    target_include_directories(MTControlsPitchShiftTests PRIVATE src)
+    target_compile_definitions(MTControlsPitchShiftTests
+        PRIVATE SOUNDTOUCH_FLOAT_SAMPLES=1)
+    target_link_libraries(MTControlsPitchShiftTests
+        PRIVATE SoundTouch juce::juce_audio_basics)
+    add_test(NAME pitch_shift_ring_buffer COMMAND MTControlsPitchShiftTests)
+
+    if(MTCONTROLS_BUNGEE_AVAILABLE)
+        add_executable(MTControlsBungeeTests
+            tests/bungee_processor_tests.cpp
+            src/audio/BungeeProcessor.cpp
+            src/audio/BungeeProcessor.h
+        )
+        target_include_directories(MTControlsBungeeTests PRIVATE src)
+        target_link_libraries(MTControlsBungeeTests
+            PRIVATE MTControlsBungee juce::juce_audio_basics)
+        add_test(NAME bungee_processor COMMAND MTControlsBungeeTests)
+    endif()
+endif()
 
 if (TARGET soundstretch)
     set_target_properties(soundstretch PROPERTIES 
@@ -200,6 +325,7 @@ target_sources(MTControls
         src/StemBufferingSource.h
         src/audio/AudioDeviceMonitor.cpp
         src/audio/AudioDeviceMonitor.h
+        src/audio/TimeStretchProcessor.h
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h
         src/audio/OutputChannelCatalog.cpp
@@ -212,6 +338,10 @@ target_sources(MTControls
         src/audio/SimpleDelayLine.h
         src/audio/StandaloneAudioDeviceBridge.cpp
         src/audio/StandaloneAudioDeviceBridge.h
+        src/audio/TransportClock.cpp
+        src/audio/TransportClock.h
+        src/audio/SectionScheduler.cpp
+        src/audio/SectionScheduler.h
         src/audio/StemOutputRouter.cpp
         src/audio/StemOutputRouter.h
         src/audio/StemOutputRoutingState.cpp
@@ -297,6 +427,12 @@ target_sources(MTControls
         src/ui/components/WelcomeModal.h
 )
 
+if(MTCONTROLS_BUNGEE_AVAILABLE)
+    target_sources(MTControls PRIVATE
+        src/audio/BungeeProcessor.cpp
+        src/audio/BungeeProcessor.h)
+endif()
+
 target_compile_definitions(MTControls
     PRIVATE
         JUCE_MODAL_LOOPS_PERMITTED=1
@@ -309,6 +445,7 @@ target_compile_definitions(MTControls
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
         SOUNDTOUCH_FLOAT_SAMPLES=1
+        MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
 )
 
 if (WIN32)
@@ -337,6 +474,71 @@ target_link_libraries(MTControls
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+if(MTCONTROLS_BUNGEE_AVAILABLE)
+    target_link_libraries(MTControls PRIVATE MTControlsBungee)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set_target_properties(MTControls_Standalone PROPERTIES
+            XCODE_EMBED_FRAMEWORKS "${_mtcontrols_bungee_framework}"
+            XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES
+            XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY YES)
+        set_source_files_properties("${MTCONTROLS_BUNGEE_DIR}/LICENSE"
+            PROPERTIES MACOSX_PACKAGE_LOCATION
+                "Resources/ThirdPartyLicenses")
+        target_sources(MTControls_Standalone PRIVATE
+            "${MTCONTROLS_BUNGEE_DIR}/LICENSE")
+    elseif(APPLE)
+        set_target_properties(MTControls_Standalone PROPERTIES
+            BUILD_RPATH "@executable_path/../Frameworks")
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks"
+            COMMAND ${CMAKE_COMMAND} -E remove_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/bungee.framework"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_mtcontrols_bungee_framework}/Versions/Current/bungee"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/libbungee.dylib"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ThirdPartyLicenses"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_BUNGEE_DIR}/LICENSE"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+            COMMAND /usr/bin/install_name_tool -id
+                "@rpath/libbungee.dylib"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/libbungee.dylib"
+            COMMAND /usr/bin/install_name_tool -change
+                "@rpath/bungee.framework/Versions/${MTCONTROLS_BUNGEE_VERSION}/bungee"
+                "@rpath/libbungee.dylib"
+                "$<TARGET_FILE:MTControls_Standalone>"
+            COMMAND /usr/bin/codesign --force --sign -
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/libbungee.dylib"
+            VERBATIM)
+    elseif(WIN32)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_BUNGEE_DIR}/windows-x86_64/bungee.dll"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/bungee.dll"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ThirdPartyLicenses"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_BUNGEE_DIR}/LICENSE"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+            VERBATIM)
+    elseif(UNIX AND NOT APPLE)
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:MTControlsBungee>"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/libbungee.so"
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ThirdPartyLicenses"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_BUNGEE_DIR}/LICENSE"
+                "$<TARGET_FILE_DIR:MTControls_Standalone>/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+            VERBATIM)
+        set_target_properties(MTControls_Standalone PROPERTIES
+            BUILD_RPATH "$ORIGIN")
+    endif()
+endif()
 
 if (TARGET SoundTouch)
     target_compile_definitions(SoundTouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
@@ -451,4 +653,15 @@ if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
             VERBATIM)
     endif()
+endif()
+
+# This must remain the final macOS POST_BUILD command. All bundled resources
+# (Bungee, ffmpeg, guides and click packs) must be present before sealing the
+# app, otherwise codesign reports a missing or invalid sealed resource.
+if(TARGET MTControls_Standalone AND APPLE AND
+   NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_custom_command(TARGET MTControls_Standalone POST_BUILD
+        COMMAND /usr/bin/codesign --force --deep --sign -
+            "$<TARGET_BUNDLE_DIR:MTControls_Standalone>"
+        VERBATIM)
 endif()

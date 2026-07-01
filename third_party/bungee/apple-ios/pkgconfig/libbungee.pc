@@ -1,5 +1,0 @@
-Name: bungee
-Description: Bungee audio time-stretch and pitch-shift library
-Version: 2.4.24
-Libs: -F${pcfiledir}/.. -framework bungee
-Cflags: -I${pcfiledir}/../../include

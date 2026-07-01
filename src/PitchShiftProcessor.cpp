@@ -1,6 +1,7 @@
 #include "PitchShiftProcessor.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 struct TempoQualitySettings {
@@ -39,9 +40,17 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   prepared = (currentSampleRate > 0.0 && currentChannels > 0);
 
   interleavedInput.clear();
+  dryFallback.clear();
   receiveBuffer.clear();
   outputFifo.clear();
   outputReadPos = 0;
+  outputWritePos = 0;
+  outputSampleCount = 0;
+  pitchTransitionFramesRemaining = 0;
+  pitchTransitionFramesTotal = 0;
+  inputFrameRemainder = 0.0;
+  maxBlockFrames = juce::jmax(0, samplesPerBlock);
+  maxInputFrames = (maxBlockFrames * 2) + 8;
 
   if (!prepared) {
     latencySamples = 0;
@@ -61,12 +70,21 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   soundtouch.setTempo(static_cast<float>(tempoRatio));
   soundtouch.setRate(1.0f);
   soundtouch.clear();
+  latencySamples = juce::jmax(
+      0, soundtouch.getSetting(SETTING_INITIAL_LATENCY));
 
   if (samplesPerBlock > 0 && currentChannels > 0) {
     interleavedInput.resize(
-        static_cast<size_t>(samplesPerBlock * currentChannels));
+        static_cast<size_t>(maxInputFrames * currentChannels));
+    dryFallback.resize(
+        static_cast<size_t>(maxInputFrames * currentChannels));
     receiveBuffer.resize(
         static_cast<size_t>(samplesPerBlock * currentChannels * 2));
+    const int fifoFrames =
+        juce::jmax(samplesPerBlock * 4,
+                   samplesPerBlock + latencySamples + 4096);
+    outputFifo.resize(
+        static_cast<size_t>(fifoFrames * currentChannels), 0.0f);
   }
 
   primeLatency();
@@ -74,8 +92,7 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
 
 void PitchShiftProcessor::reset() {
   soundtouch.clear();
-  outputFifo.clear();
-  outputReadPos = 0;
+  fifoClear();
   primeLatency();
 }
 
@@ -85,9 +102,12 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   pitchSemiTones = semitones;
   if (prepared) {
     soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-    // Pitch changes should feel immediate to the user. Flush time-domain
-    // history so old-pitch frames don't continue leaking after a key change.
-    reset();
+    // SoundTouch supports continuous pitch updates. Keep its queued frames and
+    // overlap history so changing key does not insert a silent re-prime gap.
+    refreshLatencyFromSettings();
+    pitchTransitionFramesTotal =
+        juce::jmax(latencySamples, maxBlockFrames * 4);
+    pitchTransitionFramesRemaining = pitchTransitionFramesTotal;
   }
 }
 
@@ -146,89 +166,162 @@ void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
     return;
 
   const int numSamples = buffer.getNumSamples();
-  if (numSamples <= 0)
-    return;
+  process(buffer, numSamples, buffer, numSamples);
+}
 
-  if (buffer.getNumChannels() != currentChannels) {
-    prepare(currentSampleRate, numSamples, buffer.getNumChannels());
+int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
+                                 const int inputFrames,
+                                 juce::AudioBuffer<float> &output,
+                                 const int outputFrames) {
+  if (!prepared || inputFrames <= 0 || outputFrames <= 0 ||
+      inputFrames > maxInputFrames || outputFrames > maxBlockFrames ||
+      input.getNumChannels() < currentChannels ||
+      output.getNumChannels() < currentChannels) {
+    output.clear();
+    return 0;
   }
 
-  const size_t requiredInputSize =
-      static_cast<size_t>(numSamples * currentChannels);
-  if (interleavedInput.size() < requiredInputSize)
-    interleavedInput.resize(requiredInputSize);
+  if (pitchSemiTones == 0 && juce::approximatelyEqual(tempoRatio, 1.0)) {
+    for (int channel = 0; channel < currentChannels; ++channel)
+      output.copyFrom(channel, 0, input, channel, 0, outputFrames);
+    return outputFrames;
+  }
 
-  for (int sample = 0; sample < numSamples; ++sample) {
+  for (int sample = 0; sample < inputFrames; ++sample) {
     const size_t base = static_cast<size_t>(sample * currentChannels);
-    for (int ch = 0; ch < currentChannels; ++ch)
-      interleavedInput[base + static_cast<size_t>(ch)] =
-          buffer.getSample(ch, sample);
+    for (int channel = 0; channel < currentChannels; ++channel)
+      interleavedInput[base + static_cast<size_t>(channel)] =
+          input.getSample(channel, sample);
+  }
+  for (int sample = 0; sample < outputFrames; ++sample) {
+    const int sourceSample = juce::jlimit(
+        0, inputFrames - 1,
+        static_cast<int>((static_cast<int64_t>(sample) * inputFrames) /
+                         outputFrames));
+    const size_t outputBase =
+        static_cast<size_t>(sample * currentChannels);
+    for (int channel = 0; channel < currentChannels; ++channel)
+      dryFallback[outputBase + static_cast<size_t>(channel)] =
+          input.getSample(channel, sourceSample);
   }
 
-  soundtouch.putSamples(interleavedInput.data(), numSamples);
-
-  const int framesNeeded = numSamples;
-  while (static_cast<int>((outputFifo.size() - outputReadPos) /
-                          static_cast<size_t>(currentChannels)) <
-         framesNeeded) {
-    const int maxFrames =
-        std::max(framesNeeded,
-                 static_cast<int>(receiveBuffer.size() /
-                                  static_cast<size_t>(currentChannels)));
-    if (receiveBuffer.size() <
-        static_cast<size_t>(maxFrames * currentChannels)) {
-      receiveBuffer.resize(
-          static_cast<size_t>(maxFrames * currentChannels));
-    }
-
-    const int received = soundtouch.receiveSamples(receiveBuffer.data(),
-                                                   maxFrames);
+  soundtouch.putSamples(interleavedInput.data(),
+                        static_cast<unsigned int>(inputFrames));
+  while (fifoFramesAvailable() < outputFrames) {
+    const int receiveCapacity = static_cast<int>(
+        receiveBuffer.size() / static_cast<size_t>(currentChannels));
+    const int received = static_cast<int>(soundtouch.receiveSamples(
+        receiveBuffer.data(), static_cast<unsigned int>(receiveCapacity)));
     if (received <= 0)
       break;
-
-    const size_t appendCount =
-        static_cast<size_t>(received * currentChannels);
-    outputFifo.insert(outputFifo.end(), receiveBuffer.begin(),
-                      receiveBuffer.begin() + appendCount);
+    fifoPush(receiveBuffer.data(), received);
   }
 
-  const int availableFrames =
-      static_cast<int>((outputFifo.size() - outputReadPos) /
-                       static_cast<size_t>(currentChannels));
-
-  if (availableFrames < framesNeeded) {
-    const size_t padCount =
-        static_cast<size_t>((framesNeeded - availableFrames) * currentChannels);
-    outputFifo.insert(outputFifo.end(), padCount, 0.0f);
-  }
-
-  for (int sample = 0; sample < numSamples; ++sample) {
-    const size_t base = outputReadPos +
-                        static_cast<size_t>(sample * currentChannels);
-    for (int ch = 0; ch < currentChannels; ++ch) {
-      buffer.setSample(ch, sample,
-                       outputFifo[base + static_cast<size_t>(ch)]);
+  const int popped = fifoPop(interleavedInput.data(), outputFrames);
+  for (int sample = 0; sample < outputFrames; ++sample) {
+    const size_t base = static_cast<size_t>(sample * currentChannels);
+    float processedMix = 1.0f;
+    if (pitchTransitionFramesRemaining > 0 &&
+        pitchTransitionFramesTotal > 0) {
+      processedMix =
+          1.0f -
+          (static_cast<float>(pitchTransitionFramesRemaining) /
+           static_cast<float>(pitchTransitionFramesTotal));
+      --pitchTransitionFramesRemaining;
+    }
+    for (int channel = 0; channel < currentChannels; ++channel) {
+      const size_t index = base + static_cast<size_t>(channel);
+      const float dry = dryFallback[index];
+      const float processed =
+          sample < popped ? interleavedInput[index] : dry;
+      output.setSample(channel, sample,
+                       dry + ((processed - dry) * processedMix));
     }
   }
+  return outputFrames;
+}
 
-  outputReadPos += requiredInputSize;
-  if (outputReadPos > outputFifo.size() / 2) {
-    outputFifo.erase(outputFifo.begin(), outputFifo.begin() +
-                                            static_cast<std::ptrdiff_t>(
-                                                outputReadPos));
-    outputReadPos = 0;
-  }
+int PitchShiftProcessor::requiredInputFrames(
+    const int outputFrames) noexcept {
+  if (outputFrames <= 0)
+    return 0;
+  const double exact =
+      (static_cast<double>(outputFrames) * tempoRatio) +
+      inputFrameRemainder;
+  const int frames = static_cast<int>(std::floor(exact));
+  inputFrameRemainder = exact - static_cast<double>(frames);
+  return juce::jlimit(1, maxInputFrames, frames);
 }
 
 void PitchShiftProcessor::primeLatency() {
   latencySamples = soundtouch.getSetting(SETTING_INITIAL_LATENCY);
   if (latencySamples < 0)
     latencySamples = 0;
-  outputFifo.clear();
+  fifoClear();
+  fifoPushSilence(latencySamples);
+}
+
+int PitchShiftProcessor::fifoFramesAvailable() const noexcept {
+  if (currentChannels <= 0)
+    return 0;
+  return static_cast<int>(
+      outputSampleCount / static_cast<size_t>(currentChannels));
+}
+
+void PitchShiftProcessor::fifoClear() noexcept {
   outputReadPos = 0;
-  if (latencySamples > 0 && currentChannels > 0) {
-    outputFifo.resize(static_cast<size_t>(latencySamples * currentChannels),
-                      0.0f);
+  outputWritePos = 0;
+  outputSampleCount = 0;
+}
+
+void PitchShiftProcessor::fifoPush(const float *samples,
+                                   const int frames) noexcept {
+  if (samples == nullptr || frames <= 0 || currentChannels <= 0 ||
+      outputFifo.empty()) {
+    return;
+  }
+  const size_t sampleCount =
+      static_cast<size_t>(frames * currentChannels);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    if (outputSampleCount >= outputFifo.size()) {
+      outputReadPos = (outputReadPos + 1) % outputFifo.size();
+      --outputSampleCount;
+    }
+    outputFifo[outputWritePos] = samples[i];
+    outputWritePos = (outputWritePos + 1) % outputFifo.size();
+    ++outputSampleCount;
+  }
+}
+
+int PitchShiftProcessor::fifoPop(float *destination,
+                                 const int frames) noexcept {
+  if (destination == nullptr || frames <= 0 || currentChannels <= 0 ||
+      outputFifo.empty()) {
+    return 0;
+  }
+  const int available = fifoFramesAvailable();
+  const int framesToPop = juce::jmin(frames, available);
+  const size_t samplesToPop =
+      static_cast<size_t>(framesToPop * currentChannels);
+  for (size_t i = 0; i < samplesToPop; ++i) {
+    destination[i] = outputFifo[outputReadPos];
+    outputReadPos = (outputReadPos + 1) % outputFifo.size();
+  }
+  outputSampleCount -= samplesToPop;
+  return framesToPop;
+}
+
+void PitchShiftProcessor::fifoPushSilence(const int frames) noexcept {
+  if (frames <= 0 || currentChannels <= 0 || outputFifo.empty())
+    return;
+  const size_t sampleCount =
+      static_cast<size_t>(frames * currentChannels);
+  for (size_t i = 0; i < sampleCount; ++i) {
+    if (outputSampleCount >= outputFifo.size())
+      break;
+    outputFifo[outputWritePos] = 0.0f;
+    outputWritePos = (outputWritePos + 1) % outputFifo.size();
+    ++outputSampleCount;
   }
 }
 
@@ -249,34 +342,8 @@ void PitchShiftProcessor::refreshLatencyFromSettings() {
   if (updatedLatency == latencySamples)
     return;
 
-  if (currentChannels <= 0) {
-    latencySamples = updatedLatency;
-    return;
-  }
-
-  const int deltaSamples = updatedLatency - latencySamples;
   latencySamples = updatedLatency;
-
-  if (deltaSamples > 0) {
-    const size_t padCount =
-        static_cast<size_t>(deltaSamples * currentChannels);
-    outputFifo.insert(
-        outputFifo.begin() + static_cast<std::ptrdiff_t>(outputReadPos),
-        padCount, 0.0f);
-    return;
-  }
-
-  const size_t availableToSkip =
-      outputFifo.size() > outputReadPos ? (outputFifo.size() - outputReadPos)
-                                        : 0u;
-  const size_t skipCount =
-      std::min(static_cast<size_t>((-deltaSamples) * currentChannels),
-               availableToSkip);
-  outputReadPos += skipCount;
-  if (outputReadPos > outputFifo.size() / 2) {
-    outputFifo.erase(outputFifo.begin(), outputFifo.begin() +
-                                            static_cast<std::ptrdiff_t>(
-                                                outputReadPos));
-    outputReadPos = 0;
-  }
+  soundtouch.clear();
+  fifoClear();
+  fifoPushSilence(latencySamples);
 }

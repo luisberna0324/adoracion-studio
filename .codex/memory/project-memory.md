@@ -41,6 +41,8 @@
 
 ## Audio and threading contracts
 
+- The intended pitch/tempo backend is Bungee. SoundTouch should only be treated
+  as a fallback when explicitly required by platform constraints.
 - Meters show real stem signal after per-channel gain and `S/M` state.
 - Meter display must not be artificially reduced by global mix normalization.
 - Do not block UI callbacks with heavy transport or disk work.

@@ -18,6 +18,8 @@ public:
                             juce::String *errorMessage = nullptr);
 
   bool triggerForSectionKey(const juce::String &sectionKey);
+  int resolveTriggerId(const juce::String &sectionKey) const;
+  bool triggerForId(int triggerId) noexcept;
   void render(juce::AudioBuffer<float> &output) noexcept;
 
   int getLoadedSectionCount() const noexcept;
@@ -38,4 +40,6 @@ private:
   double outputSampleRate = 44100.0;
   juce::String lastMissingKey;
   std::unordered_map<std::string, std::shared_ptr<SectionSample>> samplesByKey;
+  std::unordered_map<std::string, int> triggerIdByKey;
+  std::vector<std::shared_ptr<SectionSample>> samplesByTriggerId;
 };

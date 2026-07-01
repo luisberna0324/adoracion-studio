@@ -1,7 +1,7 @@
 #pragma once
 
-#include "PitchShiftProcessor.h"
 #include "StemTrack.h"
+#include "audio/TimeStretchProcessor.h"
 #include <JuceHeader.h>
 #include <atomic>
 #include <vector>
@@ -16,11 +16,18 @@ public:
   void mixStems(const std::vector<std::unique_ptr<StemTrack>> &stems,
                 const std::atomic<bool> *clickGuideStates,
                 const std::atomic<bool> *pitchShiftStates, int stemCount,
-                int numSamples, int numChannels);
+                int inputSamples, int numChannels);
+  void renderDirect(const std::vector<std::unique_ptr<StemTrack>> &stems,
+                    int stemCount, juce::AudioBuffer<float> &output);
 
   void renderToOutput(juce::AudioBuffer<float> &output, bool timeProcessActive,
+                      int inputSamples,
                       float fadeStart, float fadeEnd, float windowFadeStart,
                       float windowFadeEnd);
+  int requiredInputFrames(int outputFrames) noexcept;
+  int getOutputLatencySamples() const noexcept {
+    return outputLatencySamples;
+  }
 
 private:
   class SimpleDelayLine {
@@ -28,7 +35,7 @@ private:
     void prepare(int channels, int maxDelaySamples);
     void setDelay(int delaySamplesToUse);
     void reset();
-    void process(juce::AudioBuffer<float> &buffer);
+    void process(juce::AudioBuffer<float> &buffer, int numSamples);
     int getDelaySamples() const noexcept { return delaySamples; }
 
   private:
@@ -37,10 +44,12 @@ private:
     int delaySamples = 0;
     int maxDelaySamples = 0;
     int numChannels = 0;
+    int historySamples = 0;
   };
 
   void ensureBuffers(int numChannels, int numSamples);
-  void applyFade(juce::AudioBuffer<float> &buffer, float start, float end);
+  void applyFade(juce::AudioBuffer<float> &buffer, int numSamples, float start,
+                 float end);
   void updateLatencyDelays(int melodicLatency, int percussionLatency,
                            int dryLatency);
 
@@ -48,16 +57,18 @@ private:
   juce::AudioBuffer<float> stemTempBuffer;
   juce::AudioBuffer<float> percussionBuffer;
   juce::AudioBuffer<float> dryBuffer;
+  juce::AudioBuffer<float> processedBuffer;
 
-  PitchShiftProcessor pitchShiftMelodic;
-  PitchShiftProcessor tempoShiftPercussion;
-  PitchShiftProcessor tempoShiftGuide;
+  TimeStretchProcessor pitchShiftMelodic;
+  TimeStretchProcessor tempoShiftPercussion;
+  TimeStretchProcessor tempoShiftGuide;
   SimpleDelayLine pitchDelayMelodic;
   SimpleDelayLine pitchDelayPercussion;
   SimpleDelayLine pitchDelayGuide;
   int lastMelodicDelaySamples = 0;
   int lastPercussionDelaySamples = 0;
   int lastGuideDelaySamples = 0;
+  int outputLatencySamples = 0;
 
   double currentSampleRate = 0.0;
   int currentBlockSize = 0;

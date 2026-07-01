@@ -1,1 +1,0 @@
-/usr/bin/c++  -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/MTControlsAudioEngineCoreTests.dir/tests/audio_engine_core_tests.cpp.o CMakeFiles/MTControlsAudioEngineCoreTests.dir/src/audio/TransportClock.cpp.o CMakeFiles/MTControlsAudioEngineCoreTests.dir/src/audio/SectionScheduler.cpp.o -o MTControlsAudioEngineCoreTests

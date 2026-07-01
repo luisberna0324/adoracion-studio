@@ -1,3 +1,0 @@
-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/soundtouch-populate.dir
-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/edit_cache.dir
-/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/build-tests/_deps/soundtouch-subbuild/CMakeFiles/rebuild_cache.dir

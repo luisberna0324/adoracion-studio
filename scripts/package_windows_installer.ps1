@@ -17,11 +17,12 @@ param(
 $ErrorActionPreference = "Stop"
 
 if ([string]::IsNullOrWhiteSpace($StandaloneDir)) {
-    $StandaloneDir = if ($Architecture -eq "x86") {
-        "build/windows-x86-release/MTControls_artefacts/Release/Standalone"
+    $buildDir = if ($Architecture -eq "x86") {
+        "windows-x86-release"
     } else {
-        "build/windows-release/MTControls_artefacts/Release/Standalone"
+        "windows-release"
     }
+    $StandaloneDir = "build/$buildDir/MTControls_artefacts/Release/Standalone"
 }
 
 if (!(Test-Path -LiteralPath $IssFile)) {
@@ -42,6 +43,17 @@ New-Item -ItemType Directory -Force -Path $outputFull | Out-Null
 $exe = Get-ChildItem -Path $standaloneFull -Filter *.exe -File | Select-Object -First 1
 if ($null -eq $exe) {
     throw "No .exe found in standalone directory: $standaloneFull"
+}
+
+if ($Architecture -eq "x64") {
+    $bungeeDll = Join-Path $standaloneFull "bungee.dll"
+    $bungeeLicense = Join-Path $standaloneFull "ThirdPartyLicenses\Bungee-MPL-2.0.txt"
+    if (!(Test-Path -LiteralPath $bungeeDll)) {
+        throw "Required Bungee runtime missing from Standalone output: $bungeeDll"
+    }
+    if (!(Test-Path -LiteralPath $bungeeLicense)) {
+        throw "Required Bungee license missing from Standalone output: $bungeeLicense"
+    }
 }
 
 $ffmpegDestDir = Join-Path $standaloneFull "ffmpeg"

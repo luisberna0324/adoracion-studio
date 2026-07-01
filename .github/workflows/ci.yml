@@ -156,6 +156,9 @@ jobs:
       - name: Install Ninja
         run: brew install ninja
 
+      - name: Bootstrap required Bungee SDK
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (macOS)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
@@ -164,6 +167,16 @@ jobs:
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
+
+      - name: Verify Bungee bundled (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/macos-release/MTControls_artefacts/Release/Standalone/PlayWorship.app"
+          test -f "${APP}/Contents/Frameworks/libbungee.dylib"
+          test -f "${APP}/Contents/Resources/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+          otool -L "${APP}/Contents/MacOS/PlayWorship" | grep -q "@rpath/libbungee.dylib"
+          codesign --verify --deep --strict "${APP}"
 
       - name: Package PKG installer (macOS)
         env:
@@ -198,7 +211,9 @@ jobs:
   build-windows:
     name: Build Windows artifacts
     needs: prepare
-    runs-on: windows-latest
+    # windows-latest currently resolves to the VS 2026 image, which does not
+    # include a Visual Studio 2022 instance for our pinned CMake generator.
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
@@ -223,6 +238,11 @@ jobs:
           path: third_party/JUCE
           fetch-depth: 1
 
+      - name: Bootstrap required Bungee SDK
+        if: matrix.arch == 'x64'
+        shell: bash
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (Windows)
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
@@ -231,6 +251,32 @@ jobs:
 
       - name: Build (Windows)
         run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Verify Bungee bundled (Windows)
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          $dir = "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone"
+          if (!(Test-Path "$dir/bungee.dll")) { throw "Missing bungee.dll" }
+          if (!(Test-Path "$dir/ThirdPartyLicenses/Bungee-MPL-2.0.txt")) {
+            throw "Missing Bungee license"
+          }
+
+      - name: Verify legacy SoundTouch backend (Windows x86)
+        if: matrix.arch == 'x86'
+        shell: pwsh
+        run: |
+          $dir = "build/${{ matrix.build_dir }}/MTControls_artefacts/Release/Standalone"
+          $cache = "build/${{ matrix.build_dir }}/CMakeCache.txt"
+          if (!(Get-ChildItem -Path $dir -Filter *.exe -File | Select-Object -First 1)) {
+            throw "Missing Windows x86 standalone executable"
+          }
+          if (Test-Path "$dir/bungee.dll") {
+            throw "Windows x86 must not bundle the incompatible x64 Bungee runtime"
+          }
+          if (!(Select-String -Path $cache -Pattern '^MTCONTROLS_USE_BUNGEE:BOOL=OFF$' -Quiet)) {
+            throw "Windows x86 was not configured with the legacy SoundTouch backend"
+          }
 
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -311,6 +357,9 @@ jobs:
           mv third_party/ffmpeg/linux/ffmpeg.bin third_party/ffmpeg/linux/ffmpeg
           chmod +x third_party/ffmpeg/linux/ffmpeg
 
+      - name: Bootstrap required Bungee SDK
+        run: bash scripts/bootstrap_bungee.sh
+
       - name: Configure (Linux)
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
@@ -323,6 +372,15 @@ jobs:
 
       - name: Build (Linux)
         run: cmake --build --preset linux-release
+
+      - name: Verify Bungee bundled (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR="build/linux-release/MTControls_artefacts/Release/Standalone"
+          test -f "${DIR}/libbungee.so"
+          test -f "${DIR}/ThirdPartyLicenses/Bungee-MPL-2.0.txt"
+          LD_LIBRARY_PATH="${DIR}" ldd "${DIR}/PlayWorship" | grep -q "libbungee.so"
 
       - name: Verify ffmpeg bundled in Standalone (Linux)
         shell: bash
@@ -514,7 +572,7 @@ jobs:
             echo "### Enlaces directos"
             echo "- macOS (.pkg): ${MAC_URL}"
             echo "- Windows x64 (.exe): ${WIN_X64_URL}"
-            echo "- Windows x86 (.exe): ${WIN_X86_URL}"
+            echo "- Windows x86 legado (.exe, SoundTouch): ${WIN_X86_URL}"
             if [[ "${PUBLISH_INSTALLERS}" == "true" ]]; then
               echo "- Linux (.deb): ${LINUX_URL}"
             fi

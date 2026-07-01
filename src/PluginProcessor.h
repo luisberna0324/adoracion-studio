@@ -11,8 +11,11 @@
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
+#include "audio/SectionScheduler.h"
 #include "audio/StemOutputRouter.h"
 #include "audio/StemOutputRoutingState.h"
+#include "audio/TimeStretchProcessor.h"
+#include "audio/TransportClock.h"
 #include <JuceHeader.h>
 #include <array>
 #include <functional>
@@ -265,6 +268,7 @@ public:
 
 private:
   static constexpr int maxStemCount = 64;
+  static constexpr int maxRealtimeBlockSize = 8192;
   static constexpr int midiSourceKinds = 2; // CC + Note
   static constexpr int midiSourceStateSlots = midiSourceKinds * 16 * 128;
   enum class TransportState : int { stopped = 0, playing, paused };
@@ -295,8 +299,8 @@ private:
   std::atomic<int> dynamicGuideOutputWidthState{2};
 
   juce::AudioFormatManager playbackFormatManager;
+  std::vector<std::unique_ptr<juce::TimeSliceThread>> stemReadThreads;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
-  juce::MixerAudioSource mixerSource;
   std::array<std::atomic<float>, maxStemCount> stemLevels;
   std::array<std::atomic<float>, maxStemCount> stemVolumes;
   std::array<std::atomic<float>, maxStemCount> stemGains;
@@ -307,9 +311,9 @@ private:
   std::array<std::atomic<bool>, maxStemCount> stemPitchShiftStates;
   std::array<std::atomic<int>, maxStemCount> stemOutputChannels;
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
-  std::array<PitchShiftProcessor, maxStemCount> stemPitchProcessors;
+  std::array<TimeStretchProcessor, maxStemCount> stemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
-  std::array<PitchShiftProcessor, maxStemCount> outgoingStemPitchProcessors;
+  std::array<TimeStretchProcessor, maxStemCount> outgoingStemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> outgoingStemPitchDelayLines;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
@@ -321,10 +325,11 @@ private:
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
   PadsEngine padsEngine;
-  juce::AudioBuffer<float> stemRoutingTempBuffer;
-  juce::AudioBuffer<float> metronomeRenderBuffer;
-  juce::AudioBuffer<float> padsRenderBuffer;
-  juce::AudioBuffer<float> dynamicGuideRenderBuffer;
+  juce::AudioBuffer<float> stemRoutingInputBuffer;
+  juce::AudioBuffer<float> stemRoutingTempStorage;
+  juce::AudioBuffer<float> metronomeRenderStorage;
+  juce::AudioBuffer<float> padsRenderStorage;
+  juce::AudioBuffer<float> dynamicGuideRenderStorage;
   std::atomic<bool> padsEnabledState{true};
   std::atomic<float> padsVolume{1.0f};
   std::atomic<float> padsGain{0.75f};
@@ -343,11 +348,11 @@ private:
   std::atomic<float> songCrossfadeIncomingGain{1.0f};
   std::atomic<float> songCrossfadeOutgoingGain{0.0f};
   std::vector<std::unique_ptr<StemTrack>> outgoingStemTracks;
-  juce::MixerAudioSource outgoingMixerSource;
-  juce::AudioBuffer<float> outgoingStemRenderBuffer;
+  juce::AudioBuffer<float> outgoingStemRenderStorage;
   const double songCrossfadeDurationSec = 2.5;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
+  std::atomic<bool> audioCallbackActive{false};
   // SpinLock protects stemTransportSources vector modifications.
   // Unlike CriticalSection, SpinLock does NOT make kernel calls, so it cannot
   // cause priority inversion or sleep the audio thread.
@@ -366,6 +371,14 @@ private:
   std::atomic<bool> songLoaded{false};
   mutable juce::CriticalSection midiBindingsLock;
   std::vector<MidiBinding> midiBindings;
+  static constexpr int maxRealtimeMidiBindings = 512;
+  struct MidiBindingSnapshot {
+    int count = 0;
+    std::array<MidiBinding, maxRealtimeMidiBindings> bindings{};
+  };
+  std::array<MidiBindingSnapshot, 3> midiBindingSnapshots{};
+  std::atomic<int> publishedMidiBindingSnapshot{0};
+  mutable std::atomic<int> readingMidiBindingSnapshot{-1};
   std::array<int, midiSourceStateSlots> midiLastSourceValues{};
   std::atomic<int> midiLearnTargetId{-1};
   std::atomic<int> midiLearnPendingTargetId{-1};
@@ -392,12 +405,14 @@ private:
   int dynamicGuideLastPartIndex = -1;
   bool dynamicGuideWasPlaying = false;
   juce::String dynamicGuideLastMissingSection;
+  std::atomic<int> dynamicGuideMissingPartIndex{-1};
   mutable juce::SpinLock dynamicGuideWarningLock;
 
   struct ArrangementRuntimePart {
     juce::String id;
     juce::String name;
     juce::String sectionKey;
+    int guideTriggerId = -1;
     double startSec = 0.0;
     double endSec = 0.0;
   };
@@ -408,7 +423,10 @@ private:
   std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
   
-  // Custom hybrid transport state
+  // Frame-based source of truth. The legacy atomics remain as UI mirrors
+  // during the incremental engine-v2 migration.
+  playworship::audio::TransportClock transportClock;
+  playworship::audio::SectionScheduler sectionScheduler;
   std::atomic<juce::int64> globalSamplePosition{0};
   std::atomic<juce::int64> requestedSeekPosition{-1};
   
@@ -417,6 +435,7 @@ private:
   std::atomic<double> seekTargetSeconds{0.0};
 
   MetronomeEngine metronome;
+  SimpleDelayLine metronomeLatencyDelay;
 
   // Master fade (0..1) multiplier
   std::atomic<bool> fadeActive{false};
@@ -427,6 +446,7 @@ private:
   int routingPitchLatencySamples = 0;
   int outgoingRoutingPitchLatencySamples = 0;
   static constexpr int kMaxRoutingPitchLatencySamples = 65536;
+  void syncMetronomeToSourceSeconds(double sourceSeconds) noexcept;
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;
@@ -448,9 +468,13 @@ private:
   double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
   double getArrangementStartSeconds() const noexcept;
+  void rebuildSectionScheduler() noexcept;
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;
   void processMidiMapping(const juce::MidiBuffer &midiMessages);
+  void publishMidiBindingsLocked() noexcept;
+  int acquireMidiBindingSnapshot() const noexcept;
+  void releaseMidiBindingSnapshot() const noexcept;
   static int midiSourceStateIndex(MidiBindingSourceType sourceType, int channel,
                                   int data1) noexcept;
   static bool isMidiTargetValid(int targetId) noexcept;

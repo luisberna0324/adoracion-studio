@@ -1,7 +1,0 @@
-pid=25702
-app=PlayWorship
-interval_sec=1
-duration_sec=45
-sample_every_sec=15
-output=./perf-bungee/profile_PlayWorship_20260620_010316
-Profiling started. Press Ctrl+C to stop early.

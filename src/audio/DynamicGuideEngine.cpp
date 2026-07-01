@@ -91,6 +91,8 @@ bool DynamicGuideEngine::loadGuideDirectories(
     juce::AudioFormatManager &formatManager,
     juce::String *errorMessage) {
   samplesByKey.clear();
+  triggerIdByKey.clear();
+  samplesByTriggerId.clear();
   reset();
   std::unordered_map<std::string, int> samplePriorityByKey;
 
@@ -153,21 +155,41 @@ bool DynamicGuideEngine::loadGuideDirectories(
       *errorMessage = "No dynamic guide samples found.";
     return false;
   }
+  samplesByTriggerId.reserve(samplesByKey.size());
+  for (const auto &entry : samplesByKey) {
+    const int triggerId = static_cast<int>(samplesByTriggerId.size());
+    triggerIdByKey.emplace(entry.first, triggerId);
+    samplesByTriggerId.push_back(entry.second);
+  }
   return true;
 }
 
 bool DynamicGuideEngine::triggerForSectionKey(const juce::String &sectionKey) {
-  const auto normalized = normalizeSectionKey(sectionKey);
-  if (normalized.isEmpty())
-    return false;
-
-  const auto it = samplesByKey.find(toKeyString(normalized));
-  if (it == samplesByKey.end()) {
+  const int triggerId = resolveTriggerId(sectionKey);
+  if (triggerId < 0) {
     lastMissingKey = sectionKey.trim();
     return false;
   }
+  return triggerForId(triggerId);
+}
 
-  activeSample = it->second.get();
+int DynamicGuideEngine::resolveTriggerId(
+    const juce::String &sectionKey) const {
+  const auto normalized = normalizeSectionKey(sectionKey);
+  if (normalized.isEmpty())
+    return -1;
+
+  const auto it = triggerIdByKey.find(toKeyString(normalized));
+  return it == triggerIdByKey.end() ? -1 : it->second;
+}
+
+bool DynamicGuideEngine::triggerForId(const int triggerId) noexcept {
+  if (!juce::isPositiveAndBelow(
+          triggerId, static_cast<int>(samplesByTriggerId.size()))) {
+    return false;
+  }
+  activeSample =
+      samplesByTriggerId[static_cast<size_t>(triggerId)].get();
   activePosition = 0.0;
   activeIncrement = activeSample->sampleRate > 0.0 && outputSampleRate > 0.0
                         ? (activeSample->sampleRate / outputSampleRate)
