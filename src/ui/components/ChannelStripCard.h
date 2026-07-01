@@ -95,6 +95,7 @@ private:
   class LearnAwareSlider final : public juce::Slider {
   public:
     std::function<void()> onPointerDown;
+    std::function<void()> onPointerDrag;
     std::function<void()> onDragEnd;
 
     void mouseDown(const juce::MouseEvent &event) override {
@@ -107,6 +108,12 @@ private:
       juce::Slider::mouseUp(event);
       if (onDragEnd)
         onDragEnd();
+    }
+
+    void mouseDrag(const juce::MouseEvent &event) override {
+      juce::Slider::mouseDrag(event);
+      if (onPointerDrag)
+        onPointerDrag();
     }
   };
 
@@ -141,6 +148,7 @@ private:
   bool powerVisible = false;
   bool muteAlignedToFader = false;
   bool midiLearnSelectable = false;
+  bool gainValueTooltipVisible = false;
   int midiLearnPendingTargetId = -1;
   int midiVolumeTargetId = -1;
   int midiGainTargetId = -1;
@@ -155,6 +163,8 @@ private:
   void updateMidiLearnBlinkTimer();
   void refreshMidiLearnTooltips();
 
+  static juce::String formatGainDecibels(float gain);
+  void drawGainValueTooltip(juce::Graphics &g) const;
   void configureLabel(juce::Label &label, const juce::String &text, float size,
                       float kerning, bool uppercase);
   void configureKnob(juce::Slider &slider, double value);

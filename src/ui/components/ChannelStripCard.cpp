@@ -56,8 +56,11 @@ ChannelStripCard::ChannelStripCard(
 
   configureKnob(gainKnob, 1.0);
   gainKnob.onPointerDown = [this] {
-    if (!midiLearnSelectable)
+    if (!midiLearnSelectable) {
+      gainValueTooltipVisible = true;
+      repaint();
       return;
+    }
     if (onMidiLearnTargetSelected && midiGainTargetId >= 0)
       onMidiLearnTargetSelected(midiGainTargetId);
   };
@@ -113,10 +116,20 @@ ChannelStripCard::ChannelStripCard(
     }
     if (onGainChanged)
       onGainChanged(static_cast<float>(gainKnob.getValue()));
+    if (gainValueTooltipVisible)
+      repaint();
+  };
+  gainKnob.onPointerDrag = [this] {
+    if (midiLearnSelectable)
+      return;
+    gainValueTooltipVisible = true;
+    repaint();
   };
   gainKnob.onDragEnd = [this] {
     if (midiLearnSelectable)
       return;
+    gainValueTooltipVisible = false;
+    repaint();
     if (onGainDragEnded)
       onGainDragEnded(static_cast<float>(gainKnob.getValue()));
   };
@@ -180,6 +193,8 @@ void ChannelStripCard::paint(juce::Graphics &g) {
 }
 
 void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
+  drawGainValueTooltip(g);
+
   if (!midiLearnSelectable)
     return;
 
@@ -216,6 +231,35 @@ void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
     drawLearnState(soloButton.getBounds().toFloat(), midiSoloTargetId);
   if (midiPowerTargetId >= 0 && powerButton.isVisible())
     drawLearnState(powerButton.getBounds().toFloat(), midiPowerTargetId);
+}
+
+juce::String ChannelStripCard::formatGainDecibels(const float gain) {
+  if (gain <= 0.00001f)
+    return "-∞ dB";
+
+  const float decibels = juce::Decibels::gainToDecibels(gain);
+  const auto sign = decibels > 0.05f ? "+" : "";
+  return juce::String(sign) + juce::String(decibels, 1) + " dB";
+}
+
+void ChannelStripCard::drawGainValueTooltip(juce::Graphics &g) const {
+  if (!gainValueTooltipVisible || !gainKnob.isVisible())
+    return;
+
+  const auto text =
+      "Gain " + formatGainDecibels(static_cast<float>(gainKnob.getValue()));
+  auto bubble = gainKnob.getBounds().toFloat().withSizeKeepingCentre(108.0f, 30.0f);
+  bubble.setY(static_cast<float>(gainKnob.getBottom() + 1));
+  bubble = bubble.getIntersection(getLocalBounds().toFloat().reduced(3.0f));
+
+  g.setColour(UITheme::panelDark.withAlpha(0.92f));
+  g.fillRoundedRectangle(bubble, 5.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.55f));
+  g.drawRoundedRectangle(bubble, 5.0f, 1.0f);
+  g.setColour(juce::Colours::white.withAlpha(0.96f));
+  g.setFont(juce::FontOptions(16.0f).withStyle("Bold"));
+  g.drawFittedText(text, bubble.toNearestInt().reduced(5, 2),
+                   juce::Justification::centred, 1);
 }
 
 void ChannelStripCard::resized() {
