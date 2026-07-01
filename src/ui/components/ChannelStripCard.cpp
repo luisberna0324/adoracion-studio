@@ -56,8 +56,11 @@ ChannelStripCard::ChannelStripCard(
 
   configureKnob(gainKnob, 1.0);
   gainKnob.onPointerDown = [this] {
-    if (!midiLearnSelectable)
+    if (!midiLearnSelectable) {
+      gainValueTooltipVisible = true;
+      repaint();
       return;
+    }
     if (onMidiLearnTargetSelected && midiGainTargetId >= 0)
       onMidiLearnTargetSelected(midiGainTargetId);
   };
@@ -113,10 +116,20 @@ ChannelStripCard::ChannelStripCard(
     }
     if (onGainChanged)
       onGainChanged(static_cast<float>(gainKnob.getValue()));
+    if (gainValueTooltipVisible)
+      repaint();
+  };
+  gainKnob.onPointerDrag = [this] {
+    if (midiLearnSelectable)
+      return;
+    gainValueTooltipVisible = true;
+    repaint();
   };
   gainKnob.onDragEnd = [this] {
     if (midiLearnSelectable)
       return;
+    gainValueTooltipVisible = false;
+    repaint();
     if (onGainDragEnded)
       onGainDragEnded(static_cast<float>(gainKnob.getValue()));
   };
@@ -180,6 +193,9 @@ void ChannelStripCard::paint(juce::Graphics &g) {
 }
 
 void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
+  drawGainGuides(g);
+  drawGainValueTooltip(g);
+
   if (!midiLearnSelectable)
     return;
 
@@ -216,6 +232,79 @@ void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
     drawLearnState(soloButton.getBounds().toFloat(), midiSoloTargetId);
   if (midiPowerTargetId >= 0 && powerButton.isVisible())
     drawLearnState(powerButton.getBounds().toFloat(), midiPowerTargetId);
+}
+
+juce::String ChannelStripCard::formatGainDecibels(const float gain) {
+  if (gain <= 0.00001f)
+    return "-∞ dB";
+
+  const float decibels = juce::Decibels::gainToDecibels(gain);
+  const auto sign = decibels > 0.05f ? "+" : "";
+  return juce::String(sign) + juce::String(decibels, 1) + " dB";
+}
+
+void ChannelStripCard::drawGainGuides(juce::Graphics &g) const {
+  if (!gainKnob.isVisible())
+    return;
+
+  const auto knob = gainKnob.getBounds().toFloat();
+  if (knob.isEmpty())
+    return;
+
+  const auto centre = knob.getCentre();
+  const float radius = juce::jmin(knob.getWidth(), knob.getHeight()) * 0.5f;
+  const float labelRadius = radius + 7.0f;
+  const float startAngle = juce::MathConstants<float>::pi * 1.2f;
+  const float unityAngle = juce::MathConstants<float>::twoPi;
+  const float endAngle = juce::MathConstants<float>::pi * 2.8f;
+
+  auto pointForAngle = [centre, labelRadius](const float angle) {
+    return juce::Point<float>{centre.x + std::sin(angle) * labelRadius,
+                              centre.y - std::cos(angle) * labelRadius};
+  };
+
+  const auto textColour = UITheme::textSecondary.withAlpha(0.72f);
+  const auto unityColour = UITheme::textPrimary.withAlpha(0.78f);
+  const float fontSize = juce::jlimit(6.5f, 8.0f, 7.0f * layoutScale);
+  g.setFont(juce::FontOptions(fontSize).withStyle("Bold"));
+
+  auto drawGuideLabel = [&g](const juce::String &text, juce::Point<float> centrePoint,
+                             juce::Colour colour) {
+    constexpr float labelW = 18.0f;
+    constexpr float labelH = 9.0f;
+    g.setColour(colour);
+    g.drawFittedText(text,
+                     juce::Rectangle<float>(centrePoint.x - (labelW * 0.5f),
+                                            centrePoint.y - (labelH * 0.5f),
+                                            labelW, labelH)
+                         .toNearestInt(),
+                     juce::Justification::centred, 1);
+  };
+
+  drawGuideLabel("-", pointForAngle(startAngle), textColour);
+  drawGuideLabel("0", pointForAngle(unityAngle).translated(0.0f, -1.0f),
+                 unityColour);
+  drawGuideLabel("+6", pointForAngle(endAngle), textColour);
+}
+
+void ChannelStripCard::drawGainValueTooltip(juce::Graphics &g) const {
+  if (!gainValueTooltipVisible || !gainKnob.isVisible())
+    return;
+
+  const auto text =
+      "Gain " + formatGainDecibels(static_cast<float>(gainKnob.getValue()));
+  auto bubble = gainKnob.getBounds().toFloat().withSizeKeepingCentre(64.0f, 18.0f);
+  bubble.setY(static_cast<float>(gainKnob.getBottom() + 1));
+  bubble = bubble.getIntersection(getLocalBounds().toFloat().reduced(3.0f));
+
+  g.setColour(UITheme::panelDark.withAlpha(0.92f));
+  g.fillRoundedRectangle(bubble, 5.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.55f));
+  g.drawRoundedRectangle(bubble, 5.0f, 1.0f);
+  g.setColour(UITheme::onAccent.withAlpha(0.96f));
+  g.setFont(juce::FontOptions(8.0f).withStyle("Bold"));
+  g.drawFittedText(text, bubble.toNearestInt().reduced(3, 1),
+                   juce::Justification::centred, 1);
 }
 
 void ChannelStripCard::resized() {
