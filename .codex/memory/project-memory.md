@@ -28,6 +28,10 @@
 - Waveform progress follows the current playback position and song duration.
 - Setlist double-click loads the full song: stems, waveform, and channels.
 - The local persistence root is `~/Library/Application Support/MTControls/`.
+- Song arrangement persistence now supports a parallel virtual-clip schema:
+  `SongArrangementSnapshot.parts` remains the active legacy/runtime section list,
+  while `SongArrangementSnapshot.clips` stores non-destructive arrangement clips
+  with independent source ranges for future virtual waveform playback.
 
 ## UI contracts to preserve
 

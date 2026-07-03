@@ -27,6 +27,8 @@ public:
       std::function<void(const SongTempoRegionSnapshot &)>;
   using PendingArrangementPartProvider = std::function<int()>;
   using ActiveArrangementLoopPartProvider = std::function<int()>;
+  using CurrentArrangementPartProvider = std::function<int()>;
+  using CurrentArrangementPartIdProvider = std::function<juce::String()>;
 
   WaveformBar();
 
@@ -52,6 +54,8 @@ public:
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
+  void setCurrentArrangementPartProvider(CurrentArrangementPartProvider cb);
+  void setCurrentArrangementPartIdProvider(CurrentArrangementPartIdProvider cb);
   void setMidiLearnActive(bool active);
   void setMidiLearnPendingTarget(int targetId);
   void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
@@ -102,11 +106,14 @@ private:
     juce::Rectangle<float> leftHandle;
     juce::Rectangle<float> rightHandle;
     juce::Rectangle<float> deleteButton;
+    juce::Rectangle<float> addButton;
+    juce::Rectangle<float> addIcon;
     juce::Rectangle<float> loopButton;
     juce::Rectangle<float> loopIcon;
     juce::Rectangle<float> jumpButton;
     juce::Rectangle<float> jumpIcon;
     bool showsDeleteButton = false;
+    bool showsAddButton = false;
     bool showsLoopButton = false;
     bool showsJumpButton = false;
   };
@@ -116,6 +123,7 @@ private:
     bool leftEdge = false;
     bool rightEdge = false;
     bool deleteButton = false;
+    bool addButton = false;
     bool loopButton = false;
     bool jumpButton = false;
   };
@@ -131,6 +139,12 @@ private:
     juce::String id;
     double startSec = 0.0;
     double endSec = 0.0;
+  };
+
+  struct VisualTimelineSegment {
+    int partIndex = -1;
+    double sourceStartSec = 0.0;
+    double sourceEndSec = 0.0;
   };
 
   void timerCallback() override;
@@ -153,6 +167,8 @@ private:
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  CurrentArrangementPartProvider currentArrangementPartProvider;
+  CurrentArrangementPartIdProvider currentArrangementPartIdProvider;
   juce::TextButton followButton;
   juce::TextButton editButton;
   juce::TextButton guideMapButton;
@@ -201,6 +217,7 @@ private:
   bool selectionDragAdditive = false;
   std::vector<PartOverlayBounds> partOverlayBounds;
   int hoveredActionPartIndex = -1;
+  int hoveredAddPartIndex = -1;
   int hoveredLoopPartIndex = -1;
   int hoveredJumpPartIndex = -1;
   int pendingJumpDoubleClickPartIndex = -1;
@@ -228,6 +245,12 @@ private:
   bool isFollowTrackingActive() const;
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
+  std::vector<VisualTimelineSegment> buildVisualTimelineSegments() const;
+  double getVisualTimelineLengthSeconds() const;
+  double visualSecondsForPartStart(int partIndex) const;
+  double visualSecondsForPartEnd(int partIndex) const;
+  double sourceSecondsFromVisualSeconds(double visualSeconds) const;
+  double visualSecondsFromSourceSeconds(double sourceSeconds) const;
   std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;
   double getSnapStepSeconds() const;
@@ -236,6 +259,11 @@ private:
   bool isSnapBypassed(const juce::ModifierKeys &mods) const;
   double snapSeconds(double seconds, bool bypassSnap = false) const;
   double snapSecondsForward(double seconds) const;
+  bool usesVirtualClips() const;
+  void rebuildPartsFromClips();
+  void rebuildClipsFromParts();
+  void showInsertSectionMenu(int afterPartIndex,
+                             const juce::Rectangle<float> &anchorBounds);
   void normalizeArrangement(bool sortByStart, bool snapToGrid);
   int findPartIndexById(const juce::String &id) const;
   bool isPartSelected(int partIndex) const;

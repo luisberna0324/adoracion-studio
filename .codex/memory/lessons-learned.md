@@ -20,3 +20,13 @@ repository. Update it when a task teaches something reusable.
   release tags, treat removal of Bungee CMake wiring, `TimeStretchProcessor`,
   `BungeeProcessor`, or bundle verification as a regression unless the user
   explicitly says otherwise.
+- In virtual waveform/clip mode, every visible transport projection must use
+  the visual timeline, not raw source `position / songLength`. This includes
+  follow tracking, seek ruler, mini map, pending-jump markers, and duplicated
+  clip playheads; otherwise duplicated source ranges appear frozen or detached.
+- Dynamic Guide announcements in custom virtual arrangements must follow the
+  active arrangement part index, not source-time lookahead triggers. Duplicated
+  clips can jump backward in source time, so `guideTriggerFrame` lookahead can
+  announce the section after the duplicate instead of the duplicate itself. Keep
+  the one-bar preannounce by looking ahead to the next arrangement index from
+  the current virtual part end.

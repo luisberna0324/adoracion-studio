@@ -605,7 +605,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const int realtimeSectionCount = sectionScheduler.size();
       int mappedPartIndex = -1;
       if (realtimeSectionCount > 0) {
-        mappedPartIndex = findArrangementPartIndexForSourceTime(blockStartSec);
+        mappedPartIndex =
+            customArrangement
+                ? arrangementCurrentPartIndex.load(std::memory_order_relaxed)
+                : findArrangementPartIndexForSourceTime(blockStartSec);
         if (juce::isPositiveAndBelow(mappedPartIndex, realtimeSectionCount)) {
           arrangementCurrentPartIndex.store(mappedPartIndex,
                                             std::memory_order_relaxed);
@@ -616,9 +619,55 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           arrangementLoopPartIndex.load(std::memory_order_relaxed);
       const int pendingPartIndex =
           arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
-      const auto sectionDecision = sectionScheduler.evaluate(
-          transportClock.getPositionFrames(), sourceFramesThisBlock,
-          customArrangement, pendingPartIndex, loopPartIndex);
+      auto sectionDecision =
+          playworship::audio::SectionScheduler::BlockDecision{};
+      if (customArrangement && realtimeSectionCount > 0 &&
+          juce::isPositiveAndBelow(mappedPartIndex, realtimeSectionCount)) {
+        playworship::audio::SectionScheduler::Section currentPart;
+        if (sectionScheduler.getSection(mappedPartIndex, currentPart)) {
+          sectionDecision.currentSection = mappedPartIndex;
+          const auto blockEndFrame =
+              transportClock.getPositionFrames() + sourceFramesThisBlock;
+          if (blockEndFrame >= currentPart.endFrame) {
+            const bool validLoop =
+                juce::isPositiveAndBelow(loopPartIndex, realtimeSectionCount);
+            const bool insideLoop = validLoop && mappedPartIndex == loopPartIndex;
+            if (insideLoop) {
+              playworship::audio::SectionScheduler::Section loopPart;
+              if (sectionScheduler.getSection(loopPartIndex, loopPart)) {
+                sectionDecision.transition = true;
+                sectionDecision.targetSection = loopPartIndex;
+                sectionDecision.targetFrame = loopPart.startFrame;
+              }
+            } else if (juce::isPositiveAndBelow(pendingPartIndex,
+                                                realtimeSectionCount) &&
+                       pendingPartIndex != mappedPartIndex) {
+              playworship::audio::SectionScheduler::Section pendingPart;
+              if (sectionScheduler.getSection(pendingPartIndex, pendingPart)) {
+                sectionDecision.transition = true;
+                sectionDecision.targetSection = pendingPartIndex;
+                sectionDecision.targetFrame = pendingPart.startFrame;
+              }
+            } else {
+              const int nextPartIndex = mappedPartIndex + 1;
+              if (nextPartIndex < realtimeSectionCount) {
+                playworship::audio::SectionScheduler::Section nextPart;
+                if (sectionScheduler.getSection(nextPartIndex, nextPart)) {
+                  sectionDecision.transition = true;
+                  sectionDecision.targetSection = nextPartIndex;
+                  sectionDecision.targetFrame = nextPart.startFrame;
+                }
+              } else {
+                sectionDecision.stop = true;
+              }
+            }
+          }
+        }
+      } else {
+        sectionDecision = sectionScheduler.evaluate(
+            transportClock.getPositionFrames(), sourceFramesThisBlock,
+            customArrangement, pendingPartIndex, loopPartIndex);
+      }
       const bool loopPartActive =
           juce::isPositiveAndBelow(loopPartIndex, realtimeSectionCount);
       bool loopPartEngaged = false;
@@ -634,7 +683,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               playworship::audio::TransportClock::framesToSeconds(
                   loopPart.endFrame, playbackSampleRate);
           loopPartEngaged =
-              blockStartSec >= loopStartSec && blockStartSec < loopEndSec;
+              customArrangement
+                  ? (mappedPartIndex == loopPartIndex &&
+                     blockStartSec >= loopStartSec && blockStartSec < loopEndSec)
+                  : (blockStartSec >= loopStartSec && blockStartSec < loopEndSec);
         }
       }
 
@@ -688,24 +740,64 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           }
         }
 
-        juce::ignoreUnused(arrangementEditingActive);
-        const int guidePartIndex = sectionScheduler.findGuideTrigger(
-            transportClock.getPositionFrames(), sourceFramesThisBlock);
-        if (juce::isPositiveAndBelow(
-                guidePartIndex, realtimeSectionCount)) {
-          const auto guideIndex = static_cast<size_t>(guidePartIndex);
-          playworship::audio::SectionScheduler::Section part;
-          const bool hasPart =
-              sectionScheduler.getSection(guidePartIndex, part);
-          const double partStartSec =
-              playworship::audio::TransportClock::framesToSeconds(
-                  part.startFrame, playbackSampleRate);
-          const bool excludedByLoop =
-              loopPartEngaged && partStartSec >= windowEndSec;
-          if (!excludedByLoop && !dynamicGuideAnnouncedByPart[guideIndex]) {
-            if (hasPart)
-              triggerPartAnnouncement(part.guideTriggerId, guidePartIndex);
-            dynamicGuideAnnouncedByPart[guideIndex] = true;
+        if (customArrangement) {
+          if (juce::isPositiveAndBelow(mappedPartIndex,
+                                       realtimeSectionCount)) {
+            playworship::audio::SectionScheduler::Section currentPart;
+            const bool hasCurrentPart =
+                sectionScheduler.getSection(mappedPartIndex, currentPart);
+            const int targetPartIndex =
+                juce::isPositiveAndBelow(pendingPartIndex,
+                                         realtimeSectionCount) &&
+                        pendingPartIndex != mappedPartIndex
+                    ? pendingPartIndex
+                    : (loopPartEngaged ? loopPartIndex : mappedPartIndex + 1);
+            if (hasCurrentPart &&
+                juce::isPositiveAndBelow(targetPartIndex,
+                                         realtimeSectionCount)) {
+              playworship::audio::SectionScheduler::Section targetPart;
+              const bool hasTargetPart =
+                  sectionScheduler.getSection(targetPartIndex, targetPart);
+              const double bpm = juce::jmax(1.0, getPlaybackTempoBpm());
+              const auto oneBarFrames =
+                  playworship::audio::TransportClock::secondsToFrames(
+                      (60.0 / bpm) * 4.0, playbackSampleRate);
+              const auto triggerFrame =
+                  juce::jmax(currentPart.startFrame,
+                             currentPart.endFrame - oneBarFrames);
+              const auto blockStartFrame = transportClock.getPositionFrames();
+              const auto blockEndFrame = blockStartFrame + sourceFramesThisBlock;
+              const auto targetIndex = static_cast<size_t>(targetPartIndex);
+              if (hasTargetPart && !targetPart.triggerGuideOnEntry &&
+                  triggerFrame >= blockStartFrame &&
+                  triggerFrame < blockEndFrame &&
+                  !dynamicGuideAnnouncedByPart[targetIndex]) {
+                triggerPartAnnouncement(targetPart.guideTriggerId,
+                                        targetPartIndex);
+                dynamicGuideAnnouncedByPart[targetIndex] = true;
+              }
+            }
+          }
+        } else {
+          juce::ignoreUnused(arrangementEditingActive);
+          const int guidePartIndex = sectionScheduler.findGuideTrigger(
+              transportClock.getPositionFrames(), sourceFramesThisBlock);
+          if (juce::isPositiveAndBelow(
+                  guidePartIndex, realtimeSectionCount)) {
+            const auto guideIndex = static_cast<size_t>(guidePartIndex);
+            playworship::audio::SectionScheduler::Section part;
+            const bool hasPart =
+                sectionScheduler.getSection(guidePartIndex, part);
+            const double partStartSec =
+                playworship::audio::TransportClock::framesToSeconds(
+                    part.startFrame, playbackSampleRate);
+            const bool excludedByLoop =
+                loopPartEngaged && partStartSec >= windowEndSec;
+            if (!excludedByLoop && !dynamicGuideAnnouncedByPart[guideIndex]) {
+              if (hasPart)
+                triggerPartAnnouncement(part.guideTriggerId, guidePartIndex);
+              dynamicGuideAnnouncedByPart[guideIndex] = true;
+            }
           }
         }
 
@@ -2581,18 +2673,21 @@ void MTControlsAudioProcessor::setSongArrangement(
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
 
   std::vector<ArrangementRuntimePart> next;
-  next.reserve(arrangement.parts.size());
+  next.reserve(arrangement.clips.empty() ? arrangement.parts.size()
+                                         : arrangement.clips.size() + 4);
   double totalLength = 0.0;
-  for (const auto &part : arrangement.parts) {
-    double start = juce::jlimit(0.0, songLength, part.startSec);
-    double end = juce::jlimit(0.0, songLength, part.endSec);
+  const auto appendRuntimePart =
+      [&](const juce::String &id, const juce::String &name, double start,
+          double end) {
+    start = juce::jlimit(0.0, songLength, start);
+    end = juce::jlimit(0.0, songLength, end);
     if (end < start)
       std::swap(start, end);
     if (songLength > 0.0 && (end - start) < kRuntimeMinPartDurationSec)
-      continue;
+      return;
     ArrangementRuntimePart runtimePart;
-    runtimePart.id = part.id.trim();
-    runtimePart.name = part.name.trim();
+    runtimePart.id = id.trim();
+    runtimePart.name = name.trim();
     if (runtimePart.id.isEmpty())
       runtimePart.id = juce::String("part-") + juce::String(static_cast<int>(next.size()) + 1);
     if (runtimePart.name.isEmpty())
@@ -2604,16 +2699,58 @@ void MTControlsAudioProcessor::setSongArrangement(
     runtimePart.endSec = end;
     next.push_back(std::move(runtimePart));
     totalLength += juce::jmax(0.0, end - start);
-  }
+  };
 
-  if (next.size() > 1) {
+  if (!arrangement.clips.empty()) {
+    std::vector<SongArrangementClipSnapshot> sortedClips = arrangement.clips;
     std::stable_sort(
-        next.begin(), next.end(),
-        [](const ArrangementRuntimePart &a, const ArrangementRuntimePart &b) {
-          if (std::abs(a.startSec - b.startSec) <= 0.0001)
-            return a.endSec < b.endSec;
-          return a.startSec < b.startSec;
+        sortedClips.begin(), sortedClips.end(),
+        [](const SongArrangementClipSnapshot &a,
+           const SongArrangementClipSnapshot &b) {
+          if (std::abs(a.sourceStartSec - b.sourceStartSec) <= 0.0001)
+            return a.sourceEndSec < b.sourceEndSec;
+          return a.sourceStartSec < b.sourceStartSec;
         });
+
+    double cursor = 0.0;
+    size_t i = 0;
+    while (i < sortedClips.size()) {
+      const auto &firstClip = sortedClips[i];
+      const double sourceStart = juce::jlimit(0.0, songLength,
+                                              firstClip.sourceStartSec);
+      const double sourceEnd = juce::jlimit(sourceStart, songLength,
+                                            firstClip.sourceEndSec);
+      if (sourceStart > cursor + 0.0001)
+        appendRuntimePart({}, "Part", cursor, sourceStart);
+
+      while (i < sortedClips.size()) {
+        const auto &clip = sortedClips[i];
+        if (std::abs(clip.sourceStartSec - firstClip.sourceStartSec) > 0.0001 ||
+            std::abs(clip.sourceEndSec - firstClip.sourceEndSec) > 0.0001) {
+          break;
+        }
+        appendRuntimePart(clip.id, clip.label, sourceStart, sourceEnd);
+        ++i;
+      }
+
+      cursor = juce::jmax(cursor, sourceEnd);
+    }
+
+    if (cursor < songLength - 0.0001)
+      appendRuntimePart({}, "Part", cursor, songLength);
+  } else {
+    for (const auto &part : arrangement.parts)
+      appendRuntimePart(part.id, part.name, part.startSec, part.endSec);
+
+    if (next.size() > 1) {
+      std::stable_sort(
+          next.begin(), next.end(),
+          [](const ArrangementRuntimePart &a, const ArrangementRuntimePart &b) {
+            if (std::abs(a.startSec - b.startSec) <= 0.0001)
+              return a.endSec < b.endSec;
+            return a.startSec < b.startSec;
+          });
+    }
   }
 
   for (auto &part : next) {
@@ -2762,6 +2899,21 @@ int MTControlsAudioProcessor::getArrangementPartLoopIndex() const noexcept {
 
 int MTControlsAudioProcessor::getPendingArrangementPartJumpIndex() const noexcept {
   return arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
+}
+
+int MTControlsAudioProcessor::getCurrentArrangementPartIndex() const noexcept {
+  return arrangementCurrentPartIndex.load(std::memory_order_relaxed);
+}
+
+juce::String MTControlsAudioProcessor::getCurrentArrangementPartId() const {
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  const int partIndex =
+      arrangementCurrentPartIndex.load(std::memory_order_relaxed);
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangementParts.size()))) {
+    return {};
+  }
+  return arrangementParts[static_cast<size_t>(partIndex)].id;
 }
 
 bool MTControlsAudioProcessor::isCustomArrangementActive() const noexcept {

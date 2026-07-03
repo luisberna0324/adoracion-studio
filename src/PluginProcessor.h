@@ -79,6 +79,8 @@ public:
   void clearArrangementPartLoop() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
   int getPendingArrangementPartJumpIndex() const noexcept;
+  int getCurrentArrangementPartIndex() const noexcept;
+  juce::String getCurrentArrangementPartId() const;
   bool isCustomArrangementActive() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
   void setFadeStopsPlayback(bool shouldStop) noexcept;

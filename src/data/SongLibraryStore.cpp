@@ -45,6 +45,23 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
         !nearlyEqual(lhs.endSec, rhs.endSec))
       return false;
   }
+  if (a.clips.size() != b.clips.size())
+    return false;
+  for (size_t i = 0; i < a.clips.size(); ++i) {
+    const auto &lhs = a.clips[i];
+    const auto &rhs = b.clips[i];
+    if (lhs.id != rhs.id)
+      return false;
+    if (lhs.sourceSectionId != rhs.sourceSectionId)
+      return false;
+    if (lhs.label != rhs.label)
+      return false;
+    if (lhs.color != rhs.color)
+      return false;
+    if (!nearlyEqual(lhs.sourceStartSec, rhs.sourceStartSec) ||
+        !nearlyEqual(lhs.sourceEndSec, rhs.sourceEndSec))
+      return false;
+  }
   return true;
 }
 
@@ -588,8 +605,11 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     return false;
   }
 
-  if (song.arrangement.parts.empty() && !previousSong.arrangement.parts.empty())
+  if (song.arrangement.parts.empty() && song.arrangement.clips.empty() &&
+      (!previousSong.arrangement.parts.empty() ||
+       !previousSong.arrangement.clips.empty())) {
     song.arrangement = previousSong.arrangement;
+  }
   bool arrangementChanged = false;
   song.arrangement =
       reconcileArrangementForSong(song.arrangement, song, arrangementChanged);
@@ -1136,7 +1156,8 @@ bool SongLibraryStore::getSongArrangement(
   }
 
   outArrangement = arrangementChanged ? it->arrangement : normalized;
-  outIsCustomArrangement = !outArrangement.parts.empty();
+  outIsCustomArrangement =
+      !outArrangement.parts.empty() || !outArrangement.clips.empty();
   return true;
 }
 
@@ -1407,6 +1428,8 @@ LibraryState SongLibraryStore::loadLibrary() {
           library.setlists.push_back(std::move(setlist));
       }
     }
+    if (version < 3)
+      needsSave = true;
   } else {
     needsSave = true;
   }
@@ -1442,8 +1465,11 @@ LibraryState SongLibraryStore::loadLibrary() {
       bool foundLegacy = false;
       auto tryPickFromSetlist = [&](const SetlistData &setlist) {
         for (const auto &item : setlist.items) {
-          if (item.songId != songId || item.arrangement.parts.empty())
+          if (item.songId != songId ||
+              (item.arrangement.parts.empty() &&
+               item.arrangement.clips.empty())) {
             continue;
+          }
           selectedLegacy = item.arrangement;
           foundLegacy = true;
           return;
@@ -1494,7 +1520,7 @@ bool SongLibraryStore::saveLibrary(const LibraryState &library) {
 
   juce::var rootVar(new juce::DynamicObject());
   if (auto *root = rootVar.getDynamicObject()) {
-    root->setProperty("version", 2);
+    root->setProperty("version", 3);
     root->setProperty("activeSetlistId", library.activeSetlistId);
     root->setProperty("songs", juce::var(songVars));
     root->setProperty("setlists", juce::var(setlistVars));
@@ -1984,7 +2010,7 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     const SongArrangementSnapshot &arrangement, const ImportedSongData &song,
     bool &changed) {
   const double songLength = estimateSongLengthSeconds(song);
-  if (arrangement.parts.empty())
+  if (arrangement.parts.empty() && arrangement.clips.empty())
     return arrangement;
 
   SongArrangementSnapshot out = arrangement;
@@ -2052,6 +2078,69 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     if (orderChanged)
       changed = true;
     out.parts = std::move(sorted);
+  }
+
+  for (auto &clip : out.clips) {
+    if (clip.id.isEmpty()) {
+      clip.id = juce::Uuid().toString();
+      changed = true;
+    }
+
+    clip.sourceSectionId = clip.sourceSectionId.trim();
+
+    const auto trimmedLabel = clip.label.trim();
+    if (trimmedLabel.isEmpty()) {
+      clip.label = "Part";
+      changed = true;
+    } else if (clip.label != trimmedLabel) {
+      clip.label = trimmedLabel;
+      changed = true;
+    }
+
+    auto targetColour = standardArrangementPartColorForName(clip.label);
+    if (targetColour.isEmpty())
+      targetColour = fallbackArrangementPartColorForName(clip.label);
+    if (clip.color != targetColour) {
+      clip.color = targetColour;
+      changed = true;
+    }
+
+    const auto originalStart = clip.sourceStartSec;
+    const auto originalEnd = clip.sourceEndSec;
+    clip.sourceStartSec = juce::jlimit(0.0, songLength, originalStart);
+    clip.sourceEndSec = juce::jlimit(0.0, songLength, originalEnd);
+    if (clip.sourceEndSec < clip.sourceStartSec)
+      std::swap(clip.sourceStartSec, clip.sourceEndSec);
+
+    if (songLength > 0.0 &&
+        (clip.sourceEndSec - clip.sourceStartSec) < kMinPartDurationSec) {
+      clip.sourceEndSec =
+          juce::jmin(songLength, clip.sourceStartSec + kMinPartDurationSec);
+      if (clip.sourceEndSec <= clip.sourceStartSec) {
+        clip.sourceStartSec =
+            juce::jmax(0.0, clip.sourceEndSec - kMinPartDurationSec);
+      }
+    }
+
+    if (!nearlyEqual(originalStart, clip.sourceStartSec) ||
+        !nearlyEqual(originalEnd, clip.sourceEndSec)) {
+      changed = true;
+    }
+  }
+
+  if (out.clips.empty() && !out.parts.empty()) {
+    out.clips.reserve(out.parts.size());
+    for (const auto &part : out.parts) {
+      SongArrangementClipSnapshot clip;
+      clip.id = juce::Uuid().toString();
+      clip.sourceSectionId = part.id;
+      clip.label = part.name;
+      clip.color = part.color;
+      clip.sourceStartSec = part.startSec;
+      clip.sourceEndSec = part.endSec;
+      out.clips.push_back(std::move(clip));
+    }
+    changed = true;
   }
 
   return out;
@@ -2128,6 +2217,33 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
   return part;
 }
 
+static juce::var arrangementClipToVar(
+    const SongArrangementClipSnapshot &clip) {
+  auto *obj = new juce::DynamicObject();
+  obj->setProperty("id", clip.id);
+  obj->setProperty("sourceSectionId", clip.sourceSectionId);
+  obj->setProperty("label", clip.label);
+  obj->setProperty("color", clip.color);
+  obj->setProperty("sourceStartSec", clip.sourceStartSec);
+  obj->setProperty("sourceEndSec", clip.sourceEndSec);
+  return juce::var(obj);
+}
+
+static SongArrangementClipSnapshot arrangementClipFromVar(const juce::var &v) {
+  SongArrangementClipSnapshot clip;
+  auto *obj = v.getDynamicObject();
+  if (obj == nullptr)
+    return clip;
+  clip.id = obj->getProperty("id").toString();
+  clip.sourceSectionId = obj->getProperty("sourceSectionId").toString();
+  clip.label = obj->getProperty("label").toString();
+  if (obj->hasProperty("color"))
+    clip.color = obj->getProperty("color").toString();
+  clip.sourceStartSec = static_cast<double>(obj->getProperty("sourceStartSec"));
+  clip.sourceEndSec = static_cast<double>(obj->getProperty("sourceEndSec"));
+  return clip;
+}
+
 juce::var SongLibraryStore::arrangementToVar(
     const SongArrangementSnapshot &arrangement) {
   auto *obj = new juce::DynamicObject();
@@ -2136,6 +2252,11 @@ juce::var SongLibraryStore::arrangementToVar(
   for (const auto &part : arrangement.parts)
     partsArray.add(arrangementPartToVar(part));
   obj->setProperty("parts", juce::var(partsArray));
+  juce::Array<juce::var> clipsArray;
+  clipsArray.ensureStorageAllocated(static_cast<int>(arrangement.clips.size()));
+  for (const auto &clip : arrangement.clips)
+    clipsArray.add(arrangementClipToVar(clip));
+  obj->setProperty("clips", juce::var(clipsArray));
   return juce::var(obj);
 }
 
@@ -2152,6 +2273,18 @@ SongArrangementSnapshot SongLibraryStore::arrangementFromVar(
             nearlyEqual(part.startSec, 0.0) && nearlyEqual(part.endSec, 0.0))
           continue;
         arrangement.parts.push_back(std::move(part));
+      }
+    }
+    if (auto *clipsArray = obj->getProperty("clips").getArray()) {
+      arrangement.clips.reserve(static_cast<size_t>(clipsArray->size()));
+      for (const auto &clipVar : *clipsArray) {
+        auto clip = arrangementClipFromVar(clipVar);
+        if (clip.id.isEmpty() && clip.sourceSectionId.isEmpty() &&
+            clip.label.isEmpty() && nearlyEqual(clip.sourceStartSec, 0.0) &&
+            nearlyEqual(clip.sourceEndSec, 0.0)) {
+          continue;
+        }
+        arrangement.clips.push_back(std::move(clip));
       }
     }
   }

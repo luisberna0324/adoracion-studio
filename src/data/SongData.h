@@ -27,8 +27,18 @@ struct SongArrangementPartSnapshot {
   double endSec = 0.0;
 };
 
+struct SongArrangementClipSnapshot {
+  juce::String id;
+  juce::String sourceSectionId;
+  juce::String label;
+  juce::String color;
+  double sourceStartSec = 0.0;
+  double sourceEndSec = 0.0;
+};
+
 struct SongArrangementSnapshot {
   std::vector<SongArrangementPartSnapshot> parts;
+  std::vector<SongArrangementClipSnapshot> clips;
 };
 
 enum class ClickDivision { Quarter = 1, Eighth = 2, Sixteenth = 4 };
