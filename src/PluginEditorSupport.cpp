@@ -10,9 +10,10 @@ namespace PluginEditorSupport {
 const int kDefaultTopBarH = 60;
 const int kDefaultWaveformH = 192;
 const int kCompactWaveformH = 166;
-const int kDefaultWaveformExpandedH = 232;
-const int kCompactWaveformExpandedH = 210;
+const int kDefaultWaveformExpandedH = 292;
+const int kCompactWaveformExpandedH = 252;
 const int kLargeWaveformH = 212;
+const int kWaveformEditToolbarReserveH = 28;
 
 const int kDefaultWindowW = 1120;
 const int kDefaultWindowH = 700;

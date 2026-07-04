@@ -34,6 +34,10 @@ struct SongArrangementClipSnapshot {
   juce::String color;
   double sourceStartSec = 0.0;
   double sourceEndSec = 0.0;
+  double playbackStartSec = 0.0;
+  double playbackEndSec = 0.0;
+  bool muted = false;
+  bool primaryInstance = true;
 };
 
 struct SongArrangementSnapshot {

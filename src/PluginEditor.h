@@ -46,6 +46,7 @@ private:
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;
   bool isWaveformExpanded = false;
+  bool isWaveformEditing = false;
   ImportedSongData currentLoadedSong;
   bool hasCurrentLoadedSong = false;
   SongListPanel *songListPanelRaw = nullptr;

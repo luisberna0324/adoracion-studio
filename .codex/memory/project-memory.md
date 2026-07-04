@@ -29,9 +29,29 @@
 - Setlist double-click loads the full song: stems, waveform, and channels.
 - The local persistence root is `~/Library/Application Support/MTControls/`.
 - Song arrangement persistence now supports a parallel virtual-clip schema:
-  `SongArrangementSnapshot.parts` remains the active legacy/runtime section list,
-  while `SongArrangementSnapshot.clips` stores non-destructive arrangement clips
-  with independent source ranges for future virtual waveform playback.
+  `SongArrangementSnapshot.parts` remains the legacy/fallback source-section
+  list for backward compatibility, while `SongArrangementSnapshot.clips`
+  stores the effective non-destructive arrangement sequence with independent
+  source ranges for virtual waveform playback. Do not auto-materialize clips
+  from legacy parts on load; create/persist clips only once the arrangement
+  enters the new editable virtual mode.
+- Arrangement clips distinguish immutable source range from editable playback
+  range: `sourceStartSec/sourceEndSec` stores the original source section
+  bounds, while `playbackStartSec/playbackEndSec` stores the currently used
+  subrange that is rendered and played in the virtual timeline.
+- Arrangement clips can be muted independently via `SongArrangementClipSnapshot::muted`.
+  Muting a clip preserves its virtual duration and keeps click/guide stems plus
+  dynamic guide audible; it only silences musical stems for that clip.
+- Arrangement clips use `primaryInstance` to distinguish the original/source
+  section from duplicates. Primary clips edit their source/visible range
+  directly and keep playback equal to source; reducing a primary section can
+  leave unassigned source space. The UI and scheduler must preserve that source
+  space as a gap without section controls. Duplicate clips edit only playback
+  range inside their source bounds; reducing a duplicate closes virtual time and
+  never takes audio from neighbouring sections.
+- Resetting the waveform arrangement should restore the captured source
+  sections and remove virtual clips, duplicates, deletes, trims, and mutes.
+  For unsectioned songs this means returning to the single full-song fallback.
 
 ## UI contracts to preserve
 
@@ -52,6 +72,9 @@
 - Do not block UI callbacks with heavy transport or disk work.
 - Do not perform disk operations in `paint` or high-frequency timer callbacks.
 - Keep transport state deterministic and centralized.
+- Rebuilding the arrangement scheduler during playback must preserve the
+  current part index and valid pending/loop indices so UI edits such as mute do
+  not feel like playback stopped or jumped back to the first section.
 
 ## Verification commands
 

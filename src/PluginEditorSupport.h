@@ -13,6 +13,7 @@ extern const int kCompactWaveformH;
 extern const int kDefaultWaveformExpandedH;
 extern const int kCompactWaveformExpandedH;
 extern const int kLargeWaveformH;
+extern const int kWaveformEditToolbarReserveH;
 
 extern const int kDefaultWindowW;
 extern const int kDefaultWindowH;

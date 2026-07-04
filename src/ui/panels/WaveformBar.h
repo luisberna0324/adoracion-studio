@@ -9,6 +9,17 @@
 #include <utility>
 #include <vector>
 
+class WaveformIconButton final : public juce::Button {
+public:
+  WaveformIconButton(const juce::String &name, SvgIconName iconIn);
+  void setIcon(SvgIconName iconIn);
+  void paintButton(juce::Graphics &g, bool highlighted,
+                   bool down) override;
+
+private:
+  SvgIconName icon;
+};
+
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
   using PlayingProvider = std::function<bool()>;
@@ -17,6 +28,7 @@ public:
   using SongWindowProvider = std::function<double()>;
   using SeekCallback = std::function<void(double)>;
   using EditToggleCallback = std::function<void(bool)>;
+  using ExpandToggleCallback = std::function<void(bool)>;
   using ArrangementChangedCallback = std::function<void(
       const SongArrangementSnapshot &, bool isCustomArrangement)>;
   using ArrangementResetCallback = std::function<void()>;
@@ -44,6 +56,7 @@ public:
                               SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
   void setOnEditToggle(EditToggleCallback cb);
+  void setOnExpandToggle(ExpandToggleCallback cb);
   void setOnArrangementChanged(ArrangementChangedCallback cb);
   void setOnArrangementReset(ArrangementResetCallback cb);
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
@@ -106,6 +119,7 @@ private:
     juce::Rectangle<float> leftHandle;
     juce::Rectangle<float> rightHandle;
     juce::Rectangle<float> deleteButton;
+    juce::Rectangle<float> muteButton;
     juce::Rectangle<float> addButton;
     juce::Rectangle<float> addIcon;
     juce::Rectangle<float> loopButton;
@@ -113,6 +127,7 @@ private:
     juce::Rectangle<float> jumpButton;
     juce::Rectangle<float> jumpIcon;
     bool showsDeleteButton = false;
+    bool showsMuteButton = false;
     bool showsAddButton = false;
     bool showsLoopButton = false;
     bool showsJumpButton = false;
@@ -123,6 +138,7 @@ private:
     bool leftEdge = false;
     bool rightEdge = false;
     bool deleteButton = false;
+    bool muteButton = false;
     bool addButton = false;
     bool loopButton = false;
     bool jumpButton = false;
@@ -145,6 +161,9 @@ private:
     int partIndex = -1;
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
+    double playbackStartSec = 0.0;
+    double playbackEndSec = 0.0;
+    bool primaryInstance = true;
   };
 
   void timerCallback() override;
@@ -159,6 +178,7 @@ private:
   SongWindowProvider songWindowEndProvider;
   SeekCallback onSeekTo;
   EditToggleCallback onEditToggle;
+  ExpandToggleCallback onExpandToggle;
   ArrangementChangedCallback onArrangementChanged;
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
@@ -169,8 +189,11 @@ private:
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   CurrentArrangementPartProvider currentArrangementPartProvider;
   CurrentArrangementPartIdProvider currentArrangementPartIdProvider;
-  juce::TextButton followButton;
-  juce::TextButton editButton;
+  std::unique_ptr<juce::LookAndFeel> insertSectionMenuLookAndFeel;
+  WaveformIconButton followButton{"follow", SvgIconName::CornerDownRight};
+  WaveformIconButton expandButton{"expand", SvgIconName::Maximize};
+  WaveformIconButton editButton{"edit", SvgIconName::ImageEdit};
+  WaveformIconButton resetButton{"reset", SvgIconName::SkipBack};
   juce::TextButton guideMapButton;
   juce::TextButton tempoMapButton;
   juce::Label snapModeLabel;
@@ -190,6 +213,11 @@ private:
   float viewportStart = 0.0f;
   float viewportSpan = 1.0f;
   SongArrangementSnapshot arrangement;
+  std::vector<SongArrangementPartSnapshot> sourceArrangementParts;
+  SongArrangementSnapshot lastCommittedArrangement;
+  std::vector<SongArrangementSnapshot> arrangementUndoStack;
+  std::vector<SongArrangementSnapshot> arrangementRedoStack;
+  SongArrangementSnapshot arrangementClipboard;
   SongTempoMapSnapshot tempoMap;
   bool customArrangement = false;
   int selectedPartIndex = -1;
@@ -218,6 +246,7 @@ private:
   std::vector<PartOverlayBounds> partOverlayBounds;
   int hoveredActionPartIndex = -1;
   int hoveredAddPartIndex = -1;
+  int hoveredMutePartIndex = -1;
   int hoveredLoopPartIndex = -1;
   int hoveredJumpPartIndex = -1;
   int pendingJumpDoubleClickPartIndex = -1;
@@ -234,6 +263,8 @@ private:
   double songLoadingShownAtMs = 0.0;
   double songLoadingHideAfterMs = 0.0;
   bool followPlaybackEnabled = false;
+  bool waveformExpanded = false;
+  bool deferActiveResizeTimelineUpdate = false;
   double followSuspendedUntilMs = 0.0;
   bool followPendingJumpWasActive = false;
   bool followLastSongProgressValid = false;
@@ -249,6 +280,8 @@ private:
   double getVisualTimelineLengthSeconds() const;
   double visualSecondsForPartStart(int partIndex) const;
   double visualSecondsForPartEnd(int partIndex) const;
+  double visualSecondsForPartPlaybackStart(int partIndex) const;
+  double visualSecondsForPartPlaybackEnd(int partIndex) const;
   double sourceSecondsFromVisualSeconds(double visualSeconds) const;
   double visualSecondsFromSourceSeconds(double sourceSeconds) const;
   std::pair<double, double> getPlayableRangeSeconds() const;
@@ -262,9 +295,21 @@ private:
   bool usesVirtualClips() const;
   void rebuildPartsFromClips();
   void rebuildClipsFromParts();
+  void captureSourceArrangementParts(const SongArrangementSnapshot &snapshot);
   void showInsertSectionMenu(int afterPartIndex,
                              const juce::Rectangle<float> &anchorBounds);
+  int findRestoreIndexForSourcePart(const juce::String &sourcePartId) const;
+  int findInsertIndexForCurrentSeek() const;
+  double getCurrentSeekSourceSeconds() const;
+  bool arrangementsEqual(const SongArrangementSnapshot &a,
+                         const SongArrangementSnapshot &b) const;
+  void rememberArrangementForUndo();
+  bool undoLastArrangementChange();
+  bool redoLastArrangementChange();
+  bool copySelectedArrangementParts();
+  bool pasteArrangementClipboard();
   void normalizeArrangement(bool sortByStart, bool snapToGrid);
+  SongArrangementSnapshot buildArrangementSnapshotForPersistence() const;
   int findPartIndexById(const juce::String &id) const;
   bool isPartSelected(int partIndex) const;
   void pruneSelectedPartIds();
@@ -314,6 +359,7 @@ private:
   void duplicateArrangementPart(int partIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
+  void toggleArrangementPartMute(int partIndex);
   void deleteArrangementPart(int partIndex);
   void deleteSelectedArrangementParts();
   void notifyArrangementChanged(bool isCustom);

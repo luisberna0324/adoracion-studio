@@ -415,8 +415,12 @@ private:
     juce::String name;
     juce::String sectionKey;
     int guideTriggerId = -1;
+    int uiPartIndex = -1;
     double startSec = 0.0;
     double endSec = 0.0;
+    double playbackStartSec = 0.0;
+    double playbackEndSec = 0.0;
+    bool muted = false;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
   std::atomic<bool> arrangementCustomActive{false};
@@ -434,6 +438,7 @@ private:
   
   // Lock-free seek atomics
   std::atomic<bool> seekPending{false};
+  std::atomic<bool> arrangementTransitionSeekPending{false};
   std::atomic<double> seekTargetSeconds{0.0};
 
   MetronomeEngine metronome;

@@ -61,8 +61,45 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
     if (!nearlyEqual(lhs.sourceStartSec, rhs.sourceStartSec) ||
         !nearlyEqual(lhs.sourceEndSec, rhs.sourceEndSec))
       return false;
+    if (!nearlyEqual(lhs.playbackStartSec, rhs.playbackStartSec) ||
+        !nearlyEqual(lhs.playbackEndSec, rhs.playbackEndSec))
+      return false;
+    if (lhs.muted != rhs.muted)
+      return false;
+    if (lhs.primaryInstance != rhs.primaryInstance)
+      return false;
   }
   return true;
+}
+
+bool arrangementPartsMirrorClips(
+    const std::vector<SongArrangementPartSnapshot> &parts,
+    const std::vector<SongArrangementClipSnapshot> &clips) {
+  if (parts.size() != clips.size())
+    return false;
+
+  for (size_t i = 0; i < parts.size(); ++i) {
+    const auto &part = parts[i];
+    const auto &clip = clips[i];
+    if (part.id != clip.id)
+      return false;
+    if (part.name != clip.label)
+      return false;
+    if (part.color != clip.color)
+      return false;
+    if (!nearlyEqual(part.startSec, clip.playbackStartSec) ||
+        !nearlyEqual(part.endSec, clip.playbackEndSec)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool hasIndependentLegacyArrangementParts(const SongArrangementSnapshot &arrangement) {
+  return !arrangement.parts.empty() &&
+         (arrangement.clips.empty() ||
+          !arrangementPartsMirrorClips(arrangement.parts, arrangement.clips));
 }
 
 bool windowsEqual(const SongWindowSnapshot &a, const SongWindowSnapshot &b) {
@@ -1180,6 +1217,14 @@ bool SongLibraryStore::updateSongArrangement(
   if (!isCustomArrangement)
     normalized = createDefaultArrangementForSong(*it);
 
+  // Preserve legacy source sections when a previously sectioned song starts
+  // using virtual clips. `parts` remains the fallback/base arrangement, while
+  // `clips` owns the editable playback sequence.
+  if (!normalized.clips.empty() &&
+      hasIndependentLegacyArrangementParts(it->arrangement)) {
+    normalized.parts = it->arrangement.parts;
+  }
+
   const bool arrangementChanged =
       changed || !arrangementsEqual(it->arrangement, normalized);
   if (!arrangementChanged)
@@ -2052,7 +2097,7 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
       changed = true;
   }
 
-  if (out.parts.size() > 1) {
+  if (out.clips.empty() && out.parts.size() > 1) {
     auto sorted = out.parts;
     std::stable_sort(
         sorted.begin(), sorted.end(),
@@ -2080,6 +2125,7 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     out.parts = std::move(sorted);
   }
 
+  std::unordered_set<std::string> seenSourceSections;
   for (auto &clip : out.clips) {
     if (clip.id.isEmpty()) {
       clip.id = juce::Uuid().toString();
@@ -2087,6 +2133,8 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     }
 
     clip.sourceSectionId = clip.sourceSectionId.trim();
+    if (clip.sourceSectionId.isEmpty())
+      clip.sourceSectionId = clip.id;
 
     const auto trimmedLabel = clip.label.trim();
     if (trimmedLabel.isEmpty()) {
@@ -2126,21 +2174,53 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
         !nearlyEqual(originalEnd, clip.sourceEndSec)) {
       changed = true;
     }
-  }
 
-  if (out.clips.empty() && !out.parts.empty()) {
-    out.clips.reserve(out.parts.size());
-    for (const auto &part : out.parts) {
-      SongArrangementClipSnapshot clip;
-      clip.id = juce::Uuid().toString();
-      clip.sourceSectionId = part.id;
-      clip.label = part.name;
-      clip.color = part.color;
-      clip.sourceStartSec = part.startSec;
-      clip.sourceEndSec = part.endSec;
-      out.clips.push_back(std::move(clip));
+    const auto sourceKey = clip.sourceSectionId.trim().toStdString();
+    const bool firstSourceInstance =
+        sourceKey.empty() || seenSourceSections.insert(sourceKey).second;
+    if (clip.primaryInstance != firstSourceInstance) {
+      clip.primaryInstance = firstSourceInstance;
+      changed = true;
     }
-    changed = true;
+
+    auto playbackStart = clip.playbackStartSec;
+    auto playbackEnd = clip.playbackEndSec;
+    if (!std::isfinite(playbackStart) || !std::isfinite(playbackEnd) ||
+        (nearlyEqual(playbackStart, 0.0) &&
+         nearlyEqual(playbackEnd, 0.0))) {
+      playbackStart = clip.sourceStartSec;
+      playbackEnd = clip.sourceEndSec;
+    }
+
+    const auto originalPlaybackStart = clip.playbackStartSec;
+    const auto originalPlaybackEnd = clip.playbackEndSec;
+    playbackStart =
+        juce::jlimit(clip.sourceStartSec, clip.sourceEndSec, playbackStart);
+    playbackEnd =
+        juce::jlimit(clip.sourceStartSec, clip.sourceEndSec, playbackEnd);
+    if (playbackEnd < playbackStart)
+      std::swap(playbackStart, playbackEnd);
+
+    if ((playbackEnd - playbackStart) < kMinPartDurationSec) {
+      playbackEnd =
+          juce::jmin(clip.sourceEndSec, playbackStart + kMinPartDurationSec);
+      if (playbackEnd <= playbackStart) {
+        playbackStart =
+            juce::jmax(clip.sourceStartSec, playbackEnd - kMinPartDurationSec);
+      }
+    }
+
+    if (clip.primaryInstance) {
+      playbackStart = clip.sourceStartSec;
+      playbackEnd = clip.sourceEndSec;
+    }
+
+    clip.playbackStartSec = playbackStart;
+    clip.playbackEndSec = playbackEnd;
+    if (!nearlyEqual(originalPlaybackStart, clip.playbackStartSec) ||
+        !nearlyEqual(originalPlaybackEnd, clip.playbackEndSec)) {
+      changed = true;
+    }
   }
 
   return out;
@@ -2226,6 +2306,10 @@ static juce::var arrangementClipToVar(
   obj->setProperty("color", clip.color);
   obj->setProperty("sourceStartSec", clip.sourceStartSec);
   obj->setProperty("sourceEndSec", clip.sourceEndSec);
+  obj->setProperty("playbackStartSec", clip.playbackStartSec);
+  obj->setProperty("playbackEndSec", clip.playbackEndSec);
+  obj->setProperty("muted", clip.muted);
+  obj->setProperty("primaryInstance", clip.primaryInstance);
   return juce::var(obj);
 }
 
@@ -2241,6 +2325,21 @@ static SongArrangementClipSnapshot arrangementClipFromVar(const juce::var &v) {
     clip.color = obj->getProperty("color").toString();
   clip.sourceStartSec = static_cast<double>(obj->getProperty("sourceStartSec"));
   clip.sourceEndSec = static_cast<double>(obj->getProperty("sourceEndSec"));
+  if (obj->hasProperty("playbackStartSec"))
+    clip.playbackStartSec =
+        static_cast<double>(obj->getProperty("playbackStartSec"));
+  else
+    clip.playbackStartSec = clip.sourceStartSec;
+  if (obj->hasProperty("playbackEndSec"))
+    clip.playbackEndSec =
+        static_cast<double>(obj->getProperty("playbackEndSec"));
+  else
+    clip.playbackEndSec = clip.sourceEndSec;
+  if (obj->hasProperty("muted"))
+    clip.muted = static_cast<bool>(obj->getProperty("muted"));
+  if (obj->hasProperty("primaryInstance"))
+    clip.primaryInstance =
+        static_cast<bool>(obj->getProperty("primaryInstance"));
   return clip;
 }
 
@@ -2281,7 +2380,10 @@ SongArrangementSnapshot SongLibraryStore::arrangementFromVar(
         auto clip = arrangementClipFromVar(clipVar);
         if (clip.id.isEmpty() && clip.sourceSectionId.isEmpty() &&
             clip.label.isEmpty() && nearlyEqual(clip.sourceStartSec, 0.0) &&
-            nearlyEqual(clip.sourceEndSec, 0.0)) {
+            nearlyEqual(clip.sourceEndSec, 0.0) &&
+            nearlyEqual(clip.playbackStartSec, 0.0) &&
+            nearlyEqual(clip.playbackEndSec, 0.0) && !clip.muted &&
+            clip.primaryInstance) {
           continue;
         }
         arrangement.clips.push_back(std::move(clip));

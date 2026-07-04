@@ -394,10 +394,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getCurrentArrangementPartIndex(); });
   waveformBarRaw->setCurrentArrangementPartIdProvider(
       [&p] { return p.getCurrentArrangementPartId(); });
-  waveformBarRaw->setOnEditToggle([this](bool expanded) {
-    isWaveformExpanded = expanded;
+  waveformBarRaw->setOnEditToggle([this](bool editing) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-    processorRef.setArrangementEditingActive(expanded);
+    isWaveformEditing = editing;
+    processorRef.setArrangementEditingActive(editing);
+    resized();
+    repaint();
+  });
+  waveformBarRaw->setOnExpandToggle([this](bool expanded) {
+    isWaveformExpanded = expanded;
     resized();
     repaint();
   });
@@ -2275,7 +2280,9 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   topBar->setBounds(area.removeFromTop(topBarH));
-  const int waveH = isWaveformExpanded ? waveformExpandedH : waveformH;
+  int waveH = isWaveformExpanded ? waveformExpandedH : waveformH;
+  if (isWaveformEditing)
+    waveH += kWaveformEditToolbarReserveH;
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
 
