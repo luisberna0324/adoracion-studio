@@ -45,3 +45,8 @@ repository. Update it when a task teaches something reusable.
 - Timeline ruler seeking must target any point in the full arranged song,
   including regions with no section marker. Do not clamp custom-arrangement
   seeks to the nearest/current section unless a section loop is active.
+- Dynamic guide musical sections should be preannounced from their trigger
+  frame, not announced on section entry. Counts and utility cues are the
+  exception and trigger on entry/seek. If a numbered musical key such as
+  `interlude 2` has no guide asset, fall back to the canonical base key
+  (`interlude`) so repeated sections still announce.

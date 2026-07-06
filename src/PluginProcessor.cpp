@@ -177,6 +177,13 @@ bool sectionTriggersOnEntry(const juce::String &sectionKey,
          isDynamicGuideUtilityCueKey(sectionName);
 }
 
+juce::String baseArrangementSectionKey(const juce::String &partName) {
+  const auto canonical = canonicalArrangementSectionName(partName);
+  return canonical.isNotEmpty()
+             ? DynamicGuideEngine::normalizeSectionKey(canonical)
+             : DynamicGuideEngine::normalizeSectionKey(partName);
+}
+
 } // namespace
 
 #if JucePlugin_Build_Standalone
@@ -718,12 +725,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
                seekAppliedThisBlock)) {
             const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
-            const bool shouldTriggerNow =
-                enteredPlayback || seekAppliedThisBlock || triggerOnEntry ||
-                !alreadyAnnounced;
+            const bool shouldTriggerNow = triggerOnEntry && !alreadyAnnounced;
             if (shouldTriggerNow)
               triggerPartAnnouncement(part.guideTriggerId, mappedPartIndex);
-            dynamicGuideAnnouncedByPart[partIdx] = true;
+            if (shouldTriggerNow)
+              dynamicGuideAnnouncedByPart[partIdx] = true;
           }
         }
 
@@ -2731,6 +2737,16 @@ void MTControlsAudioProcessor::setSongArrangement(
     part.sectionKey = arrangementSectionKey(part.name);
     part.guideTriggerId =
         dynamicGuideEngine.resolveTriggerId(part.sectionKey);
+    if (part.guideTriggerId < 0) {
+      const auto baseKey = baseArrangementSectionKey(part.name);
+      if (baseKey.isNotEmpty() && baseKey != part.sectionKey) {
+        const int baseTriggerId = dynamicGuideEngine.resolveTriggerId(baseKey);
+        if (baseTriggerId >= 0) {
+          part.sectionKey = baseKey;
+          part.guideTriggerId = baseTriggerId;
+        }
+      }
+    }
   }
 
   if (next.empty()) {
