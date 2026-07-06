@@ -20,3 +20,7 @@ repository. Update it when a task teaches something reusable.
   release tags, treat removal of Bungee CMake wiring, `TimeStretchProcessor`,
   `BungeeProcessor`, or bundle verification as a regression unless the user
   explicitly says otherwise.
+- Duplicated arrangement sections are virtual source references: keep UI seek
+  and playhead position in arrangement time, and remap to source frames inside
+  `MTControlsAudioProcessor`/`SectionScheduler`. Do not remap duplicate seeks in
+  `WaveformBar`, or the playhead jumps back to the source section.

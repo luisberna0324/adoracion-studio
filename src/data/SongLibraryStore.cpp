@@ -2110,6 +2110,8 @@ juce::var SongLibraryStore::arrangementPartToVar(
   obj->setProperty("color", part.color);
   obj->setProperty("startSec", part.startSec);
   obj->setProperty("endSec", part.endSec);
+  if (part.sourcePartId.isNotEmpty())
+    obj->setProperty("sourcePartId", part.sourcePartId);
   return juce::var(obj);
 }
 
@@ -2125,6 +2127,8 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
     part.color = obj->getProperty("color").toString();
   part.startSec = static_cast<double>(obj->getProperty("startSec"));
   part.endSec = static_cast<double>(obj->getProperty("endSec"));
+  if (obj->hasProperty("sourcePartId"))
+    part.sourcePartId = obj->getProperty("sourcePartId").toString();
   return part;
 }
 

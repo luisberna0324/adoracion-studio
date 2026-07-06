@@ -404,9 +404,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           return;
         SongLibraryStore::updateSongArrangement(
             currentLoadedSong.id, arrangement, isCustomArrangement);
-        // Las partes son marcadores visuales/editables y no deben alterar
-        // el flujo de reproduccion normal de la cancion.
-        p.setSongArrangement(arrangement, false);
+        p.setSongArrangement(arrangement, isCustomArrangement);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
@@ -416,7 +414,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     bool isCustomArrangement = false;
     if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,
                                              isCustomArrangement)) {
-      p.setSongArrangement(arrangement, false);
+      p.setSongArrangement(arrangement, isCustomArrangement);
     }
   });
   waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
@@ -803,7 +801,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
-    p.setSongArrangement(arrangement, false);
+    p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
     return true;
   };

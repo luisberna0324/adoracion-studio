@@ -428,6 +428,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool seekAppliedThisBlock = false;
   int stemOutputLatencyThisBlock = 0;
   int sourceFramesThisBlock = buffer.getNumSamples();
+  double renderedSourceStartSec = 0.0;
 
   if (songLoaded.load(std::memory_order_relaxed)) {
     buffer.clear();
@@ -478,9 +479,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // Apply pending seek
     if (seekPending.exchange(false, std::memory_order_acquire)) {
       const double seekTarget = seekTargetSeconds.load(std::memory_order_relaxed);
-      const juce::int64 seekSamples = static_cast<juce::int64>(seekTarget * playbackSampleRate);
+      const juce::int64 seekSamples =
+          playworship::audio::TransportClock::secondsToFrames(
+              seekTarget, playbackSampleRate);
+      const juce::int64 sourceSeekSamples =
+          mapArrangementFrameToSourceFrame(seekSamples);
       for (auto& track : stemTracks)
-        track->setNextReadPosition(seekSamples);
+        track->setNextReadPosition(sourceSeekSamples);
 
       // Seeking changes source position abruptly: flush all time-domain
       // processors so no stale pre-seek audio survives in different groups.
@@ -490,7 +495,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       transportClock.seek(seekSamples);
       songCurrentPositionSeconds.store(seekTarget, std::memory_order_relaxed);
 
-      syncMetronomeToSourceSeconds(seekTarget);
+      syncMetronomeToSourceSeconds(
+          playworship::audio::TransportClock::framesToSeconds(
+              sourceSeekSamples, playbackSampleRate));
       seekAppliedThisBlock = true;
     }
 
@@ -581,20 +588,34 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const float fadeTargetLocalForMix =
         fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
-      const double length =
-          loadedSongLengthSeconds.load(std::memory_order_relaxed);
       const bool customArrangement =
           arrangementCustomActive.load(std::memory_order_relaxed);
+      const double sourceLength =
+          loadedSongLengthSeconds.load(std::memory_order_relaxed);
+      const double length =
+          customArrangement
+              ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                             std::memory_order_relaxed))
+              : sourceLength;
       double windowStartSec = songStartSeconds.load(std::memory_order_relaxed);
       double windowEndSec =
           songEndSeconds.load(std::memory_order_relaxed);
-      if (windowEndSec <= 0.0 || windowEndSec > length)
+      if (customArrangement)
+        windowEndSec = length;
+      else if (windowEndSec <= 0.0 || windowEndSec > length)
         windowEndSec = length;
       double fadeOutSec = songFadeOutSeconds.load(std::memory_order_relaxed);
       const double blockStartSec =
           playbackSampleRate > 0.0
               ? transportClock.getPositionSeconds()
               : 0.0;
+      const auto blockStartFrame = transportClock.getPositionFrames();
+      const auto blockSourceStartFrame =
+          mapArrangementFrameToSourceFrame(blockStartFrame);
+      const double blockSourceStartSec =
+          playworship::audio::TransportClock::framesToSeconds(
+              blockSourceStartFrame, playbackSampleRate);
+      renderedSourceStartSec = blockSourceStartSec;
       const double blockEndSec =
           playbackSampleRate > 0.0
               ? blockStartSec +
@@ -602,10 +623,28 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                      playbackSampleRate)
               : blockStartSec;
 
+      if (stemCount > 0) {
+        const auto currentSourceFrame =
+            stemTracks.front()->getNextReadPosition();
+        const auto deltaFrames =
+            currentSourceFrame > blockSourceStartFrame
+                ? currentSourceFrame - blockSourceStartFrame
+                : blockSourceStartFrame - currentSourceFrame;
+        const auto thresholdFrames =
+            static_cast<juce::int64>(juce::jmax(4, sourceFramesThisBlock + 4));
+        if (deltaFrames > thresholdFrames) {
+          for (auto &track : stemTracks)
+            track->setNextReadPosition(blockSourceStartFrame);
+          flushAllTimeProcessingState();
+          seekAppliedThisBlock = true;
+        }
+      }
+
       const int realtimeSectionCount = sectionScheduler.size();
       int mappedPartIndex = -1;
       if (realtimeSectionCount > 0) {
-        mappedPartIndex = findArrangementPartIndexForSourceTime(blockStartSec);
+        mappedPartIndex =
+            findArrangementPartIndexForArrangementTime(blockStartSec);
         if (juce::isPositiveAndBelow(mappedPartIndex, realtimeSectionCount)) {
           arrangementCurrentPartIndex.store(mappedPartIndex,
                                             std::memory_order_relaxed);
@@ -1183,10 +1222,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool metronomeAudible = !muted && (!anySoloActive || soloed);
     metronome.setVolume(effectiveVolume);
     metronome.setMuted(!metronomeAudible);
-    syncMetronomeToSourceSeconds(
-        playworship::audio::TransportClock::framesToSeconds(
-            transportClock.getPositionFrames() - sourceFramesThisBlock,
-            playbackSampleRate));
+    syncMetronomeToSourceSeconds(renderedSourceStartSec);
     metronome.process(metronomeRenderBuffer);
     metronomeLatencyDelay.setDelay(stemOutputLatencyThisBlock);
     metronomeLatencyDelay.process(metronomeRenderBuffer);
@@ -1320,14 +1356,17 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     seekPending.store(true, std::memory_order_release);
     songCurrentPositionSeconds.store(nextArrangementPartStartSec,
                                      std::memory_order_relaxed);
+    const juce::int64 nextSamples =
+        playworship::audio::TransportClock::secondsToFrames(
+            nextArrangementPartStartSec, playbackSampleRate);
     if (playbackSampleRate > 0.0) {
-      const juce::int64 nextSamples =
-          static_cast<juce::int64>(nextArrangementPartStartSec *
-                                   playbackSampleRate);
       globalSamplePosition.store(nextSamples, std::memory_order_relaxed);
       transportClock.seek(nextSamples);
     }
-    syncMetronomeToSourceSeconds(nextArrangementPartStartSec);
+    syncMetronomeToSourceSeconds(
+        playworship::audio::TransportClock::framesToSeconds(
+            mapArrangementFrameToSourceFrame(nextSamples),
+            playbackSampleRate));
   } else if (stopAtEnd) {
     juce::ignoreUnused(stopAtEndSec);
     // Al llegar al final de la ventana, detenemos y volvemos al inicio para
@@ -2302,6 +2341,8 @@ bool MTControlsAudioProcessor::loadSongStems(
         dynamicGuideEngine.resolveTriggerId(initialPart.sectionKey);
     initialPart.startSec = 0.0;
     initialPart.endSec = maxLengthSeconds;
+    initialPart.sourceStartSec = initialPart.startSec;
+    initialPart.sourceEndSec = initialPart.endSec;
     arrangementParts.push_back(std::move(initialPart));
     rebuildSectionScheduler();
     arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
@@ -2345,7 +2386,7 @@ void MTControlsAudioProcessor::playSong() {
       return;
     const double current =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
-    int partIndex = findArrangementPartIndexForSourceTime(current);
+    int partIndex = findArrangementPartIndexForArrangementTime(current);
     if (!juce::isPositiveAndBelow(partIndex,
                                   static_cast<int>(arrangementParts.size()))) {
       partIndex = 0;
@@ -2363,7 +2404,13 @@ void MTControlsAudioProcessor::playSong() {
     }
   }
   const double start = songStartSeconds.load(std::memory_order_relaxed);
-  const double end = songEndSeconds.load(std::memory_order_relaxed);
+  double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (customArrangement) {
+    const double arrangementEnd =
+        arrangementTotalLengthSeconds.load(std::memory_order_relaxed);
+    if (arrangementEnd > start)
+      end = arrangementEnd;
+  }
   const double current =
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   if (current < start || (end > 0.0 && current >= end))
@@ -2421,10 +2468,19 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   const double length =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  const double playbackLength =
+      customArrangement
+          ? juce::jmax(length, arrangementTotalLengthSeconds.load(
+                                   std::memory_order_relaxed))
+          : length;
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
-  if (end <= 0.0 || end > length)
-    end = length;
+  if (customArrangement)
+    end = playbackLength;
+  else if (end <= 0.0 || end > playbackLength)
+    end = playbackLength;
   start = juce::jlimit(0.0, end, start);
   const double target =
       juce::jlimit(start, end, current + deltaSeconds);
@@ -2440,17 +2496,24 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
 
   const double length =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  const double playbackLength =
+      customArrangement
+          ? juce::jmax(length, arrangementTotalLengthSeconds.load(
+                                   std::memory_order_relaxed))
+          : length;
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
-  if (end <= 0.0 || end > length)
-    end = length;
+  if (customArrangement)
+    end = playbackLength;
+  else if (end <= 0.0 || end > playbackLength)
+    end = playbackLength;
   start = juce::jlimit(0.0, end, start);
   double target = juce::jlimit(start, end, positionSeconds);
   arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
   const int loopPartIndex =
       arrangementLoopPartIndex.load(std::memory_order_relaxed);
-  const bool customArrangement =
-      arrangementCustomActive.load(std::memory_order_relaxed);
   if (loopPartIndex >= 0 || customArrangement) {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     if (juce::isPositiveAndBelow(loopPartIndex,
@@ -2459,7 +2522,7 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
       arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
       target = juce::jlimit(loopPart.startSec, loopPart.endSec, target);
     } else if (customArrangement && !arrangementParts.empty()) {
-      int partIndex = findArrangementPartIndexForSourceTime(target);
+      int partIndex = findArrangementPartIndexForArrangementTime(target);
       if (!juce::isPositiveAndBelow(partIndex,
                                     static_cast<int>(arrangementParts.size())))
         partIndex = 0;
@@ -2583,6 +2646,34 @@ void MTControlsAudioProcessor::setSongArrangement(
   std::vector<ArrangementRuntimePart> next;
   next.reserve(arrangement.parts.size());
   double totalLength = 0.0;
+  const auto resolveSourceRange =
+      [&arrangement, songLength](const SongArrangementPartSnapshot &part) {
+        const SongArrangementPartSnapshot *source = &part;
+        const int maxDepth = static_cast<int>(arrangement.parts.size());
+        for (int depth = 0; depth < maxDepth; ++depth) {
+          if (source->sourcePartId.isEmpty())
+            break;
+
+          const SongArrangementPartSnapshot *nextSource = nullptr;
+          for (const auto &candidate : arrangement.parts) {
+            if (candidate.id == source->sourcePartId) {
+              nextSource = &candidate;
+              break;
+            }
+          }
+
+          if (nextSource == nullptr || nextSource == source)
+            break;
+          source = nextSource;
+        }
+
+        double sourceStart = juce::jlimit(0.0, songLength, source->startSec);
+        double sourceEnd = juce::jlimit(0.0, songLength, source->endSec);
+        if (sourceEnd < sourceStart)
+          std::swap(sourceStart, sourceEnd);
+        return std::pair<double, double>{sourceStart, sourceEnd};
+      };
+
   for (const auto &part : arrangement.parts) {
     double start = juce::jlimit(0.0, songLength, part.startSec);
     double end = juce::jlimit(0.0, songLength, part.endSec);
@@ -2602,8 +2693,15 @@ void MTControlsAudioProcessor::setSongArrangement(
         dynamicGuideEngine.resolveTriggerId(runtimePart.sectionKey);
     runtimePart.startSec = start;
     runtimePart.endSec = end;
+    const auto [sourceStart, sourceEnd] =
+        part.sourcePartId.isNotEmpty()
+            ? resolveSourceRange(part)
+            : std::pair<double, double>{start, end};
+    runtimePart.sourceStartSec = sourceStart;
+    runtimePart.sourceEndSec =
+        sourceEnd > sourceStart ? sourceEnd : sourceStart + (end - start);
     next.push_back(std::move(runtimePart));
-    totalLength += juce::jmax(0.0, end - start);
+    totalLength = juce::jmax(totalLength, end);
   }
 
   if (next.size() > 1) {
@@ -2639,6 +2737,8 @@ void MTControlsAudioProcessor::setSongArrangement(
         dynamicGuideEngine.resolveTriggerId(runtimePart.sectionKey);
     runtimePart.startSec = 0.0;
     runtimePart.endSec = songLength;
+    runtimePart.sourceStartSec = runtimePart.startSec;
+    runtimePart.sourceEndSec = runtimePart.endSec;
     next.push_back(std::move(runtimePart));
     totalLength = songLength;
     isCustomArrangement = false;
@@ -2689,7 +2789,8 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
     const bool playing = getTransportState() == TransportState::playing;
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
-    const int currentPartIndex = findArrangementPartIndexForSourceTime(currentSec);
+    const int currentPartIndex =
+        findArrangementPartIndexForArrangementTime(currentSec);
     const int pendingPartIndex =
         arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
 
@@ -2781,7 +2882,11 @@ double MTControlsAudioProcessor::getSongCurrentPositionSeconds() const {
 }
 
 double MTControlsAudioProcessor::getSongLengthSeconds() const {
-  return loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  double length = loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  if (arrangementCustomActive.load(std::memory_order_relaxed))
+    length = juce::jmax(length, arrangementTotalLengthSeconds.load(
+                                    std::memory_order_relaxed));
+  return length;
 }
 
 double MTControlsAudioProcessor::getLoadedSongBpm() const {
@@ -3775,13 +3880,39 @@ void MTControlsAudioProcessor::syncMetronomeToSourceSeconds(
   metronome.syncPhaseForTimeSeconds(juce::jmax(0.0, sourceSeconds) / ratio);
 }
 
-int MTControlsAudioProcessor::findArrangementPartIndexForSourceTime(
-    const double sourceSeconds) const noexcept {
+int MTControlsAudioProcessor::findArrangementPartIndexForArrangementTime(
+    const double arrangementSeconds) const noexcept {
   const double sampleRate =
       playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0;
   return sectionScheduler.findSection(
-      playworship::audio::TransportClock::secondsToFrames(sourceSeconds,
+      playworship::audio::TransportClock::secondsToFrames(arrangementSeconds,
                                                            sampleRate));
+}
+
+juce::int64 MTControlsAudioProcessor::mapArrangementFrameToSourceFrame(
+    const juce::int64 arrangementFrame) const noexcept {
+  playworship::audio::SectionScheduler::Section section;
+  const int sectionIndex = sectionScheduler.findSection(arrangementFrame);
+  if (!sectionScheduler.getSection(sectionIndex, section))
+    return arrangementFrame;
+
+  const auto arrangementDuration =
+      juce::jmax<juce::int64>(1, section.endFrame - section.startFrame);
+  const auto sourceDuration =
+      juce::jmax<juce::int64>(1,
+                              section.sourceEndFrame - section.sourceStartFrame);
+  const auto arrangementOffset = juce::jlimit<juce::int64>(
+      0, arrangementDuration, arrangementFrame - section.startFrame);
+
+  if (arrangementDuration == sourceDuration)
+    return section.sourceStartFrame + arrangementOffset;
+
+  const double normalized =
+      static_cast<double>(arrangementOffset) /
+      static_cast<double>(arrangementDuration);
+  return section.sourceStartFrame +
+         static_cast<juce::int64>(std::llround(normalized *
+                                               static_cast<double>(sourceDuration)));
 }
 
 double MTControlsAudioProcessor::getArrangementStartSeconds() const noexcept {
@@ -3809,6 +3940,10 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
     sections.push_back({
         startFrame,
         playworship::audio::TransportClock::secondsToFrames(part.endSec,
+                                                             sampleRate),
+        playworship::audio::TransportClock::secondsToFrames(part.sourceStartSec,
+                                                             sampleRate),
+        playworship::audio::TransportClock::secondsToFrames(part.sourceEndSec,
                                                              sampleRate),
         triggerOnEntry
             ? startFrame

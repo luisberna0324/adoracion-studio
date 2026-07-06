@@ -18,6 +18,8 @@ public:
   struct Section {
     Frame startFrame = 0;
     Frame endFrame = 0;
+    Frame sourceStartFrame = 0;
+    Frame sourceEndFrame = 0;
     Frame guideTriggerFrame = -1;
     int guideTriggerId = -1;
     bool triggerGuideOnEntry = false;

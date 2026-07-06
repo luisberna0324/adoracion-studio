@@ -106,9 +106,12 @@ private:
     juce::Rectangle<float> loopIcon;
     juce::Rectangle<float> jumpButton;
     juce::Rectangle<float> jumpIcon;
+    juce::Rectangle<float> duplicateButton;
+    juce::Rectangle<float> duplicateIcon;
     bool showsDeleteButton = false;
     bool showsLoopButton = false;
     bool showsJumpButton = false;
+    bool showsDuplicateButton = false;
   };
 
   struct PartHitResult {
@@ -118,6 +121,7 @@ private:
     bool deleteButton = false;
     bool loopButton = false;
     bool jumpButton = false;
+    bool duplicateButton = false;
   };
 
   struct TempoRegionHitResult {
@@ -284,6 +288,7 @@ private:
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
   void duplicateArrangementPart(int partIndex);
+  void createDuplicatedSection(int sourcePartIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
   void deleteArrangementPart(int partIndex);

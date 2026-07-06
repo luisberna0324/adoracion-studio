@@ -1453,6 +1453,14 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       repaint();
       return;
     }
+
+    if (isEditingArrangement() &&
+        juce::isPositiveAndBelow(actionHit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        actionHit.duplicateButton) {
+      createDuplicatedSection(actionHit.partIndex);
+      return;
+    }
   }
 
   if (isEditingArrangement() && mainWaveBodyBounds.contains(event.position)) {
@@ -2039,7 +2047,9 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
       } else if (hit.jumpButton) {
         nextHoveredJumpPartIndex = hit.partIndex;
         nextCursor = juce::MouseCursor::PointingHandCursor;
-      } else if (isEditingArrangement() && hit.deleteButton)
+      } else if (isEditingArrangement() && hit.duplicateButton)
+        nextCursor = juce::MouseCursor::PointingHandCursor;
+      else if (isEditingArrangement() && hit.deleteButton)
         nextCursor = juce::MouseCursor::PointingHandCursor;
       else if (isEditingArrangement() && (hit.leftEdge || hit.rightEdge))
         nextCursor = juce::MouseCursor::LeftRightResizeCursor;
@@ -2837,6 +2847,9 @@ WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
     hit.jumpButton = bounds.showsJumpButton && bounds.jumpButton.contains(pos);
     if (hit.jumpButton)
       return hit;
+    hit.duplicateButton = bounds.showsDuplicateButton && bounds.duplicateButton.contains(pos);
+    if (hit.duplicateButton)
+      return hit;
     return hit;
   }
   return {};
@@ -2989,6 +3002,26 @@ void WaveformBar::rebuildPartOverlayBounds(
       overlay.jumpIcon = {};
       overlay.showsJumpButton = false;
     }
+
+    // Duplicate (+) button: always shown on right edge, vertically centered.
+    constexpr float dupButtonSize = 22.0f;
+    constexpr float dupButtonPadding = 12.0f;
+    overlay.showsDuplicateButton =
+        isEditingArrangement() &&
+        body.getWidth() >= (dupButtonSize + dupButtonPadding + 8.0f) &&
+        body.getHeight() >= (dupButtonSize + 6.0f);
+    if (overlay.showsDuplicateButton) {
+      overlay.duplicateButton = juce::Rectangle<float>(
+          body.getRight() - dupButtonSize - dupButtonPadding,
+          body.getCentreY() - (dupButtonSize * 0.5f),
+          dupButtonSize, dupButtonSize);
+      overlay.duplicateIcon = overlay.duplicateButton.withSizeKeepingCentre(
+          14.0f, 14.0f);
+    } else {
+      overlay.duplicateButton = {};
+      overlay.duplicateIcon = {};
+    }
+
     partOverlayBounds.push_back(overlay);
   }
 }
@@ -3390,10 +3423,112 @@ void WaveformBar::drawArrangementOverlay(
 
     const auto &part = arrangement.parts[static_cast<size_t>(overlay.partIndex)];
     const auto sectionColour = partColorOrFallback(part, overlay.partIndex);
-    auto fill = sectionColour.withAlpha(editing ? (selected ? 0.28f : 0.18f) : 0.16f);
+    const float baseAlpha = editing ? (selected ? 0.28f : 0.18f) : 0.16f;
+    auto fill = sectionColour.withAlpha(baseAlpha);
 
+    // For duplicated sections, resolve the source part so we draw the same
+    // waveform content as the original (and replace the global waveform that
+    // would otherwise show through the clip).
+    double sectionWaveStartSec = part.startSec;
+    double sectionWaveEndSec = part.endSec;
+    const SongArrangementPartSnapshot *sourceForWaveform = nullptr;
+    if (part.sourcePartId.isNotEmpty()) {
+      for (const auto &p : arrangement.parts) {
+        if (p.id == part.sourcePartId) {
+          sourceForWaveform = &p;
+          break;
+        }
+      }
+      if (sourceForWaveform != nullptr) {
+        sectionWaveStartSec = sourceForWaveform->startSec;
+        sectionWaveEndSec = sourceForWaveform->endSec;
+      }
+    }
+
+    // Clip to section body so we only affect the waveform inside it.
+    g.saveState();
+    g.reduceClipRegion(overlay.body.toNearestInt());
+
+    // For duplicated sections: redraw the waveform from the source's time range
+    // so the content inside the clip matches the original (and hides the
+    // timeline waveform "continuing" past the clip's bounds).
+    if (sourceForWaveform != nullptr &&
+        sectionWaveEndSec > sectionWaveStartSec && !waveformBins.empty()) {
+      const int bins = static_cast<int>(waveformBins.size());
+      if (bins >= 2) {
+        const double songLength = getSongLengthSeconds();
+        if (songLength > 0.0) {
+          const double sectionDur = sectionWaveEndSec - sectionWaveStartSec;
+          const float midY = overlay.body.getCentreY();
+          const float ampScale = overlay.body.getHeight() * 0.48f;
+          const float barWidth = 4.0f;
+          const float barGap = 2.0f;
+          const float barStep = barWidth + barGap;
+          const int barCount =
+              juce::jmax(1, static_cast<int>(overlay.body.getWidth() / barStep));
+
+          // Played/unplayed threshold uses the source's playhead ratio.
+          float sourcePlayheadRatio = 0.0f;
+          if (positionProvider && lengthProvider) {
+            const double songLen = juce::jmax(0.0, lengthProvider());
+            if (songLen > 0.0) {
+              const double globalPos = juce::jmax(0.0, positionProvider());
+              sourcePlayheadRatio = static_cast<float>(
+                  juce::jlimit(0.0, 1.0, (globalPos - sectionWaveStartSec) /
+                                            juce::jmax(0.0001, sectionDur)));
+            }
+          }
+
+          for (int i = 0; i < barCount; ++i) {
+            const float t = static_cast<float>(i) / static_cast<float>(barCount);
+            const double sectionSec = sectionWaveStartSec + (t * sectionDur);
+            const float globalNorm = static_cast<float>(
+                juce::jlimit(0.0, 1.0, sectionSec / songLength));
+            const float binIdx = globalNorm * static_cast<float>(bins - 1);
+            const int i0 = static_cast<int>(binIdx);
+            const int i1 = juce::jmin(i0 + 1, bins - 1);
+            const float frac = binIdx - static_cast<float>(i0);
+            const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
+                                         waveformBins[static_cast<size_t>(i1)]);
+            const float lineHalf = juce::jmax(1.2f, amp * ampScale);
+            const float xPos = overlay.body.getX() + (t * overlay.body.getWidth());
+
+            // Match the global timeline waveform style: thin vertical line per bin
+            // with the same pending/played colours.
+            juce::Colour barColour = juce::Colour::fromRGB(42, 42, 42).withAlpha(0.6f);
+            if (t <= sourcePlayheadRatio)
+              barColour = juce::Colour::fromRGB(193, 122, 90);
+            g.setColour(barColour);
+            g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
+          }
+        }
+      }
+    }
+
+    // Subtle section colour tint overlay (matches the original behaviour so
+    // duplicated sections look identical except for the dashed border + link).
     g.setColour(fill);
     g.fillRoundedRectangle(overlay.body, 2.5f);
+
+    g.restoreState();
+
+    // Visual indicator for duplicated (reference) sections: dashed right/top/bottom edges.
+    if (part.sourcePartId.isNotEmpty()) {
+      g.setColour(sectionColour.withAlpha(0.55f));
+      const float dashPattern[] = {3.0f, 3.0f};
+      // Right edge
+      g.drawDashedLine(juce::Line<float>(overlay.body.getRight(), overlay.body.getY() + 3.0f,
+                                         overlay.body.getRight(), overlay.body.getBottom() - 3.0f),
+                      dashPattern, 2, 1.5f);
+      // Top edge
+      g.drawDashedLine(juce::Line<float>(overlay.body.getX() + 3.0f, overlay.body.getY(),
+                                         overlay.body.getRight() - 3.0f, overlay.body.getY()),
+                      dashPattern, 2, 1.5f);
+      // Bottom edge
+      g.drawDashedLine(juce::Line<float>(overlay.body.getX() + 3.0f, overlay.body.getBottom(),
+                                         overlay.body.getRight() - 3.0f, overlay.body.getBottom()),
+                      dashPattern, 2, 1.5f);
+    }
 
     if (pendingJump) {
       const float darkAlpha = juce::jlimit(
@@ -3449,6 +3584,17 @@ void WaveformBar::drawArrangementOverlay(
       g.setFont(labelFont);
       g.drawFittedText(visibleName, flag.toNearestInt().reduced(4, 0),
                        juce::Justification::centred, 1);
+
+      // Link icon for duplicated sections, inside the label flag.
+      if (part.sourcePartId.isNotEmpty() && overlay.body.getWidth() >= 54.0f) {
+        constexpr float linkIconSize = 10.0f;
+        auto linkArea = juce::Rectangle<float>(
+            flag.getRight() - linkIconSize - 4.0f,
+            flag.getCentreY() - (linkIconSize * 0.5f),
+            linkIconSize, linkIconSize);
+        g.setColour(juce::Colours::white.withAlpha(0.50f));
+        drawSvgIcon(g, linkArea, SvgIconName::Copy, juce::Colours::white.withAlpha(0.50f));
+      }
     }
 
     const bool showsSectionActions = hoveredActionPartIndex == overlay.partIndex;
@@ -3487,6 +3633,22 @@ void WaveformBar::drawArrangementOverlay(
       g.fillEllipse(button.reduced(jumpHovered ? 4.0f : 5.0f));
       drawSvgIcon(g, icon, SvgIconName::CornerDownRight,
                   juce::Colours::white.withAlpha(jumpHovered ? 0.96f : 0.58f));
+    }
+
+    // Duplicate (+) button: shown on hover, on the right edge.
+    if (showsSectionActions && overlay.showsDuplicateButton) {
+      const auto button = overlay.duplicateButton;
+      const auto icon = overlay.duplicateIcon;
+      const bool hovered = hoveredActionPartIndex == overlay.partIndex;
+      const auto bubbleColour = juce::Colour::fromRGBA(255, 255, 255, hovered ? 50 : 35);
+      const float iconAlpha = hovered ? 0.96f : 0.60f;
+
+      g.setColour(juce::Colours::black.withAlpha(hovered ? 0.20f : 0.12f));
+      g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
+      g.setColour(bubbleColour);
+      g.fillEllipse(button.reduced(hovered ? 4.0f : 5.0f));
+      drawSvgIcon(g, icon, SvgIconName::Plus,
+                  juce::Colours::white.withAlpha(iconAlpha));
     }
 
     if (editing) {
@@ -3996,6 +4158,69 @@ void WaveformBar::duplicateArrangementPart(const int partIndex) {
   copy.color = standardArrangementPartColorForName(copy.name);
   if (copy.color.isEmpty())
     copy.color = fallbackArrangementPartColorForName(copy.name);
+  arrangement.parts.push_back(std::move(copy));
+  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
+  if (!juce::isPositiveAndBelow(sourcePartIndex,
+                                 static_cast<int>(arrangement.parts.size())))
+    return;
+
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double playableLength = playableEndSec - playableStartSec;
+  if (playableLength < kMinPartDurationSec)
+    return;
+
+  const auto &sourcePart = arrangement.parts[static_cast<size_t>(sourcePartIndex)];
+  const double sourceDuration = sourcePart.endSec - sourcePart.startSec;
+  if (sourceDuration < kMinPartDurationSec)
+    return;
+
+  // Follow the chain to find the real source (original, not another duplicate).
+  juce::String realSourceId = sourcePart.sourcePartId.isEmpty()
+                                  ? sourcePart.id
+                                  : sourcePart.sourcePartId;
+  // If the resolved source is itself a duplicate, trace one more level.
+  if (!sourcePart.sourcePartId.isEmpty()) {
+    const int resolvedIdx = findPartIndexById(sourcePart.sourcePartId);
+    if (juce::isPositiveAndBelow(resolvedIdx,
+                                  static_cast<int>(arrangement.parts.size()))) {
+      const auto &resolved = arrangement.parts[static_cast<size_t>(resolvedIdx)];
+      if (!resolved.sourcePartId.isEmpty())
+        realSourceId = resolved.sourcePartId;
+    }
+  }
+
+  // Position duplicated section immediately after the source section.
+  double startSec = sourcePart.endSec;
+  double endSec = startSec + sourceDuration;
+  if (endSec > playableEndSec) {
+    endSec = playableEndSec;
+    startSec = juce::jmax(playableStartSec, endSec - sourceDuration);
+  }
+  if ((endSec - startSec) < kMinPartDurationSec)
+    return;
+
+  // Count existing duplicates of the real source to name: ×2, ×3, etc.
+  int dupCount = 0;
+  for (const auto &p : arrangement.parts) {
+    if (p.sourcePartId == realSourceId)
+      ++dupCount;
+  }
+  const juce::String suffix = " ×" + juce::String(dupCount + 2);
+
+  SongArrangementPartSnapshot copy;
+  copy.id = juce::Uuid().toString();
+  copy.name = sourcePart.name + suffix;
+  copy.color = sourcePart.color;
+  copy.startSec = startSec;
+  copy.endSec = endSec;
+  copy.sourcePartId = realSourceId;
+
   arrangement.parts.push_back(std::move(copy));
   setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;

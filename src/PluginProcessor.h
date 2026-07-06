@@ -415,6 +415,8 @@ private:
     int guideTriggerId = -1;
     double startSec = 0.0;
     double endSec = 0.0;
+    double sourceStartSec = 0.0;
+    double sourceEndSec = 0.0;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
   std::atomic<bool> arrangementCustomActive{false};
@@ -466,7 +468,9 @@ private:
   void flushRoutingTimeProcessors() noexcept;
   void flushAllTimeProcessingState() noexcept;
   double getPlaybackTempoRatio() const noexcept;
-  int findArrangementPartIndexForSourceTime(double sourceSeconds) const noexcept;
+  int findArrangementPartIndexForArrangementTime(double arrangementSeconds) const noexcept;
+  juce::int64 mapArrangementFrameToSourceFrame(
+      juce::int64 arrangementFrame) const noexcept;
   double getArrangementStartSeconds() const noexcept;
   void rebuildSectionScheduler() noexcept;
   TransportState getTransportState() const noexcept;

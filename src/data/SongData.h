@@ -25,6 +25,8 @@ struct SongArrangementPartSnapshot {
   juce::String color;
   double startSec = 0.0;
   double endSec = 0.0;
+  // If non-empty, this part is a virtual reference (duplicate) pointing to the source part.
+  juce::String sourcePartId;
 };
 
 struct SongArrangementSnapshot {

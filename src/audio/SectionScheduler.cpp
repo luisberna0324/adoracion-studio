@@ -18,9 +18,18 @@ void SectionScheduler::publish(
   next.count = std::min(static_cast<int>(sections.size()), maxSections);
   for (int i = 0; i < next.count; ++i) {
     const auto &source = sections[static_cast<std::size_t>(i)];
+    const auto sourceStart =
+        source.sourceEndFrame > source.sourceStartFrame
+            ? source.sourceStartFrame
+            : source.startFrame;
+    const auto sourceEnd =
+        source.sourceEndFrame > source.sourceStartFrame ? source.sourceEndFrame
+                                                        : source.endFrame;
     next.sections[static_cast<std::size_t>(i)] = {
         std::max<Frame>(0, source.startFrame),
         std::max(source.startFrame, source.endFrame),
+        std::max<Frame>(0, sourceStart),
+        std::max(sourceStart, sourceEnd),
         source.guideTriggerFrame,
         source.guideTriggerId,
         source.triggerGuideOnEntry};
@@ -51,7 +60,7 @@ int SectionScheduler::findSection(const Frame frame) const noexcept {
   if (local.count <= 0)
     return -1;
 
-  for (int i = 0; i < local.count; ++i) {
+  for (int i = local.count - 1; i >= 0; --i) {
     const auto &section = local.sections[static_cast<std::size_t>(i)];
     if (frame >= section.startFrame && frame < section.endFrame)
       return i;
@@ -78,7 +87,7 @@ int SectionScheduler::findGuideTrigger(const Frame blockStart,
     return -1;
   const auto local = readSnapshot();
   const Frame blockEnd = blockStart + blockFrames;
-  for (int i = 0; i < local.count; ++i) {
+  for (int i = local.count - 1; i >= 0; --i) {
     const Frame trigger =
         local.sections[static_cast<std::size_t>(i)].guideTriggerFrame;
     if (trigger >= blockStart && trigger < blockEnd)
@@ -106,7 +115,7 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
     return decision;
 
   const auto findInSnapshot = [&local](const Frame frame) noexcept {
-    for (int i = 0; i < local.count; ++i) {
+    for (int i = local.count - 1; i >= 0; --i) {
       const auto &section = local.sections[static_cast<std::size_t>(i)];
       if (frame >= section.startFrame && frame < section.endFrame)
         return i;
