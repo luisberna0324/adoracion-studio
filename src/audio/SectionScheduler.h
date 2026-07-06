@@ -23,6 +23,7 @@ public:
     Frame guideTriggerFrame = -1;
     int guideTriggerId = -1;
     bool triggerGuideOnEntry = false;
+    bool insertedClip = false;
   };
 
   struct BlockDecision {

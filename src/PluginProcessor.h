@@ -417,6 +417,7 @@ private:
     double endSec = 0.0;
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
+    bool insertedClip = false;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
   std::atomic<bool> arrangementCustomActive{false};

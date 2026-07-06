@@ -34,3 +34,7 @@ repository. Update it when a task teaches something reusable.
   arrangement waveform, not drawing it as an overlay on the original marker.
   The unmarked remainder of the master is implicit arrangement content and must
   shift after inserted clips in both waveform rendering and playback mapping.
+- Original arrangement sections are movable markers over the arranged master;
+  moving/resizing them must not remap or displace the master waveform. Only
+  duplicated sections (`sourcePartId` set) are inserted audio clips that change
+  waveform/playback source mapping.

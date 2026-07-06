@@ -2957,6 +2957,8 @@ bool WaveformBar::mapArrangementSecondsToSourceSeconds(
   std::vector<Segment> segments;
   segments.reserve(arrangement.parts.size());
   for (const auto &part : arrangement.parts) {
+    if (part.sourcePartId.isEmpty())
+      continue;
     if (part.endSec <= part.startSec)
       continue;
     const auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
@@ -2977,44 +2979,31 @@ bool WaveformBar::mapArrangementSecondsToSourceSeconds(
                      return a.start < b.start;
                    });
 
-  const Segment *previous = nullptr;
-  const Segment *next = nullptr;
-  for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
-    if (arrangementSeconds >= it->start && arrangementSeconds < it->end) {
-      const double duration = juce::jmax(0.0001, it->end - it->start);
-      const double sourceDuration =
-          juce::jmax(0.0001, it->sourceEnd - it->sourceStart);
-      const double ratio = juce::jlimit(
-          0.0, 1.0, (arrangementSeconds - it->start) / duration);
+  double insertedOffset = 0.0;
+  for (const auto &segment : segments) {
+    if (arrangementSeconds < segment.start) {
       sourceSecondsOut =
-          juce::jlimit(0.0, sourceLength,
-                       it->sourceStart + (ratio * sourceDuration));
+          juce::jlimit(0.0, sourceLength, arrangementSeconds - insertedOffset);
       return true;
     }
-  }
 
-  for (const auto &segment : segments) {
-    if (segment.end <= arrangementSeconds)
-      previous = &segment;
-    else if (segment.start > arrangementSeconds) {
-      next = &segment;
-      break;
+    if (arrangementSeconds < segment.end) {
+      const double duration = juce::jmax(0.0001, segment.end - segment.start);
+      const double sourceDuration =
+          juce::jmax(0.0001, segment.sourceEnd - segment.sourceStart);
+      const double ratio = juce::jlimit(
+          0.0, 1.0, (arrangementSeconds - segment.start) / duration);
+      sourceSecondsOut =
+          juce::jlimit(0.0, sourceLength,
+                       segment.sourceStart + (ratio * sourceDuration));
+      return true;
     }
+
+    insertedOffset += segment.end - segment.start;
   }
 
-  const double arrangementLength = getSongLengthSeconds();
-  const double gapStart = previous != nullptr ? previous->end : 0.0;
-  const double gapEnd = next != nullptr ? next->start : arrangementLength;
-  const double sourceStart = previous != nullptr ? previous->sourceEnd : 0.0;
-  const double sourceEnd = next != nullptr ? next->sourceStart : sourceLength;
-  if (gapEnd <= gapStart || sourceEnd <= sourceStart)
-    return false;
-
-  const double ratio = juce::jlimit(
-      0.0, 1.0, (arrangementSeconds - gapStart) / (gapEnd - gapStart));
   sourceSecondsOut =
-      juce::jlimit(0.0, sourceLength,
-                   sourceStart + (ratio * (sourceEnd - sourceStart)));
+      juce::jlimit(0.0, sourceLength, arrangementSeconds - insertedOffset);
   return true;
 }
 

@@ -2721,6 +2721,7 @@ void MTControlsAudioProcessor::setSongArrangement(
         sourceEnd > sourceStart
             ? sourceEnd
             : juce::jmin(songLength, sourceStart + (end - start));
+    runtimePart.insertedClip = part.sourcePartId.isNotEmpty();
     if (songLength > 0.0 &&
         (runtimePart.sourceEndSec - runtimePart.sourceStartSec) <
             kRuntimeMinPartDurationSec)
@@ -3969,7 +3970,8 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
             ? startFrame
             : std::max<juce::int64>(0, startFrame - oneBarFrames),
         part.guideTriggerId,
-        triggerOnEntry});
+        triggerOnEntry,
+        part.insertedClip});
   }
   sectionScheduler.publish(sections);
 }

@@ -33,7 +33,8 @@ void SectionScheduler::publish(
         std::max(sourceStart, sourceEnd),
         source.guideTriggerFrame,
         source.guideTriggerId,
-        source.triggerGuideOnEntry};
+        source.triggerGuideOnEntry,
+        source.insertedClip};
   }
   publishedIndex.store(writeIndex, std::memory_order_release);
 }
@@ -113,11 +114,19 @@ bool SectionScheduler::mapFrameToSourceFrame(
   if (local.count <= 0 || sourceEndFrame <= 0)
     return false;
 
-  const Section *previous = nullptr;
-  const Section *next = nullptr;
-  for (int i = local.count - 1; i >= 0; --i) {
+  Frame insertedOffset = 0;
+  for (int i = 0; i < local.count; ++i) {
     const auto &section = local.sections[static_cast<std::size_t>(i)];
-    if (frame >= section.startFrame && frame < section.endFrame) {
+    if (!section.insertedClip)
+      continue;
+
+    if (frame < section.startFrame) {
+      sourceFrameOut =
+          std::clamp(frame - insertedOffset, static_cast<Frame>(0), sourceEndFrame);
+      return true;
+    }
+
+    if (frame < section.endFrame) {
       const auto arrangementDuration =
           std::max<Frame>(1, section.endFrame - section.startFrame);
       const auto sourceDuration =
@@ -138,34 +147,12 @@ bool SectionScheduler::mapFrameToSourceFrame(
           std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
       return true;
     }
+
+    insertedOffset += section.endFrame - section.startFrame;
   }
 
-  for (int i = 0; i < local.count; ++i) {
-    const auto &section = local.sections[static_cast<std::size_t>(i)];
-    if (section.endFrame <= frame)
-      previous = &section;
-    else if (section.startFrame > frame) {
-      next = &section;
-      break;
-    }
-  }
-
-  const Frame gapStart = previous != nullptr ? previous->endFrame : 0;
-  const Frame gapEnd = next != nullptr ? next->startFrame : arrangementEndFrame;
-  const Frame sourceStart =
-      previous != nullptr ? previous->sourceEndFrame : static_cast<Frame>(0);
-  const Frame sourceEnd =
-      next != nullptr ? next->sourceStartFrame : sourceEndFrame;
-  if (gapEnd <= gapStart || sourceEnd <= sourceStart)
-    return false;
-
-  const double normalized =
-      static_cast<double>(std::clamp(frame - gapStart, static_cast<Frame>(0),
-                                    gapEnd - gapStart)) /
-      static_cast<double>(gapEnd - gapStart);
-  sourceFrameOut = sourceStart + static_cast<Frame>(std::llround(
-                                     normalized *
-                                     static_cast<double>(sourceEnd - sourceStart)));
+  static_cast<void>(arrangementEndFrame);
+  sourceFrameOut = frame - insertedOffset;
   sourceFrameOut =
       std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
   return true;
