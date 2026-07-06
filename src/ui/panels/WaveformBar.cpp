@@ -2418,7 +2418,25 @@ bool WaveformBar::getPendingJumpProgressRatio(float &ratioOut) const {
 }
 
 double WaveformBar::getSongLengthSeconds() const {
-  return lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
+  double length = lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
+  if (customArrangement) {
+    double sourceLength = 0.0;
+    if (songWindowEndProvider != nullptr)
+      sourceLength = juce::jmax(0.0, songWindowEndProvider());
+    if (sourceLength <= 0.0)
+      sourceLength = length;
+
+    double insertedLength = 0.0;
+    for (const auto &part : arrangement.parts) {
+      if (std::isfinite(part.endSec))
+        length = juce::jmax(length, part.endSec);
+      if (part.sourcePartId.isNotEmpty() && part.endSec > part.startSec)
+        insertedLength += part.endSec - part.startSec;
+    }
+    if (sourceLength > 0.0 && insertedLength > 0.0)
+      length = juce::jmax(length, sourceLength + insertedLength);
+  }
+  return length;
 }
 
 std::pair<double, double> WaveformBar::getPlayableRangeSeconds() const {
@@ -2505,7 +2523,13 @@ double WaveformBar::snapSecondsForward(const double seconds) const {
 
 void WaveformBar::normalizeArrangement(const bool sortByStart,
                                        const bool snapToGrid) {
-  const double songLength = getSongLengthSeconds();
+  const double currentLength = getSongLengthSeconds();
+  double arrangementLength = currentLength;
+  for (const auto &part : arrangement.parts) {
+    if (std::isfinite(part.endSec))
+      arrangementLength = juce::jmax(arrangementLength, part.endSec);
+  }
+  const double sourceLength = getWaveformSourceLengthSeconds();
   juce::String selectedId;
   if (juce::isPositiveAndBelow(selectedPartIndex,
                                static_cast<int>(arrangement.parts.size()))) {
@@ -2523,13 +2547,14 @@ void WaveformBar::normalizeArrangement(const bool sortByStart,
       targetColour = fallbackArrangementPartColorForName(part.name);
     part.color = targetColour;
 
-    part.startSec = juce::jlimit(0.0, songLength, part.startSec);
-    part.endSec = juce::jlimit(0.0, songLength, part.endSec);
+    part.startSec = juce::jlimit(0.0, arrangementLength, part.startSec);
+    part.endSec = juce::jlimit(0.0, arrangementLength, part.endSec);
     if (part.endSec < part.startSec)
       std::swap(part.endSec, part.startSec);
 
     if ((part.endSec - part.startSec) < kMinPartDurationSec) {
-      part.endSec = juce::jmin(songLength, part.startSec + kMinPartDurationSec);
+      part.endSec =
+          juce::jmin(arrangementLength, part.startSec + kMinPartDurationSec);
       if ((part.endSec - part.startSec) < kMinPartDurationSec)
         part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
     }
@@ -2539,12 +2564,52 @@ void WaveformBar::normalizeArrangement(const bool sortByStart,
       part.endSec = snapSeconds(part.endSec);
     }
 
-    part.startSec = juce::jlimit(0.0, songLength, part.startSec);
-    part.endSec = juce::jlimit(0.0, songLength, part.endSec);
+    part.startSec = juce::jlimit(0.0, arrangementLength, part.startSec);
+    part.endSec = juce::jlimit(0.0, arrangementLength, part.endSec);
     if ((part.endSec - part.startSec) < kMinPartDurationSec) {
-      part.endSec = juce::jmin(songLength, part.startSec + kMinPartDurationSec);
+      part.endSec =
+          juce::jmin(arrangementLength, part.startSec + kMinPartDurationSec);
       if ((part.endSec - part.startSec) < kMinPartDurationSec)
         part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
+    }
+
+    if (sourceLength > 0.0) {
+      if (part.sourceEndSec <= part.sourceStartSec) {
+        part.sourceStartSec = juce::jlimit(0.0, sourceLength, part.startSec);
+        part.sourceEndSec = juce::jlimit(0.0, sourceLength, part.endSec);
+      } else {
+        part.sourceStartSec =
+            juce::jlimit(0.0, sourceLength, part.sourceStartSec);
+        part.sourceEndSec = juce::jlimit(0.0, sourceLength, part.sourceEndSec);
+      }
+      if (part.sourceEndSec < part.sourceStartSec)
+        std::swap(part.sourceStartSec, part.sourceEndSec);
+      if ((part.sourceEndSec - part.sourceStartSec) < kMinPartDurationSec) {
+        part.sourceEndSec =
+            juce::jmin(sourceLength, part.sourceStartSec + kMinPartDurationSec);
+        if ((part.sourceEndSec - part.sourceStartSec) < kMinPartDurationSec)
+          part.sourceStartSec =
+              juce::jmax(0.0, part.sourceEndSec - kMinPartDurationSec);
+      }
+    }
+  }
+
+  if (sourceLength > 0.0) {
+    for (auto &part : arrangement.parts) {
+      if (part.sourcePartId.isEmpty())
+        continue;
+      const int sourceIndex = findPartIndexById(part.sourcePartId);
+      if (!juce::isPositiveAndBelow(sourceIndex,
+                                    static_cast<int>(arrangement.parts.size())))
+        continue;
+      const auto &source = arrangement.parts[static_cast<size_t>(sourceIndex)];
+      if (source.sourceEndSec > source.sourceStartSec) {
+        part.sourceStartSec = juce::jlimit(0.0, sourceLength, source.sourceStartSec);
+        part.sourceEndSec = juce::jlimit(0.0, sourceLength, source.sourceEndSec);
+      } else {
+        part.sourceStartSec = juce::jlimit(0.0, sourceLength, source.startSec);
+        part.sourceEndSec = juce::jlimit(0.0, sourceLength, source.endSec);
+      }
     }
   }
 
@@ -2825,6 +2890,134 @@ float WaveformBar::sourceSecondsToWindowX(
          (juce::jlimit(0.0f, 1.0f, normalizedWindow) * windowBounds.getWidth());
 }
 
+double WaveformBar::getWaveformSourceLengthSeconds() const {
+  if (songWindowEndProvider != nullptr) {
+    const double sourceLength = juce::jmax(0.0, songWindowEndProvider());
+    if (sourceLength > 0.0)
+      return sourceLength;
+  }
+
+  if (!customArrangement && lengthProvider != nullptr) {
+    const double sourceLength = juce::jmax(0.0, lengthProvider());
+    if (sourceLength > 0.0)
+      return sourceLength;
+  }
+
+  double sourceLength = 0.0;
+  for (const auto &part : arrangement.parts) {
+    if (part.sourceEndSec > part.sourceStartSec)
+      sourceLength = juce::jmax(sourceLength, part.sourceEndSec);
+    else if (part.sourcePartId.isEmpty())
+      sourceLength = juce::jmax(sourceLength, part.endSec);
+  }
+
+  if (sourceLength <= 0.0)
+    sourceLength = getSongLengthSeconds();
+  return sourceLength;
+}
+
+std::pair<double, double> WaveformBar::getPartSourceRange(
+    const SongArrangementPartSnapshot &part, const double sourceLength) const {
+  if (part.sourceEndSec > part.sourceStartSec) {
+    return {juce::jlimit(0.0, sourceLength, part.sourceStartSec),
+            juce::jlimit(0.0, sourceLength, part.sourceEndSec)};
+  }
+
+  if (part.sourcePartId.isNotEmpty()) {
+    const int sourceIndex = findPartIndexById(part.sourcePartId);
+    if (juce::isPositiveAndBelow(sourceIndex,
+                                 static_cast<int>(arrangement.parts.size()))) {
+      const auto &source = arrangement.parts[static_cast<size_t>(sourceIndex)];
+      if (source.sourceEndSec > source.sourceStartSec) {
+        return {juce::jlimit(0.0, sourceLength, source.sourceStartSec),
+                juce::jlimit(0.0, sourceLength, source.sourceEndSec)};
+      }
+      return {juce::jlimit(0.0, sourceLength, source.startSec),
+              juce::jlimit(0.0, sourceLength, source.endSec)};
+    }
+  }
+
+  return {juce::jlimit(0.0, sourceLength, part.startSec),
+          juce::jlimit(0.0, sourceLength, part.endSec)};
+}
+
+bool WaveformBar::mapArrangementSecondsToSourceSeconds(
+    const double arrangementSeconds, const double sourceLength,
+    double &sourceSecondsOut) const {
+  if (sourceLength <= 0.0)
+    return false;
+
+  struct Segment {
+    double start = 0.0;
+    double end = 0.0;
+    double sourceStart = 0.0;
+    double sourceEnd = 0.0;
+  };
+
+  std::vector<Segment> segments;
+  segments.reserve(arrangement.parts.size());
+  for (const auto &part : arrangement.parts) {
+    if (part.endSec <= part.startSec)
+      continue;
+    const auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
+    if (sourceEnd <= sourceStart)
+      continue;
+    segments.push_back({part.startSec, part.endSec, sourceStart, sourceEnd});
+  }
+
+  if (segments.empty()) {
+    sourceSecondsOut = juce::jlimit(0.0, sourceLength, arrangementSeconds);
+    return true;
+  }
+
+  std::stable_sort(segments.begin(), segments.end(),
+                   [](const Segment &a, const Segment &b) {
+                     if (nearlyEqual(a.start, b.start))
+                       return a.end < b.end;
+                     return a.start < b.start;
+                   });
+
+  const Segment *previous = nullptr;
+  const Segment *next = nullptr;
+  for (auto it = segments.rbegin(); it != segments.rend(); ++it) {
+    if (arrangementSeconds >= it->start && arrangementSeconds < it->end) {
+      const double duration = juce::jmax(0.0001, it->end - it->start);
+      const double sourceDuration =
+          juce::jmax(0.0001, it->sourceEnd - it->sourceStart);
+      const double ratio = juce::jlimit(
+          0.0, 1.0, (arrangementSeconds - it->start) / duration);
+      sourceSecondsOut =
+          juce::jlimit(0.0, sourceLength,
+                       it->sourceStart + (ratio * sourceDuration));
+      return true;
+    }
+  }
+
+  for (const auto &segment : segments) {
+    if (segment.end <= arrangementSeconds)
+      previous = &segment;
+    else if (segment.start > arrangementSeconds) {
+      next = &segment;
+      break;
+    }
+  }
+
+  const double arrangementLength = getSongLengthSeconds();
+  const double gapStart = previous != nullptr ? previous->end : 0.0;
+  const double gapEnd = next != nullptr ? next->start : arrangementLength;
+  const double sourceStart = previous != nullptr ? previous->sourceEnd : 0.0;
+  const double sourceEnd = next != nullptr ? next->sourceStart : sourceLength;
+  if (gapEnd <= gapStart || sourceEnd <= sourceStart)
+    return false;
+
+  const double ratio = juce::jlimit(
+      0.0, 1.0, (arrangementSeconds - gapStart) / (gapEnd - gapStart));
+  sourceSecondsOut =
+      juce::jlimit(0.0, sourceLength,
+                   sourceStart + (ratio * (sourceEnd - sourceStart)));
+  return true;
+}
+
 WaveformBar::PartHitResult
 WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
   for (int i = static_cast<int>(partOverlayBounds.size()) - 1; i >= 0; --i) {
@@ -3043,9 +3236,9 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);
   g.setColour(waveformBg);
   g.fillRoundedRectangle(bounds, 4.0f);
+  const double songLength = getSongLengthSeconds();
 
   if (showGrid) {
-    const double songLength = getSongLengthSeconds();
     if (songBpm > 0.0 && songLength > 0.0 && songBeatsPerBar > 0) {
       const double barDurationSec = getBarDurationSeconds();
       const double beatDurationSec = 60.0 / songBpm;
@@ -3116,6 +3309,9 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   const float midY = bounds.getCentreY();
   const float ampScale = bounds.getHeight() * 0.495f;
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
+  const bool hasCustomArrangement =
+      customArrangement && !arrangement.parts.empty();
+  const double sourceLength = getWaveformSourceLengthSeconds();
 
   float progressRatio = 0.0f;
   float pendingTravelRatio = 0.0f;
@@ -3124,11 +3320,11 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
     progressRatio =
         static_cast<float>(juce::jlimit(0.0, 1.0, songLoadingProgress01));
   } else if (positionProvider && lengthProvider) {
-    const double songLength = juce::jmax(0.0, lengthProvider());
-    if (songLength > 0.0) {
+    const double transportLength = juce::jmax(0.0, lengthProvider());
+    if (transportLength > 0.0) {
       const double songPosition = juce::jmax(0.0, positionProvider());
       progressRatio = static_cast<float>(
-          juce::jlimit(0.0, 1.0, songPosition / songLength));
+          juce::jlimit(0.0, 1.0, songPosition / transportLength));
       pendingTravelRatio = progressRatio;
     }
   }
@@ -3154,17 +3350,18 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   float playableStartRatio = 0.0f;
   float playableEndRatio = 1.0f;
   bool showPlayableWindow = false;
-  if (lengthProvider && songWindowStartProvider && songWindowEndProvider) {
-    const double songLength = juce::jmax(0.0, lengthProvider());
-    if (songLength > 0.0) {
+  if (!hasCustomArrangement && lengthProvider && songWindowStartProvider &&
+      songWindowEndProvider) {
+    const double transportLength = juce::jmax(0.0, lengthProvider());
+    if (transportLength > 0.0) {
       double startSec = songWindowStartProvider();
       double endSec = songWindowEndProvider();
-      endSec = juce::jlimit(0.0, songLength, endSec);
+      endSec = juce::jlimit(0.0, transportLength, endSec);
       startSec = juce::jlimit(0.0, endSec, startSec);
       playableStartRatio =
-          static_cast<float>(juce::jlimit(0.0, 1.0, startSec / songLength));
+          static_cast<float>(juce::jlimit(0.0, 1.0, startSec / transportLength));
       playableEndRatio =
-          static_cast<float>(juce::jlimit(0.0, 1.0, endSec / songLength));
+          static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
       showPlayableWindow =
           playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
     }
@@ -3189,8 +3386,18 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   const int step = 2;
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) / static_cast<float>(widthPixels - 1);
-    const float index =
-        (windowStart + (t * windowSpan)) * static_cast<float>(bins - 1);
+    const double arrangementSec = songLength * (windowStart + (t * windowSpan));
+    double sourceSec = arrangementSec;
+    if (hasCustomArrangement &&
+        !mapArrangementSecondsToSourceSeconds(arrangementSec, sourceLength,
+                                              sourceSec))
+      continue;
+    if (sourceLength <= 0.0 || sourceSec < 0.0 || sourceSec > sourceLength)
+      continue;
+
+    const float index = static_cast<float>(
+        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
+        static_cast<float>(bins - 1);
     const int i0 = static_cast<int>(index);
     const int i1 = juce::jmin(i0 + 1, bins - 1);
     const float frac = index - static_cast<float>(i0);
@@ -3236,6 +3443,54 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       g.drawLine(pendingTravelX, bounds.getY(), pendingTravelX,
                  bounds.getBottom(), 1.0f);
     }
+  }
+}
+
+void WaveformBar::drawWaveformSegment(juce::Graphics &g,
+                                      const juce::Rectangle<float> &bounds,
+                                      const double sourceStartSec,
+                                      const double sourceEndSec) const {
+  if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
+    return;
+  if (waveformBins.empty())
+    return;
+
+  const int bins = static_cast<int>(waveformBins.size());
+  if (bins < 2)
+    return;
+
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (sourceLength <= 0.0 || sourceEndSec <= sourceStartSec)
+    return;
+
+  const float midY = bounds.getCentreY();
+  const float ampScale = bounds.getHeight() * 0.495f;
+  const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
+
+  g.setColour(juce::Colours::white.withAlpha(0.16f));
+  const float centerDashes[] = {2.0f, 4.0f};
+  g.drawDashedLine({bounds.getX(), midY, bounds.getRight(), midY},
+                   centerDashes, 2, 1.0f);
+
+  constexpr int step = 2;
+  const double sourceDuration = sourceEndSec - sourceStartSec;
+  for (int x = 0; x < widthPixels; x += step) {
+    const float t = static_cast<float>(x) /
+                    static_cast<float>(juce::jmax(1, widthPixels - 1));
+    const double sourceSec = sourceStartSec + (static_cast<double>(t) * sourceDuration);
+    const float index = static_cast<float>(
+        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
+        static_cast<float>(bins - 1);
+    const int i0 = static_cast<int>(index);
+    const int i1 = juce::jmin(i0 + 1, bins - 1);
+    const float frac = index - static_cast<float>(i0);
+    const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
+                                 waveformBins[static_cast<size_t>(i1)]);
+    const float lineHalf = juce::jmax(1.2f, amp * ampScale);
+    const float xPos = bounds.getX() + static_cast<float>(x);
+
+    g.setColour(juce::Colours::white.withAlpha(0.72f));
+    g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
   }
 }
 
@@ -3426,84 +3681,9 @@ void WaveformBar::drawArrangementOverlay(
     const float baseAlpha = editing ? (selected ? 0.28f : 0.18f) : 0.16f;
     auto fill = sectionColour.withAlpha(baseAlpha);
 
-    // For duplicated sections, resolve the source part so we draw the same
-    // waveform content as the original (and replace the global waveform that
-    // would otherwise show through the clip).
-    double sectionWaveStartSec = part.startSec;
-    double sectionWaveEndSec = part.endSec;
-    const SongArrangementPartSnapshot *sourceForWaveform = nullptr;
-    if (part.sourcePartId.isNotEmpty()) {
-      for (const auto &p : arrangement.parts) {
-        if (p.id == part.sourcePartId) {
-          sourceForWaveform = &p;
-          break;
-        }
-      }
-      if (sourceForWaveform != nullptr) {
-        sectionWaveStartSec = sourceForWaveform->startSec;
-        sectionWaveEndSec = sourceForWaveform->endSec;
-      }
-    }
-
     // Clip to section body so we only affect the waveform inside it.
     g.saveState();
     g.reduceClipRegion(overlay.body.toNearestInt());
-
-    // For duplicated sections: redraw the waveform from the source's time range
-    // so the content inside the clip matches the original (and hides the
-    // timeline waveform "continuing" past the clip's bounds).
-    if (sourceForWaveform != nullptr &&
-        sectionWaveEndSec > sectionWaveStartSec && !waveformBins.empty()) {
-      const int bins = static_cast<int>(waveformBins.size());
-      if (bins >= 2) {
-        const double songLength = getSongLengthSeconds();
-        if (songLength > 0.0) {
-          const double sectionDur = sectionWaveEndSec - sectionWaveStartSec;
-          const float midY = overlay.body.getCentreY();
-          const float ampScale = overlay.body.getHeight() * 0.48f;
-          const float barWidth = 4.0f;
-          const float barGap = 2.0f;
-          const float barStep = barWidth + barGap;
-          const int barCount =
-              juce::jmax(1, static_cast<int>(overlay.body.getWidth() / barStep));
-
-          // Played/unplayed threshold uses the source's playhead ratio.
-          float sourcePlayheadRatio = 0.0f;
-          if (positionProvider && lengthProvider) {
-            const double songLen = juce::jmax(0.0, lengthProvider());
-            if (songLen > 0.0) {
-              const double globalPos = juce::jmax(0.0, positionProvider());
-              sourcePlayheadRatio = static_cast<float>(
-                  juce::jlimit(0.0, 1.0, (globalPos - sectionWaveStartSec) /
-                                            juce::jmax(0.0001, sectionDur)));
-            }
-          }
-
-          for (int i = 0; i < barCount; ++i) {
-            const float t = static_cast<float>(i) / static_cast<float>(barCount);
-            const double sectionSec = sectionWaveStartSec + (t * sectionDur);
-            const float globalNorm = static_cast<float>(
-                juce::jlimit(0.0, 1.0, sectionSec / songLength));
-            const float binIdx = globalNorm * static_cast<float>(bins - 1);
-            const int i0 = static_cast<int>(binIdx);
-            const int i1 = juce::jmin(i0 + 1, bins - 1);
-            const float frac = binIdx - static_cast<float>(i0);
-            const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
-                                         waveformBins[static_cast<size_t>(i1)]);
-            const float lineHalf = juce::jmax(1.2f, amp * ampScale);
-            const float xPos = overlay.body.getX() + (t * overlay.body.getWidth());
-
-            // Match the global timeline waveform style: thin vertical line per bin
-            // with the same pending/played colours.
-            juce::Colour barColour = juce::Colour::fromRGB(42, 42, 42).withAlpha(0.6f);
-            if (t <= sourcePlayheadRatio)
-              barColour = juce::Colour::fromRGB(193, 122, 90);
-            g.setColour(barColour);
-            g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
-          }
-        }
-      }
-    }
 
     // Subtle section colour tint overlay (matches the original behaviour so
     // duplicated sections look identical except for the dashed border + link).
@@ -4170,14 +4350,19 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
                                  static_cast<int>(arrangement.parts.size())))
     return;
 
-  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
-  const double playableLength = playableEndSec - playableStartSec;
-  if (playableLength < kMinPartDurationSec)
+  const auto selectedPartId =
+      arrangement.parts[static_cast<size_t>(sourcePartIndex)].id;
+  normalizeArrangement(true, false);
+
+  const int normalizedSourcePartIndex = findPartIndexById(selectedPartId);
+  if (!juce::isPositiveAndBelow(normalizedSourcePartIndex,
+                                 static_cast<int>(arrangement.parts.size())))
     return;
 
-  const auto &sourcePart = arrangement.parts[static_cast<size_t>(sourcePartIndex)];
-  const double sourceDuration = sourcePart.endSec - sourcePart.startSec;
-  if (sourceDuration < kMinPartDurationSec)
+  const auto sourcePart =
+      arrangement.parts[static_cast<size_t>(normalizedSourcePartIndex)];
+  const double arrangementDuration = sourcePart.endSec - sourcePart.startSec;
+  if (arrangementDuration < kMinPartDurationSec)
     return;
 
   // Follow the chain to find the real source (original, not another duplicate).
@@ -4195,14 +4380,13 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
     }
   }
 
-  // Position duplicated section immediately after the source section.
-  double startSec = sourcePart.endSec;
-  double endSec = startSec + sourceDuration;
-  if (endSec > playableEndSec) {
-    endSec = playableEndSec;
-    startSec = juce::jmax(playableStartSec, endSec - sourceDuration);
-  }
-  if ((endSec - startSec) < kMinPartDurationSec)
+  const double insertAtSec = sourcePart.endSec;
+  const double startSec = insertAtSec;
+  const double endSec = startSec + arrangementDuration;
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  const auto [sourceStartSec, sourceEndSec] =
+      getPartSourceRange(sourcePart, sourceLength);
+  if ((sourceEndSec - sourceStartSec) < kMinPartDurationSec)
     return;
 
   // Count existing duplicates of the real source to name: ×2, ×3, etc.
@@ -4220,10 +4404,23 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   copy.startSec = startSec;
   copy.endSec = endSec;
   copy.sourcePartId = realSourceId;
+  copy.sourceStartSec = sourceStartSec;
+  copy.sourceEndSec = sourceEndSec;
+  const auto copyId = copy.id;
 
+  for (auto &part : arrangement.parts) {
+    if (part.startSec >= insertAtSec - 0.0001) {
+      part.startSec += arrangementDuration;
+      part.endSec += arrangementDuration;
+    }
+  }
   arrangement.parts.push_back(std::move(copy));
-  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;
+  normalizeArrangement(true, false);
+  const int copyIndex = findPartIndexById(copyId);
+  if (juce::isPositiveAndBelow(copyIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    setSingleSelectedPart(copyIndex);
   notifyArrangementChanged(true);
   repaint();
 }

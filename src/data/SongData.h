@@ -27,6 +27,10 @@ struct SongArrangementPartSnapshot {
   double endSec = 0.0;
   // If non-empty, this part is a virtual reference (duplicate) pointing to the source part.
   juce::String sourcePartId;
+  // Arrangement clips can move independently from the original audio source.
+  // These values describe the source-audio region rendered by this part.
+  double sourceStartSec = 0.0;
+  double sourceEndSec = 0.0;
 };
 
 struct SongArrangementSnapshot {

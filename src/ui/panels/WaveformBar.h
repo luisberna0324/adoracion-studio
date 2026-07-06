@@ -275,6 +275,17 @@ private:
   void drawWaveform(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                     float windowStart, float windowSpan, bool showGrid,
                     bool showPlayhead) const;
+  void drawWaveformSegment(juce::Graphics &g,
+                           const juce::Rectangle<float> &bounds,
+                           double sourceStartSec,
+                           double sourceEndSec) const;
+  double getWaveformSourceLengthSeconds() const;
+  std::pair<double, double>
+  getPartSourceRange(const SongArrangementPartSnapshot &part,
+                     double sourceLength) const;
+  bool mapArrangementSecondsToSourceSeconds(double arrangementSeconds,
+                                            double sourceLength,
+                                            double &sourceSecondsOut) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                      float windowStart, float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,

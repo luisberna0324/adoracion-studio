@@ -20,7 +20,17 @@ repository. Update it when a task teaches something reusable.
   release tags, treat removal of Bungee CMake wiring, `TimeStretchProcessor`,
   `BungeeProcessor`, or bundle verification as a regression unless the user
   explicitly says otherwise.
-- Duplicated arrangement sections are virtual source references: keep UI seek
-  and playhead position in arrangement time, and remap to source frames inside
-  `MTControlsAudioProcessor`/`SectionScheduler`. Do not remap duplicate seeks in
-  `WaveformBar`, or the playhead jumps back to the source section.
+- Duplicated arrangement sections are inserted virtual clips: `startSec/endSec`
+  are arrangement time and may extend song length, while
+  `sourceStartSec/sourceEndSec` identify the original audio. Keep UI seek and
+  playhead in arrangement time, keep the master waveform visible as the fixed
+  base reference, draw only duplicated/virtual clips as waveform overlays, and
+  remap to source frames inside `MTControlsAudioProcessor`/`SectionScheduler`.
+- Original sections must not replace the master waveform with per-section clip
+  overlays; they only mark the master structure. Once duplicated clips exist,
+  the primary waveform represents the arranged master by mapping inserted clips
+  and shifted implicit master gaps back to source audio.
+- Duplicating a section means inserting that source clip into the primary
+  arrangement waveform, not drawing it as an overlay on the original marker.
+  The unmarked remainder of the master is implicit arrangement content and must
+  shift after inserted clips in both waveform rendering and playback mapping.

@@ -1,6 +1,7 @@
 #include "SectionScheduler.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace playworship::audio {
@@ -102,6 +103,71 @@ bool SectionScheduler::getSection(const int index,
   if (index < 0 || index >= local.count)
     return false;
   section = local.sections[static_cast<std::size_t>(index)];
+  return true;
+}
+
+bool SectionScheduler::mapFrameToSourceFrame(
+    const Frame frame, const Frame arrangementEndFrame,
+    const Frame sourceEndFrame, Frame &sourceFrameOut) const noexcept {
+  const auto local = readSnapshot();
+  if (local.count <= 0 || sourceEndFrame <= 0)
+    return false;
+
+  const Section *previous = nullptr;
+  const Section *next = nullptr;
+  for (int i = local.count - 1; i >= 0; --i) {
+    const auto &section = local.sections[static_cast<std::size_t>(i)];
+    if (frame >= section.startFrame && frame < section.endFrame) {
+      const auto arrangementDuration =
+          std::max<Frame>(1, section.endFrame - section.startFrame);
+      const auto sourceDuration =
+          std::max<Frame>(1, section.sourceEndFrame - section.sourceStartFrame);
+      const auto arrangementOffset =
+          std::clamp(frame - section.startFrame, static_cast<Frame>(0),
+                     arrangementDuration);
+      if (arrangementDuration == sourceDuration)
+        sourceFrameOut = section.sourceStartFrame + arrangementOffset;
+      else {
+        const double normalized = static_cast<double>(arrangementOffset) /
+                                  static_cast<double>(arrangementDuration);
+        sourceFrameOut = section.sourceStartFrame +
+                         static_cast<Frame>(std::llround(
+                             normalized * static_cast<double>(sourceDuration)));
+      }
+      sourceFrameOut =
+          std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
+      return true;
+    }
+  }
+
+  for (int i = 0; i < local.count; ++i) {
+    const auto &section = local.sections[static_cast<std::size_t>(i)];
+    if (section.endFrame <= frame)
+      previous = &section;
+    else if (section.startFrame > frame) {
+      next = &section;
+      break;
+    }
+  }
+
+  const Frame gapStart = previous != nullptr ? previous->endFrame : 0;
+  const Frame gapEnd = next != nullptr ? next->startFrame : arrangementEndFrame;
+  const Frame sourceStart =
+      previous != nullptr ? previous->sourceEndFrame : static_cast<Frame>(0);
+  const Frame sourceEnd =
+      next != nullptr ? next->sourceStartFrame : sourceEndFrame;
+  if (gapEnd <= gapStart || sourceEnd <= sourceStart)
+    return false;
+
+  const double normalized =
+      static_cast<double>(std::clamp(frame - gapStart, static_cast<Frame>(0),
+                                    gapEnd - gapStart)) /
+      static_cast<double>(gapEnd - gapStart);
+  sourceFrameOut = sourceStart + static_cast<Frame>(std::llround(
+                                     normalized *
+                                     static_cast<double>(sourceEnd - sourceStart)));
+  sourceFrameOut =
+      std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
   return true;
 }
 

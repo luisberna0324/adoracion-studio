@@ -1988,6 +1988,12 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     return arrangement;
 
   SongArrangementSnapshot out = arrangement;
+  double arrangementLength = songLength;
+  for (const auto &part : out.parts) {
+    if (std::isfinite(part.endSec))
+      arrangementLength = juce::jmax(arrangementLength, part.endSec);
+  }
+
   for (auto &part : out.parts) {
     if (part.id.isEmpty()) {
       part.id = juce::Uuid().toString();
@@ -2010,20 +2016,76 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
 
     const auto originalStart = part.startSec;
     const auto originalEnd = part.endSec;
-    part.startSec = juce::jlimit(0.0, songLength, originalStart);
-    part.endSec = juce::jlimit(0.0, songLength, originalEnd);
+    part.startSec = juce::jlimit(0.0, arrangementLength, originalStart);
+    part.endSec = juce::jlimit(0.0, arrangementLength, originalEnd);
     if (part.endSec < part.startSec)
       std::swap(part.startSec, part.endSec);
 
-    if (songLength > 0.0 && (part.endSec - part.startSec) < kMinPartDurationSec) {
-      part.endSec = juce::jmin(songLength, part.startSec + kMinPartDurationSec);
+    if (arrangementLength > 0.0 &&
+        (part.endSec - part.startSec) < kMinPartDurationSec) {
+      part.endSec =
+          juce::jmin(arrangementLength, part.startSec + kMinPartDurationSec);
       if (part.endSec <= part.startSec)
         part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
     }
 
+    const auto originalSourceStart = part.sourceStartSec;
+    const auto originalSourceEnd = part.sourceEndSec;
+    if (songLength > 0.0) {
+      const bool hasSourceRange = part.sourceEndSec > part.sourceStartSec;
+      if (!hasSourceRange) {
+        part.sourceStartSec = juce::jlimit(0.0, songLength, part.startSec);
+        part.sourceEndSec = juce::jlimit(0.0, songLength, part.endSec);
+      } else {
+        part.sourceStartSec = juce::jlimit(0.0, songLength, part.sourceStartSec);
+        part.sourceEndSec = juce::jlimit(0.0, songLength, part.sourceEndSec);
+      }
+      if (part.sourceEndSec < part.sourceStartSec)
+        std::swap(part.sourceStartSec, part.sourceEndSec);
+      if ((part.sourceEndSec - part.sourceStartSec) < kMinPartDurationSec) {
+        part.sourceEndSec =
+            juce::jmin(songLength, part.sourceStartSec + kMinPartDurationSec);
+        if (part.sourceEndSec <= part.sourceStartSec)
+          part.sourceStartSec =
+              juce::jmax(0.0, part.sourceEndSec - kMinPartDurationSec);
+      }
+    }
+
     if (!nearlyEqual(originalStart, part.startSec) ||
-        !nearlyEqual(originalEnd, part.endSec))
+        !nearlyEqual(originalEnd, part.endSec) ||
+        !nearlyEqual(originalSourceStart, part.sourceStartSec) ||
+        !nearlyEqual(originalSourceEnd, part.sourceEndSec))
       changed = true;
+  }
+
+  for (auto &part : out.parts) {
+    if (part.sourcePartId.isEmpty())
+      continue;
+
+    const SongArrangementPartSnapshot *source = nullptr;
+    for (const auto &candidate : out.parts) {
+      if (candidate.id == part.sourcePartId) {
+        source = &candidate;
+        break;
+      }
+    }
+    if (source == nullptr)
+      continue;
+
+    const double nextSourceStart =
+        source->sourceEndSec > source->sourceStartSec
+            ? source->sourceStartSec
+            : juce::jlimit(0.0, songLength, source->startSec);
+    const double nextSourceEnd =
+        source->sourceEndSec > source->sourceStartSec
+            ? source->sourceEndSec
+            : juce::jlimit(0.0, songLength, source->endSec);
+    if (!nearlyEqual(part.sourceStartSec, nextSourceStart) ||
+        !nearlyEqual(part.sourceEndSec, nextSourceEnd)) {
+      part.sourceStartSec = nextSourceStart;
+      part.sourceEndSec = nextSourceEnd;
+      changed = true;
+    }
   }
 
   if (out.parts.size() > 1) {
@@ -2110,6 +2172,8 @@ juce::var SongLibraryStore::arrangementPartToVar(
   obj->setProperty("color", part.color);
   obj->setProperty("startSec", part.startSec);
   obj->setProperty("endSec", part.endSec);
+  obj->setProperty("sourceStartSec", part.sourceStartSec);
+  obj->setProperty("sourceEndSec", part.sourceEndSec);
   if (part.sourcePartId.isNotEmpty())
     obj->setProperty("sourcePartId", part.sourcePartId);
   return juce::var(obj);
@@ -2127,6 +2191,10 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
     part.color = obj->getProperty("color").toString();
   part.startSec = static_cast<double>(obj->getProperty("startSec"));
   part.endSec = static_cast<double>(obj->getProperty("endSec"));
+  if (obj->hasProperty("sourceStartSec"))
+    part.sourceStartSec = static_cast<double>(obj->getProperty("sourceStartSec"));
+  if (obj->hasProperty("sourceEndSec"))
+    part.sourceEndSec = static_cast<double>(obj->getProperty("sourceEndSec"));
   if (obj->hasProperty("sourcePartId"))
     part.sourcePartId = obj->getProperty("sourcePartId").toString();
   return part;

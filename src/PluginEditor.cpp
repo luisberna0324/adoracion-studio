@@ -350,7 +350,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setTransportProviders(
       [&p] { return p.isSongPlaying(); },
       [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongEndSeconds(); },
+      [&p] {
+        return p.isCustomArrangementActive() ? p.getSongLengthSeconds()
+                                             : p.getSongEndSeconds();
+      },
       [&p] { return p.getLoadedSongKey(); },
       [this] { return currentLoadedSong.id; },
       [this]() -> const ImportedSongData * {

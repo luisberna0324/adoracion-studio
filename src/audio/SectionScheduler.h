@@ -40,6 +40,9 @@ public:
   int findSection(Frame frame) const noexcept;
   int findGuideTrigger(Frame blockStart, int blockFrames) const noexcept;
   bool getSection(int index, Section &section) const noexcept;
+  bool mapFrameToSourceFrame(Frame frame, Frame arrangementEndFrame,
+                             Frame sourceEndFrame,
+                             Frame &sourceFrameOut) const noexcept;
 
   BlockDecision evaluate(Frame blockStart, int blockFrames,
                          bool customArrangement, int pendingSection,

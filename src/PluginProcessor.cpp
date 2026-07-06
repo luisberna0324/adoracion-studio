@@ -2646,8 +2646,24 @@ void MTControlsAudioProcessor::setSongArrangement(
   std::vector<ArrangementRuntimePart> next;
   next.reserve(arrangement.parts.size());
   double totalLength = 0.0;
+  double arrangementLength = songLength;
+  double insertedLength = 0.0;
+  for (const auto &part : arrangement.parts) {
+    if (std::isfinite(part.endSec))
+      arrangementLength = juce::jmax(arrangementLength, part.endSec);
+    if (part.sourcePartId.isNotEmpty() && part.endSec > part.startSec)
+      insertedLength += part.endSec - part.startSec;
+  }
   const auto resolveSourceRange =
       [&arrangement, songLength](const SongArrangementPartSnapshot &part) {
+        if (part.sourceEndSec > part.sourceStartSec) {
+          double sourceStart = juce::jlimit(0.0, songLength, part.sourceStartSec);
+          double sourceEnd = juce::jlimit(0.0, songLength, part.sourceEndSec);
+          if (sourceEnd < sourceStart)
+            std::swap(sourceStart, sourceEnd);
+          return std::pair<double, double>{sourceStart, sourceEnd};
+        }
+
         const SongArrangementPartSnapshot *source = &part;
         const int maxDepth = static_cast<int>(arrangement.parts.size());
         for (int depth = 0; depth < maxDepth; ++depth) {
@@ -2667,16 +2683,22 @@ void MTControlsAudioProcessor::setSongArrangement(
           source = nextSource;
         }
 
-        double sourceStart = juce::jlimit(0.0, songLength, source->startSec);
-        double sourceEnd = juce::jlimit(0.0, songLength, source->endSec);
+        double sourceStart =
+            source->sourceEndSec > source->sourceStartSec
+                ? juce::jlimit(0.0, songLength, source->sourceStartSec)
+                : juce::jlimit(0.0, songLength, source->startSec);
+        double sourceEnd =
+            source->sourceEndSec > source->sourceStartSec
+                ? juce::jlimit(0.0, songLength, source->sourceEndSec)
+                : juce::jlimit(0.0, songLength, source->endSec);
         if (sourceEnd < sourceStart)
           std::swap(sourceStart, sourceEnd);
         return std::pair<double, double>{sourceStart, sourceEnd};
       };
 
   for (const auto &part : arrangement.parts) {
-    double start = juce::jlimit(0.0, songLength, part.startSec);
-    double end = juce::jlimit(0.0, songLength, part.endSec);
+    double start = juce::jlimit(0.0, arrangementLength, part.startSec);
+    double end = juce::jlimit(0.0, arrangementLength, part.endSec);
     if (end < start)
       std::swap(start, end);
     if (songLength > 0.0 && (end - start) < kRuntimeMinPartDurationSec)
@@ -2693,16 +2715,21 @@ void MTControlsAudioProcessor::setSongArrangement(
         dynamicGuideEngine.resolveTriggerId(runtimePart.sectionKey);
     runtimePart.startSec = start;
     runtimePart.endSec = end;
-    const auto [sourceStart, sourceEnd] =
-        part.sourcePartId.isNotEmpty()
-            ? resolveSourceRange(part)
-            : std::pair<double, double>{start, end};
+    const auto [sourceStart, sourceEnd] = resolveSourceRange(part);
     runtimePart.sourceStartSec = sourceStart;
     runtimePart.sourceEndSec =
-        sourceEnd > sourceStart ? sourceEnd : sourceStart + (end - start);
+        sourceEnd > sourceStart
+            ? sourceEnd
+            : juce::jmin(songLength, sourceStart + (end - start));
+    if (songLength > 0.0 &&
+        (runtimePart.sourceEndSec - runtimePart.sourceStartSec) <
+            kRuntimeMinPartDurationSec)
+      continue;
     next.push_back(std::move(runtimePart));
     totalLength = juce::jmax(totalLength, end);
   }
+  if (isCustomArrangement && songLength > 0.0 && insertedLength > 0.0)
+    totalLength = juce::jmax(totalLength, songLength + insertedLength);
 
   if (next.size() > 1) {
     std::stable_sort(
@@ -3891,28 +3918,21 @@ int MTControlsAudioProcessor::findArrangementPartIndexForArrangementTime(
 
 juce::int64 MTControlsAudioProcessor::mapArrangementFrameToSourceFrame(
     const juce::int64 arrangementFrame) const noexcept {
-  playworship::audio::SectionScheduler::Section section;
-  const int sectionIndex = sectionScheduler.findSection(arrangementFrame);
-  if (!sectionScheduler.getSection(sectionIndex, section))
-    return arrangementFrame;
-
-  const auto arrangementDuration =
-      juce::jmax<juce::int64>(1, section.endFrame - section.startFrame);
-  const auto sourceDuration =
-      juce::jmax<juce::int64>(1,
-                              section.sourceEndFrame - section.sourceStartFrame);
-  const auto arrangementOffset = juce::jlimit<juce::int64>(
-      0, arrangementDuration, arrangementFrame - section.startFrame);
-
-  if (arrangementDuration == sourceDuration)
-    return section.sourceStartFrame + arrangementOffset;
-
-  const double normalized =
-      static_cast<double>(arrangementOffset) /
-      static_cast<double>(arrangementDuration);
-  return section.sourceStartFrame +
-         static_cast<juce::int64>(std::llround(normalized *
-                                               static_cast<double>(sourceDuration)));
+  const double sampleRate =
+      playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0;
+  const auto arrangementEndFrame =
+      playworship::audio::TransportClock::secondsToFrames(
+          arrangementTotalLengthSeconds.load(std::memory_order_relaxed),
+          sampleRate);
+  const auto sourceEndFrame =
+      playworship::audio::TransportClock::secondsToFrames(
+          loadedSongLengthSeconds.load(std::memory_order_relaxed), sampleRate);
+  juce::int64 sourceFrame = arrangementFrame;
+  if (sectionScheduler.mapFrameToSourceFrame(arrangementFrame,
+                                             arrangementEndFrame,
+                                             sourceEndFrame, sourceFrame))
+    return sourceFrame;
+  return arrangementFrame;
 }
 
 double MTControlsAudioProcessor::getArrangementStartSeconds() const noexcept {
