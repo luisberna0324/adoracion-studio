@@ -769,20 +769,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               playworship::audio::TransportClock::framesToSeconds(
                   sectionDecision.targetFrame, playbackSampleRate);
         }
-      } else if (customArrangement && realtimeSectionCount > 0 &&
-                 juce::isPositiveAndBelow(mappedPartIndex,
-                                          realtimeSectionCount)) {
-        const int partIndex = mappedPartIndex;
-        playworship::audio::SectionScheduler::Section part;
-        sectionScheduler.getSection(partIndex, part);
-        windowStartSec =
-            playworship::audio::TransportClock::framesToSeconds(
-                part.startFrame, playbackSampleRate);
-        windowEndSec =
-            playworship::audio::TransportClock::framesToSeconds(
-                part.endFrame, playbackSampleRate);
-        fadeOutSec = 0.0;
-
+      } else if (customArrangement) {
         if (sectionDecision.transition) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = sectionDecision.targetSection;
@@ -790,9 +777,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               playworship::audio::TransportClock::framesToSeconds(
                   sectionDecision.targetFrame, playbackSampleRate);
           arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
-        } else if (sectionDecision.stop) {
-          stopAtEnd = true;
-          stopAtEndSec = windowEndSec;
         }
       } else if (!customArrangement && realtimeSectionCount > 0 &&
                  juce::isPositiveAndBelow(mappedPartIndex,
@@ -826,7 +810,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             (windowFadeStart < 0.999f) || (windowFadeEnd < 0.999f);
       }
 
-      if (!customArrangement && windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
+      if (windowEndSec > 0.0 && blockEndSec >= windowEndSec) {
         stopAtEnd = true;
         stopAtEndSec = windowEndSec;
       }

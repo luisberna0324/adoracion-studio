@@ -211,17 +211,7 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
     return decision;
   }
 
-  if (customArrangement) {
-    const int next = decision.currentSection + 1;
-    if (next < local.count) {
-      decision.transition = true;
-      decision.targetSection = next;
-      decision.targetFrame =
-          local.sections[static_cast<std::size_t>(next)].startFrame;
-    } else {
-      decision.stop = true;
-    }
-  }
+  static_cast<void>(customArrangement);
   return decision;
 }
 

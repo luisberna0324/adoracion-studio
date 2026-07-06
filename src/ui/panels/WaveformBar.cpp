@@ -2598,6 +2598,8 @@ void WaveformBar::normalizeArrangement(const bool sortByStart,
     for (auto &part : arrangement.parts) {
       if (part.sourcePartId.isEmpty())
         continue;
+      if (part.sourceEndSec > part.sourceStartSec)
+        continue;
       const int sourceIndex = findPartIndexById(part.sourcePartId);
       if (!juce::isPositiveAndBelow(sourceIndex,
                                     static_cast<int>(arrangement.parts.size())))
@@ -4292,46 +4294,7 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
 }
 
 void WaveformBar::duplicateArrangementPart(const int partIndex) {
-  if (!juce::isPositiveAndBelow(partIndex,
-                                static_cast<int>(arrangement.parts.size())))
-    return;
-  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
-  const double playableLength = playableEndSec - playableStartSec;
-  if (playableLength < kMinPartDurationSec)
-    return;
-
-  auto copy = arrangement.parts[static_cast<size_t>(partIndex)];
-  const double desiredDuration = juce::jlimit(
-      kMinPartDurationSec, playableLength,
-      juce::jmax(kMinPartDurationSec, copy.endSec - copy.startSec));
-
-  double startSec =
-      juce::jlimit(playableStartSec, playableEndSec, copy.startSec);
-  if ((playableEndSec - startSec) < desiredDuration)
-    startSec = juce::jmax(playableStartSec, playableEndSec - desiredDuration);
-  double endSec = juce::jmin(playableEndSec, startSec + desiredDuration);
-
-  if ((endSec - startSec) < kMinPartDurationSec)
-    return;
-
-  copy.startSec = startSec;
-  copy.endSec = endSec;
-  copy.id = juce::Uuid().toString();
-  const auto originalName = copy.name.trim();
-  if (originalName.isEmpty())
-    copy.name = L10n::tr("Parte", "Part");
-  else if (isKnownArrangementSectionName(originalName))
-    copy.name = originalName;
-  else
-    copy.name = originalName + L10n::tr(" Copia", " Copy");
-  copy.color = standardArrangementPartColorForName(copy.name);
-  if (copy.color.isEmpty())
-    copy.color = fallbackArrangementPartColorForName(copy.name);
-  arrangement.parts.push_back(std::move(copy));
-  setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
-  customArrangement = true;
-  notifyArrangementChanged(true);
-  repaint();
+  createDuplicatedSection(partIndex);
 }
 
 void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
@@ -4373,8 +4336,18 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   const double startSec = insertAtSec;
   const double endSec = startSec + arrangementDuration;
   const double sourceLength = getWaveformSourceLengthSeconds();
-  const auto [sourceStartSec, sourceEndSec] =
-      getPartSourceRange(sourcePart, sourceLength);
+  double sourceStartSec = 0.0;
+  double sourceEndSec = 0.0;
+  if (!mapArrangementSecondsToSourceSeconds(sourcePart.startSec, sourceLength,
+                                            sourceStartSec) ||
+      !mapArrangementSecondsToSourceSeconds(sourcePart.endSec, sourceLength,
+                                            sourceEndSec)) {
+    const auto fallbackSourceRange = getPartSourceRange(sourcePart, sourceLength);
+    sourceStartSec = fallbackSourceRange.first;
+    sourceEndSec = fallbackSourceRange.second;
+  }
+  if (sourceEndSec < sourceStartSec)
+    std::swap(sourceStartSec, sourceEndSec);
   if ((sourceEndSec - sourceStartSec) < kMinPartDurationSec)
     return;
 
