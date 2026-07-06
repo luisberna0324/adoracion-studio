@@ -2371,20 +2371,13 @@ void MTControlsAudioProcessor::playSong() {
     const double current =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);
     int partIndex = findArrangementPartIndexForArrangementTime(current);
-    if (!juce::isPositiveAndBelow(partIndex,
+    if (juce::isPositiveAndBelow(partIndex,
                                   static_cast<int>(arrangementParts.size()))) {
-      partIndex = 0;
-      arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
-      seekTargetSeconds.store(arrangementParts.front().startSec,
-                              std::memory_order_relaxed);
-      seekPending.store(true, std::memory_order_release);
+      const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
+      if (current >= part.startSec && current < part.endSec)
+        arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
     } else {
       arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
-      const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
-      if (current >= part.endSec || current < part.startSec) {
-        seekTargetSeconds.store(part.startSec, std::memory_order_relaxed);
-        seekPending.store(true, std::memory_order_release);
-      }
     }
   }
   const double start = songStartSeconds.load(std::memory_order_relaxed);
@@ -2507,15 +2500,15 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
       target = juce::jlimit(loopPart.startSec, loopPart.endSec, target);
     } else if (customArrangement && !arrangementParts.empty()) {
       int partIndex = findArrangementPartIndexForArrangementTime(target);
-      if (!juce::isPositiveAndBelow(partIndex,
-                                    static_cast<int>(arrangementParts.size())))
-        partIndex = 0;
-      const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
-      arrangementCurrentPartIndex.store(partIndex, std::memory_order_relaxed);
-      if (target < part.startSec || target > part.endSec)
-        target = part.startSec;
-      else
-        target = juce::jlimit(part.startSec, part.endSec, target);
+      if (juce::isPositiveAndBelow(partIndex,
+                                    static_cast<int>(arrangementParts.size()))) {
+        const auto &part = arrangementParts[static_cast<size_t>(partIndex)];
+        arrangementCurrentPartIndex.store(
+            target >= part.startSec && target < part.endSec ? partIndex : -1,
+            std::memory_order_relaxed);
+      } else {
+        arrangementCurrentPartIndex.store(-1, std::memory_order_relaxed);
+      }
     }
   }
 

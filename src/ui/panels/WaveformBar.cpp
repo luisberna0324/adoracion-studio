@@ -2336,7 +2336,7 @@ void WaveformBar::handleSeek(float x, const juce::Rectangle<float> &seekBounds) 
   if (!onSeekTo || !lengthProvider)
     return;
 
-  const double songLength = juce::jmax(0.0, lengthProvider());
+  const double songLength = getSongLengthSeconds();
   if (songLength <= 0.0 || seekBounds.getWidth() <= 0.0f)
     return;
 

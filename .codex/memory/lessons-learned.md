@@ -42,3 +42,6 @@ repository. Update it when a task teaches something reusable.
   start to arrangement end, including unmarked master regions. Section
   boundaries should update guide/current-section state but must not auto-seek,
   skip gaps, or stop playback unless the user explicitly loops/jumps.
+- Timeline ruler seeking must target any point in the full arranged song,
+  including regions with no section marker. Do not clamp custom-arrangement
+  seeks to the nearest/current section unless a section loop is active.
