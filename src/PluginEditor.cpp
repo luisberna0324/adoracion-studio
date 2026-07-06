@@ -2380,6 +2380,9 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   const auto modifiers = key.getModifiers();
   const bool altDown = modifiers.isAltDown();
 
+  if (waveformBar != nullptr && waveformBar->keyPressed(key))
+    return true;
+
   if (keyCode == juce::KeyPress::spaceKey) {
     if (altDown) {
       processorRef.stopSong();

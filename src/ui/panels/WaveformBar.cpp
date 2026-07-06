@@ -782,6 +782,10 @@ void WaveformBar::setArrangement(
   customArrangement = isCustomArrangement;
   selectedPartIndex = -1;
   selectedPartIds.clear();
+  arrangementUndoStack.clear();
+  arrangementRedoStack.clear();
+  arrangementClipboard.clear();
+  hasArrangementDragUndoSnapshot = false;
   normalizeArrangement(true, false);
 
   dragMode = DragMode::none;
@@ -1508,6 +1512,8 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
         captureDragPartOrigins();
       else
         dragPartOrigins.clear();
+      arrangementDragUndoSnapshot = makeArrangementHistoryEntry();
+      hasArrangementDragUndoSnapshot = true;
 
       if (dragMode == DragMode::resizePartLeft ||
           dragMode == DragMode::resizePartRight)
@@ -1962,10 +1968,14 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
   if (wasArrangementDrag && arrangementDragPendingCommit) {
+    if (hasArrangementDragUndoSnapshot)
+      pushArrangementUndoSnapshot(arrangementDragUndoSnapshot);
+    hasArrangementDragUndoSnapshot = false;
     arrangementDragPendingCommit = false;
     notifyArrangementChanged(true);
     repaint();
   } else {
+    hasArrangementDragUndoSnapshot = false;
     arrangementDragPendingCommit = false;
   }
   if (wasSelectionDrag)
@@ -2116,6 +2126,26 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 bool WaveformBar::keyPressed(const juce::KeyPress &key) {
   if (!isEditingArrangement())
     return false;
+
+  const auto modifiers = key.getModifiers();
+  const bool commandDown = modifiers.isCommandDown() || modifiers.isCtrlDown();
+  const int keyCode = key.getKeyCode();
+  if (commandDown && timelineViewMode == TimelineViewMode::GuideMap) {
+    if (keyCode == 'c' || keyCode == 'C')
+      return copySelectedArrangementParts();
+
+    if (keyCode == 'b' || keyCode == 'B') {
+      if (arrangementClipboard.empty() && !copySelectedArrangementParts())
+        return false;
+      return pasteCopiedArrangementParts();
+    }
+
+    if (keyCode == 'z' || keyCode == 'Z')
+      return undoArrangementEdit();
+
+    if (keyCode == 'y' || keyCode == 'Y')
+      return redoArrangementEdit();
+  }
 
   if (key == juce::KeyPress::deleteKey ||
       key == juce::KeyPress::backspaceKey) {
@@ -2751,6 +2781,234 @@ void WaveformBar::captureDragPartOrigins() {
   }
 }
 
+WaveformBar::ArrangementHistoryEntry
+WaveformBar::makeArrangementHistoryEntry() const {
+  ArrangementHistoryEntry entry;
+  entry.arrangement = arrangement;
+  entry.customArrangement = customArrangement;
+  entry.selectedPartIndex = selectedPartIndex;
+  entry.selectedPartIds = selectedPartIds;
+  return entry;
+}
+
+void WaveformBar::pushArrangementUndoSnapshot() {
+  pushArrangementUndoSnapshot(makeArrangementHistoryEntry());
+}
+
+void WaveformBar::pushArrangementUndoSnapshot(
+    const ArrangementHistoryEntry &entry) {
+  constexpr size_t kMaxArrangementHistoryEntries = 64;
+  if (arrangementUndoStack.size() >= kMaxArrangementHistoryEntries)
+    arrangementUndoStack.erase(arrangementUndoStack.begin());
+  arrangementUndoStack.push_back(entry);
+  arrangementRedoStack.clear();
+}
+
+void WaveformBar::restoreArrangementHistoryEntry(
+    const ArrangementHistoryEntry &entry) {
+  arrangement = entry.arrangement;
+  customArrangement = entry.customArrangement;
+  selectedPartIndex = entry.selectedPartIndex;
+  selectedPartIds = entry.selectedPartIds;
+  normalizeArrangement(true, false);
+  pruneSelectedPartIds();
+  if (!juce::isPositiveAndBelow(selectedPartIndex,
+                                static_cast<int>(arrangement.parts.size()))) {
+    selectedPartIndex =
+        selectedPartIds.empty() ? -1 : findPartIndexById(selectedPartIds.back());
+  }
+  notifyArrangementChanged(customArrangement);
+  repaint();
+}
+
+bool WaveformBar::undoArrangementEdit() {
+  if (arrangementUndoStack.empty())
+    return false;
+
+  arrangementRedoStack.push_back(makeArrangementHistoryEntry());
+  const auto entry = arrangementUndoStack.back();
+  arrangementUndoStack.pop_back();
+  restoreArrangementHistoryEntry(entry);
+  return true;
+}
+
+bool WaveformBar::redoArrangementEdit() {
+  if (arrangementRedoStack.empty())
+    return false;
+
+  arrangementUndoStack.push_back(makeArrangementHistoryEntry());
+  const auto entry = arrangementRedoStack.back();
+  arrangementRedoStack.pop_back();
+  restoreArrangementHistoryEntry(entry);
+  return true;
+}
+
+juce::String WaveformBar::resolveRealSourcePartId(
+    const SongArrangementPartSnapshot &part) const {
+  juce::String sourceId =
+      part.sourcePartId.isEmpty() ? part.id : part.sourcePartId;
+  const int maxDepth = static_cast<int>(arrangement.parts.size());
+  for (int depth = 0; depth < maxDepth && sourceId.isNotEmpty(); ++depth) {
+    const int sourceIndex = findPartIndexById(sourceId);
+    if (!juce::isPositiveAndBelow(sourceIndex,
+                                  static_cast<int>(arrangement.parts.size())))
+      break;
+
+    const auto &source = arrangement.parts[static_cast<size_t>(sourceIndex)];
+    if (source.sourcePartId.isEmpty())
+      break;
+    sourceId = source.sourcePartId;
+  }
+  return sourceId;
+}
+
+bool WaveformBar::copySelectedArrangementParts() {
+  if (timelineViewMode == TimelineViewMode::TempoMap)
+    return false;
+
+  pruneSelectedPartIds();
+  std::vector<int> selectedIndices;
+  for (const auto &id : selectedPartIds) {
+    const int idx = findPartIndexById(id);
+    if (juce::isPositiveAndBelow(idx,
+                                 static_cast<int>(arrangement.parts.size())))
+      selectedIndices.push_back(idx);
+  }
+  if (selectedIndices.empty() && juce::isPositiveAndBelow(
+                                     selectedPartIndex,
+                                     static_cast<int>(arrangement.parts.size()))) {
+    selectedIndices.push_back(selectedPartIndex);
+  }
+  if (selectedIndices.empty())
+    return false;
+
+  std::sort(selectedIndices.begin(), selectedIndices.end(),
+            [this](const int a, const int b) {
+              return arrangement.parts[static_cast<size_t>(a)].startSec <
+                     arrangement.parts[static_cast<size_t>(b)].startSec;
+            });
+  selectedIndices.erase(std::unique(selectedIndices.begin(), selectedIndices.end()),
+                        selectedIndices.end());
+
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (sourceLength <= 0.0)
+    return false;
+
+  const double baseStart =
+      arrangement.parts[static_cast<size_t>(selectedIndices.front())].startSec;
+  std::vector<CopiedArrangementPart> nextClipboard;
+  nextClipboard.reserve(selectedIndices.size());
+
+  for (const int idx : selectedIndices) {
+    const auto &part = arrangement.parts[static_cast<size_t>(idx)];
+    const auto sourceId = resolveRealSourcePartId(part);
+    if (sourceId.isEmpty())
+      continue;
+
+    double sourceStartSec = 0.0;
+    double sourceEndSec = 0.0;
+    if (part.sourcePartId.isNotEmpty()) {
+      const auto sourceRange = getPartSourceRange(part, sourceLength);
+      sourceStartSec = sourceRange.first;
+      sourceEndSec = sourceRange.second;
+    } else if (!mapArrangementSecondsToSourceSeconds(part.startSec, sourceLength,
+                                                     sourceStartSec) ||
+               !mapArrangementSecondsToSourceSeconds(part.endSec, sourceLength,
+                                                     sourceEndSec)) {
+      const auto sourceRange = getPartSourceRange(part, sourceLength);
+      sourceStartSec = sourceRange.first;
+      sourceEndSec = sourceRange.second;
+    }
+
+    if (sourceEndSec < sourceStartSec)
+      std::swap(sourceStartSec, sourceEndSec);
+    if ((sourceEndSec - sourceStartSec) < kMinPartDurationSec)
+      continue;
+
+    CopiedArrangementPart copied;
+    copied.part = part;
+    copied.sourcePartId = sourceId;
+    copied.sourceStartSec = sourceStartSec;
+    copied.sourceEndSec = sourceEndSec;
+    copied.relativeStartSec = juce::jmax(0.0, part.startSec - baseStart);
+    nextClipboard.push_back(std::move(copied));
+  }
+
+  if (nextClipboard.empty())
+    return false;
+
+  arrangementClipboard = std::move(nextClipboard);
+  return true;
+}
+
+bool WaveformBar::pasteCopiedArrangementParts() {
+  if (timelineViewMode == TimelineViewMode::TempoMap)
+    return false;
+  if (arrangementClipboard.empty())
+    return false;
+
+  double insertAtSec = 0.0;
+  if (juce::isPositiveAndBelow(selectedPartIndex,
+                               static_cast<int>(arrangement.parts.size()))) {
+    insertAtSec = arrangement.parts[static_cast<size_t>(selectedPartIndex)].endSec;
+  } else if (!arrangement.parts.empty()) {
+    insertAtSec = arrangement.parts.back().endSec;
+  }
+
+  double blockDuration = 0.0;
+  for (const auto &copied : arrangementClipboard) {
+    const double clipDuration = copied.sourceEndSec - copied.sourceStartSec;
+    if (clipDuration < kMinPartDurationSec)
+      continue;
+    blockDuration =
+        juce::jmax(blockDuration, copied.relativeStartSec + clipDuration);
+  }
+  if (blockDuration < kMinPartDurationSec)
+    return false;
+
+  pushArrangementUndoSnapshot();
+
+  for (auto &part : arrangement.parts) {
+    if (part.startSec >= insertAtSec - 0.0001) {
+      part.startSec += blockDuration;
+      part.endSec += blockDuration;
+    }
+  }
+
+  selectedPartIds.clear();
+  int lastInsertedIndex = -1;
+  for (const auto &copied : arrangementClipboard) {
+    const double clipDuration = copied.sourceEndSec - copied.sourceStartSec;
+    if (clipDuration < kMinPartDurationSec)
+      continue;
+
+    SongArrangementPartSnapshot part = copied.part;
+    part.id = juce::Uuid().toString();
+    part.sourcePartId = copied.sourcePartId;
+    part.sourceStartSec = copied.sourceStartSec;
+    part.sourceEndSec = copied.sourceEndSec;
+    part.startSec = insertAtSec + copied.relativeStartSec;
+    part.endSec = part.startSec + clipDuration;
+    if (part.color.isEmpty())
+      part.color = fallbackArrangementPartColorForName(part.name);
+
+    selectedPartIds.push_back(part.id);
+    arrangement.parts.push_back(std::move(part));
+    lastInsertedIndex = static_cast<int>(arrangement.parts.size()) - 1;
+  }
+
+  if (lastInsertedIndex < 0)
+    return false;
+
+  customArrangement = true;
+  normalizeArrangement(true, false);
+  selectedPartIndex =
+      selectedPartIds.empty() ? -1 : findPartIndexById(selectedPartIds.back());
+  notifyArrangementChanged(true);
+  repaint();
+  return true;
+}
+
 juce::Rectangle<float> WaveformBar::getSelectionDragBounds() const {
   const auto x = juce::jmin(selectionDragStart.x, selectionDragCurrent.x);
   const auto y = juce::jmin(selectionDragStart.y, selectionDragCurrent.y);
@@ -3201,16 +3459,21 @@ void WaveformBar::rebuildPartOverlayBounds(
 
     // Duplicate (+) button: always shown on right edge, vertically centered.
     constexpr float dupButtonSize = 22.0f;
-    constexpr float dupButtonPadding = 12.0f;
+    constexpr float dupButtonPadding = 8.0f;
     overlay.showsDuplicateButton =
         isEditingArrangement() &&
-        body.getWidth() >= (dupButtonSize + dupButtonPadding + 8.0f) &&
+        body.getWidth() >= 18.0f &&
         body.getHeight() >= (dupButtonSize + 6.0f);
     if (overlay.showsDuplicateButton) {
+      const float buttonSize =
+          juce::jmin(dupButtonSize, juce::jmax(16.0f, body.getWidth() - 4.0f));
+      const float buttonX =
+          body.getWidth() >= (buttonSize + dupButtonPadding)
+              ? body.getRight() - buttonSize - dupButtonPadding
+              : body.getCentreX() - (buttonSize * 0.5f);
       overlay.duplicateButton = juce::Rectangle<float>(
-          body.getRight() - dupButtonSize - dupButtonPadding,
-          body.getCentreY() - (dupButtonSize * 0.5f),
-          dupButtonSize, dupButtonSize);
+          buttonX, body.getCentreY() - (buttonSize * 0.5f),
+          buttonSize, buttonSize);
       overlay.duplicateIcon = overlay.duplicateButton.withSizeKeepingCentre(
           14.0f, 14.0f);
     } else {
@@ -3768,16 +4031,6 @@ void WaveformBar::drawArrangementOverlay(
       g.drawFittedText(visibleName, flag.toNearestInt().reduced(4, 0),
                        juce::Justification::centred, 1);
 
-      // Link icon for duplicated sections, inside the label flag.
-      if (part.sourcePartId.isNotEmpty() && overlay.body.getWidth() >= 54.0f) {
-        constexpr float linkIconSize = 10.0f;
-        auto linkArea = juce::Rectangle<float>(
-            flag.getRight() - linkIconSize - 4.0f,
-            flag.getCentreY() - (linkIconSize * 0.5f),
-            linkIconSize, linkIconSize);
-        g.setColour(juce::Colours::white.withAlpha(0.50f));
-        drawSvgIcon(g, linkArea, SvgIconName::Copy, juce::Colours::white.withAlpha(0.50f));
-      }
     }
 
     const bool showsSectionActions = hoveredActionPartIndex == overlay.partIndex;
@@ -3818,13 +4071,13 @@ void WaveformBar::drawArrangementOverlay(
                   juce::Colours::white.withAlpha(jumpHovered ? 0.96f : 0.58f));
     }
 
-    // Duplicate (+) button: shown on hover, on the right edge.
-    if (showsSectionActions && overlay.showsDuplicateButton) {
+    // Duplicate (+) button: stays visible while editing.
+    if (isEditingArrangement() && overlay.showsDuplicateButton) {
       const auto button = overlay.duplicateButton;
       const auto icon = overlay.duplicateIcon;
       const bool hovered = hoveredActionPartIndex == overlay.partIndex;
       const auto bubbleColour = juce::Colour::fromRGBA(255, 255, 255, hovered ? 50 : 35);
-      const float iconAlpha = hovered ? 0.96f : 0.60f;
+      const float iconAlpha = hovered ? 0.96f : 0.72f;
 
       g.setColour(juce::Colours::black.withAlpha(hovered ? 0.20f : 0.12f));
       g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
@@ -4191,6 +4444,7 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   part.startSec = startSec;
   part.endSec = endSec;
 
+  pushArrangementUndoSnapshot();
   arrangement.parts.push_back(std::move(part));
   setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;
@@ -4243,6 +4497,8 @@ void WaveformBar::addCountSequenceParts(const int firstCount,
     part.startSec = startSec;
     part.endSec = endSec;
 
+    if (lastInsertedIndex < 0)
+      pushArrangementUndoSnapshot();
     arrangement.parts.push_back(std::move(part));
     lastInsertedIndex = static_cast<int>(arrangement.parts.size()) - 1;
     cursorSec = endSec;
@@ -4298,6 +4554,7 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
   part.startSec = startSec;
   part.endSec = endSec;
 
+  pushArrangementUndoSnapshot();
   arrangement.parts.push_back(std::move(part));
   setSingleSelectedPart(static_cast<int>(arrangement.parts.size()) - 1);
   customArrangement = true;
@@ -4390,6 +4647,7 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   copy.sourceEndSec = sourceEndSec;
   const auto copyId = copy.id;
 
+  pushArrangementUndoSnapshot();
   for (auto &part : arrangement.parts) {
     if (part.startSec >= insertAtSec - 0.0001) {
       part.startSec += clipDuration;
@@ -4431,6 +4689,7 @@ void WaveformBar::renameArrangementPart(const int partIndex) {
                 partIndex, static_cast<int>(safe->arrangement.parts.size())))
           return;
         const auto nextName = dialog->getTextEditorContents("name").trim();
+        safe->pushArrangementUndoSnapshot();
         safe->arrangement.parts[static_cast<size_t>(partIndex)].name =
             nextName.isEmpty() ? L10n::tr("Parte", "Part") : nextName;
         safe->setSingleSelectedPart(partIndex);
@@ -4486,6 +4745,7 @@ void WaveformBar::editArrangementPartRange(const int partIndex) {
         }
 
         auto &editedPart = safe->arrangement.parts[static_cast<size_t>(partIndex)];
+        safe->pushArrangementUndoSnapshot();
         editedPart.startSec = start;
         editedPart.endSec = end;
         safe->setSingleSelectedPart(partIndex);
@@ -4506,6 +4766,7 @@ void WaveformBar::deleteArrangementPart(const int partIndex) {
     return;
   }
 
+  pushArrangementUndoSnapshot();
   arrangement.parts.erase(arrangement.parts.begin() + partIndex);
   setSingleSelectedPart(
       juce::jlimit(0, static_cast<int>(arrangement.parts.size()) - 1, partIndex));
@@ -4540,6 +4801,7 @@ void WaveformBar::deleteSelectedArrangementParts() {
            idsToDelete.end();
   };
 
+  pushArrangementUndoSnapshot();
   int fallbackIndex = selectedPartIndex;
   arrangement.parts.erase(
       std::remove_if(arrangement.parts.begin(), arrangement.parts.end(), shouldDelete),
@@ -4559,6 +4821,7 @@ void WaveformBar::notifyArrangementChanged(const bool isCustom) {
 }
 
 void WaveformBar::resetArrangementToDefault() {
+  pushArrangementUndoSnapshot();
   arrangement.parts.clear();
 
   customArrangement = false;

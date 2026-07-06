@@ -137,6 +137,21 @@ private:
     double endSec = 0.0;
   };
 
+  struct ArrangementHistoryEntry {
+    SongArrangementSnapshot arrangement;
+    bool customArrangement = false;
+    int selectedPartIndex = -1;
+    std::vector<juce::String> selectedPartIds;
+  };
+
+  struct CopiedArrangementPart {
+    SongArrangementPartSnapshot part;
+    juce::String sourcePartId;
+    double sourceStartSec = 0.0;
+    double sourceEndSec = 0.0;
+    double relativeStartSec = 0.0;
+  };
+
   void timerCallback() override;
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
@@ -210,6 +225,11 @@ private:
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;
+  bool hasArrangementDragUndoSnapshot = false;
+  ArrangementHistoryEntry arrangementDragUndoSnapshot;
+  std::vector<ArrangementHistoryEntry> arrangementUndoStack;
+  std::vector<ArrangementHistoryEntry> arrangementRedoStack;
+  std::vector<CopiedArrangementPart> arrangementClipboard;
   bool tempoDragPendingCommit = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
@@ -248,6 +268,16 @@ private:
   void togglePartSelection(int partIndex);
   void ensurePartSelectedForDrag(int partIndex);
   void captureDragPartOrigins();
+  ArrangementHistoryEntry makeArrangementHistoryEntry() const;
+  void pushArrangementUndoSnapshot();
+  void pushArrangementUndoSnapshot(const ArrangementHistoryEntry &entry);
+  void restoreArrangementHistoryEntry(const ArrangementHistoryEntry &entry);
+  bool undoArrangementEdit();
+  bool redoArrangementEdit();
+  juce::String resolveRealSourcePartId(
+      const SongArrangementPartSnapshot &part) const;
+  bool copySelectedArrangementParts();
+  bool pasteCopiedArrangementParts();
   juce::Rectangle<float> getSelectionDragBounds() const;
   void updateSelectionFromDragBounds();
   bool isEditingArrangement() const;
