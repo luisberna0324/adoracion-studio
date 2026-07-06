@@ -38,6 +38,10 @@ repository. Update it when a task teaches something reusable.
   moving/resizing them must not remap or displace the master waveform. Only
   duplicated sections (`sourcePartId` set) are inserted audio clips that change
   waveform/playback source mapping.
+- For original arrangement sections (`sourcePartId` empty),
+  `sourceStartSec/sourceEndSec` are not authoritative clip metadata; derive
+  their source position from the current arrangement/master mapping. Only
+  duplicated sections should preserve and use explicit source ranges.
 - Playback through a custom arrangement must be continuous from arrangement
   start to arrangement end, including unmarked master regions. Section
   boundaries should update guide/current-section state but must not auto-seek,

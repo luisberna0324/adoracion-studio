@@ -2032,17 +2032,22 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     const auto originalSourceStart = part.sourceStartSec;
     const auto originalSourceEnd = part.sourceEndSec;
     if (songLength > 0.0) {
-      const bool hasSourceRange = part.sourceEndSec > part.sourceStartSec;
-      if (!hasSourceRange) {
+      bool hasSourceRange = true;
+      if (part.sourcePartId.isEmpty()) {
         part.sourceStartSec = juce::jlimit(0.0, songLength, part.startSec);
         part.sourceEndSec = juce::jlimit(0.0, songLength, part.endSec);
+      } else if (part.sourceEndSec <= part.sourceStartSec) {
+        part.sourceStartSec = 0.0;
+        part.sourceEndSec = 0.0;
+        hasSourceRange = false;
       } else {
         part.sourceStartSec = juce::jlimit(0.0, songLength, part.sourceStartSec);
         part.sourceEndSec = juce::jlimit(0.0, songLength, part.sourceEndSec);
       }
-      if (part.sourceEndSec < part.sourceStartSec)
+      if (hasSourceRange && part.sourceEndSec < part.sourceStartSec)
         std::swap(part.sourceStartSec, part.sourceEndSec);
-      if ((part.sourceEndSec - part.sourceStartSec) < kMinPartDurationSec) {
+      if (hasSourceRange &&
+          (part.sourceEndSec - part.sourceStartSec) < kMinPartDurationSec) {
         part.sourceEndSec =
             juce::jmin(songLength, part.sourceStartSec + kMinPartDurationSec);
         if (part.sourceEndSec <= part.sourceStartSec)
@@ -2061,6 +2066,8 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
   for (auto &part : out.parts) {
     if (part.sourcePartId.isEmpty())
       continue;
+    if (part.sourceEndSec > part.sourceStartSec)
+      continue;
 
     const SongArrangementPartSnapshot *source = nullptr;
     for (const auto &candidate : out.parts) {
@@ -2073,11 +2080,13 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
       continue;
 
     const double nextSourceStart =
-        source->sourceEndSec > source->sourceStartSec
+        source->sourcePartId.isNotEmpty() &&
+                source->sourceEndSec > source->sourceStartSec
             ? source->sourceStartSec
             : juce::jlimit(0.0, songLength, source->startSec);
     const double nextSourceEnd =
-        source->sourceEndSec > source->sourceStartSec
+        source->sourcePartId.isNotEmpty() &&
+                source->sourceEndSec > source->sourceStartSec
             ? source->sourceEndSec
             : juce::jlimit(0.0, songLength, source->endSec);
     if (!nearlyEqual(part.sourceStartSec, nextSourceStart) ||

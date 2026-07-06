@@ -2639,6 +2639,12 @@ void MTControlsAudioProcessor::setSongArrangement(
   }
   const auto resolveSourceRange =
       [&arrangement, songLength](const SongArrangementPartSnapshot &part) {
+        if (part.sourcePartId.isEmpty()) {
+          return std::pair<double, double>{
+              juce::jlimit(0.0, songLength, part.startSec),
+              juce::jlimit(0.0, songLength, part.endSec)};
+        }
+
         if (part.sourceEndSec > part.sourceStartSec) {
           double sourceStart = juce::jlimit(0.0, songLength, part.sourceStartSec);
           double sourceEnd = juce::jlimit(0.0, songLength, part.sourceEndSec);
@@ -2667,11 +2673,13 @@ void MTControlsAudioProcessor::setSongArrangement(
         }
 
         double sourceStart =
-            source->sourceEndSec > source->sourceStartSec
+            source->sourcePartId.isNotEmpty() &&
+                    source->sourceEndSec > source->sourceStartSec
                 ? juce::jlimit(0.0, songLength, source->sourceStartSec)
                 : juce::jlimit(0.0, songLength, source->startSec);
         double sourceEnd =
-            source->sourceEndSec > source->sourceStartSec
+            source->sourcePartId.isNotEmpty() &&
+                    source->sourceEndSec > source->sourceStartSec
                 ? juce::jlimit(0.0, songLength, source->sourceEndSec)
                 : juce::jlimit(0.0, songLength, source->endSec);
         if (sourceEnd < sourceStart)
