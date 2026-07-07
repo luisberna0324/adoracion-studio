@@ -77,6 +77,7 @@ public:
   void requestArrangementPartJump(int partIndex);
   void toggleArrangementPartLoop(int partIndex);
   void clearArrangementPartLoop() noexcept;
+  void clearPendingArrangementPartJump() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
   int getPendingArrangementPartJumpIndex() const noexcept;
   bool isCustomArrangementActive() const noexcept;

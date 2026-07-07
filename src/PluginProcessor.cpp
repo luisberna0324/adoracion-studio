@@ -2914,6 +2914,10 @@ void MTControlsAudioProcessor::clearArrangementPartLoop() noexcept {
   arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
 }
 
+void MTControlsAudioProcessor::clearPendingArrangementPartJump() noexcept {
+  arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+}
+
 int MTControlsAudioProcessor::getArrangementPartLoopIndex() const noexcept {
   return arrangementLoopPartIndex.load(std::memory_order_relaxed);
 }

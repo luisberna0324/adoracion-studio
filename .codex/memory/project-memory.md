@@ -38,6 +38,10 @@
 - The main layout keeps the top bar, waveform bar, collapsible setlist, handle,
   and channel grid.
 - Keep the UI compact and useful for live performance.
+- In playback mode, section controls show `M`, loop, and next; the active
+  control should slide into the centered position and keep its hit target aligned
+  with the visual position. These playback controls are mutually exclusive:
+  activating one clears the other active playback-control states.
 
 ## Audio and threading contracts
 

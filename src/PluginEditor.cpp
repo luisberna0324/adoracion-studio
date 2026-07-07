@@ -384,12 +384,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   });
   waveformBarRaw->setOnArrangementPartJumpRequest([&p](int partIndex) {
     const int activeLoopPartIndex = p.getArrangementPartLoopIndex();
-    if (activeLoopPartIndex >= 0 && activeLoopPartIndex != partIndex)
+    if (activeLoopPartIndex >= 0)
       p.clearArrangementPartLoop();
     p.requestArrangementPartJump(partIndex);
   });
-  waveformBarRaw->setOnArrangementPartLoopToggleRequest(
-      [&p](int partIndex) { p.toggleArrangementPartLoop(partIndex); });
+  waveformBarRaw->setOnArrangementPartLoopToggleRequest([&p](int partIndex) {
+    p.clearPendingArrangementPartJump();
+    p.toggleArrangementPartLoop(partIndex);
+  });
+  waveformBarRaw->setOnArrangementPlaybackSelectionClearRequest([&p] {
+    p.clearArrangementPartLoop();
+    p.clearPendingArrangementPartJump();
+  });
   waveformBarRaw->setPendingArrangementPartProvider(
       [&p] { return p.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(

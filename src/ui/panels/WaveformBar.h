@@ -35,6 +35,7 @@ public:
   using ArrangementResetCallback = std::function<void()>;
   using ArrangementPartJumpRequestCallback = std::function<void(int)>;
   using ArrangementPartLoopToggleRequestCallback = std::function<void(int)>;
+  using ArrangementPlaybackSelectionClearCallback = std::function<void()>;
   using TempoMapChangedCallback = std::function<void(const SongTempoMapSnapshot &)>;
   using ActiveTempoRegionCallback =
       std::function<void(const SongTempoRegionSnapshot &)>;
@@ -61,6 +62,8 @@ public:
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
   void setOnArrangementPartLoopToggleRequest(
       ArrangementPartLoopToggleRequestCallback cb);
+  void setOnArrangementPlaybackSelectionClearRequest(
+      ArrangementPlaybackSelectionClearCallback cb);
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
@@ -99,6 +102,7 @@ public:
 private:
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
   enum class TimelineViewMode { GuideMap = 1, TempoMap };
+  enum class PlaybackControlFocus { None, Mute, Loop, Jump };
 
   enum class DragMode {
     none,
@@ -119,6 +123,7 @@ private:
   struct PartOverlayBounds {
     int partIndex = -1;
     juce::Rectangle<float> body;
+    juce::Rectangle<float> editToolbar;
     juce::Rectangle<float> leftHandle;
     juce::Rectangle<float> rightHandle;
     juce::Rectangle<float> deleteButton;
@@ -197,6 +202,7 @@ private:
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
   ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
+  ArrangementPlaybackSelectionClearCallback onArrangementPlaybackSelectionClearRequest;
   TempoMapChangedCallback onTempoMapChanged;
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   PendingArrangementPartProvider pendingArrangementPartProvider;
@@ -254,6 +260,11 @@ private:
   int hoveredJumpPartIndex = -1;
   int hoveredMutePartIndex = -1;
   int hoveredSkipPartIndex = -1;
+  int hoveredDuplicatePartIndex = -1;
+  int hoveredDeletePartIndex = -1;
+  int playbackControlFocusPartIndex = -1;
+  PlaybackControlFocus playbackControlFocus = PlaybackControlFocus::None;
+  double playbackControlFocusChangedAtMs = 0.0;
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;
