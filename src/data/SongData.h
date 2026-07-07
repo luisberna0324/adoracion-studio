@@ -31,6 +31,8 @@ struct SongArrangementPartSnapshot {
   // These values describe the source-audio region rendered by this part.
   double sourceStartSec = 0.0;
   double sourceEndSec = 0.0;
+  bool muteInstruments = false;
+  bool skipPlayback = false;
 };
 
 struct SongArrangementSnapshot {

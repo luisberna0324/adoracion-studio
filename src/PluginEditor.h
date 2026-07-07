@@ -7,6 +7,7 @@
 #include <JuceHeader.h>
 
 class TopBar;
+class WaveformBar;
 class SetlistHandlePanel;
 class SongListPanel;
 class PadsComponent;
@@ -46,9 +47,11 @@ private:
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;
   bool isWaveformExpanded = false;
+  bool isWaveformHeightExpanded = false;
   ImportedSongData currentLoadedSong;
   bool hasCurrentLoadedSong = false;
   SongListPanel *songListPanelRaw = nullptr;
+  WaveformBar *waveformBarPtr = nullptr;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
   double lastObservedSongPositionSec = 0.0;

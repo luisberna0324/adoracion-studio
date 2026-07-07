@@ -368,6 +368,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
   auto *waveformBarRaw = waveformBarImpl.get();
+  waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
@@ -394,9 +395,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setActiveArrangementLoopPartProvider(
       [&p] { return p.getArrangementPartLoopIndex(); });
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
-    isWaveformExpanded = expanded;
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
     processorRef.setArrangementEditingActive(expanded);
+    resized();
+    repaint();
+  });
+  waveformBarRaw->setOnWaveformHeightToggle([this](bool expanded) {
+    isWaveformHeightExpanded = expanded;
     resized();
     repaint();
   });
@@ -2274,9 +2279,18 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   topBar->setBounds(area.removeFromTop(topBarH));
-  const int waveH = isWaveformExpanded ? waveformExpandedH : waveformH;
+  int waveH =
+      (isWaveformExpanded || isWaveformHeightExpanded) ? waveformExpandedH
+                                                       : waveformH;
+  // When the arrangement editor is open, the WaveformBar draws a parts toolbar
+  // on top. Grow the waveform area by that amount so the toolbar doesn't
+  // compress the waveform+minimap, and so the mixer / song list below get
+  // pushed down instead of being covered by the expanded bar.
+  if (waveformBarPtr)
+    waveH += waveformBarPtr->getExtraHeightForHostLayout();
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
+  area.removeFromTop(contentInset);
 
   auto mainArea = area;
   constexpr int handleW = 14;

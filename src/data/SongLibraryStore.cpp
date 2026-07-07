@@ -41,6 +41,9 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
       return false;
     if (lhs.color != rhs.color)
       return false;
+    if (lhs.muteInstruments != rhs.muteInstruments ||
+        lhs.skipPlayback != rhs.skipPlayback)
+      return false;
     if (!nearlyEqual(lhs.startSec, rhs.startSec) ||
         !nearlyEqual(lhs.endSec, rhs.endSec))
       return false;
@@ -2183,6 +2186,8 @@ juce::var SongLibraryStore::arrangementPartToVar(
   obj->setProperty("endSec", part.endSec);
   obj->setProperty("sourceStartSec", part.sourceStartSec);
   obj->setProperty("sourceEndSec", part.sourceEndSec);
+  obj->setProperty("muteInstruments", part.muteInstruments);
+  obj->setProperty("skipPlayback", part.skipPlayback);
   if (part.sourcePartId.isNotEmpty())
     obj->setProperty("sourcePartId", part.sourcePartId);
   return juce::var(obj);
@@ -2206,6 +2211,10 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
     part.sourceEndSec = static_cast<double>(obj->getProperty("sourceEndSec"));
   if (obj->hasProperty("sourcePartId"))
     part.sourcePartId = obj->getProperty("sourcePartId").toString();
+  if (obj->hasProperty("muteInstruments"))
+    part.muteInstruments = static_cast<bool>(obj->getProperty("muteInstruments"));
+  if (obj->hasProperty("skipPlayback"))
+    part.skipPlayback = static_cast<bool>(obj->getProperty("skipPlayback"));
   return part;
 }
 

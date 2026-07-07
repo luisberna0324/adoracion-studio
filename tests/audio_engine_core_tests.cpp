@@ -34,9 +34,9 @@ void testSectionScheduler() {
   using Scheduler = playworship::audio::SectionScheduler;
   Scheduler scheduler;
   scheduler.publish(
-      {{0, 1000, 0, 1000, 0, 10, true, false},
-       {1000, 2000, 1000, 2000, 750, 11, false, false},
-       {2000, 3000, 2000, 3000, 1800, 12, false, false}});
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, false},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
 
   expect(scheduler.findSection(1500) == 1, "find current section");
   expect(scheduler.findGuideTrigger(750, 100) == 1,
@@ -67,6 +67,15 @@ void testSectionScheduler() {
   expect(decision.transition && decision.targetSection == 1 &&
              decision.targetFrame == 1000,
          "loop requested outside its range enters at current boundary");
+
+  scheduler.publish(
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, true},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
+  decision = scheduler.evaluate(1000, 100, true, -1, -1);
+  expect(decision.transition && decision.skippedSection &&
+             decision.targetSection == 2 && decision.targetFrame == 2000,
+         "skip section jumps immediately to next section");
 }
 
 } // namespace

@@ -54,3 +54,6 @@ repository. Update it when a task teaches something reusable.
   exception and trigger on entry/seek. If a numbered musical key such as
   `interlude 2` has no guide asset, fall back to the canonical base key
   (`interlude`) so repeated sections still announce.
+- Arrangement section `muteInstruments` silences only non-click/guide stems
+  while transport continues reading; `skipPlayback` jumps immediately to the
+  next section and suppresses the skipped section announcement.

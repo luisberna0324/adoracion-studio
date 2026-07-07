@@ -34,7 +34,9 @@ void SectionScheduler::publish(
         source.guideTriggerFrame,
         source.guideTriggerId,
         source.triggerGuideOnEntry,
-        source.insertedClip};
+        source.insertedClip,
+        source.muteInstruments,
+        source.skipPlayback};
   }
   publishedIndex.store(writeIndex, std::memory_order_release);
 }
@@ -177,6 +179,25 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
   };
 
   decision.currentSection = findInSnapshot(blockStart);
+  if (decision.currentSection >= 0) {
+    const auto &current =
+        local.sections[static_cast<std::size_t>(decision.currentSection)];
+    if (current.skipPlayback) {
+      decision.transition = true;
+      decision.skippedSection = true;
+      if (decision.currentSection + 1 < local.count) {
+        decision.targetSection = decision.currentSection + 1;
+        decision.targetFrame =
+            local.sections[static_cast<std::size_t>(decision.targetSection)]
+                .startFrame;
+      } else {
+        decision.targetSection = -1;
+        decision.targetFrame = current.endFrame;
+      }
+      return decision;
+    }
+  }
+
   const bool validLoop = loopSection >= 0 && loopSection < local.count;
   if (validLoop) {
     const auto &loop = local.sections[static_cast<std::size_t>(loopSection)];

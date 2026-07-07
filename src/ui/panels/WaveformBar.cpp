@@ -19,6 +19,7 @@ constexpr float kSeekRulerHeight = 28.0f;
 constexpr float kSeekRulerGap = 4.0f;
 constexpr float kMiniMapHeight = 24.0f;
 constexpr float kMiniMapGap = 10.0f;
+constexpr float kBottomSafetyInset = 8.0f;
 constexpr float kPartHandleHitWidth = 7.0f;
 constexpr float kViewportHandleHitWidth = 9.0f;
 constexpr int kSnapModeBarId = 1;
@@ -554,11 +555,44 @@ private:
 };
 } // namespace
 
+SvgToolbarButton::SvgToolbarButton(const juce::String &name,
+                                   const SvgIconName icon)
+    : juce::TextButton(name), iconName(icon) {
+  setButtonText({});
+}
+
+void SvgToolbarButton::setIcon(const SvgIconName nextIcon) {
+  iconName = nextIcon;
+  repaint();
+}
+
+void SvgToolbarButton::paintButton(juce::Graphics &g,
+                                   const bool isMouseOverButton,
+                                   const bool isButtonDown) {
+  auto b = getLocalBounds().toFloat().reduced(0.5f);
+  const bool active = isButtonDown || getToggleState();
+  auto fill = UITheme::cardBgHover;
+  if (active)
+    fill = UITheme::accent.withAlpha(0.88f);
+  else if (isMouseOverButton)
+    fill = fill.brighter(0.10f);
+
+  g.setColour(juce::Colours::black.withAlpha(active ? 0.24f : 0.16f));
+  g.fillRoundedRectangle(b.translated(0.0f, 1.0f), 7.0f);
+  g.setColour(fill);
+  g.fillRoundedRectangle(b, 7.0f);
+  g.setColour((active ? UITheme::accentSoft : UITheme::cardBorder)
+                  .withAlpha(isMouseOverButton ? 0.92f : 0.76f));
+  g.drawRoundedRectangle(b, 7.0f, 1.0f);
+
+  const auto iconColour = active ? UITheme::onAccent : UITheme::textPrimary;
+  drawSvgIcon(g, b.withSizeKeepingCentre(18.0f, 18.0f), iconName, iconColour);
+}
+
 WaveformBar::WaveformBar() {
   setWantsKeyboardFocus(true);
   setMouseClickGrabsKeyboardFocus(true);
 
-  followButton.setButtonText(L10n::tr("SEGUIR", "FOLLOW"));
   followButton.setClickingTogglesState(true);
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
   followButton.setTooltip(
@@ -596,7 +630,6 @@ WaveformBar::WaveformBar() {
   };
   addAndMakeVisible(followButton);
 
-  editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
   editButton.setTooltip(
       L10n::tr(
           "Arrastra para ajustar; usa el selector para compas/beat/libre (Option/Alt = libre temporal)",
@@ -610,9 +643,6 @@ WaveformBar::WaveformBar() {
       snapMode = SnapMode::Bar;
       snapModeBox.setSelectedId(kSnapModeBarId, juce::sendNotificationSync);
     }
-    editButton.setButtonText(
-        editing ? L10n::tr("SALIR", "EXIT")
-                : L10n::tr("EDITAR", "EDIT"));
     // Cuando el alto del panel no cambia entre modos, resized() no siempre se
     // dispara desde el padre. Forzamos layout local para mostrar/ocultar
     // correctamente los botones de partes.
@@ -625,10 +655,24 @@ WaveformBar::WaveformBar() {
   };
   addAndMakeVisible(editButton);
 
+  waveHeightButton.setClickingTogglesState(true);
+  waveHeightButton.setTooltip(
+      L10n::tr("Expandir altura de la onda", "Expand waveform height"));
+  waveHeightButton.setViewportIgnoreDragFlag(true);
+  waveHeightButton.onClick = [this] {
+    waveformVerticalExpanded = waveHeightButton.getToggleState();
+    if (onWaveformHeightToggle)
+      onWaveformHeightToggle(waveformVerticalExpanded);
+    resized();
+    repaint();
+  };
+  addAndMakeVisible(waveHeightButton);
+
   auto configureViewButton = [this](juce::TextButton &button,
                                     const juce::String &text,
                                     TimelineViewMode mode) {
-    button.setButtonText(text);
+    button.setButtonText({});
+    button.setTooltip(text);
     button.setClickingTogglesState(true);
     button.setViewportIgnoreDragFlag(true);
     button.onClick = [this, mode] {
@@ -762,7 +806,6 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
     snapMode = SnapMode::Bar;
     snapModeBox.setSelectedId(kSnapModeBarId, juce::sendNotificationSync);
     editButton.setToggleState(false, juce::dontSendNotification);
-    editButton.setButtonText(L10n::tr("EDITAR", "EDIT"));
     if (onEditToggle)
       onEditToggle(false);
   }
@@ -797,6 +840,8 @@ void WaveformBar::setArrangement(
   hoveredActionPartIndex = -1;
   hoveredLoopPartIndex = -1;
   hoveredJumpPartIndex = -1;
+  hoveredMutePartIndex = -1;
+  hoveredSkipPartIndex = -1;
   cancelDeferredPartJumpFromDoubleClick();
   repaint();
 }
@@ -840,6 +885,10 @@ void WaveformBar::setSeekCallback(SeekCallback cb) { onSeekTo = std::move(cb); }
 
 void WaveformBar::setOnEditToggle(EditToggleCallback cb) {
   onEditToggle = std::move(cb);
+}
+
+void WaveformBar::setOnWaveformHeightToggle(WaveformHeightToggleCallback cb) {
+  onWaveformHeightToggle = std::move(cb);
 }
 
 void WaveformBar::setOnArrangementChanged(ArrangementChangedCallback cb) {
@@ -1099,8 +1148,7 @@ void WaveformBar::resized() {
   const auto mainWaveBounds = getMainWaveBounds(localBounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   auto toolbarBounds = getEditToolbarBounds(localBounds).toNearestInt();
-  const int editButtonW = 72;
-  const int followButtonW = 86;
+  const int iconButtonW = 30;
   const int followGap = 6;
   const int snapModeGroupW = 186;
   const int snapModeLabelW = 56;
@@ -1111,6 +1159,8 @@ void WaveformBar::resized() {
     followButton.setEnabled(false);
     editButton.setVisible(false);
     editButton.setEnabled(false);
+    waveHeightButton.setVisible(false);
+    waveHeightButton.setEnabled(false);
     guideMapButton.setVisible(false);
     guideMapButton.setEnabled(false);
     tempoMapButton.setVisible(false);
@@ -1137,9 +1187,12 @@ void WaveformBar::resized() {
   followButton.setVisible(true);
   followButton.setEnabled(true);
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
-  followButton.setButtonText(L10n::tr("SEGUIR", "FOLLOW"));
   editButton.setVisible(true);
   editButton.setEnabled(true);
+  waveHeightButton.setVisible(true);
+  waveHeightButton.setEnabled(true);
+  waveHeightButton.setToggleState(waveformVerticalExpanded,
+                                  juce::dontSendNotification);
   const bool editing = isEditingArrangement();
 
   auto placeBottomWaveControls = [&](const bool includeFollow,
@@ -1149,17 +1202,20 @@ void WaveformBar::resized() {
       const int controlH = 26;
       auto bottomControls = floating.removeFromBottom(controlH);
       bottomControls = bottomControls.reduced(2, 1);
-      editButton.setBounds(bottomControls.removeFromRight(editButtonW).reduced(1));
+      editButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
+      bottomControls.removeFromRight(4);
+      waveHeightButton.setBounds(
+          bottomControls.removeFromRight(iconButtonW).reduced(1));
       if (includeViewButtons) {
         bottomControls.removeFromRight(followGap);
-        tempoMapButton.setBounds(bottomControls.removeFromRight(112).reduced(1));
+        tempoMapButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
         bottomControls.removeFromRight(4);
-        guideMapButton.setBounds(bottomControls.removeFromRight(112).reduced(1));
+        guideMapButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       if (includeFollow) {
         bottomControls.removeFromRight(followGap);
         followButton.setBounds(
-            bottomControls.removeFromRight(followButtonW).reduced(1));
+            bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       return true;
     }
@@ -1310,9 +1366,11 @@ void WaveformBar::resized() {
   snapModeBox.setEnabled(false);
 
   if (!placeBottomWaveControls(true, false)) {
-    editButton.setBounds(toolbarBounds.removeFromRight(editButtonW).reduced(1));
+    editButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
     toolbarBounds.removeFromRight(followGap);
-    followButton.setBounds(toolbarBounds.removeFromRight(followButtonW).reduced(1));
+    waveHeightButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
+    toolbarBounds.removeFromRight(4);
+    followButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
   }
 }
 
@@ -1455,6 +1513,22 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(actionHit.partIndex);
       repaint();
+      return;
+    }
+
+    if (isEditingArrangement() &&
+        juce::isPositiveAndBelow(actionHit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        actionHit.muteButton) {
+      toggleArrangementPartMute(actionHit.partIndex);
+      return;
+    }
+
+    if (isEditingArrangement() &&
+        juce::isPositiveAndBelow(actionHit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        actionHit.skipButton) {
+      toggleArrangementPartSkip(actionHit.partIndex);
       return;
     }
 
@@ -1934,6 +2008,11 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
       part.startSec = juce::jmax(0.0, part.endSec - kMinPartDurationSec);
   }
 
+  if (part.sourcePartId.isNotEmpty()) {
+    clampDuplicatedPartToSourceDuration(
+        part, dragMode == DragMode::resizePartLeft);
+  }
+
   if (nearlyEqual(previousStart, part.startSec) &&
       nearlyEqual(previousEnd, part.endSec))
     return;
@@ -1998,10 +2077,13 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
 
   if (midiLearnActive) {
     if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
-        hoveredJumpPartIndex >= 0) {
+        hoveredJumpPartIndex >= 0 || hoveredMutePartIndex >= 0 ||
+        hoveredSkipPartIndex >= 0) {
       hoveredActionPartIndex = -1;
       hoveredLoopPartIndex = -1;
       hoveredJumpPartIndex = -1;
+      hoveredMutePartIndex = -1;
+      hoveredSkipPartIndex = -1;
       repaint();
     }
     setMouseCursor(juce::MouseCursor::NormalCursor);
@@ -2012,6 +2094,8 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
   int nextHoveredActionPartIndex = -1;
   int nextHoveredLoopPartIndex = -1;
   int nextHoveredJumpPartIndex = -1;
+  int nextHoveredMutePartIndex = -1;
+  int nextHoveredSkipPartIndex = -1;
   const auto bounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(bounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -2057,6 +2141,12 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
       } else if (hit.jumpButton) {
         nextHoveredJumpPartIndex = hit.partIndex;
         nextCursor = juce::MouseCursor::PointingHandCursor;
+      } else if (hit.muteButton) {
+        nextHoveredMutePartIndex = hit.partIndex;
+        nextCursor = juce::MouseCursor::PointingHandCursor;
+      } else if (hit.skipButton) {
+        nextHoveredSkipPartIndex = hit.partIndex;
+        nextCursor = juce::MouseCursor::PointingHandCursor;
       } else if (isEditingArrangement() && hit.duplicateButton)
         nextCursor = juce::MouseCursor::PointingHandCursor;
       else if (isEditingArrangement() && hit.deleteButton)
@@ -2071,10 +2161,14 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
 
   if (hoveredActionPartIndex != nextHoveredActionPartIndex ||
       hoveredLoopPartIndex != nextHoveredLoopPartIndex ||
-      hoveredJumpPartIndex != nextHoveredJumpPartIndex) {
+      hoveredJumpPartIndex != nextHoveredJumpPartIndex ||
+      hoveredMutePartIndex != nextHoveredMutePartIndex ||
+      hoveredSkipPartIndex != nextHoveredSkipPartIndex) {
     hoveredActionPartIndex = nextHoveredActionPartIndex;
     hoveredLoopPartIndex = nextHoveredLoopPartIndex;
     hoveredJumpPartIndex = nextHoveredJumpPartIndex;
+    hoveredMutePartIndex = nextHoveredMutePartIndex;
+    hoveredSkipPartIndex = nextHoveredSkipPartIndex;
     repaint();
   }
   setMouseCursor(nextCursor);
@@ -2085,10 +2179,13 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
     return;
 
   if (hoveredActionPartIndex >= 0 || hoveredLoopPartIndex >= 0 ||
-      hoveredJumpPartIndex >= 0) {
+      hoveredJumpPartIndex >= 0 || hoveredMutePartIndex >= 0 ||
+      hoveredSkipPartIndex >= 0) {
     hoveredActionPartIndex = -1;
     hoveredLoopPartIndex = -1;
     hoveredJumpPartIndex = -1;
+    hoveredMutePartIndex = -1;
+    hoveredSkipPartIndex = -1;
     repaint();
   }
   setMouseCursor(juce::MouseCursor::NormalCursor);
@@ -2134,7 +2231,7 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
     if (keyCode == 'c' || keyCode == 'C')
       return copySelectedArrangementParts();
 
-    if (keyCode == 'b' || keyCode == 'B') {
+    if (keyCode == 'v' || keyCode == 'V') {
       if (arrangementClipboard.empty() && !copySelectedArrangementParts())
         return false;
       return pasteCopiedArrangementParts();
@@ -2908,9 +3005,26 @@ bool WaveformBar::copySelectedArrangementParts() {
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
     if (part.sourcePartId.isNotEmpty()) {
-      const auto sourceRange = getPartSourceRange(part, sourceLength);
-      sourceStartSec = sourceRange.first;
-      sourceEndSec = sourceRange.second;
+      const int sourceIndex = findPartIndexById(sourceId);
+      if (juce::isPositiveAndBelow(sourceIndex,
+                                   static_cast<int>(arrangement.parts.size()))) {
+        const auto &sourcePart =
+            arrangement.parts[static_cast<size_t>(sourceIndex)];
+        if (!mapArrangementSecondsToSourceSeconds(sourcePart.startSec,
+                                                  sourceLength,
+                                                  sourceStartSec) ||
+            !mapArrangementSecondsToSourceSeconds(sourcePart.endSec,
+                                                  sourceLength,
+                                                  sourceEndSec)) {
+          const auto sourceRange = getPartSourceRange(sourcePart, sourceLength);
+          sourceStartSec = sourceRange.first;
+          sourceEndSec = sourceRange.second;
+        }
+      } else {
+        const auto sourceRange = getPartSourceRange(part, sourceLength);
+        sourceStartSec = sourceRange.first;
+        sourceEndSec = sourceRange.second;
+      }
     } else if (!mapArrangementSecondsToSourceSeconds(part.startSec, sourceLength,
                                                      sourceStartSec) ||
                !mapArrangementSecondsToSourceSeconds(part.endSec, sourceLength,
@@ -3062,18 +3176,27 @@ bool WaveformBar::isEditingArrangement() const {
   return editButton.getToggleState();
 }
 
+int WaveformBar::getExtraHeightForHostLayout() const {
+  if (!isEditingArrangement())
+    return 0;
+  return static_cast<int>(std::ceil(kEditToolbarHeight + kEditToolbarBottomGap));
+}
+
 juce::Rectangle<float>
 WaveformBar::getEditToolbarBounds(const juce::Rectangle<float> &bounds) const {
-  const auto area = bounds.reduced(8.0f, 6.0f);
+  const auto area = bounds.reduced(8.0f, 6.0f)
+                        .withTrimmedBottom(kBottomSafetyInset);
   const float height = juce::jmin(kEditToolbarHeight, area.getHeight());
   return {area.getX(), area.getY(), area.getWidth(), height};
 }
 
 juce::Rectangle<float>
 WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
-  auto area = bounds.reduced(8.0f, 6.0f);
+  auto area = bounds.reduced(8.0f, 6.0f)
+                  .withTrimmedBottom(kBottomSafetyInset);
   if (isEditingArrangement())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
+  // Always reserve bottom space for the minimap (visible in both modes).
   area = area.withTrimmedBottom(kMiniMapHeight + kMiniMapGap);
   return area;
 }
@@ -3105,6 +3228,7 @@ juce::Rectangle<float> WaveformBar::getMainWaveBodyBounds(
 juce::Rectangle<float>
 WaveformBar::getMiniMapBounds(const juce::Rectangle<float> &bounds) const {
   auto area = bounds.reduced(8.0f, 6.0f);
+  area = area.withTrimmedBottom(kBottomSafetyInset);
   if (isEditingArrangement())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   if (area.getHeight() <= kMiniMapHeight)
@@ -3213,6 +3337,52 @@ std::pair<double, double> WaveformBar::getPartSourceRange(
           juce::jlimit(0.0, sourceLength, part.endSec)};
 }
 
+double WaveformBar::getPartSourceDurationSeconds(
+    const SongArrangementPartSnapshot &part) const {
+  if (part.sourcePartId.isEmpty())
+    return juce::jmax(0.0, part.endSec - part.startSec);
+
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (sourceLength <= 0.0)
+    return 0.0;
+
+  const auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
+  return juce::jmax(0.0, sourceEnd - sourceStart);
+}
+
+void WaveformBar::clampDuplicatedPartToSourceDuration(
+    SongArrangementPartSnapshot &part, const bool anchorEnd) {
+  if (part.sourcePartId.isEmpty())
+    return;
+
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (sourceLength <= 0.0)
+    return;
+
+  auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
+  if (sourceEnd < sourceStart)
+    std::swap(sourceStart, sourceEnd);
+
+  const double maxDuration = sourceEnd - sourceStart;
+  if (maxDuration < kMinPartDurationSec)
+    return;
+
+  double duration =
+      juce::jlimit(kMinPartDurationSec, maxDuration, part.endSec - part.startSec);
+  if (anchorEnd) {
+    part.startSec = part.endSec - duration;
+    part.sourceStartSec = sourceEnd - duration;
+    part.sourceEndSec = sourceEnd;
+  } else {
+    part.endSec = part.startSec + duration;
+    part.sourceStartSec = sourceStart;
+    part.sourceEndSec = sourceStart + duration;
+  }
+
+  part.sourceStartSec = juce::jlimit(0.0, sourceLength, part.sourceStartSec);
+  part.sourceEndSec = juce::jlimit(0.0, sourceLength, part.sourceEndSec);
+}
+
 bool WaveformBar::mapArrangementSecondsToSourceSeconds(
     const double arrangementSeconds, const double sourceLength,
     double &sourceSecondsOut) const {
@@ -3300,6 +3470,12 @@ WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
       return hit;
     hit.jumpButton = bounds.showsJumpButton && bounds.jumpButton.contains(pos);
     if (hit.jumpButton)
+      return hit;
+    hit.muteButton = bounds.showsMuteButton && bounds.muteButton.contains(pos);
+    if (hit.muteButton)
+      return hit;
+    hit.skipButton = bounds.showsSkipButton && bounds.skipButton.contains(pos);
+    if (hit.skipButton)
       return hit;
     hit.duplicateButton = bounds.showsDuplicateButton && bounds.duplicateButton.contains(pos);
     if (hit.duplicateButton)
@@ -3457,13 +3633,20 @@ void WaveformBar::rebuildPartOverlayBounds(
       overlay.showsJumpButton = false;
     }
 
-    // Duplicate (+) button: always shown on right edge, vertically centered.
+    // Edit controls: mute instruments, skip section, duplicate.
     constexpr float dupButtonSize = 22.0f;
     constexpr float dupButtonPadding = 8.0f;
+    constexpr float editActionGap = 6.0f;
     overlay.showsDuplicateButton =
         isEditingArrangement() &&
         body.getWidth() >= 18.0f &&
         body.getHeight() >= (dupButtonSize + 6.0f);
+    const bool canShowFullEditStack =
+        body.getHeight() >= ((dupButtonSize * 3.0f) + (editActionGap * 2.0f) + 28.0f);
+    overlay.showsMuteButton = overlay.showsDuplicateButton &&
+                              body.getWidth() >= 34.0f &&
+                              canShowFullEditStack;
+    overlay.showsSkipButton = overlay.showsMuteButton;
     if (overlay.showsDuplicateButton) {
       const float buttonSize =
           juce::jmin(dupButtonSize, juce::jmax(16.0f, body.getWidth() - 4.0f));
@@ -3471,14 +3654,41 @@ void WaveformBar::rebuildPartOverlayBounds(
           body.getWidth() >= (buttonSize + dupButtonPadding)
               ? body.getRight() - buttonSize - dupButtonPadding
               : body.getCentreX() - (buttonSize * 0.5f);
+      const int actionCount =
+          (overlay.showsMuteButton ? 1 : 0) + (overlay.showsSkipButton ? 1 : 0) + 1;
+      const float stackHeight =
+          (buttonSize * static_cast<float>(actionCount)) +
+          (editActionGap * static_cast<float>(juce::jmax(0, actionCount - 1)));
+      float stackY = body.getCentreY() - (stackHeight * 0.5f);
+      stackY = juce::jlimit(body.getY() + 22.0f,
+                            body.getBottom() - stackHeight - 4.0f, stackY);
+      if (overlay.showsMuteButton) {
+        overlay.muteButton =
+            juce::Rectangle<float>(buttonX, stackY, buttonSize, buttonSize);
+        overlay.muteIcon =
+            overlay.muteButton.withSizeKeepingCentre(14.0f, 14.0f);
+        stackY += buttonSize + editActionGap;
+      }
+      if (overlay.showsSkipButton) {
+        overlay.skipButton =
+            juce::Rectangle<float>(buttonX, stackY, buttonSize, buttonSize);
+        overlay.skipIcon =
+            overlay.skipButton.withSizeKeepingCentre(14.0f, 14.0f);
+        stackY += buttonSize + editActionGap;
+      }
       overlay.duplicateButton = juce::Rectangle<float>(
-          buttonX, body.getCentreY() - (buttonSize * 0.5f),
-          buttonSize, buttonSize);
+          buttonX, stackY, buttonSize, buttonSize);
       overlay.duplicateIcon = overlay.duplicateButton.withSizeKeepingCentre(
           14.0f, 14.0f);
     } else {
       overlay.duplicateButton = {};
       overlay.duplicateIcon = {};
+      overlay.muteButton = {};
+      overlay.muteIcon = {};
+      overlay.skipButton = {};
+      overlay.skipIcon = {};
+      overlay.showsMuteButton = false;
+      overlay.showsSkipButton = false;
     }
 
     partOverlayBounds.push_back(overlay);
@@ -4071,6 +4281,42 @@ void WaveformBar::drawArrangementOverlay(
                   juce::Colours::white.withAlpha(jumpHovered ? 0.96f : 0.58f));
     }
 
+    if (isEditingArrangement() && overlay.showsMuteButton) {
+      const auto button = overlay.muteButton;
+      const auto icon = overlay.muteIcon;
+      const bool active = part.muteInstruments;
+      const bool hovered = hoveredMutePartIndex == overlay.partIndex;
+      const auto bubbleColour =
+          active ? UITheme::accent.withAlpha(hovered ? 0.82f : 0.64f)
+                 : juce::Colour::fromRGBA(255, 255, 255, hovered ? 50 : 35);
+      const float iconAlpha = hovered || active ? 0.96f : 0.70f;
+
+      g.setColour(juce::Colours::black.withAlpha(hovered ? 0.20f : 0.12f));
+      g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
+      g.setColour(bubbleColour);
+      g.fillEllipse(button.reduced(hovered ? 4.0f : 5.0f));
+      drawSvgIcon(g, icon, SvgIconName::VolumeX,
+                  juce::Colours::white.withAlpha(iconAlpha));
+    }
+
+    if (isEditingArrangement() && overlay.showsSkipButton) {
+      const auto button = overlay.skipButton;
+      const auto icon = overlay.skipIcon;
+      const bool active = part.skipPlayback;
+      const bool hovered = hoveredSkipPartIndex == overlay.partIndex;
+      const auto bubbleColour =
+          active ? sectionColour.withAlpha(hovered ? 0.90f : 0.70f)
+                 : juce::Colour::fromRGBA(255, 255, 255, hovered ? 50 : 35);
+      const float iconAlpha = hovered || active ? 0.96f : 0.70f;
+
+      g.setColour(juce::Colours::black.withAlpha(hovered ? 0.20f : 0.12f));
+      g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
+      g.setColour(bubbleColour);
+      g.fillEllipse(button.reduced(hovered ? 4.0f : 5.0f));
+      drawSvgIcon(g, icon, SvgIconName::SkipForward,
+                  juce::Colours::white.withAlpha(iconAlpha));
+    }
+
     // Duplicate (+) button: stays visible while editing.
     if (isEditingArrangement() && overlay.showsDuplicateButton) {
       const auto button = overlay.duplicateButton;
@@ -4645,6 +4891,8 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   copy.sourcePartId = realSourceId;
   copy.sourceStartSec = sourceStartSec;
   copy.sourceEndSec = sourceEndSec;
+  copy.muteInstruments = sourcePart.muteInstruments;
+  copy.skipPlayback = sourcePart.skipPlayback;
   const auto copyId = copy.id;
 
   pushArrangementUndoSnapshot();
@@ -4661,6 +4909,34 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   if (juce::isPositiveAndBelow(copyIndex,
                                 static_cast<int>(arrangement.parts.size())))
     setSingleSelectedPart(copyIndex);
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::toggleArrangementPartMute(const int partIndex) {
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    return;
+
+  pushArrangementUndoSnapshot();
+  auto &part = arrangement.parts[static_cast<size_t>(partIndex)];
+  part.muteInstruments = !part.muteInstruments;
+  setSingleSelectedPart(partIndex);
+  customArrangement = true;
+  notifyArrangementChanged(true);
+  repaint();
+}
+
+void WaveformBar::toggleArrangementPartSkip(const int partIndex) {
+  if (!juce::isPositiveAndBelow(partIndex,
+                                static_cast<int>(arrangement.parts.size())))
+    return;
+
+  pushArrangementUndoSnapshot();
+  auto &part = arrangement.parts[static_cast<size_t>(partIndex)];
+  part.skipPlayback = !part.skipPlayback;
+  setSingleSelectedPart(partIndex);
+  customArrangement = true;
   notifyArrangementChanged(true);
   repaint();
 }
@@ -4746,8 +5022,16 @@ void WaveformBar::editArrangementPartRange(const int partIndex) {
 
         auto &editedPart = safe->arrangement.parts[static_cast<size_t>(partIndex)];
         safe->pushArrangementUndoSnapshot();
+        const double previousStart = editedPart.startSec;
+        const double previousEnd = editedPart.endSec;
         editedPart.startSec = start;
         editedPart.endSec = end;
+        if (editedPart.sourcePartId.isNotEmpty()) {
+          const bool anchorEnd =
+              !nearlyEqual(previousStart, editedPart.startSec) ||
+              nearlyEqual(previousEnd, editedPart.endSec);
+          safe->clampDuplicatedPartToSourceDuration(editedPart, anchorEnd);
+        }
         safe->setSingleSelectedPart(partIndex);
         safe->customArrangement = true;
         safe->notifyArrangementChanged(true);
@@ -4830,6 +5114,8 @@ void WaveformBar::resetArrangementToDefault() {
   hoveredActionPartIndex = -1;
   hoveredLoopPartIndex = -1;
   hoveredJumpPartIndex = -1;
+  hoveredMutePartIndex = -1;
+  hoveredSkipPartIndex = -1;
   setVisibleWindow(0.0f, 1.0f);
 
   if (onArrangementReset)

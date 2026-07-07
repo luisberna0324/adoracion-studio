@@ -24,12 +24,15 @@ public:
     int guideTriggerId = -1;
     bool triggerGuideOnEntry = false;
     bool insertedClip = false;
+    bool muteInstruments = false;
+    bool skipPlayback = false;
   };
 
   struct BlockDecision {
     int currentSection = -1;
     bool transition = false;
     bool stop = false;
+    bool skippedSection = false;
     int targetSection = -1;
     Frame targetFrame = 0;
   };

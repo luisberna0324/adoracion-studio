@@ -426,6 +426,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool transitionToNextArrangementPart = false;
   int nextArrangementPartIndex = -1;
   double nextArrangementPartStartSec = 0.0;
+  bool muteSectionInstrumentsThisBlock = false;
+  bool skipArrangementPartThisBlock = false;
   bool dynamicGuideShouldRender = false;
   bool dynamicGuideAnnouncementsActive = false;
   int dynamicGuideOutputChannelOneBased = 1;
@@ -509,6 +511,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
 
     const int stemCount = static_cast<int>(stemTracks.size());
+    if (isPlaying && arrangementCustomActive.load(std::memory_order_relaxed) &&
+        sectionScheduler.size() > 0) {
+      const auto currentFrame = transportClock.getPositionFrames();
+      const int sectionIndex = sectionScheduler.findSection(currentFrame);
+      playworship::audio::SectionScheduler::Section currentSection;
+      if (sectionScheduler.getSection(sectionIndex, currentSection) &&
+          currentFrame >= currentSection.startFrame &&
+          currentFrame < currentSection.endFrame) {
+        muteSectionInstrumentsThisBlock = currentSection.muteInstruments;
+        skipArrangementPartThisBlock = currentSection.skipPlayback;
+      }
+    }
 
     const int clickStemIndexLocal =
         metronomeClickStemIndex.load(std::memory_order_relaxed);
@@ -538,7 +552,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // Inject lock-free mix state into StemTracks and update UI meters
     for (int i = 0; i < stemCount; ++i) {
       auto& track = stemTracks[static_cast<size_t>(i)];
+      const bool isClickGuideStem =
+          stemClickGuideStates[static_cast<size_t>(i)].load(
+              std::memory_order_relaxed);
+      const bool mutedBySection =
+          skipArrangementPartThisBlock ||
+          (muteSectionInstrumentsThisBlock && !isClickGuideStem);
       track->setMuted(
+          mutedBySection ||
           stemMuteStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
       track->setSoloed(stemSoloStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
       track->setVolume(juce::jlimit(0.0f, 1.0f, stemVolumes[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
@@ -684,7 +705,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
       }
 
-      if (dynamicGuideAnnouncementsActive && realtimeSectionCount > 0) {
+      if (!skipArrangementPartThisBlock && dynamicGuideAnnouncementsActive &&
+          realtimeSectionCount > 0) {
         const bool wrappedBack =
             dynamicGuideLastBlockStartSec >= 0.0 &&
             blockStartSec + 0.02 < dynamicGuideLastBlockStartSec;
@@ -2398,6 +2420,8 @@ void MTControlsAudioProcessor::playSong() {
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
+  else if (customArrangement)
+    seekSongTo(current);
   syncMetronomeToSourceSeconds(
       songCurrentPositionSeconds.load(std::memory_order_relaxed));
   setTransportState(TransportState::playing);
@@ -2713,6 +2737,8 @@ void MTControlsAudioProcessor::setSongArrangement(
             ? sourceEnd
             : juce::jmin(songLength, sourceStart + (end - start));
     runtimePart.insertedClip = part.sourcePartId.isNotEmpty();
+    runtimePart.muteInstruments = part.muteInstruments;
+    runtimePart.skipPlayback = part.skipPlayback;
     if (songLength > 0.0 &&
         (runtimePart.sourceEndSec - runtimePart.sourceStartSec) <
             kRuntimeMinPartDurationSec)
@@ -2768,6 +2794,8 @@ void MTControlsAudioProcessor::setSongArrangement(
     runtimePart.endSec = songLength;
     runtimePart.sourceStartSec = runtimePart.startSec;
     runtimePart.sourceEndSec = runtimePart.endSec;
+    runtimePart.muteInstruments = false;
+    runtimePart.skipPlayback = false;
     next.push_back(std::move(runtimePart));
     totalLength = songLength;
     isCustomArrangement = false;
@@ -3972,7 +4000,9 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
             : std::max<juce::int64>(0, startFrame - oneBarFrames),
         part.guideTriggerId,
         triggerOnEntry,
-        part.insertedClip});
+        part.insertedClip,
+        part.muteInstruments,
+        part.skipPlayback});
   }
   sectionScheduler.publish(sections);
 }

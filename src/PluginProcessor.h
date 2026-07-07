@@ -418,6 +418,8 @@ private:
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
     bool insertedClip = false;
+    bool muteInstruments = false;
+    bool skipPlayback = false;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
   std::atomic<bool> arrangementCustomActive{false};
