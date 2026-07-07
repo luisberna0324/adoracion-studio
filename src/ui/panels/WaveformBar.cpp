@@ -3337,6 +3337,39 @@ std::pair<double, double> WaveformBar::getPartSourceRange(
           juce::jlimit(0.0, sourceLength, part.endSec)};
 }
 
+std::pair<double, double> WaveformBar::getPartOriginalSourceRange(
+    const SongArrangementPartSnapshot &part, const double sourceLength) const {
+  if (part.sourcePartId.isEmpty())
+    return getPartSourceRange(part, sourceLength);
+
+  const SongArrangementPartSnapshot *source = &part;
+  const int maxDepth = static_cast<int>(arrangement.parts.size());
+  for (int depth = 0; depth < maxDepth; ++depth) {
+    if (source->sourcePartId.isEmpty())
+      break;
+
+    const int sourceIndex = findPartIndexById(source->sourcePartId);
+    if (!juce::isPositiveAndBelow(sourceIndex,
+                                  static_cast<int>(arrangement.parts.size())))
+      break;
+
+    const auto *nextSource =
+        &arrangement.parts[static_cast<size_t>(sourceIndex)];
+    if (nextSource == source)
+      break;
+    source = nextSource;
+  }
+
+  if (source->sourcePartId.isNotEmpty() &&
+      source->sourceEndSec > source->sourceStartSec) {
+    return {juce::jlimit(0.0, sourceLength, source->sourceStartSec),
+            juce::jlimit(0.0, sourceLength, source->sourceEndSec)};
+  }
+
+  return {juce::jlimit(0.0, sourceLength, source->startSec),
+          juce::jlimit(0.0, sourceLength, source->endSec)};
+}
+
 double WaveformBar::getPartSourceDurationSeconds(
     const SongArrangementPartSnapshot &part) const {
   if (part.sourcePartId.isEmpty())
@@ -3346,7 +3379,8 @@ double WaveformBar::getPartSourceDurationSeconds(
   if (sourceLength <= 0.0)
     return 0.0;
 
-  const auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
+  const auto [sourceStart, sourceEnd] =
+      getPartOriginalSourceRange(part, sourceLength);
   return juce::jmax(0.0, sourceEnd - sourceStart);
 }
 
@@ -3359,11 +3393,29 @@ void WaveformBar::clampDuplicatedPartToSourceDuration(
   if (sourceLength <= 0.0)
     return;
 
-  auto [sourceStart, sourceEnd] = getPartSourceRange(part, sourceLength);
-  if (sourceEnd < sourceStart)
-    std::swap(sourceStart, sourceEnd);
+  auto [currentSourceStart, currentSourceEnd] =
+      getPartSourceRange(part, sourceLength);
+  if (currentSourceEnd < currentSourceStart)
+    std::swap(currentSourceStart, currentSourceEnd);
 
-  const double maxDuration = sourceEnd - sourceStart;
+  auto [originalSourceStart, originalSourceEnd] =
+      getPartOriginalSourceRange(part, sourceLength);
+  if (originalSourceEnd < originalSourceStart)
+    std::swap(originalSourceStart, originalSourceEnd);
+
+  const double originalDuration = originalSourceEnd - originalSourceStart;
+  if (originalDuration < kMinPartDurationSec)
+    return;
+
+  const double sourceAnchor =
+      anchorEnd
+          ? juce::jlimit(originalSourceStart, originalSourceEnd,
+                         currentSourceEnd)
+          : juce::jlimit(originalSourceStart, originalSourceEnd,
+                         currentSourceStart);
+  const double maxDuration =
+      anchorEnd ? sourceAnchor - originalSourceStart
+                : originalSourceEnd - sourceAnchor;
   if (maxDuration < kMinPartDurationSec)
     return;
 
@@ -3371,12 +3423,12 @@ void WaveformBar::clampDuplicatedPartToSourceDuration(
       juce::jlimit(kMinPartDurationSec, maxDuration, part.endSec - part.startSec);
   if (anchorEnd) {
     part.startSec = part.endSec - duration;
-    part.sourceStartSec = sourceEnd - duration;
-    part.sourceEndSec = sourceEnd;
+    part.sourceStartSec = sourceAnchor - duration;
+    part.sourceEndSec = sourceAnchor;
   } else {
     part.endSec = part.startSec + duration;
-    part.sourceStartSec = sourceStart;
-    part.sourceEndSec = sourceStart + duration;
+    part.sourceStartSec = sourceAnchor;
+    part.sourceEndSec = sourceAnchor + duration;
   }
 
   part.sourceStartSec = juce::jlimit(0.0, sourceLength, part.sourceStartSec);

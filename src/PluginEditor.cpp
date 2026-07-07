@@ -397,6 +397,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
     processorRef.setArrangementEditingActive(expanded);
+    isWaveformExpanded = expanded;
     resized();
     repaint();
   });
@@ -811,6 +812,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
+    isWaveformExpanded = false;
     return true;
   };
 

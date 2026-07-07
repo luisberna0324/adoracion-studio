@@ -346,6 +346,9 @@ private:
   std::pair<double, double>
   getPartSourceRange(const SongArrangementPartSnapshot &part,
                      double sourceLength) const;
+  std::pair<double, double>
+  getPartOriginalSourceRange(const SongArrangementPartSnapshot &part,
+                             double sourceLength) const;
   double getPartSourceDurationSeconds(
       const SongArrangementPartSnapshot &part) const;
   void clampDuplicatedPartToSourceDuration(SongArrangementPartSnapshot &part,
