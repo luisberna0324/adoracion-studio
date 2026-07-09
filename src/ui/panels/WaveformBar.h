@@ -364,6 +364,8 @@ private:
       const SongArrangementPartSnapshot &part) const;
   void clampDuplicatedPartToSourceDuration(SongArrangementPartSnapshot &part,
                                            bool anchorEnd);
+  void rippleCloseGapAfterDuplicatedPart(double gapStartSec, double gapEndSec,
+                                         const juce::String &excludedPartId = {});
   bool mapArrangementSecondsToSourceSeconds(double arrangementSeconds,
                                             double sourceLength,
                                             double &sourceSecondsOut) const;
@@ -379,6 +381,7 @@ private:
   void addArrangementPart(const juce::String &preferredName = {});
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
+  double getArrangementAppendStartSec(double fallbackStartSec) const;
   void duplicateArrangementPart(int partIndex);
   void createDuplicatedSection(int sourcePartIndex);
   void toggleArrangementPartMute(int partIndex);

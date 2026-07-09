@@ -783,6 +783,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         dynamicGuideWasPlaying = false;
       }
 
+      const bool skipTransitionBlockedBySeek =
+          seekAppliedThisBlock && sectionDecision.skippedSection;
+
       if (loopPartEngaged) {
         windowStartSec = loopStartSec;
         windowEndSec = loopEndSec;
@@ -790,7 +793,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
 
-        if (sectionDecision.transition) {
+        if (sectionDecision.transition && !skipTransitionBlockedBySeek) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = sectionDecision.targetSection;
           nextArrangementPartStartSec =
@@ -798,7 +801,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                   sectionDecision.targetFrame, playbackSampleRate);
         }
       } else if (customArrangement) {
-        if (sectionDecision.transition) {
+        if (sectionDecision.transition && !skipTransitionBlockedBySeek) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = sectionDecision.targetSection;
           nextArrangementPartStartSec =
@@ -809,7 +812,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       } else if (!customArrangement && realtimeSectionCount > 0 &&
                  juce::isPositiveAndBelow(mappedPartIndex,
                                           realtimeSectionCount)) {
-        if (sectionDecision.transition) {
+        if (sectionDecision.transition && !skipTransitionBlockedBySeek) {
           transitionToNextArrangementPart = true;
           nextArrangementPartIndex = sectionDecision.targetSection;
           nextArrangementPartStartSec =

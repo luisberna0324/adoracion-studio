@@ -286,10 +286,8 @@ juce::String userMessageForAccessDenial(const juce::String &reasonCode,
   const auto code = reasonCode.trim().toUpperCase();
   if (code == "LICENSE_INACTIVE")
     return "Tu suscripcion no esta activa. Activa tu plan para continuar.";
-  if (code == "TRIAL_EXPIRED")
-    return "Tu periodo de prueba ha finalizado. Debes comprar una suscripcion para continuar.";
   if (code == "NO_SUBSCRIPTION")
-    return "No tienes una suscripcion activa. Inicia un plan para continuar.";
+    return "No tienes acceso habilitado para esta cuenta. Inicia sesion nuevamente.";
   if (code == "CANCELLED_SUBSCRIPTION")
     return "Tu suscripcion fue cancelada. Reactiva tu plan para continuar.";
   if (code == "DEVICE_LIMIT")
@@ -314,7 +312,7 @@ bool hasValidAccessBySubscriptionState(const juce::String &subscriptionStatus,
   const auto status = subscriptionStatus.trim().toLowerCase();
   const auto normalizedPlan = plan.trim().toUpperCase();
 
-  if (status == "trial")
+  if (status == "free" || status == "trial")
     return true;
 
   if (status == "active")

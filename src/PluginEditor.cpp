@@ -1274,7 +1274,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       activeSession.reasonCode = "INVALID_SUBSCRIPTION_STATE";
     if (activeSession.reason.isEmpty()) {
       activeSession.reason =
-          "Subscription status is not trial/active with a valid plan";
+          "Subscription status is not free/trial/active with a valid plan";
     }
   }
 
@@ -1791,7 +1791,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
             ? "CANCELLED_SUBSCRIPTION"
             : "INVALID_SUBSCRIPTION_STATE";
     activeSession.reason =
-        "Subscription status is not trial/active with a valid plan";
+        "Subscription status is not free/trial/active with a valid plan";
     SessionAuthLogger::write(
         "evaluateReauthPolicy: invalid subscription state -> handleLogout code=" +
         activeSession.reasonCode);
