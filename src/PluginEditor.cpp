@@ -350,7 +350,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setTransportProviders(
       [&p] { return p.isSongPlaying(); },
       [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongEndSeconds(); },
+      [&p] {
+        return p.isCustomArrangementActive() ? p.getSongLengthSeconds()
+                                             : p.getSongEndSeconds();
+      },
       [&p] { return p.getLoadedSongKey(); },
       [this] { return currentLoadedSong.id; },
       [this]() -> const ImportedSongData * {
@@ -365,6 +368,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
   auto *waveformBarRaw = waveformBarImpl.get();
+  waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
@@ -380,20 +384,31 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   });
   waveformBarRaw->setOnArrangementPartJumpRequest([&p](int partIndex) {
     const int activeLoopPartIndex = p.getArrangementPartLoopIndex();
-    if (activeLoopPartIndex >= 0 && activeLoopPartIndex != partIndex)
+    if (activeLoopPartIndex >= 0)
       p.clearArrangementPartLoop();
     p.requestArrangementPartJump(partIndex);
   });
-  waveformBarRaw->setOnArrangementPartLoopToggleRequest(
-      [&p](int partIndex) { p.toggleArrangementPartLoop(partIndex); });
+  waveformBarRaw->setOnArrangementPartLoopToggleRequest([&p](int partIndex) {
+    p.clearPendingArrangementPartJump();
+    p.toggleArrangementPartLoop(partIndex);
+  });
+  waveformBarRaw->setOnArrangementPlaybackSelectionClearRequest([&p] {
+    p.clearArrangementPartLoop();
+    p.clearPendingArrangementPartJump();
+  });
   waveformBarRaw->setPendingArrangementPartProvider(
       [&p] { return p.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
       [&p] { return p.getArrangementPartLoopIndex(); });
   waveformBarRaw->setOnEditToggle([this](bool expanded) {
-    isWaveformExpanded = expanded;
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
     processorRef.setArrangementEditingActive(expanded);
+    isWaveformExpanded = expanded;
+    resized();
+    repaint();
+  });
+  waveformBarRaw->setOnWaveformHeightToggle([this](bool expanded) {
+    isWaveformHeightExpanded = expanded;
     resized();
     repaint();
   });
@@ -404,9 +419,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           return;
         SongLibraryStore::updateSongArrangement(
             currentLoadedSong.id, arrangement, isCustomArrangement);
-        // Las partes son marcadores visuales/editables y no deben alterar
-        // el flujo de reproduccion normal de la cancion.
-        p.setSongArrangement(arrangement, false);
+        p.setSongArrangement(arrangement, isCustomArrangement);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
@@ -416,7 +429,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     bool isCustomArrangement = false;
     if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,
                                              isCustomArrangement)) {
-      p.setSongArrangement(arrangement, false);
+      p.setSongArrangement(arrangement, isCustomArrangement);
     }
   });
   waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
@@ -803,8 +816,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
-    p.setSongArrangement(arrangement, false);
+    p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
+    isWaveformExpanded = false;
     return true;
   };
 
@@ -1260,7 +1274,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       activeSession.reasonCode = "INVALID_SUBSCRIPTION_STATE";
     if (activeSession.reason.isEmpty()) {
       activeSession.reason =
-          "Subscription status is not trial/active with a valid plan";
+          "Subscription status is not free/trial/active with a valid plan";
     }
   }
 
@@ -1777,7 +1791,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
             ? "CANCELLED_SUBSCRIPTION"
             : "INVALID_SUBSCRIPTION_STATE";
     activeSession.reason =
-        "Subscription status is not trial/active with a valid plan";
+        "Subscription status is not free/trial/active with a valid plan";
     SessionAuthLogger::write(
         "evaluateReauthPolicy: invalid subscription state -> handleLogout code=" +
         activeSession.reasonCode);
@@ -2273,9 +2287,18 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   topBar->setBounds(area.removeFromTop(topBarH));
-  const int waveH = isWaveformExpanded ? waveformExpandedH : waveformH;
+  int waveH =
+      (isWaveformExpanded || isWaveformHeightExpanded) ? waveformExpandedH
+                                                       : waveformH;
+  // When the arrangement editor is open, the WaveformBar draws a parts toolbar
+  // on top. Grow the waveform area by that amount so the toolbar doesn't
+  // compress the waveform+minimap, and so the mixer / song list below get
+  // pushed down instead of being covered by the expanded bar.
+  if (waveformBarPtr)
+    waveH += waveformBarPtr->getExtraHeightForHostLayout();
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
+  area.removeFromTop(contentInset);
 
   auto mainArea = area;
   constexpr int handleW = 14;
@@ -2378,6 +2401,9 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   const auto keyCode = key.getKeyCode();
   const auto modifiers = key.getModifiers();
   const bool altDown = modifiers.isAltDown();
+
+  if (waveformBar != nullptr && waveformBar->keyPressed(key))
+    return true;
 
   if (keyCode == juce::KeyPress::spaceKey) {
     if (altDown) {

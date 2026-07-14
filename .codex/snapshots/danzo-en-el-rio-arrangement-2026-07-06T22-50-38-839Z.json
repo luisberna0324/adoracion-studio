@@ -1,0 +1,308 @@
+{
+  "capturedAt": "2026-07-06T22:50:38.844Z",
+  "dbPath": "/Users/luisberna/Library/MTControls/songs.json",
+  "matches": [
+    {
+      "id": "6022b632e73d40c9a4243e3cec96f036",
+      "title": "Danzo en el Rio",
+      "artist": "Miel San Marcos",
+      "bpm": 135,
+      "key": "D",
+      "timeSignature": "4/4",
+      "fileType": "Multitrack ALAC",
+      "artworkPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/artwork.jpg",
+      "artworkSource": "https://mtracks.azureedge.net/public/images/albums/260/1448.jpg",
+      "createdMs": 1775910765686,
+      "stems": [
+        {
+          "stemId": "1461265F-ADE0-46D6-9510-E4357369AE82",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/1461265F-ADE0-46D6-9510-E4357369AE82.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/1461265F-ADE0-46D6-9510-E4357369AE82.m4a",
+          "fileName": "1461265F-ADE0-46D6-9510-E4357369AE82.m4a",
+          "displayName": "CLICK",
+          "category": "Click",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "D46A68E9-F09A-447A-89D8-7B8173CBCD07",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/D46A68E9-F09A-447A-89D8-7B8173CBCD07.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/D46A68E9-F09A-447A-89D8-7B8173CBCD07.m4a",
+          "fileName": "D46A68E9-F09A-447A-89D8-7B8173CBCD07.m4a",
+          "displayName": "CUES",
+          "category": "Cues",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "846DAEB3-D15E-4DBC-85BB-6EB9072D64AD",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/846DAEB3-D15E-4DBC-85BB-6EB9072D64AD.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/846DAEB3-D15E-4DBC-85BB-6EB9072D64AD.m4a",
+          "fileName": "846DAEB3-D15E-4DBC-85BB-6EB9072D64AD.m4a",
+          "displayName": "BASS",
+          "category": "Bass",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "2251D6D7-D7BD-4950-82BF-FBE5F08E88D3",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/2251D6D7-D7BD-4950-82BF-FBE5F08E88D3.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/2251D6D7-D7BD-4950-82BF-FBE5F08E88D3.m4a",
+          "fileName": "2251D6D7-D7BD-4950-82BF-FBE5F08E88D3.m4a",
+          "displayName": "BELLS",
+          "category": "Percussion",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "1D212E1C-5C7C-4DD6-A991-ADD8492859AA",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/1D212E1C-5C7C-4DD6-A991-ADD8492859AA.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/1D212E1C-5C7C-4DD6-A991-ADD8492859AA.m4a",
+          "fileName": "1D212E1C-5C7C-4DD6-A991-ADD8492859AA.m4a",
+          "displayName": "BGVS",
+          "category": "Strings",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "BDD3F946-C7AE-4DCC-90BD-972E257C8504",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/BDD3F946-C7AE-4DCC-90BD-972E257C8504.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/BDD3F946-C7AE-4DCC-90BD-972E257C8504.m4a",
+          "fileName": "BDD3F946-C7AE-4DCC-90BD-972E257C8504.m4a",
+          "displayName": "BGVS 2",
+          "category": "Other",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "F58526F8-E6CD-4A99-828B-4F8652D46D5A",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/F58526F8-E6CD-4A99-828B-4F8652D46D5A.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/F58526F8-E6CD-4A99-828B-4F8652D46D5A.m4a",
+          "fileName": "F58526F8-E6CD-4A99-828B-4F8652D46D5A.m4a",
+          "displayName": "CHOIR",
+          "category": "Vocals",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "17E2E1CA-24FB-44DD-843B-972D44FA2F8B",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/17E2E1CA-24FB-44DD-843B-972D44FA2F8B.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/17E2E1CA-24FB-44DD-843B-972D44FA2F8B.m4a",
+          "fileName": "17E2E1CA-24FB-44DD-843B-972D44FA2F8B.m4a",
+          "displayName": "DRUMS",
+          "category": "Drums",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "D1C0BA20-F412-4C55-A9FF-5F843EFF2F06",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/D1C0BA20-F412-4C55-A9FF-5F843EFF2F06.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/D1C0BA20-F412-4C55-A9FF-5F843EFF2F06.m4a",
+          "fileName": "D1C0BA20-F412-4C55-A9FF-5F843EFF2F06.m4a",
+          "displayName": "EG 1",
+          "category": "Electric Guitars",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "8B03500E-5346-41E5-8E35-E53AC1F1A1B4",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/8B03500E-5346-41E5-8E35-E53AC1F1A1B4.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/8B03500E-5346-41E5-8E35-E53AC1F1A1B4.m4a",
+          "fileName": "8B03500E-5346-41E5-8E35-E53AC1F1A1B4.m4a",
+          "displayName": "EG 2",
+          "category": "Electric Guitars",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "8D9682F1-87EE-4EC2-A3CE-B9A3E9F2A21C",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/8D9682F1-87EE-4EC2-A3CE-B9A3E9F2A21C.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/8D9682F1-87EE-4EC2-A3CE-B9A3E9F2A21C.m4a",
+          "fileName": "8D9682F1-87EE-4EC2-A3CE-B9A3E9F2A21C.m4a",
+          "displayName": "EG 3",
+          "category": "Electric Guitars",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "C3CBF504-0351-4DBC-AB22-125C78D527F8",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/C3CBF504-0351-4DBC-AB22-125C78D527F8.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/C3CBF504-0351-4DBC-AB22-125C78D527F8.m4a",
+          "fileName": "C3CBF504-0351-4DBC-AB22-125C78D527F8.m4a",
+          "displayName": "EG 4",
+          "category": "Electric Guitars",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "7ED390DF-EAA5-42BB-9F64-8CF3323FB3C9",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/7ED390DF-EAA5-42BB-9F64-8CF3323FB3C9.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/7ED390DF-EAA5-42BB-9F64-8CF3323FB3C9.m4a",
+          "fileName": "7ED390DF-EAA5-42BB-9F64-8CF3323FB3C9.m4a",
+          "displayName": "FX",
+          "category": "FX",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "F6B83FC4-D93F-4D45-B528-2E9D4B1D5084",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/F6B83FC4-D93F-4D45-B528-2E9D4B1D5084.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/F6B83FC4-D93F-4D45-B528-2E9D4B1D5084.m4a",
+          "fileName": "F6B83FC4-D93F-4D45-B528-2E9D4B1D5084.m4a",
+          "displayName": "KEYS1",
+          "category": "Keys",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "C48E5AC7-3C3D-44F2-8F44-C36BB06D5253",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/C48E5AC7-3C3D-44F2-8F44-C36BB06D5253.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/C48E5AC7-3C3D-44F2-8F44-C36BB06D5253.m4a",
+          "fileName": "C48E5AC7-3C3D-44F2-8F44-C36BB06D5253.m4a",
+          "displayName": "KEYS2",
+          "category": "Keys",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "56568433-3EA5-484F-BE73-27C705FBD852",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/56568433-3EA5-484F-BE73-27C705FBD852.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/56568433-3EA5-484F-BE73-27C705FBD852.m4a",
+          "fileName": "56568433-3EA5-484F-BE73-27C705FBD852.m4a",
+          "displayName": "LOOP",
+          "category": "Pads/Ambience",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "1CAB22EF-57FA-4A67-9069-B6A28F66B4CE",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/1CAB22EF-57FA-4A67-9069-B6A28F66B4CE.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/1CAB22EF-57FA-4A67-9069-B6A28F66B4CE.m4a",
+          "fileName": "1CAB22EF-57FA-4A67-9069-B6A28F66B4CE.m4a",
+          "displayName": "PIANO",
+          "category": "Piano",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        },
+        {
+          "stemId": "7CF6E95F-7DE7-47EC-B1BD-2A44CC3CB3D6",
+          "sourcePath": "/Users/luisberna/Library/Containers/com.loopcommunity.PRIMEMAC/Data/Documents/PRIME/.hjklnewo/xvoiaozz/Tracks/7CF6E95F-7DE7-47EC-B1BD-2A44CC3CB3D6.m4a",
+          "storedPath": "/Users/luisberna/Library/MTControls/audio/6022b632e73d40c9a4243e3cec96f036/7CF6E95F-7DE7-47EC-B1BD-2A44CC3CB3D6.m4a",
+          "fileName": "7CF6E95F-7DE7-47EC-B1BD-2A44CC3CB3D6.m4a",
+          "displayName": "SYNTH BASS",
+          "category": "Bass",
+          "include": true,
+          "durationSec": 273.3333333333333,
+          "sampleRate": 44100,
+          "channels": 2
+        }
+      ],
+      "arrangement": {
+        "parts": [
+          {
+            "id": "58e129e7538b4967b56fd91c68382e9a",
+            "name": "Intro",
+            "color": "ffB66A8A",
+            "startSec": 0,
+            "endSec": 17.77777777777778,
+            "sourceStartSec": 0,
+            "sourceEndSec": 8.88888888888889
+          },
+          {
+            "id": "ebc64d8d54ff4cc7bd5c41ffbef6136e",
+            "name": "Verse",
+            "color": "ff8A7A68",
+            "startSec": 17.77777777777778,
+            "endSec": 32,
+            "sourceStartSec": 17.77777777777778,
+            "sourceEndSec": 26.666666666666664
+          },
+          {
+            "id": "3b08ae1008274ecbb87af04a06e59378",
+            "name": "Verse 2",
+            "color": "ff8A7A68",
+            "startSec": 32,
+            "endSec": 46.22222222222222,
+            "sourceStartSec": 32,
+            "sourceEndSec": 40.888888888888886
+          },
+          {
+            "id": "17aa3bc7c3014bbebccb3d6be0ad8bde",
+            "name": "Interlude",
+            "color": "ff6E9A91",
+            "startSec": 46.22222222222222,
+            "endSec": 60.44444444444444,
+            "sourceStartSec": 46.22222222222222,
+            "sourceEndSec": 55.11111111111111
+          },
+          {
+            "id": "917d6adeb2f84199b6e9aaf981c81ef8",
+            "name": "Vamp",
+            "color": "ff7F9B67",
+            "startSec": 102.22222222222221,
+            "endSec": 103.1111111111111,
+            "sourceStartSec": 74.66666666666666,
+            "sourceEndSec": 82.66666666666666
+          },
+          {
+            "id": "4b6fb97c77f94dd6afdce7e85cec6060",
+            "name": "Vamp Ã2",
+            "color": "ff7F9B67",
+            "startSec": 103.1111111111111,
+            "endSec": 103.99999999999999,
+            "sourceStartSec": 74.66666666666666,
+            "sourceEndSec": 82.66666666666666,
+            "sourcePartId": "917d6adeb2f84199b6e9aaf981c81ef8"
+          }
+        ]
+      },
+      "tempoMap": {
+        "regions": [
+          {
+            "id": "73156e0d9b884536abbd75302d9d463a",
+            "startSec": 0,
+            "endSec": 273.3333333333333,
+            "bpm": 135,
+            "timeSignature": "4/4",
+            "clickDivision": 1,
+            "accentEnabled": true
+          }
+        ]
+      }
+    }
+  ]
+}

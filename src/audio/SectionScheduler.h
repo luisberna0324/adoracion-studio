@@ -18,15 +18,21 @@ public:
   struct Section {
     Frame startFrame = 0;
     Frame endFrame = 0;
+    Frame sourceStartFrame = 0;
+    Frame sourceEndFrame = 0;
     Frame guideTriggerFrame = -1;
     int guideTriggerId = -1;
     bool triggerGuideOnEntry = false;
+    bool insertedClip = false;
+    bool muteInstruments = false;
+    bool skipPlayback = false;
   };
 
   struct BlockDecision {
     int currentSection = -1;
     bool transition = false;
     bool stop = false;
+    bool skippedSection = false;
     int targetSection = -1;
     Frame targetFrame = 0;
   };
@@ -38,6 +44,9 @@ public:
   int findSection(Frame frame) const noexcept;
   int findGuideTrigger(Frame blockStart, int blockFrames) const noexcept;
   bool getSection(int index, Section &section) const noexcept;
+  bool mapFrameToSourceFrame(Frame frame, Frame arrangementEndFrame,
+                             Frame sourceEndFrame,
+                             Frame &sourceFrameOut) const noexcept;
 
   BlockDecision evaluate(Frame blockStart, int blockFrames,
                          bool customArrangement, int pendingSection,

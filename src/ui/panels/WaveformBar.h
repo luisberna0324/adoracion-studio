@@ -9,6 +9,18 @@
 #include <utility>
 #include <vector>
 
+class SvgToolbarButton final : public juce::TextButton {
+public:
+  SvgToolbarButton(const juce::String &name, SvgIconName icon);
+
+  void setIcon(SvgIconName nextIcon);
+  void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                   bool isButtonDown) override;
+
+private:
+  SvgIconName iconName;
+};
+
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
   using PlayingProvider = std::function<bool()>;
@@ -17,11 +29,13 @@ public:
   using SongWindowProvider = std::function<double()>;
   using SeekCallback = std::function<void(double)>;
   using EditToggleCallback = std::function<void(bool)>;
+  using WaveformHeightToggleCallback = std::function<void(bool)>;
   using ArrangementChangedCallback = std::function<void(
       const SongArrangementSnapshot &, bool isCustomArrangement)>;
   using ArrangementResetCallback = std::function<void()>;
   using ArrangementPartJumpRequestCallback = std::function<void(int)>;
   using ArrangementPartLoopToggleRequestCallback = std::function<void(int)>;
+  using ArrangementPlaybackSelectionClearCallback = std::function<void()>;
   using TempoMapChangedCallback = std::function<void(const SongTempoMapSnapshot &)>;
   using ActiveTempoRegionCallback =
       std::function<void(const SongTempoRegionSnapshot &)>;
@@ -42,11 +56,14 @@ public:
                               SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
   void setOnEditToggle(EditToggleCallback cb);
+  void setOnWaveformHeightToggle(WaveformHeightToggleCallback cb);
   void setOnArrangementChanged(ArrangementChangedCallback cb);
   void setOnArrangementReset(ArrangementResetCallback cb);
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
   void setOnArrangementPartLoopToggleRequest(
       ArrangementPartLoopToggleRequestCallback cb);
+  void setOnArrangementPlaybackSelectionClearRequest(
+      ArrangementPlaybackSelectionClearCallback cb);
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
@@ -76,9 +93,16 @@ public:
                       const juce::MouseWheelDetails &wheel) override;
   void mouseMagnify(const juce::MouseEvent &, float magnifyAmount) override;
 
+  /** Extra height the host layout should reserve so the parts toolbar drawn
+   *  on top of the waveform doesn't compress the waveform / minimap when the
+   *  arrangement editor is active. Returns 0 when the editor is closed.
+   */
+  int getExtraHeightForHostLayout() const;
+
 private:
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
   enum class TimelineViewMode { GuideMap = 1, TempoMap };
+  enum class PlaybackControlFocus { None, Mute, Loop, Jump };
 
   enum class DragMode {
     none,
@@ -99,6 +123,7 @@ private:
   struct PartOverlayBounds {
     int partIndex = -1;
     juce::Rectangle<float> body;
+    juce::Rectangle<float> editToolbar;
     juce::Rectangle<float> leftHandle;
     juce::Rectangle<float> rightHandle;
     juce::Rectangle<float> deleteButton;
@@ -106,9 +131,18 @@ private:
     juce::Rectangle<float> loopIcon;
     juce::Rectangle<float> jumpButton;
     juce::Rectangle<float> jumpIcon;
+    juce::Rectangle<float> duplicateButton;
+    juce::Rectangle<float> duplicateIcon;
+    juce::Rectangle<float> muteButton;
+    juce::Rectangle<float> muteIcon;
+    juce::Rectangle<float> skipButton;
+    juce::Rectangle<float> skipIcon;
     bool showsDeleteButton = false;
     bool showsLoopButton = false;
     bool showsJumpButton = false;
+    bool showsDuplicateButton = false;
+    bool showsMuteButton = false;
+    bool showsSkipButton = false;
   };
 
   struct PartHitResult {
@@ -118,6 +152,9 @@ private:
     bool deleteButton = false;
     bool loopButton = false;
     bool jumpButton = false;
+    bool duplicateButton = false;
+    bool muteButton = false;
+    bool skipButton = false;
   };
 
   struct TempoRegionHitResult {
@@ -133,6 +170,21 @@ private:
     double endSec = 0.0;
   };
 
+  struct ArrangementHistoryEntry {
+    SongArrangementSnapshot arrangement;
+    bool customArrangement = false;
+    int selectedPartIndex = -1;
+    std::vector<juce::String> selectedPartIds;
+  };
+
+  struct CopiedArrangementPart {
+    SongArrangementPartSnapshot part;
+    juce::String sourcePartId;
+    double sourceStartSec = 0.0;
+    double sourceEndSec = 0.0;
+    double relativeStartSec = 0.0;
+  };
+
   void timerCallback() override;
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
@@ -145,18 +197,21 @@ private:
   SongWindowProvider songWindowEndProvider;
   SeekCallback onSeekTo;
   EditToggleCallback onEditToggle;
+  WaveformHeightToggleCallback onWaveformHeightToggle;
   ArrangementChangedCallback onArrangementChanged;
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
   ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
+  ArrangementPlaybackSelectionClearCallback onArrangementPlaybackSelectionClearRequest;
   TempoMapChangedCallback onTempoMapChanged;
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
-  juce::TextButton followButton;
-  juce::TextButton editButton;
-  juce::TextButton guideMapButton;
-  juce::TextButton tempoMapButton;
+  SvgToolbarButton followButton{"follow", SvgIconName::AudioWaveform};
+  SvgToolbarButton editButton{"edit", SvgIconName::Pencil};
+  SvgToolbarButton waveHeightButton{"waveHeight", SvgIconName::Maximize};
+  SvgToolbarButton guideMapButton{"guideMap", SvgIconName::Music};
+  SvgToolbarButton tempoMapButton{"tempoMap", SvgIconName::Metronome};
   juce::Label snapModeLabel;
   juce::ComboBox snapModeBox;
   juce::TextButton sectionMenuButton;
@@ -203,9 +258,21 @@ private:
   int hoveredActionPartIndex = -1;
   int hoveredLoopPartIndex = -1;
   int hoveredJumpPartIndex = -1;
+  int hoveredMutePartIndex = -1;
+  int hoveredSkipPartIndex = -1;
+  int hoveredDuplicatePartIndex = -1;
+  int hoveredDeletePartIndex = -1;
+  int playbackControlFocusPartIndex = -1;
+  PlaybackControlFocus playbackControlFocus = PlaybackControlFocus::None;
+  double playbackControlFocusChangedAtMs = 0.0;
   int pendingJumpDoubleClickPartIndex = -1;
   double pendingJumpDoubleClickDispatchAtMs = 0.0;
   bool arrangementDragPendingCommit = false;
+  bool hasArrangementDragUndoSnapshot = false;
+  ArrangementHistoryEntry arrangementDragUndoSnapshot;
+  std::vector<ArrangementHistoryEntry> arrangementUndoStack;
+  std::vector<ArrangementHistoryEntry> arrangementRedoStack;
+  std::vector<CopiedArrangementPart> arrangementClipboard;
   bool tempoDragPendingCommit = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
@@ -221,6 +288,7 @@ private:
   bool followPendingJumpWasActive = false;
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
+  bool waveformVerticalExpanded = false;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
@@ -244,6 +312,16 @@ private:
   void togglePartSelection(int partIndex);
   void ensurePartSelectedForDrag(int partIndex);
   void captureDragPartOrigins();
+  ArrangementHistoryEntry makeArrangementHistoryEntry() const;
+  void pushArrangementUndoSnapshot();
+  void pushArrangementUndoSnapshot(const ArrangementHistoryEntry &entry);
+  void restoreArrangementHistoryEntry(const ArrangementHistoryEntry &entry);
+  bool undoArrangementEdit();
+  bool redoArrangementEdit();
+  juce::String resolveRealSourcePartId(
+      const SongArrangementPartSnapshot &part) const;
+  bool copySelectedArrangementParts();
+  bool pasteCopiedArrangementParts();
   juce::Rectangle<float> getSelectionDragBounds() const;
   void updateSelectionFromDragBounds();
   bool isEditingArrangement() const;
@@ -271,6 +349,26 @@ private:
   void drawWaveform(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                     float windowStart, float windowSpan, bool showGrid,
                     bool showPlayhead) const;
+  void drawWaveformSegment(juce::Graphics &g,
+                           const juce::Rectangle<float> &bounds,
+                           double sourceStartSec,
+                           double sourceEndSec) const;
+  double getWaveformSourceLengthSeconds() const;
+  std::pair<double, double>
+  getPartSourceRange(const SongArrangementPartSnapshot &part,
+                     double sourceLength) const;
+  std::pair<double, double>
+  getPartOriginalSourceRange(const SongArrangementPartSnapshot &part,
+                             double sourceLength) const;
+  double getPartSourceDurationSeconds(
+      const SongArrangementPartSnapshot &part) const;
+  void clampDuplicatedPartToSourceDuration(SongArrangementPartSnapshot &part,
+                                           bool anchorEnd);
+  void rippleCloseGapAfterDuplicatedPart(double gapStartSec, double gapEndSec,
+                                         const juce::String &excludedPartId = {});
+  bool mapArrangementSecondsToSourceSeconds(double arrangementSeconds,
+                                            double sourceLength,
+                                            double &sourceSecondsOut) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                      float windowStart, float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
@@ -283,7 +381,11 @@ private:
   void addArrangementPart(const juce::String &preferredName = {});
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
+  double getArrangementAppendStartSec(double fallbackStartSec) const;
   void duplicateArrangementPart(int partIndex);
+  void createDuplicatedSection(int sourcePartIndex);
+  void toggleArrangementPartMute(int partIndex);
+  void toggleArrangementPartSkip(int partIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
   void deleteArrangementPart(int partIndex);

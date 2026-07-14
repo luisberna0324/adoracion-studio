@@ -301,6 +301,8 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/repeat.svg
         assets/ui-icons/corner_down_right.svg
         assets/ui-icons/image_edit.svg
+        assets/ui-icons/pencil.svg
+        assets/ui-icons/volume_x.svg
 )
 
 target_sources(MTControls

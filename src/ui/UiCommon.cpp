@@ -196,6 +196,10 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::corner_down_right_svg, BinaryData::corner_down_right_svgSize};
   case SvgIconName::ImageEdit:
     return {BinaryData::image_edit_svg, BinaryData::image_edit_svgSize};
+  case SvgIconName::Pencil:
+    return {BinaryData::pencil_svg, BinaryData::pencil_svgSize};
+  case SvgIconName::VolumeX:
+    return {BinaryData::volume_x_svg, BinaryData::volume_x_svgSize};
   }
   return {};
 }

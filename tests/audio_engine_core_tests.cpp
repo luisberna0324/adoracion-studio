@@ -34,9 +34,9 @@ void testSectionScheduler() {
   using Scheduler = playworship::audio::SectionScheduler;
   Scheduler scheduler;
   scheduler.publish(
-      {{0, 1000, 0, 10, true},
-       {1000, 2000, 800, 11, false},
-       {2000, 3000, 1800, 12, false}});
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, false},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
 
   expect(scheduler.findSection(1500) == 1, "find current section");
   expect(scheduler.findGuideTrigger(750, 100) == 1,
@@ -46,9 +46,8 @@ void testSectionScheduler() {
          "section snapshot carries pre-resolved guide data");
 
   auto decision = scheduler.evaluate(900, 200, true, -1, -1);
-  expect(decision.transition && decision.targetSection == 1 &&
-             decision.targetFrame == 1000,
-         "custom arrangement advances at boundary");
+  expect(!decision.transition && !decision.stop,
+         "custom arrangement remains continuous at section boundary");
 
   decision = scheduler.evaluate(900, 200, false, 2, -1);
   expect(decision.transition && decision.targetSection == 2 &&
@@ -56,7 +55,8 @@ void testSectionScheduler() {
          "pending jump executes at section boundary");
 
   decision = scheduler.evaluate(2900, 200, true, -1, -1);
-  expect(decision.stop, "custom arrangement stops after final section");
+  expect(!decision.transition && !decision.stop,
+         "custom arrangement does not stop at final section marker");
 
   decision = scheduler.evaluate(1900, 200, false, -1, 1);
   expect(decision.transition && decision.targetSection == 1 &&
@@ -67,6 +67,15 @@ void testSectionScheduler() {
   expect(decision.transition && decision.targetSection == 1 &&
              decision.targetFrame == 1000,
          "loop requested outside its range enters at current boundary");
+
+  scheduler.publish(
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, true},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
+  decision = scheduler.evaluate(1000, 100, true, -1, -1);
+  expect(decision.transition && decision.skippedSection &&
+             decision.targetSection == 2 && decision.targetFrame == 2000,
+         "skip section jumps immediately to next section");
 }
 
 } // namespace

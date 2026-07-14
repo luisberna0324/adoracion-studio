@@ -1,6 +1,7 @@
 #include "SectionScheduler.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace playworship::audio {
@@ -18,12 +19,24 @@ void SectionScheduler::publish(
   next.count = std::min(static_cast<int>(sections.size()), maxSections);
   for (int i = 0; i < next.count; ++i) {
     const auto &source = sections[static_cast<std::size_t>(i)];
+    const auto sourceStart =
+        source.sourceEndFrame > source.sourceStartFrame
+            ? source.sourceStartFrame
+            : source.startFrame;
+    const auto sourceEnd =
+        source.sourceEndFrame > source.sourceStartFrame ? source.sourceEndFrame
+                                                        : source.endFrame;
     next.sections[static_cast<std::size_t>(i)] = {
         std::max<Frame>(0, source.startFrame),
         std::max(source.startFrame, source.endFrame),
+        std::max<Frame>(0, sourceStart),
+        std::max(sourceStart, sourceEnd),
         source.guideTriggerFrame,
         source.guideTriggerId,
-        source.triggerGuideOnEntry};
+        source.triggerGuideOnEntry,
+        source.insertedClip,
+        source.muteInstruments,
+        source.skipPlayback};
   }
   publishedIndex.store(writeIndex, std::memory_order_release);
 }
@@ -51,7 +64,7 @@ int SectionScheduler::findSection(const Frame frame) const noexcept {
   if (local.count <= 0)
     return -1;
 
-  for (int i = 0; i < local.count; ++i) {
+  for (int i = local.count - 1; i >= 0; --i) {
     const auto &section = local.sections[static_cast<std::size_t>(i)];
     if (frame >= section.startFrame && frame < section.endFrame)
       return i;
@@ -78,7 +91,7 @@ int SectionScheduler::findGuideTrigger(const Frame blockStart,
     return -1;
   const auto local = readSnapshot();
   const Frame blockEnd = blockStart + blockFrames;
-  for (int i = 0; i < local.count; ++i) {
+  for (int i = local.count - 1; i >= 0; --i) {
     const Frame trigger =
         local.sections[static_cast<std::size_t>(i)].guideTriggerFrame;
     if (trigger >= blockStart && trigger < blockEnd)
@@ -96,6 +109,57 @@ bool SectionScheduler::getSection(const int index,
   return true;
 }
 
+bool SectionScheduler::mapFrameToSourceFrame(
+    const Frame frame, const Frame arrangementEndFrame,
+    const Frame sourceEndFrame, Frame &sourceFrameOut) const noexcept {
+  const auto local = readSnapshot();
+  if (local.count <= 0 || sourceEndFrame <= 0)
+    return false;
+
+  Frame insertedOffset = 0;
+  for (int i = 0; i < local.count; ++i) {
+    const auto &section = local.sections[static_cast<std::size_t>(i)];
+    if (!section.insertedClip)
+      continue;
+
+    if (frame < section.startFrame) {
+      sourceFrameOut =
+          std::clamp(frame - insertedOffset, static_cast<Frame>(0), sourceEndFrame);
+      return true;
+    }
+
+    if (frame < section.endFrame) {
+      const auto arrangementDuration =
+          std::max<Frame>(1, section.endFrame - section.startFrame);
+      const auto sourceDuration =
+          std::max<Frame>(1, section.sourceEndFrame - section.sourceStartFrame);
+      const auto arrangementOffset =
+          std::clamp(frame - section.startFrame, static_cast<Frame>(0),
+                     arrangementDuration);
+      if (arrangementDuration == sourceDuration)
+        sourceFrameOut = section.sourceStartFrame + arrangementOffset;
+      else {
+        const double normalized = static_cast<double>(arrangementOffset) /
+                                  static_cast<double>(arrangementDuration);
+        sourceFrameOut = section.sourceStartFrame +
+                         static_cast<Frame>(std::llround(
+                             normalized * static_cast<double>(sourceDuration)));
+      }
+      sourceFrameOut =
+          std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
+      return true;
+    }
+
+    insertedOffset += section.endFrame - section.startFrame;
+  }
+
+  static_cast<void>(arrangementEndFrame);
+  sourceFrameOut = frame - insertedOffset;
+  sourceFrameOut =
+      std::clamp(sourceFrameOut, static_cast<Frame>(0), sourceEndFrame);
+  return true;
+}
+
 SectionScheduler::BlockDecision SectionScheduler::evaluate(
     const Frame blockStart, const int blockFrames,
     const bool customArrangement, const int pendingSection,
@@ -106,7 +170,7 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
     return decision;
 
   const auto findInSnapshot = [&local](const Frame frame) noexcept {
-    for (int i = 0; i < local.count; ++i) {
+    for (int i = local.count - 1; i >= 0; --i) {
       const auto &section = local.sections[static_cast<std::size_t>(i)];
       if (frame >= section.startFrame && frame < section.endFrame)
         return i;
@@ -115,6 +179,25 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
   };
 
   decision.currentSection = findInSnapshot(blockStart);
+  if (decision.currentSection >= 0) {
+    const auto &current =
+        local.sections[static_cast<std::size_t>(decision.currentSection)];
+    if (current.skipPlayback) {
+      decision.transition = true;
+      decision.skippedSection = true;
+      if (decision.currentSection + 1 < local.count) {
+        decision.targetSection = decision.currentSection + 1;
+        decision.targetFrame =
+            local.sections[static_cast<std::size_t>(decision.targetSection)]
+                .startFrame;
+      } else {
+        decision.targetSection = -1;
+        decision.targetFrame = current.endFrame;
+      }
+      return decision;
+    }
+  }
+
   const bool validLoop = loopSection >= 0 && loopSection < local.count;
   if (validLoop) {
     const auto &loop = local.sections[static_cast<std::size_t>(loopSection)];
@@ -149,17 +232,7 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
     return decision;
   }
 
-  if (customArrangement) {
-    const int next = decision.currentSection + 1;
-    if (next < local.count) {
-      decision.transition = true;
-      decision.targetSection = next;
-      decision.targetFrame =
-          local.sections[static_cast<std::size_t>(next)].startFrame;
-    } else {
-      decision.stop = true;
-    }
-  }
+  static_cast<void>(customArrangement);
   return decision;
 }
 

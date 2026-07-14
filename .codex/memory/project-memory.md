@@ -28,6 +28,10 @@
 - Waveform progress follows the current playback position and song duration.
 - Setlist double-click loads the full song: stems, waveform, and channels.
 - The local persistence root is `~/Library/Application Support/MTControls/`.
+- Arrangement duplicate clips are virtual sections: they reference source audio
+  from their original section. Ripple edit only applies when the changed clip is
+  a duplicate; deleting it or reducing its right edge shifts later blocks left
+  without changing their source audio ranges.
 
 ## UI contracts to preserve
 
@@ -38,6 +42,22 @@
 - The main layout keeps the top bar, waveform bar, collapsible setlist, handle,
   and channel grid.
 - Keep the UI compact and useful for live performance.
+- In playback mode, section controls show `M`, loop, and next; the active
+  control should slide into the centered position and keep its hit target aligned
+  with the visual position. These playback controls are mutually exclusive:
+  activating one clears the other active playback-control states.
+- Toolbar-created arrangement sections, counts, and utility cues append
+  immediately to the right of the furthest existing section, independent of the
+  currently selected section.
+- Duplicating or pasting from an already duplicated arrangement section must
+  preserve the original source section's label and color; do not chain duplicate
+  suffixes or derive fallback colors from suffixed names.
+- Arrangement section `muteInstruments` and `skipPlayback` are mutually
+  exclusive. Mute uses a dark/opaque overlay; skip uses a distinct striped
+  overlay plus skip icon because the section will not be reproduced.
+- `skipPlayback` is an edit-mode arrangement state, distinct from the playback
+  `next/jump` control. Skipped sections should not show playback controls, and
+  manual seek into or past a skipped section must remain possible.
 
 ## Audio and threading contracts
 
