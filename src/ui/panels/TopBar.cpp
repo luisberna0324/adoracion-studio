@@ -543,6 +543,10 @@ void TopBar::setOnSettings(std::function<void()> cb) {
   onSettings = std::move(cb);
 }
 
+void TopBar::setOnExportMixRequested(std::function<void()> cb) {
+  onExportMixRequested = std::move(cb);
+}
+
 void TopBar::setOnSettingsWithAnchor(
     std::function<void(juce::Rectangle<int>, juce::Component *)> cb) {
   onSettingsWithAnchor = std::move(cb);
@@ -1423,8 +1427,10 @@ void TopBar::showSongWindowPopover() {
   class SongWindowPopover final : public juce::Component {
   public:
     SongWindowPopover(MTControlsAudioProcessor &processorRef,
-                      const bool readOnlyArrangement)
-        : processor(processorRef), arrangementReadOnly(readOnlyArrangement) {
+                      const bool readOnlyArrangement,
+                      std::function<void()> exportMixCb)
+        : processor(processorRef), arrangementReadOnly(readOnlyArrangement),
+          onExportMix(std::move(exportMixCb)) {
       configureRow(startLabel, startMinus, startEditor, startPlus,
                    L10n::tr("Inicio", "Start"));
       configureRow(endLabel, endMinus, endEditor, endPlus,
@@ -1457,6 +1463,14 @@ void TopBar::showSongWindowPopover() {
         arrangementInfoLabel.setFont(juce::FontOptions(11.0f));
         addAndMakeVisible(arrangementInfoLabel);
       }
+
+      exportMixButton.setButtonText(
+          L10n::tr(u8"Exportar mix...", u8"Export mix..."));
+      exportMixButton.onClick = [this] {
+        if (onExportMix)
+          onExportMix();
+      };
+      addAndMakeVisible(exportMixButton);
 
       refreshValues();
       applyTheme();
@@ -1511,6 +1525,13 @@ void TopBar::showSongWindowPopover() {
         btn->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
         btn->setViewportIgnoreDragFlag(true);
       }
+      exportMixButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+      exportMixButton.setColour(juce::TextButton::buttonOnColourId,
+                                UITheme::accent.brighter(0.12f));
+      exportMixButton.setColour(juce::TextButton::textColourOffId,
+                                UITheme::onAccent);
+      exportMixButton.setColour(juce::TextButton::textColourOnId,
+                                UITheme::onAccent);
       if (arrangementReadOnly) {
         arrangementInfoLabel.setColour(juce::Label::textColourId,
                                        UITheme::accent);
@@ -1540,11 +1561,15 @@ void TopBar::showSongWindowPopover() {
         area.removeFromTop(6);
         arrangementInfoLabel.setBounds(area.removeFromTop(18));
       }
+      area.removeFromTop(10);
+      exportMixButton.setBounds(area.removeFromTop(30));
     }
 
   private:
     MTControlsAudioProcessor &processor;
     bool arrangementReadOnly = false;
+    std::function<void()> onExportMix;
+    juce::TextButton exportMixButton;
     juce::Label startLabel, endLabel, fadeLabel;
     juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
         fadePlus;
@@ -1657,9 +1682,9 @@ void TopBar::showSongWindowPopover() {
   if (!processor.hasLoadedSong())
     return;
   const bool arrangementReadOnly = processor.isCustomArrangementActive();
-  auto panel =
-      std::make_unique<SongWindowPopover>(processor, arrangementReadOnly);
-  panel->setSize(230, arrangementReadOnly ? 156 : 128);
+  auto panel = std::make_unique<SongWindowPopover>(
+      processor, arrangementReadOnly, onExportMixRequested);
+  panel->setSize(230, arrangementReadOnly ? 196 : 168);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)

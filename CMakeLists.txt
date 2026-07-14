@@ -208,6 +208,8 @@ target_sources(MTControls
         src/audio/PadsEngine.h
         src/audio/RoutingSuggestionEngine.cpp
         src/audio/RoutingSuggestionEngine.h
+        src/audio/SongMixExporter.cpp
+        src/audio/SongMixExporter.h
         src/audio/SimpleDelayLine.cpp
         src/audio/SimpleDelayLine.h
         src/audio/StandaloneAudioDeviceBridge.cpp

@@ -29,6 +29,7 @@ public:
                                  songProviderFn);
 
   void setOnSettings(std::function<void()> cb);
+  void setOnExportMixRequested(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
@@ -122,6 +123,7 @@ private:
   std::function<void(bool)> onFadeToggle;
   std::function<void(double)> onSeekRelative;
   std::function<void()> onSettings;
+  std::function<void()> onExportMixRequested;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
   std::function<void(bool)> onMetronomeEnabledChanged;

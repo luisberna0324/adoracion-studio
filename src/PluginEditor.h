@@ -144,6 +144,11 @@ private:
       juce::int64 lastOnlineMs) const;
   void applyPersistedSnapshotToActive(const PersistedSessionSnapshot &snap);
   void saveSessionSnapshotToDisk();
+  void beginExportCurrentSongMix();
+  void runSongMixExport(const juce::File &outputFile);
+
+  bool mixExportBusy = false;
+  std::unique_ptr<juce::FileChooser> mixExportFileChooser;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };
