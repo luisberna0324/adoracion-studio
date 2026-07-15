@@ -6,6 +6,10 @@ No es una transcripcion de cambios; es una guia de trabajo y decisiones.
 ## 1) Scope y estructura del proyecto
 
 - El desarrollo activo de esta app ocurre en `juce-controls-plugin/`.
+- La documentación `docs/okf/` es la fuente de datos y comportamiento técnico
+  del proyecto. Consultar el módulo relevante antes de cambiar transporte,
+  arrange, motor de audio, mixer, MIDI o sistemas de audio; mantenerla
+  actualizada cuando esos contratos cambien.
 - Codigo principal:
   - UI: `juce-controls-plugin/src/PluginEditor.cpp`, `PluginEditor.h`
   - Audio/engine: `juce-controls-plugin/src/PluginProcessor.cpp`, `PluginProcessor.h`

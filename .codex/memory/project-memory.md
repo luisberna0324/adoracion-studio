@@ -7,6 +7,9 @@
   mixer channels, setlist flow, waveform, and local persistence.
 - Main development target for local validation: `MTControls_Standalone`.
 - Product/engineering source of truth: `AGENT.md`.
+- API and implementation-behavior reference: `docs/okf/`. Consult the relevant
+  module for transport, arrange, audio engine, mixer, MIDI, and audio systems;
+  update it when those contracts change.
 - Conversation startup entry point: `AGENTS.md`.
 - Accumulated task lessons: `.codex/memory/lessons-learned.md`.
 
@@ -68,6 +71,11 @@
 - Do not block UI callbacks with heavy transport or disk work.
 - Do not perform disk operations in `paint` or high-frequency timer callbacks.
 - Keep transport state deterministic and centralized.
+- Song-mix export is offline and must not disturb live transport. It renders
+  WAV 24-bit, MP3 320 kbps, or M4A/AAC 256 kbps from the current stem/mixer snapshot on a background thread;
+  the mixer export control and waveform progress are disabled/updated together.
+- Dynamic-guide output must receive the same latency compensation as stems when
+  pitch/tempo processing is active; keep its delay line primed during silence.
 
 ## Verification commands
 

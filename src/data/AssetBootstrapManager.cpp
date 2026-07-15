@@ -12,7 +12,7 @@ constexpr const char *kAssetsBaseUrl = "https://storage.googleapis.com/playworsh
 constexpr const char *kEncoderVersion = "2026-04-18-1";
 constexpr const char *kPadsVersion = "roman-v1";
 constexpr const char *kClicksVersion = "clicks-v1";
-constexpr const char *kGuidesVersion = "en-es-v2";
+constexpr const char *kGuidesVersion = "en-es-v3";
 constexpr const char *kGuidesVersionFileName = "pack-version.txt";
 
 juce::String buildEncoderUrl() {

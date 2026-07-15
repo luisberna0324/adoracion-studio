@@ -18,7 +18,7 @@ class StemTrack : public juce::PositionableAudioSource {
 public:
   StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
             juce::TimeSliceThread &sharedReadThread, double sampleRateToUse,
-            int readAheadSamples = 262144);
+            int readAheadSamples = 262144, bool useReadAhead = true);
   ~StemTrack() override;
 
   // ==============================================================================
@@ -63,6 +63,7 @@ private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;
   std::unique_ptr<StemBufferingSource> bufferingSource;
+  juce::PositionableAudioSource *activeSource = nullptr;
 
   std::atomic<float> volume{1.0f};
   std::atomic<float> trim{1.0f};

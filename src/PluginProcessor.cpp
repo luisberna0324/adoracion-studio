@@ -278,6 +278,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   dynamicGuideEngine.prepare(sampleRate);
   metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
   metronomeLatencyDelay.setDelay(0);
+  dynamicGuideLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
+  dynamicGuideLatencyDelay.setDelay(0);
   padsEngine.setEnabled(padsEnabledState.load(std::memory_order_relaxed));
   standaloneAudioDeviceBridge.setAvailableOutputChannelCount(getTotalNumOutputChannels());
   refreshPadsRoutingFromSettings();
@@ -339,6 +341,7 @@ void MTControlsAudioProcessor::releaseResources() {
   outgoingMixEngine.reset();
   padsEngine.releaseResources();
   dynamicGuideEngine.reset();
+  dynamicGuideLatencyDelay.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   for (auto &track : stemTracks)
     track->releaseResources();
@@ -1329,9 +1332,16 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
   }
 
-  if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive) {
-    dynamicGuideRenderBuffer.clear();
+  dynamicGuideRenderBuffer.clear();
+  if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive)
     dynamicGuideEngine.render(dynamicGuideRenderBuffer);
+
+  // Pitch/tempo processing delays the stems. Feed the guide delay line every
+  // callback (including silence) so its first announcement is aligned too.
+  dynamicGuideLatencyDelay.setDelay(stemOutputLatencyThisBlock);
+  dynamicGuideLatencyDelay.process(dynamicGuideRenderBuffer);
+
+  if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive) {
     if (!juce::approximatelyEqual(dynamicGuideOutputGain, 1.0f))
       dynamicGuideRenderBuffer.applyGain(dynamicGuideOutputGain);
 
@@ -2762,6 +2772,32 @@ void MTControlsAudioProcessor::setSongArrangement(
         });
   }
 
+  // Updating a section's playback state (for example its Mute button) must
+  // not reset the transport. Only a change that moves, resizes, or remaps a
+  // clip requires seeking to the beginning of a custom arrangement.
+  const auto sameTimeline = [this, &next] {
+    if (arrangementParts.size() != next.size())
+      return false;
+
+    constexpr double kTimelineToleranceSec = 0.0001;
+    for (size_t i = 0; i < next.size(); ++i) {
+      const auto &current = arrangementParts[i];
+      const auto &updated = next[i];
+      if (current.insertedClip != updated.insertedClip ||
+          std::abs(current.startSec - updated.startSec) >
+              kTimelineToleranceSec ||
+          std::abs(current.endSec - updated.endSec) >
+              kTimelineToleranceSec ||
+          std::abs(current.sourceStartSec - updated.sourceStartSec) >
+              kTimelineToleranceSec ||
+          std::abs(current.sourceEndSec - updated.sourceEndSec) >
+              kTimelineToleranceSec)
+        return false;
+    }
+    return true;
+  };
+  const bool arrangementTimelineChanged = !sameTimeline();
+
   for (auto &part : next) {
     const auto countKey = arrangementCountSectionKey(part.name);
     if (countKey.isNotEmpty()) {
@@ -2815,7 +2851,7 @@ void MTControlsAudioProcessor::setSongArrangement(
   arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
   arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
 
-  if (isCustomArrangement) {
+  if (isCustomArrangement && arrangementTimelineChanged) {
     const double target = arrangementParts.front().startSec;
     seekTargetSeconds.store(target, std::memory_order_relaxed);
     seekPending.store(true, std::memory_order_release);

@@ -28,11 +28,12 @@ const std::array<const char *, 19> kTrackCategories = {{
     "Pads/Ambience",
 }};
 
-const std::array<const char *, 14> kSongSectionSuggestions = {{
+const std::array<const char *, 15> kSongSectionSuggestions = {{
     "Intro",
     "Verse",
     "Pre-Chorus",
     "Chorus",
+    "Refrain",
     "Post-Chorus",
     "Bridge",
     "Instrumental",
@@ -215,12 +216,14 @@ struct ArrangementSectionStyle {
   std::initializer_list<const char *> aliases;
 };
 
-const std::array<ArrangementSectionStyle, 14> kArrangementSectionStyles = {{
+const std::array<ArrangementSectionStyle, 15> kArrangementSectionStyles = {{
     {"Intro", "Intro", "Intro", "ffB66A8A", {"intro", "introduccion", "introduction"}},
     {"Verse", "Verso", "Verse", "ff8A7A68", {"verse", "verso"}},
     {"Pre-Chorus", "Pre-Coro", "Pre-Chorus", "ff5E8F76",
      {"prechorus", "pre-coro", "precoro", "prechorus", "pre"}},
     {"Chorus", "Coro", "Chorus", "ff6FA36D", {"chorus", "coro"}},
+    {"Refrain", "Refrain", "Refrain", "ff6D91A3",
+     {"refrain", "estribillo"}},
     {"Post-Chorus", "Post-Coro", "Post-Chorus", "ff7D8F6B",
      {"postchorus", "post-coro", "postcoro"}},
     {"Bridge", "Puente", "Bridge", "ff7D74A8", {"bridge", "puente"}},

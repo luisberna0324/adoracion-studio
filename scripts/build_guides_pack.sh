@@ -16,7 +16,7 @@ USAGE
 SOURCE_ROOT="${HOME}/Documents/proyectos/playworship"
 OUTPUT_ZIP="assets/guides/guides-en-es.zip"
 FFMPEG_BIN="ffmpeg"
-GUIDES_PACK_VERSION="en-es-v2"
+GUIDES_PACK_VERSION="en-es-v3"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -149,8 +149,11 @@ convert_category() {
     if grep -Fxq "$normalized" "$seen_keys_file"; then
       return 0
     fi
-    local dst="$dst_base/$normalized.m4a"
-    "$FFMPEG_BIN" -hide_banner -loglevel error -y -i "$src_file" -c:a alac "$dst"
+    # MP3 decodes through both CoreAudio (macOS) and Windows Media Foundation.
+    # ALAC/M4A works on macOS but is not reliably readable on Windows.
+    local dst="$dst_base/$normalized.mp3"
+    "$FFMPEG_BIN" -hide_banner -loglevel error -y -i "$src_file" \
+      -codec:a libmp3lame -b:a 128k "$dst"
     printf '%s\n' "$normalized" >> "$seen_keys_file"
   }
 
@@ -206,16 +209,16 @@ convert_category() {
     ensure_canonical_key() {
       local canonical="$1"
       shift
-      local canonical_file="$dst_base/$canonical.m4a"
+      local canonical_file="$dst_base/$canonical.mp3"
       if [[ -f "$canonical_file" ]]; then
         return 0
       fi
       local pattern
       for pattern in "$@"; do
         local match
-        match="$(find "$dst_base" -maxdepth 1 -type f -name '*.m4a' \
+        match="$(find "$dst_base" -maxdepth 1 -type f -name '*.mp3' \
           | sed 's#^.*/##' \
-          | grep -Ei "^${pattern}\\.m4a$" \
+          | grep -Ei "^${pattern}\\.mp3$" \
           | sort \
           | head -n 1 || true)"
         if [[ -n "$match" && -f "$dst_base/$match" ]]; then
@@ -262,7 +265,7 @@ for lang in en es; do
     echo "Missing required sections output for language: $lang" >&2
     exit 1
   fi
-  section_count="$(find "$TMP_DIR/$lang/sections" -type f -iname '*.m4a' | wc -l | xargs)"
+  section_count="$(find "$TMP_DIR/$lang/sections" -type f -iname '*.mp3' | wc -l | xargs)"
   if [[ -z "$section_count" || "$section_count" -eq 0 ]]; then
     echo "No section assets produced for language: $lang" >&2
     exit 1
