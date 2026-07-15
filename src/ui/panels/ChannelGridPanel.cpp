@@ -468,17 +468,18 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
     formats.addItem(1, "WAV (24 bits)");
     formats.addItem(2, "MP3 (320 kbps)");
     formats.addItem(3, "M4A / AAC (256 kbps)");
+    const juce::Component::SafePointer<ChannelGridPanel> safePanel(this);
     formats.showMenuAsync(
         juce::PopupMenu::Options().withTargetComponent(exportMixButton.get()),
-        [safe = juce::Component::SafePointer<ChannelGridPanel>(this)](const int choice) {
-          if (safe == nullptr || !safe->onExportMixRequested)
+        [safePanel](const int choice) {
+          if (safePanel == nullptr || !safePanel->onExportMixRequested)
             return;
           if (choice == 1)
-            safe->onExportMixRequested("wav");
+            safePanel->onExportMixRequested("wav");
           else if (choice == 2)
-            safe->onExportMixRequested("mp3");
+            safePanel->onExportMixRequested("mp3");
           else if (choice == 3)
-            safe->onExportMixRequested("m4a");
+            safePanel->onExportMixRequested("m4a");
         });
   };
   exportMixButton->setTooltip(

@@ -3991,6 +3991,7 @@ int MTControlsAudioProcessor::findArrangementPartIndexForArrangementTime(
 
 juce::int64 MTControlsAudioProcessor::mapArrangementFrameToSourceFrame(
     const juce::int64 arrangementFrame) const noexcept {
+  using SchedulerFrame = playworship::audio::SectionScheduler::Frame;
   const double sampleRate =
       playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0;
   const auto arrangementEndFrame =
@@ -4000,11 +4001,13 @@ juce::int64 MTControlsAudioProcessor::mapArrangementFrameToSourceFrame(
   const auto sourceEndFrame =
       playworship::audio::TransportClock::secondsToFrames(
           loadedSongLengthSeconds.load(std::memory_order_relaxed), sampleRate);
-  juce::int64 sourceFrame = arrangementFrame;
-  if (sectionScheduler.mapFrameToSourceFrame(arrangementFrame,
+  const auto schedulerArrangementFrame =
+      static_cast<SchedulerFrame>(arrangementFrame);
+  SchedulerFrame sourceFrame = schedulerArrangementFrame;
+  if (sectionScheduler.mapFrameToSourceFrame(schedulerArrangementFrame,
                                              arrangementEndFrame,
                                              sourceEndFrame, sourceFrame))
-    return sourceFrame;
+    return static_cast<juce::int64>(sourceFrame);
   return arrangementFrame;
 }
 
