@@ -303,6 +303,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/image_edit.svg
         assets/ui-icons/pencil.svg
         assets/ui-icons/volume_x.svg
+        assets/ui-icons/file_audio.svg
 )
 
 target_sources(MTControls
@@ -327,6 +328,8 @@ target_sources(MTControls
         src/StemBufferingSource.h
         src/audio/AudioDeviceMonitor.cpp
         src/audio/AudioDeviceMonitor.h
+        src/audio/SongMixExporter.cpp
+        src/audio/SongMixExporter.h
         src/audio/TimeStretchProcessor.h
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h

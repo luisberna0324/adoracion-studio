@@ -442,6 +442,7 @@ private:
 
   MetronomeEngine metronome;
   SimpleDelayLine metronomeLatencyDelay;
+  SimpleDelayLine dynamicGuideLatencyDelay;
 
   // Master fade (0..1) multiplier
   std::atomic<bool> fadeActive{false};

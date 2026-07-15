@@ -357,9 +357,41 @@ private:
   float stripScale = 1.0f;
 };
 
+class ChannelGridPanel::ExportMixButton final : public juce::TextButton {
+public:
+  ExportMixButton() : juce::TextButton("EXPORTAR MIX") {}
+
+  void paintButton(juce::Graphics &g, const bool highlighted,
+                   const bool down) override {
+    const auto bounds = getLocalBounds().toFloat();
+    auto background = UITheme::cardBgHover;
+    if (!isEnabled())
+      background = UITheme::cardBorder;
+    else if (down)
+      background = UITheme::cardBgPressed;
+    else if (highlighted)
+      background = UITheme::cardBgHover.brighter(0.05f);
+    g.setColour(background);
+    g.fillRoundedRectangle(bounds, 5.0f);
+    auto buttonContent = bounds.reduced(9.0f, 4.0f);
+    auto iconArea =
+        buttonContent.removeFromLeft(18.0f).withSizeKeepingCentre(16.0f, 16.0f);
+    const auto foreground = isEnabled()
+                                ? UITheme::textPrimary
+                                : UITheme::textSecondary.withAlpha(0.65f);
+    drawSvgIcon(g, iconArea, SvgIconName::FileAudio, foreground);
+    buttonContent.removeFromLeft(5.0f);
+    g.setColour(foreground);
+    g.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
+    g.drawFittedText(getButtonText(), buttonContent.toNearestInt(),
+                     juce::Justification::centred, 1);
+  }
+};
+
 ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                                    MTControlsAudioProcessor &processorRef)
     : lookAndFeel(lookAndFeelRef), processor(processorRef) {
+  exportMixButton = std::make_unique<ExportMixButton>();
   nudgeHintLabel.setText("Volumen stems", juce::dontSendNotification);
   nudgeHintLabel.setJustificationType(juce::Justification::centredLeft);
   nudgeHintLabel.setFont(juce::FontOptions(10.0f));
@@ -429,6 +461,30 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
       "Baja todos los stems (excepto master/click/guia)");
   addAndMakeVisible(nudgeDownButton);
 
+  exportMixButton->onClick = [this] {
+    if (exportBusy || !onExportMixRequested)
+      return;
+    juce::PopupMenu formats;
+    formats.addItem(1, "WAV (24 bits)");
+    formats.addItem(2, "MP3 (320 kbps)");
+    formats.addItem(3, "M4A / AAC (256 kbps)");
+    formats.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(exportMixButton.get()),
+        [safe = juce::Component::SafePointer<ChannelGridPanel>(this)](const int choice) {
+          if (safe == nullptr || !safe->onExportMixRequested)
+            return;
+          if (choice == 1)
+            safe->onExportMixRequested("wav");
+          else if (choice == 2)
+            safe->onExportMixRequested("mp3");
+          else if (choice == 3)
+            safe->onExportMixRequested("m4a");
+        });
+  };
+  exportMixButton->setTooltip(
+      "Exporta la mezcla actual como WAV, MP3 o M4A");
+  addAndMakeVisible(*exportMixButton);
+
   dynamicGuideToggle.setVisible(false);
 
   viewport.setViewedComponent(&content, false);
@@ -446,6 +502,18 @@ ChannelGridPanel::~ChannelGridPanel() {
   flushPendingVolumePersistence();
   nudgeUpButton.setLookAndFeel(nullptr);
   nudgeDownButton.setLookAndFeel(nullptr);
+}
+
+void ChannelGridPanel::setOnExportMixRequested(
+    std::function<void(juce::String)> cb) {
+  onExportMixRequested = std::move(cb);
+}
+
+void ChannelGridPanel::setExportBusy(const bool busy) {
+  exportBusy = busy;
+  exportMixButton->setEnabled(!busy);
+  exportMixButton->setButtonText(busy ? "EXPORTANDO..." : "EXPORTAR MIX");
+  repaint();
 }
 
 void ChannelGridPanel::setResponsiveProfile(
@@ -723,7 +791,9 @@ void ChannelGridPanel::timerCallback() {
 
 void ChannelGridPanel::layoutHeaderAndViewport() {
   const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
-  auto r = getLocalBounds().reduced(panelPad);
+  auto r = getLocalBounds();
+  r.reduce(panelPad, 0);
+  r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
   const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
                           ? 38
                           : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46
@@ -734,8 +804,6 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
       10, responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 7);
   const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 66 : 78;
   const int nudgeGap = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
-  const int gridPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 8;
-  const int masterAlignedX = panelPad + gridPad + 1;
   nudgeHintLabel.setBounds({});
   nudgeHintLabel.setFont(juce::FontOptions(
       responsiveProfile == ResponsiveLayoutProfile::Compact ? 10.5f : 11.5f));
@@ -745,17 +813,13 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
                                                                               : 10.5f));
   guideWarningLabel.setVisible(guideWarningLabel.getText().isNotEmpty());
 
-  auto nudgeButtonsArea =
-      juce::Rectangle<int>(masterAlignedX, headerContent.getY(),
-                           (nudgeBtnW * 2) + nudgeGap, headerContent.getHeight());
-  nudgeUpButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
-  nudgeButtonsArea.removeFromLeft(nudgeGap);
-  nudgeDownButton.setBounds(nudgeButtonsArea.removeFromLeft(nudgeBtnW));
-
-  const int routingLeft = nudgeDownButton.getRight() + 12;
-  if (routingLeft > headerContent.getX())
-    headerContent.removeFromLeft(juce::jmin(headerContent.getWidth(),
-                                            routingLeft - headerContent.getX()));
+  const int exportBtnW =
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 104 : 122;
+  exportMixButton->setBounds(headerContent.removeFromRight(exportBtnW));
+  nudgeUpButton.setBounds(headerContent.removeFromLeft(nudgeBtnW));
+  headerContent.removeFromLeft(nudgeGap);
+  nudgeDownButton.setBounds(headerContent.removeFromLeft(nudgeBtnW));
+  headerContent.removeFromLeft(nudgeGap);
 
   if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
     applyRoutingButton.setVisible(true);
@@ -1251,6 +1315,8 @@ void ChannelGridPanel::refreshThemeColours() {
   nudgeDownButton.setColour(juce::TextButton::textColourOnId,
                             UITheme::textPrimary);
 
+  exportMixButton->repaint();
+
   for (size_t i = 0; i < slots.size(); ++i) {
     auto &slot = *slots[i];
     auto &strip = slot.getStrip();
@@ -1293,7 +1359,10 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
 
   const int panelPad =
       responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
-  auto headerArea = getLocalBounds().reduced(panelPad);
+  auto headerArea = getLocalBounds();
+  headerArea.reduce(panelPad, 0);
+  headerArea.removeFromTop(
+      responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
   const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
                           ? 38
                           : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46

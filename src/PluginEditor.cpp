@@ -1,6 +1,7 @@
 #include "PluginEditor.h"
 #include "PluginEditorSupport.h"
 #include "audio/AudioDeviceMonitor.h"
+#include "audio/SongMixExporter.h"
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
@@ -450,6 +451,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
   channelGridRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
+  channelGridRaw->setOnExportMixRequested(
+      [this](const juce::String &format) { beginExportCurrentSongMix(format); });
   channelGridRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   channelGridRaw->setOnMidiLearnTargetSelected(
@@ -2298,7 +2301,6 @@ void MTControlsAudioProcessorEditor::resized() {
     waveH += waveformBarPtr->getExtraHeightForHostLayout();
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
-  area.removeFromTop(contentInset);
 
   auto mainArea = area;
   constexpr int handleW = 14;
@@ -2312,7 +2314,6 @@ void MTControlsAudioProcessorEditor::resized() {
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea;
   rightChannelsArea.removeFromLeft(2);
-  rightChannelsArea.removeFromTop(contentInset);
   rightChannelsArea.removeFromRight(contentInset);
   rightChannelsArea.removeFromBottom(contentInset);
   padsDrawerBackgroundBounds = {};
@@ -2376,7 +2377,6 @@ void MTControlsAudioProcessorEditor::resized() {
     songListPanel->setVisible(true);
     auto setlistBounds = leftSetlistArea;
     setlistBounds.removeFromLeft(contentInset);
-    setlistBounds.removeFromTop(contentInset);
     setlistBounds.removeFromBottom(contentInset);
     setlistBounds.removeFromRight(3);
     songListPanel->setBounds(setlistBounds);
@@ -2391,6 +2391,182 @@ void MTControlsAudioProcessorEditor::resized() {
     reauthPromptModal->toFront(false);
   }
 
+}
+
+void MTControlsAudioProcessorEditor::beginExportCurrentSongMix(
+    const juce::String &formatExtension) {
+  if (mixExportBusy || songLoadBusy)
+    return;
+
+  auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+  if (!hasCurrentLoadedSong || !p.hasLoadedSong()) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon, "Exportar mix",
+        "Carga una canción antes de exportar el mix.");
+    return;
+  }
+
+  auto title = currentLoadedSong.title.trim();
+  if (title.isEmpty())
+    title = "PlayWorship Mix";
+  title = title.replaceCharacters("\\/:*?\"<>|", "---------");
+  auto folder = juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+  if (!folder.exists())
+    folder = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+  const auto extension = formatExtension == "mp3" || formatExtension == "m4a"
+                             ? formatExtension
+                             : juce::String("wav");
+  mixExportFileChooser = std::make_unique<juce::FileChooser>(
+      "Guardar bounce como...",
+      folder.getChildFile(title + " Bounce." + extension), "*." + extension);
+  mixExportFileChooser->launchAsync(
+      juce::FileBrowserComponent::saveMode |
+          juce::FileBrowserComponent::warnAboutOverwriting,
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
+       extension](
+          const juce::FileChooser &chooser) {
+        if (safe == nullptr)
+          return;
+        auto file = chooser.getResult();
+        if (file == juce::File())
+          return;
+        safe->runSongMixExport(file.hasFileExtension(extension)
+                                    ? file
+                                    : file.withFileExtension(extension));
+      });
+}
+
+void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFile) {
+  if (mixExportBusy || !hasCurrentLoadedSong)
+    return;
+  auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+  if (!p.hasLoadedSong())
+    return;
+
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->flushPendingPersistenceNow();
+
+  SongMixExportRequest request;
+  request.outputFile = outputFile;
+  if (outputFile.hasFileExtension("mp3"))
+    request.format = SongMixExportRequest::Format::Mp3;
+  else if (outputFile.hasFileExtension("m4a"))
+    request.format = SongMixExportRequest::Format::M4a;
+  request.sampleRate = p.getSampleRate() > 0.0 ? p.getSampleRate() : 44100.0;
+  request.startSeconds = p.getSongStartSeconds();
+  request.endSeconds = p.getSongEndSeconds();
+  request.fadeOutSeconds = p.getSongFadeOutSeconds();
+  request.pitchSemiTones = p.getPitchSemiTones();
+  request.tempoRatio = p.getOriginalSongBpm() > 0.0
+                           ? p.getPlaybackTempoBpm() / p.getOriginalSongBpm()
+                           : 1.0;
+  request.playbackBpm = p.getMetronomeBpm();
+  request.masterVolume = p.getMasterVolume();
+  request.masterGain = p.getMasterGain();
+  request.masterMuted = p.isMasterMuted();
+  request.dynamicClick.enabled =
+      p.isMetronomeEnabled() && p.isClickDivisionEnabled();
+  request.dynamicClick.volume = p.getMetronomeVolume();
+  request.dynamicClick.gain = p.getMetronomeGain();
+  request.dynamicClick.muted = p.isMetronomeMuted();
+  request.dynamicClick.soloed = p.isMetronomeSolo();
+  request.clickDivisionMask = p.getClickDivision();
+  request.beatsPerBar =
+      timeSignatureBeatsPerBar(currentLoadedSong.timeSignature);
+  switch (AppSettings::getMetronomeClickStyle()) {
+  case MetronomeClickStyle::Woodblock: request.clickStyle = "Woodblock"; break;
+  case MetronomeClickStyle::Cowbell: request.clickStyle = "Cowbell"; break;
+  case MetronomeClickStyle::Digital: request.clickStyle = "Digital"; break;
+  case MetronomeClickStyle::Gentle: request.clickStyle = "Gentle"; break;
+  case MetronomeClickStyle::Percussive: request.clickStyle = "Percussive"; break;
+  case MetronomeClickStyle::Saw: request.clickStyle = "Saw"; break;
+  case MetronomeClickStyle::Blip: request.clickStyle = "Blip"; break;
+  case MetronomeClickStyle::Classic: request.clickStyle = "Classic"; break;
+  }
+
+  const auto guideSettings = p.getDynamicGuideSettings();
+  request.dynamicGuide.enabled = guideSettings.enabled;
+  request.dynamicGuide.volume = p.getDynamicGuideVolume();
+  request.dynamicGuide.gain = p.getDynamicGuideGain();
+  request.dynamicGuide.muted = p.isDynamicGuideMuted();
+  request.dynamicGuide.soloed = p.isDynamicGuideSolo();
+  request.guideLanguage =
+      AppSettings::getLanguage() == AppLanguage::English ? "en" : "es";
+  SongArrangementSnapshot exportArrangement;
+  bool exportArrangementCustomized = false;
+  if (SongLibraryStore::getSongArrangement(
+          currentLoadedSong.id, exportArrangement,
+          exportArrangementCustomized)) {
+    for (const auto &part : exportArrangement.parts) {
+      if (!part.skipPlayback)
+        request.guideSections.push_back({part.name, part.startSec});
+    }
+  }
+  if (request.guideSections.empty()) {
+    for (const auto &part : currentLoadedSong.arrangement.parts) {
+      if (!part.skipPlayback)
+        request.guideSections.push_back({part.name, part.startSec});
+    }
+  }
+  for (size_t i = 0; i < currentLoadedSong.stems.size(); ++i) {
+    const auto &stem = currentLoadedSong.stems[i];
+    juce::File file(stem.storedPath);
+    if (!file.existsAsFile())
+      file = juce::File(stem.sourcePath);
+    if (!file.existsAsFile())
+      continue;
+    request.stems.push_back({file.getFullPathName(), p.getStemVolume((int) i),
+                             p.getStemGain((int) i), p.isStemMuted((int) i),
+                             p.isStemSoloed((int) i),
+                             stemPriorityForStripOrder(stem) <= 1,
+                             isStemPitchShiftable(stem)});
+  }
+  if (request.stems.empty()) {
+    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                           "Exportar mix",
+                                           "No se encontraron pistas de audio para exportar.");
+    return;
+  }
+
+  mixExportBusy = true;
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->setExportBusy(true);
+  if (waveformBarPtr != nullptr)
+    waveformBarPtr->setSongLoadingState(true, 0.0, "Preparando exportación… 0%");
+
+  std::thread([safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this), request] {
+    const auto formatLabel = request.format == SongMixExportRequest::Format::Mp3
+                                 ? juce::String("MP3")
+                                 : (request.format == SongMixExportRequest::Format::M4a
+                                        ? juce::String("M4A")
+                                        : juce::String("WAV"));
+    const auto result = SongMixExporter::exportToWav(
+        request, [safe, formatLabel](const double progress) {
+          juce::MessageManager::callAsync([safe, progress, formatLabel] {
+            if (safe != nullptr && safe->waveformBarPtr != nullptr)
+              safe->waveformBarPtr->setSongLoadingState(
+                  true, progress,
+                  (progress >= 1.0 && formatLabel != "WAV"
+                       ? "Codificando " + formatLabel + "…"
+                       : "Exportando " + formatLabel + "… " +
+                             juce::String((int) std::round(progress * 100.0)) + "%"));
+          });
+        });
+    juce::MessageManager::callAsync([safe, result] {
+      if (safe == nullptr)
+        return;
+      safe->mixExportBusy = false;
+      if (auto *grid = dynamic_cast<ChannelGridPanel *>(safe->channelGridPanel.get()))
+        grid->setExportBusy(false);
+      if (safe->waveformBarPtr != nullptr)
+        safe->waveformBarPtr->clearSongLoadingState();
+      juce::AlertWindow::showMessageBoxAsync(
+          result.ok ? juce::AlertWindow::InfoIcon : juce::AlertWindow::WarningIcon,
+          result.ok ? "Mix exportado" : "Error al exportar",
+          result.ok ? "Archivo guardado en:\n" + result.outputFile.getFullPathName()
+                    : (result.error.isNotEmpty() ? result.error : "No se pudo crear el archivo de audio."));
+    });
+  }).detach();
 }
 
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {

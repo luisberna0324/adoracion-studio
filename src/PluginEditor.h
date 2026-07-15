@@ -95,6 +95,8 @@ private:
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
+  bool mixExportBusy = false;
+  std::unique_ptr<juce::FileChooser> mixExportFileChooser;
   bool deferredStartupSongLoadPending = false;
   int deferredStartupSongIndex = -1;
   juce::int64 deferredStartupSongLoadAtMs = 0;
@@ -147,6 +149,8 @@ private:
       juce::int64 lastOnlineMs) const;
   void applyPersistedSnapshotToActive(const PersistedSessionSnapshot &snap);
   void saveSessionSnapshotToDisk();
+  void beginExportCurrentSongMix(const juce::String &formatExtension);
+  void runSongMixExport(const juce::File &outputFile);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };

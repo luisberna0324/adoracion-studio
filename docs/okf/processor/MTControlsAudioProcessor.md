@@ -1,0 +1,533 @@
+---
+type: Audio Processor Class
+title: MTControlsAudioProcessor
+description: Procesador principal del plugin - JUCE AudioProcessor
+resource: src/PluginProcessor.h
+tags: [juce, processor, audio, plugin, main]
+timestamp: 2026-07-14T20:45:00Z
+---
+
+# MTControlsAudioProcessor
+
+Clase principal que extiende `juce::AudioProcessor`. Gestiona toda la pipeline de audio incluyendo stems, mezcla, metrónomo, pads y guías dinámicas.
+
+## Herencia
+
+```
+juce::AudioProcessor
+└── MTControlsAudioProcessor
+```
+
+## Constantes
+
+| Constante | Valor | Descripción |
+|-----------|-------|-------------|
+| `maxStemCount` | 64 | Máximo número de stems soportados |
+| `maxRealtimeBlockSize` | 8192 | Tamaño máximo de bloque |
+| `inputGainId` | "inputGain" | ID del parámetro de gain de entrada |
+| `mixId` | "mix" | ID del parámetro de mezcla |
+| `bypassId` | "bypass" | ID del bypass |
+
+## Songs API
+
+### Cargar canción
+
+```cpp
+bool loadSongStems(
+    const juce::StringArray &stemPaths,
+    const juce::String &songTitle,
+    const juce::String &songKey,
+    double songBpm,
+    const std::function<void(double progress01)> &onLoadProgress = {}
+);
+```
+
+Carga múltiples archivos de audio como stems separados. El `onLoadProgress` callback recibe valores de 0.0 a 1.0.
+
+**Parámetros:**
+- `stemPaths`: Array de rutas a archivos de audio (WAV, MP3, FLAC, etc.)
+- `songTitle`: Título de la canción
+- `songKey`: Tonalidad (ej: "C", "Am", "F#m")
+- `songBpm`: BPM original de la canción
+- `onLoadProgress`: Callback opcional para progress UI
+
+**Retorna:** `true` si la carga fue exitosa
+
+### Estado de canción
+
+| Método | Retorno | Descripción |
+|--------|---------|-------------|
+| `hasLoadedSong()` | `bool` | Hay canción cargada |
+| `getLoadedSongTitle()` | `juce::String` | Título de la canción |
+| `getLoadedSongKey()` | `juce::String` | Tonalidad |
+| `getLoadedSongBpm()` | `double` | BPM de la canción |
+| `getSongLengthSeconds()` | `double` | Duración total |
+| `getSongCurrentPositionSeconds()` | `double` | Posición actual |
+| `getLoadedStemCount()` | `int` | Número de stems cargados |
+
+## Stem Controls
+
+Control individual de cada stem (índice 0 a maxStemCount-1).
+
+### Volumen y Gain
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setStemVolume(int, float)` | volume: 0.0-1.0 | Volumen visual |
+| `getStemVolume(int)` | — | Obtener volumen |
+| `setStemGain(int, float)` | gain: lineal | Gain en dB linear |
+| `getStemGain(int)` | — | Obtener gain |
+
+### Mute/Solo
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setStemMute(int, bool)` | muted | Silenciar stem |
+| `isStemMuted(int)` | — | ¿Está silenciado? |
+| `setStemSolo(int, bool)` | soloed | Aislar stem |
+| `isStemSoloed(int)` | — | ¿Está solo? |
+
+### Nivel de salida
+
+```cpp
+float getStemLevel(int stemIndex) const noexcept;
+```
+
+Retorna el nivel actual del stem para metering (0.0-1.0).
+
+### Enrutamiento de salida
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setStemOutputChannel(int, int)` | channel (1-indexed) | Canal de salida |
+| `getStemOutputChannel(int)` | — | Canal actual |
+| `setStemOutputWidth(int, int)` | width: 1=mono, 2=stereo | Ancho |
+| `getStemOutputWidth(int)` | — | Ancho actual |
+
+**Canales disponibles:**
+
+```cpp
+juce::StringArray getAvailableOutputChannelNames() const;
+int getAvailableOutputChannelCount() const noexcept;
+```
+
+## Transport API
+
+### Reproducción
+
+```cpp
+void playSong();       // Iniciar reproducción
+void pauseSong();      // Pausar
+void stopSong();       // Detener y resetear posición
+void toggleSongPlayPause();
+```
+
+### Posición
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `seekSongTo(double)` | seconds | Ir a posición |
+| `seekSongRelative(double)` | deltaSeconds | Mover relativo |
+| `setSongStartSeconds(double)` | seconds | Punto de inicio |
+| `getSongStartSeconds()` | — | Inicio actual |
+| `setSongEndSeconds(double)` | seconds | Punto de fin |
+| `getSongEndSeconds()` | — | Fin actual |
+
+### Fade
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setSongFadeOutSeconds(double)` | seconds | Duración del fade |
+| `getSongFadeOutSeconds()` | — | Fade actual |
+| `setFadeActive(bool)` | shouldFadeOut | Activar fade |
+| `isFadeActive()` | — | ¿Fade activo? |
+| `setFadeStopsPlayback(bool)` | shouldStop | ¿Fade detiene? |
+| `isFadeStopsPlayback()` | — | ¿Fade detiene? |
+
+### Estado de reproducción
+
+```cpp
+bool isSongPlaying() const noexcept;
+// Retorna true si está reproduciendo
+```
+
+## Metrónomo API
+
+### Habilitación y estado
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMetronomeEnabled(bool)` | enabled | Activar/desactivar |
+| `isMetronomeEnabled()` | — | ¿Está activo? |
+
+### Tempo y volumen
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMetronomeBpm(double)` | bpm | BPM del click |
+| `getMetronomeBpm()` | — | BPM actual |
+| `setMetronomeBeatsPerBar(int)` | beats | Beats por compás |
+| `setMetronomeVolume(float)` | volume (0-1) | Volumen |
+| `getMetronomeVolume()` | — | Volumen actual |
+
+### Mute/Solo/Gain
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMetronomeMuted(bool)` | muted | Silenciar |
+| `isMetronomeMuted()` | — | ¿Muteado? |
+| `setMetronomeSolo(bool)` | soloed | Solo |
+| `isMetronomeSolo()` | — | ¿Solo? |
+| `setMetronomeGain(float)` | gainValue | Gain lineal |
+| `getMetronomeGain()` | — | Gain actual |
+
+### Enrutamiento de salida
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMetronomeOutputRouting(int, int)` | channel, width | Canal y ancho |
+| `getMetronomeOutputChannel()` | — | Canal actual |
+| `getMetronomeOutputWidth()` | — | Ancho actual |
+
+### Click division (dinámica)
+
+Controla qué notas del click suenan (bitmask):
+
+| Valor | Constante | Descripción |
+|-------|-----------|-------------|
+| 1 | 1/4 | negras |
+| 2 | 1/8 | corcheas |
+| 4 | 1/16 | semicorcheas |
+
+```cpp
+void setClickDivision(int division) noexcept;
+int getClickDivision() const noexcept;
+void setClickDivisionEnabled(bool enabled) noexcept;
+bool isClickDivisionEnabled() const noexcept;
+```
+
+### Samples personalizados
+
+```cpp
+bool loadMetronomeClickSamplesFromFolder(
+    const juce::File &folder,
+    const juce::String &style,
+    juce::String *errorMessage = nullptr
+);
+void clearMetronomeClickSamples() noexcept;
+bool hasMetronomeClickSamples() const noexcept;
+```
+
+### Guía por stem
+
+```cpp
+void setStemClickGuideMask(const std::vector<bool> &mask) noexcept;
+// mask[i] = true → stem i contribuye al click
+```
+
+## Dynamic Guide API
+
+Guias de audio localizadas por idioma.
+
+### Settings
+
+```cpp
+void setDynamicGuideSettings(const DynamicGuideSettings &settings);
+DynamicGuideSettings getDynamicGuideSettings() const;
+```
+
+### Volumen y enrutamiento
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setDynamicGuideVolume(float)` | volume | Volumen |
+| `getDynamicGuideVolume()` | — | Volumen actual |
+| `setDynamicGuideGain(float)` | gainValue | Gain |
+| `getDynamicGuideGain()` | — | Gain actual |
+| `setDynamicGuideMuted(bool)` | muted | Mute |
+| `isDynamicGuideMuted()` | — | ¿Muteado? |
+| `setDynamicGuideSolo(bool)` | soloed | Solo |
+| `isDynamicGuideSolo()` | — | ¿Solo? |
+| `setDynamicGuideOutputRouting(int, int)` | channel, width | Enrutamiento |
+| `getDynamicGuideOutputChannel()` | — | Canal |
+| `getDynamicGuideOutputWidth()` | — | Ancho |
+
+### Idioma
+
+```cpp
+void setDynamicGuideLanguage(AppLanguage language);
+```
+
+Idiomas soportados: `AppLanguage::Spanish`, `AppLanguage::English`
+
+### Warnings
+
+```cpp
+bool consumeDynamicGuideMissingSectionWarning(juce::String &outSectionName);
+// Retorna true si hay una sección faltante
+```
+
+## Pitch Shift API
+
+### Pitch por stem
+
+```cpp
+void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
+// mask[i] = true → aplicar pitch shift al stem i
+```
+
+### Pitch global
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setPitchSemiTones(int)` | semitoneDelta (-12 a +12) | Pitch global |
+| `getPitchSemiTones()` | — | Semitonos actuales |
+
+## Guide Mask
+
+```cpp
+void setStemGuideMask(const std::vector<bool> &mask) noexcept;
+// mask[i] = true → stem i es guía (para DynamicGuide)
+```
+
+## Pads API
+
+### Habilitación
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setPadsEnabled(bool)` | enabled | Activar/desactivar |
+| `isPadsEnabled()` | — | ¿Está activo? |
+
+### Carga de pack
+
+```cpp
+bool loadPadsPackFromFolder(const juce::File &sourceFolder);
+bool reloadLastPadsPack();
+bool ensurePadsPackReady();
+bool isPadsPackLoaded() const noexcept;
+juce::String getPadsPackStatusText() const;
+```
+
+### Volumen y gain
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setPadsVolume(float)` | volume | Volumen |
+| `getPadsVolume()` | — | Volumen actual |
+| `setPadsGain(float)` | gain | Gain (default 0.75) |
+| `getPadsGain()` | — | Gain actual |
+
+### Preset de crossfade
+
+```cpp
+void setPadsCrossfadePreset(PadsEngine::CrossfadePreset preset) noexcept;
+PadsEngine::CrossfadePreset getPadsCrossfadePreset() const noexcept;
+```
+
+### Trigger de notas
+
+```cpp
+void triggerPadNote(int noteIndex, int octave);
+void stopPadNote(int noteIndex);
+float getPadsOutputLevel() const noexcept;
+```
+
+### Actualizar enrutamiento
+
+```cpp
+void refreshPadsRoutingFromSettings() noexcept;
+```
+
+## Master Controls
+
+### Volumen master
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMasterVolume(float)` | volume (0-1) | Volumen master |
+| `getMasterVolume()` | — | Volumen actual |
+| `setMasterGain(float)` | gain | Gain master |
+| `getMasterGain()` | — | Gain actual |
+
+### Mute master
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setMasterMute(bool)` | muted | Silenciar master |
+| `isMasterMuted()` | — | ¿Muteado? |
+
+## Tempo
+
+### Tempo de reproducción
+
+| Método | Parámetros | Descripción |
+|--------|------------|-------------|
+| `setPlaybackTempoBpm(double)` | bpm | Tempo de playback |
+| `getPlaybackTempoBpm()` | — | Tempo actual |
+| `getOriginalSongBpm()` | — | BPM original |
+
+## Arrangement API
+
+### Snapshots de arrange
+
+```cpp
+void setSongArrangement(
+    const SongArrangementSnapshot &arrangement,
+    bool isCustomArrangement
+);
+bool isCustomArrangementActive() const noexcept;
+```
+
+### Part jumps
+
+```cpp
+void requestArrangementPartJump(int partIndex);
+void toggleArrangementPartLoop(int partIndex);
+void clearArrangementPartLoop() noexcept;
+void clearPendingArrangementPartJump() noexcept;
+int getArrangementPartLoopIndex() const noexcept;
+int getPendingArrangementPartJumpIndex() const noexcept;
+```
+
+### Edición de arrange
+
+```cpp
+void setArrangementEditingActive(bool editingActive) noexcept;
+```
+
+## Metering
+
+### Salidas master
+
+```cpp
+void getOutputMeterLevels(float &left, float &right) const;
+```
+
+### Metrónomo
+
+```cpp
+void getMetronomeMeterLevels(float &left, float &right) const noexcept;
+```
+
+### Dynamic Guide
+
+```cpp
+void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
+```
+
+## Audio Device
+
+```cpp
+StandaloneAudioDeviceBridge &getAudioDeviceBridge() noexcept;
+const StandaloneAudioDeviceBridge &getAudioDeviceBridge() const noexcept;
+AppAudioMode getCurrentAudioMode() const noexcept;
+```
+
+## MIDI API
+
+Ver [MidiTargets](midi/MidiTargets.md) para lista completa de targets.
+
+### Bindings
+
+```cpp
+std::vector<MidiBinding> getMidiBindings() const;
+void setMidiBinding(const MidiBinding &binding);
+void clearMidiBindingForTarget(int targetId);
+```
+
+### MIDI Learn
+
+```cpp
+void beginMidiLearnForTarget(int targetId);
+bool consumePendingMidiLearnBinding(MidiBinding &outBinding);
+```
+
+### Probing
+
+```cpp
+MidiInputProbe getLastMidiInputProbe() const noexcept;
+bool consumePendingMidiUiCommand(int &outCommand);
+```
+
+## Estado y presets
+
+```cpp
+void getStateInformation(juce::MemoryBlock &destData);
+void setStateInformation(const void *data, int sizeInBytes);
+juce::AudioProcessorValueTreeState &getValueTreeState();
+```
+
+## Valores de retorno comunes
+
+| Método | Tipo de retorno | Valores |
+|--------|----------------|---------|
+| `isSongPlaying()` | `bool` | true/false |
+| `hasLoadedSong()` | `bool` | true/false |
+| `isMetronomeEnabled()` | `bool` | true/false |
+| `isMasterMuted()` | `bool` | true/false |
+| `isStemMuted(int)` | `bool` | true/false |
+| `isStemSoloed(int)` | `bool` | true/false |
+
+## Ejemplos de uso
+
+### Ejemplo 1: Cargar y reproducir
+
+```cpp
+MTControlsAudioProcessor &proc = ...;
+
+// Cargar canción con 4 stems
+juce::StringArray stems = {
+    "/audio/song_drums.wav",
+    "/audio/song_bass.wav",
+    "/audio/song_guitars.wav",
+    "/audio/song_vocals.wav"
+};
+
+proc.loadSongStems(stems, "Amazing Grace", "G", 72.0, 
+    [](double progress) {
+        std::cout << "Loading: " << (progress * 100) << "%\n";
+    });
+
+// Reproducir
+proc.playSong();
+```
+
+### Ejemplo 2: Mezcla con mute/solo
+
+```cpp
+// Bajar volumen de bass, silenciar drums
+proc.setStemVolume(1, 0.6f);  // Bass
+proc.setStemMute(0, true);     // Mute drums
+
+// Solo vocals
+for (int i = 0; i < proc.getLoadedStemCount(); i++) {
+    proc.setStemSolo(i, i == 3);  // Solo stem 3 (vocals)
+}
+```
+
+### Ejemplo 3: Setup de metrónomo
+
+```cpp
+proc.setMetronomeEnabled(true);
+proc.setMetronomeBpm(72.0);
+proc.setMetronomeVolume(0.7f);
+
+// Solo clicks de negra y semicorcheas
+proc.setClickDivision(1 | 4);  // 1/4 + 1/16
+proc.setClickDivisionEnabled(true);
+
+// Cargar samples personalizados
+proc.loadMetronomeClickSamplesFromFolder(
+    juce::File("/samples/clicks/jazz"),
+    "jazz"
+);
+```
+
+## Archivos relacionados
+
+- [StemMixEngine](../engine/StemMixEngine.md)
+- [StemTrack](../engine/StemTrack.md)
+- [Metronome](../audio-systems/Metronome.md)
+- [Pads](../audio-systems/Pads.md)
+- [DynamicGuide](../audio-systems/DynamicGuide.md)

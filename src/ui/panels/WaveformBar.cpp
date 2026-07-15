@@ -201,6 +201,8 @@ juce::String abbreviatedArrangementLabel(const juce::String &label) {
     return L10n::tr("Pre", "Pre");
   if (canonical == "Chorus")
     return L10n::tr("Co", "Ch");
+  if (canonical == "Refrain")
+    return "Ref";
   if (canonical == "Post-Chorus")
     return L10n::tr("Post", "Post");
   if (canonical == "Bridge")
@@ -1134,6 +1136,27 @@ void WaveformBar::paint(juce::Graphics &g) {
 
   if (miniMapBounds.getWidth() > 2.0f && miniMapBounds.getHeight() > 2.0f)
     drawMiniMap(g, miniMapBounds);
+
+  if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
+    const int percent = static_cast<int>(
+        std::round(juce::jlimit(0.0, 1.0, songLoadingProgress01) * 100.0));
+    const auto text = songLoadingPhaseText.isNotEmpty()
+                          ? songLoadingPhaseText
+                          : L10n::tr(u8"Procesando… ", "Processing… ") +
+                                juce::String(percent) + "%";
+    g.setFont(makeAppFont(11.5f, AppFontWeight::SemiBold));
+    const float pillW = juce::jmin(mainWaveBodyBounds.getWidth() - 16.0f,
+                                   juce::jmax(180.0f, g.getCurrentFont().getStringWidthFloat(text) + 30.0f));
+    const auto pill = juce::Rectangle<float>(pillW, 26.0f)
+                          .withCentre(mainWaveBodyBounds.getCentre());
+    g.setColour(UITheme::panelDark.withAlpha(0.92f));
+    g.fillRoundedRectangle(pill, 13.0f);
+    g.setColour(UITheme::accent.withAlpha(0.9f));
+    g.drawRoundedRectangle(pill, 13.0f, 1.0f);
+    g.setColour(UITheme::cardBg);
+    g.drawFittedText(text, pill.toNearestInt().reduced(10, 2),
+                     juce::Justification::centred, 1);
+  }
 }
 
 void WaveformBar::paintOverChildren(juce::Graphics &g) {

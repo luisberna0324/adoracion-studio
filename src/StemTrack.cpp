@@ -2,7 +2,8 @@
 
 StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
                      juce::TimeSliceThread &sharedReadThread,
-                     double sampleRateToUse, int readAheadSamples) {
+                     double sampleRateToUse, int readAheadSamples,
+                     const bool useReadAhead) {
   // Transfer ownership of reader to AudioFormatReaderSource
   readerSource =
       std::make_unique<juce::AudioFormatReaderSource>(reader.release(), true);
@@ -11,9 +12,16 @@ StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
   resamplingSource = std::make_unique<ResamplingPositionableSource>(
       readerSource.get(), sampleRateToUse, 2);
 
-  // Wrap it in a BufferingAudioSource with a dedicated read-ahead buffer thread
-  bufferingSource = std::make_unique<StemBufferingSource>(
-      resamplingSource.get(), sharedReadThread, false, readAheadSamples, 2);
+  if (useReadAhead) {
+    // Realtime playback must never block on disk I/O.
+    bufferingSource = std::make_unique<StemBufferingSource>(
+        resamplingSource.get(), sharedReadThread, false, readAheadSamples, 2);
+    activeSource = bufferingSource.get();
+  } else {
+    // Offline rendering advances faster than a read-ahead worker can refill;
+    // synchronous reads are deterministic and cannot create buffer-miss gaps.
+    activeSource = resamplingSource.get();
+  }
 }
 
 StemTrack::~StemTrack() { bufferingSource.reset(); }
@@ -21,7 +29,8 @@ StemTrack::~StemTrack() { bufferingSource.reset(); }
 void StemTrack::getNextAudioBlock(
     const juce::AudioSourceChannelInfo &bufferToFill) {
   // Read from the buffering source directly into the provided temporary buffer
-  bufferingSource->getNextAudioBlock(bufferToFill);
+  jassert(activeSource != nullptr);
+  activeSource->getNextAudioBlock(bufferToFill);
 
   const int numSamples = bufferToFill.numSamples;
   const int numChannels = bufferToFill.buffer->getNumChannels();
@@ -54,25 +63,25 @@ void StemTrack::getNextAudioBlock(
 }
 
 void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
-  bufferingSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
+  activeSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
 }
 
-void StemTrack::releaseResources() { bufferingSource->releaseResources(); }
+void StemTrack::releaseResources() { activeSource->releaseResources(); }
 
 void StemTrack::setNextReadPosition(juce::int64 newPosition) {
-  bufferingSource->setNextReadPosition(newPosition);
+  activeSource->setNextReadPosition(newPosition);
 }
 
 juce::int64 StemTrack::getNextReadPosition() const {
-  return bufferingSource->getNextReadPosition();
+  return activeSource->getNextReadPosition();
 }
 
 juce::int64 StemTrack::getTotalLength() const {
-  return bufferingSource->getTotalLength();
+  return activeSource->getTotalLength();
 }
 
-bool StemTrack::isLooping() const { return bufferingSource->isLooping(); }
+bool StemTrack::isLooping() const { return activeSource->isLooping(); }
 
 void StemTrack::setLooping(bool shouldLoop) {
-  bufferingSource->setLooping(shouldLoop);
+  activeSource->setLooping(shouldLoop);
 }
