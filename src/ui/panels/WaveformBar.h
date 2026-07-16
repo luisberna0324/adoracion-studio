@@ -185,6 +185,12 @@ private:
     double relativeStartSec = 0.0;
   };
 
+  struct PlaybackVisualState {
+    float progressRatio = 0.0f;
+    float transportProgressRatio = 0.0f;
+    bool showPendingTravelSeek = false;
+  };
+
   void timerCallback() override;
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
@@ -288,12 +294,29 @@ private:
   bool followPendingJumpWasActive = false;
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
+  double followLastUpdateMs = 0.0;
+  bool lastTimerSongProgressValid = false;
+  float lastTimerSongProgressRatio = 0.0f;
   bool waveformVerticalExpanded = false;
+
+  // The follow view moves every frame, but its waveform data is static. Keep
+  // a full-timeline raster at the current zoom so each frame only composites
+  // an image slice plus the moving playback overlay.
+  mutable juce::Image followWaveformBaseCache;
+  mutable juce::Image followWaveformHighlightMaskCache;
+  mutable int followWaveformCacheWidth = 0;
+  mutable int followWaveformCacheHeight = 0;
+  mutable float followWaveformCacheSpan = 0.0f;
+  mutable juce::Image miniMapWaveformCache;
+  mutable int miniMapWaveformCacheWidth = 0;
+  mutable int miniMapWaveformCacheHeight = 0;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
   bool isFollowTrackingActive() const;
+  PlaybackVisualState getPlaybackVisualState() const;
+  void invalidateWaveformRenderCaches();
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   std::pair<double, double> getPlayableRangeSeconds() const;
@@ -349,6 +372,18 @@ private:
   void drawWaveform(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                     float windowStart, float windowSpan, bool showGrid,
                     bool showPlayhead) const;
+  void drawWaveformDirect(juce::Graphics &g,
+                          const juce::Rectangle<float> &bounds,
+                          float windowStart, float windowSpan, bool showGrid,
+                          bool showPlayhead) const;
+  bool drawCachedFollowWaveform(juce::Graphics &g,
+                                const juce::Rectangle<float> &bounds,
+                                float windowStart, float windowSpan) const;
+  void drawWaveformHighlightMask(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds,
+                                 float windowStart, float windowSpan) const;
+  void drawCachedMiniMapWaveform(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds) const;
   void drawWaveformSegment(juce::Graphics &g,
                            const juce::Rectangle<float> &bounds,
                            double sourceStartSec,
