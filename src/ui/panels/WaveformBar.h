@@ -300,13 +300,15 @@ private:
   bool waveformVerticalExpanded = false;
 
   // The follow view moves every frame, but its waveform data is static. Keep
-  // a full-timeline raster at the current zoom so each frame only composites
-  // an image slice plus the moving playback overlay.
+  // a bounded overscanned raster around the visible window so each frame only
+  // composites an image slice plus the moving playback overlay.
   mutable juce::Image followWaveformBaseCache;
   mutable juce::Image followWaveformHighlightMaskCache;
   mutable int followWaveformCacheWidth = 0;
   mutable int followWaveformCacheHeight = 0;
+  mutable float followWaveformCacheStart = 0.0f;
   mutable float followWaveformCacheSpan = 0.0f;
+  mutable float followWaveformCacheScale = 0.0f;
   mutable juce::Image miniMapWaveformCache;
   mutable int miniMapWaveformCacheWidth = 0;
   mutable int miniMapWaveformCacheHeight = 0;
@@ -382,6 +384,8 @@ private:
   void drawWaveformHighlightMask(juce::Graphics &g,
                                  const juce::Rectangle<float> &bounds,
                                  float windowStart, float windowSpan) const;
+  float sampleWaveformAmplitude(double sourceSec, double sourceLength,
+                                double sourceSecondsPerColumn) const;
   void drawCachedMiniMapWaveform(juce::Graphics &g,
                                  const juce::Rectangle<float> &bounds) const;
   void drawWaveformSegment(juce::Graphics &g,

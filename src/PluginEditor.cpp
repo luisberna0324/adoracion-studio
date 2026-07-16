@@ -787,11 +787,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     currentSongIndex = songIndex;
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
+    if (cachedBins.size() !=
+        static_cast<size_t>(kWaveformPreviewBinCount))
+      cachedBins.clear();
     if (cachedBins.empty()) {
       pushLoadUi(0.58, L10n::tr(u8"Generando vista de forma de onda...",
                                 u8"Generating waveform preview..."));
       cachedBins = buildMixedWaveformBins(
-          loadedSong, 1400, [&pushLoadUi](const double wf01) {
+          loadedSong, kWaveformPreviewBinCount, [&pushLoadUi](const double wf01) {
             pushLoadUi(0.58 + 0.40 * wf01,
                        L10n::tr(u8"Generando vista de forma de onda...",
                                 u8"Generating waveform preview..."));

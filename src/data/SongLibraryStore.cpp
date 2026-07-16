@@ -845,7 +845,8 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     const auto waveformPhase = L10n::tr(u8"Generando forma de onda...",
                                         u8"Generating waveform preview...");
     auto bins = buildMixedWaveformBins(
-        song, 1400, [&onProgress, &waveformPhase](const double wf01) {
+        song, kWaveformPreviewBinCount,
+        [&onProgress, &waveformPhase](const double wf01) {
           if (onProgress)
             onProgress(0.90 + 0.09 * juce::jlimit(0.0, 1.0, wf01),
                        waveformPhase);

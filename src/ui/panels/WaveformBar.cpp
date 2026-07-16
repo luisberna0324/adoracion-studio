@@ -31,7 +31,8 @@ constexpr double kFollowSuspendAfterManualViewportMs = 2500.0;
 constexpr float kFollowEnabledViewportSpan = 0.25f;
 constexpr float kFollowCenterRatio = 0.5f;
 constexpr double kFollowCameraSmoothingTimeSec = 0.065;
-constexpr int kFollowWaveformCacheMaxWidth = 8192;
+constexpr float kFollowWaveformCacheOverscan = 3.0f;
+constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
 constexpr float kWheelPanSensitivity = 0.22f;
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
@@ -2490,7 +2491,7 @@ void WaveformBar::timerCallback() {
       followDiscontinuity = wrappedBackwards || (delta >= threshold);
     }
 
-    if (!nearlyEqual(targetStart, start, 0.0001)) {
+    if (!nearlyEqual(targetStart, start, kFollowViewportPositionEpsilon)) {
       if (followJumpJustExecuted || followDiscontinuity) {
         setVisibleWindow(targetStart, span);
         followLastUpdateMs = nowMs;
@@ -2616,9 +2617,11 @@ void WaveformBar::setVisibleWindow(float start, float span) {
   if ((start + span) > 1.0f)
     start = 1.0f - span;
 
-  const bool changed = !nearlyEqual(start, viewportStart) ||
-                       !nearlyEqual(span, viewportSpan);
-  const bool spanChanged = !nearlyEqual(span, viewportSpan);
+  const bool changed =
+      !nearlyEqual(start, viewportStart, kFollowViewportPositionEpsilon) ||
+      !nearlyEqual(span, viewportSpan, kFollowViewportPositionEpsilon);
+  const bool spanChanged =
+      !nearlyEqual(span, viewportSpan, kFollowViewportPositionEpsilon);
   viewportStart = start;
   viewportSpan = span;
   if (spanChanged)
@@ -2689,7 +2692,9 @@ void WaveformBar::invalidateWaveformRenderCaches() {
   followWaveformHighlightMaskCache = {};
   followWaveformCacheWidth = 0;
   followWaveformCacheHeight = 0;
+  followWaveformCacheStart = 0.0f;
   followWaveformCacheSpan = 0.0f;
+  followWaveformCacheScale = 0.0f;
   miniMapWaveformCache = {};
   miniMapWaveformCacheWidth = 0;
   miniMapWaveformCacheHeight = 0;
@@ -4192,6 +4197,10 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
                    centerDashes, 2, 1.0f);
 
   const int step = 2;
+  const double sourceSecondsPerColumn =
+      songLength * static_cast<double>(windowSpan) *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) / static_cast<float>(widthPixels - 1);
     const double arrangementSec = songLength * (windowStart + (t * windowSpan));
@@ -4203,14 +4212,8 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
     if (sourceLength <= 0.0 || sourceSec < 0.0 || sourceSec > sourceLength)
       continue;
 
-    const float index = static_cast<float>(
-        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
-        static_cast<float>(bins - 1);
-    const int i0 = static_cast<int>(index);
-    const int i1 = juce::jmin(i0 + 1, bins - 1);
-    const float frac = index - static_cast<float>(i0);
-    const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
-                                 waveformBins[static_cast<size_t>(i1)]);
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
@@ -4261,7 +4264,6 @@ void WaveformBar::drawWaveformHighlightMask(
       waveformBins.size() < 2)
     return;
 
-  const int bins = static_cast<int>(waveformBins.size());
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
   const float midY = bounds.getCentreY();
   const float ampScale = bounds.getHeight() * 0.495f;
@@ -4274,6 +4276,10 @@ void WaveformBar::drawWaveformHighlightMask(
 
   g.setColour(juce::Colours::white);
   constexpr int step = 2;
+  const double sourceSecondsPerColumn =
+      songLength * static_cast<double>(windowSpan) *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) /
                     static_cast<float>(juce::jmax(1, widthPixels - 1));
@@ -4286,18 +4292,45 @@ void WaveformBar::drawWaveformHighlightMask(
     if (sourceSec < 0.0 || sourceSec > sourceLength)
       continue;
 
-    const float index = static_cast<float>(
-        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
-                        static_cast<float>(bins - 1);
-    const int i0 = static_cast<int>(index);
-    const int i1 = juce::jmin(i0 + 1, bins - 1);
-    const float amp = juce::jmap(index - static_cast<float>(i0),
-                                 waveformBins[static_cast<size_t>(i0)],
-                                 waveformBins[static_cast<size_t>(i1)]);
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
     g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
   }
+}
+
+float WaveformBar::sampleWaveformAmplitude(
+    const double sourceSec, const double sourceLength,
+    const double sourceSecondsPerColumn) const {
+  const int bins = static_cast<int>(waveformBins.size());
+  if (bins < 2 || sourceLength <= 0.0)
+    return 0.0f;
+
+  const double sourceRatio =
+      juce::jlimit(0.0, 1.0, sourceSec / sourceLength);
+  const double index = sourceRatio * static_cast<double>(bins - 1);
+  const double binsPerColumn =
+      std::abs(sourceSecondsPerColumn) / sourceLength *
+      static_cast<double>(bins - 1);
+
+  if (binsPerColumn <= 1.0) {
+    const int i0 = juce::jlimit(0, bins - 1, static_cast<int>(index));
+    const int i1 = juce::jmin(i0 + 1, bins - 1);
+    const float fraction = static_cast<float>(index - static_cast<double>(i0));
+    return juce::jmap(fraction, waveformBins[static_cast<size_t>(i0)],
+                      waveformBins[static_cast<size_t>(i1)]);
+  }
+
+  const double halfRange = binsPerColumn * 0.5;
+  const int first = juce::jlimit(
+      0, bins - 1, static_cast<int>(std::floor(index - halfRange)));
+  const int last = juce::jlimit(
+      first, bins - 1, static_cast<int>(std::ceil(index + halfRange)));
+  float peak = 0.0f;
+  for (int i = first; i <= last; ++i)
+    peak = juce::jmax(peak, waveformBins[static_cast<size_t>(i)]);
+  return peak;
 }
 
 bool WaveformBar::drawCachedFollowWaveform(
@@ -4321,46 +4354,77 @@ bool WaveformBar::drawCachedFollowWaveform(
     }
   }
 
-  const int cacheWidth = static_cast<int>(std::ceil(bounds.getWidth() / windowSpan));
-  const int cacheHeight = static_cast<int>(std::ceil(bounds.getHeight()));
-  if (cacheWidth <= 2 || cacheHeight <= 2 ||
-      cacheWidth > kFollowWaveformCacheMaxWidth)
+  const float cacheSpan = juce::jlimit(
+      windowSpan, 1.0f, windowSpan * kFollowWaveformCacheOverscan);
+  const float cacheStart = juce::jlimit(
+      0.0f, 1.0f - cacheSpan,
+      windowStart - ((cacheSpan - windowSpan) * 0.5f));
+  const float cacheScale = juce::jlimit(
+      1.0f, 4.0f, juce::Component::getApproximateScaleFactorForComponent(this));
+  const int cacheWidth = static_cast<int>(
+      std::ceil(bounds.getWidth() * (cacheSpan / windowSpan) * cacheScale));
+  const int cacheHeight =
+      static_cast<int>(std::ceil(bounds.getHeight() * cacheScale));
+  if (cacheWidth <= 2 || cacheHeight <= 2)
     return false;
 
+  const float cachedEnd = followWaveformCacheStart + followWaveformCacheSpan;
+  const float windowEnd = windowStart + windowSpan;
+  const bool cacheContainsWindow =
+      followWaveformBaseCache.isValid() &&
+      windowStart >= (followWaveformCacheStart -
+                      kFollowViewportPositionEpsilon) &&
+      windowEnd <= (cachedEnd + kFollowViewportPositionEpsilon);
   const bool cacheNeedsRebuild =
       !followWaveformBaseCache.isValid() ||
       !followWaveformHighlightMaskCache.isValid() ||
       followWaveformCacheWidth != cacheWidth ||
       followWaveformCacheHeight != cacheHeight ||
-      !nearlyEqual(followWaveformCacheSpan, windowSpan, 0.00001);
+      !nearlyEqual(followWaveformCacheSpan, cacheSpan,
+                   kFollowViewportPositionEpsilon) ||
+      !nearlyEqual(followWaveformCacheScale, cacheScale,
+                   kFollowViewportPositionEpsilon) ||
+      !cacheContainsWindow;
   if (cacheNeedsRebuild) {
     followWaveformBaseCache =
         juce::Image(juce::Image::ARGB, cacheWidth, cacheHeight, true);
     followWaveformHighlightMaskCache =
         juce::Image(juce::Image::SingleChannel, cacheWidth, cacheHeight, true);
 
-    const auto cacheBounds =
-        juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(cacheWidth),
-                               static_cast<float>(cacheHeight));
+    const auto cacheBounds = juce::Rectangle<float>(
+        0.0f, 0.0f, static_cast<float>(cacheWidth) / cacheScale,
+        static_cast<float>(cacheHeight) / cacheScale);
     juce::Graphics cacheGraphics(followWaveformBaseCache);
-    drawWaveformDirect(cacheGraphics, cacheBounds, 0.0f, 1.0f, false, false);
+    cacheGraphics.addTransform(juce::AffineTransform::scale(cacheScale));
+    drawWaveformDirect(cacheGraphics, cacheBounds, cacheStart, cacheSpan, false,
+                       false);
 
     juce::Graphics highlightMaskGraphics(followWaveformHighlightMaskCache);
-    drawWaveformHighlightMask(highlightMaskGraphics, cacheBounds, 0.0f, 1.0f);
+    highlightMaskGraphics.addTransform(
+        juce::AffineTransform::scale(cacheScale));
+    drawWaveformHighlightMask(highlightMaskGraphics, cacheBounds, cacheStart,
+                              cacheSpan);
 
     followWaveformCacheWidth = cacheWidth;
     followWaveformCacheHeight = cacheHeight;
-    followWaveformCacheSpan = windowSpan;
+    followWaveformCacheStart = cacheStart;
+    followWaveformCacheSpan = cacheSpan;
+    followWaveformCacheScale = cacheScale;
   }
 
-  const float sourceX = windowStart * static_cast<float>(cacheWidth);
-  const float sourceWidth = windowSpan * static_cast<float>(cacheWidth);
+  const float sourceX =
+      ((windowStart - followWaveformCacheStart) / followWaveformCacheSpan) *
+      static_cast<float>(cacheWidth);
+  const float sourceWidth =
+      (windowSpan / followWaveformCacheSpan) * static_cast<float>(cacheWidth);
   if (sourceWidth <= 0.0f)
     return false;
 
   const float scaleX = bounds.getWidth() / sourceWidth;
+  const float scaleY = bounds.getHeight() /
+                       static_cast<float>(followWaveformCacheHeight);
   const auto sourceToBounds = juce::AffineTransform(
-      scaleX, 0.0f, bounds.getX() - (sourceX * scaleX), 0.0f, 1.0f,
+      scaleX, 0.0f, bounds.getX() - (sourceX * scaleX), 0.0f, scaleY,
       bounds.getY());
   const auto clipBounds = bounds.toNearestInt();
   g.saveState();
@@ -4443,11 +4507,7 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
                                       const double sourceEndSec) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
-  if (waveformBins.empty())
-    return;
-
-  const int bins = static_cast<int>(waveformBins.size());
-  if (bins < 2)
+  if (waveformBins.size() < 2)
     return;
 
   const double sourceLength = getWaveformSourceLengthSeconds();
@@ -4465,18 +4525,16 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
 
   constexpr int step = 2;
   const double sourceDuration = sourceEndSec - sourceStartSec;
+  const double sourceSecondsPerColumn =
+      sourceDuration *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) /
                     static_cast<float>(juce::jmax(1, widthPixels - 1));
     const double sourceSec = sourceStartSec + (static_cast<double>(t) * sourceDuration);
-    const float index = static_cast<float>(
-        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
-        static_cast<float>(bins - 1);
-    const int i0 = static_cast<int>(index);
-    const int i1 = juce::jmin(i0 + 1, bins - 1);
-    const float frac = index - static_cast<float>(i0);
-    const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
-                                 waveformBins[static_cast<size_t>(i1)]);
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
@@ -4602,7 +4660,8 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
                                          juce::jmax(0.0001f, windowSpan));
       const float x = snapToPixelCenter(
           bounds.getX() + playheadNorm * bounds.getWidth());
-      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, true, true, 0.96f);
+      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, false, false,
+                         0.96f);
 
       if (showPendingTravelSeek) {
         const float pendingTravelRatio = static_cast<float>(
