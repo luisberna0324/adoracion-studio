@@ -1326,12 +1326,8 @@ bool SongLibraryStore::saveWaveformCache(const juce::String &songId,
                                         const std::vector<float> &bins) {
   if (songId.isEmpty() || bins.empty())
     return false;
-  auto file = getWaveformCacheDir().getChildFile(songId + ".bin");
-  juce::FileOutputStream out(file);
-  if (out.failedToOpen())
-    return false;
-  out.write(bins.data(), bins.size() * sizeof(float));
-  return true;
+  const auto file = getWaveformCacheDir().getChildFile(songId + ".bin");
+  return file.replaceWithData(bins.data(), bins.size() * sizeof(float));
 }
 
 std::vector<float> SongLibraryStore::loadWaveformCache(
@@ -1342,18 +1338,21 @@ std::vector<float> SongLibraryStore::loadWaveformCache(
   if (!file.existsAsFile())
     return {};
   const auto size = file.getSize();
-  if (size < static_cast<juce::int64>(sizeof(float)))
+  const auto expectedSize =
+      static_cast<juce::int64>(kWaveformPreviewBinCount) *
+      static_cast<juce::int64>(sizeof(float));
+  if (size != expectedSize)
     return {};
   const auto sizeBytes = static_cast<size_t>(size);
-  if ((sizeBytes % sizeof(float)) != 0)
-    return {};
   if (sizeBytes > static_cast<size_t>(std::numeric_limits<int>::max()))
     return {};
   std::vector<float> bins(sizeBytes / sizeof(float));
   juce::FileInputStream in(file);
   if (in.failedToOpen())
     return {};
-  in.read(bins.data(), static_cast<int>(sizeBytes));
+  if (in.read(bins.data(), static_cast<int>(sizeBytes)) !=
+      static_cast<int>(sizeBytes))
+    return {};
   return bins;
 }
 

@@ -598,7 +598,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     auto pumpUi = [] {
       if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
-        mm->runDispatchLoopUntil(14);
+        mm->runDispatchLoopUntil(1);
     };
 
     auto pushLoadUi = [waveformBarRaw, pumpUi](double overall01,
@@ -693,6 +693,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setStemPitchShiftMask(pitchShiftMask);
     p.setMetronomeClickStemIndex(clickStemIndex);
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
+    pushLoadUi(0.58, L10n::tr(u8"Restaurando configuración...",
+                              u8"Restoring settings..."));
     double savedTempoBpm = 0.0;
     if (SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
                                                    savedTempoBpm)) {
@@ -721,6 +723,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideSolo(dynamicGuideMix.solo);
     p.setDynamicGuideOutputRouting(dynamicGuideMix.outputChannel,
                                    dynamicGuideMix.outputWidth);
+    pushLoadUi(0.63, L10n::tr(u8"Restaurando guía y click...",
+                              u8"Restoring guide and click..."));
 
     ClickDynMixSnapshot clickDynMix;
     if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
@@ -735,6 +739,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setMetronomeSolo(clickDynMix.solo);
     p.setMetronomeOutputRouting(clickDynMix.outputChannel,
                                 clickDynMix.outputWidth);
+    pushLoadUi(0.68, L10n::tr(u8"Restaurando mezcla...",
+                              u8"Restoring mix..."));
 
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
@@ -760,6 +766,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setStemSolo(stemIndex, it->solo);
       }
     }
+    pushLoadUi(0.73, L10n::tr(u8"Restaurando reproducción...",
+                              u8"Restoring playback..."));
 
     SongWindowSnapshot windowSnapshot;
     bool isCustomWindow = false;
@@ -778,6 +786,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
                     p.getSongEndSeconds(), p.getSongFadeOutSeconds());
 
+    pushLoadUi(0.77, L10n::tr(u8"Preparando interfaz...",
+                              u8"Preparing interface..."));
     channelGridRaw->setSong(loadedSong);
     channelGridRaw->setGuideSourceMode(
         dynamicGuideSettings.enabled
@@ -785,23 +795,26 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
             : ChannelGridPanel::GuideSourceMode::SongGuide);
     channelGridRaw->setGuideWarningMessage({});
     currentSongIndex = songIndex;
+    pushLoadUi(0.80, L10n::tr(u8"Cargando forma de onda...",
+                              u8"Loading waveform..."));
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
-    if (cachedBins.size() !=
-        static_cast<size_t>(kWaveformPreviewBinCount))
-      cachedBins.clear();
     if (cachedBins.empty()) {
-      pushLoadUi(0.58, L10n::tr(u8"Generando vista de forma de onda...",
+      pushLoadUi(0.81, L10n::tr(u8"Generando vista de forma de onda...",
                                 u8"Generating waveform preview..."));
       cachedBins = buildMixedWaveformBins(
           loadedSong, kWaveformPreviewBinCount, [&pushLoadUi](const double wf01) {
-            pushLoadUi(0.58 + 0.40 * wf01,
+            pushLoadUi(0.81 + 0.18 * wf01,
                        L10n::tr(u8"Generando vista de forma de onda...",
                                 u8"Generating waveform preview..."));
           });
-      SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins);
+      if (!cachedBins.empty() &&
+          !SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins)) {
+        SessionAuthLogger::write("loadSong: couldn't persist waveform cache for " +
+                                 loadedSong.id);
+      }
     } else {
-      pushLoadUi(0.98, L10n::tr(u8"Cargando forma de onda en caché...",
+      pushLoadUi(0.99, L10n::tr(u8"Cargando forma de onda en caché...",
                                 u8"Loading cached waveform..."));
     }
 

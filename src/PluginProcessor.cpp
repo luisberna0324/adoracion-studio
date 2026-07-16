@@ -2257,7 +2257,8 @@ bool MTControlsAudioProcessor::loadSongStems(
       break;
 
     if (onLoadProgress)
-      onLoadProgress(static_cast<double>(i) / static_cast<double>(denom));
+      onLoadProgress(0.82 * static_cast<double>(i) /
+                     static_cast<double>(denom));
 
     const juce::File file(stemPaths[i]);
     if (!file.existsAsFile())
@@ -2283,13 +2284,17 @@ bool MTControlsAudioProcessor::loadSongStems(
     track->prepareToPlay(localBlockSize, localSampleRate);
     track->setNextReadPosition(0);
     newTracks.push_back(std::move(track));
+
+    if (onLoadProgress)
+      onLoadProgress(0.82 * static_cast<double>(i + 1) /
+                     static_cast<double>(denom));
   }
 
   if (newTracks.empty())
     return false;
 
   if (onLoadProgress)
-    onLoadProgress(1.0);
+    onLoadProgress(0.86);
 
   // Briefly acquire the lock to swap in the new stem list.
   suspendProcessing(true);
@@ -2302,6 +2307,8 @@ bool MTControlsAudioProcessor::loadSongStems(
     suspendProcessing(false);
     return false;
   }
+  if (onLoadProgress)
+    onLoadProgress(0.90);
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     const bool canCrossfadeDecks =
@@ -2383,7 +2390,12 @@ bool MTControlsAudioProcessor::loadSongStems(
     setTransportState(wasPlayingBeforeLoad ? TransportState::playing
                                            : TransportState::stopped);
   }
+  if (onLoadProgress)
+    onLoadProgress(0.98);
   suspendProcessing(false);
+
+  if (onLoadProgress)
+    onLoadProgress(1.0);
 
   return true;
 }
