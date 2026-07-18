@@ -341,6 +341,7 @@ target_sources(MTControls
         src/audio/RoutingSuggestionEngine.h
         src/audio/SimpleDelayLine.cpp
         src/audio/SimpleDelayLine.h
+        src/audio/SongTransitionEnvelope.h
         src/audio/StandaloneAudioDeviceBridge.cpp
         src/audio/StandaloneAudioDeviceBridge.h
         src/audio/TransportClock.cpp

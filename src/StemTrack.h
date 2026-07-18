@@ -32,6 +32,8 @@ public:
   juce::int64 getTotalLength() const override;
   bool isLooping() const override;
   void setLooping(bool shouldLoop) override;
+  bool waitForNextAudioBlockReady(int numSamples,
+                                  juce::uint32 timeoutMs) const;
 
   // ==============================================================================
   // Lock-free Mix Controls (Written from UI, read from Audio Thread)

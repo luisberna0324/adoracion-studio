@@ -21,12 +21,24 @@ timestamp: 2026-07-14T20:45:00Z
 - Documentación de MIDI Targets y Bindings
 - Documentación de Transport API
 
+## 2026-07-18
+
+### Agregado
+
+- Sección de integraciones externas para software de letras
+- Documentación de FreeShow como primer destino compatible
+- Contrato técnico inicial para disparo de cues externos desde secciones
+- Priorización inicial de ProPresenter como primer destino compatible
+- Transición de canciones `fade-through-zero` con handoff en silencio
+- Verificación de read-ahead antes de publicar una canción nueva
+- Restauración completa de mix, routing, click, guía y arrange antes del fade-in
+
 ### Estructura
 
 ```
 docs/okf/
 ├── index.md                    # Raíz de la KB
-├── log.md                     # Este archivo
+├── log.md                      # Este archivo
 ├── processor/
 │   ├── index.md
 │   └── MTControlsAudioProcessor.md
@@ -45,6 +57,9 @@ docs/okf/
 │   ├── index.md
 │   ├── MidiTargets.md
 │   └── MidiBindings.md
-└── transport/
-    └── Transport.md
+├── transport/
+│   └── Transport.md
+└── integrations/
+    ├── index.md
+    └── LyricsControllers.md
 ```

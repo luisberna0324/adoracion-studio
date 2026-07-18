@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FreeShow Launcher</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: rgba(15, 22, 41, 0.88);
+      --panel-2: rgba(20, 30, 54, 0.88);
+      --line: rgba(255,255,255,0.10);
+      --text: #f4f7fb;
+      --muted: #9ca7ba;
+      --accent: #67e8f9;
+      --accent-2: #f59e0b;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --danger: #fb7185;
+      --radius: 18px;
+      --shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 20%, rgba(103, 232, 249, 0.16), transparent 26%),
+        radial-gradient(circle at 85% 15%, rgba(245, 158, 11, 0.13), transparent 25%),
+        radial-gradient(circle at 50% 100%, rgba(52, 211, 153, 0.08), transparent 32%),
+        linear-gradient(180deg, #0a0f1d 0%, #070b14 100%);
+    }
+
+    .app {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero, .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .hero {
+      padding: 22px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 46px);
+      line-height: 1;
+      letter-spacing: -0.05em;
+    }
+
+    .subtitle {
+      margin: 10px 0 0;
+      color: var(--muted);
+      max-width: 78ch;
+      line-height: 1.5;
+      font-size: 14px;
+    }
+
+    .toolbar {
+      display: grid;
+      gap: 10px;
+      min-width: 320px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+
+    input, select, button, textarea {
+      font: inherit;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 11px 12px;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 88px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: rgba(103, 232, 249, 0.55);
+      box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.14);
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04));
+      color: var(--text);
+      border-radius: 12px;
+      padding: 11px 14px;
+      cursor: pointer;
+      font-weight: 700;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(103, 232, 249, 0.45);
+    }
+
+    button.primary {
+      background: linear-gradient(180deg, rgba(103,232,249,0.22), rgba(103,232,249,0.08));
+      border-color: rgba(103,232,249,0.36);
+    }
+
+    button.ok {
+      background: linear-gradient(180deg, rgba(52,211,153,0.22), rgba(52,211,153,0.08));
+      border-color: rgba(52,211,153,0.36);
+    }
+
+    button.warn {
+      background: linear-gradient(180deg, rgba(251,191,36,0.22), rgba(251,191,36,0.08));
+      border-color: rgba(251,191,36,0.36);
+    }
+
+    button.ghost {
+      background: transparent;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr) 390px;
+      gap: 16px;
+    }
+
+    .panel {
+      padding: 16px;
+      min-width: 0;
+    }
+
+    .panel h2, .panel h3 {
+      margin: 0 0 12px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .stack {
+      display: grid;
+      gap: 10px;
+    }
+
+    .list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03);
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .item-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .title {
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+      font-family: var(--mono);
+      word-break: break-all;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .grid-buttons {
+      display: grid;
+      gap: 8px;
+    }
+
+    .group-button {
+      text-align: left;
+      width: 100%;
+    }
+
+    .group-name {
+      font-weight: 700;
+    }
+
+    .group-sub {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .slide-button {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      text-align: left;
+      width: 100%;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .badge.ok { color: #8bf7c2; }
+    .badge.warn { color: #fcd34d; }
+    .badge.danger { color: #fda4af; }
+
+    .status {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.03);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .small {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--line);
+      margin: 12px 0;
+    }
+
+    @media (max-width: 1200px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toolbar {
+        min-width: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="hero">
+      <div>
+        <p class="badge ok">FreeShow launcher</p>
+        <h1>Control de grupos y slides</h1>
+        <p class="subtitle">
+          Pequeña web local para descubrir proyectos, shows, grupos y slides en FreeShow.
+          Permite lanzar contenido por sección desde PlayWorship o desde pruebas manuales.
+        </p>
+      </div>
+      <div class="toolbar">
+        <div class="row">
+          <div class="field">
+            <label for="host">Proxy host</label>
+            <input id="host" value="127.0.0.1" />
+          </div>
+          <div class="field">
+            <label for="port">Proxy port</label>
+            <input id="port" value="8787" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="transport">FreeShow protocol</label>
+            <select id="transport">
+              <option value="rest">REST (POST to FreeShow 5506)</option>
+              <option value="http">HTTP query (to FreeShow 5506)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="showId">Active show</label>
+            <input id="showId" placeholder="auto o id manual" />
+          </div>
+        </div>
+        <div class="row">
+          <button id="refresh" class="primary">Load projects/shows</button>
+          <button id="loadActive">Load active show</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <aside class="panel">
+        <div class="section-title">
+          <h2>Projects</h2>
+          <span id="projectCount" class="badge">0</span>
+        </div>
+        <div id="projects" class="list"></div>
+      </aside>
+
+      <main class="panel">
+        <div class="section-title">
+          <h2>Shows</h2>
+          <span id="showCount" class="badge">0</span>
+        </div>
+        <div id="shows" class="list"></div>
+      </main>
+
+      <aside class="panel">
+        <div class="section-title">
+          <h2>Current show</h2>
+          <span id="currentState" class="badge warn">idle</span>
+        </div>
+        <div id="currentInfo" class="status">Load a show to inspect groups and slides.</div>
+        <div class="divider"></div>
+        <div class="section-title">
+          <h3>Groups</h3>
+          <button id="loadGroups" class="ghost">Reload</button>
+        </div>
+        <div id="groups" class="grid-buttons"></div>
+        <div class="divider"></div>
+        <div class="section-title">
+          <h3>Slides</h3>
+          <span id="slideCount" class="badge">0</span>
+        </div>
+        <div id="slides" class="grid-buttons"></div>
+        <div class="divider"></div>
+        <h3>Response</h3>
+        <textarea id="output" readonly placeholder="API response will appear here"></textarea>
+      </aside>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      projects: {},
+      shows: {},
+      currentShow: null,
+      currentShowId: "",
+      currentShowData: null,
+    };
+
+    function apiBase() {
+      const host = $("host").value.trim() || "127.0.0.1";
+      const port = $("port").value.trim() || "8787";
+      return `http://${host}:${port}`;
+    }
+
+    async function request(action, data = {}, useCurrent = true) {
+      const transport = $("transport").value;
+      const base = apiBase();
+      let url = `${base}/api`;
+      let init = { method: "GET" };
+
+      if (transport === "rest") {
+        init = {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, ...data }),
+        };
+      } else {
+        const params = new URLSearchParams({ action, ...Object.fromEntries(
+          Object.entries(data).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])
+        )});
+        url = `${base}/api?${params.toString()}`;
+      }
+
+      const res = await fetch(url, init);
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch (_) {}
+      $("output").value = json ? JSON.stringify(json, null, 2) : text;
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return json ?? text;
+    }
+
+    async function loadProjectsAndShows() {
+      setState("loading");
+      const [projectsRes, showsRes] = await Promise.all([
+        request("get_projects"),
+        request("get_shows"),
+      ]);
+      state.projects = (projectsRes && projectsRes.data) || {};
+      state.shows = (showsRes && showsRes.data) || {};
+      renderProjects();
+      renderShows();
+      setState("ready");
+    }
+
+    async function loadShowById(showId) {
+      if (!showId) return;
+      setState("loading");
+      const showRes = await request("get_show", { id: showId });
+      state.currentShowId = showId;
+      state.currentShowData = showRes && showRes.data ? showRes.data : null;
+      $("showId").value = showId;
+      renderCurrentShow();
+      setState("ready");
+    }
+
+    async function loadActiveShow() {
+      const firstShowId = Object.keys(state.shows)[0];
+      if (!firstShowId) return;
+      await loadShowById(firstShowId);
+    }
+
+    function setState(kind) {
+      const badge = $("currentState");
+      if (kind === "loading") {
+        badge.textContent = "loading";
+        badge.className = "badge warn";
+      } else if (kind === "ready") {
+        badge.textContent = "ready";
+        badge.className = "badge ok";
+      } else if (kind === "error") {
+        badge.textContent = "error";
+        badge.className = "badge danger";
+      } else {
+        badge.textContent = kind;
+        badge.className = "badge";
+      }
+    }
+
+    function renderProjects() {
+      const wrap = $("projects");
+      const entries = Object.entries(state.projects);
+      $("projectCount").textContent = String(entries.length);
+      wrap.innerHTML = entries.map(([id, project]) => `
+        <div class="item">
+          <div class="item-head">
+            <div>
+              <div class="title">${escapeHtml(project.name || id)}</div>
+              <div class="meta">${escapeHtml(id)}</div>
+            </div>
+            <span class="badge">${(project.shows || []).length} items</span>
+          </div>
+          <div class="buttons">
+            <button class="ok" data-project="${escapeAttr(id)}">Open</button>
+          </div>
+        </div>
+      `).join("") || '<div class="status">No projects available.</div>';
+
+      wrap.querySelectorAll("button[data-project]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const projectId = btn.getAttribute("data-project");
+          const project = state.projects[projectId];
+          const firstShow = (project && project.shows && project.shows.find((s) => s.type !== "section")) || (project && project.shows && project.shows[0]);
+          if (firstShow && firstShow.id) {
+            await request("id_select_project", { id: projectId });
+            await loadShowById(firstShow.id);
+          }
+        });
+      });
+    }
+
+    function renderShows() {
+      const wrap = $("shows");
+      const entries = Object.entries(state.shows);
+      $("showCount").textContent = String(entries.length);
+      wrap.innerHTML = entries.map(([id, show]) => `
+        <div class="item">
+          <div class="item-head">
+            <div>
+              <div class="title">${escapeHtml(show.name || id)}</div>
+              <div class="meta">${escapeHtml(id)}</div>
+            </div>
+            <span class="badge">${escapeHtml(show.category || "show")}</span>
+          </div>
+          <div class="buttons">
+            <button class="primary" data-load-show="${escapeAttr(id)}">Load</button>
+            <button class="ok" data-start-show="${escapeAttr(id)}">Start</button>
+          </div>
+        </div>
+      `).join("") || '<div class="status">No shows available.</div>';
+
+      wrap.querySelectorAll("button[data-load-show]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          await loadShowById(btn.getAttribute("data-load-show"));
+        });
+      });
+
+      wrap.querySelectorAll("button[data-start-show]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-start-show");
+          await request("start_show", { id });
+          await loadShowById(id);
+        });
+      });
+    }
+
+    function renderCurrentShow() {
+      const data = state.currentShowData;
+      const wrap = $("currentInfo");
+      if (!data) {
+        wrap.textContent = "No show loaded.";
+        $("groups").innerHTML = "";
+        $("slides").innerHTML = "";
+        $("slideCount").textContent = "0";
+        return;
+      }
+
+      const meta = data.meta || {};
+      const slides = data.slides || {};
+      const layouts = data.layouts || {};
+      const slideEntries = Object.entries(slides);
+      const groups = slideEntries.reduce((acc, [slideId, slide]) => {
+        const key = slide.globalGroup || slide.group || "ungrouped";
+        if (!acc[key]) acc[key] = [];
+        acc[key].push({ id: slideId, slide });
+        return acc;
+      }, {});
+
+      $("slideCount").textContent = String(slideEntries.length);
+      wrap.innerHTML = `
+        <div><strong>${escapeHtml(meta.title || data.name || state.currentShowId)}</strong></div>
+        <div class="small">${escapeHtml(meta.artist || "")}</div>
+        <div class="divider"></div>
+        <div class="small">Layouts: ${Object.keys(layouts).length}</div>
+        <div class="small">Slides: ${slideEntries.length}</div>
+      `;
+
+      $("groups").innerHTML = Object.entries(groups).map(([groupName, items]) => `
+        <button class="group-button" data-group="${escapeAttr(groupName)}" data-first-slide="${escapeAttr(items[0].id)}">
+          <div class="group-name">${escapeHtml(groupName)}</div>
+          <div class="group-sub">${items.length} slide(s) · first: ${escapeHtml(items[0].id)}</div>
+        </button>
+      `).join("") || '<div class="status">No groups available.</div>';
+
+      $("slides").innerHTML = slideEntries.map(([id, slide], index) => `
+        <button class="slide-button" data-slide="${escapeAttr(id)}" data-index="${index}">
+          <span>${escapeHtml(slide.group || slide.globalGroup || "Slide")} </span>
+          <span class="badge">${index + 1}</span>
+        </button>
+      `).join("") || '<div class="status">No slides available.</div>';
+
+      $("groups").querySelectorAll("button[data-group]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const slideId = btn.getAttribute("data-first-slide");
+          await launchSlide(slideId);
+        });
+      });
+
+      $("slides").querySelectorAll("button[data-slide]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          await launchSlide(btn.getAttribute("data-slide"));
+        });
+      });
+    }
+
+    async function launchSlide(slideId) {
+      if (!slideId) return;
+      const showId = state.currentShowId;
+      if (!showId) return;
+      await request("id_select_show", { id: showId }).catch(() => {});
+      try {
+        await request("id_select_slide", { showId, slideId });
+      } catch (err) {
+        try {
+          await request("index_select_slide", { showId, index: 0 });
+        } catch (_) {
+          // Keep the UI responsive even if the action name differs in a future build.
+        }
+      }
+      await loadShowById(showId);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, "&#96;");
+    }
+
+    $("refresh").addEventListener("click", async () => {
+      try {
+        await loadProjectsAndShows();
+      } catch (err) {
+        setState("error");
+        $("output").value = String(err);
+      }
+    });
+
+    $("loadActive").addEventListener("click", async () => {
+      try {
+        await loadActiveShow();
+      } catch (err) {
+        setState("error");
+        $("output").value = String(err);
+      }
+    });
+
+    $("loadGroups").addEventListener("click", async () => {
+      if (state.currentShowId) {
+        await loadShowById(state.currentShowId);
+      }
+    });
+
+    $("showId").addEventListener("change", async () => {
+      const id = $("showId").value.trim();
+      if (id) {
+        try {
+          await loadShowById(id);
+        } catch (err) {
+          setState("error");
+          $("output").value = String(err);
+        }
+      }
+    });
+
+    loadProjectsAndShows().catch((err) => {
+      setState("error");
+      $("output").value = String(err);
+    });
+  </script>
+</body>
+</html>

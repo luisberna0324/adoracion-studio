@@ -51,7 +51,12 @@ juce::int64 getNextReadPosition() const override;
 juce::int64 getTotalLength() const override;
 bool isLooping() const override;
 void setLooping(bool shouldLoop) override;
+bool waitForNextAudioBlockReady(int numSamples, juce::uint32 timeoutMs) const;
 ```
+
+`waitForNextAudioBlockReady()` se usa fuera del audio thread para impedir que
+una canción entre antes de que todos sus stems puedan entregar el primer bloque.
+Un seek redundante a la posición actual conserva el read-ahead válido.
 
 ### Lifecycle
 

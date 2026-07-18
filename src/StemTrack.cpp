@@ -85,3 +85,13 @@ bool StemTrack::isLooping() const { return activeSource->isLooping(); }
 void StemTrack::setLooping(bool shouldLoop) {
   activeSource->setLooping(shouldLoop);
 }
+
+bool StemTrack::waitForNextAudioBlockReady(const int numSamples,
+                                           const juce::uint32 timeoutMs) const {
+  if (bufferingSource == nullptr || numSamples <= 0)
+    return true;
+
+  juce::AudioBuffer<float> readinessBuffer(2, numSamples);
+  juce::AudioSourceChannelInfo info(&readinessBuffer, 0, numSamples);
+  return bufferingSource->waitForNextAudioBlockReady(info, timeoutMs);
+}

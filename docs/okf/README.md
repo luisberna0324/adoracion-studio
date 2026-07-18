@@ -19,6 +19,7 @@ docs/okf/
 ├── engine/              # Motores de audio
 ├── audio-systems/       # Sistemas auxiliary
 ├── midi/                # Sistema MIDI
+├── integrations/        # Integraciones externas
 └── transport/           # Control de transporte
 ```
 
@@ -30,6 +31,8 @@ docs/okf/
 | [engine/StemTrack](engine/StemTrack.md) | Track de audio |
 | [audio-systems/Metronome](audio-systems/Metronome.md) | Metrónomo |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI |
+| [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
+| [integrations/LyricsControllers](integrations/LyricsControllers.md) | Control de software de letras |
 
 ## Uso con Agentes de IA
 

@@ -161,6 +161,14 @@ juce::int64 StemBufferingSource::getNextReadPosition() const {
 }
 
 void StemBufferingSource::setNextReadPosition(juce::int64 newPosition) {
+  const auto currentPosition = nextPlayPos.load(std::memory_order_acquire);
+  const auto validStart = bufferValidStart.load(std::memory_order_acquire);
+  const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
+  if (newPosition == currentPosition && newPosition >= validStart &&
+      newPosition < validEnd) {
+    return;
+  }
+
   nextPlayPos = newPosition;
   bufferValidStart.store(0, std::memory_order_release);
   bufferValidEnd.store(0, std::memory_order_release);

@@ -46,7 +46,6 @@ private:
   int currentSongIndex = -1;
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;
-  bool isWaveformExpanded = false;
   bool isWaveformHeightExpanded = false;
   ImportedSongData currentLoadedSong;
   bool hasCurrentLoadedSong = false;

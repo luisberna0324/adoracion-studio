@@ -192,6 +192,7 @@ private:
   };
 
   void timerCallback() override;
+  void updatePlaybackAnimation(double frameTimestampSec);
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
 
@@ -253,6 +254,8 @@ private:
   bool dragAnchorActive = false;
   bool dragAnchorEdgeIsStart = true;
   double dragAnchoredBoundarySec = 0.0;
+  bool sectionInsertionAnchorValid = false;
+  double sectionInsertionAnchorSec = 0.0;
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
@@ -294,7 +297,7 @@ private:
   bool followPendingJumpWasActive = false;
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
-  double followLastUpdateMs = 0.0;
+  double followLastFrameTimestampSec = 0.0;
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
   bool waveformVerticalExpanded = false;
@@ -312,6 +315,7 @@ private:
   mutable juce::Image miniMapWaveformCache;
   mutable int miniMapWaveformCacheWidth = 0;
   mutable int miniMapWaveformCacheHeight = 0;
+  juce::VBlankAttachment playbackVBlankAttachment;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
@@ -410,6 +414,10 @@ private:
                                             double &sourceSecondsOut) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                      float windowStart, float windowSpan) const;
+  void drawSectionInsertionAnchor(
+      juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
+      const juce::Rectangle<float> &rulerBounds, float windowStart,
+      float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
                               const juce::Rectangle<float> &mainWaveBounds);
   void drawTempoOverlay(juce::Graphics &g,
@@ -418,6 +426,10 @@ private:
                    const juce::Rectangle<float> &miniMapBounds) const;
   void rebuildSectionAddButtons();
   void addArrangementPart(const juce::String &preferredName = {});
+  bool addArrangementPartAtInsertionAnchor(const juce::String &name,
+                                           double playableStartSec,
+                                           double playableEndSec);
+  void clearSectionInsertionAnchor();
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
   double getArrangementAppendStartSec(double fallbackStartSec) const;
