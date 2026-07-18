@@ -2630,7 +2630,7 @@ void SongListPanel::openSongImportWizard() {
             progress(0.98, L10n::tr(u8"Generando vista de forma de onda...",
                                     u8"Generating waveform preview..."));
           auto bins = buildMixedWaveformBins(
-              saved, 1400,
+              saved, kWaveformPreviewBinCount,
               [&progress](const double wf01) {
                 if (progress)
                   progress(0.98 + 0.02 * juce::jlimit(0.0, 1.0, wf01),

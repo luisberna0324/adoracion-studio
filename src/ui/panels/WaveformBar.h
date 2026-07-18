@@ -185,7 +185,14 @@ private:
     double relativeStartSec = 0.0;
   };
 
+  struct PlaybackVisualState {
+    float progressRatio = 0.0f;
+    float transportProgressRatio = 0.0f;
+    bool showPendingTravelSeek = false;
+  };
+
   void timerCallback() override;
+  void updatePlaybackAnimation(double frameTimestampSec);
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
 
@@ -247,6 +254,8 @@ private:
   bool dragAnchorActive = false;
   bool dragAnchorEdgeIsStart = true;
   double dragAnchoredBoundarySec = 0.0;
+  bool sectionInsertionAnchorValid = false;
+  double sectionInsertionAnchorSec = 0.0;
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
@@ -288,12 +297,32 @@ private:
   bool followPendingJumpWasActive = false;
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
+  double followLastFrameTimestampSec = 0.0;
+  bool lastTimerSongProgressValid = false;
+  float lastTimerSongProgressRatio = 0.0f;
   bool waveformVerticalExpanded = false;
+
+  // The follow view moves every frame, but its waveform data is static. Keep
+  // a bounded overscanned raster around the visible window so each frame only
+  // composites an image slice plus the moving playback overlay.
+  mutable juce::Image followWaveformBaseCache;
+  mutable juce::Image followWaveformHighlightMaskCache;
+  mutable int followWaveformCacheWidth = 0;
+  mutable int followWaveformCacheHeight = 0;
+  mutable float followWaveformCacheStart = 0.0f;
+  mutable float followWaveformCacheSpan = 0.0f;
+  mutable float followWaveformCacheScale = 0.0f;
+  mutable juce::Image miniMapWaveformCache;
+  mutable int miniMapWaveformCacheWidth = 0;
+  mutable int miniMapWaveformCacheHeight = 0;
+  juce::VBlankAttachment playbackVBlankAttachment;
 
   std::pair<float, float> getVisibleWindow() const;
   void setVisibleWindow(float start, float span);
   void applyZoom(float factor, float anchorRatio = 0.5f);
   bool isFollowTrackingActive() const;
+  PlaybackVisualState getPlaybackVisualState() const;
+  void invalidateWaveformRenderCaches();
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   std::pair<double, double> getPlayableRangeSeconds() const;
@@ -349,6 +378,20 @@ private:
   void drawWaveform(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                     float windowStart, float windowSpan, bool showGrid,
                     bool showPlayhead) const;
+  void drawWaveformDirect(juce::Graphics &g,
+                          const juce::Rectangle<float> &bounds,
+                          float windowStart, float windowSpan, bool showGrid,
+                          bool showPlayhead) const;
+  bool drawCachedFollowWaveform(juce::Graphics &g,
+                                const juce::Rectangle<float> &bounds,
+                                float windowStart, float windowSpan) const;
+  void drawWaveformHighlightMask(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds,
+                                 float windowStart, float windowSpan) const;
+  float sampleWaveformAmplitude(double sourceSec, double sourceLength,
+                                double sourceSecondsPerColumn) const;
+  void drawCachedMiniMapWaveform(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds) const;
   void drawWaveformSegment(juce::Graphics &g,
                            const juce::Rectangle<float> &bounds,
                            double sourceStartSec,
@@ -371,6 +414,10 @@ private:
                                             double &sourceSecondsOut) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                      float windowStart, float windowSpan) const;
+  void drawSectionInsertionAnchor(
+      juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
+      const juce::Rectangle<float> &rulerBounds, float windowStart,
+      float windowSpan) const;
   void drawArrangementOverlay(juce::Graphics &g,
                               const juce::Rectangle<float> &mainWaveBounds);
   void drawTempoOverlay(juce::Graphics &g,
@@ -379,6 +426,10 @@ private:
                    const juce::Rectangle<float> &miniMapBounds) const;
   void rebuildSectionAddButtons();
   void addArrangementPart(const juce::String &preferredName = {});
+  bool addArrangementPartAtInsertionAnchor(const juce::String &name,
+                                           double playableStartSec,
+                                           double playableEndSec);
+  void clearSectionInsertionAnchor();
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
   double getArrangementAppendStartSec(double fallbackStartSec) const;

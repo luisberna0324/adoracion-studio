@@ -17,8 +17,9 @@ docs/okf/
 ├── processor/         # MTControlsAudioProcessor (clase principal)
 ├── engine/           # Motores de audio (Mix, Stem, Transport)
 ├── audio-systems/    # Sistemas de audio (Metronome, Pads, DynamicGuide)
-├── midi/            # Sistema MIDI y bindings
-└── transport/      # Control de transporte y arrange
+├── midi/             # Sistema MIDI y bindings
+├── transport/        # Control de transporte y arrange
+└── integrations/     # Integraciones externas (lyrics, cues, control)
 ```
 
 ## Módulos Principales
@@ -33,6 +34,8 @@ docs/okf/
 | [audio-systems/DynamicGuide](audio-systems/DynamicGuide.md) | Guías dinámicas por idioma |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
+| [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
+| [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |
 
 ## Uso Rápido
 

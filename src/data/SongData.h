@@ -89,6 +89,7 @@ juce::String standardArrangementPartColorForName(const juce::String &name);
 juce::String fallbackArrangementPartColorForName(const juce::String &name);
 juce::String arrangementPartDisplayLabelForName(const juce::String &name);
 double estimateSongLengthSeconds(const ImportedSongData &song);
+constexpr int kWaveformPreviewBinCount = 22400;
 std::vector<float> buildMixedWaveformBins(
-    const ImportedSongData &song, int binCount = 1400,
+    const ImportedSongData &song, int binCount = kWaveformPreviewBinCount,
     const std::function<void(double progress01)> &onProgress = {});

@@ -10,6 +10,7 @@
 #include "data/AppSettings.h"
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
+#include "audio/SongTransitionEnvelope.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/SectionScheduler.h"
 #include "audio/StemOutputRouter.h"
@@ -59,7 +60,9 @@ public:
   bool loadSongStems(
       const juce::StringArray &stemPaths, const juce::String &songTitle,
       const juce::String &songKey, double songBpm,
-      const std::function<void(double progress01)> &onLoadProgress = {});
+      const std::function<void(double progress01)> &onLoadProgress = {},
+      bool deferTransitionFadeInUntilConfigured = false);
+  void finishPendingSongTransition();
   void playSong();
   void pauseSong();
   void stopSong();
@@ -273,6 +276,13 @@ private:
   static constexpr int midiSourceKinds = 2; // CC + Note
   static constexpr int midiSourceStateSlots = midiSourceKinds * 16 * 128;
   enum class TransportState : int { stopped = 0, playing, paused };
+  enum class SongLoadTransitionState : int {
+    idle = 0,
+    fadingOut,
+    readyToSwap,
+    holdingAtZero,
+    fadingIn
+  };
 
   juce::AudioProcessorValueTreeState apvts;
   juce::dsp::Gain<float> gain;
@@ -314,14 +324,11 @@ private:
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
   std::array<TimeStretchProcessor, maxStemCount> stemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
-  std::array<TimeStretchProcessor, maxStemCount> outgoingStemPitchProcessors;
-  std::array<SimpleDelayLine, maxStemCount> outgoingStemPitchDelayLines;
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
   StemMixEngine mixEngine;
-  StemMixEngine outgoingMixEngine;
   StemOutputRouter stemOutputRouter;
   StemOutputRoutingState stemOutputRoutingState;
   StandaloneAudioDeviceBridge standaloneAudioDeviceBridge;
@@ -344,16 +351,14 @@ private:
   int pitchActiveSemiTones = 0;
   std::atomic<double> playbackTempoBpm{120.0};
   double playbackTempoRatioActive = 1.0;
-  std::atomic<bool> songCrossfadeActive{false};
-  std::atomic<float> songCrossfadeProgress{1.0f};
-  std::atomic<float> songCrossfadeIncomingGain{1.0f};
-  std::atomic<float> songCrossfadeOutgoingGain{0.0f};
-  std::vector<std::unique_ptr<StemTrack>> outgoingStemTracks;
-  juce::AudioBuffer<float> outgoingStemRenderStorage;
-  const double songCrossfadeDurationSec = 2.5;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   std::atomic<bool> audioCallbackActive{false};
+  std::atomic<int> songLoadTransitionState{
+      static_cast<int>(SongLoadTransitionState::idle)};
+  std::atomic<float> songLoadTransitionGain{1.0f};
+  static constexpr double songLoadFadeOutDurationSec = 0.10;
+  static constexpr double songLoadFadeInDurationSec = 0.15;
   // SpinLock protects stemTransportSources vector modifications.
   // Unlike CriticalSection, SpinLock does NOT make kernel calls, so it cannot
   // cause priority inversion or sleep the audio thread.
@@ -451,7 +456,6 @@ private:
   const double fadeDurationSec = 2.0;
   std::atomic<bool> fadeStopsPlayback{true};
   int routingPitchLatencySamples = 0;
-  int outgoingRoutingPitchLatencySamples = 0;
   static constexpr int kMaxRoutingPitchLatencySamples = 65536;
   void syncMetronomeToSourceSeconds(double sourceSeconds) noexcept;
 

@@ -164,22 +164,31 @@ bool loadSongStems(
     const juce::String &songTitle,
     const juce::String &songKey,
     double songBpm,
-    const std::function<void(double progress01)> &onLoadProgress = {}
+    const std::function<void(double progress01)> &onLoadProgress = {},
+    bool deferTransitionFadeInUntilConfigured = false
 );
+
+void finishPendingSongTransition();
 ```
 
-## Crossfade entre canciones
+## Transición entre canciones
 
-El sistema soporta crossfade a otra canción:
+Cuando se carga otra canción durante playback, el transporte usa una transición
+`fade-through-zero`:
 
-```cpp
-std::atomic<bool> songCrossfadeActive{false};
-std::atomic<float> songCrossfadeProgress{1.0f};
-```
+1. La canción actual continúa mientras se crean y prebufferizan los stems nuevos.
+2. El output completo baja de 1 a 0 en 100 ms.
+3. El reemplazo de fuentes ocurre únicamente con el output en silencio.
+4. La canción nueva queda pausada y en gain 0 mientras se restaura su snapshot.
+5. `finishPendingSongTransition()` inicia playback y sube de 0 a 1 en 150 ms.
 
-Durante crossfade:
-- `songCrossfadeIncomingGain` aumenta de 0 a 1
-- `songCrossfadeOutgoingGain` disminuye de 1 a 0
+La suspensión breve necesaria para reemplazar los contenedores se realiza solo
+después de alcanzar cero. Por tanto, cualquier buffer vacío del host coincide
+con una ventana que ya es silenciosa.
+
+Si `deferTransitionFadeInUntilConfigured` es `false`, `loadSongStems()` completa
+automáticamente el fade-in. La UI principal usa `true` para aplicar antes del
+fade-in mezcla, routing, tempo, click, guía, ventana y arrangement.
 
 ## Seek lock-free
 
@@ -250,17 +259,15 @@ processor.setSongEndSeconds(60.0);
 processor.playSong();
 ```
 
-### Crossfade a siguiente canción
+### Cambio seguro a la siguiente canción
 
 ```cpp
-// Iniciar crossfade
+// Preparar y reemplazar manteniendo la entrada en silencio.
 processor.loadSongStems(nextSongPaths, nextTitle, nextKey, nextBpm,
-    [](double p) { /* progress */ });
+    [](double p) { /* progress */ }, true);
 
-// Cuando lista, hacer crossfade
-processor.setSongFadeOutSeconds(2.5);
-processor.setFadeActive(true);
-processor.playSong();  // Nueva canción entra con fade-in
+// Restaurar aquí mix/routing/click/guía/arrangement.
+processor.finishPendingSongTransition();
 ```
 
 ### Arrangement

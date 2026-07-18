@@ -1,6 +1,8 @@
 #include "../src/audio/SectionScheduler.h"
+#include "../src/audio/SongTransitionEnvelope.h"
 #include "../src/audio/TransportClock.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
@@ -78,11 +80,54 @@ void testSectionScheduler() {
          "skip section jumps immediately to next section");
 }
 
+void testSongTransitionEnvelope() {
+  constexpr double sampleRate = 48000.0;
+  constexpr double fadeOutSeconds = 0.10;
+  constexpr double fadeInSeconds = 0.15;
+
+  float gain = 1.0f;
+  float previousEnd = gain;
+  int renderedSamples = 0;
+  while (gain > 0.0f) {
+    const int blockSize = renderedSamples == 0 ? 127 : 511;
+    const auto ramp = playworship::audio::advanceSongTransitionGain(
+        gain, 0.0f, blockSize, sampleRate, fadeOutSeconds);
+    expect(std::abs(ramp.startGain - previousEnd) < 1.0e-6f,
+           "fade-out remains continuous across blocks");
+    expect(ramp.endGain <= ramp.startGain,
+           "fade-out gain is monotonic");
+    gain = ramp.endGain;
+    previousEnd = ramp.endGain;
+    renderedSamples += blockSize;
+  }
+  expect(gain == 0.0f, "fade-out reaches exact silence");
+  expect(renderedSamples >= static_cast<int>(sampleRate * fadeOutSeconds),
+         "fade-out duration is sample based");
+
+  previousEnd = gain;
+  while (gain < 1.0f) {
+    const auto ramp = playworship::audio::advanceSongTransitionGain(
+        gain, 1.0f, 257, sampleRate, fadeInSeconds);
+    expect(std::abs(ramp.startGain - previousEnd) < 1.0e-6f,
+           "fade-in remains continuous across blocks");
+    expect(ramp.endGain >= ramp.startGain, "fade-in gain is monotonic");
+    gain = ramp.endGain;
+    previousEnd = ramp.endGain;
+  }
+  expect(gain == 1.0f, "fade-in reaches exact unity");
+
+  const auto immediate = playworship::audio::advanceSongTransitionGain(
+      0.5f, 0.0f, 64, 0.0, fadeOutSeconds);
+  expect(immediate.reachedTarget && immediate.endGain == 0.0f,
+         "invalid sample rate resolves safely to target");
+}
+
 } // namespace
 
 int main() {
   testTransportClock();
   testSectionScheduler();
+  testSongTransitionEnvelope();
   std::cout << "audio engine core tests passed\n";
   return 0;
 }

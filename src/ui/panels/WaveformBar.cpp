@@ -30,7 +30,9 @@ constexpr double kSongLoadingMinVisibleMs = 180.0;
 constexpr double kFollowSuspendAfterManualViewportMs = 2500.0;
 constexpr float kFollowEnabledViewportSpan = 0.25f;
 constexpr float kFollowCenterRatio = 0.5f;
-constexpr float kFollowSmoothFactor = 0.25f;
+constexpr double kFollowCameraSmoothingTimeSec = 0.065;
+constexpr float kFollowWaveformCacheOverscan = 3.0f;
+constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
 constexpr float kWheelPanSensitivity = 0.22f;
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
@@ -602,6 +604,7 @@ WaveformBar::WaveformBar() {
   followButton.setViewportIgnoreDragFlag(true);
   followButton.onClick = [this] {
     followPlaybackEnabled = followButton.getToggleState();
+    followLastFrameTimestampSec = 0.0;
     if (followPlaybackEnabled) {
       followPendingJumpWasActive = false;
       followLastSongProgressValid = false;
@@ -640,6 +643,7 @@ WaveformBar::WaveformBar() {
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
     const bool editing = editButton.getToggleState();
+    invalidateWaveformRenderCaches();
     timelineViewMode = TimelineViewMode::GuideMap;
     if (!editing) {
       snapMode = SnapMode::Bar;
@@ -651,6 +655,8 @@ WaveformBar::WaveformBar() {
     resized();
     if (editing && viewportSpan >= 0.999f)
       setVisibleWindow(0.0f, 1.0f);
+    if (!editing)
+      clearSectionInsertionAnchor();
     if (onEditToggle)
       onEditToggle(editing);
     repaint();
@@ -679,6 +685,8 @@ WaveformBar::WaveformBar() {
     button.setViewportIgnoreDragFlag(true);
     button.onClick = [this, mode] {
       timelineViewMode = mode;
+      if (timelineViewMode != TimelineViewMode::GuideMap)
+        clearSectionInsertionAnchor();
       guideMapButton.setToggleState(timelineViewMode == TimelineViewMode::GuideMap,
                                     juce::dontSendNotification);
       tempoMapButton.setToggleState(timelineViewMode == TimelineViewMode::TempoMap,
@@ -695,7 +703,9 @@ WaveformBar::WaveformBar() {
                       TimelineViewMode::TempoMap);
 
   sectionMenuButton.setButtonText("+ " + L10n::tr("Sección", "Section"));
-  sectionMenuButton.setTooltip(L10n::tr("Agregar sección", "Add section"));
+  sectionMenuButton.setTooltip(L10n::tr(
+      "Agregar en el punto marcado de la regla o, sin marca, al final",
+      "Add at the ruler marker or, without a marker, at the end"));
   sectionMenuButton.setViewportIgnoreDragFlag(true);
   sectionMenuButton.onClick = [this] {
     auto safe = juce::Component::SafePointer<WaveformBar>(this);
@@ -796,12 +806,17 @@ WaveformBar::WaveformBar() {
   rebuildSectionAddButtons();
 
   refreshThemeColours();
-  startTimerHz(20);
+  playbackVBlankAttachment = juce::VBlankAttachment(
+      this, [this](const double frameTimestampSec) {
+        updatePlaybackAnimation(frameTimestampSec);
+      });
+  startTimerHz(60);
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
   const bool wasEditing = editButton.getToggleState();
   waveformBins = std::move(bins);
+  invalidateWaveformRenderCaches();
   const bool hasLoadedSong = !waveformBins.empty();
 
   if (!hasLoadedSong && wasEditing) {
@@ -814,8 +829,10 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
 
   editButton.setVisible(hasLoadedSong);
   editButton.setEnabled(hasLoadedSong);
-  if (!hasLoadedSong)
+  if (!hasLoadedSong) {
     cancelDeferredPartJumpFromDoubleClick();
+    clearSectionInsertionAnchor();
+  }
   resized();
   repaint();
 }
@@ -824,6 +841,7 @@ void WaveformBar::setArrangement(
     const SongArrangementSnapshot &arrangementSnapshot,
     const bool isCustomArrangement) {
   arrangement = arrangementSnapshot;
+  invalidateWaveformRenderCaches();
   customArrangement = isCustomArrangement;
   selectedPartIndex = -1;
   selectedPartIds.clear();
@@ -839,6 +857,7 @@ void WaveformBar::setArrangement(
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
+  clearSectionInsertionAnchor();
   hoveredActionPartIndex = -1;
   hoveredLoopPartIndex = -1;
   hoveredJumpPartIndex = -1;
@@ -852,6 +871,7 @@ void WaveformBar::setArrangement(
 
 void WaveformBar::setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot) {
   tempoMap = tempoMapSnapshot;
+  invalidateWaveformRenderCaches();
   selectedTempoRegionIndex = tempoMap.regions.empty() ? -1 : 0;
   lastAppliedTempoRegionIndex = -1;
   normalizeTempoMap();
@@ -866,6 +886,7 @@ void WaveformBar::setSongRhythm(const double bpm,
   if (songTimeSignature.isEmpty())
     songTimeSignature = "4/4";
   songBeatsPerBar = timeSignatureBeatsPerBar(songTimeSignature);
+  invalidateWaveformRenderCaches();
   normalizeTempoMap();
 
   repaint();
@@ -883,6 +904,7 @@ void WaveformBar::setSongWindowProviders(SongWindowProvider startCb,
                                          SongWindowProvider endCb) {
   songWindowStartProvider = std::move(startCb);
   songWindowEndProvider = std::move(endCb);
+  invalidateWaveformRenderCaches();
 }
 
 void WaveformBar::setSeekCallback(SeekCallback cb) { onSeekTo = std::move(cb); }
@@ -965,6 +987,7 @@ void WaveformBar::triggerEditToggleFromMidi() {
 }
 
 void WaveformBar::refreshThemeColours() {
+  invalidateWaveformRenderCaches();
   followButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   followButton.setColour(juce::TextButton::buttonOnColourId,
                          UITheme::accent.withAlpha(0.95f));
@@ -1098,12 +1121,15 @@ void WaveformBar::paint(juce::Graphics &g) {
     return;
 
   if (waveformBins.empty()) {
-    g.setColour(UITheme::cardBg.withAlpha(0.55f));
+    const bool isShowingLoadingState =
+        songLoadingActive || songLoadingHideAfterMs > 0.0;
+    g.setColour(isShowingLoadingState ? juce::Colours::white
+                                      : UITheme::cardBg.withAlpha(0.55f));
     g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
     juce::String emptyText =
         L10n::tr(u8"Doble click en una canción para cargar waveform",
                  "Double-click a song to load stems waveform");
-    if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
+    if (isShowingLoadingState) {
       const int percent = static_cast<int>(
           std::round(juce::jlimit(0.0, 1.0, songLoadingProgress01) * 100.0));
       emptyText = L10n::tr(u8"Cargando canción...", "Loading song...") + " " +
@@ -1134,6 +1160,9 @@ void WaveformBar::paint(juce::Graphics &g) {
   if (seekRulerBounds.getWidth() > 2.0f && seekRulerBounds.getHeight() > 2.0f)
     drawSeekRuler(g, seekRulerBounds, window.first, window.second);
 
+  drawSectionInsertionAnchor(g, mainWaveBodyBounds, seekRulerBounds,
+                             window.first, window.second);
+
   if (miniMapBounds.getWidth() > 2.0f && miniMapBounds.getHeight() > 2.0f)
     drawMiniMap(g, miniMapBounds);
 
@@ -1153,7 +1182,7 @@ void WaveformBar::paint(juce::Graphics &g) {
     g.fillRoundedRectangle(pill, 13.0f);
     g.setColour(UITheme::accent.withAlpha(0.9f));
     g.drawRoundedRectangle(pill, 13.0f, 1.0f);
-    g.setColour(UITheme::cardBg);
+    g.setColour(juce::Colours::white);
     g.drawFittedText(text, pill.toNearestInt().reduced(10, 2),
                      juce::Justification::centred, 1);
   }
@@ -1174,6 +1203,7 @@ void WaveformBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void WaveformBar::resized() {
+  invalidateWaveformRenderCaches();
   const auto localBounds = getLocalBounds().toFloat();
   const auto mainWaveBounds = getMainWaveBounds(localBounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -2313,6 +2343,11 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
   if (!isEditingArrangement())
     return false;
 
+  if (key == juce::KeyPress::escapeKey && sectionInsertionAnchorValid) {
+    clearSectionInsertionAnchor();
+    return true;
+  }
+
   const auto modifiers = key.getModifiers();
   const bool commandDown = modifiers.isCommandDown() || modifiers.isCtrlDown();
   const int keyCode = key.getKeyCode();
@@ -2438,6 +2473,43 @@ void WaveformBar::timerCallback() {
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
   float pendingJumpRatio = 0.0f;
   const bool hasPendingJumpRatio = getPendingJumpProgressRatio(pendingJumpRatio);
+
+  bool hasSongProgress = false;
+  float songProgress = 0.0f;
+  if (positionProvider != nullptr && lengthProvider != nullptr) {
+    const double songLength = juce::jmax(0.0, lengthProvider());
+    if (songLength > 0.0) {
+      const double songPosSec = juce::jmax(0.0, positionProvider());
+      songProgress =
+          static_cast<float>(juce::jlimit(0.0, 1.0, songPosSec / songLength));
+      hasSongProgress = true;
+    }
+  }
+
+  const bool transportVisualChanged =
+      hasSongProgress &&
+      (!lastTimerSongProgressValid ||
+       !nearlyEqual(songProgress, lastTimerSongProgressRatio, 0.000001));
+  lastTimerSongProgressValid = hasSongProgress;
+  if (hasSongProgress)
+    lastTimerSongProgressRatio = songProgress;
+
+  updateActiveTempoRegionFromTransport();
+  flushDeferredPartJumpFromDoubleClickIfDue();
+  const bool needsAnimatedRepaint =
+      songLoadingActive || songLoadingHideAfterMs > 0.0 ||
+      (!isPlayingNow && hasPendingJumpRatio) ||
+      pendingJumpDoubleClickDispatchAtMs > 0.0 ||
+      playbackControlFocus != PlaybackControlFocus::None ||
+      (!isPlayingNow && transportVisualChanged);
+  if (needsAnimatedRepaint)
+    repaint();
+}
+
+void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
+  const bool isPlayingNow = playingProvider ? playingProvider() : false;
+  float pendingJumpRatio = 0.0f;
+  const bool hasPendingJumpRatio = getPendingJumpProgressRatio(pendingJumpRatio);
   const bool followJumpJustExecuted =
       followPendingJumpWasActive && !hasPendingJumpRatio &&
       followPlaybackEnabled && !isEditingArrangement() && isPlayingNow &&
@@ -2457,7 +2529,8 @@ void WaveformBar::timerCallback() {
     }
   }
 
-  if ((isFollowTrackingActive() || followJumpJustExecuted) && hasSongProgress) {
+  const bool followTrackingActive = isFollowTrackingActive();
+  if ((followTrackingActive || followJumpJustExecuted) && hasSongProgress) {
     auto window = getVisibleWindow();
     const float start = window.first;
     const float span = window.second;
@@ -2472,15 +2545,29 @@ void WaveformBar::timerCallback() {
       followDiscontinuity = wrappedBackwards || (delta >= threshold);
     }
 
-    if (!nearlyEqual(targetStart, start, 0.0001)) {
-      if (followJumpJustExecuted || followDiscontinuity)
+    if (!nearlyEqual(targetStart, start, kFollowViewportPositionEpsilon)) {
+      if (followJumpJustExecuted || followDiscontinuity) {
         setVisibleWindow(targetStart, span);
-      else {
+        followLastFrameTimestampSec = frameTimestampSec;
+      } else {
+        const double elapsedSec =
+            followLastFrameTimestampSec > 0.0
+                ? juce::jlimit(0.0, 0.25,
+                               frameTimestampSec -
+                                   followLastFrameTimestampSec)
+                : (1.0 / 60.0);
+        const float smoothingAlpha = static_cast<float>(
+            1.0 - std::exp(-elapsedSec / kFollowCameraSmoothingTimeSec));
         const float smoothedStart =
-            start + ((targetStart - start) * kFollowSmoothFactor);
+            start + ((targetStart - start) * smoothingAlpha);
         setVisibleWindow(smoothedStart, span);
+        followLastFrameTimestampSec = frameTimestampSec;
       }
+    } else {
+      followLastFrameTimestampSec = frameTimestampSec;
     }
+  } else if (!followTrackingActive) {
+    followLastFrameTimestampSec = 0.0;
   }
 
   followPendingJumpWasActive = followPlaybackEnabled && !isEditingArrangement() &&
@@ -2493,9 +2580,8 @@ void WaveformBar::timerCallback() {
     followLastSongProgressValid = false;
   }
 
-  updateActiveTempoRegionFromTransport();
-  flushDeferredPartJumpFromDoubleClickIfDue();
-  repaint();
+  if (isPlayingNow || hasPendingJumpRatio || followJumpJustExecuted)
+    repaint();
 }
 
 void WaveformBar::scheduleDeferredPartJumpFromDoubleClick(const int partIndex) {
@@ -2562,6 +2648,14 @@ void WaveformBar::handleSeek(float x, const juce::Rectangle<float> &seekBounds) 
   const auto window = getVisibleWindow();
   const double target =
       songLength * juce::jlimit(0.0f, 1.0f, window.first + (ratio * window.second));
+
+  if (isEditingArrangement() && timelineViewMode == TimelineViewMode::GuideMap) {
+    const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+    sectionInsertionAnchorSec = juce::jlimit(
+        playableStartSec, playableEndSec, snapSeconds(target));
+    sectionInsertionAnchorValid = true;
+    repaint();
+  }
   onSeekTo(target);
 }
 
@@ -2579,10 +2673,15 @@ void WaveformBar::setVisibleWindow(float start, float span) {
   if ((start + span) > 1.0f)
     start = 1.0f - span;
 
-  const bool changed = !nearlyEqual(start, viewportStart) ||
-                       !nearlyEqual(span, viewportSpan);
+  const bool changed =
+      !nearlyEqual(start, viewportStart, kFollowViewportPositionEpsilon) ||
+      !nearlyEqual(span, viewportSpan, kFollowViewportPositionEpsilon);
+  const bool spanChanged =
+      !nearlyEqual(span, viewportSpan, kFollowViewportPositionEpsilon);
   viewportStart = start;
   viewportSpan = span;
+  if (spanChanged)
+    invalidateWaveformRenderCaches();
   if (changed)
     repaint();
 }
@@ -2611,6 +2710,50 @@ bool WaveformBar::isFollowTrackingActive() const {
     return false;
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   return nowMs >= followSuspendedUntilMs;
+}
+
+WaveformBar::PlaybackVisualState WaveformBar::getPlaybackVisualState() const {
+  PlaybackVisualState state;
+  const bool isShowingLoadingState =
+      songLoadingActive || songLoadingHideAfterMs > 0.0;
+  if (isShowingLoadingState) {
+    state.progressRatio =
+        static_cast<float>(juce::jlimit(0.0, 1.0, songLoadingProgress01));
+  } else if (positionProvider != nullptr && lengthProvider != nullptr) {
+    const double transportLength = juce::jmax(0.0, lengthProvider());
+    if (transportLength > 0.0) {
+      const double songPosition = juce::jmax(0.0, positionProvider());
+      state.progressRatio = static_cast<float>(
+          juce::jlimit(0.0, 1.0, songPosition / transportLength));
+      state.transportProgressRatio = state.progressRatio;
+    }
+  }
+
+  if (followPlaybackEnabled && !isEditingArrangement() &&
+      playingProvider != nullptr && playingProvider()) {
+    float pendingRatio = 0.0f;
+    if (getPendingJumpProgressRatio(pendingRatio)) {
+      state.progressRatio = pendingRatio;
+      state.showPendingTravelSeek = !isShowingLoadingState &&
+                                    positionProvider != nullptr &&
+                                    lengthProvider != nullptr;
+    }
+  }
+
+  return state;
+}
+
+void WaveformBar::invalidateWaveformRenderCaches() {
+  followWaveformBaseCache = {};
+  followWaveformHighlightMaskCache = {};
+  followWaveformCacheWidth = 0;
+  followWaveformCacheHeight = 0;
+  followWaveformCacheStart = 0.0f;
+  followWaveformCacheSpan = 0.0f;
+  followWaveformCacheScale = 0.0f;
+  miniMapWaveformCache = {};
+  miniMapWaveformCacheWidth = 0;
+  miniMapWaveformCacheHeight = 0;
 }
 
 bool WaveformBar::getPendingJumpProgressRatio(float &ratioOut) const {
@@ -3960,6 +4103,21 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
                                const float windowStart, const float windowSpan,
                                const bool showGrid,
                                const bool showPlayhead) const {
+  if (showPlayhead && !showGrid &&
+      drawCachedFollowWaveform(g, bounds, windowStart, windowSpan)) {
+    return;
+  }
+
+  drawWaveformDirect(g, bounds, windowStart, windowSpan, showGrid,
+                     showPlayhead);
+}
+
+void WaveformBar::drawWaveformDirect(juce::Graphics &g,
+                                     const juce::Rectangle<float> &bounds,
+                                     const float windowStart,
+                                     const float windowSpan,
+                                     const bool showGrid,
+                                     const bool showPlayhead) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
   if (waveformBins.empty())
@@ -4049,37 +4207,12 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
       customArrangement && !arrangement.parts.empty();
   const double sourceLength = getWaveformSourceLengthSeconds();
 
-  float progressRatio = 0.0f;
-  float pendingTravelRatio = 0.0f;
-  bool showPendingTravelSeek = false;
-  if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
-    progressRatio =
-        static_cast<float>(juce::jlimit(0.0, 1.0, songLoadingProgress01));
-  } else if (positionProvider && lengthProvider) {
-    const double transportLength = juce::jmax(0.0, lengthProvider());
-    if (transportLength > 0.0) {
-      const double songPosition = juce::jmax(0.0, positionProvider());
-      progressRatio = static_cast<float>(
-          juce::jlimit(0.0, 1.0, songPosition / transportLength));
-      pendingTravelRatio = progressRatio;
-    }
-  }
-
-  if (followPlaybackEnabled && !isEditingArrangement() && playingProvider != nullptr &&
-      playingProvider()) {
-    float pendingRatio = 0.0f;
-    if (getPendingJumpProgressRatio(pendingRatio)) {
-      progressRatio = pendingRatio;
-      showPendingTravelSeek = !songLoadingActive &&
-                              songLoadingHideAfterMs <= 0.0 &&
-                              positionProvider != nullptr &&
-                              lengthProvider != nullptr;
-    }
-  }
+  const auto playbackVisual = getPlaybackVisualState();
 
   const float playheadRatio = juce::jlimit(
       0.0f, 1.0f,
-      (progressRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+      (playbackVisual.progressRatio - windowStart) /
+          juce::jmax(0.0001f, windowSpan));
   const float playheadX = snapToPixelCenter(
       bounds.getX() + (playheadRatio * bounds.getWidth()));
 
@@ -4120,6 +4253,10 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
                    centerDashes, 2, 1.0f);
 
   const int step = 2;
+  const double sourceSecondsPerColumn =
+      songLength * static_cast<double>(windowSpan) *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) / static_cast<float>(widthPixels - 1);
     const double arrangementSec = songLength * (windowStart + (t * windowSpan));
@@ -4131,14 +4268,8 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
     if (sourceLength <= 0.0 || sourceSec < 0.0 || sourceSec > sourceLength)
       continue;
 
-    const float index = static_cast<float>(
-        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
-        static_cast<float>(bins - 1);
-    const int i0 = static_cast<int>(index);
-    const int i1 = juce::jmin(i0 + 1, bins - 1);
-    const float frac = index - static_cast<float>(i0);
-    const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
-                                 waveformBins[static_cast<size_t>(i1)]);
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
@@ -4169,9 +4300,9 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   if (showPlayhead) {
     drawPlayheadNeedle(g, bounds, playheadX, false, false, 1.0f);
 
-    if (showPendingTravelSeek) {
+    if (playbackVisual.showPendingTravelSeek) {
       const float pendingTravelNorm = juce::jlimit(
-          0.0f, 1.0f, (pendingTravelRatio - windowStart) /
+          0.0f, 1.0f, (playbackVisual.transportProgressRatio - windowStart) /
                            juce::jmax(0.0001f, windowSpan));
       const float pendingTravelX = snapToPixelCenter(
           bounds.getX() + (pendingTravelNorm * bounds.getWidth()));
@@ -4182,17 +4313,257 @@ void WaveformBar::drawWaveform(juce::Graphics &g,
   }
 }
 
+void WaveformBar::drawWaveformHighlightMask(
+    juce::Graphics &g, const juce::Rectangle<float> &bounds,
+    const float windowStart, const float windowSpan) const {
+  if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f ||
+      waveformBins.size() < 2)
+    return;
+
+  const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
+  const float midY = bounds.getCentreY();
+  const float ampScale = bounds.getHeight() * 0.495f;
+  const bool hasCustomArrangement =
+      customArrangement && !arrangement.parts.empty();
+  const double songLength = getSongLengthSeconds();
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (songLength <= 0.0 || sourceLength <= 0.0)
+    return;
+
+  g.setColour(juce::Colours::white);
+  constexpr int step = 2;
+  const double sourceSecondsPerColumn =
+      songLength * static_cast<double>(windowSpan) *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
+  for (int x = 0; x < widthPixels; x += step) {
+    const float t = static_cast<float>(x) /
+                    static_cast<float>(juce::jmax(1, widthPixels - 1));
+    const double arrangementSec = songLength * (windowStart + (t * windowSpan));
+    double sourceSec = arrangementSec;
+    if (hasCustomArrangement &&
+        !mapArrangementSecondsToSourceSeconds(arrangementSec, sourceLength,
+                                              sourceSec))
+      continue;
+    if (sourceSec < 0.0 || sourceSec > sourceLength)
+      continue;
+
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
+    const float lineHalf = juce::jmax(1.2f, amp * ampScale);
+    const float xPos = bounds.getX() + static_cast<float>(x);
+    g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
+  }
+}
+
+float WaveformBar::sampleWaveformAmplitude(
+    const double sourceSec, const double sourceLength,
+    const double sourceSecondsPerColumn) const {
+  const int bins = static_cast<int>(waveformBins.size());
+  if (bins < 2 || sourceLength <= 0.0)
+    return 0.0f;
+
+  const double sourceRatio =
+      juce::jlimit(0.0, 1.0, sourceSec / sourceLength);
+  const double index = sourceRatio * static_cast<double>(bins - 1);
+  const double binsPerColumn =
+      std::abs(sourceSecondsPerColumn) / sourceLength *
+      static_cast<double>(bins - 1);
+
+  if (binsPerColumn <= 1.0) {
+    const int i0 = juce::jlimit(0, bins - 1, static_cast<int>(index));
+    const int i1 = juce::jmin(i0 + 1, bins - 1);
+    const float fraction = static_cast<float>(index - static_cast<double>(i0));
+    return juce::jmap(fraction, waveformBins[static_cast<size_t>(i0)],
+                      waveformBins[static_cast<size_t>(i1)]);
+  }
+
+  const double halfRange = binsPerColumn * 0.5;
+  const int first = juce::jlimit(
+      0, bins - 1, static_cast<int>(std::floor(index - halfRange)));
+  const int last = juce::jlimit(
+      first, bins - 1, static_cast<int>(std::ceil(index + halfRange)));
+  float peak = 0.0f;
+  for (int i = first; i <= last; ++i)
+    peak = juce::jmax(peak, waveformBins[static_cast<size_t>(i)]);
+  return peak;
+}
+
+bool WaveformBar::drawCachedFollowWaveform(
+    juce::Graphics &g, const juce::Rectangle<float> &bounds,
+    const float windowStart, const float windowSpan) const {
+  if (!isFollowTrackingActive() || waveformBins.size() < 2 ||
+      bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f ||
+      windowSpan <= 0.0f)
+    return false;
+
+  // A restricted playback window needs its darkened region composited after
+  // the waveform. Keep the direct renderer for that less common presentation.
+  if (!customArrangement && lengthProvider != nullptr &&
+      songWindowStartProvider != nullptr && songWindowEndProvider != nullptr) {
+    const double length = juce::jmax(0.0, lengthProvider());
+    if (length > 0.0) {
+      const double start = juce::jlimit(0.0, length, songWindowStartProvider());
+      const double end = juce::jlimit(start, length, songWindowEndProvider());
+      if (start > 0.0001 || end < length - 0.0001)
+        return false;
+    }
+  }
+
+  const float cacheSpan = juce::jlimit(
+      windowSpan, 1.0f, windowSpan * kFollowWaveformCacheOverscan);
+  const float cacheStart = juce::jlimit(
+      0.0f, 1.0f - cacheSpan,
+      windowStart - ((cacheSpan - windowSpan) * 0.5f));
+  const float cacheScale = juce::jlimit(
+      1.0f, 4.0f, juce::Component::getApproximateScaleFactorForComponent(this));
+  const int cacheWidth = static_cast<int>(
+      std::ceil(bounds.getWidth() * (cacheSpan / windowSpan) * cacheScale));
+  const int cacheHeight =
+      static_cast<int>(std::ceil(bounds.getHeight() * cacheScale));
+  if (cacheWidth <= 2 || cacheHeight <= 2)
+    return false;
+
+  const float cachedEnd = followWaveformCacheStart + followWaveformCacheSpan;
+  const float windowEnd = windowStart + windowSpan;
+  const bool cacheContainsWindow =
+      followWaveformBaseCache.isValid() &&
+      windowStart >= (followWaveformCacheStart -
+                      kFollowViewportPositionEpsilon) &&
+      windowEnd <= (cachedEnd + kFollowViewportPositionEpsilon);
+  const bool cacheNeedsRebuild =
+      !followWaveformBaseCache.isValid() ||
+      !followWaveformHighlightMaskCache.isValid() ||
+      followWaveformCacheWidth != cacheWidth ||
+      followWaveformCacheHeight != cacheHeight ||
+      !nearlyEqual(followWaveformCacheSpan, cacheSpan,
+                   kFollowViewportPositionEpsilon) ||
+      !nearlyEqual(followWaveformCacheScale, cacheScale,
+                   kFollowViewportPositionEpsilon) ||
+      !cacheContainsWindow;
+  if (cacheNeedsRebuild) {
+    followWaveformBaseCache =
+        juce::Image(juce::Image::ARGB, cacheWidth, cacheHeight, true);
+    followWaveformHighlightMaskCache =
+        juce::Image(juce::Image::SingleChannel, cacheWidth, cacheHeight, true);
+
+    const auto cacheBounds = juce::Rectangle<float>(
+        0.0f, 0.0f, static_cast<float>(cacheWidth) / cacheScale,
+        static_cast<float>(cacheHeight) / cacheScale);
+    juce::Graphics cacheGraphics(followWaveformBaseCache);
+    cacheGraphics.addTransform(juce::AffineTransform::scale(cacheScale));
+    drawWaveformDirect(cacheGraphics, cacheBounds, cacheStart, cacheSpan, false,
+                       false);
+
+    juce::Graphics highlightMaskGraphics(followWaveformHighlightMaskCache);
+    highlightMaskGraphics.addTransform(
+        juce::AffineTransform::scale(cacheScale));
+    drawWaveformHighlightMask(highlightMaskGraphics, cacheBounds, cacheStart,
+                              cacheSpan);
+
+    followWaveformCacheWidth = cacheWidth;
+    followWaveformCacheHeight = cacheHeight;
+    followWaveformCacheStart = cacheStart;
+    followWaveformCacheSpan = cacheSpan;
+    followWaveformCacheScale = cacheScale;
+  }
+
+  const float sourceX =
+      ((windowStart - followWaveformCacheStart) / followWaveformCacheSpan) *
+      static_cast<float>(cacheWidth);
+  const float sourceWidth =
+      (windowSpan / followWaveformCacheSpan) * static_cast<float>(cacheWidth);
+  if (sourceWidth <= 0.0f)
+    return false;
+
+  const float scaleX = bounds.getWidth() / sourceWidth;
+  const float scaleY = bounds.getHeight() /
+                       static_cast<float>(followWaveformCacheHeight);
+  const auto sourceToBounds = juce::AffineTransform(
+      scaleX, 0.0f, bounds.getX() - (sourceX * scaleX), 0.0f, scaleY,
+      bounds.getY());
+  const auto clipBounds = bounds.toNearestInt();
+  g.saveState();
+  g.reduceClipRegion(clipBounds);
+  g.setImageResamplingQuality(juce::Graphics::mediumResamplingQuality);
+  g.drawImageTransformed(followWaveformBaseCache, sourceToBounds);
+  g.restoreState();
+
+  const auto playbackVisual = getPlaybackVisualState();
+  const float playheadRatio = juce::jlimit(
+      0.0f, 1.0f,
+      (playbackVisual.progressRatio - windowStart) /
+          juce::jmax(0.0001f, windowSpan));
+  const float playheadX = snapToPixelCenter(
+      bounds.getX() + (playheadRatio * bounds.getWidth()));
+
+  const int playedRight = static_cast<int>(std::floor(playheadX));
+  if (playedRight > clipBounds.getX()) {
+    g.saveState();
+    g.reduceClipRegion(clipBounds.withRight(
+        juce::jmin(clipBounds.getRight(), playedRight)));
+    // Base waveform alpha is 0.70. This alpha raises only the waveform mask
+    // to the existing played-state brightness (~0.92) without tinting the bg.
+    g.setColour(juce::Colours::white.withAlpha(0.74f));
+    g.drawImageTransformed(followWaveformHighlightMaskCache, sourceToBounds,
+                           true);
+    g.restoreState();
+  }
+
+  const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);
+  g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
+  g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+  drawPlayheadNeedle(g, bounds, playheadX, false, false, 1.0f);
+
+  if (playbackVisual.showPendingTravelSeek) {
+    const float pendingTravelNorm = juce::jlimit(
+        0.0f, 1.0f,
+        (playbackVisual.transportProgressRatio - windowStart) /
+            juce::jmax(0.0001f, windowSpan));
+    const float pendingTravelX = snapToPixelCenter(
+        bounds.getX() + (pendingTravelNorm * bounds.getWidth()));
+    g.setColour(juce::Colours::white.withAlpha(0.62f));
+    g.drawLine(pendingTravelX, bounds.getY(), pendingTravelX,
+               bounds.getBottom(), 1.0f);
+  }
+
+  return true;
+}
+
+void WaveformBar::drawCachedMiniMapWaveform(
+    juce::Graphics &g, const juce::Rectangle<float> &bounds) const {
+  const int cacheWidth = static_cast<int>(std::ceil(bounds.getWidth()));
+  const int cacheHeight = static_cast<int>(std::ceil(bounds.getHeight()));
+  if (cacheWidth <= 2 || cacheHeight <= 2)
+    return;
+
+  const bool cacheNeedsRebuild = !miniMapWaveformCache.isValid() ||
+                                 miniMapWaveformCacheWidth != cacheWidth ||
+                                 miniMapWaveformCacheHeight != cacheHeight;
+  if (cacheNeedsRebuild) {
+    miniMapWaveformCache =
+        juce::Image(juce::Image::ARGB, cacheWidth, cacheHeight, true);
+    juce::Graphics cacheGraphics(miniMapWaveformCache);
+    drawWaveformDirect(
+        cacheGraphics,
+        {0.0f, 0.0f, static_cast<float>(cacheWidth),
+         static_cast<float>(cacheHeight)},
+        0.0f, 1.0f, false, false);
+    miniMapWaveformCacheWidth = cacheWidth;
+    miniMapWaveformCacheHeight = cacheHeight;
+  }
+
+  g.drawImageAt(miniMapWaveformCache, static_cast<int>(std::round(bounds.getX())),
+                static_cast<int>(std::round(bounds.getY())));
+}
+
 void WaveformBar::drawWaveformSegment(juce::Graphics &g,
                                       const juce::Rectangle<float> &bounds,
                                       const double sourceStartSec,
                                       const double sourceEndSec) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
-  if (waveformBins.empty())
-    return;
-
-  const int bins = static_cast<int>(waveformBins.size());
-  if (bins < 2)
+  if (waveformBins.size() < 2)
     return;
 
   const double sourceLength = getWaveformSourceLengthSeconds();
@@ -4210,18 +4581,16 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
 
   constexpr int step = 2;
   const double sourceDuration = sourceEndSec - sourceStartSec;
+  const double sourceSecondsPerColumn =
+      sourceDuration *
+      (static_cast<double>(step) /
+       static_cast<double>(juce::jmax(1, widthPixels - 1)));
   for (int x = 0; x < widthPixels; x += step) {
     const float t = static_cast<float>(x) /
                     static_cast<float>(juce::jmax(1, widthPixels - 1));
     const double sourceSec = sourceStartSec + (static_cast<double>(t) * sourceDuration);
-    const float index = static_cast<float>(
-        juce::jlimit(0.0, 1.0, sourceSec / sourceLength)) *
-        static_cast<float>(bins - 1);
-    const int i0 = static_cast<int>(index);
-    const int i1 = juce::jmin(i0 + 1, bins - 1);
-    const float frac = index - static_cast<float>(i0);
-    const float amp = juce::jmap(frac, waveformBins[static_cast<size_t>(i0)],
-                                 waveformBins[static_cast<size_t>(i1)]);
+    const float amp = sampleWaveformAmplitude(
+        sourceSec, sourceLength, sourceSecondsPerColumn);
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
@@ -4347,7 +4716,8 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
                                          juce::jmax(0.0001f, windowSpan));
       const float x = snapToPixelCenter(
           bounds.getX() + playheadNorm * bounds.getWidth());
-      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, true, true, 0.96f);
+      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, false, false,
+                         0.96f);
 
       if (showPendingTravelSeek) {
         const float pendingTravelRatio = static_cast<float>(
@@ -4363,6 +4733,40 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
       }
     }
   }
+}
+
+void WaveformBar::drawSectionInsertionAnchor(
+    juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
+    const juce::Rectangle<float> &rulerBounds, const float windowStart,
+    const float windowSpan) const {
+  if (!sectionInsertionAnchorValid || !isEditingArrangement() ||
+      timelineViewMode != TimelineViewMode::GuideMap ||
+      waveBounds.getWidth() <= 2.0f)
+    return;
+
+  const double songLength = getSongLengthSeconds();
+  if (songLength <= 0.0)
+    return;
+
+  const float anchorRatio = static_cast<float>(
+      juce::jlimit(0.0, 1.0, sectionInsertionAnchorSec / songLength));
+  const float visibleEnd = windowStart + windowSpan;
+  if (anchorRatio < windowStart || anchorRatio > visibleEnd)
+    return;
+
+  const float localRatio =
+      (anchorRatio - windowStart) / juce::jmax(0.0001f, windowSpan);
+  const float x = snapToPixelCenter(
+      waveBounds.getX() + (localRatio * waveBounds.getWidth()));
+  const float top = rulerBounds.getHeight() > 2.0f ? rulerBounds.getY()
+                                                   : waveBounds.getY();
+  const float dashLengths[] = {4.0f, 3.0f};
+
+  g.setColour(juce::Colours::black.withAlpha(0.42f));
+  g.drawLine(x + 1.0f, top, x + 1.0f, waveBounds.getBottom(), 2.4f);
+  g.setColour(UITheme::accentSoft.withAlpha(0.92f));
+  g.drawDashedLine(juce::Line<float>(x, top, x, waveBounds.getBottom()),
+                   dashLengths, 2, 1.35f);
 }
 
 void WaveformBar::drawArrangementOverlay(
@@ -4778,7 +5182,7 @@ void WaveformBar::drawMiniMap(juce::Graphics &g,
   g.setColour(UITheme::panelDark.withAlpha(0.45f));
   g.fillRoundedRectangle(miniMapBounds, 4.0f);
 
-  drawWaveform(g, miniMapBounds, 0.0f, 1.0f, false, false);
+  drawCachedMiniMapWaveform(g, miniMapBounds);
 
   const double songLength = getSongLengthSeconds();
   if (songLength > 0.0) {
@@ -4859,7 +5263,10 @@ void WaveformBar::rebuildSectionAddButtons() {
                                          : L10n::tr("Parte", "Part");
     const auto displayName = arrangementPartDisplayLabelForName(sectionName);
     btn->setButtonText("+ " + displayName);
-    btn->setTooltip(L10n::tr("Agregar ", "Add ") + displayName);
+    btn->setTooltip(
+        L10n::tr("Agregar en la marca de la regla o al final: ",
+                 "Add at the ruler marker or at the end: ") +
+        displayName);
     btn->setViewportIgnoreDragFlag(true);
     auto *buttonPtr = btn.get();
     btn->onClick = [this, sectionName, buttonPtr] {
@@ -4958,6 +5365,154 @@ void WaveformBar::rebuildSectionAddButtons() {
   sectionAddButtons.push_back(std::move(utilityBtn));
 }
 
+void WaveformBar::clearSectionInsertionAnchor() {
+  if (!sectionInsertionAnchorValid)
+    return;
+
+  sectionInsertionAnchorValid = false;
+  sectionInsertionAnchorSec = 0.0;
+  repaint();
+}
+
+bool WaveformBar::addArrangementPartAtInsertionAnchor(
+    const juce::String &name, const double playableStartSec,
+    const double playableEndSec) {
+  if (!sectionInsertionAnchorValid)
+    return false;
+
+  constexpr double kBoundaryToleranceSec = 0.0001;
+  double insertionSec = juce::jlimit(
+      playableStartSec, playableEndSec, snapSeconds(sectionInsertionAnchorSec));
+  const auto colourForName = [](const juce::String &partName) {
+    auto colour = standardArrangementPartColorForName(partName);
+    if (colour.isEmpty())
+      colour = fallbackArrangementPartColorForName(partName);
+    return colour;
+  };
+
+  // Keep both sides of a split valid. A point very close to an existing edge
+  // is treated as that edge, which also makes ruler placement feel magnetic.
+  double nearestBoundaryDistance = kMinPartDurationSec;
+  for (const auto &part : arrangement.parts) {
+    for (const double boundarySec : {part.startSec, part.endSec}) {
+      const double distance = std::abs(boundarySec - insertionSec);
+      if (distance <= nearestBoundaryDistance) {
+        insertionSec = boundarySec;
+        nearestBoundaryDistance = distance;
+      }
+    }
+  }
+
+  // If a section already begins on the marked boundary, marking that point
+  // means relabelling the existing section rather than creating an overlap.
+  for (int i = static_cast<int>(arrangement.parts.size()) - 1; i >= 0; --i) {
+    auto &part = arrangement.parts[static_cast<size_t>(i)];
+    if (std::abs(part.startSec - insertionSec) > kBoundaryToleranceSec)
+      continue;
+
+    pushArrangementUndoSnapshot();
+    const auto partId = part.id;
+    part.name = name;
+    part.color = colourForName(name);
+    customArrangement = true;
+    clearSectionInsertionAnchor();
+    notifyArrangementChanged(true);
+    const int updatedIndex = findPartIndexById(partId);
+    if (juce::isPositiveAndBelow(updatedIndex,
+                                 static_cast<int>(arrangement.parts.size())))
+      setSingleSelectedPart(updatedIndex);
+    repaint();
+    return true;
+  }
+
+  // A point inside a section is a new boundary. Split the range so the
+  // scheduler never receives two sections covering the same time.
+  for (int i = static_cast<int>(arrangement.parts.size()) - 1; i >= 0; --i) {
+    const auto original = arrangement.parts[static_cast<size_t>(i)];
+    if (insertionSec <= original.startSec + kBoundaryToleranceSec ||
+        insertionSec >= original.endSec - kBoundaryToleranceSec)
+      continue;
+
+    const double leftDuration = insertionSec - original.startSec;
+    const double rightDuration = original.endSec - insertionSec;
+    if (leftDuration < kMinPartDurationSec ||
+        rightDuration < kMinPartDurationSec)
+      return false;
+
+    SongArrangementPartSnapshot rightPart = original;
+    rightPart.id = juce::Uuid().toString();
+    rightPart.name = name;
+    rightPart.color = colourForName(name);
+    rightPart.startSec = insertionSec;
+    const auto rightPartId = rightPart.id;
+
+    pushArrangementUndoSnapshot();
+    auto &leftPart = arrangement.parts[static_cast<size_t>(i)];
+    leftPart.endSec = insertionSec;
+
+    if (original.sourcePartId.isNotEmpty()) {
+      const double sourceLength = getWaveformSourceLengthSeconds();
+      const auto [sourceStartSec, sourceEndSec] =
+          getPartSourceRange(original, sourceLength);
+      const double splitRatio = juce::jlimit(
+          0.0, 1.0, leftDuration / juce::jmax(kMinPartDurationSec,
+                                               original.endSec - original.startSec));
+      const double sourceSplitSec =
+          sourceStartSec + ((sourceEndSec - sourceStartSec) * splitRatio);
+      leftPart.sourceStartSec = sourceStartSec;
+      leftPart.sourceEndSec = sourceSplitSec;
+      rightPart.sourceStartSec = sourceSplitSec;
+      rightPart.sourceEndSec = sourceEndSec;
+    }
+
+    arrangement.parts.push_back(std::move(rightPart));
+    customArrangement = true;
+    clearSectionInsertionAnchor();
+    notifyArrangementChanged(true);
+    const int insertedIndex = findPartIndexById(rightPartId);
+    if (juce::isPositiveAndBelow(insertedIndex,
+                                 static_cast<int>(arrangement.parts.size())))
+      setSingleSelectedPart(insertedIndex);
+    repaint();
+    return true;
+  }
+
+  // In an uncovered range, create the usual default-length section but stop
+  // it at the next section boundary to avoid introducing an overlap.
+  double nextBoundarySec = playableEndSec;
+  for (const auto &part : arrangement.parts) {
+    if (part.startSec > insertionSec + kBoundaryToleranceSec)
+      nextBoundarySec = juce::jmin(nextBoundarySec, part.startSec);
+  }
+
+  double endSec = juce::jmin(
+      playableEndSec, nextBoundarySec,
+      insertionSec + juce::jmax(8.0, kMinPartDurationSec));
+  endSec = juce::jmin(nextBoundarySec, snapSeconds(endSec));
+  if ((endSec - insertionSec) < kMinPartDurationSec)
+    return false;
+
+  SongArrangementPartSnapshot part;
+  part.id = juce::Uuid().toString();
+  part.name = name;
+  part.color = colourForName(name);
+  part.startSec = insertionSec;
+  part.endSec = endSec;
+  const auto partId = part.id;
+
+  pushArrangementUndoSnapshot();
+  arrangement.parts.push_back(std::move(part));
+  customArrangement = true;
+  clearSectionInsertionAnchor();
+  notifyArrangementChanged(true);
+  const int insertedIndex = findPartIndexById(partId);
+  if (juce::isPositiveAndBelow(insertedIndex,
+                               static_cast<int>(arrangement.parts.size())))
+    setSingleSelectedPart(insertedIndex);
+  repaint();
+  return true;
+}
+
 void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
   const double playableLength = playableEndSec - playableStartSec;
@@ -4972,6 +5527,12 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   }
   if (nextName.isEmpty())
     nextName = L10n::tr("Parte", "Part");
+
+  if (sectionInsertionAnchorValid) {
+    addArrangementPartAtInsertionAnchor(nextName, playableStartSec,
+                                        playableEndSec);
+    return;
+  }
 
   double startSec = getArrangementAppendStartSec(playableStartSec);
 
@@ -5438,6 +5999,7 @@ void WaveformBar::deleteSelectedArrangementParts() {
 
 void WaveformBar::notifyArrangementChanged(const bool isCustom) {
   normalizeArrangement(true, false);
+  invalidateWaveformRenderCaches();
   if (onArrangementChanged)
     onArrangementChanged(arrangement, isCustom);
 }

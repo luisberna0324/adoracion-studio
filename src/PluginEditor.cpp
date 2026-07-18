@@ -401,10 +401,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
       [&p] { return p.getArrangementPartLoopIndex(); });
-  waveformBarRaw->setOnEditToggle([this](bool expanded) {
+  waveformBarRaw->setOnEditToggle([this](const bool editing) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-    processorRef.setArrangementEditingActive(expanded);
-    isWaveformExpanded = expanded;
+    processorRef.setArrangementEditingActive(editing);
     resized();
     repaint();
   });
@@ -589,16 +588,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                    this](const ImportedSongData &song, int songIndex) -> bool {
     if (songLoadBusy)
       return false;
+    const bool hadLoadedSongBeforeLoad = p.hasLoadedSong();
     maybePersistSongWindowForActiveSong();
     if (channelGridRaw != nullptr)
       channelGridRaw->flushPendingPersistenceNow();
-    p.setMetronomeEnabled(false);
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
     auto pumpUi = [] {
       if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
-        mm->runDispatchLoopUntil(14);
+        mm->runDispatchLoopUntil(1);
     };
 
     auto pushLoadUi = [waveformBarRaw, pumpUi](double overall01,
@@ -668,7 +667,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           pushLoadUi(0.55 * stemPhase01,
                      L10n::tr(u8"Leyendo audio de las pistas...",
                               u8"Reading stem audio..."));
-        });
+        },
+        true);
 
     if (!loaded) {
       juce::AlertWindow::showMessageBoxAsync(
@@ -676,15 +676,17 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           L10n::tr("Error de carga", "Load error"),
           L10n::tr(u8"No se pudieron cargar los stems de esta canción.",
                    "Couldn't load audio stems for this song."));
-      waveformBarRaw->setWaveformBins({});
-      waveformBarRaw->setSongRhythm(0.0, {});
-      p.setStemClickGuideMask({});
-      p.setStemGuideMask({});
-      p.setMetronomeClickStemIndex(-1);
-      channelGridRaw->setSong(ImportedSongData{});
-      hasCurrentLoadedSong = false;
-      currentLoadedSong = ImportedSongData{};
-      resetTrackedSongWindow();
+      if (!hadLoadedSongBeforeLoad) {
+        waveformBarRaw->setWaveformBins({});
+        waveformBarRaw->setSongRhythm(0.0, {});
+        p.setStemClickGuideMask({});
+        p.setStemGuideMask({});
+        p.setMetronomeClickStemIndex(-1);
+        channelGridRaw->setSong(ImportedSongData{});
+        hasCurrentLoadedSong = false;
+        currentLoadedSong = ImportedSongData{};
+        resetTrackedSongWindow();
+      }
       return false;
     }
 
@@ -693,6 +695,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setStemPitchShiftMask(pitchShiftMask);
     p.setMetronomeClickStemIndex(clickStemIndex);
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
+    pushLoadUi(0.58, L10n::tr(u8"Restaurando configuración...",
+                              u8"Restoring settings..."));
     double savedTempoBpm = 0.0;
     if (SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
                                                    savedTempoBpm)) {
@@ -721,6 +725,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideSolo(dynamicGuideMix.solo);
     p.setDynamicGuideOutputRouting(dynamicGuideMix.outputChannel,
                                    dynamicGuideMix.outputWidth);
+    pushLoadUi(0.63, L10n::tr(u8"Restaurando guía y click...",
+                              u8"Restoring guide and click..."));
 
     ClickDynMixSnapshot clickDynMix;
     if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
@@ -735,6 +741,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setMetronomeSolo(clickDynMix.solo);
     p.setMetronomeOutputRouting(clickDynMix.outputChannel,
                                 clickDynMix.outputWidth);
+    pushLoadUi(0.68, L10n::tr(u8"Restaurando mezcla...",
+                              u8"Restoring mix..."));
 
     SongMixSnapshot mixSnapshot;
     if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
@@ -760,6 +768,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setStemSolo(stemIndex, it->solo);
       }
     }
+    pushLoadUi(0.73, L10n::tr(u8"Restaurando reproducción...",
+                              u8"Restoring playback..."));
 
     SongWindowSnapshot windowSnapshot;
     bool isCustomWindow = false;
@@ -771,41 +781,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       p.setSongFadeOutSeconds(windowSnapshot.fadeOutSec);
     }
 
-    currentLoadedSong = loadedSong;
-    hasCurrentLoadedSong = true;
-    AppSettings::setLastSelectedSongId(currentLoadedSong.id);
-    applyRoutingDefaultsToSong(currentLoadedSong);
-    trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
-                    p.getSongEndSeconds(), p.getSongFadeOutSeconds());
-
-    channelGridRaw->setSong(loadedSong);
-    channelGridRaw->setGuideSourceMode(
-        dynamicGuideSettings.enabled
-            ? ChannelGridPanel::GuideSourceMode::DynamicBySections
-            : ChannelGridPanel::GuideSourceMode::SongGuide);
-    channelGridRaw->setGuideWarningMessage({});
-    currentSongIndex = songIndex;
-
-    auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
-    if (cachedBins.empty()) {
-      pushLoadUi(0.58, L10n::tr(u8"Generando vista de forma de onda...",
-                                u8"Generating waveform preview..."));
-      cachedBins = buildMixedWaveformBins(
-          loadedSong, 1400, [&pushLoadUi](const double wf01) {
-            pushLoadUi(0.58 + 0.40 * wf01,
-                       L10n::tr(u8"Generando vista de forma de onda...",
-                                u8"Generating waveform preview..."));
-          });
-      SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins);
-    } else {
-      pushLoadUi(0.98, L10n::tr(u8"Cargando forma de onda en caché...",
-                                u8"Loading cached waveform..."));
-    }
-
-    pushLoadUi(1.0, L10n::tr(u8"Finalizando...", u8"Finishing..."));
-    waveformBarRaw->setWaveformBins(std::move(cachedBins));
-    waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
-                                  loadedSong.timeSignature);
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
     if (!SongLibraryStore::getSongArrangement(loadedSong.id, arrangement,
@@ -813,25 +788,70 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       arrangement.parts.clear();
       isCustomArrangement = false;
     }
-    waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
-    waveformBarRaw->setTempoMap(loadedSong.tempoMap);
+
+    currentLoadedSong = loadedSong;
+    hasCurrentLoadedSong = true;
+    AppSettings::setLastSelectedSongId(currentLoadedSong.id);
+    applyRoutingDefaultsToSong(currentLoadedSong);
     p.setMetronomeOutputRouting(clickDynMix.outputChannel,
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
-    isWaveformExpanded = false;
+    trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
+                    p.getSongEndSeconds(), p.getSongFadeOutSeconds());
+
+    // The processor kept the replacement at zero while the complete mix,
+    // routing, click, guide and arrangement snapshot was restored.
+    p.finishPendingSongTransition();
+
+    pushLoadUi(0.77, L10n::tr(u8"Preparando interfaz...",
+                              u8"Preparing interface..."));
+    channelGridRaw->setSong(loadedSong);
+    channelGridRaw->setGuideSourceMode(
+        dynamicGuideSettings.enabled
+            ? ChannelGridPanel::GuideSourceMode::DynamicBySections
+            : ChannelGridPanel::GuideSourceMode::SongGuide);
+    channelGridRaw->setGuideWarningMessage({});
+    currentSongIndex = songIndex;
+    pushLoadUi(0.80, L10n::tr(u8"Cargando forma de onda...",
+                              u8"Loading waveform..."));
+
+    auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
+    if (cachedBins.empty()) {
+      pushLoadUi(0.81, L10n::tr(u8"Generando vista de forma de onda...",
+                                u8"Generating waveform preview..."));
+      cachedBins = buildMixedWaveformBins(
+          loadedSong, kWaveformPreviewBinCount, [&pushLoadUi](const double wf01) {
+            pushLoadUi(0.81 + 0.18 * wf01,
+                       L10n::tr(u8"Generando vista de forma de onda...",
+                                u8"Generating waveform preview..."));
+          });
+      if (!cachedBins.empty() &&
+          !SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins)) {
+        SessionAuthLogger::write("loadSong: couldn't persist waveform cache for " +
+                                 loadedSong.id);
+      }
+    } else {
+      pushLoadUi(0.99, L10n::tr(u8"Cargando forma de onda en caché...",
+                                u8"Loading cached waveform..."));
+    }
+
+    pushLoadUi(1.0, L10n::tr(u8"Finalizando...", u8"Finishing..."));
+    waveformBarRaw->setWaveformBins(std::move(cachedBins));
+    waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
+                                  loadedSong.timeSignature);
+    waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
+    waveformBarRaw->setTempoMap(loadedSong.tempoMap);
     return true;
   };
 
   songListRaw->setOnSongActivated(
-      [this, loadSong, &p](const ImportedSongData &song, int songIndex) {
+      [this, loadSong](const ImportedSongData &song, int songIndex) {
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
         deferredStartupSongLoadAtMs = 0;
-        if (p.isSongPlaying())
-          p.stopSong();
         (void)loadSong(song, songIndex);
       });
 
@@ -858,14 +878,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   channelGridRaw->setOnLibrarySongLoadRequested(
-      [this, songListRaw, loadSong, &p](const ImportedSongData &song,
-                                        int songIndex) {
+      [this, songListRaw, loadSong](const ImportedSongData &song,
+                                    int songIndex) {
         juce::ignoreUnused(songIndex);
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
         deferredStartupSongLoadAtMs = 0;
-        if (p.isSongPlaying())
-          p.stopSong();
         const int setlistIndex =
             songListRaw != nullptr ? songListRaw->getSongIndexById(song.id) : -1;
         const int indexForState = setlistIndex >= 0 ? setlistIndex : -1;
@@ -2290,9 +2308,7 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   topBar->setBounds(area.removeFromTop(topBarH));
-  int waveH =
-      (isWaveformExpanded || isWaveformHeightExpanded) ? waveformExpandedH
-                                                       : waveformH;
+  int waveH = isWaveformHeightExpanded ? waveformExpandedH : waveformH;
   // When the arrangement editor is open, the WaveformBar draws a parts toolbar
   // on top. Grow the waveform area by that amount so the toolbar doesn't
   // compress the waveform+minimap, and so the mixer / song list below get

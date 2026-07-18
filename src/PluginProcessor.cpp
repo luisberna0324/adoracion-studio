@@ -184,6 +184,22 @@ juce::String baseArrangementSectionKey(const juce::String &partName) {
              : DynamicGuideEngine::normalizeSectionKey(partName);
 }
 
+void applySongTransitionRamp(
+    juce::AudioBuffer<float> &buffer,
+    const playworship::audio::SongTransitionGainRamp &ramp) noexcept {
+  if (buffer.getNumSamples() <= 0)
+    return;
+  if (juce::approximatelyEqual(ramp.startGain, 1.0f) &&
+      juce::approximatelyEqual(ramp.endGain, 1.0f)) {
+    return;
+  }
+  if (juce::approximatelyEqual(ramp.startGain, ramp.endGain))
+    buffer.applyGain(ramp.endGain);
+  else
+    buffer.applyGainRamp(0, buffer.getNumSamples(), ramp.startGain,
+                         ramp.endGain);
+}
+
 } // namespace
 
 #if JucePlugin_Build_Standalone
@@ -245,7 +261,6 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
   stemTracks.clear();
-  outgoingStemTracks.clear();
   for (auto &worker : stemReadThreads)
     worker->stopThread(3000);
   stemReadThreads.clear();
@@ -264,16 +279,12 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   dryMixBuffer.setSize(getTotalNumOutputChannels(), realtimeBlockCapacity);
   mixEngine.prepare(sampleRate, realtimeBlockCapacity,
                     getTotalNumOutputChannels());
-  outgoingMixEngine.prepare(sampleRate, realtimeBlockCapacity,
-                            getTotalNumOutputChannels());
   stemRoutingInputBuffer.setSize(2, (realtimeBlockCapacity * 2) + 8);
   stemRoutingTempStorage.setSize(2, realtimeBlockCapacity);
   metronomeRenderStorage.setSize(2, realtimeBlockCapacity);
   padsRenderStorage.setSize(juce::jmax(2, getTotalNumOutputChannels()),
                             realtimeBlockCapacity);
   dynamicGuideRenderStorage.setSize(2, realtimeBlockCapacity);
-  outgoingStemRenderStorage.setSize(getTotalNumOutputChannels(),
-                                    realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
   dynamicGuideEngine.prepare(sampleRate);
   metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
@@ -303,17 +314,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     stemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
     stemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
     stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].prepare(
-        sampleRate, realtimeBlockCapacity, 2);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].setContentType(
-        TimeStretchProcessor::ContentType::Melodic);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
-    outgoingStemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
-    outgoingStemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
   }
   routingPitchLatencySamples = 0;
-  outgoingRoutingPitchLatencySamples = 0;
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
@@ -323,8 +325,6 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     rebuildSectionScheduler();
     metronome.prepare(sampleRate);
     for (auto &track : stemTracks)
-      track->prepareToPlay(samplesPerBlock, sampleRate);
-    for (auto &track : outgoingStemTracks)
       track->prepareToPlay(samplesPerBlock, sampleRate);
   }
 
@@ -338,14 +338,11 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
 void MTControlsAudioProcessor::releaseResources() {
   diagnostics.stopBackgroundLogger();
   mixEngine.reset();
-  outgoingMixEngine.reset();
   padsEngine.releaseResources();
   dynamicGuideEngine.reset();
   dynamicGuideLatencyDelay.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   for (auto &track : stemTracks)
-    track->releaseResources();
-  for (auto &track : outgoingStemTracks)
     track->releaseResources();
 }
 
@@ -353,16 +350,12 @@ void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
   for (int i = 0; i < maxStemCount; ++i) {
     stemPitchProcessors[static_cast<size_t>(i)].reset();
     stemPitchDelayLines[static_cast<size_t>(i)].reset();
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].reset();
-    outgoingStemPitchDelayLines[static_cast<size_t>(i)].reset();
   }
   routingPitchLatencySamples = 0;
-  outgoingRoutingPitchLatencySamples = 0;
 }
 
 void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
   mixEngine.reset();
-  outgoingMixEngine.reset();
   flushRoutingTimeProcessors();
 }
 
@@ -406,9 +399,48 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       juce::jmax(2, callbackChannels), callbackSamples);
   juce::AudioBuffer<float> dynamicGuideRenderBuffer(
       dynamicGuideRenderStorage.getArrayOfWritePointers(), 2, callbackSamples);
-  juce::AudioBuffer<float> outgoingStemRenderBuffer(
-      outgoingStemRenderStorage.getArrayOfWritePointers(), callbackChannels,
-      callbackSamples);
+
+  playworship::audio::SongTransitionGainRamp songLoadGainRamp;
+  const auto songLoadState = static_cast<SongLoadTransitionState>(
+      songLoadTransitionState.load(std::memory_order_acquire));
+  const float currentSongLoadGain =
+      songLoadTransitionGain.load(std::memory_order_relaxed);
+  switch (songLoadState) {
+  case SongLoadTransitionState::fadingOut:
+    songLoadGainRamp = playworship::audio::advanceSongTransitionGain(
+        currentSongLoadGain, 0.0f, callbackSamples, playbackSampleRate,
+        songLoadFadeOutDurationSec);
+    songLoadTransitionGain.store(songLoadGainRamp.endGain,
+                                 std::memory_order_relaxed);
+    if (songLoadGainRamp.reachedTarget) {
+      songLoadTransitionState.store(
+          static_cast<int>(SongLoadTransitionState::readyToSwap),
+          std::memory_order_release);
+    }
+    break;
+  case SongLoadTransitionState::fadingIn:
+    songLoadGainRamp = playworship::audio::advanceSongTransitionGain(
+        currentSongLoadGain, 1.0f, callbackSamples, playbackSampleRate,
+        songLoadFadeInDurationSec);
+    songLoadTransitionGain.store(songLoadGainRamp.endGain,
+                                 std::memory_order_relaxed);
+    if (songLoadGainRamp.reachedTarget) {
+      songLoadTransitionState.store(
+          static_cast<int>(SongLoadTransitionState::idle),
+          std::memory_order_release);
+    }
+    break;
+  case SongLoadTransitionState::readyToSwap:
+  case SongLoadTransitionState::holdingAtZero:
+    songLoadGainRamp = {0.0f, 0.0f, true};
+    songLoadTransitionGain.store(0.0f, std::memory_order_relaxed);
+    break;
+  case SongLoadTransitionState::idle:
+  default:
+    songLoadGainRamp = {1.0f, 1.0f, true};
+    songLoadTransitionGain.store(1.0f, std::memory_order_relaxed);
+    break;
+  }
 
   // --- Diagnostics: overall block start time ---
   const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
@@ -459,7 +491,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (targetPitch != pitchActiveSemiTones) {
       pitchActiveSemiTones = targetPitch;
       mixEngine.setPitchSemiTones(pitchActiveSemiTones);
-      outgoingMixEngine.setPitchSemiTones(pitchActiveSemiTones);
       // Routing processors accept live pitch updates below. Do not flush their
       // overlap/FIFO state: doing so inserts a re-prime silence.
     }
@@ -467,7 +498,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const double previousTempoRatio = playbackTempoRatioActive;
       playbackTempoRatioActive = targetTempoRatio;
       mixEngine.setTempoRatio(playbackTempoRatioActive);
-      outgoingMixEngine.setTempoRatio(playbackTempoRatioActive);
       const bool crossedUnity =
           (previousTempoRatio < 1.0 && playbackTempoRatioActive >= 1.0) ||
           (previousTempoRatio > 1.0 && playbackTempoRatioActive <= 1.0);
@@ -481,7 +511,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         flushAllTimeProcessingState();
       } else {
         routingPitchLatencySamples = 0;
-        outgoingRoutingPitchLatencySamples = 0;
       }
     }
     sourceFramesThisBlock = mixEngine.requiredInputFrames(numSamples);
@@ -1141,60 +1170,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
   }
 
-  if (songCrossfadeActive.load(std::memory_order_relaxed) &&
-      numSamples > 0 && playbackSampleRate > 0.0 &&
-      getTransportState() == TransportState::playing) {
-    const float progressStart =
-        songCrossfadeProgress.load(std::memory_order_relaxed);
-    const float progressStep = static_cast<float>(
-        (static_cast<double>(numSamples) / playbackSampleRate) /
-        songCrossfadeDurationSec);
-    const float progressEnd =
-        juce::jlimit(0.0f, 1.0f, progressStart + progressStep);
-
-    const float incomingStart = progressStart;
-    const float incomingEnd = progressEnd;
-    const float outgoingStart = 1.0f - progressStart;
-    const float outgoingEnd = 1.0f - progressEnd;
-
-    songCrossfadeProgress.store(progressEnd, std::memory_order_relaxed);
-    songCrossfadeIncomingGain.store(incomingEnd, std::memory_order_relaxed);
-    songCrossfadeOutgoingGain.store(outgoingEnd, std::memory_order_relaxed);
-
-    if (juce::approximatelyEqual(incomingStart, incomingEnd))
-      buffer.applyGain(incomingEnd);
-    else
-      buffer.applyGainRamp(0, numSamples, incomingStart, incomingEnd);
-
-    bool renderedOutgoing = false;
-    if (!outgoingStemTracks.empty()) {
-      outgoingStemRenderBuffer.clear();
-      outgoingMixEngine.renderDirect(
-          outgoingStemTracks, static_cast<int>(outgoingStemTracks.size()),
-          outgoingStemRenderBuffer);
-      renderedOutgoing = true;
-    }
-
-    if (renderedOutgoing) {
-      if (juce::approximatelyEqual(outgoingStart, outgoingEnd))
-        outgoingStemRenderBuffer.applyGain(outgoingEnd);
-      else
-        outgoingStemRenderBuffer.applyGainRamp(0, numSamples, outgoingStart,
-                                               outgoingEnd);
-      const int addChannels = juce::jmin(numChannels, outgoingStemRenderBuffer.getNumChannels());
-      for (int ch = 0; ch < addChannels; ++ch) {
-        buffer.addFrom(ch, 0, outgoingStemRenderBuffer, ch, 0, numSamples);
-      }
-    }
-
-    if (progressEnd >= 0.9999f) {
-      songCrossfadeActive.store(false, std::memory_order_relaxed);
-      songCrossfadeIncomingGain.store(1.0f, std::memory_order_relaxed);
-      songCrossfadeOutgoingGain.store(0.0f, std::memory_order_relaxed);
-      songCrossfadeProgress.store(1.0f, std::memory_order_relaxed);
-    }
-  }
-
   if (fadeStopsPlayback.load(std::memory_order_relaxed) &&
       fadeActive.load(std::memory_order_relaxed) &&
       juce::approximatelyEqual(fadeGain, 0.0f) &&
@@ -1372,6 +1347,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
     buffer.applyGain(masterOutGain);
+
+  // Song replacement is committed only after this envelope has reached zero.
+  // Apply it after all song-related buses so stems, click and guide remain
+  // sample-continuous at the handoff.
+  applySongTransitionRamp(buffer, songLoadGainRamp);
 
   if (transitionToNextArrangementPart) {
     arrangementCurrentPartIndex.store(nextArrangementPartIndex,
@@ -2233,7 +2213,8 @@ MTControlsAudioProcessor::createParameterLayout() {
 bool MTControlsAudioProcessor::loadSongStems(
     const juce::StringArray &stemPaths, const juce::String &songTitle,
     const juce::String &songKey, const double songBpm,
-    const std::function<void(double)> &onLoadProgress) {
+    const std::function<void(double)> &onLoadProgress,
+    const bool deferTransitionFadeInUntilConfigured) {
   // Snapshot playback configuration safely before we start building transports.
   double localSampleRate = 0.0;
   int localBlockSize = 0;
@@ -2257,7 +2238,8 @@ bool MTControlsAudioProcessor::loadSongStems(
       break;
 
     if (onLoadProgress)
-      onLoadProgress(static_cast<double>(i) / static_cast<double>(denom));
+      onLoadProgress(0.82 * static_cast<double>(i) /
+                     static_cast<double>(denom));
 
     const juce::File file(stemPaths[i]);
     if (!file.existsAsFile())
@@ -2281,17 +2263,75 @@ bool MTControlsAudioProcessor::loadSongStems(
         std::move(reader), *stemReadThreads[workerIndex], sampleRate, 262144);
         
     track->prepareToPlay(localBlockSize, localSampleRate);
-    track->setNextReadPosition(0);
     newTracks.push_back(std::move(track));
+
+    if (onLoadProgress)
+      onLoadProgress(0.82 * static_cast<double>(i + 1) /
+                     static_cast<double>(denom));
   }
 
   if (newTracks.empty())
     return false;
 
-  if (onLoadProgress)
-    onLoadProgress(1.0);
+  // prepareToPlay pre-fills each read-ahead buffer. Verify the first callback
+  // can be served before touching the currently playing song.
+  for (const auto &track : newTracks) {
+    if (!track->waitForNextAudioBlockReady(localBlockSize, 250))
+      return false;
+  }
 
-  // Briefly acquire the lock to swap in the new stem list.
+  if (onLoadProgress)
+    onLoadProgress(0.86);
+
+  const bool shouldResumeAfterLoad = wasPlayingBeforeLoad;
+  const bool shouldFadeOutCurrentSong =
+      shouldResumeAfterLoad && isSongPlaying() &&
+      songLoaded.load(std::memory_order_relaxed) && !stemTracks.empty();
+
+  if (shouldFadeOutCurrentSong) {
+    songLoadTransitionState.store(
+        static_cast<int>(SongLoadTransitionState::fadingOut),
+        std::memory_order_release);
+
+    constexpr int maxFadeWaitMs = 1500;
+    for (int wait = 0; wait < maxFadeWaitMs; ++wait) {
+      const auto state = static_cast<SongLoadTransitionState>(
+          songLoadTransitionState.load(std::memory_order_acquire));
+      if (state == SongLoadTransitionState::readyToSwap)
+        break;
+      if (onLoadProgress && wait > 0 && (wait % 25) == 0) {
+        onLoadProgress(0.86 +
+                       (0.03 * static_cast<double>(wait) / maxFadeWaitMs));
+      }
+      juce::Thread::sleep(1);
+    }
+
+    if (static_cast<SongLoadTransitionState>(
+            songLoadTransitionState.load(std::memory_order_acquire)) !=
+        SongLoadTransitionState::readyToSwap) {
+      // Keep the old deck alive and recover its level if the audio device did
+      // not service the fade in time.
+      songLoadTransitionState.store(
+          static_cast<int>(SongLoadTransitionState::fadingIn),
+          std::memory_order_release);
+      return false;
+    }
+  } else if (shouldResumeAfterLoad) {
+    // Playback may have ended while the next deck was being prepared. Start
+    // the replacement from silence without manufacturing an outgoing deck.
+    songLoadTransitionGain.store(0.0f, std::memory_order_relaxed);
+    songLoadTransitionState.store(
+        static_cast<int>(SongLoadTransitionState::readyToSwap),
+        std::memory_order_release);
+  } else {
+    songLoadTransitionGain.store(1.0f, std::memory_order_relaxed);
+    songLoadTransitionState.store(
+        static_cast<int>(SongLoadTransitionState::idle),
+        std::memory_order_release);
+  }
+
+  // The callback is suspended only after the output envelope has reached
+  // zero, so an empty host buffer cannot create a waveform discontinuity.
   suspendProcessing(true);
   for (int wait = 0;
        wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
@@ -2300,30 +2340,17 @@ bool MTControlsAudioProcessor::loadSongStems(
   }
   if (audioCallbackActive.load(std::memory_order_acquire)) {
     suspendProcessing(false);
+    if (shouldResumeAfterLoad) {
+      songLoadTransitionState.store(
+          static_cast<int>(SongLoadTransitionState::fadingIn),
+          std::memory_order_release);
+    }
     return false;
   }
+  if (onLoadProgress)
+    onLoadProgress(0.90);
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
-    const bool canCrossfadeDecks =
-        wasPlayingBeforeLoad && songLoaded.load(std::memory_order_relaxed) &&
-        !stemTracks.empty();
-
-    if (canCrossfadeDecks) {
-      outgoingStemTracks = std::move(stemTracks);
-      outgoingStemRenderStorage.setSize(getTotalNumOutputChannels(),
-                                        maxRealtimeBlockSize, false, false,
-                                        true);
-      songCrossfadeActive.store(true, std::memory_order_relaxed);
-      songCrossfadeProgress.store(0.0f, std::memory_order_relaxed);
-      songCrossfadeIncomingGain.store(0.0f, std::memory_order_relaxed);
-      songCrossfadeOutgoingGain.store(1.0f, std::memory_order_relaxed);
-    } else {
-      outgoingStemTracks.clear();
-      songCrossfadeActive.store(false, std::memory_order_relaxed);
-      songCrossfadeProgress.store(1.0f, std::memory_order_relaxed);
-      songCrossfadeIncomingGain.store(1.0f, std::memory_order_relaxed);
-      songCrossfadeOutgoingGain.store(0.0f, std::memory_order_relaxed);
-    }
     removeAllStemSources();
     clearLoadedSongState();
 
@@ -2380,12 +2407,44 @@ bool MTControlsAudioProcessor::loadSongStems(
     dynamicGuideLastBlockStartSec = -1.0;
     dynamicGuideWasPlaying = false;
     pitchTargetSemiTones.store(0, std::memory_order_relaxed);
-    setTransportState(wasPlayingBeforeLoad ? TransportState::playing
-                                           : TransportState::stopped);
+    fadeActive.store(false, std::memory_order_relaxed);
+    fadeTarget.store(1.0f, std::memory_order_relaxed);
+    fadeGain = 1.0f;
+    setTransportState(shouldResumeAfterLoad ? TransportState::paused
+                                            : TransportState::stopped);
+    songLoadTransitionGain.store(shouldResumeAfterLoad ? 0.0f : 1.0f,
+                                 std::memory_order_relaxed);
+    songLoadTransitionState.store(
+        static_cast<int>(shouldResumeAfterLoad
+                             ? SongLoadTransitionState::holdingAtZero
+                             : SongLoadTransitionState::idle),
+        std::memory_order_release);
   }
+  if (onLoadProgress)
+    onLoadProgress(0.98);
   suspendProcessing(false);
 
+  if (onLoadProgress)
+    onLoadProgress(1.0);
+
+  if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
+    finishPendingSongTransition();
+
   return true;
+}
+
+void MTControlsAudioProcessor::finishPendingSongTransition() {
+  const auto state = static_cast<SongLoadTransitionState>(
+      songLoadTransitionState.load(std::memory_order_acquire));
+  if (state != SongLoadTransitionState::holdingAtZero)
+    return;
+
+  // Start transport while held at zero. The following state change lets the
+  // next callback bring the fully configured song in with a continuous ramp.
+  playSong();
+  songLoadTransitionState.store(
+      static_cast<int>(SongLoadTransitionState::fadingIn),
+      std::memory_order_release);
 }
 
 void MTControlsAudioProcessor::playSong() {
@@ -3724,7 +3783,6 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   metronome.reset();
   metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
   routingPitchLatencySamples = 0;
-  outgoingRoutingPitchLatencySamples = 0;
   for (auto &delay : stemPitchDelayLines)
     delay.reset();
   for (auto &processor : stemPitchProcessors)
@@ -3874,8 +3932,6 @@ void MTControlsAudioProcessor::setStemPitchShiftMask(
         canPitch, std::memory_order_relaxed);
     const auto contentType = stemContentTypeForPitchShiftable(canPitch);
     stemPitchProcessors[static_cast<size_t>(i)].setContentType(contentType);
-    outgoingStemPitchProcessors[static_cast<size_t>(i)].setContentType(
-        contentType);
   }
 }
 

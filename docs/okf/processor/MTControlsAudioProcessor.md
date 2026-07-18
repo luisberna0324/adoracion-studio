@@ -38,8 +38,11 @@ bool loadSongStems(
     const juce::String &songTitle,
     const juce::String &songKey,
     double songBpm,
-    const std::function<void(double progress01)> &onLoadProgress = {}
+    const std::function<void(double progress01)> &onLoadProgress = {},
+    bool deferTransitionFadeInUntilConfigured = false
 );
+
+void finishPendingSongTransition();
 ```
 
 Carga múltiples archivos de audio como stems separados. El `onLoadProgress` callback recibe valores de 0.0 a 1.0.
@@ -50,8 +53,15 @@ Carga múltiples archivos de audio como stems separados. El `onLoadProgress` cal
 - `songKey`: Tonalidad (ej: "C", "Am", "F#m")
 - `songBpm`: BPM original de la canción
 - `onLoadProgress`: Callback opcional para progress UI
+- `deferTransitionFadeInUntilConfigured`: Mantiene la canción nueva en gain 0
+  hasta llamar `finishPendingSongTransition()`
 
 **Retorna:** `true` si la carga fue exitosa
+
+Si había una canción reproduciéndose, la fuente anterior continúa durante la
+preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y
+fade-in de 150 ms. Antes del intercambio se verifica que el primer bloque de
+todos los stems esté disponible en read-ahead.
 
 ### Estado de canción
 
