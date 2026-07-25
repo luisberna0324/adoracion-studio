@@ -7,7 +7,7 @@ void SimpleDelayLine::prepare(int channels, int maxDelaySamplesToUse) {
   delayBuffer.setSize(numChannels, juce::jmax(1, maxDelaySamples + 1));
   delayBuffer.clear();
   writePos = 0;
-  historySamples = 0;
+  validHistorySamples = 0;
 }
 
 void SimpleDelayLine::setDelay(int delaySamplesToUse) {
@@ -16,9 +16,8 @@ void SimpleDelayLine::setDelay(int delaySamplesToUse) {
 
 void SimpleDelayLine::reset() {
   delaySamples = 0;
-  delayBuffer.clear();
   writePos = 0;
-  historySamples = 0;
+  validHistorySamples = 0;
 }
 
 void SimpleDelayLine::process(juce::AudioBuffer<float> &buffer) {
@@ -36,8 +35,7 @@ void SimpleDelayLine::process(juce::AudioBuffer<float> &buffer) {
 
   int localWrite = writePos;
   for (int sample = 0; sample < numSamples; ++sample) {
-    const int effectiveDelay = juce::jmin(delaySamples, historySamples);
-    int readPos = localWrite - effectiveDelay;
+    int readPos = localWrite - delaySamples;
     if (readPos < 0)
       readPos += bufferSize;
 
@@ -45,7 +43,11 @@ void SimpleDelayLine::process(juce::AudioBuffer<float> &buffer) {
       auto *delayData = delayBuffer.getWritePointer(ch);
       auto *outData = buffer.getWritePointer(ch);
       const float input = outData[sample];
-      const float delayed = effectiveDelay > 0 ? delayData[readPos] : input;
+      const float delayed =
+          delaySamples <= 0
+              ? input
+              : (validHistorySamples >= delaySamples ? delayData[readPos]
+                                                     : 0.0f);
       delayData[localWrite] = input;
       outData[sample] = delayed;
     }
@@ -53,7 +55,8 @@ void SimpleDelayLine::process(juce::AudioBuffer<float> &buffer) {
     ++localWrite;
     if (localWrite >= bufferSize)
       localWrite = 0;
-    historySamples = juce::jmin(maxDelaySamples, historySamples + 1);
+    validHistorySamples =
+        juce::jmin(maxDelaySamples, validHistorySamples + 1);
   }
 
   writePos = localWrite;

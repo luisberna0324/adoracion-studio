@@ -2110,8 +2110,10 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   MTControlsAudioProcessor::MidiBinding learnedBinding;
   if (processorRef.consumePendingMidiLearnBinding(learnedBinding)) {
+    // The audio callback only publishes the fixed-size learn result. Mutating
+    // the binding vector and persisting settings belongs to the message thread.
+    processorRef.setMidiBinding(learnedBinding);
     AppSettings::setMidiBindings(processorRef.getMidiBindings());
-    juce::ignoreUnused(learnedBinding);
     midiLearnPendingTargetId = -1;
     if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
       bar->setMidiLearnPendingTarget(midiLearnPendingTargetId);

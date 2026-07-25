@@ -11,6 +11,12 @@ public:
 
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
   void reset();
+  // SoundTouch resets in place and does not need an off-thread replacement
+  // voice. This keeps the TimeStretchProcessor maintenance API uniform.
+  bool servicePendingRebuild() noexcept { return false; }
+  bool tryResolvePendingReset() noexcept { return isPrepared(); }
+  uint64_t getResetMissCount() const noexcept { return 0; }
+  uint64_t getServiceFailureCount() const noexcept { return 0; }
   void setPitchSemiTones(int semitones);
   void setTempoRatio(double ratio);
   void setContentType(ContentType type);

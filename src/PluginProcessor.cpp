@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "audio/DynamicGuideTiming.h"
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include <algorithm>
@@ -8,10 +9,16 @@
 #include <limits>
 
 namespace {
+using playworship::audio::arrangementCountSectionKey;
+using playworship::audio::DynamicGuideAnnouncementTiming;
+using playworship::audio::dynamicGuideAnnouncementTiming;
+
 constexpr double kMinPlaybackTempoBpm = 20.0;
 constexpr double kMaxPlaybackTempoBpm = 300.0;
 constexpr double kMinPlaybackTempoRatio = 0.75;
 constexpr double kMaxPlaybackTempoRatio = 2.0;
+constexpr int kMinPitchSemitones = -12;
+constexpr int kMaxPitchSemitones = 12;
 constexpr const char *kDynamicGuideLoadWarningPrefix =
     "__dynamic_guide_load_error__:";
 
@@ -122,71 +129,6 @@ juce::String arrangementSectionKey(const juce::String &partName) {
   return DynamicGuideEngine::normalizeSectionKey(partName);
 }
 
-juce::String arrangementCountSectionKey(const juce::String &partName) {
-  const auto key = DynamicGuideEngine::normalizeSectionKey(partName);
-  if (key.isEmpty())
-    return {};
-
-  bool allDigits = true;
-  for (int i = 0; i < key.length(); ++i) {
-    if (!juce::CharacterFunctions::isDigit(key[i])) {
-      allDigits = false;
-      break;
-    }
-  }
-  if (allDigits)
-    return key;
-
-  if (key == "one" || key == "uno")
-    return "1";
-  if (key == "two" || key == "dos")
-    return "2";
-  if (key == "three" || key == "tres")
-    return "3";
-  if (key == "four" || key == "cuatro")
-    return "4";
-  if (key == "five" || key == "cinco")
-    return "5";
-  if (key == "six" || key == "seis")
-    return "6";
-  if (key == "seven" || key == "siete")
-    return "7";
-  return {};
-}
-
-bool isDynamicGuideUtilityCueKey(const juce::String &rawKey) {
-  const auto key = DynamicGuideEngine::normalizeSectionKey(rawKey);
-  static const std::array<const char *, 26> kUtilityCueKeys = {{
-      "a capella", "ad lib", "all", "all in", "bass", "big", "big ending",
-      "break", "breakdown", "build", "drums", "drums in", "guitar", "hits",
-      "hold", "key", "key change down", "key change up", "keys", "last",
-      "last time", "slowly", "slowly build", "softly", "swell",
-      "worship freely"}};
-  for (const auto *candidate : kUtilityCueKeys) {
-    if (key == candidate)
-      return true;
-  }
-  return false;
-}
-
-enum class DynamicGuideAnnouncementTiming {
-  atSectionEntry,
-  oneBarBeforeSection,
-};
-
-DynamicGuideAnnouncementTiming dynamicGuideAnnouncementTiming(
-    const juce::String &sectionKey, const juce::String &sectionName) {
-  // Counts and utility cues are instructions to execute now. Every musical
-  // section (Intro through Ending, including variants) is announced ahead of
-  // its downbeat so the band can prepare the transition.
-  if (arrangementCountSectionKey(sectionKey).isNotEmpty() ||
-      arrangementCountSectionKey(sectionName).isNotEmpty() ||
-      isDynamicGuideUtilityCueKey(sectionKey) ||
-      isDynamicGuideUtilityCueKey(sectionName))
-    return DynamicGuideAnnouncementTiming::atSectionEntry;
-  return DynamicGuideAnnouncementTiming::oneBarBeforeSection;
-}
-
 juce::String baseArrangementSectionKey(const juce::String &partName) {
   const auto canonical = canonicalArrangementSectionName(partName);
   return canonical.isNotEmpty()
@@ -267,9 +209,26 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
       std::memory_order_relaxed);
   dynamicGuideEnabledState.store(dynamicGuideSettings.enabled,
                                  std::memory_order_relaxed);
+
+#if MTCONTROLS_USE_BUNGEE
+  timeProcessorMaintenanceThread =
+      std::make_unique<juce::TimeSliceThread>("TimeProcessorMaintenance");
+  timeProcessorMaintenanceThread->addTimeSliceClient(this);
+  timeProcessorMaintenanceThread->startThread(
+      juce::Thread::Priority::normal);
+  resumeTimeProcessorMaintenance();
+#endif
+  startTimerHz(100);
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
+  stopTimer();
+  pauseTimeProcessorMaintenance();
+  if (timeProcessorMaintenanceThread != nullptr) {
+    timeProcessorMaintenanceThread->stopThread(3000);
+    timeProcessorMaintenanceThread->removeTimeSliceClient(this);
+    timeProcessorMaintenanceThread.reset();
+  }
   stemTracks.clear();
   for (auto &worker : stemReadThreads)
     worker->stopThread(3000);
@@ -278,6 +237,7 @@ MTControlsAudioProcessor::~MTControlsAudioProcessor() {
 
 void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
+  pauseTimeProcessorMaintenance();
   const int realtimeBlockCapacity =
       juce::jmax(samplesPerBlock, maxRealtimeBlockSize);
   juce::dsp::ProcessSpec spec;
@@ -316,15 +276,10 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     stemOutputChannels[static_cast<size_t>(i)].store(channel, std::memory_order_relaxed);
     const int width = stemOutputRoutingState.getStemOutputWidth(i);
     stemOutputWidths[static_cast<size_t>(i)].store(width, std::memory_order_relaxed);
-    stemPitchProcessors[static_cast<size_t>(i)].prepare(
-        sampleRate, realtimeBlockCapacity, 2);
-    stemPitchProcessors[static_cast<size_t>(i)].setContentType(
-        TimeStretchProcessor::ContentType::Melodic);
-    stemPitchProcessors[static_cast<size_t>(i)].setPitchSemiTones(pitchActiveSemiTones);
-    stemPitchProcessors[static_cast<size_t>(i)].setTempoRatio(playbackTempoRatioActive);
-    stemPitchDelayLines[static_cast<size_t>(i)].prepare(2, kMaxRoutingPitchLatencySamples);
-    stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
   }
+  prepareRoutingTimeProcessors(
+      loadedStemCount.load(std::memory_order_relaxed), sampleRate,
+      realtimeBlockCapacity);
   routingPitchLatencySamples = 0;
 
   {
@@ -338,6 +293,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
       track->prepareToPlay(samplesPerBlock, sampleRate);
   }
 
+  resumeTimeProcessorMaintenance();
+
   // Start the background diagnostics logger.
   diagnostics.startBackgroundLogger(
       juce::File::getSpecialLocation(
@@ -346,9 +303,12 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
 }
 
 void MTControlsAudioProcessor::releaseResources() {
+  pauseTimeProcessorMaintenance();
   diagnostics.stopBackgroundLogger();
-  mixEngine.reset();
+  flushAllTimeProcessingState();
   padsEngine.releaseResources();
+  metronome.reset();
+  metronomeLatencyDelay.reset();
   dynamicGuideEngine.reset();
   dynamicGuideLatencyDelay.reset();
   const juce::SpinLock::ScopedLockType lock(stemListLock);
@@ -356,8 +316,29 @@ void MTControlsAudioProcessor::releaseResources() {
     track->releaseResources();
 }
 
+void MTControlsAudioProcessor::prepareRoutingTimeProcessors(
+    const int activeStemCount, const double sampleRate,
+    const int maxBlockFrames) {
+  const int count = juce::jlimit(0, maxStemCount, activeStemCount);
+  const int capacity = juce::jmax(1, maxBlockFrames);
+  for (int i = 0; i < count; ++i) {
+    const auto index = static_cast<size_t>(i);
+    auto &processor = stemPitchProcessors[index];
+    processor.prepare(sampleRate, capacity, 2);
+    processor.setContentType(stemContentTypeForPitchShiftable(
+        stemPitchShiftStates[index].load(std::memory_order_relaxed)));
+    processor.setPitchSemiTones(pitchActiveSemiTones);
+    processor.setTempoRatio(playbackTempoRatioActive);
+    stemPitchDelayLines[index].prepare(2, kMaxRoutingPitchLatencySamples);
+    stemPitchDelayLines[index].setDelay(0);
+  }
+  preparedRoutingProcessorCount.store(count, std::memory_order_release);
+}
+
 void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
-  for (int i = 0; i < maxStemCount; ++i) {
+  const int count =
+      preparedRoutingProcessorCount.load(std::memory_order_acquire);
+  for (int i = 0; i < count; ++i) {
     stemPitchProcessors[static_cast<size_t>(i)].reset();
     stemPitchDelayLines[static_cast<size_t>(i)].reset();
   }
@@ -367,6 +348,41 @@ void MTControlsAudioProcessor::flushRoutingTimeProcessors() noexcept {
 void MTControlsAudioProcessor::flushAllTimeProcessingState() noexcept {
   mixEngine.reset();
   flushRoutingTimeProcessors();
+}
+
+void MTControlsAudioProcessor::pauseTimeProcessorMaintenance() noexcept {
+  timeProcessorMaintenanceEnabled.store(false, std::memory_order_release);
+  // Control-thread barrier: once this scoped lock returns, an in-flight
+  // rebuild has finished and the disabled service cannot start another one.
+  const juce::ScopedLock barrier(timeProcessorMaintenanceLock);
+}
+
+void MTControlsAudioProcessor::resumeTimeProcessorMaintenance() noexcept {
+  if (timeProcessorMaintenanceThread == nullptr)
+    return;
+  timeProcessorMaintenanceEnabled.store(true, std::memory_order_release);
+  timeProcessorMaintenanceThread->moveToFrontOfQueue(this);
+}
+
+int MTControlsAudioProcessor::useTimeSlice() {
+  if (!timeProcessorMaintenanceEnabled.load(std::memory_order_acquire))
+    return 20;
+
+  const juce::ScopedLock lock(timeProcessorMaintenanceLock);
+  if (!timeProcessorMaintenanceEnabled.load(std::memory_order_acquire))
+    return 20;
+
+  int rebuilt = mixEngine.servicePendingProcessorRebuilds();
+  const int count =
+      preparedRoutingProcessorCount.load(std::memory_order_acquire);
+  for (int i = 0; i < count; ++i) {
+    rebuilt += stemPitchProcessors[static_cast<size_t>(i)]
+                   .servicePendingRebuild()
+                   ? 1
+                   : 0;
+  }
+
+  return rebuilt > 0 ? 0 : 5;
 }
 
 bool MTControlsAudioProcessor::isBusesLayoutSupported(
@@ -391,6 +407,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
     std::atomic<bool> &flag;
   } callbackActivityGuard(audioCallbackActive);
+
+  const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
+  const bool songLoadedForDiagnostics =
+      songLoaded.load(std::memory_order_relaxed);
+  const bool diagnosticsActive = diagnostics.isActive();
 
   juce::ScopedNoDenormals noDenormals;
   processMidiMapping(midiMessages);
@@ -452,8 +473,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     break;
   }
 
-  // --- Diagnostics: overall block start time ---
-  const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
+  int diagnosticStemCount = 0;
+  bool diagnosticWasPlaying = false;
 
   for (auto i = getTotalNumInputChannels(); i < getTotalNumOutputChannels();
        ++i)
@@ -480,15 +501,35 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   float dynamicGuideOutputGain = 1.0f;
   bool dynamicGuideOutputAudible = false;
   bool seekAppliedThisBlock = false;
+  bool timeProcessingStateFlushedThisBlock = false;
+  bool virtualTimelineStateFlushedThisBlock = false;
+  bool timeProcessingBlockedThisBlock = false;
   int stemOutputLatencyThisBlock = 0;
   int sourceFramesThisBlock = buffer.getNumSamples();
   double renderedSourceStartSec = 0.0;
 
-  if (songLoaded.load(std::memory_order_relaxed)) {
+  if (songLoadedForDiagnostics) {
     buffer.clear();
 
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
+    const auto flushTimeProcessingStateOnce = [this,
+                                                &timeProcessingStateFlushedThisBlock] {
+      if (timeProcessingStateFlushedThisBlock)
+        return;
+      flushAllTimeProcessingState();
+      timeProcessingStateFlushedThisBlock = true;
+    };
+    const auto flushVirtualTimelineStateOnce =
+        [this, &virtualTimelineStateFlushedThisBlock] {
+          if (virtualTimelineStateFlushedThisBlock)
+            return;
+          metronome.reset();
+          metronomeLatencyDelay.reset();
+          dynamicGuideEngine.reset();
+          dynamicGuideLatencyDelay.reset();
+          virtualTimelineStateFlushedThisBlock = true;
+        };
     const bool isPlaying = getTransportState() == TransportState::playing;
     const bool dynamicGuideEnabled =
         dynamicGuideEnabledState.load(std::memory_order_relaxed);
@@ -518,14 +559,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       // With pitch active, tempo profile jumps can leave per-stem queues with
       // stale timing history. Hard-resync to keep percussion aligned.
       if (pitchActiveSemiTones != 0 && (crossedUnity || profileChanged)) {
-        flushAllTimeProcessingState();
+        flushTimeProcessingStateOnce();
       } else {
         routingPitchLatencySamples = 0;
       }
     }
     sourceFramesThisBlock = mixEngine.requiredInputFrames(numSamples);
-
-    constexpr double lockWaitMs = 0.0;
 
     // Apply pending seek
     if (seekPending.exchange(false, std::memory_order_acquire)) {
@@ -540,7 +579,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
       // Seeking changes source position abruptly: flush all time-domain
       // processors so no stale pre-seek audio survives in different groups.
-      flushAllTimeProcessingState();
+      flushTimeProcessingStateOnce();
+      flushVirtualTimelineStateOnce();
 
       globalSamplePosition.store(seekSamples, std::memory_order_relaxed);
       transportClock.seek(seekSamples);
@@ -553,6 +593,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     }
 
     const int stemCount = static_cast<int>(stemTracks.size());
+    diagnosticStemCount = stemCount;
+    diagnosticWasPlaying = isPlaying;
     if (isPlaying && arrangementCustomActive.load(std::memory_order_relaxed) &&
         sectionScheduler.size() > 0) {
       const auto currentFrame = transportClock.getPositionFrames();
@@ -705,7 +747,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (deltaFrames > thresholdFrames) {
           for (auto &track : stemTracks)
             track->setNextReadPosition(blockSourceStartFrame);
-          flushAllTimeProcessingState();
+          flushTimeProcessingStateOnce();
+          flushVirtualTimelineStateOnce();
           seekAppliedThisBlock = true;
         }
       }
@@ -898,6 +941,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         std::array<bool, maxStemCount> stemNeedsTimeProcess{};
         std::array<bool, maxStemCount> stemPitchShiftableFlags{};
         int targetLatency = 0;
+        bool timeProcessorsReady = true;
         if (timeProcessActive) {
           for (int i = 0; i < stemCount; ++i) {
             const size_t stemIndex = static_cast<size_t>(i);
@@ -910,17 +954,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             if (!shouldProcess)
               continue;
             auto &proc = stemPitchProcessors[stemIndex];
-            if (!proc.isPrepared() || proc.getNumChannels() != 2)
-              continue;
             proc.setContentType(
                 stemContentTypeForPitchShiftable(pitchShiftable));
             proc.setPitchSemiTones(pitchShiftable ? pitchActiveSemiTones : 0);
             proc.setTempoRatio(playbackTempoRatioActive);
+            if (!proc.tryResolvePendingReset() || !proc.isPrepared() ||
+                proc.getNumChannels() != 2) {
+              timeProcessorsReady = false;
+              continue;
+            }
             stemProcessLatencies[stemIndex] = proc.getLatencySamples();
             targetLatency =
                 juce::jmax(targetLatency, stemProcessLatencies[stemIndex]);
           }
         }
+        timeProcessingBlockedThisBlock =
+            timeProcessActive && !timeProcessorsReady;
 
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
@@ -936,13 +985,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             delay.setDelay(desiredDelay);
         }
 
-        if (++stemTimingSnapshotDecimator >=
+        if (diagnosticsActive &&
+            ++stemTimingSnapshotDecimator >=
             kStemTimingSnapshotEveryBlocks) {
           stemTimingSnapshotDecimator = 0;
 
           AudioDiagnostics::StemTimingEvent stemTimingEvent;
-          stemTimingEvent.wallMs =
-              static_cast<double>(juce::Time::currentTimeMillis());
+          stemTimingEvent.wallMs = diagnostics.wallTimeForHighResolutionTick(
+              juce::Time::getHighResolutionTicks());
           stemTimingEvent.tempoRatio = playbackTempoRatioActive;
           stemTimingEvent.pitchSemiTones = pitchActiveSemiTones;
           stemTimingEvent.stemCount = juce::jlimit(
@@ -980,42 +1030,54 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         buffer.clear();
         const int routingInputSamples =
             timeProcessActive ? sourceFramesThisBlock : numSamples;
-        for (int i = 0; i < stemCount; ++i) {
-          stemRoutingInputBuffer.clear();
-          stemRoutingTempBuffer.clear();
-          const size_t stemIndex = static_cast<size_t>(i);
-          if (timeProcessActive && stemNeedsTimeProcess[stemIndex]) {
+        if (timeProcessingBlockedThisBlock) {
+          // Keep every source and the transport moving as one unit, but do not
+          // let a subset of recovered processors or dry stems leak through.
+          for (int i = 0; i < stemCount; ++i) {
+            stemRoutingInputBuffer.clear(0, routingInputSamples);
             juce::AudioSourceChannelInfo stemInfo(
                 &stemRoutingInputBuffer, 0, routingInputSamples);
-            stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
-            auto &proc = stemPitchProcessors[stemIndex];
-            proc.process(stemRoutingInputBuffer, routingInputSamples,
-                         stemRoutingTempBuffer, numSamples);
-          } else {
-            juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
-                                                  numSamples);
-            stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
+            stemTracks[static_cast<size_t>(i)]->getNextAudioBlock(stemInfo);
+            stemPitchDelayLines[static_cast<size_t>(i)].invalidateHistory();
           }
-          // Always run the delay line, including at zero delay, so it retains
-          // enough history to engage latency compensation without a silent
-          // prefill gap when pitch processing is enabled or its latency moves.
-          stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
-          int assignedWidth = juce::jlimit(
-              1, 2, stemOutputWidths[stemIndex].load(
-                        std::memory_order_relaxed));
-          if (numChannels < 2)
-            assignedWidth = 1;
+        } else {
+          for (int i = 0; i < stemCount; ++i) {
+            stemRoutingInputBuffer.clear(0, routingInputSamples);
+            stemRoutingTempBuffer.clear(0, numSamples);
+            const size_t stemIndex = static_cast<size_t>(i);
+            if (timeProcessActive && stemNeedsTimeProcess[stemIndex]) {
+              juce::AudioSourceChannelInfo stemInfo(
+                  &stemRoutingInputBuffer, 0, routingInputSamples);
+              stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
+              auto &proc = stemPitchProcessors[stemIndex];
+              proc.process(stemRoutingInputBuffer, routingInputSamples,
+                           stemRoutingTempBuffer, numSamples);
+            } else {
+              juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
+                                                    numSamples);
+              stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
+            }
+            // Always run the delay line, including at zero delay, so it retains
+            // enough history to engage latency compensation without a silent
+            // prefill gap when pitch processing is enabled or its latency moves.
+            stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
+            int assignedWidth = juce::jlimit(
+                1, 2, stemOutputWidths[stemIndex].load(
+                          std::memory_order_relaxed));
+            if (numChannels < 2)
+              assignedWidth = 1;
 
-          const int maxBaseChannel = juce::jmax(
-              1, numChannels - (assignedWidth >= 2 ? 1 : 0));
-          const int assignedChannelOneBased = juce::jlimit(
-              1, maxBaseChannel,
-              stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
-          const int outputIndex =
-              juce::jlimit(0, juce::jmax(0, numChannels - 1),
-                           assignedChannelOneBased - 1);
-          stemOutputRouter.routeStemToOutputChannels(
-              stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
+            const int maxBaseChannel = juce::jmax(
+                1, numChannels - (assignedWidth >= 2 ? 1 : 0));
+            const int assignedChannelOneBased = juce::jlimit(
+                1, maxBaseChannel,
+                stemOutputChannels[stemIndex].load(std::memory_order_relaxed));
+            const int outputIndex =
+                juce::jlimit(0, juce::jmax(0, numChannels - 1),
+                             assignedChannelOneBased - 1);
+            stemOutputRouter.routeStemToOutputChannels(
+                stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
+          }
         }
         usedSeparatedMix = false;
       } else {
@@ -1063,22 +1125,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
     }
 
-    // --- Diagnostics: record block event ---
-    {
-      const double blockMs =
-          juce::Time::highResolutionTicksToSeconds(
-              juce::Time::getHighResolutionTicks() - blockStartTick) * 1000.0;
-      const double budgetMs =
-          playbackSampleRate > 0.0
-              ? (static_cast<double>(numSamples) / playbackSampleRate) * 1000.0
-              : 0.0;
-      int64_t streamingMisses = 0;
-      for (const auto &track : stemTracks)
-        streamingMisses += track->getRealtimeReadMissCount();
-      diagnostics.pushEvent({juce::Time::currentTimeMillis() * 1.0, blockMs,
-                             budgetMs, lockWaitMs, stemCount,
-                             streamingMisses, blockMs > budgetMs, isPlaying});
-    }
   } else {
     // No song loaded — sin bus de entrada física: silencio (los parámetros
     // inputGain/mix/bypass siguen existiendo por compatibilidad de estado).
@@ -1165,6 +1211,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock,
                              fadeStart, fadeEnd, windowFadeStart,
                              windowFadeEnd);
+    timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
     stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
   } else {
     const float combinedFadeStart = fadeStart * windowFadeStart;
@@ -1228,7 +1275,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     syncMetronomeToSourceSeconds(renderedSourceStartSec);
     metronome.process(metronomeRenderBuffer);
     metronomeLatencyDelay.setDelay(stemOutputLatencyThisBlock);
-    metronomeLatencyDelay.process(metronomeRenderBuffer);
+    if (timeProcessingBlockedThisBlock) {
+      // Advance the click voice/phase with the song but do not retain or emit
+      // only one side of a time-processor recovery gap.
+      metronomeRenderBuffer.clear();
+      metronomeLatencyDelay.invalidateHistory();
+    } else {
+      metronomeLatencyDelay.process(metronomeRenderBuffer);
+    }
     if (!juce::approximatelyEqual(effectiveGain, 1.0f))
       metronomeRenderBuffer.applyGain(effectiveGain);
 
@@ -1261,6 +1315,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     {
       const juce::SpinLock::ScopedTryLockType lock(padsStateLock);
       if (lock.isLocked()) {
+        const auto stopMask =
+            midiPendingPadStopMask.exchange(0, std::memory_order_acq_rel);
+        const auto triggerMask =
+            midiPendingPadTriggerMask.exchange(0, std::memory_order_acq_rel);
+        for (int note = 0; note < 12; ++note) {
+          const auto bit = static_cast<uint16_t>(1U << note);
+          if ((stopMask & bit) != 0)
+            padsEngine.stopNote(note);
+        }
+        for (int note = 0; note < 12; ++note) {
+          const auto bit = static_cast<uint16_t>(1U << note);
+          if ((triggerMask & bit) != 0)
+            padsEngine.triggerNote(note, 0);
+        }
         padsEngine.process(padsRenderBuffer);
         renderedPads = true;
       }
@@ -1321,10 +1389,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive)
     dynamicGuideEngine.render(dynamicGuideRenderBuffer);
 
-  // Pitch/tempo processing delays the stems. Feed the guide delay line every
-  // callback (including silence) so its first announcement is aligned too.
+  // Pitch/tempo processing delays the stems. In normal playback, feed the
+  // guide delay every callback (including silence) so its first announcement
+  // is aligned too.
   dynamicGuideLatencyDelay.setDelay(stemOutputLatencyThisBlock);
-  dynamicGuideLatencyDelay.process(dynamicGuideRenderBuffer);
+  if (timeProcessingBlockedThisBlock) {
+    // The guide voice still advances, but its partial cue and pre-gap delay
+    // history are discarded with the blocked song bus.
+    dynamicGuideRenderBuffer.clear();
+    dynamicGuideLatencyDelay.invalidateHistory();
+  } else {
+    dynamicGuideLatencyDelay.process(dynamicGuideRenderBuffer);
+  }
 
   if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive) {
     if (!juce::approximatelyEqual(dynamicGuideOutputGain, 1.0f))
@@ -1395,6 +1471,51 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       numChannels > 1 ? buffer.getMagnitude(1, 0, numSamples) : left;
   meterLevelLeft.store(left, std::memory_order_relaxed);
   meterLevelRight.store(right, std::memory_order_relaxed);
+
+  // Record the complete callback, including grouped time processing, virtual
+  // buses, master gain and transition handling.
+  if (songLoadedForDiagnostics && diagnosticsActive) {
+    const double budgetMs =
+        playbackSampleRate > 0.0
+            ? (static_cast<double>(callbackSamples) / playbackSampleRate) *
+                  1000.0
+            : 0.0;
+    int64_t streamingMisses = 0;
+    int64_t streamingMissingFrames = 0;
+    for (const auto &track : stemTracks) {
+      streamingMisses += track->getRealtimeReadMissCount();
+      streamingMissingFrames += track->getRealtimeMissingFrameCount();
+    }
+    uint64_t timeProcessorResetMisses =
+        mixEngine.getTimeProcessorResetMissCount();
+    uint64_t timeProcessorServiceFailures =
+        mixEngine.getTimeProcessorServiceFailureCount();
+    const int preparedProcessorCount =
+        preparedRoutingProcessorCount.load(std::memory_order_acquire);
+    for (int i = 0; i < preparedProcessorCount; ++i) {
+      timeProcessorResetMisses +=
+          stemPitchProcessors[static_cast<size_t>(i)].getResetMissCount();
+      timeProcessorServiceFailures +=
+          stemPitchProcessors[static_cast<size_t>(i)]
+              .getServiceFailureCount();
+    }
+    const auto blockEndTick = juce::Time::getHighResolutionTicks();
+    const double blockMs =
+        juce::Time::highResolutionTicksToSeconds(blockEndTick -
+                                                 blockStartTick) *
+        1000.0;
+    diagnostics.pushEvent(
+        {diagnostics.wallTimeForHighResolutionTick(blockEndTick), blockMs,
+         budgetMs, 0.0,
+         diagnosticStemCount, streamingMisses, blockMs > budgetMs,
+         diagnosticWasPlaying, streamingMissingFrames,
+         static_cast<int64_t>(juce::jmin<uint64_t>(
+             timeProcessorResetMisses,
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))),
+         static_cast<int64_t>(juce::jmin<uint64_t>(
+             timeProcessorServiceFailures,
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max())))});
+  }
 }
 
 juce::AudioProcessorEditor *MTControlsAudioProcessor::createEditor() {
@@ -1758,6 +1879,96 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
   return true;
 }
 
+void MTControlsAudioProcessor::timerCallback() {
+  int command = 0;
+  while (dequeueMidiControlCommand(command))
+    executeMidiControlCommand(command);
+
+  if (midiPadsPackLoadRequested.exchange(false,
+                                         std::memory_order_acq_rel) &&
+      !ensurePadsPackReady()) {
+    // A failed/cancelled load must not leave an old note armed indefinitely;
+    // otherwise it could fire much later when a different pack is loaded.
+    midiPendingPadTriggerMask.store(0, std::memory_order_release);
+    midiPendingPadStopMask.store(0, std::memory_order_release);
+  }
+}
+
+bool MTControlsAudioProcessor::enqueueMidiControlCommand(
+    const int command) noexcept {
+  int startIndex1 = 0;
+  int blockSize1 = 0;
+  int startIndex2 = 0;
+  int blockSize2 = 0;
+  midiControlCommandFifo.prepareToWrite(
+      1, startIndex1, blockSize1, startIndex2, blockSize2);
+  juce::ignoreUnused(startIndex2, blockSize2);
+  if (blockSize1 <= 0) {
+    midiControlCommandDropCount.fetch_add(1, std::memory_order_relaxed);
+    return false;
+  }
+
+  midiControlCommandBuffer[static_cast<size_t>(startIndex1)] = command;
+  midiControlCommandFifo.finishedWrite(1);
+  return true;
+}
+
+bool MTControlsAudioProcessor::dequeueMidiControlCommand(
+    int &command) noexcept {
+  int startIndex1 = 0;
+  int blockSize1 = 0;
+  int startIndex2 = 0;
+  int blockSize2 = 0;
+  midiControlCommandFifo.prepareToRead(
+      1, startIndex1, blockSize1, startIndex2, blockSize2);
+  juce::ignoreUnused(startIndex2, blockSize2);
+  if (blockSize1 <= 0)
+    return false;
+
+  command =
+      midiControlCommandBuffer[static_cast<size_t>(startIndex1)];
+  midiControlCommandFifo.finishedRead(1);
+  return true;
+}
+
+void MTControlsAudioProcessor::executeMidiControlCommand(
+    const int command) {
+  switch (command) {
+  case midiUiCommandTransportPlayPause:
+    toggleSongPlayPause();
+    break;
+  case midiUiCommandTransportStop:
+    stopSong();
+    break;
+  case midiUiCommandTransportSeekBack:
+    seekSongRelative(-5.0);
+    break;
+  case midiUiCommandTransportSeekForward:
+    seekSongRelative(5.0);
+    break;
+  case midiUiCommandTempoDown:
+    setPlaybackTempoBpm(getPlaybackTempoBpm() - 1.0);
+    break;
+  case midiUiCommandTempoUp:
+    setPlaybackTempoBpm(getPlaybackTempoBpm() + 1.0);
+    break;
+  case midiUiCommandPadsEnable:
+    setPadsEnabled(true);
+    break;
+  case midiUiCommandPadsDisable:
+    setPadsEnabled(false);
+    break;
+  case midiUiCommandPadsToggle:
+    setPadsEnabled(!isPadsEnabled());
+    break;
+  case midiUiCommandEnsurePadsPack:
+    midiPadsPackLoadRequested.store(true, std::memory_order_release);
+    break;
+  default:
+    break;
+  }
+}
+
 void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
                                                      const int ccValue,
                                                      const MidiBindingMode mode) {
@@ -1769,6 +1980,9 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   const bool high = ccValue >= 64;
   const auto queueUiCommand = [this](const int commandId) {
     midiPendingUiCommand.store(commandId, std::memory_order_release);
+  };
+  const auto queueControlCommand = [this](const int commandId) {
+    enqueueMidiControlCommand(commandId);
   };
   const auto divisionBitForTarget = [](const int divisionTargetId) -> int {
     if (divisionTargetId ==
@@ -1822,14 +2036,20 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   if (targetId >= midiTargetPadsNoteBase &&
       targetId < midiTargetPadsNoteBase + 12) {
     const int noteIndex = targetId - midiTargetPadsNoteBase;
+    const auto bit = static_cast<uint16_t>(1U << noteIndex);
     if (mode == MidiBindingMode::Momentary) {
-      if (high)
-        triggerPadNote(noteIndex, 0);
-      else
-        stopPadNote(noteIndex);
+      if (high) {
+        midiPendingPadTriggerMask.fetch_or(bit, std::memory_order_release);
+      } else {
+        midiPendingPadTriggerMask.fetch_and(
+            static_cast<uint16_t>(~bit), std::memory_order_acq_rel);
+        midiPendingPadStopMask.fetch_or(bit, std::memory_order_release);
+      }
     } else if (high) {
-      triggerPadNote(noteIndex, 0);
+      midiPendingPadTriggerMask.fetch_or(bit, std::memory_order_release);
     }
+    if (!padsPackLoaded.load(std::memory_order_relaxed))
+      midiPadsPackLoadRequested.store(true, std::memory_order_release);
     return;
   }
 
@@ -1846,7 +2066,8 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
     else if (targetId == midiTargetMetronomeSolo)
       setMetronomeSolo(high);
     else if (targetId == midiTargetPadsPower)
-      setPadsEnabled(high);
+      queueControlCommand(high ? midiUiCommandPadsEnable
+                               : midiUiCommandPadsDisable);
     else if (targetId >= midiTargetStemMuteBase &&
              targetId < midiTargetStemMuteBase + maxStemCount)
       setStemMute(targetId - midiTargetStemMuteBase, high);
@@ -1854,11 +2075,11 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
              targetId < midiTargetStemSoloBase + maxStemCount)
       setStemSolo(targetId - midiTargetStemSoloBase, high);
     else if (targetId == midiTargetTransportStop && high)
-      stopSong();
+      queueControlCommand(midiUiCommandTransportStop);
     else if (targetId == midiTargetTransportSeekBack && high)
-      seekSongRelative(-5.0);
+      queueControlCommand(midiUiCommandTransportSeekBack);
     else if (targetId == midiTargetTransportSeekForward && high)
-      seekSongRelative(5.0);
+      queueControlCommand(midiUiCommandTransportSeekForward);
     else if (targetId == midiTargetTransportPrevSong && high)
       queueUiCommand(midiUiCommandPrevSong);
     else if (targetId == midiTargetTransportNextSong && high)
@@ -1882,9 +2103,9 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
     else if (targetId == midiTargetSongFadePlus && high)
       setSongFadeOutSeconds(getSongFadeOutSeconds() + 1.0);
     else if (targetId == midiTargetTempoDown && high)
-      setPlaybackTempoBpm(getPlaybackTempoBpm() - 1.0);
+      queueControlCommand(midiUiCommandTempoDown);
     else if (targetId == midiTargetTempoUp && high)
-      setPlaybackTempoBpm(getPlaybackTempoBpm() + 1.0);
+      queueControlCommand(midiUiCommandTempoUp);
     else if (targetId == midiTargetPitchDown && high)
       setPitchSemiTones(getPitchSemiTones() - 1);
     else if (targetId == midiTargetPitchUp && high)
@@ -1904,18 +2125,18 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   else if (targetId == midiTargetMetronomeSolo)
     setMetronomeSolo(!isMetronomeSolo());
   else if (targetId == midiTargetTransportPlayPause)
-    toggleSongPlayPause();
+    queueControlCommand(midiUiCommandTransportPlayPause);
   else if (targetId == midiTargetTransportStop)
-    stopSong();
+    queueControlCommand(midiUiCommandTransportStop);
   else if (targetId == midiTargetTransportSeekBack)
-    seekSongRelative(-5.0);
+    queueControlCommand(midiUiCommandTransportSeekBack);
   else if (targetId == midiTargetTransportSeekForward)
-    seekSongRelative(5.0);
+    queueControlCommand(midiUiCommandTransportSeekForward);
   else if (targetId == midiTargetTransportFadeToggle) {
     setFadeStopsPlayback(false);
     setFadeActive(!isFadeActive());
   } else if (targetId == midiTargetPadsPower) {
-    setPadsEnabled(!isPadsEnabled());
+    queueControlCommand(midiUiCommandPadsToggle);
   } else if (targetId >= midiTargetStemMuteBase &&
              targetId < midiTargetStemMuteBase + maxStemCount) {
     const int stemIndex = targetId - midiTargetStemMuteBase;
@@ -1947,9 +2168,9 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
   } else if (targetId == midiTargetSongFadePlus) {
     setSongFadeOutSeconds(getSongFadeOutSeconds() + 1.0);
   } else if (targetId == midiTargetTempoDown) {
-    setPlaybackTempoBpm(getPlaybackTempoBpm() - 1.0);
+    queueControlCommand(midiUiCommandTempoDown);
   } else if (targetId == midiTargetTempoUp) {
-    setPlaybackTempoBpm(getPlaybackTempoBpm() + 1.0);
+    queueControlCommand(midiUiCommandTempoUp);
   } else if (targetId == midiTargetPitchDown) {
     setPitchSemiTones(getPitchSemiTones() - 1);
   } else if (targetId == midiTargetPitchUp) {
@@ -2004,8 +2225,15 @@ void MTControlsAudioProcessor::processMidiMapping(
       probeData1 = msg.getNoteNumber();
       probeData2 = msg.getVelocity();
     }
-    midiLastMessageMs.store(juce::Time::currentTimeMillis(),
-                            std::memory_order_relaxed);
+    const auto midiTick = juce::Time::getHighResolutionTicks();
+    const auto timestampMs =
+        midiClockTicksPerSecond > 0.0
+            ? midiClockBaseWallMs +
+                  static_cast<juce::int64>(
+                      static_cast<double>(midiTick - midiClockBaseTick) *
+                      1000.0 / midiClockTicksPerSecond)
+            : midiClockBaseWallMs;
+    midiLastMessageMs.store(timestampMs, std::memory_order_relaxed);
     midiLastMessageChannel.store(channel, std::memory_order_relaxed);
     midiLastMessageData1.store(probeData1, std::memory_order_relaxed);
     midiLastMessageData2.store(probeData2, std::memory_order_relaxed);
@@ -2035,7 +2263,6 @@ void MTControlsAudioProcessor::processMidiMapping(
       learned.sourceType = sourceType;
       learned.ccNumber = sourceData1;
       learned.mode = defaultModeForTarget(learnTarget);
-      setMidiBinding(learned);
       midiLearnPendingChannel.store(channel, std::memory_order_relaxed);
       midiLearnPendingSourceType.store(static_cast<int>(sourceType),
                                        std::memory_order_relaxed);
@@ -2359,6 +2586,8 @@ bool MTControlsAudioProcessor::loadSongStems(
   }
   if (onLoadProgress)
     onLoadProgress(0.90);
+  pauseTimeProcessorMaintenance();
+  const int newStemCount = static_cast<int>(newTracks.size());
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     removeAllStemSources();
@@ -2432,6 +2661,10 @@ bool MTControlsAudioProcessor::loadSongStems(
   }
   if (onLoadProgress)
     onLoadProgress(0.98);
+  prepareRoutingTimeProcessors(
+      newStemCount, localSampleRate,
+      juce::jmax(localBlockSize, maxRealtimeBlockSize));
+  resumeTimeProcessorMaintenance();
   suspendProcessing(false);
 
   if (onLoadProgress)
@@ -3590,8 +3823,13 @@ void MTControlsAudioProcessor::setPlaybackTempoBpm(double bpm) noexcept {
   }
 
   const double normalized = juce::jlimit(minBpm, maxBpm, bpm);
-  playbackTempoBpm.store(normalized, std::memory_order_relaxed);
+  const double previous =
+      playbackTempoBpm.exchange(normalized, std::memory_order_relaxed);
   setMetronomeBpm(normalized);
+  if (!juce::approximatelyEqual(previous, normalized)) {
+    const juce::SpinLock::ScopedLockType lock(stemListLock);
+    rebuildSectionScheduler();
+  }
 }
 
 double MTControlsAudioProcessor::getPlaybackTempoBpm() const noexcept {
@@ -3836,15 +4074,14 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   dynamicGuideLastPartIndex = -1;
   dynamicGuideWasPlaying = false;
   dynamicGuideEngine.reset();
+  dynamicGuideLatencyDelay.reset();
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
   mixEngine.reset();
   metronome.reset();
+  metronomeLatencyDelay.reset();
   metronomeClickStemIndex.store(-1, std::memory_order_relaxed);
-  routingPitchLatencySamples = 0;
-  for (auto &delay : stemPitchDelayLines)
-    delay.reset();
-  for (auto &processor : stemPitchProcessors)
-    processor.reset();
+  flushRoutingTimeProcessors();
+  preparedRoutingProcessorCount.store(0, std::memory_order_release);
   setTransportState(TransportState::stopped);
 }
 
@@ -3881,7 +4118,6 @@ void MTControlsAudioProcessor::resetStemControls(
       stemPitchDelayLines[static_cast<size_t>(i)].setDelay(0);
       stemPitchProcessors[static_cast<size_t>(i)].setContentType(
           TimeStretchProcessor::ContentType::Melodic);
-      stemPitchProcessors[static_cast<size_t>(i)].reset();
     }
   }
 
@@ -3988,14 +4224,14 @@ void MTControlsAudioProcessor::setStemPitchShiftMask(
     const bool canPitch = i < limit ? mask[static_cast<size_t>(i)] : true;
     stemPitchShiftStates[static_cast<size_t>(i)].store(
         canPitch, std::memory_order_relaxed);
-    const auto contentType = stemContentTypeForPitchShiftable(canPitch);
-    stemPitchProcessors[static_cast<size_t>(i)].setContentType(contentType);
   }
 }
 
 void MTControlsAudioProcessor::setPitchSemiTones(
     const int semitoneDelta) noexcept {
-  pitchTargetSemiTones.store(semitoneDelta, std::memory_order_relaxed);
+  pitchTargetSemiTones.store(
+      juce::jlimit(kMinPitchSemitones, kMaxPitchSemitones, semitoneDelta),
+      std::memory_order_relaxed);
 }
 
 int MTControlsAudioProcessor::getPitchSemiTones() const noexcept {
@@ -4131,10 +4367,11 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
   const double sampleRate =
       playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0;
   const double bpm = juce::jmax(1.0, getPlaybackTempoBpm());
+  const double tempoRatio = getPlaybackTempoRatio();
   const int beatsPerBar = guideAnnouncementBeatsPerBar.load(
       std::memory_order_relaxed);
   const auto oneBarFrames = playworship::audio::TransportClock::secondsToFrames(
-      (60.0 / bpm) * juce::jmax(1, beatsPerBar), sampleRate);
+      (60.0 / bpm) * juce::jmax(1, beatsPerBar) * tempoRatio, sampleRate);
   for (const auto &part : arrangementParts) {
     const auto startFrame =
         playworship::audio::TransportClock::secondsToFrames(part.startSec,

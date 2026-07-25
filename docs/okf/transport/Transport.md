@@ -121,6 +121,12 @@ sostener, entradas de instrumentos, cambios de tono, última vez y final
 grande. Una sección que comienza en `0.0 s` se anuncia al entrar porque no
 hay un compás anterior disponible.
 
+El scheduler vive en el timeline fuente. Por eso, cuando cambia el tempo, el
+adelanto de un compás se convierte con
+`(60 / playbackBpm) * beatsPerBar * tempoRatio`. Cambiar BPM o métrica vuelve a
+publicar el snapshot para mantener el mismo compás audible que el click y el
+bounce offline.
+
 ### Snapshots
 
 ```cpp

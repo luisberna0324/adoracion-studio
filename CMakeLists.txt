@@ -213,6 +213,34 @@ if(MTCONTROLS_BUILD_TESTS)
         PRIVATE SoundTouch juce::juce_audio_basics)
     add_test(NAME pitch_shift_ring_buffer COMMAND MTControlsPitchShiftTests)
 
+    add_executable(MTControlsStemBufferingTests
+        tests/stem_buffering_source_tests.cpp
+        src/StemBufferingSource.cpp
+        src/StemBufferingSource.h
+    )
+    target_include_directories(MTControlsStemBufferingTests PRIVATE src)
+    target_compile_definitions(MTControlsStemBufferingTests
+        PRIVATE MTCONTROLS_ENABLE_TEST_HOOKS=1)
+    target_link_libraries(MTControlsStemBufferingTests
+        PRIVATE juce::juce_audio_basics)
+    add_test(NAME stem_buffering_source COMMAND MTControlsStemBufferingTests)
+
+    juce_add_console_app(MTControlsSongMixExportTimelineTests
+        PRODUCT_NAME "MTControls Song Mix Export Timeline Tests")
+    target_sources(MTControlsSongMixExportTimelineTests PRIVATE
+        tests/song_mix_export_timeline_tests.cpp
+        src/audio/SongMixExporter.h
+        src/audio/DynamicGuideEngine.cpp
+        src/audio/DynamicGuideEngine.h
+        src/audio/DynamicGuideTiming.h
+    )
+    juce_generate_juce_header(MTControlsSongMixExportTimelineTests)
+    target_include_directories(MTControlsSongMixExportTimelineTests PRIVATE src)
+    target_link_libraries(MTControlsSongMixExportTimelineTests
+        PRIVATE juce::juce_audio_utils)
+    add_test(NAME song_mix_export_timeline
+        COMMAND MTControlsSongMixExportTimelineTests)
+
     if(MTCONTROLS_BUNGEE_AVAILABLE)
         add_executable(MTControlsBungeeTests
             tests/bungee_processor_tests.cpp
@@ -223,6 +251,29 @@ if(MTCONTROLS_BUILD_TESTS)
         target_link_libraries(MTControlsBungeeTests
             PRIVATE MTControlsBungee juce::juce_audio_basics)
         add_test(NAME bungee_processor COMMAND MTControlsBungeeTests)
+
+        juce_add_console_app(MTControlsStemMixEngineTests
+            PRODUCT_NAME "MTControls Stem Mix Engine Tests")
+        target_sources(MTControlsStemMixEngineTests PRIVATE
+            tests/stem_mix_engine_tests.cpp
+            src/StemMixEngine.cpp
+            src/StemMixEngine.h
+            src/StemTrack.cpp
+            src/StemTrack.h
+            src/StemBufferingSource.cpp
+            src/StemBufferingSource.h
+            src/ResamplingPositionableSource.cpp
+            src/ResamplingPositionableSource.h
+            src/audio/BungeeProcessor.cpp
+            src/audio/BungeeProcessor.h
+        )
+        juce_generate_juce_header(MTControlsStemMixEngineTests)
+        target_include_directories(MTControlsStemMixEngineTests PRIVATE src)
+        target_compile_definitions(MTControlsStemMixEngineTests
+            PRIVATE MTCONTROLS_USE_BUNGEE=1)
+        target_link_libraries(MTControlsStemMixEngineTests
+            PRIVATE MTControlsBungee juce::juce_audio_utils)
+        add_test(NAME stem_mix_engine COMMAND MTControlsStemMixEngineTests)
     endif()
 endif()
 
@@ -333,6 +384,7 @@ target_sources(MTControls
         src/audio/TimeStretchProcessor.h
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h
+        src/audio/DynamicGuideTiming.h
         src/audio/OutputChannelCatalog.cpp
         src/audio/OutputChannelCatalog.h
         src/audio/PadsEngine.cpp

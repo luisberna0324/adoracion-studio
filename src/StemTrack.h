@@ -60,6 +60,11 @@ public:
     return bufferingSource != nullptr ? bufferingSource->getRealtimeMissCount()
                                       : 0;
   }
+  juce::int64 getRealtimeMissingFrameCount() const noexcept {
+    return bufferingSource != nullptr
+               ? bufferingSource->getRealtimeMissingFrameCount()
+               : 0;
+  }
 
 private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;

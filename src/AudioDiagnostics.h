@@ -9,8 +9,9 @@
 /**
  * AudioDiagnostics — Lock-free audio thread performance logger.
  *
- * The audio thread only calls pushEvent(), which writes to a ring buffer
- * using atomic indices — zero locks, zero allocations, zero syscalls.
+ * The audio thread only reads a pre-captured wall-clock calibration and writes
+ * to ring buffers using atomic indices — zero locks, allocations or wall-clock
+ * syscalls.
  *
  * A background JUCE thread drains the ring buffer every 500ms and appends
  * rows to a rotating CSV file under ~/Library/Logs/MTControls/.
@@ -30,6 +31,9 @@ public:
     int64_t streamingMisses = 0;
     bool overrun = false;     // blockMs > budgetMs
     bool isPlaying = false;
+    int64_t streamingMissingFrames = 0;
+    int64_t timeProcessorResetMisses = 0;
+    int64_t timeProcessorServiceFailures = 0;
   };
 
   struct StemTimingEvent {
@@ -86,6 +90,22 @@ public:
     stemHead.store(nextIdx, std::memory_order_release);
   }
 
+  bool isActive() const noexcept {
+    return active.load(std::memory_order_acquire);
+  }
+
+  double wallTimeForHighResolutionTick(const int64_t tick) const noexcept {
+    const auto ticksPerSecond =
+        wallClockTicksPerSecond.load(std::memory_order_relaxed);
+    if (ticksPerSecond <= 0.0)
+      return wallClockBaseMs.load(std::memory_order_relaxed);
+    const auto baseTick =
+        wallClockBaseTick.load(std::memory_order_relaxed);
+    return wallClockBaseMs.load(std::memory_order_relaxed) +
+           (static_cast<double>(tick - baseTick) * 1000.0 /
+            ticksPerSecond);
+  }
+
   // ---------------------------------------------------------------------------
   // Called from the UI / message thread
   // ---------------------------------------------------------------------------
@@ -101,7 +121,7 @@ public:
     // Write CSV header
     if (auto stream = logFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,streaming_misses,is_playing\n",
+          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,streaming_misses,is_playing,streaming_missing_frames,time_processor_reset_misses,time_processor_service_failures\n",
           false, false, nullptr);
     }
     if (auto stream = stemLogFile.createOutputStream()) {
@@ -110,13 +130,23 @@ public:
           false, false, nullptr);
     }
 
-    active.store(true, std::memory_order_relaxed);
+    // Capture the expensive wall clock once on the message thread. Audio
+    // events derive epoch timestamps from the monotonic high-resolution tick.
+    wallClockBaseMs.store(
+        static_cast<double>(juce::Time::currentTimeMillis()),
+        std::memory_order_relaxed);
+    wallClockBaseTick.store(juce::Time::getHighResolutionTicks(),
+                            std::memory_order_relaxed);
+    wallClockTicksPerSecond.store(
+        static_cast<double>(juce::Time::getHighResolutionTicksPerSecond()),
+        std::memory_order_relaxed);
+    active.store(true, std::memory_order_release);
     flushThread = std::make_unique<FlushThread>(*this);
     flushThread->startThread(juce::Thread::Priority::low);
   }
 
   void stopBackgroundLogger() {
-    active.store(false, std::memory_order_relaxed);
+    active.store(false, std::memory_order_release);
     if (flushThread) {
       flushThread->stopThread(2000);
       flushThread.reset();
@@ -151,6 +181,9 @@ private:
   std::atomic<int> stemHead{0};
   std::atomic<int> stemTail{0};
   std::atomic<bool> active{false};
+  std::atomic<double> wallClockBaseMs{0.0};
+  std::atomic<int64_t> wallClockBaseTick{0};
+  std::atomic<double> wallClockTicksPerSecond{0.0};
 
   // Cumulative stats (updated by flush thread only)
   std::atomic<int> overrunCount{0};
@@ -189,7 +222,10 @@ private:
           << juce::String(ev.lockWaitMs, 3).toStdString() << ","
           << ev.stemCount << ","
           << ev.streamingMisses << ","
-          << (ev.isPlaying ? "1" : "0") << "\n";
+          << (ev.isPlaying ? "1" : "0") << ","
+          << ev.streamingMissingFrames << ","
+          << ev.timeProcessorResetMisses << ","
+          << ev.timeProcessorServiceFailures << "\n";
 
       // Update cumulative stats
       totalCount.fetch_add(1, std::memory_order_relaxed);

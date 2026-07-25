@@ -21,7 +21,9 @@
 #include <array>
 #include <functional>
 
-class MTControlsAudioProcessor : public juce::AudioProcessor {
+class MTControlsAudioProcessor : public juce::AudioProcessor,
+                                 private juce::TimeSliceClient,
+                                 private juce::Timer {
 public:
   MTControlsAudioProcessor();
   ~MTControlsAudioProcessor() override;
@@ -269,6 +271,16 @@ public:
   static constexpr int midiUiCommandMixerNudgeDown = 9;
   static constexpr int midiUiCommandMixerApplyRouting = 10;
   static constexpr int midiUiCommandWaveformEditToggle = 11;
+  static constexpr int midiUiCommandTransportPlayPause = 12;
+  static constexpr int midiUiCommandTransportStop = 13;
+  static constexpr int midiUiCommandTransportSeekBack = 14;
+  static constexpr int midiUiCommandTransportSeekForward = 15;
+  static constexpr int midiUiCommandTempoDown = 16;
+  static constexpr int midiUiCommandTempoUp = 17;
+  static constexpr int midiUiCommandPadsEnable = 18;
+  static constexpr int midiUiCommandPadsDisable = 19;
+  static constexpr int midiUiCommandPadsToggle = 20;
+  static constexpr int midiUiCommandEnsurePadsPack = 21;
 
 private:
   static constexpr int maxStemCount = 64;
@@ -311,6 +323,9 @@ private:
 
   juce::AudioFormatManager playbackFormatManager;
   std::vector<std::unique_ptr<juce::TimeSliceThread>> stemReadThreads;
+  std::unique_ptr<juce::TimeSliceThread> timeProcessorMaintenanceThread;
+  std::atomic<bool> timeProcessorMaintenanceEnabled{false};
+  juce::CriticalSection timeProcessorMaintenanceLock;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
   std::array<std::atomic<float>, maxStemCount> stemLevels;
   std::array<std::atomic<float>, maxStemCount> stemVolumes;
@@ -324,6 +339,7 @@ private:
   std::array<std::atomic<int>, maxStemCount> stemOutputWidths;
   std::array<TimeStretchProcessor, maxStemCount> stemPitchProcessors;
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
+  std::atomic<int> preparedRoutingProcessorCount{0};
   std::atomic<int> loadedStemCount{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
@@ -347,6 +363,8 @@ private:
   juce::String padsPackStatusText{"Not loaded"};
   std::atomic<bool> padsPackLoaded{false};
   mutable juce::SpinLock padsStateLock;
+  std::atomic<uint16_t> midiPendingPadTriggerMask{0};
+  std::atomic<uint16_t> midiPendingPadStopMask{0};
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
   std::atomic<double> playbackTempoBpm{120.0};
@@ -395,6 +413,17 @@ private:
   std::atomic<int> midiLearnPendingCc{0};
   std::atomic<int> midiLearnPendingMode{0};
   std::atomic<int> midiPendingUiCommand{0};
+  static constexpr int midiControlCommandQueueCapacity = 64;
+  juce::AbstractFifo midiControlCommandFifo{
+      midiControlCommandQueueCapacity};
+  std::array<int, midiControlCommandQueueCapacity>
+      midiControlCommandBuffer{};
+  std::atomic<uint64_t> midiControlCommandDropCount{0};
+  std::atomic<bool> midiPadsPackLoadRequested{false};
+  const juce::int64 midiClockBaseWallMs = juce::Time::currentTimeMillis();
+  const int64_t midiClockBaseTick = juce::Time::getHighResolutionTicks();
+  const double midiClockTicksPerSecond =
+      static_cast<double>(juce::Time::getHighResolutionTicksPerSecond());
   std::atomic<juce::int64> midiLastMessageMs{0};
   std::atomic<int> midiLastMessageChannel{0};
   std::atomic<int> midiLastMessageData1{-1};
@@ -475,8 +504,17 @@ private:
   bool reloadDynamicGuideAssets(juce::String *errorMessage = nullptr);
   juce::String currentDynamicGuideLanguageCode() const noexcept;
   int findFirstGuideStemIndex(int stemCount) const noexcept;
+  void prepareRoutingTimeProcessors(int activeStemCount, double sampleRate,
+                                    int maxBlockFrames);
   void flushRoutingTimeProcessors() noexcept;
   void flushAllTimeProcessingState() noexcept;
+  void pauseTimeProcessorMaintenance() noexcept;
+  void resumeTimeProcessorMaintenance() noexcept;
+  int useTimeSlice() override;
+  void timerCallback() override;
+  bool enqueueMidiControlCommand(int command) noexcept;
+  bool dequeueMidiControlCommand(int &command) noexcept;
+  void executeMidiControlCommand(int command);
   double getPlaybackTempoRatio() const noexcept;
   int findArrangementPartIndexForArrangementTime(double arrangementSeconds) const noexcept;
   juce::int64 mapArrangementFrameToSourceFrame(

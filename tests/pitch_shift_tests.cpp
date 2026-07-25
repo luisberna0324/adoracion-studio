@@ -84,6 +84,34 @@ int main() {
   expect(delayBlock.getSample(0, 0) == 23.0f,
          "engaging latency compensation uses retained history");
 
+  SimpleDelayLine startupDelay;
+  startupDelay.prepare(2, 64);
+  startupDelay.setDelay(10);
+  juce::AudioBuffer<float> impulseBlock(2, 16);
+  impulseBlock.clear();
+  impulseBlock.setSample(0, 0, 1.0f);
+  impulseBlock.setSample(1, 0, 1.0f);
+  startupDelay.process(impulseBlock);
+  for (int sample = 0; sample < 10; ++sample) {
+    expect(impulseBlock.getSample(0, sample) == 0.0f,
+           "clean delay ring emits zero for the complete startup delay");
+  }
+  expect(impulseBlock.getSample(0, 10) == 1.0f,
+         "startup impulse appears at the configured delay");
+
+  startupDelay.reset();
+  startupDelay.setDelay(10);
+  impulseBlock.clear();
+  impulseBlock.setSample(0, 0, 0.5f);
+  impulseBlock.setSample(1, 0, 0.5f);
+  startupDelay.process(impulseBlock);
+  for (int sample = 0; sample < 10; ++sample) {
+    expect(impulseBlock.getSample(0, sample) == 0.0f,
+           "reset delay ring emits zero for the complete delay");
+  }
+  expect(impulseBlock.getSample(0, 10) == 0.5f,
+         "post-reset impulse appears at the configured delay");
+
   processor.reset();
   processor.setPitchSemiTones(0);
   processor.setTempoRatio(1.0);

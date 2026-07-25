@@ -4,7 +4,7 @@ title: StemMixEngine
 description: Motor de mezcla de stems con procesamiento de pitch y tempo
 resource: src/StemMixEngine.h
 tags: [juce, audio, engine, mix, stem, pitch, tempo]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T22:12:14Z
 ---
 
 # StemMixEngine
@@ -63,9 +63,28 @@ Configura el motor para el sample rate y tamaño de bloque dados.
 
 ```cpp
 void reset();
+int servicePendingProcessorRebuilds() noexcept;
+uint64_t getTimeProcessorResetMissCount() const noexcept;
+uint64_t getTimeProcessorServiceFailureCount() const noexcept;
 ```
 
-Resetea todos los procesadores y buffers al estado inicial.
+`reset()` limpia buffers y cambia cada Bungee activo por una segunda voz ya
+construida. El cambio es lock-free y no reserva memoria. La voz anterior queda
+retirada; `servicePendingProcessorRebuilds()` debe ejecutarse fuera del callback
+para reconstruirla y volver a publicar un spare limpio.
+
+Cada voz se precalienta con silencio fuera del callback hasta publicar una
+latencia estable. Si llega otra discontinuidad antes de que exista un spare, el
+reset queda pendiente, `getTimeProcessorResetMissCount()` aumenta y el
+procesador entrega silencio en vez de reutilizar historia vieja. El worker
+reconstruye el spare con backoff exponencial si falla; esos fallos se consultan
+con `getTimeProcessorServiceFailureCount()`.
+
+Antes de renderizar, el motor intenta activar todos los reemplazos requeridos
+sin cortar el preflight al primer fallo. Si alguno todavía no está listo, el
+bus agrupado completo se entrega en silencio y `wasLastRenderBlocked()` lo
+indica al procesador principal. Las fuentes sí avanzan: la recuperación produce
+un hueco coherente, nunca melodía ausente mientras percusión o guía continúan.
 
 ### Pitch shift
 
@@ -81,7 +100,7 @@ Establece el pitch shift en semitonos (-12 a +12).
 void setTempoRatio(double ratio);
 ```
 
-Establece la proporción de tempo (1.0 = normal, 0.5 = mitad, 2.0 = doble).
+Establece la proporción de tempo (1.0 = normal, 0.75 = mínimo, 2.0 = doble).
 
 ## Métodos de render
 
@@ -147,7 +166,15 @@ Calcula frames de input necesarios para producir outputFrames (considera process
 int getOutputLatencySamples() const noexcept;
 ```
 
-Retorna la latencia total en samples.
+Retorna la latencia total en samples del dominio de salida. Los backends que
+reportan su latencia en frames de entrada, como Bungee, la convierten antes de
+publicarla:
+
+```text
+outputLatencySamples = inputLatencyFrames / tempoRatio
+```
+
+`tempoRatio` expresa frames de entrada consumidos por cada frame de salida.
 
 ## Constantes
 
@@ -170,6 +197,36 @@ Los stems percusivos usan `tempoShiftPercussion` con latency diferente a los mel
 Las delay lines (`SimpleDelayLine`) compensan la diferente latencia de procesamiento entre:
 - Stems con time stretch (mayor latencia)
 - Stems sin processing (menor latencia)
+
+Las tres delay lines se procesan en todos los bloques, incluso cuando su delay
+actual es cero. Esto conserva historia suficiente para activar pitch sin
+introducir un bloque de silencio al establecer la compensación. En modo
+pitch-only, percusión y guía atraviesan explícitamente sus delay lines para
+alinearse con el grupo melódico procesado por Bungee.
+
+Después de `prepare()` o `reset()`, un delay mayor que cero se aplica completo
+desde el primer sample: las posiciones del ring todavía no escritas producen
+cero hasta acumular exactamente `delaySamples`. El modo delay cero no lee el
+ring, pero sí escribe cada sample; por eso un cambio en vivo a delay positivo
+puede recuperar historia real ya renderizada, sin reducir artificialmente el
+retardo durante el arranque.
+
+La validez de esa historia se lleva con un contador separado. `reset()` e
+`invalidateHistory()` son O(1): no limpian el ring completo dentro del callback,
+sino que tratan sus muestras anteriores como inválidas hasta escribir el delay
+completo de la nueva línea temporal.
+
+### Discontinuidades
+
+`MTControlsAudioProcessor` atiende los tres grupos y los procesadores de
+routing desde un único `TimeSliceThread`: no crea un hilo por stem. Las dos
+voces Bungee evitan reutilizar granos o cola de la posición anterior después de
+seek, loop o cambio estructural.
+
+El servicio preconstruye y precalienta estado DSP limpio con silencio, pero
+todavía no prealimenta audio del destino. El salto queda libre de historia
+vieja y conoce su latencia desde el primer bloque; no se declara gapless hasta
+disponer también de una segunda caché fuente prellenada.
 
 ## Archivos relacionados
 

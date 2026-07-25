@@ -30,8 +30,10 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
     buffer.setSize(numberOfChannels, bufferSizeNeeded);
     buffer.clear();
 
-    bufferValidStart.store(0, std::memory_order_relaxed);
-    bufferValidEnd.store(0, std::memory_order_relaxed);
+    const auto epoch =
+        requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    workerBufferEpoch = epoch;
+    publishValidBufferRange(0, 0, epoch);
 
     backgroundThread.addTimeSliceClient(this);
 
@@ -49,6 +51,10 @@ void StemBufferingSource::releaseResources() {
   isPrepared = false;
   backgroundThread.removeTimeSliceClient(this);
 
+  const auto epoch =
+      requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+  workerBufferEpoch = epoch;
+  publishValidBufferRange(0, 0, epoch);
   buffer.setSize(numberOfChannels, 0);
 
   if (source != this)
@@ -57,56 +63,108 @@ void StemBufferingSource::releaseResources() {
 
 void StemBufferingSource::getNextAudioBlock(
     const juce::AudioSourceChannelInfo &info) {
-  const auto bufferRange = getValidBufferRange(info.numSamples);
-
-  if (bufferRange.isEmpty()) {
-    info.clearActiveBufferRegion();
+  if (info.numSamples <= 0)
     return;
-  }
 
-  const auto validStart = bufferRange.getStart();
-  const auto validEnd = bufferRange.getEnd();
+  const auto blockStart = nextPlayPos.load(std::memory_order_acquire);
+  const auto blockCursorEpoch =
+      cursorEpoch.load(std::memory_order_acquire);
+  const auto blockBufferEpoch =
+      requestedBufferEpoch.load(std::memory_order_acquire);
+  const auto bufferRange =
+      getValidBufferRange(info.numSamples, blockStart);
+  auto validStart =
+      juce::jlimit(0, info.numSamples, bufferRange.getStart());
+  auto validEnd =
+      juce::jlimit(validStart, info.numSamples, bufferRange.getEnd());
 
-  if (validStart > 0)
-    info.buffer->clear(info.startSample, validStart);
-
-  if (validEnd < info.numSamples)
-    info.buffer->clear(info.startSample + validEnd, info.numSamples - validEnd);
+  // Start from deterministic silence so empty/partial read-ahead ranges and
+  // output channels beyond numberOfChannels cannot leak stale samples.
+  info.clearActiveBufferRegion();
 
   if (validStart < validEnd) {
     if (!callbackLock.tryEnter()) {
-      info.clearActiveBufferRegion();
-      realtimeMissCount.fetch_add(1, std::memory_order_relaxed);
-      nextPlayPos += info.numSamples;
-      return;
-    }
-    for (int chan = std::min(numberOfChannels, info.buffer->getNumChannels());
-         --chan >= 0;) {
-      jassert(buffer.getNumSamples() > 0);
+      validStart = validEnd = 0;
+    } else {
+      // The worker may have republished its window between the optimistic
+      // atomic snapshot and this lock. Revalidate while the ring itself is
+      // stable so stale offsets can never address newly repurposed storage.
+      const auto lockedRange =
+          getValidBufferRange(info.numSamples, blockStart);
+      validStart =
+          juce::jlimit(0, info.numSamples, lockedRange.getStart());
+      validEnd =
+          juce::jlimit(validStart, info.numSamples, lockedRange.getEnd());
 
-      const auto startBufferIndex =
-          (int)((validStart + nextPlayPos) % buffer.getNumSamples());
-      const auto endBufferIndex =
-          (int)((validEnd + nextPlayPos) % buffer.getNumSamples());
+      if (validStart < validEnd) {
+        for (int chan =
+                 std::min(numberOfChannels, info.buffer->getNumChannels());
+             --chan >= 0;) {
+          jassert(buffer.getNumSamples() > 0);
 
-      if (startBufferIndex < endBufferIndex) {
-        info.buffer->copyFrom(chan, info.startSample + validStart, buffer, chan,
-                              startBufferIndex, validEnd - validStart);
-      } else {
-        const auto initialSize = buffer.getNumSamples() - startBufferIndex;
+          const auto startBufferIndex =
+              (int)((validStart + blockStart) % buffer.getNumSamples());
+          const auto endBufferIndex =
+              (int)((validEnd + blockStart) % buffer.getNumSamples());
 
-        info.buffer->copyFrom(chan, info.startSample + validStart, buffer, chan,
-                              startBufferIndex, initialSize);
+          if (startBufferIndex < endBufferIndex) {
+            info.buffer->copyFrom(chan, info.startSample + validStart, buffer,
+                                  chan, startBufferIndex,
+                                  validEnd - validStart);
+          } else {
+            const auto initialSize = buffer.getNumSamples() - startBufferIndex;
 
-        info.buffer->copyFrom(chan, info.startSample + validStart + initialSize,
-                              buffer, chan, 0,
-                              (validEnd - validStart) - initialSize);
+            info.buffer->copyFrom(chan, info.startSample + validStart, buffer,
+                                  chan, startBufferIndex, initialSize);
+
+            info.buffer->copyFrom(
+                chan, info.startSample + validStart + initialSize, buffer, chan,
+                0, (validEnd - validStart) - initialSize);
+          }
+        }
       }
+
+      // A control-thread seek can invalidate the range without waiting for
+      // this short copy lock. If it landed during the copy, discard the old
+      // timeline audio instead of exposing one stale block.
+      if (requestedBufferEpoch.load(std::memory_order_acquire) !=
+          blockBufferEpoch) {
+        info.clearActiveBufferRegion();
+        validStart = validEnd = 0;
+      }
+      callbackLock.exit();
     }
-    callbackLock.exit();
   }
 
-  nextPlayPos += info.numSamples;
+  const auto missingFrames =
+      info.numSamples - juce::jmax(0, validEnd - validStart);
+  if (missingFrames > 0) {
+    realtimeMissCount.fetch_add(1, std::memory_order_relaxed);
+    realtimeMissingFrameCount.fetch_add(missingFrames,
+                                        std::memory_order_relaxed);
+  }
+
+#if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
+  if (beforeCursorAdvanceTestHook != nullptr)
+    beforeCursorAdvanceTestHook(*this);
+#endif
+
+  // Advance only the position captured for this block. A concurrent seek
+  // increments the epoch before publishing its destination, so either this
+  // epoch check fails, the CAS fails against the new position, or the seek
+  // overwrites an advance that completed first. The callback can therefore
+  // never add its block length to the seek destination.
+  auto expectedPosition = blockStart;
+  const auto maximumPosition = std::numeric_limits<juce::int64>::max();
+  const auto advancedPosition =
+      blockStart > maximumPosition - info.numSamples
+          ? maximumPosition
+          : blockStart + static_cast<juce::int64>(info.numSamples);
+  if (cursorEpoch.load(std::memory_order_acquire) == blockCursorEpoch) {
+    nextPlayPos.compare_exchange_strong(
+        expectedPosition, advancedPosition,
+        std::memory_order_release, std::memory_order_relaxed);
+  }
 }
 
 bool StemBufferingSource::waitForNextAudioBlockReady(
@@ -127,7 +185,10 @@ bool StemBufferingSource::waitForNextAudioBlockReady(
            : (std::numeric_limits<juce::uint32>::max() - startTime) + now);
 
   while (elapsed <= timeout) {
-    const auto bufferRange = getValidBufferRange(info.numSamples);
+    const auto readinessStart =
+        nextPlayPos.load(std::memory_order_acquire);
+    const auto bufferRange =
+        getValidBufferRange(info.numSamples, readinessStart);
 
     const auto validStart = bufferRange.getStart();
     const auto validEnd = bufferRange.getEnd();
@@ -152,38 +213,79 @@ bool StemBufferingSource::waitForNextAudioBlockReady(
 }
 
 juce::int64 StemBufferingSource::getNextReadPosition() const {
-  jassert(source->getTotalLength() > 0);
-  const auto pos = nextPlayPos.load();
-
-  return (source->isLooping() && nextPlayPos > 0)
-             ? pos % source->getTotalLength()
-             : pos;
+  const auto length = source->getTotalLength();
+  const auto pos = nextPlayPos.load(std::memory_order_acquire);
+  jassert(length > 0);
+  return source->isLooping() && pos > 0 && length > 0 ? pos % length : pos;
 }
 
 void StemBufferingSource::setNextReadPosition(juce::int64 newPosition) {
-  const auto currentPosition = nextPlayPos.load(std::memory_order_acquire);
-  const auto validStart = bufferValidStart.load(std::memory_order_acquire);
-  const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
-  if (newPosition == currentPosition && newPosition >= validStart &&
-      newPosition < validEnd) {
-    return;
-  }
+  // Announce the seek before publishing its position. Combined with the
+  // callback's captured epoch and position CAS, this ordering guarantees that
+  // an in-flight block cannot advance the new destination.
+  cursorEpoch.fetch_add(1, std::memory_order_acq_rel);
+  nextPlayPos.store(newPosition, std::memory_order_release);
 
-  nextPlayPos = newPosition;
-  bufferValidStart.store(0, std::memory_order_release);
-  bufferValidEnd.store(0, std::memory_order_release);
+  // Advance the buffer epoch only after publishing the destination, so a
+  // worker that observes the new epoch must also observe the new position.
+  // Do not touch the worker-owned start/end pair here.
+  requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel);
   backgroundThread.moveToFrontOfQueue(this);
 }
 
-juce::Range<int>
-StemBufferingSource::getValidBufferRange(int numSamples) const {
-  const auto pos = nextPlayPos.load();
-  const auto validStart = bufferValidStart.load(std::memory_order_acquire);
-  const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
+void StemBufferingSource::publishValidBufferRange(
+    const juce::int64 start, const juce::int64 end,
+    const uint64_t epoch) noexcept {
+  const auto sequence =
+      bufferRangeSequence.fetch_add(1, std::memory_order_acq_rel);
+  jassert((sequence & 1U) == 0U);
+  juce::ignoreUnused(sequence);
+  bufferValidStart.store(start, std::memory_order_relaxed);
+  bufferValidEnd.store(end, std::memory_order_relaxed);
+  publishedBufferEpoch.store(epoch, std::memory_order_relaxed);
+  bufferRangeSequence.fetch_add(1, std::memory_order_release);
+}
 
-  return {(int)(juce::jlimit(validStart, validEnd, pos) - pos),
-          (int)(juce::jlimit(validStart, validEnd, pos + numSamples) -
-                pos)};
+juce::Range<int>
+StemBufferingSource::getValidBufferRange(const int numSamples,
+                                         const juce::int64 pos) const {
+  if (numSamples <= 0)
+    return {};
+
+  const auto requestedEpoch =
+      requestedBufferEpoch.load(std::memory_order_acquire);
+  const auto sequenceBefore =
+      bufferRangeSequence.load(std::memory_order_acquire);
+  if ((sequenceBefore & 1U) != 0U)
+    return {};
+  const auto validStart = bufferValidStart.load(std::memory_order_relaxed);
+  const auto validEnd = bufferValidEnd.load(std::memory_order_relaxed);
+  const auto publishedEpoch =
+      publishedBufferEpoch.load(std::memory_order_relaxed);
+  const auto sequenceAfter =
+      bufferRangeSequence.load(std::memory_order_acquire);
+  if (sequenceBefore != sequenceAfter ||
+      (sequenceAfter & 1U) != 0U ||
+      publishedEpoch != requestedEpoch ||
+      requestedBufferEpoch.load(std::memory_order_acquire) !=
+          requestedEpoch) {
+    return {};
+  }
+
+  const auto maxPosition = std::numeric_limits<juce::int64>::max();
+  const auto requestedEnd =
+      pos > maxPosition - numSamples ? maxPosition : pos + numSamples;
+  const auto overlapStart = juce::jmax(pos, validStart);
+  const auto overlapEnd = juce::jmin(requestedEnd, validEnd);
+  if (overlapEnd <= overlapStart)
+    return {};
+
+  // The overlap is bounded by numSamples before narrowing to int, even when
+  // the published window is far from a long-running monotonic play cursor.
+  return {
+      static_cast<int>(overlapStart - pos),
+      static_cast<int>(overlapEnd - pos),
+  };
 }
 
 bool StemBufferingSource::readNextBufferChunk() {
@@ -191,37 +293,51 @@ bool StemBufferingSource::readNextBufferChunk() {
 
   if (wasSourceLooping != isLooping()) {
     wasSourceLooping = isLooping();
-    bufferValidStart.store(0, std::memory_order_release);
-    bufferValidEnd.store(0, std::memory_order_release);
+    requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  const auto workEpoch =
+      requestedBufferEpoch.load(std::memory_order_acquire);
+  if (workerBufferEpoch != workEpoch) {
+    workerBufferEpoch = workEpoch;
+    publishValidBufferRange(0, 0, workEpoch);
   }
 
   newBVS = std::max((juce::int64)0, nextPlayPos.load());
-  newBVE = newBVS + buffer.getNumSamples() - 4;
+  const auto ringSpan =
+      static_cast<juce::int64>(juce::jmax(0, buffer.getNumSamples() - 4));
+  newBVE =
+      newBVS > std::numeric_limits<juce::int64>::max() - ringSpan
+          ? std::numeric_limits<juce::int64>::max()
+          : newBVS + ringSpan;
   sectionToReadStart = 0;
   sectionToReadEnd = 0;
   const auto validStart = bufferValidStart.load(std::memory_order_acquire);
   const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
 
   constexpr int maxChunkSize = 32768;
+  const auto addChunkWithoutOverflow = [](const juce::int64 value) {
+    const auto maximum = std::numeric_limits<juce::int64>::max();
+    return value > maximum - maxChunkSize
+               ? maximum
+               : value + static_cast<juce::int64>(maxChunkSize);
+  };
 
   if (newBVS < validStart || newBVS >= validEnd) {
-    newBVE = std::min(newBVE, newBVS + (juce::int64)maxChunkSize);
+    newBVE = std::min(newBVE, addChunkWithoutOverflow(newBVS));
 
     sectionToReadStart = newBVS;
     sectionToReadEnd = newBVE;
 
-    bufferValidStart.store(0, std::memory_order_release);
-    bufferValidEnd.store(0, std::memory_order_release);
-  } else if (std::abs((int)(newBVS - validStart)) > 512 ||
-             std::abs((int)(newBVE - validEnd)) > 512) {
-    newBVE = std::min(newBVE, validEnd + (juce::int64)maxChunkSize);
+    publishValidBufferRange(0, 0, workEpoch);
+  } else if (std::abs(newBVS - validStart) > 512 ||
+             std::abs(newBVE - validEnd) > 512) {
+    newBVE = std::min(newBVE, addChunkWithoutOverflow(validEnd));
 
     sectionToReadStart = validEnd;
     sectionToReadEnd = newBVE;
 
-    bufferValidStart.store(newBVS, std::memory_order_release);
-    bufferValidEnd.store(std::min(validEnd, newBVE),
-                         std::memory_order_release);
+    publishValidBufferRange(newBVS, std::min(validEnd, newBVE), workEpoch);
   }
 
   if (sectionToReadStart == sectionToReadEnd)
@@ -248,8 +364,10 @@ bool StemBufferingSource::readNextBufferChunk() {
                       0);
   }
 
-  bufferValidStart.store(newBVS, std::memory_order_release);
-  bufferValidEnd.store(newBVE, std::memory_order_release);
+  if (requestedBufferEpoch.load(std::memory_order_acquire) != workEpoch)
+    return true;
+
+  publishValidBufferRange(newBVS, newBVE, workEpoch);
 
   bufferReadyEvent.signal();
   return true;

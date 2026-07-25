@@ -4,7 +4,7 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
@@ -62,6 +62,24 @@ Si había una canción reproduciéndose, la fuente anterior continúa durante la
 preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y
 fade-in de 150 ms. Antes del intercambio se verifica que el primer bloque de
 todos los stems esté disponible en read-ahead.
+
+Los procesadores de tono/tempo por routing se preparan sólo para los stems
+cargados, no para los 64 slots máximos. Un único worker
+`TimeProcessorMaintenance` reconstruye fuera del callback las voces Bungee
+retiradas por seeks, loops y cambios estructurales.
+
+Una discontinuidad real de timeline también limpia los delays de compensación
+del click y de la guía dinámica, además de sus voces activas. De este modo no
+se filtra audio virtual perteneciente a la posición anterior. Los cambios de
+perfil de tempo que no mueven el playhead reinician sólo el DSP de tono/tempo.
+
+Si un reset llega antes de que el worker haya reconstruido algún spare, el
+callback hace preflight de todos los procesadores necesarios. En routing
+descarta el bus completo mientras falta uno; en mezcla agrupada
+`StemMixEngine` aplica la misma regla. Stems, click y guía avanzan sin emitirse,
+los delays invalidan su historia en O(1) y todos retoman juntos desde la
+posición fuente actual. Los pads continúan porque no pertenecen al timeline de
+la canción.
 
 ### Estado de canción
 
@@ -160,6 +178,34 @@ void toggleSongPlayPause();
 bool isSongPlaying() const noexcept;
 // Retorna true si está reproduciendo
 ```
+
+El pitch público se normaliza a `-12..+12` semitonos. El tempo usa la relación
+`source/output` y se limita a `0.75..2.0`.
+
+## Diagnóstico realtime
+
+El evento `audio_*.csv` se cierra al final del callback, después del
+time-stretch agrupado, buses virtuales, master y transiciones. Registra:
+
+- `streaming_misses`: callbacks acumulados con read-ahead incompleto;
+- `streaming_missing_frames`: frames exactos sustituidos por silencio;
+- `time_processor_reset_misses`: discontinuidades que llegaron antes de que
+  el worker reconstruyera un spare Bungee;
+- `time_processor_service_failures`: reconstrucciones Bungee fallidas; el
+  servicio aplica backoff exponencial antes de reintentar.
+
+La hora de pared se calibra una vez al iniciar el logger. El callback deriva
+`wall_ms` desde el contador monotónico de alta resolución y no consulta el reloj
+de sistema por bloque. El script de resumen usa `sort` O(n log n) y reporta
+tanto deltas dentro del CSV como el último acumulado observado.
+
+El aprendizaje MIDI publica desde el callback sólo un resultado de tamaño
+fijo. La mutación del vector de bindings y su persistencia se realizan en el
+message thread. Transporte, tempo, power de pads y demás acciones de control se
+publican en una FIFO SPSC fija; un timer del procesador la consume en orden a
+100 Hz aunque el editor esté cerrado. La solicitud de carga del pack se
+coalesce por separado. Las notas de pads usan dos bitmasks atómicos y se aplican
+sólo cuando el callback obtiene su `tryLock` normal de render.
 
 ## Metrónomo API
 
@@ -459,6 +505,10 @@ bool consumePendingMidiLearnBinding(MidiBinding &outBinding);
 MidiInputProbe getLastMidiInputProbe() const noexcept;
 bool consumePendingMidiUiCommand(int &outCommand);
 ```
+
+La marca de tiempo del probe se deriva de una calibración monotónica; recibir
+MIDI no consulta el reloj de pared. Los comandos internos 12–21 trasladan
+play/pause/stop/seek, tempo y lifecycle de pads al timer del message thread.
 
 ## Estado y presets
 

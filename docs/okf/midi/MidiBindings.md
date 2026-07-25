@@ -4,7 +4,7 @@ title: MidiBindings
 description: Sistema de binding MIDI con MIDI learn
 resource: src/PluginProcessor.h
 tags: [juce, midi, binding, learn]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # MIDI Bindings
@@ -134,6 +134,30 @@ Consume comandos de UI pendientes por MIDI.
 | 10 | `midiUiCommandMixerApplyRouting` | Aplicar routing |
 | 11 | `midiUiCommandWaveformEditToggle` | Toggle edit |
 
+Los comandos 1–11 se consumen mediante `consumePendingMidiUiCommand()` porque
+requieren componentes del editor.
+
+**Comandos de control interno:**
+
+| ID | Constante | Acción |
+|----|-----------|--------|
+| 12 | `midiUiCommandTransportPlayPause` | Play/pause |
+| 13 | `midiUiCommandTransportStop` | Stop |
+| 14 | `midiUiCommandTransportSeekBack` | Seek -5 s |
+| 15 | `midiUiCommandTransportSeekForward` | Seek +5 s |
+| 16 | `midiUiCommandTempoDown` | Tempo -1 BPM |
+| 17 | `midiUiCommandTempoUp` | Tempo +1 BPM |
+| 18 | `midiUiCommandPadsEnable` | Habilitar pads |
+| 19 | `midiUiCommandPadsDisable` | Deshabilitar pads |
+| 20 | `midiUiCommandPadsToggle` | Toggle pads |
+| 21 | `midiUiCommandEnsurePadsPack` | Preparar pack de pads fuera de RT |
+
+Los comandos 12–21 usan una FIFO SPSC fija de 64 entradas. Un timer de 100 Hz
+propiedad del procesador los consume en orden en el message thread, incluso si
+el editor está cerrado. Al ser una cola preasignada, publicar no toma locks ni
+reserva memoria; si se llena, el evento se descarta y aumenta un contador
+interno en vez de bloquear el callback.
+
 ## Implementación
 
 ### Snapshots lock-free
@@ -153,6 +177,19 @@ std::atomic<int> publishedMidiBindingSnapshot{0};
 - **Writer**: UI thread escribe nuevos bindings
 - **Reader**: Audio thread lee snapshot actual
 - **Atomic swap**: Cambio de índice atómico
+
+### Contrato realtime
+
+El callback no muta el vector de bindings ni persiste el resultado de MIDI
+Learn. Publica campos de tamaño fijo y el editor completa esas acciones.
+
+Transporte, tempo y operaciones de pads que pueden tomar locks, preparar el
+dispositivo o realizar I/O se convierten en comandos de control. Note-on/note-off
+de pads se acumulan en bitmasks atómicos; el render los consume sólo después de
+obtener el `tryLock` existente de `PadsEngine`. La carga del pack usa un request
+atómico coalescido y, si falla, descarta las notas pendientes para impedir que
+se disparen mucho después sobre otro pack. El probe deriva su timestamp de una
+calibración monotónica y no llama al reloj de pared desde audio.
 
 ### Lookup rápido
 

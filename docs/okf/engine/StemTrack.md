@@ -1,10 +1,10 @@
 ---
 type: Audio Source Class
 title: StemTrack
-description: Track individual de audio con buffering y resampling lock-free
+description: Track individual con resampling y read-ahead no bloqueante
 resource: src/StemTrack.h
 tags: [juce, audio, stem, source, buffering, resampling]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # StemTrack
@@ -18,9 +18,9 @@ AudioFormatReader
        ↓
 AudioFormatReaderSource
        ↓
-StemBufferingSource (read-ahead buffer)
-       ↓
 ResamplingPositionableSource
+       ↓
+StemBufferingSource (read-ahead buffer)
        ↓
 PositionableAudioSource (interface)
 ```
@@ -39,7 +39,8 @@ StemTrack(
 - `reader`: Reader del archivo de audio
 - `sharedReadThread`: Thread compartido para lectura async
 - `sampleRateToUse`: Sample rate destino
-- `readAheadSamples`: Tamaño del buffer de read-ahead (default 256KB)
+- `readAheadSamples`: Tamaño del buffer de read-ahead en frames (default
+  262144)
 
 ## PositionableAudioSource API
 
@@ -134,6 +135,12 @@ juce::int64 getRealtimeReadMissCount() const noexcept;
 
 Contador de "misses" del buffer de read-ahead. Un valor alto indica que el disco no puede mantener el streaming.
 
+El componente interno `StemBufferingSource` también mantiene
+`getRealtimeMissingFrameCount()`, que acumula la cantidad exacta de frames
+reemplazados por silencio. Cada callback vacío o parcial avanza siempre el
+bloque completo para conservar la sincronización con el transporte y los demás
+stems.
+
 ## Detalles de implementación
 
 ### Thread de lectura
@@ -146,7 +153,10 @@ La lectura de disco ocurre en `sharedReadThread` (TimeSliceThread). Esto mantien
 
 ### Buffering
 
-`StemBufferingSource` implementa un buffer circular de read-ahead para absorber jitter de disco.
+`StemBufferingSource` implementa un buffer circular de read-ahead para absorber
+jitter de disco. El callback usa únicamente `tryEnter()` para la copia corta:
+si el rango no está listo o el lock está ocupado, entrega silencio, registra el
+miss y no espera al worker.
 
 ## Uso típico
 

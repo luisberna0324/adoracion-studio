@@ -16,10 +16,21 @@ public:
   BungeeProcessor &operator=(const BungeeProcessor &) = delete;
 
   bool prepare(double sampleRate, int maxOutputFrames, int numChannels);
+  // Rebuilds both voice slots. Call only while audio processing is stopped.
   bool rebuild();
-  // Stream construction allocates internal work buffers. Discontinuities are
-  // handled by replacing a prepared voice outside the audio callback.
+  // Allocation-free and lock-free. Swaps to the prepared spare voice and
+  // retires the old one. If no clean voice is ready, the reset remains pending
+  // and process() emits silence rather than leaking pre-discontinuity history.
   void reset() noexcept;
+  // May allocate, pre-warm and destroy Bungee objects; call from a shared
+  // non-RT service, never from process() or the audio callback. Empty slots
+  // left by a failed prepare are also recoverable. Failed attempts use an
+  // internal exponential backoff.
+  bool servicePendingRebuild() noexcept;
+  // Audio-thread preflight. Activates a clean Ready voice when a reset is
+  // pending (or when prepare recovery has not published an active voice yet).
+  // Returns false only while no clean voice can process the next block.
+  bool tryResolvePendingReset() noexcept;
   void setPitchSemiTones(int semitones) noexcept;
   void setTempoRatio(double ratio) noexcept;
   void setContentType(ContentType type) noexcept;
@@ -33,12 +44,27 @@ public:
 
   int getPitchSemiTones() const noexcept;
   double getTempoRatio() const noexcept;
-  int getLatencySamples() const noexcept;
+  // Bungee::Stream::latency() is reported in input frames. Public latency is
+  // always converted to samples in the output timeline so callers can use it
+  // directly for delay compensation.
+  int getOutputLatencySamples() const noexcept;
+  int getLatencySamples() const noexcept { return getOutputLatencySamples(); }
   int getNumChannels() const noexcept;
   bool isPrepared() const noexcept;
+  bool hasReadyVoice() const noexcept;
+  bool hasPendingReset() const noexcept;
+  uint64_t getResetSuccessCount() const noexcept;
+  uint64_t getResetMissCount() const noexcept;
+  // Cumulative non-RT rebuild failures since the most recent prepare().
+  uint64_t getServiceFailureCount() const noexcept;
+  uint64_t getActiveVoiceGeneration() const noexcept;
+  int getActiveVoiceSlotForDiagnostics() const noexcept;
   const char *backendName() const noexcept;
 
 private:
+  friend struct BungeeProcessorTestPeer;
+  void setForcedVoiceBuildFailuresForTests(int failureCount) noexcept;
+
   struct Impl;
   std::unique_ptr<Impl> impl;
 };

@@ -8,7 +8,7 @@ void StemMixEngine::SimpleDelayLine::prepare(int channels,
   delayBuffer.setSize(numChannels, juce::jmax(1, maxDelaySamples + 1));
   delayBuffer.clear();
   writePos = 0;
-  historySamples = 0;
+  validHistorySamples = 0;
 }
 
 void StemMixEngine::SimpleDelayLine::setDelay(int delaySamplesToUse) {
@@ -17,9 +17,8 @@ void StemMixEngine::SimpleDelayLine::setDelay(int delaySamplesToUse) {
 
 void StemMixEngine::SimpleDelayLine::reset() {
   delaySamples = 0;
-  delayBuffer.clear();
   writePos = 0;
-  historySamples = 0;
+  validHistorySamples = 0;
 }
 
 void StemMixEngine::SimpleDelayLine::process(
@@ -32,8 +31,7 @@ void StemMixEngine::SimpleDelayLine::process(
 
   int localWrite = writePos;
   for (int sample = 0; sample < numSamples; ++sample) {
-    const int effectiveDelay = juce::jmin(delaySamples, historySamples);
-    int readPos = localWrite - effectiveDelay;
+    int readPos = localWrite - delaySamples;
     if (readPos < 0)
       readPos += bufferSize;
 
@@ -41,7 +39,11 @@ void StemMixEngine::SimpleDelayLine::process(
       auto *delayData = delayBuffer.getWritePointer(ch);
       auto *outData = buffer.getWritePointer(ch);
       const float input = outData[sample];
-      const float delayed = effectiveDelay > 0 ? delayData[readPos] : input;
+      const float delayed =
+          delaySamples <= 0
+              ? input
+              : (validHistorySamples >= delaySamples ? delayData[readPos]
+                                                     : 0.0f);
       delayData[localWrite] = input;
       outData[sample] = delayed;
     }
@@ -49,7 +51,8 @@ void StemMixEngine::SimpleDelayLine::process(
     ++localWrite;
     if (localWrite >= bufferSize)
       localWrite = 0;
-    historySamples = juce::jmin(maxDelaySamples, historySamples + 1);
+    validHistorySamples =
+        juce::jmin(maxDelaySamples, validHistorySamples + 1);
   }
 
   writePos = localWrite;
@@ -63,20 +66,17 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
 
   pitchShiftMelodic.prepare(sampleRate, samplesPerBlock, numChannels);
   pitchShiftMelodic.setContentType(TimeStretchProcessor::ContentType::Melodic);
-  pitchShiftMelodic.reset();
   pitchShiftMelodic.setPitchSemiTones(pitchSemiTones);
   pitchShiftMelodic.setTempoRatio(tempoRatio);
 
   tempoShiftPercussion.prepare(sampleRate, samplesPerBlock, numChannels);
   tempoShiftPercussion.setContentType(
       TimeStretchProcessor::ContentType::Percussive);
-  tempoShiftPercussion.reset();
   tempoShiftPercussion.setPitchSemiTones(0);
   tempoShiftPercussion.setTempoRatio(tempoRatio);
 
   tempoShiftGuide.prepare(sampleRate, samplesPerBlock, numChannels);
   tempoShiftGuide.setContentType(TimeStretchProcessor::ContentType::Percussive);
-  tempoShiftGuide.reset();
   tempoShiftGuide.setPitchSemiTones(0);
   tempoShiftGuide.setTempoRatio(tempoRatio);
 
@@ -94,6 +94,7 @@ void StemMixEngine::prepare(double sampleRate, int samplesPerBlock,
   lastPercussionDelaySamples = 0;
   lastGuideDelaySamples = 0;
   outputLatencySamples = 0;
+  lastRenderBlocked = false;
 }
 
 void StemMixEngine::reset() {
@@ -112,13 +113,15 @@ void StemMixEngine::reset() {
   lastPercussionDelaySamples = 0;
   lastGuideDelaySamples = 0;
   outputLatencySamples = 0;
+  lastRenderBlocked = false;
 }
 
 void StemMixEngine::setPitchSemiTones(int semitones) {
-  if (pitchSemiTones == semitones)
+  const int normalized = juce::jlimit(-12, 12, semitones);
+  if (pitchSemiTones == normalized)
     return;
-  pitchSemiTones = semitones;
-  pitchShiftMelodic.setPitchSemiTones(semitones);
+  pitchSemiTones = normalized;
+  pitchShiftMelodic.setPitchSemiTones(normalized);
   // Preserve processor and delay history. Resetting here forces the stretcher
   // to re-prime and produces an audible dropout on every key change.
 }
@@ -155,11 +158,15 @@ void StemMixEngine::applyFade(juce::AudioBuffer<float> &buffer,
   }
 }
 
-void StemMixEngine::updateLatencyDelays(int melodicLatency, int percussionLatency,
-                                        int dryLatency) {
-  const int clampedMelodic = juce::jmax(0, melodicLatency);
-  const int clampedPercussion = juce::jmax(0, percussionLatency);
-  const int clampedDry = juce::jmax(0, dryLatency);
+void StemMixEngine::updateLatencyDelays(
+    const int melodicOutputLatencySamples,
+    const int percussionOutputLatencySamples,
+    const int dryOutputLatencySamples) {
+  const int clampedMelodic =
+      juce::jmax(0, melodicOutputLatencySamples);
+  const int clampedPercussion =
+      juce::jmax(0, percussionOutputLatencySamples);
+  const int clampedDry = juce::jmax(0, dryOutputLatencySamples);
   const int maxLatency =
       juce::jmax(clampedMelodic, juce::jmax(clampedPercussion, clampedDry));
   outputLatencySamples = maxLatency;
@@ -239,9 +246,15 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
   const float instrumentFadeStart = fadeStart * windowFadeStart;
   const float instrumentFadeEnd = fadeEnd * windowFadeEnd;
   output.clear();
+  lastRenderBlocked = false;
 
   if (timeProcessActive) {
     const bool tempoActive = !juce::approximatelyEqual(tempoRatio, 1.0);
+    if (!tryResolveRequiredProcessors(tempoActive)) {
+      invalidateLatencyDelayHistory();
+      lastRenderBlocked = true;
+      return;
+    }
 
     const int melodicLatency = pitchShiftMelodic.getLatencySamples();
     const int percussionLatency =
@@ -275,6 +288,11 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
       for (int ch = 0; ch < numChannels; ++ch)
         output.addFrom(ch, 0, processedBuffer, ch, 0, numSamples);
     } else {
+      // Pitch-only still delays the unpitched groups by the melodic Bungee
+      // latency. Running these delay lines on every block also retains their
+      // zero-delay history, so enabling pitch does not need a silent re-prime.
+      pitchDelayPercussion.process(percussionBuffer, numSamples);
+      pitchDelayGuide.process(dryBuffer, numSamples);
       applyFade(percussionBuffer, numSamples, instrumentFadeStart,
                 instrumentFadeEnd);
       for (int ch = 0; ch < numChannels; ++ch) {
@@ -285,6 +303,11 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
 
   } else {
     updateLatencyDelays(0, 0, 0);
+    // Keep all histories current at zero delay. A later latency change can
+    // then read already-rendered samples instead of producing a dropout.
+    pitchDelayMelodic.process(stemMixBuffer, numSamples);
+    pitchDelayPercussion.process(percussionBuffer, numSamples);
+    pitchDelayGuide.process(dryBuffer, numSamples);
     applyFade(stemMixBuffer, numSamples, instrumentFadeStart,
               instrumentFadeEnd);
     applyFade(percussionBuffer, numSamples, instrumentFadeStart,
@@ -299,4 +322,42 @@ void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
 
 int StemMixEngine::requiredInputFrames(const int outputFrames) noexcept {
   return pitchShiftMelodic.requiredInputFrames(outputFrames);
+}
+
+bool StemMixEngine::tryResolveRequiredProcessors(
+    const bool tempoActive) noexcept {
+  bool ready = pitchShiftMelodic.tryResolvePendingReset();
+  if (tempoActive) {
+    if (!tempoShiftPercussion.tryResolvePendingReset())
+      ready = false;
+    if (!tempoShiftGuide.tryResolvePendingReset())
+      ready = false;
+  }
+  return ready;
+}
+
+void StemMixEngine::invalidateLatencyDelayHistory() noexcept {
+  pitchDelayMelodic.invalidateHistory();
+  pitchDelayPercussion.invalidateHistory();
+  pitchDelayGuide.invalidateHistory();
+}
+
+int StemMixEngine::servicePendingProcessorRebuilds() noexcept {
+  int rebuilt = 0;
+  rebuilt += pitchShiftMelodic.servicePendingRebuild() ? 1 : 0;
+  rebuilt += tempoShiftPercussion.servicePendingRebuild() ? 1 : 0;
+  rebuilt += tempoShiftGuide.servicePendingRebuild() ? 1 : 0;
+  return rebuilt;
+}
+
+uint64_t StemMixEngine::getTimeProcessorResetMissCount() const noexcept {
+  return pitchShiftMelodic.getResetMissCount() +
+         tempoShiftPercussion.getResetMissCount() +
+         tempoShiftGuide.getResetMissCount();
+}
+
+uint64_t StemMixEngine::getTimeProcessorServiceFailureCount() const noexcept {
+  return pitchShiftMelodic.getServiceFailureCount() +
+         tempoShiftPercussion.getServiceFailureCount() +
+         tempoShiftGuide.getServiceFailureCount();
 }

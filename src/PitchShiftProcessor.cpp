@@ -97,6 +97,7 @@ void PitchShiftProcessor::reset() {
 }
 
 void PitchShiftProcessor::setPitchSemiTones(int semitones) {
+  semitones = juce::jlimit(-12, 12, semitones);
   if (pitchSemiTones == semitones)
     return;
   pitchSemiTones = semitones;
