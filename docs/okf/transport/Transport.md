@@ -107,6 +107,20 @@ El arrange permite definir secciones no lineales:
 - Hacer loops de secciones
 - Reordenar playback
 
+### Anuncios de guía dinámica
+
+Las secciones musicales (`Intro`, `Verse`, `Pre-Chorus`, `Chorus`,
+`Refrain`, `Post-Chorus`, `Bridge`, `Instrumental`, `Solo`, `Breakdown`,
+`Interlude`, `Tag`, `Vamp`, `Outro` y `Ending`) se anuncian un compás antes
+de su entrada. El compás se calcula con el BPM y la métrica activa de la
+canción.
+
+Los conteos y las utilidades se anuncian al entrar en su sección. Las
+utilidades incluyen indicaciones como cambios de intensidad, pausas,
+sostener, entradas de instrumentos, cambios de tono, última vez y final
+grande. Una sección que comienza en `0.0 s` se anuncia al entrar porque no
+hay un compás anterior disponible.
+
 ### Snapshots
 
 ```cpp
@@ -137,6 +151,11 @@ int getArrangementPartLoopIndex() const noexcept;
 
 Activa loop en una parte específica.
 
+`Stop` siempre deja el transporte detenido en `0.0 s`. El inicio de la primera
+sección del arrange y el inicio configurado de la ventana de reproducción no
+alteran esa posición de retorno. Si no existe una sección que cubra `0.0 s`, no
+queda ninguna sección marcada como actual.
+
 ### Edición
 
 ```cpp
@@ -144,6 +163,27 @@ void setArrangementEditingActive(bool editingActive) noexcept;
 ```
 
 Marca si el usuario está editando el arrange.
+
+Mientras la edición está activa, publicar un snapshot mediante
+`setSongArrangement()` conserva el estado y la posición actuales del
+transporte. Crear, eliminar, mover o redimensionar una sección actualiza el
+scheduler en el lugar y solo realinea la lectura de source si el nuevo mapeo
+afecta al playhead; no detiene ni rebobina la canción. Los loops y saltos
+pendientes se conservan por ID mientras su sección siga existiendo.
+
+La marca de inserción de la regla aplica a todos los tipos de sección,
+incluidas `Cuenta` y `Utilidad`. Estas dos conservan su duración corta de grilla
+y dividen la sección existente alrededor de la marca sin crear solapamientos.
+
+En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
+sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
+barra contextual de cada sección y abre el selector contextual. La lista inicial
+muestra directamente todas las secciones; las secciones con variantes (por
+ejemplo `Verso` o `Coro`) abren su propio submenú. `Conteos` y `Utilidades`
+también se abren como submenús en cascada. Al abrirlo desde una sección, la
+inserción usa su límite final; al seleccionar una opción se cierra toda la
+cadena de menús. El botón no reserva altura adicional ni reduce el área de
+waveform.
 
 ## Song Metadata
 

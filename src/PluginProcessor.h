@@ -369,6 +369,7 @@ private:
   int playbackBlockSize = 0;
   std::atomic<double> loadedSongLengthSeconds{0.0};
   std::atomic<double> loadedSongBpm{0.0};
+  std::atomic<int> guideAnnouncementBeatsPerBar{4};
   std::atomic<double> songStartSeconds{0.0};
   std::atomic<double> songEndSeconds{0.0};
   std::atomic<double> songFadeOutSeconds{0.0};
@@ -480,7 +481,6 @@ private:
   int findArrangementPartIndexForArrangementTime(double arrangementSeconds) const noexcept;
   juce::int64 mapArrangementFrameToSourceFrame(
       juce::int64 arrangementFrame) const noexcept;
-  double getArrangementStartSeconds() const noexcept;
   void rebuildSectionScheduler() noexcept;
   TransportState getTransportState() const noexcept;
   void setTransportState(TransportState state) noexcept;

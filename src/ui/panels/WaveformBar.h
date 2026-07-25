@@ -133,6 +133,8 @@ private:
     juce::Rectangle<float> jumpIcon;
     juce::Rectangle<float> duplicateButton;
     juce::Rectangle<float> duplicateIcon;
+    juce::Rectangle<float> addButton;
+    juce::Rectangle<float> addIcon;
     juce::Rectangle<float> muteButton;
     juce::Rectangle<float> muteIcon;
     juce::Rectangle<float> skipButton;
@@ -141,6 +143,7 @@ private:
     bool showsLoopButton = false;
     bool showsJumpButton = false;
     bool showsDuplicateButton = false;
+    bool showsAddButton = false;
     bool showsMuteButton = false;
     bool showsSkipButton = false;
   };
@@ -153,6 +156,7 @@ private:
     bool loopButton = false;
     bool jumpButton = false;
     bool duplicateButton = false;
+    bool addButton = false;
     bool muteButton = false;
     bool skipButton = false;
   };
@@ -270,7 +274,9 @@ private:
   int hoveredMutePartIndex = -1;
   int hoveredSkipPartIndex = -1;
   int hoveredDuplicatePartIndex = -1;
+  int hoveredAddPartIndex = -1;
   int hoveredDeletePartIndex = -1;
+  int contextualSectionInsertPartIndex = -1;
   int playbackControlFocusPartIndex = -1;
   PlaybackControlFocus playbackControlFocus = PlaybackControlFocus::None;
   double playbackControlFocusChangedAtMs = 0.0;
@@ -425,10 +431,13 @@ private:
   void drawMiniMap(juce::Graphics &g,
                    const juce::Rectangle<float> &miniMapBounds) const;
   void rebuildSectionAddButtons();
+  void openSectionPicker(const juce::Rectangle<float> &anchor,
+                         int insertionPartIndex = -1);
   void addArrangementPart(const juce::String &preferredName = {});
   bool addArrangementPartAtInsertionAnchor(const juce::String &name,
-                                           double playableStartSec,
-                                           double playableEndSec);
+                                            double playableStartSec,
+                                            double playableEndSec,
+                                            double preferredDurationSec = 0.0);
   void clearSectionInsertionAnchor();
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
