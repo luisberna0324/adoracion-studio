@@ -175,8 +175,20 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
               .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playbackFormatManager.registerBasicFormats();
+  // 18 stems across N workers → each worker round-robins over
+  // (18 / N) stems. With N=4 (legacy cap) each worker handles 4-5
+  // stems and the round-trip latency between consecutive refills of
+  // the same stem is too long, producing the bulk of the
+  // streaming_misses observed in benchmarks.
+  //
+  // Raising the cap to 8 (while still leaving headroom for the audio
+  // thread on the remaining cores) brings the per-worker stem count
+  // down to 2-3 and roughly halves the round-trip latency. Measured
+  // improvement on 18 stems: streaming_misses drop to a small fraction
+  // of the legacy value with no measurable CPU cost on the audio
+  // thread.
   const int readWorkerCount =
-      juce::jlimit(2, 4, juce::SystemStats::getNumCpus() - 1);
+      juce::jlimit(4, 8, juce::SystemStats::getNumCpus() - 1);
   stemReadThreads.reserve(static_cast<size_t>(readWorkerCount));
   for (int i = 0; i < readWorkerCount; ++i) {
     auto worker = std::make_unique<juce::TimeSliceThread>(
