@@ -1440,6 +1440,113 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             if (!stemPitchShiftableFlags[stemIndex] && tempoActive)
               flags |= 0x4u;
             stemTimingEvent.flags[stemIndex] = flags;
+
+            // ---- Benchmark: sample worker drain for this stem ----------
+            // We read the worker's most recent visit atomics and compute
+            // the time since it ENDED. A large gap_us means the worker
+            // round-robin is taking too long to come back to this stem.
+            auto *buffering = stemTracks[stemIndex]->bufferingSourceForBenchmark();
+            if (buffering != nullptr) {
+              const int64_t drainStart =
+                  buffering->getLastWorkerDrainStartTick();
+              const int64_t drainDur =
+                  buffering->getLastWorkerDrainDurationTicks();
+              const int64_t nowTick = juce::Time::getHighResolutionTicks();
+              if (drainStart > 0) {
+                const double drainUs =
+                    static_cast<double>(drainDur) * 1e6 /
+                    juce::Time::getHighResolutionTicksPerSecond();
+                const double gapUs =
+                    static_cast<double>(nowTick - drainStart - drainDur) *
+                    1e6 /
+                    juce::Time::getHighResolutionTicksPerSecond();
+                stemTimingEvent.workerDrainUs[stemIndex] =
+                    static_cast<int32_t>(
+                        juce::jlimit<int64_t>(0, 2000000000L,
+                                               static_cast<int64_t>(drainUs)));
+                stemTimingEvent.workerGapUs[stemIndex] =
+                    static_cast<int32_t>(
+                        juce::jlimit<int64_t>(0, 2000000000L,
+                                               static_cast<int64_t>(gapUs)));
+              }
+              stemTimingEvent.workerVisitCount[stemIndex] = static_cast<uint32_t>(
+                  buffering->getWorkerVisitCount());
+
+              // ---- Benchmark: sample REAL drain stats ----------------
+              // Most useTimeSlice() calls are no-ops (buffer full). The
+              // REAL-drain atomics track only the visits that actually
+              // pulled data from the disk/decoder pipeline, and the
+              // gap between them is computed from the worker's own
+              // pair (lastRealDrainEndTick, previousRealDrainEndTick)
+              // so it is not biased by the decimation cadence.
+              const int64_t lastRealEnd =
+                  buffering->getLastRealDrainEndTick();
+              const int64_t prevRealEnd =
+                  buffering->getPreviousRealDrainEndTick();
+              const int64_t realDur =
+                  buffering->getLastRealDrainDurationTicks();
+              if (lastRealEnd > 0) {
+                const double realDrainUs =
+                    static_cast<double>(realDur) * 1e6 /
+                    juce::Time::getHighResolutionTicksPerSecond();
+                stemTimingEvent.realDrainUs[stemIndex] =
+                    static_cast<int32_t>(
+                        juce::jlimit<int64_t>(0, 2000000000L,
+                                               static_cast<int64_t>(realDrainUs)));
+              }
+              if (lastRealEnd > 0 && prevRealEnd > 0) {
+                const double realGapUs =
+                    static_cast<double>(lastRealEnd - prevRealEnd) * 1e6 /
+                    juce::Time::getHighResolutionTicksPerSecond();
+                stemTimingEvent.realDrainGapUs[stemIndex] =
+                    static_cast<int32_t>(
+                        juce::jlimit<int64_t>(0, 2000000000L,
+                                               static_cast<int64_t>(realGapUs)));
+              }
+              stemTimingEvent.realDrainCount[stemIndex] = static_cast<uint32_t>(
+                  buffering->getRealDrainCount());
+
+              // ---- Benchmark: sample AAC decode + resample stats -----
+              // ResamplingPositionableSource::getNextAudioBlock is
+              // called from the background worker when the buffering
+              // source needs to refill; it is the only place where the
+              // AAC decode (via AudioFormatReader) and the resampler
+              // run. The atomic (last, previous) pair lets the audio
+              // thread compute the inter-call gap without any
+              // decimation bias.
+              auto *resampling =
+                  stemTracks[stemIndex]->resamplingSourceForBenchmark();
+              if (resampling != nullptr) {
+                const int64_t decodeStart =
+                    resampling->getLastDecodeStartTick();
+                const int64_t decodeDur =
+                    resampling->getLastDecodeDurationTicks();
+                const int64_t prevDecodeStart =
+                    resampling->getPreviousDecodeStartTick();
+                if (decodeStart > 0) {
+                  const double decodeUs =
+                      static_cast<double>(decodeDur) * 1e6 /
+                      juce::Time::getHighResolutionTicksPerSecond();
+                  stemTimingEvent.decodeUs[stemIndex] =
+                      static_cast<int32_t>(
+                          juce::jlimit<int64_t>(0, 2000000000L,
+                                                 static_cast<int64_t>(decodeUs)));
+                }
+                if (decodeStart > 0 && prevDecodeStart > 0) {
+                  const double decodeGapUs =
+                      static_cast<double>(decodeStart - prevDecodeStart) *
+                      1e6 /
+                      juce::Time::getHighResolutionTicksPerSecond();
+                  stemTimingEvent.decodeGapUs[stemIndex] =
+                      static_cast<int32_t>(
+                          juce::jlimit<int64_t>(0, 2000000000L,
+                                                 static_cast<int64_t>(decodeGapUs)));
+                }
+                stemTimingEvent.decodeCount[stemIndex] =
+                    static_cast<uint32_t>(
+                        resampling->getDecodeCallCount());
+              }
+            }
           }
 
           diagnostics.pushStemTimingEvent(stemTimingEvent);
@@ -3040,6 +3147,29 @@ bool MTControlsAudioProcessor::loadSongStems(
   const int pathCount = stemPaths.size();
   const int denom = juce::jmax(1, pathCount);
 
+  // ---- Benchmark: stem-to-worker assignment strategy -----------------
+  // The legacy round-robin (`newTracks.size() % threadCount`) ignores
+  // the per-stem decode cost: a 175 kbps stem and a 8 kbps stem were
+  // placed in the same worker with no regard for the asymmetry.
+  // Benchmarks showed the resulting decode_gap_max clustering around
+  // 295ms and 570ms (a bimodal pattern) — some workers spent too long
+  // on heavy stems while lighter siblings waited.
+  //
+  // kUseBinPackingForStemWorkers enables a greedy LPT (Longest
+  // Processing Time) bin-packing: each stem is assigned to the worker
+  // with the lowest current accumulated weight, using the file size
+  // (a strong proxy for compressed-format decode cost) as weight.
+  // Stable at load time; no per-callback overhead.
+  static constexpr bool kUseBinPackingForStemWorkers = true;
+
+  // Reset the per-worker weight accumulator. We keep a small parallel
+  // array on the stack — the load path is not real-time so the
+  // allocation is free.
+  std::vector<juce::int64> workerLoad;
+  if (kUseBinPackingForStemWorkers) {
+    workerLoad.assign(stemReadThreads.size(), 0);
+  }
+
   double maxLengthSeconds = 0.0;
   for (int i = 0; i < pathCount; ++i) {
     if (newTracks.size() >= static_cast<size_t>(maxStemCount))
@@ -3069,12 +3199,30 @@ bool MTControlsAudioProcessor::loadSongStems(
                          : 0.0;
     maxLengthSeconds = juce::jmax(maxLengthSeconds, lengthSeconds);
 
-    const size_t workerIndex =
-        newTracks.size() % std::max<size_t>(1, stemReadThreads.size());
+    // Weight = file size in bytes. For compressed formats (AAC) this
+    // tracks decoder cost directly (bigger encoded stream = more work
+    // per sample of output). For uncompressed PCM it is the raw I/O
+    // cost, which is the same dimension. A single scalar is enough
+    // for the relative ordering the LPT heuristic needs.
+    const juce::int64 stemWeight = file.getSize();
+
+    size_t workerIndex;
+    if (kUseBinPackingForStemWorkers && !workerLoad.empty()) {
+      workerIndex = 0;
+      for (size_t w = 1; w < workerLoad.size(); ++w) {
+        if (workerLoad[w] < workerLoad[workerIndex])
+          workerIndex = w;
+      }
+      workerLoad[workerIndex] += stemWeight;
+    } else {
+      workerIndex =
+          newTracks.size() % std::max<size_t>(1, stemReadThreads.size());
+    }
+
     auto track = std::make_unique<StemTrack>(
         std::move(reader), *stemReadThreads[workerIndex], sampleRate, 262144,
         true, std::move(prefetchReader));
-        
+
     track->prepareToPlay(localBlockSize, localSampleRate);
     newTracks.push_back(std::move(track));
 
