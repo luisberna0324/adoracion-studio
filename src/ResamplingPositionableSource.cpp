@@ -36,7 +36,27 @@ void ResamplingPositionableSource::releaseResources() {
 
 void ResamplingPositionableSource::getNextAudioBlock(
     const juce::AudioSourceChannelInfo &info) {
+  // ---- Benchmark: bracket the decode + resample path -----------------
+  // The background TimeSliceThread worker pulls PCM out of the
+  // AudioFormatReader (which decodes AAC/WAV/FLAC/etc) and feeds it
+  // through the JUCE resampler. getNextAudioBlock() is the only place
+  // where both happen for the same call, so it is the natural point
+  // to measure end-to-end cost. Hardware register read — safe from
+  // the worker thread.
+  const int64_t t0 = juce::Time::getHighResolutionTicks();
+  decodeCallCount.fetch_add(1, std::memory_order_relaxed);
+  // exchange gives us (previousStart, newStart) atomically so the
+  // audio thread can read the gap between consecutive decode starts
+  // without any decimation bias.
+  const int64_t prevStart =
+      lastDecodeStartTick.exchange(t0, std::memory_order_relaxed);
+  previousDecodeStartTick.store(prevStart, std::memory_order_relaxed);
+
   resampler.getNextAudioBlock(info);
+
+  const int64_t t1 = juce::Time::getHighResolutionTicks();
+  lastDecodeDurationTicks.store(t1 - t0, std::memory_order_relaxed);
+
   if (info.numSamples > 0)
     outputPosition.fetch_add(info.numSamples, std::memory_order_relaxed);
 }

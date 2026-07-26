@@ -75,6 +75,26 @@ public:
                : 0;
   }
 
+  /**
+   * Returns the underlying StemBufferingSource so the benchmark can sample
+   * its worker-drain atomics. Lifetime is tied to this StemTrack, so the
+   * returned pointer is valid as long as the StemTrack itself is.
+   * Returns nullptr if the buffering source has not been initialised yet.
+   */
+  StemBufferingSource *bufferingSourceForBenchmark() const noexcept {
+    return bufferingSource.get();
+  }
+
+  /**
+   * Returns the main ResamplingPositionableSource so the benchmark can
+   * sample its decode+resample atomics. The background worker feeds
+   * decoded AAC through this on every useTimeSlice() that actually
+   * does work. May be nullptr before prepareToPlay.
+   */
+  ResamplingPositionableSource *resamplingSourceForBenchmark() const noexcept {
+    return resamplingSource.get();
+  }
+
 private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;

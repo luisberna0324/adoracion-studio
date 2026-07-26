@@ -49,6 +49,40 @@ public:
   bool isLooping() const override { return source->isLooping(); }
   void setLooping(bool shouldLoop) override;
 
+  // ---- Benchmark: worker drain instrumentation -------------------------
+  // Public read access to the atomics the worker writes in useTimeSlice.
+  // The audio thread calls these to learn how long each worker visit
+  // takes and how long the worker has been away.
+  int64_t getLastWorkerDrainStartTick() const noexcept {
+    return lastWorkerDrainStartTick.load(std::memory_order_relaxed);
+  }
+  int64_t getLastWorkerDrainDurationTicks() const noexcept {
+    return lastWorkerDrainDurationTicks.load(std::memory_order_relaxed);
+  }
+  uint64_t getWorkerVisitCount() const noexcept {
+    return workerVisitCount.load(std::memory_order_relaxed);
+  }
+
+  // ---- Benchmark: REAL drain instrumentation ---------------------------
+  // Separated from the above because most useTimeSlice() calls are no-ops
+  // (the prefetch/main buffers are full and readNextBufferChunk returns
+  // false in microseconds). Mixing the two collapses the signal we want:
+  // the audio thread needs to know how often the worker actually has
+  // work to do, how long that real work takes, and how much time
+  // passes between consecutive real drains of the same stem.
+  int64_t getLastRealDrainEndTick() const noexcept {
+    return lastRealDrainEndTick.load(std::memory_order_relaxed);
+  }
+  int64_t getPreviousRealDrainEndTick() const noexcept {
+    return previousRealDrainEndTick.load(std::memory_order_relaxed);
+  }
+  int64_t getLastRealDrainDurationTicks() const noexcept {
+    return lastRealDrainDurationTicks.load(std::memory_order_relaxed);
+  }
+  uint64_t getRealDrainCount() const noexcept {
+    return realDrainCount.load(std::memory_order_relaxed);
+  }
+
   // Lock-free request used by the audio thread to prepare a future seek/loop
   // target without invalidating the currently audible read-ahead window.
   void requestPrefetchPosition(juce::int64 position,
@@ -136,6 +170,25 @@ private:
   std::atomic<uint64_t> publishedPrefetchGeneration{0};
   std::atomic<juce::int64> realtimeMissCount{0};
   std::atomic<juce::int64> realtimeMissingFrameCount{0};
+
+  // ---- Benchmark: worker drain instrumentation -------------------------
+  // The audio thread reads these periodically to capture how long each
+  // useTimeSlice() visit takes and how much wall-clock time elapsed
+  // between consecutive visits (a proxy for worker scheduling latency).
+  // The worker is the sole writer; the audio thread is the sole reader.
+  // Relaxed ordering is sufficient — we are sampling approximate
+  // diagnostics, not synchronising state.
+  std::atomic<int64_t> lastWorkerDrainStartTick{0};     // high-res tick when this drain started
+  std::atomic<int64_t> lastWorkerDrainDurationTicks{0}; // duration of this drain
+  std::atomic<uint64_t> workerVisitCount{0};             // increments per useTimeSlice call
+
+  // ---- Benchmark: REAL drain instrumentation ---------------------------
+  // Only updated when useTimeSlice() actually had to read from disk /
+  // decoder. Most visits are no-ops (buffer full) and never touch these.
+  std::atomic<int64_t> lastRealDrainEndTick{0};          // end of most recent real drain
+  std::atomic<int64_t> previousRealDrainEndTick{0};      // end of second-to-most-recent real drain
+  std::atomic<int64_t> lastRealDrainDurationTicks{0};    // duration of most recent real drain
+  std::atomic<uint64_t> realDrainCount{0};               // count of real drains since prepare
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
   BeforeCursorAdvanceTestHook beforeCursorAdvanceTestHook = nullptr;
 #endif

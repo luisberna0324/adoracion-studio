@@ -740,7 +740,44 @@ void StemBufferingSource::readBufferSection(juce::int64 start, int length,
 }
 
 int StemBufferingSource::useTimeSlice() {
-  if (readPendingPrefetch())
-    return 0;
-  return readNextBufferChunk() ? 5 : 10;
+  // ---- Benchmark: bracket the worker drain ----------------------------
+  // The audio thread samples (lastWorkerDrainStartTick,
+  // lastWorkerDrainDurationTicks) to learn how long each visit takes
+  // and how long the worker has been away. getHighResolutionTicks is
+  // a hardware register read — safe from the worker thread.
+  const int64_t drainStartTick = juce::Time::getHighResolutionTicks();
+  workerVisitCount.fetch_add(1, std::memory_order_relaxed);
+  lastWorkerDrainStartTick.store(drainStartTick, std::memory_order_relaxed);
+
+  // readPendingPrefetch returns true if a prefetch drain happened;
+  // readNextBufferChunk returns true if a main-buffer refill happened.
+  // Both are real I/O — the rest of the time useTimeSlice is a no-op
+  // and the buffer is already full.
+  const bool didPrefetch = readPendingPrefetch();
+  const bool didMainRefill = !didPrefetch && readNextBufferChunk();
+  const bool didRealWork = didPrefetch || didMainRefill;
+
+  const int returnValue = didPrefetch ? 0 : (didMainRefill ? 5 : 10);
+
+  const int64_t drainEndTick = juce::Time::getHighResolutionTicks();
+  const int64_t drainDuration = drainEndTick - drainStartTick;
+  lastWorkerDrainDurationTicks.store(drainDuration,
+                                      std::memory_order_relaxed);
+
+  // ---- Benchmark: track REAL drains separately -----------------------
+  // Only update when the worker actually had to read from disk /
+  // decoder. The exchange + store gives the audio thread a
+  // (lastRealDrainEndTick, previousRealDrainEndTick) pair from which
+  // it can compute the inter-real-drain gap without depending on
+  // when the audio thread happens to sample.
+  if (didRealWork) {
+    const int64_t prevEnd =
+        lastRealDrainEndTick.exchange(drainEndTick,
+                                       std::memory_order_relaxed);
+    previousRealDrainEndTick.store(prevEnd, std::memory_order_relaxed);
+    lastRealDrainDurationTicks.store(drainDuration,
+                                      std::memory_order_relaxed);
+    realDrainCount.fetch_add(1, std::memory_order_relaxed);
+  }
+  return returnValue;
 }

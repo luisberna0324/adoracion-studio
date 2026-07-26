@@ -129,6 +129,53 @@ public:
     //  bit1 = pitchShiftable
     //  bit2 = percussive content profile
     std::array<uint8_t, kMaxStemMetrics> flags{};
+
+    // ---- Benchmark: worker drain instrumentation ----------------------
+    // For each stem the audio thread samples the worker's most recent
+    // visit. The flush thread writes one row per (event, stem) pair.
+    //
+    // workerDrainUs: how long the most recent useTimeSlice() took for
+    //   this stem. 0 if the worker has not visited it yet.
+    // workerGapUs: wall-clock microseconds since the most recent drain
+    //   ENDED. Computed by the audio thread as
+    //     (now - lastDrainStartTick - lastDrainDurationTicks)
+    //   A large gap means the worker is slow to come back to this stem;
+    //   that is the smoking gun for round-robin scheduling latency.
+    // workerVisitCount: monotonically increasing per stem; the analysis
+    //   can divide by elapsed time to get visits/sec per stem.
+    std::array<int32_t, kMaxStemMetrics> workerDrainUs{};
+    std::array<int32_t, kMaxStemMetrics> workerGapUs{};
+    std::array<uint32_t, kMaxStemMetrics> workerVisitCount{};
+
+    // ---- Benchmark: REAL drain instrumentation -----------------------
+    // Separated from the "any drain" stats above because most
+    // useTimeSlice calls are no-ops (buffer full). The audio thread
+    // samples these to learn:
+    //   realDrainUs:  duration of the most recent REAL drain (disk/decoder)
+    //   realDrainGapUs:  inter-real-drain gap (computed by the audio
+    //     thread as lastRealDrainEndTick - previousRealDrainEndTick, so
+    //     it is NOT biased by the decimation cadence).
+    //   realDrainCount:  cumulative count of real drains for this stem.
+    std::array<int32_t, kMaxStemMetrics> realDrainUs{};
+    std::array<int32_t, kMaxStemMetrics> realDrainGapUs{};
+    std::array<uint32_t, kMaxStemMetrics> realDrainCount{};
+
+    // ---- Benchmark: AAC decode + resample instrumentation -----------
+    // The background worker calls ResamplingPositionableSource::
+    // getNextAudioBlock() to pull PCM out of the AudioFormatReader
+    // (which decodes AAC/WAV/FLAC) and feed it through the JUCE
+    // resampler. These stats measure that path directly. The
+    // decode time is the one the audio thread cannot see from
+    // processBlock — this is what fills in the missing piece.
+    //   decodeUs:  duration of the most recent decode+resample call.
+    //   decodeGapUs:  wall-clock microseconds between the start of
+    //     the most recent decode call and the start of the
+    //     second-to-most-recent one. Captured directly by the
+    //     worker (no decimation bias).
+    //   decodeCount:  total decode+resample calls for this stem.
+    std::array<int32_t, kMaxStemMetrics> decodeUs{};
+    std::array<int32_t, kMaxStemMetrics> decodeGapUs{};
+    std::array<uint32_t, kMaxStemMetrics> decodeCount{};
   };
 
   AudioDiagnostics() = default;
@@ -255,7 +302,7 @@ public:
     }
     if (auto stream = stemLogFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples\n",
+          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count\n",
           false, false, nullptr);
     }
     if (auto stream = gapLogFile.createOutputStream()) {
@@ -476,7 +523,16 @@ private:
             << pitchShiftable << ","
             << contentType << ","
             << ev.processLatencySamples[static_cast<size_t>(stemIndex)] << ","
-            << ev.delaySamples[static_cast<size_t>(stemIndex)] << "\n";
+            << ev.delaySamples[static_cast<size_t>(stemIndex)] << ","
+            << ev.workerDrainUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.workerGapUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.workerVisitCount[static_cast<size_t>(stemIndex)] << ","
+            << ev.realDrainUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.realDrainGapUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.realDrainCount[static_cast<size_t>(stemIndex)] << ","
+            << ev.decodeUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.decodeGapUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.decodeCount[static_cast<size_t>(stemIndex)] << "\n";
       }
 
       idx = (idx + 1) & kStemMask;
