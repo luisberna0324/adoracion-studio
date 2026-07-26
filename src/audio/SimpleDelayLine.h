@@ -29,6 +29,19 @@ public:
   void process(juce::AudioBuffer<float> &buffer);
   int getDelaySamples() const noexcept { return delaySamples; }
 
+  /**
+   * True while the delay line is actually altering the output. The audio
+   * thread uses this to skip the per-block call when the delay line would
+   * be a pure transparent memory copy (delay == 0 and no transition in
+   * flight). Skipping the transparent copy is a measurable win when many
+   * stems are routed but pitch / time-stretch is off.
+   */
+  bool isActive() const noexcept {
+    return delaySamples > 0 || transitionActive ||
+           currentDelaySamples > 0 || transitionFromDelaySamples > 0 ||
+           transitionToDelaySamples > 0;
+  }
+
 private:
   juce::AudioBuffer<float> delayBuffer;
   int writePos = 0;

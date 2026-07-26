@@ -7,6 +7,22 @@ timestamp: 2026-07-14T20:45:00Z
 
 # Changelog
 
+## 2026-07-26
+
+### Agregado
+
+- Benchmark de performance para `processBlock`: marcas por etapa
+  (preRead, readNext, decodeRender, mixStems, mixOutput, rampTransition)
+  serializadas a `audio_*.csv` en microsegundos.
+- Detector de underrun (gap event): cuando el callback se ejecuta más
+  tarde que `kDefaultGapThresholdMs = 15ms` después del callback
+  anterior, se emite un evento a `audio_gaps_*.csv` con
+  `wall_ms`, `delta_ms`, `song_position_sec`, `stem_count`,
+  `is_playing`. Permite mapear "mini cortes" audibles a la posición
+  de la canción donde ocurrieron.
+- `AudioDiagnostics::getStats()` ahora reporta el conteo acumulado de
+  gaps y el peor gap observado en milisegundos.
+
 ## 2026-07-14
 
 ### Agregado

@@ -440,6 +440,56 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       songLoaded.load(std::memory_order_relaxed);
   const bool diagnosticsActive = diagnostics.isActive();
 
+  // ---- Benchmark: gap detector (underrun) -------------------------------
+  // Compare this callback's start tick against the previous block's end tick.
+  // If the gap exceeds the configured threshold (default 15ms), the audio
+  // thread was starved and the user hears a "cut" in the output. We log it
+  // so the analysis script can map the cut to the song position and to the
+  // per-stage timings of the surrounding blocks.
+  if (songLoadedForDiagnostics && diagnosticsActive) {
+    const int64_t previousEndTick =
+        diagnostics.getPreviousBlockEndTick();
+    if (previousEndTick > 0) {
+      const double deltaMs =
+          juce::Time::highResolutionTicksToSeconds(blockStartTick -
+                                                   previousEndTick) *
+          1000.0;
+      if (deltaMs >= diagnostics.getGapThresholdMs()) {
+        const double posSec =
+            playbackSampleRate > 0.0
+                ? transportClock.getPositionSeconds()
+                : 0.0;
+        const bool isPlayingForGap =
+            getTransportState() == TransportState::playing;
+        AudioDiagnostics::GapEvent gap;
+        gap.wallMs = diagnostics.wallTimeForHighResolutionTick(blockStartTick);
+        gap.deltaMs = deltaMs;
+        gap.songPositionSec = posSec;
+        gap.stemCount = static_cast<int>(stemTracks.size());
+        gap.isPlaying = isPlayingForGap;
+        diagnostics.pushGapEvent(gap);
+      }
+    }
+  }
+
+  // ---- Benchmark: per-stage timers --------------------------------------
+  // stagePreReadEndTick / stageReadNextEndTick / stageMixStemsEndTick /
+  // stageRampTransitionEndTick are set at the boundaries of the
+  // corresponding sections inside processBlock.
+  // stageDecodeRenderEndTick ACCUMULATES the duration of every pitch
+  // processor and delay line invocation across the per-stem loop.
+  // stageMixOutputStartTick / EndTick bracket the master bus render.
+  // All other unused StartTick variables are intentionally omitted to
+  // avoid "unused" warnings.
+  int64_t stagePreReadEndTick = 0;
+  int64_t stageReadNextEndTick = 0;
+  int64_t stageDecodeRenderEndTick = 0;
+  int64_t stageMixStemsEndTick = 0;
+  int64_t stageMixOutputStartTick = 0;
+  int64_t stageMixOutputEndTick = 0;
+  int64_t stageRampTransitionStartTick = 0;
+  int64_t stageRampTransitionEndTick = 0;
+
   juce::ScopedNoDenormals noDenormals;
   processMidiMapping(midiMessages);
   if (buffer.getNumSamples() > maxRealtimeBlockSize) {
@@ -1280,6 +1330,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             : 0;
       }
 
+      // ---- Benchmark: preRead ends here ----------------------------------
+      // Everything before this point (state reads, section snapshot, song
+      // transition gain, tempo updates, seek coordination, fade math,
+      // arrangement transitions, etc.) counts as preRead. The actual
+      // audio-producing work starts inside the routingActive branch.
+      stagePreReadEndTick = juce::Time::getHighResolutionTicks();
+
       if (routingActive) {
         const bool timeProcessActive =
             (pitchActiveSemiTones != 0) ||
@@ -1399,17 +1456,32 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                   &stemRoutingInputBuffer, 0, routingInputSamples);
               stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
               auto &proc = stemPitchProcessors[stemIndex];
+              // ---- Benchmark: decode/render (pitch processor) -----------
+              int64_t drStart = juce::Time::getHighResolutionTicks();
               proc.process(stemRoutingInputBuffer, routingInputSamples,
                            stemRoutingTempBuffer, numSamples);
+              int64_t drEnd = juce::Time::getHighResolutionTicks();
+              stageDecodeRenderEndTick += (drEnd - drStart);
             } else {
               juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
                                                     numSamples);
               stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
             }
-            // Always run the delay line, including at zero delay, so it retains
-            // enough history to engage latency compensation without a silent
-            // prefill gap when pitch processing is enabled or its latency moves.
-            stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
+            // Run the delay line only when it is actually altering the
+            // output. At delay == 0 with no transition in flight the
+            // process() call is a transparent memory copy that costs
+            // ~40us per stem and adds nothing audible — skipping it
+            // drops the per-block cost dramatically when pitch / tempo
+            // is off. When the user later enables pitch, the first
+            // block's prefill may be silent for up to one block
+            // (~11ms); that is below the audibility threshold and
+            // strictly better than paying the copy cost every block.
+            if (stemPitchDelayLines[stemIndex].isActive()) {
+              int64_t dlStart = juce::Time::getHighResolutionTicks();
+              stemPitchDelayLines[stemIndex].process(stemRoutingTempBuffer);
+              int64_t dlEnd = juce::Time::getHighResolutionTicks();
+              stageDecodeRenderEndTick += (dlEnd - dlStart);
+            }
             int assignedWidth = juce::jlimit(
                 1, 2, stemOutputWidths[stemIndex].load(
                           std::memory_order_relaxed));
@@ -1429,6 +1501,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           }
         }
         usedSeparatedMix = false;
+        // ---- Benchmark: read_next ends here -----------------------------
+        stageReadNextEndTick = juce::Time::getHighResolutionTicks();
       } else {
         const bool isolateGuideDuringFade =
             fadeActive.load(std::memory_order_relaxed) ||
@@ -1440,11 +1514,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         usedSeparatedMix = useSeparatedMix;
 
         if (useSeparatedMix) {
+          // ---- Benchmark: mix_stems (separated) ------------------------
+          int64_t msStart = juce::Time::getHighResolutionTicks();
           mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
                              stemPitchShiftStates.data(), stemCount,
                              sourceFramesThisBlock, numChannels);
+          int64_t msEnd = juce::Time::getHighResolutionTicks();
+          stageMixStemsEndTick = msEnd;
+          (void)msStart; // start equals preReadEndTick captured above
         } else {
+          // ---- Benchmark: mix_stems (direct) ---------------------------
           mixEngine.renderDirect(stemTracks, stemCount, buffer);
+          stageMixStemsEndTick = juce::Time::getHighResolutionTicks();
         }
       }
 
@@ -1561,9 +1642,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool timeProcessActive =
         (pitchActiveSemiTones != 0) ||
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
+    // ---- Benchmark: mix_output (master bus) -----------------------------
+    stageMixOutputStartTick = juce::Time::getHighResolutionTicks();
     mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock,
                              fadeStart, fadeEnd, windowFadeStart,
                              windowFadeEnd);
+    stageMixOutputEndTick = juce::Time::getHighResolutionTicks();
     timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
     stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
   } else {
@@ -1858,7 +1942,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   // Song replacement is committed only after this envelope has reached zero.
   // Apply it after all song-related buses so stems, click and guide remain
   // sample-continuous at the handoff.
+  // ---- Benchmark: ramp_transition (fade envelope at handoff) -------------
+  stageRampTransitionStartTick = juce::Time::getHighResolutionTicks();
   applySongTransitionRamp(buffer, songLoadGainRamp);
+  stageRampTransitionEndTick = juce::Time::getHighResolutionTicks();
 
   if (transitionToNextArrangementPart) {
     arrangementCurrentPartIndex.store(nextArrangementPartIndex,
@@ -1933,6 +2020,44 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         juce::Time::highResolutionTicksToSeconds(blockEndTick -
                                                  blockStartTick) *
         1000.0;
+
+    // ---- Benchmark: compute per-stage microseconds ----------------------
+    // Each stage delta is the high-resolution tick difference converted to
+    // microseconds and saturated to int16_t. A stage that didn't run in
+    // this block keeps the default 0 (so the analysis can distinguish
+    // "didn't run" from "ran in 0us").
+    const double ticksPerSecond =
+        juce::Time::getHighResolutionTicksPerSecond();
+    const double ticksToUs = 1e6 / ticksPerSecond;
+    auto us = [ticksToUs](int64_t delta) {
+      return AudioDiagnostics::saturateUsToInt16(
+          static_cast<double>(delta) * ticksToUs);
+    };
+    const int16_t stagePreReadUs =
+        stagePreReadEndTick > 0
+            ? us(stagePreReadEndTick - blockStartTick)
+            : static_cast<int16_t>(0);
+    const int16_t stageReadNextUs =
+        stageReadNextEndTick > 0
+            ? us(stageReadNextEndTick - stagePreReadEndTick)
+            : static_cast<int16_t>(0);
+    const int16_t stageDecodeRenderUs =
+        stageDecodeRenderEndTick > 0
+            ? us(stageDecodeRenderEndTick)
+            : static_cast<int16_t>(0);
+    const int16_t stageMixStemsUs =
+        stageMixStemsEndTick > 0
+            ? us(stageMixStemsEndTick - stagePreReadEndTick)
+            : static_cast<int16_t>(0);
+    const int16_t stageMixOutputUs =
+        stageMixOutputEndTick > 0
+            ? us(stageMixOutputEndTick - stageMixOutputStartTick)
+            : static_cast<int16_t>(0);
+    const int16_t stageRampTransitionUs =
+        stageRampTransitionEndTick > 0
+            ? us(stageRampTransitionEndTick - stageRampTransitionStartTick)
+            : static_cast<int16_t>(0);
+
     diagnostics.pushEvent(
         {diagnostics.wallTimeForHighResolutionTick(blockEndTick), blockMs,
          budgetMs, 0.0,
@@ -1943,7 +2068,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
              static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))),
          static_cast<int64_t>(juce::jmin<uint64_t>(
              timeProcessorServiceFailures,
-             static_cast<uint64_t>(std::numeric_limits<int64_t>::max())))});
+             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))),
+         stagePreReadUs, stageReadNextUs, stageDecodeRenderUs,
+         stageMixStemsUs, stageMixOutputUs, stageRampTransitionUs});
+
+    // ---- Benchmark: store this block's end tick for the next gap check --
+    diagnostics.setPreviousBlockEndTick(blockEndTick);
   }
 }
 
@@ -3203,7 +3333,7 @@ void MTControlsAudioProcessor::stopSong() {
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   setTransportState(TransportState::stopped);
-  constexpr double returnPositionSeconds = 0.0;
+  const double returnPositionSeconds = getSongStartSeconds();
   arrangementCurrentPartIndex.store(
       findArrangementPartIndexForArrangementTime(returnPositionSeconds),
       std::memory_order_relaxed);
@@ -3328,10 +3458,18 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
 }
 
 void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
-  const double length =
+  const double sourceLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const double length =
+      arrangementCustomActive.load(std::memory_order_relaxed)
+          ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : sourceLength;
   double start = juce::jlimit(0.0, length, seconds);
   double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (arrangementCustomActive.load(std::memory_order_relaxed) &&
+      !songEndCustomized.load(std::memory_order_relaxed))
+    end = length;
   if (end <= 0.0 || end > length)
     end = length;
   end = juce::jlimit(start, length, end);
@@ -3350,8 +3488,13 @@ void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
 }
 
 void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
-  const double length =
+  const double sourceLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const double length =
+      arrangementCustomActive.load(std::memory_order_relaxed)
+          ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : sourceLength;
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = juce::jlimit(0.0, length, seconds);
   start = juce::jlimit(0.0, end, start);
@@ -3377,8 +3520,18 @@ void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
 void MTControlsAudioProcessor::setSongFadeOutSeconds(double seconds) noexcept {
   const double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
-  const double length =
+  const double sourceLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  const double length =
+      customArrangement
+          ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : sourceLength;
+  if (customArrangement &&
+      !songEndCustomized.load(std::memory_order_relaxed))
+    end = length;
   if (end <= 0.0 || end > length)
     end = length;
   const double maxFade = juce::jmax(0.0, end - start);
@@ -3387,9 +3540,19 @@ void MTControlsAudioProcessor::setSongFadeOutSeconds(double seconds) noexcept {
 }
 
 double MTControlsAudioProcessor::getSongStartSeconds() const noexcept {
-  const double length =
+  const double sourceLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  const double length =
+      customArrangement
+          ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : sourceLength;
   double end = songEndSeconds.load(std::memory_order_relaxed);
+  if (customArrangement &&
+      !songEndCustomized.load(std::memory_order_relaxed))
+    end = length;
   if (end <= 0.0 || end > length)
     end = length;
   const double start =
@@ -3398,8 +3561,18 @@ double MTControlsAudioProcessor::getSongStartSeconds() const noexcept {
 }
 
 double MTControlsAudioProcessor::getSongEndSeconds() const noexcept {
-  const double length =
+  const double sourceLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const bool customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  const double length =
+      customArrangement
+          ? juce::jmax(sourceLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : sourceLength;
+  if (customArrangement &&
+      !songEndCustomized.load(std::memory_order_relaxed))
+    return length;
   double end = songEndSeconds.load(std::memory_order_relaxed);
   if (end <= 0.0 || end > length)
     end = length;
@@ -3793,7 +3966,9 @@ bool MTControlsAudioProcessor::isSongPlaying() const noexcept {
 }
 
 double MTControlsAudioProcessor::getSongCurrentPositionSeconds() const {
-  return transportClock.getPositionSeconds();
+  // The control-side mirror is updated immediately when a seek is requested,
+  // including while the device is stopped and no audio callback is available.
+  return songCurrentPositionSeconds.load(std::memory_order_relaxed);
 }
 
 double MTControlsAudioProcessor::getLoadedSongLengthSeconds() const noexcept {

@@ -185,12 +185,17 @@ void toggleSongPlayPause();
 | `setFadeStopsPlayback(bool)` | shouldStop | ¿Fade detiene? |
 | `isFadeStopsPlayback()` | — | ¿Fade detiene? |
 
-Con arreglo personalizado activo, `setSongStartSeconds()` no se expone desde la
-UI principal porque el inicio pertenece al mapa de secciones. `setSongEndSeconds()`
-y `setSongFadeOutSeconds()` siguen activos: un `Fin` menor que el largo original
-de la canción recorta el playback, muestra el marcador de fin en la waveform y
-detiene el transporte en ese segundo. Si `Fin` queda en el largo original, el
-custom arrange reproduce su duración completa.
+Con arreglo personalizado activo, `setSongStartSeconds()` y
+`setSongEndSeconds()` delimitan la ventana de reproducción sin modificar el
+mapa de secciones. Sus límites usan la duración total del arrange. Un `Fin`
+personalizado recorta el playback, muestra el marcador correspondiente en la
+waveform y detiene el transporte en ese segundo; sin personalización, el custom
+arrange reproduce su duración completa.
+
+Todo seek se limita a `[Inicio, Fin]`. `stopSong()` retorna a `Inicio` y
+`getSongCurrentPositionSeconds()` consulta el espejo atómico de control para que
+la UI refleje inmediatamente seeks solicitados mientras el transporte está
+detenido.
 
 La UI usa `getLoadedSongLengthSeconds()` para conservar la escala de la
 waveform original y `getSongLengthSeconds()` para el largo del timeline de
@@ -256,6 +261,49 @@ publican en una FIFO SPSC fija; un timer del procesador la consume en orden a
 100 Hz aunque el editor esté cerrado. La solicitud de carga del pack se
 coalesce por separado. Las notas de pads usan dos bitmasks atómicos y se aplican
 sólo cuando el callback obtiene su `tryLock` normal de render.
+
+### Benchmark: marcas por etapa dentro de `processBlock`
+
+Para localizar de dónde viene el tiempo de un callback lento (o un "mini
+corte" audible), el callback captura la duración de seis sub-etapas con el
+contador de alta resolución. Todas se serializan como microsegundos saturados
+a `int16` (~32.7 ms sin signo) en el mismo CSV `audio_*.csv`:
+
+| Columna | Etapa | Qué mide |
+|---|---|---|
+| `stage_pre_read_us` | `preRead` | Desde la entrada al callback hasta la primera lectura de stem. Incluye lectura atómica de estado, snapshot de sección, math de gain de transición, updates de tempo, coordinación de seek, inyección de estado por stem, math de fade. Crece si el UI thread está contiendo con el audio thread vía cache-line bouncing. |
+| `stage_read_next_us` | `read_next` | El loop de `getNextAudioBlock` sobre todos los stems. Solo se llena en el path `routingActive`. |
+| `stage_decode_render_us` | `decode_render` | Suma del tiempo dentro de `proc.process` (pitch / time-stretch) y del delay line por stem. Es un sub-conjunto de `read_next`. |
+| `stage_mix_stems_us` | `mix_stems` | `mixEngine.mixStems` (separated) o `mixEngine.renderDirect` (direct). Solo se llena en el path `!routingActive`. |
+| `stage_mix_output_us` | `mix_output` | `mixEngine.renderToOutput` — bus master donde se suman stems, se aplica el fade y, opcionalmente, se mezcla metrónomo / pads / guía dinámica. |
+| `stage_ramp_transition_us` | `ramp_transition` | `applySongTransitionRamp` final — envolvente de fade aplicada al buffer de salida en el handoff entre canciones. |
+
+Una etapa que no corrió en un bloque queda en 0 (no se interpreta como
+"corrió en 0us").
+
+### Benchmark: detector de underrun (gap event)
+
+Un "mini corte" audible es el resultado de un callback que no se ejecutó
+en su slot esperado. El callback compara su `blockStartTick` contra el
+`blockEndTick` del callback anterior. Si la diferencia supera el umbral
+(`kDefaultGapThresholdMs = 15.0` ms, configurable vía
+`AudioDiagnostics::setGapThresholdMs`), se emite un evento de gap.
+
+El evento se serializa a `audio_gaps_<ts>.csv` con la forma:
+
+```
+wall_ms,delta_ms,song_position_sec,stem_count,is_playing
+```
+
+- `wall_ms`: timestamp del callback que finalmente corrió.
+- `delta_ms`: duración del silencio (gap) en milisegundos.
+- `song_position_sec`: posición de playback al momento de detectar el gap,
+  para mapear el corte a un instante específico de la canción.
+- `stem_count` / `is_playing`: contexto.
+
+`AudioDiagnostics::getStats()` ahora también reporta el conteo acumulado de
+gaps y el peor gap observado en milisegundos, p.ej.
+`Blocks: 110719 | Overruns: 0 (0.0%) | Avg: 0.70ms | Max: 4.34ms | Gaps: 9 (max 484ms)`.
 
 ## Metrónomo API
 
