@@ -1,5 +1,6 @@
 #include "../src/StemBufferingSource.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -16,8 +17,9 @@ void expect(const bool condition, const char *message) {
 
 class RampSource final : public juce::PositionableAudioSource {
 public:
-  explicit RampSource(const juce::int64 sourceLength)
-      : length(sourceLength) {}
+  explicit RampSource(const juce::int64 sourceLength,
+                      const float sampleBias = 0.0f)
+      : length(sourceLength), bias(sampleBias) {}
 
   static float sampleAt(const juce::int64 position) {
     return static_cast<float>((position % 1000) + 1) / 1000.0f;
@@ -38,7 +40,7 @@ public:
       if (sourcePosition < 0 || sourcePosition >= length)
         continue;
 
-      const auto value = sampleAt(sourcePosition);
+      const auto value = sampleAt(sourcePosition) + bias;
       for (int channel = 0; channel < info.buffer->getNumChannels();
            ++channel) {
         info.buffer->setSample(channel, info.startSample + sample, value);
@@ -49,7 +51,12 @@ public:
   }
 
   void setNextReadPosition(const juce::int64 newPosition) override {
+    setPositionCallCount.fetch_add(1, std::memory_order_relaxed);
     position = newPosition;
+  }
+
+  int getSetPositionCallCount() const noexcept {
+    return setPositionCallCount.load(std::memory_order_relaxed);
   }
 
   juce::int64 getNextReadPosition() const override {
@@ -64,7 +71,9 @@ public:
 private:
   juce::int64 position = 0;
   const juce::int64 length;
+  const float bias;
   bool looping = false;
+  std::atomic<int> setPositionCallCount{0};
 };
 
 void expectNear(const float actual, const float expected,
@@ -275,6 +284,220 @@ void testPublishedEofSilenceIsNotAnUnderrun() {
          "published EOF silence adds no missing frames");
 }
 
+void testPrefetchedSeekKeepsCurrentWindowAndSuppliesTargetImmediately() {
+  constexpr juce::int64 target = 50000;
+  constexpr int blockFrames = 512;
+  RampSource source(100000);
+  RampSource prefetchSource(100000);
+  juce::TimeSliceThread readThread("prefetched seek read thread");
+  expect(readThread.startThread(), "prefetch read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false, &prefetchSource);
+  bufferingSource.prepareToPlay(blockFrames, 48000.0);
+
+  juce::AudioBuffer<float> readiness(2, blockFrames);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, blockFrames);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "current timeline window becomes ready");
+  const auto mainSourceSeekCallsBeforePrefetch =
+      source.getSetPositionCallCount();
+
+  bufferingSource.requestPrefetchPosition(target, blockFrames);
+  const auto deadline = juce::Time::getMillisecondCounter() + 2000U;
+  while (!bufferingSource.isPrefetchReady(target, blockFrames) &&
+         juce::Time::getMillisecondCounter() < deadline) {
+    juce::Thread::sleep(1);
+  }
+  expect(bufferingSource.isPrefetchReady(target, blockFrames),
+         "secondary target window becomes ready");
+  readThread.stopThread(2000);
+  expect(source.getSetPositionCallCount() ==
+             mainSourceSeekCallsBeforePrefetch,
+         "target prefetch never seeks the main playback source");
+  expect(prefetchSource.getSetPositionCallCount() > 0,
+         "target prefetch seeks only its independent source");
+
+  juce::AudioBuffer<float> current(2, blockFrames);
+  const juce::AudioSourceChannelInfo currentInfo(&current, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(currentInfo);
+  for (int channel = 0; channel < current.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < blockFrames; ++sample) {
+      expectNear(current.getSample(channel, sample),
+                 RampSource::sampleAt(sample),
+                 "prefetch does not replace the current audible window");
+    }
+  }
+
+  const auto missesBeforeSeek = bufferingSource.getRealtimeMissCount();
+  bufferingSource.setNextReadPosition(target);
+  juce::AudioBuffer<float> jumped(2, blockFrames);
+  const juce::AudioSourceChannelInfo jumpedInfo(&jumped, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(jumpedInfo);
+  for (int channel = 0; channel < jumped.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < blockFrames; ++sample) {
+      expectNear(jumped.getSample(channel, sample),
+                 RampSource::sampleAt(target + sample),
+                 "prefetched seek emits target audio in its first callback");
+    }
+  }
+  expect(bufferingSource.getRealtimeMissCount() == missesBeforeSeek,
+         "ready prefetched seek adds no streaming miss");
+  expect(bufferingSource.getNextReadPosition() == target + blockFrames,
+         "prefetched seek advances from its exact target");
+}
+
+void testSeekPrefetchBankCannotBeOverwrittenBeforeMainHandoff() {
+  constexpr juce::int64 target = 50000;
+  constexpr juce::int64 otherTarget = 70000;
+  constexpr int blockFrames = 512;
+  constexpr int prefetchedFrames = blockFrames * 2;
+
+  RampSource source(100000);
+  RampSource prefetchSource(100000);
+  juce::TimeSliceThread readThread("prefetch pin read thread");
+  expect(readThread.startThread(), "prefetch pin thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false, &prefetchSource);
+  bufferingSource.prepareToPlay(blockFrames, 48000.0);
+
+  juce::AudioBuffer<float> readiness(2, blockFrames);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, blockFrames);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "prefetch pin current window becomes ready");
+
+  bufferingSource.requestPrefetchPosition(target, prefetchedFrames);
+  const auto deadline = juce::Time::getMillisecondCounter() + 2000U;
+  while (!bufferingSource.isPrefetchReady(target, prefetchedFrames) &&
+         juce::Time::getMillisecondCounter() < deadline) {
+    juce::Thread::sleep(1);
+  }
+  expect(bufferingSource.isPrefetchReady(target, prefetchedFrames),
+         "prefetch pin target bank covers two callbacks");
+  readThread.stopThread(2000);
+
+  bufferingSource.setNextReadPosition(target);
+  juce::AudioBuffer<float> first(2, blockFrames);
+  const juce::AudioSourceChannelInfo firstInfo(&first, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(firstInfo);
+
+  bufferingSource.requestPrefetchPosition(otherTarget, blockFrames);
+  expect(!bufferingSource.isPrefetchReady(otherTarget, blockFrames),
+         "new target request is ignored while seek handoff is pinned");
+
+  juce::AudioBuffer<float> second(2, blockFrames);
+  const juce::AudioSourceChannelInfo secondInfo(&second, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(secondInfo);
+  for (int channel = 0; channel < second.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < blockFrames; ++sample) {
+      expectNear(second.getSample(channel, sample),
+                 RampSource::sampleAt(target + blockFrames + sample),
+                 "pinned target bank supplies the second post-seek block");
+    }
+  }
+}
+
+void testMainRingTakesPrecedenceOverOverlappingPrefetch() {
+  constexpr int blockFrames = 512;
+  constexpr float prefetchBias = 2.0f;
+
+  RampSource source(100000);
+  RampSource prefetchSource(100000, prefetchBias);
+  juce::TimeSliceThread readThread("overlapping prefetch read thread");
+  expect(readThread.startThread(), "overlapping prefetch thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false, &prefetchSource);
+  bufferingSource.prepareToPlay(blockFrames, 48000.0);
+
+  juce::AudioBuffer<float> readiness(2, blockFrames);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, blockFrames);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "main window becomes ready before overlapping prefetch");
+
+  bufferingSource.requestPrefetchPosition(0, blockFrames);
+  const auto deadline = juce::Time::getMillisecondCounter() + 2000U;
+  while (!bufferingSource.isPrefetchReady(0, blockFrames) &&
+         juce::Time::getMillisecondCounter() < deadline) {
+    juce::Thread::sleep(1);
+  }
+  expect(bufferingSource.isPrefetchReady(0, blockFrames),
+         "overlapping target bank becomes ready");
+  readThread.stopThread(2000);
+
+  juce::AudioBuffer<float> output(2, blockFrames);
+  const juce::AudioSourceChannelInfo outputInfo(&output, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(outputInfo);
+
+  for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < blockFrames; ++sample) {
+      expectNear(output.getSample(channel, sample),
+                 RampSource::sampleAt(sample),
+                 "main ring wins every sample shared with target bank");
+      expect(std::abs(output.getSample(channel, sample) -
+                      (RampSource::sampleAt(sample) + prefetchBias)) >
+                 1.0f,
+             "overlapping prefetch cannot overwrite main ring audio");
+    }
+  }
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "fully overlapping ready banks produce no streaming miss");
+}
+
+void testPrefetchedTargetCanSplitOneCallbackAtExactBoundary() {
+  constexpr juce::int64 target = 50000;
+  constexpr int blockFrames = 512;
+  constexpr int boundaryOffset = 488;
+  constexpr int suffixFrames = blockFrames - boundaryOffset;
+
+  RampSource source(100000);
+  RampSource prefetchSource(100000);
+  juce::TimeSliceThread readThread("split callback read thread");
+  expect(readThread.startThread(), "split callback read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false, &prefetchSource);
+  bufferingSource.prepareToPlay(blockFrames, 48000.0);
+
+  juce::AudioBuffer<float> readiness(2, blockFrames);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, blockFrames);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "split callback current window becomes ready");
+
+  bufferingSource.requestPrefetchPosition(target, blockFrames);
+  const auto deadline = juce::Time::getMillisecondCounter() + 2000U;
+  while (!bufferingSource.isPrefetchReady(target, blockFrames) &&
+         juce::Time::getMillisecondCounter() < deadline) {
+    juce::Thread::sleep(1);
+  }
+  expect(bufferingSource.isPrefetchReady(target, blockFrames),
+         "split callback target bank becomes ready");
+  readThread.stopThread(2000);
+
+  juce::AudioBuffer<float> output(2, blockFrames);
+  const juce::AudioSourceChannelInfo prefixInfo(&output, 0, boundaryOffset);
+  bufferingSource.getNextAudioBlock(prefixInfo);
+  bufferingSource.setNextReadPosition(target);
+  const juce::AudioSourceChannelInfo suffixInfo(
+      &output, boundaryOffset, suffixFrames);
+  bufferingSource.getNextAudioBlock(suffixInfo);
+
+  for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < boundaryOffset; ++sample) {
+      expectNear(output.getSample(channel, sample),
+                 RampSource::sampleAt(sample),
+                 "split callback keeps every pre-boundary source frame");
+    }
+    for (int sample = 0; sample < suffixFrames; ++sample) {
+      expectNear(output.getSample(channel, boundaryOffset + sample),
+                 RampSource::sampleAt(target + sample),
+                 "split callback starts target audio at the exact offset");
+    }
+  }
+
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "fully prefetched split callback has no streaming miss");
+  expect(bufferingSource.getNextReadPosition() == target + suffixFrames,
+         "split callback clock advances only the target suffix after jump");
+}
+
 void testFarCursorCannotWrapRangeOffsets() {
   RampSource source(100000);
   juce::TimeSliceThread inactiveReadThread("inactive far cursor thread");
@@ -338,6 +561,10 @@ int main() {
   testEmptyLoopingRangeAdvancesModuloSourceLength();
   testBufferedLoopCrossingPreservesAudio();
   testPublishedEofSilenceIsNotAnUnderrun();
+  testPrefetchedSeekKeepsCurrentWindowAndSuppliesTargetImmediately();
+  testSeekPrefetchBankCannotBeOverwrittenBeforeMainHandoff();
+  testMainRingTakesPrecedenceOverOverlappingPrefetch();
+  testPrefetchedTargetCanSplitOneCallbackAtExactBoundary();
   testFarCursorCannotWrapRangeOffsets();
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
   testConcurrentSeekWinsOverInFlightBlockAdvance();

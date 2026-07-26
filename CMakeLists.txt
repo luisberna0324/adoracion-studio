@@ -225,6 +225,21 @@ if(MTCONTROLS_BUILD_TESTS)
         PRIVATE juce::juce_audio_basics)
     add_test(NAME stem_buffering_source COMMAND MTControlsStemBufferingTests)
 
+    juce_add_console_app(MTControlsMetronomeTests
+        PRODUCT_NAME "MTControls Metronome Tests")
+    target_sources(MTControlsMetronomeTests PRIVATE
+        tests/metronome_engine_tests.cpp
+        src/MetronomeEngine.cpp
+        src/MetronomeEngine.h
+    )
+    juce_generate_juce_header(MTControlsMetronomeTests)
+    target_include_directories(MTControlsMetronomeTests PRIVATE src)
+    target_compile_definitions(MTControlsMetronomeTests
+        PRIVATE MTCONTROLS_ENABLE_TEST_HOOKS=1)
+    target_link_libraries(MTControlsMetronomeTests
+        PRIVATE juce::juce_audio_utils)
+    add_test(NAME metronome_engine COMMAND MTControlsMetronomeTests)
+
     juce_add_console_app(MTControlsSongMixExportTimelineTests
         PRODUCT_NAME "MTControls Song Mix Export Timeline Tests")
     target_sources(MTControlsSongMixExportTimelineTests PRIVATE

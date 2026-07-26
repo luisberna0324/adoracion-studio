@@ -78,19 +78,41 @@ Completed foundations:
     one required clean voice is unavailable, song stems, click and guide advance
     but the whole song bus is discarded; delay history is invalidated in O(1).
     This trades a coherent gap for partial, rhythmically misaligned playback.
+24. Seek, loop and queued-section targets use a per-stem prefetch bank backed
+    by its own file reader and resampler. The worker primes that independent
+    filter with up to 256 discarded frames before publishing the target; the
+    current ring remains audible and has precedence over overlapping cache
+    ranges.
+25. Section decisions expose their exact in-block offset. A ready target is
+    rendered as current-prefix plus target-suffix in the same callback, with a
+    short equal-power fade-through-zero and exact suffix-only clock advance.
+    Late I/O defers the handoff without flushing DSP or emitting a partial mix.
+26. Control seeks are generation commands; only the audio thread mutates the
+    effective clock. Section snapshots are acquired once per callback from
+    bounded multi-reader atomic banks.
+27. Pitch changes ramp internally for 50 ms, tempo targets ramp for 100 ms and
+    live latency-tap changes crossfade for 256 samples.
+28. Routing time processors now have a real non-RT release lifecycle. Unused
+    slots destroy both Bungee voices (or SoundTouch), delay storage and scratch
+    buffers instead of retaining the maximum historical stem count.
+29. Click and dynamic-guide buses render prefix and suffix ranges around the
+    same exact arrangement boundary as stems. The target click is re-anchored
+    from source beat position plus effective ramped BPM, and song-bus tails are
+    trimmed at the exact end offset while pads remain independent.
+30. Deferred arrangement handoffs carry an intent generation and are cancelled
+    by newer seek, stop, edit, jump or loop commands. Metronome reset commands
+    likewise use generations, and subdivision requests remain persistent until
+    the audio thread adopts them on a main-beat boundary.
 
 Remaining architectural boundary:
 
 - Bungee synthesis is currently synchronous in the audio callback. The next
   boundary is a bounded producer/consumer layer that can move synthesis, not
   only retired-stream construction, off-thread.
-- Replacement DSP voices are clean and pre-warmed with silence, but are not
-  pre-fed with target audio.
-  Guaranteed gapless seeks and loops still require a second prefilled source
-  cache and a sample-accurate/crossfaded handoff.
-- Seek and loop targets invalidate the current streaming cache and wake the
-  reader pool, but do not yet maintain a second prefilled cache for guaranteed
-  gapless jumps.
+- Source handoffs are prefilled and sample-accurate, but Bungee still consumes
+  the discontinuity through its current synthesis history. A second DSP voice
+  pre-fed with target audio plus an output overlap would be required to call
+  pitch/tempo transitions perceptually gapless under every signal.
 - Structural stem swaps suspend new callbacks, wait for the active callback to
   leave, then publish the new deck. The callback no longer acquires
   `stemListLock`.

@@ -9,6 +9,9 @@
 class StemMixEngine {
 public:
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
+  // Non-RT lifecycle operation. Releases grouped DSP voices, delay rings and
+  // scratch buffers while preserving logical pitch/tempo settings.
+  void releaseResources() noexcept;
   void reset();
   void setPitchSemiTones(int semitones);
   void setTempoRatio(double ratio);
@@ -37,11 +40,22 @@ public:
 private:
   class SimpleDelayLine {
   public:
+    static constexpr int kDelayTransitionSamples = 256;
+
     void prepare(int channels, int maxDelaySamples);
+    void releaseResources() noexcept;
     void setDelay(int delaySamplesToUse);
     void reset();
-    void invalidateHistory() noexcept { validHistorySamples = 0; }
+    void invalidateHistory() noexcept {
+      validHistorySamples = 0;
+      currentDelaySamples = delaySamples;
+      transitionFromDelaySamples = delaySamples;
+      transitionToDelaySamples = delaySamples;
+      transitionActive = false;
+      transitionSample = 0;
+    }
     // Clean state yields the full leading delay; delay zero still records.
+    // Live changes crossfade between two ring-buffer read taps.
     void process(juce::AudioBuffer<float> &buffer, int numSamples);
     int getDelaySamples() const noexcept { return delaySamples; }
 
@@ -49,9 +63,14 @@ private:
     juce::AudioBuffer<float> delayBuffer;
     int writePos = 0;
     int delaySamples = 0;
+    int currentDelaySamples = 0;
+    int transitionFromDelaySamples = 0;
+    int transitionToDelaySamples = 0;
+    int transitionSample = 0;
     int maxDelaySamples = 0;
     int numChannels = 0;
     int validHistorySamples = 0;
+    bool transitionActive = false;
   };
 
   void ensureBuffers(int numChannels, int numSamples);

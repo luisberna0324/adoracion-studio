@@ -1,4 +1,5 @@
 #include "../src/StemMixEngine.h"
+#include "../src/audio/SimpleDelayLine.h"
 
 #include <algorithm>
 #include <array>
@@ -58,6 +59,38 @@ public:
 
 private:
   juce::int64 impulsePosition = 0;
+};
+
+class RampAudioFormatReader final : public juce::AudioFormatReader {
+public:
+  RampAudioFormatReader() : AudioFormatReader(nullptr, "test ramp") {
+    sampleRate = kSampleRate;
+    bitsPerSample = 32;
+    lengthInSamples = 160 * kBlockSize;
+    numChannels = 2;
+    usesFloatingPointData = true;
+  }
+
+  bool readSamples(int *const *destChannels, const int numDestChannels,
+                   const int startOffsetInDestBuffer,
+                   const juce::int64 startSampleInFile,
+                   const int numSamples) override {
+    for (int channel = 0; channel < numDestChannels; ++channel) {
+      if (destChannels[channel] == nullptr)
+        continue;
+
+      auto *destination =
+          reinterpret_cast<float *>(destChannels[channel]) +
+          startOffsetInDestBuffer;
+      for (int sample = 0; sample < numSamples; ++sample) {
+        destination[sample] =
+            static_cast<float>(startSampleInFile + sample) * kSlope;
+      }
+    }
+    return true;
+  }
+
+  static constexpr float kSlope = 1.0e-5f;
 };
 
 enum class RenderGroup { Melodic, Percussion, Guide };
@@ -174,6 +207,93 @@ int main() {
                               1.0f, 1.0f);
     expect(!blockedMix.wasLastRenderBlocked(),
            "grouped render resumes only after preflight resolves reset");
+  }
+
+  {
+    constexpr int preRollBlocks = 130;
+    constexpr int transitionSamples =
+        SimpleDelayLine::kDelayTransitionSamples;
+    juce::TimeSliceThread unusedReadThread("delay-transition-test-read");
+    std::vector<std::unique_ptr<StemTrack>> stems;
+    stems.push_back(std::make_unique<StemTrack>(
+        std::make_unique<RampAudioFormatReader>(), unusedReadThread,
+        kSampleRate, 32768, false));
+    stems.front()->prepareToPlay((kBlockSize * 2) + 8, kSampleRate);
+
+    std::array<std::atomic<bool>, 1> guideStates;
+    std::array<std::atomic<bool>, 1> pitchStates;
+    guideStates[0].store(true, std::memory_order_relaxed);
+    pitchStates[0].store(false, std::memory_order_relaxed);
+
+    StemMixEngine transitioningMix;
+    transitioningMix.prepare(kSampleRate, kBlockSize, 2);
+    juce::AudioBuffer<float> output(2, kBlockSize);
+    for (int block = 0; block < preRollBlocks; ++block) {
+      const int inputFrames =
+          transitioningMix.requiredInputFrames(kBlockSize);
+      transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(),
+                                1, inputFrames, 2);
+      transitioningMix.renderToOutput(output, false, inputFrames, 1.0f, 1.0f,
+                                      1.0f, 1.0f);
+    }
+
+    const auto delayIncreaseSourceStart =
+        stems.front()->getNextReadPosition();
+    transitioningMix.setPitchSemiTones(3);
+    const int pitchedInputFrames =
+        transitioningMix.requiredInputFrames(kBlockSize);
+    transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
+                              pitchedInputFrames, 2);
+    transitioningMix.renderToOutput(output, true, pitchedInputFrames, 1.0f,
+                                    1.0f, 1.0f, 1.0f);
+
+    const int latency = transitioningMix.getOutputLatencySamples();
+    expect(latency > 0,
+           "guide transition test obtains a positive pitch latency");
+    const auto expectedRampSample = [](const juce::int64 sourceFrame) {
+      return static_cast<float>(sourceFrame) * RampAudioFormatReader::kSlope;
+    };
+    expect(std::abs(output.getSample(0, 0) -
+                    expectedRampSample(delayIncreaseSourceStart)) <
+               5.0e-5f,
+           "grouped guide delay increase starts without a timeline jump");
+    expect(std::abs(
+               output.getSample(0, transitionSamples - 1) -
+               expectedRampSample(delayIncreaseSourceStart +
+                                  transitionSamples - 1 - latency)) <
+               5.0e-5f,
+           "grouped guide delay increase reaches the compensated tap");
+    expect(std::abs(output.getSample(0, transitionSamples) -
+                    expectedRampSample(delayIncreaseSourceStart +
+                                       transitionSamples - latency)) <
+               5.0e-5f,
+           "grouped guide delay stays compensated after its transition");
+
+    const auto delayDecreaseSourceStart =
+        stems.front()->getNextReadPosition();
+    transitioningMix.setPitchSemiTones(0);
+    const int directInputFrames =
+        transitioningMix.requiredInputFrames(kBlockSize);
+    transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
+                              directInputFrames, 2);
+    transitioningMix.renderToOutput(output, false, directInputFrames, 1.0f,
+                                    1.0f, 1.0f, 1.0f);
+    expect(std::abs(output.getSample(0, 0) -
+                    expectedRampSample(delayDecreaseSourceStart - latency)) <
+               5.0e-5f,
+           "grouped guide delay decrease starts from the compensated tap");
+    expect(std::abs(
+               output.getSample(0, transitionSamples - 1) -
+               expectedRampSample(delayDecreaseSourceStart +
+                                  transitionSamples - 1)) <
+               5.0e-5f,
+           "grouped guide delay decrease reaches the direct tap");
+    expect(std::abs(output.getSample(0, transitionSamples) -
+                    expectedRampSample(delayDecreaseSourceStart +
+                                       transitionSamples)) <
+               5.0e-5f,
+           "grouped guide delay stays direct after its transition");
+    stems.front()->releaseResources();
   }
 
   const RenderResult melodic = renderImpulse(RenderGroup::Melodic);

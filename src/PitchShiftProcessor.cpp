@@ -35,20 +35,11 @@ TempoQualitySettings tempoQualitySettingsForRatio(
 
 void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
                                   int numChannels) {
+  releaseResources();
   currentSampleRate = sampleRate;
   currentChannels = numChannels;
   prepared = (currentSampleRate > 0.0 && currentChannels > 0);
 
-  interleavedInput.clear();
-  dryFallback.clear();
-  receiveBuffer.clear();
-  outputFifo.clear();
-  outputReadPos = 0;
-  outputWritePos = 0;
-  outputSampleCount = 0;
-  pitchTransitionFramesRemaining = 0;
-  pitchTransitionFramesTotal = 0;
-  inputFrameRemainder = 0.0;
   maxBlockFrames = juce::jmax(0, samplesPerBlock);
   maxInputFrames = (maxBlockFrames * 2) + 8;
 
@@ -63,15 +54,16 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
     return;
   }
 
-  soundtouch.setSampleRate(static_cast<unsigned int>(currentSampleRate));
-  soundtouch.setChannels(static_cast<unsigned int>(currentChannels));
+  soundtouch = std::make_unique<soundtouch::SoundTouch>();
+  soundtouch->setSampleRate(static_cast<unsigned int>(currentSampleRate));
+  soundtouch->setChannels(static_cast<unsigned int>(currentChannels));
   configureQualitySettings();
-  soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
-  soundtouch.setTempo(static_cast<float>(tempoRatio));
-  soundtouch.setRate(1.0f);
-  soundtouch.clear();
+  soundtouch->setPitchSemiTones(static_cast<float>(pitchSemiTones));
+  soundtouch->setTempo(static_cast<float>(tempoRatio));
+  soundtouch->setRate(1.0f);
+  soundtouch->clear();
   latencySamples = juce::jmax(
-      0, soundtouch.getSetting(SETTING_INITIAL_LATENCY));
+      0, soundtouch->getSetting(SETTING_INITIAL_LATENCY));
 
   if (samplesPerBlock > 0 && currentChannels > 0) {
     interleavedInput.resize(
@@ -90,8 +82,39 @@ void PitchShiftProcessor::prepare(double sampleRate, int samplesPerBlock,
   primeLatency();
 }
 
+void PitchShiftProcessor::releaseResources() noexcept {
+  // The caller guarantees the audio callback is stopped. Clear the published
+  // state first, then destroy the backend and return vector capacity.
+  prepared = false;
+  soundtouch.reset();
+  std::vector<float>().swap(interleavedInput);
+  std::vector<float>().swap(dryFallback);
+  std::vector<float>().swap(receiveBuffer);
+  std::vector<float>().swap(outputFifo);
+
+  outputReadPos = 0;
+  outputWritePos = 0;
+  outputSampleCount = 0;
+  currentSampleRate = 0.0;
+  currentChannels = 0;
+  maxBlockFrames = 0;
+  maxInputFrames = 0;
+  latencySamples = 0;
+  pitchTransitionFramesRemaining = 0;
+  pitchTransitionFramesTotal = 0;
+  inputFrameRemainder = 0.0;
+}
+
 void PitchShiftProcessor::reset() {
-  soundtouch.clear();
+  inputFrameRemainder = 0.0;
+  pitchTransitionFramesRemaining = 0;
+  pitchTransitionFramesTotal = 0;
+  if (!prepared || soundtouch == nullptr) {
+    latencySamples = 0;
+    fifoClear();
+    return;
+  }
+  soundtouch->clear();
   fifoClear();
   primeLatency();
 }
@@ -101,8 +124,8 @@ void PitchShiftProcessor::setPitchSemiTones(int semitones) {
   if (pitchSemiTones == semitones)
     return;
   pitchSemiTones = semitones;
-  if (prepared) {
-    soundtouch.setPitchSemiTones(static_cast<float>(pitchSemiTones));
+  if (prepared && soundtouch != nullptr) {
+    soundtouch->setPitchSemiTones(static_cast<float>(pitchSemiTones));
     // SoundTouch supports continuous pitch updates. Keep its queued frames and
     // overlap history so changing key does not insert a silent re-prime gap.
     refreshLatencyFromSettings();
@@ -121,9 +144,9 @@ void PitchShiftProcessor::setTempoRatio(double ratio) {
   const int nextProfile =
       tempoQualitySettingsForRatio(normalized, contentType).profileId;
   tempoRatio = normalized;
-  if (prepared) {
+  if (prepared && soundtouch != nullptr) {
     configureQualitySettings();
-    soundtouch.setTempo(static_cast<float>(tempoRatio));
+    soundtouch->setTempo(static_cast<float>(tempoRatio));
     // Crossing between stretch profiles changes SoundTouch windowing strategy.
     // Flush pipeline so old-profile frames don't drift against other stems.
     if (previousProfile != nextProfile)
@@ -137,7 +160,7 @@ void PitchShiftProcessor::setContentType(const ContentType type) {
   if (contentType == type)
     return;
   contentType = type;
-  if (prepared) {
+  if (prepared && soundtouch != nullptr) {
     configureQualitySettings();
     // Windowing changes should apply immediately and without stale tails.
     reset();
@@ -161,7 +184,7 @@ int PitchShiftProcessor::getNumChannels() const noexcept {
 bool PitchShiftProcessor::isPrepared() const noexcept { return prepared; }
 
 void PitchShiftProcessor::process(juce::AudioBuffer<float> &buffer) {
-  if (!prepared || currentChannels <= 0)
+  if (!prepared || soundtouch == nullptr || currentChannels <= 0)
     return;
   if (pitchSemiTones == 0 && juce::approximatelyEqual(tempoRatio, 1.0))
     return;
@@ -174,7 +197,8 @@ int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
                                  const int inputFrames,
                                  juce::AudioBuffer<float> &output,
                                  const int outputFrames) {
-  if (!prepared || inputFrames <= 0 || outputFrames <= 0 ||
+  if (!prepared || soundtouch == nullptr || inputFrames <= 0 ||
+      outputFrames <= 0 ||
       inputFrames > maxInputFrames || outputFrames > maxBlockFrames ||
       input.getNumChannels() < currentChannels ||
       output.getNumChannels() < currentChannels) {
@@ -206,12 +230,12 @@ int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
           input.getSample(channel, sourceSample);
   }
 
-  soundtouch.putSamples(interleavedInput.data(),
-                        static_cast<unsigned int>(inputFrames));
+  soundtouch->putSamples(interleavedInput.data(),
+                         static_cast<unsigned int>(inputFrames));
   while (fifoFramesAvailable() < outputFrames) {
     const int receiveCapacity = static_cast<int>(
         receiveBuffer.size() / static_cast<size_t>(currentChannels));
-    const int received = static_cast<int>(soundtouch.receiveSamples(
+    const int received = static_cast<int>(soundtouch->receiveSamples(
         receiveBuffer.data(), static_cast<unsigned int>(receiveCapacity)));
     if (received <= 0)
       break;
@@ -244,7 +268,7 @@ int PitchShiftProcessor::process(const juce::AudioBuffer<float> &input,
 
 int PitchShiftProcessor::requiredInputFrames(
     const int outputFrames) noexcept {
-  if (outputFrames <= 0)
+  if (outputFrames <= 0 || maxInputFrames <= 0)
     return 0;
   const double exact =
       (static_cast<double>(outputFrames) * tempoRatio) +
@@ -255,7 +279,12 @@ int PitchShiftProcessor::requiredInputFrames(
 }
 
 void PitchShiftProcessor::primeLatency() {
-  latencySamples = soundtouch.getSetting(SETTING_INITIAL_LATENCY);
+  if (!prepared || soundtouch == nullptr) {
+    latencySamples = 0;
+    fifoClear();
+    return;
+  }
+  latencySamples = soundtouch->getSetting(SETTING_INITIAL_LATENCY);
   if (latencySamples < 0)
     latencySamples = 0;
   fifoClear();
@@ -327,24 +356,38 @@ void PitchShiftProcessor::fifoPushSilence(const int frames) noexcept {
 }
 
 void PitchShiftProcessor::configureQualitySettings() {
+  if (soundtouch == nullptr)
+    return;
   const auto settings = tempoQualitySettingsForRatio(tempoRatio, contentType);
 
   // Favor quality over CPU while stretching down tempo in live playback.
-  soundtouch.setSetting(SETTING_USE_QUICKSEEK, 0);
-  soundtouch.setSetting(SETTING_SEQUENCE_MS, settings.sequenceMs);
-  soundtouch.setSetting(SETTING_SEEKWINDOW_MS, settings.seekWindowMs);
-  soundtouch.setSetting(SETTING_OVERLAP_MS, settings.overlapMs);
+  soundtouch->setSetting(SETTING_USE_QUICKSEEK, 0);
+  soundtouch->setSetting(SETTING_SEQUENCE_MS, settings.sequenceMs);
+  soundtouch->setSetting(SETTING_SEEKWINDOW_MS, settings.seekWindowMs);
+  soundtouch->setSetting(SETTING_OVERLAP_MS, settings.overlapMs);
 }
 
 void PitchShiftProcessor::refreshLatencyFromSettings() {
-  int updatedLatency = soundtouch.getSetting(SETTING_INITIAL_LATENCY);
+  if (!prepared || soundtouch == nullptr)
+    return;
+  int updatedLatency = soundtouch->getSetting(SETTING_INITIAL_LATENCY);
   if (updatedLatency < 0)
     updatedLatency = 0;
   if (updatedLatency == latencySamples)
     return;
 
   latencySamples = updatedLatency;
-  soundtouch.clear();
+  soundtouch->clear();
   fifoClear();
   fifoPushSilence(latencySamples);
+}
+
+bool PitchShiftProcessor::hasBackendForTests() const noexcept {
+  return soundtouch != nullptr;
+}
+
+size_t
+PitchShiftProcessor::getAllocatedBufferCapacityForTests() const noexcept {
+  return interleavedInput.capacity() + dryFallback.capacity() +
+         receiveBuffer.capacity() + outputFifo.capacity();
 }

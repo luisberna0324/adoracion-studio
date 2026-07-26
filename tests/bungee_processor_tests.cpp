@@ -13,6 +13,39 @@ struct BungeeProcessorTestPeer {
                                   const int failureCount) {
     processor.setForcedVoiceBuildFailuresForTests(failureCount);
   }
+
+  static int allocatedVoiceCount(const BungeeProcessor &processor) {
+    return processor.getAllocatedVoiceCountForTests();
+  }
+
+  static size_t scratchPointerCapacity(const BungeeProcessor &processor) {
+    return processor.getScratchPointerCapacityForTests();
+  }
+
+  static double currentPitchSemiTones(const BungeeProcessor &processor) {
+    return processor.getCurrentPitchSemiTonesForTests();
+  }
+
+  static int pitchRampFramesRemaining(const BungeeProcessor &processor) {
+    return processor.getPitchRampFramesRemainingForTests();
+  }
+
+  static int lastProcessSegmentCount(const BungeeProcessor &processor) {
+    return processor.getLastProcessSegmentCountForTests();
+  }
+
+  static int lastProcessedInputFrames(const BungeeProcessor &processor) {
+    return processor.getLastProcessedInputFramesForTests();
+  }
+
+  static int lastProducedOutputFrames(const BungeeProcessor &processor) {
+    return processor.getLastProducedOutputFramesForTests();
+  }
+
+  static double lastAppliedPitchScale(const BungeeProcessor &processor,
+                                      const int segment) {
+    return processor.getLastAppliedPitchScaleForTests(segment);
+  }
 };
 
 namespace {
@@ -296,6 +329,219 @@ void testServiceFailureBackoff() {
   expect(processor.hasReadyVoice(),
          "successful retry publishes the rebuilt spare");
 }
+
+void testReleaseResourcesLifecycle() {
+  constexpr int outputFrames = 512;
+  BungeeProcessor processor;
+  processor.setPitchSemiTones(-5);
+  processor.setTempoRatio(0.8);
+  processor.setContentType(BungeeProcessor::ContentType::Percussive);
+  expect(processor.prepare(48000.0, outputFrames, 2),
+         "release lifecycle processor prepares");
+  expect(BungeeProcessorTestPeer::allocatedVoiceCount(processor) == 2,
+         "prepare owns both Bungee voices");
+  expect(BungeeProcessorTestPeer::scratchPointerCapacity(processor) >= 4,
+         "prepare reserves channel pointer storage");
+
+  processor.reset();
+  expect(processor.getResetSuccessCount() == 1,
+         "release test establishes runtime reset state");
+  processor.releaseResources();
+
+  expect(!processor.isPrepared(),
+         "release removes the active Bungee voice");
+  expect(!processor.hasReadyVoice(),
+         "release removes the spare Bungee voice");
+  expect(!processor.hasPendingReset(),
+         "release clears pending reset state");
+  expect(processor.getActiveVoiceGeneration() == 0 &&
+             processor.getActiveVoiceSlotForDiagnostics() == -1,
+         "release clears the active voice token and generation");
+  expect(processor.getNumChannels() == 0,
+         "release clears the prepared channel configuration");
+  expect(processor.getOutputLatencySamples() == 0,
+         "release clears published latency");
+  expect(processor.getResetSuccessCount() == 0 &&
+             processor.getResetMissCount() == 0 &&
+             processor.getServiceFailureCount() == 0,
+         "release clears runtime diagnostics");
+  expect(BungeeProcessorTestPeer::allocatedVoiceCount(processor) == 0,
+         "release destroys both Bungee voice object graphs");
+  expect(BungeeProcessorTestPeer::scratchPointerCapacity(processor) == 0,
+         "release returns scratch pointer capacity");
+  expect(processor.requiredInputFrames(outputFrames) == 0,
+         "released processor does not plan source frames");
+  expect(!processor.tryResolvePendingReset() &&
+             !processor.servicePendingRebuild() && !processor.rebuild(),
+         "released processor cannot reactivate or rebuild without prepare");
+
+  juce::AudioBuffer<float> input(2, (outputFrames * 2) + 8);
+  juce::AudioBuffer<float> output(2, outputFrames);
+  input.clear();
+  output.clear();
+  for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < outputFrames; ++sample)
+      output.setSample(channel, sample, 1.0f);
+  }
+  expect(processor.process(input, outputFrames, output, outputFrames) == 0,
+         "released processor rejects rendering");
+  expect(output.getMagnitude(0, outputFrames) == 0.0f,
+         "released processor fails closed with deterministic silence");
+
+  processor.reset();
+  processor.releaseResources();
+  expect(!processor.hasPendingReset() &&
+             BungeeProcessorTestPeer::allocatedVoiceCount(processor) == 0,
+         "reset and repeated release are safe while unprepared");
+
+  expect(processor.getPitchSemiTones() == -5 &&
+             std::abs(processor.getTempoRatio() - 0.8) < 1.0e-12,
+         "release preserves logical pitch and tempo configuration");
+  expect(processor.prepare(44100.0, outputFrames, 1),
+         "processor can prepare again after complete release");
+  expect(processor.getPitchSemiTones() == -5 &&
+             std::abs(processor.getTempoRatio() - 0.8) < 1.0e-12,
+         "re-prepare retains logical processing configuration");
+  expect(processor.getNumChannels() == 1 &&
+             BungeeProcessorTestPeer::allocatedVoiceCount(processor) == 2,
+         "re-prepare reconstructs the requested resources");
+  expect(processor.requiredInputFrames(outputFrames) == 409,
+         "re-prepared planner uses the retained tempo ratio");
+}
+
+void testProgressivePitchSmoothing() {
+  constexpr int outputFrames = 512;
+  constexpr int expectedRampFrames = 2400; // 50 ms at 48 kHz.
+  BungeeProcessor processor;
+  expect(processor.prepare(48000.0, outputFrames, 2),
+         "pitch smoothing processor prepares");
+  expect(std::abs(BungeeProcessorTestPeer::currentPitchSemiTones(processor)) <
+             1.0e-12 &&
+             BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 0,
+         "prepare starts from the configured pitch deterministically");
+
+  processor.setPitchSemiTones(12);
+  expect(processor.getPitchSemiTones() == 12,
+         "public pitch target changes immediately");
+  expect(std::abs(BungeeProcessorTestPeer::currentPitchSemiTones(processor)) <
+             1.0e-12 &&
+             BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 expectedRampFrames,
+         "DSP pitch begins a 50 ms transition from its current value");
+
+  processor.setTempoRatio(0.751);
+  juce::AudioBuffer<float> input(2, (outputFrames * 2) + 8);
+  juce::AudioBuffer<float> output(2, outputFrames);
+  input.clear();
+
+  int totalInputFrames = 0;
+  for (int block = 0; block < 5; ++block) {
+    const int inputFrames = processor.requiredInputFrames(outputFrames);
+    totalInputFrames += inputFrames;
+    output.clear();
+    expect(processor.process(input, inputFrames, output, outputFrames) ==
+               outputFrames,
+           "pitch-ramped process produces the complete output block");
+    expect(BungeeProcessorTestPeer::lastProcessedInputFrames(processor) ==
+                   inputFrames &&
+               BungeeProcessorTestPeer::lastProducedOutputFrames(processor) ==
+                   outputFrames,
+           "pitch subdivision preserves exact input and output totals");
+
+    if (block == 0) {
+      const int segments =
+          BungeeProcessorTestPeer::lastProcessSegmentCount(processor);
+      expect(segments == 4,
+             "512-frame pitch transition uses four bounded sub-processes");
+      double previousScale = 1.0;
+      for (int segment = 0; segment < segments; ++segment) {
+        const double scale =
+            BungeeProcessorTestPeer::lastAppliedPitchScale(processor,
+                                                           segment);
+        expect(scale > previousScale && scale < 2.0,
+               "first pitch-up block applies progressive intermediate scales");
+        previousScale = scale;
+      }
+      expect(std::abs(
+                 BungeeProcessorTestPeer::currentPitchSemiTones(processor) -
+                 2.56) <
+                 1.0e-9,
+             "pitch state advances by exactly one output block");
+      expect(BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 expectedRampFrames - outputFrames,
+             "pitch transition duration is measured in output frames");
+    }
+  }
+
+  expect(totalInputFrames ==
+             static_cast<int>(
+                 std::floor(outputFrames * 0.751 * 5.0)),
+         "segmented pitch processing preserves fractional tempo planning");
+  expect(std::abs(BungeeProcessorTestPeer::currentPitchSemiTones(processor) -
+                  12.0) <
+                 1.0e-12 &&
+             BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 0,
+         "pitch converges exactly to the target after approximately 50 ms");
+  const int convergedSegments =
+      BungeeProcessorTestPeer::lastProcessSegmentCount(processor);
+  expect(std::abs(BungeeProcessorTestPeer::lastAppliedPitchScale(
+                      processor, convergedSegments - 1) -
+                  2.0) <
+             1.0e-12,
+         "final pitch segment applies the exact target scale");
+
+  const int steadyInputFrames = processor.requiredInputFrames(outputFrames);
+  output.clear();
+  expect(processor.process(input, steadyInputFrames, output, outputFrames) ==
+             outputFrames &&
+             BungeeProcessorTestPeer::lastProcessSegmentCount(processor) == 1,
+         "converged pitch returns to one backend call per block");
+  expect(std::abs(
+             BungeeProcessorTestPeer::lastAppliedPitchScale(processor, 0) -
+             2.0) <
+             1.0e-12,
+         "steady-state processing keeps the exact target scale");
+
+  processor.setPitchSemiTones(-12);
+  const int inputFrames = processor.requiredInputFrames(outputFrames);
+  output.clear();
+  expect(processor.process(input, inputFrames, output, outputFrames) ==
+             outputFrames,
+         "pitch-down transition produces a complete block");
+  const int descendingSegments =
+      BungeeProcessorTestPeer::lastProcessSegmentCount(processor);
+  double previousScale = 2.0;
+  for (int segment = 0; segment < descendingSegments; ++segment) {
+    const double scale =
+        BungeeProcessorTestPeer::lastAppliedPitchScale(processor, segment);
+    expect(scale < previousScale && scale > 0.5,
+           "pitch-down block applies progressive intermediate scales");
+    previousScale = scale;
+  }
+
+  processor.reset();
+  expect(std::abs(BungeeProcessorTestPeer::currentPitchSemiTones(processor) +
+                  12.0) <
+                 1.0e-12 &&
+             BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 0,
+         "reset deterministically starts the fresh voice at the target pitch");
+
+  processor.setPitchSemiTones(6);
+  expect(BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+             expectedRampFrames,
+         "a subsequent target starts a new transition");
+  expect(processor.prepare(44100.0, outputFrames, 2),
+         "pitch smoothing processor can be prepared again");
+  expect(std::abs(BungeeProcessorTestPeer::currentPitchSemiTones(processor) -
+                  6.0) <
+                 1.0e-12 &&
+             BungeeProcessorTestPeer::pitchRampFramesRemaining(processor) ==
+                 0,
+         "prepare deterministically snaps a new DSP graph to its target");
+}
 } // namespace
 
 int main() {
@@ -370,6 +616,8 @@ int main() {
   testRealtimeResetVoiceLifecycle();
   testFailedPrepareRecovery();
   testServiceFailureBackoff();
+  testReleaseResourcesLifecycle();
+  testProgressivePitchSmoothing();
 
   std::cout << "bungee processor tests passed\n";
   return 0;

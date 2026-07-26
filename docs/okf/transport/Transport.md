@@ -4,7 +4,7 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # Transport API
@@ -98,6 +98,11 @@ double getOriginalSongBpm() const noexcept;
 
 Cambia el tempo de reproducción sin alterar el pitch (time stretch).
 
+El target se mantiene en atomics, pero el ratio efectivo no salta de un bloque
+al siguiente: durante reproducción se interpola con `smoothstep` a lo largo de
+100 ms. El `TransportClock` avanza con los frames fuente realmente solicitados
+por cada bloque de la rampa.
+
 ## Arrangement
 
 ### Concepto
@@ -156,6 +161,61 @@ int getArrangementPartLoopIndex() const noexcept;
 ```
 
 Activa loop en una parte específica.
+
+### Transiciones dentro del bloque
+
+`SectionScheduler` devuelve el offset exacto del límite. El callback prearma el
+destino de loops y jumps en el banco secundario de cada stem y, cuando todos
+publicaron la misma ventana, compone un único bloque:
+
+```text
+sección actual ─────────┐
+                       │ offset exacto
+destino                 └────────────────
+```
+
+Los stems reciben el mismo `scheduleReadDiscontinuity()`. El reloj se coloca en
+el frame destino y sólo avanza por el largo del sufijo, por ejemplo:
+
+```text
+bloque [512, 1024), límite 1000, destino 2000
+prefijo = 488, sufijo = 24, posición final = 2024
+```
+
+Si el disco no termina el prefetch a tiempo, el audio no se vacía ni se resetea
+el DSP. El callback conserva un salto diferido audio-thread-owned, continúa la
+línea actual y ejecuta el handoff con offset cero en cuanto todos los stems
+están listos. Así se prefiere continuidad audible a emitir una mezcla parcial.
+
+El salto diferido conserva la generación de intención vigente al crearse.
+Seek, stop, edición/publicación del arrange y cambios o cancelaciones de
+jump/loop incrementan `arrangementTransitionIntentGeneration`. Si la generación
+ya no coincide al comienzo de otro callback, audio descarta el destino diferido
+en vez de ejecutar una intención obsoleta. Mientras haya un seek de control
+pendiente, ese comando es el único dueño del banco secundario durante todo el
+callback; un prearmado de arrange no puede sobrescribir su destino.
+
+### Buses virtuales y fin exacto
+
+El offset de transición de source se convierte proporcionalmente al offset de
+salida del callback después de considerar tempo. Metrónomo y guía dinámica
+renderizan por rangos usando el mismo límite que los stems:
+
+1. El prefijo conserva la fase o voz de la sección anterior.
+2. En el offset se resetea el estado virtual y se sincroniza con el frame source
+   del destino.
+3. El metrónomo dispara el click de entrada y la guía dispara el anuncio de
+   entrada sólo cuando esa sección lo requiere.
+4. El sufijo se renderiza desde la nueva sección.
+
+Después, click y guía atraviesan su delay de compensación normal para mantener
+el alineamiento con la latencia de pitch/tempo.
+
+Cuando el final de la ventana cae dentro del callback, el motor también mapea
+ese frame source al offset de salida y limpia desde allí hasta el final del
+bloque en stems, click y guía. El estado de transporte se detiene y vuelve a
+`0.0 s` al cerrar el callback. Los pads no pertenecen al timeline de canción y
+no se recortan.
 
 `Stop` siempre deja el transporte detenido en `0.0 s`. El inicio de la primera
 sección del arrange y el inicio configurado de la ventana de reproducción no
@@ -241,16 +301,24 @@ fade-in mezcla, routing, tempo, click, guía, ventana y arrangement.
 El seek usa atomics para ser thread-safe:
 
 ```cpp
-std::atomic<bool> seekPending{false};
 std::atomic<double> seekTargetSeconds{0.0};
+std::atomic<uint64_t> seekRequestGeneration{0};
+uint64_t appliedSeekRequestGeneration = 0; // sólo audio thread
 ```
 
 ### Algoritmo de seek
 
-1. UI escribe `seekTargetSeconds` y `seekPending = true`
-2. Audio thread detecta `seekPending`
-3. Audio thread calcula frame y hace seek
-4. Audio thread marca `seekPending = false`
+1. Control escribe `seekTargetSeconds` e incrementa la generación con
+   `release`.
+2. Audio captura una generación y mapea el frame de arrange al source usando
+   el mismo snapshot de secciones del bloque.
+3. Solicita el banco secundario en todos los stems.
+4. Si la reproducción es audible, sólo confirma el seek cuando todos exponen
+   el destino. Pausado o detenido puede confirmar de inmediato.
+5. Vuelve a comprobar la generación, cambia todos los cursores, limpia la
+   historia temporal y actualiza `TransportClock` únicamente desde audio.
+6. Publica la generación aplicada. Una solicitud más nueva nunca se pierde por
+   un `exchange(false)` de una solicitud anterior.
 
 ## TransportClock (engine-v2)
 
@@ -336,6 +404,6 @@ processor.requestArrangementPartJump(2);
 
 ## Archivos relacionados
 
-- [TransportClock](../../engine/TransportClock.md)
-- [SectionScheduler](../../engine/SectionScheduler.md)
-- [MTControlsAudioProcessor](../../processor/MTControlsAudioProcessor.md)
+- [TransportClock](../engine/TransportClock.md)
+- [SectionScheduler](../engine/SectionScheduler.md)
+- [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md)

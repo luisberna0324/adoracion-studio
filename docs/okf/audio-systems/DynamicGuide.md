@@ -4,7 +4,7 @@ title: DynamicGuide
 description: Motor de guías dinámicas localizadas por idioma
 resource: src/audio/DynamicGuideEngine.h
 tags: [juce, audio, guide, localization, section]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # DynamicGuideEngine
@@ -247,6 +247,20 @@ Cuando pitch o tempo introducen latencia en los stems, la salida de la guía
 debe pasar por la misma compensación (`stemOutputLatencyThisBlock`). La línea
 de retardo se procesa también durante bloques silenciosos para que el primer
 anuncio no quede adelantado respecto de los instrumentos.
+
+## Estado compartido con arrange
+
+La lista de anuncios consumidos es almacenamiento fijo para
+`SectionScheduler::maxSections`; publicar o editar un arrange nunca redimensiona
+un contenedor que el callback esté indexando.
+
+Los hilos de control no llaman `reset()` sobre la voz ni escriben
+`dynamicGuideLastPartIndex`, `dynamicGuideWasPlaying` o la lista de anuncios.
+En su lugar incrementan `dynamicGuideResetGeneration`. El callback consume esa
+generación al inicio del bloque y reinicia conjuntamente voz, delay y estado
+audio-thread-owned. Al recargar assets se recompila además el snapshot del
+scheduler, porque los IDs enteros de trigger dependen del pack actualmente
+cargado.
 
 ## Archivos relacionados
 

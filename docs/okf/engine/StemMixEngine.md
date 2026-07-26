@@ -59,6 +59,24 @@ void prepare(double sampleRate, int samplesPerBlock, int numChannels);
 
 Configura el motor para el sample rate y tamaño de bloque dados.
 
+Cada `TimeStretchProcessor` contenido expone además:
+
+```cpp
+void releaseResources() noexcept;
+```
+
+Es una operación exclusivamente no-RT: el callback y el servicio de
+mantenimiento deben estar detenidos antes de invocarla. Destruye las dos voces
+Bungee (o el backend SoundTouch), libera la capacidad de sus buffers temporales
+y FIFO, y borra sample rate, canales, latencia, planificador fraccional,
+generaciones y diagnósticos de ejecución. El procesador queda no preparado y
+no puede reconstruirse mediante el servicio hasta recibir otro `prepare()`.
+
+Pitch, tempo y tipo de contenido son configuración lógica y se conservan; un
+`prepare()` posterior reconstruye sólo los recursos solicitados aplicando esa
+misma configuración. La operación es idempotente, pero puede liberar memoria y
+nunca debe ejecutarse desde el hilo de audio.
+
 ### Reset
 
 ```cpp
@@ -93,6 +111,22 @@ void setPitchSemiTones(int semitones);
 ```
 
 Establece el pitch shift en semitonos (-12 a +12).
+
+El valor público continúa siendo entero y representa el target. En Bungee, el
+valor aplicado se interpola en el dominio de semitonos durante 50 ms del
+timeline de salida; así una subida o bajada no cambia la escala de frecuencia
+de golpe entre callbacks. Mientras la rampa está activa, cada bloque se divide
+en segmentos de aproximadamente 128 frames, con un máximo fijo de ocho llamadas
+al backend. Las particiones acumulativas suman exactamente los frames de entrada
+y salida originales y el callback no reserva memoria ni toma locks.
+
+Cada segmento usa la escala media de su tramo de rampa. Al terminar los 50 ms,
+la escala queda exactamente en `2^(target/12)`. `prepare()` y `reset()` arrancan
+la voz nueva directamente en el target y cancelan cualquier rampa anterior;
+esto hace determinista el estado después de crear o intercambiar una voz.
+
+El fallback SoundTouch conserva su transición existente entre señal seca y
+procesada; no divide el bloque ni reconstruye el backend desde el callback.
 
 ### Tempo ratio
 

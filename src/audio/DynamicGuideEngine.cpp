@@ -200,9 +200,18 @@ bool DynamicGuideEngine::triggerForId(const int triggerId) noexcept {
 }
 
 void DynamicGuideEngine::render(juce::AudioBuffer<float> &output) noexcept {
+  render(output, 0, output.getNumSamples());
+}
+
+void DynamicGuideEngine::render(juce::AudioBuffer<float> &output,
+                                const int startSample,
+                                const int samplesToRender) noexcept {
   if (activeSample == nullptr)
     return;
-  const int outSamples = output.getNumSamples();
+  const int boundedStart =
+      juce::jlimit(0, output.getNumSamples(), startSample);
+  const int outSamples = juce::jlimit(
+      0, output.getNumSamples() - boundedStart, samplesToRender);
   const int outChannels = output.getNumChannels();
   const int srcSamples = activeSample->data.getNumSamples();
   const int srcChannels = activeSample->data.getNumChannels();
@@ -227,7 +236,7 @@ void DynamicGuideEngine::render(juce::AudioBuffer<float> &output) noexcept {
       const int srcCh = juce::jmin(ch, srcChannels - 1);
       const auto *src = activeSample->data.getReadPointer(srcCh);
       const float v = src[pos0] + (src[pos1] - src[pos0]) * frac;
-      output.addSample(ch, i, v);
+      output.addSample(ch, boundedStart + i, v);
     }
 
     activePosition += activeIncrement;

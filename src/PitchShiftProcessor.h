@@ -2,7 +2,10 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <SoundTouch.h>
+
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class PitchShiftProcessor {
@@ -10,6 +13,10 @@ public:
   enum class ContentType : uint8_t { Melodic = 0, Percussive = 1 };
 
   void prepare(double sampleRate, int samplesPerBlock, int numChannels);
+  // Destroys the SoundTouch backend and releases every scratch/FIFO buffer.
+  // May deallocate: call only while audio processing is stopped. Pitch, tempo
+  // and content configuration are retained for a later prepare().
+  void releaseResources() noexcept;
   void reset();
   // SoundTouch resets in place and does not need an off-thread replacement
   // voice. This keeps the TimeStretchProcessor maintenance API uniform.
@@ -31,6 +38,10 @@ public:
               juce::AudioBuffer<float> &output, int outputFrames);
 
 private:
+  friend struct PitchShiftProcessorTestPeer;
+  bool hasBackendForTests() const noexcept;
+  size_t getAllocatedBufferCapacityForTests() const noexcept;
+
   void configureQualitySettings();
   void refreshLatencyFromSettings();
   void primeLatency();
@@ -40,7 +51,7 @@ private:
   int fifoPop(float *destination, int frames) noexcept;
   void fifoPushSilence(int frames) noexcept;
 
-  soundtouch::SoundTouch soundtouch;
+  std::unique_ptr<soundtouch::SoundTouch> soundtouch;
   std::vector<float> interleavedInput;
   std::vector<float> dryFallback;
   std::vector<float> receiveBuffer;

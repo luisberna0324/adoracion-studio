@@ -4,7 +4,7 @@ title: SectionScheduler
 description: Programador de secciones de arrange con soporte para loops y jumps
 resource: src/audio/SectionScheduler.h
 tags: [juce, audio, arrange, section, scheduler]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # SectionScheduler
@@ -48,10 +48,21 @@ struct BlockDecision {
     bool skippedSection = false;    // Sección saltada
     int targetSection = -1;        // Sección destino
     Frame targetFrame = 0;          // Frame destino
+    int transitionOffsetFrames = -1; // Offset exacto dentro del bloque
 };
 ```
 
-Resultado de evaluación de bloque.
+Resultado de evaluación de bloque. Cuando existe una transición,
+`transitionOffsetFrames` está en el rango inclusivo `[0, blockFrames]`:
+
+- `0`: el salto ocurre antes de renderizar el primer frame, como un `skip`.
+- `blockFrames`: el salto cae inmediatamente después del bloque.
+- Un valor intermedio divide el bloque en prefijo y sufijo.
+- `-1`: no existe transición.
+
+Ejemplo: si una sección termina en el frame `1000` y el callback evalúa
+`[512, 1024)`, el offset es `488`. El renderer puede entregar primero los 488
+frames de la sección actual y completar los 24 restantes desde el destino.
 
 ## Constantes
 
@@ -77,77 +88,108 @@ void clear() noexcept;
 
 Limpia todas las secciones.
 
-### Consulta
+### Snapshot único por callback
 
 ```cpp
-int size() const noexcept;  // Número de secciones
+struct Snapshot {
+    std::uint64_t generation = 0;
+    int count = 0;
+    std::array<Section, maxSections> sections{};
+    bool valid = false;
+};
+
+Snapshot acquireSnapshot() const noexcept;
 ```
 
-Retorna cuántas secciones hay.
+`Snapshot` tiene tamaño fijo y no reserva memoria. El callback debe adquirirlo
+una vez al comienzo del bloque y reutilizarlo en todas las consultas:
 
 ```cpp
-int findSection(Frame frame) const noexcept;
+SectionScheduler::Snapshot audioSnapshot;
+const auto next = scheduler.acquireSnapshot();
+if (next.valid)
+    audioSnapshot = next;
+
+const int section = SectionScheduler::findSection(audioSnapshot, currentFrame);
+const auto decision = SectionScheduler::evaluate(
+    audioSnapshot, currentFrame, blockFrames, custom, pending, loop);
 ```
 
-Encuentra la sección que contiene el frame dado.
+Si una publicación excepcionalmente rápida impide obtener una generación
+coherente durante los tres intentos acotados, `valid` es `false`. El callback no
+espera ni gira indefinidamente: conserva su snapshot válido anterior.
+
+### Helpers sobre snapshot
 
 ```cpp
-int findGuideTrigger(Frame blockStart, int blockFrames) const noexcept;
-```
-
-Busca triggers de guía en el rango de frames.
-
-```cpp
-bool getSection(int index, Section &section) const noexcept;
-```
-
-Obtiene sección por índice.
-
-```cpp
-bool mapFrameToSourceFrame(
+static int size(const Snapshot &snapshot) noexcept;
+static int findSection(const Snapshot &snapshot, Frame frame) noexcept;
+static int findGuideTrigger(
+    const Snapshot &snapshot,
+    Frame blockStart,
+    int blockFrames
+) noexcept;
+static bool getSection(
+    const Snapshot &snapshot,
+    int index,
+    Section &section
+) noexcept;
+static bool mapFrameToSourceFrame(
+    const Snapshot &snapshot,
     Frame frame,
     Frame arrangementEndFrame,
     Frame sourceEndFrame,
     Frame &sourceFrameOut
-) const noexcept;
-```
-
-Mapea frame de arrange a frame de source.
-
-### Evaluación
-
-```cpp
-BlockDecision evaluate(
+) noexcept;
+static BlockDecision evaluate(
+    const Snapshot &snapshot,
     Frame blockStart,
     int blockFrames,
     bool customArrangement,
     int pendingSection,
     int loopSection
-) const noexcept;
+) noexcept;
 ```
 
-Evalúa el bloque actual y decide qué hacer (play, loop, jump, stop).
+Las sobrecargas históricas sin parámetro `Snapshot` siguen disponibles por
+compatibilidad. Cada una adquiere su propia generación; por ello no deben
+encadenarse dentro de un callback que necesita una vista coherente.
+
+`evaluate()` también marca transiciones implícitas en custom arrange cuando dos
+secciones contiguas no son continuas en la fuente
+(`current.sourceEndFrame != next.sourceStartFrame`). Esto cubre entrada y
+salida de clips insertados aunque no exista loop ni jump explícito. La
+transición usa `transitionOffsetFrames` para que el processor pueda renderizar
+prefijo y sufijo en el sample exacto.
 
 ## Arquitectura lock-free
 
-### Snapshots
+### Bancos atómicos multi-reader
 
-Usa triple-buffering para snapshots:
+Usa tres bancos de publicación. Cada campo mutable del banco es atómico y cada
+banco tiene una secuencia par/impar:
 
 ```cpp
-struct Snapshot {
-    int count = 0;
-    std::array<Section, maxSections> sections{};
+struct AtomicSnapshotBank {
+    std::atomic<std::uint64_t> sequence{0};
+    std::atomic<std::uint64_t> generation{0};
+    std::atomic<int> count{0};
+    std::array<AtomicSection, maxSections> sections{};
 };
 
-std::array<Snapshot, 3> snapshots{};
+std::array<AtomicSnapshotBank, 3> snapshotBanks{};
 std::atomic<int> publishedIndex{0};
-mutable std::atomic<int> readerIndex{-1};
 ```
 
-- **Writer** (UI thread): Escribe en `snapshots[publishedIndex]`
-- **Reader** (Audio thread): Lee desde `snapshots[readerIndex]`
-- **Atomic swap**: Cambio atómico de índice de publicación
+- El writer serializado escribe un banco no publicado, cierra su secuencia y
+  publica el índice con `release`.
+- Cualquier cantidad de readers puede copiar el banco publicado sin compartir
+  un hazard index.
+- Si un writer muy rápido vuelve a alcanzar un banco mientras un reader lo
+  copia, los campos atómicos evitan data races y la secuencia descarta la copia
+  mezclada.
+- La adquisición realiza como máximo tres intentos y nunca toma el mutex del
+  writer.
 
 ### Mutex interno
 
@@ -181,7 +223,13 @@ std::vector<Section> sections = {
 scheduler.publish(sections);
 
 // En callback de audio
-BlockDecision decision = scheduler.evaluate(
+SectionScheduler::Snapshot currentSnapshot;
+auto candidate = scheduler.acquireSnapshot();
+if (candidate.valid)
+    currentSnapshot = candidate;
+
+BlockDecision decision = SectionScheduler::evaluate(
+    currentSnapshot,
     currentFrame,
     blockFrames,
     useCustomArrangement,
@@ -190,7 +238,9 @@ BlockDecision decision = scheduler.evaluate(
 );
 
 if (decision.transition) {
-    // Ir a decision.targetFrame
+    renderPrefix(decision.transitionOffsetFrames);
+    seekTo(decision.targetFrame);
+    renderSuffix(blockFrames - decision.transitionOffsetFrames);
 }
 ```
 
@@ -199,19 +249,20 @@ if (decision.transition) {
 ### Loop de sección
 
 1. Establecer `loopSection` en evaluate
-2. Cuando el playback alcanza el final de la sección, salta a `startFrame`
+2. Cuando el bloque contiene el final, dividir en `transitionOffsetFrames`
+3. Saltar a `startFrame` y renderizar el sufijo en el mismo callback
 
 ### Jump a sección
 
 1. Establecer `pendingSection` en evaluate
-2. En el siguiente bloque, salta al inicio de esa sección
+2. Al alcanzar el límite actual, usar el offset exacto y saltar al destino
 
 ### Skip playback
 
 1. Marcar `skipPlayback = true` en la sección
-2. El scheduler salta directamente al final
+2. El scheduler devuelve offset `0` y el inicio de la siguiente sección
 
 ## Archivos relacionados
 
 - [TransportClock](TransportClock.md) - Proveedor de frames
-- [MTControlsAudioProcessor](../../processor/MTControlsAudioProcessor.md) - Usa SectionScheduler
+- [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md) - Usa SectionScheduler

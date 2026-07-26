@@ -2,9 +2,11 @@
 #include "../src/audio/SongTransitionEnvelope.h"
 #include "../src/audio/TransportClock.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -40,6 +42,25 @@ void testSectionScheduler() {
        {1000, 2000, 1000, 2000, 750, 11, false, false, false, false},
        {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
 
+  const auto snapshot = scheduler.acquireSnapshot();
+  expect(snapshot.valid && Scheduler::size(snapshot) == 3,
+         "callback acquires one fixed scheduler snapshot");
+  expect(Scheduler::findSection(snapshot, 1500) == 1,
+         "snapshot helper finds current section");
+  scheduler.publish(
+      {{0, 500, 0, 500, 0, 20, true, false, false, false}});
+  expect(Scheduler::size(snapshot) == 3 &&
+             Scheduler::findSection(snapshot, 1500) == 1,
+         "acquired snapshot remains coherent after a newer publication");
+
+  scheduler.publish(
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, false},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
+  const auto transitionSnapshot = scheduler.acquireSnapshot();
+  expect(transitionSnapshot.generation > snapshot.generation,
+         "scheduler snapshots carry monotonically increasing generations");
+
   expect(scheduler.findSection(1500) == 1, "find current section");
   expect(scheduler.findGuideTrigger(750, 100) == 1,
          "guide trigger resolves without scanning arrangement strings");
@@ -47,37 +68,198 @@ void testSectionScheduler() {
   expect(scheduler.getSection(1, section) && section.guideTriggerId == 11,
          "section snapshot carries pre-resolved guide data");
 
-  auto decision = scheduler.evaluate(900, 200, true, -1, -1);
+  auto decision =
+      Scheduler::evaluate(transitionSnapshot, 900, 200, true, -1, -1);
   expect(!decision.transition && !decision.stop,
          "custom arrangement remains continuous at section boundary");
+  expect(decision.transitionOffsetFrames == -1,
+         "non-transition keeps an invalid block offset");
 
-  decision = scheduler.evaluate(900, 200, false, 2, -1);
+  scheduler.publish(
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 1500, 4000, 4500, 1000, 11, true, true, false, false},
+       {1500, 2500, 1000, 2000, 1500, 12, true, false, false, false}});
+  const auto insertedClipSnapshot = scheduler.acquireSnapshot();
+  decision =
+      Scheduler::evaluate(insertedClipSnapshot, 900, 200, true, -1, -1);
+  expect(decision.transition && decision.targetSection == 1 &&
+             decision.targetFrame == 1000 &&
+             decision.transitionOffsetFrames == 100,
+         "custom arrange enters inserted source clip at exact boundary");
+  decision =
+      Scheduler::evaluate(insertedClipSnapshot, 1400, 200, true, -1, -1);
   expect(decision.transition && decision.targetSection == 2 &&
-             decision.targetFrame == 2000,
+             decision.targetFrame == 1500 &&
+             decision.transitionOffsetFrames == 100,
+         "custom arrange exits inserted source clip at exact boundary");
+
+  scheduler.publish(
+      {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
+       {1000, 2000, 1000, 2000, 750, 11, false, false, false, false},
+       {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
+  const auto restoredTransitionSnapshot = scheduler.acquireSnapshot();
+
+  decision =
+      Scheduler::evaluate(restoredTransitionSnapshot, 900, 200, false, 2, -1);
+  expect(decision.transition && decision.targetSection == 2 &&
+             decision.targetFrame == 2000 &&
+             decision.transitionOffsetFrames == 100,
          "pending jump executes at section boundary");
 
-  decision = scheduler.evaluate(2900, 200, true, -1, -1);
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 2900, 200, true, -1, -1);
   expect(!decision.transition && !decision.stop,
          "custom arrangement does not stop at final section marker");
 
-  decision = scheduler.evaluate(1900, 200, false, -1, 1);
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 1900, 200, false, -1, 1);
   expect(decision.transition && decision.targetSection == 1 &&
-             decision.targetFrame == 1000,
+             decision.targetFrame == 1000 &&
+             decision.transitionOffsetFrames == 100,
          "active section loop wraps to its start");
 
-  decision = scheduler.evaluate(900, 200, false, 1, 1);
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 900, 200, false, 1, 1);
   expect(decision.transition && decision.targetSection == 1 &&
-             decision.targetFrame == 1000,
+             decision.targetFrame == 1000 &&
+             decision.transitionOffsetFrames == 100,
          "loop requested outside its range enters at current boundary");
+
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 512, 512, false, 2, -1);
+  expect(decision.transition && decision.targetSection == 2 &&
+             decision.transitionOffsetFrames == 488,
+         "pending jump exposes exact offset for boundary 1000 in block 512");
+  const auto positionAfterSplitBlock =
+      decision.targetFrame + (512 - decision.transitionOffsetFrames);
+  expect(positionAfterSplitBlock == 2024,
+         "split transition clock advances only the target suffix");
+
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 488, 512, false, 2, -1);
+  expect(decision.transition && decision.targetSection == 2 &&
+             decision.transitionOffsetFrames == 512,
+         "transition at the block end reports the full block offset");
+
+  decision =
+      Scheduler::evaluate(transitionSnapshot, 512, 512, false, -1, 0);
+  expect(decision.transition && decision.targetSection == 0 &&
+             decision.targetFrame == 0 &&
+             decision.transitionOffsetFrames == 488,
+         "loop exposes exact offset for boundary 1000 in block 512");
 
   scheduler.publish(
       {{0, 1000, 0, 1000, 0, 10, true, false, false, false},
        {1000, 2000, 1000, 2000, 750, 11, false, false, false, true},
        {2000, 3000, 2000, 3000, 1800, 12, false, false, false, false}});
-  decision = scheduler.evaluate(1000, 100, true, -1, -1);
+  const auto skipSnapshot = scheduler.acquireSnapshot();
+  decision = Scheduler::evaluate(skipSnapshot, 1000, 100, true, -1, -1);
   expect(decision.transition && decision.skippedSection &&
-             decision.targetSection == 2 && decision.targetFrame == 2000,
+             decision.targetSection == 2 && decision.targetFrame == 2000 &&
+             decision.transitionOffsetFrames == 0,
          "skip section jumps immediately to next section");
+}
+
+std::vector<playworship::audio::SectionScheduler::Section>
+makeSchedulerStressPattern(const int marker, const int count) {
+  using Scheduler = playworship::audio::SectionScheduler;
+  std::vector<Scheduler::Section> sections;
+  sections.reserve(static_cast<std::size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    const auto start =
+        static_cast<Scheduler::Frame>(marker) + (i * 100);
+    sections.push_back(
+        {start,
+         start + 90,
+         start + 10,
+         start + 80,
+         start + 5,
+         marker + i,
+         (i % 2) == 0,
+         (i % 3) == 0,
+         (i % 5) == 0,
+         (i % 7) == 0});
+  }
+  return sections;
+}
+
+bool schedulerStressSnapshotMatches(
+    const playworship::audio::SectionScheduler::Snapshot &snapshot,
+    const int marker, const int count) {
+  using Scheduler = playworship::audio::SectionScheduler;
+  if (!snapshot.valid || Scheduler::size(snapshot) != count)
+    return false;
+  for (int i = 0; i < count; ++i) {
+    const auto start =
+        static_cast<Scheduler::Frame>(marker) + (i * 100);
+    const auto &section = snapshot.sections[static_cast<std::size_t>(i)];
+    if (section.startFrame != start || section.endFrame != start + 90 ||
+        section.sourceStartFrame != start + 10 ||
+        section.sourceEndFrame != start + 80 ||
+        section.guideTriggerFrame != start + 5 ||
+        section.guideTriggerId != marker + i ||
+        section.triggerGuideOnEntry != ((i % 2) == 0) ||
+        section.insertedClip != ((i % 3) == 0) ||
+        section.muteInstruments != ((i % 5) == 0) ||
+        section.skipPlayback != ((i % 7) == 0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void testSectionSchedulerConcurrentReadersSeeCoherentSnapshots() {
+  using Scheduler = playworship::audio::SectionScheduler;
+  constexpr int markerA = 10000;
+  constexpr int markerB = 50000;
+  constexpr int countA = 64;
+  constexpr int countB = 128;
+
+  Scheduler scheduler;
+  const auto patternA = makeSchedulerStressPattern(markerA, countA);
+  const auto patternB = makeSchedulerStressPattern(markerB, countB);
+  scheduler.publish(patternA);
+
+  std::atomic<bool> start{false};
+  std::atomic<bool> stop{false};
+  std::atomic<bool> failed{false};
+  std::atomic<int> validReads{0};
+  std::atomic<int> readersReady{0};
+  const auto reader = [&] {
+    while (!start.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    readersReady.fetch_add(1, std::memory_order_release);
+    while (!stop.load(std::memory_order_acquire)) {
+      const auto snapshot = scheduler.acquireSnapshot();
+      if (!snapshot.valid)
+        continue;
+      validReads.fetch_add(1, std::memory_order_relaxed);
+      const bool matchesA =
+          schedulerStressSnapshotMatches(snapshot, markerA, countA);
+      const bool matchesB =
+          schedulerStressSnapshotMatches(snapshot, markerB, countB);
+      if (!matchesA && !matchesB) {
+        failed.store(true, std::memory_order_release);
+        return;
+      }
+    }
+  };
+
+  std::thread firstReader(reader);
+  std::thread secondReader(reader);
+  start.store(true, std::memory_order_release);
+  while (readersReady.load(std::memory_order_acquire) != 2)
+    std::this_thread::yield();
+  for (int publication = 0; publication < 2000; ++publication)
+    scheduler.publish((publication & 1) == 0 ? patternB : patternA);
+  stop.store(true, std::memory_order_release);
+  firstReader.join();
+  secondReader.join();
+
+  expect(!failed.load(std::memory_order_acquire),
+         "concurrent readers never observe a mixed scheduler generation");
+  expect(validReads.load(std::memory_order_relaxed) > 0,
+         "concurrent readers acquire valid scheduler snapshots");
 }
 
 void testSongTransitionEnvelope() {
@@ -127,6 +309,7 @@ void testSongTransitionEnvelope() {
 int main() {
   testTransportClock();
   testSectionScheduler();
+  testSectionSchedulerConcurrentReadersSeeCoherentSnapshots();
   testSongTransitionEnvelope();
   std::cout << "audio engine core tests passed\n";
   return 0;

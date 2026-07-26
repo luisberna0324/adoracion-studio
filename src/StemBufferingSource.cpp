@@ -4,11 +4,16 @@ StemBufferingSource::StemBufferingSource(juce::PositionableAudioSource *s,
                                          juce::TimeSliceThread &thread,
                                          bool deleteSourceWhenDeleted,
                                          int bufferSizeSamples, int numChannels,
-                                         bool prefillBufferOnPrepareToPlay)
-    : source(s, deleteSourceWhenDeleted), backgroundThread(thread),
+                                         bool prefillBufferOnPrepareToPlay,
+                                         juce::PositionableAudioSource
+                                             *prefetchSourceToUse)
+    : source(s, deleteSourceWhenDeleted),
+      prefetchSource(prefetchSourceToUse), backgroundThread(thread),
       numberOfSamplesToBuffer(juce::jmax(32768, bufferSizeSamples)),
-      numberOfChannels(numChannels), prefillBuffer(prefillBufferOnPrepareToPlay) {
+      numberOfChannels(numChannels),
+      prefillBuffer(prefillBufferOnPrepareToPlay) {
   jassert(source != nullptr);
+  jassert(prefetchSource == nullptr || prefetchSource != source.get());
 }
 
 StemBufferingSource::~StemBufferingSource() { releaseResources(); }
@@ -19,21 +24,40 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
       juce::jmax(samplesPerBlockExpected * 2, numberOfSamplesToBuffer);
 
   if (!juce::approximatelyEqual(newSampleRate, sampleRate) ||
-      bufferSizeNeeded != buffer.getNumSamples() || !isPrepared) {
+      bufferSizeNeeded != buffer.getNumSamples() ||
+      !isPrepared.load(std::memory_order_acquire)) {
     backgroundThread.removeTimeSliceClient(this);
 
-    isPrepared = true;
+    isPrepared.store(true, std::memory_order_release);
     sampleRate = newSampleRate;
 
     source->prepareToPlay(samplesPerBlockExpected, newSampleRate);
+    if (prefetchSource != nullptr)
+      prefetchSource->prepareToPlay(samplesPerBlockExpected, newSampleRate);
 
     buffer.setSize(numberOfChannels, bufferSizeNeeded);
     buffer.clear();
+    const int prefetchBufferSize =
+        prefetchSource != nullptr
+            ? juce::jmin(bufferSizeNeeded,
+                         juce::jmax(32768, samplesPerBlockExpected * 4))
+            : 0;
+    prefetchBuffer.setSize(numberOfChannels, prefetchBufferSize);
+    prefetchBuffer.clear();
+    prefetchCapacityFrames.store(prefetchBufferSize,
+                                 std::memory_order_release);
 
     const auto epoch =
         requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     workerBufferEpoch = epoch;
     publishValidBufferRange(0, 0, epoch);
+    const auto prefetchGeneration =
+        requestedPrefetchGeneration.fetch_add(1, std::memory_order_acq_rel) +
+        1;
+    workerPrefetchGeneration = prefetchGeneration;
+    requestedPrefetchFrames.store(0, std::memory_order_relaxed);
+    pinnedPrefetchGeneration.store(0, std::memory_order_release);
+    publishPrefetchRange(0, 0, prefetchGeneration);
 
     backgroundThread.addTimeSliceClient(this);
 
@@ -48,7 +72,8 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
 }
 
 void StemBufferingSource::releaseResources() {
-  isPrepared = false;
+  isPrepared.store(false, std::memory_order_release);
+  prefetchCapacityFrames.store(0, std::memory_order_release);
   backgroundThread.removeTimeSliceClient(this);
 
   const auto epoch =
@@ -56,9 +81,18 @@ void StemBufferingSource::releaseResources() {
   workerBufferEpoch = epoch;
   publishValidBufferRange(0, 0, epoch);
   buffer.setSize(numberOfChannels, 0);
+  const auto prefetchGeneration =
+      requestedPrefetchGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  workerPrefetchGeneration = prefetchGeneration;
+  requestedPrefetchFrames.store(0, std::memory_order_relaxed);
+  pinnedPrefetchGeneration.store(0, std::memory_order_release);
+  publishPrefetchRange(0, 0, prefetchGeneration);
+  prefetchBuffer.setSize(numberOfChannels, 0);
 
   if (source != this)
     source->releaseResources();
+  if (prefetchSource != nullptr)
+    prefetchSource->releaseResources();
 }
 
 void StemBufferingSource::getNextAudioBlock(
@@ -67,59 +101,68 @@ void StemBufferingSource::getNextAudioBlock(
     return;
 
   const auto blockStart = nextPlayPos.load(std::memory_order_acquire);
-  const auto blockCursorEpoch =
-      cursorEpoch.load(std::memory_order_acquire);
+  lastAudioBlockFrames.store(info.numSamples, std::memory_order_relaxed);
+  const auto blockCursorEpoch = cursorEpoch.load(std::memory_order_acquire);
   const auto blockBufferEpoch =
       requestedBufferEpoch.load(std::memory_order_acquire);
-  const auto bufferRange =
-      getValidBufferRange(info.numSamples, blockStart);
-  auto validStart =
+  const auto blockPrefetchGeneration =
+      requestedPrefetchGeneration.load(std::memory_order_acquire);
+  const auto bufferRange = getValidBufferRange(info.numSamples, blockStart);
+  auto mainValidStart =
       juce::jlimit(0, info.numSamples, bufferRange.getStart());
-  auto validEnd =
-      juce::jlimit(validStart, info.numSamples, bufferRange.getEnd());
+  auto mainValidEnd =
+      juce::jlimit(mainValidStart, info.numSamples, bufferRange.getEnd());
+  const auto prefetchRange =
+      getValidPrefetchRange(info.numSamples, blockStart);
+  auto prefetchValidStart =
+      juce::jlimit(0, info.numSamples, prefetchRange.getStart());
+  auto prefetchValidEnd = juce::jlimit(
+      prefetchValidStart, info.numSamples, prefetchRange.getEnd());
 
   // Start from deterministic silence so empty/partial read-ahead ranges and
   // output channels beyond numberOfChannels cannot leak stale samples.
   info.clearActiveBufferRegion();
 
-  if (validStart < validEnd) {
+  if (mainValidStart < mainValidEnd) {
     if (!callbackLock.tryEnter()) {
-      validStart = validEnd = 0;
+      mainValidStart = mainValidEnd = 0;
     } else {
       // The worker may have republished its window between the optimistic
       // atomic snapshot and this lock. Revalidate while the ring itself is
       // stable so stale offsets can never address newly repurposed storage.
       const auto lockedRange =
           getValidBufferRange(info.numSamples, blockStart);
-      validStart =
+      mainValidStart =
           juce::jlimit(0, info.numSamples, lockedRange.getStart());
-      validEnd =
-          juce::jlimit(validStart, info.numSamples, lockedRange.getEnd());
+      mainValidEnd = juce::jlimit(mainValidStart, info.numSamples,
+                                  lockedRange.getEnd());
 
-      if (validStart < validEnd) {
+      if (mainValidStart < mainValidEnd) {
         for (int chan =
                  std::min(numberOfChannels, info.buffer->getNumChannels());
              --chan >= 0;) {
           jassert(buffer.getNumSamples() > 0);
 
           const auto startBufferIndex =
-              (int)((validStart + blockStart) % buffer.getNumSamples());
+              (int)((mainValidStart + blockStart) % buffer.getNumSamples());
           const auto endBufferIndex =
-              (int)((validEnd + blockStart) % buffer.getNumSamples());
+              (int)((mainValidEnd + blockStart) % buffer.getNumSamples());
 
           if (startBufferIndex < endBufferIndex) {
-            info.buffer->copyFrom(chan, info.startSample + validStart, buffer,
-                                  chan, startBufferIndex,
-                                  validEnd - validStart);
+            info.buffer->copyFrom(
+                chan, info.startSample + mainValidStart, buffer, chan,
+                startBufferIndex, mainValidEnd - mainValidStart);
           } else {
             const auto initialSize = buffer.getNumSamples() - startBufferIndex;
 
-            info.buffer->copyFrom(chan, info.startSample + validStart, buffer,
-                                  chan, startBufferIndex, initialSize);
+            info.buffer->copyFrom(
+                chan, info.startSample + mainValidStart, buffer, chan,
+                startBufferIndex, initialSize);
 
             info.buffer->copyFrom(
-                chan, info.startSample + validStart + initialSize, buffer, chan,
-                0, (validEnd - validStart) - initialSize);
+                chan, info.startSample + mainValidStart + initialSize, buffer,
+                chan, 0,
+                (mainValidEnd - mainValidStart) - initialSize);
           }
         }
       }
@@ -130,14 +173,118 @@ void StemBufferingSource::getNextAudioBlock(
       if (requestedBufferEpoch.load(std::memory_order_acquire) !=
           blockBufferEpoch) {
         info.clearActiveBufferRegion();
-        validStart = validEnd = 0;
+        mainValidStart = mainValidEnd = 0;
       }
       callbackLock.exit();
     }
   }
 
-  const auto missingFrames =
-      info.numSamples - juce::jmax(0, validEnd - validStart);
+  // Fill any range covered by the independently prepared target bank. This is
+  // most important immediately after setNextReadPosition invalidates the main
+  // ring: the target audio is already resident and can be copied in the same
+  // callback as an arrangement handoff.
+  if (prefetchValidStart < prefetchValidEnd) {
+    if (!prefetchLock.tryEnter()) {
+      prefetchValidStart = prefetchValidEnd = 0;
+    } else {
+      const auto snapshot = readPrefetchRangeSnapshot();
+      const auto lockedRange =
+          getValidPrefetchRange(info.numSamples, blockStart);
+      prefetchValidStart =
+          juce::jlimit(0, info.numSamples, lockedRange.getStart());
+      prefetchValidEnd = juce::jlimit(
+          prefetchValidStart, info.numSamples, lockedRange.getEnd());
+
+      int firstCopiedStart = 0;
+      int firstCopiedEnd = 0;
+      int secondCopiedStart = 0;
+      int secondCopiedEnd = 0;
+      if (snapshot.valid &&
+          snapshot.generation == blockPrefetchGeneration &&
+          prefetchValidStart < prefetchValidEnd) {
+        // The continuous main ring always wins. The target bank fills only
+        // uncovered holes, so reaching an anticipated target naturally cannot
+        // replace warm sequential audio with cold-seek output.
+        firstCopiedStart = prefetchValidStart;
+        firstCopiedEnd =
+            juce::jmin(prefetchValidEnd, mainValidStart);
+        secondCopiedStart =
+            juce::jmax(prefetchValidStart, mainValidEnd);
+        secondCopiedEnd = prefetchValidEnd;
+        if (mainValidStart >= mainValidEnd) {
+          firstCopiedStart = prefetchValidStart;
+          firstCopiedEnd = prefetchValidEnd;
+          secondCopiedStart = secondCopiedEnd = 0;
+        }
+
+        const auto copyRange = [&](const int rangeStart,
+                                   const int rangeEnd) noexcept {
+          if (rangeEnd <= rangeStart)
+            return true;
+          const auto absoluteStart =
+              blockStart + static_cast<juce::int64>(rangeStart);
+          const auto sourceOffset = absoluteStart - snapshot.start;
+          if (sourceOffset < 0 ||
+              sourceOffset + (rangeEnd - rangeStart) >
+                  prefetchBuffer.getNumSamples()) {
+            return false;
+          }
+          for (int chan =
+                   std::min(numberOfChannels, info.buffer->getNumChannels());
+               --chan >= 0;) {
+            info.buffer->copyFrom(
+                chan, info.startSample + rangeStart, prefetchBuffer, chan,
+                static_cast<int>(sourceOffset), rangeEnd - rangeStart);
+          }
+          return true;
+        };
+
+        if (!copyRange(firstCopiedStart, firstCopiedEnd) ||
+            !copyRange(secondCopiedStart, secondCopiedEnd)) {
+          if (firstCopiedEnd > firstCopiedStart)
+            info.buffer->clear(info.startSample + firstCopiedStart,
+                               firstCopiedEnd - firstCopiedStart);
+          if (secondCopiedEnd > secondCopiedStart)
+            info.buffer->clear(info.startSample + secondCopiedStart,
+                               secondCopiedEnd - secondCopiedStart);
+          prefetchValidStart = prefetchValidEnd = 0;
+        }
+      } else {
+        prefetchValidStart = prefetchValidEnd = 0;
+      }
+
+      if (requestedPrefetchGeneration.load(std::memory_order_acquire) !=
+          blockPrefetchGeneration) {
+        if (firstCopiedEnd > firstCopiedStart)
+          info.buffer->clear(info.startSample + firstCopiedStart,
+                             firstCopiedEnd - firstCopiedStart);
+        if (secondCopiedEnd > secondCopiedStart)
+          info.buffer->clear(info.startSample + secondCopiedStart,
+                             secondCopiedEnd - secondCopiedStart);
+        prefetchValidStart = prefetchValidEnd = 0;
+      }
+      prefetchLock.exit();
+    }
+  }
+
+  // A seek concurrent with this callback wins over both banks. Do not expose a
+  // mixture of the captured source position and the newly published target.
+  if (cursorEpoch.load(std::memory_order_acquire) != blockCursorEpoch) {
+    info.clearActiveBufferRegion();
+    mainValidStart = mainValidEnd = 0;
+    prefetchValidStart = prefetchValidEnd = 0;
+  }
+
+  int coveredFrames =
+      juce::jmax(0, mainValidEnd - mainValidStart) +
+      juce::jmax(0, prefetchValidEnd - prefetchValidStart);
+  const int overlapStart = juce::jmax(mainValidStart, prefetchValidStart);
+  const int overlapEnd = juce::jmin(mainValidEnd, prefetchValidEnd);
+  if (overlapEnd > overlapStart)
+    coveredFrames -= overlapEnd - overlapStart;
+  coveredFrames = juce::jlimit(0, info.numSamples, coveredFrames);
+
+  const auto missingFrames = info.numSamples - coveredFrames;
   if (missingFrames > 0) {
     realtimeMissCount.fetch_add(1, std::memory_order_relaxed);
     realtimeMissingFrameCount.fetch_add(missingFrames,
@@ -219,6 +366,67 @@ juce::int64 StemBufferingSource::getNextReadPosition() const {
   return source->isLooping() && pos > 0 && length > 0 ? pos % length : pos;
 }
 
+void StemBufferingSource::requestPrefetchPosition(
+    const juce::int64 position, const int minimumFrames) noexcept {
+  const int capacity =
+      prefetchCapacityFrames.load(std::memory_order_acquire);
+  if (prefetchSource == nullptr ||
+      !isPrepared.load(std::memory_order_acquire) || capacity <= 0 ||
+      minimumFrames <= 0) {
+    return;
+  }
+
+  const auto normalizedPosition = juce::jmax<juce::int64>(0, position);
+  const int frames = juce::jlimit(1, capacity, minimumFrames);
+  auto pinnedGeneration =
+      pinnedPrefetchGeneration.load(std::memory_order_acquire);
+  if (pinnedGeneration != 0) {
+    const int handoffFrames = juce::jlimit(
+        1, capacity,
+        juce::jmax(1, lastAudioBlockFrames.load(std::memory_order_relaxed)));
+    const auto currentPosition = nextPlayPos.load(std::memory_order_acquire);
+    const auto mainRange = getValidBufferRange(handoffFrames, currentPosition);
+    if (mainRange.getStart() > 0 || mainRange.getEnd() < handoffFrames)
+      return;
+
+    pinnedPrefetchGeneration.compare_exchange_strong(
+        pinnedGeneration, static_cast<uint64_t>(0),
+        std::memory_order_acq_rel, std::memory_order_relaxed);
+  }
+
+  if (isPrefetchReady(normalizedPosition, frames))
+    return;
+
+  if (requestedPrefetchPosition.load(std::memory_order_relaxed) ==
+          normalizedPosition &&
+      requestedPrefetchFrames.load(std::memory_order_relaxed) >= frames) {
+    return;
+  }
+
+  // Single producer: the audio callback publishes fields before the release
+  // generation. The TimeSlice worker consumes the generation with acquire.
+  requestedPrefetchPosition.store(normalizedPosition,
+                                  std::memory_order_relaxed);
+  requestedPrefetchFrames.store(frames, std::memory_order_relaxed);
+  requestedPrefetchGeneration.fetch_add(1, std::memory_order_release);
+}
+
+bool StemBufferingSource::isPrefetchReady(
+    const juce::int64 position, const int minimumFrames) const noexcept {
+  if (minimumFrames <= 0)
+    return true;
+  if (prefetchSource == nullptr)
+    return false;
+  const int capacity =
+      prefetchCapacityFrames.load(std::memory_order_acquire);
+  if (capacity <= 0)
+    return false;
+  const int frames = juce::jlimit(1, capacity, minimumFrames);
+  const auto range =
+      getValidPrefetchRange(frames, juce::jmax<juce::int64>(0, position));
+  return range.getStart() == 0 && range.getEnd() >= frames;
+}
+
 void StemBufferingSource::setNextReadPosition(juce::int64 newPosition) {
   // Announce the seek before publishing its position. Combined with the
   // callback's captured epoch and position CAS, this ordering guarantees that
@@ -226,11 +434,28 @@ void StemBufferingSource::setNextReadPosition(juce::int64 newPosition) {
   cursorEpoch.fetch_add(1, std::memory_order_acq_rel);
   nextPlayPos.store(newPosition, std::memory_order_release);
 
+  const auto prefetchGeneration =
+      requestedPrefetchGeneration.load(std::memory_order_acquire);
+  if (prefetchGeneration != 0 && isPrefetchReady(newPosition, 1))
+    pinnedPrefetchGeneration.store(prefetchGeneration,
+                                   std::memory_order_release);
+  else
+    pinnedPrefetchGeneration.store(0, std::memory_order_release);
+
   // Advance the buffer epoch only after publishing the destination, so a
   // worker that observes the new epoch must also observe the new position.
   // Do not touch the worker-owned start/end pair here.
   requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel);
-  backgroundThread.moveToFrontOfQueue(this);
+}
+
+void StemBufferingSource::setLooping(const bool shouldLoop) {
+  source->setLooping(shouldLoop);
+  if (prefetchSource != nullptr)
+    prefetchSource->setLooping(shouldLoop);
+  requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel);
+  requestedPrefetchFrames.store(0, std::memory_order_relaxed);
+  pinnedPrefetchGeneration.store(0, std::memory_order_release);
+  requestedPrefetchGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void StemBufferingSource::publishValidBufferRange(
@@ -244,6 +469,40 @@ void StemBufferingSource::publishValidBufferRange(
   bufferValidEnd.store(end, std::memory_order_relaxed);
   publishedBufferEpoch.store(epoch, std::memory_order_relaxed);
   bufferRangeSequence.fetch_add(1, std::memory_order_release);
+}
+
+StemBufferingSource::PrefetchRangeSnapshot
+StemBufferingSource::readPrefetchRangeSnapshot() const noexcept {
+  PrefetchRangeSnapshot snapshot;
+  const auto sequenceBefore =
+      prefetchRangeSequence.load(std::memory_order_acquire);
+  if ((sequenceBefore & 1U) != 0U)
+    return snapshot;
+
+  snapshot.start = prefetchedRangeStart.load(std::memory_order_relaxed);
+  snapshot.end = prefetchedRangeEnd.load(std::memory_order_relaxed);
+  snapshot.generation =
+      publishedPrefetchGeneration.load(std::memory_order_relaxed);
+
+  const auto sequenceAfter =
+      prefetchRangeSequence.load(std::memory_order_acquire);
+  snapshot.valid =
+      sequenceBefore == sequenceAfter && (sequenceAfter & 1U) == 0U &&
+      snapshot.end > snapshot.start;
+  return snapshot;
+}
+
+void StemBufferingSource::publishPrefetchRange(
+    const juce::int64 start, const juce::int64 end,
+    const uint64_t generation) noexcept {
+  const auto sequence =
+      prefetchRangeSequence.fetch_add(1, std::memory_order_acq_rel);
+  jassert((sequence & 1U) == 0U);
+  juce::ignoreUnused(sequence);
+  prefetchedRangeStart.store(start, std::memory_order_relaxed);
+  prefetchedRangeEnd.store(end, std::memory_order_relaxed);
+  publishedPrefetchGeneration.store(generation, std::memory_order_relaxed);
+  prefetchRangeSequence.fetch_add(1, std::memory_order_release);
 }
 
 juce::Range<int>
@@ -286,6 +545,93 @@ StemBufferingSource::getValidBufferRange(const int numSamples,
       static_cast<int>(overlapStart - pos),
       static_cast<int>(overlapEnd - pos),
   };
+}
+
+juce::Range<int> StemBufferingSource::getValidPrefetchRange(
+    const int numSamples, const juce::int64 pos) const {
+  if (numSamples <= 0)
+    return {};
+
+  const auto requestedGeneration =
+      requestedPrefetchGeneration.load(std::memory_order_acquire);
+  const auto snapshot = readPrefetchRangeSnapshot();
+  if (!snapshot.valid || snapshot.generation != requestedGeneration ||
+      requestedPrefetchGeneration.load(std::memory_order_acquire) !=
+          requestedGeneration) {
+    return {};
+  }
+
+  const auto maxPosition = std::numeric_limits<juce::int64>::max();
+  const auto requestedEnd =
+      pos > maxPosition - numSamples ? maxPosition : pos + numSamples;
+  const auto overlapStart = juce::jmax(pos, snapshot.start);
+  const auto overlapEnd = juce::jmin(requestedEnd, snapshot.end);
+  if (overlapEnd <= overlapStart)
+    return {};
+
+  return {
+      static_cast<int>(overlapStart - pos),
+      static_cast<int>(overlapEnd - pos),
+  };
+}
+
+bool StemBufferingSource::readPendingPrefetch() {
+  if (prefetchSource == nullptr)
+    return false;
+  const auto generation =
+      requestedPrefetchGeneration.load(std::memory_order_acquire);
+  if (generation == workerPrefetchGeneration)
+    return false;
+
+  const auto position =
+      requestedPrefetchPosition.load(std::memory_order_relaxed);
+  const int frames = juce::jlimit(
+      0, prefetchBuffer.getNumSamples(),
+      requestedPrefetchFrames.load(std::memory_order_relaxed));
+  if (requestedPrefetchGeneration.load(std::memory_order_acquire) !=
+      generation) {
+    return true;
+  }
+
+  workerPrefetchGeneration = generation;
+  publishPrefetchRange(0, 0, generation);
+  if (frames <= 0)
+    return true;
+
+  // Prime the independent resampler before the published target. This avoids
+  // exposing the cold filter transient that follows flushBuffers() at a seek.
+  constexpr int prefetchPrerollFrames = 256;
+  const int preroll =
+      static_cast<int>(juce::jmin<juce::int64>(position,
+                                               prefetchPrerollFrames));
+  const auto warmupPosition = position - preroll;
+  prefetchSource->setNextReadPosition(warmupPosition);
+  readBuffer.setSize(numberOfChannels, juce::jmax(frames, preroll), false,
+                     false, true);
+  if (preroll > 0) {
+    juce::AudioSourceChannelInfo warmupInfo(&readBuffer, 0, preroll);
+    prefetchSource->getNextAudioBlock(warmupInfo);
+  }
+  juce::AudioSourceChannelInfo info(&readBuffer, 0, frames);
+  prefetchSource->getNextAudioBlock(info);
+
+  if (requestedPrefetchGeneration.load(std::memory_order_acquire) !=
+      generation) {
+    return true;
+  }
+
+  {
+    const juce::ScopedLock lock(prefetchLock);
+    for (int channel = 0; channel < numberOfChannels; ++channel)
+      prefetchBuffer.copyFrom(channel, 0, readBuffer, channel, 0, frames);
+    const auto maximumPosition = std::numeric_limits<juce::int64>::max();
+    const auto end =
+        position > maximumPosition - frames ? maximumPosition
+                                            : position + frames;
+    publishPrefetchRange(position, end, generation);
+  }
+  bufferReadyEvent.signal();
+  return true;
 }
 
 bool StemBufferingSource::readNextBufferChunk() {
@@ -393,5 +739,7 @@ void StemBufferingSource::readBufferSection(juce::int64 start, int length,
 }
 
 int StemBufferingSource::useTimeSlice() {
-  return readNextBufferChunk() ? 10 : 100;
+  if (readPendingPrefetch())
+    return 0;
+  return readNextBufferChunk() ? 5 : 10;
 }

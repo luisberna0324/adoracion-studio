@@ -61,6 +61,9 @@ struct BungeeProcessor::Impl {
   int maxOutputFrames = 0;
   int maxInputFrames = 0;
   int pitchSemitones = 0;
+  double currentPitchSemitones = 0.0;
+  double pitchRampSemitonesPerFrame = 0.0;
+  int pitchRampFramesRemaining = 0;
   double tempoRatio = 1.0;
   ContentType contentType = ContentType::Melodic;
   double inputFrameRemainder = 0.0;
@@ -76,6 +79,10 @@ struct BungeeProcessor::Impl {
   std::chrono::steady_clock::time_point nextServiceRetry{};
   std::vector<const float *> inputPointers;
   std::vector<float *> outputPointers;
+  std::array<double, 8> lastAppliedPitchScales{};
+  int lastProcessSegmentCount = 0;
+  int lastProcessedInputFrames = 0;
+  int lastProducedOutputFrames = 0;
 
   static constexpr uint64_t kMaxGeneration =
       std::numeric_limits<uint64_t>::max() >> 1U;
@@ -83,9 +90,64 @@ struct BungeeProcessor::Impl {
   static constexpr int kMaxWarmupLatencyFrames = 65536;
   static constexpr int kServiceRetryBaseMilliseconds = 10;
   static constexpr int kServiceRetryMaxMilliseconds = 1000;
+  static constexpr double kPitchRampSeconds = 0.050;
+  static constexpr int kPreferredPitchSegmentFrames = 128;
+  static constexpr int kMaxPitchProcessSegments = 8;
 
   static uint64_t nextGeneration(const uint64_t current) noexcept {
     return current == 0 || current >= kMaxGeneration ? 1 : current + 1;
+  }
+
+  void snapPitchToTarget() noexcept {
+    currentPitchSemitones = static_cast<double>(pitchSemitones);
+    pitchRampSemitonesPerFrame = 0.0;
+    pitchRampFramesRemaining = 0;
+  }
+
+  void beginPitchRamp() noexcept {
+    if (sampleRate <= 0.0) {
+      snapPitchToTarget();
+      return;
+    }
+
+    const int rampFrames = std::max(
+        1, static_cast<int>(std::lround(sampleRate * kPitchRampSeconds)));
+    pitchRampFramesRemaining = rampFrames;
+    pitchRampSemitonesPerFrame =
+        (static_cast<double>(pitchSemitones) - currentPitchSemitones) /
+        static_cast<double>(rampFrames);
+  }
+
+  double pitchSemitonesForSegment(const int outputFrames) noexcept {
+    if (outputFrames <= 0)
+      return currentPitchSemitones;
+    if (pitchRampFramesRemaining <= 0) {
+      snapPitchToTarget();
+      return currentPitchSemitones;
+    }
+
+    const int rampedFrames =
+        std::min(outputFrames, pitchRampFramesRemaining);
+    const double rampStart = currentPitchSemitones;
+    double rampEnd =
+        rampStart +
+        (pitchRampSemitonesPerFrame * static_cast<double>(rampedFrames));
+    if (rampedFrames == pitchRampFramesRemaining)
+      rampEnd = static_cast<double>(pitchSemitones);
+
+    const double rampAverage = (rampStart + rampEnd) * 0.5;
+    const double targetFrames =
+        static_cast<double>(outputFrames - rampedFrames);
+    const double segmentAverage =
+        ((rampAverage * static_cast<double>(rampedFrames)) +
+         (static_cast<double>(pitchSemitones) * targetFrames)) /
+        static_cast<double>(outputFrames);
+
+    currentPitchSemitones = rampEnd;
+    pitchRampFramesRemaining -= rampedFrames;
+    if (pitchRampFramesRemaining <= 0)
+      snapPitchToTarget();
+    return segmentAverage;
   }
 
   static uint64_t makeVoiceToken(const int slot,
@@ -314,8 +376,49 @@ bool BungeeProcessor::prepare(const double sampleRate,
   impl->resetSuccessCount.store(0, std::memory_order_relaxed);
   impl->resetMissCount.store(0, std::memory_order_relaxed);
   impl->serviceFailureCount.store(0, std::memory_order_relaxed);
+  impl->snapPitchToTarget();
+  impl->lastAppliedPitchScales.fill(0.0);
+  impl->lastProcessSegmentCount = 0;
+  impl->lastProcessedInputFrames = 0;
+  impl->lastProducedOutputFrames = 0;
   impl->clearServiceBackoff();
   return rebuild();
+}
+
+void BungeeProcessor::releaseResources() noexcept {
+  // The caller guarantees that neither process() nor
+  // servicePendingRebuild() is running. Publish the unprepared state before
+  // destroying objects so subsequent accidental calls fail closed.
+  impl->activeVoiceToken.store(0, std::memory_order_release);
+  impl->resetPending.store(false, std::memory_order_release);
+
+  for (auto &voice : impl->voices) {
+    voice.state.store(Impl::VoiceState::Rebuilding,
+                      std::memory_order_release);
+    impl->clearVoice(voice);
+    voice.generation.store(0, std::memory_order_relaxed);
+    voice.state.store(Impl::VoiceState::Empty, std::memory_order_release);
+  }
+
+  std::vector<const float *>().swap(impl->inputPointers);
+  std::vector<float *>().swap(impl->outputPointers);
+
+  impl->sampleRate = 0.0;
+  impl->channels = 0;
+  impl->maxOutputFrames = 0;
+  impl->maxInputFrames = 0;
+  impl->inputFrameRemainder = 0.0;
+  impl->snapPitchToTarget();
+  impl->lastAppliedPitchScales.fill(0.0);
+  impl->lastProcessSegmentCount = 0;
+  impl->lastProcessedInputFrames = 0;
+  impl->lastProducedOutputFrames = 0;
+  impl->resetSuccessCount.store(0, std::memory_order_relaxed);
+  impl->resetMissCount.store(0, std::memory_order_relaxed);
+  impl->serviceFailureCount.store(0, std::memory_order_relaxed);
+  impl->forcedVoiceBuildFailuresForTests.store(0,
+                                                std::memory_order_relaxed);
+  impl->clearServiceBackoff();
 }
 
 bool BungeeProcessor::rebuild() {
@@ -354,12 +457,19 @@ bool BungeeProcessor::rebuild() {
   impl->activeVoiceToken.store(Impl::makeVoiceToken(0, activeGeneration),
                                std::memory_order_release);
   impl->inputFrameRemainder = 0.0;
+  impl->snapPitchToTarget();
   impl->clearServiceBackoff();
   return true;
 }
 
 void BungeeProcessor::reset() noexcept {
   impl->inputFrameRemainder = 0.0;
+  impl->snapPitchToTarget();
+  if (impl->sampleRate <= 0.0 || impl->channels <= 0 ||
+      impl->maxInputFrames <= 0) {
+    impl->resetPending.store(false, std::memory_order_release);
+    return;
+  }
   impl->resetPending.store(true, std::memory_order_release);
   if (!impl->activateReadyVoice(true))
     impl->resetMissCount.fetch_add(1, std::memory_order_relaxed);
@@ -415,7 +525,11 @@ bool BungeeProcessor::tryResolvePendingReset() noexcept {
 }
 
 void BungeeProcessor::setPitchSemiTones(const int semitones) noexcept {
-  impl->pitchSemitones = std::clamp(semitones, -12, 12);
+  const int normalized = std::clamp(semitones, -12, 12);
+  if (impl->pitchSemitones == normalized)
+    return;
+  impl->pitchSemitones = normalized;
+  impl->beginPitchRamp();
 }
 
 void BungeeProcessor::setTempoRatio(const double ratio) noexcept {
@@ -427,7 +541,7 @@ void BungeeProcessor::setContentType(const ContentType type) noexcept {
 }
 
 int BungeeProcessor::requiredInputFrames(const int outputFrames) noexcept {
-  if (outputFrames <= 0)
+  if (outputFrames <= 0 || impl->maxInputFrames <= 0)
     return 0;
   const double exactFrames =
       (static_cast<double>(outputFrames) * impl->tempoRatio) +
@@ -457,36 +571,78 @@ int BungeeProcessor::process(const juce::AudioBuffer<float> &input,
     return 0;
   }
 
-  for (int channel = 0; channel < impl->channels; ++channel) {
-    impl->inputPointers[static_cast<size_t>(channel)] =
-        input.getReadPointer(channel);
-    impl->outputPointers[static_cast<size_t>(channel)] =
-        output.getWritePointer(channel);
+  int segmentCount = 1;
+  if (impl->pitchRampFramesRemaining > 0) {
+    segmentCount =
+        (outputFrames + Impl::kPreferredPitchSegmentFrames - 1) /
+        Impl::kPreferredPitchSegmentFrames;
+    segmentCount = std::clamp(
+        segmentCount, 1,
+        std::min({Impl::kMaxPitchProcessSegments, inputFrames, outputFrames}));
   }
 
-  const double pitchScale =
-      std::pow(2.0, static_cast<double>(impl->pitchSemitones) / 12.0);
-  int produced = 0;
-  try {
-    produced = voice->stream->process(
-        impl->inputPointers.data(), impl->outputPointers.data(), inputFrames,
-        static_cast<double>(outputFrames), pitchScale);
-  } catch (...) {
-    output.clear();
-    return 0;
+  impl->lastAppliedPitchScales.fill(0.0);
+  impl->lastProcessSegmentCount = segmentCount;
+  impl->lastProcessedInputFrames = 0;
+  impl->lastProducedOutputFrames = 0;
+
+  for (int segment = 0; segment < segmentCount; ++segment) {
+    const int inputBegin = static_cast<int>(
+        (static_cast<int64_t>(inputFrames) * segment) / segmentCount);
+    const int inputEnd = static_cast<int>(
+        (static_cast<int64_t>(inputFrames) * (segment + 1)) / segmentCount);
+    const int outputBegin = static_cast<int>(
+        (static_cast<int64_t>(outputFrames) * segment) / segmentCount);
+    const int outputEnd = static_cast<int>(
+        (static_cast<int64_t>(outputFrames) * (segment + 1)) / segmentCount);
+    const int segmentInputFrames = inputEnd - inputBegin;
+    const int segmentOutputFrames = outputEnd - outputBegin;
+
+    for (int channel = 0; channel < impl->channels; ++channel) {
+      impl->inputPointers[static_cast<size_t>(channel)] =
+          input.getReadPointer(channel, inputBegin);
+      impl->outputPointers[static_cast<size_t>(channel)] =
+          output.getWritePointer(channel, outputBegin);
+    }
+
+    const double appliedPitchSemitones =
+        impl->pitchSemitonesForSegment(segmentOutputFrames);
+    const double pitchScale =
+        std::pow(2.0, appliedPitchSemitones / 12.0);
+    impl->lastAppliedPitchScales[static_cast<size_t>(segment)] = pitchScale;
+
+    int segmentProduced = 0;
+    try {
+      segmentProduced = voice->stream->process(
+          impl->inputPointers.data(), impl->outputPointers.data(),
+          segmentInputFrames, static_cast<double>(segmentOutputFrames),
+          pitchScale);
+    } catch (...) {
+      output.clear();
+      impl->lastProcessSegmentCount = 0;
+      impl->lastProcessedInputFrames = 0;
+      impl->lastProducedOutputFrames = 0;
+      return 0;
+    }
+
+    segmentProduced = std::clamp(segmentProduced, 0, segmentOutputFrames);
+    if (segmentProduced < segmentOutputFrames) {
+      for (int channel = 0; channel < impl->channels; ++channel) {
+        output.clear(channel, outputBegin + segmentProduced,
+                     segmentOutputFrames - segmentProduced);
+      }
+    }
+    impl->lastProcessedInputFrames += segmentInputFrames;
+    impl->lastProducedOutputFrames += segmentProduced;
   }
 
-  if (produced < outputFrames) {
-    for (int channel = 0; channel < impl->channels; ++channel)
-      output.clear(channel, produced, outputFrames - produced);
-  }
-  if (produced > 0) {
+  if (impl->lastProducedOutputFrames > 0) {
     const double latency = voice->stream->latency();
     if (std::isfinite(latency))
       voice->latencyInputFrames.store(std::max(0.0, latency),
                                       std::memory_order_relaxed);
   }
-  return produced;
+  return impl->lastProducedOutputFrames;
 }
 
 int BungeeProcessor::getPitchSemiTones() const noexcept {
@@ -561,4 +717,46 @@ void BungeeProcessor::setForcedVoiceBuildFailuresForTests(
     const int failureCount) noexcept {
   impl->forcedVoiceBuildFailuresForTests.store(
       std::max(0, failureCount), std::memory_order_relaxed);
+}
+
+int BungeeProcessor::getAllocatedVoiceCountForTests() const noexcept {
+  int count = 0;
+  for (const auto &voice : impl->voices) {
+    if (voice.stretcher != nullptr || voice.stream != nullptr)
+      ++count;
+  }
+  return count;
+}
+
+size_t BungeeProcessor::getScratchPointerCapacityForTests() const noexcept {
+  return impl->inputPointers.capacity() + impl->outputPointers.capacity();
+}
+
+double BungeeProcessor::getCurrentPitchSemiTonesForTests() const noexcept {
+  return impl->currentPitchSemitones;
+}
+
+int BungeeProcessor::getPitchRampFramesRemainingForTests() const noexcept {
+  return impl->pitchRampFramesRemaining;
+}
+
+int BungeeProcessor::getLastProcessSegmentCountForTests() const noexcept {
+  return impl->lastProcessSegmentCount;
+}
+
+int BungeeProcessor::getLastProcessedInputFramesForTests() const noexcept {
+  return impl->lastProcessedInputFrames;
+}
+
+int BungeeProcessor::getLastProducedOutputFramesForTests() const noexcept {
+  return impl->lastProducedOutputFrames;
+}
+
+double BungeeProcessor::getLastAppliedPitchScaleForTests(
+    const int segment) const noexcept {
+  if (segment < 0 ||
+      segment >= static_cast<int>(impl->lastAppliedPitchScales.size())) {
+    return 0.0;
+  }
+  return impl->lastAppliedPitchScales[static_cast<size_t>(segment)];
 }

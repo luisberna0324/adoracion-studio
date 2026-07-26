@@ -21,6 +21,8 @@ public:
   int resolveTriggerId(const juce::String &sectionKey) const;
   bool triggerForId(int triggerId) noexcept;
   void render(juce::AudioBuffer<float> &output) noexcept;
+  void render(juce::AudioBuffer<float> &output, int startSample,
+              int numSamples) noexcept;
 
   int getLoadedSectionCount() const noexcept;
   bool consumeLastMissingSectionKey(juce::String &outKey);

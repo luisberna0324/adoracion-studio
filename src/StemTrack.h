@@ -18,7 +18,8 @@ class StemTrack : public juce::PositionableAudioSource {
 public:
   StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
             juce::TimeSliceThread &sharedReadThread, double sampleRateToUse,
-            int readAheadSamples = 262144, bool useReadAhead = true);
+            int readAheadSamples = 262144, bool useReadAhead = true,
+            std::unique_ptr<juce::AudioFormatReader> prefetchReader = {});
   ~StemTrack() override;
 
   // ==============================================================================
@@ -34,6 +35,14 @@ public:
   void setLooping(bool shouldLoop) override;
   bool waitForNextAudioBlockReady(int numSamples,
                                   juce::uint32 timeoutMs) const;
+  void requestPrefetchPosition(juce::int64 position,
+                               int minimumFrames) noexcept;
+  bool isPrefetchReady(juce::int64 position,
+                       int minimumFrames) const noexcept;
+  // Audio-thread only. The next source read is assembled as
+  // [current timeline prefix][target timeline suffix] without allocating.
+  void scheduleReadDiscontinuity(int prefixFrames, juce::int64 targetFrame,
+                                 int fadeFrames = 64) noexcept;
 
   // ==============================================================================
   // Lock-free Mix Controls (Written from UI, read from Audio Thread)
@@ -69,6 +78,8 @@ public:
 private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;
+  std::unique_ptr<juce::AudioFormatReaderSource> prefetchReaderSource;
+  std::unique_ptr<ResamplingPositionableSource> prefetchResamplingSource;
   std::unique_ptr<StemBufferingSource> bufferingSource;
   juce::PositionableAudioSource *activeSource = nullptr;
 
@@ -79,6 +90,11 @@ private:
   std::atomic<float> globalMixGain{1.0f};
   std::atomic<bool> isAnySoloActive{false};
   std::atomic<float> currentMagnitude{0.0f};
+  bool readDiscontinuityPending = false;
+  int readDiscontinuityPrefixFrames = 0;
+  int readDiscontinuityFadeFrames = 0;
+  int pendingLeadingDiscontinuityFadeFrames = 0;
+  juce::int64 readDiscontinuityTargetFrame = 0;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StemTrack)
 };

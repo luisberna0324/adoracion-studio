@@ -38,8 +38,21 @@ void MetronomeEngine::prepare(double sampleRateToUse) {
 }
 
 void MetronomeEngine::reset() {
+  resetAudioState();
+  appliedResetGeneration =
+      requestedResetGeneration.load(std::memory_order_acquire);
+}
+
+void MetronomeEngine::requestReset() noexcept {
+  requestedResetGeneration.fetch_add(1, std::memory_order_release);
+}
+
+void MetronomeEngine::resetAudioState() noexcept {
   phase = 0.0;
   subPhase = 0.0;
+  activeBpm = bpm.load(std::memory_order_relaxed);
+  activeSubdivision = normalizeSubdivision(
+      requestedSubdivision.load(std::memory_order_relaxed));
   clickSamplesRemaining = 0;
   beatIndex = juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed)) - 1;
   subIndex = 0;
@@ -48,6 +61,15 @@ void MetronomeEngine::reset() {
   currentClickTone = ClickTone::downbeat;
   for (auto &voice : sampleVoices)
     voice = {};
+}
+
+void MetronomeEngine::applyPendingReset() noexcept {
+  const auto requested =
+      requestedResetGeneration.load(std::memory_order_acquire);
+  if (requested == appliedResetGeneration)
+    return;
+  resetAudioState();
+  appliedResetGeneration = requested;
 }
 
 void MetronomeEngine::setEnabled(bool enabledToUse) noexcept {
@@ -70,7 +92,6 @@ double MetronomeEngine::getBpm() const noexcept {
 void MetronomeEngine::setBeatsPerBar(int beats) noexcept {
   const int clamped = juce::jmax(1, beats);
   beatsPerBar.store(clamped, std::memory_order_relaxed);
-  beatIndex = clamped - 1;
 }
 
 int MetronomeEngine::getBeatsPerBar() const noexcept {
@@ -99,15 +120,12 @@ void MetronomeEngine::triggerImmediateClick() noexcept {
 }
 
 void MetronomeEngine::setSubdivision(int subdiv) noexcept {
-  const int normalized = normalizeSubdivision(subdiv);
-  const int current = subdivision.load(std::memory_order_relaxed);
-  if (normalized != current) {
-    pendingSubdivision.store(normalized, std::memory_order_relaxed);
-  }
+  requestedSubdivision.store(normalizeSubdivision(subdiv),
+                             std::memory_order_release);
 }
 
 int MetronomeEngine::getSubdivision() const noexcept {
-  return subdivision.load(std::memory_order_relaxed);
+  return requestedSubdivision.load(std::memory_order_acquire);
 }
 
 void MetronomeEngine::setDivisionMask(int mask) noexcept {
@@ -122,19 +140,33 @@ void MetronomeEngine::syncPhaseForTimeSeconds(double seconds) noexcept {
   const double bpmLocal = bpm.load(std::memory_order_relaxed);
   if (bpmLocal <= 0.0)
     return;
-  const double beatPos = (juce::jmax(0.0, seconds) * bpmLocal) / 60.0;
+  syncPhaseForBeatPosition(
+      (juce::jmax(0.0, seconds) * bpmLocal) / 60.0, bpmLocal);
+}
+
+void MetronomeEngine::syncPhaseForBeatPosition(
+    const double beatPosition, const double effectiveBpm) noexcept {
+  applyPendingReset();
+  activeBpm = juce::jlimit(20.0, 300.0, effectiveBpm);
+  const double beatPos = juce::jmax(0.0, beatPosition);
   const int beats = juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed));
   const int wholeBeats = static_cast<int>(std::floor(beatPos));
   beatIndex = ((wholeBeats % beats) + beats) % beats;
   phase = beatPos - std::floor(beatPos);
 
-  const int subdiv = juce::jmax(1, subdivision.load(std::memory_order_relaxed));
+  const int subdiv = juce::jmax(1, activeSubdivision);
   const double subBeatPos = phase * static_cast<double>(subdiv);
   subIndex = static_cast<int>(std::floor(subBeatPos)) % subdiv;
   subPhase = subBeatPos - std::floor(subBeatPos);
 }
 
 void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
+  process(buffer, 0, buffer.getNumSamples());
+}
+
+void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
+                              const int startSample,
+                              const int samplesToProcess) noexcept {
   if (!enabled.load(std::memory_order_relaxed))
     return;
   const float gain = muted.load(std::memory_order_relaxed)
@@ -142,21 +174,24 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
                          : juce::jlimit(0.0f, 1.0f,
                                         volume.load(std::memory_order_relaxed));
   const bool shouldRenderAudio = gain > 0.0001f;
-  const int numSamples = buffer.getNumSamples();
+  const int boundedStart =
+      juce::jlimit(0, buffer.getNumSamples(), startSample);
+  const int numSamples = juce::jlimit(
+      0, buffer.getNumSamples() - boundedStart, samplesToProcess);
   if (numSamples <= 0 || sampleRate <= 0.0)
     return;
 
-  const double bpmLocal = bpm.load(std::memory_order_relaxed);
+  const double bpmLocal = activeBpm;
   const int beats =
       juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed));
   if (bpmLocal <= 0.0)
     return;
 
-  const int subdiv = juce::jmax(1, subdivision.load(std::memory_order_relaxed));
+  int subdiv = juce::jmax(1, activeSubdivision);
   const int activeMask = normalizeDivisionMask(
       divisionMask.load(std::memory_order_relaxed));
   const double phaseInc = bpmLocal / (60.0 * sampleRate);
-  const double subPhaseInc = phaseInc * static_cast<double>(subdiv);
+  double subPhaseInc = phaseInc * static_cast<double>(subdiv);
   const int numChannels = buffer.getNumChannels();
   bool sampleVoicesActive = hasActiveSampleVoices();
 
@@ -182,11 +217,14 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
       subIndex = 0;
       subPhase = 0.0;
 
-      // Apply pending subdivision change on next beat boundary
-      const int pending = pendingSubdivision.load(std::memory_order_relaxed);
-      if (pending > 0) {
-        subdivision.store(pending, std::memory_order_relaxed);
-        pendingSubdivision.store(-1, std::memory_order_relaxed);
+      // The requested value is persistent; the audio thread never clears a
+      // control publication, so a concurrent update cannot be lost.
+      const int requested = normalizeSubdivision(
+          requestedSubdivision.load(std::memory_order_acquire));
+      if (requested != activeSubdivision) {
+        activeSubdivision = requested;
+        subdiv = activeSubdivision;
+        subPhaseInc = phaseInc * static_cast<double>(subdiv);
       }
 
       if (shouldRenderAudio && isLayerEnabled(activeMask, ClickLayer::downbeat)) {
@@ -224,7 +262,7 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
       continue;
 
     for (int ch = 0; ch < numChannels; ++ch)
-      buffer.addSample(ch, sample, clickSample);
+      buffer.addSample(ch, boundedStart + sample, clickSample);
   }
 }
 
@@ -289,23 +327,20 @@ bool MetronomeEngine::loadClickSamplesFromFolder(
     return false;
   }
 
-  std::atomic_store_explicit(&clickSamples,
-                             std::shared_ptr<const ClickSampleSet>(nextSamples),
-                             std::memory_order_release);
+  if (!publishClickSamples(std::shared_ptr<const ClickSampleSet>(nextSamples))) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Unable to retain click sample generation.";
+    return false;
+  }
   return true;
 }
 
 void MetronomeEngine::clearClickSamples() noexcept {
-  std::atomic_store_explicit(&clickSamples,
-                             std::shared_ptr<const ClickSampleSet>{},
-                             std::memory_order_release);
-  for (auto &voice : sampleVoices)
-    voice = {};
+  publishedClickSamples.store(nullptr, std::memory_order_release);
 }
 
 bool MetronomeEngine::hasClickSamples() const noexcept {
-  return std::atomic_load_explicit(&clickSamples, std::memory_order_acquire) !=
-         nullptr;
+  return publishedClickSamples.load(std::memory_order_acquire) != nullptr;
 }
 
 int MetronomeEngine::normalizeDivisionMask(const int mask) noexcept {
@@ -370,12 +405,10 @@ void MetronomeEngine::triggerClick(const ClickLayer layer,
                                           ? kSixteenthClickGainScale
                                           : 1.0f);
   const float adjustedTriggerGain = triggerGain * layerGainScale;
-  if (auto samples =
-          std::atomic_load_explicit(&clickSamples, std::memory_order_acquire)) {
+  if (auto *samples = publishedClickSamples.load(std::memory_order_acquire)) {
     if (auto *sampleToUse = selectSampleForTrigger(*samples, layer);
         sampleToUse != nullptr &&
-        triggerSampleClick(std::move(samples), sampleToUse,
-                           adjustedTriggerGain)) {
+        triggerSampleClick(samples, sampleToUse, adjustedTriggerGain)) {
       if (layer != ClickLayer::downbeat)
         triggerSyntheticClick(layer, mainBeat,
                               (layer == ClickLayer::eighth ? 0.085f : 0.065f) *
@@ -426,10 +459,30 @@ void MetronomeEngine::triggerSyntheticClick(const ClickLayer layer,
                                                         : ClickTone::sixteenth);
 }
 
+bool MetronomeEngine::publishClickSamples(
+    std::shared_ptr<const ClickSampleSet> nextSamples) noexcept {
+  if (nextSamples == nullptr) {
+    publishedClickSamples.store(nullptr, std::memory_order_release);
+    return true;
+  }
+
+  const auto *rawSamples = nextSamples.get();
+  try {
+    const juce::ScopedLock lock(clickSamplesGenerationLock);
+    clickSampleGenerations.push_back(std::move(nextSamples));
+  } catch (...) {
+    return false;
+  }
+
+  publishedClickSamples.store(rawSamples, std::memory_order_release);
+  return true;
+}
+
 bool MetronomeEngine::triggerSampleClick(
-    std::shared_ptr<const ClickSampleSet> sampleSet, const ClickSample *sample,
+    const ClickSampleSet *sampleSet, const ClickSample *sample,
     const float triggerGain) noexcept {
-  if (sample == nullptr || !sample->isValid() || sampleRate <= 0.0)
+  if (sampleSet == nullptr || sample == nullptr || !sample->isValid() ||
+      sampleRate <= 0.0)
     return false;
 
   SampleVoice *target = nullptr;
@@ -442,7 +495,7 @@ bool MetronomeEngine::triggerSampleClick(
   if (target == nullptr)
     target = &sampleVoices.front();
 
-  target->sampleSet = std::move(sampleSet);
+  target->sampleSet = sampleSet;
   target->sample = sample;
   target->position = 0.0;
   target->increment = sample->sourceSampleRate / sampleRate;

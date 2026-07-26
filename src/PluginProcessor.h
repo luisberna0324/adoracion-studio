@@ -369,6 +369,10 @@ private:
   int pitchActiveSemiTones = 0;
   std::atomic<double> playbackTempoBpm{120.0};
   double playbackTempoRatioActive = 1.0;
+  double tempoTransitionStartRatio = 1.0;
+  double tempoTransitionTargetRatio = 1.0;
+  int tempoTransitionElapsedFrames = 0;
+  int tempoTransitionTotalFrames = 0;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   std::atomic<bool> audioCallbackActive{false};
@@ -436,7 +440,13 @@ private:
   std::atomic<bool> arrangementEditingActiveState{false};
   std::atomic<int> dynamicGuideLanguageCode{0}; // 0=es,1=en
   DynamicGuideSettings dynamicGuideSettings;
-  std::vector<bool> dynamicGuideAnnouncedByPart;
+  // Audio-thread-owned fixed state. Control code only increments the reset
+  // generation, so arrangement publication can never resize storage while the
+  // callback is indexing it.
+  std::array<uint8_t, playworship::audio::SectionScheduler::maxSections>
+      dynamicGuideAnnouncedByPart{};
+  std::atomic<uint64_t> dynamicGuideResetGeneration{1};
+  uint64_t dynamicGuideAppliedResetGeneration = 0;
   double dynamicGuideLastBlockStartSec = -1.0;
   int dynamicGuideLastPartIndex = -1;
   bool dynamicGuideWasPlaying = false;
@@ -462,18 +472,41 @@ private:
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
   std::atomic<int> arrangementLoopPartIndex{-1};
+  std::atomic<uint64_t> arrangementTransitionIntentGeneration{1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
+
+  struct AudioArrangementRuntimeSnapshot {
+    bool customActive = false;
+    double totalLengthSeconds = 0.0;
+    int pendingJumpPartIndex = -1;
+    int loopPartIndex = -1;
+  };
   
   // Frame-based source of truth. The legacy atomics remain as UI mirrors
   // during the incremental engine-v2 migration.
   playworship::audio::TransportClock transportClock;
   playworship::audio::SectionScheduler sectionScheduler;
+  std::atomic<uint64_t> arrangementStructurePublicationSequence{0};
+  playworship::audio::SectionScheduler::Snapshot audioSectionSnapshot;
+  AudioArrangementRuntimeSnapshot audioArrangementRuntimeSnapshot;
+  uint64_t audioArrangementStructureSequence = 0;
+  // Audio-thread-owned fallback for a section transition whose target bank
+  // was not ready at the exact boundary. Playback remains continuous and the
+  // jump is applied at offset zero as soon as every stem has the target.
+  bool deferredArrangementTransitionPending = false;
+  int deferredArrangementTransitionPartIndex = -1;
+  juce::int64 deferredArrangementTransitionFrame = 0;
+  juce::int64 deferredArrangementTransitionSourceFrame = 0;
+  uint64_t deferredArrangementTransitionIntentGeneration = 0;
   std::atomic<juce::int64> globalSamplePosition{0};
   std::atomic<juce::int64> requestedSeekPosition{-1};
   
-  // Lock-free seek atomics
-  std::atomic<bool> seekPending{false};
+  // Lock-free seek command. The audio thread is the only writer of the
+  // effective TransportClock; control publishes a target then increments the
+  // release generation.
   std::atomic<double> seekTargetSeconds{0.0};
+  std::atomic<uint64_t> seekRequestGeneration{0};
+  uint64_t appliedSeekRequestGeneration = 0;
 
   MetronomeEngine metronome;
   SimpleDelayLine metronomeLatencyDelay;
@@ -506,6 +539,7 @@ private:
   int findFirstGuideStemIndex(int stemCount) const noexcept;
   void prepareRoutingTimeProcessors(int activeStemCount, double sampleRate,
                                     int maxBlockFrames);
+  void releaseRoutingTimeProcessors(int retainedStemCount = 0);
   void flushRoutingTimeProcessors() noexcept;
   void flushAllTimeProcessingState() noexcept;
   void pauseTimeProcessorMaintenance() noexcept;

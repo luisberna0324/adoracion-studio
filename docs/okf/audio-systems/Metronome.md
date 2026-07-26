@@ -4,7 +4,7 @@ title: Metronome
 description: Motor de metrónomo configurable con samples personalizados y subdivisions
 resource: src/MetronomeEngine.h
 tags: [juce, audio, metronome, click, rhythm]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-07-25T00:00:00Z
 ---
 
 # Metronome
@@ -48,9 +48,19 @@ divisionMask = 1 | 2 | 4;  // Todas
 ```cpp
 void prepare(double sampleRate);
 void reset();
+void requestReset() noexcept;
 ```
 
-Configura el motor para el sample rate dado.
+`prepare()` configura el motor para el sample rate dado. `reset()` muta el
+estado interno de fase, beat, voces y síntesis directamente; sólo es válido
+cuando el motor está detenido o desde el audio thread.
+
+Desde control se usa `requestReset()`: incrementa una generación atómica y no
+toca estado audio-owned. La generación pendiente se consume únicamente en la
+siguiente sincronización de fase (`syncPhaseForTimeSeconds()` o
+`syncPhaseForBeatPosition()`). `process()` no consume resets para evitar que un
+reset publicado entre sync y render vuelva la fase a cero dentro del mismo
+callback. Varias solicitudes no se pierden ni requieren lock.
 
 ### Habilitación
 
@@ -109,13 +119,27 @@ void setDivisionMask(int mask) noexcept;
 int getDivisionMask() const noexcept;
 ```
 
+`setSubdivision()` publica un valor persistente `requestedSubdivision`;
+`getSubdivision()` devuelve ese valor solicitado. El audio thread conserva
+`activeSubdivision` y adopta el último request sólo en el siguiente límite de
+negra. De este modo un cambio de UI no desplaza la grilla a mitad de beat y el
+audio thread nunca borra una publicación concurrente.
+
 ### Sincronización
 
 ```cpp
 void syncPhaseForTimeSeconds(double seconds) noexcept;
+void syncPhaseForBeatPosition(double beatPosition,
+                              double effectiveBpm) noexcept;
 ```
 
-Sincroniza la fase del click con una posición en segundos.
+`syncPhaseForTimeSeconds()` mantiene la API simple usando el BPM configurado.
+La integración con transporte usa `syncPhaseForBeatPosition()`: publica en una
+sola llamada la posición absoluta dentro de la grilla musical y el BPM efectivo
+que debe avanzar audio. El processor calcula `beatPosition` desde segundos de
+source y BPM original, y `effectiveBpm` desde el ratio de tempo audio-owned.
+Así fase y velocidad no pueden pertenecer a dos targets de tempo distintos
+dentro del mismo callback.
 
 ### Trigger manual
 
@@ -129,9 +153,15 @@ Fuerza un click inmediato (para preview).
 
 ```cpp
 void process(juce::AudioBuffer<float> &buffer) noexcept;
+void process(juce::AudioBuffer<float> &buffer,
+             int startSample,
+             int numSamples) noexcept;
 ```
 
-Procesa el buffer de audio, añadiendo clicks.
+La primera variante procesa todo el buffer. La segunda limita escritura y
+avance de fase al rango indicado. El transporte la usa para renderizar el
+prefijo con la fase anterior y el sufijo con la fase del destino cuando un loop
+o jump cae dentro del bloque.
 
 ### Samples personalizados
 
@@ -152,6 +182,12 @@ Carga samples de click desde carpeta. Busca archivos con sufijos:
 - `*_quarter.wav` - negra
 - `*_eighth.wav` - corchea
 - `*_sixteenth.wav` - semicorchea
+
+La publicación del set usa un puntero crudo atómico a una generación inmutable.
+Las generaciones quedan retenidas por el control thread hasta destruir el
+motor. `clearClickSamples()` retira el set para triggers nuevos, pero las voces
+activas pueden terminar de leer memoria válida sin tomar locks ni destruir
+buffers desde el audio thread.
 
 ## Estructura interna
 
@@ -181,7 +217,7 @@ struct ClickSampleSet {
 
 ```cpp
 struct SampleVoice {
-    std::shared_ptr<const ClickSampleSet> sampleSet;
+    const ClickSampleSet *sampleSet = nullptr;
     const ClickSample *sample = nullptr;
     double position = 0.0;       // Posición en sample
     double increment = 1.0;       // Incremento por frame
@@ -190,6 +226,12 @@ struct SampleVoice {
 ```
 
 Hay 16 voces de sample para permitir overlaps.
+
+`phase`, `subPhase`, `beatIndex`, `subIndex`, `activeBpm`,
+`activeSubdivision`, las voces y `appliedResetGeneration` pertenecen
+exclusivamente al audio thread. Control sólo escribe atomics de configuración,
+generaciones y el puntero publicado a samples. La retención de
+`ClickSampleSet` se hace fuera del callback.
 
 ## Click synthesis
 
@@ -207,6 +249,9 @@ Genera clicks usando síntesis simple (sine + envelope).
 |----------|------|---------|
 | `clickGain` | `float` | 0.22f |
 | `sampleRate` | `double` | 44100.0 |
+| `requestedSubdivision` | `atomic<int>` | 1 |
+| `activeSubdivision` | `int` | 1 |
+| `requestedResetGeneration` | `atomic<uint64_t>` | 0 |
 
 ## Ejemplo de uso
 
@@ -252,4 +297,4 @@ processor.setClickDivision(1 | 4);  // 1/4 + 1/16
 
 ## Archivos relacionados
 
-- [MTControlsAudioProcessor](../../processor/MTControlsAudioProcessor.md)
+- [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md)

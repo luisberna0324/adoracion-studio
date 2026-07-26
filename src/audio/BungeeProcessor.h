@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -16,6 +17,11 @@ public:
   BungeeProcessor &operator=(const BungeeProcessor &) = delete;
 
   bool prepare(double sampleRate, int maxOutputFrames, int numChannels);
+  // Destroys both Bungee voices and releases scratch-buffer storage. This may
+  // deallocate and must only be called after audio processing and non-RT
+  // maintenance have stopped. Pitch, tempo and content configuration survive
+  // so a later prepare() restores the same logical settings.
+  void releaseResources() noexcept;
   // Rebuilds both voice slots. Call only while audio processing is stopped.
   bool rebuild();
   // Allocation-free and lock-free. Swaps to the prepared spare voice and
@@ -64,6 +70,14 @@ public:
 private:
   friend struct BungeeProcessorTestPeer;
   void setForcedVoiceBuildFailuresForTests(int failureCount) noexcept;
+  int getAllocatedVoiceCountForTests() const noexcept;
+  size_t getScratchPointerCapacityForTests() const noexcept;
+  double getCurrentPitchSemiTonesForTests() const noexcept;
+  int getPitchRampFramesRemainingForTests() const noexcept;
+  int getLastProcessSegmentCountForTests() const noexcept;
+  int getLastProcessedInputFramesForTests() const noexcept;
+  int getLastProducedOutputFramesForTests() const noexcept;
+  double getLastAppliedPitchScaleForTests(int segment) const noexcept;
 
   struct Impl;
   std::unique_ptr<Impl> impl;

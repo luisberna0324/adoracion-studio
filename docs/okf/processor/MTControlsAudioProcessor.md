@@ -68,10 +68,21 @@ cargados, no para los 64 slots máximos. Un único worker
 `TimeProcessorMaintenance` reconstruye fuera del callback las voces Bungee
 retiradas por seeks, loops y cambios estructurales.
 
-Una discontinuidad real de timeline también limpia los delays de compensación
-del click y de la guía dinámica, además de sus voces activas. De este modo no
-se filtra audio virtual perteneciente a la posición anterior. Los cambios de
-perfil de tempo que no mueven el playhead reinician sólo el DSP de tono/tempo.
+El contrato común de `TimeStretchProcessor` incluye
+`releaseResources() noexcept` para devolver completamente la memoria de un slot
+que deja de utilizarse. Antes de llamarlo, el procesador principal debe detener
+el callback y usar la barrera que pausa `TimeProcessorMaintenance`; la
+operación destruye voces/backend y buffers, por lo que no es realtime-safe. El
+slot queda no preparado y tanto el preflight como el servicio responden
+`false` hasta un nuevo `prepare()`. Los parámetros lógicos de pitch, tempo y
+tipo de contenido permanecen configurados.
+
+Un seek u otra discontinuidad dura de timeline también limpia los delays de
+compensación del click y de la guía dinámica, además de sus voces activas. De
+este modo no se filtra audio virtual perteneciente a la posición anterior. Una
+transición de arrange prearmada no usa ese flush: parte stems y buses virtuales
+en el offset exacto del bloque. Los cambios de perfil de tempo que no mueven el
+playhead reinician sólo el DSP de tono/tempo.
 
 Si un reset llega antes de que el worker haya reconstruido algún spare, el
 callback hace preflight de todos los procesadores necesarios. En routing
@@ -182,6 +193,30 @@ bool isSongPlaying() const noexcept;
 El pitch público se normaliza a `-12..+12` semitonos. El tempo usa la relación
 `source/output` y se limita a `0.75..2.0`.
 
+Un cambio de pitch publica inmediatamente ese target entero, pero Bungee acerca
+la escala DSP al nuevo valor durante 50 ms de audio. La rampa es interna al
+`TimeStretchProcessor`, está acotada a ocho sub-bloques o llamadas al backend
+por callback y conserva exactamente el total de frames fuente/salida; no crea
+hilos ni requiere trabajo de control adicional en `MTControlsAudioProcessor`.
+
+### Handoff de arrange y buses de canción
+
+Los loops y jumps se prearman en una segunda cadena reader/resampler por stem.
+Si todos los destinos están residentes, el callback compone prefijo actual y
+sufijo destino en el offset source devuelto por `SectionScheduler`; el offset
+equivalente de salida parte también metrónomo y guía dinámica. El click se
+resincroniza con el beat source y BPM efectivo, y la guía puede disparar el
+anuncio de entrada antes de renderizar el sufijo.
+
+Si el destino todavía no está listo, audio mantiene un handoff diferido ligado
+a `arrangementTransitionIntentGeneration`. Cualquier nueva intención de
+seek/stop/edición/jump/loop lo invalida. Un seek de control tiene prioridad
+sobre la única ventana secundaria del stem durante todo su callback.
+
+Al alcanzar el final de canción dentro de un bloque, stems, click y guía se
+limpian desde el offset de salida exacto. Los pads siguen sonando porque su
+lifecycle no depende del timeline de la canción.
+
 ## Diagnóstico realtime
 
 El evento `audio_*.csv` se cierra al final del callback, después del
@@ -261,6 +296,12 @@ int getClickDivision() const noexcept;
 void setClickDivisionEnabled(bool enabled) noexcept;
 bool isClickDivisionEnabled() const noexcept;
 ```
+
+El metrónomo mantiene por separado la subdivisión solicitada por control y la
+subdivisión activa de audio; sólo la cambia en un límite de negra. Sus resets
+desde control se publican por generación. Durante un handoff interno al bloque,
+el processor usa el render por rango para conservar el prefijo, resetear y
+sincronizar en el límite, y producir el sufijo desde la fase destino.
 
 ### Samples personalizados
 
@@ -451,6 +492,20 @@ int getPendingArrangementPartJumpIndex() const noexcept;
 ```cpp
 void setArrangementEditingActive(bool editingActive) noexcept;
 ```
+
+La publicación estructural de arrange usa una secuencia odd/even
+`arrangementStructurePublicationSequence`. El callback de audio acepta una
+versión nueva sólo si puede leer de forma coherente el snapshot de
+`SectionScheduler`, `arrangementCustomActive`,
+`arrangementTotalLengthSeconds`, `arrangementPendingJumpPartIndex` y
+`arrangementLoopPartIndex`. Si la secuencia cambia o está impar, conserva la
+última versión audio-owned.
+
+Los loops, jumps y discontinuidades implícitas de clips insertados se resuelven
+como transiciones de bloque con `transitionOffsetFrames`. El processor prearma
+el destino en el banco secundario de cada stem; si no está listo en el sample de
+frontera, difiere el handoff y mantiene la línea actual audible hasta que todos
+los stems expongan el mismo destino.
 
 ## Metering
 

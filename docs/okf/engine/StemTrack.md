@@ -32,7 +32,9 @@ StemTrack(
     std::unique_ptr<juce::AudioFormatReader> reader,
     juce::TimeSliceThread &sharedReadThread,
     double sampleRateToUse,
-    int readAheadSamples = 262144
+    int readAheadSamples = 262144,
+    bool useReadAhead = true,
+    std::unique_ptr<juce::AudioFormatReader> prefetchReader = {}
 );
 ```
 
@@ -41,6 +43,10 @@ StemTrack(
 - `sampleRateToUse`: Sample rate destino
 - `readAheadSamples`: Tamaño del buffer de read-ahead en frames (default
   262144)
+- `useReadAhead`: Usa streaming asíncrono; el bounce offline lo desactiva para
+  lecturas síncronas deterministas
+- `prefetchReader`: Segundo reader del mismo archivo para preparar destinos de
+  seek/loop/jump sin mover ni resetear la cadena principal
 
 ## PositionableAudioSource API
 
@@ -53,11 +59,44 @@ juce::int64 getTotalLength() const override;
 bool isLooping() const override;
 void setLooping(bool shouldLoop) override;
 bool waitForNextAudioBlockReady(int numSamples, juce::uint32 timeoutMs) const;
+void requestPrefetchPosition(juce::int64 position, int minimumFrames) noexcept;
+bool isPrefetchReady(juce::int64 position, int minimumFrames) const noexcept;
+void scheduleReadDiscontinuity(
+    int prefixFrames,
+    juce::int64 targetFrame,
+    int fadeFrames = 64
+) noexcept;
 ```
 
 `waitForNextAudioBlockReady()` se usa fuera del audio thread para impedir que
 una canción entre antes de que todos sus stems puedan entregar el primer bloque.
 Un seek redundante a la posición actual conserva el read-ahead válido.
+
+`requestPrefetchPosition()` e `isPrefetchReady()` exponen el banco secundario
+del source. `scheduleReadDiscontinuity()` es exclusivamente audio-thread y arma
+una única lectura compuesta sin reservar memoria:
+
+```text
+[prefixFrames del cursor actual][sufijo desde targetFrame]
+```
+
+El cambio de fuente ocurre en el offset exacto entregado por
+`SectionScheduler`. Alrededor del límite se aplica un
+`fade-through-zero` equal-power de hasta 64 frames: el final del prefijo usa
+coseno y el inicio del sufijo seno. No es una superposición de dos voces; evita
+el salto duro de forma de onda manteniendo intacta la duración del bloque.
+`setNextReadPosition()` cancela cualquier discontinuidad todavía no consumida.
+
+Los límites del callback tienen el mismo tratamiento sin reservar una segunda
+voz:
+
+- con `prefixFrames == 0`, el destino comienza en este bloque con un fade-in
+  seno de hasta `fadeFrames`;
+- con `prefixFrames == numSamples`, el bloque actual termina con un fade-out
+  coseno y el fade-in del destino queda pendiente para el inicio del próximo
+  bloque;
+- `prepareToPlay()`, `releaseResources()` y un seek explícito cancelan ese
+  estado pendiente.
 
 ### Lifecycle
 
@@ -141,6 +180,11 @@ reemplazados por silencio. Cada callback vacío o parcial avanza siempre el
 bloque completo para conservar la sincronización con el transporte y los demás
 stems.
 
+Durante un loop o jump, el prefijo y el sufijo son dos lecturas parciales del
+mismo callback. Por tanto cada stem avanza exactamente `prefixFrames` en la
+línea anterior y exactamente el largo del sufijo desde el destino, sin una
+lectura completa adicional.
+
 ## Detalles de implementación
 
 ### Thread de lectura
@@ -149,7 +193,11 @@ La lectura de disco ocurre en `sharedReadThread` (TimeSliceThread). Esto mantien
 
 ### Resampling
 
-`ResamplingPositionableSource` maneja conversión de sample rate si el archivo tiene diferente rate que `sampleRateToUse`.
+`ResamplingPositionableSource` maneja conversión de sample rate si el archivo
+tiene diferente rate que `sampleRateToUse`. En reproducción con prefetch hay
+dos instancias independientes: una para el ring secuencial y otra para el banco
+de destino. El preroll secundario nunca modifica la historia del resampler que
+está sonando.
 
 ### Buffering
 
