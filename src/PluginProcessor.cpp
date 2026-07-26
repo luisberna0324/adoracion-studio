@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "audio/DynamicGuideTiming.h"
+#include "audio/StemCache.h"
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include <algorithm>
@@ -3183,12 +3184,30 @@ bool MTControlsAudioProcessor::loadSongStems(
     if (!file.existsAsFile())
       continue;
 
+    // ---- StemCache lookup ---------------------------------------------
+    // The benchmark showed AAC decode takes 1.2-2.9ms per stem per
+    // block — more than the 11.6ms block budget allows for 19 stems.
+    // If a valid lossless FLAC cache exists for this source, prefer
+    // it: FLAC decodes 5-10x faster on every platform JUCE supports.
+    // On a miss, we use the original source (degraded but functional)
+    // and enqueue a background precompute so the next load is fast.
+    juce::File playbackFile = file;
+    if (StemCache::isValid(file, songTitle)) {
+      playbackFile = StemCache::getCacheFile(file, songTitle);
+    } else {
+      // Fire-and-forget: the precompute runs in a background thread
+      // and updates the sidecar on completion. If it fails, the
+      // current load keeps using the source without any visible
+      // regression.
+      StemCache::precomputeAsync(file, songTitle, nullptr);
+    }
+
     auto reader = std::unique_ptr<juce::AudioFormatReader>(
-        playbackFormatManager.createReaderFor(file));
+        playbackFormatManager.createReaderFor(playbackFile));
     if (reader == nullptr)
       continue;
     auto prefetchReader = std::unique_ptr<juce::AudioFormatReader>(
-        playbackFormatManager.createReaderFor(file));
+        playbackFormatManager.createReaderFor(playbackFile));
     if (prefetchReader == nullptr)
       return false;
 

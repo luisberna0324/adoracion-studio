@@ -194,10 +194,18 @@ public:
                                 const std::vector<float> &bins);
   static std::vector<float> loadWaveformCache(const juce::String &songId);
 
+  /**
+   * Returns the per-platform application-data root directory used by
+   * the audio library (e.g. "MTControls" under
+   * userApplicationDataDirectory). Exposed publicly so other
+   * subsystems (StemCache, etc.) can co-locate their data with the
+   * library without duplicating the path logic.
+   */
+  static juce::File getRootDirectory();
+
 private:
   static LibraryState loadLibrary();
   static bool saveLibrary(const LibraryState &library);
-  static juce::File getRootDirectory();
   static juce::File getDbFile();
   static juce::File getAudioRoot();
   static juce::File getWaveformCacheDir();
