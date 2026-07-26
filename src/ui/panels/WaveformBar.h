@@ -52,6 +52,8 @@ public:
   void setTransportProviders(PositionProvider positionCb,
                              LengthProvider lengthCb,
                              PlayingProvider playingCb = {});
+  void setSongSourceLengthProvider(LengthProvider lengthCb);
+  void setSongEndCustomizedProvider(std::function<bool()> provider);
   void setSongWindowProviders(SongWindowProvider startCb,
                               SongWindowProvider endCb);
   void setSeekCallback(SeekCallback cb);
@@ -204,6 +206,8 @@ private:
   PlayingProvider playingProvider;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
+  LengthProvider sourceLengthProvider;
+  std::function<bool()> songEndCustomizedProvider;
   SongWindowProvider songWindowStartProvider;
   SongWindowProvider songWindowEndProvider;
   SeekCallback onSeekTo;
@@ -306,6 +310,10 @@ private:
   double followLastFrameTimestampSec = 0.0;
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
+  bool lastTimerEndValid = false;
+  double lastTimerEndSeconds = 0.0;
+  bool lastTimerStartValid = false;
+  double lastTimerStartSeconds = 0.0;
   bool waveformVerticalExpanded = false;
 
   // The follow view moves every frame, but its waveform data is static. Keep
@@ -331,6 +339,8 @@ private:
   void invalidateWaveformRenderCaches();
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
+  bool getPlaybackEndGuideSeconds(double &endSecondsOut) const;
+  bool getPlaybackStartGuideSeconds(double &startSecondsOut) const;
   std::pair<double, double> getPlayableRangeSeconds() const;
   double getBarDurationSeconds() const;
   double getSnapStepSeconds() const;
@@ -418,6 +428,9 @@ private:
   bool mapArrangementSecondsToSourceSeconds(double arrangementSeconds,
                                             double sourceLength,
                                             double &sourceSecondsOut) const;
+  void drawPlaybackWindowGuides(juce::Graphics &g,
+                                const juce::Rectangle<float> &bounds,
+                                float windowStart, float windowSpan) const;
   void drawSeekRuler(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                      float windowStart, float windowSpan) const;
   void drawSectionInsertionAnchor(

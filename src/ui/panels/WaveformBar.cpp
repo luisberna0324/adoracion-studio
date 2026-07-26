@@ -966,6 +966,18 @@ void WaveformBar::setTransportProviders(PositionProvider positionCb,
   playingProvider = std::move(playingCb);
 }
 
+void WaveformBar::setSongSourceLengthProvider(LengthProvider lengthCb) {
+  sourceLengthProvider = std::move(lengthCb);
+  invalidateWaveformRenderCaches();
+}
+
+void WaveformBar::setSongEndCustomizedProvider(
+    std::function<bool()> provider) {
+  songEndCustomizedProvider = std::move(provider);
+  invalidateWaveformRenderCaches();
+  repaint();
+}
+
 void WaveformBar::setSongWindowProviders(SongWindowProvider startCb,
                                          SongWindowProvider endCb) {
   songWindowStartProvider = std::move(startCb);
@@ -1315,6 +1327,12 @@ void WaveformBar::paint(juce::Graphics &g) {
     drawTempoOverlay(g, mainWaveBodyBounds);
   else
     drawArrangementOverlay(g, mainWaveBodyBounds);
+
+  // The arrangement overlay is painted after the waveform. Draw the playback
+  // limit here so it remains visible over section cards and cannot be mistaken
+  // for a gap in the audio source.
+  drawPlaybackWindowGuides(g, mainWaveBodyBounds, window.first,
+                           window.second);
 
   if (seekRulerBounds.getWidth() > 2.0f && seekRulerBounds.getHeight() > 2.0f)
     drawSeekRuler(g, seekRulerBounds, window.first, window.second);
@@ -2638,6 +2656,28 @@ void WaveformBar::timerCallback() {
   if (hasSongProgress)
     lastTimerSongProgressRatio = songProgress;
 
+  bool hasEndMarker = false;
+  double endMarkerSeconds = 0.0;
+  hasEndMarker = getPlaybackEndGuideSeconds(endMarkerSeconds);
+  const bool endMarkerChanged =
+      hasEndMarker != lastTimerEndValid ||
+      (hasEndMarker &&
+       !nearlyEqual(endMarkerSeconds, lastTimerEndSeconds, 0.0001));
+  lastTimerEndValid = hasEndMarker;
+  if (hasEndMarker)
+    lastTimerEndSeconds = endMarkerSeconds;
+
+  bool hasStartMarker = false;
+  double startMarkerSeconds = 0.0;
+  hasStartMarker = getPlaybackStartGuideSeconds(startMarkerSeconds);
+  const bool startMarkerChanged =
+      hasStartMarker != lastTimerStartValid ||
+      (hasStartMarker &&
+       !nearlyEqual(startMarkerSeconds, lastTimerStartSeconds, 0.0001));
+  lastTimerStartValid = hasStartMarker;
+  if (hasStartMarker)
+    lastTimerStartSeconds = startMarkerSeconds;
+
   updateActiveTempoRegionFromTransport();
   flushDeferredPartJumpFromDoubleClickIfDue();
   const bool needsAnimatedRepaint =
@@ -2646,7 +2686,7 @@ void WaveformBar::timerCallback() {
       pendingJumpDoubleClickDispatchAtMs > 0.0 ||
       playbackControlFocus != PlaybackControlFocus::None ||
       (!isPlayingNow && transportVisualChanged);
-  if (needsAnimatedRepaint)
+  if (startMarkerChanged || endMarkerChanged || needsAnimatedRepaint)
     repaint();
 }
 
@@ -2924,9 +2964,9 @@ bool WaveformBar::getPendingJumpProgressRatio(float &ratioOut) const {
 double WaveformBar::getSongLengthSeconds() const {
   double length = lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
   if (customArrangement) {
-    double sourceLength = 0.0;
-    if (songWindowEndProvider != nullptr)
-      sourceLength = juce::jmax(0.0, songWindowEndProvider());
+    double sourceLength = sourceLengthProvider
+                              ? juce::jmax(0.0, sourceLengthProvider())
+                              : 0.0;
     if (sourceLength <= 0.0)
       sourceLength = length;
 
@@ -2941,6 +2981,54 @@ double WaveformBar::getSongLengthSeconds() const {
       length = juce::jmax(length, sourceLength + insertedLength);
   }
   return length;
+}
+
+bool WaveformBar::getPlaybackEndGuideSeconds(double &endSecondsOut) const {
+  if (lengthProvider == nullptr || songWindowEndProvider == nullptr)
+    return false;
+
+  const double timelineLength = juce::jmax(0.0, lengthProvider());
+  if (timelineLength <= 0.0)
+    return false;
+
+  const double end = juce::jlimit(0.0, timelineLength, songWindowEndProvider());
+  if (customArrangement) {
+    const double sourceLength = sourceLengthProvider
+                                    ? juce::jmax(0.0, sourceLengthProvider())
+                                    : timelineLength;
+    const bool customized = songEndCustomizedProvider != nullptr
+                                ? songEndCustomizedProvider()
+                                : (sourceLength > 0.0 &&
+                                   end < sourceLength - 0.0001);
+    if (!customized)
+      return false;
+  } else if (end >= timelineLength - 0.0001) {
+    return false;
+  }
+
+  endSecondsOut = end;
+  return true;
+}
+
+bool WaveformBar::getPlaybackStartGuideSeconds(double &startSecondsOut) const {
+  if (customArrangement || lengthProvider == nullptr ||
+      songWindowStartProvider == nullptr)
+    return false;
+
+  const double timelineLength = juce::jmax(0.0, lengthProvider());
+  if (timelineLength <= 0.0)
+    return false;
+
+  const double end = songWindowEndProvider != nullptr
+                         ? juce::jlimit(0.0, timelineLength,
+                                        songWindowEndProvider())
+                         : timelineLength;
+  const double start = juce::jlimit(0.0, end, songWindowStartProvider());
+  if (start <= 0.0001)
+    return false;
+
+  startSecondsOut = start;
+  return true;
 }
 
 std::pair<double, double> WaveformBar::getPlayableRangeSeconds() const {
@@ -3669,8 +3757,8 @@ float WaveformBar::sourceSecondsToWindowX(
 }
 
 double WaveformBar::getWaveformSourceLengthSeconds() const {
-  if (songWindowEndProvider != nullptr) {
-    const double sourceLength = juce::jmax(0.0, songWindowEndProvider());
+  if (sourceLengthProvider != nullptr) {
+    const double sourceLength = juce::jmax(0.0, sourceLengthProvider());
     if (sourceLength > 0.0)
       return sourceLength;
   }
@@ -4378,7 +4466,9 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
   bool showPlayableWindow = false;
   if (lengthProvider && songWindowStartProvider &&
       songWindowEndProvider) {
-    const double sourceLengthForWindow = juce::jmax(0.0, lengthProvider());
+    const double sourceLengthForWindow = sourceLengthProvider
+                                            ? juce::jmax(0.0, sourceLengthProvider())
+                                            : juce::jmax(0.0, lengthProvider());
     const double transportLength =
         hasCustomArrangement ? songLength : sourceLengthForWindow;
     if (transportLength > 0.0) {
@@ -4391,10 +4481,7 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
       playableEndRatio =
           static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
       if (hasCustomArrangement) {
-        const bool manualEndTrim =
-            sourceLengthForWindow > 0.0 && endSec > 0.0 &&
-            endSec < sourceLengthForWindow - 0.0001;
-        showPlayableWindow = manualEndTrim;
+        showPlayableWindow = getPlaybackEndGuideSeconds(endSec);
         playableStartRatio = 0.0f;
       } else {
         showPlayableWindow =
@@ -4565,7 +4652,10 @@ bool WaveformBar::drawCachedFollowWaveform(
     return false;
 
   // A restricted playback window needs its darkened region composited after
-  // the waveform. Keep the direct renderer for that less common presentation.
+  // the waveform. This also applies to a manual end trim in an arrangement.
+  double playbackEndGuideSeconds = 0.0;
+  if (getPlaybackEndGuideSeconds(playbackEndGuideSeconds))
+    return false;
   if (!customArrangement && lengthProvider != nullptr &&
       songWindowStartProvider != nullptr && songWindowEndProvider != nullptr) {
     const double length = juce::jmax(0.0, lengthProvider());
@@ -4695,6 +4785,45 @@ bool WaveformBar::drawCachedFollowWaveform(
   }
 
   return true;
+}
+
+void WaveformBar::drawPlaybackWindowGuides(
+    juce::Graphics &g, const juce::Rectangle<float> &bounds,
+    const float windowStart, const float windowSpan) const {
+  double endSeconds = 0.0;
+  double startSeconds = 0.0;
+  const bool hasEndGuide = getPlaybackEndGuideSeconds(endSeconds);
+  const bool hasStartGuide = getPlaybackStartGuideSeconds(startSeconds);
+  if ((!hasEndGuide && !hasStartGuide) || bounds.getWidth() <= 2.0f ||
+      bounds.getHeight() <= 2.0f)
+    return;
+
+  const double timelineLength = getSongLengthSeconds();
+  if (timelineLength <= 0.0)
+    return;
+
+  const float dashPattern[] = {5.0f, 4.0f};
+  const auto drawGuide = [&](const double seconds,
+                             const juce::Colour colour) {
+    const float ratio = static_cast<float>(juce::jlimit(
+        0.0, 1.0, seconds / timelineLength));
+    const float norm = juce::jlimit(
+        0.0f, 1.0f,
+        (ratio - windowStart) / juce::jmax(0.0001f, windowSpan));
+    const float x = snapToPixelCenter(
+        bounds.getX() + (norm * bounds.getWidth()));
+    g.setColour(juce::Colours::black.withAlpha(0.78f));
+    g.drawDashedLine({x - 1.0f, bounds.getY(), x - 1.0f, bounds.getBottom()},
+                     dashPattern, 2, 3.0f);
+    g.setColour(colour.withAlpha(0.96f));
+    g.drawDashedLine({x, bounds.getY(), x, bounds.getBottom()}, dashPattern, 2,
+                     1.5f);
+  };
+
+  if (hasStartGuide)
+    drawGuide(startSeconds, juce::Colours::deepskyblue);
+  if (hasEndGuide)
+    drawGuide(endSeconds, UITheme::accent.brighter(0.20f));
 }
 
 void WaveformBar::drawCachedMiniMapWaveform(

@@ -144,7 +144,10 @@ public:
   bool hasLoadedSong() const noexcept;
   bool isSongPlaying() const noexcept;
   double getSongCurrentPositionSeconds() const;
+  // Duration of the loaded audio source, before any arrangement extensions.
+  double getLoadedSongLengthSeconds() const noexcept;
   double getSongLengthSeconds() const;
+  bool isSongEndCustomized() const noexcept;
   double getLoadedSongBpm() const;
   juce::String getLoadedSongKey() const;
   juce::String getLoadedSongTitle() const;
@@ -394,6 +397,7 @@ private:
   std::atomic<int> guideAnnouncementBeatsPerBar{4};
   std::atomic<double> songStartSeconds{0.0};
   std::atomic<double> songEndSeconds{0.0};
+  std::atomic<bool> songEndCustomized{false};
   std::atomic<double> songFadeOutSeconds{0.0};
   juce::String loadedSongKey;
   juce::String loadedSongTitle;

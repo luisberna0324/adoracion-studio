@@ -214,8 +214,19 @@ el alineamiento con la latencia de pitch/tempo.
 Cuando el final de la ventana cae dentro del callback, el motor también mapea
 ese frame source al offset de salida y limpia desde allí hasta el final del
 bloque en stems, click y guía. El estado de transporte se detiene en el segundo
-marcado como `Fin`, dejando visible el punto exacto de corte. Los pads no
+marcado como `Fin`, dejando visible el punto exacto de corte. La waveform lo
+representa con una guía vertical persistente por encima de las tarjetas del
+arrange; no se confunde con el playhead ni se oculta detrás de una sección. La
+guía usa un trazo punteado y se actualiza inmediatamente al pulsar `+` o `−` en
+`Fin`, mientras la waveform posterior permanece visible con opacidad reducida.
+duración de audio fuente se conserva separada del `Fin` configurado para que el
+recorte no se muestre como una duración de waveform errónea. Los pads no
 pertenecen al timeline de canción y no se recortan.
+
+`Inicio` usa el mismo patrón en el timeline normal: su guía punteada se mueve
+con `+`/`−` y el tramo anterior queda atenuado. En un arrange personalizado,
+`Inicio` permanece bloqueado y no se dibuja una guía editable para no romper el
+mapa de secciones.
 
 Con arreglo personalizado activo, `Inicio` permanece bloqueado porque moverlo
 rompería el mapa de secciones. `Fin` y `Salida` siguen activos: si `Fin` es

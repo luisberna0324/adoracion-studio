@@ -101,6 +101,8 @@ la canción.
 | `getLoadedSongKey()` | `juce::String` | Tonalidad |
 | `getLoadedSongBpm()` | `double` | BPM de la canción |
 | `getSongLengthSeconds()` | `double` | Duración total |
+| `getLoadedSongLengthSeconds()` | `double` | Duración del audio fuente, sin extensiones del arrange |
+| `isSongEndCustomized()` | `bool` | El usuario fijó explícitamente un límite `Fin` |
 | `getSongCurrentPositionSeconds()` | `double` | Posición actual |
 | `getLoadedStemCount()` | `int` | Número de stems cargados |
 
@@ -189,6 +191,12 @@ y `setSongFadeOutSeconds()` siguen activos: un `Fin` menor que el largo original
 de la canción recorta el playback, muestra el marcador de fin en la waveform y
 detiene el transporte en ese segundo. Si `Fin` queda en el largo original, el
 custom arrange reproduce su duración completa.
+
+La UI usa `getLoadedSongLengthSeconds()` para conservar la escala de la
+waveform original y `getSongLengthSeconds()` para el largo del timeline de
+arrange. Así, un `Fin` recortado se presenta como una guía vertical visible
+sobre las secciones, sin convertir el resto del timeline en una falsa duración
+de audio.
 
 ### Estado de reproducción
 

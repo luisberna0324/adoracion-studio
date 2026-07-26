@@ -377,6 +377,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.getSongLengthSeconds(); },
       [&p] { return p.isSongPlaying(); });
+  waveformBarRaw->setSongSourceLengthProvider(
+      [&p] { return p.getLoadedSongLengthSeconds(); });
+  waveformBarRaw->setSongEndCustomizedProvider(
+      [&p] { return p.isSongEndCustomized(); });
   waveformBarRaw->setSongWindowProviders(
       [&p] { return p.getSongStartSeconds(); },
       [&p] { return p.getSongEndSeconds(); });

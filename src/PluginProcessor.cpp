@@ -863,10 +863,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       double windowEndSec =
           songEndSeconds.load(std::memory_order_relaxed);
       if (customArrangement) {
-        const bool manualEndTrim =
-            sourceLength > 0.0 && windowEndSec > 0.0 &&
-            windowEndSec < sourceLength - 0.0001;
-        if (!manualEndTrim)
+        if (!songEndCustomized.load(std::memory_order_relaxed))
           windowEndSec = length;
       } else if (windowEndSec <= 0.0 || windowEndSec > length) {
         windowEndSec = length;
@@ -3048,6 +3045,7 @@ bool MTControlsAudioProcessor::loadSongStems(
     loadedSongLengthSeconds = maxLengthSeconds;
     songStartSeconds.store(0.0, std::memory_order_relaxed);
     songEndSeconds.store(maxLengthSeconds, std::memory_order_relaxed);
+    songEndCustomized.store(false, std::memory_order_relaxed);
     songFadeOutSeconds.store(juce::jmin(1.0, maxLengthSeconds),
                              std::memory_order_relaxed);
     const double normalizedSongBpm =
@@ -3180,9 +3178,7 @@ void MTControlsAudioProcessor::playSong() {
     const double sourceLength =
         loadedSongLengthSeconds.load(std::memory_order_relaxed);
     const double playbackEnd = juce::jmax(sourceLength, arrangementEnd);
-    const bool manualEndTrim =
-        sourceLength > 0.0 && end > 0.0 && end < sourceLength - 0.0001;
-    end = manualEndTrim ? end : playbackEnd;
+    end = songEndCustomized.load(std::memory_order_relaxed) ? end : playbackEnd;
     if (end <= start)
       end = playbackEnd;
   }
@@ -3255,9 +3251,7 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
   if (customArrangement) {
-    const bool manualEndTrim =
-        length > 0.0 && end > 0.0 && end < length - 0.0001;
-    if (!manualEndTrim)
+    if (!songEndCustomized.load(std::memory_order_relaxed))
       end = playbackLength;
   } else if (end <= 0.0 || end > playbackLength) {
     end = playbackLength;
@@ -3287,9 +3281,7 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
   if (customArrangement) {
-    const bool manualEndTrim =
-        length > 0.0 && end > 0.0 && end < length - 0.0001;
-    if (!manualEndTrim)
+    if (!songEndCustomized.load(std::memory_order_relaxed))
       end = playbackLength;
   } else if (end <= 0.0 || end > playbackLength) {
     end = playbackLength;
@@ -3366,6 +3358,7 @@ void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
   end = juce::jlimit(start, length, end);
   songStartSeconds.store(start, std::memory_order_relaxed);
   songEndSeconds.store(end, std::memory_order_relaxed);
+  songEndCustomized.store(true, std::memory_order_relaxed);
 
   const double maxFade = juce::jmax(0.0, end - start);
   const double fadeOut = songFadeOutSeconds.load(std::memory_order_relaxed);
@@ -3801,6 +3794,14 @@ bool MTControlsAudioProcessor::isSongPlaying() const noexcept {
 
 double MTControlsAudioProcessor::getSongCurrentPositionSeconds() const {
   return transportClock.getPositionSeconds();
+}
+
+double MTControlsAudioProcessor::getLoadedSongLengthSeconds() const noexcept {
+  return loadedSongLengthSeconds.load(std::memory_order_relaxed);
+}
+
+bool MTControlsAudioProcessor::isSongEndCustomized() const noexcept {
+  return songEndCustomized.load(std::memory_order_relaxed);
 }
 
 double MTControlsAudioProcessor::getSongLengthSeconds() const {
@@ -4525,6 +4526,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   loadedSongTitle.clear();
   songStartSeconds.store(0.0, std::memory_order_relaxed);
   songEndSeconds.store(0.0, std::memory_order_relaxed);
+  songEndCustomized.store(false, std::memory_order_relaxed);
   songFadeOutSeconds.store(0.0, std::memory_order_relaxed);
   resetStemControls(0);
   masterVolume.store(1.0f, std::memory_order_relaxed);
