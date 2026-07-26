@@ -40,7 +40,8 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
     const int prefetchBufferSize =
         prefetchSource != nullptr
             ? juce::jmin(bufferSizeNeeded,
-                         juce::jmax(32768, samplesPerBlockExpected * 4))
+                         juce::jmax(kMinPrefetchBufferSamples,
+                                    samplesPerBlockExpected * 4))
             : 0;
     prefetchBuffer.setSize(numberOfChannels, prefetchBufferSize);
     prefetchBuffer.clear();

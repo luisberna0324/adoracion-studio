@@ -15,6 +15,21 @@ public:
   static_assert(std::atomic<bool>::is_always_lock_free,
                 "Stem streaming requires lock-free lifecycle publication");
 
+  /**
+   * Minimum read-ahead window (in samples) kept in the prefetch bank.
+   * Acts as a cushion for the background TimeSliceThread against short
+   * decoder stalls.
+   *
+   * The legacy 32768 (~0.74s @ 44.1kHz) was the minimum originally
+   * shipped; raising it to 131072 (~3.0s) was tried and found to make
+   * streaming_misses WORSE — the per-iteration drain grows linearly
+   * with the buffer, so the worker's round-robin across 4-5 stems slows
+   * down enough that each stem waits longer for the next refill. Keep
+   * the legacy minimum until a different strategy (more worker threads,
+   * per-stem drain budget, etc.) lands.
+   */
+  static constexpr int kMinPrefetchBufferSamples = 32768;
+
   StemBufferingSource(juce::PositionableAudioSource *source,
                       juce::TimeSliceThread &backgroundThread,
                       bool deleteSourceWhenDeleted, int numberOfSamplesToBuffer,
