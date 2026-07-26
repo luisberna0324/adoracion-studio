@@ -1425,8 +1425,9 @@ void TopBar::showSongWindowPopover() {
   class SongWindowPopover final : public juce::Component {
   public:
     SongWindowPopover(MTControlsAudioProcessor &processorRef,
-                      const bool readOnlyArrangement)
-        : processor(processorRef), arrangementReadOnly(readOnlyArrangement) {
+                      const bool customArrangement)
+        : processor(processorRef),
+          customArrangementActive(customArrangement) {
       configureRow(startLabel, startMinus, startEditor, startPlus,
                    L10n::tr("Inicio", "Start"));
       configureRow(endLabel, endMinus, endEditor, endPlus,
@@ -1434,8 +1435,9 @@ void TopBar::showSongWindowPopover() {
       configureRow(fadeLabel, fadeMinus, fadeValue, fadePlus,
                    L10n::tr("Salida", "Fade out"));
 
-      startMinus.onClick = [this] { adjustStart(-stepSeconds()); };
-      startPlus.onClick = [this] { adjustStart(stepSeconds()); };
+      // For Start, "-" trims time from the beginning and "+" restores it.
+      startMinus.onClick = [this] { adjustStart(stepSeconds()); };
+      startPlus.onClick = [this] { adjustStart(-stepSeconds()); };
       endMinus.onClick = [this] { adjustEnd(-stepSeconds()); };
       endPlus.onClick = [this] { adjustEnd(stepSeconds()); };
       fadeMinus.onClick = [this] { adjustFade(-stepSeconds()); };
@@ -1449,16 +1451,10 @@ void TopBar::showSongWindowPopover() {
                         &fadeMinus, &fadePlus})
         btn->setEnabled(true);
 
-      if (arrangementReadOnly) {
-        startMinus.setEnabled(false);
-        startPlus.setEnabled(false);
-        startEditor.setEnabled(false);
-      }
-
-      if (arrangementReadOnly) {
+      if (customArrangementActive) {
         arrangementInfoLabel.setText(
-            L10n::tr("Arreglo personalizado activo: Inicio bloqueado; Fin/Salida activos",
-                     "Custom arrangement active: Start locked; End/Fade active"),
+            L10n::tr("Arreglo personalizado: Inicio/Fin delimitan la reproducción",
+                     "Custom arrangement: Start/End limit playback"),
             juce::dontSendNotification);
         arrangementInfoLabel.setJustificationType(juce::Justification::centred);
         arrangementInfoLabel.setFont(juce::FontOptions(11.0f));
@@ -1470,18 +1466,21 @@ void TopBar::showSongWindowPopover() {
     }
 
     void refreshValues() {
-      startValue.setText(formatTimeSeconds(processor.getSongStartSeconds()),
+      const double start = processor.getSongStartSeconds();
+      const double end = processor.getSongEndSeconds();
+      startValue.setText(formatTimeSeconds(start),
                          juce::dontSendNotification);
-      endValue.setText(formatTimeSeconds(processor.getSongEndSeconds()),
+      endValue.setText(formatTimeSeconds(end),
                        juce::dontSendNotification);
-      startEditor.setText(formatTimeSeconds(processor.getSongStartSeconds()),
+      startEditor.setText(formatTimeSeconds(start),
                           juce::dontSendNotification);
-      endEditor.setText(formatTimeSeconds(processor.getSongEndSeconds()),
+      endEditor.setText(formatTimeSeconds(end),
                         juce::dontSendNotification);
       const int fadeSecs =
           static_cast<int>(std::round(processor.getSongFadeOutSeconds()));
       fadeValue.setText(juce::String(fadeSecs) + " " + L10n::tr("seg", "sec"),
                         juce::dontSendNotification);
+      updateButtonStates(start, end);
     }
 
     void applyTheme() {
@@ -1518,7 +1517,7 @@ void TopBar::showSongWindowPopover() {
         btn->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
         btn->setViewportIgnoreDragFlag(true);
       }
-      if (arrangementReadOnly) {
+      if (customArrangementActive) {
         arrangementInfoLabel.setColour(juce::Label::textColourId,
                                        UITheme::accent);
       }
@@ -1543,7 +1542,7 @@ void TopBar::showSongWindowPopover() {
       area.removeFromTop(8);
       layoutRow(area.removeFromTop(rowH), fadeLabel, fadeMinus, fadeValue,
                 fadePlus);
-      if (arrangementReadOnly) {
+      if (customArrangementActive) {
         area.removeFromTop(6);
         arrangementInfoLabel.setBounds(area.removeFromTop(18));
       }
@@ -1551,7 +1550,7 @@ void TopBar::showSongWindowPopover() {
 
   private:
     MTControlsAudioProcessor &processor;
-    bool arrangementReadOnly = false;
+    bool customArrangementActive = false;
     juce::Label startLabel, endLabel, fadeLabel;
     juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
         fadePlus;
@@ -1631,6 +1630,20 @@ void TopBar::showSongWindowPopover() {
       return mods.isShiftDown() ? 5.0 : 1.0;
     }
 
+    void updateButtonStates(const double start, const double end) {
+      constexpr double epsilon = 0.0001;
+      const double length = juce::jmax(0.0, processor.getSongLengthSeconds());
+      const double fade = processor.getSongFadeOutSeconds();
+      const double windowLength = juce::jmax(0.0, end - start);
+
+      startPlus.setEnabled(start > epsilon);
+      startMinus.setEnabled(start < end - epsilon);
+      endMinus.setEnabled(end > start + epsilon);
+      endPlus.setEnabled(end < length - epsilon);
+      fadeMinus.setEnabled(fade > epsilon);
+      fadePlus.setEnabled(fade < windowLength - epsilon);
+    }
+
     void adjustStart(double delta) {
       processor.setSongStartSeconds(processor.getSongStartSeconds() + delta);
       refreshValues();
@@ -1663,10 +1676,10 @@ void TopBar::showSongWindowPopover() {
 
   if (!processor.hasLoadedSong())
     return;
-  const bool arrangementReadOnly = processor.isCustomArrangementActive();
+  const bool customArrangementActive = processor.isCustomArrangementActive();
   auto panel =
-      std::make_unique<SongWindowPopover>(processor, arrangementReadOnly);
-  panel->setSize(230, arrangementReadOnly ? 156 : 128);
+      std::make_unique<SongWindowPopover>(processor, customArrangementActive);
+  panel->setSize(230, customArrangementActive ? 156 : 128);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)

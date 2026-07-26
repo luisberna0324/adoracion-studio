@@ -2830,11 +2830,13 @@ void WaveformBar::handleSeek(float x, const juce::Rectangle<float> &seekBounds) 
       juce::jlimit(seekBounds.getX(), seekBounds.getRight(), x);
   const float ratio = (clampedX - seekBounds.getX()) / seekBounds.getWidth();
   const auto window = getVisibleWindow();
-  const double target =
+  const double rawTarget =
       songLength * juce::jlimit(0.0f, 1.0f, window.first + (ratio * window.second));
+  const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
+  const double target =
+      juce::jlimit(playableStartSec, playableEndSec, rawTarget);
 
   if (isEditingArrangement() && timelineViewMode == TimelineViewMode::GuideMap) {
-    const auto [playableStartSec, playableEndSec] = getPlayableRangeSeconds();
     sectionInsertionAnchorSec = juce::jlimit(
         playableStartSec, playableEndSec, snapSeconds(target));
     sectionInsertionAnchorValid = true;
@@ -3011,8 +3013,7 @@ bool WaveformBar::getPlaybackEndGuideSeconds(double &endSecondsOut) const {
 }
 
 bool WaveformBar::getPlaybackStartGuideSeconds(double &startSecondsOut) const {
-  if (customArrangement || lengthProvider == nullptr ||
-      songWindowStartProvider == nullptr)
+  if (lengthProvider == nullptr || songWindowStartProvider == nullptr)
     return false;
 
   const double timelineLength = juce::jmax(0.0, lengthProvider());
@@ -4481,8 +4482,9 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
       playableEndRatio =
           static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
       if (hasCustomArrangement) {
-        showPlayableWindow = getPlaybackEndGuideSeconds(endSec);
-        playableStartRatio = 0.0f;
+        double startGuideSec = 0.0;
+        showPlayableWindow = getPlaybackEndGuideSeconds(endSec) ||
+                             getPlaybackStartGuideSeconds(startGuideSec);
       } else {
         showPlayableWindow =
             playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
@@ -4655,6 +4657,9 @@ bool WaveformBar::drawCachedFollowWaveform(
   // the waveform. This also applies to a manual end trim in an arrangement.
   double playbackEndGuideSeconds = 0.0;
   if (getPlaybackEndGuideSeconds(playbackEndGuideSeconds))
+    return false;
+  double playbackStartGuideSeconds = 0.0;
+  if (getPlaybackStartGuideSeconds(playbackStartGuideSeconds))
     return false;
   if (!customArrangement && lengthProvider != nullptr &&
       songWindowStartProvider != nullptr && songWindowEndProvider != nullptr) {

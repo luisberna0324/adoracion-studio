@@ -219,25 +219,25 @@ representa con una guía vertical persistente por encima de las tarjetas del
 arrange; no se confunde con el playhead ni se oculta detrás de una sección. La
 guía usa un trazo punteado y se actualiza inmediatamente al pulsar `+` o `−` en
 `Fin`, mientras la waveform posterior permanece visible con opacidad reducida.
-duración de audio fuente se conserva separada del `Fin` configurado para que el
+La duración de audio fuente se conserva separada del `Fin` configurado para que el
 recorte no se muestre como una duración de waveform errónea. Los pads no
 pertenecen al timeline de canción y no se recortan.
 
-`Inicio` usa el mismo patrón en el timeline normal: su guía punteada se mueve
-con `+`/`−` y el tramo anterior queda atenuado. En un arrange personalizado,
-`Inicio` permanece bloqueado y no se dibuja una guía editable para no romper el
-mapa de secciones.
+`Inicio` usa el mismo patrón: su guía punteada se mueve con `+`/`−` y el tramo
+anterior queda atenuado. `−` recorta tiempo del comienzo y `+` lo recupera; por
+eso, en `00:00`, `+` queda deshabilitado y `−` permanece disponible mientras
+exista ventana por recortar. En `Fin`, `−` recorta y `+` extiende hasta la
+duración total disponible.
 
-Con arreglo personalizado activo, `Inicio` permanece bloqueado porque moverlo
-rompería el mapa de secciones. `Fin` y `Salida` siguen activos: si `Fin` es
-menor que el largo original de la canción, recorta el playback aunque el
-arreglo tenga más duración por clips insertados. Si no hay recorte manual, el
+Con arreglo personalizado activo, `Inicio` y `Fin` delimitan únicamente la
+ventana de reproducción; no desplazan ni reescriben las secciones. Ambos pueden
+recorrer la duración completa del arrange. Si no hay un `Fin` personalizado, el
 custom arrange usa su duración completa.
 
-`Stop` siempre deja el transporte detenido en `0.0 s`. El inicio de la primera
-sección del arrange y el inicio configurado de la ventana de reproducción no
-alteran esa posición de retorno. Si no existe una sección que cubra `0.0 s`, no
-queda ninguna sección marcada como actual.
+`Inicio` y `Fin` son también los límites inferior y superior de cualquier seek.
+Un clic o arrastre fuera de la ventana se limita a la guía correspondiente.
+`Stop` devuelve el transporte a `Inicio`, no a `0.0 s`, y la posición publicada
+a la UI cambia de inmediato aunque el dispositivo no esté ejecutando callbacks.
 
 ### Edición
 
