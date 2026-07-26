@@ -183,6 +183,13 @@ void toggleSongPlayPause();
 | `setFadeStopsPlayback(bool)` | shouldStop | ¿Fade detiene? |
 | `isFadeStopsPlayback()` | — | ¿Fade detiene? |
 
+Con arreglo personalizado activo, `setSongStartSeconds()` no se expone desde la
+UI principal porque el inicio pertenece al mapa de secciones. `setSongEndSeconds()`
+y `setSongFadeOutSeconds()` siguen activos: un `Fin` menor que el largo original
+de la canción recorta el playback, muestra el marcador de fin en la waveform y
+detiene el transporte en ese segundo. Si `Fin` queda en el largo original, el
+custom arrange reproduce su duración completa.
+
 ### Estado de reproducción
 
 ```cpp

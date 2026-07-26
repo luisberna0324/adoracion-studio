@@ -4376,9 +4376,11 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
   float playableStartRatio = 0.0f;
   float playableEndRatio = 1.0f;
   bool showPlayableWindow = false;
-  if (!hasCustomArrangement && lengthProvider && songWindowStartProvider &&
+  if (lengthProvider && songWindowStartProvider &&
       songWindowEndProvider) {
-    const double transportLength = juce::jmax(0.0, lengthProvider());
+    const double sourceLengthForWindow = juce::jmax(0.0, lengthProvider());
+    const double transportLength =
+        hasCustomArrangement ? songLength : sourceLengthForWindow;
     if (transportLength > 0.0) {
       double startSec = songWindowStartProvider();
       double endSec = songWindowEndProvider();
@@ -4388,8 +4390,16 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
           static_cast<float>(juce::jlimit(0.0, 1.0, startSec / transportLength));
       playableEndRatio =
           static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
-      showPlayableWindow =
-          playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
+      if (hasCustomArrangement) {
+        const bool manualEndTrim =
+            sourceLengthForWindow > 0.0 && endSec > 0.0 &&
+            endSec < sourceLengthForWindow - 0.0001;
+        showPlayableWindow = manualEndTrim;
+        playableStartRatio = 0.0f;
+      } else {
+        showPlayableWindow =
+            playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
+      }
     }
   }
 

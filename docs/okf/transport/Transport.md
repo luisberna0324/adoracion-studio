@@ -213,9 +213,15 @@ el alineamiento con la latencia de pitch/tempo.
 
 Cuando el final de la ventana cae dentro del callback, el motor también mapea
 ese frame source al offset de salida y limpia desde allí hasta el final del
-bloque en stems, click y guía. El estado de transporte se detiene y vuelve a
-`0.0 s` al cerrar el callback. Los pads no pertenecen al timeline de canción y
-no se recortan.
+bloque en stems, click y guía. El estado de transporte se detiene en el segundo
+marcado como `Fin`, dejando visible el punto exacto de corte. Los pads no
+pertenecen al timeline de canción y no se recortan.
+
+Con arreglo personalizado activo, `Inicio` permanece bloqueado porque moverlo
+rompería el mapa de secciones. `Fin` y `Salida` siguen activos: si `Fin` es
+menor que el largo original de la canción, recorta el playback aunque el
+arreglo tenga más duración por clips insertados. Si no hay recorte manual, el
+custom arrange usa su duración completa.
 
 `Stop` siempre deja el transporte detenido en `0.0 s`. El inicio de la primera
 sección del arrange y el inicio configurado de la ventana de reproducción no

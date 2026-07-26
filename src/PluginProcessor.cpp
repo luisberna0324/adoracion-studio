@@ -862,10 +862,15 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       double windowStartSec = songStartSeconds.load(std::memory_order_relaxed);
       double windowEndSec =
           songEndSeconds.load(std::memory_order_relaxed);
-      if (customArrangement)
+      if (customArrangement) {
+        const bool manualEndTrim =
+            sourceLength > 0.0 && windowEndSec > 0.0 &&
+            windowEndSec < sourceLength - 0.0001;
+        if (!manualEndTrim)
+          windowEndSec = length;
+      } else if (windowEndSec <= 0.0 || windowEndSec > length) {
         windowEndSec = length;
-      else if (windowEndSec <= 0.0 || windowEndSec > length)
-        windowEndSec = length;
+      }
       double fadeOutSec = songFadeOutSeconds.load(std::memory_order_relaxed);
       const double blockStartSec =
           playbackSampleRate > 0.0
@@ -1876,10 +1881,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               playbackSampleRate));
     }
   } else if (stopAtEnd && !deferredArrangementTransitionPending) {
-    juce::ignoreUnused(stopAtEndSec);
-    // Al llegar al final de la ventana, detenemos y volvemos al inicio para
-    // que el seek no quede clavado al final.
-    stopSong();
+    const double stoppedPositionSeconds = juce::jmax(0.0, stopAtEndSec);
+    const auto stoppedPositionFrames =
+        playworship::audio::TransportClock::secondsToFrames(
+            stoppedPositionSeconds, playbackSampleRate);
+    setTransportState(TransportState::stopped);
+    transportClock.seek(stoppedPositionFrames);
+    globalSamplePosition.store(stoppedPositionFrames,
+                               std::memory_order_relaxed);
+    songCurrentPositionSeconds.store(stoppedPositionSeconds,
+                                     std::memory_order_relaxed);
+    requestedSeekPosition.store(stoppedPositionFrames,
+                                std::memory_order_relaxed);
+    arrangementTransitionIntentGeneration.fetch_add(
+        1, std::memory_order_release);
   }
 
   const float left =
@@ -3162,8 +3177,14 @@ void MTControlsAudioProcessor::playSong() {
   if (customArrangement) {
     const double arrangementEnd =
         arrangementTotalLengthSeconds.load(std::memory_order_relaxed);
-    if (arrangementEnd > start)
-      end = arrangementEnd;
+    const double sourceLength =
+        loadedSongLengthSeconds.load(std::memory_order_relaxed);
+    const double playbackEnd = juce::jmax(sourceLength, arrangementEnd);
+    const bool manualEndTrim =
+        sourceLength > 0.0 && end > 0.0 && end < sourceLength - 0.0001;
+    end = manualEndTrim ? end : playbackEnd;
+    if (end <= start)
+      end = playbackEnd;
   }
   const double current =
       songCurrentPositionSeconds.load(std::memory_order_relaxed);
@@ -3233,10 +3254,14 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
           : length;
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
-  if (customArrangement)
+  if (customArrangement) {
+    const bool manualEndTrim =
+        length > 0.0 && end > 0.0 && end < length - 0.0001;
+    if (!manualEndTrim)
+      end = playbackLength;
+  } else if (end <= 0.0 || end > playbackLength) {
     end = playbackLength;
-  else if (end <= 0.0 || end > playbackLength)
-    end = playbackLength;
+  }
   start = juce::jlimit(0.0, end, start);
   const double target =
       juce::jlimit(start, end, current + deltaSeconds);
@@ -3261,10 +3286,14 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
           : length;
   double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
-  if (customArrangement)
+  if (customArrangement) {
+    const bool manualEndTrim =
+        length > 0.0 && end > 0.0 && end < length - 0.0001;
+    if (!manualEndTrim)
+      end = playbackLength;
+  } else if (end <= 0.0 || end > playbackLength) {
     end = playbackLength;
-  else if (end <= 0.0 || end > playbackLength)
-    end = playbackLength;
+  }
   start = juce::jlimit(0.0, end, start);
   double target = juce::jlimit(start, end, positionSeconds);
   arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);

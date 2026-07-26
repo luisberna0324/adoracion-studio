@@ -1446,14 +1446,19 @@ void TopBar::showSongWindowPopover() {
       endEditor.onFocusLost = [this] { submitEndEditor(); };
 
       for (auto *btn : {&startMinus, &startPlus, &endMinus, &endPlus,
-                        &fadeMinus, &fadePlus}) {
-        btn->setEnabled(!arrangementReadOnly);
+                        &fadeMinus, &fadePlus})
+        btn->setEnabled(true);
+
+      if (arrangementReadOnly) {
+        startMinus.setEnabled(false);
+        startPlus.setEnabled(false);
+        startEditor.setEnabled(false);
       }
 
       if (arrangementReadOnly) {
         arrangementInfoLabel.setText(
-            L10n::tr("Arreglo personalizado activo: Inicio/Fin/Salida bloqueados",
-                     "Custom arrangement active: Start/End/Fade locked"),
+            L10n::tr("Arreglo personalizado activo: Inicio bloqueado; Fin/Salida activos",
+                     "Custom arrangement active: Start locked; End/Fade active"),
             juce::dontSendNotification);
         arrangementInfoLabel.setJustificationType(juce::Justification::centred);
         arrangementInfoLabel.setFont(juce::FontOptions(11.0f));
