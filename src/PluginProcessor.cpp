@@ -1547,6 +1547,25 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                     static_cast<uint32_t>(
                         resampling->getDecodeCallCount());
               }
+
+              // ---- Benchmark: Bungee per-stem -----------------------
+              // The Bungee timing was written to lastBungeeUsMicros
+              // / lastBungeeGapUsMicros / lastBungeeCount on the
+              // same audio thread (no other writer). Just copy the
+              // most recent values into the snapshot.
+              if (lastBungeeUsMicros[stemIndex] > 0.0) {
+                stemTimingEvent.bungeeUs[stemIndex] =
+                    static_cast<int32_t>(juce::jlimit<double>(
+                        0.0, 2000000000.0, lastBungeeUsMicros[stemIndex]));
+              }
+              if (lastBungeeGapUsMicros[stemIndex] > 0.0) {
+                stemTimingEvent.bungeeGapUs[stemIndex] =
+                    static_cast<int32_t>(juce::jlimit<double>(
+                        0.0, 2000000000.0,
+                        lastBungeeGapUsMicros[stemIndex]));
+              }
+              stemTimingEvent.bungeeCount[stemIndex] =
+                  lastBungeeCount[stemIndex];
             }
           }
 
@@ -1582,7 +1601,37 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                            stemRoutingTempBuffer, numSamples);
               int64_t drEnd = juce::Time::getHighResolutionTicks();
               stageDecodeRenderEndTick += (drEnd - drStart);
+              // ---- Benchmark: per-stem Bungee timing --------------------
+              // Captured here (in the timeProcessActive branch) so we
+              // only see real work. The previous Bungee start tick
+              // for each stem is kept in a static array so we can
+              // compute the inter-call gap (decimation cadence bias
+              // applies, same caveat as workerGapUs). The values are
+              // written into the StemTimingEvent that is created in
+              // the decimated snapshot block further down.
+              static int64_t prevBungeeStart[AudioDiagnostics::StemTimingEvent::kMaxStemMetrics]{};
+              const int64_t gapTicks = drStart - prevBungeeStart[stemIndex];
+              prevBungeeStart[stemIndex] = drStart;
+              lastBungeeUsMicros[stemIndex] =
+                  static_cast<double>(drEnd - drStart) * 1e6 /
+                  juce::Time::getHighResolutionTicksPerSecond();
+              lastBungeeGapUsMicros[stemIndex] =
+                  gapTicks > 0
+                      ? static_cast<double>(gapTicks) * 1e6 /
+                            juce::Time::getHighResolutionTicksPerSecond()
+                      : 0.0;
+              lastBungeeCount[stemIndex] =
+                  lastBungeeCount[stemIndex] + 1;
             } else {
+              // No time processing for this stem — clear any residual
+              // Bungee timing from a previous active period. Without
+              // this reset, the decimated snapshot would keep
+              // reporting the last non-zero Bungee duration even
+              // after the user has turned pitch/tempo off, which
+              // makes the CSV harder to read across scenarios.
+              lastBungeeUsMicros[stemIndex] = 0.0;
+              lastBungeeGapUsMicros[stemIndex] = 0.0;
+              lastBungeeCount[stemIndex] = 0;
               juce::AudioSourceChannelInfo stemInfo(&stemRoutingTempBuffer, 0,
                                                     numSamples);
               stemTracks[stemIndex]->getNextAudioBlock(stemInfo);

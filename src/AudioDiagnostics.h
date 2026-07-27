@@ -176,6 +176,23 @@ public:
     std::array<int32_t, kMaxStemMetrics> decodeUs{};
     std::array<int32_t, kMaxStemMetrics> decodeGapUs{};
     std::array<uint32_t, kMaxStemMetrics> decodeCount{};
+
+    // ---- Benchmark: Bungee (pitch/time-stretch) processing ----------
+    // When the user transposes pitch or changes tempo, the audio
+    // thread calls BungeeProcessor::process() on each stem that
+    // needs the transform. That work is on the audio thread, so
+    // its cost directly eats into the block budget. Captured per
+    // stem so we can see which stems are expensive to pitch-shift
+    // (typically percussive content is harder for the algorithm).
+    //   bungeeUs:  duration of the most recent Bungee process()
+    //     call for this stem. 0 when pitch/tempo is off.
+    //   bungeeGapUs:  inter-call gap (decimation bias applies,
+    //     same caveat as workerGapUs).
+    //   bungeeCount:  cumulative number of Bungee process()
+    //     invocations for this stem.
+    std::array<int32_t, kMaxStemMetrics> bungeeUs{};
+    std::array<int32_t, kMaxStemMetrics> bungeeGapUs{};
+    std::array<uint32_t, kMaxStemMetrics> bungeeCount{};
   };
 
   AudioDiagnostics() = default;
@@ -302,7 +319,7 @@ public:
     }
     if (auto stream = stemLogFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count\n",
+          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count,bungee_us,bungee_gap_us,bungee_count\n",
           false, false, nullptr);
     }
     if (auto stream = gapLogFile.createOutputStream()) {
@@ -532,7 +549,10 @@ private:
             << ev.realDrainCount[static_cast<size_t>(stemIndex)] << ","
             << ev.decodeUs[static_cast<size_t>(stemIndex)] << ","
             << ev.decodeGapUs[static_cast<size_t>(stemIndex)] << ","
-            << ev.decodeCount[static_cast<size_t>(stemIndex)] << "\n";
+            << ev.decodeCount[static_cast<size_t>(stemIndex)] << ","
+            << ev.bungeeUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.bungeeGapUs[static_cast<size_t>(stemIndex)] << ","
+            << ev.bungeeCount[static_cast<size_t>(stemIndex)] << "\n";
       }
 
       idx = (idx + 1) & kStemMask;

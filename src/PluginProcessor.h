@@ -531,6 +531,16 @@ private:
   int stemTimingSnapshotDecimator = 0;
   static constexpr int kStemTimingSnapshotEveryBlocks = 20;
 
+  // ---- Benchmark: per-stem Bungee timing buffers ---------------------
+  // Written from the audio thread on every Bungee process() call, read
+  // from the same thread when the decimated StemTimingEvent snapshot is
+  // built (every kStemTimingSnapshotEveryBlocks blocks). They live on
+  // the audio thread stack across snapshots, so plain double/uint32_t
+  // storage is race-free.
+  double lastBungeeUsMicros[maxStemCount]{};
+  double lastBungeeGapUsMicros[maxStemCount]{};
+  uint32_t lastBungeeCount[maxStemCount]{};
+
   void clearLoadedSongState();
   void removeAllStemSources();
   void resetStemControls(int activeStemCount) noexcept;
