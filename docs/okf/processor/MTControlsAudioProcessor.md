@@ -11,6 +11,8 @@ timestamp: 2026-07-25T00:00:00Z
 
 Clase principal que extiende `juce::AudioProcessor`. Gestiona toda la pipeline de audio incluyendo stems, mezcla, metrónomo, pads y guías dinámicas.
 
+> **Performance**: la captura de telemetría de performance de `processBlock` (stages, gaps, decode, render) está documentada en [`AudioDiagnostics`](AudioDiagnostics.md). Toda métrica de rendimiento del plugin pasa por ese módulo.
+
 ## Herencia
 
 ```

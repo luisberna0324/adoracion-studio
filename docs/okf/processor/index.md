@@ -10,8 +10,9 @@ timestamp: 2026-07-14T20:45:00Z
 
 Contiene la clase principal `MTControlsAudioProcessor` y sus periféricos.
 
-## Clases
+## Clases y módulos
 
-| Clase | Descripción |
+| Clase / Módulo | Descripción |
 |--------|-------------|
 | [MTControlsAudioProcessor](MTControlsAudioProcessor.md) | Procesador principal del plugin |
+| [AudioDiagnostics](AudioDiagnostics.md) | Benchmark lock-free de performance (stages, gaps, decode, render) |

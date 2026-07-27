@@ -27,6 +27,7 @@ docs/okf/
 | Módulo | Descripción |
 |--------|-------------|
 | [processor/MTControlsAudioProcessor](processor/MTControlsAudioProcessor.md) | Procesador principal del plugin |
+| [processor/AudioDiagnostics](processor/AudioDiagnostics.md) | Benchmark lock-free de performance (stages, gaps, decode, render) |
 | [engine/StemMixEngine](engine/StemMixEngine.md) | Motor de mezcla de stems |
 | [engine/StemTrack](engine/StemTrack.md) | Track individual de audio |
 | [audio-systems/Metronome](audio-systems/Metronome.md) | Sistema de metrónomo |

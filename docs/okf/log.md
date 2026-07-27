@@ -7,6 +7,12 @@ timestamp: 2026-07-14T20:45:00Z
 
 # Changelog
 
+## 2026-07-26 (tarde)
+
+### Agregado
+
+- Documento canónico de referencia [`AudioDiagnostics`](processor/AudioDiagnostics.md) — descripción unificada del benchmark lock-free (6 stages, gap detector, worker drain, decode, Bungee) con tabla de optimizaciones medidas, CSVs, y guía para extender.
+
 ## 2026-07-26
 
 ### Agregado
