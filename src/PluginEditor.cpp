@@ -387,13 +387,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setSeekCallback([&p](double targetSeconds) {
     p.seekSongTo(targetSeconds);
   });
-  waveformBarRaw->setOnArrangementPartJumpRequest([&p](int partIndex) {
-    const int activeLoopPartIndex = p.getArrangementPartLoopIndex();
-    if (activeLoopPartIndex >= 0)
-      p.clearArrangementPartLoop();
-    p.requestArrangementPartJump(partIndex);
-  });
+  // The jump button now respects the active loop: the request is queued as a
+  // pending jump and the audio thread resolves whether it should escape the
+  // current loop (SectionScheduler::evaluate handles that precedence). Clearing
+  // the loop eagerly here would defeat the "loop on a section while
+  // pre-arranging a jump to the next one" workflow, and it also hides the
+  // pending-jump escape branch from the scheduler.
+  waveformBarRaw->setOnArrangementPartJumpRequest(
+      [&p](int partIndex) { p.requestArrangementPartJump(partIndex); });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([&p](int partIndex) {
+    // Marking a loop must NOT auto-jump the playhead; the loop waits for
+    // natural playback to reach the section. We still drop any previously
+    // queued jump so the user can replace a pending jump with a loop target
+    // without the two intents fighting each other.
     p.clearPendingArrangementPartJump();
     p.toggleArrangementPartLoop(partIndex);
   });
@@ -969,7 +975,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     loadSongByIndex(target);
   };
 
-  auto nextSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex]() {
+  auto nextSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex,
+                   this]() {
     if (!songListRaw)
       return;
     const int count = songListRaw->getSongCount();
@@ -980,7 +987,26 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       index = songListRaw->getLastActivatedIndex();
     if (index < 0)
       index = 0;
-    const int target = juce::jlimit(0, count - 1, index + 1);
+    index = juce::jlimit(0, count - 1, index);
+
+    // Prefer a song explicitly marked for auto-play-next. This keeps worship
+    // flow predictable: clicking "next" while the last song plays should jump
+    // to the next marked song instead of silently no-op'ing at the boundary.
+    if (hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
+      const int markedNext =
+          songListRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
+      if (juce::isPositiveAndBelow(markedNext, count) && markedNext != index) {
+        loadSongByIndex(markedNext);
+        return;
+      }
+    }
+
+    // Fallback: walk forward by one slot, wrapping to the first song when the
+    // user is already at the tail. This makes the transport button always
+    // feel responsive instead of dying silently at the end of the setlist.
+    int target = index + 1;
+    if (target >= count)
+      target = 0;
     if (target == index)
       return;
     loadSongByIndex(target);

@@ -494,6 +494,12 @@ private:
   playworship::audio::SectionScheduler::Snapshot audioSectionSnapshot;
   AudioArrangementRuntimeSnapshot audioArrangementRuntimeSnapshot;
   uint64_t audioArrangementStructureSequence = 0;
+  // Last arrangementTransitionIntentGeneration observed by the audio thread.
+  // The processor bumps this generation whenever the pending jump or the loop
+  // section changes; the audio thread uses it to refresh the transient fields
+  // of audioArrangementRuntimeSnapshot without waiting for a structural
+  // publication.
+  std::atomic<uint64_t> audioArrangementTransitionIntentGeneration{0};
   // Audio-thread-owned fallback for a section transition whose target bank
   // was not ready at the exact boundary. Playback remains continuous and the
   // jump is applied at offset zero as soon as every stem has the target.
@@ -502,6 +508,14 @@ private:
   juce::int64 deferredArrangementTransitionFrame = 0;
   juce::int64 deferredArrangementTransitionSourceFrame = 0;
   uint64_t deferredArrangementTransitionIntentGeneration = 0;
+  // Last pending jump target that already received its one-bar lead-in
+  // announcement. Reset whenever the pending jump is consumed, so a fresh
+  // jump from the same UI click re-arms the lead-in voice prompt.
+  int lastAnnouncedPendingJumpTarget = -1;
+  // Last loop section that already received its one-bar lead-in
+  // announcement. Reset on every loop wrap (or when the loop is cleared /
+  // re-targeted) so the next iteration re-arms the voice prompt.
+  int lastAnnouncedLoopPartIndex = -1;
   std::atomic<juce::int64> globalSamplePosition{0};
   std::atomic<juce::int64> requestedSeekPosition{-1};
   

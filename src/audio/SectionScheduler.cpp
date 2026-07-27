@@ -336,8 +336,25 @@ SectionScheduler::BlockDecision SectionScheduler::evaluate(
           transitionOffset(blockStart, loop.endFrame, blockFrames);
       return decision;
     }
-    if (blockStart >= loop.startFrame && blockStart < loop.endFrame)
+    if (blockStart >= loop.startFrame && blockStart < loop.endFrame) {
+      // Still inside the loop. A pending jump to a different section escapes
+      // the loop at the next loop boundary, mirroring the wrap behavior above.
+      const bool validPendingEscape =
+          pendingSection >= 0 && pendingSection < count &&
+          pendingSection != loopSection;
+      if (validPendingEscape) {
+        decision.currentSection = loopSection;
+        decision.transition = true;
+        decision.targetSection = pendingSection;
+        decision.targetFrame =
+            snapshot.sections[static_cast<std::size_t>(pendingSection)]
+                .startFrame;
+        decision.transitionOffsetFrames =
+            transitionOffset(blockStart, loop.endFrame, blockFrames);
+        return decision;
+      }
       return decision;
+    }
   }
 
   if (decision.currentSection < 0)

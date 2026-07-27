@@ -667,6 +667,23 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       audioArrangementRuntimeSnapshot = arrangementRuntimeCandidate;
       audioArrangementStructureSequence = arrangementSequenceAfter;
     }
+    // The transition intent (pending jump, loop section) is a transient field
+    // that the UI mutates via fetch_add on arrangementTransitionIntentGeneration
+    // without touching the structure sequence. Without this refresh the audio
+    // thread would keep reading the stale pendingJumpPartIndex captured in the
+    // previous structural snapshot, and the jump/loop click would never reach
+    // SectionScheduler::evaluate.
+    const auto currentTransitionIntentGeneration =
+        arrangementTransitionIntentGeneration.load(std::memory_order_acquire);
+    if (currentTransitionIntentGeneration !=
+        audioArrangementTransitionIntentGeneration) {
+      audioArrangementRuntimeSnapshot.pendingJumpPartIndex =
+          arrangementPendingJumpPartIndex.load(std::memory_order_relaxed);
+      audioArrangementRuntimeSnapshot.loopPartIndex =
+          arrangementLoopPartIndex.load(std::memory_order_relaxed);
+      audioArrangementTransitionIntentGeneration =
+          currentTransitionIntentGeneration;
+    }
     const auto &realtimeSections = audioSectionSnapshot;
     const bool realtimeCustomArrangement =
         audioArrangementRuntimeSnapshot.customActive;
@@ -1193,6 +1210,81 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           }
         }
 
+        // Lead-in announcement for a queued jump: when the playhead is one bar
+        // away from the end of the current section, fire the target section's
+        // guide voice prompt so the musician hears "going to <target>" before
+        // the actual transition. The trigger fires at most once per pending
+        // target; consuming the pending jump or pointing to a new target
+        // re-arms it.
+        if (juce::isPositiveAndBelow(pendingPartIndex, realtimeSectionCount) &&
+            pendingPartIndex != lastAnnouncedPendingJumpTarget &&
+            juce::isPositiveAndBelow(mappedPartIndex, realtimeSectionCount)) {
+          playworship::audio::SectionScheduler::Section currentPart;
+          if (playworship::audio::SectionScheduler::getSection(
+                  realtimeSections, mappedPartIndex, currentPart)) {
+            const double leadInBpm = juce::jmax(1.0, getPlaybackTempoBpm());
+            const double leadInTempoRatio = getPlaybackTempoRatio();
+            const int leadInBeatsPerBar = guideAnnouncementBeatsPerBar.load(
+                std::memory_order_relaxed);
+            const auto leadInOneBarFrames =
+                playworship::audio::TransportClock::secondsToFrames(
+                    (60.0 / leadInBpm) *
+                        juce::jmax(1, leadInBeatsPerBar) * leadInTempoRatio,
+                    playbackSampleRate);
+            const auto leadInFireFrame = std::max<juce::int64>(
+                0, currentPart.endFrame - leadInOneBarFrames);
+            if (blockStartFrame >= leadInFireFrame) {
+              playworship::audio::SectionScheduler::Section targetPart;
+              if (playworship::audio::SectionScheduler::getSection(
+                      realtimeSections, pendingPartIndex, targetPart)) {
+                triggerPartAnnouncement(targetPart.guideTriggerId,
+                                        pendingPartIndex);
+                dynamicGuideAnnouncedByPart[static_cast<size_t>(
+                    pendingPartIndex)] = true;
+                lastAnnouncedPendingJumpTarget = pendingPartIndex;
+              }
+            }
+          }
+        }
+
+        // Loop lead-in: when the playhead is one bar away from the end of the
+        // currently looping section, fire the section's own guide trigger so
+        // the musician hears "<section>" before the wrap. Lower priority than
+        // the pending-jump lead-in (a queued jump always wins), so the
+        // pending target is announced instead when both are armed. Reset
+        // happens at the wrap (see transition consumer below).
+        if (juce::isPositiveAndBelow(realtimeLoopPartIndex,
+                                     realtimeSectionCount) &&
+            realtimeLoopPartIndex == mappedPartIndex &&
+            realtimeLoopPartIndex != lastAnnouncedLoopPartIndex &&
+            realtimeLoopPartIndex != pendingPartIndex) {
+          playworship::audio::SectionScheduler::Section loopLeadInPart;
+          if (playworship::audio::SectionScheduler::getSection(
+                  realtimeSections, realtimeLoopPartIndex, loopLeadInPart)) {
+            const double loopLeadInBpm =
+                juce::jmax(1.0, getPlaybackTempoBpm());
+            const double loopLeadInTempoRatio = getPlaybackTempoRatio();
+            const int loopLeadInBeatsPerBar =
+                guideAnnouncementBeatsPerBar.load(
+                    std::memory_order_relaxed);
+            const auto loopLeadInOneBarFrames =
+                playworship::audio::TransportClock::secondsToFrames(
+                    (60.0 / loopLeadInBpm) *
+                        juce::jmax(1, loopLeadInBeatsPerBar) *
+                        loopLeadInTempoRatio,
+                    playbackSampleRate);
+            const auto loopLeadInFireFrame = std::max<juce::int64>(
+                0, loopLeadInPart.endFrame - loopLeadInOneBarFrames);
+            if (blockStartFrame >= loopLeadInFireFrame) {
+              triggerPartAnnouncement(loopLeadInPart.guideTriggerId,
+                                      realtimeLoopPartIndex);
+              dynamicGuideAnnouncedByPart[static_cast<size_t>(
+                  realtimeLoopPartIndex)] = true;
+              lastAnnouncedLoopPartIndex = realtimeLoopPartIndex;
+            }
+          }
+        }
+
         dynamicGuideLastPartIndex = mappedPartIndex;
         dynamicGuideLastBlockStartSec = blockStartSec;
         dynamicGuideWasPlaying = true;
@@ -1212,6 +1304,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         fadeOutSec = 0.0;
         arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
         arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+        // Note: do NOT bump arrangementTransitionIntentGeneration here. The
+        // transitionIntentStillCurrent() check at the top of this block uses
+        // the counter as captured at the start; bumping it here would cancel
+        // the very transition we are about to apply. The counter is bumped
+        // by the consumer at the end of the block instead, so the snapshot
+        // refreshes on the NEXT block.
 
         if (sectionDecision.transition && !skipTransitionBlockedBySeek) {
           transitionToNextArrangementPart = true;
@@ -2117,9 +2215,23 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   stageRampTransitionEndTick = juce::Time::getHighResolutionTicks();
 
   if (transitionToNextArrangementPart) {
+    // Capture the source section before we overwrite the current part index.
+    const int sourceArrangementPartIndex =
+        arrangementCurrentPartIndex.load(std::memory_order_relaxed);
     arrangementCurrentPartIndex.store(nextArrangementPartIndex,
                                       std::memory_order_relaxed);
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+    // Re-arm the jump and loop lead-ins so a fresh iteration can re-announce.
+    lastAnnouncedPendingJumpTarget = -1;
+    lastAnnouncedLoopPartIndex = -1;
+    // Bump the transition intent generation so the audio-side snapshot
+    // refreshes the cleared pending jump / loop fields on the NEXT block.
+    // This must happen HERE (after the transitionIntentStillCurrent check at
+    // the top of the block has already used the snapshot) and not in the
+    // transition setup, otherwise the check would observe its own bump and
+    // cancel the transition it was supposed to validate.
+    arrangementTransitionIntentGeneration.fetch_add(
+        1, std::memory_order_release);
     juce::ignoreUnused(nextArrangementPartStartSec);
     if (inBlockArrangementTransitionApplied) {
       songCurrentPositionSeconds.store(transportClock.getPositionSeconds(),
@@ -4136,26 +4248,22 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
         arrangementLoopPartIndex.load(std::memory_order_relaxed);
     if (activeLoopIndex == partIndex) {
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
+      // Toggling the loop off must also drop any pending jump that was queued
+      // to enter the loop, otherwise the audio thread will still teleport the
+      // playhead to the loop section after the user already cancelled it.
+      arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
       arrangementTransitionIntentGeneration.fetch_add(
           1, std::memory_order_release);
       return;
     }
 
-    const auto &loopPart = arrangementParts[static_cast<size_t>(partIndex)];
-    const bool isPlayingNow =
-        getTransportState() == TransportState::playing;
-    const double currentSec =
-        songCurrentPositionSeconds.load(std::memory_order_relaxed);
-    const bool alreadyInsideLoopRange =
-        currentSec >= loopPart.startSec && currentSec < loopPart.endSec;
-
+    // Marking a section as loop must NOT auto-jump to it. The loop stays
+    // dormant until natural playback reaches the section's range; once there
+    // it wraps automatically on every section end. The previous behaviour
+    // (queueing a jump when the playhead was outside) interrupted worship
+    // flow by teleporting the user away from the section they were on.
     arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
-    // En reproducción, si el transporte está fuera de la sección objetivo,
-    // dejamos un salto en cola para garantizar que el loop entre también en
-    // modo Follow sin intervención manual.
-    if (isPlayingNow && !alreadyInsideLoopRange)
-      arrangementPendingJumpPartIndex.store(partIndex, std::memory_order_relaxed);
     arrangementTransitionIntentGeneration.fetch_add(
         1, std::memory_order_release);
   }

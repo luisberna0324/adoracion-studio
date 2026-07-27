@@ -257,10 +257,56 @@ if (decision.transition) {
 1. Establecer `pendingSection` en evaluate
 2. Al alcanzar el límite actual, usar el offset exacto y saltar al destino
 
+#### Lead-in announcement
+
+Cuando hay un `pendingSection` activo, el audio thread dispara el
+`guideTriggerId` de la sección destino **un compás antes** del final de la
+sección actual. Esto le avisa al músico "vamos a <target>" antes de que la
+transición ocurra. La duración de un compás se calcula como
+`(60.0 / bpm) * beatsPerBar * tempoRatio` y se traduce a frames con
+`TransportClock::secondsToFrames`.
+
+El trigger se dispara **una sola vez** por cada `pendingSection` distinto
+y se rearma cuando:
+
+- El pending se consume (transición fired) — `lastAnnouncedPendingJumpTarget = -1`
+- El usuario cambia el target del pending
+
 ### Skip playback
 
 1. Marcar `skipPlayback = true` en la sección
 2. El scheduler devuelve offset `0` y el inicio de la siguiente sección
+
+## Precedencia de intents
+
+Cuando varios intents compiten dentro del mismo bloque, `evaluate()` aplica
+una precedencia determinista (de mayor a menor prioridad):
+
+1. **Skip playback** — se evalúa primero en cada bloque. Si el playhead
+   entra a una sección con `skipPlayback=true`, la transición es inmediata
+   (offset `0`) hacia la siguiente sección. El skip se procesa aunque haya
+   un loop activo.
+2. **Loop wrap (boundary)** — si el bloque cruza el final de la sección
+   en loop, el scheduler emite un wrap a `loop.startFrame` con el offset
+   exacto dentro del bloque.
+3. **Pending jump escape** — si el playhead está dentro del loop y hay un
+   `pendingSection` válido apuntando a una sección distinta, el jump gana
+   sobre la continuación del loop. La transición se programa al final de
+   la sección en loop (con el offset clampeado a `blockFrames` si el bloque
+   no llega al límite).
+4. **Loop continuation** — sin pending jump, el playhead se queda dentro
+   de la sección en loop.
+5. **Pending jump (no-loop)** — al cruzar el final de la sección actual,
+   salta al destino pendiente.
+6. **Custom arrangement transition** — entre secciones contiguas con
+   `sourceEndFrame` distinto de la siguiente `sourceStartFrame` (clips
+   insertados).
+7. **Default** — sin transición.
+
+Nota de diseño: si un loop está activo en la sección P, una marca de skip
+en una sección Q nunca se aplica mientras el playhead no salga del loop
+(Q queda "latente"). Al desactivar el loop, el skip se ejecuta en la
+próxima entrada a Q.
 
 ## Archivos relacionados
 

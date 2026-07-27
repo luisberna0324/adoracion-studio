@@ -552,6 +552,21 @@ int getArrangementPartLoopIndex() const noexcept;
 int getPendingArrangementPartJumpIndex() const noexcept;
 ```
 
+**Semántica de toggleArrangementPartLoop(partIndex):**
+
+- Si no hay loop activo y la playhead está **fuera** de la sección: activa
+  el loop y queuea un jump para entrar a la sección en el próximo bloque
+  que cruce la frontera de la sección actual.
+- Si no hay loop activo y la playhead está **dentro** de la sección:
+  activa el loop sin queuear jump (ya estás ahí).
+- Si el loop activo es otra sección: cambia el loop al nuevo `partIndex` y
+  queuea un jump para entrar (mismo comportamiento que el primer caso).
+- Si el loop activo es **la misma** sección: apaga el loop **y limpia
+  cualquier pending jump** que estuviera esperando para entrar. Esto
+  garantiza que un doble-click rápido en el botón loop (encender y apagar)
+  no deje un jump fantasma que teletransporte al usuario a la sección
+  cancelada.
+
 ### Edición de arrange
 
 ```cpp
