@@ -147,20 +147,25 @@ juce::String baseArrangementSectionKey(const juce::String &partName) {
              : DynamicGuideEngine::normalizeSectionKey(partName);
 }
 
+void applyBufferGainRamp(juce::AudioBuffer<float> &buffer,
+                         const float startGain,
+                         const float endGain) noexcept {
+  if (buffer.getNumSamples() <= 0)
+    return;
+  if (juce::approximatelyEqual(startGain, 1.0f) &&
+      juce::approximatelyEqual(endGain, 1.0f)) {
+    return;
+  }
+  if (juce::approximatelyEqual(startGain, endGain))
+    buffer.applyGain(endGain);
+  else
+    buffer.applyGainRamp(0, buffer.getNumSamples(), startGain, endGain);
+}
+
 void applySongTransitionRamp(
     juce::AudioBuffer<float> &buffer,
     const playworship::audio::SongTransitionGainRamp &ramp) noexcept {
-  if (buffer.getNumSamples() <= 0)
-    return;
-  if (juce::approximatelyEqual(ramp.startGain, 1.0f) &&
-      juce::approximatelyEqual(ramp.endGain, 1.0f)) {
-    return;
-  }
-  if (juce::approximatelyEqual(ramp.startGain, ramp.endGain))
-    buffer.applyGain(ramp.endGain);
-  else
-    buffer.applyGainRamp(0, buffer.getNumSamples(), ramp.startGain,
-                         ramp.endGain);
+  applyBufferGainRamp(buffer, ramp.startGain, ramp.endGain);
 }
 
 } // namespace
@@ -586,6 +591,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   dynamicGuideMeterLevelRight.store(0.0f, std::memory_order_relaxed);
 
   bool usedSeparatedMix = false;
+  bool routedStemFadeApplied = false;
   float windowFadeStart = 1.0f;
   float windowFadeEnd = 1.0f;
   bool windowFadeActive = false;
@@ -617,6 +623,26 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   int stemOutputLatencyThisBlock = 0;
   int sourceFramesThisBlock = buffer.getNumSamples();
   double renderedSourceStartSec = 0.0;
+  const float fadeTargetForBlock =
+      fadeTarget.load(std::memory_order_relaxed);
+  float fadeStart = fadeGain;
+  float fadeEnd = fadeGain;
+  if (callbackSamples > 0 && playbackSampleRate > 0.0f &&
+      !juce::approximatelyEqual(fadeGain, fadeTargetForBlock)) {
+    const float step =
+        (fadeTargetForBlock - fadeGain) /
+        static_cast<float>(fadeDurationSec * playbackSampleRate);
+    fadeEnd = fadeGain + (step * static_cast<float>(callbackSamples));
+    if ((step > 0.0f && fadeEnd > fadeTargetForBlock) ||
+        (step < 0.0f && fadeEnd < fadeTargetForBlock)) {
+      fadeEnd = fadeTargetForBlock;
+    }
+    fadeGain = fadeEnd;
+  }
+  const bool transportFadeAffectsBlock =
+      fadeActive.load(std::memory_order_relaxed) ||
+      !juce::approximatelyEqual(fadeStart, 1.0f) ||
+      !juce::approximatelyEqual(fadeEnd, 1.0f);
 
   if (songLoadedForDiagnostics) {
     buffer.clear();
@@ -928,8 +954,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
     }
 
-    const float fadeTargetLocalForMix =
-        fadeTarget.load(std::memory_order_relaxed);
     if (isPlaying) {
       const bool customArrangement = realtimeCustomArrangement;
       const double sourceLength =
@@ -1749,6 +1773,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               int64_t dlEnd = juce::Time::getHighResolutionTicks();
               stageDecodeRenderEndTick += (dlEnd - dlStart);
             }
+            const bool isClickOrGuideStem =
+                stemClickGuideStates[stemIndex].load(
+                    std::memory_order_relaxed);
+            if (!isClickOrGuideStem) {
+              applyBufferGainRamp(stemRoutingTempBuffer,
+                                  fadeStart * windowFadeStart,
+                                  fadeEnd * windowFadeEnd);
+            }
             int assignedWidth = juce::jlimit(
                 1, 2, stemOutputWidths[stemIndex].load(
                           std::memory_order_relaxed));
@@ -1767,13 +1799,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                 stemRoutingTempBuffer, outputIndex, assignedWidth, buffer);
           }
         }
+        routedStemFadeApplied = true;
         usedSeparatedMix = false;
         // ---- Benchmark: read_next ends here -----------------------------
         stageReadNextEndTick = juce::Time::getHighResolutionTicks();
       } else {
         const bool isolateGuideDuringFade =
-            fadeActive.load(std::memory_order_relaxed) ||
-            !juce::approximatelyEqual(fadeGain, fadeTargetLocalForMix);
+            transportFadeAffectsBlock;
         const bool useSeparatedMix =
             isolateGuideDuringFade || windowFadeActive ||
             (pitchActiveSemiTones != 0) ||
@@ -1890,21 +1922,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
            : juce::jlimit(0.0f, 1.0f,
                           masterVolume.load(std::memory_order_relaxed))) *
       juce::jlimit(0.0f, 2.0f, masterGain.load(std::memory_order_relaxed));
-  const float fadeTargetLocal = fadeTarget.load(std::memory_order_relaxed);
-  float fadeStart = fadeGain;
-  float fadeEnd = fadeGain;
-  if (numSamples > 0 && playbackSampleRate > 0.0f &&
-      !juce::approximatelyEqual(fadeGain, fadeTargetLocal)) {
-    const float step =
-        (fadeTargetLocal - fadeGain) /
-        static_cast<float>(fadeDurationSec * playbackSampleRate);
-    fadeEnd = fadeGain + (step * static_cast<float>(numSamples));
-    if ((step > 0.0f && fadeEnd > fadeTargetLocal) ||
-        (step < 0.0f && fadeEnd < fadeTargetLocal))
-      fadeEnd = fadeTargetLocal;
-    fadeGain = fadeEnd;
-  }
-
   if (usedSeparatedMix) {
     const bool timeProcessActive =
         (pitchActiveSemiTones != 0) ||
@@ -1917,18 +1934,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     stageMixOutputEndTick = juce::Time::getHighResolutionTicks();
     timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
     stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
-  } else {
+  } else if (!routedStemFadeApplied) {
     const float combinedFadeStart = fadeStart * windowFadeStart;
     const float combinedFadeEnd = fadeEnd * windowFadeEnd;
-    if (!juce::approximatelyEqual(combinedFadeStart, 1.0f) ||
-        !juce::approximatelyEqual(combinedFadeEnd, 1.0f)) {
-      if (juce::approximatelyEqual(combinedFadeStart, combinedFadeEnd)) {
-        buffer.applyGain(combinedFadeEnd);
-      } else {
-        buffer.applyGainRamp(0, numSamples, combinedFadeStart,
-                             combinedFadeEnd);
-      }
-    }
+    applyBufferGainRamp(buffer, combinedFadeStart, combinedFadeEnd);
   }
 
   const bool trimSongBusesAtExactEnd =
@@ -2074,6 +2083,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           juce::jlimit(0.0f, 2.0f, padsGain.load(std::memory_order_relaxed));
       if (!juce::approximatelyEqual(padsOutputGain, 1.0f))
         padsRenderBuffer.applyGain(padsOutputGain);
+      applyBufferGainRamp(padsRenderBuffer, fadeStart, fadeEnd);
 
       // Gentle safety clipper on pads bus to tame hot transients.
       {

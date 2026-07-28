@@ -182,7 +182,10 @@ void renderToOutput(
 );
 ```
 
-Renderiza a buffer de salida con fade window.
+Renderiza a buffer de salida con fade window. El grupo `dryBuffer`, que contiene
+los stems marcados como click/guía, no recibe el fade de instrumentos. Esta
+misma excepción debe conservarse en el camino de routing multicanal del
+procesador.
 
 ## Latencia
 
