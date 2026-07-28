@@ -663,7 +663,8 @@ bool StemBufferingSource::readNextBufferChunk() {
   const auto validEnd = bufferValidEnd.load(std::memory_order_acquire);
 
   constexpr int maxChunkSize = 32768;
-  const auto addChunkWithoutOverflow = [](const juce::int64 value) {
+  const auto addChunkWithoutOverflow =
+      [maxChunkSize](const juce::int64 value) {
     const auto maximum = std::numeric_limits<juce::int64>::max();
     return value > maximum - maxChunkSize
                ? maximum
