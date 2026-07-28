@@ -187,6 +187,13 @@ void toggleSongPlayPause();
 | `setFadeStopsPlayback(bool)` | shouldStop | ¿Fade detiene? |
 | `isFadeStopsPlayback()` | — | ¿Fade detiene? |
 
+El fade de transporte (`setFadeActive`) reduce instrumentos y pads, pero
+mantiene audibles los cuatro buses de referencia: click stem, click dinámico,
+guía stem y guía dinámica. La exclusión de stems usa `stemClickGuideStates` y
+rige tanto en mezcla agrupada como con routing multicanal explícito. El mute
+master y el fade técnico de reemplazo de canción continúan afectando la salida
+completa.
+
 Con arreglo personalizado activo, `setSongStartSeconds()` y
 `setSongEndSeconds()` delimitan la ventana de reproducción sin modificar el
 mapa de secciones. Sus límites usan la duración total del arrange. Un `Fin`
@@ -277,7 +284,7 @@ a `int16` (~32.7 ms sin signo) en el mismo CSV `audio_*.csv`:
 | `stage_read_next_us` | `read_next` | El loop de `getNextAudioBlock` sobre todos los stems. Solo se llena en el path `routingActive`. |
 | `stage_decode_render_us` | `decode_render` | Suma del tiempo dentro de `proc.process` (pitch / time-stretch) y del delay line por stem. Es un sub-conjunto de `read_next`. |
 | `stage_mix_stems_us` | `mix_stems` | `mixEngine.mixStems` (separated) o `mixEngine.renderDirect` (direct). Solo se llena en el path `!routingActive`. |
-| `stage_mix_output_us` | `mix_output` | `mixEngine.renderToOutput` — bus master donde se suman stems, se aplica el fade y, opcionalmente, se mezcla metrónomo / pads / guía dinámica. |
+| `stage_mix_output_us` | `mix_output` | `mixEngine.renderToOutput` — mezcla agrupada donde el fade se aplica a instrumentos y preserva stems de click/guía. Los buses dinámicos y pads se procesan después. |
 | `stage_ramp_transition_us` | `ramp_transition` | `applySongTransitionRamp` final — envolvente de fade aplicada al buffer de salida en el handoff entre canciones. |
 
 Una etapa que no corrió en un bloque queda en 0 (no se interpreta como

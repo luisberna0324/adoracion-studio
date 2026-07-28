@@ -102,7 +102,9 @@ struct RenderResult {
 
 RenderResult renderImpulse(const RenderGroup group,
                            const int impulseFrame = kImpulseFrame,
-                           const bool resetBeforeRender = false) {
+                           const bool resetBeforeRender = false,
+                           const float fadeStart = 1.0f,
+                           const float fadeEnd = 1.0f) {
   juce::TimeSliceThread unusedReadThread("stem-mix-test-read");
   std::vector<std::unique_ptr<StemTrack>> stems;
   stems.push_back(std::make_unique<StemTrack>(
@@ -131,7 +133,7 @@ RenderResult renderImpulse(const RenderGroup group,
     const int inputFrames = engine.requiredInputFrames(kBlockSize);
     engine.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
                     inputFrames, 2);
-    engine.renderToOutput(output, true, inputFrames, 1.0f, 1.0f, 1.0f,
+    engine.renderToOutput(output, true, inputFrames, fadeStart, fadeEnd, 1.0f,
                           1.0f);
     for (int sample = 0; sample < kBlockSize; ++sample)
       result.samples.push_back(output.getSample(0, sample));
@@ -336,6 +338,15 @@ int main() {
          "clean percussion delay is complete from the first sample");
   expect(std::abs(earlyGuidePeak - earlyMelodicPeak) <= kBlockSize,
          "clean guide delay is complete from the first sample");
+
+  const RenderResult fadedInstrument =
+      renderImpulse(RenderGroup::Melodic, kImpulseFrame, false, 0.0f, 0.0f);
+  const RenderResult preservedGuide =
+      renderImpulse(RenderGroup::Guide, kImpulseFrame, false, 0.0f, 0.0f);
+  expect(peakIndex(fadedInstrument.samples) == -1,
+         "transport fade silences instrument stems");
+  expect(peakIndex(preservedGuide.samples) >= 0,
+         "transport fade preserves click and guide stems");
 
   std::cout << "stem mix engine tests passed\n";
   return 0;
