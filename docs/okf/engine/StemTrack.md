@@ -232,6 +232,15 @@ track->setMuted(false);
 track->setSoloed(true);
 ```
 
+### Origen `.pwproj`
+
+Cuando una canción se abre desde un proyecto portable `.pwproj`, `StemTrack`
+no lee el ZIP directamente. `ProjectStore` extrae cada recurso validado a su
+directorio de caché y el constructor recibe esa ruta temporal como cualquier
+otro archivo de audio. Así se preservan el read-ahead, el prefetch y las
+garantías de no bloquear el callback; la caché puede eliminarse y se recreará
+al abrir el proyecto nuevamente.
+
 ## Constantes internas
 
 | Atómico | Tipo | Default | Descripción |

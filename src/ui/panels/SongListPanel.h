@@ -2,6 +2,7 @@
 
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/ProjectStore.h"
 #include "../components/SearchField.h"
 #include "../components/SetlistSongsHeaderPanel.h"
 #include "LibraryCatalogPanel.h"
@@ -171,6 +172,9 @@ private:
   class SetlistsContent;
 
   void openSongImportWizard();
+  void openSongImportWizard(const juce::File &destination);
+  void openProjectFileChooser();
+  void openProjectFile(const juce::File &file);
   void openSongEditWizard(const juce::String &songId);
   void openSetlistManager();
   void openHeaderMenu();
@@ -251,4 +255,5 @@ private:
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   int lastActivatedIndex = -1;
+  std::unique_ptr<juce::FileChooser> projectFileChooser;
 };

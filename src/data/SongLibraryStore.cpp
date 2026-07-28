@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "ProjectStore.h"
 #include "AppSettings.h"
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
@@ -92,6 +93,42 @@ ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
   mix.outputChannel = juce::jmax(1, mix.outputChannel);
   mix.outputWidth = juce::jlimit(1, 2, mix.outputWidth);
   return mix;
+}
+
+ProjectSongSettings projectSettingsFromItem(const SetlistItem &item,
+                                            const ImportedSongData &song) {
+  juce::ignoreUnused(song);
+  ProjectSongSettings settings;
+  settings.mix = item.mix;
+  settings.pitchSemitones = item.pitchSemitones;
+  settings.tempoBpm = item.tempoBpm;
+  settings.window = item.window;
+  settings.windowCustomized = item.windowCustomized;
+  settings.arrangement = item.arrangement;
+  settings.arrangementCustomized = item.arrangementCustomized;
+  settings.dynamicGuide = item.dynamicGuide;
+  settings.dynamicGuideCustomized = item.dynamicGuideCustomized;
+  settings.dynamicGuideMix = item.dynamicGuideMix;
+  settings.clickDynMix = item.clickDynMix;
+  return settings;
+}
+
+SetlistItem projectSettingsCacheItem(const juce::String &songId,
+                                     const ProjectSongSettings &settings) {
+  SetlistItem item;
+  item.songId = songId;
+  item.mix = settings.mix;
+  item.pitchSemitones = settings.pitchSemitones;
+  item.tempoBpm = settings.tempoBpm;
+  item.window = settings.window;
+  item.windowCustomized = settings.windowCustomized;
+  item.arrangement = settings.arrangement;
+  item.arrangementCustomized = settings.arrangementCustomized;
+  item.dynamicGuide = settings.dynamicGuide;
+  item.dynamicGuideCustomized = settings.dynamicGuideCustomized;
+  item.dynamicGuideMix = settings.dynamicGuideMix;
+  item.clickDynMix = settings.clickDynMix;
+  return item;
 }
 
 bool clickDynMixesEqual(const ClickDynMixSnapshot &a,
@@ -512,6 +549,26 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
     SessionAuthLogger::write("[SongImportStore] appendSong saved id=" + song.id);
   }
   return saved;
+}
+
+bool SongLibraryStore::registerProjectSong(ImportedSongData song) {
+  song.id = song.id.trim();
+  song.projectPath = song.projectPath.trim();
+  if (song.id.isEmpty() || song.projectPath.isEmpty())
+    return false;
+  auto library = loadLibrary();
+  ensureSongHasStemIds(song);
+  sortStemsForStripOrder(song.stems);
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&song](const ImportedSongData &candidate) {
+                           return candidate.id == song.id;
+                         });
+  if (it == library.songs.end())
+    library.songs.push_back(std::move(song));
+  else
+    *it = std::move(song);
+  ensureDefaultSetlist(library);
+  return saveLibrary(library);
 }
 
 bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMessage,
@@ -1599,6 +1656,16 @@ bool SongLibraryStore::convertStemToStorageFormat(
   return true;
 }
 
+bool SongLibraryStore::convertStemForProject(const juce::File &source,
+                                             const juce::File &destination,
+                                             juce::String &errorMessage) {
+  return convertStemToStorageFormat(source, destination, errorMessage);
+}
+
+juce::String SongLibraryStore::projectStorageStemExtension() {
+  return kStoredStemExtension;
+}
+
 bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage,
                                      const SongImportProgressFn &onProgress) {
   errorMessage.clear();
@@ -1770,6 +1837,7 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("fileType", song.fileType);
   obj->setProperty("artworkPath", song.artworkPath);
   obj->setProperty("artworkSource", song.artworkSource);
+  obj->setProperty("projectPath", song.projectPath);
   obj->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
 
   juce::Array<juce::var> stemVars;
@@ -1798,6 +1866,7 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.fileType = obj->getProperty("fileType").toString();
   song.artworkPath = obj->getProperty("artworkPath").toString();
   song.artworkSource = obj->getProperty("artworkSource").toString();
+  song.projectPath = obj->getProperty("projectPath").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
 
   auto *stemsArray = obj->getProperty("stems").getArray();
@@ -1817,6 +1886,15 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
     song.tempoMap = tempoMapFromVar({}, &song, changed);
 
   return song;
+}
+
+juce::var SongLibraryStore::songDataToVar(const ImportedSongData &song) {
+  return songToVar(song);
+}
+
+ImportedSongData SongLibraryStore::songDataFromVar(const juce::var &value,
+                                                    bool &changed) {
+  return songFromVar(value, changed);
 }
 
 bool SongLibraryStore::ensureSongHasStemIds(ImportedSongData &song) {
@@ -2760,6 +2838,18 @@ bool SongLibraryStore::updateActiveSetlistItem(
   const auto *song = findSongById(library.songs, songId);
   if (song == nullptr)
     return false;
+  if (song->projectPath.isNotEmpty()) {
+    const juce::File projectFile(song->projectPath);
+    ProjectSongSettings cachedSettings;
+    if (!ProjectStore::getCachedSettings(projectFile, cachedSettings))
+      return false;
+    auto cachedItem = projectSettingsCacheItem(songId, cachedSettings);
+    updater(cachedItem, *song);
+    cachedItem.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    ProjectStore::scheduleSettingsSave(
+        projectFile, projectSettingsFromItem(cachedItem, *song));
+    return true;
+  }
 
   auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
                          [&songId](const SetlistItem &item) {
@@ -2822,7 +2912,8 @@ bool SongLibraryStore::updateActiveSetlistItem(
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   it->updatedMs = now;
   setlist->updatedMs = now;
-  return saveLibrary(library);
+  const bool saved = saveLibrary(library);
+  return saved;
 }
 
 bool SongLibraryStore::updateStemMixValue(

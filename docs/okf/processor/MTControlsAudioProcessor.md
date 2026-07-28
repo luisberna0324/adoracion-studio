@@ -60,6 +60,25 @@ Carga múltiples archivos de audio como stems separados. El `onLoadProgress` cal
 
 **Retorna:** `true` si la carga fue exitosa
 
+### Proyectos portables `.pwproj`
+
+Una canción puede provenir de un proyecto `.pwproj` autocontenido. El paquete
+incluye el manifiesto, stems y portada; antes de llamar `loadSongStems()` la UI
+lo valida y extrae sus stems a una caché local. El procesador continúa
+recibiendo paths de archivos normales y no abre ZIPs ni realiza I/O de
+empaquetado en el audio thread. El manifiesto restaura mezcla, pitch, tempo,
+ventana, arrange, guía dinámica y click antes de completar la transición.
+La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
+la copia local en `MTControls/waveforms` es sólo una caché regenerable.
+Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
+tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
+fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
+cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
+`ProjectStore` conserva en memoria el snapshot completo más reciente, por lo que
+cambios consecutivos se acumulan aun cuando la canción no pertenezca al setlist
+activo. El setlist sólo aporta referencia y orden; no es la fuente de ajustes de
+un proyecto.
+
 Si había una canción reproduciéndose, la fuente anterior continúa durante la
 preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y
 fade-in de 150 ms. Antes del intercambio se verifica que el primer bloque de

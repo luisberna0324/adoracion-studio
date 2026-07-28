@@ -1025,6 +1025,8 @@ void SongListPanel::openHeaderMenu() {
     menu.addSeparator();
     menu.addItem(L10n::tr(u8"Importar canción", "Import song"),
                  [this] { openSongImportWizard(); });
+    menu.addItem(L10n::tr("Abrir proyecto...", "Open project..."),
+                 [this] { openProjectFileChooser(); });
     menu.addItem(
         L10n::tr("Limpiar busqueda", "Clear search"),
         setlistSearchQuery.isNotEmpty(), false,
@@ -2573,6 +2575,39 @@ private:
 };
 
 void SongListPanel::openSongImportWizard() {
+  openSongImportWizard({});
+}
+
+void SongListPanel::openProjectFileChooser() {
+  projectFileChooser = std::make_unique<juce::FileChooser>(
+      L10n::tr("Abrir proyecto", "Open project"), juce::File{}, "*.pwproj");
+  projectFileChooser->launchAsync(juce::FileBrowserComponent::openMode |
+                                      juce::FileBrowserComponent::canSelectFiles,
+                                  [safeThis = juce::Component::SafePointer<SongListPanel>(this)](
+                                      const juce::FileChooser &chooser) {
+    if (safeThis != nullptr) safeThis->openProjectFile(chooser.getResult());
+  });
+}
+
+void SongListPanel::openProjectFile(const juce::File &file) {
+  if (!file.existsAsFile()) return;
+  ProjectDocument document; juce::String error;
+  if (!ProjectStore::open(file, document, &error) ||
+      !SongLibraryStore::registerProjectSong(document.song)) {
+    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"), error);
+    return;
+  }
+  selectedSongId = document.song.id;
+  AppSettings::setLastSelectedSongId(selectedSongId);
+  refreshFromStorage();
+  if (onSongActivated != nullptr) {
+    const int index = getSongIndexById(selectedSongId);
+    onSongActivated(document.song, index);
+  }
+}
+
+void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
   auto *centerTarget =
@@ -2599,13 +2634,41 @@ void SongListPanel::openSongImportWizard() {
         }
 
         SessionAuthLogger::write(
-            "[SongImport] appendSong begin title=\"" + song.title.trim() +
+            "[SongImport] save project begin title=\"" + song.title.trim() +
             "\" id=" + song.id + " stems=" +
             juce::String(static_cast<int>(song.stems.size())));
 
+        const juce::File selectedDestination(song.projectPath);
+        if (selectedDestination == juce::File{}) {
+          errorMessage = L10n::tr("No se eligió una ubicación para el proyecto.",
+                                  "No project location was selected.");
+          return false;
+        }
+        ProjectDocument document;
+        document.song = std::move(song);
+        document.settings.tempoBpm = document.song.bpm > 0 ? document.song.bpm : 120.0;
+        document.settings.window.endSec = estimateSongLengthSeconds(document.song);
+        document.settings.window.fadeOutSec = juce::jmin(1.0, document.settings.window.endSec);
+        for (const auto &stem : document.song.stems) if (stem.include) {
+          StemMixSnapshot mix; mix.stemId = stem.stemId; document.settings.mix.stems.push_back(mix);
+        }
+        if (progress) {
+          progress(0.82, L10n::tr(u8"Generando forma de onda...",
+                                  "Generating waveform preview..."));
+        }
+        document.waveformBins = buildMixedWaveformBins(
+            document.song, kWaveformPreviewBinCount,
+            [&progress](const double waveformProgress) {
+              if (progress)
+                progress(0.82 + 0.12 * juce::jlimit(0.0, 1.0, waveformProgress),
+                         L10n::tr(u8"Generando forma de onda...",
+                                  "Generating waveform preview..."));
+            });
         juce::String importError;
-        const bool success =
-            SongLibraryStore::appendSong(std::move(song), &importError, progress);
+        const bool packaged = ProjectStore::save(document, selectedDestination, &importError);
+        ProjectDocument opened;
+        const bool success = packaged && ProjectStore::open(selectedDestination, opened, &importError) &&
+                             SongLibraryStore::registerProjectSong(opened.song);
 
         if (!success) {
           SessionAuthLogger::write("[SongImport] appendSong failed error=\"" +
@@ -2618,28 +2681,11 @@ void SongListPanel::openSongImportWizard() {
         }
 
         SessionAuthLogger::write(
-            "[SongImport] appendSong ok, refreshing storage and waveform cache");
+            "[SongImport] project saved with embedded waveform");
 
         if (progress)
           progress(0.97, L10n::tr(u8"Actualizando lista de canciónes...",
                                   u8"Refreshing song list..."));
-        const auto allSongs = SongLibraryStore::loadSongs();
-        if (!allSongs.empty()) {
-          const auto &saved = allSongs.back();
-          if (progress)
-            progress(0.98, L10n::tr(u8"Generando vista de forma de onda...",
-                                    u8"Generating waveform preview..."));
-          auto bins = buildMixedWaveformBins(
-              saved, kWaveformPreviewBinCount,
-              [&progress](const double wf01) {
-                if (progress)
-                  progress(0.98 + 0.02 * juce::jlimit(0.0, 1.0, wf01),
-                           L10n::tr(u8"Generando vista de forma de onda...",
-                                    u8"Generating waveform preview..."));
-              });
-          SongLibraryStore::saveWaveformCache(saved.id, bins);
-        }
-
         if (progress)
           progress(1.0, L10n::tr(u8"Importación completa", "Import complete"));
 
@@ -2647,7 +2693,44 @@ void SongListPanel::openSongImportWizard() {
         SessionAuthLogger::write("[SongImport] import flow completed successfully");
         return true;
       },
-      AppSettings::getPrimeImportEnabled());
+      AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
+      {}, [](const ImportedSongData &song, juce::File &destination,
+             juce::String &) {
+        const auto title = juce::File::createLegalFileName(song.title.trim());
+        const auto artist = juce::File::createLegalFileName(song.artist.trim());
+        const auto baseName = artist.isNotEmpty() && title.isNotEmpty()
+                                  ? artist + " - " + title
+                                  : (title.isNotEmpty() ? title : "Nueva canción");
+        juce::AlertWindow choice(
+            L10n::tr("Guardar proyecto", "Save project"),
+            L10n::tr("¿Dónde quieres guardar este proyecto?",
+                     "Where do you want to save this project?"),
+            juce::AlertWindow::QuestionIcon);
+        choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
+        choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
+        choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
+        const int choiceId = choice.runModalLoop();
+        if (choiceId == 0)
+          return false;
+        if (choiceId == 1) {
+          auto localDirectory = SongLibraryStore::getRootDirectory().getChildFile("projects");
+          localDirectory.createDirectory();
+          destination = localDirectory.getNonexistentChildFile(
+              baseName, ProjectStore::kFileExtension, false);
+          return true;
+        }
+        juce::FileChooser chooser(
+            L10n::tr("Guardar proyecto", "Save project"),
+            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                .getChildFile(baseName + ProjectStore::kFileExtension),
+            "*.pwproj");
+        if (!chooser.browseForFileToSave(true))
+          return false;
+        destination = chooser.getResult();
+        if (!destination.hasFileExtension(ProjectStore::kFileExtension))
+          destination = destination.withFileExtension(ProjectStore::kFileExtension);
+        return true;
+      });
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 

@@ -438,6 +438,8 @@ target_sources(MTControls
         src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h
+        src/data/ProjectStore.cpp
+        src/data/ProjectStore.h
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp

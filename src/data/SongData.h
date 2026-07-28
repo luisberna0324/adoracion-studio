@@ -65,6 +65,10 @@ struct ImportedSongData {
   juce::String fileType;
   juce::String artworkPath;
   juce::String artworkSource;
+  // Ruta del paquete portable .pwproj cuando la canción no pertenece al
+  // almacenamiento legacy de la aplicación. No forma parte del manifiesto
+  // interno del proyecto: es una referencia local de la biblioteca reciente.
+  juce::String projectPath;
   int64_t createdMs = 0;
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;

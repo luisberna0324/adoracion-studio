@@ -7,6 +7,7 @@
 #include "data/AuthSessionApi.h"
 #include "data/LocalAuthCallbackServer.h"
 #include "data/Localization.h"
+#include "data/ProjectStore.h"
 #include "data/SessionAuthLogger.h"
 #include "data/SessionPersistence.h"
 #include "data/SongData.h"
@@ -602,6 +603,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     maybePersistSongWindowForActiveSong();
     if (channelGridRaw != nullptr)
       channelGridRaw->flushPendingPersistenceNow();
+    if (hasCurrentLoadedSong && currentLoadedSong.projectPath.isNotEmpty())
+      ProjectStore::flushPendingSettings(juce::File(currentLoadedSong.projectPath));
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
@@ -623,13 +626,27 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     std::vector<bool> guideMask;
     std::vector<bool> pitchShiftMask;
     int clickStemIndex = -1;
-    ImportedSongData loadedSong = song;
+    ProjectSongSettings projectSettings;
+    bool hasProjectSettings = false;
+    ImportedSongData sourceSong = song;
+    if (song.projectPath.isNotEmpty()) {
+      ProjectDocument document;
+      juce::String projectError;
+      if (ProjectStore::open(juce::File(song.projectPath), document, &projectError)) {
+        sourceSong = document.song;
+        projectSettings = document.settings;
+        hasProjectSettings = true;
+      } else {
+        SessionAuthLogger::write("[Project] Couldn't reopen " + song.projectPath + ": " + projectError);
+      }
+    }
+    ImportedSongData loadedSong = sourceSong;
     loadedSong.stems.clear();
-    loadedSong.stems.reserve(song.stems.size());
+    loadedSong.stems.reserve(sourceSong.stems.size());
     std::vector<ImportedStemData> resolvedStems;
-    resolvedStems.reserve(song.stems.size());
+    resolvedStems.reserve(sourceSong.stems.size());
 
-    for (const auto &stem : song.stems) {
+    for (const auto &stem : sourceSong.stems) {
       if (!stem.include)
         continue;
 
@@ -672,7 +689,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     pushLoadUi(0.0, L10n::tr(u8"Preparando pistas...", u8"Preparing tracks..."));
 
     const bool loaded = p.loadSongStems(
-        stemPaths, song.title, song.key, static_cast<double>(song.bpm),
+        stemPaths, sourceSong.title, sourceSong.key, static_cast<double>(sourceSong.bpm),
         [&pushLoadUi](double stemPhase01) {
           pushLoadUi(0.55 * stemPhase01,
                      L10n::tr(u8"Leyendo audio de las pistas...",
@@ -707,15 +724,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
     pushLoadUi(0.58, L10n::tr(u8"Restaurando configuración...",
                               u8"Restoring settings..."));
-    double savedTempoBpm = 0.0;
-    if (SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
+    double savedTempoBpm = hasProjectSettings ? projectSettings.tempoBpm : 0.0;
+    if (savedTempoBpm > 0.0 || SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
                                                    savedTempoBpm)) {
       p.setPlaybackTempoBpm(savedTempoBpm);
     }
 
     DynamicGuideSettings dynamicGuideSettings;
     bool dynamicGuideCustomized = false;
-    if (!SongLibraryStore::getActiveSetlistDynamicGuide(
+    if (hasProjectSettings) {
+      dynamicGuideSettings = projectSettings.dynamicGuide;
+      dynamicGuideCustomized = projectSettings.dynamicGuideCustomized;
+    } else if (!SongLibraryStore::getActiveSetlistDynamicGuide(
             loadedSong.id, dynamicGuideSettings, dynamicGuideCustomized)) {
       dynamicGuideSettings = DynamicGuideSettings{};
       dynamicGuideCustomized = false;
@@ -723,7 +743,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideSettings(dynamicGuideSettings);
 
     DynamicGuideMixSnapshot dynamicGuideMix;
-    if (!SongLibraryStore::getActiveSetlistDynamicGuideMix(loadedSong.id,
+    if (hasProjectSettings) {
+      dynamicGuideMix = projectSettings.dynamicGuideMix;
+    } else if (!SongLibraryStore::getActiveSetlistDynamicGuideMix(loadedSong.id,
                                                             dynamicGuideMix)) {
       dynamicGuideMix = DynamicGuideMixSnapshot{};
     }
@@ -739,7 +761,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                               u8"Restoring guide and click..."));
 
     ClickDynMixSnapshot clickDynMix;
-    if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
+    if (hasProjectSettings) {
+      clickDynMix = projectSettings.clickDynMix;
+    } else if (!SongLibraryStore::getActiveSetlistClickDynMix(loadedSong.id,
                                                        clickDynMix)) {
       clickDynMix = ClickDynMixSnapshot{};
     }
@@ -755,7 +779,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                               u8"Restoring mix..."));
 
     SongMixSnapshot mixSnapshot;
-    if (SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
+    if (hasProjectSettings)
+      mixSnapshot = projectSettings.mix;
+    if (hasProjectSettings || SongLibraryStore::getActiveSetlistMix(loadedSong.id, mixSnapshot)) {
       p.setMasterVolume(mixSnapshot.master.volume);
       p.setMasterGain(mixSnapshot.master.gain);
       p.setMasterMute(mixSnapshot.master.mute);
@@ -776,6 +802,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setStemGain(stemIndex, it->gain);
         p.setStemMute(stemIndex, it->mute);
         p.setStemSolo(stemIndex, it->solo);
+        p.setStemOutputChannel(stemIndex, it->outputChannel);
       }
     }
     pushLoadUi(0.73, L10n::tr(u8"Restaurando reproducción...",
@@ -783,7 +810,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     SongWindowSnapshot windowSnapshot;
     bool isCustomWindow = false;
-    if (SongLibraryStore::getActiveSetlistSongWindow(loadedSong.id, windowSnapshot,
+    if (hasProjectSettings) {
+      windowSnapshot = projectSettings.window;
+      isCustomWindow = projectSettings.windowCustomized;
+    } else if (SongLibraryStore::getActiveSetlistSongWindow(loadedSong.id, windowSnapshot,
                                                       isCustomWindow) &&
         isCustomWindow) {
       p.setSongStartSeconds(windowSnapshot.startSec);
@@ -793,7 +823,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
-    if (!SongLibraryStore::getSongArrangement(loadedSong.id, arrangement,
+    if (hasProjectSettings) {
+      arrangement = projectSettings.arrangement;
+      isCustomArrangement = projectSettings.arrangementCustomized;
+    } else if (!SongLibraryStore::getSongArrangement(loadedSong.id, arrangement,
                                               isCustomArrangement)) {
       arrangement.parts.clear();
       isCustomArrangement = false;
@@ -802,7 +835,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     currentLoadedSong = loadedSong;
     hasCurrentLoadedSong = true;
     AppSettings::setLastSelectedSongId(currentLoadedSong.id);
-    applyRoutingDefaultsToSong(currentLoadedSong);
+    if (!hasProjectSettings)
+      applyRoutingDefaultsToSong(currentLoadedSong);
     p.setMetronomeOutputRouting(clickDynMix.outputChannel,
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
@@ -842,6 +876,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           !SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins)) {
         SessionAuthLogger::write("loadSong: couldn't persist waveform cache for " +
                                  loadedSong.id);
+      }
+      if (!cachedBins.empty() && loadedSong.projectPath.isNotEmpty()) {
+        juce::String waveformError;
+        if (!ProjectStore::updateWaveform(juce::File(loadedSong.projectPath),
+                                          cachedBins, &waveformError)) {
+          SessionAuthLogger::write("[Project] couldn't embed waveform: " +
+                                   waveformError);
+        }
       }
     } else {
       pushLoadUi(0.99, L10n::tr(u8"Cargando forma de onda en caché...",
@@ -2275,6 +2317,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  if (hasCurrentLoadedSong && currentLoadedSong.projectPath.isNotEmpty())
+    ProjectStore::flushPendingSettings(juce::File(currentLoadedSong.projectPath));
+  ProjectStore::flushAllPendingSettings();
   if (localAuthServer)
     localAuthServer->stop();
   localAuthServer.reset();

@@ -118,6 +118,8 @@ public:
                                 int toIndex);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
+  /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */
+  static bool registerProjectSong(ImportedSongData song);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
@@ -193,6 +195,17 @@ public:
   static bool saveWaveformCache(const juce::String &songId,
                                 const std::vector<float> &bins);
   static std::vector<float> loadWaveformCache(const juce::String &songId);
+
+  // Serialización reutilizable por ProjectStore. El formato interno de la
+  // biblioteca y el manifiesto .pwproj comparten la representación de canción.
+  static juce::var songDataToVar(const ImportedSongData &song);
+  static ImportedSongData songDataFromVar(const juce::var &value,
+                                          bool &changed);
+  /** Conversión de stems reutilizada por los paquetes .pwproj. */
+  static bool convertStemForProject(const juce::File &source,
+                                    const juce::File &destination,
+                                    juce::String &errorMessage);
+  static juce::String projectStorageStemExtension();
 
   /**
    * Returns the per-platform application-data root directory used by
