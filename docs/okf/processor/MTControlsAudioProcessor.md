@@ -4,7 +4,7 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-08-06T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
@@ -242,6 +242,14 @@ bool isSongPlaying() const noexcept;
 
 El pitch público se normaliza a `-12..+12` semitonos. El tempo usa la relación
 `source/output` y se limita a `0.75..2.0`.
+
+Al completar naturalmente la ventana `[Inicio, Fin]`, el transporte queda
+detenido y estacionado exactamente en `Fin`. La UI diferencia este estado de
+un stop manual —que retorna a `Inicio`— y, si la canción tiene configurado
+auto-play dentro del setlist activo, carga el destino y llama `playSong()`.
+La marca de auto-play se persiste en el `SetlistItem`; por tanto sobrevive al
+reinicio de la aplicación y continúa siendo una propiedad local del setlist,
+no del proyecto `.pwproj`.
 
 Un cambio de pitch publica inmediatamente ese target entero, pero Bungee acerca
 la escala DSP al nuevo valor durante 50 ms de audio. La rampa es interna al
@@ -513,15 +521,41 @@ juce::String getPadsPackStatusText() const;
 ```cpp
 void setPadsCrossfadePreset(PadsEngine::CrossfadePreset preset) noexcept;
 PadsEngine::CrossfadePreset getPadsCrossfadePreset() const noexcept;
+double getPadsCrossfadeDurationSeconds() const noexcept;
+void beginPadsSongTransitionFadeOut() noexcept;
+void beginPadsSongTransitionFadeIn() noexcept;
 ```
 
 ### Trigger de notas
 
 ```cpp
 void triggerPadNote(int noteIndex, int octave);
+void triggerPadNoteForSongTransition(int noteIndex, int octave);
 void stopPadNote(int noteIndex);
 float getPadsOutputLevel() const noexcept;
 ```
+
+Las voces de pad repiten indefinidamente el sample con un crossfade de loop en
+el borde. Al cargar otra canción, la UI mantiene cualquier pad activo y lo
+cambia mediante crossfade a la tonalidad efectiva de la nueva canción
+(`songKey + pitchSemitones`). El cambio de transporte por sí solo nunca detiene
+el pad.
+
+En una transición automática, el editor solicita el fade down del bus de Pads
+cuando el transporte entra en los últimos segundos definidos por el preset de
+crossfade (1/3/5 s). La nota activa no se borra. Tras restaurar la siguiente
+canción, elimina la voz anterior mientras el bus permanece en cero, prepara el
+pad de su tonalidad efectiva y solicita el fade up con la misma duración antes
+de reanudar el transporte. No se solapan tonalidades durante la entrada. Una detención manual, un seek
+hacia atrás o retirar el destino de autoplay cancelan la bajada y recuperan el
+nivel del pad.
+
+Todo cambio manual entre dos canciones cargadas también usa
+`triggerPadNoteForSongTransition()`. Antes de cargar se difiere la solicitud por
+la duración configurada para que el bus complete su fade down. La carga actúa
+entonces como frontera silenciosa: se reemplaza la voz anterior y sólo la
+tonalidad de la nueva canción entra con el fade up configurado. Esto aplica a
+siguiente, anterior y selección desde biblioteca.
 
 ### Actualizar enrutamiento
 

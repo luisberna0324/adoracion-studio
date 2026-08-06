@@ -240,6 +240,19 @@ if(MTCONTROLS_BUILD_TESTS)
         PRIVATE juce::juce_audio_utils)
     add_test(NAME metronome_engine COMMAND MTControlsMetronomeTests)
 
+    juce_add_console_app(MTControlsPadsEngineTests
+        PRODUCT_NAME "MTControls Pads Engine Tests")
+    target_sources(MTControlsPadsEngineTests PRIVATE
+        tests/pads_engine_tests.cpp
+        src/audio/PadsEngine.cpp
+        src/audio/PadsEngine.h
+    )
+    juce_generate_juce_header(MTControlsPadsEngineTests)
+    target_include_directories(MTControlsPadsEngineTests PRIVATE src)
+    target_link_libraries(MTControlsPadsEngineTests
+        PRIVATE juce::juce_audio_utils)
+    add_test(NAME pads_engine COMMAND MTControlsPadsEngineTests)
+
     juce_add_console_app(MTControlsSongMixExportTimelineTests
         PRODUCT_NAME "MTControls Song Mix Export Timeline Tests")
     target_sources(MTControlsSongMixExportTimelineTests PRIVATE

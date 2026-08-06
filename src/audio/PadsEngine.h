@@ -10,6 +10,9 @@ public:
                                                           "E",  "F",  "F#", "G",
                                                           "G#", "A",  "A#", "B"};
 
+  /** Convierte tonalidades como C, F#, Bb o Am al índice cromático 0..11. */
+  static int noteIndexForSongKey(const juce::String &songKey) noexcept;
+
   struct LoadResult {
     bool ok = false;
     juce::String statusText;
@@ -24,18 +27,32 @@ public:
   void setEnabled(bool shouldEnable) noexcept;
   bool isEnabled() const noexcept { return enabled.load(std::memory_order_relaxed); }
   void setCrossfadePreset(CrossfadePreset preset) noexcept;
-  CrossfadePreset getCrossfadePreset() const noexcept { return crossfadePreset; }
+  CrossfadePreset getCrossfadePreset() const noexcept {
+    return crossfadePreset.load(std::memory_order_relaxed);
+  }
+  double getCrossfadeDurationSeconds() const noexcept;
+
+  /** Fades the complete pads bus around an automatic song transition. */
+  void beginSongTransitionFadeOut() noexcept;
+  void beginSongTransitionFadeIn() noexcept;
 
   LoadResult loadFromFolder(const juce::File &folder, juce::AudioFormatManager &formatManager);
 
   void triggerNote(int noteIndex, int octave);
+  /** Replaces the silent outgoing voice before the song-transition fade-in. */
+  void triggerNoteForSongTransition(int noteIndex, int octave);
   void stopNote(int noteIndex);
   void stopAll();
+  int getActiveNoteIndex() const noexcept {
+    return activeNoteIndex.load(std::memory_order_relaxed);
+  }
 
   void process(juce::AudioBuffer<float> &outputBuffer);
   float getOutputLevel() const noexcept { return outputLevel.load(std::memory_order_relaxed); }
 
 private:
+  friend struct PadsEngineTestPeer;
+
   enum class VoiceState : int { stopped = 0, fadingIn, playing, fadingOut };
 
   struct NoteSample {
@@ -61,9 +78,12 @@ private:
   int maxBlock = 0;
   std::atomic<bool> enabled{true};
   std::atomic<float> outputLevel{0.0f};
+  std::atomic<int> activeNoteIndex{-1};
   int fadeInSamples = 1;
   int fadeOutSamples = 1;
-  CrossfadePreset crossfadePreset = CrossfadePreset::Medium;
+  std::atomic<CrossfadePreset> crossfadePreset{CrossfadePreset::Medium};
+  std::atomic<float> songTransitionTargetGain{1.0f};
+  float songTransitionGain = 1.0f;
 
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);
@@ -73,5 +93,6 @@ private:
   void fadeOutAllActive();
   Voice *findBestVoiceForTrigger();
   bool hasActiveVoices() const noexcept;
+  void applySongTransitionGain(juce::AudioBuffer<float> &outputBuffer);
   void renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffer);
 };

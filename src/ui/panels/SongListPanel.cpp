@@ -543,11 +543,10 @@ SongListPanel::SongListPanel() {
     const auto key = makeAutoPlayNextMarkKey(activeSetlistId, songId);
     if (key.isEmpty())
       return;
-    if (autoPlayNextMarks.contains(key)) {
-      autoPlayNextMarks.removeString(key);
-    } else {
-      autoPlayNextMarks.addIfNotAlreadyThere(key);
-    }
+    const bool shouldEnable = !autoPlayNextMarks.contains(key);
+    if (!SongLibraryStore::setAutoPlayNextForSetlist(
+            activeSetlistId, songId, shouldEnable))
+      return;
     refreshFromStorage();
   });
   listContent.setOnSongRemoveRequested([this](int songIndex) {
@@ -3048,6 +3047,14 @@ void SongListPanel::refreshFromStorage() {
   }
   if (activeSetlist != nullptr)
     activeSetlistName = activeSetlist->name;
+  autoPlayNextMarks.clear();
+  if (activeSetlist != nullptr) {
+    for (const auto &item : activeSetlist->items) {
+      if (item.autoPlayNext)
+        autoPlayNextMarks.addIfNotAlreadyThere(
+            makeAutoPlayNextMarkKey(activeSetlistId, item.songId));
+    }
+  }
   applyInitialViewFromStorage();
   if (setlistsContent != nullptr) {
     std::vector<SetlistsContent::Row> setlistRows;

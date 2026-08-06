@@ -304,6 +304,15 @@ void PadsComponent::timerCallback() {
         const bool runtimePadsEnabled = processor.isPadsEnabled();
         if (runtimePadsEnabled != padsPoweredOn)
             applyPowerState(runtimePadsEnabled);
+
+        const int runtimeActiveNote = processor.getActivePadNoteIndex();
+        if (runtimeActiveNote != activeNoteIndex) {
+            if (juce::isPositiveAndBelow(activeNoteIndex, kNoteCount))
+                notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
+            if (juce::isPositiveAndBelow(runtimeActiveNote, kNoteCount))
+                notePads[static_cast<size_t>(runtimeActiveNote)]->setActive(true);
+            activeNoteIndex = runtimeActiveNote;
+        }
     }
 
     if (midiLearnActive)
@@ -379,6 +388,37 @@ void PadsComponent::onPadPressed(int noteIndex) {
 
 void PadsComponent::onPadReleased(int noteIndex) {
     juce::ignoreUnused(noteIndex);
+}
+
+bool PadsComponent::followSongKey(const juce::String& songKey,
+                                  const int semitoneOffset,
+                                  const bool afterSongTransitionFadeOut) {
+    const int runtimeActiveNote = processor.getActivePadNoteIndex();
+    if (!padsPoweredOn ||
+        !juce::isPositiveAndBelow(runtimeActiveNote, kNoteCount))
+        return false;
+
+    if (juce::isPositiveAndBelow(activeNoteIndex, kNoteCount) &&
+        activeNoteIndex != runtimeActiveNote)
+        notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
+    activeNoteIndex = runtimeActiveNote;
+
+    const int songNoteIndex = PadsEngine::noteIndexForSongKey(songKey);
+    if (songNoteIndex < 0)
+        return false;
+    const int targetNoteIndex =
+        (songNoteIndex + (semitoneOffset % kNoteCount) + kNoteCount) % kNoteCount;
+    if (targetNoteIndex == activeNoteIndex)
+        return true;
+
+    notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
+    notePads[static_cast<size_t>(targetNoteIndex)]->setActive(true);
+    activeNoteIndex = targetNoteIndex;
+    if (afterSongTransitionFadeOut)
+        processor.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
+    else
+        processor.triggerPadNote(targetNoteIndex, currentOctave);
+    return true;
 }
 
 void PadsComponent::applyPowerState(bool on) {

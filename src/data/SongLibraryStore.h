@@ -72,6 +72,7 @@ struct DynamicGuideSettings {
 
 struct SetlistItem {
   juce::String songId;
+  bool autoPlayNext = false;
   SongMixSnapshot mix;
   int pitchSemitones = 0;
   double tempoBpm = 0.0;
@@ -120,6 +121,9 @@ public:
   static bool deleteSong(const juce::String &songId);
   static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
                                 int toIndex);
+  static bool setAutoPlayNextForSetlist(const juce::String &setlistId,
+                                        const juce::String &songId,
+                                        bool enabled);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */

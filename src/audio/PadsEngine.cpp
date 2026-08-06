@@ -18,7 +18,38 @@ float smoothstep(const float t) {
 constexpr double kCrossfadeFastSec = 1.0;
 constexpr double kCrossfadeMediumSec = 3.0;
 constexpr double kCrossfadeLongSec = 5.0;
+constexpr double kLoopCrossfadeSec = 2.0;
 } // namespace
+
+int PadsEngine::noteIndexForSongKey(const juce::String &songKey) noexcept {
+  auto normalized = songKey.trim().toUpperCase();
+  if (normalized.startsWith("KEY OF "))
+    normalized = normalized.substring(7).trimStart();
+  if (normalized.isEmpty())
+    return -1;
+
+  int noteIndex = -1;
+  switch (normalized[0]) {
+  case 'C': noteIndex = 0; break;
+  case 'D': noteIndex = 2; break;
+  case 'E': noteIndex = 4; break;
+  case 'F': noteIndex = 5; break;
+  case 'G': noteIndex = 7; break;
+  case 'A': noteIndex = 9; break;
+  case 'B': noteIndex = 11; break;
+  default: return -1;
+  }
+
+  if (normalized.length() > 1) {
+    const auto accidental = normalized[1];
+    if (accidental == '#' || accidental == 0x266f)
+      ++noteIndex;
+    else if (accidental == 'B' || accidental == 0x266d)
+      --noteIndex;
+  }
+
+  return (noteIndex + kNoteCount) % kNoteCount;
+}
 
 void PadsEngine::prepare(const double sampleRate, const int maxBlockSize) {
   outputSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
@@ -27,24 +58,32 @@ void PadsEngine::prepare(const double sampleRate, const int maxBlockSize) {
 }
 
 void PadsEngine::setCrossfadePreset(const CrossfadePreset preset) noexcept {
-  crossfadePreset = preset;
+  crossfadePreset.store(preset, std::memory_order_relaxed);
   updateFadeDurations();
 }
 
-void PadsEngine::updateFadeDurations() noexcept {
-  double seconds = kCrossfadeMediumSec;
-  switch (crossfadePreset) {
+double PadsEngine::getCrossfadeDurationSeconds() const noexcept {
+  switch (crossfadePreset.load(std::memory_order_relaxed)) {
   case CrossfadePreset::Fast:
-    seconds = kCrossfadeFastSec;
-    break;
+    return kCrossfadeFastSec;
   case CrossfadePreset::Long:
-    seconds = kCrossfadeLongSec;
-    break;
+    return kCrossfadeLongSec;
   case CrossfadePreset::Medium:
   default:
-    seconds = kCrossfadeMediumSec;
-    break;
+    return kCrossfadeMediumSec;
   }
+}
+
+void PadsEngine::beginSongTransitionFadeOut() noexcept {
+  songTransitionTargetGain.store(0.0f, std::memory_order_relaxed);
+}
+
+void PadsEngine::beginSongTransitionFadeIn() noexcept {
+  songTransitionTargetGain.store(1.0f, std::memory_order_relaxed);
+}
+
+void PadsEngine::updateFadeDurations() noexcept {
+  const double seconds = getCrossfadeDurationSeconds();
 
   // Symmetric crossfade: incoming fades in while outgoing fades out over
   // the same interval.
@@ -59,6 +98,7 @@ void PadsEngine::releaseResources() { stopAll(); }
 void PadsEngine::setEnabled(const bool shouldEnable) noexcept {
   enabled.store(shouldEnable, std::memory_order_relaxed);
   if (!shouldEnable) {
+    activeNoteIndex.store(-1, std::memory_order_relaxed);
     for (auto &voice : voices) {
       if (voice.state != VoiceState::stopped)
         beginFadeOut(voice);
@@ -241,6 +281,36 @@ void PadsEngine::triggerNote(const int noteIndex, const int octave) {
   voice->fadeOutProgress = 0.0f;
   voice->state = VoiceState::fadingIn;
   updateVoiceIncrement(*voice);
+  activeNoteIndex.store(noteIndex, std::memory_order_relaxed);
+}
+
+void PadsEngine::triggerNoteForSongTransition(const int noteIndex,
+                                              const int octave) {
+  if (!enabled.load(std::memory_order_relaxed) ||
+      !juce::isPositiveAndBelow(noteIndex, kNoteCount) ||
+      !noteSamples[static_cast<size_t>(noteIndex)].valid)
+    return;
+
+  // The pads bus has already faded down with the outgoing song. Remove every
+  // old voice before it becomes audible again, then stage the new key at full
+  // voice gain; the bus envelope supplies the configured fade-in.
+  for (auto &voice : voices) {
+    voice = Voice{};
+  }
+  songTransitionGain = 0.0f;
+  songTransitionTargetGain.store(0.0f, std::memory_order_relaxed);
+
+  auto *voice = findBestVoiceForTrigger();
+  if (voice == nullptr)
+    return;
+  voice->noteIndex = noteIndex;
+  voice->octave = juce::jlimit(-3, 3, octave);
+  voice->position = 0.0;
+  voice->gain = 1.0f;
+  voice->state = VoiceState::playing;
+  updateVoiceIncrement(*voice);
+  activeNoteIndex.store(noteIndex, std::memory_order_relaxed);
+  outputLevel.store(0.0f, std::memory_order_relaxed);
 }
 
 void PadsEngine::stopNote(const int noteIndex) {
@@ -253,9 +323,15 @@ void PadsEngine::stopNote(const int noteIndex) {
       continue;
     beginFadeOut(voice);
   }
+  int expected = noteIndex;
+  activeNoteIndex.compare_exchange_strong(expected, -1,
+                                          std::memory_order_relaxed);
 }
 
 void PadsEngine::stopAll() {
+  activeNoteIndex.store(-1, std::memory_order_relaxed);
+  songTransitionTargetGain.store(1.0f, std::memory_order_relaxed);
+  songTransitionGain = 1.0f;
   for (auto &voice : voices) {
     voice.state = VoiceState::stopped;
     voice.position = 0.0;
@@ -277,6 +353,28 @@ bool PadsEngine::hasActiveVoices() const noexcept {
   return false;
 }
 
+void PadsEngine::applySongTransitionGain(
+    juce::AudioBuffer<float> &outputBuffer) {
+  const int numSamples = outputBuffer.getNumSamples();
+  const int numChannels = outputBuffer.getNumChannels();
+  if (numSamples <= 0 || numChannels <= 0)
+    return;
+
+  const float target = songTransitionTargetGain.load(std::memory_order_relaxed);
+  const float step = 1.0f / static_cast<float>(juce::jmax(1, fadeInSamples));
+  for (int sample = 0; sample < numSamples; ++sample) {
+    const float gain = songTransitionGain;
+    for (int channel = 0; channel < numChannels; ++channel)
+      outputBuffer.setSample(channel, sample,
+                             outputBuffer.getSample(channel, sample) * gain);
+
+    if (songTransitionGain < target)
+      songTransitionGain = juce::jmin(target, songTransitionGain + step);
+    else if (songTransitionGain > target)
+      songTransitionGain = juce::jmax(target, songTransitionGain - step);
+  }
+}
+
 void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffer) {
   if (voice.state == VoiceState::stopped || !juce::isPositiveAndBelow(voice.noteIndex, kNoteCount))
     return;
@@ -294,27 +392,62 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
   if (outSamples <= 0 || outChans <= 0 || srcChans <= 0)
     return;
 
+  // Ambient pads are long, but they must remain continuous indefinitely. Mix
+  // the beginning over the final two seconds and skip that already-rendered
+  // overlap when wrapping. Short samples retain the simple boundary loop.
+  const int requestedLoopCrossfade = static_cast<int>(std::llround(
+      sample.sourceSampleRate * kLoopCrossfadeSec));
+  const int loopCrossfadeSamples =
+      srcSamples >= 8
+          ? juce::jlimit(1, juce::jmax(1, srcSamples / 4),
+                         juce::jmax(1, requestedLoopCrossfade))
+          : 0;
+  const double loopCrossfadeStart =
+      static_cast<double>(srcSamples - loopCrossfadeSamples);
+  const double loopSpan = static_cast<double>(
+      juce::jmax(1, srcSamples - loopCrossfadeSamples));
+
+  const auto readInterpolated = [&sample, srcSamples](const int channel,
+                                                       double position) {
+    while (position >= static_cast<double>(srcSamples))
+      position -= static_cast<double>(srcSamples);
+    while (position < 0.0)
+      position += static_cast<double>(srcSamples);
+    const int pos0 = static_cast<int>(position);
+    const int pos1 = pos0 + 1 < srcSamples ? pos0 + 1 : 0;
+    const float frac = static_cast<float>(position - static_cast<double>(pos0));
+    const auto *src = sample.data.getReadPointer(channel);
+    return src[pos0] + (src[pos1] - src[pos0]) * frac;
+  };
+
   const float inStep = 1.0f / static_cast<float>(fadeInSamples);
   const float outStep = 1.0f / static_cast<float>(fadeOutSamples);
   for (int i = 0; i < outSamples; ++i) {
-    int pos0 = static_cast<int>(voice.position);
-    while (pos0 >= srcSamples)
-      pos0 -= srcSamples;
-    int pos1 = pos0 + 1;
-    if (pos1 >= srcSamples)
-      pos1 = 0;
-    const float frac = static_cast<float>(voice.position - static_cast<double>(pos0));
+    const bool inLoopCrossfade =
+        loopCrossfadeSamples > 0 && voice.position >= loopCrossfadeStart;
+    const float loopMix = inLoopCrossfade
+                              ? static_cast<float>(juce::jlimit(
+                                    0.0, 1.0,
+                                    (voice.position - loopCrossfadeStart) /
+                                        static_cast<double>(loopCrossfadeSamples)))
+                              : 0.0f;
 
     for (int ch = 0; ch < outChans; ++ch) {
       const int srcCh = juce::jmin(ch, srcChans - 1);
-      const auto *src = sample.data.getReadPointer(srcCh);
-      const float v = src[pos0] + (src[pos1] - src[pos0]) * frac;
+      const float tail = readInterpolated(srcCh, voice.position);
+      const float head = inLoopCrossfade
+                             ? readInterpolated(
+                                   srcCh, voice.position - loopCrossfadeStart)
+                             : 0.0f;
+      const float v = inLoopCrossfade
+                          ? (tail * (1.0f - loopMix)) + (head * loopMix)
+                          : tail;
       outputBuffer.addSample(ch, i, v * voice.gain);
     }
 
     voice.position += voice.increment;
     while (voice.position >= static_cast<double>(srcSamples))
-      voice.position -= static_cast<double>(srcSamples);
+      voice.position -= loopSpan;
 
     if (voice.state == VoiceState::fadingIn) {
       voice.gain = juce::jmin(1.0f, voice.gain + inStep);
@@ -343,6 +476,8 @@ void PadsEngine::process(juce::AudioBuffer<float> &outputBuffer) {
 
   for (auto &voice : voices)
     renderVoice(voice, outputBuffer);
+
+  applySongTransitionGain(outputBuffer);
 
   float peak = 0.0f;
   for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch) {

@@ -188,8 +188,13 @@ public:
   float getPadsGain() const noexcept;
   void setPadsCrossfadePreset(PadsEngine::CrossfadePreset preset) noexcept;
   PadsEngine::CrossfadePreset getPadsCrossfadePreset() const noexcept;
+  double getPadsCrossfadeDurationSeconds() const noexcept;
+  void beginPadsSongTransitionFadeOut() noexcept;
+  void beginPadsSongTransitionFadeIn() noexcept;
   void triggerPadNote(int noteIndex, int octave);
+  void triggerPadNoteForSongTransition(int noteIndex, int octave);
   void stopPadNote(int noteIndex);
+  int getActivePadNoteIndex() const noexcept;
   float getPadsOutputLevel() const noexcept;
   bool isPadsPackLoaded() const noexcept;
   juce::String getPadsPackStatusText() const;

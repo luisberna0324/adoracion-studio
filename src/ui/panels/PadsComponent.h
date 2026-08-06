@@ -31,6 +31,9 @@ public:
     void setMidiLearnPendingTarget(int targetId);
     void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
     void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
+    /** Ajusta un pad activo a la tonalidad de la canción. */
+    bool followSongKey(const juce::String& songKey, int semitoneOffset = 0,
+                       bool afterSongTransitionFadeOut = false);
 
 private:
   static constexpr int kNoteCount = 12;

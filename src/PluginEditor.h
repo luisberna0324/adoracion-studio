@@ -51,9 +51,15 @@ private:
   bool hasCurrentLoadedSong = false;
   SongListPanel *songListPanelRaw = nullptr;
   WaveformBar *waveformBarPtr = nullptr;
+  std::function<bool(const ImportedSongData &, int)> loadSongAction;
+  std::function<void(const ImportedSongData &, int)> requestSongLoadAction;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
-  double lastObservedSongPositionSec = 0.0;
+  bool padsSongTransitionFadeActive = false;
+  bool pendingManualPadSongLoad = false;
+  ImportedSongData pendingManualPadSong;
+  int pendingManualPadSongIndex = -1;
+  juce::int64 pendingManualPadSongLoadAtMs = 0;
   struct SessionSummary {
     juce::String uid;
     juce::String email;

@@ -489,7 +489,7 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
 }
 
 bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
-                                        int fromIndex, int toIndex) {
+                                         int fromIndex, int toIndex) {
   auto library = loadLibrary();
   auto *setlist = findSetlistById(library, setlistId);
   if (setlist == nullptr)
@@ -504,6 +504,34 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
   setlist->items.erase(setlist->items.begin() + fromIndex);
   setlist->items.insert(setlist->items.begin() + toIndex, item);
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::setAutoPlayNextForSetlist(
+    const juce::String &setlistId, const juce::String &songId,
+    const bool enabled) {
+  if (setlistId.isEmpty() || songId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end())
+    return false;
+  if (it->autoPlayNext == enabled)
+    return true;
+
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  it->autoPlayNext = enabled;
+  it->updatedMs = now;
+  setlist->updatedMs = now;
   return saveLibrary(library);
 }
 
@@ -2643,6 +2671,7 @@ SongMixSnapshot SongLibraryStore::mixFromVar(const juce::var &v,
 juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("songId", item.songId);
+  obj->setProperty("autoPlayNext", item.autoPlayNext);
   obj->setProperty("mix", mixToVar(item.mix));
   obj->setProperty("pitchSemitones", item.pitchSemitones);
   if (item.tempoBpm > 0.0)
@@ -2672,6 +2701,8 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   if (obj == nullptr)
     return item;
   item.songId = obj->getProperty("songId").toString();
+  if (obj->hasProperty("autoPlayNext"))
+    item.autoPlayNext = static_cast<bool>(obj->getProperty("autoPlayNext"));
   item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
   item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
   if (obj->hasProperty("pitchSemitones"))

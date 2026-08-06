@@ -1,15 +1,16 @@
 ---
 type: Audio System Class
 title: Pads
-description: Motor de pads con 12 notas y crossfade
+description: Motor de pads con 12 notas, seguimiento de tonalidad y loop continuo
 resource: src/audio/PadsEngine.h
 tags: [juce, audio, pads, samples, trigger]
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-08-06T00:00:00Z
 ---
 
 # PadsEngine
 
-Motor de pads/samples que soporta 12 notas musicales con crossfade suave.
+Motor de pads/samples que soporta 12 notas musicales con crossfade suave y
+reproducción continua. Un pad activo no depende del transporte de la canción.
 
 ## Constantes
 
@@ -19,6 +20,10 @@ static constexpr const char *kNoteNames[kNoteCount] = {
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
 };
 ```
+
+`noteIndexForSongKey()` normaliza tonalidades mayores o menores (`C`, `F#`,
+`Bb`, `Am`, `Key of C#m`) a esos doce índices. Si el texto no contiene una
+tonalidad reconocible retorna `-1` y el pad activo no cambia.
 
 ## Crossfade Presets
 
@@ -67,9 +72,13 @@ Activa/desactiva los pads.
 ```cpp
 void setCrossfadePreset(CrossfadePreset preset) noexcept;
 CrossfadePreset getCrossfadePreset() const noexcept;
+double getCrossfadeDurationSeconds() const noexcept;
+void beginSongTransitionFadeOut() noexcept;
+void beginSongTransitionFadeIn() noexcept;
 ```
 
-Cambia el preset de crossfade.
+Cambia el preset de crossfade. La misma duración se aplica al cambio de nota y
+a la envolvente del bus de Pads durante una transición automática de canción.
 
 ### Carga de samples
 
@@ -88,6 +97,7 @@ Carga samples desde carpeta. Busca archivos con nombres de notas:
 
 ```cpp
 void triggerNote(int noteIndex, int octave);
+void triggerNoteForSongTransition(int noteIndex, int octave);
 void stopNote(int noteIndex);
 void stopAll();
 ```
@@ -157,9 +167,49 @@ enum class VoiceState : int {
 
 | Preset | Fade In | Fade Out |
 |--------|--------|---------|
-| Fast | ~10ms | ~50ms |
-| Medium | ~50ms | ~200ms |
-| Long | ~200ms | ~500ms |
+| Fast | 1 s | 1 s |
+| Medium | 3 s | 3 s |
+| Long | 5 s | 5 s |
+
+## Loop continuo
+
+Cada voz vuelve a reproducirse al alcanzar el final del sample. Para evitar un
+corte audible, los últimos dos segundos mezclan progresivamente el inicio del
+archivo; al envolver, el cursor salta después de la porción inicial que ya fue
+renderizada por el crossfade. En archivos muy cortos se limita el solapamiento
+a una cuarta parte de su duración; por debajo de ocho muestras se usa el loop
+directo.
+
+El loop continúa aunque termine o cambie la canción. Sólo se detiene al pulsar
+de nuevo la misma nota, apagar Pads o llamar `stopNote()`/`stopAll()`.
+
+## Seguimiento de tonalidad entre canciones
+
+La UI conserva la nota seleccionada como estado global. Cuando se carga otra
+canción y existe un pad activo, convierte la tonalidad de la canción —incluido
+el desplazamiento de pitch guardado— al índice cromático y dispara la nota
+nueva. `triggerNote()` aplica el preset de crossfade a la voz saliente y a la
+entrante. Si no hay pad activo o la tonalidad no se reconoce, no se inicia ni
+se modifica ningún pad. `getActiveNoteIndex()` publica el pad seleccionado para
+que este comportamiento también funcione cuando la nota se disparó por MIDI y
+para que la interfaz mantenga su indicador sincronizado.
+
+Cuando la canción tiene un destino de autoplay válido, el editor inicia un
+fade down del bus de Pads al faltar 1, 3 o 5 segundos para `Fin`, según el
+preset configurado. La nota seleccionada se conserva aunque el bus llegue a
+silencio. Después de cargar la siguiente canción se retiran las voces antiguas,
+se prepara la nueva tonalidad mientras el bus sigue en cero y se inicia el fade
+up con la misma duración. De este modo el tono anterior no reaparece durante la
+entrada. Si se desactiva autoplay, se busca
+hacia atrás o se detiene manualmente, el bus recupera su nivel mediante fade
+up y no queda silenciado.
+
+El mismo relevo silencioso se usa al cambiar manualmente mediante siguiente,
+anterior o la biblioteca. En esos casos la carga solicitada se difiere durante
+los 1, 3 o 5 segundos configurados para permitir que el pad anterior complete
+su fade out. Al terminar, la frontera de carga elimina esa voz, prepara la nueva
+y abre su fade up. Una segunda selección durante la bajada actualiza el destino
+sin reiniciar ni extender el fade.
 
 ## Algoritmo de trigger
 

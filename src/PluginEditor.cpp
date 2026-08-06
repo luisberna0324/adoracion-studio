@@ -600,6 +600,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (songLoadBusy)
       return false;
     const bool hadLoadedSongBeforeLoad = p.hasLoadedSong();
+    const bool hadActivePadBeforeLoad = p.getActivePadNoteIndex() >= 0;
+    const bool shouldUseSilentPadHandoff =
+        hadLoadedSongBeforeLoad && hadActivePadBeforeLoad;
     maybePersistSongWindowForActiveSong();
     if (channelGridRaw != nullptr)
       channelGridRaw->flushPendingPersistenceNow();
@@ -714,6 +717,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         true);
 
     if (!loaded) {
+      if (padsSongTransitionFadeActive) {
+        p.beginPadsSongTransitionFadeIn();
+        padsSongTransitionFadeActive = false;
+      }
       juce::AlertWindow::showMessageBoxAsync(
           juce::AlertWindow::WarningIcon,
           L10n::tr("Error de carga", "Load error"),
@@ -875,6 +882,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
                     p.getSongEndSeconds(), p.getSongFadeOutSeconds());
 
+    // A pad selected by the performer is global across the setlist. At every
+    // song-to-song handoff, stage the new key while the pads bus is silent so
+    // the outgoing key cannot remain audible after the new song starts.
+    const bool useSilentPadHandoff =
+        padsSongTransitionFadeActive || shouldUseSilentPadHandoff;
+    if (padsComponent != nullptr)
+      padsComponent->followSongKey(loadedSong.key, savedPitchSemitones,
+                                   useSilentPadHandoff);
+
+    if (useSilentPadHandoff)
+      p.beginPadsSongTransitionFadeIn();
+
+    if (padsSongTransitionFadeActive)
+      padsSongTransitionFadeActive = false;
+
     // The processor kept the replacement at zero while the complete mix,
     // routing, click, guide and arrangement snapshot was restored.
     p.finishPendingSongTransition();
@@ -928,12 +950,57 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     return true;
   };
 
+  loadSongAction = loadSong;
+  requestSongLoadAction = [this](const ImportedSongData &song,
+                                 const int songIndex) {
+    auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+
+    if (pendingManualPadSongLoad) {
+      if (hasCurrentLoadedSong && song.id.isNotEmpty() &&
+          song.id == currentLoadedSong.id) {
+        pendingManualPadSongLoad = false;
+        pendingManualPadSong = ImportedSongData{};
+        pendingManualPadSongIndex = -1;
+        pendingManualPadSongLoadAtMs = 0;
+        processorRef.beginPadsSongTransitionFadeIn();
+        padsSongTransitionFadeActive = false;
+      } else {
+        // A second selection during the fade updates the destination without
+        // restarting or extending the configured fade-out.
+        pendingManualPadSong = song;
+        pendingManualPadSongIndex = songIndex;
+      }
+      return;
+    }
+
+    const bool isDifferentLoadedSong =
+        hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty() &&
+        song.id.isNotEmpty() && song.id != currentLoadedSong.id;
+    if (isDifferentLoadedSong &&
+        processorRef.getActivePadNoteIndex() >= 0) {
+      processorRef.beginPadsSongTransitionFadeOut();
+      padsSongTransitionFadeActive = true;
+      pendingManualPadSongLoad = true;
+      pendingManualPadSong = song;
+      pendingManualPadSongIndex = songIndex;
+      pendingManualPadSongLoadAtMs =
+          juce::Time::currentTimeMillis() +
+          static_cast<juce::int64>(std::llround(
+              processorRef.getPadsCrossfadeDurationSeconds() * 1000.0));
+      return;
+    }
+
+    if (loadSongAction)
+      (void)loadSongAction(song, songIndex);
+  };
+
   songListRaw->setOnSongActivated(
-      [this, loadSong](const ImportedSongData &song, int songIndex) {
+      [this](const ImportedSongData &song, int songIndex) {
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
         deferredStartupSongLoadAtMs = 0;
-        (void)loadSong(song, songIndex);
+        if (requestSongLoadAction)
+          requestSongLoadAction(song, songIndex);
       });
 
   auto loadSongByIndex = [songListRaw, loadSong](int index) -> bool {
@@ -958,9 +1025,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       p.playSong();
   };
 
+  auto requestSongLoadByIndex = [songListRaw, this](const int index) {
+    if (songListRaw == nullptr || !requestSongLoadAction)
+      return;
+    if (const auto *song = songListRaw->getSongPtr(index))
+      requestSongLoadAction(*song, index);
+  };
+
   channelGridRaw->setOnLibrarySongLoadRequested(
-      [this, songListRaw, loadSong](const ImportedSongData &song,
-                                    int songIndex) {
+      [this, songListRaw](const ImportedSongData &song, int songIndex) {
         juce::ignoreUnused(songIndex);
         deferredStartupSongLoadPending = false;
         deferredStartupSongIndex = -1;
@@ -968,7 +1041,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         const int setlistIndex =
             songListRaw != nullptr ? songListRaw->getSongIndexById(song.id) : -1;
         const int indexForState = setlistIndex >= 0 ? setlistIndex : -1;
-        (void)loadSong(song, indexForState);
+        if (requestSongLoadAction)
+          requestSongLoadAction(song, indexForState);
       });
   channelGridRaw->setOnLibraryAddSongRequested(
       [channelGridRaw, songListRaw](const juce::StringArray &songIds) {
@@ -1029,7 +1103,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     return currentSongIndex;
   };
 
-  auto prevSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex]() {
+  auto prevSong = [songListRaw, requestSongLoadByIndex,
+                   resolveCurrentSongIndex]() {
     if (!songListRaw)
       return;
     const int count = songListRaw->getSongCount();
@@ -1043,10 +1118,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const int target = juce::jlimit(0, count - 1, index - 1);
     if (target == index)
       return;
-    loadSongByIndex(target);
+    requestSongLoadByIndex(target);
   };
 
-  auto nextSong = [songListRaw, loadSongByIndex, resolveCurrentSongIndex,
+  auto nextSong = [songListRaw, requestSongLoadByIndex,
+                   resolveCurrentSongIndex,
                    this]() {
     if (!songListRaw)
       return;
@@ -1067,7 +1143,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       const int markedNext =
           songListRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
       if (juce::isPositiveAndBelow(markedNext, count) && markedNext != index) {
-        loadSongByIndex(markedNext);
+        requestSongLoadByIndex(markedNext);
         return;
       }
     }
@@ -1080,7 +1156,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       target = 0;
     if (target == index)
       return;
-    loadSongByIndex(target);
+    requestSongLoadByIndex(target);
   };
 
   prevSongAction = prevSong;
@@ -1244,7 +1320,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   grabKeyboardFocus();
 
   wasSongPlaying = p.isSongPlaying();
-  lastObservedSongPositionSec = p.getSongCurrentPositionSeconds();
   startTimerHz(20);
   mainUiInitialized = true;
   resized();
@@ -2166,6 +2241,25 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     }
   }
 
+  if (pendingManualPadSongLoad && !songLoadBusy &&
+      nowMs >= pendingManualPadSongLoadAtMs) {
+    const ImportedSongData song = pendingManualPadSong;
+    const int songIndex = pendingManualPadSongIndex;
+    pendingManualPadSongLoad = false;
+    pendingManualPadSong = ImportedSongData{};
+    pendingManualPadSongIndex = -1;
+    pendingManualPadSongLoadAtMs = 0;
+
+    if (loadSongAction) {
+      (void)loadSongAction(song, songIndex);
+    } else {
+      auto &processorRef =
+          static_cast<MTControlsAudioProcessor &>(processor);
+      processorRef.beginPadsSongTransitionFadeIn();
+      padsSongTransitionFadeActive = false;
+    }
+  }
+
   if (nowMs >= nextAudioDeviceFallbackPollMs) {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
@@ -2307,6 +2401,35 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   const bool isPlayingNow = processorRef.isSongPlaying();
   const double currentPosSec = processorRef.getSongCurrentPositionSeconds();
 
+  // Prepare the active pad for an automatic handoff using the same 1/3/5 s
+  // duration selected for pad crossfades. The selected note remains published
+  // while the bus becomes silent so the next song can choose its own key.
+  if (songListPanelRaw != nullptr && hasCurrentLoadedSong &&
+      currentLoadedSong.id.isNotEmpty()) {
+    const int autoPlayNextIndex =
+        songListPanelRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
+    const bool hasAutoPlayTarget = juce::isPositiveAndBelow(
+        autoPlayNextIndex, songListPanelRaw->getSongCount());
+    const double endSec = processorRef.getSongEndSeconds();
+    const double crossfadeSec =
+        processorRef.getPadsCrossfadeDurationSeconds();
+    const double remainingSec = endSec - currentPosSec;
+
+    if (isPlayingNow && hasAutoPlayTarget &&
+        processorRef.getActivePadNoteIndex() >= 0 &&
+        !padsSongTransitionFadeActive && endSec > currentPosSec &&
+        remainingSec <= crossfadeSec) {
+      processorRef.beginPadsSongTransitionFadeOut();
+      padsSongTransitionFadeActive = true;
+    } else if (padsSongTransitionFadeActive && !pendingManualPadSongLoad &&
+               (!hasAutoPlayTarget ||
+                (isPlayingNow && remainingSec > crossfadeSec + 0.12))) {
+      // Autoplay was disabled or the performer sought back before the handoff.
+      processorRef.beginPadsSongTransitionFadeIn();
+      padsSongTransitionFadeActive = false;
+    }
+  }
+
   if (songListPanelRaw != nullptr) {
     const bool hasPlayingSong = isPlayingNow && hasCurrentLoadedSong &&
                                 currentLoadedSong.id.isNotEmpty();
@@ -2318,28 +2441,34 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     }
   }
 
-  if (wasSongPlaying && !isPlayingNow && songListPanelRaw != nullptr &&
+  if (!pendingManualPadSongLoad && wasSongPlaying && !isPlayingNow &&
+      songListPanelRaw != nullptr &&
       hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
     const double startSec = processorRef.getSongStartSeconds();
     const double endSec = processorRef.getSongEndSeconds();
     const bool reachedSongEnd =
-        endSec > startSec && lastObservedSongPositionSec >= (endSec - 0.12);
-    const bool wrappedToStart = currentPosSec <= (startSec + 0.12);
+        endSec > startSec && currentPosSec >= (endSec - 0.12);
 
-    if (reachedSongEnd && wrappedToStart) {
+    // Natural completion leaves the processor parked exactly at Fin. A manual
+    // stop seeks back to Inicio, so checking the current cursor distinguishes
+    // both cases without requiring an impossible wrap-to-start transition.
+    if (reachedSongEnd) {
       const int nextIndex =
           songListPanelRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
       if (juce::isPositiveAndBelow(nextIndex, songListPanelRaw->getSongCount()) &&
           loadSongByIndexAction) {
         loadSongByIndexAction(nextIndex, true);
+      } else if (padsSongTransitionFadeActive) {
+        processorRef.beginPadsSongTransitionFadeIn();
+        padsSongTransitionFadeActive = false;
       }
+    } else if (padsSongTransitionFadeActive) {
+      // Manual stop returns to Inicio and must leave the independent pad bus
+      // at its normal level.
+      processorRef.beginPadsSongTransitionFadeIn();
+      padsSongTransitionFadeActive = false;
     }
   }
-
-  if (isPlayingNow)
-    lastObservedSongPositionSec = currentPosSec;
-  else if (!wasSongPlaying)
-    lastObservedSongPositionSec = currentPosSec;
 
   wasSongPlaying = isPlayingNow;
 }
