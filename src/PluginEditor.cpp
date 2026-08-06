@@ -165,6 +165,19 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #endif
 }
 
+void MTControlsAudioProcessorEditor::openProjectFromExternalApplication(
+    const juce::File &file) {
+  pendingExternalProjectFile = file;
+  deferredStartupSongLoadPending = false;
+  deferredStartupSongIndex = -1;
+  deferredStartupSongLoadAtMs = 0;
+
+  // Authentication/bootstrap may still be showing. The regular editor timer
+  // will open the project as soon as the complete library UI is available.
+  if (!isTimerRunning())
+    startTimerHz(mainUiInitialized ? 20 : 12);
+}
+
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #if JucePlugin_Build_Standalone
   auto *top = getTopLevelComponent();
@@ -2225,6 +2238,30 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  if (pendingExternalProjectFile != juce::File{} && !songLoadBusy &&
+      songListPanelRaw != nullptr) {
+    const auto projectFile = pendingExternalProjectFile;
+    pendingExternalProjectFile = juce::File{};
+
+    maybePersistSongWindowForActiveSong();
+    maybePersistClickDynMetronomeEnabledForActiveSong();
+    if (auto *grid =
+            dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+      grid->flushPendingPersistenceNow();
+    if (hasCurrentLoadedSong && currentLoadedSong.projectPath.isNotEmpty())
+      ProjectStore::flushPendingSettings(
+          juce::File(currentLoadedSong.projectPath));
+    ProjectStore::flushAllPendingSettings();
+
+    // Opening a document from the OS is a load operation, never an autoplay
+    // request. Stop before replacing the song so loadSongStems() cannot inherit
+    // a playing transport state from the previous project.
+    auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+    processorRef.stopSong();
+
+    songListPanelRaw->openProjectFile(projectFile);
+  }
+
   if (deferredStartupSongLoadPending && !songLoadBusy &&
       nowMs >= deferredStartupSongLoadAtMs) {
     const int index = deferredStartupSongIndex;

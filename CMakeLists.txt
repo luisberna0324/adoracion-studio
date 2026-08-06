@@ -362,6 +362,12 @@ endif()
 
 juce_generate_juce_header(MTControls)
 
+if(TARGET MTControls_Standalone AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
+    target_compile_definitions(MTControls_Standalone
+        PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+endif()
+
 juce_add_binary_data(MTControlsAssets
     SOURCES
         assets/logoPlayWorship.jpeg

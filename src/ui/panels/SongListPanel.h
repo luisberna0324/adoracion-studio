@@ -71,6 +71,8 @@ public:
   void openSongImportWizardFromExternal();
   void refreshLanguageTexts();
   void refreshThemeColours();
+  /** Abre un .pwproj recibido desde el sistema operativo. */
+  void openProjectFile(const juce::File &file);
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -174,7 +176,6 @@ private:
   void openSongImportWizard();
   void openSongImportWizard(const juce::File &destination);
   void openProjectFileChooser();
-  void openProjectFile(const juce::File &file);
   void openSongEditWizard(const juce::String &songId);
   void openSetlistManager();
   void openHeaderMenu();

@@ -81,6 +81,14 @@ haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
 ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
 restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
 
+En escritorio, la aplicación Standalone es de instancia única y recibe rutas
+`.pwproj` desde la asociación del sistema operativo. Un doble clic inicia
+PlayWorship o lleva al frente la ventana existente, termina de persistir el
+proyecto actual, detiene el transporte y entrega la ruta al mismo flujo validado
+de apertura de la biblioteca. La canción queda cargada sin autoplay. Si la UI
+de autenticación todavía está activa, la solicitud se conserva hasta que la
+biblioteca esté disponible.
+
 Si había una canción reproduciéndose, la fuente anterior continúa durante la
 preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y
 fade-in de 150 ms. Antes del intercambio se verifica que el primer bloque de

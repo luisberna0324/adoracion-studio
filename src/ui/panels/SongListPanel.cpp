@@ -2581,8 +2581,17 @@ void SongListPanel::openSongImportWizard() {
 }
 
 void SongListPanel::openProjectFileChooser() {
+  // Some Windows native file dialogs hide every entry when filtering by an
+  // application-specific extension that is not yet registered on the system.
+  // Keep all files visible there, then enforce .pwproj in openProjectFile().
+#if JUCE_WINDOWS
+  constexpr auto projectChooserPattern = "*.pwproj;*.PWPROJ;*.*";
+#else
+  constexpr auto projectChooserPattern = "*.pwproj";
+#endif
   projectFileChooser = std::make_unique<juce::FileChooser>(
-      L10n::tr("Abrir proyecto", "Open project"), juce::File{}, "*.pwproj");
+      L10n::tr("Abrir proyecto", "Open project"), juce::File{},
+      projectChooserPattern);
   projectFileChooser->launchAsync(juce::FileBrowserComponent::openMode |
                                       juce::FileBrowserComponent::canSelectFiles,
                                   [safeThis = juce::Component::SafePointer<SongListPanel>(this)](
@@ -2592,7 +2601,22 @@ void SongListPanel::openProjectFileChooser() {
 }
 
 void SongListPanel::openProjectFile(const juce::File &file) {
-  if (!file.existsAsFile()) return;
+  if (!file.existsAsFile()) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Proyecto no encontrado", "Project not found"),
+        L10n::tr("El archivo seleccionado ya no existe o no está disponible.",
+                 "The selected file no longer exists or is unavailable."));
+    return;
+  }
+  if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Archivo no compatible", "Unsupported file"),
+        L10n::tr("Selecciona un proyecto con extensión .pwproj.",
+                 "Select a project with the .pwproj extension."));
+    return;
+  }
   ProjectDocument document; juce::String error;
   if (!ProjectStore::open(file, document, &error) ||
       !SongLibraryStore::registerProjectSong(document.song)) {

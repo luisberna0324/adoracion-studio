@@ -26,6 +26,9 @@ public:
   bool keyPressed(const juce::KeyPress &key) override;
   void parentHierarchyChanged() override;
 
+  /** Recibe un proyecto solicitado por asociación de archivo/doble clic. */
+  void openProjectFromExternalApplication(const juce::File &file);
+
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
                                          PersistedSessionSnapshot snapshot,
@@ -60,6 +63,7 @@ private:
   ImportedSongData pendingManualPadSong;
   int pendingManualPadSongIndex = -1;
   juce::int64 pendingManualPadSongLoadAtMs = 0;
+  juce::File pendingExternalProjectFile;
   struct SessionSummary {
     juce::String uid;
     juce::String email;
