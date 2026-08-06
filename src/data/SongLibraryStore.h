@@ -35,8 +35,12 @@ struct DynamicGuideMixSnapshot {
   float gain = 1.0f;
   bool mute = false;
   bool solo = false;
+  // Default to mono Out 1 to mirror the click defaults. The runtime mixes
+  // the (always-stereo) guide render buffer down to mono when the width
+  // is 1, so the announcement stays on a single, predictable bus. Users
+  // who actually want stereo can flip the width from the routing UI.
   int outputChannel = 1;
-  int outputWidth = 2;
+  int outputWidth = 1;
 };
 
 struct ClickDynMixSnapshot {

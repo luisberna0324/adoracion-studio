@@ -5058,7 +5058,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   dynamicGuideMutedState.store(false, std::memory_order_relaxed);
   dynamicGuideSoloState.store(false, std::memory_order_relaxed);
   dynamicGuideOutputChannelState.store(1, std::memory_order_relaxed);
-  dynamicGuideOutputWidthState.store(2, std::memory_order_relaxed);
+  dynamicGuideOutputWidthState.store(1, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
   arrangementParts.clear();

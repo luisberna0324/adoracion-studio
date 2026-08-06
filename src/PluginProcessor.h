@@ -322,7 +322,12 @@ private:
   std::atomic<bool> dynamicGuideMutedState{false};
   std::atomic<bool> dynamicGuideSoloState{false};
   std::atomic<int> dynamicGuideOutputChannelState{1};
-  std::atomic<int> dynamicGuideOutputWidthState{2};
+  // Both the click and the dynamic guide default to mono on Out 1. The
+  // guide render buffer is always 2-channel; the StemOutputRouter folds
+  // it to mono (averaging L+R) when outputWidth=1, so the musician gets
+  // a centered, dedicated bus that does not collide with the main mix
+  // routed to Out 1-2. The user can opt back into stereo from the UI.
+  std::atomic<int> dynamicGuideOutputWidthState{1};
 
   juce::AudioFormatManager playbackFormatManager;
   std::vector<std::unique_ptr<juce::TimeSliceThread>> stemReadThreads;

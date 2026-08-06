@@ -1343,7 +1343,7 @@ void SongImportWizardComponent::updateSummaryText() {
 
   juce::StringArray lines;
   lines.add(mode == Mode::Edit ? L10n::tr(u8"Modo: Edición", "Mode: Edit")
-                               : L10n::tr(u8"Modo: Importación", "Mode: Import"));
+                               : L10n::tr(u8"Modo: Creación", "Mode: Create"));
   lines.add(L10n::tr(u8"Canción: ", "Song: ") + songTitleEditor.getText().trim());
   lines.add(L10n::tr("Artista: ", "Artist: ") + artistEditor.getText().trim());
   lines.add("BPM: " + bpmEditor.getText().trim() + "   " +
@@ -1657,7 +1657,7 @@ void SongImportWizardComponent::submitSong() {
   overlay.refreshThemeColours();
   overlay.setTitleText(mode == Mode::Edit
                            ? L10n::tr(u8"Actualizando canción", "Updating song")
-                           : L10n::tr(u8"Importando canción", "Importing song"));
+                           : L10n::tr(u8"Creando canción", "Creating song"));
   overlay.setAlwaysOnTop(true);
   overlay.setBounds(getLocalBounds());
   overlay.setVisible(true);
@@ -1722,7 +1722,7 @@ void SongImportWizardComponent::submitSong() {
         juce::AlertWindow::WarningIcon,
         mode == Mode::Edit
             ? L10n::tr("Error al actualizar", "Update error")
-            : L10n::tr(u8"Error de importación", "Import error"),
+            : L10n::tr(u8"Error al crear", "Create error"),
         errorMessage.isNotEmpty()
             ? errorMessage
             : L10n::tr(u8"No se pudo guardar la canción seleccionada.",

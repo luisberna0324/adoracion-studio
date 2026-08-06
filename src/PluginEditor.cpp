@@ -629,16 +629,32 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     ProjectSongSettings projectSettings;
     bool hasProjectSettings = false;
     ImportedSongData sourceSong = song;
-    if (song.projectPath.isNotEmpty()) {
+    juce::File projectFile(song.projectPath);
+    if (projectFile == juce::File{})
+      projectFile = ProjectStore::findRecentProjectFile(song.id);
+    if (projectFile.existsAsFile()) {
       ProjectDocument document;
       juce::String projectError;
-      if (ProjectStore::open(juce::File(song.projectPath), document, &projectError)) {
+      if (ProjectStore::open(projectFile, document, &projectError)) {
         sourceSong = document.song;
         projectSettings = document.settings;
         hasProjectSettings = true;
       } else {
-        SessionAuthLogger::write("[Project] Couldn't reopen " + song.projectPath + ": " + projectError);
+        SessionAuthLogger::write("[Project] Couldn't reopen " +
+                                 projectFile.getFullPathName() + ": " +
+                                 projectError);
       }
+    } else if (ProjectStore::getCachedSettings(song.id, projectSettings)) {
+      hasProjectSettings = true;
+      SessionAuthLogger::write(
+          "[Project] Restored settings from local cache for unavailable "
+          "project id=" +
+          song.id);
+    } else if (projectFile != juce::File{}) {
+      SessionAuthLogger::write(
+          "[Project] Package unavailable; changes will remain in local cache "
+          "until relinked: " +
+          projectFile.getFullPathName());
     }
     ImportedSongData loadedSong = sourceSong;
     loadedSong.stems.clear();
@@ -724,8 +740,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
     pushLoadUi(0.58, L10n::tr(u8"Restaurando configuración...",
                               u8"Restoring settings..."));
+    int savedPitchSemitones = 0;
+    if (hasProjectSettings) {
+      savedPitchSemitones =
+          juce::jlimit(-12, 12, projectSettings.pitchSemitones);
+    } else {
+      SongLibraryStore::getActiveSetlistPitchSemitones(loadedSong.id,
+                                                       savedPitchSemitones);
+    }
+    p.setPitchSemiTones(savedPitchSemitones);
+
     double savedTempoBpm = hasProjectSettings ? projectSettings.tempoBpm : 0.0;
-    if (savedTempoBpm > 0.0 || SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
+    if (savedTempoBpm > 0.0 ||
+        SongLibraryStore::getActiveSetlistTempoBpm(loadedSong.id,
                                                    savedTempoBpm)) {
       p.setPlaybackTempoBpm(savedTempoBpm);
     }
@@ -813,9 +840,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (hasProjectSettings) {
       windowSnapshot = projectSettings.window;
       isCustomWindow = projectSettings.windowCustomized;
-    } else if (SongLibraryStore::getActiveSetlistSongWindow(loadedSong.id, windowSnapshot,
-                                                      isCustomWindow) &&
-        isCustomWindow) {
+    } else {
+      SongLibraryStore::getActiveSetlistSongWindow(loadedSong.id, windowSnapshot,
+                                                   isCustomWindow);
+    }
+    if (isCustomWindow) {
       p.setSongStartSeconds(windowSnapshot.startSec);
       p.setSongEndSeconds(windowSnapshot.endSec);
       p.setSongFadeOutSeconds(windowSnapshot.fadeOutSec);
@@ -2317,6 +2346,11 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  maybePersistSongWindowForActiveSong();
+  maybePersistClickDynMetronomeEnabledForActiveSong();
+  if (auto *channelGridRaw =
+          dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    channelGridRaw->flushPendingPersistenceNow();
   if (hasCurrentLoadedSong && currentLoadedSong.projectPath.isNotEmpty())
     ProjectStore::flushPendingSettings(juce::File(currentLoadedSong.projectPath));
   ProjectStore::flushAllPendingSettings();

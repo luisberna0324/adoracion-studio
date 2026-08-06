@@ -1,5 +1,6 @@
 #include "ProjectStore.h"
 #include "AppSettings.h"
+#include "SessionAuthLogger.h"
 
 #include <algorithm>
 #include <map>
@@ -24,8 +25,10 @@ public:
     const juce::ScopedLock lock(writeGuard);
     if (isCurrent != nullptr && !isCurrent())
       return jobHasFinished;
-    juce::String ignored;
-    ProjectStore::updateSettings(file, settings, &ignored);
+    juce::String error;
+    if (!ProjectStore::updateSettings(file, settings, &error))
+      SessionAuthLogger::write("[Project] Settings save failed path=" +
+                               file.getFullPathName() + " error=" + error);
     return jobHasFinished;
   }
 private:
@@ -109,8 +112,11 @@ private:
   }
   void writeNow(const Pending &entry) {
     const juce::ScopedLock lock(writeGuard);
-    juce::String ignored;
-    ProjectStore::updateSettings(entry.file, entry.settings, &ignored);
+    juce::String error;
+    if (!ProjectStore::updateSettings(entry.file, entry.settings, &error))
+      SessionAuthLogger::write("[Project] Settings flush failed path=" +
+                               entry.file.getFullPathName() + " error=" +
+                               error);
   }
   juce::CriticalSection guard;
   juce::CriticalSection writeGuard;
@@ -259,6 +265,46 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
                   out.clickDynMix.outputWidth, &out.clickDynMix.divisionMask,
                   &out.clickDynMix.enabled, &out.clickDynMix.metronomeEnabled);
   return out;
+}
+
+juce::File cachedSettingsFile(const juce::String &projectId) {
+  if (projectId.trim().isEmpty())
+    return {};
+  return ProjectStore::getCacheDirectory(projectId)
+      .getChildFile("song-settings.json");
+}
+
+bool writeCachedSettings(const juce::String &projectId,
+                         const ProjectSongSettings &settings) {
+  const auto target = cachedSettingsFile(projectId);
+  if (target == juce::File{})
+    return false;
+  auto *root = new juce::DynamicObject();
+  root->setProperty("schemaVersion", ProjectStore::kSchemaVersion);
+  root->setProperty("songSettings", settingsToVar(settings));
+  const auto temp = target.getSiblingFile(target.getFileName() + ".tmp");
+  if (!temp.replaceWithText(juce::JSON::toString(juce::var(root), true)))
+    return false;
+  if (!temp.replaceFileIn(target)) {
+    temp.deleteFile();
+    return false;
+  }
+  return true;
+}
+
+bool readCachedSettings(const juce::String &projectId,
+                        ProjectSongSettings &outSettings) {
+  const auto file = cachedSettingsFile(projectId);
+  if (!file.existsAsFile())
+    return false;
+  const auto parsed = juce::JSON::parse(file);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr ||
+      static_cast<int>(root->getProperty("schemaVersion")) !=
+          ProjectStore::kSchemaVersion)
+    return false;
+  outSettings = settingsFromVar(root->getProperty("songSettings"));
+  return true;
 }
 
 bool copyZipEntry(juce::ZipFile &zip, const juce::String &name, const juce::File &target,
@@ -412,6 +458,13 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   bool changed = false;
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
   if (song.id.isEmpty() || song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "Project has no valid song or stems."; return false; }
+  ProjectSongSettings newerCachedSettings;
+  const auto settingsCacheFile = cachedSettingsFile(song.id);
+  const bool hasNewerCachedSettings =
+      rebuildCache && settingsCacheFile.existsAsFile() &&
+      settingsCacheFile.getLastModificationTime() >
+          file.getLastModificationTime() &&
+      readCachedSettings(song.id, newerCachedSettings);
   auto cache = getCacheDirectory(song.id);
   if (rebuildCache && cache.exists()) cache.deleteRecursively();
   cache.createDirectory();
@@ -475,12 +528,18 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     }
     SongLibraryStore::saveWaveformCache(song.id, waveformBins);
   }
-  auto settings = settingsFromVar(o->getProperty("songSettings"));
-  if (rebuildCache)
+  auto settings = hasNewerCachedSettings
+                      ? newerCachedSettings
+                      : settingsFromVar(o->getProperty("songSettings"));
+  if (rebuildCache) {
     settingsSaveQueue().remember(file, settings);
+    writeCachedSettings(song.id, settings);
+  }
   outDocument = {std::move(song), std::move(settings),
                  std::move(waveformBins), file};
   recordRecent(outDocument);
+  if (hasNewerCachedSettings)
+    settingsSaveQueue().schedule(file, outDocument.settings);
   return true;
 }
 
@@ -497,6 +556,20 @@ void ProjectStore::scheduleSettingsSave(const juce::File &file,
   settingsSaveQueue().schedule(file, std::move(settings));
 }
 
+void ProjectStore::scheduleSettingsSave(const juce::File &file,
+                                        const juce::String &projectId,
+                                        ProjectSongSettings settings) {
+  if (!writeCachedSettings(projectId, settings))
+    SessionAuthLogger::write(
+        "[Project] Couldn't persist local settings cache id=" + projectId);
+  if (file.existsAsFile())
+    settingsSaveQueue().schedule(file, std::move(settings));
+  else if (file != juce::File{})
+    SessionAuthLogger::write(
+        "[Project] Package unavailable; settings cached locally path=" +
+        file.getFullPathName());
+}
+
 bool ProjectStore::getCachedSettings(const juce::File &file,
                                      ProjectSongSettings &outSettings) {
   if (settingsSaveQueue().getCached(file, outSettings))
@@ -507,6 +580,11 @@ bool ProjectStore::getCachedSettings(const juce::File &file,
   outSettings = document.settings;
   settingsSaveQueue().remember(file, outSettings);
   return true;
+}
+
+bool ProjectStore::getCachedSettings(const juce::String &projectId,
+                                     ProjectSongSettings &outSettings) {
+  return readCachedSettings(projectId, outSettings);
 }
 
 void ProjectStore::flushPendingSettings(const juce::File &file) {
@@ -549,6 +627,17 @@ std::vector<RecentProjectInfo> ProjectStore::getRecentProjects() {
     info.file = juce::File(o->getProperty("path").toString()); info.lastOpenedMs = static_cast<juce::int64>(o->getProperty("lastOpenedMs")); info.available = info.file.existsAsFile(); out.push_back(std::move(info));
   }
   std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.lastOpenedMs > b.lastOpenedMs; }); return out;
+}
+
+juce::File ProjectStore::findRecentProjectFile(
+    const juce::String &projectId) {
+  const auto recent = getRecentProjects();
+  const auto it = std::find_if(
+      recent.begin(), recent.end(),
+      [&projectId](const RecentProjectInfo &candidate) {
+        return candidate.id == projectId;
+      });
+  return it != recent.end() ? it->file : juce::File{};
 }
 
 void ProjectStore::recordRecent(const ProjectDocument &document) {

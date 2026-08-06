@@ -290,6 +290,20 @@ if(MTCONTROLS_BUILD_TESTS)
             PRIVATE MTControlsBungee juce::juce_audio_utils)
         add_test(NAME stem_mix_engine COMMAND MTControlsStemMixEngineTests)
     endif()
+
+    juce_add_console_app(MTControlsStemOutputRouterTests
+        PRODUCT_NAME "MTControls Stem Output Router Tests")
+    target_sources(MTControlsStemOutputRouterTests PRIVATE
+        tests/stem_output_router_tests.cpp
+        src/audio/StemOutputRouter.cpp
+        src/audio/StemOutputRouter.h
+    )
+    juce_generate_juce_header(MTControlsStemOutputRouterTests)
+    target_include_directories(MTControlsStemOutputRouterTests PRIVATE src)
+    target_link_libraries(MTControlsStemOutputRouterTests
+        PRIVATE juce::juce_audio_basics)
+    add_test(NAME stem_output_router
+        COMMAND MTControlsStemOutputRouterTests)
 endif()
 
 if (TARGET soundstretch)
@@ -316,6 +330,7 @@ juce_add_plugin(MTControls
     PRODUCT_NAME "PlayWorship"
     ICON_BIG "assets/icons/app-icon-1024.png"
     ICON_SMALL "assets/icons/app-icon-1024.png"
+    DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE

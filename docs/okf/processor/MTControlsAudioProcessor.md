@@ -74,10 +74,12 @@ Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
 tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
 fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
 cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
-`ProjectStore` conserva en memoria el snapshot completo más reciente, por lo que
-cambios consecutivos se acumulan aun cuando la canción no pertenezca al setlist
-activo. El setlist sólo aporta referencia y orden; no es la fuente de ajustes de
-un proyecto.
+`ProjectStore` conserva el snapshot completo más reciente en memoria y en
+`project-cache/<project-id>/song-settings.json`, por lo que cambios consecutivos
+se acumulan aun cuando la canción no pertenezca al setlist activo o el `.pwproj`
+haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
+ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
+restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
 
 Si había una canción reproduciéndose, la fuente anterior continúa durante la
 preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y

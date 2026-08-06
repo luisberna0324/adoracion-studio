@@ -440,7 +440,10 @@ SongListPanel::SongListPanel() {
     refreshFromStorage();
     showSongsSubview(true);
   });
-  libraryCatalogPanel.setOnImportRequested([this] { openSongImportWizard(); });
+  libraryCatalogPanel.setOnCreateSongRequested(
+      [this] { openSongImportWizard(); });
+  libraryCatalogPanel.setOnOpenProjectRequested(
+      [this] { openProjectFileChooser(); });
   libraryCatalogPanel.setOnSongEditRequested(
       [this](const juce::String &songId) { openSongEditWizard(songId); });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
@@ -1023,7 +1026,7 @@ void SongListPanel::openHeaderMenu() {
     menu.addItem(L10n::tr("Crear setlist", "Create setlist"),
                  [this] { createSetlist(); });
     menu.addSeparator();
-    menu.addItem(L10n::tr(u8"Importar canción", "Import song"),
+    menu.addItem(L10n::tr(u8"Crear canción", "Create song"),
                  [this] { openSongImportWizard(); });
     menu.addItem(L10n::tr("Abrir proyecto...", "Open project..."),
                  [this] { openProjectFileChooser(); });
@@ -2615,7 +2618,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
                         : static_cast<juce::Component *>(this);
 
   juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr(u8"Importar canción", "Import Song");
+  options.dialogTitle = L10n::tr(u8"Crear canción", "Create Song");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
@@ -2675,8 +2678,8 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
                                    importError + "\"");
           errorMessage = importError.isNotEmpty() ? importError
                                                   : L10n::tr(
-                                                        "No se pudo guardar la cancion importada.",
-                                                        "Couldn't persist the imported song.");
+                                                        u8"No se pudo guardar la canción.",
+                                                        "Couldn't persist the song.");
           return false;
         }
 
@@ -2684,10 +2687,10 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             "[SongImport] project saved with embedded waveform");
 
         if (progress)
-          progress(0.97, L10n::tr(u8"Actualizando lista de canciónes...",
+          progress(0.97, L10n::tr(u8"Actualizando lista de canciones...",
                                   u8"Refreshing song list..."));
         if (progress)
-          progress(1.0, L10n::tr(u8"Importación completa", "Import complete"));
+          progress(1.0, L10n::tr(u8"Canción creada", "Song created"));
 
         safeThis->refreshFromStorage();
         SessionAuthLogger::write("[SongImport] import flow completed successfully");

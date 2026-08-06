@@ -21,7 +21,8 @@ public:
   using SongEditRequested = std::function<void(const juce::String &songId)>;
   using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
-  using ImportRequested = std::function<void()>;
+  using CreateSongRequested = std::function<void()>;
+  using OpenProjectRequested = std::function<void()>;
   using BackRequested = std::function<void()>;
 
   LibraryCatalogPanel();
@@ -31,7 +32,8 @@ public:
   void setOnSongEditRequested(SongEditRequested cb);
   void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
-  void setOnImportRequested(ImportRequested cb);
+  void setOnCreateSongRequested(CreateSongRequested cb);
+  void setOnOpenProjectRequested(OpenProjectRequested cb);
   void setOnBackRequested(BackRequested cb);
 
   void setActiveSetlistId(const juce::String &setlistId);
@@ -202,7 +204,8 @@ private:
   std::unique_ptr<ChipsRow> chipsRow;
   juce::Viewport contentViewport;
   CatalogContent content;
-  juce::TextButton importSongsButton{"+ Importar canciones"};
+  juce::TextButton loadProjectButton{"Cargar"};
+  juce::TextButton createSongButton{"Crear"};
   FooterActionButton confirmButton;
   juce::Rectangle<int> headerTitleBounds;
   juce::Rectangle<int> headerSubtitleBounds;
@@ -225,6 +228,7 @@ private:
   SongEditRequested onSongEditRequested;
   SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
-  ImportRequested onImportRequested;
+  CreateSongRequested onCreateSongRequested;
+  OpenProjectRequested onOpenProjectRequested;
   BackRequested onBackRequested;
 };

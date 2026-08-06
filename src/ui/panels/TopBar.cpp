@@ -1756,20 +1756,12 @@ void TopBar::refreshFromProviders() {
         activeKeyLabel = keyText.isNotEmpty() ? keyText : L10n::tr("Tono", "Key");
       }
       hasKey = true;
-      activePitchDelta = 0;
-      if (activeSongId.isNotEmpty())
-        SongLibraryStore::getActiveSetlistPitchSemitones(activeSongId,
-                                                         activePitchDelta);
+      activePitchDelta =
+          juce::jlimit(-12, 12, processor.getPitchSemiTones());
       activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
       activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
       processor.setPitchSemiTones(activePitchDelta);
-      double savedTempoBpm = 0.0;
-      if (activeSongId.isNotEmpty() &&
-          SongLibraryStore::getActiveSetlistTempoBpm(activeSongId,
-                                                     savedTempoBpm)) {
-        processor.setPlaybackTempoBpm(savedTempoBpm);
-        updateBpmDisplay();
-      }
+      updateBpmDisplay();
     } else if (keyText != lastKeyToken) {
       // Metadata key text may refresh asynchronously; keep user-selected
       // transposition and only refresh labels/base reference.

@@ -720,14 +720,23 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   menuButton.onClick = [this] { openHeaderMenu(); };
   addAndMakeVisible(menuButton);
 
-  importSongsButton.setTooltip(
-      L10n::tr(u8"Importar canciónes nuevas a la biblioteca",
-               "Import new songs to the library"));
-  importSongsButton.onClick = [this] {
-    if (onImportRequested)
-      onImportRequested();
+  loadProjectButton.setTooltip(
+      L10n::tr(u8"Cargar un proyecto .pwproj existente",
+               "Load an existing .pwproj project"));
+  loadProjectButton.onClick = [this] {
+    if (onOpenProjectRequested)
+      onOpenProjectRequested();
   };
-  addAndMakeVisible(importSongsButton);
+  addAndMakeVisible(loadProjectButton);
+
+  createSongButton.setTooltip(
+      L10n::tr(u8"Crear una canción nueva en la biblioteca",
+               "Create a new song in the library"));
+  createSongButton.onClick = [this] {
+    if (onCreateSongRequested)
+      onCreateSongRequested();
+  };
+  addAndMakeVisible(createSongButton);
 
   searchField.setPlaceholderText(L10n::tr(u8"Buscar canción...", "Search song..."));
   searchField.setIconGlyph(IconGlyph::Search);
@@ -789,8 +798,12 @@ void LibraryCatalogPanel::setOnAddSongsToSetlist(AddSongsRequested cb) {
   onAddSongsToSetlist = std::move(cb);
 }
 
-void LibraryCatalogPanel::setOnImportRequested(ImportRequested cb) {
-  onImportRequested = std::move(cb);
+void LibraryCatalogPanel::setOnCreateSongRequested(CreateSongRequested cb) {
+  onCreateSongRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnOpenProjectRequested(OpenProjectRequested cb) {
+  onOpenProjectRequested = std::move(cb);
 }
 
 void LibraryCatalogPanel::setOnBackRequested(BackRequested cb) {
@@ -874,12 +887,22 @@ void LibraryCatalogPanel::refreshThemeColours() {
   backButton.setStyle(false, juce::Colours::white);
   menuButton.setStyle(false, juce::Colours::white);
   searchField.refreshThemeColours();
-  importSongsButton.setColour(juce::TextButton::buttonColourId,
-                              UITheme::accent.withAlpha(0.90f));
-  importSongsButton.setColour(juce::TextButton::buttonOnColourId,
-                              UITheme::accentSoft.withAlpha(0.95f));
-  importSongsButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
-  importSongsButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  loadProjectButton.setColour(juce::TextButton::buttonColourId,
+                              UITheme::cardBgHover.withAlpha(0.96f));
+  loadProjectButton.setColour(juce::TextButton::buttonOnColourId,
+                              UITheme::cardBgPressed.withAlpha(0.96f));
+  loadProjectButton.setColour(juce::TextButton::textColourOffId,
+                              UITheme::textPrimary);
+  loadProjectButton.setColour(juce::TextButton::textColourOnId,
+                              UITheme::textPrimary);
+  createSongButton.setColour(juce::TextButton::buttonColourId,
+                             UITheme::accent.withAlpha(0.90f));
+  createSongButton.setColour(juce::TextButton::buttonOnColourId,
+                             UITheme::accentSoft.withAlpha(0.95f));
+  createSongButton.setColour(juce::TextButton::textColourOffId,
+                             UITheme::onAccent);
+  createSongButton.setColour(juce::TextButton::textColourOnId,
+                             UITheme::onAccent);
   repaint();
 }
 
@@ -962,8 +985,15 @@ void LibraryCatalogPanel::resized() {
       headerCenterColumn.getWidth(), subtitleHeight);
 
   area.removeFromTop(sectionGap);
-  importSongsButton.setBounds(
-      area.removeFromTop(importButtonHeight).reduced(kCatalogItemSideInset, 0));
+  auto actionButtonsArea =
+      area.removeFromTop(importButtonHeight).reduced(kCatalogItemSideInset, 0);
+  constexpr int actionButtonsGap = 10;
+  const int splitWidth =
+      juce::jmax(0, (actionButtonsArea.getWidth() - actionButtonsGap) / 2);
+  auto loadButtonArea = actionButtonsArea.removeFromLeft(splitWidth);
+  actionButtonsArea.removeFromLeft(actionButtonsGap);
+  loadProjectButton.setBounds(loadButtonArea);
+  createSongButton.setBounds(actionButtonsArea);
   area.removeFromTop(searchToImportGap);
   searchField.setBounds(
       area.removeFromTop(searchHeight).reduced(kCatalogItemSideInset, 0));
@@ -1092,42 +1122,48 @@ void LibraryCatalogPanel::refreshFooterState() {
 
 void LibraryCatalogPanel::refreshTexts() {
   searchField.setPlaceholderText(L10n::tr(u8"Buscar canción...", "Search song..."));
-  importSongsButton.setButtonText(
-      L10n::tr(u8"+ Importar canciónes", "+ Import songs"));
+  loadProjectButton.setButtonText(L10n::tr("Cargar", "Load"));
+  createSongButton.setButtonText(L10n::tr("Crear", "Create"));
 }
 
 void LibraryCatalogPanel::openHeaderMenu() {
   juce::PopupMenu menu;
-  menu.addItem(1, L10n::tr(u8"Importar canciónes", "Import songs"));
+  menu.addItem(1, L10n::tr("Cargar proyecto...", "Load project..."));
+  menu.addItem(2, L10n::tr(u8"Crear canción", "Create song"));
   menu.addSeparator();
-  menu.addItem(2, L10n::tr("Ordenar A-Z", "Sort A-Z"), true,
+  menu.addItem(3, L10n::tr("Ordenar A-Z", "Sort A-Z"), true,
                sortMode == SortMode::TitleAsc);
-  menu.addItem(3, L10n::tr("Ordenar Z-A", "Sort Z-A"), true,
+  menu.addItem(4, L10n::tr("Ordenar Z-A", "Sort Z-A"), true,
                sortMode == SortMode::TitleDesc);
-  menu.addItem(4, L10n::tr(u8"Más recientes", "Most recent"), true,
+  menu.addItem(5, L10n::tr(u8"Más recientes", "Most recent"), true,
                sortMode == SortMode::RecentFirst);
-  menu.addItem(5, L10n::tr("BPM ascendente", "BPM ascending"), true,
+  menu.addItem(6, L10n::tr("BPM ascendente", "BPM ascending"), true,
                sortMode == SortMode::BpmAsc);
-  menu.addItem(6, L10n::tr("BPM descendente", "BPM descending"), true,
+  menu.addItem(7, L10n::tr("BPM descendente", "BPM descending"), true,
                sortMode == SortMode::BpmDesc);
   menu.addSeparator();
-  menu.addItem(7, L10n::tr("Limpiar seleccion", "Clear selection"),
+  menu.addItem(8, L10n::tr("Limpiar seleccion", "Clear selection"),
                headerMode == HeaderMode::SetlistTarget &&
                    pendingSelectedSongIds.size() > 0);
 
   menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&menuButton),
                      [this](int result) {
                        if (result == 1) {
-                         if (onImportRequested)
-                           onImportRequested();
+                         if (onOpenProjectRequested)
+                           onOpenProjectRequested();
                          return;
                        }
-                       if (result >= 2 && result <= 6) {
-                         sortMode = static_cast<SortMode>(result - 2);
+                       if (result == 2) {
+                         if (onCreateSongRequested)
+                           onCreateSongRequested();
+                         return;
+                       }
+                       if (result >= 3 && result <= 7) {
+                         sortMode = static_cast<SortMode>(result - 3);
                          rebuildRows();
                          return;
                        }
-                       if (result == 7) {
+                       if (result == 8) {
                          pendingSelectedSongIds.clear();
                          rebuildRows();
                        }

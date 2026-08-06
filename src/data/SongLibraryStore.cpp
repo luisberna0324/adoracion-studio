@@ -2838,16 +2838,36 @@ bool SongLibraryStore::updateActiveSetlistItem(
   const auto *song = findSongById(library.songs, songId);
   if (song == nullptr)
     return false;
-  if (song->projectPath.isNotEmpty()) {
-    const juce::File projectFile(song->projectPath);
-    ProjectSongSettings cachedSettings;
-    if (!ProjectStore::getCachedSettings(projectFile, cachedSettings))
-      return false;
+  juce::File projectFile(song->projectPath);
+  if (projectFile == juce::File{})
+    projectFile = ProjectStore::findRecentProjectFile(songId);
+  ProjectSongSettings cachedSettings;
+  bool hasCachedProjectSettings =
+      ProjectStore::getCachedSettings(songId, cachedSettings);
+  const bool isProjectSong =
+      song->projectPath.isNotEmpty() || projectFile != juce::File{} ||
+      hasCachedProjectSettings;
+  if (isProjectSong) {
+    if (!hasCachedProjectSettings && projectFile.existsAsFile())
+      hasCachedProjectSettings =
+          ProjectStore::getCachedSettings(projectFile, cachedSettings);
+    if (!hasCachedProjectSettings) {
+      cachedSettings.mix = createDefaultMixForSong(*song);
+      cachedSettings.tempoBpm =
+          song->bpm > 0 ? static_cast<double>(song->bpm) : 120.0;
+      cachedSettings.window = createDefaultWindowForSong(*song);
+      cachedSettings.arrangement = song->arrangement;
+      cachedSettings.arrangementCustomized =
+          !song->arrangement.parts.empty();
+      cachedSettings.dynamicGuide = makeDefaultDynamicGuideSettings();
+      cachedSettings.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
+      cachedSettings.clickDynMix = makeDefaultClickDynMixSnapshot();
+    }
     auto cachedItem = projectSettingsCacheItem(songId, cachedSettings);
     updater(cachedItem, *song);
     cachedItem.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
     ProjectStore::scheduleSettingsSave(
-        projectFile, projectSettingsFromItem(cachedItem, *song));
+        projectFile, songId, projectSettingsFromItem(cachedItem, *song));
     return true;
   }
 

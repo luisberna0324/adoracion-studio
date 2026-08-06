@@ -298,3 +298,4 @@ processor.setClickDivision(1 | 4);  // 1/4 + 1/16
 ## Archivos relacionados
 
 - [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md)
+- [DynamicGuide](DynamicGuide.md) — comparte convención de default mono Out 1

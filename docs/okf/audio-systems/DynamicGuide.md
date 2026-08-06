@@ -248,6 +248,34 @@ debe pasar por la misma compensación (`stemOutputLatencyThisBlock`). La línea
 de retardo se procesa también durante bloques silenciosos para que el primer
 anuncio no quede adelantado respecto de los instrumentos.
 
+## Enrutamiento de salida (contrato con el músico)
+
+El bus de la guía dinámica se publica por default como **mono en Out 1**, igual
+que el click. El render buffer interno es siempre estéreo (2 canales) para no
+perder información del sample original; cuando el routing efectivo es mono, el
+`StemOutputRouter` colapsa L+R a un único canal físico promediando ambos lados.
+Esto evita que la guía se monte sobre la mezcla principal cuando el host tiene
+2+ canales de salida y le da al músico un bus predecible que no compite con el
+resto.
+
+Anteriormente el default era estéreo en Out 1-2. Varios usuarios reportaron
+que la guía "salía por el canal 2" o se solapaba con la mezcla principal; el
+problema era justamente la asimetría con el click (mono Out 1). El default
+actual puede revertirse a estéreo desde la UI de routing si el músico lo
+necesita.
+
+| Default | Valor | Razón |
+|---------|-------|-------|
+| `dynamicGuideOutputChannelState` | `1` (Out 1) | Comparte el bus con el click |
+| `dynamicGuideOutputWidthState` | `1` (mono) | No se monta sobre Out 1-2 de la mezcla |
+| `DynamicGuideMixSnapshot::outputChannel` | `1` | Persiste la elección del músico |
+| `DynamicGuideMixSnapshot::outputWidth` | `1` | Idem |
+
+Cuando un stem está marcado como `stemGuideStates[i] = true`, la guía hereda
+el canal y el ancho configurados para ese stem (vía
+`getDynamicGuideOutputChannel` / `getDynamicGuideOutputWidth`). En ese caso
+los defaults de mono Out 1 no aplican y la guía sigue al stem.
+
 ## Estado compartido con arrange
 
 La lista de anuncios consumidos es almacenamiento fijo para
