@@ -12,6 +12,36 @@
 #include <utility>
 
 namespace {
+class LegacyProjectMigrationTask final
+    : public juce::ThreadWithProgressWindow {
+public:
+  LegacyProjectMigrationTask(const juce::String &songIdIn,
+                             const juce::File &destinationIn,
+                             juce::Component *centreAround)
+      : ThreadWithProgressWindow(
+            L10n::tr("Convirtiendo a proyecto", "Converting to project"),
+            true, false, 10000, {}, centreAround),
+        songId(songIdIn), destination(destinationIn) {}
+
+  void run() override {
+    success = ProjectStore::convertLegacySongToProject(
+        songId, destination, projectSong, sourceSetlistName, &error,
+        [this](const double progress, const juce::String &phase) {
+          setProgress(juce::jlimit(0.0, 1.0, progress));
+          setStatusMessage(phase);
+        });
+  }
+
+  bool success = false;
+  juce::String error;
+  juce::String sourceSetlistName;
+  ImportedSongData projectSong;
+
+private:
+  juce::String songId;
+  juce::File destination;
+};
+
 juce::String makeAutoPlayNextMarkKey(const juce::String &setlistId,
                                      const juce::String &songId) {
   if (setlistId.isEmpty() || songId.isEmpty())
@@ -446,6 +476,10 @@ SongListPanel::SongListPanel() {
       [this] { openProjectFileChooser(); });
   libraryCatalogPanel.setOnSongEditRequested(
       [this](const juce::String &songId) { openSongEditWizard(songId); });
+  libraryCatalogPanel.setOnSongConvertRequested(
+      [this](const juce::String &songId) {
+        beginLegacySongConversion(songId);
+      });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
     const auto trimmedSongId = songId.trim();
     if (trimmedSongId.isEmpty())
@@ -645,43 +679,14 @@ int SongListPanel::resolveAutoPlayNextIndex(
   const int currentIndex = getSongIndexById(currentSongId);
   if (currentIndex < 0)
     return -1;
+  if (!isAutoPlayNextEnabledForSong(currentSongId))
+    return -1;
 
-  int firstMarkedAfterCurrent = -1;
-  bool currentSongMarked = false;
-
-  for (size_t i = 0; i < activeSongIndices.size(); ++i) {
-    const int libraryIndex = activeSongIndices[i];
-    if (!juce::isPositiveAndBelow(libraryIndex, static_cast<int>(librarySongs.size())))
-      continue;
-
-    const auto &song = librarySongs[static_cast<size_t>(libraryIndex)];
-    const auto key = makeAutoPlayNextMarkKey(activeSetlistId, song.id);
-    const bool marked = key.isNotEmpty() && autoPlayNextMarks.contains(key);
-    if (!marked)
-      continue;
-
-    const int rowIndex = static_cast<int>(i);
-    if (rowIndex == currentIndex) {
-      currentSongMarked = true;
-      continue;
-    }
-    if (rowIndex > currentIndex && firstMarkedAfterCurrent < 0)
-      firstMarkedAfterCurrent = rowIndex;
-  }
-
-  // Preferred behavior: the marked song itself is the "next" target.
-  if (firstMarkedAfterCurrent >= 0)
-    return firstMarkedAfterCurrent;
-
-  // Backward compatibility: if current song is marked, fall through to next index.
-  if (currentSongMarked) {
-    const int immediateNext = currentIndex + 1;
-    if (juce::isPositiveAndBelow(immediateNext,
-                                 static_cast<int>(activeSongIndices.size())))
-      return immediateNext;
-  }
-
-  return -1;
+  const int immediateNext = currentIndex + 1;
+  return juce::isPositiveAndBelow(
+             immediateNext, static_cast<int>(activeSongIndices.size()))
+             ? immediateNext
+             : -1;
 }
 
 void SongListPanel::setNowPlayingSong(const juce::String &songId,
@@ -1782,17 +1787,23 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
 
   class SongActionsPopover final : public juce::Component {
   public:
-    SongActionsPopover(bool autoPlayEnabled, std::function<void()> onToggleFn,
+    SongActionsPopover(bool autoPlayEnabled, bool hasNextSong,
+                       std::function<void()> onToggleFn,
                        std::function<void()> onRemoveFn)
-        : toggleChip(autoPlayEnabled
-                         ? L10n::tr("Desactivar auto-play siguiente",
-                                    "Disable auto-play next")
-                         : L10n::tr("Activar auto-play siguiente",
-                                    "Enable auto-play next"),
+        : toggleChip(!hasNextSong
+                         ? L10n::tr("No hay canción siguiente",
+                                    "There is no next song")
+                         : (autoPlayEnabled
+                                ? L10n::tr(
+                                      "No reproducir siguiente al terminar",
+                                      "Don't play next when finished")
+                                : L10n::tr("Reproducir siguiente al terminar",
+                                           "Play next when finished")),
                      autoPlayEnabled, false),
           removeChip(L10n::tr("Quitar del setlist", "Remove from setlist"),
                      false, true),
           onToggle(std::move(onToggleFn)), onRemove(std::move(onRemoveFn)) {
+      toggleChip.setEnabled(hasNextSong);
       toggleChip.onClick = [this] {
         if (onToggle)
           onToggle();
@@ -1846,6 +1857,7 @@ void SongListPanel::ListContent::showActionsMenuForRow(int rowIndex) {
   auto safeThis = juce::Component::SafePointer<ListContent>(this);
   auto panel = std::make_unique<SongActionsPopover>(
       autoPlayEnabled,
+      rowIndex + 1 < static_cast<int>(songs.size()),
       [safeThis, songIndex] {
         if (safeThis == nullptr)
           return;
@@ -2633,6 +2645,118 @@ void SongListPanel::openProjectFile(const juce::File &file) {
   }
 }
 
+void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
+  const auto trimmedSongId = songId.trim();
+  const auto songIt = std::find_if(
+      librarySongs.begin(), librarySongs.end(),
+      [&trimmedSongId](const ImportedSongData &candidate) {
+        return candidate.id == trimmedSongId;
+      });
+  if (songIt == librarySongs.end() || isProjectBackedSong(*songIt))
+    return;
+
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  if (editor != nullptr && editor->isSongCurrentlyLoaded(trimmedSongId)) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Canción actualmente cargada", "Song currently loaded"),
+        L10n::tr(
+            "Carga otra canción antes de convertir esta. Así PlayWorship puede cerrar sus archivos legacy y eliminarlos con seguridad.",
+            "Load another song before converting this one. This lets PlayWorship close and safely remove its legacy files."));
+    return;
+  }
+  if (editor != nullptr)
+    editor->flushActiveSongPersistenceNow();
+
+  const auto title = juce::File::createLegalFileName(songIt->title.trim());
+  const auto artist = juce::File::createLegalFileName(songIt->artist.trim());
+  const auto baseName = artist.isNotEmpty() && title.isNotEmpty()
+                            ? artist + " - " + title
+                            : (title.isNotEmpty() ? title : "Canción");
+
+  juce::AlertWindow choice(
+      L10n::tr("Convertir a proyecto", "Convert to project"),
+      L10n::tr(
+          "Se creará y validará el proyecto antes de eliminar la estructura legacy. ¿Dónde quieres guardarlo?",
+          "The project will be created and validated before the legacy structure is removed. Where do you want to save it?"),
+      juce::AlertWindow::QuestionIcon);
+  choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
+  choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
+  choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
+  const int choiceId = choice.runModalLoop();
+  if (choiceId == 0)
+    return;
+
+  if (choiceId == 1) {
+    auto localDirectory =
+        SongLibraryStore::getRootDirectory().getChildFile("projects");
+    localDirectory.createDirectory();
+    const auto destination = localDirectory.getNonexistentChildFile(
+        baseName, ProjectStore::kFileExtension, false);
+    convertLegacySongAtDestination(trimmedSongId, destination);
+    return;
+  }
+
+  projectConversionFileChooser = std::make_unique<juce::FileChooser>(
+      L10n::tr("Guardar proyecto convertido", "Save converted project"),
+      juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+          .getChildFile(baseName + ProjectStore::kFileExtension),
+      "*.pwproj");
+  projectConversionFileChooser->launchAsync(
+      juce::FileBrowserComponent::saveMode |
+          juce::FileBrowserComponent::canSelectFiles |
+          juce::FileBrowserComponent::warnAboutOverwriting,
+      [safeThis = juce::Component::SafePointer<SongListPanel>(this),
+       trimmedSongId](const juce::FileChooser &chooser) {
+        if (safeThis == nullptr)
+          return;
+        auto destination = chooser.getResult();
+        if (destination == juce::File{})
+          return;
+        if (!destination.hasFileExtension(ProjectStore::kFileExtension))
+          destination =
+              destination.withFileExtension(ProjectStore::kFileExtension);
+        safeThis->convertLegacySongAtDestination(trimmedSongId, destination);
+      });
+}
+
+void SongListPanel::convertLegacySongAtDestination(
+    const juce::String &songId, const juce::File &destination) {
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  LegacyProjectMigrationTask task(songId, destination,
+                                  editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this));
+  const bool threadCompleted = task.runThread();
+  if (!threadCompleted || !task.success) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo convertir la canción",
+                 "Couldn't convert song"),
+        task.error.isNotEmpty()
+            ? task.error
+            : L10n::tr("La conversión no pudo completarse.",
+                       "Conversion couldn't be completed."));
+    return;
+  }
+
+  selectedSongId = songId;
+  AppSettings::setLastSelectedSongId(selectedSongId);
+  refreshFromStorage();
+  const auto sourceLabel = task.sourceSetlistName.isNotEmpty()
+                               ? task.sourceSetlistName
+                               : L10n::tr("Valores predeterminados",
+                                          "Default settings");
+  juce::AlertWindow::showMessageBoxAsync(
+      juce::AlertWindow::InfoIcon,
+      L10n::tr("Conversión completada", "Conversion completed"),
+      L10n::tr("La canción ahora vive en el proyecto:\n",
+               "The song now lives in the project:\n") +
+          destination.getFullPathName() + "\n\n" +
+          L10n::tr("Configuración tomada de: ", "Settings taken from: ") +
+          sourceLabel);
+}
+
 void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
@@ -3074,7 +3198,7 @@ void SongListPanel::refreshFromStorage() {
   autoPlayNextMarks.clear();
   if (activeSetlist != nullptr) {
     for (const auto &item : activeSetlist->items) {
-      if (item.autoPlayNext)
+      if (item.transitionToNext.autoPlay)
         autoPlayNextMarks.addIfNotAlreadyThere(
             makeAutoPlayNextMarkKey(activeSetlistId, item.songId));
     }

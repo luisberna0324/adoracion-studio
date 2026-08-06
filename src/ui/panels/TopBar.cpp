@@ -1710,11 +1710,14 @@ void TopBar::refreshFromProviders() {
       loadedSong != nullptr && loadedSong->id.isNotEmpty()
           ? loadedSong->id.trim()
           : songIdFromProvider;
+  const auto activeSongIdentity =
+      loadedSong != nullptr ? playbackIdentityForSong(*loadedSong)
+                            : activeSongId + "|legacy";
 
   if (!songLoaded) {
-    if (hasKey || lastKeyToken.isNotEmpty() || lastSongId.isNotEmpty()) {
+    if (hasKey || lastKeyToken.isNotEmpty() || lastSongIdentity.isNotEmpty()) {
       hasKey = false;
-      lastSongId.clear();
+      lastSongIdentity.clear();
       lastArtworkPath.clear();
       songArtwork = {};
       lastKeyToken.clear();
@@ -1741,9 +1744,9 @@ void TopBar::refreshFromProviders() {
             ? loadedSong->artist.trim()
             : L10n::tr("Sin artista", "Unknown artist");
 
-    const bool songChanged = activeSongId != lastSongId;
+    const bool songChanged = activeSongIdentity != lastSongIdentity;
     if (songChanged || !hasKey) {
-      lastSongId = activeSongId;
+      lastSongIdentity = activeSongIdentity;
       lastKeyToken = keyText;
       int semitone = 0;
       if (parseKeySemitone(keyText, semitone)) {

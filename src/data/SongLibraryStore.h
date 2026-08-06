@@ -70,9 +70,19 @@ struct DynamicGuideSettings {
       DynamicGuideChannelPolicy::EnsureVirtualGuideChannel;
 };
 
+/** Comportamiento al terminar esta posición dentro del setlist. */
+struct SetlistTransition {
+  bool autoPlay = false;
+};
+
 struct SetlistItem {
+  // Identifica la posición del setlist, independientemente de la canción.
+  // Permite evolucionar hacia canciones repetidas sin mezclar transiciones.
+  juce::String itemId;
   juce::String songId;
-  bool autoPlayNext = false;
+  SetlistTransition transitionToNext;
+  // Compatibilidad legacy: estos ajustes sólo se serializan para canciones
+  // que todavía no viven en un proyecto .pwproj.
   SongMixSnapshot mix;
   int pitchSemitones = 0;
   double tempoBpm = 0.0;
@@ -127,7 +137,16 @@ public:
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */
-  static bool registerProjectSong(ImportedSongData song);
+  static bool registerProjectSong(ImportedSongData &song);
+  /** Obtiene canción y ajustes canónicos para convertir una entrada legacy. */
+  static bool prepareLegacyProjectMigration(
+      const juce::String &songId, ImportedSongData &outSong,
+      SetlistItem &outSettingsItem, juce::String &outSourceSetlistName,
+      juce::String *errorMessage = nullptr);
+  /** Sustituye la entrada legacy preservando items, orden y transiciones. */
+  static bool finalizeLegacyProjectMigration(
+      const juce::String &legacySongId, ImportedSongData projectSong,
+      juce::String *errorMessage = nullptr);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
@@ -297,11 +316,14 @@ private:
   static SongMixSnapshot mixFromVar(const juce::var &v,
                                     const ImportedSongData *song,
                                     bool &changed);
-  static juce::var setlistItemToVar(const SetlistItem &item);
+  static juce::var setlistItemToVar(const SetlistItem &item,
+                                    bool persistLegacySongSettings);
   static SetlistItem setlistItemFromVar(const juce::var &v,
                                         const ImportedSongData *song,
                                         bool &changed);
-  static juce::var setlistToVar(const SetlistData &setlist);
+  static juce::var setlistToVar(
+      const SetlistData &setlist,
+      const std::vector<ImportedSongData> &songs);
   static SetlistData setlistFromVar(const juce::var &v,
                                     const std::vector<ImportedSongData> &songs,
                                     bool &changed);

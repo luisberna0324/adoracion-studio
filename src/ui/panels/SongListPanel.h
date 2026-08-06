@@ -177,6 +177,9 @@ private:
   void openSongImportWizard(const juce::File &destination);
   void openProjectFileChooser();
   void openSongEditWizard(const juce::String &songId);
+  void beginLegacySongConversion(const juce::String &songId);
+  void convertLegacySongAtDestination(const juce::String &songId,
+                                      const juce::File &destination);
   void openSetlistManager();
   void openHeaderMenu();
   void openLibraryBrowser();
@@ -257,4 +260,5 @@ private:
   std::function<void(const juce::String &)> onSetlistNameChanged;
   int lastActivatedIndex = -1;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
+  std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
 };

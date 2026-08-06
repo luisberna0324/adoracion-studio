@@ -57,6 +57,10 @@ struct SongTempoMapSnapshot {
 
 struct ImportedSongData {
   juce::String id;
+  // Identidad estable guardada dentro del manifiesto .pwproj. Puede diferir
+  // de `id`, que es la identidad local de la entrada de Biblioteca, cuando el
+  // proyecto y una canción legacy provienen de la misma canción original.
+  juce::String projectId;
   juce::String title;
   juce::String artist;
   int bpm = 0;
@@ -93,6 +97,9 @@ juce::String standardArrangementPartColorForName(const juce::String &name);
 juce::String fallbackArrangementPartColorForName(const juce::String &name);
 juce::String arrangementPartDisplayLabelForName(const juce::String &name);
 double estimateSongLengthSeconds(const ImportedSongData &song);
+bool isProjectBackedSong(const ImportedSongData &song);
+juce::String projectIdentityForSong(const ImportedSongData &song);
+juce::String playbackIdentityForSong(const ImportedSongData &song);
 constexpr int kWaveformPreviewBinCount = 22400;
 std::vector<float> buildMixedWaveformBins(
     const ImportedSongData &song, int binCount = kWaveformPreviewBinCount,

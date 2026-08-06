@@ -81,6 +81,33 @@ haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
 ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
 restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
 
+El origen de ajustes se decide exclusivamente por la referencia explícita
+`projectPath` de la entrada cargada. Una canción legacy con `projectPath` vacío
+no se convierte implícitamente en proyecto por coincidir su ID con la caché o
+con el índice de recientes: conserva pitch, tempo y mezcla del setlist. La
+Biblioteca mantiene además `projectId` (identidad del manifiesto) separado de
+`id` (identidad local de la entrada), de modo que un `.pwproj` exportado desde
+una canción legacy puede coexistir con ella. La UI compara ID y origen al
+detectar un cambio de canción; así reinicializa la tonalidad restaurada incluso
+cuando ambas variantes comparten el mismo ID histórico.
+
+### Conversión de canciones legacy
+
+La acción **Convertir a proyecto...** de Biblioteca no crea una copia legacy y
+otra portable. Obtiene audio, portada, metadatos y waveform del almacenamiento
+interno, toma mezcla, pitch, tempo, ventana, arrange, guía y click del setlist
+activo (o del primer setlist que contenga la canción) y construye un `.pwproj`.
+El paquete se vuelve a abrir y validar antes de modificar la Biblioteca.
+
+Tras la validación, la entrada conserva su ID local y todos los `SetlistItem`
+conservan `itemId`, orden y `transitionToNext`; únicamente la canción cambia su
+origen a `projectPath`. La carpeta `MTControls/audio/<song-id>` se mueve primero
+a staging, `songs.json` se reemplaza y sólo entonces se elimina el staging. Si
+no se puede guardar la Biblioteca, la carpeta vuelve a su ubicación original y
+el paquete recién creado se retira. No se permite elegir como destino una ruta
+dentro de la carpeta legacy. Una canción cargada debe soltarse antes de iniciar
+la conversión para que Windows también pueda cerrar y eliminar sus archivos.
+
 En escritorio, la aplicación Standalone es de instancia única y recibe rutas
 `.pwproj` desde la asociación del sistema operativo. Un doble clic inicia
 PlayWorship o lleva al frente la ventana existente, termina de persistir el
@@ -255,9 +282,19 @@ Al completar naturalmente la ventana `[Inicio, Fin]`, el transporte queda
 detenido y estacionado exactamente en `Fin`. La UI diferencia este estado de
 un stop manual —que retorna a `Inicio`— y, si la canción tiene configurado
 auto-play dentro del setlist activo, carga el destino y llama `playSong()`.
-La marca de auto-play se persiste en el `SetlistItem`; por tanto sobrevive al
+La marca se persiste como `SetlistItem.transitionToNext.autoPlay`: significa
+exclusivamente «al terminar este item, reproducir el item inmediatamente
+siguiente». No busca otra canción marcada ni salta posiciones intermedias; el
+último item nunca puede tener una transición activa. Por tanto sobrevive al
 reinicio de la aplicación y continúa siendo una propiedad local del setlist,
 no del proyecto `.pwproj`.
+
+Los items que referencian un `.pwproj` serializan sólo identidad, referencia y
+transición. Mezcla, pitch, tempo, ventana, arrange, guía, click y routing se
+restauran desde el proyecto. Los mismos campos se siguen leyendo y escribiendo
+en el item únicamente para canciones legacy hasta completar su migración. El
+lector convierte el antiguo `autoPlayNext` al objeto `transitionToNext` sin
+perder la marca existente.
 
 Un cambio de pitch publica inmediatamente ese target entero, pero Bungee acerca
 la escala DSP al nuevo valor durante 50 ms de audio. La rampa es interna al

@@ -1,5 +1,6 @@
 #include "ProjectStore.h"
 #include "AppSettings.h"
+#include "Localization.h"
 #include "SessionAuthLogger.h"
 
 #include <algorithm>
@@ -267,6 +268,31 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
   return out;
 }
 
+ProjectSongSettings settingsFromLegacySetlistItem(
+    const SetlistItem &item, const ImportedSongData &song) {
+  ProjectSongSettings settings;
+  settings.mix = item.mix;
+  settings.pitchSemitones = item.pitchSemitones;
+  settings.tempoBpm = item.tempoBpm > 0.0
+                          ? item.tempoBpm
+                          : (song.bpm > 0 ? static_cast<double>(song.bpm)
+                                          : 120.0);
+  settings.window = item.window;
+  if (settings.window.endSec <= 0.0) {
+    settings.window.endSec = estimateSongLengthSeconds(song);
+    settings.window.fadeOutSec =
+        juce::jmin(1.0, settings.window.endSec);
+  }
+  settings.windowCustomized = item.windowCustomized;
+  settings.arrangement = item.arrangement;
+  settings.arrangementCustomized = item.arrangementCustomized;
+  settings.dynamicGuide = item.dynamicGuide;
+  settings.dynamicGuideCustomized = item.dynamicGuideCustomized;
+  settings.dynamicGuideMix = item.dynamicGuideMix;
+  settings.clickDynMix = item.clickDynMix;
+  return settings;
+}
+
 juce::File cachedSettingsFile(const juce::String &projectId) {
   if (projectId.trim().isEmpty())
     return {};
@@ -369,6 +395,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   }
   auto &song = document.song;
   if (song.id.trim().isEmpty()) song.id = juce::Uuid().toString();
+  if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
   if (song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
   const auto temp = destination.getSiblingFile(destination.getFileName() + ".tmp");
   if (temp.existsAsFile()) temp.deleteFile();
@@ -379,6 +406,8 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   stageDir.createDirectory();
   auto cleanupStage = [&stageDir] { if (stageDir.exists()) stageDir.deleteRecursively(); };
   ImportedSongData manifestSong = song;
+  manifestSong.id = song.projectId;
+  manifestSong.projectId.clear();
   manifestSong.projectPath.clear();
   for (size_t i = 0; i < song.stems.size(); ++i) {
     auto &stem = song.stems[i];
@@ -458,6 +487,7 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   bool changed = false;
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
   if (song.id.isEmpty() || song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "Project has no valid song or stems."; return false; }
+  song.projectId = song.id.trim();
   ProjectSongSettings newerCachedSettings;
   const auto settingsCacheFile = cachedSettingsFile(song.id);
   const bool hasNewerCachedSettings =
@@ -540,6 +570,108 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   recordRecent(outDocument);
   if (hasNewerCachedSettings)
     settingsSaveQueue().schedule(file, outDocument.settings);
+  return true;
+}
+
+bool ProjectStore::convertLegacySongToProject(
+    const juce::String &legacySongId, const juce::File &destination,
+    ImportedSongData &outProjectSong, juce::String &outSourceSetlistName,
+    juce::String *errorMessage,
+    const ProjectMigrationProgressFn &onProgress) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  outProjectSong = {};
+  outSourceSetlistName.clear();
+
+  if (destination.exists()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "Ya existe un archivo con ese nombre. Elige otro destino.",
+          "A file with that name already exists. Choose another destination.");
+    return false;
+  }
+
+  ImportedSongData legacySong;
+  SetlistItem sourceSettings;
+  if (!SongLibraryStore::prepareLegacyProjectMigration(
+          legacySongId, legacySong, sourceSettings, outSourceSetlistName,
+          errorMessage))
+    return false;
+
+  const auto legacyAudioDirectory = SongLibraryStore::getRootDirectory()
+                                        .getChildFile("audio")
+                                        .getChildFile(legacySong.id);
+  if (destination.isAChildOf(legacyAudioDirectory)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "El proyecto no puede guardarse dentro de la carpeta legacy que será eliminada.",
+          "The project can't be saved inside the legacy folder that will be removed.");
+    return false;
+  }
+
+  if (onProgress)
+    onProgress(0.05, L10n::tr("Preparando canción legacy...",
+                              "Preparing legacy song..."));
+  ProjectDocument document;
+  document.song = legacySong;
+  document.song.projectId = legacySong.id;
+  document.settings = settingsFromLegacySetlistItem(sourceSettings, legacySong);
+  document.waveformBins = SongLibraryStore::loadWaveformCache(legacySong.id);
+  if (document.waveformBins.empty()) {
+    document.waveformBins = buildMixedWaveformBins(
+        legacySong, kWaveformPreviewBinCount,
+        [&onProgress](const double waveformProgress) {
+          if (onProgress)
+            onProgress(0.08 + 0.22 * juce::jlimit(0.0, 1.0, waveformProgress),
+                       L10n::tr("Generando forma de onda...",
+                                "Generating waveform..."));
+        });
+  }
+
+  if (onProgress)
+    onProgress(0.32, L10n::tr("Empaquetando proyecto...",
+                              "Packaging project..."));
+  juce::String migrationError;
+  double packageProgress = 0.0;
+  if (!save(document, destination, &migrationError, &packageProgress)) {
+    if (errorMessage != nullptr)
+      *errorMessage = migrationError;
+    return false;
+  }
+
+  auto rollbackPackage = [&destination] {
+    ProjectStore::forgetRecentProject(destination);
+    if (destination.existsAsFile())
+      destination.deleteFile();
+  };
+
+  if (onProgress)
+    onProgress(0.82, L10n::tr("Validando proyecto...",
+                              "Validating project..."));
+  ProjectDocument opened;
+  if (!open(destination, opened, &migrationError)) {
+    rollbackPackage();
+    if (errorMessage != nullptr)
+      *errorMessage = migrationError;
+    return false;
+  }
+
+  if (onProgress)
+    onProgress(0.94, L10n::tr("Reemplazando estructura legacy...",
+                              "Replacing legacy structure..."));
+  if (!SongLibraryStore::finalizeLegacyProjectMigration(
+          legacySong.id, opened.song, &migrationError)) {
+    rollbackPackage();
+    if (errorMessage != nullptr)
+      *errorMessage = migrationError;
+    return false;
+  }
+
+  opened.song.id = legacySong.id;
+  outProjectSong = std::move(opened.song);
+  if (onProgress)
+    onProgress(1.0, L10n::tr("Conversión completada",
+                             "Conversion completed"));
   return true;
 }
 
@@ -643,7 +775,7 @@ juce::File ProjectStore::findRecentProjectFile(
 void ProjectStore::recordRecent(const ProjectDocument &document) {
   auto entries = getRecentProjects();
   entries.erase(std::remove_if(entries.begin(), entries.end(), [&document](const auto &item) { return item.file == document.projectFile; }), entries.end());
-  entries.insert(entries.begin(), {document.song.id, document.song.title, document.projectFile, juce::Time::getCurrentTime().toMilliseconds(), true});
+  entries.insert(entries.begin(), {projectIdentityForSong(document.song), document.song.title, document.projectFile, juce::Time::getCurrentTime().toMilliseconds(), true});
   auto *root = new juce::DynamicObject(); juce::Array<juce::var> items;
   for (const auto &entry : entries) { auto *o = new juce::DynamicObject(); o->setProperty("id", entry.id); o->setProperty("title", entry.title); o->setProperty("path", entry.file.getFullPathName()); o->setProperty("lastOpenedMs", entry.lastOpenedMs); items.add(o); }
   root->setProperty("recent", items); getRegistryFile().replaceWithText(juce::JSON::toString(juce::var(root), true));

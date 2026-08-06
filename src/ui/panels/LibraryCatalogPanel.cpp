@@ -790,6 +790,10 @@ void LibraryCatalogPanel::setOnSongEditRequested(SongEditRequested cb) {
   onSongEditRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnSongConvertRequested(SongConvertRequested cb) {
+  onSongConvertRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnSongDeleteRequested(SongDeleteRequested cb) {
   onSongDeleteRequested = std::move(cb);
 }
@@ -1041,6 +1045,7 @@ void LibraryCatalogPanel::rebuildRows() {
     item.inSetlist = item.songId.isNotEmpty() && activeSetlistSongIds.contains(item.songId);
     item.isNowPlaying =
         playbackActive && nowPlayingSongId.isNotEmpty() && item.songId == nowPlayingSongId;
+    item.isProjectBacked = isProjectBackedSong(song);
     visibleRows.push_back(std::move(item));
   }
 
@@ -1219,6 +1224,25 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                        if (targetItem.songId.isNotEmpty())
                          safeThis->onSongEditRequested(targetItem.songId);
                      }});
+  const auto &selectedItem =
+      visibleRows[static_cast<size_t>(rowIndex)];
+  if (!selectedItem.isProjectBacked) {
+    actions.push_back(
+        {L10n::tr("Convertir a proyecto...", "Convert to project..."),
+         true, false, false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr ||
+               safeThis->onSongConvertRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex,
+                   static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto &targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.songId.isNotEmpty())
+             safeThis->onSongConvertRequested(targetItem.songId);
+         }});
+  }
   actions.push_back({L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
                      [safeThis, rowIndex] {
                        if (safeThis == nullptr ||

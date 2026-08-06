@@ -178,6 +178,22 @@ void MTControlsAudioProcessorEditor::openProjectFromExternalApplication(
     startTimerHz(mainUiInitialized ? 20 : 12);
 }
 
+bool MTControlsAudioProcessorEditor::isSongCurrentlyLoaded(
+    const juce::String &songId) const noexcept {
+  return hasCurrentLoadedSong && songId.trim().isNotEmpty() &&
+         currentLoadedSong.id == songId.trim();
+}
+
+void MTControlsAudioProcessorEditor::flushActiveSongPersistenceNow() {
+  maybePersistSongWindowForActiveSong();
+  maybePersistClickDynMetronomeEnabledForActiveSong();
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->flushPendingPersistenceNow();
+  if (hasCurrentLoadedSong && currentLoadedSong.projectPath.isNotEmpty())
+    ProjectStore::flushPendingSettings(juce::File(currentLoadedSong.projectPath));
+  ProjectStore::flushAllPendingSettings();
+}
+
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #if JucePlugin_Build_Standalone
   auto *top = getTopLevelComponent();
@@ -643,33 +659,56 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     std::vector<bool> pitchShiftMask;
     int clickStemIndex = -1;
     ProjectSongSettings projectSettings;
-    bool hasProjectSettings = false;
     ImportedSongData sourceSong = song;
-    juce::File projectFile(song.projectPath);
-    if (projectFile == juce::File{})
-      projectFile = ProjectStore::findRecentProjectFile(song.id);
+    const bool isProjectSong = isProjectBackedSong(song);
+    const bool hasProjectSettings = isProjectSong;
+    bool restoredProjectSettings = false;
+    const auto localLibrarySongId = song.id;
+    const auto projectId = projectIdentityForSong(song);
+    juce::File projectFile(isProjectSong ? song.projectPath : juce::String{});
     if (projectFile.existsAsFile()) {
       ProjectDocument document;
       juce::String projectError;
       if (ProjectStore::open(projectFile, document, &projectError)) {
         sourceSong = document.song;
+        // ProjectStore devuelve el ID del manifiesto. La UI y los setlists
+        // deben conservar la identidad local de esta entrada de Biblioteca.
+        sourceSong.id = localLibrarySongId;
         projectSettings = document.settings;
-        hasProjectSettings = true;
+        restoredProjectSettings = true;
       } else {
         SessionAuthLogger::write("[Project] Couldn't reopen " +
                                  projectFile.getFullPathName() + ": " +
                                  projectError);
       }
-    } else if (ProjectStore::getCachedSettings(song.id, projectSettings)) {
-      hasProjectSettings = true;
+    }
+    if (isProjectSong && !restoredProjectSettings &&
+        ProjectStore::getCachedSettings(projectId, projectSettings)) {
+      restoredProjectSettings = true;
       SessionAuthLogger::write(
           "[Project] Restored settings from local cache for unavailable "
           "project id=" +
-          song.id);
-    } else if (projectFile != juce::File{}) {
+          projectId);
+    }
+    if (isProjectSong && !restoredProjectSettings) {
+      for (const auto &stem : sourceSong.stems) {
+        if (!stem.include)
+          continue;
+        StemMixSnapshot stemMix;
+        stemMix.stemId = stem.stemId;
+        projectSettings.mix.stems.push_back(std::move(stemMix));
+      }
+      projectSettings.tempoBpm =
+          sourceSong.bpm > 0 ? static_cast<double>(sourceSong.bpm) : 120.0;
+      projectSettings.window.endSec = estimateSongLengthSeconds(sourceSong);
+      projectSettings.window.fadeOutSec =
+          juce::jmin(1.0, projectSettings.window.endSec);
+      projectSettings.arrangement = sourceSong.arrangement;
+      projectSettings.arrangementCustomized =
+          !sourceSong.arrangement.parts.empty();
       SessionAuthLogger::write(
-          "[Project] Package unavailable; changes will remain in local cache "
-          "until relinked: " +
+          "[Project] Settings unavailable; using project defaults until "
+          "the package is relinked: " +
           projectFile.getFullPathName());
     }
     ImportedSongData loadedSong = sourceSong;
@@ -967,10 +1006,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   requestSongLoadAction = [this](const ImportedSongData &song,
                                  const int songIndex) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+    const auto requestedSongIdentity = playbackIdentityForSong(song);
+    const auto loadedSongIdentity =
+        hasCurrentLoadedSong ? playbackIdentityForSong(currentLoadedSong)
+                             : juce::String{};
 
     if (pendingManualPadSongLoad) {
-      if (hasCurrentLoadedSong && song.id.isNotEmpty() &&
-          song.id == currentLoadedSong.id) {
+      if (hasCurrentLoadedSong && requestedSongIdentity.isNotEmpty() &&
+          requestedSongIdentity == loadedSongIdentity) {
         pendingManualPadSongLoad = false;
         pendingManualPadSong = ImportedSongData{};
         pendingManualPadSongIndex = -1;
@@ -987,8 +1030,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
 
     const bool isDifferentLoadedSong =
-        hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty() &&
-        song.id.isNotEmpty() && song.id != currentLoadedSong.id;
+        hasCurrentLoadedSong && requestedSongIdentity.isNotEmpty() &&
+        requestedSongIdentity != loadedSongIdentity;
     if (isDifferentLoadedSong &&
         processorRef.getActivePadNoteIndex() >= 0) {
       processorRef.beginPadsSongTransitionFadeOut();

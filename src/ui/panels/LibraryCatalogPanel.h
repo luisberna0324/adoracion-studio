@@ -19,6 +19,7 @@ public:
   using SongLoadRequested =
       std::function<void(const ImportedSongData &, int songIndex)>;
   using SongEditRequested = std::function<void(const juce::String &songId)>;
+  using SongConvertRequested = std::function<void(const juce::String &songId)>;
   using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using CreateSongRequested = std::function<void()>;
@@ -30,6 +31,7 @@ public:
 
   void setOnSongLoadRequested(SongLoadRequested cb);
   void setOnSongEditRequested(SongEditRequested cb);
+  void setOnSongConvertRequested(SongConvertRequested cb);
   void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnCreateSongRequested(CreateSongRequested cb);
@@ -79,6 +81,7 @@ private:
     juce::Colour accentColour = UITheme::accent;
     bool inSetlist = false;
     bool isNowPlaying = false;
+    bool isProjectBacked = false;
   };
 
   class IconButton final : public juce::Button {
@@ -226,6 +229,7 @@ private:
 
   SongLoadRequested onSongLoadRequested;
   SongEditRequested onSongEditRequested;
+  SongConvertRequested onSongConvertRequested;
   SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
   CreateSongRequested onCreateSongRequested;

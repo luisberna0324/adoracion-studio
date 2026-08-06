@@ -194,7 +194,8 @@ se modifica ningún pad. `getActiveNoteIndex()` publica el pad seleccionado para
 que este comportamiento también funcione cuando la nota se disparó por MIDI y
 para que la interfaz mantenga su indicador sincronizado.
 
-Cuando la canción tiene un destino de autoplay válido, el editor inicia un
+Cuando el item actual tiene activa su transición autoplay hacia el item
+inmediatamente siguiente, el editor inicia un
 fade down del bus de Pads al faltar 1, 3 o 5 segundos para `Fin`, según el
 preset configurado. La nota seleccionada se conserva aunque el bus llegue a
 silencio. Después de cargar la siguiente canción se retiran las voces antiguas,

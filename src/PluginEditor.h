@@ -28,6 +28,8 @@ public:
 
   /** Recibe un proyecto solicitado por asociación de archivo/doble clic. */
   void openProjectFromExternalApplication(const juce::File &file);
+  bool isSongCurrentlyLoaded(const juce::String &songId) const noexcept;
+  void flushActiveSongPersistenceNow();
 
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
