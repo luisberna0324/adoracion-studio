@@ -137,6 +137,9 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_ref }}
           fetch-depth: 0
 
+      - name: Create third_party directory
+        run: mkdir -p third_party
+
       - name: Checkout JUCE
         uses: actions/checkout@v4
         with:
@@ -221,6 +224,10 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_ref }}
           fetch-depth: 0
+
+      - name: Create third_party directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path third_party
 
       - name: Checkout JUCE
         uses: actions/checkout@v4
