@@ -231,7 +231,9 @@ public:
   /** Conversión de stems reutilizada por los paquetes .pwproj. */
   static bool convertStemForProject(const juce::File &source,
                                     const juce::File &destination,
-                                    juce::String &errorMessage);
+                                    juce::String &errorMessage,
+                                    double durationSec = 0.0,
+                                    const SongImportProgressFn &onProgress = {});
   static juce::String projectStorageStemExtension();
 
   /**
@@ -254,7 +256,9 @@ private:
   static juce::File resolveBundledFfmpegBinary();
   static bool convertStemToStorageFormat(const juce::File &source,
                                          const juce::File &destination,
-                                         juce::String &errorMessage);
+                                         juce::String &errorMessage,
+                                         double durationSec = 0.0,
+                                         const SongImportProgressFn &onProgress = {});
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);

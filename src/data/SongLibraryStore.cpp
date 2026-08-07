@@ -1812,7 +1812,8 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
 
 bool SongLibraryStore::convertStemToStorageFormat(
     const juce::File &source, const juce::File &destination,
-    juce::String &errorMessage) {
+    juce::String &errorMessage, const double durationSec,
+    const SongImportProgressFn &onProgress) {
   auto ffmpegBinary = resolveBundledFfmpegBinary();
   if (!ffmpegBinary.existsAsFile()) {
     juce::String bootstrapError;
@@ -1839,6 +1840,9 @@ bool SongLibraryStore::convertStemToStorageFormat(
   args.add("-y");
   args.add("-v");
   args.add("error");
+  args.add("-progress");
+  args.add("pipe:1");
+  args.add("-nostats");
   args.add("-i");
   args.add(source.getFullPathName());
   args.add("-map_metadata");
@@ -1854,13 +1858,73 @@ bool SongLibraryStore::convertStemToStorageFormat(
     return false;
   }
 
-  if (!process.waitForProcessToFinish(10 * 60 * 1000)) {
-    process.kill();
-    errorMessage = juce::String(kStorageFormatLabel) + " conversion timed out.";
-    return false;
+  juce::String output;
+  juce::String pendingOutput;
+  auto consumeOutput = [&](const char *bytes, const int byteCount) {
+    const auto chunk = juce::String::fromUTF8(bytes, byteCount);
+    pendingOutput += chunk;
+    for (;;) {
+      const auto newline = pendingOutput.indexOfChar('\n');
+      if (newline < 0)
+        break;
+      const auto line = pendingOutput.substring(0, newline).trim();
+      pendingOutput = pendingOutput.substring(newline + 1);
+      if (line.startsWith("out_time_us=") ||
+          line.startsWith("out_time_ms=")) {
+        const auto encodedTime =
+            line.fromFirstOccurrenceOf("=", false, false).getLargeIntValue();
+        if (durationSec > 0.0 && onProgress) {
+          const auto progress = static_cast<double>(encodedTime) /
+                                (durationSec * 1000000.0);
+          onProgress(juce::jlimit(0.0, 0.995, progress), {});
+        }
+      } else if (line == "progress=end" && onProgress) {
+        onProgress(1.0, {});
+      } else if (line.isNotEmpty() && !line.startsWith("bitrate=") &&
+                 !line.startsWith("total_size=") &&
+                 !line.startsWith("out_time=") &&
+                 !line.startsWith("dup_frames=") &&
+                 !line.startsWith("drop_frames=") &&
+                 !line.startsWith("speed=") &&
+                 !line.startsWith("progress=")) {
+        output << line << "\n";
+      }
+    }
+  };
+
+  const auto startedAt = juce::Time::getMillisecondCounter();
+  // ChildProcess::readProcessOutput waits for the requested byte count on
+  // Windows and may buffer similarly through stdio on POSIX. A small buffer
+  // lets each FFmpeg progress block reach the UI as soon as it is emitted.
+  std::array<char, 64> processBuffer{};
+  while (process.isRunning()) {
+    const auto bytesRead = process.readProcessOutput(
+        processBuffer.data(), static_cast<int>(processBuffer.size()));
+    if (bytesRead > 0)
+      consumeOutput(processBuffer.data(), bytesRead);
+    else
+      juce::Thread::sleep(15);
+
+    if (juce::Time::getMillisecondCounter() - startedAt >=
+        static_cast<juce::uint32>(10 * 60 * 1000)) {
+      process.kill();
+      errorMessage =
+          juce::String(kStorageFormatLabel) + " conversion timed out.";
+      return false;
+    }
+  }
+  for (;;) {
+    const auto bytesRead = process.readProcessOutput(
+        processBuffer.data(), static_cast<int>(processBuffer.size()));
+    if (bytesRead <= 0)
+      break;
+    consumeOutput(processBuffer.data(), bytesRead);
   }
 
-  const auto output = process.readAllProcessOutput().trim();
+  if (pendingOutput.trim().isNotEmpty() &&
+      !pendingOutput.trim().containsChar('='))
+    output << pendingOutput.trim();
+  output = output.trim();
   if (static_cast<int>(process.getExitCode()) != 0 || !destination.existsAsFile()) {
     if (destination.existsAsFile())
       destination.deleteFile();
@@ -1875,8 +1939,11 @@ bool SongLibraryStore::convertStemToStorageFormat(
 
 bool SongLibraryStore::convertStemForProject(const juce::File &source,
                                              const juce::File &destination,
-                                             juce::String &errorMessage) {
-  return convertStemToStorageFormat(source, destination, errorMessage);
+                                             juce::String &errorMessage,
+                                             const double durationSec,
+                                             const SongImportProgressFn &onProgress) {
+  return convertStemToStorageFormat(source, destination, errorMessage,
+                                    durationSec, onProgress);
 }
 
 juce::String SongLibraryStore::projectStorageStemExtension() {

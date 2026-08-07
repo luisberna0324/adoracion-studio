@@ -108,6 +108,15 @@ el paquete recién creado se retira. No se permite elegir como destino una ruta
 dentro de la carpeta legacy. Una canción cargada debe soltarse antes de iniciar
 la conversión para que Windows también pueda cerrar y eliminar sus archivos.
 
+El progreso de esta migración representa trabajo real y es monotónico. La
+generación de waveform ocupa el tramo inicial; la conversión de cada stem usa
+`ffmpeg -progress pipe:1` y pondera `out_time_us` por la duración del stem; la
+escritura del ZIP avanza según los bytes entregados al `OutputStream`; y la
+validación avanza según los bytes extraídos nuevamente a caché. Las
+notificaciones se limitan a intervalos cortos para no bloquear la UI, pero no
+se simula avance mediante temporizadores. Por eso una demora del disco o del
+encoder se refleja en la fase y porcentaje que realmente la está causando.
+
 En escritorio, la aplicación Standalone es de instancia única y recibe rutas
 `.pwproj` desde la asociación del sistema operativo. Un doble clic inicia
 PlayWorship o lleva al frente la ventana existente, termina de persistir el

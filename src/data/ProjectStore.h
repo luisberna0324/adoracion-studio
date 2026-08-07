@@ -32,8 +32,9 @@ struct RecentProjectInfo {
   bool available = false;
 };
 
-using ProjectMigrationProgressFn =
+using ProjectProgressFn =
     std::function<void(double progress01, const juce::String &phase)>;
+using ProjectMigrationProgressFn = ProjectProgressFn;
 
 /**
  * Almacenamiento portable de canciones. Un .pwproj es un ZIP autocontenido:
@@ -47,10 +48,12 @@ public:
 
   static bool save(ProjectDocument document, const juce::File &destination,
                    juce::String *errorMessage = nullptr,
-                   double *progress01 = nullptr);
+                   double *progress01 = nullptr,
+                   const ProjectProgressFn &onProgress = {});
   static bool open(const juce::File &file, ProjectDocument &outDocument,
                    juce::String *errorMessage = nullptr,
-                   bool rebuildCache = true);
+                   bool rebuildCache = true,
+                   const ProjectProgressFn &onProgress = {});
   /** Convierte una canción legacy, valida el paquete y retira su audio interno. */
   static bool convertLegacySongToProject(
       const juce::String &legacySongId, const juce::File &destination,

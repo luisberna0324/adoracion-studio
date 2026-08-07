@@ -11,6 +11,62 @@ constexpr auto kManifestName = "manifest.json";
 constexpr auto kAudioPrefix = "audio/";
 constexpr auto kWaveformName = "waveform.bin";
 
+class ProgressThrottle final {
+public:
+  explicit ProgressThrottle(ProjectProgressFn callbackIn)
+      : callback(std::move(callbackIn)) {}
+
+  void publish(double progress, const juce::String &phase,
+               const bool force = false) {
+    if (!callback)
+      return;
+    progress = juce::jlimit(lastProgress, 1.0, progress);
+    const auto now = juce::Time::getMillisecondCounter();
+    if (!force && progress < 1.0 && now - lastPublishedAt < 75 &&
+        progress - lastProgress < 0.01)
+      return;
+    lastProgress = progress;
+    lastPublishedAt = now;
+    callback(progress, phase);
+  }
+
+private:
+  ProjectProgressFn callback;
+  double lastProgress = 0.0;
+  juce::uint32 lastPublishedAt = 0;
+};
+
+class ProgressOutputStream final : public juce::OutputStream {
+public:
+  ProgressOutputStream(juce::OutputStream &targetIn,
+                       const juce::int64 estimatedBytesIn,
+                       std::function<void(double)> onProgressIn)
+      : target(targetIn), estimatedBytes(juce::jmax<juce::int64>(
+                              1, estimatedBytesIn)),
+        onProgress(std::move(onProgressIn)) {}
+
+  void flush() override { target.flush(); }
+  bool setPosition(const juce::int64 newPosition) override {
+    return target.setPosition(newPosition);
+  }
+  juce::int64 getPosition() override { return target.getPosition(); }
+  bool write(const void *data, const size_t bytes) override {
+    if (!target.write(data, bytes))
+      return false;
+    if (onProgress) {
+      const auto fraction = static_cast<double>(target.getPosition()) /
+                            static_cast<double>(estimatedBytes);
+      onProgress(juce::jlimit(0.0, 0.995, fraction));
+    }
+    return true;
+  }
+
+private:
+  juce::OutputStream &target;
+  juce::int64 estimatedBytes;
+  std::function<void(double)> onProgress;
+};
+
 class ProjectSettingsSaveJob final : public juce::ThreadPoolJob {
 public:
   ProjectSettingsSaveJob(juce::CriticalSection &writeGuardIn,
@@ -333,15 +389,32 @@ bool readCachedSettings(const juce::String &projectId,
   return true;
 }
 
-bool copyZipEntry(juce::ZipFile &zip, const juce::String &name, const juce::File &target,
-                  juce::String &error) {
+bool copyZipEntry(juce::ZipFile &zip, const juce::String &name,
+                  const juce::File &target, juce::String &error,
+                  const std::function<void(juce::int64)> &onBytesCopied = {}) {
   const int index = zip.getIndexOfFileName(name);
   if (index < 0) { error = "Project is missing " + name; return false; }
   std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(index));
   if (in == nullptr) { error = "Couldn't read " + name; return false; }
   target.getParentDirectory().createDirectory();
   juce::FileOutputStream out(target);
-  const auto copied = out.openedOk() ? out.writeFromInputStream(*in, -1) : -1;
+  juce::int64 copied = 0;
+  std::array<char, 64 * 1024> buffer{};
+  while (out.openedOk() && !in->isExhausted()) {
+    const auto bytesRead =
+        in->read(buffer.data(), static_cast<int>(buffer.size()));
+    if (bytesRead < 0 || (bytesRead > 0 &&
+                          !out.write(buffer.data(),
+                                     static_cast<size_t>(bytesRead)))) {
+      copied = -1;
+      break;
+    }
+    if (bytesRead == 0)
+      break;
+    copied += bytesRead;
+    if (onBytesCopied)
+      onBytesCopied(bytesRead);
+  }
   out.flush();
   if (!out.openedOk() || copied < 0 || out.getStatus().failed()) {
     error = "Couldn't extract " + name; return false;
@@ -386,9 +459,25 @@ bool downloadArtworkToCache(const juce::String &url, const juce::File &cache,
 } // namespace
 
 bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
-                        juce::String *errorMessage, double *progress01) {
+                        juce::String *errorMessage, double *progress01,
+                        const ProjectProgressFn &onProgress) {
   if (errorMessage != nullptr) errorMessage->clear();
   if (progress01 != nullptr) *progress01 = 0.0;
+  ProjectProgressFn combinedProgress;
+  if (progress01 != nullptr || onProgress) {
+    combinedProgress = [progress01, &onProgress](
+                           const double progress,
+                           const juce::String &phase) {
+      if (progress01 != nullptr)
+        *progress01 = progress;
+      if (onProgress)
+        onProgress(progress, phase);
+    };
+  }
+  ProgressThrottle progress(std::move(combinedProgress));
+  progress.publish(0.0,
+                   L10n::tr("Preparando paquete...", "Preparing package..."),
+                   true);
   if (!destination.hasFileExtension(kFileExtension)) {
     if (errorMessage != nullptr) *errorMessage = "Project file must use .pwproj";
     return false;
@@ -409,6 +498,23 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   manifestSong.id = song.projectId;
   manifestSong.projectId.clear();
   manifestSong.projectPath.clear();
+  const auto fallbackSongDuration = estimateSongLengthSeconds(song);
+  std::vector<double> stemWork;
+  stemWork.reserve(song.stems.size());
+  double totalStemWork = 0.0;
+  for (const auto &stem : song.stems) {
+    const juce::File source(stem.storedPath.isNotEmpty() ? stem.storedPath
+                                                         : stem.sourcePath);
+    const auto weight = stem.durationSec > 0.0
+                            ? stem.durationSec
+                            : juce::jmax(1.0, static_cast<double>(source.getSize()) /
+                                                 (1024.0 * 1024.0));
+    stemWork.push_back(weight);
+    totalStemWork += weight;
+  }
+  totalStemWork = juce::jmax(1.0, totalStemWork);
+  double completedStemWork = 0.0;
+  juce::int64 estimatedPackageBytes = 4096;
   for (size_t i = 0; i < song.stems.size(); ++i) {
     auto &stem = song.stems[i];
     const juce::File source(stem.storedPath.isNotEmpty() ? stem.storedPath : stem.sourcePath);
@@ -425,17 +531,35 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
           (legalId.isNotEmpty() ? legalId : juce::String("stem_") + juce::String(static_cast<int>(i + 1))) +
           SongLibraryStore::projectStorageStemExtension());
       juce::String conversionError;
-      if (!SongLibraryStore::convertStemForProject(source, converted, conversionError)) {
+      const auto phase =
+          L10n::tr("Convirtiendo ", "Converting ") +
+          (stem.displayName.isNotEmpty() ? stem.displayName
+                                         : source.getFileNameWithoutExtension());
+      const auto progressDuration = stem.durationSec > 0.0
+                                        ? stem.durationSec
+                                        : fallbackSongDuration;
+      if (!SongLibraryStore::convertStemForProject(
+              source, converted, conversionError, progressDuration,
+              [&](const double stemProgress, const juce::String &) {
+                const auto overall =
+                    (completedStemWork + stemWork[i] * stemProgress) /
+                    totalStemWork;
+                progress.publish(0.60 * overall, phase);
+              })) {
         cleanupStage();
         if (errorMessage != nullptr) *errorMessage = conversionError;
         return false;
       }
       packagedSource = converted;
     }
+    completedStemWork += stemWork[i];
+    progress.publish(0.60 * completedStemWork / totalStemWork,
+                     L10n::tr("Preparando stems...", "Preparing stems..."));
     ImportedStemData packagedStem = stem;
     packagedStem.storedPath = packagedSource.getFullPathName();
     const auto path = internalStemPath(packagedStem, static_cast<int>(i));
     builder.addFile(packagedSource, 0, path);
+    estimatedPackageBytes += packagedSource.getSize();
     manifestSong.stems[i].storedPath = path;
     manifestSong.stems[i].sourcePath.clear();
     manifestSong.stems[i].fileName = juce::File(path).getFileName();
@@ -443,6 +567,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   if (juce::File artwork(song.artworkPath); juce::File(song.artworkPath).existsAsFile()) {
     const auto artworkPath = "artwork" + juce::File(song.artworkPath).getFileExtension().toLowerCase();
     builder.addFile(juce::File(song.artworkPath), 0, artworkPath);
+    estimatedPackageBytes += juce::File(song.artworkPath).getSize();
     manifestSong.artworkPath = artworkPath; manifestSong.artworkSource.clear();
   } else { manifestSong.artworkPath.clear(); }
   auto *root = new juce::DynamicObject();
@@ -450,17 +575,31 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   root->setProperty("song", SongLibraryStore::songDataToVar(manifestSong));
   root->setProperty("songSettings", settingsToVar(document.settings));
   const auto manifest = juce::JSON::toString(juce::var(root), true);
+  estimatedPackageBytes += manifest.getNumBytesAsUTF8();
   builder.addEntry(new juce::MemoryInputStream(manifest.toRawUTF8(), static_cast<size_t>(manifest.getNumBytesAsUTF8()), true),
                    0, kManifestName, juce::Time::getCurrentTime());
   if (!document.waveformBins.empty() &&
       document.waveformBins.size() == static_cast<size_t>(kWaveformPreviewBinCount)) {
     const auto byteCount = document.waveformBins.size() * sizeof(float);
+    estimatedPackageBytes += static_cast<juce::int64>(byteCount);
     builder.addEntry(new juce::MemoryInputStream(document.waveformBins.data(), byteCount, true),
                      0, kWaveformName, juce::Time::getCurrentTime());
   }
+  progress.publish(0.60,
+                   L10n::tr("Escribiendo proyecto...", "Writing project..."),
+                   true);
   temp.getParentDirectory().createDirectory();
   juce::FileOutputStream out(temp);
-  const bool wrote = out.openedOk() && builder.writeToStream(out, progress01);
+  ProgressOutputStream progressOut(
+      out, estimatedPackageBytes,
+      [&progress](const double writeProgress) {
+        progress.publish(
+            0.60 + 0.40 * writeProgress,
+            L10n::tr("Escribiendo proyecto...", "Writing project..."));
+      });
+  const bool wrote =
+      out.openedOk() && builder.writeToStream(progressOut, nullptr);
+  progressOut.flush();
   out.flush();
   if (!wrote || out.getStatus().failed()) {
     cleanupStage(); temp.deleteFile(); if (errorMessage != nullptr) *errorMessage = "Couldn't write project package."; return false;
@@ -468,13 +607,20 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   if (!temp.replaceFileIn(destination)) { cleanupStage(); temp.deleteFile(); if (errorMessage != nullptr) *errorMessage = "Couldn't replace project package."; return false; }
   cleanupStage();
   document.projectFile = destination; recordRecent(document);
-  if (progress01 != nullptr) *progress01 = 1.0;
+  progress.publish(1.0,
+                   L10n::tr("Proyecto guardado", "Project saved"), true);
   return true;
 }
 
 bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
-                        juce::String *errorMessage, const bool rebuildCache) {
+                        juce::String *errorMessage, const bool rebuildCache,
+                        const ProjectProgressFn &onProgress) {
   if (errorMessage != nullptr) errorMessage->clear();
+  ProgressThrottle progress(onProgress);
+  progress.publish(0.0,
+                   L10n::tr("Validando manifiesto...",
+                            "Validating manifest..."),
+                   true);
   if (!file.existsAsFile() || !file.hasFileExtension(kFileExtension)) { if (errorMessage != nullptr) *errorMessage = "Project file not found or invalid."; return false; }
   juce::ZipFile zip(file);
   const int manifestIndex = zip.getIndexOfFileName(kManifestName);
@@ -488,6 +634,33 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
   if (song.id.isEmpty() || song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "Project has no valid song or stems."; return false; }
   song.projectId = song.id.trim();
+  auto entrySize = [&zip](const juce::String &name) -> juce::int64 {
+    const auto index = zip.getIndexOfFileName(name);
+    const auto *entry = index >= 0 ? zip.getEntry(index) : nullptr;
+    return entry != nullptr ? entry->uncompressedSize : 0;
+  };
+  juce::int64 totalResourceBytes = 0;
+  for (const auto &stem : song.stems)
+    totalResourceBytes += entrySize(stem.storedPath);
+  if (song.artworkPath.isNotEmpty())
+    totalResourceBytes += entrySize(song.artworkPath);
+  totalResourceBytes += entrySize(kWaveformName);
+  totalResourceBytes = juce::jmax<juce::int64>(1, totalResourceBytes);
+  juce::int64 processedResourceBytes = 0;
+  auto reportResourceBytes = [&](const juce::int64 bytes,
+                                 const juce::String &resourceName) {
+    processedResourceBytes += juce::jmax<juce::int64>(0, bytes);
+    const auto resourceProgress =
+        static_cast<double>(processedResourceBytes) /
+        static_cast<double>(totalResourceBytes);
+    progress.publish(
+        0.05 + 0.90 * juce::jlimit(0.0, 1.0, resourceProgress),
+        L10n::tr("Validando ", "Validating ") + resourceName);
+  };
+  progress.publish(0.05,
+                   L10n::tr("Validando recursos...",
+                            "Validating resources..."),
+                   true);
   ProjectSongSettings newerCachedSettings;
   const auto settingsCacheFile = cachedSettingsFile(song.id);
   const bool hasNewerCachedSettings =
@@ -503,8 +676,15 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     const auto internalPath = stem.storedPath;
     if (!internalPath.startsWith(kAudioPrefix) || internalPath.contains("..")) { localError = "Unsafe stem path in project."; break; }
     const auto target = cache.getChildFile(internalPath);
-    if ((rebuildCache || !target.existsAsFile()) &&
-        !copyZipEntry(zip, internalPath, target, localError)) break;
+    const bool needsExtraction = rebuildCache || !target.existsAsFile();
+    if (needsExtraction &&
+        !copyZipEntry(zip, internalPath, target, localError,
+                      [&](const juce::int64 bytes) {
+                        reportResourceBytes(bytes, target.getFileName());
+                      }))
+      break;
+    if (!needsExtraction)
+      reportResourceBytes(entrySize(internalPath), target.getFileName());
     stem.storedPath = target.getFullPathName(); stem.sourcePath = stem.storedPath; stem.fileName = target.getFileName();
   }
   if (localError.isEmpty() && song.artworkPath.isNotEmpty()) {
@@ -515,7 +695,14 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
       const bool needsExtraction = rebuildCache || !artworkTarget.existsAsFile();
       const bool extracted = !needsExtraction ||
                              copyZipEntry(zip, song.artworkPath, artworkTarget,
-                                          localError);
+                                          localError,
+                                          [&](const juce::int64 bytes) {
+                                            reportResourceBytes(
+                                                bytes,
+                                                artworkTarget.getFileName());
+                                          });
+      if (!needsExtraction)
+        reportResourceBytes(entrySize(song.artworkPath), artworkName);
       if (extracted)
         song.artworkPath = artworkTarget.getFullPathName();
     }
@@ -556,8 +743,13 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
       if (errorMessage != nullptr) *errorMessage = "Couldn't extract project waveform.";
       return false;
     }
+    reportResourceBytes(expectedBytes, kWaveformName);
     SongLibraryStore::saveWaveformCache(song.id, waveformBins);
   }
+  progress.publish(0.96,
+                   L10n::tr("Restaurando configuración...",
+                            "Restoring settings..."),
+                   true);
   auto settings = hasNewerCachedSettings
                       ? newerCachedSettings
                       : settingsFromVar(o->getProperty("songSettings"));
@@ -570,6 +762,8 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   recordRecent(outDocument);
   if (hasNewerCachedSettings)
     settingsSaveQueue().schedule(file, outDocument.settings);
+  progress.publish(1.0,
+                   L10n::tr("Proyecto validado", "Project validated"), true);
   return true;
 }
 
@@ -632,8 +826,12 @@ bool ProjectStore::convertLegacySongToProject(
     onProgress(0.32, L10n::tr("Empaquetando proyecto...",
                               "Packaging project..."));
   juce::String migrationError;
-  double packageProgress = 0.0;
-  if (!save(document, destination, &migrationError, &packageProgress)) {
+  if (!save(document, destination, &migrationError, nullptr,
+            [&onProgress](const double saveProgress,
+                          const juce::String &phase) {
+              if (onProgress)
+                onProgress(0.32 + 0.50 * saveProgress, phase);
+            })) {
     if (errorMessage != nullptr)
       *errorMessage = migrationError;
     return false;
@@ -649,7 +847,12 @@ bool ProjectStore::convertLegacySongToProject(
     onProgress(0.82, L10n::tr("Validando proyecto...",
                               "Validating project..."));
   ProjectDocument opened;
-  if (!open(destination, opened, &migrationError)) {
+  if (!open(destination, opened, &migrationError, true,
+            [&onProgress](const double openProgress,
+                          const juce::String &phase) {
+              if (onProgress)
+                onProgress(0.82 + 0.12 * openProgress, phase);
+            })) {
     rollbackPackage();
     if (errorMessage != nullptr)
       *errorMessage = migrationError;
