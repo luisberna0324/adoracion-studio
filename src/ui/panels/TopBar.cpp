@@ -1710,11 +1710,14 @@ void TopBar::refreshFromProviders() {
       loadedSong != nullptr && loadedSong->id.isNotEmpty()
           ? loadedSong->id.trim()
           : songIdFromProvider;
+  const auto activeSongIdentity =
+      loadedSong != nullptr ? playbackIdentityForSong(*loadedSong)
+                            : activeSongId + "|legacy";
 
   if (!songLoaded) {
-    if (hasKey || lastKeyToken.isNotEmpty() || lastSongId.isNotEmpty()) {
+    if (hasKey || lastKeyToken.isNotEmpty() || lastSongIdentity.isNotEmpty()) {
       hasKey = false;
-      lastSongId.clear();
+      lastSongIdentity.clear();
       lastArtworkPath.clear();
       songArtwork = {};
       lastKeyToken.clear();
@@ -1741,9 +1744,9 @@ void TopBar::refreshFromProviders() {
             ? loadedSong->artist.trim()
             : L10n::tr("Sin artista", "Unknown artist");
 
-    const bool songChanged = activeSongId != lastSongId;
+    const bool songChanged = activeSongIdentity != lastSongIdentity;
     if (songChanged || !hasKey) {
-      lastSongId = activeSongId;
+      lastSongIdentity = activeSongIdentity;
       lastKeyToken = keyText;
       int semitone = 0;
       if (parseKeySemitone(keyText, semitone)) {
@@ -1756,20 +1759,12 @@ void TopBar::refreshFromProviders() {
         activeKeyLabel = keyText.isNotEmpty() ? keyText : L10n::tr("Tono", "Key");
       }
       hasKey = true;
-      activePitchDelta = 0;
-      if (activeSongId.isNotEmpty())
-        SongLibraryStore::getActiveSetlistPitchSemitones(activeSongId,
-                                                         activePitchDelta);
+      activePitchDelta =
+          juce::jlimit(-12, 12, processor.getPitchSemiTones());
       activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
       activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
       processor.setPitchSemiTones(activePitchDelta);
-      double savedTempoBpm = 0.0;
-      if (activeSongId.isNotEmpty() &&
-          SongLibraryStore::getActiveSetlistTempoBpm(activeSongId,
-                                                     savedTempoBpm)) {
-        processor.setPlaybackTempoBpm(savedTempoBpm);
-        updateBpmDisplay();
-      }
+      updateBpmDisplay();
     } else if (keyText != lastKeyToken) {
       // Metadata key text may refresh asynchronously; keep user-selected
       // transposition and only refresh labels/base reference.

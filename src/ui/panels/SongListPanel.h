@@ -2,6 +2,7 @@
 
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/ProjectStore.h"
 #include "../components/SearchField.h"
 #include "../components/SetlistSongsHeaderPanel.h"
 #include "LibraryCatalogPanel.h"
@@ -70,6 +71,8 @@ public:
   void openSongImportWizardFromExternal();
   void refreshLanguageTexts();
   void refreshThemeColours();
+  /** Abre un .pwproj recibido desde el sistema operativo. */
+  void openProjectFile(const juce::File &file);
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -171,7 +174,12 @@ private:
   class SetlistsContent;
 
   void openSongImportWizard();
+  void openSongImportWizard(const juce::File &destination);
+  void openProjectFileChooser();
   void openSongEditWizard(const juce::String &songId);
+  void beginLegacySongConversion(const juce::String &songId);
+  void convertLegacySongAtDestination(const juce::String &songId,
+                                      const juce::File &destination);
   void openSetlistManager();
   void openHeaderMenu();
   void openLibraryBrowser();
@@ -251,4 +259,6 @@ private:
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   int lastActivatedIndex = -1;
+  std::unique_ptr<juce::FileChooser> projectFileChooser;
+  std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
 };

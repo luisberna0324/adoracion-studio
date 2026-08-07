@@ -240,6 +240,19 @@ if(MTCONTROLS_BUILD_TESTS)
         PRIVATE juce::juce_audio_utils)
     add_test(NAME metronome_engine COMMAND MTControlsMetronomeTests)
 
+    juce_add_console_app(MTControlsPadsEngineTests
+        PRODUCT_NAME "MTControls Pads Engine Tests")
+    target_sources(MTControlsPadsEngineTests PRIVATE
+        tests/pads_engine_tests.cpp
+        src/audio/PadsEngine.cpp
+        src/audio/PadsEngine.h
+    )
+    juce_generate_juce_header(MTControlsPadsEngineTests)
+    target_include_directories(MTControlsPadsEngineTests PRIVATE src)
+    target_link_libraries(MTControlsPadsEngineTests
+        PRIVATE juce::juce_audio_utils)
+    add_test(NAME pads_engine COMMAND MTControlsPadsEngineTests)
+
     juce_add_console_app(MTControlsSongMixExportTimelineTests
         PRODUCT_NAME "MTControls Song Mix Export Timeline Tests")
     target_sources(MTControlsSongMixExportTimelineTests PRIVATE
@@ -290,6 +303,20 @@ if(MTCONTROLS_BUILD_TESTS)
             PRIVATE MTControlsBungee juce::juce_audio_utils)
         add_test(NAME stem_mix_engine COMMAND MTControlsStemMixEngineTests)
     endif()
+
+    juce_add_console_app(MTControlsStemOutputRouterTests
+        PRODUCT_NAME "MTControls Stem Output Router Tests")
+    target_sources(MTControlsStemOutputRouterTests PRIVATE
+        tests/stem_output_router_tests.cpp
+        src/audio/StemOutputRouter.cpp
+        src/audio/StemOutputRouter.h
+    )
+    juce_generate_juce_header(MTControlsStemOutputRouterTests)
+    target_include_directories(MTControlsStemOutputRouterTests PRIVATE src)
+    target_link_libraries(MTControlsStemOutputRouterTests
+        PRIVATE juce::juce_audio_basics)
+    add_test(NAME stem_output_router
+        COMMAND MTControlsStemOutputRouterTests)
 endif()
 
 if (TARGET soundstretch)
@@ -316,6 +343,7 @@ juce_add_plugin(MTControls
     PRODUCT_NAME "PlayWorship"
     ICON_BIG "assets/icons/app-icon-1024.png"
     ICON_SMALL "assets/icons/app-icon-1024.png"
+    DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
@@ -333,6 +361,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 endif()
 
 juce_generate_juce_header(MTControls)
+
+if(TARGET MTControls_Standalone AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
+    target_compile_definitions(MTControls_Standalone
+        PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+endif()
 
 juce_add_binary_data(MTControlsAssets
     SOURCES
@@ -438,6 +472,8 @@ target_sources(MTControls
         src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h
+        src/data/ProjectStore.cpp
+        src/data/ProjectStore.h
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp

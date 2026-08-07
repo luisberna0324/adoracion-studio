@@ -38,6 +38,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
+ChangesAssociations=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 #if InstallerArch == "x64"
 ArchitecturesAllowed=x64compatible
@@ -70,6 +71,12 @@ Source: "{#VcRedistFile}"; DestDir: "{tmp}"; DestName: "vc_redist.exe"; Flags: d
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+
+[Registry]
+Root: HKA; Subkey: "Software\Classes\.pwproj"; ValueType: string; ValueName: ""; ValueData: "PlayWorship.Project"; Flags: uninsdeletevalue uninsdeletekeyifempty
+Root: HKA; Subkey: "Software\Classes\PlayWorship.Project"; ValueType: string; ValueName: ""; ValueData: "PlayWorship Project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\PlayWorship.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"",0"
+Root: HKA; Subkey: "Software\Classes\PlayWorship.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#AppExeName}"" ""%1"""
 
 [Run]
 #if VcRedistFile != ""

@@ -4,7 +4,7 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-08-06T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
@@ -59,6 +59,71 @@ Carga múltiples archivos de audio como stems separados. El `onLoadProgress` cal
   hasta llamar `finishPendingSongTransition()`
 
 **Retorna:** `true` si la carga fue exitosa
+
+### Proyectos portables `.pwproj`
+
+Una canción puede provenir de un proyecto `.pwproj` autocontenido. El paquete
+incluye el manifiesto, stems y portada; antes de llamar `loadSongStems()` la UI
+lo valida y extrae sus stems a una caché local. El procesador continúa
+recibiendo paths de archivos normales y no abre ZIPs ni realiza I/O de
+empaquetado en el audio thread. El manifiesto restaura mezcla, pitch, tempo,
+ventana, arrange, guía dinámica y click antes de completar la transición.
+La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
+la copia local en `MTControls/waveforms` es sólo una caché regenerable.
+Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
+tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
+fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
+cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
+`ProjectStore` conserva el snapshot completo más reciente en memoria y en
+`project-cache/<project-id>/song-settings.json`, por lo que cambios consecutivos
+se acumulan aun cuando la canción no pertenezca al setlist activo o el `.pwproj`
+haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
+ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
+restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
+
+El origen de ajustes se decide exclusivamente por la referencia explícita
+`projectPath` de la entrada cargada. Una canción legacy con `projectPath` vacío
+no se convierte implícitamente en proyecto por coincidir su ID con la caché o
+con el índice de recientes: conserva pitch, tempo y mezcla del setlist. La
+Biblioteca mantiene además `projectId` (identidad del manifiesto) separado de
+`id` (identidad local de la entrada), de modo que un `.pwproj` exportado desde
+una canción legacy puede coexistir con ella. La UI compara ID y origen al
+detectar un cambio de canción; así reinicializa la tonalidad restaurada incluso
+cuando ambas variantes comparten el mismo ID histórico.
+
+### Conversión de canciones legacy
+
+La acción **Convertir a proyecto...** de Biblioteca no crea una copia legacy y
+otra portable. Obtiene audio, portada, metadatos y waveform del almacenamiento
+interno, toma mezcla, pitch, tempo, ventana, arrange, guía y click del setlist
+activo (o del primer setlist que contenga la canción) y construye un `.pwproj`.
+El paquete se vuelve a abrir y validar antes de modificar la Biblioteca.
+
+Tras la validación, la entrada conserva su ID local y todos los `SetlistItem`
+conservan `itemId`, orden y `transitionToNext`; únicamente la canción cambia su
+origen a `projectPath`. La carpeta `MTControls/audio/<song-id>` se mueve primero
+a staging, `songs.json` se reemplaza y sólo entonces se elimina el staging. Si
+no se puede guardar la Biblioteca, la carpeta vuelve a su ubicación original y
+el paquete recién creado se retira. No se permite elegir como destino una ruta
+dentro de la carpeta legacy. Una canción cargada debe soltarse antes de iniciar
+la conversión para que Windows también pueda cerrar y eliminar sus archivos.
+
+El progreso de esta migración representa trabajo real y es monotónico. La
+generación de waveform ocupa el tramo inicial; la conversión de cada stem usa
+`ffmpeg -progress pipe:1` y pondera `out_time_us` por la duración del stem; la
+escritura del ZIP avanza según los bytes entregados al `OutputStream`; y la
+validación avanza según los bytes extraídos nuevamente a caché. Las
+notificaciones se limitan a intervalos cortos para no bloquear la UI, pero no
+se simula avance mediante temporizadores. Por eso una demora del disco o del
+encoder se refleja en la fase y porcentaje que realmente la está causando.
+
+En escritorio, la aplicación Standalone es de instancia única y recibe rutas
+`.pwproj` desde la asociación del sistema operativo. Un doble clic inicia
+PlayWorship o lleva al frente la ventana existente, termina de persistir el
+proyecto actual, detiene el transporte y entrega la ruta al mismo flujo validado
+de apertura de la biblioteca. La canción queda cargada sin autoplay. Si la UI
+de autenticación todavía está activa, la solicitud se conserva hasta que la
+biblioteca esté disponible.
 
 Si había una canción reproduciéndose, la fuente anterior continúa durante la
 preparación. El intercambio usa fade-out de 100 ms, reemplazo en silencio y
@@ -221,6 +286,24 @@ bool isSongPlaying() const noexcept;
 
 El pitch público se normaliza a `-12..+12` semitonos. El tempo usa la relación
 `source/output` y se limita a `0.75..2.0`.
+
+Al completar naturalmente la ventana `[Inicio, Fin]`, el transporte queda
+detenido y estacionado exactamente en `Fin`. La UI diferencia este estado de
+un stop manual —que retorna a `Inicio`— y, si la canción tiene configurado
+auto-play dentro del setlist activo, carga el destino y llama `playSong()`.
+La marca se persiste como `SetlistItem.transitionToNext.autoPlay`: significa
+exclusivamente «al terminar este item, reproducir el item inmediatamente
+siguiente». No busca otra canción marcada ni salta posiciones intermedias; el
+último item nunca puede tener una transición activa. Por tanto sobrevive al
+reinicio de la aplicación y continúa siendo una propiedad local del setlist,
+no del proyecto `.pwproj`.
+
+Los items que referencian un `.pwproj` serializan sólo identidad, referencia y
+transición. Mezcla, pitch, tempo, ventana, arrange, guía, click y routing se
+restauran desde el proyecto. Los mismos campos se siguen leyendo y escribiendo
+en el item únicamente para canciones legacy hasta completar su migración. El
+lector convierte el antiguo `autoPlayNext` al objeto `transitionToNext` sin
+perder la marca existente.
 
 Un cambio de pitch publica inmediatamente ese target entero, pero Bungee acerca
 la escala DSP al nuevo valor durante 50 ms de audio. La rampa es interna al
@@ -492,15 +575,41 @@ juce::String getPadsPackStatusText() const;
 ```cpp
 void setPadsCrossfadePreset(PadsEngine::CrossfadePreset preset) noexcept;
 PadsEngine::CrossfadePreset getPadsCrossfadePreset() const noexcept;
+double getPadsCrossfadeDurationSeconds() const noexcept;
+void beginPadsSongTransitionFadeOut() noexcept;
+void beginPadsSongTransitionFadeIn() noexcept;
 ```
 
 ### Trigger de notas
 
 ```cpp
 void triggerPadNote(int noteIndex, int octave);
+void triggerPadNoteForSongTransition(int noteIndex, int octave);
 void stopPadNote(int noteIndex);
 float getPadsOutputLevel() const noexcept;
 ```
+
+Las voces de pad repiten indefinidamente el sample con un crossfade de loop en
+el borde. Al cargar otra canción, la UI mantiene cualquier pad activo y lo
+cambia mediante crossfade a la tonalidad efectiva de la nueva canción
+(`songKey + pitchSemitones`). El cambio de transporte por sí solo nunca detiene
+el pad.
+
+En una transición automática, el editor solicita el fade down del bus de Pads
+cuando el transporte entra en los últimos segundos definidos por el preset de
+crossfade (1/3/5 s). La nota activa no se borra. Tras restaurar la siguiente
+canción, elimina la voz anterior mientras el bus permanece en cero, prepara el
+pad de su tonalidad efectiva y solicita el fade up con la misma duración antes
+de reanudar el transporte. No se solapan tonalidades durante la entrada. Una detención manual, un seek
+hacia atrás o retirar el destino de autoplay cancelan la bajada y recuperan el
+nivel del pad.
+
+Todo cambio manual entre dos canciones cargadas también usa
+`triggerPadNoteForSongTransition()`. Antes de cargar se difiere la solicitud por
+la duración configurada para que el bus complete su fade down. La carga actúa
+entonces como frontera silenciosa: se reemplaza la voz anterior y sólo la
+tonalidad de la nueva canción entra con el fade up configurado. Esto aplica a
+siguiente, anterior y selección desde biblioteca.
 
 ### Actualizar enrutamiento
 

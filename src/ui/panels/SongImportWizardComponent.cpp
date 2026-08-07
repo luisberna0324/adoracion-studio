@@ -341,9 +341,12 @@ SongImportWizardComponent::SongImportWizardComponent(
                        const SongImportProgressFn &)>
         onSubmitSong,
     const bool primeImportEnabledIn, const Mode modeIn,
-    ImportedSongData initialSongIn)
-    : onSubmit(std::move(onSubmitSong)), mode(modeIn),
-      initialSong(std::move(initialSongIn)),
+    ImportedSongData initialSongIn,
+    std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
+        projectDestinationResolver)
+    : onSubmit(std::move(onSubmitSong)),
+      resolveProjectDestination(std::move(projectDestinationResolver)),
+      mode(modeIn), initialSong(std::move(initialSongIn)),
       primeImportEnabled(primeImportEnabledIn) {
   setSize(820, 620);
 
@@ -1311,37 +1314,10 @@ void SongImportWizardComponent::applyPrimeSong(const size_t index) {
                                 juce::dontSendNotification);
   triggerSecuenciasSearch();
 
+  // Elegir una canción de Prime sólo autocompleta metadata. Los stems deben
+  // ser seleccionados explícitamente por la persona usuaria en el paso
+  // siguiente; no prellenamos tracks ni referencias de la biblioteca externa.
   stems.clear();
-  stems.reserve(song.tracks.size());
-  juce::AudioFormatManager formatManager;
-  formatManager.registerBasicFormats();
-  for (const auto &track : song.tracks) {
-    const juce::File file(track.sourcePath);
-    if (!file.existsAsFile())
-      continue;
-    StemDraft draft;
-    draft.file = file;
-    draft.sourcePath = file.getFullPathName();
-    draft.storedPath.clear();
-    draft.stemId = track.stemId.isNotEmpty() ? track.stemId : juce::Uuid().toString();
-    draft.displayName = makeDisplayNameFromFile(file);
-    draft.category = suggestCategoryFromFilename(file.getFileNameWithoutExtension());
-    draft.fromExistingSong = false;
-    draft.include = true;
-    if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
-            formatManager.createReaderFor(file))) {
-      draft.sampleRate = static_cast<int>(reader->sampleRate);
-      draft.channels = static_cast<int>(reader->numChannels);
-      if (reader->sampleRate > 0.0) {
-        draft.durationSec =
-            static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
-      }
-    }
-    draft.displayName = track.displayName;
-    draft.category = track.category;
-    stems.push_back(std::move(draft));
-  }
-
   updateSelectedFilesText();
   rebuildMappingRows();
   primeStatusLabel.setText(
@@ -1367,7 +1343,7 @@ void SongImportWizardComponent::updateSummaryText() {
 
   juce::StringArray lines;
   lines.add(mode == Mode::Edit ? L10n::tr(u8"Modo: Edición", "Mode: Edit")
-                               : L10n::tr(u8"Modo: Importación", "Mode: Import"));
+                               : L10n::tr(u8"Modo: Creación", "Mode: Create"));
   lines.add(L10n::tr(u8"Canción: ", "Song: ") + songTitleEditor.getText().trim());
   lines.add(L10n::tr("Artista: ", "Artist: ") + artistEditor.getText().trim());
   lines.add("BPM: " + bpmEditor.getText().trim() + "   " +
@@ -1568,6 +1544,20 @@ void SongImportWizardComponent::submitSong() {
       juce::String(static_cast<int>(stems.size())));
 
   auto songData = buildSongData();
+  if (mode == Mode::Import && resolveProjectDestination) {
+    juce::File destination;
+    juce::String destinationError;
+    if (!resolveProjectDestination(songData, destination, destinationError)) {
+      if (destinationError.isNotEmpty()) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon,
+            L10n::tr("Ubicación del proyecto", "Project location"),
+            destinationError);
+      }
+      return;
+    }
+    songData.projectPath = destination.getFullPathName();
+  }
   bool temporarilyDisableOptimization = false;
 
   const bool optimizationEnabled = AppSettings::getStemOptimizationEnabled();
@@ -1667,7 +1657,7 @@ void SongImportWizardComponent::submitSong() {
   overlay.refreshThemeColours();
   overlay.setTitleText(mode == Mode::Edit
                            ? L10n::tr(u8"Actualizando canción", "Updating song")
-                           : L10n::tr(u8"Importando canción", "Importing song"));
+                           : L10n::tr(u8"Creando canción", "Creating song"));
   overlay.setAlwaysOnTop(true);
   overlay.setBounds(getLocalBounds());
   overlay.setVisible(true);
@@ -1732,7 +1722,7 @@ void SongImportWizardComponent::submitSong() {
         juce::AlertWindow::WarningIcon,
         mode == Mode::Edit
             ? L10n::tr("Error al actualizar", "Update error")
-            : L10n::tr(u8"Error de importación", "Import error"),
+            : L10n::tr(u8"Error al crear", "Create error"),
         errorMessage.isNotEmpty()
             ? errorMessage
             : L10n::tr(u8"No se pudo guardar la canción seleccionada.",
@@ -2066,22 +2056,15 @@ void SongImportWizardComponent::applySecuenciasMetadata(const SongSearchResult &
   if (result.originalKey.isNotEmpty())
     keyBox.setText(result.originalKey, juce::dontSendNotification);
 
-  if (stems.empty() && detail != nullptr && !detail->tracks.empty()) {
-    for (const auto &track : detail->tracks) {
-      StemDraft draft;
-      draft.file = juce::File();
-      draft.sourcePath.clear();
-      draft.storedPath.clear();
-      draft.stemId = track.stemId.isNotEmpty() ? track.stemId : juce::Uuid().toString();
-      draft.displayName = track.name.isNotEmpty() ? track.name : L10n::tr("Track", "Track");
-      draft.category = track.isClickOrGuide ? (track.name.containsIgnoreCase("click") ? "Click" : "Cues") : "Other";
-      draft.fromExistingSong = false;
-      draft.include = true;
-      stems.push_back(std::move(draft));
-    }
-    updateSelectedFilesText();
-    rebuildMappingRows();
-  }
+  // Los resultados de Secuencias describen tracks remotos, pero no son stems
+  // importables. No se crean placeholders: la lista queda vacía hasta que el
+  // usuario elija archivos reales en el paso de stems.
+  stems.erase(std::remove_if(stems.begin(), stems.end(), [](const StemDraft &stem) {
+                return !stem.file.existsAsFile() && stem.sourcePath.trim().isEmpty() &&
+                       stem.storedPath.trim().isEmpty();
+              }), stems.end());
+  updateSelectedFilesText();
+  rebuildMappingRows();
 
   secuenciasStatusLabel.setText(
       L10n::tr("Metadata aplicada. Puedes editarla manualmente.",

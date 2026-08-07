@@ -23,7 +23,9 @@ public:
                          const SongImportProgressFn &)>
           onSubmitSong,
       bool primeImportEnabled, Mode mode = Mode::Import,
-      ImportedSongData initialSong = {});
+      ImportedSongData initialSong = {},
+      std::function<bool(const ImportedSongData &, juce::File &,
+                         juce::String &)> projectDestinationResolver = {});
   ~SongImportWizardComponent() override;
 
   void paint(juce::Graphics &g) override;
@@ -105,6 +107,8 @@ private:
   std::function<bool(ImportedSongData, juce::String &,
                      const SongImportProgressFn &)>
       onSubmit;
+  std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
+      resolveProjectDestination;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;

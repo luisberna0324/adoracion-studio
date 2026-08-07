@@ -142,7 +142,7 @@ private:
   juce::Image songArtwork;
   juce::String songTitleText;
   juce::String songArtistText;
-  juce::String lastSongId;
+  juce::String lastSongIdentity;
   juce::String lastArtworkPath;
   juce::Colour songAccentColour = UITheme::accent;
   juce::String lastKeyToken;

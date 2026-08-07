@@ -26,6 +26,11 @@ public:
   bool keyPressed(const juce::KeyPress &key) override;
   void parentHierarchyChanged() override;
 
+  /** Recibe un proyecto solicitado por asociación de archivo/doble clic. */
+  void openProjectFromExternalApplication(const juce::File &file);
+  bool isSongCurrentlyLoaded(const juce::String &songId) const noexcept;
+  void flushActiveSongPersistenceNow();
+
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
                                          PersistedSessionSnapshot snapshot,
@@ -51,9 +56,16 @@ private:
   bool hasCurrentLoadedSong = false;
   SongListPanel *songListPanelRaw = nullptr;
   WaveformBar *waveformBarPtr = nullptr;
+  std::function<bool(const ImportedSongData &, int)> loadSongAction;
+  std::function<void(const ImportedSongData &, int)> requestSongLoadAction;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
-  double lastObservedSongPositionSec = 0.0;
+  bool padsSongTransitionFadeActive = false;
+  bool pendingManualPadSongLoad = false;
+  ImportedSongData pendingManualPadSong;
+  int pendingManualPadSongIndex = -1;
+  juce::int64 pendingManualPadSongLoadAtMs = 0;
+  juce::File pendingExternalProjectFile;
   struct SessionSummary {
     juce::String uid;
     juce::String email;

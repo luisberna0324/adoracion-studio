@@ -35,8 +35,12 @@ struct DynamicGuideMixSnapshot {
   float gain = 1.0f;
   bool mute = false;
   bool solo = false;
+  // Default to mono Out 1 to mirror the click defaults. The runtime mixes
+  // the (always-stereo) guide render buffer down to mono when the width
+  // is 1, so the announcement stays on a single, predictable bus. Users
+  // who actually want stereo can flip the width from the routing UI.
   int outputChannel = 1;
-  int outputWidth = 2;
+  int outputWidth = 1;
 };
 
 struct ClickDynMixSnapshot {
@@ -66,8 +70,19 @@ struct DynamicGuideSettings {
       DynamicGuideChannelPolicy::EnsureVirtualGuideChannel;
 };
 
+/** Comportamiento al terminar esta posición dentro del setlist. */
+struct SetlistTransition {
+  bool autoPlay = false;
+};
+
 struct SetlistItem {
+  // Identifica la posición del setlist, independientemente de la canción.
+  // Permite evolucionar hacia canciones repetidas sin mezclar transiciones.
+  juce::String itemId;
   juce::String songId;
+  SetlistTransition transitionToNext;
+  // Compatibilidad legacy: estos ajustes sólo se serializan para canciones
+  // que todavía no viven en un proyecto .pwproj.
   SongMixSnapshot mix;
   int pitchSemitones = 0;
   double tempoBpm = 0.0;
@@ -116,8 +131,22 @@ public:
   static bool deleteSong(const juce::String &songId);
   static bool moveSongInSetlist(const juce::String &setlistId, int fromIndex,
                                 int toIndex);
+  static bool setAutoPlayNextForSetlist(const juce::String &setlistId,
+                                        const juce::String &songId,
+                                        bool enabled);
   static bool appendSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
+  /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */
+  static bool registerProjectSong(ImportedSongData &song);
+  /** Obtiene canción y ajustes canónicos para convertir una entrada legacy. */
+  static bool prepareLegacyProjectMigration(
+      const juce::String &songId, ImportedSongData &outSong,
+      SetlistItem &outSettingsItem, juce::String &outSourceSetlistName,
+      juce::String *errorMessage = nullptr);
+  /** Sustituye la entrada legacy preservando items, orden y transiciones. */
+  static bool finalizeLegacyProjectMigration(
+      const juce::String &legacySongId, ImportedSongData projectSong,
+      juce::String *errorMessage = nullptr);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
   static bool getActiveSetlistMix(const juce::String &songId,
@@ -194,6 +223,19 @@ public:
                                 const std::vector<float> &bins);
   static std::vector<float> loadWaveformCache(const juce::String &songId);
 
+  // Serialización reutilizable por ProjectStore. El formato interno de la
+  // biblioteca y el manifiesto .pwproj comparten la representación de canción.
+  static juce::var songDataToVar(const ImportedSongData &song);
+  static ImportedSongData songDataFromVar(const juce::var &value,
+                                          bool &changed);
+  /** Conversión de stems reutilizada por los paquetes .pwproj. */
+  static bool convertStemForProject(const juce::File &source,
+                                    const juce::File &destination,
+                                    juce::String &errorMessage,
+                                    double durationSec = 0.0,
+                                    const SongImportProgressFn &onProgress = {});
+  static juce::String projectStorageStemExtension();
+
   /**
    * Returns the per-platform application-data root directory used by
    * the audio library (e.g. "MTControls" under
@@ -214,7 +256,9 @@ private:
   static juce::File resolveBundledFfmpegBinary();
   static bool convertStemToStorageFormat(const juce::File &source,
                                          const juce::File &destination,
-                                         juce::String &errorMessage);
+                                         juce::String &errorMessage,
+                                         double durationSec = 0.0,
+                                         const SongImportProgressFn &onProgress = {});
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);
@@ -276,11 +320,14 @@ private:
   static SongMixSnapshot mixFromVar(const juce::var &v,
                                     const ImportedSongData *song,
                                     bool &changed);
-  static juce::var setlistItemToVar(const SetlistItem &item);
+  static juce::var setlistItemToVar(const SetlistItem &item,
+                                    bool persistLegacySongSettings);
   static SetlistItem setlistItemFromVar(const juce::var &v,
                                         const ImportedSongData *song,
                                         bool &changed);
-  static juce::var setlistToVar(const SetlistData &setlist);
+  static juce::var setlistToVar(
+      const SetlistData &setlist,
+      const std::vector<ImportedSongData> &songs);
   static SetlistData setlistFromVar(const juce::var &v,
                                     const std::vector<ImportedSongData> &songs,
                                     bool &changed);

@@ -4733,6 +4733,19 @@ MTControlsAudioProcessor::getPadsCrossfadePreset() const noexcept {
   return PadsEngine::CrossfadePreset::Medium;
 }
 
+double
+MTControlsAudioProcessor::getPadsCrossfadeDurationSeconds() const noexcept {
+  return padsEngine.getCrossfadeDurationSeconds();
+}
+
+void MTControlsAudioProcessor::beginPadsSongTransitionFadeOut() noexcept {
+  padsEngine.beginSongTransitionFadeOut();
+}
+
+void MTControlsAudioProcessor::beginPadsSongTransitionFadeIn() noexcept {
+  padsEngine.beginSongTransitionFadeIn();
+}
+
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
                                               const int octave) {
   if (!padsPackLoaded.load(std::memory_order_relaxed))
@@ -4743,9 +4756,21 @@ void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
   padsEngine.triggerNote(noteIndex, octave);
 }
 
+void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
+    const int noteIndex, const int octave) {
+  if (!padsPackLoaded.load(std::memory_order_relaxed))
+    return;
+  const juce::SpinLock::ScopedLockType lock(padsStateLock);
+  padsEngine.triggerNoteForSongTransition(noteIndex, octave);
+}
+
 void MTControlsAudioProcessor::stopPadNote(const int noteIndex) {
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   padsEngine.stopNote(noteIndex);
+}
+
+int MTControlsAudioProcessor::getActivePadNoteIndex() const noexcept {
+  return padsEngine.getActiveNoteIndex();
 }
 
 float MTControlsAudioProcessor::getPadsOutputLevel() const noexcept {
@@ -5058,7 +5083,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   dynamicGuideMutedState.store(false, std::memory_order_relaxed);
   dynamicGuideSoloState.store(false, std::memory_order_relaxed);
   dynamicGuideOutputChannelState.store(1, std::memory_order_relaxed);
-  dynamicGuideOutputWidthState.store(2, std::memory_order_relaxed);
+  dynamicGuideOutputWidthState.store(1, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   songLoaded.store(false, std::memory_order_relaxed);
   arrangementParts.clear();

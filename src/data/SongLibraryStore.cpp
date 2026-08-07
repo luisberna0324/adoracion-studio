@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "ProjectStore.h"
 #include "AppSettings.h"
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <unordered_set>
 #include <utility>
@@ -92,6 +94,42 @@ ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
   mix.outputChannel = juce::jmax(1, mix.outputChannel);
   mix.outputWidth = juce::jlimit(1, 2, mix.outputWidth);
   return mix;
+}
+
+ProjectSongSettings projectSettingsFromItem(const SetlistItem &item,
+                                            const ImportedSongData &song) {
+  juce::ignoreUnused(song);
+  ProjectSongSettings settings;
+  settings.mix = item.mix;
+  settings.pitchSemitones = item.pitchSemitones;
+  settings.tempoBpm = item.tempoBpm;
+  settings.window = item.window;
+  settings.windowCustomized = item.windowCustomized;
+  settings.arrangement = item.arrangement;
+  settings.arrangementCustomized = item.arrangementCustomized;
+  settings.dynamicGuide = item.dynamicGuide;
+  settings.dynamicGuideCustomized = item.dynamicGuideCustomized;
+  settings.dynamicGuideMix = item.dynamicGuideMix;
+  settings.clickDynMix = item.clickDynMix;
+  return settings;
+}
+
+SetlistItem projectSettingsCacheItem(const juce::String &songId,
+                                     const ProjectSongSettings &settings) {
+  SetlistItem item;
+  item.songId = songId;
+  item.mix = settings.mix;
+  item.pitchSemitones = settings.pitchSemitones;
+  item.tempoBpm = settings.tempoBpm;
+  item.window = settings.window;
+  item.windowCustomized = settings.windowCustomized;
+  item.arrangement = settings.arrangement;
+  item.arrangementCustomized = settings.arrangementCustomized;
+  item.dynamicGuide = settings.dynamicGuide;
+  item.dynamicGuideCustomized = settings.dynamicGuideCustomized;
+  item.dynamicGuideMix = settings.dynamicGuideMix;
+  item.clickDynMix = settings.clickDynMix;
+  return item;
 }
 
 bool clickDynMixesEqual(const ClickDynMixSnapshot &a,
@@ -411,6 +449,8 @@ bool SongLibraryStore::removeSongFromSetlist(const juce::String &setlistId,
       setlist->items.end());
   if (setlist->items.size() == before)
     return false;
+  if (!setlist->items.empty())
+    setlist->items.back().transitionToNext.autoPlay = false;
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return saveLibrary(library);
 }
@@ -441,6 +481,8 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
         setlist.items.end());
     if (setlist.items.size() != before)
       setlist.updatedMs = now;
+    if (!setlist.items.empty())
+      setlist.items.back().transitionToNext.autoPlay = false;
   }
 
   if (!saveLibrary(library))
@@ -452,7 +494,7 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
 }
 
 bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
-                                        int fromIndex, int toIndex) {
+                                         int fromIndex, int toIndex) {
   auto library = loadLibrary();
   auto *setlist = findSetlistById(library, setlistId);
   if (setlist == nullptr)
@@ -466,7 +508,39 @@ bool SongLibraryStore::moveSongInSetlist(const juce::String &setlistId,
   auto item = setlist->items[static_cast<size_t>(fromIndex)];
   setlist->items.erase(setlist->items.begin() + fromIndex);
   setlist->items.insert(setlist->items.begin() + toIndex, item);
+  if (!setlist->items.empty())
+    setlist->items.back().transitionToNext.autoPlay = false;
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::setAutoPlayNextForSetlist(
+    const juce::String &setlistId, const juce::String &songId,
+    const bool enabled) {
+  if (setlistId.isEmpty() || songId.isEmpty())
+    return false;
+
+  auto library = loadLibrary();
+  ensureDefaultSetlist(library);
+  auto *setlist = findSetlistById(library, setlistId);
+  if (setlist == nullptr)
+    return false;
+
+  auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
+                         [&songId](const SetlistItem &item) {
+                           return item.songId == songId;
+                         });
+  if (it == setlist->items.end())
+    return false;
+  if (enabled && std::next(it) == setlist->items.end())
+    return false;
+  if (it->transitionToNext.autoPlay == enabled)
+    return true;
+
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  it->transitionToNext.autoPlay = enabled;
+  it->updatedMs = now;
+  setlist->updatedMs = now;
   return saveLibrary(library);
 }
 
@@ -512,6 +586,206 @@ bool SongLibraryStore::appendSong(ImportedSongData song, juce::String *errorMess
     SessionAuthLogger::write("[SongImportStore] appendSong saved id=" + song.id);
   }
   return saved;
+}
+
+bool SongLibraryStore::registerProjectSong(ImportedSongData &song) {
+  song.id = song.id.trim();
+  song.projectId = song.projectId.trim();
+  song.projectPath = song.projectPath.trim();
+  if (song.id.isEmpty() || song.projectPath.isEmpty())
+    return false;
+  if (song.projectId.isEmpty())
+    song.projectId = song.id;
+  auto library = loadLibrary();
+  ensureSongHasStemIds(song);
+  sortStemsForStripOrder(song.stems);
+
+  // La ruta identifica la entrada local. Al volver a abrir el mismo paquete
+  // conservamos su ID de Biblioteca, aunque el manifiesto haya cambiado.
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&song](const ImportedSongData &candidate) {
+                           return candidate.projectPath.isNotEmpty() &&
+                                  juce::File(candidate.projectPath) ==
+                                      juce::File(song.projectPath);
+                         });
+  if (it != library.songs.end()) {
+    song.id = it->id;
+    const auto *existingEntry = &(*it);
+    const bool collidesWithAnotherEntry = std::any_of(
+        library.songs.begin(), library.songs.end(),
+        [&song, existingEntry](const ImportedSongData &candidate) {
+          return &candidate != existingEntry && candidate.id == song.id;
+        });
+    if (collidesWithAnotherEntry)
+      song.id = juce::Uuid().toString();
+    *it = song;
+  } else {
+    // Un proyecto exportado desde una canción legacy conserva el ID del
+    // manifiesto. Si ese ID ya existe localmente, asignamos sólo a la entrada
+    // de Biblioteca un ID distinto; projectId sigue siendo el del paquete.
+    const bool localIdAlreadyUsed = std::any_of(
+        library.songs.begin(), library.songs.end(),
+        [&song](const ImportedSongData &candidate) {
+          return candidate.id == song.id;
+        });
+    if (localIdAlreadyUsed)
+      song.id = juce::Uuid().toString();
+    library.songs.push_back(song);
+  }
+  ensureDefaultSetlist(library);
+  return saveLibrary(library);
+}
+
+bool SongLibraryStore::prepareLegacyProjectMigration(
+    const juce::String &songId, ImportedSongData &outSong,
+    SetlistItem &outSettingsItem, juce::String &outSourceSetlistName,
+    juce::String *errorMessage) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  const auto trimmedSongId = songId.trim();
+  auto library = loadLibrary();
+  const auto *song = findSongById(library.songs, trimmedSongId);
+  if (song == nullptr) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("La canción legacy ya no existe.",
+                               "Legacy song no longer exists.");
+    return false;
+  }
+  if (isProjectBackedSong(*song)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("La canción ya pertenece a un proyecto.",
+                               "Song is already project-backed.");
+    return false;
+  }
+
+  outSong = *song;
+  outSong.projectId.clear();
+  outSong.projectPath.clear();
+  outSettingsItem = createSetlistItem(*song);
+  outSourceSetlistName.clear();
+
+  auto copyItemFromSetlist = [&](const SetlistData &setlist) {
+    const auto item = std::find_if(
+        setlist.items.begin(), setlist.items.end(),
+        [&trimmedSongId](const SetlistItem &candidate) {
+          return candidate.songId == trimmedSongId;
+        });
+    if (item == setlist.items.end())
+      return false;
+    outSettingsItem = *item;
+    outSourceSetlistName = setlist.name;
+    return true;
+  };
+
+  const auto activeSetlist = std::find_if(
+      library.setlists.begin(), library.setlists.end(),
+      [&library](const SetlistData &setlist) {
+        return setlist.id == library.activeSetlistId;
+      });
+  bool foundSettings =
+      activeSetlist != library.setlists.end() &&
+      copyItemFromSetlist(*activeSetlist);
+  if (!foundSettings) {
+    for (const auto &setlist : library.setlists) {
+      if (copyItemFromSetlist(setlist)) {
+        foundSettings = true;
+        break;
+      }
+    }
+  }
+  if (!foundSettings)
+    outSourceSetlistName = L10n::tr("Valores predeterminados",
+                                    "Default settings");
+  return true;
+}
+
+bool SongLibraryStore::finalizeLegacyProjectMigration(
+    const juce::String &legacySongId, ImportedSongData projectSong,
+    juce::String *errorMessage) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  const auto trimmedSongId = legacySongId.trim();
+  if (trimmedSongId.isEmpty() || !isProjectBackedSong(projectSong)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("El proyecto validado no es compatible.",
+                               "Validated project is not compatible.");
+    return false;
+  }
+
+  auto library = loadLibrary();
+  const auto songIt = std::find_if(
+      library.songs.begin(), library.songs.end(),
+      [&trimmedSongId](const ImportedSongData &candidate) {
+        return candidate.id == trimmedSongId;
+      });
+  if (songIt == library.songs.end() || isProjectBackedSong(*songIt)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("La entrada legacy cambió durante la conversión.",
+                               "Legacy entry changed during conversion.");
+    return false;
+  }
+
+  const auto legacySongBackup = *songIt;
+  const auto legacyCreatedMs = legacySongBackup.createdMs;
+  projectSong.id = trimmedSongId;
+  if (projectSong.projectId.trim().isEmpty())
+    projectSong.projectId = trimmedSongId;
+  if (projectSong.createdMs <= 0)
+    projectSong.createdMs = legacyCreatedMs;
+
+  const auto legacyAudioDirectory =
+      getRootDirectory().getChildFile("audio").getChildFile(trimmedSongId);
+  const auto migrationDirectory =
+      getRootDirectory().getChildFile("migration-staging");
+  const auto stagedLegacyDirectory = migrationDirectory.getChildFile(
+      trimmedSongId + "-" + juce::Uuid().toString());
+  bool stagedLegacyAudio = false;
+  if (legacyAudioDirectory.exists()) {
+    migrationDirectory.createDirectory();
+    if (!legacyAudioDirectory.moveFileTo(stagedLegacyDirectory)) {
+      if (errorMessage != nullptr)
+        *errorMessage = L10n::tr(
+            "No se pudo preparar la carpeta legacy para eliminarla.",
+            "Couldn't stage the legacy folder for removal.");
+      return false;
+    }
+    stagedLegacyAudio = true;
+  }
+
+  *songIt = std::move(projectSong);
+  if (!saveLibrary(library)) {
+    if (stagedLegacyAudio)
+      stagedLegacyDirectory.moveFileTo(legacyAudioDirectory);
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo actualizar la biblioteca; se restauró la canción legacy.",
+          "Couldn't update the library; the legacy song was restored.");
+    return false;
+  }
+
+  if (stagedLegacyAudio && !stagedLegacyDirectory.deleteRecursively()) {
+    *songIt = legacySongBackup;
+    const bool restoredLibrary = saveLibrary(library);
+    const bool restoredAudio =
+        stagedLegacyDirectory.exists()
+            ? stagedLegacyDirectory.moveFileTo(legacyAudioDirectory)
+            : legacyAudioDirectory.exists();
+    SessionAuthLogger::write(
+        "[ProjectMigration] Couldn't remove staged legacy directory=" +
+        stagedLegacyDirectory.getFullPathName() +
+        " restoredLibrary=" + juce::String(restoredLibrary ? 1 : 0) +
+        " restoredAudio=" + juce::String(restoredAudio ? 1 : 0));
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo eliminar la estructura legacy; la conversión fue revertida.",
+          "Couldn't remove the legacy structure; conversion was rolled back.");
+    return false;
+  }
+  if (migrationDirectory.isDirectory() &&
+      migrationDirectory.getNumberOfChildFiles(
+          juce::File::findFilesAndDirectories) == 0)
+    migrationDirectory.deleteRecursively();
+  return true;
 }
 
 bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMessage,
@@ -1493,11 +1767,11 @@ bool SongLibraryStore::saveLibrary(const LibraryState &library) {
   setlistVars.ensureStorageAllocated(
       static_cast<int>(library.setlists.size()));
   for (const auto &setlist : library.setlists)
-    setlistVars.add(setlistToVar(setlist));
+    setlistVars.add(setlistToVar(setlist, library.songs));
 
   juce::var rootVar(new juce::DynamicObject());
   if (auto *root = rootVar.getDynamicObject()) {
-    root->setProperty("version", 2);
+    root->setProperty("version", 3);
     root->setProperty("activeSetlistId", library.activeSetlistId);
     root->setProperty("songs", juce::var(songVars));
     root->setProperty("setlists", juce::var(setlistVars));
@@ -1538,7 +1812,8 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
 
 bool SongLibraryStore::convertStemToStorageFormat(
     const juce::File &source, const juce::File &destination,
-    juce::String &errorMessage) {
+    juce::String &errorMessage, const double durationSec,
+    const SongImportProgressFn &onProgress) {
   auto ffmpegBinary = resolveBundledFfmpegBinary();
   if (!ffmpegBinary.existsAsFile()) {
     juce::String bootstrapError;
@@ -1565,6 +1840,9 @@ bool SongLibraryStore::convertStemToStorageFormat(
   args.add("-y");
   args.add("-v");
   args.add("error");
+  args.add("-progress");
+  args.add("pipe:1");
+  args.add("-nostats");
   args.add("-i");
   args.add(source.getFullPathName());
   args.add("-map_metadata");
@@ -1580,13 +1858,73 @@ bool SongLibraryStore::convertStemToStorageFormat(
     return false;
   }
 
-  if (!process.waitForProcessToFinish(10 * 60 * 1000)) {
-    process.kill();
-    errorMessage = juce::String(kStorageFormatLabel) + " conversion timed out.";
-    return false;
+  juce::String output;
+  juce::String pendingOutput;
+  auto consumeOutput = [&](const char *bytes, const int byteCount) {
+    const auto chunk = juce::String::fromUTF8(bytes, byteCount);
+    pendingOutput += chunk;
+    for (;;) {
+      const auto newline = pendingOutput.indexOfChar('\n');
+      if (newline < 0)
+        break;
+      const auto line = pendingOutput.substring(0, newline).trim();
+      pendingOutput = pendingOutput.substring(newline + 1);
+      if (line.startsWith("out_time_us=") ||
+          line.startsWith("out_time_ms=")) {
+        const auto encodedTime =
+            line.fromFirstOccurrenceOf("=", false, false).getLargeIntValue();
+        if (durationSec > 0.0 && onProgress) {
+          const auto progress = static_cast<double>(encodedTime) /
+                                (durationSec * 1000000.0);
+          onProgress(juce::jlimit(0.0, 0.995, progress), {});
+        }
+      } else if (line == "progress=end" && onProgress) {
+        onProgress(1.0, {});
+      } else if (line.isNotEmpty() && !line.startsWith("bitrate=") &&
+                 !line.startsWith("total_size=") &&
+                 !line.startsWith("out_time=") &&
+                 !line.startsWith("dup_frames=") &&
+                 !line.startsWith("drop_frames=") &&
+                 !line.startsWith("speed=") &&
+                 !line.startsWith("progress=")) {
+        output << line << "\n";
+      }
+    }
+  };
+
+  const auto startedAt = juce::Time::getMillisecondCounter();
+  // ChildProcess::readProcessOutput waits for the requested byte count on
+  // Windows and may buffer similarly through stdio on POSIX. A small buffer
+  // lets each FFmpeg progress block reach the UI as soon as it is emitted.
+  std::array<char, 64> processBuffer{};
+  while (process.isRunning()) {
+    const auto bytesRead = process.readProcessOutput(
+        processBuffer.data(), static_cast<int>(processBuffer.size()));
+    if (bytesRead > 0)
+      consumeOutput(processBuffer.data(), bytesRead);
+    else
+      juce::Thread::sleep(15);
+
+    if (juce::Time::getMillisecondCounter() - startedAt >=
+        static_cast<juce::uint32>(10 * 60 * 1000)) {
+      process.kill();
+      errorMessage =
+          juce::String(kStorageFormatLabel) + " conversion timed out.";
+      return false;
+    }
+  }
+  for (;;) {
+    const auto bytesRead = process.readProcessOutput(
+        processBuffer.data(), static_cast<int>(processBuffer.size()));
+    if (bytesRead <= 0)
+      break;
+    consumeOutput(processBuffer.data(), bytesRead);
   }
 
-  const auto output = process.readAllProcessOutput().trim();
+  if (pendingOutput.trim().isNotEmpty() &&
+      !pendingOutput.trim().containsChar('='))
+    output << pendingOutput.trim();
+  output = output.trim();
   if (static_cast<int>(process.getExitCode()) != 0 || !destination.existsAsFile()) {
     if (destination.existsAsFile())
       destination.deleteFile();
@@ -1597,6 +1935,19 @@ bool SongLibraryStore::convertStemToStorageFormat(
   }
 
   return true;
+}
+
+bool SongLibraryStore::convertStemForProject(const juce::File &source,
+                                             const juce::File &destination,
+                                             juce::String &errorMessage,
+                                             const double durationSec,
+                                             const SongImportProgressFn &onProgress) {
+  return convertStemToStorageFormat(source, destination, errorMessage,
+                                    durationSec, onProgress);
+}
+
+juce::String SongLibraryStore::projectStorageStemExtension() {
+  return kStoredStemExtension;
 }
 
 bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage,
@@ -1762,6 +2113,7 @@ ImportedStemData SongLibraryStore::stemFromVar(const juce::var &v) {
 juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("id", song.id);
+  obj->setProperty("projectId", song.projectId);
   obj->setProperty("title", song.title);
   obj->setProperty("artist", song.artist);
   obj->setProperty("bpm", song.bpm);
@@ -1770,6 +2122,7 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("fileType", song.fileType);
   obj->setProperty("artworkPath", song.artworkPath);
   obj->setProperty("artworkSource", song.artworkSource);
+  obj->setProperty("projectPath", song.projectPath);
   obj->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
 
   juce::Array<juce::var> stemVars;
@@ -1790,6 +2143,7 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
     return song;
 
   song.id = obj->getProperty("id").toString();
+  song.projectId = obj->getProperty("projectId").toString();
   song.title = obj->getProperty("title").toString();
   song.artist = obj->getProperty("artist").toString();
   song.bpm = static_cast<int>(obj->getProperty("bpm"));
@@ -1798,6 +2152,7 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.fileType = obj->getProperty("fileType").toString();
   song.artworkPath = obj->getProperty("artworkPath").toString();
   song.artworkSource = obj->getProperty("artworkSource").toString();
+  song.projectPath = obj->getProperty("projectPath").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
 
   auto *stemsArray = obj->getProperty("stems").getArray();
@@ -1817,6 +2172,15 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
     song.tempoMap = tempoMapFromVar({}, &song, changed);
 
   return song;
+}
+
+juce::var SongLibraryStore::songDataToVar(const ImportedSongData &song) {
+  return songToVar(song);
+}
+
+ImportedSongData SongLibraryStore::songDataFromVar(const juce::var &value,
+                                                    bool &changed) {
+  return songFromVar(value, changed);
 }
 
 bool SongLibraryStore::ensureSongHasStemIds(ImportedSongData &song) {
@@ -1879,6 +2243,7 @@ SetlistData *SongLibraryStore::findSetlistById(LibraryState &library,
 
 SetlistItem SongLibraryStore::createSetlistItem(const ImportedSongData &song) {
   SetlistItem item;
+  item.itemId = juce::Uuid().toString();
   item.songId = song.id;
   item.mix = createDefaultMixForSong(song);
   item.window = createDefaultWindowForSong(song);
@@ -2562,27 +2927,35 @@ SongMixSnapshot SongLibraryStore::mixFromVar(const juce::var &v,
   return mix;
 }
 
-juce::var SongLibraryStore::setlistItemToVar(const SetlistItem &item) {
+juce::var SongLibraryStore::setlistItemToVar(
+    const SetlistItem &item, const bool persistLegacySongSettings) {
   auto *obj = new juce::DynamicObject();
+  obj->setProperty("itemId", item.itemId);
   obj->setProperty("songId", item.songId);
-  obj->setProperty("mix", mixToVar(item.mix));
-  obj->setProperty("pitchSemitones", item.pitchSemitones);
-  if (item.tempoBpm > 0.0)
-    obj->setProperty("tempoBpm", item.tempoBpm);
-  if (item.windowCustomized) {
-    obj->setProperty("songWindow", windowToVar(item.window));
-    obj->setProperty("windowCustomized", true);
+  auto *transition = new juce::DynamicObject();
+  transition->setProperty("autoPlay", item.transitionToNext.autoPlay);
+  obj->setProperty("transitionToNext", transition);
+  if (persistLegacySongSettings) {
+    obj->setProperty("mix", mixToVar(item.mix));
+    obj->setProperty("pitchSemitones", item.pitchSemitones);
+    if (item.tempoBpm > 0.0)
+      obj->setProperty("tempoBpm", item.tempoBpm);
+    if (item.windowCustomized) {
+      obj->setProperty("songWindow", windowToVar(item.window));
+      obj->setProperty("windowCustomized", true);
+    }
+    if (item.arrangementCustomized) {
+      obj->setProperty("arrangement", arrangementToVar(item.arrangement));
+      obj->setProperty("arrangementCustomized", true);
+    }
+    if (item.dynamicGuideCustomized) {
+      obj->setProperty("dynamicGuide", dynamicGuideToVar(item.dynamicGuide));
+      obj->setProperty("dynamicGuideCustomized", true);
+    }
+    obj->setProperty("dynamicGuideMix",
+                     dynamicGuideMixToVar(item.dynamicGuideMix));
+    obj->setProperty("clickDynMix", clickDynMixToVar(item.clickDynMix));
   }
-  if (item.arrangementCustomized) {
-    obj->setProperty("arrangement", arrangementToVar(item.arrangement));
-    obj->setProperty("arrangementCustomized", true);
-  }
-  if (item.dynamicGuideCustomized) {
-    obj->setProperty("dynamicGuide", dynamicGuideToVar(item.dynamicGuide));
-    obj->setProperty("dynamicGuideCustomized", true);
-  }
-  obj->setProperty("dynamicGuideMix", dynamicGuideMixToVar(item.dynamicGuideMix));
-  obj->setProperty("clickDynMix", clickDynMixToVar(item.clickDynMix));
   obj->setProperty("updatedMs", static_cast<juce::int64>(item.updatedMs));
   return juce::var(obj);
 }
@@ -2593,8 +2966,43 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   auto *obj = v.getDynamicObject();
   if (obj == nullptr)
     return item;
+  item.itemId = obj->getProperty("itemId").toString().trim();
+  if (item.itemId.isEmpty()) {
+    item.itemId = juce::Uuid().toString();
+    changed = true;
+  }
   item.songId = obj->getProperty("songId").toString();
+  if (const auto *transition =
+          obj->getProperty("transitionToNext").getDynamicObject()) {
+    item.transitionToNext.autoPlay =
+        static_cast<bool>(transition->getProperty("autoPlay"));
+  } else if (obj->hasProperty("autoPlayNext")) {
+    // v2: la marca ya significaba "al terminar, reproducir siguiente".
+    item.transitionToNext.autoPlay =
+        static_cast<bool>(obj->getProperty("autoPlayNext"));
+    changed = true;
+  }
   item.updatedMs = static_cast<juce::int64>(obj->getProperty("updatedMs"));
+  if (song != nullptr && isProjectBackedSong(*song)) {
+    constexpr const char *legacySongSettingKeys[] = {
+        "mix", "pitchSemitones", "tempoBpm", "songWindow",
+        "windowCustomized", "arrangement", "arrangementCustomized",
+        "dynamicGuide", "dynamicGuideCustomized", "dynamicGuideMix",
+        "clickDynMix"};
+    for (const auto *key : legacySongSettingKeys) {
+      if (obj->hasProperty(key)) {
+        changed = true;
+        break;
+      }
+    }
+    item.mix = createDefaultMixForSong(*song);
+    item.window = createDefaultWindowForSong(*song);
+    item.arrangement = createDefaultArrangementForSong(*song);
+    item.dynamicGuide = makeDefaultDynamicGuideSettings();
+    item.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
+    item.clickDynMix = makeDefaultClickDynMixSnapshot();
+    return item;
+  }
   item.mix = mixFromVar(obj->getProperty("mix"), song, changed);
   if (obj->hasProperty("pitchSemitones"))
     item.pitchSemitones = juce::jlimit(
@@ -2688,7 +3096,9 @@ SetlistItem SongLibraryStore::setlistItemFromVar(
   return item;
 }
 
-juce::var SongLibraryStore::setlistToVar(const SetlistData &setlist) {
+juce::var SongLibraryStore::setlistToVar(
+    const SetlistData &setlist,
+    const std::vector<ImportedSongData> &songs) {
   auto *obj = new juce::DynamicObject();
   obj->setProperty("id", setlist.id);
   obj->setProperty("name", setlist.name);
@@ -2697,8 +3107,13 @@ juce::var SongLibraryStore::setlistToVar(const SetlistData &setlist) {
 
   juce::Array<juce::var> itemsArray;
   itemsArray.ensureStorageAllocated(static_cast<int>(setlist.items.size()));
-  for (const auto &item : setlist.items)
-    itemsArray.add(setlistItemToVar(item));
+  for (const auto &item : setlist.items) {
+    const auto *song = findSongById(songs, item.songId);
+    const bool persistLegacySongSettings =
+        song == nullptr || !isProjectBackedSong(*song);
+    itemsArray.add(
+        setlistItemToVar(item, persistLegacySongSettings));
+  }
   obj->setProperty("items", juce::var(itemsArray));
   return juce::var(obj);
 }
@@ -2732,6 +3147,11 @@ SetlistData SongLibraryStore::setlistFromVar(
       setlist.items.push_back(setlistItemFromVar(itemVar, song, changed));
     }
   }
+  if (!setlist.items.empty() &&
+      setlist.items.back().transitionToNext.autoPlay) {
+    setlist.items.back().transitionToNext.autoPlay = false;
+    changed = true;
+  }
 
   return setlist;
 }
@@ -2760,6 +3180,36 @@ bool SongLibraryStore::updateActiveSetlistItem(
   const auto *song = findSongById(library.songs, songId);
   if (song == nullptr)
     return false;
+  const bool isProjectSong = isProjectBackedSong(*song);
+  juce::File projectFile(isProjectSong ? song->projectPath : juce::String{});
+  ProjectSongSettings cachedSettings;
+  if (isProjectSong) {
+    bool hasCachedProjectSettings =
+        projectFile.existsAsFile() &&
+        ProjectStore::getCachedSettings(projectFile, cachedSettings);
+    const auto projectId = projectIdentityForSong(*song);
+    if (!hasCachedProjectSettings)
+      hasCachedProjectSettings =
+          ProjectStore::getCachedSettings(projectId, cachedSettings);
+    if (!hasCachedProjectSettings) {
+      cachedSettings.mix = createDefaultMixForSong(*song);
+      cachedSettings.tempoBpm =
+          song->bpm > 0 ? static_cast<double>(song->bpm) : 120.0;
+      cachedSettings.window = createDefaultWindowForSong(*song);
+      cachedSettings.arrangement = song->arrangement;
+      cachedSettings.arrangementCustomized =
+          !song->arrangement.parts.empty();
+      cachedSettings.dynamicGuide = makeDefaultDynamicGuideSettings();
+      cachedSettings.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
+      cachedSettings.clickDynMix = makeDefaultClickDynMixSnapshot();
+    }
+    auto cachedItem = projectSettingsCacheItem(songId, cachedSettings);
+    updater(cachedItem, *song);
+    cachedItem.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+    ProjectStore::scheduleSettingsSave(
+        projectFile, projectId, projectSettingsFromItem(cachedItem, *song));
+    return true;
+  }
 
   auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
                          [&songId](const SetlistItem &item) {
@@ -2822,7 +3272,8 @@ bool SongLibraryStore::updateActiveSetlistItem(
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   it->updatedMs = now;
   setlist->updatedMs = now;
-  return saveLibrary(library);
+  const bool saved = saveLibrary(library);
+  return saved;
 }
 
 bool SongLibraryStore::updateStemMixValue(

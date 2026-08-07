@@ -371,6 +371,24 @@ double estimateSongLengthSeconds(const ImportedSongData &song) {
   return std::max(0.0, maxDuration);
 }
 
+bool isProjectBackedSong(const ImportedSongData &song) {
+  return song.projectPath.trim().isNotEmpty();
+}
+
+juce::String projectIdentityForSong(const ImportedSongData &song) {
+  const auto projectId = song.projectId.trim();
+  return projectId.isNotEmpty() ? projectId : song.id.trim();
+}
+
+juce::String playbackIdentityForSong(const ImportedSongData &song) {
+  const auto localId = song.id.trim();
+  if (localId.isEmpty())
+    return {};
+  const auto projectPath = song.projectPath.trim();
+  return projectPath.isNotEmpty() ? localId + "|project:" + projectPath
+                                  : localId + "|legacy";
+}
+
 std::vector<float> buildMixedWaveformBins(
     const ImportedSongData &song, const int binCount,
     const std::function<void(double)> &onProgress) {
