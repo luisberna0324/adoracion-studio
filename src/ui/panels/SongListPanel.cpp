@@ -2815,10 +2815,30 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
                                   "Generating waveform preview..."));
             });
         juce::String importError;
-        const bool packaged = ProjectStore::save(document, selectedDestination, &importError);
+        const bool packaged = ProjectStore::save(
+            document, selectedDestination, &importError, nullptr,
+            [&progress](const double projectProgress,
+                        const juce::String &phase) {
+              if (progress)
+                progress(0.94 + 0.035 * juce::jlimit(0.0, 1.0,
+                                                    projectProgress),
+                         phase);
+            });
         ProjectDocument opened;
-        const bool success = packaged && ProjectStore::open(selectedDestination, opened, &importError) &&
-                             SongLibraryStore::registerProjectSong(opened.song);
+        const bool openedProject =
+            packaged && ProjectStore::open(
+                            selectedDestination, opened, &importError, true,
+                            [&progress](const double projectProgress,
+                                        const juce::String &phase) {
+                              if (progress)
+                                progress(0.975 +
+                                             0.02 * juce::jlimit(
+                                                        0.0, 1.0,
+                                                        projectProgress),
+                                         phase);
+                            });
+        const bool success =
+            openedProject && SongLibraryStore::registerProjectSong(opened.song);
 
         if (!success) {
           SessionAuthLogger::write("[SongImport] appendSong failed error=\"" +
@@ -2834,8 +2854,8 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             "[SongImport] project saved with embedded waveform");
 
         if (progress)
-          progress(0.97, L10n::tr(u8"Actualizando lista de canciones...",
-                                  u8"Refreshing song list..."));
+          progress(0.995, L10n::tr(u8"Actualizando lista de canciones...",
+                                   u8"Refreshing song list..."));
         if (progress)
           progress(1.0, L10n::tr(u8"Canción creada", "Song created"));
 

@@ -1,5 +1,4 @@
 #include "ProjectStore.h"
-#include "AppSettings.h"
 #include "Localization.h"
 #include "SessionAuthLogger.h"
 
@@ -10,6 +9,8 @@ namespace {
 constexpr auto kManifestName = "manifest.json";
 constexpr auto kAudioPrefix = "audio/";
 constexpr auto kWaveformName = "waveform.bin";
+constexpr auto kCacheSourceName = "project-source.json";
+constexpr auto kProjectAudioFormat = "flac";
 
 class ProgressThrottle final {
 public:
@@ -77,6 +78,43 @@ bool replaceProjectFileWithRetry(const juce::File &temporaryFile,
       return true;
   }
   return false;
+}
+
+bool cacheMatchesProject(const juce::File &projectFile,
+                         const juce::File &cacheDirectory) {
+  const auto marker = cacheDirectory.getChildFile(kCacheSourceName);
+  if (!marker.existsAsFile())
+    return false;
+  const auto parsed = juce::JSON::parse(marker);
+  const auto *root = parsed.getDynamicObject();
+  if (root == nullptr)
+    return false;
+  const juce::File recordedPath(root->getProperty("projectPath").toString());
+  const auto recordedSize =
+      static_cast<juce::int64>(root->getProperty("projectSize"));
+  const auto recordedMtime =
+      static_cast<juce::int64>(root->getProperty("projectMtimeMs"));
+  return recordedPath == projectFile && recordedSize == projectFile.getSize() &&
+         recordedMtime ==
+             projectFile.getLastModificationTime().toMilliseconds();
+}
+
+bool writeCacheProjectMarker(const juce::File &projectFile,
+                             const juce::File &cacheDirectory) {
+  auto *root = new juce::DynamicObject();
+  root->setProperty("projectPath", projectFile.getFullPathName());
+  root->setProperty("projectSize", projectFile.getSize());
+  root->setProperty("projectMtimeMs",
+                    projectFile.getLastModificationTime().toMilliseconds());
+  return cacheDirectory.getChildFile(kCacheSourceName)
+      .replaceWithText(juce::JSON::toString(juce::var(root), true));
+}
+
+bool canDecodeAudioFile(const juce::File &file) {
+  juce::AudioFormatManager formats;
+  formats.registerBasicFormats();
+  return std::unique_ptr<juce::AudioFormatReader>(
+             formats.createReaderFor(file)) != nullptr;
 }
 
 class ProjectSettingsSaveJob final : public juce::ThreadPoolJob {
@@ -519,6 +557,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   manifestSong.id = song.projectId;
   manifestSong.projectId.clear();
   manifestSong.projectPath.clear();
+  manifestSong.fileType = "Multitrack FLAC";
   const auto fallbackSongDuration = estimateSongLengthSeconds(song);
   std::vector<double> stemWork;
   stemWork.reserve(song.stems.size());
@@ -546,11 +585,13 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
       return false;
     }
     juce::File packagedSource = source;
-    if (AppSettings::getStemOptimizationEnabled()) {
+    const auto projectStemExtension =
+        SongLibraryStore::projectStorageStemExtension();
+    if (!source.hasFileExtension(projectStemExtension)) {
       const auto legalId = juce::File::createLegalFileName(stem.stemId);
       const auto converted = stageDir.getChildFile(
           (legalId.isNotEmpty() ? legalId : juce::String("stem_") + juce::String(static_cast<int>(i + 1))) +
-          SongLibraryStore::projectStorageStemExtension());
+          projectStemExtension);
       juce::String conversionError;
       const auto phase =
           L10n::tr("Convirtiendo ", "Converting ") +
@@ -593,6 +634,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   } else { manifestSong.artworkPath.clear(); }
   auto *root = new juce::DynamicObject();
   root->setProperty("schemaVersion", kSchemaVersion);
+  root->setProperty("audioFormat", kProjectAudioFormat);
   root->setProperty("song", SongLibraryStore::songDataToVar(manifestSong));
   root->setProperty("songSettings", settingsToVar(document.settings));
   const auto manifest = juce::JSON::toString(juce::var(root), true);
@@ -693,8 +735,16 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     return entry != nullptr ? entry->uncompressedSize : 0;
   };
   juce::int64 totalResourceBytes = 0;
-  for (const auto &stem : song.stems)
-    totalResourceBytes += entrySize(stem.storedPath);
+  for (const auto &stem : song.stems) {
+    const auto bytes = entrySize(stem.storedPath);
+    totalResourceBytes += bytes;
+#if JUCE_WINDOWS
+    // Legacy projects produced on macOS contain ALAC/M4A. Windows needs one
+    // additional conversion pass before those bytes become playable FLAC.
+    if (juce::File(stem.storedPath).hasFileExtension(".m4a"))
+      totalResourceBytes += bytes;
+#endif
+  }
   if (song.artworkPath.isNotEmpty())
     totalResourceBytes += entrySize(song.artworkPath);
   totalResourceBytes += entrySize(kWaveformName);
@@ -722,14 +772,22 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
           file.getLastModificationTime() &&
       readCachedSettings(song.id, newerCachedSettings);
   auto cache = getCacheDirectory(song.id);
-  if (rebuildCache && cache.exists()) cache.deleteRecursively();
+  const bool shouldRebuildCache =
+      rebuildCache && !cacheMatchesProject(file, cache);
+  if (shouldRebuildCache && cache.exists() && !cache.deleteRecursively()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo actualizar la caché del proyecto. Detén la canción e inténtalo nuevamente.",
+          "Couldn't refresh the project cache. Stop the song and try again.");
+    return false;
+  }
   cache.createDirectory();
   juce::String localError;
   for (auto &stem : song.stems) {
     const auto internalPath = stem.storedPath;
     if (!internalPath.startsWith(kAudioPrefix) || internalPath.contains("..")) { localError = "Unsafe stem path in project."; break; }
     const auto target = cache.getChildFile(internalPath);
-    const bool needsExtraction = rebuildCache || !target.existsAsFile();
+    const bool needsExtraction = shouldRebuildCache || !target.existsAsFile();
     if (needsExtraction &&
         !copyZipEntry(zip, internalPath, target, localError,
                       [&](const juce::int64 bytes) {
@@ -738,14 +796,69 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
       break;
     if (!needsExtraction)
       reportResourceBytes(entrySize(internalPath), target.getFileName());
-    stem.storedPath = target.getFullPathName(); stem.sourcePath = stem.storedPath; stem.fileName = target.getFileName();
+
+    juce::File playbackTarget = target;
+    bool readable = canDecodeAudioFile(playbackTarget);
+#if JUCE_WINDOWS
+    if (!readable && target.hasFileExtension(".m4a")) {
+      const auto convertedTarget = target.withFileExtension(
+          SongLibraryStore::projectStorageStemExtension());
+      const bool needsConversion =
+          shouldRebuildCache || !convertedTarget.existsAsFile() ||
+          convertedTarget.getLastModificationTime() <
+              target.getLastModificationTime();
+      if (needsConversion) {
+        juce::String conversionError;
+        const auto conversionWork = entrySize(internalPath);
+        juce::int64 reportedConversionBytes = 0;
+        if (!SongLibraryStore::convertStemForProject(
+                target, convertedTarget, conversionError, stem.durationSec,
+                [&](const double conversionProgress, const juce::String &) {
+                  const auto desiredBytes = static_cast<juce::int64>(
+                      static_cast<double>(conversionWork) * conversionProgress);
+                  const auto delta = desiredBytes - reportedConversionBytes;
+                  if (delta > 0) {
+                    reportResourceBytes(
+                        delta,
+                        L10n::tr("conversión de ", "conversion of ") +
+                            target.getFileName());
+                    reportedConversionBytes = desiredBytes;
+                  }
+                })) {
+          localError = L10n::tr(
+                           "No se pudo convertir un stem antiguo para Windows: ",
+                           "Couldn't convert a legacy stem for Windows: ") +
+                       target.getFileName() + ". " + conversionError;
+          break;
+        }
+        if (reportedConversionBytes < conversionWork)
+          reportResourceBytes(conversionWork - reportedConversionBytes,
+                              convertedTarget.getFileName());
+      } else {
+        reportResourceBytes(entrySize(internalPath),
+                            convertedTarget.getFileName());
+      }
+      playbackTarget = convertedTarget;
+      readable = canDecodeAudioFile(playbackTarget);
+    }
+#endif
+    if (!readable) {
+      localError = L10n::tr("No se puede decodificar el stem: ",
+                            "Couldn't decode stem: ") +
+                   target.getFileName();
+      break;
+    }
+    stem.storedPath = playbackTarget.getFullPathName();
+    stem.sourcePath = stem.storedPath;
+    stem.fileName = playbackTarget.getFileName();
   }
   if (localError.isEmpty() && song.artworkPath.isNotEmpty()) {
     const auto artworkName = juce::File(song.artworkPath).getFileName();
     if (artworkName != song.artworkPath || !artworkName.startsWith("artwork.")) localError = "Unsafe artwork path in project.";
     else {
       const auto artworkTarget = cache.getChildFile(artworkName);
-      const bool needsExtraction = rebuildCache || !artworkTarget.existsAsFile();
+      const bool needsExtraction =
+          shouldRebuildCache || !artworkTarget.existsAsFile();
       const bool extracted = !needsExtraction ||
                              copyZipEntry(zip, song.artworkPath, artworkTarget,
                                           localError,
@@ -765,7 +878,7 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     juce::String downloadedArtwork;
     const auto cachedArtwork = cache.getChildFile(
         "artwork" + artworkExtensionFromUrl(song.artworkSource));
-    if (!rebuildCache && cachedArtwork.existsAsFile())
+    if (!shouldRebuildCache && cachedArtwork.existsAsFile())
       song.artworkPath = cachedArtwork.getFullPathName();
     else if (downloadArtworkToCache(song.artworkSource, cache, downloadedArtwork))
       song.artworkPath = downloadedArtwork;
@@ -809,6 +922,10 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   if (rebuildCache) {
     settingsSaveQueue().remember(file, settings);
     writeCachedSettings(song.id, settings);
+    if (!writeCacheProjectMarker(file, cache))
+      SessionAuthLogger::write(
+          "[Project] Couldn't persist cache source marker path=" +
+          cache.getFullPathName());
   }
   outDocument = {std::move(song), std::move(settings),
                  std::move(waveformBins), file};

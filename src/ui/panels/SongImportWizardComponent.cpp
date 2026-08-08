@@ -4,6 +4,7 @@
 #include "../../data/AssetBootstrapManager.h"
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
+#include "../../data/SongLibraryStore.h"
 #include "../UiCommon.h"
 #include "../components/SongLoadProgressOverlay.h"
 
@@ -1569,7 +1570,27 @@ void SongImportWizardComponent::submitSong() {
                 stem.storedPath.trim().isNotEmpty());
       });
 
-  if (optimizationEnabled && hasLocalStemsToStore) {
+  const bool isPortableProjectCreation =
+      mode == Mode::Import && static_cast<bool>(resolveProjectDestination);
+  const bool projectNeedsFlacConversion =
+      isPortableProjectCreation &&
+      std::any_of(songData.stems.begin(), songData.stems.end(),
+                  [](const ImportedStemData &stem) {
+                    if (!stem.include)
+                      return false;
+                    const juce::File source(
+                        stem.storedPath.trim().isNotEmpty()
+                            ? stem.storedPath
+                            : stem.sourcePath);
+                    return source.existsAsFile() &&
+                           !source.hasFileExtension(
+                               SongLibraryStore::projectStorageStemExtension());
+                  });
+  const bool legacyOptimizationNeedsEncoder =
+      !isPortableProjectCreation && optimizationEnabled &&
+      hasLocalStemsToStore;
+
+  if (projectNeedsFlacConversion || legacyOptimizationNeedsEncoder) {
     const auto availableEncoder = AssetBootstrapManager::getAvailableEncoderBinary();
     const bool encoderReadyLocally =
         availableEncoder.existsAsFile() && availableEncoder.getSize() > 0;
@@ -1577,15 +1598,23 @@ void SongImportWizardComponent::submitSong() {
     if (!encoderReadyLocally) {
       juce::AlertWindow prompt(
           L10n::tr("Descargar encoder", "Download encoder"),
-          L10n::tr(
-              u8"No se encontró el encoder para optimizar almacenamiento.\n\n"
-              u8"¿Deseas descargarlo ahora?",
-              "Encoder for storage optimization wasn't found.\n\n"
-              "Do you want to download it now?"),
+          projectNeedsFlacConversion
+              ? L10n::tr(
+                    u8"Se necesita el encoder para convertir los stems al formato FLAC portable.\n\n"
+                    u8"¿Deseas descargarlo ahora?",
+                    "The encoder is required to convert stems to the portable FLAC format.\n\n"
+                    "Do you want to download it now?")
+              : L10n::tr(
+                    u8"No se encontró el encoder para optimizar almacenamiento.\n\n"
+                    u8"¿Deseas descargarlo ahora?",
+                    "Encoder for storage optimization wasn't found.\n\n"
+                    "Do you want to download it now?"),
           juce::AlertWindow::QuestionIcon);
       prompt.addButton(L10n::tr("Descargar", "Download"), 1);
-      prompt.addButton(L10n::tr("Continuar sin optimizar", "Continue without optimization"),
-                       2);
+      if (!projectNeedsFlacConversion)
+        prompt.addButton(
+            L10n::tr("Continuar sin optimizar", "Continue without optimization"),
+            2);
       prompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
 
       const int decision = prompt.runModalLoop();
@@ -1627,6 +1656,19 @@ void SongImportWizardComponent::submitSong() {
         removeChildComponent(&downloadOverlay);
 
         if (!encoderReady) {
+          if (projectNeedsFlacConversion) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                L10n::tr("No se pudo preparar el encoder",
+                         "Couldn't prepare encoder"),
+                (bootstrapError.isNotEmpty()
+                     ? bootstrapError + "\n\n"
+                     : juce::String()) +
+                    L10n::tr(
+                        "El proyecto necesita stems FLAC para funcionar en Mac y Windows.",
+                        "The project requires FLAC stems to work on Mac and Windows."));
+            return;
+          }
           juce::AlertWindow failedPrompt(
               L10n::tr("No se pudo descargar encoder",
                        "Couldn't download encoder"),

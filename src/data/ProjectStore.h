@@ -38,8 +38,9 @@ using ProjectMigrationProgressFn = ProjectProgressFn;
 
 /**
  * Almacenamiento portable de canciones. Un .pwproj es un ZIP autocontenido:
- * manifest.json, audio/<stem>.<ext> y artwork.<ext>. Los recursos se extraen
+ * manifest.json, audio/<stem>.flac y artwork.<ext>. Los recursos se extraen
  * al cache local para que el motor siga leyendo archivos normales desde disco.
+ * Proyectos legacy con ALAC/M4A se convierten a FLAC de caché en Windows.
  */
 class ProjectStore final {
 public:

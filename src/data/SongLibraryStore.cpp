@@ -26,6 +26,13 @@ constexpr const char *kFfmpegAudioCodec = "alac";
 constexpr const char *kStorageFormatLabel = "ALAC";
 #endif
 
+// Project packages are exchanged between platforms, so their audio format
+// must not depend on the operating system that created them. JUCE ships a
+// native FLAC reader on every supported desktop platform.
+constexpr const char *kProjectStemExtension = ".flac";
+constexpr const char *kProjectFfmpegAudioCodec = "flac";
+constexpr const char *kProjectStorageFormatLabel = "FLAC";
+
 bool nearlyEqual(double a, double b) {
   return std::abs(a - b) <= kArrangementEpsilon;
 }
@@ -1810,8 +1817,9 @@ juce::File SongLibraryStore::resolveBundledFfmpegBinary() {
   return AssetBootstrapManager::getAvailableEncoderBinary();
 }
 
-bool SongLibraryStore::convertStemToStorageFormat(
+bool SongLibraryStore::convertStemWithFfmpeg(
     const juce::File &source, const juce::File &destination,
+    const juce::String &audioCodec, const juce::String &formatLabel,
     juce::String &errorMessage, const double durationSec,
     const SongImportProgressFn &onProgress) {
   auto ffmpegBinary = resolveBundledFfmpegBinary();
@@ -1826,7 +1834,7 @@ bool SongLibraryStore::convertStemToStorageFormat(
   if (!ffmpegBinary.existsAsFile()) {
     if (errorMessage.isEmpty()) {
       errorMessage = "Couldn't find bundled or downloaded ffmpeg binary for " +
-                   juce::String(kStorageFormatLabel) + " conversion.";
+                     formatLabel + " conversion.";
     }
     return false;
   }
@@ -1849,7 +1857,7 @@ bool SongLibraryStore::convertStemToStorageFormat(
   args.add("-1");
   args.add("-vn");
   args.add("-c:a");
-  args.add(kFfmpegAudioCodec);
+  args.add(audioCodec);
   args.add(destination.getFullPathName());
 
   juce::ChildProcess process;
@@ -1908,8 +1916,7 @@ bool SongLibraryStore::convertStemToStorageFormat(
     if (juce::Time::getMillisecondCounter() - startedAt >=
         static_cast<juce::uint32>(10 * 60 * 1000)) {
       process.kill();
-      errorMessage =
-          juce::String(kStorageFormatLabel) + " conversion timed out.";
+      errorMessage = formatLabel + " conversion timed out.";
       return false;
     }
   }
@@ -1930,11 +1937,20 @@ bool SongLibraryStore::convertStemToStorageFormat(
       destination.deleteFile();
     errorMessage = output.isNotEmpty() ? output
                                        : "ffmpeg failed converting stem to " +
-                                             juce::String(kStorageFormatLabel) + ".";
+                                             formatLabel + ".";
     return false;
   }
 
   return true;
+}
+
+bool SongLibraryStore::convertStemToStorageFormat(
+    const juce::File &source, const juce::File &destination,
+    juce::String &errorMessage, const double durationSec,
+    const SongImportProgressFn &onProgress) {
+  return convertStemWithFfmpeg(
+      source, destination, kFfmpegAudioCodec, kStorageFormatLabel,
+      errorMessage, durationSec, onProgress);
 }
 
 bool SongLibraryStore::convertStemForProject(const juce::File &source,
@@ -1942,12 +1958,13 @@ bool SongLibraryStore::convertStemForProject(const juce::File &source,
                                              juce::String &errorMessage,
                                              const double durationSec,
                                              const SongImportProgressFn &onProgress) {
-  return convertStemToStorageFormat(source, destination, errorMessage,
-                                    durationSec, onProgress);
+  return convertStemWithFfmpeg(
+      source, destination, kProjectFfmpegAudioCodec,
+      kProjectStorageFormatLabel, errorMessage, durationSec, onProgress);
 }
 
 juce::String SongLibraryStore::projectStorageStemExtension() {
-  return kStoredStemExtension;
+  return kProjectStemExtension;
 }
 
 bool SongLibraryStore::copyStemFiles(ImportedSongData &song, juce::String &errorMessage,
