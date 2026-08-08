@@ -67,6 +67,18 @@ private:
   std::function<void(double)> onProgress;
 };
 
+bool replaceProjectFileWithRetry(const juce::File &temporaryFile,
+                                 const juce::File &destination) {
+  constexpr int retryDelaysMs[] = {0, 30, 90, 180};
+  for (const auto delayMs : retryDelaysMs) {
+    if (delayMs > 0)
+      juce::Thread::sleep(delayMs);
+    if (temporaryFile.replaceFileIn(destination))
+      return true;
+  }
+  return false;
+}
+
 class ProjectSettingsSaveJob final : public juce::ThreadPoolJob {
 public:
   ProjectSettingsSaveJob(juce::CriticalSection &writeGuardIn,
@@ -487,7 +499,16 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
   if (song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
   const auto temp = destination.getSiblingFile(destination.getFileName() + ".tmp");
-  if (temp.existsAsFile()) temp.deleteFile();
+  if (temp.exists() && !temp.deleteFile()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo retirar un archivo temporal anterior. Cierra otras instancias de PlayWorship e inténtalo nuevamente.",
+          "Couldn't remove a previous temporary file. Close other PlayWorship instances and try again.");
+    SessionAuthLogger::write(
+        "[Project] Couldn't remove stale temporary package path=" +
+        temp.getFullPathName());
+    return false;
+  }
   juce::ZipFile::Builder builder;
   const auto stageDir = SongLibraryStore::getRootDirectory()
                             .getChildFile("project-staging")
@@ -589,22 +610,54 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
                    L10n::tr("Escribiendo proyecto...", "Writing project..."),
                    true);
   temp.getParentDirectory().createDirectory();
-  juce::FileOutputStream out(temp);
-  ProgressOutputStream progressOut(
-      out, estimatedPackageBytes,
-      [&progress](const double writeProgress) {
-        progress.publish(
-            0.60 + 0.40 * writeProgress,
-            L10n::tr("Escribiendo proyecto...", "Writing project..."));
-      });
-  const bool wrote =
-      out.openedOk() && builder.writeToStream(progressOut, nullptr);
-  progressOut.flush();
-  out.flush();
-  if (!wrote || out.getStatus().failed()) {
-    cleanupStage(); temp.deleteFile(); if (errorMessage != nullptr) *errorMessage = "Couldn't write project package."; return false;
+  bool wrote = false;
+  auto writeStatus = juce::Result::ok();
+  {
+    // Windows does not allow MoveFile/ReplaceFile while this output handle is
+    // open because JUCE shares it for reads only. Keep both stream wrappers in
+    // this scope so their destructors run before replaceFileIn() below.
+    juce::FileOutputStream out(temp);
+    if (out.openedOk()) {
+      ProgressOutputStream progressOut(
+          out, estimatedPackageBytes,
+          [&progress](const double writeProgress) {
+            progress.publish(
+                0.60 + 0.40 * writeProgress,
+                L10n::tr("Escribiendo proyecto...", "Writing project..."));
+          });
+      wrote = builder.writeToStream(progressOut, nullptr);
+      progressOut.flush();
+      out.flush();
+    }
+    writeStatus = out.getStatus();
   }
-  if (!temp.replaceFileIn(destination)) { cleanupStage(); temp.deleteFile(); if (errorMessage != nullptr) *errorMessage = "Couldn't replace project package."; return false; }
+  if (!wrote || writeStatus.failed()) {
+    cleanupStage();
+    const bool removedTemporary = !temp.exists() || temp.deleteFile();
+    SessionAuthLogger::write(
+        "[Project] Package write failed temp=" + temp.getFullPathName() +
+        " status=\"" + writeStatus.getErrorMessage() +
+        "\" removedTemporary=" + juce::String(removedTemporary ? 1 : 0));
+    if (errorMessage != nullptr)
+      *errorMessage = "Couldn't write project package.";
+    return false;
+  }
+  if (!replaceProjectFileWithRetry(temp, destination)) {
+    const auto temporaryBytes = temp.getSize();
+    const bool removedTemporary = !temp.exists() || temp.deleteFile();
+    cleanupStage();
+    SessionAuthLogger::write(
+        "[Project] Package replace failed temp=" + temp.getFullPathName() +
+        " destination=" + destination.getFullPathName() +
+        " tempBytes=" + juce::String(temporaryBytes) +
+        " destinationExists=" + juce::String(destination.exists() ? 1 : 0) +
+        " removedTemporary=" + juce::String(removedTemporary ? 1 : 0));
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo reemplazar el proyecto. Verifica que el archivo no esté abierto en otra aplicación e inténtalo nuevamente.",
+          "Couldn't replace the project. Make sure the file isn't open in another application and try again.");
+    return false;
+  }
   cleanupStage();
   document.projectFile = destination; recordRecent(document);
   progress.publish(1.0,

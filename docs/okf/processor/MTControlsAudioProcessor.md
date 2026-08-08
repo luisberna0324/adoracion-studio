@@ -74,6 +74,13 @@ Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
 tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
 fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
 cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
+La escritura del ZIP ocurre en `<proyecto>.tmp`; tanto el stream de progreso
+como el `FileOutputStream` se destruyen antes de llamar `replaceFileIn()`. Esto
+es obligatorio en Windows, donde el handle de escritura de JUCE no comparte
+permiso de borrado o renombrado. Antes de escribir se elimina cualquier temporal
+obsoleto y el reemplazo se reintenta brevemente para tolerar locks transitorios
+de antivirus o proveedores de sincronización. Si aun así falla, el proyecto
+anterior permanece intacto, el temporal se limpia y el log registra ambas rutas.
 `ProjectStore` conserva el snapshot completo más reciente en memoria y en
 `project-cache/<project-id>/song-settings.json`, por lo que cambios consecutivos
 se acumulan aun cuando la canción no pertenezca al setlist activo o el `.pwproj`
