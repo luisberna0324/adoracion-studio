@@ -241,6 +241,15 @@ otro archivo de audio. Así se preservan el read-ahead, el prefetch y las
 garantías de no bloquear el callback; la caché puede eliminarse y se recreará
 al abrir el proyecto nuevamente.
 
+Los proyectos nuevos almacenan todos sus stems como FLAC, sin depender de la
+plataforma que creó el paquete. FLAC es el formato lossless portable que JUCE
+decodifica de forma nativa tanto en macOS como en Windows. Para mantener
+compatibilidad, al abrir en Windows un proyecto antiguo con ALAC/M4A,
+`ProjectStore` lo convierte a FLAC únicamente dentro de la caché y entrega esa
+ruta a `StemTrack`; el `.pwproj` original no se modifica durante la apertura.
+Antes de construir el track se comprueba que el archivo extraído o convertido
+tenga un `AudioFormatReader` válido.
+
 ## Constantes internas
 
 | Atómico | Tipo | Default | Descripción |

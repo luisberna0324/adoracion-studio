@@ -228,7 +228,7 @@ public:
   static juce::var songDataToVar(const ImportedSongData &song);
   static ImportedSongData songDataFromVar(const juce::var &value,
                                           bool &changed);
-  /** Conversión de stems reutilizada por los paquetes .pwproj. */
+  /** Convierte un stem al FLAC portable obligatorio de los paquetes .pwproj. */
   static bool convertStemForProject(const juce::File &source,
                                     const juce::File &destination,
                                     juce::String &errorMessage,
@@ -259,6 +259,11 @@ private:
                                          juce::String &errorMessage,
                                          double durationSec = 0.0,
                                          const SongImportProgressFn &onProgress = {});
+  static bool convertStemWithFfmpeg(
+      const juce::File &source, const juce::File &destination,
+      const juce::String &audioCodec, const juce::String &formatLabel,
+      juce::String &errorMessage, double durationSec = 0.0,
+      const SongImportProgressFn &onProgress = {});
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);

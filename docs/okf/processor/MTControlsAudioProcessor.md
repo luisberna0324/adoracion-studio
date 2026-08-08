@@ -63,11 +63,25 @@ Carga múltiples archivos de audio como stems separados. El `onLoadProgress` cal
 ### Proyectos portables `.pwproj`
 
 Una canción puede provenir de un proyecto `.pwproj` autocontenido. El paquete
-incluye el manifiesto, stems y portada; antes de llamar `loadSongStems()` la UI
+incluye el manifiesto, stems FLAC y portada; antes de llamar `loadSongStems()` la UI
 lo valida y extrae sus stems a una caché local. El procesador continúa
 recibiendo paths de archivos normales y no abre ZIPs ni realiza I/O de
 empaquetado en el audio thread. El manifiesto restaura mezcla, pitch, tempo,
 ventana, arrange, guía dinámica y click antes de completar la transición.
+FLAC es obligatorio para todo proyecto nuevo, incluso si la biblioteca legacy
+de macOS usa ALAC/M4A o la preferencia de optimización de stems está
+desactivada. Un stem que ya es FLAC se empaqueta directamente; los demás se
+convierten una sola vez durante la creación del proyecto. El manifiesto agrega
+`audioFormat: "flac"` sin cambiar `schemaVersion`, por lo que los lectores
+actuales que ignoran campos adicionales siguen siendo compatibles.
+
+En Windows, un proyecto legacy que todavía contiene ALAC/M4A se extrae y se
+convierte mediante FFmpeg a FLAC dentro de `project-cache`; sólo la ruta runtime
+apunta al FLAC convertido y la apertura no reescribe el paquete. Cada stem se
+valida con `AudioFormatManager` antes de entregarlo al procesador. La caché
+guarda además `project-source.json` con ruta, tamaño y modificación del
+`.pwproj`: una segunda apertura reutiliza los recursos si ese marcador sigue
+vigente, y reconstruye la caché si el paquete cambió o falta algún archivo.
 La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
 la copia local en `MTControls/waveforms` es sólo una caché regenerable.
 Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
