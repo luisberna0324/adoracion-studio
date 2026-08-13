@@ -90,6 +90,17 @@ public:
   bool isPrefetchReady(juce::int64 position,
                        int minimumFrames) const noexcept;
 
+  // P0.2 (perf): inyectar el prefetch source después de la construcción.
+  // En Windows, abrir el mismo archivo dos veces (una para la cadena
+  // principal y otra para la de prefetch) duplica el costo de antivirus
+  // en el primer read. Si el prefetch source no está listo al
+  // prepareToPlay, podemos crearlo en lazy desde un thread aparte o
+  // en el primer requestPrefetchPosition. El método re-asigna el
+  // prefetch buffer si hace falta. Solo se debe llamar desde el
+  // message thread (aloca memoria).
+  void setPrefetchSource(juce::PositionableAudioSource *newPrefetch,
+                         int sampleRate, int samplesPerBlockExpected);
+
   bool waitForNextAudioBlockReady(const juce::AudioSourceChannelInfo &info,
                                   juce::uint32 timeout);
   juce::int64 getRealtimeMissCount() const noexcept {

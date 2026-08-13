@@ -62,13 +62,26 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
 
     backgroundThread.addTimeSliceClient(this);
 
+    // P0.3 (perf): target de prefill mucho más chico. El original pedía
+    // `min(sampleRate/4, buffer/2)` = ~250ms @ 44.1kHz. En Windows, con
+    // antivirus activo, el primer read del archivo puede tardar 200-500ms,
+    // y este loop se ejecuta en el UI thread del loadSongStems, donde
+    // 250ms × N stems se acumula y se ve como "tarda mucho en cambiar de
+    // canción". 4 blocks de headroom alcanzan para que el primer callback
+    // no haga underrun, y el waitForNextAudioBlockReady posterior en
+    // MTControlsAudioProcessor::loadSongStems sigue siendo el verdadero
+    // gate antes del swap. Si la prefill corta antes, el worker sigue
+    // llenando mientras la UI vuelve al message loop.
+    const int prefillTarget = juce::jmax(
+        samplesPerBlockExpected * 4,
+        juce::jmin(samplesPerBlockExpected * 8, buffer.getNumSamples() / 4));
     do {
       backgroundThread.moveToFrontOfQueue(this);
       juce::Thread::sleep(5);
     } while (prefillBuffer &&
              (bufferValidEnd.load(std::memory_order_acquire) -
                   bufferValidStart.load(std::memory_order_acquire) <
-              std::min((int)(newSampleRate / 4.0), buffer.getNumSamples() / 2)));
+              prefillTarget));
   }
 }
 
@@ -633,6 +646,62 @@ bool StemBufferingSource::readPendingPrefetch() {
   }
   bufferReadyEvent.signal();
   return true;
+}
+
+void StemBufferingSource::setPrefetchSource(
+    juce::PositionableAudioSource *newPrefetch, int sampleRate,
+    int samplesPerBlockExpected) {
+  // P0.2 (perf): instalar (o reemplazar) la cadena de prefetch en
+  // runtime. La cadena se construye en lazy desde el primer
+  // requestPrefetchPosition del StemTrack, no en el loadSongStems. Esto
+  // evita el segundo createReaderFor y la duplicación del costo de AV
+  // en Windows durante el cambio de canción.
+  //
+  // Solo se llama desde el message thread. El prefetchLock existente
+  // serializa contra el audio thread que pueda estar copiando del
+  // prefetchBuffer en getNextAudioBlock().
+  if (prefetchSource == newPrefetch)
+    return;
+
+  // Liberar el anterior antes de instalar el nuevo para que release
+  // (si corresponde) corra con el contexto previo.
+  if (prefetchSource != nullptr) {
+    prefetchSource->releaseResources();
+  }
+
+  prefetchSource = newPrefetch;
+
+  // (Re)alocar el prefetch buffer. Mantener la misma fórmula que
+  // prepareToPlay para que requestPrefetchPosition siga trabajando
+  // con la capacidad que espera.
+  const int newCapacity = prefetchSource != nullptr
+                              ? juce::jmin(buffer.getNumSamples(),
+                                           juce::jmax(
+                                               kMinPrefetchBufferSamples,
+                                               samplesPerBlockExpected * 4))
+                              : 0;
+  {
+    const juce::ScopedLock bufferLock(prefetchLock);
+    prefetchBuffer.setSize(numberOfChannels, newCapacity);
+    prefetchBuffer.clear();
+  }
+  prefetchCapacityFrames.store(newCapacity, std::memory_order_release);
+
+  // Si tenemos nuevo source y ya estamos preparados, preparearlo para
+  // que el worker pueda leer de él.
+  if (prefetchSource != nullptr && isPrepared.load(std::memory_order_acquire)) {
+    prefetchSource->prepareToPlay(samplesPerBlockExpected,
+                                  static_cast<double>(sampleRate));
+  }
+
+  // Bump de la generación para invalidar cualquier prefetch pendiente
+  // que se hubiera solicitado contra la cadena vieja.
+  const auto generation =
+      requestedPrefetchGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  workerPrefetchGeneration = generation;
+  requestedPrefetchFrames.store(0, std::memory_order_relaxed);
+  pinnedPrefetchGeneration.store(0, std::memory_order_release);
+  publishPrefetchRange(0, 0, generation);
 }
 
 bool StemBufferingSource::readNextBufferChunk() {

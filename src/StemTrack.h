@@ -98,8 +98,18 @@ public:
 private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;
+  // P0.2 (perf): el segundo AudioFormatReader se mantiene crudo hasta
+  // el primer requestPrefetchPosition. Esto evita pagar el segundo
+  // FileInputStream::open y la duplicación del costo de AV en el
+  // loadSongStems. Cuando la cadena de prefetch se necesita (seek,
+  // loop, arrangement handoff), se construye en lazy.
   std::unique_ptr<juce::AudioFormatReaderSource> prefetchReaderSource;
   std::unique_ptr<ResamplingPositionableSource> prefetchResamplingSource;
+  std::unique_ptr<juce::AudioFormatReader> deferredPrefetchReader;
+  double prefetchSampleRate = 0.0;
+  int prefetchBlockSize = 0;
+  std::once_flag prefetchChainBuilt;
+  void ensurePrefetchChain();
   std::unique_ptr<StemBufferingSource> bufferingSource;
   juce::PositionableAudioSource *activeSource = nullptr;
 
