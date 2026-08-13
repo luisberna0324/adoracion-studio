@@ -64,6 +64,8 @@ Name: "firewallexception"; Description: "Agregar excepcion de firewall para {#Ap
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "bootstrap-assets.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "add-defender-exclusion.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "remove-defender-exclusion.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 #if VcRedistFile != ""
 Source: "{#VcRedistFile}"; DestDir: "{tmp}"; DestName: "vc_redist.exe"; Flags: deleteafterinstall ignoreversion
 #endif
@@ -83,6 +85,11 @@ Root: HKA; Subkey: "Software\Classes\PlayWorship.Project\shell\open\command"; Va
 Filename: "{cmd}"; Parameters: "/C ""{tmp}\vc_redist.exe"" /install /quiet /norestart || exit /b 0"; StatusMsg: "Instalando Microsoft Visual C++ Runtime... / Installing Microsoft Visual C++ Runtime..."; Flags: runhidden waituntilterminated
 #endif
 Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\bootstrap-assets.ps1"" || exit /b 0"; StatusMsg: "Descargando recursos iniciales (encoder y pads)... / Downloading initial resources (encoder and pads)..."; Flags: runhidden nowait
+; P0.1 (perf): agregar exclusiones puntuales de Microsoft Defender para
+; MTControls.exe y %LocalAppData%\MTControls. Corta el costo de AV
+; en el primer read de cada stem (~200-500ms por archivo en maquinas
+; con AV empresarial). Idempotente: si ya estan, no las duplica.
+Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\add-defender-exclusion.ps1"" || exit /b 0"; Flags: runhidden waituntilterminated
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Inbound)"" dir=in action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall add rule name=""{#AppName} (Outbound)"" dir=out action=allow program=""{app}\{#AppExeName}"" enable=yes profile=any"; Flags: runhidden; Tasks: firewallexception
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
@@ -90,3 +97,5 @@ Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=""{#AppName} (Inbound)"" program=""{app}\{#AppExeName}"""; Flags: runhidden
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=""{#AppName} (Outbound)"" program=""{app}\{#AppExeName}"""; Flags: runhidden
+; P0.1 (perf): limpiar exclusiones de Defender que agrego el instalador.
+Filename: "{cmd}"; Parameters: "/C powershell -NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\remove-defender-exclusion.ps1"" || exit /b 0"; Flags: runhidden waituntilterminated
