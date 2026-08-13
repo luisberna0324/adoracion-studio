@@ -107,6 +107,10 @@ private:
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
   bool mixExportBusy = false;
+  // P0.5 (perf): generation token para descartar resultados tardíos de
+  // la generación de waveform en background. Si el usuario cambia de
+  // canción dos veces seguidas, solo el último set de bins debe ganar.
+  std::atomic<uint64_t> waveformGeneration{0};
   std::unique_ptr<juce::FileChooser> mixExportFileChooser;
   bool deferredStartupSongLoadPending = false;
   int deferredStartupSongIndex = -1;
