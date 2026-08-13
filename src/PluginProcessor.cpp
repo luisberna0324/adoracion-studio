@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "SongLoadProbe.h"
 #include "audio/DynamicGuideTiming.h"
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
@@ -181,6 +182,11 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
               .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playbackFormatManager.registerBasicFormats();
+  // P0 (perf): one-shot migration de directorios de cache legacy
+  // cuyos nombres contengan caracteres que sanitizeCacheKey() ahora
+  // reemplaza (ej. títulos con `/`, `:`, etc.). Renombrar en lugar de
+  // regenerar mantiene las FLACs y sidecars existentes. Idempotente.
+  StemCache::migrateLegacyCacheDirectories();
   // 18 stems across N workers → each worker round-robins over
   // (18 / N) stems. With N=4 (legacy cap) each worker handles 4-5
   // stems and the round-trip latency between consecutive refills of
@@ -3362,7 +3368,26 @@ bool MTControlsAudioProcessor::loadSongStems(
     // it: FLAC decodes 5-10x faster on every platform JUCE supports.
     // On a miss, we use the original source (degraded but functional)
     // and enqueue a background precompute so the next load is fast.
+    //
+    // P0 (perf): StemCache::sanitizeCacheKey se ocupa de que títulos
+    // con `/`, `:`, etc. (ej. "Al Que Es Digno / Vencio") no rompan
+    // la cache creando directorios con split de path.
     juce::File playbackFile = file;
+    // SongLoadProbe: the cache lookup is one of the first places where a
+    // legacy split-path directory (e.g. "Al Que Es Digno / Vencio" split
+    // into "Al Que Es Digno /" + " Vencio/") silently misses. Time the
+    // lookup and record hit/miss so the next slow load is traceable.
+    {
+      const int64_t lookupStart = juce::Time::getHighResolutionTicks();
+      const bool hit = StemCache::isValid(file, songTitle);
+      const int64_t lookupUs = static_cast<int64_t>(
+          (juce::Time::getHighResolutionTicks() - lookupStart) * 1000000.0 /
+          juce::Time::getHighResolutionTicksPerSecond());
+      SongLoadProbe::instance().recordStemStage(
+          i, "cache.lookup", lookupUs,
+          juce::String("hit=") + (hit ? "1" : "0") +
+              " title=" + songTitle);
+    }
     if (StemCache::isValid(file, songTitle)) {
       playbackFile = StemCache::getCacheFile(file, songTitle);
     } else {
@@ -3373,14 +3398,25 @@ bool MTControlsAudioProcessor::loadSongStems(
       StemCache::precomputeAsync(file, songTitle, nullptr);
     }
 
+    // SongLoadProbe: createReaderFor is the per-stem cost driver on AAC
+    // sources (e.g. M4A from .pwproj). Time it explicitly.
+    const int64_t createReaderStart = juce::Time::getHighResolutionTicks();
     auto reader = std::unique_ptr<juce::AudioFormatReader>(
         playbackFormatManager.createReaderFor(playbackFile));
     if (reader == nullptr)
       continue;
     auto prefetchReader = std::unique_ptr<juce::AudioFormatReader>(
         playbackFormatManager.createReaderFor(playbackFile));
+    const int64_t createReaderUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - createReaderStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
     if (prefetchReader == nullptr)
       return false;
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "stem#" + juce::String(i) + ".createReader",
+        createReaderUs,
+        "ext=" + playbackFile.getFileExtension() +
+            " size=" + juce::String(playbackFile.getSize()));
 
     const double sampleRate = reader->sampleRate;
     const auto lengthInSamples = reader->lengthInSamples;
@@ -3413,7 +3449,17 @@ bool MTControlsAudioProcessor::loadSongStems(
         std::move(reader), *stemReadThreads[workerIndex], sampleRate, 262144,
         true, std::move(prefetchReader));
 
+    // SongLoadProbe: prepareToPlay chains down into ResamplingPositionableSource
+    // + StemBufferingSource. For M4A it can open the AV decoder; time it.
+    const int64_t prepareStart = juce::Time::getHighResolutionTicks();
     track->prepareToPlay(localBlockSize, localSampleRate);
+    const int64_t prepareUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - prepareStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "stem#" + juce::String(i) + ".prepareToPlay",
+        prepareUs,
+        "blockSize=" + juce::String(localBlockSize));
     newTracks.push_back(std::move(track));
 
     if (onLoadProgress)
@@ -3426,10 +3472,29 @@ bool MTControlsAudioProcessor::loadSongStems(
 
   // prepareToPlay pre-fills each read-ahead buffer. Verify the first callback
   // can be served before touching the currently playing song.
-  for (const auto &track : newTracks) {
-    if (!track->waitForNextAudioBlockReady(localBlockSize, 250))
+  // SongLoadProbe: this is the read-ahead warm-up. On cold cache it can
+  // take up to 250ms per stem (the timeout). Capture per-stem and total.
+  const int64_t waitStart = juce::Time::getHighResolutionTicks();
+  for (size_t trackIdx = 0; trackIdx < newTracks.size(); ++trackIdx) {
+    const int64_t t0 = juce::Time::getHighResolutionTicks();
+    const bool ready =
+        newTracks[trackIdx]->waitForNextAudioBlockReady(localBlockSize, 250);
+    const int64_t dt = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - t0) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems",
+        "stem#" + juce::String(trackIdx) + ".waitForReady",
+        dt, juce::String("ready=") + (ready ? "1" : "0"));
+    if (!ready)
       return false;
   }
+  const int64_t waitTotalUs = static_cast<int64_t>(
+      (juce::Time::getHighResolutionTicks() - waitStart) * 1000000.0 /
+      juce::Time::getHighResolutionTicksPerSecond());
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "waitForReady.total", waitTotalUs,
+      "stems=" + juce::String(newTracks.size()));
 
   if (onLoadProgress)
     onLoadProgress(0.86);
@@ -3444,6 +3509,10 @@ bool MTControlsAudioProcessor::loadSongStems(
         static_cast<int>(SongLoadTransitionState::fadingOut),
         std::memory_order_release);
 
+    // SongLoadProbe: time the fade-out wait. Up to 1500ms when the previous
+    // song was playing — this is one of the dominant UI freezes when a song
+    // is in the middle of playback.
+    const int64_t fadeStart = juce::Time::getHighResolutionTicks();
     constexpr int maxFadeWaitMs = 1500;
     for (int wait = 0; wait < maxFadeWaitMs; ++wait) {
       const auto state = static_cast<SongLoadTransitionState>(
@@ -3456,6 +3525,12 @@ bool MTControlsAudioProcessor::loadSongStems(
       }
       juce::Thread::sleep(1);
     }
+    const int64_t fadeUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - fadeStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "fadeOut.wait", fadeUs,
+        juce::String("capped=") + (fadeUs >= maxFadeWaitMs * 1000 ? "1" : "0"));
 
     if (static_cast<SongLoadTransitionState>(
             songLoadTransitionState.load(std::memory_order_acquire)) !=
@@ -3483,12 +3558,24 @@ bool MTControlsAudioProcessor::loadSongStems(
 
   // The callback is suspended only after the output envelope has reached
   // zero, so an empty host buffer cannot create a waveform discontinuity.
+  // SongLoadProbe: this is the audio-thread drain wait. Up to 2000ms — when
+  // the host is mid-block this can dominate the visible swap.
+  const int64_t suspendStart = juce::Time::getHighResolutionTicks();
   suspendProcessing(true);
+  int suspendWaits = 0;
   for (int wait = 0;
        wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
        ++wait) {
     juce::Thread::sleep(1);
+    ++suspendWaits;
   }
+  const int64_t suspendUs = static_cast<int64_t>(
+      (juce::Time::getHighResolutionTicks() - suspendStart) * 1000000.0 /
+      juce::Time::getHighResolutionTicksPerSecond());
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "suspendProcessing.wait", suspendUs,
+      "capped=" + juce::String(suspendWaits >= 2000 ? 1 : 0) +
+          " waitedMs=" + juce::String(suspendWaits));
   if (audioCallbackActive.load(std::memory_order_acquire)) {
     suspendProcessing(false);
     if (shouldResumeAfterLoad) {
@@ -3588,10 +3675,26 @@ bool MTControlsAudioProcessor::loadSongStems(
   }
   if (onLoadProgress)
     onLoadProgress(0.98);
+  // P0.4 (perf): el swap de canción no necesita prepararse para el
+  // peor caso de block size del host (8192). El host todavía está
+  // reportando `localBlockSize` y, si lo cambia, prepareToPlay() se
+  // encargará de re-preparar. Usar el block size real baja
+  // sustancialmente la alocación y el pre-warm de Bungee durante
+  // el cambio de canción (cada stem construye 2 voces Bungee).
+  const int routingCapacity = juce::jmax(localBlockSize, 2048);
+  // SongLoadProbe: Bungee prep is O(stems) voice allocations + filter state.
+  // On a 12-stem project this is real cost.
+  const int64_t bungeeStart = juce::Time::getHighResolutionTicks();
   prepareRoutingTimeProcessors(
-      newStemCount, localSampleRate,
-      juce::jmax(localBlockSize, maxRealtimeBlockSize));
+      newStemCount, localSampleRate, routingCapacity);
   resumeTimeProcessorMaintenance();
+  const int64_t bungeeUs = static_cast<int64_t>(
+      (juce::Time::getHighResolutionTicks() - bungeeStart) * 1000000.0 /
+      juce::Time::getHighResolutionTicksPerSecond());
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "bungee.prepare", bungeeUs,
+      "stems=" + juce::String(newStemCount) +
+          " capacity=" + juce::String(routingCapacity));
   suspendProcessing(false);
 
   if (onLoadProgress)
