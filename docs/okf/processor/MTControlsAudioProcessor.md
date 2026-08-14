@@ -718,6 +718,12 @@ versión nueva sólo si puede leer de forma coherente el snapshot de
 `arrangementLoopPartIndex`. Si la secuencia cambia o está impar, conserva la
 última versión audio-owned.
 
+Una actualización estructural de arrange no detiene un transporte que ya está
+reproduciendo, incluso si coincide con una transición de modo de la UI. El
+callback conserva el playhead actual y adopta el siguiente snapshot coherente;
+la inicialización o restauración estando detenido conserva el comportamiento de
+posicionar el arrange personalizado en su primera parte.
+
 Los loops, jumps y discontinuidades implícitas de clips insertados se resuelven
 como transiciones de bloque con `transitionOffsetFrames`. El processor prearma
 el destino en el banco secundario de cada stem; si no está listo en el sample de

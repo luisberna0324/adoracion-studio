@@ -4274,11 +4274,15 @@ void MTControlsAudioProcessor::setSongArrangement(
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
     }
 
-    // Loading/restoring a changed custom arrange still starts at its first part.
-    // Live edits publish the new scheduler snapshot in place: the audio thread
-    // only realigns source reads if the edited mapping affects the playhead.
+    // Loading/restoring a changed custom arrange while stopped starts at its
+    // first part. A structural update must never stop an active transport:
+    // live edits normally set preserveEditingPlayback, but keeping this guard
+    // also covers an edit published during a UI mode transition. The audio
+    // callback adopts the coherent scheduler snapshot and preserves the
+    // current playhead.
     if (isCustomArrangement && arrangementTimelineChanged &&
-        !preserveEditingPlayback) {
+        !preserveEditingPlayback &&
+        getTransportState() != TransportState::playing) {
       const double target = arrangementParts.front().startSec;
       seekTargetSeconds.store(target, std::memory_order_relaxed);
       seekRequestGeneration.fetch_add(1, std::memory_order_release);
@@ -4288,8 +4292,6 @@ void MTControlsAudioProcessor::setSongArrangement(
             static_cast<juce::int64>(target * playbackSampleRate),
             std::memory_order_relaxed);
       }
-      if (getTransportState() == TransportState::playing)
-        setTransportState(TransportState::stopped);
     }
   }
   arrangementTransitionIntentGeneration.fetch_add(

@@ -98,6 +98,13 @@ float getVolume() const noexcept;
 
 Nivel de volumen.
 
+### Persistencia de Click Dyn
+
+`divisionMask`, habilitación, volumen, gain, mute, solo y routing se guardan
+como `ClickDynMixSnapshot`. El origen es la biblioteca para canciones legacy
+y `ProjectSongSettings` para `.pwproj`; los cambios observados en el processor
+también se persisten para cubrir controles externos a la interacción de UI.
+
 ### Mute
 
 ```cpp

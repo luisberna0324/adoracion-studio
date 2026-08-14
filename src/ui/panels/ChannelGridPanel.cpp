@@ -31,6 +31,16 @@ float midiLearnSoftBlinkStrength() {
 bool clickDynMixControlStateEquals(const ClickDynMixSnapshot &a,
                                    const ClickDynMixSnapshot &b) {
   return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
+         a.metronomeEnabled == b.metronomeEnabled &&
+         juce::approximatelyEqual(a.volume, b.volume) &&
+         juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
+         a.solo == b.solo && a.outputChannel == b.outputChannel &&
+         a.outputWidth == b.outputWidth;
+}
+
+bool dynamicGuideMixStateEquals(const DynamicGuideMixSnapshot &a,
+                                const DynamicGuideMixSnapshot &b) {
+  return juce::approximatelyEqual(a.volume, b.volume) &&
          juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
          a.solo == b.solo && a.outputChannel == b.outputChannel &&
          a.outputWidth == b.outputWidth;
@@ -763,6 +773,7 @@ void ChannelGridPanel::timerCallback() {
   syncDynamicGuideVirtualSlotFromProcessor();
   syncStemSlotsFromProcessor();
   maybePersistClickDynMixStateChange();
+  maybePersistDynamicGuideMixStateChange();
 
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   const bool hasPendingVolumeWrites =
@@ -970,6 +981,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   hasPendingDynamicGuideVolumeWrite = false;
   hasPendingClickDynVolumeWrite = false;
   hasLastObservedClickDynMix = false;
+  hasLastObservedDynamicGuideMix = false;
   masterSlotIndex = -1;
   divisionSlotIndex = -1;
   metronomeVirtualSlotIndex = -1;
@@ -990,6 +1002,8 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   addDivisionSlot();
   lastObservedClickDynMix = makeCurrentClickDynMixSnapshot();
   hasLastObservedClickDynMix = true;
+  lastObservedDynamicGuideMix = makeCurrentDynamicGuideMixSnapshot();
+  hasLastObservedDynamicGuideMix = true;
 
   const bool showStemRouting = false;
 
@@ -1195,14 +1209,10 @@ void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
   if (currentSongId.isEmpty())
     return;
 
-  DynamicGuideMixSnapshot mix;
-  mix.volume = processor.getDynamicGuideVolume();
-  mix.gain = processor.getDynamicGuideGain();
-  mix.mute = processor.isDynamicGuideMuted();
-  mix.solo = processor.isDynamicGuideSolo();
-  mix.outputChannel = processor.getDynamicGuideOutputChannel();
-  mix.outputWidth = processor.getDynamicGuideOutputWidth();
+  const auto mix = makeCurrentDynamicGuideMixSnapshot();
   SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
+  lastObservedDynamicGuideMix = mix;
+  hasLastObservedDynamicGuideMix = true;
 }
 
 void ChannelGridPanel::persistClickDynMixForCurrentSong() {
@@ -1229,6 +1239,18 @@ ClickDynMixSnapshot ChannelGridPanel::makeCurrentClickDynMixSnapshot() const {
   return mix;
 }
 
+DynamicGuideMixSnapshot
+ChannelGridPanel::makeCurrentDynamicGuideMixSnapshot() const {
+  DynamicGuideMixSnapshot mix;
+  mix.volume = processor.getDynamicGuideVolume();
+  mix.gain = processor.getDynamicGuideGain();
+  mix.mute = processor.isDynamicGuideMuted();
+  mix.solo = processor.isDynamicGuideSolo();
+  mix.outputChannel = processor.getDynamicGuideOutputChannel();
+  mix.outputWidth = processor.getDynamicGuideOutputWidth();
+  return mix;
+}
+
 void ChannelGridPanel::maybePersistClickDynMixStateChange() {
   if (currentSongId.isEmpty()) {
     hasLastObservedClickDynMix = false;
@@ -1238,13 +1260,30 @@ void ChannelGridPanel::maybePersistClickDynMixStateChange() {
   const auto current = makeCurrentClickDynMixSnapshot();
   if (hasLastObservedClickDynMix &&
       clickDynMixControlStateEquals(lastObservedClickDynMix, current)) {
-    lastObservedClickDynMix.volume = current.volume;
     return;
   }
 
   SongLibraryStore::updateClickDynMixForActiveSetlist(currentSongId, current);
   lastObservedClickDynMix = current;
   hasLastObservedClickDynMix = true;
+}
+
+void ChannelGridPanel::maybePersistDynamicGuideMixStateChange() {
+  if (currentSongId.isEmpty()) {
+    hasLastObservedDynamicGuideMix = false;
+    return;
+  }
+
+  const auto current = makeCurrentDynamicGuideMixSnapshot();
+  if (hasLastObservedDynamicGuideMix &&
+      dynamicGuideMixStateEquals(lastObservedDynamicGuideMix, current)) {
+    return;
+  }
+
+  SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId,
+                                                           current);
+  lastObservedDynamicGuideMix = current;
+  hasLastObservedDynamicGuideMix = true;
 }
 
 void ChannelGridPanel::flushPendingVolumePersistence() {

@@ -53,8 +53,12 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
     if (lhs.muteInstruments != rhs.muteInstruments ||
         lhs.skipPlayback != rhs.skipPlayback)
       return false;
+    if (lhs.sourcePartId != rhs.sourcePartId)
+      return false;
     if (!nearlyEqual(lhs.startSec, rhs.startSec) ||
-        !nearlyEqual(lhs.endSec, rhs.endSec))
+        !nearlyEqual(lhs.endSec, rhs.endSec) ||
+        !nearlyEqual(lhs.sourceStartSec, rhs.sourceStartSec) ||
+        !nearlyEqual(lhs.sourceEndSec, rhs.sourceEndSec))
       return false;
   }
   return true;
@@ -1411,6 +1415,33 @@ bool SongLibraryStore::getSongArrangement(
   if (it == library.songs.end())
     return false;
 
+  if (isProjectBackedSong(*it)) {
+    ProjectSongSettings settings;
+    const juce::File projectFile(it->projectPath);
+    bool hasSettings = projectFile.existsAsFile() &&
+                       ProjectStore::getCachedSettings(projectFile, settings);
+    const auto projectId = projectIdentityForSong(*it);
+    if (!hasSettings)
+      hasSettings = ProjectStore::getCachedSettings(projectId, settings);
+    if (!hasSettings) {
+      settings.arrangement = it->arrangement;
+      settings.arrangementCustomized = !it->arrangement.parts.empty();
+    }
+
+    bool changed = false;
+    auto normalized =
+        reconcileArrangementForSong(settings.arrangement, *it, changed);
+    const bool isCustomArrangement = settings.arrangementCustomized;
+    if (changed) {
+      settings.arrangement = normalized;
+      ProjectStore::scheduleSettingsSave(projectFile, projectId,
+                                         std::move(settings));
+    }
+    outArrangement = std::move(normalized);
+    outIsCustomArrangement = isCustomArrangement;
+    return true;
+  }
+
   bool changed = false;
   auto normalized = reconcileArrangementForSong(it->arrangement, *it, changed);
   const bool arrangementChanged =
@@ -1443,6 +1474,32 @@ bool SongLibraryStore::updateSongArrangement(
   auto normalized = reconcileArrangementForSong(arrangement, *it, changed);
   if (!isCustomArrangement)
     normalized = createDefaultArrangementForSong(*it);
+
+  if (isProjectBackedSong(*it)) {
+    ProjectSongSettings settings;
+    const juce::File projectFile(it->projectPath);
+    bool hasSettings = projectFile.existsAsFile() &&
+                       ProjectStore::getCachedSettings(projectFile, settings);
+    const auto projectId = projectIdentityForSong(*it);
+    if (!hasSettings)
+      hasSettings = ProjectStore::getCachedSettings(projectId, settings);
+    if (!hasSettings) {
+      settings.arrangement = it->arrangement;
+      settings.arrangementCustomized = !it->arrangement.parts.empty();
+    }
+
+    const bool arrangementChanged =
+        changed || !arrangementsEqual(settings.arrangement, normalized) ||
+        settings.arrangementCustomized != isCustomArrangement;
+    if (!arrangementChanged)
+      return true;
+
+    settings.arrangement = std::move(normalized);
+    settings.arrangementCustomized = isCustomArrangement;
+    ProjectStore::scheduleSettingsSave(projectFile, projectId,
+                                       std::move(settings));
+    return true;
+  }
 
   const bool arrangementChanged =
       changed || !arrangementsEqual(it->arrangement, normalized);
@@ -1490,7 +1547,21 @@ bool SongLibraryStore::getActiveSetlistDynamicGuide(
   const auto *song = findSongById(library.songs, songId);
   if (song == nullptr)
     return false;
-  juce::ignoreUnused(song);
+
+  if (isProjectBackedSong(*song)) {
+    ProjectSongSettings settings;
+    const juce::File projectFile(song->projectPath);
+    bool hasSettings = projectFile.existsAsFile() &&
+                       ProjectStore::getCachedSettings(projectFile, settings);
+    if (!hasSettings)
+      hasSettings = ProjectStore::getCachedSettings(
+          projectIdentityForSong(*song), settings);
+    if (!hasSettings)
+      return false;
+    outSettings = settings.dynamicGuide;
+    outIsCustomDynamicGuide = settings.dynamicGuideCustomized;
+    return true;
+  }
 
   auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
                          [&songId](const SetlistItem &item) {
@@ -1549,6 +1620,23 @@ bool SongLibraryStore::getActiveSetlistDynamicGuideMix(
   if (setlist == nullptr)
     return false;
 
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+  if (isProjectBackedSong(*song)) {
+    ProjectSongSettings settings;
+    const juce::File projectFile(song->projectPath);
+    bool hasSettings = projectFile.existsAsFile() &&
+                       ProjectStore::getCachedSettings(projectFile, settings);
+    if (!hasSettings)
+      hasSettings = ProjectStore::getCachedSettings(
+          projectIdentityForSong(*song), settings);
+    if (!hasSettings)
+      return false;
+    outMix = settings.dynamicGuideMix;
+    return true;
+  }
+
   auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
                          [&songId](const SetlistItem &item) {
                            return item.songId == songId;
@@ -1583,6 +1671,23 @@ bool SongLibraryStore::getActiveSetlistClickDynMix(
   auto *setlist = findSetlistById(library, library.activeSetlistId);
   if (setlist == nullptr)
     return false;
+
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+  if (isProjectBackedSong(*song)) {
+    ProjectSongSettings settings;
+    const juce::File projectFile(song->projectPath);
+    bool hasSettings = projectFile.existsAsFile() &&
+                       ProjectStore::getCachedSettings(projectFile, settings);
+    if (!hasSettings)
+      hasSettings = ProjectStore::getCachedSettings(
+          projectIdentityForSong(*song), settings);
+    if (!hasSettings)
+      return false;
+    outMix = normalizeClickDynMixSnapshot(settings.clickDynMix);
+    return true;
+  }
 
   auto it = std::find_if(setlist->items.begin(), setlist->items.end(),
                          [&songId](const SetlistItem &item) {

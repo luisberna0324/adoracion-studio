@@ -458,14 +458,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                  bool isCustomArrangement) {
         if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
           return;
-        SongLibraryStore::updateSongArrangement(
-            currentLoadedSong.id, arrangement, isCustomArrangement);
+        if (!SongLibraryStore::updateSongArrangement(
+                currentLoadedSong.id, arrangement, isCustomArrangement)) {
+          SessionAuthLogger::write(
+              "[Arrangement] Couldn't persist changes for song id=" +
+              currentLoadedSong.id);
+        }
         p.setSongArrangement(arrangement, isCustomArrangement);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return;
-    SongLibraryStore::resetSongArrangement(currentLoadedSong.id);
+    if (!SongLibraryStore::resetSongArrangement(currentLoadedSong.id)) {
+      SessionAuthLogger::write(
+          "[Arrangement] Couldn't reset persisted arrangement for song id=" +
+          currentLoadedSong.id);
+    }
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
     if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,

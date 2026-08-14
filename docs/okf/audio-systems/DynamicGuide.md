@@ -218,6 +218,15 @@ processor.setDynamicGuideVolume(0.8f);
 processor.consumeDynamicGuideMissingSectionWarning(sectionName);
 ```
 
+### Persistencia de mezcla
+
+El volumen, gain, mute, solo y routing de la guía dinámica forman parte del
+`DynamicGuideMixSnapshot` de la canción. En canciones legacy se guardan en la
+biblioteca; en `.pwproj` se guardan en `ProjectSongSettings` y en su caché
+local antes de actualizar el paquete. La UI también compara periódicamente el
+estado publicado por el processor para persistir cambios que no provengan de
+un fin de arrastre, por ejemplo controles MIDI.
+
 ## Casos de uso
 
 ### Live performance
