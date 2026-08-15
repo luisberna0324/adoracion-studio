@@ -391,8 +391,7 @@ void PadsComponent::onPadReleased(int noteIndex) {
 }
 
 bool PadsComponent::followSongKey(const juce::String& songKey,
-                                  const int semitoneOffset,
-                                  const bool afterSongTransitionFadeOut) {
+                                  const int semitoneOffset) {
     const int runtimeActiveNote = processor.getActivePadNoteIndex();
     if (!padsPoweredOn ||
         !juce::isPositiveAndBelow(runtimeActiveNote, kNoteCount))
@@ -414,10 +413,7 @@ bool PadsComponent::followSongKey(const juce::String& songKey,
     notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
     notePads[static_cast<size_t>(targetNoteIndex)]->setActive(true);
     activeNoteIndex = targetNoteIndex;
-    if (afterSongTransitionFadeOut)
-        processor.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
-    else
-        processor.triggerPadNote(targetNoteIndex, currentOctave);
+    processor.triggerPadNote(targetNoteIndex, currentOctave);
     return true;
 }
 

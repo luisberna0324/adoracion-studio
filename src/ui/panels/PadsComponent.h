@@ -32,8 +32,10 @@ public:
     void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
     void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
     /** Ajusta un pad activo a la tonalidad de la canción. */
-    bool followSongKey(const juce::String& songKey, int semitoneOffset = 0,
-                       bool afterSongTransitionFadeOut = false);
+    // Retunes an active Pad to the next song while preserving audible
+    // continuity. PadsEngine crossfades the old and new voices; it never
+    // requires the pads bus to go silent first.
+    bool followSongKey(const juce::String& songKey, int semitoneOffset = 0);
 
 private:
   static constexpr int kNoteCount = 12;

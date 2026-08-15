@@ -39,7 +39,7 @@ public:
   LoadResult loadFromFolder(const juce::File &folder, juce::AudioFormatManager &formatManager);
 
   void triggerNote(int noteIndex, int octave);
-  /** Replaces the silent outgoing voice before the song-transition fade-in. */
+  /** Compatibility alias for a continuous song-key retune. */
   void triggerNoteForSongTransition(int noteIndex, int octave);
   void stopNote(int noteIndex);
   void stopAll();

@@ -30,6 +30,14 @@ struct PadsEngineTestPeer {
   static float songTransitionGain(const PadsEngine &engine) {
     return engine.songTransitionGain;
   }
+
+  static int activeVoiceCount(const PadsEngine &engine) {
+    int count = 0;
+    for (const auto &voice : engine.voices)
+      if (voice.state != PadsEngine::VoiceState::stopped)
+        ++count;
+    return count;
+  }
 };
 
 namespace {
@@ -76,7 +84,7 @@ void testPadLoopsWithEndCrossfade() {
          "stopping the selected pad clears the published active note");
 }
 
-void testSongTransitionUsesConfiguredCrossfade() {
+void testSongKeyTransitionCrossfadesVoicesWithoutSilence() {
   PadsEngine engine;
   engine.prepare(8.0, 8);
   engine.setCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
@@ -90,33 +98,26 @@ void testSongTransitionUsesConfiguredCrossfade() {
          "long transition uses five seconds");
   engine.setCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
   PadsEngineTestPeer::installConstantSample(engine, 0, 64, 8.0);
-  PadsEngineTestPeer::installConstantSample(engine, 2, 64, 8.0, -1.0f);
+  PadsEngineTestPeer::installConstantSample(engine, 2, 64, 8.0, 1.0f);
   engine.triggerNote(0, 0);
 
   juce::AudioBuffer<float> output(1, 8);
   output.clear();
   engine.process(output);
 
-  engine.beginSongTransitionFadeOut();
-  output.clear();
-  engine.process(output);
-  expect(PadsEngineTestPeer::songTransitionGain(engine) == 0.0f,
-         "pad bus fades down over the configured one second");
-  expect(engine.getActiveNoteIndex() == 0,
-         "song transition fade preserves the selected pad note");
-
-  engine.triggerNoteForSongTransition(2, 0);
-  expect(PadsEngineTestPeer::songTransitionGain(engine) == 0.0f,
-         "new song key is staged while the pads bus is silent");
+  engine.triggerNote(2, 0);
   expect(engine.getActiveNoteIndex() == 2,
-         "song transition publishes only the new pad note");
-  engine.beginSongTransitionFadeIn();
+         "new song key becomes the active pad immediately");
+  expect(PadsEngineTestPeer::activeVoiceCount(engine) == 2,
+         "outgoing and incoming pad voices overlap during retune");
+
   output.clear();
   engine.process(output);
   expect(PadsEngineTestPeer::songTransitionGain(engine) == 1.0f,
-         "pad bus fades up over the same configured duration");
-  expect(output.getSample(0, 7) < -0.8f,
-         "outgoing pad tone is absent during the new fade-in");
+         "retuning does not fade the complete pads bus to silence");
+  for (int sample = 0; sample < output.getNumSamples(); ++sample)
+    expect(output.getSample(0, sample) > 0.25f,
+           "a song-key change keeps the pads bus audible throughout");
 }
 
 } // namespace
@@ -124,7 +125,7 @@ void testSongTransitionUsesConfiguredCrossfade() {
 int main() {
   testSongKeyParsing();
   testPadLoopsWithEndCrossfade();
-  testSongTransitionUsesConfiguredCrossfade();
+  testSongKeyTransitionCrossfadesVoicesWithoutSilence();
   std::cout << "Pads engine tests passed\n";
   return 0;
 }

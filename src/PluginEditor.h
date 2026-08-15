@@ -60,11 +60,6 @@ private:
   std::function<void(const ImportedSongData &, int)> requestSongLoadAction;
   std::function<void(int, bool)> loadSongByIndexAction;
   bool wasSongPlaying = false;
-  bool padsSongTransitionFadeActive = false;
-  bool pendingManualPadSongLoad = false;
-  ImportedSongData pendingManualPadSong;
-  int pendingManualPadSongIndex = -1;
-  juce::int64 pendingManualPadSongLoadAtMs = 0;
   juce::File pendingExternalProjectFile;
   struct SessionSummary {
     juce::String uid;

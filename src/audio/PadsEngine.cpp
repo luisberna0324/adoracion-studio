@@ -286,31 +286,7 @@ void PadsEngine::triggerNote(const int noteIndex, const int octave) {
 
 void PadsEngine::triggerNoteForSongTransition(const int noteIndex,
                                               const int octave) {
-  if (!enabled.load(std::memory_order_relaxed) ||
-      !juce::isPositiveAndBelow(noteIndex, kNoteCount) ||
-      !noteSamples[static_cast<size_t>(noteIndex)].valid)
-    return;
-
-  // The pads bus has already faded down with the outgoing song. Remove every
-  // old voice before it becomes audible again, then stage the new key at full
-  // voice gain; the bus envelope supplies the configured fade-in.
-  for (auto &voice : voices) {
-    voice = Voice{};
-  }
-  songTransitionGain = 0.0f;
-  songTransitionTargetGain.store(0.0f, std::memory_order_relaxed);
-
-  auto *voice = findBestVoiceForTrigger();
-  if (voice == nullptr)
-    return;
-  voice->noteIndex = noteIndex;
-  voice->octave = juce::jlimit(-3, 3, octave);
-  voice->position = 0.0;
-  voice->gain = 1.0f;
-  voice->state = VoiceState::playing;
-  updateVoiceIncrement(*voice);
-  activeNoteIndex.store(noteIndex, std::memory_order_relaxed);
-  outputLevel.store(0.0f, std::memory_order_relaxed);
+  triggerNote(noteIndex, octave);
 }
 
 void PadsEngine::stopNote(const int noteIndex) {

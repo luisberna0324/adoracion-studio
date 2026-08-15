@@ -77,8 +77,8 @@ void beginSongTransitionFadeOut() noexcept;
 void beginSongTransitionFadeIn() noexcept;
 ```
 
-Cambia el preset de crossfade. La misma duración se aplica al cambio de nota y
-a la envolvente del bus de Pads durante una transición automática de canción.
+Cambia el preset de crossfade. La misma duración se aplica al cambio de nota,
+incluido el cambio automático de tonalidad entre canciones.
 
 ### Carga de samples
 
@@ -104,6 +104,9 @@ void stopAll();
 
 - `noteIndex`: 0-11 (C a B)
 - `octave`: Octava (0-8 típicamente)
+
+`triggerNoteForSongTransition()` se conserva por compatibilidad y tiene la
+misma semántica continua que `triggerNote()`.
 
 ### Procesamiento
 
@@ -194,23 +197,14 @@ se modifica ningún pad. `getActiveNoteIndex()` publica el pad seleccionado para
 que este comportamiento también funcione cuando la nota se disparó por MIDI y
 para que la interfaz mantenga su indicador sincronizado.
 
-Cuando el item actual tiene activa su transición autoplay hacia el item
-inmediatamente siguiente, el editor inicia un
-fade down del bus de Pads al faltar 1, 3 o 5 segundos para `Fin`, según el
-preset configurado. La nota seleccionada se conserva aunque el bus llegue a
-silencio. Después de cargar la siguiente canción se retiran las voces antiguas,
-se prepara la nueva tonalidad mientras el bus sigue en cero y se inicia el fade
-up con la misma duración. De este modo el tono anterior no reaparece durante la
-entrada. Si se desactiva autoplay, se busca
-hacia atrás o se detiene manualmente, el bus recupera su nivel mediante fade
-up y no queda silenciado.
-
-El mismo relevo silencioso se usa al cambiar manualmente mediante siguiente,
-anterior o la biblioteca. En esos casos la carga solicitada se difiere durante
-los 1, 3 o 5 segundos configurados para permitir que el pad anterior complete
-su fade out. Al terminar, la frontera de carga elimina esa voz, prepara la nueva
-y abre su fade up. Una segunda selección durante la bajada actualiza el destino
-sin reiniciar ni extender el fade.
+Cuando la canción siguiente tiene una tonalidad distinta, la UI dispara la
+nueva nota al completar la carga de la canción. `PadsEngine::triggerNote()`
+mantiene la voz anterior mientras la nueva entra durante los 1, 3 o 5 segundos
+configurados. Por tanto el bus de Pads no se baja a silencio ni se demora la
+carga de la canción. Si ambas tonalidades coinciden, se conserva la voz y la
+posición de loop actual; si la tonalidad de destino no puede resolverse, el pad
+activo permanece sin cambios. La misma regla se usa para siguiente/anterior,
+biblioteca y autoplay.
 
 ## Algoritmo de trigger
 
