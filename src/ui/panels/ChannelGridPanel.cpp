@@ -779,8 +779,6 @@ void ChannelGridPanel::timerCallback() {
   const int slowDivider = juce::jmax(1, timerHz / slowTaskHz);
   if (slowTickCounter >= slowDivider) {
     slowTickCounter = 0;
-    syncMetronomeVirtualSlotFromProcessor();
-
     const int n = processor.getAvailableOutputChannelCount();
     if (n != lastSeenOutputChannelCount) {
       lastSeenOutputChannelCount = n;
@@ -972,7 +970,6 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   hasLastObservedClickDynMix = false;
   masterSlotIndex = -1;
   divisionSlotIndex = -1;
-  metronomeVirtualSlotIndex = -1;
   dynamicGuideVirtualSlotIndex = -1;
   slots.clear();
   adjustableStems.clear();
@@ -1009,7 +1006,10 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   if (!orderedStems.empty() && !hasRealClickStem) {
     addDynamicGuideVirtualSlot();
     dynamicGuideSlotAdded = true;
-    addMetronomeVirtualSlot();
+    // CLICK DYN is already the virtual metronome in this case. Adding the
+    // legacy CLICK strip would expose a second fader for the same
+    // metronomeVolumeState, so both controls visibly followed each other.
+    // Keep a CLICK strip only when it is an actual song stem below.
   }
 
   for (const auto *stemPtr : orderedStems) {
@@ -1656,64 +1656,6 @@ void ChannelGridPanel::addDivisionSlot() {
   slotStemIds.push_back({});
 }
 
-void ChannelGridPanel::addMetronomeVirtualSlot() {
-  auto slot = std::make_unique<StripSlot>(
-      "CLICK", lookAndFeel,
-      [] {
-        return std::pair<float, float>{0.0f, 0.0f};
-      });
-  auto &strip = slot->getStrip();
-  strip.setCardBgColour(UITheme::cardBgClickGuide);
-  strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
-  strip.setMuteAlignedToFader(true);
-  slot->setShowOutputRouting(false);
-  slot->setGuideSettingsVisible(false);
-
-  strip.setVolume(processor.getMetronomeVolume());
-  strip.setGain(processor.getMetronomeGain());
-  strip.setMuteState(processor.isMetronomeMuted());
-  strip.setSoloState(processor.isMetronomeSolo());
-  strip.setOnVolumeChanged([this](float value) {
-    processor.setMetronomeVolume(value);
-  });
-  strip.setOnVolumeDragEnded([this](float value) {
-    queueClickDynVolumePersistence(value);
-  });
-  strip.setOnGainChanged([this](float value) {
-    processor.setMetronomeGain(value);
-  });
-  strip.setOnGainDragEnded([this](float) {
-    persistClickDynMixForCurrentSong();
-  });
-  strip.setOnMuteChanged([this](bool muted) {
-    processor.setMetronomeMuted(muted);
-    persistClickDynMixForCurrentSong();
-  });
-  strip.setOnSoloChanged([this](bool soloed) {
-    processor.setMetronomeSolo(soloed);
-    persistClickDynMixForCurrentSong();
-  });
-  strip.setMidiLearnTargetIds(-1, -1, processor.midiTargetMetronomeMute,
-                              processor.midiTargetMetronomeSolo, -1);
-  strip.setMidiLearnBindingLabelProvider(midiLearnBindingLabelProvider);
-  strip.setOnMidiLearnTargetSelected([this](const int targetId) {
-    if (onMidiLearnTargetSelected)
-      onMidiLearnTargetSelected(targetId);
-  });
-  strip.setMidiLearnSelectable(false);
-  strip.setMidiLearnPendingTarget(-1);
-  strip.refreshThemeColours();
-
-  content.addAndMakeVisible(*slot);
-  metronomeVirtualSlotIndex = static_cast<int>(slots.size());
-  slots.push_back(std::move(slot));
-  adjustableStems.push_back(false);
-  clickGuideStems.push_back(true);
-  guideStems.push_back(false);
-  slotStemIndices.push_back(-2);
-  slotStemIds.push_back({});
-}
-
 void ChannelGridPanel::addDynamicGuideVirtualSlot() {
   auto slot = std::make_unique<StripSlot>(
       "GUIA DYN", lookAndFeel,
@@ -1813,21 +1755,6 @@ void ChannelGridPanel::syncDivisionSlotFromProcessor() {
       processor.isMetronomeSolo());
 }
 
-void ChannelGridPanel::syncMetronomeVirtualSlotFromProcessor() {
-  if (!juce::isPositiveAndBelow(metronomeVirtualSlotIndex,
-                                static_cast<int>(slots.size())))
-    return;
-
-  auto &strip =
-      slots[static_cast<size_t>(metronomeVirtualSlotIndex)]->getStrip();
-  if (!strip.isMouseButtonDown()) {
-    strip.setVolume(processor.getMetronomeVolume());
-    strip.setGain(processor.getMetronomeGain());
-  }
-  strip.setMuteState(processor.isMetronomeMuted());
-  strip.setSoloState(processor.isMetronomeSolo());
-}
-
 void ChannelGridPanel::syncDynamicGuideVirtualSlotFromProcessor() {
   if (!juce::isPositiveAndBelow(dynamicGuideVirtualSlotIndex,
                                 static_cast<int>(slots.size())))
@@ -1846,7 +1773,6 @@ void ChannelGridPanel::syncDynamicGuideVirtualSlotFromProcessor() {
 void ChannelGridPanel::syncStemSlotsFromProcessor() {
   for (size_t i = 0; i < slots.size(); ++i) {
     if (static_cast<int>(i) == masterSlotIndex ||
-        static_cast<int>(i) == metronomeVirtualSlotIndex ||
         static_cast<int>(i) == dynamicGuideVirtualSlotIndex) {
       continue;
     }

@@ -2835,13 +2835,15 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
           exportArrangementCustomized)) {
     for (const auto &part : exportArrangement.parts) {
       if (!part.skipPlayback)
-        request.guideSections.push_back({part.name, part.startSec});
+        request.guideSections.push_back(
+            {part.name, part.startSec, part.utilityCue});
     }
   }
   if (request.guideSections.empty()) {
     for (const auto &part : currentLoadedSong.arrangement.parts) {
       if (!part.skipPlayback)
-        request.guideSections.push_back({part.name, part.startSec});
+        request.guideSections.push_back(
+            {part.name, part.startSec, part.utilityCue});
     }
   }
   for (size_t i = 0; i < currentLoadedSong.stems.size(); ++i) {

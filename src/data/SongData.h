@@ -31,6 +31,10 @@ struct SongArrangementPartSnapshot {
   // These values describe the source-audio region rendered by this part.
   double sourceStartSec = 0.0;
   double sourceEndSec = 0.0;
+  // Marks an instruction inserted from the arrangement Utilities menu. It is
+  // announced at its own entry, even if its display name overlaps a musical
+  // section name (for example, "Breakdown").
+  bool utilityCue = false;
   bool muteInstruments = false;
   bool skipPlayback = false;
 };
