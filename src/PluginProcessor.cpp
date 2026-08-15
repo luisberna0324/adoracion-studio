@@ -4047,6 +4047,21 @@ void MTControlsAudioProcessor::setSongArrangement(
   const juce::SpinLock::ScopedLockType lock(stemListLock);
   const double songLength =
       loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  const double previousArrangementLength =
+      arrangementCustomActive.load(std::memory_order_relaxed)
+          ? juce::jmax(songLength, arrangementTotalLengthSeconds.load(
+                                        std::memory_order_relaxed))
+          : songLength;
+  const double configuredSongEnd =
+      songEndSeconds.load(std::memory_order_relaxed);
+  const bool songEndCustomizedBeforeUpdate =
+      songEndCustomized.load(std::memory_order_relaxed);
+  // A window end that is exactly the prior effective arrangement end is not
+  // a real trim. Keep it following arrange edits so an inserted clip beyond
+  // the source duration remains playable (including its click and guide).
+  const bool songEndFollowsArrangement =
+      !songEndCustomizedBeforeUpdate ||
+      std::abs(configuredSongEnd - previousArrangementLength) <= 0.0001;
   const bool preserveEditingPlayback =
       arrangementEditingActiveState.load(std::memory_order_relaxed);
   const auto partIdAtIndex = [this](const int index) {
@@ -4147,6 +4162,7 @@ void MTControlsAudioProcessor::setSongArrangement(
             ? sourceEnd
             : juce::jmin(songLength, sourceStart + (end - start));
     runtimePart.insertedClip = part.sourcePartId.isNotEmpty();
+    runtimePart.utilityCue = part.utilityCue;
     runtimePart.muteInstruments = part.muteInstruments;
     runtimePart.skipPlayback = part.skipPlayback;
     if (songLength > 0.0 &&
@@ -4246,6 +4262,8 @@ void MTControlsAudioProcessor::setSongArrangement(
     arrangementTotalLengthSeconds.store(totalLength, std::memory_order_relaxed);
     arrangementCustomActive.store(isCustomArrangement,
                                   std::memory_order_relaxed);
+    if (isCustomArrangement && songEndFollowsArrangement)
+      songEndSeconds.store(totalLength, std::memory_order_relaxed);
     const auto findPartIndexById = [this](const juce::String &partId) {
       if (partId.isEmpty())
         return -1;
@@ -5508,7 +5526,7 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
         playworship::audio::TransportClock::secondsToFrames(part.startSec,
                                                              sampleRate);
     const bool triggerOnEntry = dynamicGuideAnnouncementTiming(
-        part.sectionKey, part.name) ==
+        part.sectionKey, part.name, part.utilityCue) ==
         DynamicGuideAnnouncementTiming::atSectionEntry;
     sections.push_back({
         startFrame,

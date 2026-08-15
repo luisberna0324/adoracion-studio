@@ -2673,6 +2673,7 @@ juce::var SongLibraryStore::arrangementPartToVar(
   obj->setProperty("endSec", part.endSec);
   obj->setProperty("sourceStartSec", part.sourceStartSec);
   obj->setProperty("sourceEndSec", part.sourceEndSec);
+  obj->setProperty("utilityCue", part.utilityCue);
   obj->setProperty("muteInstruments", part.muteInstruments);
   obj->setProperty("skipPlayback", part.skipPlayback);
   if (part.sourcePartId.isNotEmpty())
@@ -2696,6 +2697,8 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
     part.sourceStartSec = static_cast<double>(obj->getProperty("sourceStartSec"));
   if (obj->hasProperty("sourceEndSec"))
     part.sourceEndSec = static_cast<double>(obj->getProperty("sourceEndSec"));
+  if (obj->hasProperty("utilityCue"))
+    part.utilityCue = static_cast<bool>(obj->getProperty("utilityCue"));
   if (obj->hasProperty("sourcePartId"))
     part.sourcePartId = obj->getProperty("sourcePartId").toString();
   if (obj->hasProperty("muteInstruments"))

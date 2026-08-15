@@ -478,6 +478,7 @@ private:
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
     bool insertedClip = false;
+    bool utilityCue = false;
     bool muteInstruments = false;
     bool skipPlayback = false;
   };

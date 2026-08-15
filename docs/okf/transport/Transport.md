@@ -112,6 +112,20 @@ El arrange permite definir secciones no lineales:
 - Hacer loops de secciones
 - Reordenar playback
 
+### Rangos de fuente al copiar
+
+Una copia conserva el rango de audio de su sección fuente. Al resolver el
+final de una sección original que coincide exactamente con el inicio de un
+clip insertado, Copy usa el lado izquierdo del límite: el final pertenece a
+la sección original, no al clip siguiente. Esta regla se aplica por igual al
+botón Copy y a Cmd/Ctrl-C/V. El render de onda, seek y playback mantienen su
+semántica habitual de borde derecho, donde ese punto corresponde al clip
+insertado.
+
+Un duplicado sólo propaga su rango explícito si está contenido dentro del
+rango de su `sourcePartId`; de lo contrario Copy vuelve al rango de la fuente
+referida, sin reescribir datos persistidos durante la carga.
+
 ### Anuncios de guía dinámica
 
 Las secciones musicales (`Intro`, `Verse`, `Pre-Chorus`, `Chorus`,
@@ -125,6 +139,11 @@ utilidades incluyen indicaciones como cambios de intensidad, pausas,
 sostener, entradas de instrumentos, cambios de tono, última vez y final
 grande. Una sección que comienza en `0.0 s` se anuncia al entrar porque no
 hay un compás anterior disponible.
+
+Las utilidades insertadas desde el menú `Utilidades` conservan esa identidad
+en el arrange. Así, una utilidad cuyo texto coincide con una sección musical
+(por ejemplo `Baja intensidad`/`Breakdown`) sigue disparándose al entrar; una
+sección musical con el mismo nombre no cambia su anuncio adelantado.
 
 El scheduler vive en el timeline fuente. Por eso, cuando cambia el tempo, el
 adelanto de un compás se convierte con
@@ -233,6 +252,12 @@ Con arreglo personalizado activo, `Inicio` y `Fin` delimitan únicamente la
 ventana de reproducción; no desplazan ni reescriben las secciones. Ambos pueden
 recorrer la duración completa del arrange. Si no hay un `Fin` personalizado, el
 custom arrange usa su duración completa.
+
+Un `Fin` que coincide con el borde efectivo del arrange anterior se considera
+un límite que sigue al arrange, no un recorte: si una edición inserta una copia
+más allá del audio fuente, ese borde avanza con la nueva duración para que los
+stems, click y guía dinámica lleguen a la sección insertada. Un `Fin` situado
+antes de ese borde sigue siendo un recorte explícito.
 
 `Inicio` y `Fin` son también los límites inferior y superior de cualquier seek.
 Un clic o arrastre fuera de la ventana se limita a la guía correspondiente.

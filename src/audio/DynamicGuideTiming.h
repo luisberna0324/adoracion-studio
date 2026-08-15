@@ -59,10 +59,11 @@ inline bool isDynamicGuideUtilityCueKey(const juce::String &rawKey) {
 }
 
 inline DynamicGuideAnnouncementTiming dynamicGuideAnnouncementTiming(
-    const juce::String &sectionKey, const juce::String &sectionName) {
+    const juce::String &sectionKey, const juce::String &sectionName,
+    const bool isUtilityCue = false) {
   // Counts and utility cues are immediate instructions. Musical sections are
   // announced ahead of their downbeat so the band can prepare.
-  if (arrangementCountSectionKey(sectionKey).isNotEmpty() ||
+  if (isUtilityCue || arrangementCountSectionKey(sectionKey).isNotEmpty() ||
       arrangementCountSectionKey(sectionName).isNotEmpty() ||
       isDynamicGuideUtilityCueKey(sectionKey) ||
       isDynamicGuideUtilityCueKey(sectionName)) {

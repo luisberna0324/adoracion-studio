@@ -69,12 +69,10 @@ private:
   void layoutHeaderAndViewport();
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
-  void addMetronomeVirtualSlot();
   void addDivisionSlot();
   void addDynamicGuideVirtualSlot();
   void syncMasterSlotFromProcessor();
   void syncDivisionSlotFromProcessor();
-  void syncMetronomeVirtualSlotFromProcessor();
   void syncDynamicGuideVirtualSlotFromProcessor();
   void syncStemSlotsFromProcessor();
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
@@ -140,7 +138,6 @@ private:
   int lastSeenOutputChannelCount = -1;
   int masterSlotIndex = -1;
   int divisionSlotIndex = -1;
-  int metronomeVirtualSlotIndex = -1;
   int dynamicGuideVirtualSlotIndex = -1;
   GuideSourceMode guideSourceMode = GuideSourceMode::SongGuide;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
