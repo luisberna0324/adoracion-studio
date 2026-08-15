@@ -1,5 +1,6 @@
 #include "../src/audio/SongMixExporter.h"
 #include "../src/audio/DynamicGuideTiming.h"
+#include "../src/data/ArrangementSourceMapping.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -79,6 +80,9 @@ void testGuideAnnouncementTiming() {
   expect(dynamicGuideAnnouncementTiming("Breakdown", "Breakdown") ==
              DynamicGuideAnnouncementTiming::oneBarBeforeSection,
          "breakdown follows the musical-section timing contract");
+  expect(dynamicGuideAnnouncementTiming("Breakdown", "Breakdown", true) ==
+             DynamicGuideAnnouncementTiming::atSectionEntry,
+         "a Breakdown inserted from Utilities is announced at its entry");
   expect(dynamicGuideAnnouncementTiming("4", "4") ==
              DynamicGuideAnnouncementTiming::atSectionEntry,
          "counts are announced at section entry");
@@ -106,6 +110,79 @@ void testGuideTriggersSortByActualAnnouncementTime() {
          "entry cue retains its actual trigger time");
 }
 
+SongArrangementPartSnapshot makeArrangementPart(const char *id,
+                                                 const char *name,
+                                                 const double start,
+                                                 const double end) {
+  SongArrangementPartSnapshot part;
+  part.id = id;
+  part.name = name;
+  part.startSec = start;
+  part.endSec = end;
+  part.sourceStartSec = start;
+  part.sourceEndSec = end;
+  return part;
+}
+
+void testCopySourceRangesRespectInsertedClipBoundaries() {
+  using arrangement_source_mapping::resolveCopySourceRange;
+
+  constexpr double sourceLength = 300.0;
+  const auto postChorus =
+      makeArrangementPart("post", "Post-Chorus", 225.671641791, 240.0);
+  const auto verse = makeArrangementPart("verse", "Verse", 20.0, 30.0);
+
+  const auto [postStartWithoutCopy, postEndWithoutCopy] =
+      resolveCopySourceRange({postChorus}, postChorus, sourceLength);
+  expect(std::abs(postStartWithoutCopy - postChorus.startSec) < 1.0e-9 &&
+             std::abs(postEndWithoutCopy - postChorus.endSec) < 1.0e-9,
+         "a Post-Chorus without an adjacent copy retains its short source range");
+
+  auto corruptPostCopy = makeArrangementPart("bad-post", "Post-Chorus", 240.0,
+                                              415.522388060);
+  corruptPostCopy.sourcePartId = postChorus.id;
+  corruptPostCopy.sourceStartSec = 50.149253731;
+  corruptPostCopy.sourceEndSec = 225.671641791;
+  const std::vector<SongArrangementPartSnapshot> postWithAdjacentCopy{
+      postChorus, corruptPostCopy};
+  const auto [postStartWithCopy, postEndWithCopy] =
+      resolveCopySourceRange(postWithAdjacentCopy, postChorus, sourceLength);
+  expect(std::abs(postStartWithCopy - postChorus.startSec) < 1.0e-9 &&
+             std::abs(postEndWithCopy - postChorus.endSec) < 1.0e-9,
+         "a Post-Chorus end on an inserted-clip boundary uses the left source side");
+
+  auto corruptVerseCopy = makeArrangementPart("bad-verse", "Verse", 30.0, 50.0);
+  corruptVerseCopy.sourcePartId = verse.id;
+  corruptVerseCopy.sourceStartSec = 0.0;
+  corruptVerseCopy.sourceEndSec = 20.0;
+  const std::vector<SongArrangementPartSnapshot> verseWithAdjacentCopy{
+      verse, corruptVerseCopy};
+  const auto [verseStartWithCopy, verseEndWithCopy] =
+      resolveCopySourceRange(verseWithAdjacentCopy, verse, sourceLength);
+  expect(std::abs(verseStartWithCopy - verse.startSec) < 1.0e-9 &&
+             std::abs(verseEndWithCopy - verse.endSec) < 1.0e-9,
+         "the boundary rule applies to non-Post-Chorus sections too");
+
+  auto trimmedPostCopy = makeArrangementPart("trimmed-post", "Post-Chorus",
+                                              240.0, 244.0);
+  trimmedPostCopy.sourcePartId = postChorus.id;
+  trimmedPostCopy.sourceStartSec = 230.0;
+  trimmedPostCopy.sourceEndSec = 234.0;
+  const std::vector<SongArrangementPartSnapshot> trimmedPostParts{
+      postChorus, trimmedPostCopy};
+  const auto [trimmedStart, trimmedEnd] =
+      resolveCopySourceRange(trimmedPostParts, trimmedPostCopy, sourceLength);
+  expect(std::abs(trimmedStart - 230.0) < 1.0e-9 &&
+             std::abs(trimmedEnd - 234.0) < 1.0e-9,
+         "a valid trimmed duplicate retains its explicit source range");
+
+  const auto [recoveredStart, recoveredEnd] =
+      resolveCopySourceRange(postWithAdjacentCopy, corruptPostCopy, sourceLength);
+  expect(std::abs(recoveredStart - postChorus.startSec) < 1.0e-9 &&
+             std::abs(recoveredEnd - postChorus.endSec) < 1.0e-9,
+         "an invalid duplicate range is not propagated by Copy");
+}
+
 } // namespace
 
 int main() {
@@ -114,6 +191,7 @@ int main() {
   testTempoNormalization();
   testGuideAnnouncementTiming();
   testGuideTriggersSortByActualAnnouncementTime();
+  testCopySourceRangesRespectInsertedClipBoundaries();
   std::cout << "song mix export timeline tests passed\n";
   return 0;
 }

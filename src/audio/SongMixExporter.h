@@ -124,6 +124,7 @@ struct SongMixExportVirtualSourceState {
 struct SongMixExportGuideSection {
   juce::String name;
   double startSeconds = 0.0;
+  bool utilityCue = false;
 };
 
 namespace song_mix_export {
@@ -147,7 +148,7 @@ inline std::vector<PreparedGuideTrigger> prepareGuideTriggers(
       continue;
     const bool triggerAtEntry =
         playworship::audio::dynamicGuideAnnouncementTiming(
-            section.name, section.name) ==
+            section.name, section.name, section.utilityCue) ==
         playworship::audio::DynamicGuideAnnouncementTiming::atSectionEntry;
     prepared.push_back(
         {section.name,

@@ -20,3 +20,4 @@ Sistemas de audio auxiliary: metrónomo, pads, guías dinámicas.
 | [OutputChannelCatalog](OutputChannelCatalog.md) | Catálogo de canales de salida |
 | [StemOutputRouter](StemOutputRouter.md) | Enrutador de stems a canales |
 | [SongMixExporter](SongMixExporter.md) | Render offline del mix actual a WAV |
+| [StemCache](StemCache.md) | Cache on-disk de stems decodificados a FLAC, con migración de directorios legacy |

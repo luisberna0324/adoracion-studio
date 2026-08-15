@@ -450,7 +450,8 @@ private:
   bool addArrangementPartAtInsertionAnchor(const juce::String &name,
                                             double playableStartSec,
                                             double playableEndSec,
-                                            double preferredDurationSec = 0.0);
+                                            double preferredDurationSec = 0.0,
+                                            bool utilityCue = false);
   void clearSectionInsertionAnchor();
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);

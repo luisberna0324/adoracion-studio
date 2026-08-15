@@ -28,11 +28,13 @@ docs/okf/
 |--------|-------------|
 | [processor/MTControlsAudioProcessor](processor/MTControlsAudioProcessor.md) | Procesador principal del plugin |
 | [processor/AudioDiagnostics](processor/AudioDiagnostics.md) | Benchmark lock-free de performance (stages, gaps, decode, render) |
+| [processor/SongLoadProbe](processor/SongLoadProbe.md) | Telemetría del UI thread para la carga de canciones |
 | [engine/StemMixEngine](engine/StemMixEngine.md) | Motor de mezcla de stems |
 | [engine/StemTrack](engine/StemTrack.md) | Track individual de audio |
 | [audio-systems/Metronome](audio-systems/Metronome.md) | Sistema de metrónomo |
 | [audio-systems/Pads](audio-systems/Pads.md) | Motor de pads/sampleos |
 | [audio-systems/DynamicGuide](audio-systems/DynamicGuide.md) | Guías dinámicas por idioma |
+| [audio-systems/StemCache](audio-systems/StemCache.md) | Cache FLAC on-disk de stems + migración legacy |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |

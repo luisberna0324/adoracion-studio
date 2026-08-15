@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "PluginEditorSupport.h"
+#include "SongLoadProbe.h"
 #include "audio/AudioDeviceMonitor.h"
 #include "audio/SongMixExporter.h"
 #include "data/AppSettings.h"
@@ -457,14 +458,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                  bool isCustomArrangement) {
         if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
           return;
-        SongLibraryStore::updateSongArrangement(
-            currentLoadedSong.id, arrangement, isCustomArrangement);
+        if (!SongLibraryStore::updateSongArrangement(
+                currentLoadedSong.id, arrangement, isCustomArrangement)) {
+          SessionAuthLogger::write(
+              "[Arrangement] Couldn't persist changes for song id=" +
+              currentLoadedSong.id);
+        }
         p.setSongArrangement(arrangement, isCustomArrangement);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return;
-    SongLibraryStore::resetSongArrangement(currentLoadedSong.id);
+    if (!SongLibraryStore::resetSongArrangement(currentLoadedSong.id)) {
+      SessionAuthLogger::write(
+          "[Arrangement] Couldn't reset persisted arrangement for song id=" +
+          currentLoadedSong.id);
+    }
     SongArrangementSnapshot arrangement;
     bool isCustomArrangement = false;
     if (SongLibraryStore::getSongArrangement(currentLoadedSong.id, arrangement,
@@ -632,6 +641,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const bool hadActivePadBeforeLoad = p.getActivePadNoteIndex() >= 0;
     const bool shouldUseSilentPadHandoff =
         hadLoadedSongBeforeLoad && hadActivePadBeforeLoad;
+    // SongLoadProbe: RAII bracket for the whole load. The destructor pops
+    // any nested unclosed phases, so early returns below don't leak rows.
+    ScopedSongLoadTimer _loadSongTimer(
+        "loadSong", "total",
+        "title=" + song.title +
+            " hadPrev=" + juce::String(hadLoadedSongBeforeLoad ? 1 : 0));
     maybePersistSongWindowForActiveSong();
     if (channelGridRaw != nullptr)
       channelGridRaw->flushPendingPersistenceNow();
@@ -669,7 +684,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (projectFile.existsAsFile()) {
       ProjectDocument document;
       juce::String projectError;
-      if (ProjectStore::open(projectFile, document, &projectError)) {
+      // SongLoadProbe: time the ZIP open + stem extraction from .pwproj.
+      // For non-project songs this is a no-op.
+      SongLoadProbe::instance().beginPhase(
+          "loadSong", "project.open",
+          "size=" + juce::String(projectFile.getSize()));
+      const bool projectOpened =
+          ProjectStore::open(projectFile, document, &projectError);
+      SongLoadProbe::instance().endPhase();
+      if (projectOpened) {
         sourceSong = document.song;
         // ProjectStore devuelve el ID del manifiesto. La UI y los setlists
         // deben conservar la identidad local de esta entrada de Biblioteca.
@@ -759,6 +782,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     pushLoadUi(0.0, L10n::tr(u8"Preparando pistas...", u8"Preparing tracks..."));
 
+    // SongLoadProbe: this is the heavy one — createReader per stem, FLAC
+    // cache lookup, prepareToPlay, waitForReady, fade-wait, suspendProcessing,
+    // Bungee prep. The probe records sub-stages inside loadSongStems.
+    SongLoadProbe::instance().beginPhase(
+        "loadSong", "processor.loadSongStems",
+        "stems=" + juce::String(stemPaths.size()) +
+            " prev=" + juce::String(hadLoadedSongBeforeLoad ? 1 : 0));
     const bool loaded = p.loadSongStems(
         stemPaths, sourceSong.title, sourceSong.key, static_cast<double>(sourceSong.bpm),
         [&pushLoadUi](double stemPhase01) {
@@ -767,6 +797,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                               u8"Reading stem audio..."));
         },
         true);
+    SongLoadProbe::instance().endPhase();
 
     if (!loaded) {
       if (padsSongTransitionFadeActive) {
@@ -799,6 +830,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     p.setDynamicGuideLanguage(AppSettings::getLanguage());
     pushLoadUi(0.58, L10n::tr(u8"Restaurando configuración...",
                               u8"Restoring settings..."));
+    // SongLoadProbe: the per-stem settings restoration can be hundreds of
+    // atomic stores (mix, click, guide, arrangement). Time it separately so
+    // we can compare against the actual stems load.
+    SongLoadProbe::instance().beginPhase("loadSong", "settings.restore");
     int savedPitchSemitones = 0;
     if (hasProjectSettings) {
       savedPitchSemitones =
@@ -891,6 +926,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setStemOutputChannel(stemIndex, it->outputChannel);
       }
     }
+    SongLoadProbe::instance().endPhase();  // settings.restore
     pushLoadUi(0.73, L10n::tr(u8"Restaurando reproducción...",
                               u8"Restoring playback..."));
 
@@ -967,38 +1003,82 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
     if (cachedBins.empty()) {
-      pushLoadUi(0.81, L10n::tr(u8"Generando vista de forma de onda...",
-                                u8"Generating waveform preview..."));
-      cachedBins = buildMixedWaveformBins(
-          loadedSong, kWaveformPreviewBinCount, [&pushLoadUi](const double wf01) {
-            pushLoadUi(0.81 + 0.18 * wf01,
-                       L10n::tr(u8"Generando vista de forma de onda...",
-                                u8"Generating waveform preview..."));
-          });
-      if (!cachedBins.empty() &&
-          !SongLibraryStore::saveWaveformCache(loadedSong.id, cachedBins)) {
-        SessionAuthLogger::write("loadSong: couldn't persist waveform cache for " +
-                                 loadedSong.id);
-      }
-      if (!cachedBins.empty() && loadedSong.projectPath.isNotEmpty()) {
-        juce::String waveformError;
-        if (!ProjectStore::updateWaveform(juce::File(loadedSong.projectPath),
-                                          cachedBins, &waveformError)) {
-          SessionAuthLogger::write("[Project] couldn't embed waveform: " +
-                                   waveformError);
-        }
-      }
+      // P0.5 (perf): buildMixedWaveformBins decodifica TODOS los stems
+      // completos en el UI thread. En Windows con stems largos y
+      // antivirus activo, puede tomar 1-3s y congelar la UI durante el
+      // cambio de canción. Lo movemos a un thread aparte y usamos un
+      // generation token para descartar resultados tardíos si el
+      // usuario cambia de canción otra vez antes de que termine.
+      pushLoadUi(0.81, L10n::tr(u8"Preparando forma de onda...",
+                                u8"Preparing waveform..."));
+      // Reflejar visualmente el estado de carga con bins vacíos para
+      // que la barra no muestre la canción anterior.
+      waveformBarRaw->setWaveformBins({});
+      const auto myGen =
+          waveformGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+      auto safeEditor =
+          juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+      const auto songIdForBg = loadedSong.id;
+      const auto projectPathForBg = loadedSong.projectPath;
+      const ImportedSongData songForBg = loadedSong;
+      std::thread([safeEditor, myGen, songIdForBg, projectPathForBg,
+                   songForBg]() {
+        // El cómputo corre en background. No se reportan progresos
+        // intermedios porque el spinner del SongLoadUiScope ya le da
+        // feedback al usuario; el delta total es 0.5-3s.
+        auto bins = buildMixedWaveformBins(
+            songForBg, kWaveformPreviewBinCount, nullptr);
+        juce::MessageManager::callAsync(
+            [safeEditor, myGen, songIdForBg, projectPathForBg,
+             bins = std::move(bins)]() mutable {
+              if (safeEditor == nullptr)
+                return;
+              if (myGen != safeEditor->waveformGeneration.load(
+                               std::memory_order_acquire)) {
+                // Generación vieja: el usuario cambió de canción
+                // mientras calculábamos. Descartar silenciosamente.
+                return;
+              }
+              if (bins.empty())
+                return;
+              if (!SongLibraryStore::saveWaveformCache(songIdForBg, bins)) {
+                SessionAuthLogger::write(
+                    "loadSong: couldn't persist waveform cache for " +
+                    songIdForBg);
+              }
+              if (projectPathForBg.isNotEmpty()) {
+                juce::String waveformError;
+                if (!ProjectStore::updateWaveform(
+                        juce::File(projectPathForBg), bins, &waveformError)) {
+                  SessionAuthLogger::write(
+                      "[Project] couldn't embed waveform: " + waveformError);
+                }
+              }
+              if (safeEditor->waveformBarPtr != nullptr)
+                safeEditor->waveformBarPtr->setWaveformBins(std::move(bins));
+            });
+      }).detach();
     } else {
       pushLoadUi(0.99, L10n::tr(u8"Cargando forma de onda en caché...",
                                 u8"Loading cached waveform..."));
     }
 
     pushLoadUi(1.0, L10n::tr(u8"Finalizando...", u8"Finishing..."));
-    waveformBarRaw->setWaveformBins(std::move(cachedBins));
+    // Si no estamos esperando bins en background, aplicarlos ahora.
+    // Si hay un cálculo en background, setWaveformBins ya quedó vacío
+    // arriba; el callAsync posterior los va a setear.
+    if (cachedBins.empty() == false) {
+      waveformBarRaw->setWaveformBins(std::move(cachedBins));
+    }
     waveformBarRaw->setSongRhythm(static_cast<double>(loadedSong.bpm),
                                   loadedSong.timeSignature);
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
     waveformBarRaw->setTempoMap(loadedSong.tempoMap);
+    // SongLoadProbe: the ScopedSongLoadTimer at the top of the lambda closes
+    // the total bracket and pops any leftover inner phases on scope exit.
+    // Flush here so the user can read the CSV immediately if they switch
+    // songs again before the destructor runs.
+    SongLoadProbe::instance().flush();
     return true;
   };
 
@@ -2835,13 +2915,15 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
           exportArrangementCustomized)) {
     for (const auto &part : exportArrangement.parts) {
       if (!part.skipPlayback)
-        request.guideSections.push_back({part.name, part.startSec});
+        request.guideSections.push_back(
+            {part.name, part.startSec, part.utilityCue});
     }
   }
   if (request.guideSections.empty()) {
     for (const auto &part : currentLoadedSong.arrangement.parts) {
       if (!part.skipPlayback)
-        request.guideSections.push_back({part.name, part.startSec});
+        request.guideSections.push_back(
+            {part.name, part.startSec, part.utilityCue});
     }
   }
   for (size_t i = 0; i < currentLoadedSong.stems.size(); ++i) {

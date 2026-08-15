@@ -432,6 +432,8 @@ target_sources(MTControls
         src/audio/SongMixExporter.h
         src/audio/StemCache.cpp
         src/audio/StemCache.h
+        src/SongLoadProbe.cpp
+        src/SongLoadProbe.h
         src/audio/TimeStretchProcessor.h
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h

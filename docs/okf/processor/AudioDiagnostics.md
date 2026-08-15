@@ -175,6 +175,21 @@ Estos subsistemas se benefician del benchmark o lo usan:
 
 ---
 
+## Companion: `SongLoadProbe`
+
+Para diagnosticar la **carga de canciones** (no la reproducción), existe [`SongLoadProbe`](SongLoadProbe.md), un módulo hermano que vive en `src/SongLoadProbe.h` y mide el UI thread del swap:
+
+- Stages de `loadSongStems` (per-stem: `cache.lookup`, `createReader`, `prepareToPlay`, `waitForReady`)
+- Stages de `loadSong` (`project.open`, `settings.restore`, `bungee.prepare`, fade/suspend waits)
+- Eventos one-shot de `StemCache.isValid` (hit / miss con razón: `noFlac`, `noMeta`, `badMeta`, `sizeMismatch`, `mtimeMismatch`)
+- Memory snapshot (RSS) por fila
+
+CSV en `~/Library/Logs/MTControls/song_load_<ts>.csv`.
+
+Para una sesión completa de "tarda mucho en cargar", correr **ambos** benchmarks y cruzar los CSVs: `song_load_*.csv` te dice qué fase del swap domina el wall-clock del UI thread, `audio_*.csv` te dice si el audio thread queda starving durante el warm-up post-load.
+
+---
+
 ## Cómo extender
 
 Para añadir un nuevo stage al benchmark:

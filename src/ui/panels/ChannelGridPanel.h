@@ -69,12 +69,10 @@ private:
   void layoutHeaderAndViewport();
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
-  void addMetronomeVirtualSlot();
   void addDivisionSlot();
   void addDynamicGuideVirtualSlot();
   void syncMasterSlotFromProcessor();
   void syncDivisionSlotFromProcessor();
-  void syncMetronomeVirtualSlotFromProcessor();
   void syncDynamicGuideVirtualSlotFromProcessor();
   void syncStemSlotsFromProcessor();
   void queueStemVolumePersistence(const juce::String &stemId, float volume);
@@ -83,7 +81,9 @@ private:
   void queueClickDynVolumePersistence(float volume);
   void persistDynamicGuideMixForCurrentSong();
   void persistClickDynMixForCurrentSong();
+  DynamicGuideMixSnapshot makeCurrentDynamicGuideMixSnapshot() const;
   void maybePersistClickDynMixStateChange();
+  void maybePersistDynamicGuideMixStateChange();
   ClickDynMixSnapshot makeCurrentClickDynMixSnapshot() const;
   void flushPendingVolumePersistence();
   void showGuideSourcePopover(juce::Component *anchorComponent);
@@ -131,12 +131,13 @@ private:
   float pendingClickDynVolumeValue = 1.0f;
   bool hasLastObservedClickDynMix = false;
   ClickDynMixSnapshot lastObservedClickDynMix;
+  bool hasLastObservedDynamicGuideMix = false;
+  DynamicGuideMixSnapshot lastObservedDynamicGuideMix;
   double lastVolumeInteractionMs = 0.0;
   int slowTickCounter = 0;
   int lastSeenOutputChannelCount = -1;
   int masterSlotIndex = -1;
   int divisionSlotIndex = -1;
-  int metronomeVirtualSlotIndex = -1;
   int dynamicGuideVirtualSlotIndex = -1;
   GuideSourceMode guideSourceMode = GuideSourceMode::SongGuide;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;

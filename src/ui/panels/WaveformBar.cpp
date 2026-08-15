@@ -1,6 +1,7 @@
 #include "WaveformBar.h"
 #include "../../PluginProcessor.h"
 #include "../../audio/DynamicGuideEngine.h"
+#include "../../data/ArrangementSourceMapping.h"
 #include "../../data/Localization.h"
 
 #include <algorithm>
@@ -2020,7 +2021,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   if (!isEditingArrangement() || mainWaveBodyBounds.getWidth() <= 2.0f)
     return;
 
-  const int partIndex = findPartIndexById(activeDragPartId);
+  int partIndex = findPartIndexById(activeDragPartId);
   if (!juce::isPositiveAndBelow(partIndex,
                                 static_cast<int>(arrangement.parts.size())))
     return;
@@ -2028,6 +2029,33 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   const double songLength = getSongLengthSeconds();
   if (songLength <= 0.0)
     return;
+
+  // A copied part is an insertion in the arrangement timeline. Recreate its
+  // preview from the drag origin on every mouse event so its insertion gap
+  // moves with it instead of leaving a second gap behind. Multi-part moves
+  // retain their existing independent-position behaviour.
+  const bool movingSingleDuplicatedPart =
+      dragMode == DragMode::movePart && dragPartOrigins.size() == 1 &&
+      hasArrangementDragUndoSnapshot;
+  auto dragOriginIt = arrangementDragUndoSnapshot.arrangement.parts.end();
+  if (movingSingleDuplicatedPart) {
+    dragOriginIt = std::find_if(
+        arrangementDragUndoSnapshot.arrangement.parts.begin(),
+        arrangementDragUndoSnapshot.arrangement.parts.end(),
+        [this](const SongArrangementPartSnapshot &part) {
+          return part.id == activeDragPartId;
+        });
+  }
+  const bool movingDuplicatedInsertion =
+      dragOriginIt != arrangementDragUndoSnapshot.arrangement.parts.end() &&
+      dragOriginIt->sourcePartId.isNotEmpty();
+  if (movingDuplicatedInsertion) {
+    arrangement = arrangementDragUndoSnapshot.arrangement;
+    partIndex = findPartIndexById(activeDragPartId);
+    if (!juce::isPositiveAndBelow(
+            partIndex, static_cast<int>(arrangement.parts.size())))
+      return;
+  }
 
   const double pointerSec =
       windowXToSourceSeconds(mainWaveBodyBounds, event.position.x);
@@ -2150,13 +2178,23 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 
     const double maxStart = juce::jmax(0.0, songLength - duration);
     double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec, bypassSnap);
-    nextStart = juce::jlimit(0.0, maxStart, nextStart);
+    nextStart = movingDuplicatedInsertion
+                    ? juce::jmax(0.0, nextStart)
+                    : juce::jlimit(0.0, maxStart, nextStart);
 
-    double nextEnd = juce::jlimit(nextStart, songLength, nextStart + duration);
+    double nextEnd = movingDuplicatedInsertion
+                         ? nextStart + duration
+                         : juce::jlimit(nextStart, songLength,
+                                        nextStart + duration);
     const double rawNextStart =
-        juce::jlimit(0.0, maxStart, dragOriginPartStartSec + rawDeltaSec);
+        movingDuplicatedInsertion
+            ? juce::jmax(0.0, dragOriginPartStartSec + rawDeltaSec)
+            : juce::jlimit(0.0, maxStart,
+                           dragOriginPartStartSec + rawDeltaSec);
     const double rawNextEnd =
-        juce::jlimit(rawNextStart, songLength, rawNextStart + duration);
+        movingDuplicatedInsertion
+            ? rawNextStart + duration
+            : juce::jlimit(rawNextStart, songLength, rawNextStart + duration);
 
     if (!bypassSnap && dragAnchorActive) {
       const double activeEdge = dragAnchorEdgeIsStart ? rawNextStart : rawNextEnd;
@@ -2197,13 +2235,48 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     if (nextStart < 0.0) {
       nextStart = 0.0;
       nextEnd = juce::jmin(songLength, duration);
-    } else if (nextEnd > songLength) {
+    } else if (!movingDuplicatedInsertion && nextEnd > songLength) {
       nextEnd = songLength;
       nextStart = juce::jmax(0.0, songLength - duration);
     }
 
-    part.startSec = nextStart;
-    part.endSec = nextEnd;
+    if (movingDuplicatedInsertion) {
+      const double insertionDuration =
+          dragOriginIt->endSec - dragOriginIt->startSec;
+      if (insertionDuration >= kMinPartDurationSec) {
+        // Unlike a normal part, an inserted copy may extend the arrangement.
+        // The next drag event starts from the original snapshot again, so
+        // moving back left removes this temporary tail extension.
+        const double destinationStart = juce::jmax(0.0, nextStart);
+
+        for (auto &candidate : arrangement.parts) {
+          if (candidate.id == activeDragPartId)
+            continue;
+
+          // Remove the old insertion first, then make the same-sized gap at
+          // the destination. Together these shifts move only the material the
+          // copied clip crosses; extending past the final part grows the
+          // arrangement only by the new trailing gap.
+          if (candidate.startSec >= dragOriginIt->endSec - 0.0001) {
+            candidate.startSec -= insertionDuration;
+            candidate.endSec -= insertionDuration;
+          }
+          if (candidate.startSec >= destinationStart - 0.0001) {
+            candidate.startSec += insertionDuration;
+            candidate.endSec += insertionDuration;
+          }
+        }
+
+        part.startSec = destinationStart;
+        part.endSec = destinationStart + insertionDuration;
+      } else {
+        part.startSec = nextStart;
+        part.endSec = nextEnd;
+      }
+    } else {
+      part.startSec = nextStart;
+      part.endSec = nextEnd;
+    }
   } else if (dragMode == DragMode::resizePartLeft) {
     double nextStart = snapSeconds(dragOriginPartStartSec + deltaSec, bypassSnap);
     const double anchoredStart =
@@ -3468,40 +3541,9 @@ bool WaveformBar::copySelectedArrangementParts() {
     if (sourceId.isEmpty())
       continue;
 
-    double sourceStartSec = 0.0;
-    double sourceEndSec = 0.0;
-    if (part.sourcePartId.isNotEmpty()) {
-      const int sourceIndex = findPartIndexById(sourceId);
-      if (juce::isPositiveAndBelow(sourceIndex,
-                                   static_cast<int>(arrangement.parts.size()))) {
-        const auto &sourcePart =
-            arrangement.parts[static_cast<size_t>(sourceIndex)];
-        if (!mapArrangementSecondsToSourceSeconds(sourcePart.startSec,
-                                                  sourceLength,
-                                                  sourceStartSec) ||
-            !mapArrangementSecondsToSourceSeconds(sourcePart.endSec,
-                                                  sourceLength,
-                                                  sourceEndSec)) {
-          const auto sourceRange = getPartSourceRange(sourcePart, sourceLength);
-          sourceStartSec = sourceRange.first;
-          sourceEndSec = sourceRange.second;
-        }
-      } else {
-        const auto sourceRange = getPartSourceRange(part, sourceLength);
-        sourceStartSec = sourceRange.first;
-        sourceEndSec = sourceRange.second;
-      }
-    } else if (!mapArrangementSecondsToSourceSeconds(part.startSec, sourceLength,
-                                                     sourceStartSec) ||
-               !mapArrangementSecondsToSourceSeconds(part.endSec, sourceLength,
-                                                     sourceEndSec)) {
-      const auto sourceRange = getPartSourceRange(part, sourceLength);
-      sourceStartSec = sourceRange.first;
-      sourceEndSec = sourceRange.second;
-    }
-
-    if (sourceEndSec < sourceStartSec)
-      std::swap(sourceStartSec, sourceEndSec);
+    const auto [sourceStartSec, sourceEndSec] =
+        arrangement_source_mapping::resolveCopySourceRange(
+            arrangement.parts, part, sourceLength);
     if ((sourceEndSec - sourceStartSec) < kMinPartDurationSec)
       continue;
 
@@ -5682,7 +5724,8 @@ void WaveformBar::clearSectionInsertionAnchor() {
 
 bool WaveformBar::addArrangementPartAtInsertionAnchor(
     const juce::String &name, const double playableStartSec,
-    const double playableEndSec, const double preferredDurationSec) {
+    const double playableEndSec, const double preferredDurationSec,
+    const bool utilityCue) {
   if (!sectionInsertionAnchorValid)
     return false;
 
@@ -5803,6 +5846,7 @@ bool WaveformBar::addArrangementPartAtInsertionAnchor(
       insertedPart.color = colourForName(name);
       insertedPart.startSec = insertionSec;
       insertedPart.endSec = insertedEndSec;
+      insertedPart.utilityCue = utilityCue;
       setExplicitSourceRange(insertedPart);
       const auto insertedPartId = insertedPart.id;
       replacements.push_back(std::move(insertedPart));
@@ -5894,6 +5938,7 @@ bool WaveformBar::addArrangementPartAtInsertionAnchor(
   part.color = colourForName(name);
   part.startSec = insertionSec;
   part.endSec = endSec;
+  part.utilityCue = utilityCue;
   const auto partId = part.id;
 
   pushArrangementUndoSnapshot();
@@ -6046,7 +6091,7 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
 
   if (sectionInsertionAnchorValid) {
     addArrangementPartAtInsertionAnchor(cueName.trim(), playableStartSec,
-                                        playableEndSec, cueDurationSec);
+                                        playableEndSec, cueDurationSec, true);
     return;
   }
 
@@ -6066,6 +6111,7 @@ void WaveformBar::addUtilityCuePart(const juce::String &cueName) {
   part.color = fallbackArrangementPartColorForName(part.name);
   part.startSec = startSec;
   part.endSec = endSec;
+  part.utilityCue = true;
 
   pushArrangementUndoSnapshot();
   arrangement.parts.push_back(std::move(part));
@@ -6106,20 +6152,10 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
   if ((sourcePart.endSec - sourcePart.startSec) < kMinPartDurationSec)
     return;
 
-  // Follow the chain to find the real source (original, not another duplicate).
-  juce::String realSourceId = sourcePart.sourcePartId.isEmpty()
-                                  ? sourcePart.id
-                                  : sourcePart.sourcePartId;
-  // If the resolved source is itself a duplicate, trace one more level.
-  if (!sourcePart.sourcePartId.isEmpty()) {
-    const int resolvedIdx = findPartIndexById(sourcePart.sourcePartId);
-    if (juce::isPositiveAndBelow(resolvedIdx,
-                                  static_cast<int>(arrangement.parts.size()))) {
-      const auto &resolved = arrangement.parts[static_cast<size_t>(resolvedIdx)];
-      if (!resolved.sourcePartId.isEmpty())
-        realSourceId = resolved.sourcePartId;
-    }
-  }
+  // Keep a stable reference to the original source even when a copy is
+  // duplicated again.  The source range below still comes from the selected
+  // copy, so nested copies retain an exact trimmed range.
+  const juce::String realSourceId = resolveRealSourcePartId(sourcePart);
   const int realSourceIndex = findPartIndexById(realSourceId);
   const auto &labelSourcePart =
       juce::isPositiveAndBelow(realSourceIndex,
@@ -6129,25 +6165,9 @@ void WaveformBar::createDuplicatedSection(const int sourcePartIndex) {
 
   const double insertAtSec = sourcePart.endSec;
   const double sourceLength = getWaveformSourceLengthSeconds();
-  double sourceStartSec = 0.0;
-  double sourceEndSec = 0.0;
-
-  if (sourcePart.sourcePartId.isNotEmpty()) {
-    const auto fallbackSourceRange = getPartSourceRange(sourcePart, sourceLength);
-    sourceStartSec = fallbackSourceRange.first;
-    sourceEndSec = fallbackSourceRange.second;
-  } else if (!mapArrangementSecondsToSourceSeconds(sourcePart.startSec,
-                                                   sourceLength,
-                                                   sourceStartSec) ||
-             !mapArrangementSecondsToSourceSeconds(sourcePart.endSec,
-                                                   sourceLength,
-                                                   sourceEndSec)) {
-    const auto fallbackSourceRange = getPartSourceRange(sourcePart, sourceLength);
-    sourceStartSec = fallbackSourceRange.first;
-    sourceEndSec = fallbackSourceRange.second;
-  }
-  if (sourceEndSec < sourceStartSec)
-    std::swap(sourceStartSec, sourceEndSec);
+  const auto [sourceStartSec, sourceEndSec] =
+      arrangement_source_mapping::resolveCopySourceRange(
+          arrangement.parts, sourcePart, sourceLength);
   const double clipDuration = sourceEndSec - sourceStartSec;
   if (clipDuration < kMinPartDurationSec)
     return;

@@ -83,6 +83,40 @@ public:
    */
   static juce::File getCacheDirectory(const juce::String &songId);
 
+  /**
+   * Sanitizes a raw song identifier (typically the song title) into a
+   * stable, filesystem-safe cache key.
+   *
+   * Background: before this helper existed, getCacheDirectory() called
+   * getChildFile() with the raw title. Titles containing characters that
+   * are either path separators (`/`, `\` on Windows) or invalid in
+   * Windows filenames (`:`, `*`, `?`, `"`, `<`, `>`, `|`) caused the
+   * cache to be written to a wrong or split directory. The first
+   * concrete case was a song titled "Al Que Es Digno / Vencio", whose
+   * cache ended up in `decoded/Al Que Es Digno / Vencio/` (with the
+   * `/` interpreted as a directory separator on POSIX), and the cache
+   * lookup could not find it consistently.
+   *
+   * The sanitizer replaces every problematic character with `_`, trims
+   * leading/trailing whitespace and dots, and falls back to "untitled"
+   * if the result would otherwise be empty. The output is intended to
+   * be human-readable, not a hash, so logs and on-disk inspection stay
+   * useful. The sidecar files inside the directory still key on the
+   * sourcePath hash, so collisions between similarly-titled songs are
+   * caught by the existing isValid() mtime/size check.
+   */
+  static juce::String sanitizeCacheKey(const juce::String &rawSongId);
+
+  /**
+   * One-shot migration of any pre-sanitizer cache directories whose
+   * names contain characters that sanitizeCacheKey() would now replace.
+   * Called once at startup from the message thread; safe to call again
+   * (idempotent). The migration renames directories in place so any
+   * existing .flac / .meta.txt files keep working — no re-precompute
+   * needed.
+   */
+  static void migrateLegacyCacheDirectories();
+
 private:
   // The sidecar metadata file (sits next to the .flac with .meta.txt
   // suffix). Format is plain text key=value, one per line. The
