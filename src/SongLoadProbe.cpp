@@ -1,6 +1,8 @@
 #include "SongLoadProbe.h"
 
+#if !defined(_WIN32)
 #include <sys/resource.h>
+#endif
 
 namespace {
 constexpr int kFlushEveryNRows = 32;
@@ -12,6 +14,11 @@ SongLoadProbe &SongLoadProbe::instance() {
 }
 
 int64_t SongLoadProbe::getCurrentRssKb() {
+#if defined(_WIN32)
+  // getrusage is not provided by MSVC. Keep the CSV schema stable and mark
+  // the optional diagnostic unavailable rather than changing load behavior.
+  return -1;
+#else
   struct rusage ru {};
   if (getrusage(RUSAGE_SELF, &ru) == 0) {
 #if defined(__APPLE__)
@@ -23,6 +30,7 @@ int64_t SongLoadProbe::getCurrentRssKb() {
 #endif
   }
   return -1;
+#endif
 }
 
 void SongLoadProbe::ensureStarted() {

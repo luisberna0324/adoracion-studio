@@ -158,6 +158,7 @@ loadSongStems.stem#3.cache.lookup               1      250us  avg=250us
 - **No captura ZIP-level I/O del .pwproj**: el `project.open` mide end-to-end pero no desglosa manifest-parse vs stem-extract. Si el proyecto es muy grande, se puede añadir sub-stages dentro de `ProjectStore::open`.
 - **Wall-clock drift**: los timestamps vienen de `juce::Time::getHighResolutionTicks()` por stage. Si el clock base se descalibra entre stages, los deltas pueden tener jitter ±100 μs en hardware de baja calidad.
 - **RSS no diferencia heap de mmap**: el `.pwproj` ZIP se mapea entero en memoria al abrirse; un proyecto de 449 MB infla RSS ~450 MB aunque solo se hayan extraído 12 stems. El delta real de heap es menor.
+- **RSS no está disponible en Windows**: el build MSVC no expone `getrusage`; el probe conserva la columna `rss_kb` y escribe `-1`, sin afectar la carga ni las métricas de tiempo.
 
 ---
 
