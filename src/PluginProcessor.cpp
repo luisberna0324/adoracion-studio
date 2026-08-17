@@ -3373,48 +3373,66 @@ bool MTControlsAudioProcessor::loadSongStems(
     // con `/`, `:`, etc. (ej. "Al Que Es Digno / Vencio") no rompan
     // la cache creando directorios con split de path.
     juce::File playbackFile = file;
+    const bool sourceIsFlac = file.hasFileExtension("flac");
     // SongLoadProbe: the cache lookup is one of the first places where a
     // legacy split-path directory (e.g. "Al Que Es Digno / Vencio" split
     // into "Al Que Es Digno /" + " Vencio/") silently misses. Time the
     // lookup and record hit/miss so the next slow load is traceable.
     {
       const int64_t lookupStart = juce::Time::getHighResolutionTicks();
-      const bool hit = StemCache::isValid(file, songTitle);
+      const bool hit = !sourceIsFlac && StemCache::isValid(file, songTitle);
       const int64_t lookupUs = static_cast<int64_t>(
           (juce::Time::getHighResolutionTicks() - lookupStart) * 1000000.0 /
           juce::Time::getHighResolutionTicksPerSecond());
       SongLoadProbe::instance().recordStemStage(
           i, "cache.lookup", lookupUs,
           juce::String("hit=") + (hit ? "1" : "0") +
+              " sourceFlac=" + (sourceIsFlac ? "1" : "0") +
               " title=" + songTitle);
-    }
-    if (StemCache::isValid(file, songTitle)) {
-      playbackFile = StemCache::getCacheFile(file, songTitle);
-    } else {
-      // Fire-and-forget: the precompute runs in a background thread
-      // and updates the sidecar on completion. If it fails, the
-      // current load keeps using the source without any visible
-      // regression.
-      StemCache::precomputeAsync(file, songTitle, nullptr);
+      if (hit) {
+        playbackFile = StemCache::getCacheFile(file, songTitle);
+      } else if (!sourceIsFlac) {
+        // Fire-and-forget compatibility path for non-canonical callers.  A
+        // .pwproj already supplies FLAC and must not be duplicated into a
+        // second FLAC cache.
+        StemCache::precomputeAsync(file, songTitle, nullptr);
+      }
     }
 
-    // SongLoadProbe: createReaderFor is the per-stem cost driver on AAC
-    // sources (e.g. M4A from .pwproj). Time it explicitly.
-    const int64_t createReaderStart = juce::Time::getHighResolutionTicks();
+    // SongLoadProbe: createReaderFor is a per-stem cost driver, especially for
+    // non-canonical compressed sources. Time each pass separately so we can
+    // confirm the suspicion that we open the same FLAC twice per stem
+    // (main reader + prefetch reader). If createReader.main and
+    // createReader.prefetch sum to the previous "createReader" row we know
+    // the duplicate is real; the cost reduction from sharing one reader
+    // is then trivial to estimate.
+    const int64_t createReaderMainStart = juce::Time::getHighResolutionTicks();
     auto reader = std::unique_ptr<juce::AudioFormatReader>(
         playbackFormatManager.createReaderFor(playbackFile));
+    const int64_t createReaderMainUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - createReaderMainStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
     if (reader == nullptr)
       continue;
+    const int64_t createReaderPrefetchStart =
+        juce::Time::getHighResolutionTicks();
     auto prefetchReader = std::unique_ptr<juce::AudioFormatReader>(
         playbackFormatManager.createReaderFor(playbackFile));
-    const int64_t createReaderUs = static_cast<int64_t>(
-        (juce::Time::getHighResolutionTicks() - createReaderStart) * 1000000.0 /
-        juce::Time::getHighResolutionTicksPerSecond());
+    const int64_t createReaderPrefetchUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - createReaderPrefetchStart) *
+        1000000.0 / juce::Time::getHighResolutionTicksPerSecond());
     if (prefetchReader == nullptr)
       return false;
     SongLoadProbe::instance().recordDurationUs(
-        "loadSongStems", "stem#" + juce::String(i) + ".createReader",
-        createReaderUs,
+        "loadSongStems",
+        "stem#" + juce::String(i) + ".createReader.main",
+        createReaderMainUs,
+        "ext=" + playbackFile.getFileExtension() +
+            " size=" + juce::String(playbackFile.getSize()));
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems",
+        "stem#" + juce::String(i) + ".createReader.prefetch",
+        createReaderPrefetchUs,
         "ext=" + playbackFile.getFileExtension() +
             " size=" + juce::String(playbackFile.getSize()));
 
@@ -3450,7 +3468,7 @@ bool MTControlsAudioProcessor::loadSongStems(
         true, std::move(prefetchReader));
 
     // SongLoadProbe: prepareToPlay chains down into ResamplingPositionableSource
-    // + StemBufferingSource. For M4A it can open the AV decoder; time it.
+    // + StemBufferingSource and may initialize a decoder; time it.
     const int64_t prepareStart = juce::Time::getHighResolutionTicks();
     track->prepareToPlay(localBlockSize, localSampleRate);
     const int64_t prepareUs = static_cast<int64_t>(
@@ -3496,8 +3514,15 @@ bool MTControlsAudioProcessor::loadSongStems(
       "loadSongStems", "waitForReady.total", waitTotalUs,
       "stems=" + juce::String(newTracks.size()));
 
-  if (onLoadProgress)
+  if (onLoadProgress) {
+    const int64_t progressStart = juce::Time::getHighResolutionTicks();
     onLoadProgress(0.86);
+    const int64_t progressUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - progressStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "progress.0.86", progressUs, "");
+  }
 
   const bool shouldResumeAfterLoad = wasPlayingBeforeLoad;
   const bool shouldFadeOutCurrentSong =
@@ -3562,6 +3587,11 @@ bool MTControlsAudioProcessor::loadSongStems(
   // the host is mid-block this can dominate the visible swap.
   const int64_t suspendStart = juce::Time::getHighResolutionTicks();
   suspendProcessing(true);
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "suspendProcessing.take", static_cast<int64_t>(
+          (juce::Time::getHighResolutionTicks() - suspendStart) * 1000000.0 /
+          juce::Time::getHighResolutionTicksPerSecond()),
+      "");
   int suspendWaits = 0;
   for (int wait = 0;
        wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
@@ -3585,10 +3615,33 @@ bool MTControlsAudioProcessor::loadSongStems(
     }
     return false;
   }
-  if (onLoadProgress)
+  if (onLoadProgress) {
+    const int64_t progressStart = juce::Time::getHighResolutionTicks();
     onLoadProgress(0.90);
+    const int64_t progressUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - progressStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "progress.0.90", progressUs, "");
+  }
+  // SongLoadProbe: the swap region between waitForReady and Bungee prep
+  // historically carries an "other_in_lss" of 400-600ms in warm swaps that
+  // is not accounted for by per-stem, fadeOut, suspend, wait or bungee
+  // sub-stages. Splitting it here into two pieces (pauseMaintenance +
+  // lockRegion) so we can pinpoint the source: removeAllStemSources
+  // (which destructs the previous StemTracks, and through that calls
+  // TimeSliceThread::removeTimeSliceClient — known to block until the
+  // current useTimeSlice completes) is the prime suspect.
+  const int64_t pauseMaintenanceStart = juce::Time::getHighResolutionTicks();
   pauseTimeProcessorMaintenance();
+  const int64_t pauseMaintenanceUs = static_cast<int64_t>(
+      (juce::Time::getHighResolutionTicks() - pauseMaintenanceStart) *
+      1000000.0 / juce::Time::getHighResolutionTicksPerSecond());
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "pauseMaintenance", pauseMaintenanceUs, "");
+
   const int newStemCount = static_cast<int>(newTracks.size());
+  const int64_t lockRegionStart = juce::Time::getHighResolutionTicks();
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     removeAllStemSources();
@@ -3596,7 +3649,7 @@ bool MTControlsAudioProcessor::loadSongStems(
 
     stemTracks = std::move(newTracks);
     resetStemControls(static_cast<int>(stemTracks.size()));
-    
+
     globalSamplePosition.store(0, std::memory_order_relaxed);
     transportClock.reset(0);
     deferredArrangementTransitionPending = false;
@@ -3673,8 +3726,21 @@ bool MTControlsAudioProcessor::loadSongStems(
                              : SongLoadTransitionState::idle),
         std::memory_order_release);
   }
-  if (onLoadProgress)
+  const int64_t lockRegionUs = static_cast<int64_t>(
+      (juce::Time::getHighResolutionTicks() - lockRegionStart) * 1000000.0 /
+      juce::Time::getHighResolutionTicksPerSecond());
+  SongLoadProbe::instance().recordDurationUs(
+      "loadSongStems", "swap.lockRegion", lockRegionUs,
+      "stems=" + juce::String(newStemCount));
+  if (onLoadProgress) {
+    const int64_t progressStart = juce::Time::getHighResolutionTicks();
     onLoadProgress(0.98);
+    const int64_t progressUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - progressStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "progress.0.98", progressUs, "");
+  }
   // P0.4 (perf): el swap de canción no necesita prepararse para el
   // peor caso de block size del host (8192). El host todavía está
   // reportando `localBlockSize` y, si lo cambia, prepareToPlay() se
@@ -3695,10 +3761,25 @@ bool MTControlsAudioProcessor::loadSongStems(
       "loadSongStems", "bungee.prepare", bungeeUs,
       "stems=" + juce::String(newStemCount) +
           " capacity=" + juce::String(routingCapacity));
-  suspendProcessing(false);
+  {
+    const int64_t resumeStart = juce::Time::getHighResolutionTicks();
+    suspendProcessing(false);
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "suspendProcessing.release", static_cast<int64_t>(
+            (juce::Time::getHighResolutionTicks() - resumeStart) * 1000000.0 /
+            juce::Time::getHighResolutionTicksPerSecond()),
+        "");
+  }
 
-  if (onLoadProgress)
+  if (onLoadProgress) {
+    const int64_t progressStart = juce::Time::getHighResolutionTicks();
     onLoadProgress(1.0);
+    const int64_t progressUs = static_cast<int64_t>(
+        (juce::Time::getHighResolutionTicks() - progressStart) * 1000000.0 /
+        juce::Time::getHighResolutionTicksPerSecond());
+    SongLoadProbe::instance().recordDurationUs(
+        "loadSongStems", "progress.1.0", progressUs, "");
+  }
 
   if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
     finishPendingSongTransition();
@@ -5298,6 +5379,13 @@ void MTControlsAudioProcessor::setDynamicGuideSettings(
     dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
     return;
   }
+  // Guide assets are global for the selected app language, not song-specific.
+  // Re-decoding the complete pack on every settings restore dominated the
+  // measured `settings.restore` phase.  The language setter performs its own
+  // reload when the language actually changes; here we only bootstrap a pack
+  // that has not been loaded yet (or retry a previous failed load).
+  if (dynamicGuideEngine.getLoadedSectionCount() > 0)
+    return;
   juce::String loadError;
   if (!reloadDynamicGuideAssets(&loadError)) {
     const juce::SpinLock::ScopedLockType warningLock(dynamicGuideWarningLock);

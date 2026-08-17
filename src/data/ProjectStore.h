@@ -40,7 +40,7 @@ using ProjectMigrationProgressFn = ProjectProgressFn;
  * Almacenamiento portable de canciones. Un .pwproj es un ZIP autocontenido:
  * manifest.json, audio/<stem>.flac y artwork.<ext>. Los recursos se extraen
  * al cache local para que el motor siga leyendo archivos normales desde disco.
- * Proyectos legacy con ALAC/M4A se convierten a FLAC de caché en Windows.
+ * Todos los stems del paquete son FLAC, independientemente de la plataforma.
  */
 class ProjectStore final {
 public:
@@ -67,6 +67,19 @@ public:
   static bool updateWaveform(const juce::File &file,
                              const std::vector<float> &waveformBins,
                              juce::String *errorMessage = nullptr);
+  /**
+   * True when the two settings serialize to the same JSON. Used to
+   * skip the re-pack of the .pwproj ZIP when settings have not actually
+   * changed since the last save (which would otherwise change the ZIP
+   * mtime and force a re-extract on the next load).
+   */
+  static bool settingsJsonEqual(const ProjectSongSettings &a,
+                                const ProjectSongSettings &b);
+  // Internal helper: persist settings to the per-project sidecar
+  // without touching the .pwproj. Used by updateSettings to avoid the
+  // mtime-bump that invalidated the cache for every subsequent load.
+  static bool writeCachedSettingsFromFile(const juce::File &file,
+                                         const ProjectSongSettings &settings);
   /** Guarda ajustes tras 750 ms sin cambios; la UI nunca espera el ZIP. */
   static void scheduleSettingsSave(const juce::File &file,
                                    ProjectSongSettings settings);

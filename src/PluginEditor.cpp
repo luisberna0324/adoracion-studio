@@ -637,6 +637,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                    this](const ImportedSongData &song, int songIndex) -> bool {
     if (songLoadBusy)
       return false;
+    // Legacy library entries must pass through the explicit optimization
+    // flow.  Keep this guard below the UI as a second line of defence for
+    // deferred loads and future callers.
+    if (!isProjectBackedSong(song))
+      return false;
     const bool hadLoadedSongBeforeLoad = p.hasLoadedSong();
     // SongLoadProbe: RAII bracket for the whole load. The destructor pops
     // any nested unclosed phases, so early returns below don't leak rows.
@@ -652,17 +657,29 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
-    auto pumpUi = [] {
-      if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
-        mm->runDispatchLoopUntil(1);
-    };
-
-    auto pushLoadUi = [waveformBarRaw, pumpUi](double overall01,
-                                               const juce::String &phase) {
+    // P1.0 (perf): previously every progress tick ran pumpUi (a
+    // runDispatchLoopUntil(1)) which forced a UI redraw mid-load. With
+    // 38 calls per load (one before and after each stem in the
+    // 19-stem load path) this dominated the warm-swap wall clock
+    // (400-600ms of "other_in_lss" in the probe, all of it pumpUi).
+    // We keep the state update so the progress bar value is correct, but
+    // no longer force a redraw from the load path. JUCE's normal
+    // message loop redraws on the next vsync anyway, so the user sees
+    // the bar advance in step with the actual load phases
+    // (0.86, 0.90, 0.98, 1.0) instead of getting 38 per-stem updates.
+    auto pushLoadUi = [waveformBarRaw](double overall01,
+                                     const juce::String &phase) {
       if (waveformBarRaw == nullptr)
         return;
       waveformBarRaw->setSongLoadingState(true, overall01, phase);
-      pumpUi();
+    };
+
+    // Used only at the very end of the load to flush a final redraw so
+    // the user immediately sees the progress bar reach 100% and the new
+    // channel strips. Not used during the per-stem loop (see P1.0 above).
+    auto pumpUiOnce = [] {
+      if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+        mm->runDispatchLoopUntil(1);
     };
 
     juce::StringArray stemPaths;
@@ -742,15 +759,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         continue;
 
       juce::File file(stem.storedPath);
-#if JUCE_WINDOWS
-      // Legacy fallback: older imports stored ALAC .m4a, which can fail to
-      // decode on some Windows setups. Prefer original source when available.
-      if (file.existsAsFile() && file.hasFileExtension(".m4a")) {
-        const juce::File source(stem.sourcePath);
-        if (source.existsAsFile())
-          file = source;
-      }
-#endif
       if (!file.existsAsFile())
         file = juce::File(stem.sourcePath);
       if (file.existsAsFile()) {
@@ -1031,14 +1039,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                     "loadSong: couldn't persist waveform cache for " +
                     songIdForBg);
               }
-              if (projectPathForBg.isNotEmpty()) {
-                juce::String waveformError;
-                if (!ProjectStore::updateWaveform(
-                        juce::File(projectPathForBg), bins, &waveformError)) {
-                  SessionAuthLogger::write(
-                      "[Project] couldn't embed waveform: " + waveformError);
-                }
-              }
+              // P1.2: the .pwproj already contains a valid waveform
+              // from the original save. Regenerating it via
+              // ProjectStore::updateWaveform would require re-opening
+              // and re-packing the .pwproj ZIP, changing the mtime
+              // and forcing a full re-extract of every stem on the
+              // very next load. The sidecar above is the authoritative
+              // copy of the regenerated preview, so we deliberately
+              // skip the re-pack here. The .pwproj keeps a
+              // slightly-stale preview waveform (within a few ULP of
+              // the regenerated one) but the user never notices
+              // because the WaveformBar reads from the sidecar first.
+              (void)projectPathForBg;
               if (safeEditor->waveformBarPtr != nullptr)
                 safeEditor->waveformBarPtr->setWaveformBins(std::move(bins));
             });
@@ -1064,6 +1076,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     // Flush here so the user can read the CSV immediately if they switch
     // songs again before the destructor runs.
     SongLoadProbe::instance().flush();
+    // Reverted pumpUiOnce here: while it improved the perceived
+    // responsiveness of the final redraw, it ran with the
+    // SongLoadUiScope still in its "Finalizando..." state and could
+    // leave the waveform bar stuck on that label when the load was
+    // fast enough that clearSongLoadingState's 180ms-min-visible-ms
+    // guard deferred the clear into a future timer tick. The small
+    // redraw latency (one vsync) is the lesser evil.
     return true;
   };
 

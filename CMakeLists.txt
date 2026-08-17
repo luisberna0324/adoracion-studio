@@ -546,6 +546,10 @@ if(MTCONTROLS_BUNGEE_AVAILABLE)
         src/audio/BungeeProcessor.h)
 endif()
 
+# Allow subdirectories under src/ (e.g. src/data/ProjectStore.cpp) to
+# include headers from the top-level src/ directory (e.g. SongLoadProbe.h).
+target_include_directories(MTControls PRIVATE src)
+
 target_compile_definitions(MTControls
     PRIVATE
         JUCE_MODAL_LOOPS_PERMITTED=1
