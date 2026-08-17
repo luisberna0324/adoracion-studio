@@ -2,10 +2,115 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-07-14T20:45:00Z
+timestamp: 2026-08-17T16:30:00Z
 ---
 
 # Changelog
+
+## 2026-08-17
+
+### Performance: setlist swap cold 8-18x, warm 3-5x, sin cold repetido
+
+El swap entre dos proyectos del setlist tardaba 5-30s en cold
+(extract secuencial del ZIP) y 700-1000ms en warm. Con los fixes
+aplicados baja a 1-2s cold y 180-300ms warm. También desaparece
+el patrón de "cold repetido" donde volver a una canción recién
+cargada forzaba otro re-extract completo.
+
+Cambios principales:
+
+- `ProjectStore::open` extrae los stems del .pwproj en paralelo
+  con 4 workers (`std::thread` + `juce::ZipFile` propio por
+  worker). El extract secuencial corría a 16-43 MB/s sobre SSD;
+  en paralelo satura el ancho de banda y baja el cold de 19-26s
+  a 1-2s para proyectos de 500-800MB.
+- Se quita el `pumpUi()` del callback de `onLoadProgress` en
+  `PluginEditor::loadSong`. Cada `pumpUi()` forzaba un
+  `runDispatchLoopUntil(1)` que procesaba mensajes UI pendientes.
+  Con 38 llamadas por load, dominaba el wall-clock de los warm
+  swaps (400-600ms del "other_in_lss" en el probe, todo
+  pumpUi). El redraw queda para el próximo vsync.
+- `ProjectStore::updateSettings` ya no re-packea el .pwproj ZIP.
+  Solo persiste al sidecar (`project-cache/<id>/song-settings.json`).
+  `ProjectStore::open` ya prefiere el sidecar cuando su mtime es
+  más nuevo, así que el efecto neto es idéntico. Antes, el
+  re-pack cambiaba el mtime del .pwproj y `cacheMatchesProject()`
+  invalidaba el cache, forzando un re-extract de todos los stems
+  en la siguiente carga.
+- El mismo skip de re-pack se aplica en `scheduleSettingsSave`,
+  `settingsSaveQueue::schedule` interno,
+  `ProjectSettingsSaveJob::runJob` y `writeNow`: si los
+  settings del sidecar son byte-idénticos a los nuevos, no se
+  re-packea nada.
+- `updateWaveform` del callback async queda deshabilitado: el
+  waveform regenerado tenía variación de 1-ULP respecto al
+  embebido (orden de operaciones FP no determinístico), y la
+  comparación bit-exact nunca saltaba. El sidecar
+  `song-waveform-cache` ya tenía el waveform actual; re-embeberlo
+  en el .pwproj no aporta.
+- Nuevos sub-stages en `SongLoadProbe` para visibilidad:
+  `createReaderFor` se separa en `.main` y `.prefetch`;
+  `project.open` instrumenta `isDecodableFlac` per-stem;
+  `processor.loadSongStems` mide `pauseMaintenance`,
+  `swap.lockRegion` y `progress.{0.86,0.90,0.98,1.0}` por
+  separado.
+- Bug del RSS del probe: `getCurrentRssKb` usaba
+  `getrusage().ru_maxrss` (pico histórico monotónico, no RSS
+  actual). 6 de 10 CSVs tenían un único valor de RSS en todas
+  sus filas. Documentado como limitación conocida, no fixado
+  en este commit (el fix usa `task_info(TASK_VM_INFO,
+  phys_footprint)` en macOS o `/proc/self/statm` en Linux).
+- `CMakeLists.txt`: `target_include_directories(MTControls
+  PRIVATE src)` para que `src/data/*.cpp` pueda incluir
+  `SongLoadProbe.h` directamente.
+- Informe y script reproducible en
+  `perf/analysis_20260817/INFORME.md` y
+  `perf/analysis_20260817/analyze_setlist_load.py`.
+
+Speedup medido (2026-08-17):
+
+| Métrica | Antes | Después |
+|---|---|---|
+| Cold 800MB project | 19.7s | 1.0-2.0s (8-18x) |
+| Warm swap | 700-1000ms | 180-300ms (3-5x) |
+| Cold repetido (mismo proyecto 2da vez) | 1-2s | 180-240ms (warm) |
+| Audio gaps durante load | 70-406ms | eliminados |
+
+Causas raíz identificadas (ya no aplican):
+
+- `copyZipEntry` single-threaded → cuello del cold.
+- `pumpUi` por stem → cuello del warm.
+- `updateSettings` re-paqueando el .pwproj → causa del cold
+  repetido.
+- `updateWaveform` bit-exact compare → re-pack por 1-ULP.
+
+## 2026-08-16
+
+### Política FLAC y migración visible
+
+- El almacenamiento de stems legacy usa FLAC en todas las plataformas; los
+  imports nuevos aceptan WAV, AIFF y FLAC como formatos lossless de entrada.
+- Los `.pwproj` se validan estrictamente como FLAC. Se retiraron la conversión
+  M4A específica de Windows y el fallback de carga hacia `sourcePath` para un
+  M4A existente.
+- `loadSongStems()` reproduce directamente un source FLAC y no genera una
+  segunda copia FLAC en `StemCache`.
+- `setDynamicGuideSettings()` reutiliza el pack ya cargado. La restauración de
+  una canción deja de suspender audio y decodificar nuevamente todas las guías;
+  sólo el primer uso o un cambio real de idioma recarga assets.
+- Esto corrige el diagnóstico inicial del `settings.restore` de 408 ms: el
+  costo dominante era la recarga redundante del pack de guía, no los stores
+  atómicos del mixer. El batching queda como mejora separada, no como causa raíz.
+- Las canciones legacy del setlist se muestran atenuadas y exponen
+  **Optimizar**. Confirmar crea el proyecto en la biblioteca local, lo valida,
+  preserva setlists/ajustes/transiciones y elimina el audio anterior mediante
+  staging transaccional.
+- Las rutas de activación desde setlist y Biblioteca bloquean la carga legacy;
+  `PluginEditor` conserva un guard adicional para callers futuros.
+- Los pools de click y guía aceptan WAV/AIFF/FLAC/MP3, sin ALAC/M4A. El export
+  de mezcla conserva WAV, MP3 y M4A porque es un formato de salida al usuario.
+- Se confirmó que no existe un bug de anuncios de sección; no se modificaron
+  `DynamicGuideTiming` ni `SectionScheduler`.
 
 ## 2026-08-13
 
