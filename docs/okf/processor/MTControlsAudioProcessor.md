@@ -4,7 +4,7 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-08-06T00:00:00Z
+timestamp: 2026-08-18T00:00:00Z
 ---
 
 # MTControlsAudioProcessor
@@ -232,6 +232,18 @@ Retorna el nivel actual del stem para metering (0.0-1.0).
 | `getStemOutputChannel(int)` | — | Canal actual |
 | `setStemOutputWidth(int, int)` | width: 1=mono, 2=stereo | Ancho |
 | `getStemOutputWidth(int)` | — | Ancho actual |
+
+`setStemOutputWidth` re-normaliza el canal almacenado con el ancho nuevo
+(clamp a `maxChannels - (width >= 2 ? 1 : 0)`), de modo que cambiar un
+stem de mono a estéreo no lo deja apuntando a un canal base ilegal.
+
+**Categorías (ruteo por dispositivo):** el panel de Ajustes persiste
+defaults por categoría en `AppSettings::routingByDevice[deviceKey]`.
+Estos defaults alimentan `applyRoutingDefaultsToSong` (en el editor) y
+se aplican a **todos** los stems al cargar una canción y cuando el
+usuario toca el panel. La fuente de verdad para el ancho por stem es el
+default de la categoría; el canal base sigue siendo responsabilidad
+del mix snapshot de la canción (legacy) o del proyecto (`.pwproj`).
 
 **Canales disponibles:**
 

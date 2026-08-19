@@ -7,6 +7,57 @@ timestamp: 2026-08-17T16:30:00Z
 
 # Changelog
 
+## 2026-08-19
+
+### Routing: legacy songs ahora también aplican los defaults por categoría
+
+La lambda `loadSong` en `PluginEditor.cpp` arrancaba con un
+`if (!isProjectBackedSong(song)) return false;` que salía antes de
+llegar a `applyRoutingDefaultsToSong`. El comentario decía que las
+canciones legacy debían pasar por un "explicit optimization flow"
+(la conversión a `.pwproj`), pero en la práctica la rama legacy
+nunca corría: el audio thread seguía tocando los stems anteriores
+con el routing default (todos mono ch=1) hasta que el usuario
+tocaba el panel.
+
+Cambios:
+
+- Se sacó el early-return. El bloque de apertura de `.pwproj` (que
+  abre el ZIP, extrae stems, y carga el manifest con los settings)
+  queda envuelto en `if (isProjectSong)`. El resto del lambda es
+  compartido y ya funcionaba para legacy porque el `settings.restore`
+  cae a `SongLibraryStore` cuando no hay `projectSettings`.
+- Con esto, una canción legacy ahora también recibe el apply del
+  routing panel y deja de sonar "todo en mono ch=1" hasta que el
+  usuario toque el panel de ruteo.
+
+## 2026-08-18
+
+### Routing: per-stem width now applied on project load
+
+Antes, `applyRoutingDefaultsToSong` se saltaba en el lazo de
+`loadSong` para canciones `.pwproj` (`if (!hasProjectSettings)`). El
+mix snapshot del proyecto solo guarda `outputChannel` por stem
+(`StemMixSnapshot` no tiene `outputWidth`), así que el ancho de cada
+stem quedaba en el default de `resetStemControls` (1 = mono). La
+audible era "todo suena por L" hasta que el usuario tocaba el panel
+de ruteo, que disparaba el apply completo y reseteaba todo a estéreo.
+
+Cambios:
+
+- `applyRoutingDefaultsToSong` se llama siempre, también para
+  proyectos. El proyecto sigue siendo la fuente de verdad para el
+  canal base; el ancho lo conduce el default de la categoría.
+- `refreshPadsRoutingFromSettings` ya no se invoca al final de
+  `applyRoutingDefaultsToSong`: el call site es responsable. Antes se
+  ejecutaba 2 veces por click en el panel (1× en el callback del
+  `onChanged`, 1× al final del apply). Ahora se ejecuta 1 vez.
+- Marcadores en `SongLoadProbe` con phase `routing`:
+  `loadSong.gate`, `apply.enter`, `apply.stem` (prevW/newW/prevC/
+  newC por stem), `apply.exit`, `panel.onChanged`, `device.change`.
+  Sirven para confirmar el gate (isProject=0 vs 1) y para ver en
+  el CSV por qué tocar el panel re-aplica la tabla completa.
+
 ## 2026-08-17
 
 ### Performance: setlist swap cold 8-18x, warm 3-5x, sin cold repetido

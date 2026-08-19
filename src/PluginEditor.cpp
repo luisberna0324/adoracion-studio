@@ -637,11 +637,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                    this](const ImportedSongData &song, int songIndex) -> bool {
     if (songLoadBusy)
       return false;
-    // Legacy library entries must pass through the explicit optimization
-    // flow.  Keep this guard below the UI as a second line of defence for
-    // deferred loads and future callers.
-    if (!isProjectBackedSong(song))
-      return false;
+    // Bug fix: the previous version returned false here for any
+    // !isProjectBackedSong(song), which short-circuited the lambda
+    // before applyRoutingDefaultsToSong ran. The audio thread kept
+    // playing the previous song's stems but with no per-stem width
+    // applied, so a user with routing defaults (stereo instruments,
+    // mono click/guide) would hear the previous song collapse to
+    // mono on the new load. The settings.restore block below already
+    // falls back to SongLibraryStore for non-project songs, so the
+    // shared path works for both. We only need to skip the
+    // .pwproj-specific open + extract block for legacy entries.
     const bool hadLoadedSongBeforeLoad = p.hasLoadedSong();
     // SongLoadProbe: RAII bracket for the whole load. The destructor pops
     // any nested unclosed phases, so early returns below don't leak rows.
@@ -695,58 +700,60 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const auto localLibrarySongId = song.id;
     const auto projectId = projectIdentityForSong(song);
     juce::File projectFile(isProjectSong ? song.projectPath : juce::String{});
-    if (projectFile.existsAsFile()) {
-      ProjectDocument document;
-      juce::String projectError;
-      // SongLoadProbe: time the ZIP open + stem extraction from .pwproj.
-      // For non-project songs this is a no-op.
-      SongLoadProbe::instance().beginPhase(
-          "loadSong", "project.open",
-          "size=" + juce::String(projectFile.getSize()));
-      const bool projectOpened =
-          ProjectStore::open(projectFile, document, &projectError);
-      SongLoadProbe::instance().endPhase();
-      if (projectOpened) {
-        sourceSong = document.song;
-        // ProjectStore devuelve el ID del manifiesto. La UI y los setlists
-        // deben conservar la identidad local de esta entrada de Biblioteca.
-        sourceSong.id = localLibrarySongId;
-        projectSettings = document.settings;
+    if (isProjectSong) {
+      if (projectFile.existsAsFile()) {
+        ProjectDocument document;
+        juce::String projectError;
+        // SongLoadProbe: time the ZIP open + stem extraction from .pwproj.
+        // For non-project songs this is a no-op.
+        SongLoadProbe::instance().beginPhase(
+            "loadSong", "project.open",
+            "size=" + juce::String(projectFile.getSize()));
+        const bool projectOpened =
+            ProjectStore::open(projectFile, document, &projectError);
+        SongLoadProbe::instance().endPhase();
+        if (projectOpened) {
+          sourceSong = document.song;
+          // ProjectStore devuelve el ID del manifiesto. La UI y los setlists
+          // deben conservar la identidad local de esta entrada de Biblioteca.
+          sourceSong.id = localLibrarySongId;
+          projectSettings = document.settings;
+          restoredProjectSettings = true;
+        } else {
+          SessionAuthLogger::write("[Project] Couldn't reopen " +
+                                   projectFile.getFullPathName() + ": " +
+                                   projectError);
+        }
+      }
+      if (!restoredProjectSettings &&
+          ProjectStore::getCachedSettings(projectId, projectSettings)) {
         restoredProjectSettings = true;
-      } else {
-        SessionAuthLogger::write("[Project] Couldn't reopen " +
-                                 projectFile.getFullPathName() + ": " +
-                                 projectError);
+        SessionAuthLogger::write(
+            "[Project] Restored settings from local cache for unavailable "
+            "project id=" +
+            projectId);
       }
-    }
-    if (isProjectSong && !restoredProjectSettings &&
-        ProjectStore::getCachedSettings(projectId, projectSettings)) {
-      restoredProjectSettings = true;
-      SessionAuthLogger::write(
-          "[Project] Restored settings from local cache for unavailable "
-          "project id=" +
-          projectId);
-    }
-    if (isProjectSong && !restoredProjectSettings) {
-      for (const auto &stem : sourceSong.stems) {
-        if (!stem.include)
-          continue;
-        StemMixSnapshot stemMix;
-        stemMix.stemId = stem.stemId;
-        projectSettings.mix.stems.push_back(std::move(stemMix));
+      if (!restoredProjectSettings) {
+        for (const auto &stem : sourceSong.stems) {
+          if (!stem.include)
+            continue;
+          StemMixSnapshot stemMix;
+          stemMix.stemId = stem.stemId;
+          projectSettings.mix.stems.push_back(std::move(stemMix));
+        }
+        projectSettings.tempoBpm =
+            sourceSong.bpm > 0 ? static_cast<double>(sourceSong.bpm) : 120.0;
+        projectSettings.window.endSec = estimateSongLengthSeconds(sourceSong);
+        projectSettings.window.fadeOutSec =
+            juce::jmin(1.0, projectSettings.window.endSec);
+        projectSettings.arrangement = sourceSong.arrangement;
+        projectSettings.arrangementCustomized =
+            !sourceSong.arrangement.parts.empty();
+        SessionAuthLogger::write(
+            "[Project] Settings unavailable; using project defaults until "
+            "the package is relinked: " +
+            projectFile.getFullPathName());
       }
-      projectSettings.tempoBpm =
-          sourceSong.bpm > 0 ? static_cast<double>(sourceSong.bpm) : 120.0;
-      projectSettings.window.endSec = estimateSongLengthSeconds(sourceSong);
-      projectSettings.window.fadeOutSec =
-          juce::jmin(1.0, projectSettings.window.endSec);
-      projectSettings.arrangement = sourceSong.arrangement;
-      projectSettings.arrangementCustomized =
-          !sourceSong.arrangement.parts.empty();
-      SessionAuthLogger::write(
-          "[Project] Settings unavailable; using project defaults until "
-          "the package is relinked: " +
-          projectFile.getFullPathName());
     }
     ImportedSongData loadedSong = sourceSong;
     loadedSong.stems.clear();
@@ -960,8 +967,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     currentLoadedSong = loadedSong;
     hasCurrentLoadedSong = true;
     AppSettings::setLastSelectedSongId(currentLoadedSong.id);
-    if (!hasProjectSettings)
-      applyRoutingDefaultsToSong(currentLoadedSong);
+
+    // Routing probe: load gate. Records whether the load is for a
+    // project (.pwproj) or legacy song so regressions in the gate
+    // show up directly in the CSV next to the apply.enter/exit rows.
+    SongLoadProbe::instance().recordEvent(
+        "routing", "loadSong.gate",
+        "isProject=" + juce::String(hasProjectSettings ? 1 : 0) +
+            " songStems=" + juce::String(loadedSong.stems.size()));
+
+    // The gate used to skip this call for project songs, which left
+    // the per-stem outputWidth at the default (1 = mono) until the
+    // user opened the routing panel. Routing defaults now drive the
+    // width for both legacy and project songs; the project's per-stem
+    // mix (outputChannel) still owns the channel.
+    applyRoutingDefaultsToSong(currentLoadedSong);
+    p.refreshPadsRoutingFromSettings();
     p.setMetronomeOutputRouting(clickDynMix.outputChannel,
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
@@ -1705,6 +1726,14 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,
              const std::vector<CategoryRoutingDefaults> &next) {
+        // Routing probe: panel onChanged. Fires once per ComboBox
+        // change; combined with apply.enter/exit rows it explains why
+        // touching one row in the panel re-applies the whole table.
+        SongLoadProbe::instance().recordEvent(
+            "routing", "panel.onChanged",
+            "deviceKey=" + deviceKey +
+                " categories=" + juce::String(next.size()) +
+                " hasSong=" + juce::String(hasCurrentLoadedSong ? 1 : 0));
         AppSettings::setRoutingDefaultsForDevice(deviceKey, next);
         auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
         processorRef.refreshPadsRoutingFromSettings();
@@ -2165,6 +2194,18 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   const auto deviceKey = getCurrentDeviceKey(audioCtx);
   const auto defaults = AppSettings::getRoutingDefaultsForDevice(deviceKey);
   const auto clickRouting = routingForCategory(defaults, "Click");
+
+  // ---- Routing probe: enter ------------------------------------------
+  // Records the device key, how many stems the processor has loaded
+  // and how many the song says are included, plus the click routing
+  // we are about to push. Discrepancies between the two counts would
+  // show up as a hidden off-by-one in the load pipeline.
+  SongLoadProbe::instance().recordEvent(
+      "routing", "apply.enter",
+      "deviceKey=" + deviceKey + " stemCount=" + juce::String(stemCount) +
+          " clickW=" + juce::String(clickRouting.width) +
+          " clickC=" + juce::String(clickRouting.baseChannel));
+
   processorRef.setMetronomeOutputRouting(clickRouting.baseChannel,
                                          clickRouting.width);
 
@@ -2176,11 +2217,36 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
       break;
 
     const auto routing = routingForCategory(defaults, stem.category);
+
+    // Snapshot the atomics BEFORE we mutate, so the row exposes both
+    // the previous and the requested state. The bug shows up as
+    // prevW=1 newW=1 on load (defaults never pushed) and prevW=1
+    // newW=2 after touching the routing panel.
+    const int prevW = processorRef.getStemOutputWidth(stemIndex);
+    const int prevC = processorRef.getStemOutputChannel(stemIndex);
+
     processorRef.setStemOutputWidth(stemIndex, routing.width);
     processorRef.setStemOutputChannel(stemIndex, routing.baseChannel);
+
+    SongLoadProbe::instance().recordEvent(
+        "routing", "apply.stem",
+        "idx=" + juce::String(stemIndex) + " cat=" + stem.category +
+            " prevW=" + juce::String(prevW) +
+            " newW=" + juce::String(routing.width) +
+            " prevC=" + juce::String(prevC) +
+            " newC=" + juce::String(routing.baseChannel));
+
     ++stemIndex;
   }
-  processorRef.refreshPadsRoutingFromSettings();
+
+  // ---- Routing probe: exit -------------------------------------------
+  SongLoadProbe::instance().recordEvent(
+      "routing", "apply.exit", "stemsApplied=" + juce::String(stemIndex));
+
+  // refreshPadsRoutingFromSettings used to be called here. It is now
+  // the caller's responsibility so each call site reads the JSON
+  // exactly once per user action. The dedup is visible at the two
+  // call sites (loadSong and the routing panel onChanged).
 }
 
 void MTControlsAudioProcessorEditor::resetTrackedSongWindow() {
@@ -2387,6 +2453,14 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
         if (currentDeviceKey.isNotEmpty() &&
             currentDeviceKey != lastObservedAudioDeviceKey) {
+          // Routing probe: device change. The polling loop re-applies
+          // routing whenever the device key changes; a row here
+          // explains why the same apply can run outside of song load.
+          SongLoadProbe::instance().recordEvent(
+              "routing", "device.change",
+              "deviceKey=" + currentDeviceKey +
+                  " prev=" + lastObservedAudioDeviceKey +
+                  " hasSong=" + juce::String(hasCurrentLoadedSong ? 1 : 0));
           lastObservedAudioDeviceKey = currentDeviceKey;
           processorRef.refreshPadsRoutingFromSettings();
           if (hasCurrentLoadedSong)
