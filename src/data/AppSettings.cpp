@@ -86,11 +86,30 @@ int getCategoryIndexForName(const juce::String &category) {
 }
 
 std::vector<CategoryRoutingDefaults> buildDefaultRouting() {
+  // Defaults mirror the user-visible "expected" routing the first time
+  // someone installs the plugin, before any per-device override has been
+  // written to app_settings.json:
+  //   Click   -> mono, channel 1
+  //   Cues    -> mono, channel 2 (the "Guía" stem)
+  //   others  -> stereo, channel 1
+  // Per-device overrides in app_settings.json (`routingByDevice`) still
+  // take precedence once the user has saved a config from the Settings
+  // -> Routing tab.
   std::vector<CategoryRoutingDefaults> out;
   out.resize(kTrackCategories.size());
-  for (auto &entry : out) {
-    entry.baseChannel = 1;
-    entry.width = 1;
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    const juce::String name = kTrackCategories[i];
+    auto &entry = out[static_cast<size_t>(i)];
+    if (name.equalsIgnoreCase("Click")) {
+      entry.baseChannel = 1;
+      entry.width = 1;
+    } else if (name.equalsIgnoreCase("Cues")) {
+      entry.baseChannel = 2;
+      entry.width = 1;
+    } else {
+      entry.baseChannel = 1;
+      entry.width = 2;
+    }
   }
   return out;
 }
