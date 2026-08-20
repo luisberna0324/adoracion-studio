@@ -25,7 +25,9 @@ public:
       bool primeImportEnabled, Mode mode = Mode::Import,
       ImportedSongData initialSong = {},
       std::function<bool(const ImportedSongData &, juce::File &,
-                         juce::String &)> projectDestinationResolver = {});
+                         juce::String &)> projectDestinationResolver = {},
+      std::function<bool(ImportedSongData, juce::String &)>
+          onSaveMetadataOnly = {});
   ~SongImportWizardComponent() override;
 
   void paint(juce::Graphics &g) override;
@@ -80,6 +82,7 @@ private:
   void syncMappingsToDrafts();
   void updateSummaryText();
   void goToNextStep();
+  void saveMetadataOnly();
   bool validateStepImport();
   bool validateStepMetadata();
   bool validateStepMapping();
@@ -109,6 +112,7 @@ private:
       onSubmit;
   std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
       resolveProjectDestination;
+  std::function<bool(ImportedSongData, juce::String &)> onMetadataOnlySubmit;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;
@@ -159,6 +163,7 @@ private:
   juce::TextButton backButton;
   juce::TextButton nextButton;
   juce::TextButton submitButton;
+  juce::TextButton saveMetadataButton;
   juce::TextButton clearSongSearchButton;
 
   SecuenciasClient secuenciasClient;

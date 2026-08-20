@@ -81,11 +81,14 @@ private:
   void queueClickDynVolumePersistence(float volume);
   void persistDynamicGuideMixForCurrentSong();
   void persistClickDynMixForCurrentSong();
+  SongMixSnapshot makeCurrentSongMixSnapshot() const;
   DynamicGuideMixSnapshot makeCurrentDynamicGuideMixSnapshot() const;
+  void maybePersistSongMixStateChange();
   void maybePersistClickDynMixStateChange();
   void maybePersistDynamicGuideMixStateChange();
   ClickDynMixSnapshot makeCurrentClickDynMixSnapshot() const;
   void flushPendingVolumePersistence();
+  bool hasActivePointerInteraction() const;
   void showGuideSourcePopover(juce::Component *anchorComponent);
   void applyGuideSourceModeToVisibleGuideSlots();
 
@@ -129,6 +132,8 @@ private:
   float pendingDynamicGuideVolumeValue = 1.0f;
   bool hasPendingClickDynVolumeWrite = false;
   float pendingClickDynVolumeValue = 1.0f;
+  bool hasLastObservedSongMix = false;
+  SongMixSnapshot lastObservedSongMix;
   bool hasLastObservedClickDynMix = false;
   ClickDynMixSnapshot lastObservedClickDynMix;
   bool hasLastObservedDynamicGuideMix = false;

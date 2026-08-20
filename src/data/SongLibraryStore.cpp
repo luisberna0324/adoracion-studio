@@ -1149,6 +1149,69 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   return true;
 }
 
+bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
+                                          juce::String *errorMessage) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+
+  song.id = song.id.trim();
+  if (song.id.isEmpty()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(u8"No se pudo identificar la canción a editar.",
+                               "Couldn't identify the song to edit.");
+    return false;
+  }
+
+  auto library = loadLibrary();
+  auto songIt =
+      std::find_if(library.songs.begin(), library.songs.end(),
+                   [&song](const ImportedSongData &candidate) {
+                     return candidate.id == song.id;
+                   });
+  if (songIt == library.songs.end()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(u8"La canción ya no existe en la biblioteca.",
+                               "Song no longer exists in the library.");
+    return false;
+  }
+
+  const auto previousSong = *songIt;
+  auto updated = previousSong;
+  updated.title = song.title.trim();
+  updated.artist = song.artist.trim();
+  updated.bpm = song.bpm;
+  updated.key = song.key.trim();
+  updated.timeSignature = song.timeSignature.trim();
+  updated.fileType = song.fileType.trim().isNotEmpty()
+                         ? song.fileType.trim()
+                         : previousSong.fileType;
+  updated.artworkSource = song.artworkSource.trim();
+  if (updated.artworkSource.isEmpty())
+    updated.artworkPath.clear();
+
+  const auto artworkDir = getAudioRoot().getChildFile(updated.id);
+  artworkDir.createDirectory();
+  juce::String artworkError;
+  if (!persistSongArtwork(updated, artworkDir, &previousSong, artworkError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = artworkError;
+    return false;
+  }
+  juce::ignoreUnused(repairArtworkPathForSong(updated));
+
+  *songIt = std::move(updated);
+  if (!saveLibrary(library)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(u8"No se pudo guardar la canción editada.",
+                               "Couldn't persist edited song.");
+    return false;
+  }
+
+  SessionAuthLogger::write("[SongImportStore] metadata-only update saved id=" +
+                           song.id);
+  return true;
+}
+
 bool SongLibraryStore::getActiveSetlistMix(const juce::String &songId,
                                            SongMixSnapshot &outMix) {
   if (songId.isEmpty())
@@ -1188,6 +1251,15 @@ bool SongLibraryStore::updateStemVolumeForActiveSetlist(
                             [volume](StemMixSnapshot &mix) {
                               mix.volume = volume;
                             });
+}
+
+bool SongLibraryStore::updateMixForActiveSetlist(const juce::String &songId,
+                                                 const SongMixSnapshot &mix) {
+  return updateActiveSetlistItem(
+      songId, [&mix](SetlistItem &item, const ImportedSongData &song) {
+        bool changed = false;
+        item.mix = reconcileMixForSong(mix, song, changed);
+      });
 }
 
 bool SongLibraryStore::updateStemVolumesForActiveSetlist(

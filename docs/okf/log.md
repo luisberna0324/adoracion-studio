@@ -9,6 +9,25 @@ timestamp: 2026-08-17T16:30:00Z
 
 ## 2026-08-19
 
+### Biblioteca: guardado rápido de metadata/artwork en edición
+
+El wizard de edición de canciones ahora muestra **Guardar** en el primer paso
+de metadata. Ese camino llama `SongLibraryStore::updateSongMetadata` y preserva
+stems, arrangement, setlists y waveform cache; sólo actualiza metadata e imagen
+en la biblioteca. El flujo completo de **Guardar cambios** sigue disponible en
+el paso de revisión para ediciones que modifican stems o mapeos.
+
+### Mixer: persistencia completa de controles en proyectos
+
+El panel de canales ahora observa periódicamente el estado real del processor y
+persiste un `SongMixSnapshot` completo cuando cambia master o cualquier stem.
+Esto cubre volumen, gain, mute, solo y canal de salida de un número variable de
+stems, incluso cuando el cambio no viene de `onDragEnded`/`onClick` sino de MIDI
+o comandos programáticos. Para canciones `.pwproj`, el camino sigue pasando por
+`SongLibraryStore::updateActiveSetlistItem`, que redirige al sidecar del proyecto
+con `ProjectStore::scheduleSettingsSave`; para canciones legacy mantiene el
+setlist activo como antes.
+
 ### Routing: legacy songs ahora también aplican los defaults por categoría
 
 La lambda `loadSong` en `PluginEditor.cpp` arrancaba con un
@@ -153,9 +172,10 @@ Causas raíz identificadas (ya no aplican):
   costo dominante era la recarga redundante del pack de guía, no los stores
   atómicos del mixer. El batching queda como mejora separada, no como causa raíz.
 - Las canciones legacy del setlist se muestran atenuadas y exponen
-  **Optimizar**. Confirmar crea el proyecto en la biblioteca local, lo valida,
-  preserva setlists/ajustes/transiciones y elimina el audio anterior mediante
-  staging transaccional.
+  **Optimizar**. Confirmar pregunta dónde guardar el proyecto; la opción
+  **Biblioteca local** usa el directorio `projects` de la biblioteca de la app.
+  Luego lo valida, preserva setlists/ajustes/transiciones y elimina el audio
+  anterior mediante staging transaccional.
 - Las rutas de activación desde setlist y Biblioteca bloquean la carga legacy;
   `PluginEditor` conserva un guard adicional para callers futuros.
 - Los pools de click y guía aceptan WAV/AIFF/FLAC/MP3, sin ALAC/M4A. El export

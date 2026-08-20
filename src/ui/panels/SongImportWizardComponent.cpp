@@ -344,9 +344,11 @@ SongImportWizardComponent::SongImportWizardComponent(
     const bool primeImportEnabledIn, const Mode modeIn,
     ImportedSongData initialSongIn,
     std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
-        projectDestinationResolver)
+        projectDestinationResolver,
+    std::function<bool(ImportedSongData, juce::String &)> onSaveMetadataOnly)
     : onSubmit(std::move(onSubmitSong)),
       resolveProjectDestination(std::move(projectDestinationResolver)),
+      onMetadataOnlySubmit(std::move(onSaveMetadataOnly)),
       mode(modeIn), initialSong(std::move(initialSongIn)),
       primeImportEnabled(primeImportEnabledIn) {
   setSize(820, 620);
@@ -628,8 +630,11 @@ SongImportWizardComponent::SongImportWizardComponent(
                                  : L10n::tr(u8"Guardar canción",
                                             "Save song"));
   submitButton.onClick = [this] { submitSong(); };
+  saveMetadataButton.setButtonText(L10n::tr("Guardar", "Save"));
+  saveMetadataButton.onClick = [this] { saveMetadataOnly(); };
 
-  for (auto *btn : {&cancelButton, &backButton, &nextButton, &submitButton})
+  for (auto *btn : {&cancelButton, &backButton, &nextButton, &submitButton,
+                    &saveMetadataButton})
     addAndMakeVisible(*btn);
 
   refreshThemeColours();
@@ -693,6 +698,8 @@ void SongImportWizardComponent::resized() {
 
   if (backButton.isVisible())
     placeRight(backButton, 96);
+  if (saveMetadataButton.isVisible())
+    placeRight(saveMetadataButton, 112);
 
   layoutStepImport(content);
   layoutStepMetadata(content);
@@ -771,6 +778,7 @@ void SongImportWizardComponent::refreshThemeColours() {
   styleSecondaryButton(clearSongSearchButton);
   styleSecondaryButton(cancelButton);
   styleSecondaryButton(backButton);
+  stylePrimaryButton(saveMetadataButton);
   stylePrimaryButton(nextButton);
   stylePrimaryButton(submitButton);
 
@@ -1404,6 +1412,38 @@ void SongImportWizardComponent::goToNextStep() {
   }
 }
 
+void SongImportWizardComponent::saveMetadataOnly() {
+  if (mode != Mode::Edit || currentStep != Step::Metadata)
+    return;
+  if (!validateStepMetadata())
+    return;
+  if (!onMetadataOnlySubmit) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo guardar", "Couldn't save"),
+        L10n::tr("El guardado rápido no está disponible para esta canción.",
+                 "Quick save is not available for this song."));
+    return;
+  }
+
+  auto songData = buildSongData();
+  songData.id = initialSong.id;
+  juce::String errorMessage;
+  const bool ok = onMetadataOnlySubmit(std::move(songData), errorMessage);
+  if (!ok) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Error al guardar", "Save error"),
+        errorMessage.isNotEmpty()
+            ? errorMessage
+            : L10n::tr(u8"No se pudo guardar la metadata de la canción.",
+                       "Couldn't save the song metadata."));
+    return;
+  }
+
+  closeDialog();
+}
+
 bool SongImportWizardComponent::validateStepImport() {
   if (stems.empty())
     return true;
@@ -1787,6 +1827,9 @@ void SongImportWizardComponent::changeStep(const Step step) {
   backButton.setVisible(currentStep != Step::Metadata);
   nextButton.setVisible(currentStep != Step::Review);
   submitButton.setVisible(currentStep == Step::Review);
+  saveMetadataButton.setVisible(mode == Mode::Edit &&
+                                currentStep == Step::Metadata &&
+                                static_cast<bool>(onMetadataOnlySubmit));
   resized();
   repaint();
 }

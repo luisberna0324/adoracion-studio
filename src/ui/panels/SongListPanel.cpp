@@ -2996,7 +2996,30 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
-      baseSong);
+      baseSong, {},
+      [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
+                                               juce::String &errorMessage) {
+        if (safeThis == nullptr) {
+          errorMessage = L10n::tr(u8"La vista de edición ya no esta disponible.",
+                                  "Edit UI is no longer available.");
+          return false;
+        }
+
+        song.id = editedSongId;
+        juce::String updateError;
+        const bool success =
+            SongLibraryStore::updateSongMetadata(std::move(song), &updateError);
+        if (!success) {
+          errorMessage = updateError.isNotEmpty()
+                             ? updateError
+                             : L10n::tr(u8"No se pudo actualizar la canción.",
+                                        "Couldn't update the song.");
+          return false;
+        }
+
+        safeThis->refreshFromStorage();
+        return true;
+      });
   panel->refreshThemeColours();
   options.content.setOwned(panel);
 

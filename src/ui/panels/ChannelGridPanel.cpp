@@ -46,6 +46,33 @@ bool dynamicGuideMixStateEquals(const DynamicGuideMixSnapshot &a,
          a.outputWidth == b.outputWidth;
 }
 
+bool masterMixStateEquals(const MasterMixSnapshot &a,
+                          const MasterMixSnapshot &b) {
+  return juce::approximatelyEqual(a.volume, b.volume) &&
+         juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute;
+}
+
+bool stemMixStateEquals(const StemMixSnapshot &a, const StemMixSnapshot &b) {
+  return a.stemId == b.stemId &&
+         juce::approximatelyEqual(a.volume, b.volume) &&
+         juce::approximatelyEqual(a.gain, b.gain) && a.mute == b.mute &&
+         a.solo == b.solo && a.outputChannel == b.outputChannel;
+}
+
+bool songMixControlStateEquals(const SongMixSnapshot &a,
+                               const SongMixSnapshot &b) {
+  if (!masterMixStateEquals(a.master, b.master) ||
+      a.stems.size() != b.stems.size()) {
+    return false;
+  }
+
+  for (size_t i = 0; i < a.stems.size(); ++i)
+    if (!stemMixStateEquals(a.stems[i], b.stems[i]))
+      return false;
+
+  return true;
+}
+
 juce::String guideSourceModeLabel(const ChannelGridPanel::GuideSourceMode mode) {
   switch (mode) {
   case ChannelGridPanel::GuideSourceMode::DynamicBySections:
@@ -344,6 +371,12 @@ public:
   }
 
   ChannelStripCard &getStrip() { return *strip; }
+  const ChannelStripCard &getStrip() const { return *strip; }
+
+  bool isUserInteracting() const {
+    return strip->isMouseButtonDown(true) ||
+           (divisionPanel != nullptr && divisionPanel->isMouseButtonDown(true));
+  }
 
 private:
   bool isDivisionPanelVisible() const {
@@ -772,6 +805,7 @@ void ChannelGridPanel::timerCallback() {
   syncDivisionSlotFromProcessor();
   syncDynamicGuideVirtualSlotFromProcessor();
   syncStemSlotsFromProcessor();
+  maybePersistSongMixStateChange();
   maybePersistClickDynMixStateChange();
   maybePersistDynamicGuideMixStateChange();
 
@@ -978,6 +1012,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   guideStemMuteBeforeDynamicByStemIndex.clear();
   hasPendingDynamicGuideVolumeWrite = false;
   hasPendingClickDynVolumeWrite = false;
+  hasLastObservedSongMix = false;
   hasLastObservedClickDynMix = false;
   hasLastObservedDynamicGuideMix = false;
   masterSlotIndex = -1;
@@ -997,10 +1032,6 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
   addMasterSlot();
   addDivisionSlot();
-  lastObservedClickDynMix = makeCurrentClickDynMixSnapshot();
-  hasLastObservedClickDynMix = true;
-  lastObservedDynamicGuideMix = makeCurrentDynamicGuideMixSnapshot();
-  hasLastObservedDynamicGuideMix = true;
 
   const bool showStemRouting = false;
 
@@ -1134,6 +1165,13 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   if (!orderedStems.empty() && !dynamicGuideSlotAdded)
     addDynamicGuideVirtualSlot();
 
+  lastObservedSongMix = makeCurrentSongMixSnapshot();
+  hasLastObservedSongMix = true;
+  lastObservedClickDynMix = makeCurrentClickDynMixSnapshot();
+  hasLastObservedClickDynMix = true;
+  lastObservedDynamicGuideMix = makeCurrentDynamicGuideMixSnapshot();
+  hasLastObservedDynamicGuideMix = true;
+
   pendingOutputBySlotIndex.assign(slots.size(), 1);
   for (size_t i = 0; i < slots.size(); ++i) {
     const int si = slotStemIndices[i];
@@ -1225,6 +1263,30 @@ void ChannelGridPanel::persistClickDynMixForCurrentSong() {
   hasLastObservedClickDynMix = true;
 }
 
+SongMixSnapshot ChannelGridPanel::makeCurrentSongMixSnapshot() const {
+  SongMixSnapshot mix;
+  mix.master.volume = processor.getMasterVolume();
+  mix.master.gain = processor.getMasterGain();
+  mix.master.mute = processor.isMasterMuted();
+
+  for (size_t i = 0; i < slotStemIndices.size(); ++i) {
+    const int stemIndex = slotStemIndices[i];
+    if (stemIndex < 0 || i >= slotStemIds.size() || slotStemIds[i].isEmpty())
+      continue;
+
+    StemMixSnapshot stem;
+    stem.stemId = slotStemIds[i];
+    stem.volume = processor.getStemVolume(stemIndex);
+    stem.gain = processor.getStemGain(stemIndex);
+    stem.mute = processor.isStemMuted(stemIndex);
+    stem.solo = processor.isStemSoloed(stemIndex);
+    stem.outputChannel = processor.getStemOutputChannel(stemIndex);
+    mix.stems.push_back(std::move(stem));
+  }
+
+  return mix;
+}
+
 ClickDynMixSnapshot ChannelGridPanel::makeCurrentClickDynMixSnapshot() const {
   ClickDynMixSnapshot mix;
   mix.divisionMask = processor.getClickDivision();
@@ -1249,6 +1311,26 @@ ChannelGridPanel::makeCurrentDynamicGuideMixSnapshot() const {
   mix.outputChannel = processor.getDynamicGuideOutputChannel();
   mix.outputWidth = processor.getDynamicGuideOutputWidth();
   return mix;
+}
+
+void ChannelGridPanel::maybePersistSongMixStateChange() {
+  if (currentSongId.isEmpty()) {
+    hasLastObservedSongMix = false;
+    return;
+  }
+
+  if (hasActivePointerInteraction())
+    return;
+
+  const auto current = makeCurrentSongMixSnapshot();
+  if (hasLastObservedSongMix &&
+      songMixControlStateEquals(lastObservedSongMix, current)) {
+    return;
+  }
+
+  SongLibraryStore::updateMixForActiveSetlist(currentSongId, current);
+  lastObservedSongMix = current;
+  hasLastObservedSongMix = true;
 }
 
 void ChannelGridPanel::maybePersistClickDynMixStateChange() {
@@ -1330,6 +1412,16 @@ void ChannelGridPanel::flushPendingVolumePersistence() {
     hasLastObservedClickDynMix = true;
     hasPendingClickDynVolumeWrite = false;
   }
+
+  lastObservedSongMix = makeCurrentSongMixSnapshot();
+  hasLastObservedSongMix = true;
+}
+
+bool ChannelGridPanel::hasActivePointerInteraction() const {
+  for (const auto &slot : slots)
+    if (slot != nullptr && slot->isUserInteracting())
+      return true;
+  return false;
 }
 
 void ChannelGridPanel::refreshThemeColours() {

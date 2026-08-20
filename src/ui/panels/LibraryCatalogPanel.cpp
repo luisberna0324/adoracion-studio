@@ -1049,11 +1049,11 @@ void LibraryCatalogPanel::rebuildRows() {
     visibleRows.push_back(std::move(item));
   }
 
-  const bool prioritizeNotInSetlist = headerMode == HeaderMode::SetlistTarget;
-  const auto selectionPriority = [prioritizeNotInSetlist](const CatalogItem &item) {
-    if (!prioritizeNotInSetlist)
+  const bool prioritizeSetlistItems = headerMode == HeaderMode::SetlistTarget;
+  const auto selectionPriority = [prioritizeSetlistItems](const CatalogItem &item) {
+    if (!prioritizeSetlistItems)
       return 0;
-    return item.inSetlist ? 1 : 0;
+    return item.inSetlist ? 0 : 1;
   };
 
   const auto compareWithinGroup = [this](const CatalogItem &a,

@@ -149,8 +149,12 @@ public:
       juce::String *errorMessage = nullptr);
   static bool updateSong(ImportedSongData song, juce::String *errorMessage = nullptr,
                          const SongImportProgressFn &onProgress = {});
+  static bool updateSongMetadata(ImportedSongData song,
+                                 juce::String *errorMessage = nullptr);
   static bool getActiveSetlistMix(const juce::String &songId,
                                   SongMixSnapshot &outMix);
+  static bool updateMixForActiveSetlist(const juce::String &songId,
+                                        const SongMixSnapshot &mix);
   static bool updateStemVolumeForActiveSetlist(const juce::String &songId,
                                                const juce::String &stemId,
                                                float volume);
