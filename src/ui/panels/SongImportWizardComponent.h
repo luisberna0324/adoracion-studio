@@ -97,6 +97,7 @@ private:
   void styleSecondaryButton(juce::TextButton &button);
 
   void triggerSecuenciasSearch();
+  void hideSecuenciasSuggestions(bool resetStatus);
   void handleSecuenciasResult(const std::vector<SongSearchResult>& results, const SecuenciasError& err);
   void fetchSecuenciasDetailForSelected();
   void applySecuenciasMetadata(const SongSearchResult& result, const SongDetail* detail);

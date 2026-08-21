@@ -9,6 +9,19 @@ timestamp: 2026-08-17T16:30:00Z
 
 ## 2026-08-19
 
+### Standalone: versión visible en título de ventana
+
+La app standalone mantiene `JucePlugin_Name` como nombre interno, pero el título
+de la ventana ahora usa `PlayWorship v<JucePlugin_VersionString>`. La versión
+sigue saliendo de `MTCONTROLS_APP_VERSION` en CMake; el fallback local actual es
+`1.1.4`, y GitHub Actions lo sobrescribe con el semver calculado del release.
+
+### Import wizard: sugerencias no bloquean metadata manual
+
+En creación/edición de canción, el autocomplete del título ya no fuerza elegir
+una sugerencia. Al perder foco, presionar Enter/Escape o avanzar de metadata, se
+cierran las sugerencias pendientes sin borrar el título escrito manualmente.
+
 ### Biblioteca: guardado rápido de metadata/artwork en edición
 
 El wizard de edición de canciones ahora muestra **Guardar** en el primer paso

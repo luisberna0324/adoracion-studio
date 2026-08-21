@@ -30,6 +30,10 @@ juce::File findInitialProjectArgument(const juce::String &commandLine) {
   return {};
 }
 
+juce::String makeWindowTitle() {
+  return juce::String::fromUTF8(JucePlugin_Name) + " v" + JucePlugin_VersionString;
+}
+
 void queueProjectOpen(juce::StandaloneFilterWindow *window,
                       const juce::File &projectFile) {
   if (window == nullptr || projectFile == juce::File{})
@@ -122,7 +126,7 @@ private:
     if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
       return nullptr;
     return new juce::StandaloneFilterWindow(
-        getApplicationName(),
+        makeWindowTitle(),
         juce::LookAndFeel::getDefaultLookAndFeel().findColour(
             juce::ResizableWindow::backgroundColourId),
         createPluginHolder());

@@ -495,6 +495,18 @@ SongImportWizardComponent::SongImportWizardComponent(
       safeThis->triggerSecuenciasSearch();
     });
   };
+  songTitleEditor.onReturnKey = [this] { hideSecuenciasSuggestions(true); };
+  songTitleEditor.onEscapeKey = [this] { hideSecuenciasSuggestions(true); };
+  songTitleEditor.onFocusLost = [this] {
+    auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+    juce::Timer::callAfterDelay(80, [safeThis] {
+      if (safeThis == nullptr)
+        return;
+      if (safeThis->secuenciasList.hasKeyboardFocus(true))
+        return;
+      safeThis->hideSecuenciasSuggestions(true);
+    });
+  };
 
   secuenciasListModel = std::make_unique<SecuenciasResultListModel>(*this);
   secuenciasList.setModel(secuenciasListModel.get());
@@ -1394,6 +1406,7 @@ void SongImportWizardComponent::goToNextStep() {
   case Step::Metadata:
     if (!validateStepMetadata())
       return;
+    hideSecuenciasSuggestions(false);
     changeStep(Step::Stems);
     return;
   case Step::Stems:
@@ -2003,6 +2016,27 @@ void SongImportWizardComponent::triggerSecuenciasSearch() {
                                    return;
                                  safeThis->handleSecuenciasResult(results, err);
                                });
+}
+
+void SongImportWizardComponent::hideSecuenciasSuggestions(const bool resetStatus) {
+  const bool hadSuggestions = !secuenciasResults.empty() || secuenciasList.isVisible();
+  ++secuenciasSearchToken;
+  ++latestSearchRequestId;
+  secuenciasResults.clear();
+  secuenciasSelectedRow = -1;
+  secuenciasList.updateContent();
+  secuenciasList.selectRow(-1);
+  secuenciasList.setVisible(false);
+
+  if (resetStatus && hadSuggestions && !selectedSongDetail.has_value()) {
+    secuenciasStatusLabel.setText(
+        L10n::tr("Metadata manual. Puedes continuar sin seleccionar sugerencia.",
+                 "Manual metadata. You can continue without selecting a suggestion."),
+        juce::dontSendNotification);
+  }
+
+  resized();
+  repaint();
 }
 
 void SongImportWizardComponent::handleSecuenciasResult(
