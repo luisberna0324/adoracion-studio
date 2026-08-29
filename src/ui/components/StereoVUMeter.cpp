@@ -1,5 +1,6 @@
 #include "StereoVUMeter.h"
 
+#include <cstdint>
 #include <cmath>
 #include <utility>
 
@@ -13,6 +14,67 @@ float linearToNorm(float linear) {
       juce::Decibels::gainToDecibels(juce::jmax(0.00001f, linear), -100.0f);
   return dbToNorm(db);
 }
+
+#if defined(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS) &&                  \
+    MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
+struct VuMeterRepaintDiagnostics {
+  uint64_t timerTicks = 0;
+  uint64_t repaintRequests = 0;
+  uint64_t skippedTicks = 0;
+  uint64_t paintCalls = 0;
+  double nextLogMs = 0.0;
+};
+
+VuMeterRepaintDiagnostics &vuMeterRepaintDiagnostics() {
+  static VuMeterRepaintDiagnostics diagnostics;
+  return diagnostics;
+}
+
+void maybeLogVuMeterRepaintDiagnostics(const double nowMs) {
+  auto &diagnostics = vuMeterRepaintDiagnostics();
+  if (diagnostics.nextLogMs <= 0.0) {
+    diagnostics.nextLogMs = nowMs + 2000.0;
+    return;
+  }
+
+  if (nowMs < diagnostics.nextLogMs)
+    return;
+
+  juce::Logger::writeToLog(
+      "VU repaint diagnostics: timerTicks=" +
+      juce::String(static_cast<double>(diagnostics.timerTicks), 0) +
+      " repaintRequests=" +
+      juce::String(static_cast<double>(diagnostics.repaintRequests), 0) +
+      " skippedTicks=" +
+      juce::String(static_cast<double>(diagnostics.skippedTicks), 0) +
+      " paintCalls=" +
+      juce::String(static_cast<double>(diagnostics.paintCalls), 0));
+
+  diagnostics.timerTicks = 0;
+  diagnostics.repaintRequests = 0;
+  diagnostics.skippedTicks = 0;
+  diagnostics.paintCalls = 0;
+  diagnostics.nextLogMs = nowMs + 2000.0;
+}
+
+void recordVuMeterPaint() {
+  auto &diagnostics = vuMeterRepaintDiagnostics();
+  ++diagnostics.paintCalls;
+  maybeLogVuMeterRepaintDiagnostics(
+      juce::Time::getMillisecondCounterHiRes());
+}
+
+void recordVuMeterTimerResult(const bool requestedRepaint,
+                              const double nowMs) {
+  auto &diagnostics = vuMeterRepaintDiagnostics();
+  ++diagnostics.timerTicks;
+  if (requestedRepaint)
+    ++diagnostics.repaintRequests;
+  else
+    ++diagnostics.skippedTicks;
+  maybeLogVuMeterRepaintDiagnostics(nowMs);
+}
+#endif
 } // namespace
 
 StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
@@ -24,7 +86,24 @@ StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
   startTimerHz(30);
 }
 
+int StereoVUMeter::getVisibleSegmentCount() const noexcept {
+  const float trackH = juce::jmax(
+      0.0f, static_cast<float>(getHeight() - layout.peakLedSize - layout.gap));
+  const float segmentAreaH =
+      juce::jmax(0.0f, trackH - static_cast<float>(layout.trackPadding * 2));
+  const float segmentGap = static_cast<float>(layout.segmentGap);
+  const int fittedSegments = static_cast<int>(
+      std::floor((segmentAreaH + segmentGap) / (1.0f + segmentGap)));
+
+  return juce::jmax(6, juce::jmin(layout.segments, fittedSegments));
+}
+
 void StereoVUMeter::paint(juce::Graphics &g) {
+#if defined(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS) &&                  \
+    MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
+  recordVuMeterPaint();
+#endif
+
   auto bounds = getLocalBounds().toFloat();
   const float trackH =
       juce::jmax(0.0f, bounds.getHeight() - layout.peakLedSize - layout.gap);
@@ -80,12 +159,7 @@ void StereoVUMeter::paint(juce::Graphics &g) {
 
     auto segmentArea = track.reduced(static_cast<float>(layout.trackPadding));
     const float segmentGap = static_cast<float>(layout.segmentGap);
-    const float minSegH = 1.0f;
-    const int segments =
-        juce::jmax(6, juce::jmin(layout.segments,
-                                static_cast<int>(std::floor(
-                                    (segmentArea.getHeight() + segmentGap) /
-                                    (minSegH + segmentGap)))));
+    const int segments = getVisibleSegmentCount();
     const float availableSegH =
         segmentArea.getHeight() - (segmentGap * (segments - 1));
     const float segmentH =
@@ -126,6 +200,11 @@ void StereoVUMeter::paint(juce::Graphics &g) {
   drawColumn(meterColRect, levelL, now < holdUntilL);
 }
 
+void StereoVUMeter::resized() {
+  lastPaintedActiveSegments = -1;
+  lastPaintedPeakOn = false;
+}
+
 void StereoVUMeter::timerCallback() {
   float inputL = 0.0f;
   float inputR = 0.0f;
@@ -154,14 +233,26 @@ void StereoVUMeter::timerCallback() {
   if (targetL >= 0.985f)
     holdUntilL = now + 1500.0;
 
-  // Early-out: if level didn't change meaningfully and we're not in a hold
-  // window, skip the repaint. This dramatically reduces idle CPU when
-  // many VU meters are visible (e.g. one per stem in a 8-stem setlist).
-  const float delta = std::abs(levelL - lastPaintedLevelL);
-  const bool inHold = now < holdUntilL;
-  if (delta < 0.005f && !inHold)
-    return;
-  lastPaintedLevelL = levelL;
+  const int segmentCount = getVisibleSegmentCount();
+  const int activeSegments =
+      juce::jlimit(0, segmentCount,
+                   static_cast<int>(
+                       std::round(levelL * static_cast<float>(segmentCount))));
+  const bool peakOn = now < holdUntilL;
+  const bool shouldRepaint = activeSegments != lastPaintedActiveSegments ||
+                             peakOn != lastPaintedPeakOn;
 
+#if defined(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS) &&                  \
+    MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
+  recordVuMeterTimerResult(shouldRepaint, now);
+#endif
+
+  // The LED ladder is discrete, so repaint only when the visible segment count
+  // or peak LED state changes.
+  if (!shouldRepaint)
+    return;
+
+  lastPaintedActiveSegments = activeSegments;
+  lastPaintedPeakOn = peakOn;
   repaint();
 }

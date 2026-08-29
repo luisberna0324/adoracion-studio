@@ -25,6 +25,12 @@ juce::String withMidiAssignmentTooltip(const juce::String &baseText,
     return "MIDI: " + trimmedCode;
   return baseText + " | MIDI: " + trimmedCode;
 }
+
+void setBoundsIfChanged(juce::Component &component,
+                        const juce::Rectangle<int> &bounds) {
+  if (component.getBounds() != bounds)
+    component.setBounds(bounds);
+}
 } // namespace
 
 ChannelStripCard::ChannelStripCard(
@@ -264,82 +270,111 @@ void ChannelStripCard::drawGainValueTooltip(juce::Graphics &g) const {
 
 void ChannelStripCard::resized() {
   const bool hasButtonRow = soloVisible || muteVisible;
+  const int bandTop = juce::jmax(0, getHeight() - layout.channelBandHeight);
   const int buttonsY = hasButtonRow
-                           ? getHeight() - layout.channelBandHeight -
-                                 layout.buttonToBandGap - layout.soloHeight
+                           ? bandTop - layout.buttonToBandGap -
+                                 layout.soloHeight
                            : 0;
 
-  // Calculate total width of Fader + Gap + Meter
   const int totalGroupWidth = layout.faderWidth + layout.faderMeterGap +
                               meter.getLayout().getBlockWidth();
+  const int groupX = juce::jmax(0, (getWidth() - totalGroupWidth) / 2);
 
-  // Center whole group horizontally
-  const int groupX = (getWidth() - totalGroupWidth) / 2;
-  const int faderX = groupX;
-  const int meterX = faderX + layout.faderWidth + layout.faderMeterGap;
-
-  const int knobX = faderX + (layout.faderWidth - layout.knobSize) / 2;
+  const int knobX = groupX + (layout.faderWidth - layout.knobSize) / 2;
   const int knobY = layout.knobTop;
   const juce::Rectangle<int> knobBounds(knobX, knobY, layout.knobSize,
                                         layout.knobSize);
-  gainKnob.setBounds(knobBounds);
-  powerButton.setBounds(knobBounds);
+  setBoundsIfChanged(gainKnob, knobBounds);
+  setBoundsIfChanged(powerButton, knobBounds);
+
   const int labelW = layout.knobSize + 10;
   const int labelH = 12;
-  const int labelX = faderX + (layout.faderWidth - labelW) / 2;
+  const int labelX = groupX + (layout.faderWidth - labelW) / 2;
   const int labelY = knobY + layout.knobSize + 2;
-  gainLabel.setBounds(labelX, labelY, labelW, labelH);
+  setBoundsIfChanged(gainLabel, {labelX, labelY, labelW, labelH});
 
-  // Vertically, position the fader just above the buttons
   const int mainVolBottomSpacing = hasButtonRow ? 12 : 2;
-  const int componentBottomY =
-      hasButtonRow ? (buttonsY - mainVolBottomSpacing)
-                   : (getHeight() - layout.channelBandHeight -
-                      layout.buttonToBandGap - mainVolBottomSpacing);
-
+  const int componentBottomY = hasButtonRow
+                                   ? (buttonsY - mainVolBottomSpacing)
+                                   : (bandTop - layout.buttonToBandGap -
+                                      mainVolBottomSpacing);
   const int minFaderY = labelY + labelH + 6;
   const int faderY =
       juce::jmax(minFaderY, componentBottomY - layout.faderHeight);
   const int faderH = juce::jmax(12, componentBottomY - faderY);
-  volSlider.setBounds(faderX, faderY, layout.faderWidth, faderH);
 
-  // Make the VU meter span from near the top of the strip down to just
-  // above the mute/solo buttons.
   const int meterTop = layout.knobTop;
   const int meterBottom = hasButtonRow
                               ? (buttonsY - 10)
-                              : (getHeight() - layout.channelBandHeight -
-                                 layout.buttonToBandGap - 2);
+                              : (bandTop - layout.buttonToBandGap - 2);
   const int meterHeight = juce::jmax(12, meterBottom - meterTop);
-  meter.setBounds(meterX, meterTop, meter.getLayout().getBlockWidth(),
-                  meterHeight);
+
+  juce::FlexBox faderMeterRow;
+  faderMeterRow.flexDirection = juce::FlexBox::Direction::row;
+  faderMeterRow.justifyContent = juce::FlexBox::JustifyContent::center;
+  faderMeterRow.alignItems = juce::FlexBox::AlignItems::flexStart;
+  faderMeterRow.items.add(
+      juce::FlexItem(volSlider)
+          .withWidth(static_cast<float>(layout.faderWidth))
+          .withHeight(static_cast<float>(faderH))
+          .withMargin(juce::FlexItem::Margin(
+              static_cast<float>(faderY - meterTop), 0.0f, 0.0f, 0.0f)));
+  faderMeterRow.items.add(
+      juce::FlexItem(meter)
+          .withWidth(static_cast<float>(meter.getLayout().getBlockWidth()))
+          .withHeight(static_cast<float>(meterHeight))
+          .withMargin(juce::FlexItem::Margin(
+              0.0f, 0.0f, 0.0f, static_cast<float>(layout.faderMeterGap))));
+  faderMeterRow.performLayout(
+      juce::Rectangle<float>(static_cast<float>(groupX),
+                             static_cast<float>(meterTop),
+                             static_cast<float>(totalGroupWidth),
+                             static_cast<float>(meterHeight)));
 
   if (!hasButtonRow) {
-    soloButton.setBounds({});
-    muteButton.setBounds({});
+    setBoundsIfChanged(soloButton, {});
+    setBoundsIfChanged(muteButton, {});
     return;
   }
 
   const int buttonsX = (getWidth() - layout.soloWidth) / 2;
   if (soloVisible && muteVisible) {
-    const int buttonW = (layout.soloWidth - layout.buttonGap) / 2;
-    soloButton.setBounds(buttonsX, buttonsY, buttonW, layout.soloHeight);
-    muteButton.setBounds(buttonsX + buttonW + layout.buttonGap, buttonsY,
-                         layout.soloWidth - buttonW - layout.buttonGap,
-                         layout.soloHeight);
+    juce::FlexBox buttonRow;
+    buttonRow.flexDirection = juce::FlexBox::Direction::row;
+    buttonRow.justifyContent = juce::FlexBox::JustifyContent::center;
+    buttonRow.items.add(
+        juce::FlexItem(soloButton)
+            .withFlex(1.0f)
+            .withHeight(static_cast<float>(layout.soloHeight))
+            .withMargin(juce::FlexItem::Margin(
+                0.0f, static_cast<float>(layout.buttonGap), 0.0f, 0.0f)));
+    buttonRow.items.add(
+        juce::FlexItem(muteButton)
+            .withFlex(1.0f)
+            .withHeight(static_cast<float>(layout.soloHeight)));
+    buttonRow.performLayout(juce::Rectangle<float>(
+        static_cast<float>(buttonsX), static_cast<float>(buttonsY),
+        static_cast<float>(layout.soloWidth),
+        static_cast<float>(layout.soloHeight)));
     return;
   }
 
   if (soloVisible) {
-    soloButton.setBounds(buttonsX, buttonsY, layout.soloWidth,
-                         layout.soloHeight);
-    muteButton.setBounds({});
+    setBoundsIfChanged(soloButton,
+                       {buttonsX, buttonsY, layout.soloWidth,
+                        layout.soloHeight});
+    setBoundsIfChanged(muteButton, {});
     return;
   }
 
-  soloButton.setBounds({});
-  muteButton.setBounds(buttonsX, buttonsY, layout.soloWidth,
-                       layout.soloHeight);
+  setBoundsIfChanged(soloButton, {});
+  const auto muteBounds =
+      muteAlignedToFader
+          ? juce::Rectangle<int>(volSlider.getX(), buttonsY, layout.faderWidth,
+                                 layout.soloHeight)
+          : juce::Rectangle<int>(buttonsX, buttonsY, layout.soloWidth,
+                                 layout.soloHeight);
+  setBoundsIfChanged(muteButton, muteBounds);
 }
 
 const juce::String &ChannelStripCard::getChannelName() const { return name; }

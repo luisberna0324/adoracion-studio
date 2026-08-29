@@ -41,6 +41,7 @@ public:
   StereoVUMeter(LevelProvider levelProvider, MuteProvider muteProvider,
                 bool isCompact = false);
   void paint(juce::Graphics &g) override;
+  void resized() override;
 
   const Layout &getLayout() const { return layout; }
 
@@ -50,8 +51,10 @@ private:
   MuteProvider isMuted;
 
   float levelL = 0.0f;
-  float lastPaintedLevelL = 0.0f;
+  int lastPaintedActiveSegments = -1;
+  bool lastPaintedPeakOn = false;
   double holdUntilL = 0.0;
 
   void timerCallback() override;
+  int getVisibleSegmentCount() const noexcept;
 };

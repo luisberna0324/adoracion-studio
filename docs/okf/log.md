@@ -2,10 +2,27 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-08-17T16:30:00Z
+timestamp: 2026-08-29T19:40:00Z
 ---
 
 # Changelog
+
+## 2026-08-29
+
+### Mixer UI: Channel Strip con layout estable e instrumentación VU opt-in
+
+`ChannelStripCard::resized()` ahora usa `juce::FlexBox` para repartir el bloque
+fader + medidor y la fila de solo/mute, manteniendo los tamaños públicos de
+`ChannelStripCard::Layout`. El flag existente `setMuteAlignedToFader(true)`
+queda aplicado cuando el canal muestra sólo mute, útil para master y guías que
+no exponen solo.
+
+`StereoVUMeter` ahora evita repintar por variaciones flotantes que no cambian
+ningún LED visible: el timer sólo pide `repaint()` cuando cambia el número de
+segmentos activos o el LED de peak. Para medir la actividad sin coste en builds
+normales, CMake suma la opción apagada por defecto
+`MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS`; al activarla se loguean contadores
+agregados de ticks, repaints pedidos, ticks omitidos y paints cada dos segundos.
 
 ## 2026-08-19
 
