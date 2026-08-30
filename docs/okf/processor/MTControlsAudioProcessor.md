@@ -102,6 +102,13 @@ haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
 ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
 restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
 
+Para canciones legacy, los campos de control de canción que aún viven dentro de
+`SetlistItem` se mantienen sincronizados entre todas las apariciones de la misma
+canción: mezcla de master/stems, pitch, tempo, ventana, arrange, guía dinámica y
+click. Al agregar una canción legacy a otro setlist se copia el estado más
+reciente de esa canción. `transitionToNext`, `itemId` y el orden siguen siendo
+propios de cada setlist.
+
 El origen de ajustes se decide exclusivamente por la referencia explícita
 `projectPath` de la entrada cargada. Una canción legacy con `projectPath` vacío
 no se convierte implícitamente en proyecto por coincidir su ID con la caché o
@@ -649,6 +656,11 @@ siguiente, anterior y selección desde biblioteca.
 ```cpp
 void refreshPadsRoutingFromSettings() noexcept;
 ```
+
+En `processBlock`, el procesador renderiza Pads siempre sobre un bus temporal
+estéreo y recién después lo enruta al par físico configurado. Esto evita
+multiplicar el costo del motor de pads por la cantidad total de salidas del
+dispositivo, algo especialmente importante en interfaces multisalida.
 
 ## Master Controls
 
