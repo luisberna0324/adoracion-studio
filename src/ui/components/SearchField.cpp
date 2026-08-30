@@ -5,7 +5,7 @@ SearchField::SearchField() {
   textEditor.setReturnKeyStartsNewLine(false);
   textEditor.setScrollbarsShown(false);
   textEditor.setPopupMenuEnabled(true);
-  textEditor.setFont(juce::FontOptions(16.0f));
+  textEditor.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
   textEditor.setJustification(juce::Justification::centredLeft);
   textEditor.onTextChange = [this] {
     if (onTextChange)
@@ -41,15 +41,15 @@ void SearchField::setOnTextChange(
 
 void SearchField::refreshThemeColours() {
   textEditor.setColour(juce::TextEditor::backgroundColourId,
-                       UITheme::cardBg.interpolatedWith(UITheme::panelDark,
-                                                        0.14f));
+                       UITheme::panelDark.interpolatedWith(UITheme::cardBg,
+                                                           0.28f));
   textEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
   textEditor.setColour(juce::TextEditor::highlightedTextColourId,
                        UITheme::textPrimary);
   textEditor.setColour(juce::TextEditor::outlineColourId,
-                       UITheme::cardBorder.withAlpha(0.62f));
+                       UITheme::cardBorder.withAlpha(0.48f));
   textEditor.setColour(juce::TextEditor::focusedOutlineColourId,
-                       UITheme::accent.withAlpha(0.7f));
+                       UITheme::accent.withAlpha(0.64f));
 }
 
 juce::TextEditor &SearchField::editor() { return textEditor; }
@@ -58,11 +58,11 @@ const juce::TextEditor &SearchField::editor() const { return textEditor; }
 
 void SearchField::paintOverChildren(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
+  const auto iconSize = static_cast<float>(iconSizePx);
   auto icon = juce::Rectangle<float>(b.getX() + static_cast<float>(iconInsetX),
-                                     b.getCentreY() - iconSizePx * 0.5f,
-                                     static_cast<float>(iconSizePx),
-                                     static_cast<float>(iconSizePx));
-  drawIconGlyph(g, icon, iconGlyph, UITheme::textSecondary.withAlpha(0.88f),
+                                     b.getCentreY() - iconSize * 0.5f,
+                                     iconSize, iconSize);
+  drawIconGlyph(g, icon, iconGlyph, UITheme::textSecondary.withAlpha(0.76f),
                 1.35f);
 }
 

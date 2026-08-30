@@ -10,6 +10,16 @@
 namespace {
 
 constexpr int kCatalogItemSideInset = 10;
+constexpr int kCatalogItemRowStart = 8;
+constexpr int kCatalogItemRowHeight = 64;
+constexpr int kCatalogItemRowGap = 7;
+constexpr int kCatalogItemArtworkSize = 42;
+
+float measureTextWidth(const juce::Font &font, const juce::String &text) {
+  juce::GlyphArrangement glyphs;
+  glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+  return glyphs.getBoundingBox(0, -1, true).getWidth();
+}
 
 juce::Colour songAccentFromId(const juce::String &songId) {
   if (songId.isEmpty())
@@ -285,34 +295,33 @@ LibraryCatalogPanel::FilterChipButton::getChip() const {
 }
 
 int LibraryCatalogPanel::FilterChipButton::getPreferredWidth() const {
-  return juce::jmax(82, juce::roundToInt(makeAppFont(15.0f, AppFontWeight::SemiBold)
-                                             .getStringWidthFloat(labelText)) +
-                             32);
+  const auto font = makeAppFont(12.2f, AppFontWeight::SemiBold);
+  return juce::jmax(64, juce::roundToInt(measureTextWidth(font, labelText)) + 24);
 }
 
 void LibraryCatalogPanel::FilterChipButton::paintButton(juce::Graphics &g,
                                                         bool isMouseOverButton,
                                                         bool isButtonDown) {
   auto area = getLocalBounds().toFloat();
-  auto fill = UITheme::cardBg;
-  auto border = UITheme::cardBorder.withAlpha(0.90f);
+  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.26f);
+  auto border = UITheme::cardBorder.withAlpha(0.58f);
   auto textColour = juce::Colour::fromString("ffB0B0B0");
 
   if (active) {
-    fill = UITheme::accent.withAlpha(0.16f);
-    border = UITheme::accent;
+    fill = fill.interpolatedWith(UITheme::accent, 0.16f);
+    border = UITheme::accent.withAlpha(0.88f);
     textColour = UITheme::textPrimary;
   } else if (isMouseOverButton || isButtonDown) {
-    fill = UITheme::cardBgHover;
+    fill = UITheme::cardBgHover.withAlpha(0.82f);
     textColour = UITheme::textPrimary;
   }
 
   g.setColour(fill);
-  g.fillRoundedRectangle(area, 10.0f);
+  g.fillRoundedRectangle(area, 7.0f);
   g.setColour(border);
-  g.drawRoundedRectangle(area.reduced(0.5f), 10.0f, active ? 2.0f : 1.0f);
+  g.drawRoundedRectangle(area.reduced(0.5f), 7.0f, 1.0f);
   g.setColour(textColour.withAlpha(isEnabled() ? 1.0f : 0.45f));
-  g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
+  g.setFont(makeAppFont(12.2f, AppFontWeight::SemiBold));
   g.drawFittedText(labelText, getLocalBounds(), juce::Justification::centred, 1);
 }
 
@@ -356,7 +365,7 @@ void LibraryCatalogPanel::FooterActionButton::paintButton(juce::Graphics &g,
   const auto contentArea = area.reduced(12.0f, 0.0f);
   const auto font = makeAppFont(14.0f, AppFontWeight::SemiBold);
   const float plusSize = 16.0f;
-  const float textWidth = font.getStringWidthFloat(buttonText);
+  const float textWidth = measureTextWidth(font, buttonText);
   const float groupWidth = plusSize + 8.0f + textWidth;
   const float startX = contentArea.getCentreX() - groupWidth * 0.5f;
   const float centerY = contentArea.getCentreY();
@@ -386,8 +395,8 @@ int LibraryCatalogPanel::ChipsRow::getPreferredWidth() const {
   int width = 0;
   for (const auto &chip : chips)
     width += chip->getPreferredWidth();
-  width += 10 * (static_cast<int>(chips.size()) - 1);
-  width += 10 + 40;
+  width += 6 * (static_cast<int>(chips.size()) - 1);
+  width += 6 + 32;
   return width;
 }
 
@@ -395,10 +404,10 @@ void LibraryCatalogPanel::ChipsRow::resized() {
   int x = 0;
   for (auto &chip : chips) {
     const int chipWidth = chip->getPreferredWidth();
-    chip->setBounds(x, 2, chipWidth, 40);
-    x += chipWidth + 10;
+    chip->setBounds(x, 3, chipWidth, 30);
+    x += chipWidth + 6;
   }
-  filterButton.setBounds(x, 2, 40, 40);
+  filterButton.setBounds(x, 2, 32, 32);
 }
 
 void LibraryCatalogPanel::CatalogContent::setRows(std::vector<CatalogItem> nextRows,
@@ -436,21 +445,20 @@ int LibraryCatalogPanel::CatalogContent::getPreferredHeight(const int width) con
   juce::ignoreUnused(width);
   if (rows.empty())
     return 88;
-  constexpr int rowStart = 8;
-  constexpr int rowHeight = 72;
-  constexpr int rowGap = 8;
-  return rowStart + static_cast<int>(rows.size()) * (rowHeight + rowGap);
+  return kCatalogItemRowStart +
+         static_cast<int>(rows.size()) *
+             (kCatalogItemRowHeight + kCatalogItemRowGap);
 }
 
 juce::Rectangle<int>
 LibraryCatalogPanel::CatalogContent::itemBoundsForIndex(const int index) const {
   if (!juce::isPositiveAndBelow(index, static_cast<int>(rows.size())))
     return {};
-  constexpr int rowStart = 8;
-  constexpr int rowHeight = 72;
-  constexpr int rowGap = 8;
-  return {kCatalogItemSideInset, rowStart + index * (rowHeight + rowGap),
-          juce::jmax(1, getWidth() - (kCatalogItemSideInset * 2)), rowHeight};
+  return {kCatalogItemSideInset,
+          kCatalogItemRowStart +
+              index * (kCatalogItemRowHeight + kCatalogItemRowGap),
+          juce::jmax(1, getWidth() - (kCatalogItemSideInset * 2)),
+          kCatalogItemRowHeight};
 }
 
 juce::Rectangle<int>
@@ -480,11 +488,18 @@ int LibraryCatalogPanel::CatalogContent::rowIndexAt(const juce::Point<int> point
 
 void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
   if (rows.empty()) {
-    g.setColour(UITheme::textSecondary.withAlpha(0.92f));
-    g.setFont(makeAppFont(16.0f, AppFontWeight::Medium));
+    const auto bounds = getLocalBounds().reduced(18, 30);
+    const auto iconBounds =
+        juce::Rectangle<float>(static_cast<float>(bounds.getCentreX() - 13),
+                               static_cast<float>(bounds.getCentreY() - 30),
+                               26.0f, 26.0f);
+    drawSvgIcon(g, iconBounds, SvgIconName::Music,
+                UITheme::textSecondary.withAlpha(0.58f));
+    g.setColour(UITheme::textSecondary.withAlpha(0.90f));
+    g.setFont(makeAppFont(13.0f, AppFontWeight::Medium));
     g.drawFittedText(L10n::tr(u8"No encontramos canciónes con esa busqueda.",
                               "No songs matched that search."),
-                     getLocalBounds().reduced(18, 32), juce::Justification::centred, 3);
+                     bounds.withTrimmedTop(22), juce::Justification::centred, 2);
     return;
   }
 
@@ -520,17 +535,21 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
       rowRect = rowRect.withSizeKeepingCentre(rowRect.getWidth() * 0.995f, rowRect.getHeight() * 0.995f);
 
     juce::Path rowPath;
-    rowPath.addRoundedRectangle(rowRect, 12.0f);
-    juce::DropShadow(juce::Colours::black.withAlpha(0.25f), 8, {0, 2})
+    rowPath.addRoundedRectangle(rowRect, 10.0f);
+    juce::DropShadow(juce::Colours::black.withAlpha(0.14f), 5, {0, 1})
         .drawForPath(g, rowPath);
 
     g.setColour(fill.withAlpha(rowAlpha));
-    g.fillRoundedRectangle(rowRect, 12.0f);
-    const auto stateBarColour =
-        nowPlaying ? UITheme::accent.withAlpha(0.98f)
-                   : item.accentColour.brighter(0.08f).withAlpha(0.98f);
-    const auto stateBar = juce::Rectangle<float>(rowBounds.getX(), rowBounds.getY(),
-                                                 7.0f, rowBounds.getHeight());
+    g.fillRoundedRectangle(rowRect, 10.0f);
+    auto stateBarColour = item.accentColour.brighter(0.06f).withAlpha(0.78f);
+    if (pendingSelected)
+      stateBarColour = juce::Colour::fromRGB(250, 204, 21).withAlpha(0.94f);
+    if (nowPlaying)
+      stateBarColour = UITheme::accent.withAlpha(0.98f);
+    const auto stateBar = juce::Rectangle<float>(
+        static_cast<float>(rowBounds.getX()),
+        static_cast<float>(rowBounds.getY()), 4.0f,
+        static_cast<float>(rowBounds.getHeight()));
     g.saveState();
     g.reduceClipRegion(rowPath);
     g.setColour(stateBarColour.withAlpha(rowAlpha));
@@ -538,9 +557,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     g.restoreState();
 
     g.setColour(border.withAlpha(rowAlpha));
-    g.drawRoundedRectangle(rowRect.reduced(0.5f), 12.0f, nowPlaying ? 1.5f : 1.0f);
+    g.drawRoundedRectangle(rowRect.reduced(0.5f), 10.0f, nowPlaying ? 1.5f : 1.0f);
 
-    auto contentArea = rowBounds.reduced(16, 8);
+    auto contentArea = rowBounds.reduced(14, 7);
     contentArea.removeFromLeft(6);
     const auto toggleBounds = toggleBoundsForIndex(i);
     if (!toggleBounds.isEmpty()) {
@@ -556,11 +575,11 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                     UITheme::accent, 1.9f);
       contentArea.removeFromLeft(toggleBounds.getWidth() + 12);
     }
-    constexpr int artworkSize = 48;
     auto artworkArea = juce::Rectangle<int>(
         contentArea.getX(),
-        contentArea.getY() + juce::jmax(0, (contentArea.getHeight() - artworkSize) / 2),
-        artworkSize, artworkSize);
+        contentArea.getY() +
+            juce::jmax(0, (contentArea.getHeight() - kCatalogItemArtworkSize) / 2),
+        kCatalogItemArtworkSize, kCatalogItemArtworkSize);
 
     juce::Image artworkImage;
     const auto artworkKey = item.artworkPath.trim().toStdString();
@@ -577,9 +596,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     }
 
     g.setColour(UITheme::cardBgHover.withAlpha(0.9f * rowAlpha));
-    g.fillRoundedRectangle(artworkArea.toFloat(), 8.0f);
+    g.fillRoundedRectangle(artworkArea.toFloat(), 7.0f);
     g.setColour(UITheme::cardBorder.withAlpha(0.72f * rowAlpha));
-    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 8.0f, 1.0f);
+    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 7.0f, 1.0f);
 
     if (artworkImage.isValid()) {
       g.drawImageWithin(artworkImage, artworkArea.getX(), artworkArea.getY(),
@@ -591,19 +610,19 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
       placeholder = placeholder.isNotEmpty() ? placeholder.substring(0, 1).toUpperCase()
                                              : "?";
       g.setColour(UITheme::textSecondary.withAlpha(0.88f * rowAlpha));
-      g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
+      g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
       g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
     }
 
-    contentArea.removeFromLeft(artworkSize + 12);
+    contentArea.removeFromLeft(kCatalogItemArtworkSize + 11);
 
     const auto menuBounds = menuBoundsForIndex(i);
     if (!menuBounds.isEmpty())
       contentArea.removeFromRight(menuBounds.getWidth() + 6);
 
-    constexpr int titleHeight = 18;
-    constexpr int artistHeight = 14;
-    constexpr int metaHeight = 13;
+    constexpr int titleHeight = 17;
+    constexpr int artistHeight = 13;
+    constexpr int metaHeight = 12;
     constexpr int lineGap = 2;
     const int totalTextHeight =
         titleHeight + artistHeight + metaHeight + (lineGap * 2);
@@ -620,11 +639,11 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                                          contentArea.getWidth(), metaHeight);
 
     g.setColour(UITheme::textPrimary.withAlpha(rowAlpha));
-    g.setFont(makeAppFont(17.0f, AppFontWeight::SemiBold));
+    g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
     g.drawFittedText(item.title, titleArea, juce::Justification::centredLeft, 1);
 
     g.setColour(UITheme::textSecondary.withAlpha(0.95f * rowAlpha));
-    g.setFont(makeAppFont(11.6f, AppFontWeight::Medium));
+    g.setFont(makeAppFont(10.8f, AppFontWeight::Medium));
     g.drawFittedText(item.artist.toUpperCase(), artistArea,
                      juce::Justification::centredLeft, 1);
 
@@ -633,7 +652,7 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
         (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM" + u8" • " +
         juce::String(item.stemCount) + " stems" + u8" • " + formatDurationMMSS(item.durationSeconds);
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));
-    g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
+    g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     g.drawFittedText(metadataText, metaArea, juce::Justification::centredLeft, 1);
 
     if (!menuBounds.isEmpty()) {
@@ -644,8 +663,12 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
         g.setColour(juce::Colours::transparentBlack);
       if (hovered)
         g.fillRoundedRectangle(menuRect, 10.0f);
-      drawIconGlyph(g, menuRect.reduced(9.0f), IconGlyph::More,
-                    juce::Colour::fromString("ffB0B0B0").withAlpha(rowAlpha), 1.5f);
+      const auto menuAlpha = hovered ? 0.88f : 0.64f;
+      drawIconGlyph(g, menuRect.withSizeKeepingCentre(18.0f, 18.0f),
+                    IconGlyph::More,
+                    juce::Colour::fromString("ffB0B0B0")
+                        .withAlpha(rowAlpha * menuAlpha),
+                    1.35f);
     } else if (ultraCompact) {
       juce::ignoreUnused(ultraCompact);
     }
@@ -656,15 +679,21 @@ void LibraryCatalogPanel::CatalogContent::mouseMove(const juce::MouseEvent &even
   const int nextHovered = rowIndexAt(event.position.toInt());
   if (nextHovered == hoveredRowIndex)
     return;
+  const int previousHovered = hoveredRowIndex;
   hoveredRowIndex = nextHovered;
-  repaint();
+  if (juce::isPositiveAndBelow(previousHovered, static_cast<int>(rows.size())))
+    repaint(itemBoundsForIndex(previousHovered).expanded(3));
+  if (juce::isPositiveAndBelow(hoveredRowIndex, static_cast<int>(rows.size())))
+    repaint(itemBoundsForIndex(hoveredRowIndex).expanded(3));
 }
 
 void LibraryCatalogPanel::CatalogContent::mouseExit(const juce::MouseEvent &) {
   if (hoveredRowIndex < 0)
     return;
+  const int previousHovered = hoveredRowIndex;
   hoveredRowIndex = -1;
-  repaint();
+  if (juce::isPositiveAndBelow(previousHovered, static_cast<int>(rows.size())))
+    repaint(itemBoundsForIndex(previousHovered).expanded(3));
 }
 
 void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event) {
@@ -716,7 +745,7 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   addAndMakeVisible(backButton);
 
   menuButton.setStyle(false, juce::Colours::white);
-  menuButton.setTooltip(L10n::tr(u8"Opciónes del panel", "Panel options"));
+  menuButton.setTooltip(L10n::tr("Orden y opciones", "Sort and options"));
   menuButton.onClick = [this] { openHeaderMenu(); };
   addAndMakeVisible(menuButton);
 
@@ -892,7 +921,8 @@ void LibraryCatalogPanel::refreshThemeColours() {
   menuButton.setStyle(false, juce::Colours::white);
   searchField.refreshThemeColours();
   loadProjectButton.setColour(juce::TextButton::buttonColourId,
-                              UITheme::cardBgHover.withAlpha(0.96f));
+                              UITheme::panelDark.interpolatedWith(UITheme::cardBg,
+                                                                  0.36f));
   loadProjectButton.setColour(juce::TextButton::buttonOnColourId,
                               UITheme::cardBgPressed.withAlpha(0.96f));
   loadProjectButton.setColour(juce::TextButton::textColourOffId,
@@ -900,7 +930,7 @@ void LibraryCatalogPanel::refreshThemeColours() {
   loadProjectButton.setColour(juce::TextButton::textColourOnId,
                               UITheme::textPrimary);
   createSongButton.setColour(juce::TextButton::buttonColourId,
-                             UITheme::accent.withAlpha(0.90f));
+                             UITheme::accent.withAlpha(0.84f));
   createSongButton.setColour(juce::TextButton::buttonOnColourId,
                              UITheme::accentSoft.withAlpha(0.95f));
   createSongButton.setColour(juce::TextButton::textColourOffId,
@@ -930,8 +960,8 @@ void LibraryCatalogPanel::resized() {
   int headerHeight = bounds.getHeight() < 560 ? 56 : 64;
   int sectionGap = bounds.getHeight() < 560 ? 10 : 14;
   int searchHeight = bounds.getHeight() < 560 ? 36 : 40;
-  int importButtonHeight = bounds.getHeight() < 560 ? 38 : 42;
-  int searchToImportGap = bounds.getHeight() < 560 ? 8 : 10;
+  int importButtonHeight = bounds.getHeight() < 560 ? 42 : 44;
+  int searchToImportGap = bounds.getHeight() < 560 ? 8 : 9;
   int footerButtonHeight = bounds.getHeight() < 560 ? 42 : 44;
   int footerTopGap = bounds.getHeight() < 560 ? 8 : 10;
   int footerBottomInset = bounds.getHeight() < 560 ? 10 : 12;
@@ -957,7 +987,7 @@ void LibraryCatalogPanel::resized() {
     consumeDeficit(footerTopGap, 6);
     consumeDeficit(footerBottomInset, 8);
     footerHeight = footerTopGap + footerButtonHeight + footerBottomInset;
-    consumeDeficit(importButtonHeight, 34);
+    consumeDeficit(importButtonHeight, 40);
     consumeDeficit(searchToImportGap, 6);
     consumeDeficit(searchHeight, 44);
     consumeDeficit(headerHeight, 44);
@@ -991,7 +1021,11 @@ void LibraryCatalogPanel::resized() {
   area.removeFromTop(sectionGap);
   auto actionButtonsArea =
       area.removeFromTop(importButtonHeight).reduced(kCatalogItemSideInset, 0);
-  constexpr int actionButtonsGap = 10;
+  const int actionRowWidth = juce::jmin(actionButtonsArea.getWidth(), 560);
+  actionButtonsArea =
+      actionButtonsArea.withSizeKeepingCentre(actionRowWidth,
+                                              actionButtonsArea.getHeight());
+  constexpr int actionButtonsGap = 8;
   const int splitWidth =
       juce::jmax(0, (actionButtonsArea.getWidth() - actionButtonsGap) / 2);
   auto loadButtonArea = actionButtonsArea.removeFromLeft(splitWidth);
@@ -1133,9 +1167,7 @@ void LibraryCatalogPanel::refreshTexts() {
 
 void LibraryCatalogPanel::openHeaderMenu() {
   juce::PopupMenu menu;
-  menu.addItem(1, L10n::tr("Cargar proyecto...", "Load project..."));
-  menu.addItem(2, L10n::tr(u8"Crear canción", "Create song"));
-  menu.addSeparator();
+  menu.addSectionHeader(L10n::tr("Orden", "Sorting"));
   menu.addItem(3, L10n::tr("Ordenar A-Z", "Sort A-Z"), true,
                sortMode == SortMode::TitleAsc);
   menu.addItem(4, L10n::tr("Ordenar Z-A", "Sort Z-A"), true,
@@ -1153,16 +1185,6 @@ void LibraryCatalogPanel::openHeaderMenu() {
 
   menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&menuButton),
                      [this](int result) {
-                       if (result == 1) {
-                         if (onOpenProjectRequested)
-                           onOpenProjectRequested();
-                         return;
-                       }
-                       if (result == 2) {
-                         if (onCreateSongRequested)
-                           onCreateSongRequested();
-                         return;
-                       }
                        if (result >= 3 && result <= 7) {
                          sortMode = static_cast<SortMode>(result - 3);
                          rebuildRows();

@@ -330,6 +330,15 @@ if (TARGET soundstretch)
         XCODE_ATTRIBUTE_ENABLE_BITCODE "NO")
 endif()
 
+set(MTCONTROLS_APP_ICON_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/app-icon-1024.png")
+
+set(MTCONTROLS_PLIST_TO_MERGE "")
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(MTCONTROLS_PLIST_TO_MERGE
+        "<key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string>")
+endif()
+
 juce_add_plugin(MTControls
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
@@ -343,23 +352,27 @@ juce_add_plugin(MTControls
     PLUGIN_CODE Mtc1
     FORMATS Standalone
     PRODUCT_NAME "PlayWorship"
-    ICON_BIG "assets/icons/app-icon-1024.png"
-    ICON_SMALL "assets/icons/app-icon-1024.png"
+    ICON_BIG "${MTCONTROLS_APP_ICON_PATH}"
+    ICON_SMALL "${MTCONTROLS_APP_ICON_PATH}"
+    LAUNCH_STORYBOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/assets/ios/LaunchScreen.storyboard"
+    PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
     BLUETOOTH_PERMISSION_ENABLED TRUE
     BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
-    # iOS: committed asset catalog includes LaunchImage.launchimage so JUCE omits LaunchScreen.storyboard.
-    # The default storyboard leaves LaunchScreen.storyboardc unsigned; device install then fails (invalid bundle).
-    CUSTOM_XCASSETS_FOLDER "assets/ios/Images.xcassets"
 )
 
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_target_properties(MTControls PROPERTIES
-        JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}")
+        JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}"
+        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
+    if(TARGET MTControls_Standalone)
+        set_target_properties(MTControls_Standalone PROPERTIES
+            XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
+    endif()
 endif()
 
 juce_generate_juce_header(MTControls)
@@ -407,6 +420,17 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/volume_x.svg
         assets/ui-icons/file_audio.svg
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    foreach(aux_target IN ITEMS MTControls MTControlsAssets SoundTouch)
+        if(TARGET ${aux_target})
+            set_target_properties(${aux_target} PROPERTIES
+                XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+                XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+                XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "")
+        endif()
+    endforeach()
+endif()
 
 target_sources(MTControls
     PRIVATE
@@ -684,7 +708,8 @@ endif()
 
 if (TARGET MTControls_Standalone AND MTCONTROLS_BUNDLE_FFMPEG)
     # APPLE is true for iOS too; bundling the macOS ffmpeg binary into an iOS app breaks CodeSign.
-    if (APPLE AND MTCONTROLS_FFMPEG_BIN_MACOS)
+    if (APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
+        MTCONTROLS_FFMPEG_BIN_MACOS)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/ffmpeg"
@@ -719,7 +744,15 @@ endif()
 
 if (TARGET MTControls_Standalone AND MTCONTROLS_GUIDES_PACK AND
     EXISTS "${MTCONTROLS_GUIDES_PACK}")
-    if (APPLE)
+    if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_GUIDES_PACK}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/installer/guides-en-es.zip"
+            VERBATIM)
+    elseif (APPLE)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/guides"
@@ -748,7 +781,15 @@ endif()
 
 if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
     EXISTS "${MTCONTROLS_CLICKS_PACK}")
-    if (APPLE)
+    if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_custom_command(TARGET MTControls_Standalone POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/installer"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MTCONTROLS_CLICKS_PACK}"
+                "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
+            VERBATIM)
+    elseif (APPLE)
         add_custom_command(TARGET MTControls_Standalone POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Resources/clicks"
@@ -773,6 +814,14 @@ if (TARGET MTControls_Standalone AND MTCONTROLS_CLICKS_PACK AND
                 "$<TARGET_FILE_DIR:MTControls_Standalone>/installer/clicks-pack.zip"
             VERBATIM)
     endif()
+endif()
+
+if(TARGET MTControls_Standalone AND CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_custom_command(TARGET MTControls_Standalone POST_BUILD
+        COMMAND /bin/sh -c
+            "framework='$<TARGET_BUNDLE_CONTENT_DIR:MTControls_Standalone>/Frameworks/bungee.framework'; plist=\"$framework/Info.plist\"; if [ -f \"$plist\" ]; then /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.zynaptiq.bungee' \"$plist\" 2>/dev/null || /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string com.zynaptiq.bungee' \"$plist\"; if [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none --generate-entitlement-der \"$framework\"; fi; fi"
+        COMMENT "Preparing embedded iOS framework before app code signing"
+        VERBATIM)
 endif()
 
 # This must remain the final macOS POST_BUILD command. All bundled resources

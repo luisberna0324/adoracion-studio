@@ -22,10 +22,14 @@ public:
     void paintButton(juce::Graphics &g, bool isMouseOverButton,
                      bool isButtonDown) override;
     void setAccent(bool shouldAccent);
+    void setSvgLabel(SvgIconName iconToUse, juce::String textToUse);
 
   private:
     IconGlyph glyph;
+    SvgIconName svgIcon = SvgIconName::Music;
+    juce::String labelText;
     bool accent = false;
+    bool useSvgLabel = false;
   };
 
   class SwipeHintHandle final : public juce::Component {
@@ -138,8 +142,8 @@ private:
 
   private:
     static constexpr int rowStart = 8;
-    static constexpr int rowHeight = 72;
-    static constexpr int rowGap = 8;
+    static constexpr int rowHeight = 64;
+    static constexpr int rowGap = 7;
     static constexpr int rowSideInset = 12;
 
     int rowIndexAtY(int y) const;
@@ -224,7 +228,7 @@ private:
   juce::Label setlistsSubtitleLabel;
   HeaderIconButton backButton{"back", IconGlyph::ArrowLeft};
   HeaderIconButton editSetlistButton{"editSetlist", IconGlyph::Pencil};
-  HeaderIconButton headerMenuButton{"headerMenu", IconGlyph::More};
+  HeaderIconButton headerMenuButton{"headerMenu", IconGlyph::MusicNote};
   juce::TextButton createSetlistButton{"+ Crear setlist"};
   SearchField setlistSearchField;
   SwipeHintHandle songsToLibrarySwipeHint{SwipeHintHandle::Direction::Right};

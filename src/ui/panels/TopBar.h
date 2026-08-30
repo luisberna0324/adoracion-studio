@@ -187,6 +187,7 @@ private:
   void refreshFromProviders();
   void paintSongInfoCard(juce::Graphics &g);
   juce::Rectangle<int> getSongInfoAnchorBounds() const;
-  void setBaseTooltip(IconButton &button, const juce::String &text);
+  void setBaseTooltip(juce::Button &component, const juce::String &text);
+  void setBaseTooltip(juce::Label &component, const juce::String &text);
   void refreshMidiLearnTooltips();
 };

@@ -24,6 +24,132 @@ normales, CMake suma la opción apagada por defecto
 `MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS`; al activarla se loguean contadores
 agregados de ticks, repaints pedidos, ticks omitidos y paints cada dos segundos.
 
+### TopBar: layout por grupos y refresco visual incremental
+
+`TopBar::resized()` ahora ordena el transporte y los controles derechos como
+grupos `juce::FlexBox`, conservando la prioridad existente: en anchos reducidos
+se ocultan primero el texto de BPM y luego CPU/MEM para reservar espacio a la
+tarjeta de canción.
+
+El refresco periódico evita reasignar texto, iconos, badges y bounds cuando no
+cambian. `refreshFromProviders()` ya no repinta todo el TopBar en cada tick:
+la tarjeta central sólo invalida su área cuando cambian título, artista, artwork
+o acento. El transporte, metrónomo, fade y labels siguen actualizándose desde
+los mismos providers y callbacks.
+
+La tarjeta de canción ahora pinta una superficie propia con franja de acento y
+artwork recortado, para separar mejor metadata del fondo del header. Play queda
+como único botón primario; al reproducir se marca activo, Stop se marca cuando
+la posición vuelve al inicio y Fade muestra badge mientras está activo.
+
+El popover de tempo/compás mantiene las mismas acciones, pero separa `TAP`,
+compás y BPM en filas más legibles. En MIDI Learn, el TopBar ahora resalta y
+arma targets de ventana, settings, popover de canción, popover de tono y popover
+de metrónomo, además de los controles de transporte ya existentes. Los botones
+iconográficos muestran badges `CC`/`N` cuando existe una asignación.
+
+### TopBar: jerarquía visual compacta
+
+La pasada visual posterior conserva los mismos callbacks y reglas responsive,
+pero reduce el peso del header: los controles estándar pasan a una superficie
+más discreta, Play continúa como único botón de acento pleno y el selector de
+tempo usa una lectura oscura con una franja de acento en lugar de un bloque
+completo coloreado. La tarjeta de canción baja de altura, reduce la tintura del
+acento y limita su ancho para dejar respiración entre los grupos. CPU/MEM queda
+con menor contraste para funcionar como telemetría periférica.
+
+### TopBar: botones de control inspirados en referencia oscura
+
+Los botones de transporte y acciones adoptan una superficie oscura en degradado
+vertical, un borde único de bajo contraste y radio medio. El botón primario
+mantiene un gradiente verde, borde luminoso y halo corto para preservar su
+jerarquía. BPM usa la misma superficie neutra y reserva el color de acento para
+su valor, evitando competir con el control principal.
+
+### TopBar: tarjeta de canción contenida
+
+La tarjeta de canción evita ocupar el ancho libre completo: su ancho preferido
+se calcula desde el texto visible, artwork y margen breve, con un crecimiento
+acotado cercano al 30% y límites por perfil responsive. Su fondo usa ahora una
+superficie neutra más oscura y borde fino, sin franja lateral ni borde de
+progreso; el color específico de la canción queda reservado para el artwork o su
+placeholder.
+
+### Biblioteca: filas de setlist y canciones más densas
+
+Las filas principales de setlists, canciones del setlist y biblioteca reducen
+altura, artwork, sombra y radios para alinearse con la barra superior más
+sobria. La barra vertical de estado se conserva como indicador rápido de
+canción/selección, pero con menor grosor. El hover de las listas de canciones
+ahora invalida sólo la fila anterior y la nueva en lugar de repintar el listado
+completo.
+
+### Biblioteca: header y estados visuales más sobrios
+
+El header de canciones reduce la altura reservada para Biblioteca y métricas,
+dejando más espacio efectivo al setlist. Los controles de header adoptan una
+superficie oscura con borde fino; los chips de filtro quedan preparados con
+estilo más compacto/segmentado. Las filas conservan su barra vertical, pero el
+color queda reservado por estado: acento para reproducción, amarillo para
+selección pendiente/siguiente y color propio sólo como pista secundaria. Los
+estados vacíos agregan un icono tenue y texto compacto.
+
+### Biblioteca: acciones primarias visibles y menú secundario
+
+La vista Biblioteca mantiene `Cargar` y `Crear` como acciones primarias visibles
+para mejorar descubrimiento en iPad/iPhone. El menú de tres puntos queda
+reservado para opciones secundarias como ordenamiento y limpieza de selección,
+evitando duplicar acciones principales. La fila de acciones limita su ancho en
+pantallas amplias y mantiene altura táctil consistente en paneles compactos.
+
+### iOS: firma de Xcode y assets del bundle
+
+Los targets iOS usan deployment target 18.5 para coincidir con el mínimo del
+`bungee.framework` incluido, sin propagar ese valor a las herramientas host de
+JUCE. La generación CMake pasa el icono como ruta absoluta para que `ZERO_CHECK`
+de Xcode no dependa del directorio de trabajo. En iOS, los targets auxiliares de
+librería no se firman. El standalone usa launch storyboard de JUCE en lugar de
+`LaunchImage.launchimage`, evitando que `codesign` trate PNGs legacy del asset
+catalog como subcomponentes no firmados. Los packs de guías y clicks se copian a
+`installer/` directamente dentro del bundle plano de iOS; usar el directorio
+macOS `Resources/` hace que `codesign` deje de reconocer el producto como una
+aplicación iOS y no enlace su `Info.plist`. Los archivos de datos quedan sellados
+como recursos por la firma final de Xcode, sin firma manual ni `--deep`. El
+post-build completa `CFBundleIdentifier` en el `bungee.framework` copiado al
+`.app` y vuelve a firmar sólo ese framework antes de la firma de la aplicación,
+porque el SDK iOS incluido no declara ese campo.
+
+### Repertorio: acción compacta y búsqueda integrada
+
+La vista de Repertorio deja de usar **Crear setlist** como bloque ancho de
+acento completo. La acción pasa al header como botón compacto, mientras la
+búsqueda queda inmediatamente debajo con una superficie más integrada al panel.
+La tarjeta de setlist activo mantiene su barra vertical, pero baja el tinte de
+fondo y borde para evitar que el acento domine toda la vista.
+
+### Setlist: acciones secundarias más discretas
+
+En la vista de canciones, el acceso a Biblioteca queda centrado y limitado en
+ancho para evitar una banda full-width. Las filas bajan levemente la tipografía
+principal/secundaria y el menú de tres puntos pierde peso cuando no está en
+hover. La fila para agregar canciones mantiene affordance de drop/action, pero
+reduce altura visual, opacidad del borde punteado y tamaño del icono.
+
+### Setlist: Biblioteca en el header
+
+El acceso a Biblioteca se mueve al botón derecho del header de canciones,
+reemplazando el menú de tres puntos verticales en esa vista. El botón usa el
+icono SVG musical y conserva el texto **Biblioteca** para mantener claridad. El
+panel de métricas oculta su acción central de Biblioteca y reduce la altura
+reservada, dejando más espacio útil para la lista. Las métricas mantienen los
+mismos callbacks y estados clicables.
+
+Al quedar Biblioteca completamente abierta, el header y listado del setlist se
+ocultan en lugar de permanecer desplazados fuera del borde izquierdo. Esto evita
+que sombras o bordes redondeados de la vista anterior sobresalgan dentro de la
+subvista de biblioteca; durante swipe/animación siguen visibles para conservar
+la transición.
+
 ## 2026-08-19
 
 ### Standalone: versión visible en título de ventana

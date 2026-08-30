@@ -1,6 +1,14 @@
 #include "SetlistSongsHeaderPanel.h"
 #include "../../data/Localization.h"
 
+namespace {
+float measureTextWidth(const juce::Font &font, const juce::String &text) {
+  juce::GlyphArrangement glyphs;
+  glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+  return glyphs.getBoundingBox(0, -1, true).getWidth();
+}
+} // namespace
+
 SetlistSongsHeaderPanel::SetlistSongsHeaderPanel() {
   metricBlockBounds.fill({});
 }
@@ -40,71 +48,86 @@ void SetlistSongsHeaderPanel::setActionsEnabled(const bool enabled) {
   repaint();
 }
 
+void SetlistSongsHeaderPanel::setLibraryActionVisible(const bool visible) {
+  if (libraryActionVisible == visible)
+    return;
+  libraryActionVisible = visible;
+  hoveredAddAction = false;
+  pressedAddAction = false;
+  resized();
+  repaint();
+}
+
 void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
-  auto actionRect = addSongsButtonBounds.toFloat().reduced(0.5f);
-  const bool enabled = isAddActionEnabled();
-  auto fill = UITheme::accent.withAlpha(0.20f);
-  if (!enabled)
-    fill = fill.withMultipliedAlpha(0.45f);
-  else if (pressedAddAction)
-    fill = UITheme::accent.withAlpha(0.28f);
-  else if (hoveredAddAction)
-    fill = UITheme::accent.withAlpha(0.24f);
+  if (libraryActionVisible && !addSongsButtonBounds.isEmpty()) {
+    auto actionRect = addSongsButtonBounds.toFloat().reduced(0.5f);
+    const bool enabled = isAddActionEnabled();
+    auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.34f);
+    if (!enabled)
+      fill = fill.withMultipliedAlpha(0.45f);
+    else if (pressedAddAction)
+      fill = fill.interpolatedWith(UITheme::accent, 0.18f);
+    else if (hoveredAddAction)
+      fill = fill.interpolatedWith(UITheme::accent, 0.10f);
 
-  if (enabled && pressedAddAction)
-    actionRect = actionRect.withSizeKeepingCentre(actionRect.getWidth() * 0.985f,
-                                                  actionRect.getHeight() * 0.985f);
+    if (enabled && pressedAddAction)
+      actionRect = actionRect.withSizeKeepingCentre(actionRect.getWidth() * 0.985f,
+                                                    actionRect.getHeight() * 0.985f);
 
-  g.setColour(juce::Colours::black.withAlpha(0.15f));
-  g.fillRoundedRectangle(actionRect.translated(0.0f, 1.4f), 10.0f);
-  g.setColour(fill);
-  g.fillRoundedRectangle(actionRect, 10.0f);
+    juce::ColourGradient actionFill(fill.brighter(0.03f), actionRect.getX(),
+                                    actionRect.getY(), fill.darker(0.08f),
+                                    actionRect.getX(), actionRect.getBottom(),
+                                    false);
+    g.setGradientFill(actionFill);
+    g.fillRoundedRectangle(actionRect, 8.0f);
 
-  g.setColour(UITheme::accent.withAlpha(hoveredAddAction ? 0.92f : 0.78f));
-  g.drawRoundedRectangle(actionRect, 10.0f, hoveredAddAction ? 1.4f : 1.2f);
+    g.setColour(UITheme::cardBorder.withAlpha(hoveredAddAction ? 0.86f : 0.62f));
+    g.drawRoundedRectangle(actionRect, 8.0f, hoveredAddAction ? 1.2f : 1.0f);
 
-  const auto textColour = UITheme::textPrimary.withAlpha(enabled ? 1.0f : 0.66f);
-  const auto iconColour = UITheme::accent.withAlpha(enabled ? 0.98f : 0.54f);
-  const auto label = L10n::tr("Biblioteca", "Library");
-  const auto font = makeAppFont(13.5f, AppFontWeight::SemiBold);
-  const float textWidth = font.getStringWidthFloat(label);
-  constexpr float iconSize = 17.0f;
-  constexpr float iconGap = 8.0f;
-  const float actionGroupWidth = iconSize + iconGap + textWidth;
-  const float actionStartX = actionRect.getCentreX() - (actionGroupWidth * 0.5f);
-  const float actionCenterY = actionRect.getCentreY();
-  drawSvgIcon(g,
-              juce::Rectangle<float>(actionStartX, actionCenterY - (iconSize * 0.5f),
-                                     iconSize, iconSize),
-              SvgIconName::Music, iconColour);
+    const auto textColour = UITheme::textPrimary.withAlpha(enabled ? 1.0f : 0.66f);
+    const auto iconColour = UITheme::accent.withAlpha(enabled ? 0.98f : 0.54f);
+    const auto label = L10n::tr("Biblioteca", "Library");
+    const auto font = makeAppFont(12.4f, AppFontWeight::SemiBold);
+    const float textWidth = measureTextWidth(font, label);
+    constexpr float iconSize = 15.0f;
+    constexpr float iconGap = 7.0f;
+    const float actionGroupWidth = iconSize + iconGap + textWidth;
+    const float actionStartX = actionRect.getCentreX() - (actionGroupWidth * 0.5f);
+    const float actionCenterY = actionRect.getCentreY();
+    drawSvgIcon(g,
+                juce::Rectangle<float>(actionStartX,
+                                       actionCenterY - (iconSize * 0.5f),
+                                       iconSize, iconSize),
+                SvgIconName::Music, iconColour);
 
-  g.setColour(textColour);
-  g.setFont(font);
-  g.drawText(label,
-             juce::Rectangle<float>(actionStartX + iconSize + iconGap,
-                                    actionCenterY - 12.0f, textWidth, 24.0f),
-             juce::Justification::centredLeft);
+    g.setColour(textColour);
+    g.setFont(font);
+    g.drawText(label,
+               juce::Rectangle<float>(actionStartX + iconSize + iconGap,
+                                      actionCenterY - 11.0f, textWidth, 22.0f),
+               juce::Justification::centredLeft);
+  }
 
   const auto panel = metricsPanelBounds.toFloat();
   g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.18f));
-  g.fillRoundedRectangle(panel, 12.0f);
+  g.fillRoundedRectangle(panel, 8.0f);
   g.setColour(juce::Colours::white.withAlpha(0.035f));
-  g.drawRoundedRectangle(panel, 12.0f, 1.0f);
+  g.drawRoundedRectangle(panel, 8.0f, 1.0f);
 
   g.setColour(juce::Colours::white.withAlpha(0.055f));
   for (int i = 0; i < 2; ++i) {
     const auto &left = metricBlockBounds[static_cast<size_t>(i)];
     const float x = static_cast<float>(left.getRight());
-    const float y0 = panel.getY() + 16.0f;
-    const float y1 = panel.getBottom() - 16.0f;
+    const float y0 = panel.getY() + 11.0f;
+    const float y1 = panel.getBottom() - 11.0f;
     g.drawLine(x, y0, x, y1, 1.0f);
   }
 
   const bool hideLabels = getWidth() < 320;
   const bool valuesOnly = getWidth() < 280;
   const auto labelColour = UITheme::textSecondary.withAlpha(0.76f);
-  constexpr float metricsIconSize = 20.0f;
-  constexpr int iconTextGap = 9;
+  constexpr float metricsIconSize = 16.0f;
+  constexpr int iconTextGap = 7;
 
   const std::array<juce::String, 3> labels = {
       L10n::tr(u8"Duración total", "Total duration"),
@@ -116,7 +139,7 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
       juce::String(juce::jmax(0, summary.averageBpm))};
 
   for (int i = 0; i < 3; ++i) {
-    auto block = metricBlockBounds[static_cast<size_t>(i)].reduced(8, 5);
+    auto block = metricBlockBounds[static_cast<size_t>(i)].reduced(7, 4);
     const bool clickable = isBlockClickable(i);
     const bool hovered = hoveredBlock == i && clickable;
     const auto iconName = (i == 0) ? SvgIconName::Clock
@@ -125,21 +148,21 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
 
     if (hovered) {
       g.setColour(UITheme::cardBgHover.withAlpha(0.12f));
-      g.fillRoundedRectangle(block.toFloat(), 8.0f);
+      g.fillRoundedRectangle(block.toFloat(), 6.0f);
     }
 
     if (valuesOnly) {
       g.setColour(UITheme::textPrimary);
-      g.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
+      g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
       g.drawFittedText(values[static_cast<size_t>(i)], block,
                        juce::Justification::centred, 1);
       continue;
     }
 
     if (hideLabels) {
-      const auto valueFont = makeAppFont(14.0f, AppFontWeight::SemiBold);
+      const auto valueFont = makeAppFont(13.0f, AppFontWeight::SemiBold);
       const float valueWidth =
-          valueFont.getStringWidthFloat(values[static_cast<size_t>(i)]);
+          measureTextWidth(valueFont, values[static_cast<size_t>(i)]);
       const float groupWidth = metricsIconSize + static_cast<float>(iconTextGap) + valueWidth;
       const float startX = static_cast<float>(block.getCentreX()) - (groupWidth * 0.5f);
       const float centerY = static_cast<float>(block.getCentreY());
@@ -154,21 +177,21 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
       g.setFont(valueFont);
       g.drawText(values[static_cast<size_t>(i)],
                  juce::Rectangle<float>(startX + metricsIconSize + iconTextGap,
-                                        centerY - 11.0f, valueWidth, 22.0f),
+                                        centerY - 10.0f, valueWidth, 20.0f),
                  juce::Justification::centredLeft);
       continue;
     }
 
     auto textArea = block;
-    auto labelRow = textArea.removeFromTop(14);
+    auto labelRow = textArea.removeFromTop(11);
     g.setColour(labelColour);
-    g.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
+    g.setFont(makeAppFont(9.7f, AppFontWeight::Regular));
     g.drawFittedText(labels[static_cast<size_t>(i)], labelRow,
                      juce::Justification::centred, 1);
 
-    const auto valueFont = makeAppFont(14.0f, AppFontWeight::SemiBold);
+    const auto valueFont = makeAppFont(13.0f, AppFontWeight::SemiBold);
     const float valueWidth =
-        valueFont.getStringWidthFloat(values[static_cast<size_t>(i)]);
+        measureTextWidth(valueFont, values[static_cast<size_t>(i)]);
     auto valueRow = textArea;
     const float groupWidth = metricsIconSize + static_cast<float>(iconTextGap) + valueWidth;
     const float startX =
@@ -185,7 +208,7 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
     g.setFont(valueFont);
     g.drawText(values[static_cast<size_t>(i)],
                juce::Rectangle<float>(startX + metricsIconSize + iconTextGap,
-                                      centerY - 11.0f, valueWidth, 22.0f),
+                                      centerY - 10.0f, valueWidth, 20.0f),
                juce::Justification::centredLeft);
   }
 }
@@ -194,9 +217,15 @@ void SetlistSongsHeaderPanel::resized() {
   auto area = getLocalBounds();
   constexpr int sideInset = 12;
   area = area.reduced(sideInset, 0);
-  addSongsButtonBounds = area.removeFromTop(44);
-  area.removeFromTop(12);
-  metricsPanelBounds = area.removeFromTop(54);
+  if (libraryActionVisible) {
+    auto actionRow = area.removeFromTop(38);
+    const int actionWidth = juce::jlimit(150, 220, actionRow.getWidth() / 2);
+    addSongsButtonBounds = actionRow.withSizeKeepingCentre(actionWidth, 38);
+    area.removeFromTop(8);
+  } else {
+    addSongsButtonBounds = {};
+  }
+  metricsPanelBounds = area.removeFromTop(42);
 
   const int blockWidth = metricsPanelBounds.getWidth() / 3;
   for (int i = 0; i < 3; ++i) {
@@ -266,7 +295,7 @@ void SetlistSongsHeaderPanel::updateHoverState(const juce::Point<int> p) {
 }
 
 bool SetlistSongsHeaderPanel::isAddActionEnabled() const {
-  return actionsEnabled && static_cast<bool>(onAddSongsClicked);
+  return libraryActionVisible && actionsEnabled && static_cast<bool>(onAddSongsClicked);
 }
 
 int SetlistSongsHeaderPanel::blockIndexAt(const juce::Point<int> p) const {

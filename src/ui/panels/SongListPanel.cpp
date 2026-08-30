@@ -66,6 +66,12 @@ juce::Colour songAccentFromId(const juce::String &songId) {
   return colourfulAccentFromStableId(songId);
 }
 
+float measureTextWidth(const juce::Font &font, const juce::String &text) {
+  juce::GlyphArrangement glyphs;
+  glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+  return glyphs.getBoundingBox(0, -1, true).getWidth();
+}
+
 juce::String toCapitalCase(const juce::String &text) {
   const auto normalized = text.trim().toLowerCase();
   if (normalized.isEmpty())
@@ -113,30 +119,73 @@ juce::String toSentenceCase(const juce::String &text) {
 
 SongListPanel::HeaderIconButton::HeaderIconButton(const juce::String &name,
                                                    const IconGlyph glyphToUse)
-    : juce::Button(name), glyph(glyphToUse) {}
+    : juce::Button(name), glyph(glyphToUse) {
+  setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
 
 void SongListPanel::HeaderIconButton::setAccent(const bool shouldAccent) {
   accent = shouldAccent;
 }
 
+void SongListPanel::HeaderIconButton::setSvgLabel(SvgIconName iconToUse,
+                                                  juce::String textToUse) {
+  svgIcon = iconToUse;
+  labelText = std::move(textToUse);
+  useSvgLabel = labelText.isNotEmpty();
+  repaint();
+}
+
 void SongListPanel::HeaderIconButton::paintButton(juce::Graphics &g,
                                                   bool isMouseOverButton,
                                                   bool isButtonDown) {
-  auto b = getLocalBounds().toFloat();
+  auto b = getLocalBounds().toFloat().reduced(1.0f);
+  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  if (accent)
+    fill = fill.interpolatedWith(UITheme::accent, 0.12f);
+  if (isMouseOverButton)
+    fill = fill.interpolatedWith(UITheme::cardBgHover, 0.34f);
+  if (isButtonDown)
+    fill = fill.darker(0.06f);
 
-  if (isMouseOverButton || isButtonDown) {
-    auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
-    if (isButtonDown)
-      fill = fill.darker(0.04f);
-    g.setColour(fill.withAlpha(0.88f));
-    g.fillRoundedRectangle(b, 5.0f);
-    g.setColour(UITheme::cardBorder.withAlpha(0.65f));
-    g.drawRoundedRectangle(b, 5.0f, 1.0f);
-  }
+  juce::ColourGradient bg(fill.brighter(0.025f), b.getX(), b.getY(),
+                          fill.darker(0.075f), b.getX(), b.getBottom(),
+                          false);
+  g.setGradientFill(bg);
+  g.fillRoundedRectangle(b, 8.0f);
+  g.setColour((accent ? UITheme::accent : UITheme::cardBorder)
+                  .withAlpha(isMouseOverButton ? 0.78f : 0.52f));
+  g.drawRoundedRectangle(b, 8.0f, 1.0f);
 
   const auto glyphColour = accent ? UITheme::accent : UITheme::textPrimary;
-  drawIconGlyph(g, b.withSizeKeepingCentre(24.0f, 24.0f), glyph, glyphColour,
-                1.8f);
+  if (!useSvgLabel) {
+    drawIconGlyph(g, b.withSizeKeepingCentre(21.0f, 21.0f), glyph, glyphColour,
+                  1.8f);
+    return;
+  }
+
+  const auto font = makeAppFont(12.2f, AppFontWeight::SemiBold);
+  const float iconSize = 15.0f;
+  const float gap = 7.0f;
+  const float textWidth = measureTextWidth(font, labelText);
+  const float groupWidth = iconSize + gap + textWidth;
+  const float startX = b.getCentreX() - groupWidth * 0.5f;
+  const float centerY = b.getCentreY();
+  if (!drawSvgIcon(g,
+                   juce::Rectangle<float>(startX, centerY - iconSize * 0.5f,
+                                          iconSize, iconSize),
+                   svgIcon, glyphColour)) {
+    drawIconGlyph(g,
+                  juce::Rectangle<float>(startX, centerY - iconSize * 0.5f,
+                                         iconSize, iconSize),
+                  glyph, glyphColour, 1.6f);
+  }
+
+  g.setColour(UITheme::textPrimary.withAlpha(isEnabled() ? 1.0f : 0.54f));
+  g.setFont(font);
+  g.drawText(labelText,
+             juce::Rectangle<float>(startX + iconSize + gap, centerY - 10.0f,
+                                    textWidth, 20.0f),
+             juce::Justification::centredLeft);
 }
 
 SongListPanel::SwipeHintHandle::SwipeHintHandle(
@@ -219,8 +268,8 @@ public:
     if (rows.empty())
       return 120;
     constexpr int rowStart = 8;
-    constexpr int rowHeight = 72;
-    constexpr int rowGap = 8;
+    constexpr int rowHeight = 64;
+    constexpr int rowGap = 7;
     return rowStart + static_cast<int>(rows.size()) * (rowHeight + rowGap);
   }
 
@@ -230,15 +279,22 @@ public:
 
   void paint(juce::Graphics &g) override {
     if (rows.empty()) {
+      const auto bounds = juce::Rectangle<int>(12, 12, getWidth() - 24, 96);
+      const auto iconBounds =
+          juce::Rectangle<float>(static_cast<float>(bounds.getCentreX() - 13),
+                                 static_cast<float>(bounds.getCentreY() - 30),
+                                 26.0f, 26.0f);
+      drawSvgIcon(g, iconBounds, SvgIconName::Music,
+                  UITheme::textSecondary.withAlpha(0.58f));
       g.setColour(UITheme::textSecondary.withAlpha(0.9f));
-      g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
+      g.setFont(makeAppFont(12.5f, AppFontWeight::Medium));
       g.drawFittedText(L10n::tr("Aun no hay setlists.", "No setlists yet."),
-                       juce::Rectangle<int>(12, 12, getWidth() - 24, 96),
+                       bounds.withTrimmedTop(22),
                        juce::Justification::centred, 2);
     }
 
-    constexpr int rowHeight = 72;
-    constexpr int rowGap = 8;
+    constexpr int rowHeight = 64;
+    constexpr int rowGap = 7;
     constexpr int rowStart = 8;
     constexpr int rowSideInset = 10;
 
@@ -247,40 +303,40 @@ public:
           rowSideInset, rowStart + static_cast<int>(i) * (rowHeight + rowGap),
           getWidth() - (rowSideInset * 2), rowHeight);
       const bool active = rows[i].id == selectedSetlistId;
-      auto fill = UITheme::cardBg;
+      auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.34f);
       if (active)
-        fill = fill.interpolatedWith(UITheme::accent, 0.14f);
+        fill = fill.interpolatedWith(UITheme::accent, 0.07f);
 
       juce::Path rowPath;
-      rowPath.addRoundedRectangle(row.toFloat(), 12.0f);
-      juce::DropShadow(juce::Colours::black.withAlpha(0.25f), 8, {0, 2})
+      rowPath.addRoundedRectangle(row.toFloat(), 10.0f);
+      juce::DropShadow(juce::Colours::black.withAlpha(0.14f), 5, {0, 1})
           .drawForPath(g, rowPath);
 
       g.setColour(fill.withAlpha(1.0f));
-      g.fillRoundedRectangle(row.toFloat(), 12.0f);
+      g.fillRoundedRectangle(row.toFloat(), 10.0f);
 
-      g.setColour((active ? UITheme::accent.withAlpha(0.82f)
-                          : UITheme::cardBorder.withAlpha(0.58f * 0.42f)));
-      g.drawRoundedRectangle(row.toFloat(), 12.0f, 1.0f);
+      g.setColour((active ? UITheme::accent.withAlpha(0.66f)
+                          : UITheme::cardBorder.withAlpha(0.34f)));
+      g.drawRoundedRectangle(row.toFloat().reduced(0.5f), 10.0f, 1.0f);
 
-      auto c = row.reduced(16, 8);
-      auto accentRect = juce::Rectangle<int>(c.getX(), row.getCentreY() - 20, 4, 40);
+      auto c = row.reduced(14, 7);
+      auto accentRect = juce::Rectangle<int>(c.getX(), row.getCentreY() - 18, 4, 36);
       c.removeFromLeft(4);
       c.removeFromLeft(10);
 
       const auto accentKey =
           rows[i].id.isNotEmpty() ? rows[i].id : rows[i].name;
       const auto accentColour = colourfulAccentFromStableId(accentKey);
-      g.setColour(accentColour.withAlpha(0.92f));
+      g.setColour((active ? UITheme::accent : accentColour).withAlpha(0.92f));
       g.fillRoundedRectangle(accentRect.toFloat(), 2.0f);
 
       c.removeFromLeft(2);
       auto optionsRect = c.removeFromRight(40);
       c.removeFromRight(6);
 
-      constexpr int titleHeight = 18;
-      constexpr int artistHeight = 14;
-      constexpr int metaHeight = 13;
+      constexpr int titleHeight = 17;
+      constexpr int artistHeight = 13;
+      constexpr int metaHeight = 12;
       constexpr int lineGap = 2;
       const int totalTextHeight =
           titleHeight + artistHeight + metaHeight + (lineGap * 2);
@@ -295,18 +351,18 @@ public:
                                            c.getWidth(), metaHeight);
 
       g.setColour(UITheme::textPrimary);
-      g.setFont(makeAppFont(17.0f, AppFontWeight::SemiBold));
+      g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
       g.drawFittedText(rows[i].name, titleRect, juce::Justification::centredLeft, 1);
 
       g.setColour(UITheme::textSecondary.withAlpha(0.95f));
-      g.setFont(makeAppFont(11.6f, AppFontWeight::Medium));
+      g.setFont(makeAppFont(11.2f, AppFontWeight::Medium));
       g.drawFittedText(
           juce::String(rows[i].songCount) + " " +
               L10n::tr(u8"canciónes", "songs").toUpperCase(),
           artistRect, juce::Justification::centredLeft, 1);
 
       g.setColour(UITheme::textSecondary.withAlpha(0.76f));
-      g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
+      g.setFont(makeAppFont(11.1f, AppFontWeight::Regular));
       g.drawFittedText(
           L10n::tr(u8"Duración ", "Duration ") +
               formatDurationHMS(rows[i].totalDurationSeconds),
@@ -345,8 +401,8 @@ public:
 
 private:
   juce::Rectangle<int> rowBoundsAt(const int rowIndex) const {
-    constexpr int rowHeight = 72;
-    constexpr int rowGap = 8;
+    constexpr int rowHeight = 64;
+    constexpr int rowGap = 7;
     constexpr int rowStart = 8;
     constexpr int rowSideInset = 10;
     return juce::Rectangle<int>(
@@ -381,8 +437,8 @@ private:
     if (y < 8)
       return -1;
     const int rel = y - 8;
-    constexpr int rowHeight = 72;
-    constexpr int rowGap = 8;
+    constexpr int rowHeight = 64;
+    constexpr int rowGap = 7;
     const int step = rowHeight + rowGap;
     const int index = rel / step;
     if (!juce::isPositiveAndBelow(index, static_cast<int>(rows.size())))
@@ -406,14 +462,14 @@ SongListPanel::SongListPanel() {
   addAndMakeVisible(titleLabel);
 
   setlistsHeaderLabel.setJustificationType(juce::Justification::centredLeft);
-  setlistsHeaderLabel.setFont(makeAppFont(20.0f, AppFontWeight::Bold));
+  setlistsHeaderLabel.setFont(makeAppFont(19.0f, AppFontWeight::Bold));
   setlistsHeaderLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   setlistsHeaderLabel.setText(L10n::tr("Repertorio", "Repertoire"),
                               juce::dontSendNotification);
   addAndMakeVisible(setlistsHeaderLabel);
 
   setlistsSubtitleLabel.setJustificationType(juce::Justification::centredLeft);
-  setlistsSubtitleLabel.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+  setlistsSubtitleLabel.setFont(makeAppFont(12.4f, AppFontWeight::Medium));
   setlistsSubtitleLabel.setColour(juce::Label::textColourId,
                                   UITheme::textSecondary.withAlpha(0.95f));
   setlistsSubtitleLabel.setText(L10n::tr("Mis setlists", "My setlists"),
@@ -423,10 +479,14 @@ SongListPanel::SongListPanel() {
   backButton.onClick = [this] { showSetlistsView(); };
   addAndMakeVisible(backButton);
 
-  headerMenuButton.onClick = [this] { openHeaderMenu(); };
+  headerMenuButton.setTooltip(L10n::tr("Biblioteca", "Library"));
+  headerMenuButton.setAccent(true);
+  headerMenuButton.setSvgLabel(SvgIconName::Music, L10n::tr("Biblioteca", "Library"));
+  headerMenuButton.onClick = [this] { openLibraryBrowser(); };
   addAndMakeVisible(headerMenuButton);
 
   createSetlistButton.onClick = [this] { createSetlist(); };
+  createSetlistButton.setMouseCursor(juce::MouseCursor::PointingHandCursor);
   addAndMakeVisible(createSetlistButton);
 
   setlistSearchField.setPlaceholderText(
@@ -440,6 +500,7 @@ SongListPanel::SongListPanel() {
 
   songsHeaderPanel.setOnAddSongsClicked([this] { openLibraryBrowser(); });
   songsHeaderPanel.setOnSongsClicked([this] { listViewport.setViewPosition(0, 0); });
+  songsHeaderPanel.setLibraryActionVisible(false);
   addAndMakeVisible(songsHeaderPanel);
 
   listViewport.setViewedComponent(&listContent, false);
@@ -715,9 +776,11 @@ void SongListPanel::refreshLanguageTexts() {
   setlistsSubtitleLabel.setText(L10n::tr("Mis setlists", "My setlists"),
                                 juce::dontSendNotification);
   createSetlistButton.setButtonText(
-      L10n::tr("+ Crear setlist", "+ Create setlist"));
+      L10n::tr("+ Crear", "+ Create"));
   setlistSearchField.setPlaceholderText(
       L10n::tr("Buscar setlist...", "Search setlist..."));
+  headerMenuButton.setTooltip(L10n::tr("Biblioteca", "Library"));
+  headerMenuButton.setSvgLabel(SvgIconName::Music, L10n::tr("Biblioteca", "Library"));
   songsHeaderPanel.refreshLanguageTexts();
   libraryCatalogPanel.refreshLanguageTexts();
   refreshFromStorage();
@@ -730,7 +793,8 @@ void SongListPanel::refreshThemeColours() {
                                   UITheme::textSecondary.withAlpha(0.95f));
 
   createSetlistButton.setColour(juce::TextButton::buttonColourId,
-                                UITheme::accent.withAlpha(0.90f));
+                                UITheme::panelDark.interpolatedWith(UITheme::accent,
+                                                                    0.52f));
   createSetlistButton.setColour(juce::TextButton::buttonOnColourId,
                                 UITheme::accentSoft.withAlpha(0.95f));
   createSetlistButton.setColour(juce::TextButton::textColourOffId,
@@ -789,7 +853,7 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   layout.workspace = area;
 
   int headerRowHeight = 56;
-  int headerPanelHeight = area.getHeight() < 560 ? 96 : 112;
+  int headerPanelHeight = area.getHeight() < 560 ? 44 : 50;
   int gapAfterHeader = area.getHeight() < 560 ? 6 : 8;
   int gapAfterPanel = area.getHeight() < 560 ? 8 : 12;
   constexpr int minListHeight = 140;
@@ -798,7 +862,7 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
                             headerPanelHeight - gapAfterHeader - gapAfterPanel;
   if (availableListHeight < minListHeight) {
     int deficit = minListHeight - availableListHeight;
-    const int reducePanel = juce::jmin(deficit, juce::jmax(0, headerPanelHeight - 76));
+    const int reducePanel = juce::jmin(deficit, juce::jmax(0, headerPanelHeight - 42));
     headerPanelHeight -= reducePanel;
     deficit -= reducePanel;
     const int reduceHeader = juce::jmin(deficit, juce::jmax(0, headerRowHeight - 52));
@@ -819,9 +883,10 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
 
   auto headerGrid = layout.headerRow;
   const auto leftColumn = headerGrid.removeFromLeft(40);
-  const auto rightColumn = headerGrid.removeFromRight(40);
+  const int libraryButtonWidth = juce::jmin(132, juce::jmax(104, headerGrid.getWidth() / 4));
+  const auto rightColumn = headerGrid.removeFromRight(libraryButtonWidth);
   layout.back = leftColumn.withSizeKeepingCentre(40, 40);
-  layout.menu = rightColumn.withSizeKeepingCentre(40, 40);
+  layout.menu = rightColumn.withSizeKeepingCentre(libraryButtonWidth, 40);
   layout.edit = {};
   layout.title = headerGrid;
   return layout;
@@ -831,50 +896,44 @@ SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
   SetlistsLayout layout;
   auto area = getLocalBounds().reduced(16);
 
-  int headerHeight = area.getHeight() < 560 ? 56 : 64;
-  int createHeight = area.getHeight() < 560 ? 40 : 44;
-  int searchHeight = area.getHeight() < 560 ? 36 : 40;
+  int headerHeight = area.getHeight() < 560 ? 48 : 54;
+  int createHeight = area.getHeight() < 560 ? 32 : 34;
+  int searchHeight = area.getHeight() < 560 ? 34 : 36;
   int gap1 = area.getHeight() < 560 ? 8 : 10;
-  int gap2 = area.getHeight() < 560 ? 8 : 10;
-  int gap3 = area.getHeight() < 560 ? 10 : 12;
+  int gap3 = area.getHeight() < 560 ? 8 : 10;
   constexpr int minViewportHeight = 140;
 
   int availableViewportHeight =
-      area.getHeight() - headerHeight - createHeight - searchHeight - gap1 - gap2 - gap3;
+      area.getHeight() - headerHeight - searchHeight - gap1 - gap3;
   if (availableViewportHeight < minViewportHeight) {
     int deficit = minViewportHeight - availableViewportHeight;
     const int reduceHeader = juce::jmin(deficit, juce::jmax(0, headerHeight - 48));
     headerHeight -= reduceHeader;
     deficit -= reduceHeader;
-    const int reduceCreate = juce::jmin(deficit, juce::jmax(0, createHeight - 36));
-    createHeight -= reduceCreate;
-    deficit -= reduceCreate;
     const int reduceSearch = juce::jmin(deficit, juce::jmax(0, searchHeight - 34));
     searchHeight -= reduceSearch;
     deficit -= reduceSearch;
     const int reduceGap3 = juce::jmin(deficit, juce::jmax(0, gap3 - 6));
     gap3 -= reduceGap3;
     deficit -= reduceGap3;
-    const int reduceGap2 = juce::jmin(deficit, juce::jmax(0, gap2 - 6));
-    gap2 -= reduceGap2;
-    deficit -= reduceGap2;
     const int reduceGap1 = juce::jmin(deficit, juce::jmax(0, gap1 - 6));
     gap1 -= reduceGap1;
   }
 
   auto headerRow = area.removeFromTop(headerHeight);
+  const int actionWidth = juce::jmin(118, juce::jmax(92, headerRow.getWidth() / 3));
+  auto headerAction = headerRow.removeFromRight(actionWidth);
+  headerRow.removeFromRight(10);
+  layout.createRow =
+      headerAction.withSizeKeepingCentre(actionWidth, createHeight);
   area.removeFromTop(gap1);
-  layout.createRow = area.removeFromTop(createHeight);
-  area.removeFromTop(gap2);
   layout.searchRow = area.removeFromTop(searchHeight);
   area.removeFromTop(gap3);
 
   auto headerCenterColumn = headerRow;
-  headerCenterColumn.removeFromLeft(40);
-  headerCenterColumn.removeFromRight(40);
 
-  constexpr int titleHeight = 24;
-  constexpr int subtitleHeight = 16;
+  constexpr int titleHeight = 22;
+  constexpr int subtitleHeight = 15;
   constexpr int titleSubtitleGap = 2;
   constexpr int totalTextHeight = titleHeight + subtitleHeight + titleSubtitleGap;
   const int textY = headerCenterColumn.getY() +
@@ -1329,21 +1388,22 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
       rowFill = rowFill.interpolatedWith(UITheme::cardBgHover, 0.28f);
 
     juce::Path rowPath;
-    rowPath.addRoundedRectangle(row.toFloat(), 12.0f);
-    juce::DropShadow(juce::Colours::black.withAlpha(0.25f), 8, {0, 2})
+    rowPath.addRoundedRectangle(row.toFloat(), 10.0f);
+    juce::DropShadow(juce::Colours::black.withAlpha(0.14f), 5, {0, 1})
         .drawForPath(g, rowPath);
 
     g.setColour(rowFill.withAlpha(fillAlpha));
-    g.fillRoundedRectangle(row.toFloat(), 12.0f);
+    g.fillRoundedRectangle(row.toFloat(), 10.0f);
 
-    const auto stateBarColour = showPlayingState
-                                    ? playingStateColour.withAlpha(0.96f)
-                                    : showNextState
-                                          ? nextStateColour.withAlpha(0.95f)
-                                          : rowData.accentColour.withAlpha(
-                                                showSelectedState ? 0.94f : 0.86f);
+    const auto stateBarColour =
+        showPlayingState
+            ? playingStateColour.withAlpha(0.96f)
+            : showNextState
+                  ? nextStateColour.withAlpha(0.95f)
+                  : rowData.accentColour.withAlpha(showSelectedState ? 0.86f
+                                                                     : 0.66f);
     const auto stateBar = juce::Rectangle<float>(
-        static_cast<float>(row.getX()), static_cast<float>(row.getY()), 5.0f,
+        static_cast<float>(row.getX()), static_cast<float>(row.getY()), 4.0f,
         static_cast<float>(row.getHeight()));
     g.saveState();
     g.reduceClipRegion(rowPath);
@@ -1365,14 +1425,14 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
     g.setColour(borderColour);
     const float borderThickness = showPlayingState ? 1.5f : 1.0f;
     g.drawRoundedRectangle(row.toFloat().reduced(borderThickness * 0.5f),
-                           12.0f - (borderThickness * 0.5f), borderThickness);
+                           10.0f - (borderThickness * 0.5f), borderThickness);
 
-    auto c = row.reduced(16, 8);
+    auto c = row.reduced(14, 7);
     c.removeFromLeft(6);
     auto optionsHitArea = c.removeFromRight(34);
     c.removeFromRight(2);
 
-    constexpr int artworkSize = 48;
+    constexpr int artworkSize = 42;
     auto artworkArea = juce::Rectangle<int>(
         c.getX(),
         c.getY() + juce::jmax(0, (c.getHeight() - artworkSize) / 2), artworkSize,
@@ -1393,9 +1453,9 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
     }
 
     g.setColour(UITheme::cardBgHover.withAlpha(0.9f * fillAlpha));
-    g.fillRoundedRectangle(artworkArea.toFloat(), 8.0f);
+    g.fillRoundedRectangle(artworkArea.toFloat(), 7.0f);
     g.setColour(UITheme::cardBorder.withAlpha(0.72f * fillAlpha));
-    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 8.0f, 1.0f);
+    g.drawRoundedRectangle(artworkArea.toFloat().reduced(0.5f), 7.0f, 1.0f);
 
     if (artworkImage.isValid()) {
       g.drawImageWithin(artworkImage, artworkArea.getX(), artworkArea.getY(),
@@ -1408,11 +1468,11 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                         ? placeholder.substring(0, 1).toUpperCase()
                         : "?";
       g.setColour(UITheme::textSecondary.withAlpha(0.88f * fillAlpha));
-      g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
+      g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
       g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
     }
 
-    c.removeFromLeft(artworkSize + 12);
+    c.removeFromLeft(artworkSize + 11);
 
     if (showPlayingState) {
       const auto stateArea =
@@ -1427,9 +1487,9 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                     IconGlyph::Next, nextStateColour.withAlpha(0.95f), 1.30f);
       c.removeFromLeft(20);
     }
-    constexpr int titleHeight = 18;
-    constexpr int artistHeight = 14;
-    constexpr int metaHeight = 13;
+    constexpr int titleHeight = 17;
+    constexpr int artistHeight = 13;
+    constexpr int metaHeight = 12;
     constexpr int lineGap = 2;
     const int totalTextHeight =
         titleHeight + artistHeight + metaHeight + (lineGap * 2);
@@ -1444,25 +1504,26 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                                          c.getWidth(), metaHeight);
 
     g.setColour(UITheme::textPrimary);
-    g.setFont(makeAppFont(17.0f, AppFontWeight::SemiBold));
+    g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
     g.drawFittedText(rowData.title, titleRect, juce::Justification::centredLeft, 1);
     g.setColour(UITheme::textSecondary.withAlpha(0.95f));
-    g.setFont(makeAppFont(11.6f, AppFontWeight::Medium));
+    g.setFont(makeAppFont(10.8f, AppFontWeight::Medium));
     g.drawFittedText(
         rowData.artist.isNotEmpty()
             ? rowData.artist
             : L10n::tr("Sin artista", "Unknown artist").toUpperCase(),
         artistRect, juce::Justification::centredLeft, 1);
     g.setColour(UITheme::textSecondary.withAlpha(0.76f));
-    g.setFont(makeAppFont(11.6f, AppFontWeight::Regular));
+    g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     const auto detail = (rowData.key.isNotEmpty() ? rowData.key : "-") + u8" • " +
                         (rowData.bpm > 0 ? juce::String(rowData.bpm) : "--") +
                         " BPM" + u8" • " + juce::String(rowData.stemCount) + " stems" +
                         u8" • " + formatDurationMMSS(rowData.durationSeconds);
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
 
-    drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(20.0f, 20.0f),
-                  IconGlyph::More, UITheme::textSecondary.withAlpha(0.95f), 1.4f);
+    const auto menuAlpha = rowIndex == hoveredRow ? 0.88f : 0.64f;
+    drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(18.0f, 18.0f),
+                  IconGlyph::More, UITheme::textSecondary.withAlpha(menuAlpha), 1.35f);
   };
 
   for (size_t i = 0; i < songs.size(); ++i) {
@@ -1479,43 +1540,52 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
   }
 
   if (songs.empty()) {
+    const auto emptyBounds =
+        getLocalBounds().withTrimmedBottom(rowHeight + rowGap).reduced(10);
+    const auto iconBounds = juce::Rectangle<float>(
+        static_cast<float>(emptyBounds.getCentreX() - 12),
+        static_cast<float>(emptyBounds.getCentreY() - 29), 24.0f, 24.0f);
+    drawSvgIcon(g, iconBounds, SvgIconName::Music,
+                UITheme::textSecondary.withAlpha(0.56f));
     g.setColour(UITheme::textSecondary.withAlpha(0.88f));
-    g.setFont(makeAppFont(12.0f, AppFontWeight::Regular));
+    g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
     g.drawFittedText(L10n::tr(u8"Aun no hay canciónes en este setlist.",
                               "No songs in this setlist yet."),
-                     getLocalBounds().withTrimmedBottom(rowHeight + rowGap).reduced(10),
+                     emptyBounds.withTrimmedTop(22),
                      juce::Justification::centred, 2);
   }
 
   const auto addRow = addSongsRowBounds();
   const bool addRowHovered = addRow.contains(getMouseXYRelative());
   const auto addStroke =
-      UITheme::cardBorder.interpolatedWith(UITheme::accent, addRowHovered ? 0.56f : 0.36f)
-          .withAlpha(addRowHovered ? 0.86f : 0.62f);
+      UITheme::cardBorder.interpolatedWith(UITheme::accent, addRowHovered ? 0.34f : 0.18f)
+          .withAlpha(addRowHovered ? 0.62f : 0.40f);
   const auto addFill = UITheme::panelDark
-                           .interpolatedWith(UITheme::cardBg, addRowHovered ? 0.20f : 0.14f)
-                           .withAlpha(0.96f);
+                           .interpolatedWith(UITheme::cardBg, addRowHovered ? 0.16f : 0.10f)
+                           .withAlpha(0.90f);
   g.setColour(addFill);
-  g.fillRoundedRectangle(addRow.toFloat(), 12.0f);
+  const auto addRowRect = addRow.toFloat().reduced(0.0f, 5.0f);
+  g.fillRoundedRectangle(addRowRect, 10.0f);
 
   juce::Path addBorder;
-  addBorder.addRoundedRectangle(addRow.toFloat().reduced(0.5f), 12.0f);
+  addBorder.addRoundedRectangle(addRowRect.reduced(0.5f), 10.0f);
   juce::Path dashedBorder;
-  const float dashLengths[] = {5.0f, 4.0f};
-  juce::PathStrokeType(1.2f).createDashedStroke(dashedBorder, addBorder, dashLengths, 2);
+  const float dashLengths[] = {4.0f, 5.0f};
+  juce::PathStrokeType(1.0f).createDashedStroke(dashedBorder, addBorder, dashLengths, 2);
   g.setColour(addStroke);
   g.strokePath(dashedBorder, juce::PathStrokeType(1.0f));
 
-  const auto center = addRow.getCentre().toFloat();
-  const auto plusColour = UITheme::accent.withAlpha(addRowHovered ? 0.96f : 0.88f);
+  const auto center = addRowRect.getCentre();
+  const auto plusColour = UITheme::accent.withAlpha(addRowHovered ? 0.88f : 0.64f);
   drawSvgIcon(g,
-              juce::Rectangle<float>(center.x - 9.0f, center.y - 14.0f, 18.0f, 18.0f),
+              juce::Rectangle<float>(center.x - 8.0f, center.y - 12.0f, 16.0f, 16.0f),
               SvgIconName::Plus, plusColour);
-  g.setColour(UITheme::textSecondary.withAlpha(addRowHovered ? 0.96f : 0.90f));
-  g.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
+  g.setColour(UITheme::textSecondary.withAlpha(addRowHovered ? 0.90f : 0.72f));
+  g.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
   g.drawFittedText(
       L10n::tr(u8"Agregar canciónes desde biblioteca", "Add songs from library"),
-      addRow.withTrimmedTop(22).reduced(10, 0), juce::Justification::centred, 1);
+      addRowRect.toNearestInt().withTrimmedTop(20).reduced(10, 0),
+      juce::Justification::centred, 1);
 
   if (hasActiveDrag) {
     const int dragTop = juce::roundToInt(dragMouseY - dragRowOffsetY);
@@ -1670,15 +1740,27 @@ void SongListPanel::ListContent::mouseMove(const juce::MouseEvent &event) {
   const int idx = rowIndexAtY(juce::roundToInt(event.position.y));
   if (hoveredRow == idx)
     return;
+  const int previousHovered = hoveredRow;
   hoveredRow = idx;
-  repaint();
+  if (juce::isPositiveAndBelow(previousHovered, static_cast<int>(songs.size())))
+    repaint(juce::Rectangle<int>(rowSideInset, rowTopAtIndex(previousHovered),
+                                 getWidth() - (rowSideInset * 2), rowHeight)
+                .expanded(3));
+  if (juce::isPositiveAndBelow(hoveredRow, static_cast<int>(songs.size())))
+    repaint(juce::Rectangle<int>(rowSideInset, rowTopAtIndex(hoveredRow),
+                                 getWidth() - (rowSideInset * 2), rowHeight)
+                .expanded(3));
 }
 
 void SongListPanel::ListContent::mouseExit(const juce::MouseEvent &) {
   if (hoveredRow < 0)
     return;
+  const int previousHovered = hoveredRow;
   hoveredRow = -1;
-  repaint();
+  if (juce::isPositiveAndBelow(previousHovered, static_cast<int>(songs.size())))
+    repaint(juce::Rectangle<int>(rowSideInset, rowTopAtIndex(previousHovered),
+                                 getWidth() - (rowSideInset * 2), rowHeight)
+                .expanded(3));
 }
 
 int SongListPanel::ListContent::rowIndexAtY(int y) const {
@@ -1967,8 +2049,8 @@ public:
 
     area.removeFromTop(10);
     auto contentArea = area;
-    const int leftW =
-        juce::jlimit(240, 320, static_cast<int>(contentArea.getWidth() * 0.38f));
+    const int leftW = juce::jlimit(
+        240, 320, juce::roundToInt(static_cast<float>(contentArea.getWidth()) * 0.38f));
     auto left = contentArea.removeFromLeft(leftW);
     auto right = contentArea;
 
@@ -2354,12 +2436,15 @@ private:
         [](const ImportedStemData &stem) { return stem.include; }));
 
     juce::String meta;
-    if (song.artist.isNotEmpty())
+    if (song.artist.isNotEmpty()) {
       meta << song.artist << u8" • ";
-      if (song.key.isNotEmpty())
-        meta << song.key << u8" • ";
-      if (song.bpm > 0)
-        meta << juce::String(song.bpm) << " BPM" << u8" • ";
+    }
+    if (song.key.isNotEmpty()) {
+      meta << song.key << u8" • ";
+    }
+    if (song.bpm > 0) {
+      meta << juce::String(song.bpm) << " BPM" << u8" • ";
+    }
     meta << juce::String(includedStems) << " stems";
 
     SongsListContent::SongRow row;
@@ -3112,13 +3197,16 @@ void SongListPanel::applyModeVisibility() {
       showSongs && songsSubview == SongsSubview::SetlistSongs;
   const bool showLibrarySubview =
       showSongs && songsSubview == SongsSubview::Library;
+  const bool showSlidingSongsContent =
+      showSetlistSongsSubview || songsSubviewTransitionInFlight ||
+      songsSwipeGestureActive;
 
-  titleLabel.setVisible(showSongs);
-  backButton.setVisible(showSongs);
+  titleLabel.setVisible(showSlidingSongsContent);
+  backButton.setVisible(showSlidingSongsContent);
   editSetlistButton.setVisible(false);
-  headerMenuButton.setVisible(showSongs);
-  songsHeaderPanel.setVisible(showSongs);
-  listViewport.setVisible(showSetlistSongsSubview);
+  headerMenuButton.setVisible(showSlidingSongsContent);
+  songsHeaderPanel.setVisible(showSlidingSongsContent);
+  listViewport.setVisible(showSlidingSongsContent);
   libraryCatalogPanel.setVisible(showLibrarySubview);
 
   setlistsHeaderLabel.setVisible(!showSongs);

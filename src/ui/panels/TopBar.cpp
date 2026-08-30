@@ -167,6 +167,31 @@ juce::Path roundedControlPath(juce::Rectangle<float> bounds,
       !connectedRight && !connectedBottom);
   return path;
 }
+
+void setBoundsIfChanged(juce::Component &component,
+                        const juce::Rectangle<int> &bounds) {
+  if (component.getBounds() != bounds)
+    component.setBounds(bounds);
+}
+
+void setVisibleIfChanged(juce::Component &component, const bool visible) {
+  if (component.isVisible() != visible)
+    component.setVisible(visible);
+}
+
+bool setLabelTextIfChanged(juce::Label &label, const juce::String &text) {
+  if (label.getText() == text)
+    return false;
+  label.setText(text, juce::dontSendNotification);
+  return true;
+}
+
+bool setButtonTextIfChanged(juce::Button &button, const juce::String &text) {
+  if (button.getButtonText() == text)
+    return false;
+  button.setButtonText(text);
+  return true;
+}
 } // namespace
 
 TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
@@ -174,17 +199,25 @@ TopBar::IconButton::IconButton(juce::String name, SvgIconName iconToUse,
     : juce::Button(std::move(name)), icon(iconToUse), isPrimary(primary) {}
 
 void TopBar::IconButton::setIcon(SvgIconName iconToUse) {
+  if (icon == iconToUse)
+    return;
   icon = iconToUse;
   repaint();
 }
 
 void TopBar::IconButton::setBadgeText(juce::String badge) {
+  if (badgeText == badge)
+    return;
   badgeText = std::move(badge);
   repaint();
 }
 
 void TopBar::IconButton::setPulseAmount(float amount, bool downbeat) {
-  pulseAmount = juce::jlimit(0.0f, 1.0f, amount);
+  const float nextAmount = juce::jlimit(0.0f, 1.0f, amount);
+  if (std::abs(pulseAmount - nextAmount) < 0.01f &&
+      pulseDownbeat == downbeat)
+    return;
+  pulseAmount = nextAmount;
   pulseDownbeat = downbeat;
   repaint();
 }
@@ -200,48 +233,59 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
                                      bool isButtonDown) {
   auto b = getLocalBounds().toFloat().reduced(0.5f);
   const auto connectedEdges = getConnectedEdgeFlags();
-  const auto controlPath = roundedControlPath(b, connectedEdges, 7.0f);
+  const auto controlPath = roundedControlPath(b, connectedEdges, 10.0f);
   const bool active = isButtonDown || getToggleState();
 
-  juce::Colour fill =
-      isPrimary
-          ? UITheme::accent
-          : UITheme::cardBg.interpolatedWith(UITheme::cardBgHover, 0.28f);
-  if (active)
-    fill = isPrimary ? UITheme::accentSoft : UITheme::cardBgPressed;
-  else if (isMouseOverButton)
-    fill = fill.brighter(isPrimary ? 0.08f : 0.10f);
+  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  if (active && !isPrimary)
+    fill = fill.brighter(0.08f);
+  else if (isMouseOverButton && !isPrimary)
+    fill = fill.brighter(0.05f);
 
   if (pulseAmount > 0.001f) {
     const auto pulseColour =
         pulseDownbeat ? UITheme::accentSoft : UITheme::accent;
-    fill = fill.interpolatedWith(pulseColour, 0.25f + (pulseAmount * 0.35f));
+    fill = fill.interpolatedWith(pulseColour, 0.14f + (pulseAmount * 0.24f));
   }
 
-  gr.setColour(juce::Colours::black.withAlpha(isPrimary ? 0.24f : 0.18f));
+  if (isPrimary) {
+    gr.setColour(UITheme::accentSoft.withAlpha(active ? 0.26f : 0.18f));
+    gr.strokePath(controlPath, juce::PathStrokeType(3.0f));
+  }
+
+  gr.setColour(juce::Colours::black.withAlpha(isPrimary ? 0.18f : 0.20f));
   auto shadowPath = controlPath;
   shadowPath.applyTransform(
-      juce::AffineTransform::translation(0.0f, isPrimary ? 2.0f : 1.4f));
+      juce::AffineTransform::translation(0.0f, isPrimary ? 1.5f : 1.0f));
   gr.fillPath(shadowPath);
 
-  gr.setColour(fill);
+  if (isPrimary) {
+    auto primaryTop = UITheme::accentSoft.brighter(isMouseOverButton ? 0.04f : 0.0f);
+    if (active)
+      primaryTop = primaryTop.brighter(0.05f);
+    juce::ColourGradient primaryFill(primaryTop, b.getCentreX(), b.getY(),
+                                     UITheme::accent, b.getCentreX(),
+                                     b.getBottom(), false);
+    gr.setGradientFill(primaryFill);
+  } else {
+    juce::ColourGradient secondaryFill(fill.brighter(0.025f), b.getCentreX(),
+                                       b.getY(), fill.darker(0.035f),
+                                       b.getCentreX(), b.getBottom(), false);
+    gr.setGradientFill(secondaryFill);
+  }
   gr.fillPath(controlPath);
-
-  gr.setColour(juce::Colours::white.withAlpha(isPrimary ? 0.16f : 0.08f));
-  gr.drawHorizontalLine(static_cast<int>(b.getY() + 1.0f), b.getX() + 8.0f,
-                        b.getRight() - 8.0f);
 
   const auto border =
       isPrimary ? UITheme::accentSoft.withAlpha(active ? 0.88f : 0.70f)
-                : UITheme::cardBorder.brighter(isMouseOverButton ? 0.18f : 0.08f)
-                      .withAlpha(0.82f);
+                : UITheme::cardBorder.brighter(isMouseOverButton ? 0.10f : 0.02f)
+                      .withAlpha(active ? 0.90f : 0.72f);
   gr.setColour(border);
   gr.strokePath(controlPath,
                 juce::PathStrokeType(isPrimary ? 1.25f : 1.0f));
 
   const bool hasBadge = badgeText.isNotEmpty();
   const auto iconColour = isPrimary ? UITheme::onAccent : UITheme::textPrimary;
-  const float iconSize = hasBadge ? 20.0f : 24.0f;
+  const float iconSize = hasBadge ? 18.0f : 21.0f;
   auto iconArea = b.withSizeKeepingCentre(iconSize, iconSize);
   if (icon == SvgIconName::Midi)
     iconArea = b.reduced(6.0f, 14.0f);
@@ -293,24 +337,29 @@ void TopBar::BpmSegmentButton::paintButton(juce::Graphics &g,
                                            bool isMouseOverButton,
                                            bool isButtonDown) {
   auto b = getLocalBounds().toFloat().reduced(0.5f);
-  const auto path = roundedControlPath(b, getConnectedEdgeFlags(), 7.0f);
-  auto fill = isButtonDown ? UITheme::accentSoft : UITheme::accent;
-  if (isMouseOverButton && !isButtonDown)
+  const auto path = roundedControlPath(b, getConnectedEdgeFlags(), 10.0f);
+  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  if (isButtonDown)
     fill = fill.brighter(0.08f);
+  if (isMouseOverButton && !isButtonDown)
+    fill = fill.brighter(0.05f);
 
-  g.setColour(juce::Colours::black.withAlpha(0.24f));
+  g.setColour(juce::Colours::black.withAlpha(0.20f));
   auto shadowPath = path;
-  shadowPath.applyTransform(juce::AffineTransform::translation(0.0f, 2.0f));
+  shadowPath.applyTransform(juce::AffineTransform::translation(0.0f, 1.0f));
   g.fillPath(shadowPath);
 
-  g.setColour(fill);
+  juce::ColourGradient controlFill(fill.brighter(0.025f), b.getCentreX(),
+                                   b.getY(), fill.darker(0.035f),
+                                   b.getCentreX(), b.getBottom(), false);
+  g.setGradientFill(controlFill);
   g.fillPath(path);
-  g.setColour(UITheme::accentSoft.withAlpha(0.70f));
-  g.strokePath(path, juce::PathStrokeType(1.25f));
+  g.setColour(UITheme::cardBorder.withAlpha(0.72f));
+  g.strokePath(path, juce::PathStrokeType(1.0f));
 
-  g.setColour(UITheme::onAccent);
+  g.setColour(UITheme::accentSoft.withAlpha(isButtonDown ? 1.0f : 0.92f));
   g.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
-  g.drawFittedText(getButtonText(), getLocalBounds().reduced(6, 2),
+  g.drawFittedText(getButtonText(), getLocalBounds().reduced(8, 2),
                    juce::Justification::centred, 1);
 }
 
@@ -320,7 +369,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       playButton("play", SvgIconName::Play, true),
       stopButton("stop", SvgIconName::Square),
       seekForwardButton("seekForward", SvgIconName::FastForward),
-      nextButton("next", SvgIconName::SkipForward, true),
+      nextButton("next", SvgIconName::SkipForward),
       fadeButton("fade", SvgIconName::FadeOut),
       windowModeButton("windowMode", SvgIconName::Maximize),
       settingsButton("settings", SvgIconName::Settings),
@@ -337,6 +386,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
   configureDisplay(systemUsageDisplay, "CPU: 0.0%\nMEM: 0.0%");
+  systemUsageDisplay.setComponentID("systemUsage");
   systemUsageDisplay.setInterceptsMouseClicks(false, false);
   systemUsageDisplay.setMouseCursor(juce::MouseCursor::NormalCursor);
   activeKeyLabel = L10n::tr("Tono", "Key");
@@ -350,7 +400,13 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       seekForwardButton, L10n::tr("Avanzar 5 segundos", "Seek forward 5 seconds"));
   setBaseTooltip(nextButton, L10n::tr(u8"Siguiente canción", "Next song"));
   setBaseTooltip(fadeButton, L10n::tr("Fade out", "Fade out"));
+  setBaseTooltip(windowModeButton,
+                 L10n::tr("Maximizar / restaurar", "Maximize / restore"));
+  setBaseTooltip(settingsButton, L10n::tr("Configuración", "Settings"));
   setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
+  setBaseTooltip(timeDisplay,
+                 L10n::tr("Ventana de canción", "Song window"));
+  setBaseTooltip(keyDisplay, L10n::tr("Tono", "Key"));
   midiLearnButton.setBadgeText({});
   configureMetronomeControls();
 
@@ -397,11 +453,17 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   };
 
   timeDisplay.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetUiSongWindowPopover);
+      return;
+    }
     showSongWindowPopover();
   };
   keyDisplay.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetUiKeyPopover);
+      return;
+    }
     showKeyPopover();
   };
 
@@ -471,11 +533,17 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     refreshFromProviders();
   };
   windowModeButton.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetUiWindowModeToggle);
+      return;
+    }
     toggleWindowMode();
   };
   settingsButton.onClick = [this, armLearnTarget] {
-    juce::ignoreUnused(armLearnTarget);
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetUiSettingsToggle);
+      return;
+    }
     openSettingsPanel();
   };
   midiLearnButton.setClickingTogglesState(true);
@@ -483,11 +551,19 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     midiLearnActive = midiLearnButton.getToggleState();
     if (!midiLearnActive)
       midiLearnPendingTargetId = -1;
+    midiLearnButton.setBadgeText(midiLearnActive ? "ON" : juce::String{});
+    refreshMidiLearnTooltips();
     if (onMidiLearnModeChanged)
       onMidiLearnModeChanged(midiLearnActive);
     repaint();
   };
-  bpmSegmentButton.onClick = [this] { showMetronomePopover(); };
+  bpmSegmentButton.onClick = [this, armLearnTarget] {
+    if (midiLearnActive) {
+      armLearnTarget(processor.midiTargetUiMetronomePopover);
+      return;
+    }
+    showMetronomePopover();
+  };
   metroToggleButton.onClick = [this, armLearnTarget] {
     if (midiLearnActive) {
       armLearnTarget(processor.midiTargetMetronomeEnabled);
@@ -570,6 +646,7 @@ void TopBar::setMidiLearnActive(const bool active) {
   if (!midiLearnActive)
     midiLearnPendingTargetId = -1;
   midiLearnButton.setToggleState(midiLearnActive, juce::dontSendNotification);
+  midiLearnButton.setBadgeText(midiLearnActive ? "ON" : juce::String{});
   refreshMidiLearnTooltips();
   repaint();
 }
@@ -604,26 +681,37 @@ void TopBar::setSystemUsage(const double cpuUsage01, const double memoryUsage01)
   const auto nextText =
       "CPU: " + juce::String(nextCpu * 100.0, 1) + "%\nMEM: " +
       juce::String(nextMem * 100.0, 1) + "%";
-  if (systemUsageDisplay.getText() != nextText)
-    systemUsageDisplay.setText(nextText, juce::dontSendNotification);
+  setLabelTextIfChanged(systemUsageDisplay, nextText);
 }
 
-void TopBar::setBaseTooltip(IconButton &button, const juce::String &text) {
-  button.getProperties().set(kMidiBaseTooltipProperty, text);
-  button.setTooltip(text);
+void TopBar::setBaseTooltip(juce::Button &component, const juce::String &text) {
+  component.getProperties().set(kMidiBaseTooltipProperty, text);
+  component.setTooltip(text);
+}
+
+void TopBar::setBaseTooltip(juce::Label &component, const juce::String &text) {
+  component.getProperties().set(kMidiBaseTooltipProperty, text);
+  component.setTooltip(text);
 }
 
 void TopBar::refreshMidiLearnTooltips() {
-  auto apply = [this](IconButton &button, const int targetId) {
-    const auto baseText = button.getProperties()
-                              .getWithDefault(kMidiBaseTooltipProperty, juce::var())
-                              .toString();
+  auto midiLabelForTarget = [this](const int targetId) {
+    if (targetId < 0 || midiLearnBindingLabelProvider == nullptr)
+      return juce::String{};
+    return midiLearnBindingLabelProvider(targetId).trim();
+  };
+
+  auto apply = [this](auto &component, const int targetId) {
+    const auto baseText =
+        component.getProperties()
+            .getWithDefault(kMidiBaseTooltipProperty, juce::var())
+            .toString();
     if (targetId < 0 || midiLearnBindingLabelProvider == nullptr) {
-      button.setTooltip(baseText);
+      component.setTooltip(baseText);
       return;
     }
     const auto midiCode = midiLearnBindingLabelProvider(targetId).trim();
-    button.setTooltip(withMidiAssignmentTooltip(baseText, midiCode));
+    component.setTooltip(withMidiAssignmentTooltip(baseText, midiCode));
   };
 
   apply(prevButton, processor.midiTargetTransportPrevSong);
@@ -633,7 +721,31 @@ void TopBar::refreshMidiLearnTooltips() {
   apply(seekForwardButton, processor.midiTargetTransportSeekForward);
   apply(nextButton, processor.midiTargetTransportNextSong);
   apply(fadeButton, processor.midiTargetTransportFadeToggle);
+  apply(timeDisplay, processor.midiTargetUiSongWindowPopover);
+  apply(bpmSegmentButton, processor.midiTargetUiMetronomePopover);
   apply(metroToggleButton, processor.midiTargetMetronomeEnabled);
+  apply(keyDisplay, processor.midiTargetUiKeyPopover);
+  apply(midiLearnButton, -1);
+  apply(windowModeButton, processor.midiTargetUiWindowModeToggle);
+  apply(settingsButton, processor.midiTargetUiSettingsToggle);
+
+  auto applyBadge = [this, midiLabelForTarget](IconButton &button,
+                                               const int targetId) {
+    button.setBadgeText(midiLearnActive ? midiLabelForTarget(targetId)
+                                        : juce::String{});
+  };
+
+  applyBadge(prevButton, processor.midiTargetTransportPrevSong);
+  applyBadge(seekBackButton, processor.midiTargetTransportSeekBack);
+  applyBadge(playButton, processor.midiTargetTransportPlayPause);
+  applyBadge(stopButton, processor.midiTargetTransportStop);
+  applyBadge(seekForwardButton, processor.midiTargetTransportSeekForward);
+  applyBadge(nextButton, processor.midiTargetTransportNextSong);
+  applyBadge(fadeButton, processor.midiTargetTransportFadeToggle);
+  applyBadge(metroToggleButton, processor.midiTargetMetronomeEnabled);
+  applyBadge(windowModeButton, processor.midiTargetUiWindowModeToggle);
+  applyBadge(settingsButton, processor.midiTargetUiSettingsToggle);
+  midiLearnButton.setBadgeText(midiLearnActive ? "ON" : juce::String{});
 }
 
 void TopBar::triggerWindowModeToggleFromMidi() { toggleWindowMode(); }
@@ -657,8 +769,11 @@ void TopBar::refreshThemeColours() {
   keyDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
   keyDisplay.setColour(juce::Label::outlineColourId,
                        UITheme::cardBorder.withAlpha(0.55f));
-  systemUsageDisplay.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  systemUsageDisplay.setColour(juce::Label::backgroundColourId, UITheme::cardBg);
+  systemUsageDisplay.setColour(juce::Label::textColourId,
+                               UITheme::textSecondary.withAlpha(0.92f));
+  systemUsageDisplay.setColour(
+      juce::Label::backgroundColourId,
+      UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.28f));
   systemUsageDisplay.setColour(juce::Label::outlineColourId,
                                UITheme::cardBorder.withAlpha(0.55f));
   bpmSegmentButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
@@ -680,6 +795,13 @@ void TopBar::paint(juce::Graphics &g) {
   g.drawLine(0.0f, static_cast<float>(getHeight()) - 0.5f,
              static_cast<float>(getWidth()),
              static_cast<float>(getHeight()) - 0.5f, 1.0f);
+
+  if (!songInfoBounds.isEmpty()) {
+    g.setColour(UITheme::dividerSoft.withAlpha(0.58f));
+    const float separatorX = static_cast<float>(songInfoBounds.getX() - 8);
+    g.drawLine(separatorX, 12.0f, separatorX,
+               static_cast<float>(getHeight()) - 12.0f, 1.0f);
+  }
 }
 
 void TopBar::paintOverChildren(juce::Graphics &g) {
@@ -689,6 +811,8 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
     auto drawLearnFrame = [this, &g, selectableColour,
                            pendingColour](juce::Component &comp,
                                           const int targetId) {
+      if (targetId < 0 || !comp.isVisible() || comp.getBounds().isEmpty())
+        return;
       const auto frameBounds = comp.getBounds().toFloat().reduced(1.0f);
       const bool pending = (midiLearnPendingTargetId == targetId);
       const float blink = pending ? midiLearnBlinkStrength()
@@ -710,7 +834,12 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
     drawLearnFrame(seekForwardButton, processor.midiTargetTransportSeekForward);
     drawLearnFrame(nextButton, processor.midiTargetTransportNextSong);
     drawLearnFrame(fadeButton, processor.midiTargetTransportFadeToggle);
+    drawLearnFrame(timeDisplay, processor.midiTargetUiSongWindowPopover);
+    drawLearnFrame(bpmSegmentButton, processor.midiTargetUiMetronomePopover);
     drawLearnFrame(metroToggleButton, processor.midiTargetMetronomeEnabled);
+    drawLearnFrame(keyDisplay, processor.midiTargetUiKeyPopover);
+    drawLearnFrame(windowModeButton, processor.midiTargetUiWindowModeToggle);
+    drawLearnFrame(settingsButton, processor.midiTargetUiSettingsToggle);
 
   }
 
@@ -719,18 +848,18 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
 
 void TopBar::resized() {
   int y = 10;
-  int square = 44;
+  int square = 40;
   int gap = 8;
   int keyWidth = 72;
-  int metroTotalW = 110;
-  int metroIconW = 44;
-  int timeWidth = 120;
-  int usageWidth = 92;
-  int minUsageWidth = 72;
-  int minCardW = 280;
-  int maxCardW = 460;
-  songCardHeight = 48;
-  songArtworkSize = 36;
+  int metroTotalW = 102;
+  int metroIconW = 40;
+  int timeWidth = 116;
+  int usageWidth = 78;
+  int minUsageWidth = 68;
+  int minCardW = 158;
+  int maxCardW = 286;
+  songCardHeight = 42;
+  songArtworkSize = 32;
 
   if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
     y = 8;
@@ -742,43 +871,56 @@ void TopBar::resized() {
     timeWidth = 96;
     usageWidth = 84;
     minUsageWidth = 68;
-    minCardW = 220;
-    maxCardW = 360;
+    minCardW = 148;
+    maxCardW = 260;
     songCardHeight = 40;
     songArtworkSize = 30;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
     y = 10;
-    square = 46;
+    square = 44;
     gap = 8;
     keyWidth = 76;
-    metroTotalW = 114;
-    metroIconW = 46;
-    timeWidth = 128;
-    usageWidth = 102;
-    minUsageWidth = 80;
-    minCardW = 320;
-    maxCardW = 500;
-    songCardHeight = 50;
-    songArtworkSize = 38;
+    metroTotalW = 108;
+    metroIconW = 44;
+    timeWidth = 124;
+    usageWidth = 88;
+    minUsageWidth = 76;
+    minCardW = 176;
+    maxCardW = 325;
+    songCardHeight = 44;
+    songArtworkSize = 34;
   }
 
-  int x = 12;
-
-  auto placeSquare = [&](juce::Component &c) {
-    c.setBounds(x, y - 2, square, square);
-    x += square + gap;
-  };
-
-  placeSquare(prevButton);
-  placeSquare(seekBackButton);
-  placeSquare(playButton);
-  placeSquare(stopButton);
-  placeSquare(seekForwardButton);
-  placeSquare(nextButton);
-  placeSquare(fadeButton);
-
-  const int transportW = x;
+  constexpr int transportButtonCount = 7;
+  const int leftPadding = 12;
   const int rightPadding = 12;
+  const int transportControlsW =
+      (transportButtonCount * square) + ((transportButtonCount - 1) * gap);
+
+  juce::FlexBox transportRow;
+  transportRow.flexDirection = juce::FlexBox::Direction::row;
+  transportRow.alignItems = juce::FlexBox::AlignItems::stretch;
+  auto addTransportButton = [&](juce::Component &component,
+                                const bool last = false) {
+    transportRow.items.add(
+        juce::FlexItem(component)
+            .withWidth(static_cast<float>(square))
+            .withHeight(static_cast<float>(square))
+            .withMargin(juce::FlexItem::Margin(
+                0.0f, last ? 0.0f : static_cast<float>(gap), 0.0f, 0.0f)));
+  };
+  addTransportButton(prevButton);
+  addTransportButton(seekBackButton);
+  addTransportButton(playButton);
+  addTransportButton(stopButton);
+  addTransportButton(seekForwardButton);
+  addTransportButton(nextButton);
+  addTransportButton(fadeButton, true);
+  transportRow.performLayout(juce::Rectangle<float>(
+      static_cast<float>(leftPadding), static_cast<float>(y - 2),
+      static_cast<float>(transportControlsW), static_cast<float>(square)));
+
+  const int transportW = leftPadding + transportControlsW + gap;
   const bool showWindowButton = shouldShowWindowModeButton();
   const int fixedButtonCount = showWindowButton ? 3 : 2;
   const int minFixedButtonsW =
@@ -795,57 +937,72 @@ void TopBar::resized() {
   bool showBpmText = true;
   auto layoutRightSide = [&](const bool usageVisible,
                              const bool bpmVisible) -> int {
-    int rightX = getWidth() - rightPadding;
+    const int metronomeW = bpmVisible ? metroTotalW : metroIconW;
+    int controlsW = timeWidth + gap + metronomeW + gap + keyWidth + gap +
+                    square + gap;
+    if (showWindowButton)
+      controlsW += square + gap;
+    controlsW += square;
+    if (usageVisible)
+      controlsW += gap + usageWidth;
 
-    systemUsageDisplay.setVisible(usageVisible);
-    if (usageVisible) {
-      systemUsageDisplay.setBounds(rightX - usageWidth, y - 2, usageWidth,
-                                   square);
-      rightX -= usageWidth + gap;
-    } else {
-      systemUsageDisplay.setBounds({});
-    }
+    const int leftX = getWidth() - rightPadding - controlsW;
 
-    settingsButton.setBounds(rightX - square, y - 2, square, square);
-    rightX -= square + gap;
+    setVisibleIfChanged(timeDisplay, true);
+    setVisibleIfChanged(keyDisplay, true);
+    setVisibleIfChanged(bpmSegmentButton, bpmVisible);
+    setVisibleIfChanged(systemUsageDisplay, usageVisible);
+    setVisibleIfChanged(windowModeButton, showWindowButton);
 
-    if (showWindowButton) {
-      windowModeButton.setVisible(true);
-      windowModeButton.setBounds(rightX - square, y - 2, square, square);
-      rightX -= square + gap;
-    } else {
-      windowModeButton.setVisible(false);
-      windowModeButton.setBounds({});
-    }
+    if (!bpmVisible)
+      setBoundsIfChanged(bpmSegmentButton, {});
+    if (!usageVisible)
+      setBoundsIfChanged(systemUsageDisplay, {});
+    if (!showWindowButton)
+      setBoundsIfChanged(windowModeButton, {});
 
-    midiLearnButton.setBounds(rightX - square, y - 2, square, square);
-    rightX -= square + gap;
+    juce::FlexBox rightRow;
+    rightRow.flexDirection = juce::FlexBox::Direction::row;
+    rightRow.alignItems = juce::FlexBox::AlignItems::stretch;
 
-    keyDisplay.setVisible(true);
-    keyDisplay.setBounds(rightX - keyWidth, y - 2, keyWidth, square);
-    rightX -= keyWidth + gap;
+    auto addItem = [&](juce::Component &component, const int width,
+                       const bool last = false) {
+      rightRow.items.add(
+          juce::FlexItem(component)
+              .withWidth(static_cast<float>(width))
+              .withHeight(static_cast<float>(square))
+              .withMargin(juce::FlexItem::Margin(
+                  0.0f, last ? 0.0f : static_cast<float>(gap), 0.0f, 0.0f)));
+    };
 
-    const int metroY = y - 2;
+    addItem(timeDisplay, timeWidth);
     if (bpmVisible) {
-      bpmSegmentButton.setVisible(true);
-      bpmSegmentButton.setBounds(rightX - metroTotalW, metroY,
-                                 metroTotalW - metroIconW, square);
-      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW,
-                                  square);
-      rightX -= metroTotalW + gap;
+      rightRow.items.add(
+          juce::FlexItem(bpmSegmentButton)
+              .withWidth(static_cast<float>(metroTotalW - metroIconW))
+              .withHeight(static_cast<float>(square)));
+      rightRow.items.add(
+          juce::FlexItem(metroToggleButton)
+              .withWidth(static_cast<float>(metroIconW))
+              .withHeight(static_cast<float>(square))
+              .withMargin(juce::FlexItem::Margin(
+                  0.0f, static_cast<float>(gap), 0.0f, 0.0f)));
     } else {
-      bpmSegmentButton.setVisible(false);
-      bpmSegmentButton.setBounds({});
-      metroToggleButton.setBounds(rightX - metroIconW, metroY, metroIconW,
-                                  square);
-      rightX -= metroIconW + gap;
+      addItem(metroToggleButton, metroIconW);
     }
+    addItem(keyDisplay, keyWidth);
+    addItem(midiLearnButton, square);
+    if (showWindowButton)
+      addItem(windowModeButton, square);
+    addItem(settingsButton, square, !usageVisible);
+    if (usageVisible)
+      addItem(systemUsageDisplay, usageWidth, true);
 
-    timeDisplay.setVisible(true);
-    timeDisplay.setBounds(rightX - timeWidth, y - 2, timeWidth, square);
-    rightX -= timeWidth + gap;
+    rightRow.performLayout(juce::Rectangle<float>(
+        static_cast<float>(leftX), static_cast<float>(y - 2),
+        static_cast<float>(controlsW), static_cast<float>(square)));
 
-    return rightX;
+    return leftX - gap;
   };
 
   int rightX = 0;
@@ -871,9 +1028,30 @@ void TopBar::resized() {
   const int cardRight = rightX - 8;
   const int centerW = cardRight - cardLeft;
   if (centerW > 0) {
-    int cardW = centerW;
+    const auto titleText = songTitleText.isNotEmpty()
+                               ? songTitleText
+                               : L10n::tr("Sin canción", "No song loaded");
+    const auto artistText = songArtistText.isNotEmpty()
+                                ? songArtistText
+                                : L10n::tr("Selecciona una canción",
+                                           "Select a song");
+    const auto titleFont = makeAppFont(songTitleFontSize, AppFontWeight::SemiBold);
+    const auto artistFont = makeAppFont(songArtistFontSize, AppFontWeight::Medium);
+    auto measureText = [](const juce::Font &font, const juce::String &text) {
+      juce::GlyphArrangement glyphs;
+      glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+      return static_cast<int>(
+          std::ceil(glyphs.getBoundingBox(0, -1, true).getWidth()));
+    };
+    const int measuredTextW = juce::jmax(measureText(titleFont, titleText),
+                                         measureText(artistFont, artistText));
+    const int contentW = songArtworkSize + 11 + measuredTextW + 18;
+    const int preferredCardW =
+        juce::jlimit(minCardW, juce::jmin(maxCardW, contentW + contentW / 3),
+                     contentW);
+    int cardW = preferredCardW;
     if (centerW >= minCardW)
-      cardW = juce::jmin(maxCardW, centerW - 8);
+      cardW = juce::jmin(preferredCardW, centerW - 8);
     else
       cardW = juce::jmax(0, centerW - 8);
     const int cardX = cardLeft;
@@ -908,9 +1086,18 @@ void TopBar::paintSongInfoCard(juce::Graphics &g) {
   if (songInfoBounds.isEmpty())
     return;
 
-  const auto accent = songAccentColour;
+  auto cardBounds = songInfoBounds.toFloat().reduced(0.5f);
+  juce::ColourGradient cardFill(
+      UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f),
+      cardBounds.getX(), cardBounds.getY(),
+      UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.26f),
+      cardBounds.getRight(), cardBounds.getBottom(), false);
+  g.setGradientFill(cardFill);
+  g.fillRoundedRectangle(cardBounds, 9.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.72f));
+  g.drawRoundedRectangle(songInfoBounds.toFloat().reduced(0.5f), 9.0f, 1.0f);
 
-  auto content = songInfoBounds.reduced(4, 6);
+  auto content = songInfoBounds.reduced(6, 5);
   if (content.isEmpty())
     return;
   const int artSize =
@@ -920,29 +1107,37 @@ void TopBar::paintSongInfoCard(juce::Graphics &g) {
       content.getY() + juce::jmax(0, (content.getHeight() - artSize) / 2),
       artSize, artSize);
 
+  const auto artworkFloat = artworkArea.toFloat();
   if (songArtwork.isValid()) {
+    juce::Graphics::ScopedSaveState saveState(g);
+    juce::Path clip;
+    clip.addRoundedRectangle(artworkFloat, 5.0f);
+    g.reduceClipRegion(clip);
     g.drawImageWithin(songArtwork, artworkArea.getX(), artworkArea.getY(),
                       artworkArea.getWidth(), artworkArea.getHeight(),
-                      juce::RectanglePlacement::centred |
-                          juce::RectanglePlacement::onlyReduceInSize);
+                      juce::RectanglePlacement::fillDestination);
   } else {
     const auto placeholder = songTitleText.trim().isNotEmpty()
                                  ? songTitleText.trim().substring(0, 1).toUpperCase()
                                  : "?";
-    g.setColour(accent.withAlpha(0.96f));
+    g.setColour(songAccentColour.withAlpha(0.28f));
+    g.fillRoundedRectangle(artworkFloat, 5.0f);
+    g.setColour(songAccentColour.withAlpha(0.96f));
     g.setFont(makeAppFont(songTitleFontSize + 1.5f, AppFontWeight::SemiBold));
     g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
   }
+  g.setColour(juce::Colours::white.withAlpha(0.12f));
+  g.drawRoundedRectangle(artworkFloat.reduced(0.5f), 5.0f, 1.0f);
 
-  const int textX = artworkArea.getRight() + 10;
+  const int textX = artworkArea.getRight() + 11;
   auto textArea = juce::Rectangle<int>(textX, content.getY(),
                                        juce::jmax(0, content.getRight() - textX),
                                        content.getHeight());
   if (textArea.isEmpty())
     return;
 
-  const int titleH = responsiveProfile == ResponsiveLayoutProfile::Compact ? 14 : 17;
-  const int artistH = responsiveProfile == ResponsiveLayoutProfile::Compact ? 11 : 13;
+  const int titleH = responsiveProfile == ResponsiveLayoutProfile::Compact ? 14 : 16;
+  const int artistH = responsiveProfile == ResponsiveLayoutProfile::Compact ? 11 : 12;
   const int lineGap = responsiveProfile == ResponsiveLayoutProfile::Compact ? 1 : 2;
   const int totalTextH = titleH + artistH + lineGap;
   const int textY = textArea.getY() +
@@ -998,8 +1193,8 @@ void TopBar::applyResponsiveTypography() {
   float displayFont = 13.0f;
   float keyFont = 15.0f;
   float usageFont = 12.5f;
-  songTitleFontSize = 15.2f;
-  songArtistFontSize = 11.5f;
+  songTitleFontSize = 14.4f;
+  songArtistFontSize = 10.8f;
   if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
     displayFont = 11.5f;
     keyFont = 13.0f;
@@ -1010,8 +1205,8 @@ void TopBar::applyResponsiveTypography() {
     displayFont = 13.5f;
     keyFont = 15.5f;
     usageFont = 13.0f;
-    songTitleFontSize = 16.2f;
-    songArtistFontSize = 12.2f;
+    songTitleFontSize = 15.4f;
+    songArtistFontSize = 11.4f;
   }
   timeDisplay.setFont(juce::FontOptions(displayFont));
   keyDisplay.setFont(juce::FontOptions(keyFont).withStyle("Bold"));
@@ -1042,6 +1237,8 @@ void TopBar::configureMetronomeControls() {
   bpmSegmentButton.setColour(juce::TextButton::textColourOnId,
                              UITheme::onAccent);
   bpmSegmentButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+  setBaseTooltip(bpmSegmentButton,
+                 L10n::tr(u8"Tempo y compás", "Tempo and meter"));
   addAndMakeVisible(bpmSegmentButton);
 
   metroToggleButton.setClickingTogglesState(true);
@@ -1115,7 +1312,7 @@ void TopBar::timerCallback() {
 void TopBar::updateBpmDisplay() {
   const int bpm =
       static_cast<int>(std::round(processor.getPlaybackTempoBpm()));
-  bpmSegmentButton.setButtonText(bpm > 0 ? juce::String(bpm) : "120");
+  setButtonTextIfChanged(bpmSegmentButton, bpm > 0 ? juce::String(bpm) : "120");
 }
 
 void TopBar::applyTimeSignature(const juce::String &sigText) {
@@ -1186,6 +1383,15 @@ void TopBar::showMetronomePopover() {
       };
       addAndMakeVisible(tapButton);
 
+      meterLabel.setText(L10n::tr(u8"Compás", "Meter"),
+                         juce::dontSendNotification);
+      bpmLabel.setText("BPM", juce::dontSendNotification);
+      for (auto *label : {&meterLabel, &bpmLabel}) {
+        label->setJustificationType(juce::Justification::centredLeft);
+        label->setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
+        addAndMakeVisible(label);
+      }
+
       timeSigBox.addItem("2/4", 1);
       timeSigBox.addItem("3/4", 2);
       timeSigBox.addItem("4/4", 3);
@@ -1200,6 +1406,8 @@ void TopBar::showMetronomePopover() {
 
       minusButton.setButtonText("-");
       plusButton.setButtonText("+");
+      minusButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+      plusButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
       minusButton.onClick = [this] {
         if (onAdjustBpm)
           onAdjustBpm(-1.0);
@@ -1226,17 +1434,25 @@ void TopBar::showMetronomePopover() {
       auto b = getLocalBounds().toFloat();
       g.setColour(UITheme::cardBg);
       g.fillRoundedRectangle(b, 6.0f);
+      g.setColour(UITheme::accent.withAlpha(0.18f));
+      g.fillRoundedRectangle(b.removeFromTop(4.0f), 2.0f);
       g.setColour(UITheme::cardBorder);
-      g.drawRoundedRectangle(b, 6.0f, 1.0f);
+      g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 6.0f,
+                             1.0f);
     }
 
     void resized() override {
       auto area = getLocalBounds().reduced(10);
-      tapButton.setBounds(area.removeFromTop(32));
-      area.removeFromTop(8);
-      timeSigBox.setBounds(area.removeFromTop(26));
-      area.removeFromTop(8);
+      auto topRow = area.removeFromTop(32);
+      tapButton.setBounds(topRow.removeFromLeft(58));
+      topRow.removeFromLeft(10);
+      meterLabel.setBounds(topRow.removeFromLeft(56));
+      timeSigBox.setBounds(topRow);
+
+      area.removeFromTop(10);
       auto row = area.removeFromTop(30);
+      bpmLabel.setBounds(row.removeFromLeft(44));
+      row.removeFromLeft(6);
       minusButton.setBounds(row.removeFromLeft(28));
       plusButton.setBounds(row.removeFromRight(28));
       bpmEditor.setBounds(row.reduced(6, 0));
@@ -1246,6 +1462,7 @@ void TopBar::showMetronomePopover() {
     juce::TextButton tapButton, minusButton, plusButton;
     juce::ComboBox timeSigBox;
     juce::TextEditor bpmEditor;
+    juce::Label meterLabel, bpmLabel;
     std::function<void()> onTap;
     std::function<void(const juce::String &)> onTimeSig;
     std::function<void(double)> onSetBpm;
@@ -1259,6 +1476,12 @@ void TopBar::showMetronomePopover() {
                        UITheme::cardBgPressed);
         btn->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
       }
+      tapButton.setColour(juce::TextButton::buttonColourId,
+                          UITheme::accent.withAlpha(0.92f));
+      tapButton.setColour(juce::TextButton::textColourOffId,
+                          UITheme::onAccent);
+      for (auto *label : {&meterLabel, &bpmLabel})
+        label->setColour(juce::Label::textColourId, UITheme::textSecondary);
       timeSigBox.setColour(juce::ComboBox::backgroundColourId,
                            UITheme::cardBgHover);
       timeSigBox.setColour(juce::ComboBox::outlineColourId,
@@ -1296,7 +1519,7 @@ void TopBar::showMetronomePopover() {
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
       [this] { return processor.getPlaybackTempoBpm(); }, timeSignature);
-  panel->setSize(180, 120);
+  panel->setSize(230, 92);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)
@@ -1694,11 +1917,26 @@ void TopBar::showSongWindowPopover() {
 }
 
 void TopBar::refreshFromProviders() {
+  bool songCardNeedsRepaint = false;
+  auto assignSongText = [&songCardNeedsRepaint](juce::String &target,
+                                                juce::String value) {
+    if (target == value)
+      return;
+    target = std::move(value);
+    songCardNeedsRepaint = true;
+  };
+  auto assignSongAccent = [&songCardNeedsRepaint](juce::Colour &target,
+                                                  juce::Colour value) {
+    if (target == value)
+      return;
+    target = value;
+    songCardNeedsRepaint = true;
+  };
+
   const double pos = positionProvider ? positionProvider() : 0.0;
   const double len = lengthProvider ? lengthProvider() : 0.0;
-  timeDisplay.setText(formatTimeSeconds(pos) + " / " +
-                          formatTimeSeconds(len),
-                      juce::dontSendNotification);
+  setLabelTextIfChanged(timeDisplay, formatTimeSeconds(pos) + " / " +
+                                         formatTimeSeconds(len));
 
   updateBpmDisplay();
 
@@ -1719,17 +1957,21 @@ void TopBar::refreshFromProviders() {
       hasKey = false;
       lastSongIdentity.clear();
       lastArtworkPath.clear();
-      songArtwork = {};
+      if (songArtwork.isValid()) {
+        songArtwork = {};
+        songCardNeedsRepaint = true;
+      }
       lastKeyToken.clear();
       baseKeySemitone = 0;
       activeKeySemitone = 0;
       activeKeyLabel = L10n::tr("Tono", "Key");
       processor.setPitchSemiTones(0);
     }
-    songTitleText = L10n::tr("Sin canción", "No song loaded");
-    songArtistText = L10n::tr("Selecciona una canción", "Select a song");
-    songAccentColour = UITheme::accentMuted;
-    keyDisplay.setText(L10n::tr("Tono", "Key"), juce::dontSendNotification);
+    assignSongText(songTitleText, L10n::tr("Sin canción", "No song loaded"));
+    assignSongText(songArtistText,
+                   L10n::tr("Selecciona una canción", "Select a song"));
+    assignSongAccent(songAccentColour, UITheme::accentMuted);
+    setLabelTextIfChanged(keyDisplay, L10n::tr("Tono", "Key"));
   } else {
     const auto keyText =
         loadedSong != nullptr && loadedSong->key.trim().isNotEmpty()
@@ -1787,19 +2029,21 @@ void TopBar::refreshFromProviders() {
       activeKeyLabel = L10n::tr("Tono", "Key");
     activePitchDelta = semitoneDelta(baseKeySemitone, activeKeySemitone);
     processor.setPitchSemiTones(activePitchDelta);
-    keyDisplay.setText(activeKeyLabel, juce::dontSendNotification);
+    setLabelTextIfChanged(keyDisplay, activeKeyLabel);
 
-    songTitleText = songTitle.isNotEmpty() ? songTitle
-                                           : L10n::tr("Canción sin título",
-                                                      "Untitled Song");
-    songArtistText = songArtist;
-    songAccentColour = colourfulAccentFromStableId(activeSongId);
+    assignSongText(songTitleText,
+                   songTitle.isNotEmpty()
+                       ? songTitle
+                       : L10n::tr("Canción sin título", "Untitled Song"));
+    assignSongText(songArtistText, songArtist);
+    assignSongAccent(songAccentColour, colourfulAccentFromStableId(activeSongId));
 
     if (loadedSong != nullptr) {
       const auto artworkPath = loadedSong->artworkPath.trim();
       if (artworkPath != lastArtworkPath) {
         lastArtworkPath = artworkPath;
         songArtwork = {};
+        songCardNeedsRepaint = true;
         if (artworkPath.isNotEmpty()) {
           const juce::File artworkFile(artworkPath);
           if (artworkFile.existsAsFile())
@@ -1807,20 +2051,35 @@ void TopBar::refreshFromProviders() {
         }
       }
     } else {
-      lastArtworkPath.clear();
-      songArtwork = {};
+      if (lastArtworkPath.isNotEmpty() || songArtwork.isValid()) {
+        lastArtworkPath.clear();
+        songArtwork = {};
+        songCardNeedsRepaint = true;
+      }
     }
   }
 
   const bool playing = playingProvider ? playingProvider() : false;
   playButton.setIcon(playing ? SvgIconName::Pause : SvgIconName::Play);
+  if (playButton.getToggleState() != playing)
+    playButton.setToggleState(playing, juce::dontSendNotification);
+  const bool stopped = !playing && pos <= 0.05;
+  if (stopButton.getToggleState() != stopped)
+    stopButton.setToggleState(stopped, juce::dontSendNotification);
   const bool fadeOutActive = processor.isFadeActive();
   fadeButton.setIcon(fadeOutActive ? SvgIconName::FadeIn
                                    : SvgIconName::FadeOut);
-  fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
-  metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
-                                   juce::dontSendNotification);
-  metroToggleButton.setBadgeText(processor.isMetronomeEnabled() ? "ON"
-                                                               : juce::String{});
-  repaint();
+  if (fadeButton.getToggleState() != fadeOutActive)
+    fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
+  if (!midiLearnActive)
+    fadeButton.setBadgeText(fadeOutActive ? "ON" : juce::String{});
+  const bool metronomeEnabled = processor.isMetronomeEnabled();
+  if (metroToggleButton.getToggleState() != metronomeEnabled)
+    metroToggleButton.setToggleState(metronomeEnabled,
+                                     juce::dontSendNotification);
+  if (!midiLearnActive)
+    metroToggleButton.setBadgeText(metronomeEnabled ? "ON" : juce::String{});
+
+  if (songCardNeedsRepaint)
+    repaint(songInfoBounds.expanded(2));
 }

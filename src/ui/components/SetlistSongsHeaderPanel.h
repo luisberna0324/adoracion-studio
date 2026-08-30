@@ -27,6 +27,7 @@ public:
   void setOnBpmClicked(std::function<void()> cb);
 
   void setActionsEnabled(bool enabled);
+  void setLibraryActionVisible(bool visible);
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -51,6 +52,7 @@ private:
   std::function<void()> onBpmClicked;
 
   bool actionsEnabled = true;
+  bool libraryActionVisible = true;
   bool hoveredAddAction = false;
   bool pressedAddAction = false;
   int hoveredBlock = -1;
