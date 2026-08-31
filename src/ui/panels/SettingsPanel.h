@@ -78,9 +78,11 @@ private:
   };
 
   class RoutingRow;
+  class SettingsCard;
 
   juce::Label title;
-  SettingsTabs tabs{juce::TabbedButtonBar::TabsAtTop};
+  juce::TextButton closeButton;
+  SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Component generalPage;
   juce::Component audioPage;
   juce::Component routingPage;
@@ -118,6 +120,10 @@ private:
   juce::HyperlinkButton infoLinkButton{
       "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
   juce::TextButton logoutButton;
+  std::unique_ptr<SettingsCard> appearanceCard;
+  std::unique_ptr<SettingsCard> playbackCard;
+  std::unique_ptr<SettingsCard> sessionCard;
+  std::unique_ptr<SettingsCard> actionsCard;
   juce::Label routingSectionLabel;
   juce::Label routingHintLabel;
   juce::Viewport routingViewport;
@@ -129,6 +135,7 @@ private:
   StemOptimizationChanged onStemOptimizationChanged;
   PadsCrossfadeChanged onPadsCrossfadeChanged;
   MetronomeClickStyleChanged onMetronomeClickStyleChanged;
+  CloseRequested onCloseRequested;
   LogoutRequested onLogoutRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;

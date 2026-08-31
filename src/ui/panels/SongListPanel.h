@@ -180,6 +180,7 @@ private:
   void openSongImportWizard();
   void openSongImportWizard(const juce::File &destination);
   void openProjectFileChooser();
+  void openProjectFileFromUrl(const juce::URL &url);
   void openSongEditWizard(const juce::String &songId);
   void beginLegacySongConversion(const juce::String &songId);
   void convertLegacySongAtDestination(const juce::String &songId,

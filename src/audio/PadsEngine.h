@@ -36,7 +36,11 @@ public:
   void beginSongTransitionFadeOut() noexcept;
   void beginSongTransitionFadeIn() noexcept;
 
-  LoadResult loadFromFolder(const juce::File &folder, juce::AudioFormatManager &formatManager);
+  LoadResult loadFromFolder(const juce::File &folder,
+                            juce::AudioFormatManager &formatManager);
+  bool ensureNoteLoaded(int noteIndex,
+                        juce::AudioFormatManager &formatManager);
+  bool isNoteLoaded(int noteIndex) const noexcept;
 
   void triggerNote(int noteIndex, int octave);
   /** Compatibility alias for a continuous song-key retune. */
@@ -57,6 +61,7 @@ private:
 
   struct NoteSample {
     juce::AudioBuffer<float> data;
+    juce::File sourceFile;
     double sourceSampleRate = 44100.0;
     bool valid = false;
   };
@@ -87,6 +92,8 @@ private:
 
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);
+  static bool loadNoteSampleFromFile(NoteSample &target, const juce::File &file,
+                                     juce::AudioFormatManager &formatManager);
   void updateFadeDurations() noexcept;
   void updateVoiceIncrement(Voice &voice);
   static void beginFadeOut(Voice &voice);

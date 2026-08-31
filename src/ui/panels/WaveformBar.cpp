@@ -1130,7 +1130,7 @@ void WaveformBar::openSectionPicker(const juce::Rectangle<float> &anchor,
   menu.addSubMenu(L10n::tr("Utilidades", "Utilities"), utilityMenu);
 
   const auto safe = juce::Component::SafePointer<WaveformBar>(this);
-  auto options = juce::PopupMenu::Options()
+  auto options = makeTouchPopupMenuOptions(nullptr)
                      .withTargetScreenArea(parentComp->localAreaToGlobal(
                          calloutAnchor))
                      .withParentComponent(parentComp);
@@ -1194,29 +1194,16 @@ void WaveformBar::refreshThemeColours() {
   snapModeLabel.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
   snapModeLabel.setColour(juce::Label::textColourId,
                           UITheme::textSecondary.withAlpha(0.95f));
-  snapModeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  snapModeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  snapModeBox.setColour(juce::ComboBox::outlineColourId,
-                        UITheme::cardBorder.withAlpha(0.75f));
-  snapModeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  applyComboBoxTheme(snapModeBox, UITheme::cardBgHover,
+                     UITheme::cardBorder.withAlpha(0.75f));
   for (auto *label : {&tempoBpmLabel, &tempoSignatureLabel}) {
     label->setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
     label->setColour(juce::Label::textColourId, UITheme::textPrimary);
   }
-  tempoBpmEditor.setColour(juce::TextEditor::backgroundColourId,
-                           UITheme::cardBgHover);
-  tempoBpmEditor.setColour(juce::TextEditor::textColourId,
-                           UITheme::textPrimary);
-  tempoBpmEditor.setColour(juce::TextEditor::outlineColourId,
-                           UITheme::cardBorder.withAlpha(0.75f));
-  tempoSignatureBox.setColour(juce::ComboBox::backgroundColourId,
-                              UITheme::cardBgHover);
-  tempoSignatureBox.setColour(juce::ComboBox::textColourId,
-                              UITheme::textPrimary);
-  tempoSignatureBox.setColour(juce::ComboBox::outlineColourId,
-                              UITheme::cardBorder.withAlpha(0.75f));
-  tempoSignatureBox.setColour(juce::ComboBox::arrowColourId,
-                              UITheme::textPrimary);
+  applyTextEditorTheme(tempoBpmEditor, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.75f));
+  applyComboBoxTheme(tempoSignatureBox, UITheme::cardBgHover,
+                     UITheme::cardBorder.withAlpha(0.75f));
   for (auto *button : {&splitTempoRegionButton}) {
     button->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
     button->setColour(juce::TextButton::buttonOnColourId,

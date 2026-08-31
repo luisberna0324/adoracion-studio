@@ -115,6 +115,71 @@ juce::String toSentenceCase(const juce::String &text) {
 
   return normalized;
 }
+
+juce::File importedProjectsDirectory() {
+  auto dir = SongLibraryStore::getRootDirectory()
+                 .getChildFile("imports")
+                 .getChildFile("projects");
+  dir.createDirectory();
+  return dir;
+}
+
+juce::File makeImportedProjectTarget(const juce::URL &url) {
+  auto fileName = juce::File::createLegalFileName(url.getFileName().trim());
+  if (fileName.isEmpty())
+    fileName = "imported-project.pwproj";
+  if (!fileName.endsWithIgnoreCase(".pwproj"))
+    fileName += ".pwproj";
+
+  const auto stamp = juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+  return importedProjectsDirectory().getChildFile(
+      juce::File::createLegalFileName(stamp + "_" + fileName));
+}
+
+juce::File importProjectUrlToSandbox(const juce::URL &url,
+                                     juce::String &error) {
+  error.clear();
+  const auto target = makeImportedProjectTarget(url);
+  auto input = url.createInputStream(
+      juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+          .withConnectionTimeoutMs(60000));
+  if (input == nullptr) {
+    error = L10n::tr(
+        "No se pudo acceder al archivo seleccionado desde Archivos.",
+        "Couldn't access the selected file from Files.");
+    return {};
+  }
+
+  auto output = target.createOutputStream();
+  if (output == nullptr) {
+    error = L10n::tr("No se pudo preparar la importación del proyecto.",
+                     "Couldn't prepare the project import.");
+    return {};
+  }
+
+  constexpr int64_t bufferSize = 256 * 1024;
+  juce::HeapBlock<char> buffer(static_cast<size_t>(bufferSize));
+  while (!input->isExhausted()) {
+    const auto bytesRead = input->read(buffer.getData(),
+                                       static_cast<int>(bufferSize));
+    if (bytesRead <= 0)
+      break;
+    if (!output->write(buffer.getData(), static_cast<size_t>(bytesRead))) {
+      error = L10n::tr("No se pudo copiar el proyecto al almacenamiento local.",
+                       "Couldn't copy the project to local storage.");
+      return {};
+    }
+  }
+
+  output->flush();
+  if (!target.existsAsFile() || target.getSize() <= 0) {
+    error = L10n::tr("La copia local del proyecto quedó incompleta.",
+                     "The local project copy is incomplete.");
+    return {};
+  }
+
+  return target;
+}
 } // namespace
 
 SongListPanel::HeaderIconButton::HeaderIconButton(const juce::String &name,
@@ -1111,8 +1176,7 @@ void SongListPanel::openHeaderMenu() {
     menu.addItem(L10n::tr("Eliminar setlist actual", "Delete current setlist"),
                  [this] { deleteActiveSetlist(); });
   }
-  menu.showMenuAsync(
-      juce::PopupMenu::Options().withTargetComponent(headerMenuButton));
+  menu.showMenuAsync(makeTouchPopupMenuOptions(&headerMenuButton));
 }
 
 void SongListPanel::openLibraryBrowser() {
@@ -1144,12 +1208,12 @@ void SongListPanel::openSetlistOptionsMenu(const juce::String &setlistId,
       targetArea = viewed->getLocalBounds().withSizeKeepingCentre(10, 10);
     const auto screenArea = viewed->localAreaToGlobal(targetArea);
     menu.showMenuAsync(
-        juce::PopupMenu::Options()
+        makeTouchPopupMenuOptions(nullptr)
             .withTargetScreenArea(screenArea)
             .withParentComponent(this));
     return;
   }
-  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+  menu.showMenuAsync(makeTouchPopupMenuOptions(this));
 }
 
 void SongListPanel::createSetlist() {
@@ -2545,8 +2609,7 @@ private:
                             "No songs available"),
                    false, false, nullptr);
     }
-    menu.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(addSongButton));
+    menu.showMenuAsync(makeTouchPopupMenuOptions(&addSongButton));
   }
 
   void createSetlist() {
@@ -2693,12 +2756,50 @@ void SongListPanel::openProjectFileChooser() {
                                       juce::FileBrowserComponent::canSelectFiles,
                                   [safeThis = juce::Component::SafePointer<SongListPanel>(this)](
                                       const juce::FileChooser &chooser) {
-    if (safeThis != nullptr) safeThis->openProjectFile(chooser.getResult());
+    if (safeThis != nullptr)
+      safeThis->openProjectFileFromUrl(chooser.getURLResult());
   });
 }
 
+void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
+  if (url.isEmpty())
+    return;
+
+  const auto file = url.getLocalFile();
+  SessionAuthLogger::write("[ProjectOpenUI] picker url=" + url.toString(false) +
+                           " localPath=" + file.getFullPathName());
+
+#if JUCE_IOS
+  juce::String importError;
+  const auto importedFile = importProjectUrlToSandbox(url, importError);
+  if (importedFile == juce::File{}) {
+    SessionAuthLogger::write("[ProjectOpenUI] import failed url=" +
+                             url.toString(false) + " error=\"" +
+                             importError + "\"");
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("No se pudo importar el proyecto", "Couldn't import project"),
+        importError);
+    return;
+  }
+
+  SessionAuthLogger::write("[ProjectOpenUI] imported url to path=" +
+                           importedFile.getFullPathName() + " size=" +
+                           juce::String(importedFile.getSize()));
+  openProjectFile(importedFile);
+#else
+  openProjectFile(file);
+#endif
+}
+
 void SongListPanel::openProjectFile(const juce::File &file) {
+  SessionAuthLogger::write("[ProjectOpenUI] requested path=" +
+                           file.getFullPathName() + " exists=" +
+                           juce::String(file.existsAsFile() ? 1 : 0) +
+                           " size=" + juce::String(file.getSize()));
   if (!file.existsAsFile()) {
+    SessionAuthLogger::write("[ProjectOpenUI] file missing path=" +
+                             file.getFullPathName());
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Proyecto no encontrado", "Project not found"),
@@ -2707,6 +2808,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
     return;
   }
   if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
+    SessionAuthLogger::write("[ProjectOpenUI] invalid extension path=" +
+                             file.getFullPathName());
     juce::AlertWindow::showMessageBoxAsync(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Archivo no compatible", "Unsupported file"),
@@ -2714,13 +2817,23 @@ void SongListPanel::openProjectFile(const juce::File &file) {
                  "Select a project with the .pwproj extension."));
     return;
   }
-  ProjectDocument document; juce::String error;
+  SessionAuthLogger::write("[ProjectOpenUI] opening path=" +
+                           file.getFullPathName());
+  ProjectDocument document;
+  juce::String error;
   if (!ProjectStore::open(file, document, &error) ||
       !SongLibraryStore::registerProjectSong(document.song)) {
+    SessionAuthLogger::write("[ProjectOpenUI] failed path=" +
+                             file.getFullPathName() + " error=\"" + error +
+                             "\" songId=" + document.song.id);
     juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
         L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"), error);
     return;
   }
+  SessionAuthLogger::write("[ProjectOpenUI] success path=" +
+                           file.getFullPathName() + " songId=" +
+                           document.song.id + " stems=" +
+                           juce::String(static_cast<int>(document.song.stems.size())));
   selectedSongId = document.song.id;
   AppSettings::setLastSelectedSongId(selectedSongId);
   refreshFromStorage();

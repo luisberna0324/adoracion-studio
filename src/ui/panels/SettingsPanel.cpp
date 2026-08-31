@@ -7,6 +7,17 @@
 #include <algorithm>
 #include <map>
 
+class SettingsPanel::SettingsCard final : public juce::Component {
+public:
+  void paint(juce::Graphics &g) override {
+    const auto b = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg.withAlpha(0.22f));
+    g.fillRoundedRectangle(b, 12.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.9f));
+    g.drawRoundedRectangle(b.reduced(0.5f), 12.0f, 1.0f);
+  }
+};
+
 class SettingsPanel::RoutingRow final : public juce::Component {
 public:
   RoutingRow(const juce::String &categoryName, const int outputChannels,
@@ -64,16 +75,10 @@ public:
 
   void refreshThemeColours() {
     categoryLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-    modeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-    modeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-    modeBox.setColour(juce::ComboBox::outlineColourId,
-                      UITheme::cardBorder.withAlpha(0.65f));
-    modeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-    channelBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-    channelBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-    channelBox.setColour(juce::ComboBox::outlineColourId,
-                         UITheme::cardBorder.withAlpha(0.65f));
-    channelBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+    applyComboBoxTheme(modeBox, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.65f));
+    applyComboBoxTheme(channelBox, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.65f));
   }
 
   void setDefaults(const CategoryRoutingDefaults &defaults,
@@ -153,21 +158,26 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onStemOptimizationChanged(std::move(stemOptimizationCb)),
       onPadsCrossfadeChanged(std::move(padsCrossfadeCb)),
       onMetronomeClickStyleChanged(std::move(metronomeClickStyleCb)),
+      onCloseRequested(std::move(closeCb)),
       onLogoutRequested(std::move(logoutCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
       availableOutputChannels(juce::jmax(1, outputChannels)),
       deviceManager(deviceManagerToUse) {
-  juce::ignoreUnused(closeCb);
   title.setJustificationType(juce::Justification::centredLeft);
-  title.setFont(juce::FontOptions(16.0f).withKerningFactor(0.04f));
+  title.setFont(makeAppFont(18.0f, AppFontWeight::SemiBold));
   addAndMakeVisible(title);
+  closeButton.onClick = [this] {
+    if (onCloseRequested)
+      onCloseRequested();
+  };
+  addAndMakeVisible(closeButton);
 
   if (deviceManager != nullptr) {
     audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
         *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, true, false, true, false);
-    audioSetupComp->setItemHeight(24);
+    audioSetupComp->setItemHeight(useTouchOptimisedControls() ? 34 : 24);
     audioPage.addAndMakeVisible(audioSetupComp.get());
     deviceManager->addChangeListener(this);
   }
@@ -178,7 +188,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
               false);
   tabs.addTab(L10n::tr("Ruteo", "Routing"), UITheme::cardBg, &routingPage,
               false);
-  tabs.setTabBarDepth(30);
+  tabs.setTabBarDepth(useTouchOptimisedControls() ? 196 : 172);
   tabs.onTabChanged = [this](int newIndex, const juce::String &) {
     if (newIndex == 2) {
       refreshRoutingForDevice();
@@ -186,8 +196,17 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   addAndMakeVisible(tabs);
 
+  appearanceCard = std::make_unique<SettingsCard>();
+  playbackCard = std::make_unique<SettingsCard>();
+  sessionCard = std::make_unique<SettingsCard>();
+  actionsCard = std::make_unique<SettingsCard>();
+  generalPage.addAndMakeVisible(*appearanceCard);
+  generalPage.addAndMakeVisible(*playbackCard);
+  generalPage.addAndMakeVisible(*sessionCard);
+  generalPage.addAndMakeVisible(*actionsCard);
+
   themeLabel.setJustificationType(juce::Justification::centredLeft);
-  themeLabel.setFont(juce::FontOptions(12.0f));
+  themeLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(themeLabel);
 
   themeBox.addItem(L10n::tr("Verde Noche", "Night Green"),
@@ -199,18 +218,16 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
           ? static_cast<int>(ThemePreset::Ableton)
           : static_cast<int>(ThemePreset::Spotify);
   themeBox.setSelectedId(selectedThemeId, juce::dontSendNotification);
-  themeBox.setJustificationType(juce::Justification::centredLeft);
   generalPage.addAndMakeVisible(themeBox);
 
   languageLabel.setJustificationType(juce::Justification::centredLeft);
-  languageLabel.setFont(juce::FontOptions(12.0f));
+  languageLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(languageLabel);
 
   languageBox.addItem("Espanol", static_cast<int>(AppLanguage::Spanish) + 1);
   languageBox.addItem("English", static_cast<int>(AppLanguage::English) + 1);
   languageBox.setSelectedId(static_cast<int>(language) + 1,
                             juce::dontSendNotification);
-  languageBox.setJustificationType(juce::Justification::centredLeft);
   languageBox.onChange = [this] {
     const int id = languageBox.getSelectedId();
     if (id <= 0)
@@ -226,7 +243,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(languageBox);
 
   expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
-  expandLaunchLabel.setFont(juce::FontOptions(12.0f));
+  expandLaunchLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(expandLaunchLabel);
 
   expandLaunchToggle.setClickingTogglesState(true);
@@ -239,7 +256,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(expandLaunchToggle);
 
   primeImportLabel.setJustificationType(juce::Justification::centredLeft);
-  primeImportLabel.setFont(juce::FontOptions(12.0f));
+  primeImportLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(primeImportLabel);
 
   primeImportToggle.setClickingTogglesState(true);
@@ -252,7 +269,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(primeImportToggle);
 
   stemOptimizationLabel.setJustificationType(juce::Justification::centredLeft);
-  stemOptimizationLabel.setFont(juce::FontOptions(12.0f));
+  stemOptimizationLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(stemOptimizationLabel);
 
   stemOptimizationToggle.setClickingTogglesState(true);
@@ -265,7 +282,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(stemOptimizationToggle);
 
   padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
-  padsCrossfadeLabel.setFont(juce::FontOptions(12.0f));
+  padsCrossfadeLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(padsCrossfadeLabel);
 
   padsCrossfadeBox.addItem("Rapido (1s)", 1);
@@ -292,7 +309,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(padsCrossfadeBox);
 
   metronomeClickStyleLabel.setJustificationType(juce::Justification::centredLeft);
-  metronomeClickStyleLabel.setFont(juce::FontOptions(12.0f));
+  metronomeClickStyleLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(metronomeClickStyleLabel);
 
   metronomeClickStyleBox.addItem("Classic", 1);
@@ -316,61 +333,61 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(metronomeClickStyleBox);
 
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionSectionLabel.setFont(juce::FontOptions(14.0f));
+  sessionSectionLabel.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
   generalPage.addAndMakeVisible(sessionSectionLabel);
 
   sessionUidLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionUidLabel.setFont(juce::FontOptions(12.0f));
+  sessionUidLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionUidLabel);
   sessionUidValue.setJustificationType(juce::Justification::centredLeft);
-  sessionUidValue.setFont(juce::FontOptions(12.0f));
+  sessionUidValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionUidValue);
 
   sessionEmailLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionEmailLabel.setFont(juce::FontOptions(12.0f));
+  sessionEmailLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionEmailLabel);
   sessionEmailValue.setJustificationType(juce::Justification::centredLeft);
-  sessionEmailValue.setFont(juce::FontOptions(12.0f));
+  sessionEmailValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionEmailValue);
 
   sessionPlanLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionPlanLabel.setFont(juce::FontOptions(12.0f));
+  sessionPlanLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionPlanLabel);
   sessionPlanValue.setJustificationType(juce::Justification::centredLeft);
-  sessionPlanValue.setFont(juce::FontOptions(12.0f));
+  sessionPlanValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionPlanValue);
 
   sessionStatusLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionStatusLabel.setFont(juce::FontOptions(12.0f));
+  sessionStatusLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionStatusLabel);
   sessionStatusValue.setJustificationType(juce::Justification::centredLeft);
-  sessionStatusValue.setFont(juce::FontOptions(12.0f));
+  sessionStatusValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionStatusValue);
 
   sessionExpiresLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionExpiresLabel.setFont(juce::FontOptions(12.0f));
+  sessionExpiresLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionExpiresLabel);
   sessionExpiresValue.setJustificationType(juce::Justification::centredLeft);
-  sessionExpiresValue.setFont(juce::FontOptions(12.0f));
+  sessionExpiresValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionExpiresValue);
 
   sessionLicenseLabel.setJustificationType(juce::Justification::centredLeft);
-  sessionLicenseLabel.setFont(juce::FontOptions(12.0f));
+  sessionLicenseLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(sessionLicenseLabel);
   sessionLicenseValue.setJustificationType(juce::Justification::centredLeft);
-  sessionLicenseValue.setFont(juce::FontOptions(12.0f));
+  sessionLicenseValue.setFont(makeAppFont(12.0f));
   generalPage.addAndMakeVisible(sessionLicenseValue);
 
   actionsSectionLabel.setJustificationType(juce::Justification::centredLeft);
-  actionsSectionLabel.setFont(juce::FontOptions(14.0f));
+  actionsSectionLabel.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
   generalPage.addAndMakeVisible(actionsSectionLabel);
 
   actionLogoutLabel.setJustificationType(juce::Justification::centredLeft);
-  actionLogoutLabel.setFont(juce::FontOptions(12.0f));
+  actionLogoutLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(actionLogoutLabel);
 
   actionInfoLabel.setJustificationType(juce::Justification::centredLeft);
-  actionInfoLabel.setFont(juce::FontOptions(12.0f));
+  actionInfoLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   generalPage.addAndMakeVisible(actionInfoLabel);
 
   generalPage.addAndMakeVisible(infoLinkButton);
@@ -449,17 +466,28 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
 
 void SettingsPanel::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
-  g.setColour(UITheme::cardBg);
-  g.fillRoundedRectangle(b, 6.0f);
-  g.setColour(UITheme::cardBorder);
-  g.drawRoundedRectangle(b, 6.0f, 1.0f);
+  g.setColour(UITheme::panelDark.brighter(0.06f));
+  g.fillRoundedRectangle(b, 14.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.92f));
+  g.drawRoundedRectangle(b.reduced(0.5f), 14.0f, 1.0f);
+
+  const int headerH = useTouchOptimisedControls() ? 78 : 64;
+  const int railW = useTouchOptimisedControls() ? 196 : 172;
+  g.setColour(UITheme::cardBorder.withAlpha(0.88f));
+  g.drawHorizontalLine(headerH, 0.0f, static_cast<float>(getWidth()));
+  g.drawVerticalLine(railW, static_cast<float>(headerH),
+                     static_cast<float>(getHeight()));
 }
 
 void SettingsPanel::resized() {
-  auto area = getLocalBounds().reduced(16);
-  auto header = area.removeFromTop(28);
-  title.setBounds(header);
-  area.removeFromTop(10);
+  auto area = getLocalBounds();
+  const int headerH = useTouchOptimisedControls() ? 78 : 64;
+  const int closeSize = useTouchOptimisedControls() ? 42 : 34;
+
+  auto header = area.removeFromTop(headerH);
+  title.setBounds(header.reduced(40, 0));
+  auto closeArea = header.removeFromRight(closeSize + 18);
+  closeButton.setBounds(closeArea.withSizeKeepingCentre(closeSize, closeSize));
   tabs.setBounds(area);
 
   layoutGeneralPage();
@@ -469,26 +497,32 @@ void SettingsPanel::resized() {
 
 void SettingsPanel::refreshThemeColours() {
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  title.setJustificationType(juce::Justification::centred);
+  title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
+                            AppFontWeight::Bold));
+  closeButton.setColour(juce::TextButton::buttonColourId,
+                        UITheme::cardBgHover.withAlpha(0.9f));
+  closeButton.setColour(juce::TextButton::buttonOnColourId,
+                        UITheme::cardBgPressed);
+  closeButton.setColour(juce::TextButton::textColourOffId,
+                        UITheme::textPrimary);
+  closeButton.setColour(juce::TextButton::textColourOnId,
+                        UITheme::textPrimary);
+  closeButton.setButtonText("x");
   tabs.setColour(juce::TabbedButtonBar::tabTextColourId,
                  UITheme::textSecondary);
   tabs.setColour(juce::TabbedButtonBar::frontTextColourId,
                  UITheme::textPrimary);
   tabs.setColour(juce::TabbedButtonBar::tabOutlineColourId,
-                 UITheme::cardBorder.withAlpha(0.7f));
+                 UITheme::cardBorder.withAlpha(0.88f));
   tabs.setColour(juce::TabbedButtonBar::frontOutlineColourId,
                  UITheme::cardBorder);
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  themeBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  themeBox.setColour(juce::ComboBox::outlineColourId,
-                     UITheme::cardBorder.withAlpha(0.65f));
-  themeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  themeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
   languageLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  languageBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  languageBox.setColour(juce::ComboBox::outlineColourId,
-                        UITheme::cardBorder.withAlpha(0.65f));
-  languageBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  languageBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  applyComboBoxTheme(languageBox, UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
   expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   expandLaunchToggle.setColour(juce::ToggleButton::textColourId,
                                UITheme::textPrimary);
@@ -512,22 +546,13 @@ void SettingsPanel::refreshThemeColours() {
   stemOptimizationToggle.setColour(juce::ToggleButton::tickDisabledColourId,
                                    UITheme::textSecondary);
   padsCrossfadeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  padsCrossfadeBox.setColour(juce::ComboBox::backgroundColourId,
-                             UITheme::cardBgHover);
-  padsCrossfadeBox.setColour(juce::ComboBox::outlineColourId,
-                             UITheme::cardBorder.withAlpha(0.65f));
-  padsCrossfadeBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  padsCrossfadeBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  applyComboBoxTheme(padsCrossfadeBox, UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
   metronomeClickStyleLabel.setColour(juce::Label::textColourId,
                                      UITheme::textSecondary);
-  metronomeClickStyleBox.setColour(juce::ComboBox::backgroundColourId,
-                                   UITheme::cardBgHover);
-  metronomeClickStyleBox.setColour(juce::ComboBox::outlineColourId,
-                                   UITheme::cardBorder.withAlpha(0.65f));
-  metronomeClickStyleBox.setColour(juce::ComboBox::textColourId,
-                                   UITheme::textPrimary);
-  metronomeClickStyleBox.setColour(juce::ComboBox::arrowColourId,
-                                   UITheme::textPrimary);
+  applyComboBoxTheme(metronomeClickStyleBox,
+                     UITheme::cardBgHover.withAlpha(0.78f),
+                     UITheme::cardBorder.withAlpha(0.84f));
   sessionSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   sessionUidLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   sessionEmailLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -547,7 +572,7 @@ void SettingsPanel::refreshThemeColours() {
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   logoutButton.setColour(juce::TextButton::buttonColourId,
-                         juce::Colour::fromRGB(125, 45, 45));
+                         juce::Colour::fromRGB(116, 42, 42));
   logoutButton.setColour(juce::TextButton::buttonOnColourId,
                          juce::Colour::fromRGB(148, 54, 54));
   logoutButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
@@ -561,6 +586,7 @@ void SettingsPanel::refreshThemeColours() {
 void SettingsPanel::applyLanguageTexts() {
   title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
+  closeButton.setButtonText("x");
   tabs.setTabName(0, L10n::tr("General", "General"));
   tabs.setTabName(1, L10n::tr(u8"Audio", "Audio"));
   tabs.setTabName(2, L10n::tr("Ruteo", "Routing"));
@@ -646,63 +672,74 @@ void SettingsPanel::applyLanguageTexts() {
 }
 
 void SettingsPanel::layoutGeneralPage() {
-  auto area = generalPage.getLocalBounds().reduced(4);
-  auto row = area.removeFromTop(26);
-  themeLabel.setBounds(row.removeFromLeft(90));
-  themeBox.setBounds(row);
-  area.removeFromTop(8);
-  auto languageRow = area.removeFromTop(26);
-  languageLabel.setBounds(languageRow.removeFromLeft(90));
-  languageBox.setBounds(languageRow);
-  area.removeFromTop(14);
-  auto expandRow = area.removeFromTop(26);
-  expandLaunchLabel.setBounds(expandRow.removeFromLeft(160));
-  expandLaunchToggle.setBounds(expandRow);
-  area.removeFromTop(10);
-  auto primeRow = area.removeFromTop(26);
-  primeImportLabel.setBounds(primeRow.removeFromLeft(160));
-  primeImportToggle.setBounds(primeRow);
-  area.removeFromTop(10);
-  auto stemOptimizationRow = area.removeFromTop(26);
-  stemOptimizationLabel.setBounds(stemOptimizationRow.removeFromLeft(160));
-  stemOptimizationToggle.setBounds(stemOptimizationRow);
-  area.removeFromTop(10);
-  auto padsCrossfadeRow = area.removeFromTop(26);
-  padsCrossfadeLabel.setBounds(padsCrossfadeRow.removeFromLeft(160));
-  padsCrossfadeBox.setBounds(padsCrossfadeRow);
-  area.removeFromTop(10);
-  auto metronomeStyleRow = area.removeFromTop(26);
-  metronomeClickStyleLabel.setBounds(metronomeStyleRow.removeFromLeft(160));
-  metronomeClickStyleBox.setBounds(metronomeStyleRow);
-  area.removeFromTop(16);
-  sessionSectionLabel.setBounds(area.removeFromTop(24));
-  area.removeFromTop(4);
-  auto sessionUidRow = area.removeFromTop(24);
-  sessionUidLabel.setBounds(sessionUidRow.removeFromLeft(120));
-  sessionUidValue.setBounds(sessionUidRow);
-  auto sessionEmailRow = area.removeFromTop(24);
-  sessionEmailLabel.setBounds(sessionEmailRow.removeFromLeft(120));
-  sessionEmailValue.setBounds(sessionEmailRow);
-  auto sessionPlanRow = area.removeFromTop(24);
-  sessionPlanLabel.setBounds(sessionPlanRow.removeFromLeft(120));
-  sessionPlanValue.setBounds(sessionPlanRow);
-  auto sessionStatusRow = area.removeFromTop(24);
-  sessionStatusLabel.setBounds(sessionStatusRow.removeFromLeft(120));
-  sessionStatusValue.setBounds(sessionStatusRow);
-  auto sessionExpiresRow = area.removeFromTop(24);
-  sessionExpiresLabel.setBounds(sessionExpiresRow.removeFromLeft(120));
-  sessionExpiresValue.setBounds(sessionExpiresRow);
-  auto sessionLicenseRow = area.removeFromTop(24);
-  sessionLicenseLabel.setBounds(sessionLicenseRow.removeFromLeft(120));
-  sessionLicenseValue.setBounds(sessionLicenseRow);
-  area.removeFromTop(12);
-  actionsSectionLabel.setBounds(area.removeFromTop(24));
-  area.removeFromTop(4);
-  actionLogoutLabel.setBounds(area.removeFromTop(22));
-  logoutButton.setBounds(area.removeFromTop(30));
-  area.removeFromTop(8);
-  actionInfoLabel.setBounds(area.removeFromTop(22));
-  infoLinkButton.setBounds(area.removeFromTop(24));
+  auto area = generalPage.getLocalBounds().reduced(
+      useTouchOptimisedControls() ? 28 : 22,
+      useTouchOptimisedControls() ? 24 : 18);
+  const int rowH = useTouchOptimisedControls() ? 62 : 52;
+  const int controlH = touchOptimisedControlHeight();
+  const int rightW = juce::jlimit(220, 360, area.getWidth() / 3);
+  const int rowGap = 6;
+
+  if (appearanceCard != nullptr)
+    appearanceCard->setBounds({});
+  if (playbackCard != nullptr)
+    playbackCard->setBounds({});
+  if (sessionCard != nullptr)
+    sessionCard->setBounds({});
+  sessionSectionLabel.setBounds({});
+  sessionUidLabel.setBounds({});
+  sessionUidValue.setBounds({});
+  sessionEmailLabel.setBounds({});
+  sessionEmailValue.setBounds({});
+  sessionPlanLabel.setBounds({});
+  sessionPlanValue.setBounds({});
+  sessionStatusLabel.setBounds({});
+  sessionStatusValue.setBounds({});
+  sessionExpiresLabel.setBounds({});
+  sessionExpiresValue.setBounds({});
+  sessionLicenseLabel.setBounds({});
+  sessionLicenseValue.setBounds({});
+  actionsSectionLabel.setBounds({});
+  actionLogoutLabel.setBounds({});
+  actionInfoLabel.setBounds({});
+  infoLinkButton.setBounds({});
+
+  auto layoutChoiceRow = [&](juce::Rectangle<int> row, juce::Label &label,
+                             juce::Component &control) {
+    auto right = row.removeFromRight(rightW);
+    label.setBounds(row.reduced(0, 8));
+    control.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
+  };
+
+  auto layoutToggleRow = [&](juce::Rectangle<int> row, juce::Label &label,
+                             juce::ToggleButton &toggle) {
+    auto right = row.removeFromRight(rightW);
+    label.setBounds(row.reduced(0, 8));
+    toggle.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
+  };
+
+  layoutChoiceRow(area.removeFromTop(rowH), themeLabel, themeBox);
+  area.removeFromTop(rowGap);
+  layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox);
+  area.removeFromTop(rowGap);
+  layoutToggleRow(area.removeFromTop(rowH), expandLaunchLabel, expandLaunchToggle);
+  area.removeFromTop(rowGap);
+  layoutToggleRow(area.removeFromTop(rowH), primeImportLabel, primeImportToggle);
+  area.removeFromTop(rowGap);
+  layoutToggleRow(area.removeFromTop(rowH), stemOptimizationLabel,
+                  stemOptimizationToggle);
+  area.removeFromTop(rowGap);
+  layoutChoiceRow(area.removeFromTop(rowH), padsCrossfadeLabel, padsCrossfadeBox);
+  area.removeFromTop(rowGap);
+  layoutChoiceRow(area.removeFromTop(rowH), metronomeClickStyleLabel,
+                  metronomeClickStyleBox);
+
+  if (actionsCard != nullptr) {
+    const int railW = useTouchOptimisedControls() ? 196 : 172;
+    actionsCard->setBounds(16, 240, railW - 32,
+                           useTouchOptimisedControls() ? 58 : 50);
+    logoutButton.setBounds(actionsCard->getBounds().reduced(12, 10));
+  }
 }
 
 juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
@@ -719,22 +756,22 @@ juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
 
 void SettingsPanel::layoutAudioPage() {
   if (audioSetupComp != nullptr) {
-    audioSetupComp->setBounds(audioPage.getLocalBounds().reduced(8));
+    audioSetupComp->setBounds(audioPage.getLocalBounds().reduced(18, 16));
   }
 }
 
 void SettingsPanel::layoutRoutingPage() {
-  auto area = routingPage.getLocalBounds().reduced(4);
+  auto area = routingPage.getLocalBounds().reduced(18, 16);
 
   auto labelArea = area.removeFromTop(22);
-  routingSectionLabel.setBounds(labelArea.reduced(20, 0)); // Alineado con la lista
+  routingSectionLabel.setBounds(labelArea);
   
   area.removeFromTop(8);
   auto hintArea = area.removeFromBottom(24);
-  routingHintLabel.setBounds(hintArea.reduced(20, 0));
+  routingHintLabel.setBounds(hintArea);
   area.removeFromBottom(6);
   
-  auto listArea = area.reduced(20, 0); // Mismo margen que el audioSetupComp
+  auto listArea = area;
   routingViewport.setBounds(listArea);
   
   const int rowH = 36;

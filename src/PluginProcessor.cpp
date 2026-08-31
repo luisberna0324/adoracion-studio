@@ -120,6 +120,12 @@ PadsEngine::CrossfadePreset toPadsEngineCrossfadePreset(
   }
 }
 
+double elapsedMsSince(const juce::int64 startTicks) {
+  return (static_cast<double>(juce::Time::getHighResolutionTicks() - startTicks) *
+          1000.0) /
+         static_cast<double>(juce::Time::getHighResolutionTicksPerSecond());
+}
+
 juce::String arrangementSectionKey(const juce::String &partName) {
   const auto canonical = canonicalArrangementSectionName(partName);
   if (canonical.isNotEmpty()) {
@@ -2075,7 +2081,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         for (int note = 0; note < 12; ++note) {
           const auto bit = static_cast<uint16_t>(1U << note);
           if ((triggerMask & bit) != 0)
-            padsEngine.triggerNote(note, 0);
+            if (padsEngine.isNoteLoaded(note)) {
+              padsEngine.triggerNote(note, 0);
+            } else {
+              midiPendingPadLoadMask.fetch_or(bit, std::memory_order_release);
+              midiPendingPadTriggerMask.fetch_or(bit, std::memory_order_release);
+            }
         }
         padsEngine.process(padsRenderBuffer);
         renderedPads = true;
@@ -2743,10 +2754,23 @@ void MTControlsAudioProcessor::timerCallback() {
   if (midiPadsPackLoadRequested.exchange(false,
                                          std::memory_order_acq_rel) &&
       !ensurePadsPackReady()) {
-    // A failed/cancelled load must not leave an old note armed indefinitely;
-    // otherwise it could fire much later when a different pack is loaded.
-    midiPendingPadTriggerMask.store(0, std::memory_order_release);
-    midiPendingPadStopMask.store(0, std::memory_order_release);
+    if (!padsPackLoading.load(std::memory_order_acquire)) {
+      // A failed/cancelled load must not leave an old note armed indefinitely;
+      // otherwise it could fire much later when a different pack is loaded.
+      midiPendingPadTriggerMask.store(0, std::memory_order_release);
+      midiPendingPadStopMask.store(0, std::memory_order_release);
+    }
+  }
+
+  const auto requestedNotes =
+      midiPendingPadLoadMask.exchange(0, std::memory_order_acq_rel);
+  for (int note = 0; note < PadsEngine::kNoteCount; ++note) {
+    const auto bit = static_cast<uint16_t>(1U << note);
+    if ((requestedNotes & bit) == 0)
+      continue;
+    if (!ensurePadsNoteReady(note))
+      midiPendingPadTriggerMask.fetch_and(static_cast<uint16_t>(~bit),
+                                          std::memory_order_release);
   }
 }
 
@@ -4751,6 +4775,7 @@ juce::String MTControlsAudioProcessor::buildPadsPackHash(
 bool MTControlsAudioProcessor::loadPadsPackInternal(
     const juce::File &folderToLoad, const juce::String &sourcePathForSettings,
     const bool persistSettings) {
+  const auto loadStartTicks = juce::Time::getHighResolutionTicks();
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   auto load = padsEngine.loadFromFolder(folderToLoad, playbackFormatManager);
   padsPackLoaded.store(load.ok, std::memory_order_relaxed);
@@ -4768,6 +4793,13 @@ bool MTControlsAudioProcessor::loadPadsPackInternal(
     settings.status = load.statusText;
     AppSettings::setPadsPackSettings(settings);
   }
+
+  juce::Logger::writeToLog(
+      "Pads loadFromFolder source=" + folderToLoad.getFullPathName() +
+      " ok=" + juce::String(load.ok ? "true" : "false") +
+      " notes=" + juce::String(load.loadedNotes) +
+      " status=" + load.statusText +
+      " elapsedMs=" + juce::String(elapsedMsSince(loadStartTicks), 1));
   return load.ok;
 }
 
@@ -4811,9 +4843,19 @@ bool MTControlsAudioProcessor::reloadLastPadsPack() {
 }
 
 bool MTControlsAudioProcessor::ensurePadsPackReady() {
+  const auto ensureStartTicks = juce::Time::getHighResolutionTicks();
   refreshPadsRoutingFromSettings();
   if (padsPackLoaded.load(std::memory_order_relaxed))
     return true;
+
+  if (padsPackLoading.exchange(true, std::memory_order_acq_rel))
+    return false;
+
+  struct LoadingFlagReset {
+    std::atomic<bool> &flag;
+    ~LoadingFlagReset() { flag.store(false, std::memory_order_release); }
+  } loadingGuard{padsPackLoading};
+
   {
     const juce::SpinLock::ScopedLockType lock(padsStateLock);
     padsPackStatusText = "Loading...";
@@ -4822,13 +4864,23 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
   {
     juce::String assetsError;
     const auto managedPadsFolder = AssetBootstrapManager::getPadsPackDirectory();
+    const auto assetsStartTicks = juce::Time::getHighResolutionTicks();
     {
       const juce::SpinLock::ScopedLockType lock(padsStateLock);
       padsPackStatusText = "Descargando recursos... / Downloading resources...";
     }
-    if (AssetBootstrapManager::ensurePadsPackReady(&assetsError) &&
+    const bool assetsReady = AssetBootstrapManager::ensurePadsPackReady(&assetsError);
+    juce::Logger::writeToLog(
+        "Pads ensure assetsReady=" + juce::String(assetsReady ? "true" : "false") +
+        " dir=" + managedPadsFolder.getFullPathName() +
+        " error=" + assetsError +
+        " elapsedMs=" + juce::String(elapsedMsSince(assetsStartTicks), 1));
+    if (assetsReady &&
         managedPadsFolder.isDirectory() &&
         loadPadsPackInternal(managedPadsFolder, managedPadsFolder.getFullPathName(), true)) {
+      juce::Logger::writeToLog(
+          "Pads ensure complete source=managed elapsedMs=" +
+          juce::String(elapsedMsSince(ensureStartTicks), 1));
       return true;
     }
     if (assetsError.isNotEmpty()) {
@@ -4844,20 +4896,61 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
       romanSource.isDirectory() &&
       !settings.sourcePath.equalsIgnoreCase(romanPath);
 
-  if (shouldPreferRomanImport && loadPadsPackFromFolder(romanSource))
+  if (shouldPreferRomanImport && loadPadsPackFromFolder(romanSource)) {
+    juce::Logger::writeToLog(
+        "Pads ensure complete source=roman-import elapsedMs=" +
+        juce::String(elapsedMsSince(ensureStartTicks), 1));
     return true;
-  if (reloadLastPadsPack())
+  }
+  if (reloadLastPadsPack()) {
+    juce::Logger::writeToLog(
+        "Pads ensure complete source=reload-last elapsedMs=" +
+        juce::String(elapsedMsSince(ensureStartTicks), 1));
     return true;
-  if (romanSource.isDirectory() && loadPadsPackFromFolder(romanSource))
+  }
+  if (romanSource.isDirectory() && loadPadsPackFromFolder(romanSource)) {
+    juce::Logger::writeToLog(
+        "Pads ensure complete source=roman-fallback elapsedMs=" +
+        juce::String(elapsedMsSince(ensureStartTicks), 1));
     return true;
+  }
 
   const auto empirikFallback = getPadsSourceFolderEmpirikFallback();
-  if (empirikFallback.isDirectory() && loadPadsPackFromFolder(empirikFallback))
+  if (empirikFallback.isDirectory() && loadPadsPackFromFolder(empirikFallback)) {
+    juce::Logger::writeToLog(
+        "Pads ensure complete source=empirik-fallback elapsedMs=" +
+        juce::String(elapsedMsSince(ensureStartTicks), 1));
     return true;
+  }
 
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   padsPackStatusText = "Missing files";
+  juce::Logger::writeToLog(
+      "Pads ensure failed elapsedMs=" +
+      juce::String(elapsedMsSince(ensureStartTicks), 1));
   return false;
+}
+
+bool MTControlsAudioProcessor::ensurePadsNoteReady(const int noteIndex) {
+  if (!padsPackLoaded.load(std::memory_order_relaxed))
+    return false;
+  if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount))
+    return false;
+
+  const auto noteLoadStartTicks = juce::Time::getHighResolutionTicks();
+  const juce::SpinLock::ScopedLockType lock(padsStateLock);
+  if (padsEngine.isNoteLoaded(noteIndex))
+    return true;
+
+  const bool loaded =
+      padsEngine.ensureNoteLoaded(noteIndex, playbackFormatManager);
+  juce::Logger::writeToLog(
+      "Pads ensureNoteLoaded note=" + juce::String(noteIndex) +
+      " ok=" + juce::String(loaded ? "true" : "false") +
+      " elapsedMs=" + juce::String(elapsedMsSince(noteLoadStartTicks), 1));
+  if (!loaded)
+    padsPackStatusText = "Pad load failed";
+  return loaded;
 }
 
 void MTControlsAudioProcessor::refreshPadsRoutingFromSettings() noexcept {
@@ -4953,8 +5046,8 @@ void MTControlsAudioProcessor::beginPadsSongTransitionFadeIn() noexcept {
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
                                               const int octave) {
   if (!padsPackLoaded.load(std::memory_order_relaxed))
-    ensurePadsPackReady();
-  if (!padsPackLoaded.load(std::memory_order_relaxed))
+    return;
+  if (!ensurePadsNoteReady(noteIndex))
     return;
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   padsEngine.triggerNote(noteIndex, octave);
@@ -4963,6 +5056,8 @@ void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
 void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
     const int noteIndex, const int octave) {
   if (!padsPackLoaded.load(std::memory_order_relaxed))
+    return;
+  if (!ensurePadsNoteReady(noteIndex))
     return;
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   padsEngine.triggerNoteForSongTransition(noteIndex, octave);
@@ -4992,6 +5087,8 @@ juce::String MTControlsAudioProcessor::getPadsPackStatusText() const {
 
   if (padsPackLoaded.load(std::memory_order_relaxed))
     return "Loaded";
+  if (padsPackLoading.load(std::memory_order_relaxed))
+    return "Loading...";
   return "Loading...";
 }
 

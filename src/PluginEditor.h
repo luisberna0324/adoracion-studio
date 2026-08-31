@@ -87,6 +87,7 @@ private:
   juce::CriticalSection authCallbackLock;
   int authCallbackPort = 0;
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
+  std::unique_ptr<juce::Component> settingsOverlay;
   juce::Component::SafePointer<SettingsPanel> settingsPanelRaw;
   juce::int64 lastSuccessfulLoginMs = 0;
   /** Espejo del snapshot; ultima validacion online exitosa (login web o validate-access). */
@@ -130,6 +131,7 @@ private:
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
                     juce::Component *parent);
+  void closeSettings();
   void applyThemePreset(int presetId);
   void applyRoutingDefaultsToSong(const ImportedSongData &song);
   ResponsiveLayoutProfile resolveResponsiveLayoutProfile() const;

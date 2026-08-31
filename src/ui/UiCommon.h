@@ -96,6 +96,18 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
 bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
                  SvgIconName icon, juce::Colour colour);
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
+bool useTouchOptimisedControls();
+int touchOptimisedControlHeight();
+int touchOptimisedPopupItemHeight();
+void applyComboBoxTheme(juce::ComboBox &combo,
+                        juce::Colour background = UITheme::cardBgHover,
+                        juce::Colour outline =
+                            UITheme::cardBorder.withAlpha(0.7f));
+void applyTextEditorTheme(juce::TextEditor &editor,
+                          juce::Colour background = UITheme::cardBgHover,
+                          juce::Colour outline =
+                              UITheme::cardBorder.withAlpha(0.7f));
+juce::PopupMenu::Options makeTouchPopupMenuOptions(juce::Component *target);
 
 /** Busca la ventana JUCE contenedora (Standalone / host) y alterna maximizado. */
 void toggleTopLevelWindowMaximised(juce::Component *fromComponent);

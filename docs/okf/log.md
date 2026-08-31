@@ -119,6 +119,11 @@ post-build completa `CFBundleIdentifier` en el `bungee.framework` copiado al
 `.app` y vuelve a firmar sólo ese framework antes de la firma de la aplicación,
 porque el SDK iOS incluido no declara ese campo.
 
+El standalone fija su runtime search path a
+`@executable_path/Frameworks`. Bungee conserva el install name
+`@rpath/bungee.framework/bungee`, por lo que el ejecutable instalado nunca debe
+contener como `LC_RPATH` la ruta absoluta del SDK en la máquina de compilación.
+
 ### Repertorio: acción compacta y búsqueda integrada
 
 La vista de Repertorio deja de usar **Crear setlist** como bloque ancho de

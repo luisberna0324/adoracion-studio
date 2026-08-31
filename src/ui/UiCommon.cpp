@@ -138,6 +138,58 @@ juce::Font makeAppFont(const float size, const AppFontWeight weight) {
   return juce::Font(options);
 }
 
+bool useTouchOptimisedControls() {
+#if JUCE_IOS || JUCE_ANDROID
+  return true;
+#else
+  return false;
+#endif
+}
+
+int touchOptimisedControlHeight() {
+  return useTouchOptimisedControls() ? 44 : 30;
+}
+
+int touchOptimisedPopupItemHeight() {
+  return useTouchOptimisedControls() ? 40 : 28;
+}
+
+void applyComboBoxTheme(juce::ComboBox &combo, const juce::Colour background,
+                        const juce::Colour outline) {
+  combo.setColour(juce::ComboBox::backgroundColourId, background);
+  combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+  combo.setColour(juce::ComboBox::outlineColourId, outline);
+  combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  combo.setJustificationType(juce::Justification::centredLeft);
+}
+
+void applyTextEditorTheme(juce::TextEditor &editor,
+                          const juce::Colour background,
+                          const juce::Colour outline) {
+  editor.setMultiLine(false);
+  editor.setReturnKeyStartsNewLine(false);
+  editor.setScrollbarsShown(false);
+  editor.setPopupMenuEnabled(true);
+  editor.setJustification(juce::Justification::centredLeft);
+  editor.setColour(juce::TextEditor::backgroundColourId, background);
+  editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+  editor.setColour(juce::TextEditor::highlightedTextColourId,
+                   UITheme::textPrimary);
+  editor.setColour(juce::TextEditor::outlineColourId, outline);
+  editor.setColour(juce::TextEditor::focusedOutlineColourId,
+                   UITheme::accent.withAlpha(useTouchOptimisedControls() ? 0.82f
+                                                                         : 0.64f));
+  editor.setIndents(useTouchOptimisedControls() ? 12 : 8, 0);
+}
+
+juce::PopupMenu::Options makeTouchPopupMenuOptions(juce::Component *target) {
+  auto options = juce::PopupMenu::Options()
+                     .withStandardItemHeight(touchOptimisedPopupItemHeight());
+  if (target != nullptr)
+    options = options.withTargetComponent(target);
+  return options;
+}
+
 namespace {
 struct SvgIconData {
   const void *data = nullptr;

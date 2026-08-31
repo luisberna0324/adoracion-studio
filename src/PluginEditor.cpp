@@ -41,6 +41,49 @@
 using namespace PluginEditorSupport;
 
 namespace {
+class SettingsOverlayComponent final : public juce::Component {
+public:
+  SettingsOverlayComponent(std::unique_ptr<SettingsPanel> content,
+                           std::function<void()> dismissCb)
+      : panel(std::move(content)), onDismiss(std::move(dismissCb)) {
+    jassert(panel != nullptr);
+    addAndMakeVisible(*panel);
+    setInterceptsMouseClicks(true, true);
+  }
+
+  SettingsPanel *getPanel() const noexcept { return panel.get(); }
+
+  void paint(juce::Graphics &g) override {
+    g.fillAll(juce::Colours::black.withAlpha(0.44f));
+  }
+
+  void resized() override {
+    auto area = getLocalBounds();
+    const int margin = useTouchOptimisedControls() ? 18 : 28;
+    area.reduce(margin, margin);
+
+    const int maxWidth = useTouchOptimisedControls() ? 920 : 760;
+    const int maxHeight = useTouchOptimisedControls() ? 820 : 620;
+    const int width = juce::jmin(maxWidth, area.getWidth());
+    const int height = juce::jmin(maxHeight, area.getHeight());
+
+    auto panelBounds = juce::Rectangle<int>(width, height);
+    panelBounds.setCentre(area.getCentre());
+    panel->setBounds(panelBounds);
+  }
+
+  void mouseUp(const juce::MouseEvent &event) override {
+    if (panel == nullptr)
+      return;
+    if (!panel->getBounds().contains(event.getPosition()) && onDismiss)
+      onDismiss();
+  }
+
+private:
+  std::unique_ptr<SettingsPanel> panel;
+  std::function<void()> onDismiss;
+};
+
 void ensureStandaloneMidiInputsEnabled(juce::AudioDeviceManager &manager) {
   const auto inputs = juce::MidiInput::getAvailableDevices();
   if (inputs.isEmpty())
@@ -1648,12 +1691,16 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                                   juce::Component *parent) {
   if (!mainUiInitialized)
     return;
+#if JUCE_IOS
+  closeSettings();
+#else
   juce::DialogWindow::LaunchOptions options;
   options.dialogTitle = L10n::tr(u8"Configuración", "Settings");
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
   options.resizable = false;
+#endif
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
   const auto audioCtx = getStandaloneAudioContext();
@@ -1713,7 +1760,9 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
             : "Blip",
             &error);
       },
-      [] {},
+      [this] {
+        closeSettings();
+      },
       SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,
                                     activeSession.subscriptionStatus,
@@ -1741,8 +1790,20 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
       audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
-  panel->setSize(760, 620);
+  panel->setSize(useTouchOptimisedControls() ? 920 : 760,
+                 useTouchOptimisedControls() ? 820 : 620);
   panel->refreshThemeColours();
+
+#if JUCE_IOS
+  auto overlay = std::make_unique<SettingsOverlayComponent>(
+      std::unique_ptr<SettingsPanel>(panel), [this] { closeSettings(); });
+  settingsPanelRaw = overlay->getPanel();
+  settingsOverlay = std::move(overlay);
+  addAndMakeVisible(*settingsOverlay);
+  settingsOverlay->toFront(true);
+  settingsOverlay->setBounds(getLocalBounds());
+  return;
+#else
   options.content.setOwned(panel);
 
   if (auto *window = options.launchAsync()) {
@@ -1750,6 +1811,22 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     settingsPanelRaw = panel;
     window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
   }
+#endif
+}
+
+void MTControlsAudioProcessorEditor::closeSettings() {
+  if (settingsWindow != nullptr) {
+    settingsWindow->setVisible(false);
+    settingsWindow->exitModalState(0);
+    settingsWindow = nullptr;
+  }
+
+  if (settingsOverlay != nullptr) {
+    settingsOverlay->setVisible(false);
+    settingsOverlay.reset();
+  }
+
+  settingsPanelRaw = nullptr;
 }
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
@@ -2624,6 +2701,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  closeSettings();
   maybePersistSongWindowForActiveSong();
   maybePersistClickDynMetronomeEnabledForActiveSong();
   if (auto *channelGridRaw =
@@ -2660,6 +2738,8 @@ void MTControlsAudioProcessorEditor::resized() {
   if (!mainUiInitialized) {
     if (welcomeModal != nullptr)
       welcomeModal->setBounds(getLocalBounds());
+    if (settingsOverlay != nullptr)
+      settingsOverlay->setBounds(getLocalBounds());
     return;
   }
 
@@ -2669,6 +2749,9 @@ void MTControlsAudioProcessorEditor::resized() {
   if (topBar == nullptr || waveformBar == nullptr || channelGridPanel == nullptr ||
       songListPanel == nullptr || setlistHandlePanel == nullptr)
     return;
+
+  if (settingsOverlay != nullptr)
+    settingsOverlay->setBounds(getLocalBounds());
 
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;

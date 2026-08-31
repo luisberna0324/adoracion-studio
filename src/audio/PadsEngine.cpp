@@ -146,6 +146,7 @@ int PadsEngine::parseNoteIndexFromFilename(const juce::String &name) {
 PadsEngine::LoadResult
 PadsEngine::loadFromFolder(const juce::File &folder,
                            juce::AudioFormatManager &formatManager) {
+  juce::ignoreUnused(formatManager);
   LoadResult result;
   if (!folder.isDirectory()) {
     result.statusText = "Pads folder not found";
@@ -174,46 +175,72 @@ PadsEngine::loadFromFolder(const juce::File &folder,
     }
   }
 
-  int loaded = 0;
   std::array<NoteSample, kNoteCount> nextSamples;
   for (int i = 0; i < kNoteCount; ++i) {
     auto &slot = selected[static_cast<size_t>(i)];
     if (!slot.has_value())
       continue;
-
-    auto reader = std::unique_ptr<juce::AudioFormatReader>(
-        formatManager.createReaderFor(slot->file));
-    if (!reader)
-      continue;
-
-    const int channels = juce::jlimit(1, 2, static_cast<int>(reader->numChannels));
-    const int lengthSamples = static_cast<int>(
-        juce::jlimit<juce::int64>(0, std::numeric_limits<int>::max(),
-                                  reader->lengthInSamples));
-    if (lengthSamples <= 0)
-      continue;
-
-    NoteSample note;
-    note.data.setSize(channels, lengthSamples);
-    reader->read(&note.data, 0, lengthSamples, 0, true, channels > 1);
-    note.sourceSampleRate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
-    note.valid = true;
-    nextSamples[static_cast<size_t>(i)] = std::move(note);
-    ++loaded;
+    nextSamples[static_cast<size_t>(i)].sourceFile = slot->file;
   }
 
-  if (loaded < kNoteCount) {
+  if (std::any_of(nextSamples.begin(), nextSamples.end(),
+                  [](const NoteSample &sample) {
+                    return !sample.sourceFile.existsAsFile();
+                  })) {
     result.statusText = "Missing files";
-    result.loadedNotes = loaded;
     return result;
   }
 
   noteSamples = std::move(nextSamples);
   stopAll();
   result.ok = true;
-  result.loadedNotes = loaded;
+  result.loadedNotes = kNoteCount;
   result.statusText = "Loaded";
   return result;
+}
+
+bool PadsEngine::loadNoteSampleFromFile(NoteSample &target,
+                                        const juce::File &file,
+                                        juce::AudioFormatManager &formatManager) {
+  auto reader = std::unique_ptr<juce::AudioFormatReader>(
+      formatManager.createReaderFor(file));
+  if (!reader)
+    return false;
+
+  const int channels =
+      juce::jlimit(1, 2, static_cast<int>(reader->numChannels));
+  const int lengthSamples = static_cast<int>(juce::jlimit<juce::int64>(
+      0, std::numeric_limits<int>::max(), reader->lengthInSamples));
+  if (lengthSamples <= 0)
+    return false;
+
+  NoteSample decoded;
+  decoded.sourceFile = file;
+  decoded.data.setSize(channels, lengthSamples);
+  reader->read(&decoded.data, 0, lengthSamples, 0, true, channels > 1);
+  decoded.sourceSampleRate =
+      reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
+  decoded.valid = true;
+  target = std::move(decoded);
+  return true;
+}
+
+bool PadsEngine::ensureNoteLoaded(int noteIndex,
+                                  juce::AudioFormatManager &formatManager) {
+  if (!juce::isPositiveAndBelow(noteIndex, kNoteCount))
+    return false;
+
+  auto &sample = noteSamples[static_cast<size_t>(noteIndex)];
+  if (sample.valid)
+    return true;
+  if (!sample.sourceFile.existsAsFile())
+    return false;
+  return loadNoteSampleFromFile(sample, sample.sourceFile, formatManager);
+}
+
+bool PadsEngine::isNoteLoaded(int noteIndex) const noexcept {
+  return juce::isPositiveAndBelow(noteIndex, kNoteCount) &&
+         noteSamples[static_cast<size_t>(noteIndex)].valid;
 }
 
 void PadsEngine::updateVoiceIncrement(Voice &voice) {

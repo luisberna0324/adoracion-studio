@@ -623,6 +623,9 @@ if(MTCONTROLS_BUNGEE_AVAILABLE)
     target_link_libraries(MTControls PRIVATE MTControlsBungee)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set_target_properties(MTControls_Standalone PROPERTIES
+            BUILD_RPATH "@executable_path/Frameworks"
+            INSTALL_RPATH "@executable_path/Frameworks"
+            XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks"
             XCODE_EMBED_FRAMEWORKS "${_mtcontrols_bungee_framework}"
             XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES
             XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY YES)

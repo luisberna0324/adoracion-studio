@@ -179,6 +179,7 @@ public:
   bool loadPadsPackFromFolder(const juce::File &sourceFolder);
   bool reloadLastPadsPack();
   bool ensurePadsPackReady();
+  bool ensurePadsNoteReady(int noteIndex);
   void refreshPadsRoutingFromSettings() noexcept;
   void setPadsEnabled(bool enabled) noexcept;
   bool isPadsEnabled() const noexcept;
@@ -375,9 +376,11 @@ private:
   std::atomic<int> padsOutputWidth{1};
   juce::String padsPackStatusText{"Not loaded"};
   std::atomic<bool> padsPackLoaded{false};
+  std::atomic<bool> padsPackLoading{false};
   mutable juce::SpinLock padsStateLock;
   std::atomic<uint16_t> midiPendingPadTriggerMask{0};
   std::atomic<uint16_t> midiPendingPadStopMask{0};
+  std::atomic<uint16_t> midiPendingPadLoadMask{0};
   std::atomic<int> pitchTargetSemiTones{0};
   int pitchActiveSemiTones = 0;
   std::atomic<double> playbackTempoBpm{120.0};

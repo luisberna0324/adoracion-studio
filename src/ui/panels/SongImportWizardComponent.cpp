@@ -776,9 +776,8 @@ void SongImportWizardComponent::refreshThemeColours() {
   }
 
   summaryEditor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
-  summaryEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-  summaryEditor.setColour(juce::TextEditor::outlineColourId,
-                          UITheme::cardBorder.withAlpha(0.7f));
+  applyTextEditorTheme(summaryEditor, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.7f));
 
   configureCombo(keyBox);
   configureCombo(timeSignatureBox);
@@ -806,11 +805,8 @@ void SongImportWizardComponent::configureTextEditor(
 }
 
 void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
-  combo.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
-  combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  combo.setColour(juce::ComboBox::outlineColourId,
-                  UITheme::cardBorder.withAlpha(0.7f));
-  combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  applyComboBoxTheme(combo, UITheme::cardBgHover,
+                     UITheme::cardBorder.withAlpha(0.7f));
 }
 
 void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
@@ -900,7 +896,7 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
 
   const int sectionLabelH = 18;
   const int fieldLabelH = 16;
-  const int fieldH = 30;
+  const int fieldH = touchOptimisedControlHeight();
 
   if (showPrime) {
     auto primeHeader = bounds.removeFromTop(sectionLabelH);

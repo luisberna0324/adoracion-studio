@@ -778,23 +778,53 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                         juce::String *errorMessage, const bool rebuildCache,
                         const ProjectProgressFn &onProgress) {
   if (errorMessage != nullptr) errorMessage->clear();
+  SessionAuthLogger::write("[ProjectOpen] begin path=" +
+                           file.getFullPathName() + " exists=" +
+                           juce::String(file.existsAsFile() ? 1 : 0) +
+                           " size=" + juce::String(file.getSize()) +
+                           " rebuildCache=" +
+                           juce::String(rebuildCache ? 1 : 0));
   ProgressThrottle progress(onProgress);
   progress.publish(0.0,
                    L10n::tr("Validando manifiesto...",
                             "Validating manifest..."),
                    true);
-  if (!file.existsAsFile() || !file.hasFileExtension(kFileExtension)) { if (errorMessage != nullptr) *errorMessage = "Project file not found or invalid."; return false; }
+  if (!file.existsAsFile() || !file.hasFileExtension(kFileExtension)) {
+    SessionAuthLogger::write("[ProjectOpen] invalid file path=" +
+                             file.getFullPathName());
+    if (errorMessage != nullptr) *errorMessage = "Project file not found or invalid."; return false;
+  }
   juce::ZipFile zip(file);
   const int manifestIndex = zip.getIndexOfFileName(kManifestName);
-  if (manifestIndex < 0) { if (errorMessage != nullptr) *errorMessage = "Project manifest is missing."; return false; }
+  if (manifestIndex < 0) {
+    SessionAuthLogger::write("[ProjectOpen] manifest missing path=" +
+                             file.getFullPathName());
+    if (errorMessage != nullptr) *errorMessage = "Project manifest is missing."; return false;
+  }
   std::unique_ptr<juce::InputStream> manifestStream(zip.createStreamForEntry(manifestIndex));
-  if (manifestStream == nullptr) { if (errorMessage != nullptr) *errorMessage = "Couldn't read project manifest."; return false; }
+  if (manifestStream == nullptr) {
+    SessionAuthLogger::write("[ProjectOpen] manifest unreadable path=" +
+                             file.getFullPathName());
+    if (errorMessage != nullptr) *errorMessage = "Couldn't read project manifest."; return false;
+  }
   const auto root = juce::JSON::parse(manifestStream->readEntireStreamAsString());
   const auto *o = root.getDynamicObject();
-  if (o == nullptr || static_cast<int>(o->getProperty("schemaVersion")) != kSchemaVersion) { if (errorMessage != nullptr) *errorMessage = "Unsupported project manifest."; return false; }
+  if (o == nullptr || static_cast<int>(o->getProperty("schemaVersion")) != kSchemaVersion) {
+    SessionAuthLogger::write("[ProjectOpen] unsupported manifest path=" +
+                             file.getFullPathName() + " schema=" +
+                             (o != nullptr ? o->getProperty("schemaVersion").toString()
+                                           : juce::String("<null>")));
+    if (errorMessage != nullptr) *errorMessage = "Unsupported project manifest."; return false;
+  }
   bool changed = false;
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
-  if (song.id.isEmpty() || song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "Project has no valid song or stems."; return false; }
+  if (song.id.isEmpty() || song.stems.empty()) {
+    SessionAuthLogger::write("[ProjectOpen] invalid song payload path=" +
+                             file.getFullPathName() + " songId=" + song.id +
+                             " stems=" +
+                             juce::String(static_cast<int>(song.stems.size())));
+    if (errorMessage != nullptr) *errorMessage = "Project has no valid song or stems."; return false;
+  }
   song.projectId = song.id.trim();
   auto entrySize = [&zip](const juce::String &name) -> juce::int64 {
     const auto index = zip.getIndexOfFileName(name);
@@ -841,7 +871,17 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   auto cache = getCacheDirectory(song.id);
   const bool shouldRebuildCache =
       rebuildCache && !cacheMatchesProject(file, cache);
+  SessionAuthLogger::write("[ProjectOpen] manifest ok songId=" + song.id +
+                           " stems=" +
+                           juce::String(static_cast<int>(song.stems.size())) +
+                           " cache=" + cache.getFullPathName() +
+                           " shouldRebuild=" +
+                           juce::String(shouldRebuildCache ? 1 : 0) +
+                           " cachedSettingsNewer=" +
+                           juce::String(hasNewerCachedSettings ? 1 : 0));
   if (shouldRebuildCache && cache.exists() && !cache.deleteRecursively()) {
+    SessionAuthLogger::write("[ProjectOpen] cache delete failed path=" +
+                             cache.getFullPathName());
     if (errorMessage != nullptr)
       *errorMessage = L10n::tr(
           "No se pudo actualizar la caché del proyecto. Detén la canción e inténtalo nuevamente.",
@@ -873,6 +913,8 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   for (const auto &stem : song.stems) {
     const auto internalPath = stem.storedPath;
     if (!internalPath.startsWith(kAudioPrefix) || internalPath.contains("..")) {
+      SessionAuthLogger::write("[ProjectOpen] unsafe stem path songId=" +
+                               song.id + " path=" + internalPath);
       localError = "Unsafe stem path in project.";
       break;
     }
@@ -949,6 +991,8 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
       // Find the first failed stem to populate the user-facing error.
       for (const auto &sw : work) {
         if (!sw.ok) {
+          SessionAuthLogger::write("[ProjectOpen] extract failed songId=" +
+                                   song.id + " path=" + sw.internalPath);
           localError = "Couldn't extract " + sw.internalPath;
           break;
         }
@@ -994,6 +1038,9 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
         localError = L10n::tr("No se puede decodificar el stem: ",
                               "Couldn't decode stem: ") +
                      sw.target.getFileName();
+        SessionAuthLogger::write("[ProjectOpen] decode failed songId=" +
+                                 song.id + " stem=" +
+                                 sw.target.getFullPathName());
         break;
       }
       stem.storedPath = sw.target.getFullPathName();
@@ -1003,7 +1050,11 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   }
   if (localError.isEmpty() && song.artworkPath.isNotEmpty()) {
     const auto artworkName = juce::File(song.artworkPath).getFileName();
-    if (artworkName != song.artworkPath || !artworkName.startsWith("artwork.")) localError = "Unsafe artwork path in project.";
+    if (artworkName != song.artworkPath || !artworkName.startsWith("artwork.")) {
+      SessionAuthLogger::write("[ProjectOpen] unsafe artwork path songId=" +
+                               song.id + " artwork=" + song.artworkPath);
+      localError = "Unsafe artwork path in project.";
+    }
     else {
       const auto artworkTarget = cache.getChildFile(artworkName);
       const bool needsExtraction =
@@ -1032,7 +1083,12 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     else if (downloadArtworkToCache(song.artworkSource, cache, downloadedArtwork))
       song.artworkPath = downloadedArtwork;
   }
-  if (localError.isNotEmpty()) { cache.deleteRecursively(); if (errorMessage != nullptr) *errorMessage = localError; return false; }
+  if (localError.isNotEmpty()) {
+    SessionAuthLogger::write("[ProjectOpen] failed songId=" + song.id +
+                             " error=\"" + localError + "\"");
+    cache.deleteRecursively();
+    if (errorMessage != nullptr) *errorMessage = localError; return false;
+  }
   song.projectPath = file.getFullPathName();
   std::vector<float> waveformBins;
   const int waveformIndex = zip.getIndexOfFileName(kWaveformName);
@@ -1041,12 +1097,17 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     const auto expectedBytes = static_cast<juce::int64>(kWaveformPreviewBinCount) *
                                static_cast<juce::int64>(sizeof(float));
     if (entry == nullptr || entry->uncompressedSize != expectedBytes) {
+      SessionAuthLogger::write("[ProjectOpen] waveform size invalid songId=" +
+                               song.id + " expected=" +
+                               juce::String(expectedBytes));
       cache.deleteRecursively();
       if (errorMessage != nullptr) *errorMessage = "Project waveform has an invalid size.";
       return false;
     }
     std::unique_ptr<juce::InputStream> waveformStream(zip.createStreamForEntry(waveformIndex));
     if (waveformStream == nullptr) {
+      SessionAuthLogger::write("[ProjectOpen] waveform unreadable songId=" +
+                               song.id);
       cache.deleteRecursively();
       if (errorMessage != nullptr) *errorMessage = "Couldn't read project waveform.";
       return false;
@@ -1054,6 +1115,8 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     waveformBins.resize(kWaveformPreviewBinCount);
     const auto bytes = static_cast<int>(expectedBytes);
     if (waveformStream->read(waveformBins.data(), bytes) != bytes) {
+      SessionAuthLogger::write("[ProjectOpen] waveform extract failed songId=" +
+                               song.id);
       cache.deleteRecursively();
       if (errorMessage != nullptr) *errorMessage = "Couldn't extract project waveform.";
       return false;
@@ -1081,6 +1144,10 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   recordRecent(outDocument);
   if (hasNewerCachedSettings)
     settingsSaveQueue().schedule(file, song.id, outDocument.settings);
+  SessionAuthLogger::write("[ProjectOpen] success songId=" + outDocument.song.id +
+                           " cache=" + cache.getFullPathName() +
+                           " stems=" +
+                           juce::String(static_cast<int>(outDocument.song.stems.size())));
   progress.publish(1.0,
                    L10n::tr("Proyecto validado", "Project validated"), true);
   return true;

@@ -1183,7 +1183,7 @@ void LibraryCatalogPanel::openHeaderMenu() {
                headerMode == HeaderMode::SetlistTarget &&
                    pendingSelectedSongIds.size() > 0);
 
-  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&menuButton),
+  menu.showMenuAsync(makeTouchPopupMenuOptions(&menuButton),
                      [this](int result) {
                        if (result >= 3 && result <= 7) {
                          sortMode = static_cast<SortMode>(result - 3);
@@ -1215,7 +1215,7 @@ void LibraryCatalogPanel::openAdvancedFilterMenu() {
                activeFilter != FilterChip::All);
 
   menu.showMenuAsync(
-      juce::PopupMenu::Options().withTargetComponent(&advancedFilterButton),
+      makeTouchPopupMenuOptions(&advancedFilterButton),
       [this](int result) {
         if (result >= 10 && result <= 14) {
           sortMode = static_cast<SortMode>(result - 10);

@@ -1,12 +1,7 @@
 #include "SearchField.h"
 
 SearchField::SearchField() {
-  textEditor.setMultiLine(false);
-  textEditor.setReturnKeyStartsNewLine(false);
-  textEditor.setScrollbarsShown(false);
-  textEditor.setPopupMenuEnabled(true);
   textEditor.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
-  textEditor.setJustification(juce::Justification::centredLeft);
   textEditor.onTextChange = [this] {
     if (onTextChange)
       onTextChange(textEditor.getText());
@@ -40,16 +35,10 @@ void SearchField::setOnTextChange(
 }
 
 void SearchField::refreshThemeColours() {
-  textEditor.setColour(juce::TextEditor::backgroundColourId,
+  applyTextEditorTheme(textEditor,
                        UITheme::panelDark.interpolatedWith(UITheme::cardBg,
-                                                           0.28f));
-  textEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-  textEditor.setColour(juce::TextEditor::highlightedTextColourId,
-                       UITheme::textPrimary);
-  textEditor.setColour(juce::TextEditor::outlineColourId,
+                                                           0.28f),
                        UITheme::cardBorder.withAlpha(0.48f));
-  textEditor.setColour(juce::TextEditor::focusedOutlineColourId,
-                       UITheme::accent.withAlpha(0.64f));
 }
 
 juce::TextEditor &SearchField::editor() { return textEditor; }
@@ -68,5 +57,5 @@ void SearchField::paintOverChildren(juce::Graphics &g) {
 
 void SearchField::resized() {
   textEditor.setBounds(getLocalBounds());
-  textEditor.setIndents(iconInsetX + iconSizePx + 8, 0);
+  textEditor.setIndents(iconInsetX + iconSizePx + 10, 0);
 }

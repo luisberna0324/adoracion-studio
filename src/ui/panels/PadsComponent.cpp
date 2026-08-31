@@ -33,6 +33,10 @@ juce::String withMidiAssignmentTooltip(const juce::String& baseText,
         return "MIDI: " + trimmedCode;
     return baseText + " | MIDI: " + trimmedCode;
 }
+
+juce::String idlePadsStatusText() {
+    return "Tap a pad to load";
+}
 } // namespace
 
 PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
@@ -82,11 +86,12 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     processor.refreshPadsRoutingFromSettings();
     presetSubtitle = processor.getPadsPackStatusText();
     lastPackReady = processor.isPadsPackLoaded();
+    if (!lastPackReady && presetSubtitle.trim().isEmpty())
+        presetSubtitle = idlePadsStatusText();
 
     applyPowerState(true);
     refreshMidiLearnTooltips();
     setWantsKeyboardFocus(true);
-    startPadsLoadingAsync();
     startTimerHz(20);
 }
 
@@ -291,7 +296,9 @@ void PadsComponent::timerCallback() {
 
     const auto status = processor.getPadsPackStatusText();
     if (status != presetSubtitle) {
-        presetSubtitle = status;
+        presetSubtitle = status.isNotEmpty()
+                             ? status
+                             : (packReady ? juce::String{} : idlePadsStatusText());
         repaint();
     }
 
@@ -441,6 +448,8 @@ void PadsComponent::applyPowerState(bool on) {
     if (channelStrip) {
         channelStrip->setMuteState(!on);
     }
+    if (interactionEnabled && !packReady && !padsLoading.load(std::memory_order_relaxed))
+        presetSubtitle = idlePadsStatusText();
 }
 
 void PadsComponent::setMidiLearnActive(const bool active) {
