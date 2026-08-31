@@ -9,6 +9,29 @@ timestamp: 2026-08-17T16:30:00Z
 
 ## 2026-08-19
 
+### Waveform: cierre de estado de carga
+
+Al terminar la permanencia mínima del indicador de carga, `WaveformBar` ahora
+solicita un repintado al limpiar el estado. Así el mensaje final de fase, como
+`Finalizando...`, se elimina aun cuando no ocurra otro evento de interfaz.
+
+### Persistencia legacy: controles compartidos entre setlists
+
+Las canciones legacy ya no conservan mix/controles divergentes por setlist. Las
+APIs `update*ForActiveSetlist()` siguen usando el item activo como punto de
+entrada, pero propagan el cambio a todas las apariciones de la misma canción en
+todos los setlists. Al agregar una canción legacy a otro setlist se copia el
+estado más reciente de la canción; sólo `itemId`, orden y `transitionToNext`
+siguen siendo locales al setlist.
+
+### Standalone audio: Bluetooth output-only
+
+El standalone fuerza el `AudioDeviceManager` a operar sin input de audio. El
+panel de Audio ya no muestra entradas y el polling de dispositivo limpia
+`inputDeviceName`/`inputChannels` si un setup persistido o cambio externo las
+reactiva. Esto evita que audífonos Bluetooth cambien al perfil manos libres de
+baja fidelidad al activar micrófono; MIDI input sigue habilitándose aparte.
+
 ### Standalone: versión visible en título de ventana
 
 La app standalone mantiene `JucePlugin_Name` como nombre interno, pero el título

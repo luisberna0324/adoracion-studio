@@ -81,6 +81,22 @@ juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx) {
   return typeName + "|" + deviceName;
 }
 
+bool enforceStandaloneOutputOnlyAudio(juce::AudioDeviceManager &manager) {
+  juce::AudioDeviceManager::AudioDeviceSetup setup;
+  manager.getAudioDeviceSetup(setup);
+
+  const bool alreadyOutputOnly =
+      setup.inputDeviceName.isEmpty() && !setup.useDefaultInputChannels &&
+      setup.inputChannels.isZero();
+  if (alreadyOutputOnly)
+    return true;
+
+  setup.inputDeviceName = {};
+  setup.useDefaultInputChannels = false;
+  setup.inputChannels.clear();
+  return manager.setAudioDeviceSetup(setup, false).isEmpty();
+}
+
 namespace {
 bool deviceNameLooksBuiltIn(const juce::String &name) {
   const auto lowered = name.trim().toLowerCase();

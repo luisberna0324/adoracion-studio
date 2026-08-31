@@ -303,6 +303,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     lastObservedAudioDeviceKey = getCurrentDeviceKey(audioCtx);
 
     if (audioCtx.manager != nullptr) {
+      enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
       if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
           currentDevice != nullptr) {
         auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
@@ -584,6 +585,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         if (audioCtx.manager == nullptr)
           return;
 
+        PluginEditorSupport::enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
         if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
             currentDevice != nullptr) {
           processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
@@ -1657,6 +1659,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
   const auto audioCtx = getStandaloneAudioContext();
+  if (audioCtx.manager != nullptr)
+    enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
       [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
@@ -1740,7 +1744,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
-      audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
+      audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setSize(760, 620);
   panel->refreshThemeColours();
   options.content.setOwned(panel);
@@ -2442,6 +2446,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
     if (audioCtx.manager != nullptr) {
+      enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
       auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
       const juce::String currentDeviceKey = getCurrentDeviceKey(audioCtx);
       if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();

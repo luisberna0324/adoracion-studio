@@ -413,7 +413,7 @@ bool PadsComponent::followSongKey(const juce::String& songKey,
     notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
     notePads[static_cast<size_t>(targetNoteIndex)]->setActive(true);
     activeNoteIndex = targetNoteIndex;
-    processor.triggerPadNote(targetNoteIndex, currentOctave);
+    processor.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
     return true;
 }
 
