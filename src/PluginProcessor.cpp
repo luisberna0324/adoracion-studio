@@ -292,8 +292,10 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   stemRoutingInputBuffer.setSize(2, (realtimeBlockCapacity * 2) + 8);
   stemRoutingTempStorage.setSize(2, realtimeBlockCapacity);
   metronomeRenderStorage.setSize(2, realtimeBlockCapacity);
-  padsRenderStorage.setSize(juce::jmax(2, getTotalNumOutputChannels()),
-                            realtimeBlockCapacity);
+  // Pads render into their own stereo bus and are routed afterwards.
+  // Rendering them across every physical output channel multiplies the
+  // per-block cost on multichannel devices without changing the result.
+  padsRenderStorage.setSize(2, realtimeBlockCapacity);
   dynamicGuideRenderStorage.setSize(2, realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
   dynamicGuideEngine.prepare(sampleRate);
@@ -533,8 +535,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   juce::AudioBuffer<float> metronomeRenderBuffer(
       metronomeRenderStorage.getArrayOfWritePointers(), 2, callbackSamples);
   juce::AudioBuffer<float> padsRenderBuffer(
-      padsRenderStorage.getArrayOfWritePointers(),
-      juce::jmax(2, callbackChannels), callbackSamples);
+      padsRenderStorage.getArrayOfWritePointers(), 2, callbackSamples);
   juce::AudioBuffer<float> dynamicGuideRenderBuffer(
       dynamicGuideRenderStorage.getArrayOfWritePointers(), 2, callbackSamples);
 

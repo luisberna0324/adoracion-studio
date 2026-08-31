@@ -155,7 +155,49 @@ que sombras o bordes redondeados de la vista anterior sobresalgan dentro de la
 subvista de biblioteca; durante swipe/animación siguen visibles para conservar
 la transición.
 
+## 2026-08-31
+
+### Proyectos: guardado portable explícito y aviso de cierre
+
+Los ajustes `.pwproj` siguen escribiéndose inmediatamente en
+`project-cache/<project-id>/song-settings.json`, pero ahora el snapshot en
+memoria se actualiza junto con el sidecar. Esto corrige la regresión donde la
+cola comparaba contra el sidecar recién escrito, descartaba el update y dejaba
+una base vieja capaz de sobrescribir cambios previos de mixer, guía o click.
+
+`ProjectStore` registra generaciones pendientes y expone una consolidación
+explícita que reconstruye el ZIP mediante `<proyecto>.tmp`, reemplazo atómico y
+actualización de `project-source.json`. El menú de Biblioteca/Setlist ofrece
+**Guardar proyecto** y señala cuando hay cambios pendientes; el progreso se
+muestra sobre la waveform sin bloquear el hilo de UI. La ventana Standalone
+intercepta tanto el botón de cerrar como la salida del sistema y permite guardar
+todos los proyectos pendientes, salir conservando sólo los sidecars locales o
+cancelar.
+
 ## 2026-08-19
+
+### Waveform: cierre de estado de carga
+
+Al terminar la permanencia mínima del indicador de carga, `WaveformBar` ahora
+solicita un repintado al limpiar el estado. Así el mensaje final de fase, como
+`Finalizando...`, se elimina aun cuando no ocurra otro evento de interfaz.
+
+### Persistencia legacy: controles compartidos entre setlists
+
+Las canciones legacy ya no conservan mix/controles divergentes por setlist. Las
+APIs `update*ForActiveSetlist()` siguen usando el item activo como punto de
+entrada, pero propagan el cambio a todas las apariciones de la misma canción en
+todos los setlists. Al agregar una canción legacy a otro setlist se copia el
+estado más reciente de la canción; sólo `itemId`, orden y `transitionToNext`
+siguen siendo locales al setlist.
+
+### Standalone audio: Bluetooth output-only
+
+El standalone fuerza el `AudioDeviceManager` a operar sin input de audio. El
+panel de Audio ya no muestra entradas y el polling de dispositivo limpia
+`inputDeviceName`/`inputChannels` si un setup persistido o cambio externo las
+reactiva. Esto evita que audífonos Bluetooth cambien al perfil manos libres de
+baja fidelidad al activar micrófono; MIDI input sigue habilitándose aparte.
 
 ### Standalone: versión visible en título de ventana
 

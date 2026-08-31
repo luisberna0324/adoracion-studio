@@ -440,7 +440,34 @@ bool SongLibraryStore::addSongToSetlist(const juce::String &setlistId,
                   });
   if (exists)
     return true;
-  setlist->items.push_back(createSetlistItem(*song));
+  auto item = createSetlistItem(*song);
+  if (!isProjectBackedSong(*song)) {
+    const SetlistItem *canonicalItem = nullptr;
+    for (const auto &candidateSetlist : library.setlists) {
+      for (const auto &candidateItem : candidateSetlist.items) {
+        if (candidateItem.songId != songId)
+          continue;
+        if (canonicalItem == nullptr ||
+            candidateItem.updatedMs > canonicalItem->updatedMs)
+          canonicalItem = &candidateItem;
+      }
+    }
+
+    if (canonicalItem != nullptr) {
+      item.mix = canonicalItem->mix;
+      item.pitchSemitones = canonicalItem->pitchSemitones;
+      item.tempoBpm = canonicalItem->tempoBpm;
+      item.window = canonicalItem->window;
+      item.windowCustomized = canonicalItem->windowCustomized;
+      item.arrangement = canonicalItem->arrangement;
+      item.arrangementCustomized = canonicalItem->arrangementCustomized;
+      item.dynamicGuide = canonicalItem->dynamicGuide;
+      item.dynamicGuideCustomized = canonicalItem->dynamicGuideCustomized;
+      item.dynamicGuideMix = canonicalItem->dynamicGuideMix;
+      item.clickDynMix = canonicalItem->clickDynMix;
+    }
+  }
+  setlist->items.push_back(std::move(item));
   setlist->updatedMs = juce::Time::getCurrentTime().toMilliseconds();
   return saveLibrary(library);
 }
@@ -3415,60 +3442,78 @@ bool SongLibraryStore::updateActiveSetlistItem(
   if (it == setlist->items.end())
     return false;
 
-  bool changed = false;
-  it->mix = reconcileMixForSong(it->mix, *song, changed);
-  it->window = reconcileWindowForSong(it->window, *song, changed);
-  const auto defaultWindow = createDefaultWindowForSong(*song);
-  if (!it->windowCustomized) {
-    if (!windowsEqual(it->window, defaultWindow)) {
-      it->window = defaultWindow;
-      changed = true;
-    }
-  } else if (windowsEqual(it->window, defaultWindow)) {
-    it->windowCustomized = false;
-    changed = true;
-  }
-  it->arrangement =
-      reconcileArrangementForSong(it->arrangement, *song, changed);
   const auto defaultArrangement = createDefaultArrangementForSong(*song);
-  if (!it->arrangementCustomized &&
-      !arrangementsEqual(it->arrangement, defaultArrangement)) {
-    it->arrangementCustomized = true;
-    changed = true;
-  }
+  const auto defaultWindow = createDefaultWindowForSong(*song);
   const auto defaultDynamicGuide = makeDefaultDynamicGuideSettings();
-  if (!it->dynamicGuideCustomized &&
-      !dynamicGuidesEqual(it->dynamicGuide, defaultDynamicGuide)) {
-    it->dynamicGuideCustomized = true;
-    changed = true;
-  } else if (it->dynamicGuideCustomized &&
-             dynamicGuidesEqual(it->dynamicGuide, defaultDynamicGuide)) {
-    it->dynamicGuideCustomized = false;
-    changed = true;
-  }
-  {
-    auto normalizedGuideMix = it->dynamicGuideMix;
-    normalizedGuideMix.volume = juce::jlimit(0.0f, 1.0f, normalizedGuideMix.volume);
-    normalizedGuideMix.gain = juce::jlimit(0.0f, 2.0f, normalizedGuideMix.gain);
-    normalizedGuideMix.outputChannel = juce::jmax(1, normalizedGuideMix.outputChannel);
-    normalizedGuideMix.outputWidth = juce::jlimit(1, 2, normalizedGuideMix.outputWidth);
-    if (!dynamicGuideMixesEqual(it->dynamicGuideMix, normalizedGuideMix)) {
-      it->dynamicGuideMix = normalizedGuideMix;
-      changed = true;
-    }
-  }
-  {
-    const auto normalizedClickDynMix =
-        normalizeClickDynMixSnapshot(it->clickDynMix);
-    if (!clickDynMixesEqual(it->clickDynMix, normalizedClickDynMix)) {
-      it->clickDynMix = normalizedClickDynMix;
-      changed = true;
-    }
-  }
-  updater(*it, *song);
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
-  it->updatedMs = now;
-  setlist->updatedMs = now;
+
+  for (auto &targetSetlist : library.setlists) {
+    bool setlistChanged = false;
+    for (auto &targetItem : targetSetlist.items) {
+      if (targetItem.songId != songId)
+        continue;
+
+      bool changed = false;
+      targetItem.mix = reconcileMixForSong(targetItem.mix, *song, changed);
+      targetItem.window = reconcileWindowForSong(targetItem.window, *song, changed);
+      if (!targetItem.windowCustomized) {
+        if (!windowsEqual(targetItem.window, defaultWindow)) {
+          targetItem.window = defaultWindow;
+          changed = true;
+        }
+      } else if (windowsEqual(targetItem.window, defaultWindow)) {
+        targetItem.windowCustomized = false;
+        changed = true;
+      }
+      targetItem.arrangement =
+          reconcileArrangementForSong(targetItem.arrangement, *song, changed);
+      if (!targetItem.arrangementCustomized &&
+          !arrangementsEqual(targetItem.arrangement, defaultArrangement)) {
+        targetItem.arrangementCustomized = true;
+        changed = true;
+      }
+      if (!targetItem.dynamicGuideCustomized &&
+          !dynamicGuidesEqual(targetItem.dynamicGuide, defaultDynamicGuide)) {
+        targetItem.dynamicGuideCustomized = true;
+        changed = true;
+      } else if (targetItem.dynamicGuideCustomized &&
+                 dynamicGuidesEqual(targetItem.dynamicGuide, defaultDynamicGuide)) {
+        targetItem.dynamicGuideCustomized = false;
+        changed = true;
+      }
+      {
+        auto normalizedGuideMix = targetItem.dynamicGuideMix;
+        normalizedGuideMix.volume =
+            juce::jlimit(0.0f, 1.0f, normalizedGuideMix.volume);
+        normalizedGuideMix.gain =
+            juce::jlimit(0.0f, 2.0f, normalizedGuideMix.gain);
+        normalizedGuideMix.outputChannel =
+            juce::jmax(1, normalizedGuideMix.outputChannel);
+        normalizedGuideMix.outputWidth =
+            juce::jlimit(1, 2, normalizedGuideMix.outputWidth);
+        if (!dynamicGuideMixesEqual(targetItem.dynamicGuideMix,
+                                    normalizedGuideMix)) {
+          targetItem.dynamicGuideMix = normalizedGuideMix;
+          changed = true;
+        }
+      }
+      {
+        const auto normalizedClickDynMix =
+            normalizeClickDynMixSnapshot(targetItem.clickDynMix);
+        if (!clickDynMixesEqual(targetItem.clickDynMix, normalizedClickDynMix)) {
+          targetItem.clickDynMix = normalizedClickDynMix;
+          changed = true;
+        }
+      }
+
+      updater(targetItem, *song);
+      targetItem.updatedMs = now;
+      setlistChanged = true;
+      juce::ignoreUnused(changed);
+    }
+    if (setlistChanged)
+      targetSetlist.updatedMs = now;
+  }
   const bool saved = saveLibrary(library);
   return saved;
 }

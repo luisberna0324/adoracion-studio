@@ -30,6 +30,8 @@ public:
   void openProjectFromExternalApplication(const juce::File &file);
   bool isSongCurrentlyLoaded(const juce::String &songId) const noexcept;
   void flushActiveSongPersistenceNow();
+  /** Resuelve el aviso de cambios pendientes antes de cerrar Standalone. */
+  void requestApplicationQuit(std::function<void(bool)> onResolved);
 
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
@@ -103,6 +105,7 @@ private:
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
   bool mixExportBusy = false;
+  bool projectSaveBusy = false;
   // P0.5 (perf): generation token para descartar resultados tardíos de
   // la generación de waveform en background. Si el usuario cambia de
   // canción dos veces seguidas, solo el último set de bins debe ganar.
@@ -163,6 +166,10 @@ private:
   void saveSessionSnapshotToDisk();
   void beginExportCurrentSongMix(const juce::String &formatExtension);
   void runSongMixExport(const juce::File &outputFile);
+  void saveCurrentProject();
+  void savePortableProjects(std::vector<juce::File> files,
+                            bool showCompletionMessage,
+                            std::function<void(bool)> onComplete = {});
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MTControlsAudioProcessorEditor)
 };

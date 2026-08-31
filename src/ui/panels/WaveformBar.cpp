@@ -2683,6 +2683,7 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
 
 void WaveformBar::timerCallback() {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  bool loadingStateCleared = false;
 
   if (songLoadingHideAfterMs > 0.0 &&
       nowMs >= songLoadingHideAfterMs) {
@@ -2690,6 +2691,7 @@ void WaveformBar::timerCallback() {
     songLoadingHideAfterMs = 0.0;
     songLoadingProgress01 = 0.0;
     songLoadingPhaseText.clear();
+    loadingStateCleared = true;
   }
 
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
@@ -2746,7 +2748,8 @@ void WaveformBar::timerCallback() {
       pendingJumpDoubleClickDispatchAtMs > 0.0 ||
       playbackControlFocus != PlaybackControlFocus::None ||
       (!isPlayingNow && transportVisualChanged);
-  if (startMarkerChanged || endMarkerChanged || needsAnimatedRepaint)
+  if (loadingStateCleared || startMarkerChanged || endMarkerChanged ||
+      needsAnimatedRepaint)
     repaint();
 }
 

@@ -238,6 +238,171 @@ void MTControlsAudioProcessorEditor::flushActiveSongPersistenceNow() {
   ProjectStore::flushAllPendingSettings();
 }
 
+void MTControlsAudioProcessorEditor::saveCurrentProject() {
+  if (projectSaveBusy || !hasCurrentLoadedSong ||
+      currentLoadedSong.projectPath.isEmpty())
+    return;
+
+  flushActiveSongPersistenceNow();
+  const juce::File file(currentLoadedSong.projectPath);
+  if (!ProjectStore::hasPendingPortableChanges(file)) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::InfoIcon,
+        L10n::tr("Proyecto actualizado", "Project up to date"),
+        L10n::tr("No hay cambios pendientes para guardar.",
+                 "There are no pending changes to save."));
+    return;
+  }
+  savePortableProjects({file}, true);
+}
+
+void MTControlsAudioProcessorEditor::savePortableProjects(
+    std::vector<juce::File> files, const bool showCompletionMessage,
+    std::function<void(bool)> onComplete) {
+  if (projectSaveBusy) {
+    if (onComplete)
+      onComplete(false);
+    return;
+  }
+
+  files.erase(std::remove_if(files.begin(), files.end(), [](const juce::File &file) {
+                return !ProjectStore::hasPendingPortableChanges(file);
+              }),
+              files.end());
+  std::sort(files.begin(), files.end(), [](const juce::File &a,
+                                           const juce::File &b) {
+    return a.getFullPathName() < b.getFullPathName();
+  });
+  files.erase(std::unique(files.begin(), files.end()), files.end());
+  if (files.empty()) {
+    if (onComplete)
+      onComplete(true);
+    return;
+  }
+
+  projectSaveBusy = true;
+  setEnabled(false);
+  if (waveformBarPtr != nullptr)
+    waveformBarPtr->setSongLoadingState(
+        true, 0.0, L10n::tr("Preparando proyecto...", "Preparing project..."));
+
+  const auto safe =
+      juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  auto filesToSave = std::move(files);
+  auto completionCallback = std::move(onComplete);
+  std::thread([safe, filesToSave = std::move(filesToSave),
+               showCompletionMessage,
+               completionCallback = std::move(completionCallback)]() mutable {
+    bool success = true;
+    juce::String failure;
+    for (size_t index = 0; index < filesToSave.size(); ++index) {
+      juce::String error;
+      const auto &file = filesToSave[index];
+      const bool saved = ProjectStore::savePendingPortableChanges(
+          file, &error,
+          [safe, index, count = filesToSave.size(), name = file.getFileName()](
+              const double progress, const juce::String &phase) {
+            const auto totalProgress =
+                (static_cast<double>(index) + progress) /
+                static_cast<double>(count);
+            juce::MessageManager::callAsync(
+                [safe, totalProgress, phase, name] {
+                  if (safe == nullptr || safe->waveformBarPtr == nullptr)
+                    return;
+                  const auto status =
+                      phase.isNotEmpty()
+                          ? phase + " " +
+                                juce::String(static_cast<int>(
+                                    std::round(totalProgress * 100.0))) +
+                                "%"
+                          : L10n::tr("Guardando ", "Saving ") + name + " " +
+                                juce::String(static_cast<int>(
+                                    std::round(totalProgress * 100.0))) +
+                                "%";
+                  safe->waveformBarPtr->setSongLoadingState(
+                      true, totalProgress, status);
+                });
+          });
+      if (!saved) {
+        success = false;
+        failure = file.getFileName() + ": " +
+                  (error.isNotEmpty()
+                       ? error
+                       : L10n::tr("No se pudo guardar el proyecto.",
+                                  "The project couldn't be saved."));
+        break;
+      }
+    }
+
+    juce::MessageManager::callAsync(
+        [safe, success, failure, showCompletionMessage,
+         finalCompletion = std::move(completionCallback)]() mutable {
+          if (safe != nullptr) {
+            safe->projectSaveBusy = false;
+            safe->setEnabled(true);
+            if (safe->waveformBarPtr != nullptr)
+              safe->waveformBarPtr->clearSongLoadingState();
+          }
+          if (success && showCompletionMessage) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::InfoIcon,
+                L10n::tr("Proyecto guardado", "Project saved"),
+                L10n::tr("El archivo .pwproj fue actualizado correctamente.",
+                         "The .pwproj file was updated successfully."));
+          } else if (!success) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                L10n::tr("No se pudo guardar", "Couldn't save"), failure);
+          }
+          if (finalCompletion)
+            finalCompletion(success);
+        });
+  }).detach();
+}
+
+void MTControlsAudioProcessorEditor::requestApplicationQuit(
+    std::function<void(bool)> onResolved) {
+  flushActiveSongPersistenceNow();
+  const auto pending = ProjectStore::getPendingPortableProjectFiles();
+  if (pending.empty()) {
+    if (onResolved)
+      onResolved(true);
+    return;
+  }
+
+  const auto count = static_cast<int>(pending.size());
+  const auto message =
+      count == 1
+          ? L10n::tr(
+                "Hay cambios guardados en este dispositivo que aún no están dentro del archivo .pwproj.",
+                "There are changes saved on this device that are not yet inside the .pwproj file.")
+          : L10n::tr("Hay cambios pendientes en ",
+                     "There are pending changes in ") +
+                juce::String(count) +
+                L10n::tr(" proyectos.", " projects.");
+
+  auto resolvedCallback = std::move(onResolved);
+  juce::AlertWindow::showAsync(
+      juce::MessageBoxOptions()
+          .withIconType(juce::MessageBoxIconType::WarningIcon)
+          .withTitle(L10n::tr("Guardar antes de salir", "Save before quitting"))
+          .withMessage(message)
+          .withButton(L10n::tr("Guardar y salir", "Save and quit"))
+          .withButton(L10n::tr("Salir sin actualizar", "Quit without updating"))
+          .withButton(L10n::tr("Cancelar", "Cancel")),
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
+       pending, resolvedCallback = std::move(resolvedCallback)](
+          const int result) mutable {
+        if (result == 1 && safe != nullptr) {
+          safe->savePortableProjects(std::move(pending), false,
+                                     std::move(resolvedCallback));
+          return;
+        }
+        if (resolvedCallback)
+          resolvedCallback(result == 2);
+      });
+}
+
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #if JucePlugin_Build_Standalone
   auto *top = getTopLevelComponent();
@@ -346,6 +511,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     lastObservedAudioDeviceKey = getCurrentDeviceKey(audioCtx);
 
     if (audioCtx.manager != nullptr) {
+      enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
       if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
           currentDevice != nullptr) {
         auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
@@ -627,6 +793,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         if (audioCtx.manager == nullptr)
           return;
 
+        PluginEditorSupport::enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
         if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();
             currentDevice != nullptr) {
           processorRef.getAudioDeviceBridge().setAvailableOutputChannelCount(
@@ -665,6 +832,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (channelGridRaw != nullptr)
       channelGridRaw->refreshLibraryFromStorage();
   });
+  songListRaw->setOnSaveProjectRequested([this] { saveCurrentProject(); });
+  songListRaw->setSaveProjectStateProvider(
+      [this] {
+        return hasCurrentLoadedSong &&
+               currentLoadedSong.projectPath.isNotEmpty() && !projectSaveBusy;
+      },
+      [this] {
+        return hasCurrentLoadedSong &&
+               currentLoadedSong.projectPath.isNotEmpty() &&
+               ProjectStore::hasPendingPortableChanges(
+                   juce::File(currentLoadedSong.projectPath));
+      });
 
   struct SongLoadUiScope {
     bool &busy;
@@ -1704,6 +1883,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
   const auto audioCtx = getStandaloneAudioContext();
+  if (audioCtx.manager != nullptr)
+    enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
   auto *panel = new SettingsPanel(
       static_cast<ThemePreset>(currentThemeId),
       [this](ThemePreset preset) { applyThemePreset(static_cast<int>(preset)); },
@@ -1789,7 +1970,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         if (hasCurrentLoadedSong)
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
-      audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
+      // Standalone mode is output-only. Keep inputs out of the routing UI too.
+      audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
                  useTouchOptimisedControls() ? 860 : 780);
   panel->refreshThemeColours();
@@ -2519,6 +2701,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     const auto audioCtx = getStandaloneAudioContext();
     if (audioCtx.manager != nullptr) {
+      enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
       auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
       const juce::String currentDeviceKey = getCurrentDeviceKey(audioCtx);
       if (auto *currentDevice = audioCtx.manager->getCurrentAudioDevice();

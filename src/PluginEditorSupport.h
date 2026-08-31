@@ -41,6 +41,7 @@ struct StandaloneAudioContext {
 
 StandaloneAudioContext getStandaloneAudioContext();
 juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx);
+bool enforceStandaloneOutputOnlyAudio(juce::AudioDeviceManager &manager);
 bool fallbackToBuiltInOrDefaultOutput(juce::AudioDeviceManager &manager);
 void hideStandaloneOptionsButton(juce::Component *fromComponent);
 
