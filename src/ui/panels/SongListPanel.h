@@ -58,6 +58,9 @@ public:
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
+  void setOnSaveProjectRequested(std::function<void()> cb);
+  void setSaveProjectStateProvider(std::function<bool()> availableProvider,
+                                   std::function<bool()> pendingProvider);
   int getSongCount() const;
   const ImportedSongData *getSongPtr(int index) const;
   int getSongIndexById(const juce::String &songId) const;
@@ -258,6 +261,9 @@ private:
   juce::StringArray autoPlayNextMarks;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
+  std::function<void()> onSaveProjectRequested;
+  std::function<bool()> saveProjectAvailableProvider;
+  std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;

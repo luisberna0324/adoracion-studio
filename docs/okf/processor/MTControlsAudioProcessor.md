@@ -85,9 +85,22 @@ vigente, y reconstruye la caché si el paquete cambió o falta algún archivo.
 La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
 la copia local en `MTControls/waveforms` es sólo una caché regenerable.
 Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
-tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
-fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
-cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
+tempo, ventana, arrange, guía y click) se escriben inmediatamente en el sidecar
+local `project-cache/<project-id>/song-settings.json`. El snapshot por ruta se
+actualiza en la misma operación para que cambios consecutivos de mixer, guía y
+click se acumulen y ninguna categoría reconstruya desde un estado anterior.
+Cada diferencia respecto del `manifest.json` embebido marca el proyecto como
+pendiente de consolidación portable.
+
+La acción **Guardar proyecto** toma el último snapshot local y reconstruye el
+`.pwproj` fuera del hilo de UI, publicando fase y porcentaje. El guardado sólo
+limpia la marca pendiente si no apareció una generación nueva mientras se
+escribía. En Standalone, cerrar la ventana o salir de la aplicación ofrece
+**Guardar y salir**, **Salir sin actualizar** y **Cancelar**; el primer camino
+consolida secuencialmente todos los proyectos modificados antes de terminar. En
+iOS el sidecar inmediato es la protección ante suspensión, porque el sistema no
+garantiza tiempo para completar un ZIP grande al llevar la app a background.
+
 La escritura del ZIP ocurre en `<proyecto>.tmp`; tanto el stream de progreso
 como el `FileOutputStream` se destruyen antes de llamar `replaceFileIn()`. Esto
 es obligatorio en Windows, donde el handle de escritura de JUCE no comparte
@@ -95,7 +108,9 @@ permiso de borrado o renombrado. Antes de escribir se elimina cualquier temporal
 obsoleto y el reemplazo se reintenta brevemente para tolerar locks transitorios
 de antivirus o proveedores de sincronización. Si aun así falla, el proyecto
 anterior permanece intacto, el temporal se limpia y el log registra ambas rutas.
-`ProjectStore` conserva el snapshot completo más reciente en memoria y en
+Después de una consolidación exitosa se actualiza `project-source.json` con el
+nuevo tamaño y `mtime`; así el cambio de manifiesto no invalida los stems ya
+extraídos. `ProjectStore` conserva el snapshot completo más reciente en memoria y en
 `project-cache/<project-id>/song-settings.json`, por lo que cambios consecutivos
 se acumulan aun cuando la canción no pertenezca al setlist activo o el `.pwproj`
 haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de

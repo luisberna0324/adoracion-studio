@@ -1026,6 +1026,20 @@ void SongListPanel::applySetlistsLayout(const SetlistsLayout &layout) {
 
 void SongListPanel::openHeaderMenu() {
   juce::PopupMenu menu;
+  const bool canSaveProject = saveProjectAvailableProvider != nullptr &&
+                              saveProjectAvailableProvider();
+  const bool projectPending = canSaveProject &&
+                              saveProjectPendingProvider != nullptr &&
+                              saveProjectPendingProvider();
+  menu.addItem(projectPending
+                   ? L10n::tr("Guardar proyecto (cambios pendientes)",
+                              "Save project (pending changes)")
+                   : L10n::tr("Guardar proyecto", "Save project"),
+               canSaveProject, false, [this] {
+                 if (onSaveProjectRequested)
+                   onSaveProjectRequested();
+               });
+  menu.addSeparator();
   if (viewMode == ViewMode::Setlists) {
     menu.addItem(L10n::tr("Crear setlist", "Create setlist"),
                  [this] { createSetlist(); });
@@ -1054,6 +1068,17 @@ void SongListPanel::openHeaderMenu() {
   }
   menu.showMenuAsync(
       juce::PopupMenu::Options().withTargetComponent(headerMenuButton));
+}
+
+void SongListPanel::setOnSaveProjectRequested(std::function<void()> cb) {
+  onSaveProjectRequested = std::move(cb);
+}
+
+void SongListPanel::setSaveProjectStateProvider(
+    std::function<bool()> availableProvider,
+    std::function<bool()> pendingProvider) {
+  saveProjectAvailableProvider = std::move(availableProvider);
+  saveProjectPendingProvider = std::move(pendingProvider);
 }
 
 void SongListPanel::openLibraryBrowser() {

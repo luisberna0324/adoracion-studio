@@ -23,6 +23,52 @@ bool writeCachedSettings(const juce::String &projectId,
 juce::File cachedSettingsFile(const juce::String &projectId);
 juce::var settingsToVar(const ProjectSongSettings &settings);
 
+struct DirtyProjectEntry {
+  juce::File file;
+  juce::String projectId;
+  uint64_t generation = 0;
+};
+
+juce::CriticalSection &dirtyProjectsGuard() {
+  static juce::CriticalSection guard;
+  return guard;
+}
+
+std::map<std::string, DirtyProjectEntry> &dirtyProjects() {
+  static std::map<std::string, DirtyProjectEntry> entries;
+  return entries;
+}
+
+uint64_t markProjectDirty(const juce::File &file,
+                          const juce::String &projectId) {
+  if (file == juce::File{} || projectId.trim().isEmpty())
+    return 0;
+  const juce::ScopedLock lock(dirtyProjectsGuard());
+  const auto key = file.getFullPathName().toStdString();
+  auto &entry = dirtyProjects()[key];
+  entry.file = file;
+  entry.projectId = projectId.trim();
+  return ++entry.generation;
+}
+
+bool getDirtyProject(const juce::File &file, DirtyProjectEntry &outEntry) {
+  const juce::ScopedLock lock(dirtyProjectsGuard());
+  const auto it = dirtyProjects().find(file.getFullPathName().toStdString());
+  if (it == dirtyProjects().end())
+    return false;
+  outEntry = it->second;
+  return true;
+}
+
+void markProjectCleanIfCurrent(const juce::File &file,
+                               const uint64_t generation) {
+  const juce::ScopedLock lock(dirtyProjectsGuard());
+  const auto key = file.getFullPathName().toStdString();
+  const auto it = dirtyProjects().find(key);
+  if (it != dirtyProjects().end() && it->second.generation == generation)
+    dirtyProjects().erase(it);
+}
+
 constexpr auto kManifestName = "manifest.json";
 constexpr auto kAudioPrefix = "audio/";
 constexpr auto kWaveformName = "waveform.bin";
@@ -1065,9 +1111,10 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                    L10n::tr("Restaurando configuración...",
                             "Restoring settings..."),
                    true);
-  auto settings = hasNewerCachedSettings
-                      ? newerCachedSettings
-                      : settingsFromVar(o->getProperty("songSettings"));
+  const auto embeddedSettings =
+      settingsFromVar(o->getProperty("songSettings"));
+  auto settings = hasNewerCachedSettings ? newerCachedSettings
+                                         : embeddedSettings;
   if (rebuildCache) {
     settingsSaveQueue().remember(file, settings);
     writeCachedSettings(song.id, settings);
@@ -1079,8 +1126,9 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   outDocument = {std::move(song), std::move(settings),
                  std::move(waveformBins), file};
   recordRecent(outDocument);
-  if (hasNewerCachedSettings)
-    settingsSaveQueue().schedule(file, song.id, outDocument.settings);
+  if (hasNewerCachedSettings &&
+      !settingsJsonEqual(embeddedSettings, outDocument.settings))
+    markProjectDirty(file, outDocument.song.projectId);
   progress.publish(1.0,
                    L10n::tr("Proyecto validado", "Project validated"), true);
   return true;
@@ -1254,16 +1302,19 @@ void ProjectStore::scheduleSettingsSave(const juce::File &file,
   ProjectSongSettings previous;
   if (readCachedSettings(projectId, previous) &&
       ProjectStore::settingsJsonEqual(previous, settings)) {
-    // Nothing changed on disk since the last save. Both the sidecar
-    // and the eventual .pwproj re-pack are no-ops. Return early so we
-    // do not enqueue a job that would touch the .pwproj for nothing.
+    // Keep the path-keyed snapshot coherent even when the sidecar was
+    // populated before this process opened the project.
+    settingsSaveQueue().remember(file, settings);
     return;
   }
-  if (!writeCachedSettings(projectId, settings))
+  if (!writeCachedSettings(projectId, settings)) {
     SessionAuthLogger::write(
         "[Project] Couldn't persist local settings cache id=" + projectId);
+    return;
+  }
+  settingsSaveQueue().remember(file, settings);
   if (file.existsAsFile())
-    settingsSaveQueue().schedule(file, projectId, std::move(settings));
+    markProjectDirty(file, projectId);
   else if (file != juce::File{})
     SessionAuthLogger::write(
         "[Project] Package unavailable; settings cached locally path=" +
@@ -1299,6 +1350,75 @@ bool ProjectStore::getCachedSettings(const juce::File &file,
 bool ProjectStore::getCachedSettings(const juce::String &projectId,
                                      ProjectSongSettings &outSettings) {
   return readCachedSettings(projectId, outSettings);
+}
+
+bool ProjectStore::hasPendingPortableChanges(const juce::File &file) {
+  DirtyProjectEntry entry;
+  return getDirtyProject(file, entry);
+}
+
+std::vector<juce::File> ProjectStore::getPendingPortableProjectFiles() {
+  std::vector<juce::File> files;
+  const juce::ScopedLock lock(dirtyProjectsGuard());
+  files.reserve(dirtyProjects().size());
+  for (const auto &entry : dirtyProjects())
+    if (entry.second.file != juce::File{})
+      files.push_back(entry.second.file);
+  return files;
+}
+
+bool ProjectStore::savePendingPortableChanges(
+    const juce::File &file, juce::String *errorMessage,
+    const ProjectProgressFn &onProgress) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+
+  DirtyProjectEntry dirty;
+  if (!getDirtyProject(file, dirty))
+    return true;
+  if (!file.existsAsFile()) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr("No se encontró el archivo del proyecto.",
+                               "The project file couldn't be found.");
+    return false;
+  }
+
+  ProjectSongSettings latestSettings;
+  if (!readCachedSettings(dirty.projectId, latestSettings)) {
+    if (errorMessage != nullptr)
+      *errorMessage = L10n::tr(
+          "No se pudo leer la configuración local del proyecto.",
+          "The project's local settings couldn't be read.");
+    return false;
+  }
+
+  ProjectDocument document;
+  if (!open(file, document, errorMessage, false))
+    return false;
+  document.settings = latestSettings;
+  if (!save(std::move(document), file, errorMessage, nullptr, onProgress))
+    return false;
+
+  if (!writeCacheProjectMarker(file, getCacheDirectory(dirty.projectId)))
+    SessionAuthLogger::write(
+        "[Project] Couldn't refresh source marker after explicit save path=" +
+        file.getFullPathName());
+
+  markProjectCleanIfCurrent(file, dirty.generation);
+
+  DirtyProjectEntry stillDirty;
+  if (getDirtyProject(file, stillDirty)) {
+    ProjectSongSettings settingsAfterSave;
+    if (readCachedSettings(stillDirty.projectId, settingsAfterSave)) {
+      // Ensure open() sees concurrent edits as newer than the package that
+      // just finished writing.
+      writeCachedSettings(stillDirty.projectId, settingsAfterSave);
+      settingsSaveQueue().remember(file, settingsAfterSave);
+    }
+  } else {
+    settingsSaveQueue().remember(file, latestSettings);
+  }
+  return true;
 }
 
 void ProjectStore::flushPendingSettings(const juce::File &file) {

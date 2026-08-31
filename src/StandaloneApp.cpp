@@ -34,6 +34,17 @@ juce::String makeWindowTitle() {
   return juce::String::fromUTF8(JucePlugin_Name) + " v" + JucePlugin_VersionString;
 }
 
+class PlayWorshipStandaloneWindow final
+    : public juce::StandaloneFilterWindow {
+public:
+  using juce::StandaloneFilterWindow::StandaloneFilterWindow;
+
+  void closeButtonPressed() override {
+    if (auto *app = juce::JUCEApplicationBase::getInstance())
+      app->systemRequestedQuit();
+  }
+};
+
 void queueProjectOpen(juce::StandaloneFilterWindow *window,
                       const juce::File &projectFile) {
   if (window == nullptr || projectFile == juce::File{})
@@ -106,26 +117,49 @@ public:
   }
 
   void systemRequestedQuit() override {
-    if (pluginHolder != nullptr)
-      pluginHolder->savePluginState();
-    if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
-      mainWindow->pluginHolder->savePluginState();
-
     if (juce::ModalComponentManager::getInstance()->cancelAllModalComponents()) {
       juce::Timer::callAfterDelay(100, [] {
         if (auto *app = juce::JUCEApplicationBase::getInstance())
           app->systemRequestedQuit();
       });
-    } else {
-      quit();
+      return;
     }
+
+    if (quitFlowActive)
+      return;
+
+    auto *processor = mainWindow != nullptr ? mainWindow->getAudioProcessor()
+                                           : nullptr;
+    auto *editor = processor != nullptr
+                       ? dynamic_cast<MTControlsAudioProcessorEditor *>(
+                             processor->getActiveEditor())
+                       : nullptr;
+    if (editor == nullptr) {
+      completeQuit();
+      return;
+    }
+
+    quitFlowActive = true;
+    editor->requestApplicationQuit([this](const bool shouldQuit) {
+      quitFlowActive = false;
+      if (shouldQuit)
+        completeQuit();
+    });
   }
 
 private:
+  void completeQuit() {
+    if (pluginHolder != nullptr)
+      pluginHolder->savePluginState();
+    if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
+      mainWindow->pluginHolder->savePluginState();
+    quit();
+  }
+
   juce::StandaloneFilterWindow *createWindow() {
     if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
       return nullptr;
-    return new juce::StandaloneFilterWindow(
+    return new PlayWorshipStandaloneWindow(
         makeWindowTitle(),
         juce::LookAndFeel::getDefaultLookAndFeel().findColour(
             juce::ResizableWindow::backgroundColourId),
@@ -150,6 +184,7 @@ private:
   juce::ApplicationProperties appProperties;
   std::unique_ptr<juce::StandaloneFilterWindow> mainWindow;
   std::unique_ptr<juce::StandalonePluginHolder> pluginHolder;
+  bool quitFlowActive = false;
 };
 
 } // namespace

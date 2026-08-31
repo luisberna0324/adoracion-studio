@@ -7,6 +7,25 @@ timestamp: 2026-08-17T16:30:00Z
 
 # Changelog
 
+## 2026-08-31
+
+### Proyectos: guardado portable explícito y aviso de cierre
+
+Los ajustes `.pwproj` siguen escribiéndose inmediatamente en
+`project-cache/<project-id>/song-settings.json`, pero ahora el snapshot en
+memoria se actualiza junto con el sidecar. Esto corrige la regresión donde la
+cola comparaba contra el sidecar recién escrito, descartaba el update y dejaba
+una base vieja capaz de sobrescribir cambios previos de mixer, guía o click.
+
+`ProjectStore` registra generaciones pendientes y expone una consolidación
+explícita que reconstruye el ZIP mediante `<proyecto>.tmp`, reemplazo atómico y
+actualización de `project-source.json`. El menú de Biblioteca/Setlist ofrece
+**Guardar proyecto** y señala cuando hay cambios pendientes; el progreso se
+muestra sobre la waveform sin bloquear el hilo de UI. La ventana Standalone
+intercepta tanto el botón de cerrar como la salida del sistema y permite guardar
+todos los proyectos pendientes, salir conservando sólo los sidecars locales o
+cancelar.
+
 ## 2026-08-19
 
 ### Waveform: cierre de estado de carga

@@ -80,7 +80,7 @@ public:
   // mtime-bump that invalidated the cache for every subsequent load.
   static bool writeCachedSettingsFromFile(const juce::File &file,
                                          const ProjectSongSettings &settings);
-  /** Guarda ajustes tras 750 ms sin cambios; la UI nunca espera el ZIP. */
+  /** Guarda el snapshot local y marca el paquete para consolidación explícita. */
   static void scheduleSettingsSave(const juce::File &file,
                                    ProjectSongSettings settings);
   /** Actualiza primero la caché local, incluso si el paquete fue movido. */
@@ -93,6 +93,18 @@ public:
   /** Recupera el snapshot local por identidad, sin depender de la ruta del ZIP. */
   static bool getCachedSettings(const juce::String &projectId,
                                 ProjectSongSettings &outSettings);
+  /** Indica si el sidecar contiene cambios aún no consolidados en el ZIP. */
+  static bool hasPendingPortableChanges(const juce::File &file);
+  /** Proyectos abiertos/modificados que todavía requieren consolidación. */
+  static std::vector<juce::File> getPendingPortableProjectFiles();
+  /**
+   * Consolida el último sidecar dentro del .pwproj mediante reemplazo atómico.
+   * Si aparecen cambios durante el guardado, el proyecto permanece pendiente.
+   */
+  static bool savePendingPortableChanges(
+      const juce::File &file, juce::String *errorMessage = nullptr,
+      const ProjectProgressFn &onProgress = {});
+  /** Termina cualquier escritura local pendiente; no reconstruye el ZIP. */
   static void flushPendingSettings(const juce::File &file);
   static void flushAllPendingSettings();
 
