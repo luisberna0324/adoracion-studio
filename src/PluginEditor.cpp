@@ -62,8 +62,8 @@ public:
     const int margin = useTouchOptimisedControls() ? 18 : 28;
     area.reduce(margin, margin);
 
-    const int maxWidth = useTouchOptimisedControls() ? 920 : 760;
-    const int maxHeight = useTouchOptimisedControls() ? 820 : 620;
+    const int maxWidth = useTouchOptimisedControls() ? 980 : 1080;
+    const int maxHeight = useTouchOptimisedControls() ? 860 : 780;
     const int width = juce::jmin(maxWidth, area.getWidth());
     const int height = juce::jmin(maxHeight, area.getHeight());
 
@@ -1790,8 +1790,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
           applyRoutingDefaultsToSong(currentLoadedSong);
       },
       audioCtx.manager, audioCtx.maxInputs, audioCtx.maxOutputs);
-  panel->setSize(useTouchOptimisedControls() ? 920 : 760,
-                 useTouchOptimisedControls() ? 820 : 620);
+  panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
+                 useTouchOptimisedControls() ? 860 : 780);
   panel->refreshThemeColours();
 
 #if JUCE_IOS

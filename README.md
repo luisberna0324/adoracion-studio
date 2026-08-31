@@ -93,12 +93,12 @@ cmake --preset ios-release
 cmake --build --preset ios-release
 ```
 
-El proyecto de Xcode se genera en `build/ios-release` para firmar y ejecutar
+El proyecto de Xcode se genera en `build/ios-ipad-flatbundle` para firmar y ejecutar
 en dispositivo.
 
 Abrir en Xcode:
 ```bash
-open build/ios-release/MTControls.xcodeproj
+open build/ios-ipad-flatbundle/MTControls.xcodeproj
 ```
 
 ## Build (manual)
@@ -114,7 +114,7 @@ cmake --build build -j
 
 - Windows: GitHub Actions con `windows-latest` + presets `windows-release` (x64) y `windows-x86-release` (x86)
 - macOS: GitHub Actions con `macos-latest` + preset `macos-release`
-- iOS: generar proyecto Xcode con preset `ios-release` (requiere signing para build/run)
+- iOS: generar proyecto Xcode con preset `ios-release` (genera `build/ios-ipad-flatbundle`, requiere signing para build/run)
 
 ### Workflow `Build Artifacts`
 

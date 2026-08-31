@@ -138,6 +138,100 @@ juce::Font makeAppFont(const float size, const AppFontWeight weight) {
   return juce::Font(options);
 }
 
+namespace {
+class RoundedComboLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  void drawComboBox(juce::Graphics &g, const int width, const int height,
+                    const bool isButtonDown, const int, const int, const int,
+                    const int, juce::ComboBox &box) override {
+    auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
+                                         static_cast<float>(width) - 1.0f,
+                                         static_cast<float>(height) - 1.0f);
+    auto fill = box.findColour(juce::ComboBox::backgroundColourId);
+    if (isButtonDown)
+      fill = fill.brighter(0.08f);
+
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, 8.0f);
+    const auto arrowColour = box.findColour(juce::ComboBox::arrowColourId);
+    const auto arrowArea = juce::Rectangle<float>(
+        static_cast<float>(width - 24), static_cast<float>(height) * 0.5f - 4.0f,
+        12.0f, 8.0f);
+    juce::Path arrow;
+    arrow.startNewSubPath(arrowArea.getX() + 1.0f, arrowArea.getCentreY() - 1.5f);
+    arrow.lineTo(arrowArea.getCentreX(), arrowArea.getCentreY() + 2.0f);
+    arrow.lineTo(arrowArea.getRight() - 1.0f, arrowArea.getCentreY() - 1.5f);
+    g.setColour(arrowColour);
+    g.strokePath(arrow, juce::PathStrokeType(1.8f,
+                                             juce::PathStrokeType::curved,
+                                             juce::PathStrokeType::rounded));
+  }
+
+  juce::Font getComboBoxFont(juce::ComboBox &) override {
+    return makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f,
+                       AppFontWeight::Medium);
+  }
+
+  void positionComboBoxText(juce::ComboBox &box, juce::Label &label) override {
+    label.setBounds(12, 1, juce::jmax(1, box.getWidth() - box.getHeight() - 18),
+                    juce::jmax(1, box.getHeight() - 2));
+    label.setFont(getComboBoxFont(box));
+  }
+
+  juce::PopupMenu::Options getOptionsForComboBoxPopupMenu(
+      juce::ComboBox &box, juce::Label &label) override {
+    return juce::LookAndFeel_V4::getOptionsForComboBoxPopupMenu(box, label)
+        .withMinimumWidth(box.getWidth())
+        .withStandardItemHeight(useTouchOptimisedControls() ? 50 : 38);
+  }
+};
+
+RoundedComboLookAndFeel &getRoundedComboLookAndFeel() {
+  static RoundedComboLookAndFeel lookAndFeel;
+  return lookAndFeel;
+}
+} // namespace
+
+namespace {
+class SwitchLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  void drawToggleButton(juce::Graphics &g, juce::ToggleButton &button,
+                        const bool highlighted, const bool pressed) override {
+    const float trackW = useTouchOptimisedControls() ? 48.0f : 42.0f;
+    const float trackH = useTouchOptimisedControls() ? 28.0f : 24.0f;
+    const float x = 4.0f;
+    const float y = (static_cast<float>(button.getHeight()) - trackH) * 0.5f;
+    auto track = juce::Rectangle<float>(x, y, trackW, trackH);
+    auto trackColour = button.getToggleState() ? UITheme::accent
+                                                : UITheme::cardBgPressed;
+    if (pressed || highlighted)
+      trackColour = trackColour.brighter(0.08f);
+
+    g.setColour(trackColour);
+    g.fillRoundedRectangle(track, trackH * 0.5f);
+    const float thumbSize = trackH - 4.0f;
+    const float thumbX = button.getToggleState()
+                             ? track.getRight() - thumbSize - 2.0f
+                             : track.getX() + 2.0f;
+    g.setColour(UITheme::textPrimary.brighter(0.35f));
+    g.fillEllipse(thumbX, track.getY() + 2.0f, thumbSize, thumbSize);
+
+    g.setColour(button.findColour(juce::ToggleButton::textColourId));
+    g.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
+                          AppFontWeight::Medium));
+    auto textArea = button.getLocalBounds().withTrimmedLeft(
+        juce::roundToInt(track.getRight()) + 12);
+    g.drawFittedText(button.getButtonText(), textArea,
+                     juce::Justification::centredLeft, 2);
+  }
+};
+
+SwitchLookAndFeel &getSwitchLookAndFeel() {
+  static SwitchLookAndFeel lookAndFeel;
+  return lookAndFeel;
+}
+} // namespace
+
 bool useTouchOptimisedControls() {
 #if JUCE_IOS || JUCE_ANDROID
   return true;
@@ -155,10 +249,14 @@ int touchOptimisedPopupItemHeight() {
 }
 
 void applyComboBoxTheme(juce::ComboBox &combo, const juce::Colour background,
-                        const juce::Colour outline) {
-  combo.setColour(juce::ComboBox::backgroundColourId, background);
+                        const juce::Colour) {
+  combo.setLookAndFeel(&getRoundedComboLookAndFeel());
+  combo.setColour(juce::ComboBox::backgroundColourId,
+                  background.withAlpha(useTouchOptimisedControls() ? 0.96f
+                                                                    : 0.88f));
   combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  combo.setColour(juce::ComboBox::outlineColourId, outline);
+  combo.setColour(juce::ComboBox::outlineColourId,
+                  juce::Colours::transparentBlack);
   combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   combo.setJustificationType(juce::Justification::centredLeft);
 }
@@ -180,6 +278,14 @@ void applyTextEditorTheme(juce::TextEditor &editor,
                    UITheme::accent.withAlpha(useTouchOptimisedControls() ? 0.82f
                                                                          : 0.64f));
   editor.setIndents(useTouchOptimisedControls() ? 12 : 8, 0);
+}
+
+void applyToggleSwitchTheme(juce::ToggleButton &toggle) {
+  toggle.setLookAndFeel(&getSwitchLookAndFeel());
+  toggle.setColour(juce::ToggleButton::textColourId, UITheme::textPrimary);
+  toggle.setColour(juce::ToggleButton::tickColourId, UITheme::accent);
+  toggle.setColour(juce::ToggleButton::tickDisabledColourId,
+                   UITheme::cardBgPressed);
 }
 
 juce::PopupMenu::Options makeTouchPopupMenuOptions(juce::Component *target) {

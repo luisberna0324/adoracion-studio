@@ -107,6 +107,7 @@ void applyTextEditorTheme(juce::TextEditor &editor,
                           juce::Colour background = UITheme::cardBgHover,
                           juce::Colour outline =
                               UITheme::cardBorder.withAlpha(0.7f));
+void applyToggleSwitchTheme(juce::ToggleButton &toggle);
 juce::PopupMenu::Options makeTouchPopupMenuOptions(juce::Component *target);
 
 /** Busca la ventana JUCE contenedora (Standalone / host) y alterna maximizado. */

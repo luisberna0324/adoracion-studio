@@ -65,6 +65,41 @@ public:
   void refreshThemeColours();
 
 private:
+  class SettingsTabButton final : public juce::TextButton {
+  public:
+    enum class Position { First, Middle, Last };
+
+    void paintButton(juce::Graphics &, bool, bool) override;
+    void setPosition(Position newPosition) { position = newPosition; }
+    void setActive(bool shouldBeActive) {
+      active = shouldBeActive;
+      repaint();
+    }
+
+  private:
+    bool active = false;
+    Position position = Position::Middle;
+  };
+  class SettingsCloseButton final : public juce::TextButton {
+  public:
+    void paintButton(juce::Graphics &, bool, bool) override;
+  };
+  class SettingsLogoutButton final : public juce::TextButton {
+  public:
+    void paintButton(juce::Graphics &, bool, bool) override;
+  };
+  class SettingsCopyButton final : public juce::TextButton,
+                                   private juce::Timer {
+  public:
+    SettingsCopyButton();
+    void setValueToCopy(const juce::String &value);
+    void paintButton(juce::Graphics &, bool, bool) override;
+
+  private:
+    void timerCallback() override;
+    juce::String valueToCopy;
+    bool showingConfirmation = false;
+  };
   class SettingsTabs final : public juce::TabbedComponent {
   public:
     using juce::TabbedComponent::TabbedComponent;
@@ -79,11 +114,17 @@ private:
 
   class RoutingRow;
   class SettingsCard;
+  class SettingsRowSeparator;
 
   juce::Label title;
-  juce::TextButton closeButton;
+  SettingsCloseButton closeButton;
+  SettingsTabButton generalTabButton;
+  SettingsTabButton accountTabButton;
+  SettingsTabButton audioTabButton;
+  SettingsTabButton routingTabButton;
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Component generalPage;
+  juce::Component accountPage;
   juce::Component audioPage;
   juce::Component routingPage;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
@@ -104,6 +145,7 @@ private:
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;
+  SettingsCopyButton sessionUidCopyButton;
   juce::Label sessionEmailLabel;
   juce::Label sessionEmailValue;
   juce::Label sessionPlanLabel;
@@ -114,16 +156,23 @@ private:
   juce::Label sessionExpiresValue;
   juce::Label sessionLicenseLabel;
   juce::Label sessionLicenseValue;
+  SettingsCopyButton sessionLicenseCopyButton;
+  juce::Label sessionVersionLabel;
+  juce::Label sessionVersionValue;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
   juce::Label actionInfoLabel;
   juce::HyperlinkButton infoLinkButton{
       "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
-  juce::TextButton logoutButton;
+  SettingsLogoutButton logoutButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;
   std::unique_ptr<SettingsCard> actionsCard;
+  std::unique_ptr<SettingsRowSeparator> sessionIdentitySeparator;
+  std::unique_ptr<SettingsRowSeparator> actionsTitleSeparator;
+  std::unique_ptr<SettingsRowSeparator> actionsRowSeparator;
+  std::vector<std::unique_ptr<SettingsRowSeparator>> generalRowSeparators;
   juce::Label routingSectionLabel;
   juce::Label routingHintLabel;
   juce::Viewport routingViewport;
@@ -149,8 +198,10 @@ private:
   void refreshRoutingForDevice();
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
+  void layoutAccountPage();
   void layoutAudioPage();
   void layoutRoutingPage();
   void applyLanguageTexts();
+  void updateTabButtonStates(int activeIndex);
   static juce::String formatIsoDateTime(const juce::String &isoDateTime);
 };

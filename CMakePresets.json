@@ -47,7 +47,7 @@
       "name": "ios-release",
       "displayName": "iOS Release",
       "generator": "Xcode",
-      "binaryDir": "${sourceDir}/build/ios-release",
+      "binaryDir": "${sourceDir}/build/ios-ipad-flatbundle",
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "iOS",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
