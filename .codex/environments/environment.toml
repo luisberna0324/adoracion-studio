@@ -8,9 +8,17 @@ script = ""
 [[actions]]
 name = "Ejecutar"
 icon = "run"
-command = "cmake --build build -j && open build/MTControls_artefacts/Standalone/Adoracion\\ Estudio.app"
+command = '''
+cd /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin
+JUCE_DIR=/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE cmake --preset macos-release
+cmake --build --preset macos-release
+open build/macos-release/MTControls_artefacts/Release/Standalone/PlayWorship.app'''
 
 [[actions]]
-name = "Ejecutar"
-icon = "run"
-command = "cmake --build build -j4; open build/MTControls_artefacts/Standalone/PlayWorship.app"
+name = "Run Mac"
+icon = "tool"
+command = '''
+cd /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin
+JUCE_DIR=/Users/luisberna/dev/multitracks/multitracks/third_party/JUCE cmake --preset macos-release
+cmake --build --preset macos-release
+open build/macos-release/MTControls_artefacts/Release/Standalone/PlayWorship.app'''

@@ -68,6 +68,8 @@ public:
       ArrangementPlaybackSelectionClearCallback cb);
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
+  void setOnExportMixRequested(std::function<void(juce::String)> cb);
+  void setExportBusy(bool busy);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
@@ -220,9 +222,11 @@ private:
   ArrangementPlaybackSelectionClearCallback onArrangementPlaybackSelectionClearRequest;
   TempoMapChangedCallback onTempoMapChanged;
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
+  std::function<void(juce::String)> onExportMixRequested;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   SvgToolbarButton followButton{"follow", SvgIconName::AudioWaveform};
+  SvgToolbarButton exportButton{"export", SvgIconName::FileAudio};
   SvgToolbarButton editButton{"edit", SvgIconName::Pencil};
   SvgToolbarButton waveHeightButton{"waveHeight", SvgIconName::Maximize};
   SvgToolbarButton guideMapButton{"guideMap", SvgIconName::Music};
@@ -315,6 +319,7 @@ private:
   bool lastTimerStartValid = false;
   double lastTimerStartSeconds = 0.0;
   bool waveformVerticalExpanded = false;
+  bool exportBusy = false;
 
   // The follow view moves every frame, but its waveform data is static. Keep
   // a bounded overscanned raster around the visible window so each frame only

@@ -702,14 +702,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setMetronomeBeatsPerBar(
             timeSignatureBeatsPerBar(region.timeSignature));
       });
+  waveformBarRaw->setOnExportMixRequested(
+      [this](const juce::String &format) { beginExportCurrentSongMix(format); });
 
   auto channelGridImpl =
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
   channelGridRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
-  channelGridRaw->setOnExportMixRequested(
-      [this](const juce::String &format) { beginExportCurrentSongMix(format); });
   channelGridRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   channelGridRaw->setOnMidiLearnTargetSelected(
@@ -1232,7 +1232,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         dynamicGuideSettings.enabled
             ? ChannelGridPanel::GuideSourceMode::DynamicBySections
             : ChannelGridPanel::GuideSourceMode::SongGuide);
-    channelGridRaw->setGuideWarningMessage({});
     currentSongIndex = songIndex;
     pushLoadUi(0.80, L10n::tr(u8"Cargando forma de onda...",
                               u8"Loading waveform..."));
@@ -2817,28 +2816,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     }
   }
 
-  juce::String missingDynamicGuideSection;
-  if (processorRef.consumeDynamicGuideMissingSectionWarning(
-          missingDynamicGuideSection)) {
-    if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
-      constexpr const char *kDynamicGuideLoadWarningPrefix =
-          "__dynamic_guide_load_error__:";
-      juce::String message;
-      if (missingDynamicGuideSection.startsWith(kDynamicGuideLoadWarningPrefix)) {
-        const auto detail =
-            missingDynamicGuideSection.fromFirstOccurrenceOf(
-                kDynamicGuideLoadWarningPrefix, false, false);
-        message = L10n::tr(u8"No se pudieron cargar los audios de guía dinámica: ",
-                           "Couldn't load dynamic guide audio: ") +
-                  detail;
-      } else {
-        message = L10n::tr(u8"Sin audio de guía para sección: ",
-                           "Missing guide audio for section: ") +
-                  missingDynamicGuideSection;
-      }
-      grid->setGuideWarningMessage(message);
-    }
-  }
+  juce::String ignoredDynamicGuideWarning;
+  processorRef.consumeDynamicGuideMissingSectionWarning(
+      ignoredDynamicGuideWarning);
 
   maybePersistSongWindowForActiveSong();
   maybePersistClickDynMetronomeEnabledForActiveSong();
@@ -3202,8 +3182,8 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
   }
 
   mixExportBusy = true;
-  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
-    grid->setExportBusy(true);
+  if (waveformBarPtr != nullptr)
+    waveformBarPtr->setExportBusy(true);
   if (waveformBarPtr != nullptr)
     waveformBarPtr->setSongLoadingState(true, 0.0, "Preparando exportación… 0%");
 
@@ -3229,8 +3209,8 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
       if (safe == nullptr)
         return;
       safe->mixExportBusy = false;
-      if (auto *grid = dynamic_cast<ChannelGridPanel *>(safe->channelGridPanel.get()))
-        grid->setExportBusy(false);
+      if (safe->waveformBarPtr != nullptr)
+        safe->waveformBarPtr->setExportBusy(false);
       if (safe->waveformBarPtr != nullptr)
         safe->waveformBarPtr->clearSongLoadingState();
       juce::AlertWindow::showMessageBoxAsync(

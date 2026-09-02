@@ -46,9 +46,6 @@ public:
   void triggerMidiApplyRouting();
   void setGuideSourceMode(GuideSourceMode mode);
   void setOnGuideSourceModeChanged(std::function<void(GuideSourceMode)> cb);
-  void setOnExportMixRequested(std::function<void(juce::String)> cb);
-  void setExportBusy(bool busy);
-  void setGuideWarningMessage(const juce::String &warningMessage);
   GuideSourceMode getGuideSourceMode() const noexcept { return guideSourceMode; }
 
   /** Tras banner "Configurar": sugerencias en borrador hasta pulsar Aplicar. */
@@ -59,12 +56,10 @@ public:
   void flushPendingPersistenceNow();
 
   void paint(juce::Graphics &g) override;
-  void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
 
 private:
   class StripSlot;
-  class ExportMixButton;
   void timerCallback() override;
   void layoutHeaderAndViewport();
   void applyRoutingDraft();
@@ -94,14 +89,7 @@ private:
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
-  juce::Label nudgeHintLabel;
-  juce::Label guideWarningLabel;
-  juce::TextButton nudgeUpButton{"VOL +"};
-  juce::TextButton nudgeDownButton{"VOL -"};
-  std::unique_ptr<ExportMixButton> exportMixButton;
   juce::ToggleButton dynamicGuideToggle;
-  juce::Label routingHintLabel;
-  juce::TextButton applyRoutingButton{"Aplicar"};
   juce::Viewport viewport;
   juce::Component content;
   std::vector<std::unique_ptr<StripSlot>> slots;
@@ -116,8 +104,6 @@ private:
   std::function<void(int)> onMidiLearnTargetSelected;
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(GuideSourceMode)> onGuideSourceModeChanged;
-  std::function<void(juce::String)> onExportMixRequested;
-  bool exportBusy = false;
   juce::String currentSongId;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;

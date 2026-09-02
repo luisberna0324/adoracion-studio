@@ -703,6 +703,32 @@ WaveformBar::WaveformBar() {
   };
   addAndMakeVisible(followButton);
 
+  exportButton.setTooltip(
+      L10n::tr("Exportar mezcla como WAV, MP3 o M4A", "Export mix as WAV, MP3, or M4A"));
+  exportButton.setViewportIgnoreDragFlag(true);
+  exportButton.onClick = [this] {
+    if (exportBusy || !onExportMixRequested)
+      return;
+    juce::PopupMenu formats;
+    formats.addItem(1, "WAV (24 bits)");
+    formats.addItem(2, "MP3 (320 kbps)");
+    formats.addItem(3, "M4A / AAC (256 kbps)");
+    const juce::Component::SafePointer<WaveformBar> safeBar(this);
+    formats.showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(&exportButton),
+        [safeBar](const int choice) {
+          if (safeBar == nullptr || !safeBar->onExportMixRequested)
+            return;
+          if (choice == 1)
+            safeBar->onExportMixRequested("wav");
+          else if (choice == 2)
+            safeBar->onExportMixRequested("mp3");
+          else if (choice == 3)
+            safeBar->onExportMixRequested("m4a");
+        });
+  };
+  addAndMakeVisible(exportButton);
+
   editButton.setTooltip(
       L10n::tr(
           "Arrastra para ajustar; usa el selector para compas/beat/libre (Option/Alt = libre temporal)",
@@ -1025,6 +1051,17 @@ void WaveformBar::setOnTempoMapChanged(TempoMapChangedCallback cb) {
 
 void WaveformBar::setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb) {
   onActiveTempoRegionChanged = std::move(cb);
+}
+
+void WaveformBar::setOnExportMixRequested(
+    std::function<void(juce::String)> cb) {
+  onExportMixRequested = std::move(cb);
+}
+
+void WaveformBar::setExportBusy(const bool busy) {
+  exportBusy = busy;
+  exportButton.setEnabled(!busy);
+  exportButton.repaint();
 }
 
 void WaveformBar::setPendingArrangementPartProvider(
@@ -1382,6 +1419,8 @@ void WaveformBar::resized() {
   if (!hasLoadedSong) {
     followButton.setVisible(false);
     followButton.setEnabled(false);
+    exportButton.setVisible(false);
+    exportButton.setEnabled(false);
     editButton.setVisible(false);
     editButton.setEnabled(false);
     waveHeightButton.setVisible(false);
@@ -1412,6 +1451,8 @@ void WaveformBar::resized() {
   followButton.setVisible(true);
   followButton.setEnabled(true);
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
+  exportButton.setVisible(true);
+  exportButton.setEnabled(!exportBusy);
   editButton.setVisible(true);
   editButton.setEnabled(true);
   waveHeightButton.setVisible(true);
@@ -1441,6 +1482,9 @@ void WaveformBar::resized() {
         bottomControls.removeFromRight(followGap);
         followButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
+        bottomControls.removeFromRight(4);
+        exportButton.setBounds(
+            bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       return true;
     }
@@ -1451,6 +1495,8 @@ void WaveformBar::resized() {
     placeBottomWaveControls(false, true);
     followButton.setVisible(false);
     followButton.setEnabled(false);
+    exportButton.setVisible(false);
+    exportButton.setEnabled(false);
     guideMapButton.setVisible(true);
     guideMapButton.setEnabled(true);
     tempoMapButton.setVisible(true);
@@ -1558,6 +1604,8 @@ void WaveformBar::resized() {
     waveHeightButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
     toolbarBounds.removeFromRight(4);
     followButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
+    toolbarBounds.removeFromRight(4);
+    exportButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
   }
 }
 

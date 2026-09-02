@@ -12,22 +12,6 @@
 #include <cmath>
 
 namespace {
-float midiLearnBlinkStrength() {
-  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
-  const double pulse = 0.5 + (0.5 * std::sin(seconds *
-                                              juce::MathConstants<double>::twoPi *
-                                              2.4));
-  return static_cast<float>(juce::jmap(pulse, 0.36, 1.0));
-}
-
-float midiLearnSoftBlinkStrength() {
-  const double seconds = juce::Time::getMillisecondCounterHiRes() * 0.001;
-  const double pulse = 0.5 + (0.5 * std::sin(seconds *
-                                              juce::MathConstants<double>::twoPi *
-                                              1.1));
-  return static_cast<float>(juce::jmap(pulse, 0.82, 1.0));
-}
-
 bool clickDynMixControlStateEquals(const ClickDynMixSnapshot &a,
                                    const ClickDynMixSnapshot &b) {
   return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
@@ -400,135 +384,9 @@ private:
   float stripScale = 1.0f;
 };
 
-class ChannelGridPanel::ExportMixButton final : public juce::TextButton {
-public:
-  ExportMixButton() : juce::TextButton("EXPORTAR MIX") {}
-
-  void paintButton(juce::Graphics &g, const bool highlighted,
-                   const bool down) override {
-    const auto bounds = getLocalBounds().toFloat();
-    auto background = UITheme::cardBgHover;
-    if (!isEnabled())
-      background = UITheme::cardBorder;
-    else if (down)
-      background = UITheme::cardBgPressed;
-    else if (highlighted)
-      background = UITheme::cardBgHover.brighter(0.05f);
-    g.setColour(background);
-    g.fillRoundedRectangle(bounds, 5.0f);
-    auto buttonContent = bounds.reduced(9.0f, 4.0f);
-    auto iconArea =
-        buttonContent.removeFromLeft(18.0f).withSizeKeepingCentre(16.0f, 16.0f);
-    const auto foreground = isEnabled()
-                                ? UITheme::textPrimary
-                                : UITheme::textSecondary.withAlpha(0.65f);
-    drawSvgIcon(g, iconArea, SvgIconName::FileAudio, foreground);
-    buttonContent.removeFromLeft(5.0f);
-    g.setColour(foreground);
-    g.setFont(makeAppFont(10.5f, AppFontWeight::SemiBold));
-    g.drawFittedText(getButtonText(), buttonContent.toNearestInt(),
-                     juce::Justification::centred, 1);
-  }
-};
-
 ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
                                    MTControlsAudioProcessor &processorRef)
     : lookAndFeel(lookAndFeelRef), processor(processorRef) {
-  exportMixButton = std::make_unique<ExportMixButton>();
-  nudgeHintLabel.setText("Volumen stems", juce::dontSendNotification);
-  nudgeHintLabel.setJustificationType(juce::Justification::centredLeft);
-  nudgeHintLabel.setFont(juce::FontOptions(10.0f));
-  nudgeHintLabel.setVisible(false);
-  addAndMakeVisible(nudgeHintLabel);
-
-  guideWarningLabel.setJustificationType(juce::Justification::centredLeft);
-  guideWarningLabel.setFont(juce::FontOptions(10.0f));
-  guideWarningLabel.setColour(juce::Label::textColourId,
-                              juce::Colour::fromRGB(235, 194, 95));
-  guideWarningLabel.setVisible(false);
-  addAndMakeVisible(guideWarningLabel);
-
-  routingHintLabel.setJustificationType(juce::Justification::centredLeft);
-  routingHintLabel.setFont(juce::FontOptions(11.0f));
-  routingHintLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  routingHintLabel.setText(
-      "Routing sugerido automaticamente --- puedes ajustarlo antes de aplicar",
-      juce::dontSendNotification);
-  routingHintLabel.setVisible(false);
-  addAndMakeVisible(routingHintLabel);
-
-  applyRoutingButton.onClick = [this] {
-    if (midiLearnActive) {
-      midiLearnPendingTargetId = processor.midiTargetMixerApplyRouting;
-      if (onMidiLearnTargetSelected)
-        onMidiLearnTargetSelected(processor.midiTargetMixerApplyRouting);
-      repaint();
-      return;
-    }
-    applyRoutingDraft();
-  };
-  applyRoutingButton.setVisible(false);
-  applyRoutingButton.setColour(juce::TextButton::buttonColourId,
-                               UITheme::accent.withAlpha(0.9f));
-  applyRoutingButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
-  addAndMakeVisible(applyRoutingButton);
-
-  nudgeUpButton.setClickingTogglesState(false);
-  nudgeUpButton.setLookAndFeel(&lookAndFeel);
-  nudgeUpButton.onClick = [this] {
-    if (midiLearnActive) {
-      midiLearnPendingTargetId = processor.midiTargetMixerNudgeUp;
-      if (onMidiLearnTargetSelected)
-        onMidiLearnTargetSelected(processor.midiTargetMixerNudgeUp);
-      repaint();
-      return;
-    }
-    nudgeFaders(nudgeStep);
-  };
-  nudgeUpButton.setTooltip("Sube todos los stems (excepto master/click/guia)");
-  addAndMakeVisible(nudgeUpButton);
-
-  nudgeDownButton.setClickingTogglesState(false);
-  nudgeDownButton.setLookAndFeel(&lookAndFeel);
-  nudgeDownButton.onClick = [this] {
-    if (midiLearnActive) {
-      midiLearnPendingTargetId = processor.midiTargetMixerNudgeDown;
-      if (onMidiLearnTargetSelected)
-        onMidiLearnTargetSelected(processor.midiTargetMixerNudgeDown);
-      repaint();
-      return;
-    }
-    nudgeFaders(-nudgeStep);
-  };
-  nudgeDownButton.setTooltip(
-      "Baja todos los stems (excepto master/click/guia)");
-  addAndMakeVisible(nudgeDownButton);
-
-  exportMixButton->onClick = [this] {
-    if (exportBusy || !onExportMixRequested)
-      return;
-    juce::PopupMenu formats;
-    formats.addItem(1, "WAV (24 bits)");
-    formats.addItem(2, "MP3 (320 kbps)");
-    formats.addItem(3, "M4A / AAC (256 kbps)");
-    const juce::Component::SafePointer<ChannelGridPanel> safePanel(this);
-    formats.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(exportMixButton.get()),
-        [safePanel](const int choice) {
-          if (safePanel == nullptr || !safePanel->onExportMixRequested)
-            return;
-          if (choice == 1)
-            safePanel->onExportMixRequested("wav");
-          else if (choice == 2)
-            safePanel->onExportMixRequested("mp3");
-          else if (choice == 3)
-            safePanel->onExportMixRequested("m4a");
-        });
-  };
-  exportMixButton->setTooltip(
-      "Exporta la mezcla actual como WAV, MP3 o M4A");
-  addAndMakeVisible(*exportMixButton);
-
   dynamicGuideToggle.setVisible(false);
 
   viewport.setViewedComponent(&content, false);
@@ -544,20 +402,6 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
 
 ChannelGridPanel::~ChannelGridPanel() {
   flushPendingVolumePersistence();
-  nudgeUpButton.setLookAndFeel(nullptr);
-  nudgeDownButton.setLookAndFeel(nullptr);
-}
-
-void ChannelGridPanel::setOnExportMixRequested(
-    std::function<void(juce::String)> cb) {
-  onExportMixRequested = std::move(cb);
-}
-
-void ChannelGridPanel::setExportBusy(const bool busy) {
-  exportBusy = busy;
-  exportMixButton->setEnabled(!busy);
-  exportMixButton->setButtonText(busy ? "EXPORTANDO..." : "EXPORTAR MIX");
-  repaint();
 }
 
 void ChannelGridPanel::setResponsiveProfile(
@@ -643,15 +487,6 @@ void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode) {
 void ChannelGridPanel::setOnGuideSourceModeChanged(
     std::function<void(GuideSourceMode)> cb) {
   onGuideSourceModeChanged = std::move(cb);
-}
-
-void ChannelGridPanel::setGuideWarningMessage(
-    const juce::String &warningMessage) {
-  const auto trimmed = warningMessage.trim();
-  guideWarningLabel.setText(trimmed, juce::dontSendNotification);
-  guideWarningLabel.setVisible(trimmed.isNotEmpty());
-  resized();
-  repaint();
 }
 
 void ChannelGridPanel::applyGuideSourceModeToVisibleGuideSlots() {
@@ -838,56 +673,6 @@ void ChannelGridPanel::layoutHeaderAndViewport() {
   auto r = getLocalBounds();
   r.reduce(panelPad, 0);
   r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
-  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
-                          ? 38
-                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46
-                                                                                 : 38);
-  auto header = r.removeFromTop(headerH);
-
-  auto headerContent = header.reduced(
-      10, responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 7);
-  const int nudgeBtnW = responsiveProfile == ResponsiveLayoutProfile::Compact ? 66 : 78;
-  const int nudgeGap = responsiveProfile == ResponsiveLayoutProfile::Compact ? 6 : 8;
-  nudgeHintLabel.setBounds({});
-  nudgeHintLabel.setFont(juce::FontOptions(
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 10.5f : 11.5f));
-  nudgeHintLabel.setVisible(false);
-  guideWarningLabel.setFont(
-      juce::FontOptions(responsiveProfile == ResponsiveLayoutProfile::Compact ? 9.5f
-                                                                              : 10.5f));
-  guideWarningLabel.setVisible(guideWarningLabel.getText().isNotEmpty());
-
-  const int exportBtnW =
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 104 : 122;
-  exportMixButton->setBounds(headerContent.removeFromRight(exportBtnW));
-  nudgeUpButton.setBounds(headerContent.removeFromLeft(nudgeBtnW));
-  headerContent.removeFromLeft(nudgeGap);
-  nudgeDownButton.setBounds(headerContent.removeFromLeft(nudgeBtnW));
-  headerContent.removeFromLeft(nudgeGap);
-
-  if (routingDraftActive && processor.getAvailableOutputChannelCount() > 2) {
-    applyRoutingButton.setVisible(true);
-    routingHintLabel.setVisible(true);
-    applyRoutingButton.setBounds(headerContent.removeFromRight(96));
-    headerContent.removeFromRight(8);
-    routingHintLabel.setBounds(headerContent);
-  } else {
-    applyRoutingButton.setVisible(false);
-    routingHintLabel.setVisible(false);
-  }
-
-  if (guideWarningLabel.isVisible()) {
-    auto warningArea = viewport.getBounds().withTop(header.getBottom() + 2);
-    warningArea.setHeight(
-        responsiveProfile == ResponsiveLayoutProfile::Compact ? 16 : 18);
-    guideWarningLabel.setBounds(warningArea.reduced(10, 0));
-  } else {
-    guideWarningLabel.setBounds({});
-  }
-
-  r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 6);
-  if (guideWarningLabel.isVisible())
-    r.removeFromTop(responsiveProfile == ResponsiveLayoutProfile::Compact ? 18 : 20);
   viewport.setBounds(r);
 }
 
@@ -1425,30 +1210,6 @@ bool ChannelGridPanel::hasActivePointerInteraction() const {
 }
 
 void ChannelGridPanel::refreshThemeColours() {
-  nudgeHintLabel.setColour(juce::Label::textColourId,
-                           UITheme::textPrimary.withAlpha(0.92f));
-  guideWarningLabel.setColour(juce::Label::textColourId,
-                              juce::Colour::fromRGB(235, 194, 95));
-
-  nudgeUpButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
-  nudgeUpButton.setColour(juce::TextButton::buttonOnColourId,
-                          UITheme::cardBgPressed);
-  nudgeUpButton.setColour(juce::TextButton::textColourOffId,
-                          UITheme::textPrimary);
-  nudgeUpButton.setColour(juce::TextButton::textColourOnId,
-                          UITheme::textPrimary);
-
-  nudgeDownButton.setColour(juce::TextButton::buttonColourId,
-                            UITheme::cardBgHover);
-  nudgeDownButton.setColour(juce::TextButton::buttonOnColourId,
-                            UITheme::cardBgPressed);
-  nudgeDownButton.setColour(juce::TextButton::textColourOffId,
-                            UITheme::textPrimary);
-  nudgeDownButton.setColour(juce::TextButton::textColourOnId,
-                            UITheme::textPrimary);
-
-  exportMixButton->repaint();
-
   for (size_t i = 0; i < slots.size(); ++i) {
     auto &slot = *slots[i];
     auto &strip = slot.getStrip();
@@ -1489,45 +1250,7 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::cardBorder.withAlpha(0.86f));
   g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
 
-  const int panelPad =
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
-  auto headerArea = getLocalBounds();
-  headerArea.reduce(panelPad, 0);
-  headerArea.removeFromTop(
-      responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
-  const int headerH = responsiveProfile == ResponsiveLayoutProfile::Compact
-                          ? 38
-                          : (responsiveProfile == ResponsiveLayoutProfile::Large ? 46
-                                                                                 : 38);
-  auto mixerHeaderBounds = headerArea.removeFromTop(headerH).toFloat();
-  g.setColour(
-      UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f).withAlpha(0.96f));
-  g.fillRoundedRectangle(mixerHeaderBounds, 6.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.44f));
-  g.drawRoundedRectangle(mixerHeaderBounds.reduced(0.5f), 6.0f, 1.0f);
-
-  const float verticalSeparatorX =
-      static_cast<float>(nudgeDownButton.getRight() + 6);
-  const float verticalTop = mixerHeaderBounds.getY() + 8.0f;
-  const float verticalBottom = mixerHeaderBounds.getBottom() - 8.0f;
-  const auto separatorBase =
-      UITheme::cardBorder.interpolatedWith(UITheme::accent, 0.24f);
-  const auto separatorLight = UITheme::accentSoft.withAlpha(0.32f);
-  g.setColour(separatorBase.withAlpha(0.62f));
-  g.drawLine(verticalSeparatorX, verticalTop, verticalSeparatorX, verticalBottom,
-             1.0f);
-  g.setColour(separatorLight);
-  g.drawLine(verticalSeparatorX + 1.0f, verticalTop + 1.0f,
-             verticalSeparatorX + 1.0f, verticalBottom - 1.0f, 0.7f);
-
   const auto viewportBounds = viewport.getBounds();
-  const float separatorY = static_cast<float>(viewportBounds.getY() - 3);
-  g.setColour(separatorBase.withAlpha(0.66f));
-  g.drawLine(mixerHeaderBounds.getX() + 2.0f, separatorY,
-             mixerHeaderBounds.getRight() - 2.0f, separatorY, 0.95f);
-  g.setColour(separatorLight.withAlpha(0.65f));
-  g.drawLine(mixerHeaderBounds.getX() + 2.0f, separatorY + 1.0f,
-             mixerHeaderBounds.getRight() - 2.0f, separatorY + 1.0f, 0.6f);
 
   if (slots.empty()) {
     g.setColour(UITheme::textSecondary.withAlpha(0.85f));
@@ -1537,65 +1260,6 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
                  "Double-click a song\nfrom setlist"),
         viewportBounds, juce::Justification::centred, 2);
   }
-}
-
-void ChannelGridPanel::paintOverChildren(juce::Graphics &g) {
-  if (!midiLearnActive)
-    return;
-
-  const auto selectableColour = juce::Colour::fromRGB(78, 170, 255);
-  const auto pendingColour = juce::Colour::fromRGB(255, 196, 92);
-  auto drawLearnFrame = [this, &g, selectableColour, pendingColour](
-                            juce::Component &component,
-                            const int targetId) {
-    if (!component.isVisible() || targetId < 0)
-      return;
-    const auto frameBounds = component.getBounds().toFloat().reduced(1.0f);
-    const bool pending = (midiLearnPendingTargetId == targetId);
-    const juce::String label =
-        (pending && midiLearnBindingLabelProvider != nullptr)
-            ? midiLearnBindingLabelProvider(targetId).trim()
-            : juce::String{};
-    const bool assigned = pending && label.isNotEmpty();
-    const float blink =
-        pending ? midiLearnBlinkStrength() : midiLearnSoftBlinkStrength();
-    const auto frameColour =
-        assigned ? selectableColour : (pending ? pendingColour : selectableColour);
-    g.setColour(frameColour.withAlpha(pending ? (0.20f + (0.16f * blink))
-                                              : (0.14f + (0.06f * blink))));
-    g.fillRoundedRectangle(frameBounds, 7.0f);
-    g.setColour(frameColour.withAlpha(pending ? (0.54f + (0.40f * blink))
-                                              : (0.52f + (0.20f * blink))));
-    g.drawRoundedRectangle(frameBounds, 7.0f,
-                           pending ? (1.5f + (0.9f * blink))
-                                   : (1.0f + (0.35f * blink)));
-
-    if (!assigned)
-      return;
-
-    const juce::Font labelFont(
-        juce::FontOptions(11.0f).withStyle("Bold").withKerningFactor(0.03f));
-    const auto textBounds = frameBounds.reduced(5.0f, 5.0f);
-    const float textWidth =
-        static_cast<float>(label.length()) * labelFont.getHeight() * 0.62f;
-    const float pillW =
-        juce::jlimit(22.0f, textBounds.getWidth(), textWidth + 14.0f);
-    const float pillH = juce::jlimit(14.0f, textBounds.getHeight(), 18.0f);
-    auto pill = juce::Rectangle<float>(pillW, pillH).withCentre(textBounds.getCentre());
-    g.setColour(juce::Colours::black.withAlpha(0.56f));
-    g.fillRoundedRectangle(pill, pillH * 0.45f);
-    g.setColour(selectableColour.withAlpha(0.90f));
-    g.drawRoundedRectangle(pill, pillH * 0.45f, 0.9f);
-    g.setColour(UITheme::textPrimary);
-    g.setFont(labelFont);
-    g.drawFittedText(label, pill.toNearestInt(), juce::Justification::centred,
-                     1);
-  };
-
-  drawLearnFrame(nudgeUpButton, processor.midiTargetMixerNudgeUp);
-  drawLearnFrame(nudgeDownButton, processor.midiTargetMixerNudgeDown);
-  if (applyRoutingButton.isVisible())
-    drawLearnFrame(applyRoutingButton, processor.midiTargetMixerApplyRouting);
 }
 
 void ChannelGridPanel::resized() {
