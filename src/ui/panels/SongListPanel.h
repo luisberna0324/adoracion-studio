@@ -11,27 +11,12 @@
 
 #include <functional>
 #include <memory>
+#include <array>
 #include <unordered_map>
 #include <vector>
 
 class SongListPanel final : public juce::Component, private juce::Timer {
 public:
-  class HeaderIconButton final : public juce::Button {
-  public:
-    HeaderIconButton(const juce::String &name, IconGlyph glyphToUse);
-    void paintButton(juce::Graphics &g, bool isMouseOverButton,
-                     bool isButtonDown) override;
-    void setAccent(bool shouldAccent);
-    void setSvgLabel(SvgIconName iconToUse, juce::String textToUse);
-
-  private:
-    IconGlyph glyph;
-    SvgIconName svgIcon = SvgIconName::Music;
-    juce::String labelText;
-    bool accent = false;
-    bool useSvgLabel = false;
-  };
-
   class SwipeHintHandle final : public juce::Component {
   public:
     enum class Direction { Left, Right };
@@ -96,6 +81,7 @@ private:
     juce::Rectangle<int> title;
     juce::Rectangle<int> edit;
     juce::Rectangle<int> menu;
+    juce::Rectangle<int> add;
   };
   struct SetlistsLayout {
     juce::Rectangle<int> headerTitle;
@@ -132,7 +118,6 @@ private:
     void setOnDragStateChanged(std::function<void(bool)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
     void setOnSongRemoveRequested(std::function<void(int)> cb);
-    void setOnAddSongsRequested(std::function<void()> cb);
     int getPreferredHeight() const;
 
     void paint(juce::Graphics &g) override;
@@ -146,14 +131,13 @@ private:
   private:
     static constexpr int rowStart = 8;
     static constexpr int rowHeight = 64;
-    static constexpr int rowGap = 7;
-    static constexpr int rowSideInset = 12;
+    static constexpr int rowGap = 0;
+    static constexpr int rowSideInset = 0;
 
     int rowIndexAtY(int y) const;
     int insertionIndexAtY(int y) const;
     int rowTopAtIndex(int index) const;
     int insertionLineY(int insertionIndex) const;
-    juce::Rectangle<int> addSongsRowBounds() const;
     juce::Rectangle<int> optionsButtonBoundsForRow(
         const juce::Rectangle<int> &rowBounds) const;
     void showActionsMenuForRow(int rowIndex);
@@ -164,7 +148,6 @@ private:
     std::function<void(bool)> onDragStateChanged;
     std::function<void(int)> onAutoPlayNextToggled;
     std::function<void(int)> onSongRemoveRequested;
-    std::function<void()> onAddSongsRequested;
     juce::Point<float> mouseDownPosition;
     bool dragCandidate = false;
     bool isDragging = false;
@@ -179,6 +162,7 @@ private:
 
   class SetlistManagerPanel;
   class SetlistsContent;
+  class PageContainer;
 
   void openSongImportWizard();
   void openSongImportWizard(const juce::File &destination);
@@ -213,6 +197,7 @@ private:
   void applySongsLayout(const SongsLayout &layout);
   void applySetlistsLayout(const SetlistsLayout &layout);
   void applyModeVisibility();
+  void showPage(int index, bool animate);
   void applyInitialViewFromStorage();
   void createSetlist();
   void renameSetlistById(const juce::String &setlistId);
@@ -228,12 +213,14 @@ private:
   void timerCallback() override;
 
   juce::Label titleLabel;
+  std::unique_ptr<PageContainer> pageContainer;
   juce::Label setlistsHeaderLabel;
   juce::Label setlistsSubtitleLabel;
   HeaderIconButton backButton{"back", IconGlyph::ArrowLeft};
   HeaderIconButton editSetlistButton{"editSetlist", IconGlyph::Pencil};
   HeaderIconButton headerMenuButton{"headerMenu", IconGlyph::MusicNote};
-  juce::TextButton createSetlistButton{"+ Crear setlist"};
+  HeaderIconButton addSongsButton{"addSongs", IconGlyph::Add};
+  HeaderIconButton createSetlistButton{"createSetlist", IconGlyph::Add};
   SearchField setlistSearchField;
   SwipeHintHandle songsToLibrarySwipeHint{SwipeHintHandle::Direction::Right};
   SwipeHintHandle libraryToSongsSwipeHint{SwipeHintHandle::Direction::Left};

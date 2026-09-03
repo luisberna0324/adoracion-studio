@@ -391,6 +391,7 @@ juce_add_binary_data(MTControlsAssets
         assets/fonts/InterMedium.ttf
         assets/fonts/InterSemiBold.ttf
         assets/fonts/InterBold.ttf
+        assets/ui-icons/arrow_left.svg
         assets/ui-icons/skip_back.svg
         assets/ui-icons/rewind.svg
         assets/ui-icons/play.svg
@@ -417,6 +418,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/corner_down_right.svg
         assets/ui-icons/image_edit.svg
         assets/ui-icons/pencil.svg
+        assets/ui-icons/trash.svg
         assets/ui-icons/volume_x.svg
         assets/ui-icons/file_audio.svg
 )

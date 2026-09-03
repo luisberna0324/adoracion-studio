@@ -60,5 +60,6 @@ private:
 
   juce::Rectangle<int> addSongsButtonBounds;
   juce::Rectangle<int> metricsPanelBounds;
+  std::array<juce::Component, 3> metricColumns;
   std::array<juce::Rectangle<int>, 3> metricBlockBounds;
 };

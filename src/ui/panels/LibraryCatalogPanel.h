@@ -89,13 +89,32 @@ private:
     IconButton(const juce::String &name, IconGlyph glyphToUse);
 
     void setStyle(bool filled, juce::Colour iconColour);
+    void setAccent(bool shouldAccent);
+    void setSvgIcon(SvgIconName iconToUse);
     void paintButton(juce::Graphics &g, bool isMouseOverButton,
                      bool isButtonDown) override;
 
   private:
     IconGlyph glyph;
+    SvgIconName svgIcon = SvgIconName::ArrowLeft;
+    bool useSvgIcon = false;
     bool filledStyle = false;
+    bool accentStyle = false;
     juce::Colour glyphColour = juce::Colours::white;
+  };
+
+  class SourceFilterButton final : public juce::Button {
+  public:
+    SourceFilterButton(const juce::String &name, juce::String labelToUse);
+
+    void setActive(bool shouldBeActive);
+    bool isActive() const;
+    void paintButton(juce::Graphics &g, bool isMouseOverButton,
+                     bool isButtonDown) override;
+
+  private:
+    juce::String label;
+    bool active = false;
   };
 
   class FilterChipButton final : public juce::Button {
@@ -198,9 +217,11 @@ private:
   juce::String titleTextForActiveSetlist() const;
   juce::String subtitleTextForActiveSetlist() const;
 
-  IconButton backButton{"libraryBack", IconGlyph::ArrowLeft};
+  HeaderIconButton backButton{"libraryBack", IconGlyph::ArrowLeft};
   IconButton menuButton{"libraryMenu", IconGlyph::More};
   SearchField searchField;
+  SourceFilterButton cloudFilterButton{"cloudFilter", "Cloud"};
+  SourceFilterButton localFilterButton{"localFilter", "Local"};
   juce::Viewport chipsViewport;
   std::array<std::unique_ptr<FilterChipButton>, 5> chipButtons;
   IconButton advancedFilterButton{"libraryFilter", IconGlyph::Settings};
@@ -208,7 +229,8 @@ private:
   juce::Viewport contentViewport;
   CatalogContent content;
   juce::TextButton loadProjectButton{"Cargar"};
-  juce::TextButton createSongButton{"Crear"};
+  HeaderIconButton loadSongButton{"loadSong", IconGlyph::ArrowLeft};
+  HeaderIconButton createSongButton{"createSong", IconGlyph::Add};
   FooterActionButton confirmButton;
   juce::Rectangle<int> headerTitleBounds;
   juce::Rectangle<int> headerSubtitleBounds;

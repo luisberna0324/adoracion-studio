@@ -304,6 +304,8 @@ struct SvgIconData {
 
 SvgIconData getSvgIconData(const SvgIconName icon) {
   switch (icon) {
+  case SvgIconName::ArrowLeft:
+    return {BinaryData::arrow_left_svg, BinaryData::arrow_left_svgSize};
   case SvgIconName::SkipBack:
     return {BinaryData::skip_back_svg, BinaryData::skip_back_svgSize};
   case SvgIconName::Rewind:
@@ -356,6 +358,8 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::image_edit_svg, BinaryData::image_edit_svgSize};
   case SvgIconName::Pencil:
     return {BinaryData::pencil_svg, BinaryData::pencil_svgSize};
+  case SvgIconName::Trash:
+    return {BinaryData::trash_svg, BinaryData::trash_svgSize};
   case SvgIconName::VolumeX:
     return {BinaryData::volume_x_svg, BinaryData::volume_x_svgSize};
   case SvgIconName::FileAudio:
@@ -363,7 +367,32 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
   }
   return {};
 }
+
+class ActionCalloutLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  void drawCallOutBoxBackground(juce::CallOutBox &, juce::Graphics &g,
+                                const juce::Path &path,
+                                juce::Image &) override {
+    juce::DropShadow(juce::Colours::black.withAlpha(0.62f), 10, {0, 3})
+        .drawForPath(g, path);
+
+    const auto bounds = path.getBounds();
+    juce::ColourGradient gradient(UITheme::cardBg.brighter(0.045f),
+                                  bounds.getCentreX(), bounds.getY(),
+                                  UITheme::panelDark.darker(0.04f),
+                                  bounds.getCentreX(), bounds.getBottom(), false);
+    g.setGradientFill(gradient);
+    g.fillPath(path);
+    g.setColour(UITheme::cardBorder.brighter(0.34f).withAlpha(0.94f));
+    g.strokePath(path, juce::PathStrokeType(2.0f));
+  }
+};
 } // namespace
+
+juce::LookAndFeel &getActionCalloutLookAndFeel() {
+  static ActionCalloutLookAndFeel lookAndFeel;
+  return lookAndFeel;
+}
 
 bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
                  const SvgIconName icon, const juce::Colour colour) {
@@ -793,4 +822,107 @@ void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area) {
   g.setTiledImageFill(getNoiseTile(), static_cast<int>(area.getX()),
                       static_cast<int>(area.getY()), 0.14f);
   g.fillRect(area);
+}
+
+namespace {
+float measureTextWidth(const juce::Font &font, const juce::String &text) {
+  juce::GlyphArrangement glyphs;
+  glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+  return glyphs.getBoundingBox(0, -1, true).getWidth();
+}
+} // namespace
+
+HeaderIconButton::HeaderIconButton(const juce::String &name,
+                                   const IconGlyph glyphToUse)
+    : juce::Button(name), glyph(glyphToUse) {
+  setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
+
+void HeaderIconButton::setAccent(const bool shouldAccent) {
+  accent = shouldAccent;
+}
+
+void HeaderIconButton::setSvgLabel(const SvgIconName iconToUse,
+                                   juce::String textToUse) {
+  svgIcon = iconToUse;
+  labelText = std::move(textToUse);
+  useSvgLabel = true;
+  repaint();
+}
+
+void HeaderIconButton::paintButton(juce::Graphics &g,
+                                   bool isMouseOverButton,
+                                   bool isButtonDown) {
+  auto b = getLocalBounds().toFloat().reduced(1.0f);
+  // El "highlight sutil" (fondo claro + borde blanco translucido) se aplica a
+  // todos los HeaderIconButton no-accent, dando un look consistente a los
+  // iconos del header (back, music, file-audio, etc.).
+  const bool subtleMusicHighlight = useSvgLabel && !accent;
+  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  if (subtleMusicHighlight)
+    fill = AppColours::circleButton.interpolatedWith(juce::Colours::white,
+                                                     0.045f);
+  if (accent)
+    fill = fill.interpolatedWith(UITheme::accent, 0.12f);
+  if (isMouseOverButton)
+    fill = fill.interpolatedWith(UITheme::cardBgHover, 0.34f);
+  if (isButtonDown)
+    fill = fill.darker(0.06f);
+
+  const auto gradientTop =
+      subtleMusicHighlight
+          ? fill.interpolatedWith(juce::Colours::white, 0.075f)
+          : fill.brighter(0.025f);
+  const auto gradientBottom =
+      subtleMusicHighlight ? fill.darker(0.055f) : fill.darker(0.075f);
+  juce::ColourGradient bg(gradientTop, b.getX(), b.getY(), gradientBottom,
+                          b.getX(), b.getBottom(), false);
+  g.setGradientFill(bg);
+  if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
+    g.fillEllipse(b);
+  else
+    g.fillRoundedRectangle(b, 8.0f);
+  const auto borderColour =
+      subtleMusicHighlight ? juce::Colours::white
+                           : (accent ? UITheme::accent : UITheme::cardBorder);
+  g.setColour(borderColour.withAlpha(
+      subtleMusicHighlight ? (isMouseOverButton ? 0.26f : 0.14f)
+                           : (isMouseOverButton ? 0.78f : 0.52f)));
+  if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
+    g.drawEllipse(b, 1.0f);
+  else
+    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+
+  const auto glyphColour = accent ? UITheme::accent : UITheme::textPrimary;
+  if (!useSvgLabel) {
+    drawIconGlyph(g, b.withSizeKeepingCentre(21.0f, 21.0f), glyph, glyphColour,
+                  1.8f);
+    return;
+  }
+
+  const auto font = makeAppFont(12.2f, AppFontWeight::SemiBold);
+  const float iconSize = labelText.isEmpty() ? 19.0f : 15.0f;
+  const float gap = 7.0f;
+  const float textWidth = measureTextWidth(font, labelText);
+  const float groupWidth =
+      iconSize + (labelText.isEmpty() ? 0.0f : gap + textWidth);
+  const float startX = b.getCentreX() - groupWidth * 0.5f;
+  const float centerY = b.getCentreY();
+  if (!drawSvgIcon(g,
+                   juce::Rectangle<float>(startX, centerY - iconSize * 0.5f,
+                                          iconSize, iconSize),
+                   svgIcon, glyphColour)) {
+    drawIconGlyph(g,
+                  juce::Rectangle<float>(startX, centerY - iconSize * 0.5f,
+                                         iconSize, iconSize),
+                  glyph, glyphColour, 1.6f);
+  }
+  if (labelText.isNotEmpty()) {
+    g.setColour(glyphColour);
+    g.setFont(font);
+    g.drawText(labelText,
+               juce::Rectangle<float>(startX + iconSize + gap,
+                                      centerY - 8.0f, textWidth, 16.0f),
+               juce::Justification::centredLeft, false);
+  }
 }

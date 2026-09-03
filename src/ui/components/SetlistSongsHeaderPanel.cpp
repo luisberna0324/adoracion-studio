@@ -11,6 +11,10 @@ float measureTextWidth(const juce::Font &font, const juce::String &text) {
 
 SetlistSongsHeaderPanel::SetlistSongsHeaderPanel() {
   metricBlockBounds.fill({});
+  for (auto &column : metricColumns) {
+    column.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(column);
+  }
 }
 
 void SetlistSongsHeaderPanel::refreshLanguageTexts() { repaint(); }
@@ -227,14 +231,18 @@ void SetlistSongsHeaderPanel::resized() {
   }
   metricsPanelBounds = area.removeFromTop(42);
 
-  const int blockWidth = metricsPanelBounds.getWidth() / 3;
-  for (int i = 0; i < 3; ++i) {
-    metricBlockBounds[static_cast<size_t>(i)] = juce::Rectangle<int>(
-        metricsPanelBounds.getX() + i * blockWidth, metricsPanelBounds.getY(),
-        i == 2 ? metricsPanelBounds.getRight() - (metricsPanelBounds.getX() + i * blockWidth)
-               : blockWidth,
-        metricsPanelBounds.getHeight());
-  }
+  juce::Grid statsGrid;
+  statsGrid.templateColumns = {juce::Grid::TrackInfo(juce::Grid::Fr{1}),
+                                juce::Grid::TrackInfo(juce::Grid::Fr{1}),
+                                juce::Grid::TrackInfo(juce::Grid::Fr{1})};
+  statsGrid.templateRows = {juce::Grid::TrackInfo(juce::Grid::Fr{1})};
+  statsGrid.items = {juce::GridItem(metricColumns[0]),
+                     juce::GridItem(metricColumns[1]),
+                     juce::GridItem(metricColumns[2])};
+  statsGrid.performLayout(metricsPanelBounds);
+  for (int i = 0; i < 3; ++i)
+    metricBlockBounds[static_cast<size_t>(i)] =
+        metricColumns[static_cast<size_t>(i)].getBounds();
 }
 
 void SetlistSongsHeaderPanel::mouseMove(const juce::MouseEvent &event) {
