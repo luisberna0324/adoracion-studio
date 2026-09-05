@@ -258,3 +258,90 @@ bool CloudProjectArchive::rebuildProject(const CloudDownloadResult& downloaded,
   outSong = opened.song;
   return true;
 }
+
+bool CloudProjectArchive::materializeCachedSong(
+    const CloudDownloadResult& downloaded, ImportedSongData& outSong,
+    std::vector<float>& outWaveformBins, juce::String* errorMessage) {
+  setError(errorMessage, {});
+  outSong = {};
+  outWaveformBins.clear();
+
+  const auto* manifest = findObject(downloaded, downloaded.descriptor.settings);
+  if (manifest == nullptr || !manifest->file.existsAsFile()) {
+    setError(errorMessage, "Cloud project manifest is missing.");
+    return false;
+  }
+
+  const auto root = juce::JSON::parse(manifest->file.loadFileAsString());
+  const auto* object = root.getDynamicObject();
+  if (object == nullptr ||
+      static_cast<int>(object->getProperty("schemaVersion")) !=
+          ProjectStore::kSchemaVersion) {
+    setError(errorMessage, "Cloud project manifest is unsupported.");
+    return false;
+  }
+
+  bool changed = false;
+  auto song = SongLibraryStore::songDataFromVar(object->getProperty("song"), changed);
+  if (song.projectId.trim().isEmpty())
+    song.projectId = downloaded.descriptor.projectId;
+  if (song.id.isEmpty() || song.stems.empty() ||
+      song.projectId.trim() != downloaded.descriptor.projectId) {
+    setError(errorMessage, "Cloud project manifest does not match its descriptor.");
+    return false;
+  }
+
+  for (const auto& descriptorStem : downloaded.descriptor.stems) {
+    const auto* blob = findObject(downloaded, descriptorStem);
+    const auto stem = std::find_if(
+        song.stems.begin(), song.stems.end(),
+        [&descriptorStem](const auto& candidate) {
+          return candidate.stemId == descriptorStem.stemId;
+        });
+    if (blob == nullptr || !blob->file.existsAsFile() ||
+        stem == song.stems.end()) {
+      setError(errorMessage, "Cloud project stem mapping is invalid.");
+      return false;
+    }
+    stem->storedPath = blob->file.getFullPathName();
+    stem->sourcePath = stem->storedPath;
+    stem->fileName = blob->file.getFileName();
+  }
+
+  if (downloaded.descriptor.artwork.has_value()) {
+    const auto* artwork = findObject(downloaded, *downloaded.descriptor.artwork);
+    if (artwork == nullptr || !artwork->file.existsAsFile()) {
+      setError(errorMessage, "Cloud artwork is missing.");
+      return false;
+    }
+    song.artworkPath = artwork->file.getFullPathName();
+    song.artworkSource.clear();
+  } else {
+    song.artworkPath.clear();
+  }
+
+  if (downloaded.descriptor.waveform.has_value()) {
+    const auto* waveform = findObject(downloaded, *downloaded.descriptor.waveform);
+    const auto byteCount = static_cast<juce::int64>(kWaveformPreviewBinCount) *
+                           static_cast<juce::int64>(sizeof(float));
+    if (waveform == nullptr || !waveform->file.existsAsFile() ||
+        waveform->file.getSize() != byteCount) {
+      setError(errorMessage, "Cloud waveform is invalid.");
+      return false;
+    }
+    juce::FileInputStream input(waveform->file);
+    outWaveformBins.resize(kWaveformPreviewBinCount);
+    if (!input.openedOk() ||
+        input.read(outWaveformBins.data(), static_cast<int>(byteCount)) !=
+            byteCount) {
+      outWaveformBins.clear();
+      setError(errorMessage, "Couldn't read cloud waveform.");
+      return false;
+    }
+  }
+
+  song.projectPath.clear();
+  song.fileType = "FLAC";
+  outSong = std::move(song);
+  return true;
+}

@@ -340,7 +340,7 @@ set(MTCONTROLS_APP_ICON_PATH
 set(MTCONTROLS_PLIST_TO_MERGE "")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict></dict></plist>")
 endif()
 
 juce_add_plugin(MTControls
@@ -366,6 +366,8 @@ juce_add_plugin(MTControls
     MICROPHONE_PERMISSION_ENABLED FALSE
     BLUETOOTH_PERMISSION_ENABLED TRUE
     BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
+    LOCAL_NETWORK_PERMISSION_ENABLED TRUE
+    LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to the local development server for authentication and cloud testing."
 )
 
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
@@ -588,6 +590,17 @@ if(APPLE)
     target_sources(MTControls PRIVATE src/data/CloudSignedUpload.mm)
 else()
     target_sources(MTControls PRIVATE src/data/CloudSignedUpload.cpp)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_sources(MTControls PRIVATE
+        src/platform/NativeAuthSession.mm
+        src/platform/NativeAuthSession.h)
+    target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
+else()
+    target_sources(MTControls PRIVATE
+        src/platform/NativeAuthSession.cpp
+        src/platform/NativeAuthSession.h)
 endif()
 
 if(MTCONTROLS_BUNGEE_AVAILABLE)

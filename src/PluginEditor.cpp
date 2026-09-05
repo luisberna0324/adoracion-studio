@@ -17,6 +17,7 @@
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
 #include "ui/components/ReauthPromptModal.h"
+#include "platform/NativeAuthSession.h"
 #include "ui/components/SetlistHandlePanel.h"
 #include "ui/components/WelcomeModal.h"
 #include "ui/panels/ChannelGridPanel.h"
@@ -161,11 +162,16 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+#if JUCE_IOS
+  const int authW = userArea.getWidth();
+  const int authH = userArea.getHeight();
+#else
   const int authW = juce::jmin(kAuthWindowW, userArea.getWidth());
   const int authH = juce::jmin(kAuthWindowH, userArea.getHeight());
+#endif
   setSize(authW, authH);
-  setResizable(false, false);
-  setResizeLimits(authW, authH, authW, authH);
+  setResizable(true, true);
+  setResizeLimits(480, 500, 32000, 32000);
 
   if (const auto audioCtx = getStandaloneAudioContext();
       audioCtx.manager != nullptr) {
@@ -247,8 +253,8 @@ void MTControlsAudioProcessorEditor::saveCurrentProject() {
   flushActiveSongPersistenceNow();
   const juce::File file(currentLoadedSong.projectPath);
   if (!ProjectStore::hasPendingPortableChanges(file)) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::InfoIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::InfoIcon,
         L10n::tr("Proyecto actualizado", "Project up to date"),
         L10n::tr("No hay cambios pendientes para guardar.",
                  "There are no pending changes to save."));
@@ -345,14 +351,14 @@ void MTControlsAudioProcessorEditor::savePortableProjects(
               safe->waveformBarPtr->clearSongLoadingState();
           }
           if (success && showCompletionMessage) {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::InfoIcon,
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::InfoIcon,
                 L10n::tr("Proyecto guardado", "Project saved"),
                 L10n::tr("El archivo .pwproj fue actualizado correctamente.",
                          "The .pwproj file was updated successfully."));
           } else if (!success) {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::WarningIcon,
                 L10n::tr("No se pudo guardar", "Couldn't save"), failure);
           }
           if (finalCompletion)
@@ -481,44 +487,6 @@ void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
     applyResponsiveLayoutProfile(nextProfile);
 }
 
-void MTControlsAudioProcessorEditor::setSetlistDrawerExpanded(
-    const bool expanded) {
-  autoSetlistCollapseInitialized = true;
-  isSetlistCollapsed = !expanded;
-
-  // iPad has one workspace drawer at a time. Keeping Pads closed while the
-  // setlist is visible prevents both panels from shrinking the mixer.
-  if (expanded)
-    isPadsCollapsed = true;
-
-  if (padsHandlePanel != nullptr)
-    padsHandlePanel->setCollapsed(isPadsCollapsed);
-  if (padsComponent != nullptr)
-    padsComponent->setVisible(!isPadsCollapsed);
-
-  resized();
-  repaint();
-}
-
-void MTControlsAudioProcessorEditor::setPadsDrawerExpanded(const bool expanded) {
-  isPadsCollapsed = !expanded;
-
-  // Pads owns the bottom workspace while open, so release the horizontal
-  // space used by the setlist drawer.
-  if (expanded) {
-    autoSetlistCollapseInitialized = true;
-    isSetlistCollapsed = true;
-  }
-
-  if (padsHandlePanel != nullptr)
-    padsHandlePanel->setCollapsed(isPadsCollapsed);
-  if (padsComponent != nullptr)
-    padsComponent->setVisible(!isPadsCollapsed);
-
-  resized();
-  repaint();
-}
-
 void MTControlsAudioProcessorEditor::refreshCloudLibrary(
     const juce::String &query) {
   if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
@@ -601,6 +569,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     channelGridPanel->setVisible(true);
     songListPanel->setVisible(true);
     setlistHandlePanel->setVisible(true);
+    if (padsHandlePanel != nullptr)
+      padsHandlePanel->setVisible(true);
+    if (padsComponent != nullptr)
+      padsComponent->setVisible(!isPadsCollapsed);
     if (welcomeModal)
       welcomeModal->setVisible(false);
     if (reauthPromptModal)
@@ -610,6 +582,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
     const auto userArea =
         juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+#if JUCE_IOS
+    setSize(userArea.getWidth(), userArea.getHeight());
+#else
     const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
     const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
     const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
@@ -625,6 +600,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     } else {
       setSize(w, h);
     }
+#endif
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
     if (!autoSetlistCollapseInitialized) {
@@ -907,8 +883,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [this](const ImportedSongData &song) {
         const juce::File projectFile(song.projectPath);
         if (!isProjectBackedSong(song) || !projectFile.existsAsFile()) {
-          juce::AlertWindow::showMessageBoxAsync(
-              juce::AlertWindow::WarningIcon,
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
               L10n::tr("Proyecto no disponible", "Project unavailable"),
               L10n::tr("Convierte o abre un proyecto .pwproj antes de subirlo.",
                        "Convert or open a .pwproj project before uploading it."));
@@ -916,8 +892,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         }
         if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
             activeSession.refreshToken.isEmpty()) {
-          juce::AlertWindow::showMessageBoxAsync(
-              juce::AlertWindow::WarningIcon,
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
               L10n::tr("Sesión requerida", "Sign-in required"),
               L10n::tr("Inicia sesión nuevamente antes de sincronizar proyectos.",
                        "Sign in again before syncing projects."));
@@ -960,15 +936,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                 if (safeThis->songListPanelRaw != nullptr)
                   safeThis->songListPanelRaw->clearCloudUploadProgress(songId);
                 if (failure.code == "NO_CHANGES") {
-                  juce::AlertWindow::showMessageBoxAsync(
-                      juce::AlertWindow::InfoIcon,
+                  juce::NativeMessageBox::showMessageBoxAsync(
+                      juce::MessageBoxIconType::InfoIcon,
                       L10n::tr("Sin nada que sincronizar", "Nothing to sync"),
                       L10n::tr("El proyecto ya está actualizado en la nube.",
                                "This project is already up to date in the cloud."));
                   return;
                 }
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::AlertWindow::WarningIcon,
+                juce::NativeMessageBox::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
                     L10n::tr("No se pudo subir el proyecto",
                              "Couldn't upload project"),
                     failure.message.isNotEmpty() ? failure.message
@@ -996,11 +972,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
              const juce::String &targetSetlistId) {
         if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
             activeSession.refreshToken.isEmpty()) {
-          juce::AlertWindow::showMessageBoxAsync(
-              juce::AlertWindow::WarningIcon,
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
               L10n::tr("Sesión requerida", "Sign-in required"),
-              L10n::tr("Inicia sesión nuevamente antes de descargar proyectos.",
-                       "Sign in again before downloading projects."));
+              L10n::tr("Inicia sesión nuevamente antes de descargar canciones.",
+                       "Sign in again before downloading songs."));
           return;
         }
         if (!cloudDownloadsInProgress.insert(remoteSongId.toStdString()).second)
@@ -1008,12 +984,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         if (songSyncService == nullptr)
           songSyncService = std::make_unique<SongSyncService>();
 
-        auto destinationDirectory =
-            SongLibraryStore::getRootDirectory().getChildFile("projects");
-        destinationDirectory.createDirectory();
-        const auto destination = destinationDirectory.getNonexistentChildFile(
-            "cloud-" + juce::File::createLegalFileName(remoteSongId),
-            ProjectStore::kFileExtension, false);
+        const auto cloudCache = SongLibraryStore::getRootDirectory()
+                                    .getChildFile("cloud-content");
+        cloudCache.createDirectory();
         const CloudTransferCredentials credentials{getApiBaseUrl(),
                                                    activeSession.firebaseApiKey,
                                                    activeSession.refreshToken};
@@ -1023,7 +996,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           songListPanelRaw->setCloudUploadProgress(remoteSongId, 0.0,
                                                     "downloading");
         songSyncService->download(
-            credentials, remoteSongId, destination,
+            credentials, remoteSongId, cloudCache,
             [safeThis, remoteSongId](CloudTransferProgress progress) {
               if (safeThis != nullptr && safeThis->songListPanelRaw != nullptr)
                 safeThis->songListPanelRaw->setCloudUploadProgress(
@@ -1037,8 +1010,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
               if (safeThis->songListPanelRaw != nullptr)
                 safeThis->songListPanelRaw->clearCloudUploadProgress(remoteSongId);
               if (failure.code.isNotEmpty()) {
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::AlertWindow::WarningIcon,
+                juce::NativeMessageBox::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
                     L10n::tr("No se pudo descargar el proyecto",
                              "Couldn't download project"),
                     failure.message.isNotEmpty() ? failure.message : failure.code);
@@ -1051,16 +1024,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                 safeThis->songListPanelRaw->refreshFromStorageView();
               safeThis->refreshCloudLibrary({});
               const bool addedToSetlist = targetSetlistId.isNotEmpty();
-              juce::AlertWindow::showMessageBoxAsync(
-                  juce::AlertWindow::InfoIcon,
+              juce::NativeMessageBox::showMessageBoxAsync(
+                  juce::MessageBoxIconType::InfoIcon,
                   addedToSetlist
-                      ? L10n::tr("Proyecto agregado", "Project added")
-                      : L10n::tr("Proyecto descargado", "Project downloaded"),
+                      ? L10n::tr("Canción agregada", "Song added")
+                      : L10n::tr("Canción descargada", "Song downloaded"),
                   addedToSetlist
-                      ? L10n::tr("El proyecto se descargó y agregó al setlist.",
-                                 "The project was downloaded and added to the setlist.")
-                      : L10n::tr("El proyecto ya está disponible en la Biblioteca local.",
-                                 "The project is now available in the local Library."));
+                      ? L10n::tr("La canción se descargó y agregó al setlist.",
+                                 "The song was downloaded and added to the setlist.")
+                      : L10n::tr("La canción ya está disponible en la Biblioteca local.",
+                                 "The song is now available in the local Library."));
             });
       });
   songListRaw->setSaveProjectStateProvider(
@@ -1138,6 +1111,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
         mm->runDispatchLoopUntil(1);
     };
+
+    // Show feedback before a cold .pwproj extraction or stem resolution.
+    pushLoadUi(0.0, L10n::tr(u8"Cargando canción: ", u8"Loading song: ") +
+                        song.title);
+    pumpUiOnce();
 
     juce::StringArray stemPaths;
     std::vector<bool> clickGuideMask;
@@ -1264,8 +1242,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     SongLoadProbe::instance().endPhase();
 
     if (!loaded) {
-      juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon,
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
           L10n::tr("Error de carga", "Load error"),
           L10n::tr(u8"No se pudieron cargar los stems de esta canción.",
                    "Couldn't load audio stems for this song."));
@@ -1793,7 +1771,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
-    setSetlistDrawerExpanded(isSetlistCollapsed);
+    autoSetlistCollapseInitialized = true;
+    isSetlistCollapsed = !isSetlistCollapsed;
+    resized();
+    repaint();
   };
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
@@ -1823,7 +1804,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   padsHandlePanel->setCollapsed(isPadsCollapsed);
   padsComponent->setVisible(!isPadsCollapsed);
   padsHandlePanel->onToggle = [this] {
-    setPadsDrawerExpanded(isPadsCollapsed);
+    isPadsCollapsed = !isPadsCollapsed;
+    padsHandlePanel->setCollapsed(isPadsCollapsed);
+    padsComponent->setVisible(!isPadsCollapsed);
+    resized();
   };
   addAndMakeVisible(*padsHandlePanel);
 
@@ -1867,6 +1851,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
+#if JUCE_IOS
+  setResizable(true, true);
+  setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+  setSize(userArea.getWidth(), userArea.getHeight());
+#else
   const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
   const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
   const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
@@ -1874,12 +1863,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   setResizable(true, true);
   setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
   setSize(w, h);
+#endif
   applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
   if (!autoSetlistCollapseInitialized) {
     isSetlistCollapsed = false;
     autoSetlistCollapseInitialized = true;
   }
 
+#if !JUCE_IOS
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
@@ -1888,6 +1879,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
             expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
         });
   }
+#endif
 
   setWantsKeyboardFocus(true);
   grabKeyboardFocus();
@@ -1908,6 +1900,46 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
+#if JUCE_IOS
+  NativeAuthSession::cancel();
+  authExpectedState = juce::Uuid().toString();
+  const juce::String redirectUri = "playworship://auth/callback";
+  const juce::String loginUrl =
+      getApiBaseUrl() + "/login?redirect_uri=" + urlEncode(redirectUri) +
+      "&state=" + urlEncode(authExpectedState) +
+      "&deviceId=" + urlEncode(buildStableDeviceId());
+
+  if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+    modal->setStatusText("Esperando autenticacion...", false);
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
+    reauth->showWaitingForCallback();
+
+  const auto started = NativeAuthSession::start(
+      loginUrl, "playworship",
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+          const juce::String &callbackUrl, const juce::String &error) {
+        if (safe == nullptr)
+          return;
+        if (callbackUrl.isNotEmpty()) {
+          safe->enqueueAuthCallbackUrl(callbackUrl);
+          return;
+        }
+        safe->reauthLoginInProgress = false;
+        if (error.isNotEmpty()) {
+          if (auto *modal = dynamic_cast<WelcomeModal *>(safe->welcomeModal.get()))
+            modal->setStatusText("No se completo la autenticacion.", true);
+          if (auto *reauth = dynamic_cast<ReauthPromptModal *>(
+                  safe->reauthPromptModal.get()))
+            reauth->showError("No se completo la autenticacion.");
+        }
+      });
+  if (!started) {
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
+      modal->setStatusText("No se pudo abrir el inicio de sesion.", true);
+    reauthLoginInProgress = false;
+  }
+  return;
+#else
   if (localAuthServer != nullptr)
     localAuthServer->stop();
   localAuthServer = std::make_unique<LocalAuthCallbackServer>(
@@ -1941,6 +1973,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
     reauth->showWaitingForCallback();
 
   juce::URL(loginUrl).launchInDefaultBrowser();
+#endif
 }
 
 void MTControlsAudioProcessorEditor::completeBootstrapLogin(
@@ -2175,10 +2208,26 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.reasonCode,
                                     activeSession.reason,
                                     activeSession.licenseKey},
-      [this] { handleLogout(); },
       [this] {
-        juce::AlertWindow::showOkCancelBox(
-            juce::AlertWindow::WarningIcon,
+        const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+            juce::MessageBoxIconType::QuestionIcon,
+            L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
+            L10n::tr(
+                u8"Tendrás que iniciar sesión nuevamente para acceder a tu biblioteca y a las canciones de Cloud.",
+                "You'll need to sign in again to access your library and Cloud songs."),
+            L10n::tr(u8"Cerrar sesión", "Sign out"),
+            L10n::tr("Cancelar", "Cancel"), this);
+        juce::NativeMessageBox::showAsync(
+            options,
+            [safe = juce::Component::SafePointer<
+                 MTControlsAudioProcessorEditor>(this)](const int result) {
+              if (result == 0 && safe != nullptr)
+                safe->handleLogout();
+            });
+      },
+      [this] {
+        const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+            juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Purgar datos locales de Cloud", "Purge local Cloud data"),
             L10n::tr(
                 "Se eliminarán todas las canciones y setlists de Biblioteca, cachés, descargas y vínculos de sincronización. "
@@ -2186,21 +2235,23 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 "All Library songs and setlists, caches, downloads, and sync links will be removed. "
                 "The Library will be empty. No .pwproj file or cloud content will be deleted."),
             L10n::tr("Purgar", "Purge"), L10n::tr("Cancelar", "Cancel"),
-            this, juce::ModalCallbackFunction::create(
-                [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
-              if (result != 1 || safeThis == nullptr)
+            this);
+        juce::NativeMessageBox::showAsync(
+            options,
+            [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
+              if (result != 0 || safeThis == nullptr)
                 return;
               const auto purge = CloudSyncIndexStore::purgeLocalState();
               if (safeThis->songListPanelRaw != nullptr)
                 safeThis->songListPanelRaw->refreshFromStorageView();
               safeThis->refreshCloudLibrary({});
-              juce::AlertWindow::showMessageBoxAsync(
-                  juce::AlertWindow::InfoIcon,
+              juce::NativeMessageBox::showMessageBoxAsync(
+                  juce::MessageBoxIconType::InfoIcon,
                   L10n::tr("Datos locales purgados", "Local data purged"),
                   L10n::tr("La Biblioteca quedó vacía. No se eliminó ningún archivo .pwproj ni contenido de la nube. Canciones eliminadas de Biblioteca: ",
                            "The Library is empty. No .pwproj file or cloud content was deleted. Songs removed from Library: ") +
                       juce::String(purge.removedLibrarySongs));
-            }));
+            });
       },
       routingDefaults,
       proc.getAvailableOutputChannelCount(),
@@ -2262,9 +2313,13 @@ void MTControlsAudioProcessorEditor::closeSettings() {
 }
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
-  setResizable(false, false);
-  setResizeLimits(kAuthWindowW, kAuthWindowH, kAuthWindowW, kAuthWindowH);
-  setSize(kAuthWindowW, kAuthWindowH);
+  setResizable(true, true);
+  setResizeLimits(480, 500, 32000, 32000);
+#if JUCE_IOS
+  if (const auto *display =
+          juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+    setSize(display->userArea.getWidth(), display->userArea.getHeight());
+#endif
   if (topBar)
     topBar->setVisible(false);
   if (waveformBar)
@@ -2275,8 +2330,14 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
     songListPanel->setVisible(false);
   if (setlistHandlePanel)
     setlistHandlePanel->setVisible(false);
-  if (welcomeModal)
+  if (padsComponent)
+    padsComponent->setVisible(false);
+  if (padsHandlePanel)
+    padsHandlePanel->setVisible(false);
+  if (welcomeModal) {
     welcomeModal->setVisible(true);
+    welcomeModal->toFront(false);
+  }
   if (reauthPromptModal)
     reauthPromptModal->setVisible(false);
   mainUiInitialized = false;
@@ -2286,12 +2347,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 
 void MTControlsAudioProcessorEditor::handleLogout() {
   SessionAuthLogger::write("handleLogout");
-  if (settingsWindow != nullptr) {
-    settingsWindow->setVisible(false);
-    settingsWindow->exitModalState(0);
-    settingsWindow = nullptr;
-    settingsPanelRaw = nullptr;
-  }
+  closeSettings();
 
   if (localAuthServer != nullptr)
     localAuthServer->stop();
@@ -3302,8 +3358,8 @@ void MTControlsAudioProcessorEditor::beginExportCurrentSongMix(
 
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
   if (!hasCurrentLoadedSong || !p.hasLoadedSong()) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon, "Exportar mix",
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon, "Exportar mix",
         "Carga una canción antes de exportar el mix.");
     return;
   }
@@ -3426,7 +3482,7 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
                              isStemPitchShiftable(stem)});
   }
   if (request.stems.empty()) {
-    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
                                            "Exportar mix",
                                            "No se encontraron pistas de audio para exportar.");
     return;
@@ -3464,8 +3520,8 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
         safe->waveformBarPtr->setExportBusy(false);
       if (safe->waveformBarPtr != nullptr)
         safe->waveformBarPtr->clearSongLoadingState();
-      juce::AlertWindow::showMessageBoxAsync(
-          result.ok ? juce::AlertWindow::InfoIcon : juce::AlertWindow::WarningIcon,
+      juce::NativeMessageBox::showMessageBoxAsync(
+          result.ok ? juce::MessageBoxIconType::InfoIcon : juce::MessageBoxIconType::WarningIcon,
           result.ok ? "Mix exportado" : "Error al exportar",
           result.ok ? "Archivo guardado en:\n" + result.outputFile.getFullPathName()
                     : (result.error.isNotEmpty() ? result.error : "No se pudo crear el archivo de audio."));
@@ -3515,14 +3571,6 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   }
 
   if (key == juce::KeyPress::escapeKey) {
-    if (!isPadsCollapsed) {
-      setPadsDrawerExpanded(false);
-      return true;
-    }
-    if (!isSetlistCollapsed) {
-      setSetlistDrawerExpanded(false);
-      return true;
-    }
     processorRef.stopSong();
     return true;
   }

@@ -169,33 +169,80 @@ void WelcomeModal::setChecking(bool isChecking) {
   subtitle.setVisible(!isChecking);
 }
 
-void WelcomeModal::paint(juce::Graphics &) {}
+void WelcomeModal::paint(juce::Graphics &g) {
+  const auto bounds = getLocalBounds().toFloat();
+  juce::ColourGradient glow(juce::Colour(0xff153527).withAlpha(0.48f),
+                            bounds.getX(), bounds.getY(),
+                            juce::Colour(0xff171719).withAlpha(0.0f),
+                            bounds.getRight(), bounds.getBottom(), true);
+  g.setGradientFill(glow);
+  g.fillRect(bounds);
+
+  auto card = contentBounds.toFloat();
+  if (card.isEmpty())
+    return;
+  g.setColour(juce::Colour(0xff202124).withAlpha(0.94f));
+  g.fillRoundedRectangle(card, 22.0f);
+  g.setColour(juce::Colour(0xff383a3f).withAlpha(0.9f));
+  g.drawRoundedRectangle(card.reduced(0.5f), 22.0f, 1.0f);
+  g.setColour(juce::Colour(0xff19c765));
+  g.fillRoundedRectangle(
+      juce::Rectangle<float>(card.getX() + 28.0f, card.getY(), 72.0f, 4.0f),
+      2.0f);
+}
 
 void WelcomeModal::resized() {
-  const int sidePad = juce::jlimit(36, 56, getWidth() / 9);
-  const int topPad = juce::jlimit(32, 48, getHeight() / 11);
-  auto area = getLocalBounds().reduced(sidePad, topPad);
-  const int maxCol = 420;
-  const int colW = juce::jmin(maxCol, area.getWidth());
-  auto column = area.withSizeKeepingCentre(colW, area.getHeight());
+  const bool wide = getWidth() >= 900 && getHeight() >= 560;
+  const int outerPad = juce::jlimit(18, 48, juce::jmin(getWidth(), getHeight()) / 14);
+  auto available = getLocalBounds().reduced(outerPad);
+  const int cardW = juce::jmin(wide ? 900 : 520, available.getWidth());
+  const int cardH = juce::jmin(wide ? 500 : 610, available.getHeight());
+  contentBounds = juce::Rectangle<int>(cardW, cardH)
+                      .withCentre(available.getCentre());
+
+  if (wide) {
+    auto inner = contentBounds.reduced(48, 42);
+    auto brandArea = inner.removeFromLeft(inner.getWidth() * 45 / 100);
+    inner.removeFromLeft(42);
+    auto column = inner;
+
+    if (logoImage.isValid()) {
+      logo.setImage(logoImage, juce::RectanglePlacement::centred);
+      logo.setBounds(brandArea.reduced(8, 72));
+    }
+
+    column.removeFromTop(24);
+    title.setBounds(column.removeFromTop(82));
+    column.removeFromTop(8);
+    subtitle.setBounds(column.removeFromTop(58));
+    column.removeFromTop(14);
+    status.setBounds(column.removeFromTop(46));
+    column.removeFromTop(22);
+    loginButton.setBounds(column.removeFromTop(50));
+    column.removeFromTop(12);
+    moreInfoButton.setBounds(column.removeFromTop(50));
+    return;
+  }
+
+  auto column = contentBounds.reduced(juce::jlimit(24, 46, cardW / 10), 28);
 
   if (logoImage.isValid()) {
-    auto logoArea = column.removeFromTop(160);
-    const int logoW = juce::jmin(400, logoArea.getWidth());
+    auto logoArea = column.removeFromTop(juce::jlimit(100, 142, cardH / 4));
+    const int logoW = juce::jmin(360, logoArea.getWidth());
     const int logoH = logoArea.getHeight();
     logo.setImage(logoImage, juce::RectanglePlacement::centred);
     logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
-    column.removeFromTop(24);
+    column.removeFromTop(12);
   } else {
     column.removeFromTop(8);
   }
 
-  title.setBounds(column.removeFromTop(72));
+  title.setBounds(column.removeFromTop(68));
+  column.removeFromTop(8);
+  subtitle.setBounds(column.removeFromTop(48));
   column.removeFromTop(12);
-  subtitle.setBounds(column.removeFromTop(52));
-  column.removeFromTop(20);
-  status.setBounds(column.removeFromTop(38));
-  column.removeFromTop(26);
+  status.setBounds(column.removeFromTop(42));
+  column.removeFromTop(18);
 
   const int btnH = 48;
   loginButton.setBounds(column.removeFromTop(btnH));

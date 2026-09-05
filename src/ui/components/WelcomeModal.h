@@ -26,4 +26,5 @@ private:
   juce::Label status;
   juce::TextButton loginButton;
   juce::TextButton moreInfoButton;
+  juce::Rectangle<int> contentBounds;
 };

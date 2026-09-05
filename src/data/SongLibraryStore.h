@@ -138,6 +138,8 @@ public:
                          const SongImportProgressFn &onProgress = {});
   /** Registra un .pwproj abierto sin copiar sus recursos a la biblioteca legacy. */
   static bool registerProjectSong(ImportedSongData &song);
+  /** Registra una descarga cloud que referencia blobs verificados por hash. */
+  static bool registerCloudCachedSong(ImportedSongData &song);
   /** Obtiene canción y ajustes canónicos para convertir una entrada legacy. */
   static bool prepareLegacyProjectMigration(
       const juce::String &songId, ImportedSongData &outSong,

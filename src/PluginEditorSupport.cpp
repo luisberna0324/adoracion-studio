@@ -389,7 +389,13 @@ juce::String getApiBaseUrl() {
   if (host.isEmpty())
     return fallback;
 
-  const bool isLocalHost = host == "localhost" || host == "127.0.0.1";
+  auto hostParts = juce::StringArray::fromTokens(host, ".", "");
+  const auto secondOctet = hostParts.size() == 4 ? hostParts[1].getIntValue() : -1;
+  const bool isPrivateNetworkHost =
+      host.startsWith("10.") || host.startsWith("192.168.") ||
+      (host.startsWith("172.") && secondOctet >= 16 && secondOctet <= 31);
+  const bool isLocalHost = host == "localhost" || host == "127.0.0.1" ||
+                           host.endsWith(".local") || isPrivateNetworkHost;
   if (isHttp && !isLocalHost)
     return fallback;
 

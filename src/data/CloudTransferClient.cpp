@@ -109,6 +109,10 @@ bool putFile(const juce::String& urlText, const CloudUploadObject& object,
 
 bool downloadFile(const juce::String& urlText, const CloudObjectRef& reference,
                   const juce::File& destination, CloudTransferError& error) {
+  if (destination.existsAsFile() && destination.getSize() == reference.sizeBytes &&
+      juce::SHA256(destination).toHexString() == reference.sha256.toLowerCase())
+    return true;
+
   int status = 0;
   auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
       .withConnectionTimeoutMs(kTimeoutMs).withHttpRequestCmd("GET").withStatusCode(&status);
@@ -140,6 +144,11 @@ bool downloadFile(const juce::String& urlText, const CloudObjectRef& reference,
       juce::SHA256(temporary).toHexString() != reference.sha256.toLowerCase()) {
     temporary.deleteFile();
     error = makeError("DOWNLOADED_OBJECT_HASH_MISMATCH", destination.getFileName());
+    return false;
+  }
+  if (destination.existsAsFile() && !destination.deleteFile()) {
+    temporary.deleteFile();
+    error = makeError("LOCAL_WRITE_FAILED", destination.getFileName());
     return false;
   }
   if (!temporary.moveFileTo(destination)) {
@@ -309,7 +318,15 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
         const auto* object = value.getDynamicObject(); CloudObjectRef reference;
         if (!object || !CloudSyncJson::fromVar(value, reference)) { deliverDownload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Invalid download object")); return jobHasFinished; }
         const auto url = object->getProperty("url").toString().trim();
-        const auto file = destination.getChildFile("objects").getChildFile(reference.sha256);
+        juce::String extension = ".blob";
+        if (reference.contentType == "audio/flac") extension = ".flac";
+        else if (reference.contentType == "application/json") extension = ".json";
+        else if (reference.contentType == "image/png") extension = ".png";
+        else if (reference.contentType == "image/jpeg") extension = ".jpg";
+        else if (reference.contentType == "image/webp") extension = ".webp";
+        else if (reference.contentType == "application/octet-stream") extension = ".bin";
+        const auto file = destination.getChildFile("objects").getChildFile(
+            reference.sha256 + extension);
         if (url.isEmpty() || !downloadFile(url, reference, file, error)) { deliverDownload(std::move(callback), {}, error); return jobHasFinished; }
         result.objects.push_back({reference, file}); ++completed;
         deliverProgress(progress, {"downloading", reference.sha256, completed, total, total > 0 ? static_cast<double>(completed) / total : 1.0});

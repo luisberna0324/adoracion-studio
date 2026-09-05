@@ -1399,26 +1399,27 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
 
   const auto library = SongLibraryStore::loadLibrarySnapshot();
   if (library.setlists.size() <= 1) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se puede eliminar", "Can't delete"),
         L10n::tr("Se requiere al menos un setlist.",
                  "At least one setlist is required."));
     return;
   }
 
-  juce::AlertWindow::showOkCancelBox(
-      juce::AlertWindow::WarningIcon,
+  const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+      juce::MessageBoxIconType::WarningIcon,
       L10n::tr("Eliminar setlist", "Delete setlist"),
       L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                "Delete this setlist? This won't remove songs from the library."),
-      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
-      juce::ModalCallbackFunction::create([this, setlistId](int result) {
-        if (result != 1)
+      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
+  juce::NativeMessageBox::showAsync(
+      options, [this, setlistId](int result) {
+        if (result != 0)
           return;
         SongLibraryStore::deleteSetlist(setlistId);
         refreshFromStorage();
-      }));
+      });
 }
 
 void SongListPanel::promptTextAsync(const juce::String &title,
@@ -2791,27 +2792,28 @@ private:
     if (id.isEmpty())
       return;
     if (library.setlists.size() <= 1) {
-      juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon,
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
           L10n::tr("No se puede eliminar", "Can't delete"),
           L10n::tr("Se requiere al menos un setlist.",
                    "At least one setlist is required."));
       return;
     }
-    juce::AlertWindow::showOkCancelBox(
-        juce::AlertWindow::WarningIcon,
+    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Eliminar setlist", "Delete setlist"),
         L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
-        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
-        juce::ModalCallbackFunction::create([this, id](int result) {
-          if (result != 1)
+        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
+    juce::NativeMessageBox::showAsync(
+        options, [this, id](int result) {
+          if (result != 0)
             return;
           SongLibraryStore::deleteSetlist(id);
           selectedSetlistId = {};
           dirty = true;
           reloadLibrary();
-        }));
+        });
   }
 
   void loadSelectedSetlist() {
@@ -2912,8 +2914,8 @@ void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
     SessionAuthLogger::write("[ProjectOpenUI] import failed url=" +
                              url.toString(false) + " error=\"" +
                              importError + "\"");
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo importar el proyecto", "Couldn't import project"),
         importError);
     return;
@@ -2936,8 +2938,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
   if (!file.existsAsFile()) {
     SessionAuthLogger::write("[ProjectOpenUI] file missing path=" +
                              file.getFullPathName());
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Proyecto no encontrado", "Project not found"),
         L10n::tr("El archivo seleccionado ya no existe o no está disponible.",
                  "The selected file no longer exists or is unavailable."));
@@ -2946,8 +2948,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
   if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
     SessionAuthLogger::write("[ProjectOpenUI] invalid extension path=" +
                              file.getFullPathName());
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Archivo no compatible", "Unsupported file"),
         L10n::tr("Selecciona un proyecto con extensión .pwproj.",
                  "Select a project with the .pwproj extension."));
@@ -2962,7 +2964,7 @@ void SongListPanel::openProjectFile(const juce::File &file) {
     SessionAuthLogger::write("[ProjectOpenUI] failed path=" +
                              file.getFullPathName() + " error=\"" + error +
                              "\" songId=" + document.song.id);
-    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"), error);
     return;
   }
@@ -2993,8 +2995,8 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
 
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
   if (editor != nullptr && editor->isSongCurrentlyLoaded(trimmedSongId)) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Canción actualmente cargada", "Song currently loaded"),
         L10n::tr(
             "Carga otra canción antes de convertir esta. Así PlayWorship puede cerrar sus archivos legacy y eliminarlos con seguridad.",
@@ -3015,7 +3017,7 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
       L10n::tr(
           "Se creará y validará el proyecto antes de eliminar la estructura legacy. ¿Dónde quieres guardarlo?",
           "The project will be created and validated before the legacy structure is removed. Where do you want to save it?"),
-      juce::AlertWindow::QuestionIcon);
+      juce::MessageBoxIconType::QuestionIcon);
   choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
   choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
   choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
@@ -3065,8 +3067,8 @@ void SongListPanel::convertLegacySongAtDestination(
                                       : static_cast<juce::Component *>(this));
   const bool threadCompleted = task.runThread();
   if (!threadCompleted || !task.success) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo convertir la canción",
                  "Couldn't convert song"),
         task.error.isNotEmpty()
@@ -3083,8 +3085,8 @@ void SongListPanel::convertLegacySongAtDestination(
                                ? task.sourceSetlistName
                                : L10n::tr("Valores predeterminados",
                                           "Default settings");
-  juce::AlertWindow::showMessageBoxAsync(
-      juce::AlertWindow::InfoIcon,
+  juce::NativeMessageBox::showMessageBoxAsync(
+      juce::MessageBoxIconType::InfoIcon,
       L10n::tr("Conversión completada", "Conversion completed"),
       L10n::tr("La canción ahora vive en el proyecto:\n",
                "The song now lives in the project:\n") +
@@ -3211,7 +3213,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             L10n::tr("Guardar proyecto", "Save project"),
             L10n::tr("¿Dónde quieres guardar este proyecto?",
                      "Where do you want to save this project?"),
-            juce::AlertWindow::QuestionIcon);
+            juce::MessageBoxIconType::QuestionIcon);
         choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
         choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
         choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);

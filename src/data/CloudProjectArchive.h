@@ -15,4 +15,9 @@ public:
   static bool rebuildProject(const CloudDownloadResult& downloaded,
                              const juce::File& destination, ImportedSongData& outSong,
                              juce::String* errorMessage = nullptr);
+  /** Uses verified cloud blobs directly, without creating a duplicate .pwproj. */
+  static bool materializeCachedSong(const CloudDownloadResult& downloaded,
+                                    ImportedSongData& outSong,
+                                    std::vector<float>& outWaveformBins,
+                                    juce::String* errorMessage = nullptr);
 };

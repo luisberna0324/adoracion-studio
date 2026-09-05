@@ -9,13 +9,77 @@ timestamp: 2026-08-29T19:40:00Z
 
 ## 2026-09-04
 
-### iPad: drawers de espacio de trabajo
+### Autenticacion nativa en iPad
 
-- Setlist y Pads se coordinan como drawers excluyentes: abrir uno contrae el
-  otro, evitando que ambos reduzcan simultáneamente el área útil del mixer.
-- El arranque prioriza el setlist y deja Pads contraído. `Escape` cierra el
-  drawer visible antes de detener el transporte; los handles siguen siendo
-  los controles táctiles para abrir y cerrar cada panel.
+- iOS usa `ASWebAuthenticationSession` para presentar Google dentro de una
+  hoja segura del sistema, permitir selección de cuenta y regresar a la app.
+- El callback registrado es `playworship://auth/callback` y conserva la
+  validación `state`. macOS mantiene su callback HTTP efímero en localhost.
+- El frontend sólo admite ese callback de aplicación exacto, además de
+  `localhost` y `127.0.0.1`, evitando redirects arbitrarios.
+- El flujo no usa `signInWithRedirect`: Safari y Chrome bloquean el estado
+  cross-origin del helper alojado en `firebaseapp.com`. El frontend conserva
+  `signInWithPopup` hasta mover el intercambio OAuth completamente al backend.
+
+### Alertas nativas multiplataforma
+
+- Los avisos y confirmaciones simples de la UI principal, Biblioteca e
+  importación usan `juce::NativeMessageBox`, por lo que iOS, macOS y Windows
+  presentan el diálogo propio del sistema.
+- Los formularios con campos, selección de destino, descarga de encoder o
+  progreso permanecen como componentes JUCE porque requieren controles que una
+  alerta nativa simple no ofrece.
+
+### Backend local accesible desde iPad
+
+- El plist iOS permite conexiones HTTP exclusivamente hacia la red local y
+  declara el motivo del permiso de red local.
+- La resolución de `MTCONTROLS_API_BASE_URL` permite HTTP para loopback,
+  nombres `.local` y direcciones privadas RFC1918. HTTP público continúa
+  rechazado y usa el backend HTTPS de producción como fallback.
+- Los builds físicos de desarrollo pueden definir `MTCONTROLS_API_BASE_URL` con
+  el hostname Bonjour del Mac; la URL HTTPS de producción sigue siendo el valor
+  predeterminado.
+
+### Acceso responsive en iPad y escritorio
+
+- El modo de bienvenida usa todo el viewport disponible en iPad y conserva una
+  ventana redimensionable en escritorio; cerrar sesión ya no fuerza el editor
+  a volver a un tamaño fijo.
+- Al completar el login, las rutas de inicialización nueva y reutilizada del
+  workspace conservan el `userArea` completo en iPad en lugar de aplicar el
+  tamaño inicial `1120x700` de escritorio.
+- La bienvenida se presenta como tarjeta centrada, horizontal en superficies
+  anchas y vertical en tamaños compactos. Pads, mixer, setlist y sus handles se
+  ocultan completamente mientras no existe una sesión activa.
+- Cerrar sesión desde Settings difiere el cambio al siguiente ciclo de UI y
+  destruye primero la ventana u overlay de configuración; la bienvenida ya no
+  queda superpuesta sobre Settings.
+- Antes de cerrar sesión se solicita confirmación. Cancelar conserva la sesión
+  y Settings sin cambios; confirmar ejecuta la limpieza y vuelve al login.
+
+### Carga de canción: feedback desde el primer frame
+
+- El indicador del waveform ahora se activa antes de abrir un `.pwproj` o
+  resolver stems y muestra inmediatamente el título solicitado.
+- Se procesa un único frame inicial para que una extracción cold no parezca un
+  bloqueo. El progreso por stem conserva el camino optimizado sin bombear la UI
+  repetidamente.
+
+### Cloud download: caché por hash sin `.pwproj` automático
+
+- Descargar una canción Cloud registra una entrada local que reproduce los
+  blobs FLAC verificados desde `cloud-content/objects/`; ya no reconstruye ni
+  conserva un ZIP `.pwproj` duplicado.
+- El transporte reutiliza un objeto existente cuando tamaño y SHA-256
+  coinciden. Los FLAC cloud tampoco pasan por `decoded/`, por lo que cada stem
+  queda almacenado una sola vez.
+- `Convertir a proyecto...` sigue disponible como acción explícita y conserva
+  el `projectId` portable. La purga elimina `cloud-content/`, pero nunca los
+  `.pwproj` creados deliberadamente por el usuario.
+- Al completar correctamente una descarga se elimina, como limpieza de mejor
+  esfuerzo, el staging legado `projects/.cloud-downloads`; el caché activo por
+  hash no se toca.
 
 ### Cloud sync: purga local segura
 
@@ -26,11 +90,11 @@ timestamp: 2026-08-29T19:40:00Z
   ningún paquete `.pwproj` se elimina o modifica. Sus referencias de
   Biblioteca sí desaparecen y sólo vuelven mediante abrir, crear o descargar.
 
-### Biblioteca Cloud: descarga de proyectos
+### Biblioteca Cloud: descarga de canciones
 
 - Las filas de `Cloud` muestran el menú de tres puntos con la acción
-  `Descargar proyecto`. La descarga construye un `.pwproj` en el directorio
-  local de proyectos y lo registra en Biblioteca al completar.
+  `Descargar canción`. La descarga conserva objetos verificados en el cache
+  local y registra la canción en Biblioteca al completar.
 - La fila remota usa el indicador de progreso durante la transferencia y se
   bloquean solicitudes duplicadas por `remoteSongId`.
 
@@ -66,7 +130,7 @@ timestamp: 2026-08-29T19:40:00Z
   `Agregar`, pero las filas Cloud conservan los tres puntos: primero deben
   descargar el proyecto y luego se agregan al setlist de origen.
 - La acción Cloud se nombra `Descargar y agregar` cuando existe destino de
-  setlist; en Biblioteca general conserva `Descargar proyecto`.
+  setlist; en Biblioteca general conserva `Descargar canción`.
 - Antes de presentar la acción Cloud, la Biblioteca resuelve el vínculo
   `remoteSongId -> projectId -> localSongId`: una descarga ya materializada
   ofrece `Agregar al setlist` o `Ya agregada`, sin repetir la descarga.

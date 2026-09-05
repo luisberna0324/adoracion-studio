@@ -1242,7 +1242,7 @@ bool ProjectStore::convertLegacySongToProject(
                               "Preparing legacy song..."));
   ProjectDocument document;
   document.song = legacySong;
-  document.song.projectId = legacySong.id;
+  document.song.projectId = projectIdentityForSong(legacySong);
   document.settings = settingsFromLegacySetlistItem(sourceSettings, legacySong);
   document.waveformBins = SongLibraryStore::loadWaveformCache(legacySong.id);
   if (document.waveformBins.empty()) {

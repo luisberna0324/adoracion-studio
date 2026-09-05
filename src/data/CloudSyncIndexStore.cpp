@@ -114,7 +114,7 @@ CloudLocalPurgeResult CloudSyncIndexStore::purgeLocalState() {
   // packages. All entries that make those packages appear in the library are
   // removed, so they can only return by explicitly opening them again.
   for (const auto& directory : {"audio", "waveforms", "decoded",
-                                "cloud-artwork", "project-cache",
+                                "cloud-artwork", "cloud-content", "project-cache",
                                 "migration-staging", "project-staging",
                                 "cloud-sync-staging"}) {
     result.clearedLocalLibrary =

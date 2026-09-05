@@ -674,6 +674,38 @@ bool SongLibraryStore::registerProjectSong(ImportedSongData &song) {
   return saveLibrary(library);
 }
 
+bool SongLibraryStore::registerCloudCachedSong(ImportedSongData &song) {
+  song.id = song.id.trim();
+  song.projectId = song.projectId.trim();
+  song.projectPath.clear();
+  if (song.id.isEmpty() || song.projectId.isEmpty() || song.stems.empty())
+    return false;
+
+  auto library = loadLibrary();
+  ensureSongHasStemIds(song);
+  sortStemsForStripOrder(song.stems);
+
+  auto existing = std::find_if(
+      library.songs.begin(), library.songs.end(), [&song](const auto& candidate) {
+        return !isProjectBackedSong(candidate) &&
+               candidate.projectId.trim() == song.projectId;
+      });
+  if (existing != library.songs.end()) {
+    song.id = existing->id;
+    *existing = song;
+  } else {
+    const bool localIdAlreadyUsed = std::any_of(
+        library.songs.begin(), library.songs.end(),
+        [&song](const auto& candidate) { return candidate.id == song.id; });
+    if (localIdAlreadyUsed)
+      song.id = juce::Uuid().toString();
+    library.songs.push_back(song);
+  }
+
+  ensureDefaultSetlist(library);
+  return saveLibrary(library);
+}
+
 bool SongLibraryStore::prepareLegacyProjectMigration(
     const juce::String &songId, ImportedSongData &outSong,
     SetlistItem &outSettingsItem, juce::String &outSourceSetlistName,
@@ -697,7 +729,8 @@ bool SongLibraryStore::prepareLegacyProjectMigration(
   }
 
   outSong = *song;
-  outSong.projectId.clear();
+  // Cloud-cached songs retain their portable identity when explicitly
+  // converted; plain legacy songs already have an empty projectId here.
   outSong.projectPath.clear();
   outSettingsItem = createSetlistItem(*song);
   outSourceSetlistName.clear();

@@ -26,6 +26,36 @@ Es la fuente de verdad para:
 - Reconstruir un `.pwproj` en otro dispositivo sin pisar el estado
   local de mixer/UI existente.
 
+## Descarga local sin duplicar paquetes
+
+Una descarga desde Cloud no crea automáticamente un `.pwproj`. Los objetos
+verificados se conservan por hash en `cloud-content/objects/` y la entrada de
+Biblioteca referencia directamente esos stems FLAC, artwork y waveform. Como
+el motor reproduce FLAC sin generar una segunda copia en `decoded/`, cada stem
+descargado ocupa una sola vez el almacenamiento local.
+
+El `projectId` portable y el vínculo `remoteSongId`/revisión permanecen en la
+Biblioteca y `cloud-sync-index.json`. `projectPath` queda vacío, por lo que la
+entrada no se presenta como proyecto. Sólo la acción explícita `Convertir a
+proyecto...` empaqueta esos blobs en un `.pwproj`; ese es el punto en que el
+usuario solicita deliberadamente una copia portable.
+
+La purga incluye `cloud-content/`, además de metadata, waveform, artwork e
+índice cloud. Los `.pwproj` creados explícitamente siguen excluidos de la
+purga.
+
+Después de completar y registrar correctamente una descarga, la app elimina
+como limpieza de compatibilidad `projects/.cloud-downloads`, usado por
+versiones anteriores como staging. La eliminación es de mejor esfuerzo y no
+afecta `cloud-content/objects/` ni convierte en error una descarga válida.
+
+Para pruebas desde un dispositivo iOS físico, `localhost` no identifica el Mac
+sino el propio dispositivo. El build debe definir `MTCONTROLS_API_BASE_URL` con
+un hostname Bonjour o IP de la LAN, por ejemplo `http://work.local:3000`. El
+plist iOS permite sólo networking local no cifrado mediante
+`NSAllowsLocalNetworking` y declara `NSLocalNetworkUsageDescription`; producción
+continúa usando HTTPS por defecto.
+
 ## 1. Contexto actual (auditoría 2026-09-04)
 
 ### 1.1 Formato `.pwproj` y `manifest.json`

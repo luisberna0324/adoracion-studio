@@ -15,7 +15,7 @@ public:
   void upload(CloudTransferCredentials credentials, juce::File projectFile,
               ProgressCallback progress, CompletionCallback callback);
   void download(CloudTransferCredentials credentials, juce::String remoteSongId,
-                juce::File destination, ProgressCallback progress,
+                juce::File cacheDirectory, ProgressCallback progress,
                 CompletionCallback callback);
   void cancelAll();
 

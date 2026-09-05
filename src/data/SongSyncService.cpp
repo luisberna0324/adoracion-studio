@@ -92,35 +92,48 @@ void SongSyncService::upload(CloudTransferCredentials credentials, juce::File pr
 }
 
 void SongSyncService::download(CloudTransferCredentials credentials, juce::String remoteSongId,
-                               juce::File destination, ProgressCallback progress,
+                               juce::File cacheDirectory, ProgressCallback progress,
                                CompletionCallback callback) {
-  transfer.download(std::move(credentials), remoteSongId, destination.getSiblingFile(".cloud-downloads"),
-      std::move(progress), [this, cloudSongId = std::move(remoteSongId), destination,
+  const auto legacyDownloadDirectory = cacheDirectory.getParentDirectory()
+                                           .getChildFile("projects")
+                                           .getChildFile(".cloud-downloads");
+  transfer.download(std::move(credentials), remoteSongId, cacheDirectory,
+      std::move(progress), [this, cloudSongId = std::move(remoteSongId),
+                            legacyDownloadDirectory,
                             done = std::move(callback)](CloudDownloadResult result, CloudTransferError failure) mutable {
         if (failure.code.isNotEmpty()) { deliver(std::move(done), {}, std::move(failure)); return; }
         struct RebuildJob final : juce::ThreadPoolJob {
-          CloudDownloadResult downloaded; juce::String remoteSongId; juce::File destination; CompletionCallback callback;
-          RebuildJob(CloudDownloadResult value, juce::String id, juce::File file, CompletionCallback done)
+          CloudDownloadResult downloaded; juce::String remoteSongId;
+          juce::File legacyDownloadDirectory; CompletionCallback callback;
+          RebuildJob(CloudDownloadResult value, juce::String id,
+                     juce::File legacyDirectory, CompletionCallback done)
               : ThreadPoolJob("CloudProjectImport"), downloaded(std::move(value)), remoteSongId(std::move(id)),
-                destination(std::move(file)), callback(std::move(done)) {}
+                legacyDownloadDirectory(std::move(legacyDirectory)),
+                callback(std::move(done)) {}
           JobStatus runJob() override {
-            ImportedSongData song; juce::String error;
-            if (!CloudProjectArchive::rebuildProject(downloaded, destination, song, &error)) {
+            ImportedSongData song; std::vector<float> waveformBins; juce::String error;
+            if (!CloudProjectArchive::materializeCachedSong(
+                    downloaded, song, waveformBins, &error)) {
               deliver(std::move(callback), {}, localError(error)); return jobHasFinished;
             }
-            if (!SongLibraryStore::registerProjectSong(song)) {
-              deliver(std::move(callback), {}, localError("Couldn't register downloaded project.")); return jobHasFinished;
+            if (!SongLibraryStore::registerCloudCachedSong(song)) {
+              deliver(std::move(callback), {}, localError("Couldn't register downloaded cloud song.")); return jobHasFinished;
             }
+            if (!waveformBins.empty())
+              SongLibraryStore::saveWaveformCache(song.id, waveformBins);
             const auto now = juce::Time::currentTimeMillis();
             if (!CloudSyncIndexStore::upsert(
                     {song.projectId, remoteSongId, downloaded.descriptor.revision, now, now,
                      CloudSyncJson::fingerprint(downloaded.descriptor)})) {
               deliver(std::move(callback), {}, localError("Couldn't save cloud sync link.")); return jobHasFinished;
             }
+            if (legacyDownloadDirectory.isDirectory())
+              legacyDownloadDirectory.deleteRecursively();
             deliver(std::move(callback), std::move(song), {}); return jobHasFinished;
           }
         };
-        archivePool.addJob(new RebuildJob(std::move(result), std::move(cloudSongId), destination,
+        archivePool.addJob(new RebuildJob(std::move(result), std::move(cloudSongId),
+                                          legacyDownloadDirectory,
                                           std::move(done)), true);
       });
 }

@@ -1460,8 +1460,8 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
       const auto downloadLabel = targetSetlistId.isNotEmpty()
                                      ? L10n::tr("Descargar y agregar",
                                                 "Download and add")
-                                     : L10n::tr("Descargar proyecto",
-                                                "Download project");
+                                     : L10n::tr("Descargar canción",
+                                                "Download song");
       actions.push_back(
           {downloadLabel, true, false, false,
            [safeThis, rowIndex] {

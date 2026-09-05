@@ -1427,8 +1427,8 @@ void SongImportWizardComponent::saveMetadataOnly() {
   if (!validateStepMetadata())
     return;
   if (!onMetadataOnlySubmit) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo guardar", "Couldn't save"),
         L10n::tr("El guardado rápido no está disponible para esta canción.",
                  "Quick save is not available for this song."));
@@ -1440,8 +1440,8 @@ void SongImportWizardComponent::saveMetadataOnly() {
   juce::String errorMessage;
   const bool ok = onMetadataOnlySubmit(std::move(songData), errorMessage);
   if (!ok) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Error al guardar", "Save error"),
         errorMessage.isNotEmpty()
             ? errorMessage
@@ -1468,8 +1468,8 @@ bool SongImportWizardComponent::validateStepImport() {
         return false;
       });
   if (!hasAnyRealSource) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Stems no disponibles", "Stems unavailable"),
         L10n::tr(u8"No se encontraron archivos de audio válidos para importar.",
                  "No valid audio files were found for import."));
@@ -1480,8 +1480,8 @@ bool SongImportWizardComponent::validateStepImport() {
 
 bool SongImportWizardComponent::validateStepMetadata() {
   if (songTitleEditor.getText().trim().isEmpty()) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr(u8"Falta el título", "Missing song title"),
         L10n::tr(u8"Agrega un título de canción antes de continuar.",
                  "Add a song title before continuing."));
@@ -1499,8 +1499,8 @@ bool SongImportWizardComponent::validateStepMapping() {
       std::any_of(stems.begin(), stems.end(),
                   [](const StemDraft &stem) { return stem.include; });
   if (!hasAnyLoaded) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No hay stems seleccionados", "No stems selected"),
         L10n::tr("Activa al menos un stem para cargar o deja la lista vacía para metadata-only.",
                  "Enable at least one stem or leave the list empty for metadata-only."));
@@ -1599,8 +1599,8 @@ void SongImportWizardComponent::submitSong() {
     juce::String destinationError;
     if (!resolveProjectDestination(songData, destination, destinationError)) {
       if (destinationError.isNotEmpty()) {
-        juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::WarningIcon,
+        juce::NativeMessageBox::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Ubicación del proyecto", "Project location"),
             destinationError);
       }
@@ -1658,7 +1658,7 @@ void SongImportWizardComponent::submitSong() {
                     u8"¿Deseas descargarlo ahora?",
                     "Encoder for storage optimization wasn't found.\n\n"
                     "Do you want to download it now?"),
-          juce::AlertWindow::QuestionIcon);
+          juce::MessageBoxIconType::QuestionIcon);
       prompt.addButton(L10n::tr("Descargar", "Download"), 1);
       if (!projectNeedsFlacConversion)
         prompt.addButton(
@@ -1706,8 +1706,8 @@ void SongImportWizardComponent::submitSong() {
 
         if (!encoderReady) {
           if (projectNeedsFlacConversion) {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::WarningIcon,
                 L10n::tr("No se pudo preparar el encoder",
                          "Couldn't prepare encoder"),
                 (bootstrapError.isNotEmpty()
@@ -1724,7 +1724,7 @@ void SongImportWizardComponent::submitSong() {
               (bootstrapError.isNotEmpty() ? bootstrapError + "\n\n" : juce::String()) +
                   L10n::tr("¿Deseas continuar sin optimización de almacenamiento?",
                            "Do you want to continue without storage optimization?"),
-              juce::AlertWindow::WarningIcon);
+              juce::MessageBoxIconType::WarningIcon);
           failedPrompt.addButton(
               L10n::tr("Continuar sin optimizar", "Continue without optimization"),
               1);
@@ -1809,8 +1809,8 @@ void SongImportWizardComponent::submitSong() {
   cancelButton.setEnabled(true);
 
   if (!ok) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         mode == Mode::Edit
             ? L10n::tr("Error al actualizar", "Update error")
             : L10n::tr(u8"Error al crear", "Create error"),

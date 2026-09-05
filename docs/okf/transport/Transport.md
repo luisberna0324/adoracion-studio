@@ -319,6 +319,11 @@ bool loadSongStems(
 void finishPendingSongTransition();
 ```
 
+La UI activa el indicador de carga del waveform y procesa su primer frame
+antes de abrir un `.pwproj` o resolver los stems. Así una extracción cold no
+deja la interfaz sin feedback. Las actualizaciones posteriores reflejan audio,
+configuración, interfaz y waveform sin bombear el message loop por cada stem.
+
 ## Transición entre canciones
 
 Cuando se carga otra canción durante playback, el transporte usa una transición
