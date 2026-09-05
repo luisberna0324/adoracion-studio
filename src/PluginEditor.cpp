@@ -1905,7 +1905,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   authExpectedState = juce::Uuid().toString();
   const juce::String redirectUri = "playworship://auth/callback";
   const juce::String loginUrl =
-      getApiBaseUrl() + "/login?redirect_uri=" + urlEncode(redirectUri) +
+      getApiBaseUrl() + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
       "&state=" + urlEncode(authExpectedState) +
       "&deviceId=" + urlEncode(buildStableDeviceId());
 
@@ -1963,7 +1963,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   const juce::String deviceId = buildStableDeviceId();
   const juce::String apiBaseUrl = getApiBaseUrl();
   const juce::String loginUrl =
-      apiBaseUrl + "/login?redirect_uri=" + urlEncode(redirectUri) +
+      apiBaseUrl + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
       "&state=" + urlEncode(authExpectedState) +
       "&deviceId=" + urlEncode(deviceId);
 

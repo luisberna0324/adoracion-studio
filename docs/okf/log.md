@@ -2,10 +2,45 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-08-29T19:40:00Z
+timestamp: 2026-09-05T14:58:00Z
 ---
 
 # Changelog
+
+## 2026-09-05
+
+### Auth: Google OAuth backend-driven para iOS y macOS
+
+- `PluginEditor::launchExternalLogin` ahora apunta a
+  `getApiBaseUrl() + "/api/auth/google/start?..."` en lugar de
+  `/login?..." tanto en la rama `JUCE_IOS` (vía
+  `ASWebAuthenticationSession`) como en la rama desktop/macOS (vía
+  `LocalAuthCallbackServer` + `launchInDefaultBrowser`). El primer
+  frame es el account picker de Google en ambas plataformas; ya no se
+  muestra el formulario de PlayWorship.
+- Backend nuevo: `lib/googleOAuth.ts` con allowlist de
+  `redirect_uri`, store de `state` en memoria (TTL 10 min), armado del
+  auth URL de Google con `prompt=select_account`, exchange de code →
+  tokens, verificación RS256 del `id_token` contra el JWKS de Google
+  y armado del `session` JSON.
+- `app/api/auth/google/start/route.ts`: valida `redirect_uri`, persiste
+  `state` con `deviceId`/`licenseKey`, redirige 302 a Google.
+- `app/api/auth/google/callback/route.ts`: valida `state`, intercambia
+  el code, valida el `id_token` de Google, hace upsert del usuario
+  Firebase, minte un custom token, lo cambia por `idToken` +
+  `refreshToken` vía Identity Toolkit, llama `/api/validate-access` y
+  redirige 302 a `playworship://auth/callback?session=...` con el
+  mismo payload que ya producía `/login`.
+- Errores se traducen a 302 al `redirect_uri` original con
+  `error=<codigo>&message=<detalle>&state=<state del iOS>` para no
+  romper la validación de state en el cliente.
+- Variables de entorno requeridas: `GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_CALLBACK_URL` (debe coincidir
+  con un Authorized redirect URI del client de Google).
+- Documentación: nueva página
+  [`docs/okf/integrations/Auth.md`](integrations/Auth.md) con el
+  contrato end-to-end, allowlist, errores y la lista de lo que este
+  flujo NO hace.
 
 ## 2026-09-04
 
