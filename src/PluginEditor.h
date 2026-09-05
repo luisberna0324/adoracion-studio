@@ -110,7 +110,7 @@ private:
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
-  bool isPadsCollapsed = false;
+  bool isPadsCollapsed = true;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
@@ -150,6 +150,8 @@ private:
   ResponsiveLayoutProfile resolveResponsiveLayoutProfile() const;
   void applyResponsiveLayoutProfile(ResponsiveLayoutProfile profile);
   void updateResponsiveLayoutProfile();
+  void setSetlistDrawerExpanded(bool expanded);
+  void setPadsDrawerExpanded(bool expanded);
   void initializeMainUi();
   void initializeWelcomeModal();
   void resetTrackedSongWindow();

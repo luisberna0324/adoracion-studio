@@ -9,6 +9,14 @@ timestamp: 2026-08-29T19:40:00Z
 
 ## 2026-09-04
 
+### iPad: drawers de espacio de trabajo
+
+- Setlist y Pads se coordinan como drawers excluyentes: abrir uno contrae el
+  otro, evitando que ambos reduzcan simultáneamente el área útil del mixer.
+- El arranque prioriza el setlist y deja Pads contraído. `Escape` cierra el
+  drawer visible antes de detener el transporte; los handles siguen siendo
+  los controles táctiles para abrir y cerrar cada panel.
+
 ### Cloud sync: purga local segura
 
 - Configuración incluye `Purgar` como reset local integral: borra

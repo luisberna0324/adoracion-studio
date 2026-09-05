@@ -481,6 +481,44 @@ void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
     applyResponsiveLayoutProfile(nextProfile);
 }
 
+void MTControlsAudioProcessorEditor::setSetlistDrawerExpanded(
+    const bool expanded) {
+  autoSetlistCollapseInitialized = true;
+  isSetlistCollapsed = !expanded;
+
+  // iPad has one workspace drawer at a time. Keeping Pads closed while the
+  // setlist is visible prevents both panels from shrinking the mixer.
+  if (expanded)
+    isPadsCollapsed = true;
+
+  if (padsHandlePanel != nullptr)
+    padsHandlePanel->setCollapsed(isPadsCollapsed);
+  if (padsComponent != nullptr)
+    padsComponent->setVisible(!isPadsCollapsed);
+
+  resized();
+  repaint();
+}
+
+void MTControlsAudioProcessorEditor::setPadsDrawerExpanded(const bool expanded) {
+  isPadsCollapsed = !expanded;
+
+  // Pads owns the bottom workspace while open, so release the horizontal
+  // space used by the setlist drawer.
+  if (expanded) {
+    autoSetlistCollapseInitialized = true;
+    isSetlistCollapsed = true;
+  }
+
+  if (padsHandlePanel != nullptr)
+    padsHandlePanel->setCollapsed(isPadsCollapsed);
+  if (padsComponent != nullptr)
+    padsComponent->setVisible(!isPadsCollapsed);
+
+  resized();
+  repaint();
+}
+
 void MTControlsAudioProcessorEditor::refreshCloudLibrary(
     const juce::String &query) {
   if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
@@ -1755,10 +1793,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
-    autoSetlistCollapseInitialized = true;
-    isSetlistCollapsed = !isSetlistCollapsed;
-    resized();
-    repaint();
+    setSetlistDrawerExpanded(isSetlistCollapsed);
   };
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
@@ -1788,10 +1823,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   padsHandlePanel->setCollapsed(isPadsCollapsed);
   padsComponent->setVisible(!isPadsCollapsed);
   padsHandlePanel->onToggle = [this] {
-    isPadsCollapsed = !isPadsCollapsed;
-    padsHandlePanel->setCollapsed(isPadsCollapsed);
-    padsComponent->setVisible(!isPadsCollapsed);
-    resized();
+    setPadsDrawerExpanded(isPadsCollapsed);
   };
   addAndMakeVisible(*padsHandlePanel);
 
@@ -3483,6 +3515,14 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   }
 
   if (key == juce::KeyPress::escapeKey) {
+    if (!isPadsCollapsed) {
+      setPadsDrawerExpanded(false);
+      return true;
+    }
+    if (!isSetlistCollapsed) {
+      setSetlistDrawerExpanded(false);
+      return true;
+    }
     processorRef.stopSong();
     return true;
   }
