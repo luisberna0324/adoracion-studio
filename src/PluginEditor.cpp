@@ -6,6 +6,7 @@
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/AuthSessionApi.h"
+#include "data/CloudSyncIndexStore.h"
 #include "data/LocalAuthCallbackServer.h"
 #include "data/Localization.h"
 #include "data/ProjectStore.h"
@@ -480,6 +481,37 @@ void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
     applyResponsiveLayoutProfile(nextProfile);
 }
 
+void MTControlsAudioProcessorEditor::refreshCloudLibrary(
+    const juce::String &query) {
+  if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
+      activeSession.refreshToken.isEmpty()) {
+    if (songListPanelRaw != nullptr) {
+      songListPanelRaw->setCloudSongs({});
+      songListPanelRaw->setCloudSearchLoading(false);
+    }
+    return;
+  }
+  if (cloudLibraryClient == nullptr)
+    cloudLibraryClient = std::make_unique<CloudLibraryClient>();
+
+  const auto generation = ++cloudLibrarySearchGeneration;
+  const auto safeThis =
+      juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  cloudLibraryClient->search(
+      getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken,
+      query, {}, 50,
+      [safeThis, generation](CloudSongPage page, CloudRequestError error) {
+        if (safeThis == nullptr || generation != safeThis->cloudLibrarySearchGeneration)
+          return;
+        if (safeThis->songListPanelRaw != nullptr) {
+          safeThis->songListPanelRaw->setCloudSearchLoading(false);
+          if (error.code.isNotEmpty())
+            return;
+          safeThis->songListPanelRaw->setCloudSongs(std::move(page.songs));
+        }
+      });
+}
+
 void MTControlsAudioProcessorEditor::initializeMainUi() {
   if (lastSuccessfulLoginMs > 0) {
     const auto nowMs = juce::Time::currentTimeMillis();
@@ -833,6 +865,166 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       channelGridRaw->refreshLibraryFromStorage();
   });
   songListRaw->setOnSaveProjectRequested([this] { saveCurrentProject(); });
+  songListRaw->setOnProjectUploadRequested(
+      [this](const ImportedSongData &song) {
+        const juce::File projectFile(song.projectPath);
+        if (!isProjectBackedSong(song) || !projectFile.existsAsFile()) {
+          juce::AlertWindow::showMessageBoxAsync(
+              juce::AlertWindow::WarningIcon,
+              L10n::tr("Proyecto no disponible", "Project unavailable"),
+              L10n::tr("Convierte o abre un proyecto .pwproj antes de subirlo.",
+                       "Convert or open a .pwproj project before uploading it."));
+          return;
+        }
+        if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
+            activeSession.refreshToken.isEmpty()) {
+          juce::AlertWindow::showMessageBoxAsync(
+              juce::AlertWindow::WarningIcon,
+              L10n::tr("Sesión requerida", "Sign-in required"),
+              L10n::tr("Inicia sesión nuevamente antes de sincronizar proyectos.",
+                       "Sign in again before syncing projects."));
+          return;
+        }
+        if (!cloudUploadsInProgress.insert(song.id.toStdString()).second)
+          return;
+
+        if (songSyncService == nullptr)
+          songSyncService = std::make_unique<SongSyncService>();
+
+        const juce::String title = song.title.isNotEmpty()
+                                       ? song.title
+                                       : L10n::tr("Proyecto", "Project");
+        const CloudTransferCredentials credentials{getApiBaseUrl(),
+                                                   activeSession.firebaseApiKey,
+                                                   activeSession.refreshToken};
+        const auto safeThis =
+            juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+        if (songListPanelRaw != nullptr)
+          songListPanelRaw->setCloudUploadProgress(song.id, 0.0,
+                                                    "preparing");
+        songSyncService->upload(
+            credentials, projectFile,
+            [safeThis, songId = song.id, title](CloudTransferProgress progress) {
+              SessionAuthLogger::write(
+                  "Cloud upload " + title + " phase=" + progress.phase +
+                  " " + juce::String(progress.completedObjects) + "/" +
+                  juce::String(progress.totalObjects));
+              if (safeThis != nullptr && safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->setCloudUploadProgress(
+                    songId, progress.fraction, progress.phase);
+            },
+            [safeThis, songId = song.id](ImportedSongData,
+                                         CloudTransferError failure) {
+              if (safeThis == nullptr)
+                return;
+              safeThis->cloudUploadsInProgress.erase(songId.toStdString());
+              if (failure.code.isNotEmpty()) {
+                if (safeThis->songListPanelRaw != nullptr)
+                  safeThis->songListPanelRaw->clearCloudUploadProgress(songId);
+                if (failure.code == "NO_CHANGES") {
+                  juce::AlertWindow::showMessageBoxAsync(
+                      juce::AlertWindow::InfoIcon,
+                      L10n::tr("Sin nada que sincronizar", "Nothing to sync"),
+                      L10n::tr("El proyecto ya está actualizado en la nube.",
+                               "This project is already up to date in the cloud."));
+                  return;
+                }
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::AlertWindow::WarningIcon,
+                    L10n::tr("No se pudo subir el proyecto",
+                             "Couldn't upload project"),
+                    failure.message.isNotEmpty() ? failure.message
+                                                  : failure.code);
+                return;
+              }
+              if (safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->setCloudUploadProgress(songId, 1.0,
+                                                                    "complete");
+              if (safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->refreshFromStorageView();
+              safeThis->refreshCloudLibrary({});
+              juce::Timer::callAfterDelay(850, [safeThis, songId] {
+                if (safeThis == nullptr)
+                  return;
+                if (safeThis->songListPanelRaw != nullptr)
+                  safeThis->songListPanelRaw->clearCloudUploadProgress(songId);
+              });
+            });
+      });
+  songListRaw->setOnCloudSearchRequested(
+      [this](const juce::String &query) { refreshCloudLibrary(query); });
+  songListRaw->setOnCloudDownloadRequested(
+      [this](const juce::String &remoteSongId,
+             const juce::String &targetSetlistId) {
+        if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
+            activeSession.refreshToken.isEmpty()) {
+          juce::AlertWindow::showMessageBoxAsync(
+              juce::AlertWindow::WarningIcon,
+              L10n::tr("Sesión requerida", "Sign-in required"),
+              L10n::tr("Inicia sesión nuevamente antes de descargar proyectos.",
+                       "Sign in again before downloading projects."));
+          return;
+        }
+        if (!cloudDownloadsInProgress.insert(remoteSongId.toStdString()).second)
+          return;
+        if (songSyncService == nullptr)
+          songSyncService = std::make_unique<SongSyncService>();
+
+        auto destinationDirectory =
+            SongLibraryStore::getRootDirectory().getChildFile("projects");
+        destinationDirectory.createDirectory();
+        const auto destination = destinationDirectory.getNonexistentChildFile(
+            "cloud-" + juce::File::createLegalFileName(remoteSongId),
+            ProjectStore::kFileExtension, false);
+        const CloudTransferCredentials credentials{getApiBaseUrl(),
+                                                   activeSession.firebaseApiKey,
+                                                   activeSession.refreshToken};
+        const auto safeThis =
+            juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+        if (songListPanelRaw != nullptr)
+          songListPanelRaw->setCloudUploadProgress(remoteSongId, 0.0,
+                                                    "downloading");
+        songSyncService->download(
+            credentials, remoteSongId, destination,
+            [safeThis, remoteSongId](CloudTransferProgress progress) {
+              if (safeThis != nullptr && safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->setCloudUploadProgress(
+                    remoteSongId, progress.fraction, progress.phase);
+            },
+            [safeThis, remoteSongId, targetSetlistId](ImportedSongData downloadedSong,
+                                     CloudTransferError failure) {
+              if (safeThis == nullptr)
+                return;
+              safeThis->cloudDownloadsInProgress.erase(remoteSongId.toStdString());
+              if (safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->clearCloudUploadProgress(remoteSongId);
+              if (failure.code.isNotEmpty()) {
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::AlertWindow::WarningIcon,
+                    L10n::tr("No se pudo descargar el proyecto",
+                             "Couldn't download project"),
+                    failure.message.isNotEmpty() ? failure.message : failure.code);
+                return;
+              }
+              if (targetSetlistId.isNotEmpty())
+                SongLibraryStore::addSongToSetlist(targetSetlistId,
+                                                    downloadedSong.id);
+              if (safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->refreshFromStorageView();
+              safeThis->refreshCloudLibrary({});
+              const bool addedToSetlist = targetSetlistId.isNotEmpty();
+              juce::AlertWindow::showMessageBoxAsync(
+                  juce::AlertWindow::InfoIcon,
+                  addedToSetlist
+                      ? L10n::tr("Proyecto agregado", "Project added")
+                      : L10n::tr("Proyecto descargado", "Project downloaded"),
+                  addedToSetlist
+                      ? L10n::tr("El proyecto se descargó y agregó al setlist.",
+                                 "The project was downloaded and added to the setlist.")
+                      : L10n::tr("El proyecto ya está disponible en la Biblioteca local.",
+                                 "The project is now available in the local Library."));
+            });
+      });
   songListRaw->setSaveProjectStateProvider(
       [this] {
         return hasCurrentLoadedSong &&
@@ -1951,7 +2143,34 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.reasonCode,
                                     activeSession.reason,
                                     activeSession.licenseKey},
-      [this] { handleLogout(); }, routingDefaults,
+      [this] { handleLogout(); },
+      [this] {
+        juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::WarningIcon,
+            L10n::tr("Purgar datos locales de Cloud", "Purge local Cloud data"),
+            L10n::tr(
+                "Se eliminarán todas las canciones y setlists de Biblioteca, cachés, descargas y vínculos de sincronización. "
+                "La Biblioteca quedará vacía. No se eliminará ningún archivo .pwproj ni contenido de la nube.",
+                "All Library songs and setlists, caches, downloads, and sync links will be removed. "
+                "The Library will be empty. No .pwproj file or cloud content will be deleted."),
+            L10n::tr("Purgar", "Purge"), L10n::tr("Cancelar", "Cancel"),
+            this, juce::ModalCallbackFunction::create(
+                [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
+              if (result != 1 || safeThis == nullptr)
+                return;
+              const auto purge = CloudSyncIndexStore::purgeLocalState();
+              if (safeThis->songListPanelRaw != nullptr)
+                safeThis->songListPanelRaw->refreshFromStorageView();
+              safeThis->refreshCloudLibrary({});
+              juce::AlertWindow::showMessageBoxAsync(
+                  juce::AlertWindow::InfoIcon,
+                  L10n::tr("Datos locales purgados", "Local data purged"),
+                  L10n::tr("La Biblioteca quedó vacía. No se eliminó ningún archivo .pwproj ni contenido de la nube. Canciones eliminadas de Biblioteca: ",
+                           "The Library is empty. No .pwproj file or cloud content was deleted. Songs removed from Library: ") +
+                      juce::String(purge.removedLibrarySongs));
+            }));
+      },
+      routingDefaults,
       proc.getAvailableOutputChannelCount(),
       [this](const juce::String &deviceKey,
              const std::vector<CategoryRoutingDefaults> &next) {

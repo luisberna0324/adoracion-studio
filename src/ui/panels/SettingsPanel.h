@@ -25,6 +25,7 @@ public:
       std::function<void(MetronomeClickStyle)>;
   using CloseRequested = std::function<void()>;
   using LogoutRequested = std::function<void()>;
+  using PurgeLocalDataRequested = std::function<void()>;
   using RoutingDefaultsChanged =
       std::function<void(const juce::String &,
                          const std::vector<CategoryRoutingDefaults> &)>;
@@ -53,6 +54,7 @@ public:
                 CloseRequested closeCb,
                 SessionSummary sessionSummary,
                 LogoutRequested logoutCb,
+                PurgeLocalDataRequested purgeLocalDataCb,
                 std::vector<CategoryRoutingDefaults> routingDefaults,
                 int availableOutputChannels,
                 RoutingDefaultsChanged routingCb,
@@ -161,10 +163,12 @@ private:
   juce::Label sessionVersionValue;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
+  juce::Label actionPurgeLabel;
   juce::Label actionInfoLabel;
   juce::HyperlinkButton infoLinkButton{
       "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
   SettingsLogoutButton logoutButton;
+  SettingsLogoutButton purgeButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;
@@ -186,6 +190,7 @@ private:
   MetronomeClickStyleChanged onMetronomeClickStyleChanged;
   CloseRequested onCloseRequested;
   LogoutRequested onLogoutRequested;
+  PurgeLocalDataRequested onPurgeLocalDataRequested;
   SessionSummary session;
   RoutingDefaultsChanged onRoutingDefaultsChanged;
   std::vector<CategoryRoutingDefaults> routingDefaults;

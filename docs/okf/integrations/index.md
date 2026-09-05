@@ -16,3 +16,4 @@ Integraciones externas para software de letras, cues y control en vivo.
 |---------|-------------|
 | [FreeShow](FreeShow.md) | Integración con FreeShow |
 | [LyricsControllers](LyricsControllers.md) | Contrato de integración con software de letras |
+| [CloudSync](CloudSync.md) | Contrato cloud vs local, preflight y sanitización de `.pwproj` para R2 + Firestore |

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../data/SongData.h"
+#include "../../data/CloudLibraryClient.h"
 #include "../../data/SongLibraryStore.h"
 #include "../UiCommon.h"
 #include "../components/SearchField.h"
@@ -20,6 +21,11 @@ public:
       std::function<void(const ImportedSongData &, int songIndex)>;
   using SongEditRequested = std::function<void(const juce::String &songId)>;
   using SongConvertRequested = std::function<void(const juce::String &songId)>;
+  using ProjectUploadRequested = std::function<void(const juce::String &songId)>;
+  using CloudDownloadRequested =
+      std::function<void(const juce::String &songId,
+                         const juce::String &targetSetlistId)>;
+  using CloudSearchRequested = std::function<void(const juce::String &query)>;
   using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using CreateSongRequested = std::function<void()>;
@@ -32,6 +38,9 @@ public:
   void setOnSongLoadRequested(SongLoadRequested cb);
   void setOnSongEditRequested(SongEditRequested cb);
   void setOnSongConvertRequested(SongConvertRequested cb);
+  void setOnProjectUploadRequested(ProjectUploadRequested cb);
+  void setOnCloudDownloadRequested(CloudDownloadRequested cb);
+  void setOnCloudSearchRequested(CloudSearchRequested cb);
   void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnCreateSongRequested(CreateSongRequested cb);
@@ -39,8 +48,14 @@ public:
   void setOnBackRequested(BackRequested cb);
 
   void setActiveSetlistId(const juce::String &setlistId);
+  void setTargetSetlistId(const juce::String &setlistId);
   void setHeaderMode(HeaderMode mode);
   void setNowPlayingSong(const juce::String &songId, bool isPlaying);
+  void setCloudSongs(std::vector<CloudSongSummary> songs);
+  void setCloudSearchLoading(bool isLoading);
+  void setCloudUploadProgress(const juce::String &songId, double fraction,
+                              const juce::String &phase);
+  void clearCloudUploadProgress(const juce::String &songId);
   void refreshFromStorage();
   void refreshLanguageTexts();
   void refreshThemeColours();
@@ -82,6 +97,12 @@ private:
     bool inSetlist = false;
     bool isNowPlaying = false;
     bool isProjectBacked = false;
+    bool isCloudOnly = false;
+    bool isCloudSynced = false;
+    bool isCloudDownloaded = false;
+    juce::String localSongId;
+    double cloudUploadFraction = -1.0;
+    juce::String cloudUploadPhase;
   };
 
   class IconButton final : public juce::Button {
@@ -170,6 +191,8 @@ private:
                  const juce::StringArray &selectedSongIds,
                  bool hideOptionsButtons, bool allowSelection);
     void setNowPlayingSong(const juce::String &songId, bool isPlaying);
+    void setCloudUploadProgress(const juce::String &songId, double fraction,
+                                const juce::String &phase);
     void setOnLoadRequested(LoadCallback cb);
     void setOnToggleRequested(ToggleCallback cb);
     void setOnOptionsRequested(OptionsCallback cb);
@@ -236,11 +259,18 @@ private:
   juce::Rectangle<int> headerSubtitleBounds;
 
   std::vector<ImportedSongData> librarySongs;
+  std::vector<CloudSongSummary> cloudSongs;
   std::vector<SetlistData> setlists;
   std::vector<CatalogItem> visibleRows;
+  struct CloudUploadIndicator {
+    double fraction = 0.0;
+    juce::String phase;
+  };
+  std::unordered_map<std::string, CloudUploadIndicator> cloudUploadIndicators;
   juce::StringArray activeSetlistSongIds;
   juce::StringArray pendingSelectedSongIds;
   juce::String activeSetlistId;
+  juce::String targetSetlistId;
   juce::String activeSetlistName;
   HeaderMode headerMode = HeaderMode::SetlistTarget;
   juce::String selectedSongId;
@@ -252,6 +282,9 @@ private:
   SongLoadRequested onSongLoadRequested;
   SongEditRequested onSongEditRequested;
   SongConvertRequested onSongConvertRequested;
+  ProjectUploadRequested onProjectUploadRequested;
+  CloudDownloadRequested onCloudDownloadRequested;
+  CloudSearchRequested onCloudSearchRequested;
   SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
   CreateSongRequested onCreateSongRequested;

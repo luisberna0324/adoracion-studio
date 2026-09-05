@@ -13,6 +13,10 @@ endif()
 
 project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -491,6 +495,18 @@ target_sources(MTControls
         src/data/AssetBootstrapManager.h
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
+        src/data/CloudSyncTypes.h
+        src/data/CloudProjectArchive.cpp
+        src/data/CloudProjectArchive.h
+        src/data/CloudLibraryClient.cpp
+        src/data/CloudLibraryClient.h
+        src/data/CloudSyncIndexStore.cpp
+        src/data/CloudSyncIndexStore.h
+        src/data/CloudTransferClient.cpp
+        src/data/CloudTransferClient.h
+        src/data/CloudSignedUpload.h
+        src/data/SongSyncService.cpp
+        src/data/SongSyncService.h
         src/data/LocalAuthCallbackServer.cpp
         src/data/LocalAuthCallbackServer.h
         src/data/SessionAuthLogger.cpp
@@ -568,6 +584,12 @@ target_sources(MTControls
         src/ui/components/WelcomeModal.h
 )
 
+if(APPLE)
+    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.mm)
+else()
+    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.cpp)
+endif()
+
 if(MTCONTROLS_BUNGEE_AVAILABLE)
     target_sources(MTControls PRIVATE
         src/audio/BungeeProcessor.cpp
@@ -613,6 +635,7 @@ endif()
 target_link_libraries(MTControls
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_cryptography
         juce::juce_dsp
         MTControlsAssets
     PUBLIC

@@ -280,6 +280,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              CloseRequested closeCb,
                              SessionSummary sessionSummary,
                              LogoutRequested logoutCb,
+                             PurgeLocalDataRequested purgeLocalDataCb,
                              std::vector<CategoryRoutingDefaults> defaults,
                              int outputChannels,
                              RoutingDefaultsChanged routingCb,
@@ -295,6 +296,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onMetronomeClickStyleChanged(std::move(metronomeClickStyleCb)),
       onCloseRequested(std::move(closeCb)),
       onLogoutRequested(std::move(logoutCb)),
+      onPurgeLocalDataRequested(std::move(purgeLocalDataCb)),
       session(std::move(sessionSummary)),
       onRoutingDefaultsChanged(std::move(routingCb)),
       routingDefaults(std::move(defaults)),
@@ -599,6 +601,15 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(logoutButton);
 
+  actionPurgeLabel.setJustificationType(juce::Justification::centredLeft);
+  actionPurgeLabel.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+  accountPage.addAndMakeVisible(actionPurgeLabel);
+  purgeButton.onClick = [this] {
+    if (onPurgeLocalDataRequested)
+      onPurgeLocalDataRequested();
+  };
+  accountPage.addAndMakeVisible(purgeButton);
+
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
   routingPage.addAndMakeVisible(routingSectionLabel);
@@ -796,6 +807,7 @@ void SettingsPanel::refreshThemeColours() {
   sessionVersionValue.setColour(juce::Label::textColourId, sessionPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, sessionPrimary);
   actionLogoutLabel.setColour(juce::Label::textColourId, actionSecondary);
+  actionPurgeLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, actionSecondary);
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
@@ -911,10 +923,15 @@ void SettingsPanel::applyLanguageTexts() {
   actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
                                      "Sign out on this app"),
                             juce::dontSendNotification);
+  actionPurgeLabel.setText(
+      L10n::tr(u8"Purgar descargas, caché y vínculos de Cloud",
+               "Purge Cloud downloads, cache, and links"),
+      juce::dontSendNotification);
   actionInfoLabel.setText(L10n::tr(u8"¿Necesitas ayuda con tu cuenta?",
                                   "Need help with your account?"),
                           juce::dontSendNotification);
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
+  purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr(u8"Saber más", "Learn more"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
@@ -1015,9 +1032,11 @@ void SettingsPanel::layoutAccountPage() {
   sessionVersionValue.setBounds({});
   actionsSectionLabel.setBounds({});
   actionLogoutLabel.setBounds({});
+  actionPurgeLabel.setBounds({});
   actionInfoLabel.setBounds({});
   infoLinkButton.setBounds({});
   logoutButton.setBounds({});
+  purgeButton.setBounds({});
   if (sessionIdentitySeparator != nullptr)
     sessionIdentitySeparator->setBounds({});
   if (actionsTitleSeparator != nullptr)
@@ -1105,7 +1124,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    constexpr int actionsH = 146;
+    constexpr int actionsH = 194;
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -1120,6 +1139,11 @@ void SettingsPanel::layoutAccountPage() {
     logoutButton.setBounds(logoutControl);
     if (actionsRowSeparator != nullptr)
       actionsRowSeparator->setBounds(actions.removeFromTop(1));
+
+    auto purgeRow = actions.removeFromTop(48);
+    auto purgeControl = purgeRow.removeFromRight(112).reduced(0, 8);
+    actionPurgeLabel.setBounds(purgeRow);
+    purgeButton.setBounds(purgeControl);
 
     auto helpRow = actions.removeFromTop(48);
     auto helpControl = helpRow.removeFromRight(112);

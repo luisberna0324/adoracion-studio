@@ -2,9 +2,13 @@
 
 #include "PluginProcessor.h"
 #include "data/SessionPersistence.h"
+#include "data/CloudLibraryClient.h"
 #include "data/SongData.h"
+#include "data/SongSyncService.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include <JuceHeader.h>
+
+#include <unordered_set>
 
 class TopBar;
 class WaveformBar;
@@ -32,6 +36,7 @@ public:
   void flushActiveSongPersistenceNow();
   /** Resuelve el aviso de cambios pendientes antes de cerrar Standalone. */
   void requestApplicationQuit(std::function<void(bool)> onResolved);
+  void refreshCloudLibrary(const juce::String &query);
 
   /** Resultado del hilo de reanudacion de sesion (solo MessageManager::callAsync). */
   void applySessionResumeOnMessageThread(bool success, bool validatedOnline,
@@ -78,6 +83,11 @@ private:
     juce::String licenseKey;
   };
   SessionSummary activeSession;
+  std::unique_ptr<SongSyncService> songSyncService;
+  std::unique_ptr<CloudLibraryClient> cloudLibraryClient;
+  std::unordered_set<std::string> cloudUploadsInProgress;
+  std::unordered_set<std::string> cloudDownloadsInProgress;
+  uint64_t cloudLibrarySearchGeneration = 0;
   bool mainUiInitialized = false;
   ResponsiveLayoutProfile responsiveLayoutProfile =
       ResponsiveLayoutProfile::Standard;

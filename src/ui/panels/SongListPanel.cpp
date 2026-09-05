@@ -571,7 +571,7 @@ SongListPanel::SongListPanel() {
   });
   setlistsPage.addAndMakeVisible(setlistSearchField);
 
-  songsHeaderPanel.setOnAddSongsClicked([this] { openLibraryBrowser(); });
+  songsHeaderPanel.setOnAddSongsClicked([this] { openAddFromLibraryMenu(); });
   songsHeaderPanel.setOnSongsClicked([this] { listViewport.setViewPosition(0, 0); });
   songsHeaderPanel.setLibraryActionVisible(false);
   songsPage.addAndMakeVisible(songsHeaderPanel);
@@ -593,12 +593,15 @@ SongListPanel::SongListPanel() {
         }
       });
   libraryCatalogPanel.setOnAddSongsToSetlist([this](const juce::StringArray &songIds) {
-    if (activeSetlistId.isEmpty() || songIds.isEmpty())
+    const auto targetSetlistId = libraryTargetSetlistId.isNotEmpty()
+                                     ? libraryTargetSetlistId
+                                     : activeSetlistId;
+    if (targetSetlistId.isEmpty() || songIds.isEmpty())
       return;
     for (const auto &songId : songIds) {
       if (songId.isEmpty())
         continue;
-      SongLibraryStore::addSongToSetlist(activeSetlistId, songId);
+      SongLibraryStore::addSongToSetlist(targetSetlistId, songId);
     }
 
     refreshFromStorage();
@@ -612,6 +615,26 @@ SongListPanel::SongListPanel() {
   libraryCatalogPanel.setOnSongConvertRequested(
       [this](const juce::String &songId) {
         beginLegacySongConversion(songId);
+      });
+  libraryCatalogPanel.setOnProjectUploadRequested(
+      [this](const juce::String &songId) {
+        const auto song = std::find_if(
+            librarySongs.begin(), librarySongs.end(),
+            [&songId](const ImportedSongData &candidate) {
+              return candidate.id == songId;
+            });
+        if (song != librarySongs.end() && onProjectUploadRequested != nullptr)
+          onProjectUploadRequested(*song);
+      });
+  libraryCatalogPanel.setOnCloudDownloadRequested(
+      [this](const juce::String &songId, const juce::String &targetSetlistId) {
+        if (onCloudDownloadRequested != nullptr)
+          onCloudDownloadRequested(songId, targetSetlistId);
+      });
+  libraryCatalogPanel.setOnCloudSearchRequested(
+      [this](const juce::String &query) {
+        if (onCloudSearchRequested != nullptr)
+          onCloudSearchRequested(query);
       });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
     const auto trimmedSongId = songId.trim();
@@ -649,7 +672,11 @@ SongListPanel::SongListPanel() {
           refreshFromStorage();
         });
   });
-  libraryCatalogPanel.setOnBackRequested([this] { showSongsSubview(true); });
+  libraryCatalogPanel.setOnBackRequested([this] {
+    libraryTargetSetlistId.clear();
+    libraryCatalogPanel.setTargetSetlistId({});
+    showSongsSubview(true);
+  });
   libraryPage.addAndMakeVisible(libraryCatalogPanel);
   setlistsContent = std::make_unique<SetlistsContent>();
   setlistsContent->onSetlistChosen = [this](const juce::String &setlistId) {
@@ -744,6 +771,46 @@ SongListPanel::~SongListPanel() = default;
 void SongListPanel::setOnSongActivated(
     std::function<void(const ImportedSongData &, int)> cb) {
   onSongActivated = std::move(cb);
+}
+
+void SongListPanel::setOnProjectUploadRequested(
+    std::function<void(const ImportedSongData &)> cb) {
+  onProjectUploadRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudDownloadRequested(
+    std::function<void(const juce::String &, const juce::String &)> cb) {
+  onCloudDownloadRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudSearchRequested(
+    std::function<void(const juce::String &)> cb) {
+  onCloudSearchRequested = std::move(cb);
+}
+
+void SongListPanel::setCloudUploadProgress(const juce::String &songId,
+                                           const double fraction,
+                                           const juce::String &phase) {
+  if (songId.isEmpty())
+    return;
+  cloudUploadIndicators[songId.toStdString()] = {
+      juce::jlimit(0.0, 1.0, fraction), phase};
+  listContent.setCloudUploadProgress(songId, fraction, phase);
+  libraryCatalogPanel.setCloudUploadProgress(songId, fraction, phase);
+}
+
+void SongListPanel::clearCloudUploadProgress(const juce::String &songId) {
+  cloudUploadIndicators.erase(songId.toStdString());
+  listContent.setCloudUploadProgress(songId, -1.0, {});
+  libraryCatalogPanel.clearCloudUploadProgress(songId);
+}
+
+void SongListPanel::setCloudSongs(std::vector<CloudSongSummary> songs) {
+  libraryCatalogPanel.setCloudSongs(std::move(songs));
+}
+
+void SongListPanel::setCloudSearchLoading(const bool isLoading) {
+  libraryCatalogPanel.setCloudSearchLoading(isLoading);
 }
 
 void SongListPanel::setOnSetlistNameChanged(
@@ -1248,11 +1315,15 @@ void SongListPanel::setSaveProjectStateProvider(
 }
 
 void SongListPanel::openLibraryBrowser() {
+  libraryTargetSetlistId.clear();
+  libraryCatalogPanel.setTargetSetlistId({});
   libraryCatalogPanel.setHeaderMode(LibraryCatalogPanel::HeaderMode::Library);
   showLibraryView(true);
 }
 
 void SongListPanel::openAddFromLibraryMenu() {
+  libraryTargetSetlistId = activeSetlistId;
+  libraryCatalogPanel.setTargetSetlistId(libraryTargetSetlistId);
   libraryCatalogPanel.setHeaderMode(
       LibraryCatalogPanel::HeaderMode::SetlistTarget);
   showLibraryView(true);
@@ -1453,6 +1524,21 @@ void SongListPanel::ListContent::setSelectedSongId(const juce::String &songId) {
     repaint();
 }
 
+void SongListPanel::ListContent::setCloudUploadProgress(
+    const juce::String &songId, const double fraction,
+    const juce::String &phase) {
+  for (int index = 0; index < static_cast<int>(songs.size()); ++index) {
+    auto &row = songs[static_cast<size_t>(index)];
+    if (row.songId != songId)
+      continue;
+    row.cloudUploadFraction = fraction < 0.0 ? -1.0 : juce::jlimit(0.0, 1.0, fraction);
+    row.cloudUploadPhase = phase;
+    repaint(juce::Rectangle<int>(rowSideInset, rowTopAtIndex(index),
+                                 getWidth() - (rowSideInset * 2), rowHeight));
+    break;
+  }
+}
+
 void SongListPanel::ListContent::setOnSongActivated(
     std::function<void(int)> cb) {
   onSongActivated = std::move(cb);
@@ -1644,10 +1730,27 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                         u8" • " + formatDurationMMSS(rowData.durationSeconds);
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
 
+    const bool uploadInProgress = rowData.cloudUploadFraction >= 0.0;
+    const auto progressBounds = juce::Rectangle<float>(
+        static_cast<float>(artworkArea.getRight() + 11),
+        static_cast<float>(row.getBottom() - 4),
+        static_cast<float>(juce::jmax(0, row.getRight() - artworkArea.getRight() - 22)),
+        3.0f);
+    if (uploadInProgress && progressBounds.getWidth() > 0.0f) {
+      g.setColour(UITheme::cardBorder.withAlpha(0.75f));
+      g.fillRoundedRectangle(progressBounds, 1.5f);
+      const auto completedWidth = static_cast<float>(
+          progressBounds.getWidth() * rowData.cloudUploadFraction);
+      if (completedWidth > 0.0f) {
+        g.setColour(UITheme::accent.withAlpha(0.98f));
+        g.fillRoundedRectangle(progressBounds.withWidth(completedWidth), 1.5f);
+      }
+    }
+
     const auto menuAlpha = rowIndex == hoveredRow ? 0.88f : 0.64f;
     drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(18.0f, 18.0f),
                   IconGlyph::More, UITheme::textSecondary.withAlpha(menuAlpha), 1.35f);
-    if (rowIndex + 1 < static_cast<int>(songs.size())) {
+    if (!uploadInProgress && rowIndex + 1 < static_cast<int>(songs.size())) {
       g.setColour(AppColours::separator);
       g.drawLine(static_cast<float>(artworkArea.getRight() + 11),
                  static_cast<float>(row.getBottom() - 1),
@@ -2869,6 +2972,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
                            juce::String(static_cast<int>(document.song.stems.size())));
   selectedSongId = document.song.id;
   AppSettings::setLastSelectedSongId(selectedSongId);
+  if (libraryTargetSetlistId.isNotEmpty())
+    SongLibraryStore::addSongToSetlist(libraryTargetSetlistId, selectedSongId);
   refreshFromStorage();
   if (onSongActivated != nullptr) {
     const int index = getSongIndexById(selectedSongId);
@@ -3502,23 +3607,31 @@ void SongListPanel::refreshFromStorage() {
 
       const int rowIndex = static_cast<int>(rows.size());
       const auto autoPlayKey = makeAutoPlayNextMarkKey(activeSetlistId, song.id);
-      rows.push_back({order++,
-                      toSentenceCase(song.title.isNotEmpty()
-                                         ? song.title
-                                         : L10n::tr(u8"Canción sin título",
-                                                    "Untitled Song")),
-                      song.artist.trim().toUpperCase(),
-                      song.artworkPath.trim(),
-                      song.key,
-                      song.bpm,
-                      includedStems,
-                      song.id,
-                      autoPlayNextMarks.contains(autoPlayKey),
-                      isPlaybackActive && song.id == nowPlayingSongId,
-                      song.id == selectedSongId,
-                      rowIndex,
-                      estimateSongLengthSeconds(song),
-                      songAccentFromId(song.id)});
+      SongRow row{order++,
+                  toSentenceCase(song.title.isNotEmpty()
+                                     ? song.title
+                                     : L10n::tr(u8"Canción sin título",
+                                                "Untitled Song")),
+                  song.artist.trim().toUpperCase(),
+                  song.artworkPath.trim(),
+                  song.key,
+                  song.bpm,
+                  includedStems,
+                  song.id,
+                  autoPlayNextMarks.contains(autoPlayKey),
+                  isPlaybackActive && song.id == nowPlayingSongId,
+                  song.id == selectedSongId,
+                  rowIndex,
+                  estimateSongLengthSeconds(song),
+                  songAccentFromId(song.id),
+                  -1.0,
+                  {}};
+      if (const auto indicator = cloudUploadIndicators.find(song.id.toStdString());
+          indicator != cloudUploadIndicators.end()) {
+        row.cloudUploadFraction = indicator->second.fraction;
+        row.cloudUploadPhase = indicator->second.phase;
+      }
+      rows.push_back(std::move(row));
     }
   }
 
