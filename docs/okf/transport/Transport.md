@@ -283,6 +283,11 @@ La marca de inserción de la regla aplica a todos los tipos de sección,
 incluidas `Cuenta` y `Utilidad`. Estas dos conservan su duración corta de grilla
 y dividen la sección existente alrededor de la marca sin crear solapamientos.
 
+En iPad, la regla de la waveform se presenta como referencia de navegación:
+muestra marcas de compás y numera compases con una separación mínima de 82 px.
+No dibuja las subdivisiones de beat o snap, aunque estas continúan disponibles
+para seek y edición. El layout de escritorio conserva la regla detallada.
+
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
 barra contextual de cada sección y abre el selector contextual. La lista inicial

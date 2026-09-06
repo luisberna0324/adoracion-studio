@@ -9,17 +9,50 @@ timestamp: 2026-09-05T14:58:00Z
 
 ## 2026-09-05
 
+### Biblioteca iOS: proyectos importados idempotentes y diagnóstico de Cloud upload
+
+- Los `.pwproj` importados desde Files se identifican por `projectId`, no por
+  su ruta absoluta ni por el nombre con timestamp. Reabrir el mismo proyecto
+  ya no añade otra canción ni conserva otra copia administrada bajo
+  `imports/projects`; las referencias de setlists existentes se preservan.
+- Si un build de desarrollo cambia el UUID del contenedor iOS y el paquete aún
+  existe bajo el root actual, la Biblioteca repara el `projectPath` en
+  `songs.json`. Una desinstalación que borra el sandbox no es recuperable sin
+  Cloud o una copia del `.pwproj` fuera de la app.
+- `CloudTransferClient` registra en `session_auth.log` el resultado de refresh,
+  prepare-upload, cada objeto firmado, descriptor y commit. Esto diferencia un
+  fallo de autenticación, API, URL firmada o commit sin registrar tokens.
+
+### Biblioteca Cloud: descarga única por canción
+
+- Una fila Cloud vinculada a una canción local ya materializada muestra
+  `Ya descargada` fuera de un flujo de setlist, y `Agregar al setlist` o
+  `Ya agregada` dentro de él. Nunca vuelve a ofrecer descarga.
+- El callback de descarga comprueba nuevamente `remoteSongId -> projectId ->`
+  canción local antes de transferir, evitando una segunda caché aun si la lista
+  Cloud quedó desactualizada.
+
+### Cloud download: stems reproducibles antes de registrar
+
+- La importación Cloud valida que cada stem materializado exista y tenga tamaño
+  antes de añadir la canción a Biblioteca. Una descarga incompleta falla en vez
+  de crear una fila que el motor no pueda reproducir.
+- `session_auth.log` registra solicitud, objetos y finalización de descarga, y
+  el cargador registra cuántos stems pudo resolver antes y después de llamar al
+  motor. Esto permite diagnosticar una carga detenida en 0% sin exponer URLs
+  firmadas ni tokens.
+
 ### Auth: Google OAuth backend-driven para iOS y macOS
 
 - `PluginEditor::launchExternalLogin` ahora apunta a
-  `getApiBaseUrl() + "/api/auth/google/start?..."` en lugar de
+  `getAuthBaseUrl() + "/api/auth/google/start?..."` en lugar de
   `/login?..." tanto en la rama `JUCE_IOS` (vía
   `ASWebAuthenticationSession`) como en la rama desktop/macOS (vía
   `LocalAuthCallbackServer` + `launchInDefaultBrowser`). El primer
   frame es el account picker de Google en ambas plataformas; ya no se
   muestra el formulario de PlayWorship.
 - Backend nuevo: `lib/googleOAuth.ts` con allowlist de
-  `redirect_uri`, store de `state` en memoria (TTL 10 min), armado del
+  `redirect_uri`, token `state` HMAC autocontenido (TTL 10 min), armado del
   auth URL de Google con `prompt=select_account`, exchange de code →
   tokens, verificación RS256 del `id_token` contra el JWKS de Google
   y armado del `session` JSON.
@@ -37,6 +70,9 @@ timestamp: 2026-09-05T14:58:00Z
 - Variables de entorno requeridas: `GOOGLE_CLIENT_ID`,
   `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_CALLBACK_URL` (debe coincidir
   con un Authorized redirect URI del client de Google).
+- `MTCONTROLS_AUTH_BASE_URL` permite que un build de iPad consuma APIs en
+  una IP local (seleccionada con `MTCONTROLS_BACKEND_MODE=local`) pero arranque OAuth desde un
+  backend HTTPS compatible con Google.
 - Documentación: nueva página
   [`docs/okf/integrations/Auth.md`](integrations/Auth.md) con el
   contrato end-to-end, allowlist, errores y la lista de lo que este
@@ -75,6 +111,9 @@ timestamp: 2026-09-05T14:58:00Z
 - Los builds físicos de desarrollo pueden definir `MTCONTROLS_API_BASE_URL` con
   el hostname Bonjour del Mac; la URL HTTPS de producción sigue siendo el valor
   predeterminado.
+- La URL HTTPS predeterminada de producción es
+  `https://api.playworship.app`, tanto para la API como para OAuth cuando
+  `MTCONTROLS_AUTH_BASE_URL` no se define.
 
 ### Acceso responsive en iPad y escritorio
 
@@ -527,6 +566,21 @@ cancelar.
 Al terminar la permanencia mínima del indicador de carga, `WaveformBar` ahora
 solicita un repintado al limpiar el estado. Así el mensaje final de fase, como
 `Finalizando...`, se elimina aun cuando no ocurra otro evento de interfaz.
+
+### Waveform: regla compacta en iPad
+
+La regla superior del waveform en iPad usa una altura de 22 px y dibuja los
+pulsos musicales del compás, omitiendo sólo subdivisiones de edición. En 4/4
+se ven cuatro divisiones por compás, con el inicio destacado. Las etiquetas se
+espacian dinamicamente para mantener al menos 82 px entre ellas. Seek y snap
+conservan toda su precisión; la regla detallada de escritorio no cambia.
+
+### iPadOS: orientaciones declaradas
+
+El `Info.plist` generado declara las cuatro orientaciones para iPad y iPhone,
+incluyendo `UIInterfaceOrientationPortraitUpsideDown`. Esto elimina el aviso de
+Xcode sobre soporte incompleto de orientacion; la composicion de rendimiento
+mantiene landscape como su layout principal.
 
 ### Persistencia legacy: controles compartidos entre setlists
 

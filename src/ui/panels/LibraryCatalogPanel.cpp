@@ -1456,6 +1456,12 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
              }
            },
            SvgIconName::Plus});
+    } else if (selectedItem.localSongId.isNotEmpty()) {
+      // A cloud entry remains visible for discovery, but its local materialized
+      // song already owns the cache. Do not offer a second download.
+      actions.push_back(
+          {L10n::tr("Ya descargada", "Already downloaded"), false, false,
+           false, {}, SvgIconName::FileAudio});
     } else {
       const auto downloadLabel = targetSetlistId.isNotEmpty()
                                      ? L10n::tr("Descargar y agregar",

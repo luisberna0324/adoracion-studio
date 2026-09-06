@@ -55,6 +55,9 @@ public:
                    juce::String *errorMessage = nullptr,
                    bool rebuildCache = true,
                    const ProjectProgressFn &onProgress = {});
+  /** Restores only the embedded cover art without extracting project stems. */
+  static bool restoreArtwork(const juce::File &file, ImportedSongData &song,
+                             juce::String *errorMessage = nullptr);
   /** Convierte una canción legacy, valida el paquete y retira su audio interno. */
   static bool convertLegacySongToProject(
       const juce::String &legacySongId, const juce::File &destination,
@@ -111,6 +114,9 @@ public:
   static std::vector<RecentProjectInfo> getRecentProjects();
   static juce::File findRecentProjectFile(const juce::String &projectId);
   static void forgetRecentProject(const juce::File &file);
+  /** Removes only local runtime state; never deletes the .pwproj package. */
+  static void discardLocalState(const juce::String &projectId,
+                                const juce::File &projectFile);
   static juce::File getCacheDirectory(const juce::String &projectId);
 
 private:

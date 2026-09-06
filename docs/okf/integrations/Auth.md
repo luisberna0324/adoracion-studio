@@ -28,7 +28,7 @@ Google en el primer frame.
 2. `PluginEditor::launchExternalLogin` genera
    `authExpectedState = juce::Uuid().toString()` y construye
    ```
-   GET {apiBase}/api/auth/google/start
+   GET {authBase}/api/auth/google/start
        ?redirect_uri={redirectUri}
        &state={authExpectedState}
        &deviceId={stableDeviceId}
@@ -36,6 +36,8 @@ Google en el primer frame.
    En iOS, `redirectUri = "playworship://auth/callback"`. En macOS,
    `redirectUri = "http://127.0.0.1:<port>/auth/callback"` donde
    `<port>` es el puerto efímero del `LocalAuthCallbackServer`.
+   `authBase` sale de `MTCONTROLS_AUTH_BASE_URL` cuando está definido;
+   si está vacío usa `MTCONTROLS_API_BASE_URL`.
 3. En iOS, `NativeAuthSession::start(loginUrl, "playworship", completion)`
    abre `ASWebAuthenticationSession` apuntando a esa URL. En macOS,
    `juce::URL(loginUrl).launchInDefaultBrowser()` abre Safari (o el
@@ -49,7 +51,7 @@ Google en el primer frame.
 6. Google redirige a
    `{GOOGLE_OAUTH_CALLBACK_URL}/api/auth/google/callback?code=...&state=...`.
 7. El backend:
-   - Valida `state` contra el store en memoria (`lib/googleOAuth.ts`).
+   - Valida `state` contra el token HMAC autocontenido (`lib/googleOAuth.ts`).
    - Intercambia `code` por tokens vía
      `https://oauth2.googleapis.com/token`.
    - Verifica `id_token` contra `https://www.googleapis.com/oauth2/v3/certs`
@@ -87,10 +89,29 @@ Cualquier otro protocolo u host → 400 con `{"ok":false,"error":"redirect_uri i
   proyecto GCP `play-worship`.
 - `GOOGLE_CLIENT_SECRET` — secret del mismo client.
 - `GOOGLE_OAUTH_CALLBACK_URL` — debe coincidir **exactamente** con un
-  Authorized redirect URI del client. En dev local:
-  `http://172.20.10.2:3000/api/auth/google/callback` (o el hostname
-  Bonjour del Mac). En prod:
-  `https://playworship-py5yabecxq-ue.a.run.app/api/auth/google/callback`.
+  Authorized redirect URI del client. En iPad físico debe ser HTTPS,
+  porque Google no puede devolver el callback a `127.0.0.1` del Mac desde
+  Safari/iOS. En prod:
+  `https://api.playworship.app/api/auth/google/callback`.
+
+## Bases URL de la app
+
+- `MTCONTROLS_BACKEND_MODE` selecciona el backend al configurar CMake:
+  `cloud` usa `https://api.playworship.app` y es el valor predeterminado;
+  `local` usa `MTCONTROLS_LOCAL_API_BASE_URL` (`http://127.0.0.1:3000`
+  por defecto); `custom` requiere `MTCONTROLS_API_BASE_URL`.
+- Para desarrollo en un iPad físico con modo `local`, definir
+  `MTCONTROLS_LOCAL_API_BASE_URL` con la IP LAN del Mac, no `localhost`.
+  Ejemplo: `-DMTCONTROLS_BACKEND_MODE=local
+  -DMTCONTROLS_LOCAL_API_BASE_URL=http://192.168.1.20:3000`.
+- `MTCONTROLS_API_BASE_URL` queda reservado para integraciones especiales
+  cuando se usa `MTCONTROLS_BACKEND_MODE=custom`.
+- `MTCONTROLS_AUTH_BASE_URL` define donde inicia el OAuth
+  `/api/auth/google/start`. Si está vacío, usa el backend resuelto por
+  `MTCONTROLS_BACKEND_MODE`.
+  Para iPad con API local se debe apuntar a un backend HTTPS desplegado,
+  por ejemplo `https://api.playworship.app`, y ese backend
+  debe tener `GOOGLE_OAUTH_CALLBACK_URL` HTTPS configurado.
 
 Si falta alguna, `/api/auth/google/start` redirige con
 `error=GoogleOAuthNotConfigured` en lugar de abrir Google.

@@ -979,6 +979,33 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                        "Sign in again before downloading songs."));
           return;
         }
+        // The menu is normally derived from this same link, but guard the
+        // transfer boundary as well: a stale Cloud result must not download a
+        // second copy of a song already materialized locally.
+        CloudProjectLink existingLink;
+        if (CloudSyncIndexStore::findByRemoteSongId(remoteSongId, existingLink)) {
+          const auto localSongs = SongLibraryStore::loadSongs();
+          const auto localSong = std::find_if(
+              localSongs.begin(), localSongs.end(), [&existingLink](const auto &song) {
+                return projectIdentityForSong(song) == existingLink.projectId;
+              });
+          if (localSong != localSongs.end()) {
+            if (targetSetlistId.isNotEmpty())
+              SongLibraryStore::addSongToSetlist(targetSetlistId, localSong->id);
+            if (songListPanelRaw != nullptr)
+              songListPanelRaw->refreshFromStorageView();
+            refreshCloudLibrary({});
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::InfoIcon,
+                L10n::tr("Canción ya descargada", "Song already downloaded"),
+                targetSetlistId.isNotEmpty()
+                    ? L10n::tr("La canción local se agregó al setlist.",
+                               "The local song was added to the setlist.")
+                    : L10n::tr("La canción ya está disponible en la Biblioteca local.",
+                               "The song is already available in the local Library."));
+            return;
+          }
+        }
         if (!cloudDownloadsInProgress.insert(remoteSongId.toStdString()).second)
           return;
         if (songSyncService == nullptr)
@@ -1206,6 +1233,20 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       }
     }
 
+    SessionAuthLogger::write(
+        "[SongLoad] resolved title=" + sourceSong.title + " usable=" +
+        juce::String(resolvedStems.size()) + "/" +
+        juce::String(sourceSong.stems.size()) + " project=" +
+        juce::String(isProjectSong ? 1 : 0));
+    if (resolvedStems.empty()) {
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
+          L10n::tr("Pistas no disponibles", "Tracks unavailable"),
+          L10n::tr("La canción no tiene pistas locales reproducibles. Descárgala nuevamente desde Cloud.",
+                   "The song has no playable local tracks. Download it again from Cloud."));
+      return false;
+    }
+
     sortStemsForStripOrder(resolvedStems);
 
     for (const auto &loadedStem : resolvedStems) {
@@ -1240,6 +1281,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         },
         true);
     SongLoadProbe::instance().endPhase();
+    SessionAuthLogger::write("[SongLoad] processor result title=" +
+                             sourceSong.title + " loaded=" +
+                             juce::String(loaded ? 1 : 0) + " stems=" +
+                             juce::String(stemPaths.size()));
 
     if (!loaded) {
       juce::NativeMessageBox::showMessageBoxAsync(
@@ -1905,7 +1950,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   authExpectedState = juce::Uuid().toString();
   const juce::String redirectUri = "playworship://auth/callback";
   const juce::String loginUrl =
-      getApiBaseUrl() + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
+      getAuthBaseUrl() + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
       "&state=" + urlEncode(authExpectedState) +
       "&deviceId=" + urlEncode(buildStableDeviceId());
 
@@ -1961,9 +2006,9 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   const juce::String redirectUri =
       "http://127.0.0.1:" + juce::String(authCallbackPort) + "/auth/callback";
   const juce::String deviceId = buildStableDeviceId();
-  const juce::String apiBaseUrl = getApiBaseUrl();
+  const juce::String authBaseUrl = getAuthBaseUrl();
   const juce::String loginUrl =
-      apiBaseUrl + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
+      authBaseUrl + "/api/auth/google/start?redirect_uri=" + urlEncode(redirectUri) +
       "&state=" + urlEncode(authExpectedState) +
       "&deviceId=" + urlEncode(deviceId);
 
@@ -2084,6 +2129,12 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
   if (!activeSession.allowed) {
     juce::String message =
         userMessageForAccessDenial(activeSession.reasonCode, activeSession.reason);
+    SessionAuthLogger::write(
+        "completeBootstrapLogin: access denied allowed=" +
+        juce::String(static_cast<int>(activeSession.allowed)) + " plan=" +
+        activeSession.plan + " status=" + activeSession.subscriptionStatus +
+        " reasonCode=" + activeSession.reasonCode + " reason=" +
+        activeSession.reason);
     reauthLoginInProgress = false;
     if (mainUiInitialized) {
       handleLogout();

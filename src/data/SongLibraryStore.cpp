@@ -1,4 +1,5 @@
 #include "SongLibraryStore.h"
+#include "CloudSyncIndexStore.h"
 #include "ProjectStore.h"
 #include "AppSettings.h"
 #include "AssetBootstrapManager.h"
@@ -32,6 +33,60 @@ constexpr const char *kStorageFormatLabel = "ALAC";
 constexpr const char *kProjectStemExtension = ".flac";
 constexpr const char *kProjectFfmpegAudioCodec = "flac";
 constexpr const char *kProjectStorageFormatLabel = "FLAC";
+
+juce::File managedImportedProjectsDirectory() {
+  auto directory = SongLibraryStore::getRootDirectory()
+                       .getChildFile("imports")
+                       .getChildFile("projects");
+  directory.createDirectory();
+  return directory;
+}
+
+bool isManagedImportedProjectFile(const juce::File &file) {
+  return file.existsAsFile() && file.isAChildOf(managedImportedProjectsDirectory());
+}
+
+bool repairManagedImportedProjectPath(ImportedSongData &song) {
+#if JUCE_IOS
+  if (!isProjectBackedSong(song) || song.projectPath.isEmpty())
+    return false;
+
+  const juce::File previousPath(song.projectPath);
+  if (previousPath.existsAsFile())
+    return false;
+
+  // iOS can assign a new data-container UUID when a development build is
+  // replaced. Imported projects move with the app data, but absolute paths in
+  // songs.json retain the old UUID. Recover the package by its unique import
+  // filename under the current sandbox root.
+  const auto relocated =
+      managedImportedProjectsDirectory().getChildFile(previousPath.getFileName());
+  if (!relocated.existsAsFile())
+    return false;
+
+  song.projectPath = relocated.getFullPathName();
+  SessionAuthLogger::write("[ProjectLibrary] repaired iOS project path id=" +
+                           song.projectId + " path=" + song.projectPath);
+  return true;
+#else
+  juce::ignoreUnused(song);
+  return false;
+#endif
+}
+
+bool hasPlayableLocalStem(const ImportedSongData &song) {
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    const auto stored = juce::File(stem.storedPath);
+    if (stored.existsAsFile() && stored.getSize() > 0)
+      return true;
+    const auto source = juce::File(stem.sourcePath);
+    if (source.existsAsFile() && source.getSize() > 0)
+      return true;
+  }
+  return false;
+}
 
 bool nearlyEqual(double a, double b) {
   return std::abs(a - b) <= kArrangementEpsilon;
@@ -507,6 +562,23 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
   if (songIt == library.songs.end())
     return false;
 
+  // Capture local-only resources before erasing the entry. A project package
+  // belongs to the user and is intentionally excluded from this cleanup.
+  const auto removedSong = *songIt;
+  std::vector<juce::File> removableCloudObjects;
+  const auto cloudContent = getRootDirectory().getChildFile("cloud-content");
+  const auto captureCloudObject = [&removableCloudObjects, &cloudContent](
+                                      const juce::String &path) {
+    const juce::File file(path);
+    if (file.existsAsFile() && file.isAChildOf(cloudContent))
+      removableCloudObjects.push_back(file);
+  };
+  for (const auto &stem : removedSong.stems) {
+    captureCloudObject(stem.storedPath);
+    captureCloudObject(stem.sourcePath);
+  }
+  captureCloudObject(removedSong.artworkPath);
+
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
   library.songs.erase(songIt);
   for (auto &setlist : library.setlists) {
@@ -528,6 +600,33 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
 
   getWaveformCacheDir().getChildFile(trimmedSongId + ".bin").deleteFile();
   getAudioRoot().getChildFile(trimmedSongId).deleteRecursively();
+  ProjectStore::discardLocalState(projectIdentityForSong(removedSong),
+                                  juce::File(removedSong.projectPath));
+  CloudSyncIndexStore::removeByProjectId(projectIdentityForSong(removedSong));
+
+  // Cloud objects are content-addressed and may be shared by another local
+  // download. Delete only the objects that no remaining library entry uses.
+  std::unordered_set<std::string> stillReferencedCloudPaths;
+  for (const auto &song : library.songs) {
+    const auto collectPath = [&stillReferencedCloudPaths, &cloudContent](
+                                 const juce::String &path) {
+      const juce::File file(path);
+      if (file.isAChildOf(cloudContent))
+        stillReferencedCloudPaths.insert(file.getFullPathName().toStdString());
+    };
+    for (const auto &stem : song.stems) {
+      collectPath(stem.storedPath);
+      collectPath(stem.sourcePath);
+    }
+    collectPath(song.artworkPath);
+  }
+  for (const auto &file : removableCloudObjects) {
+    if (stillReferencedCloudPaths.count(file.getFullPathName().toStdString()) == 0)
+      file.deleteFile();
+  }
+  SessionAuthLogger::write("[SongLibrary] deleted local song id=" + trimmedSongId +
+                           " projectId=" + projectIdentityForSong(removedSong) +
+                           " (project package and cloud remote preserved)");
   return true;
 }
 
@@ -638,29 +737,54 @@ bool SongLibraryStore::registerProjectSong(ImportedSongData &song) {
   ensureSongHasStemIds(song);
   sortStemsForStripOrder(song.stems);
 
-  // La ruta identifica la entrada local. Al volver a abrir el mismo paquete
-  // conservamos su ID de Biblioteca, aunque el manifiesto haya cambiado.
-  auto it = std::find_if(library.songs.begin(), library.songs.end(),
-                         [&song](const ImportedSongData &candidate) {
-                           return candidate.projectPath.isNotEmpty() &&
-                                  juce::File(candidate.projectPath) ==
-                                      juce::File(song.projectPath);
-                         });
-  if (it != library.songs.end()) {
-    song.id = it->id;
-    const auto *existingEntry = &(*it);
-    const bool collidesWithAnotherEntry = std::any_of(
-        library.songs.begin(), library.songs.end(),
-        [&song, existingEntry](const ImportedSongData &candidate) {
-          return &candidate != existingEntry && candidate.id == song.id;
-        });
-    if (collidesWithAnotherEntry)
-      song.id = juce::Uuid().toString();
-    *it = song;
+  // `projectId` is embedded in the portable manifest and survives imports,
+  // moves and iOS sandbox UUID changes. Using an absolute import path as the
+  // identity used to create a second library entry and a second multi-hundred
+  // MB package every time the same project was selected from Files.
+  std::vector<juce::File> supersededPackages;
+  std::vector<juce::String> duplicateSongIds;
+  auto canonical = library.songs.end();
+  for (auto it = library.songs.begin(); it != library.songs.end(); ++it) {
+    if (!isProjectBackedSong(*it) ||
+        it->projectId.trim() != song.projectId)
+      continue;
+    if (canonical == library.songs.end())
+      canonical = it;
+    else
+      duplicateSongIds.push_back(it->id);
+    if (it->projectPath != song.projectPath)
+      supersededPackages.emplace_back(it->projectPath);
+  }
+
+  if (canonical != library.songs.end()) {
+    song.id = canonical->id;
+    *canonical = song;
+
+    if (!duplicateSongIds.empty()) {
+      for (auto &setlist : library.setlists) {
+        bool setlistChanged = false;
+        for (auto &item : setlist.items) {
+          if (std::find(duplicateSongIds.begin(), duplicateSongIds.end(),
+                        item.songId) == duplicateSongIds.end())
+            continue;
+          item.songId = song.id;
+          setlistChanged = true;
+        }
+        if (setlistChanged)
+          setlist.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
+      }
+      library.songs.erase(
+          std::remove_if(library.songs.begin(), library.songs.end(),
+                         [&duplicateSongIds](const ImportedSongData &candidate) {
+                           return std::find(duplicateSongIds.begin(),
+                                            duplicateSongIds.end(),
+                                            candidate.id) != duplicateSongIds.end();
+                         }),
+          library.songs.end());
+    }
   } else {
-    // Un proyecto exportado desde una canción legacy conserva el ID del
-    // manifiesto. Si ese ID ya existe localmente, asignamos sólo a la entrada
-    // de Biblioteca un ID distinto; projectId sigue siendo el del paquete.
+    // A project exported from a legacy song may share its manifest ID with a
+    // non-project entry. Preserve the latter and generate a library-only ID.
     const bool localIdAlreadyUsed = std::any_of(
         library.songs.begin(), library.songs.end(),
         [&song](const ImportedSongData &candidate) {
@@ -671,7 +795,22 @@ bool SongLibraryStore::registerProjectSong(ImportedSongData &song) {
     library.songs.push_back(song);
   }
   ensureDefaultSetlist(library);
-  return saveLibrary(library);
+  const bool saved = saveLibrary(library);
+  if (!saved)
+    return false;
+
+  for (const auto &package : supersededPackages) {
+    if (package == juce::File(song.projectPath) ||
+        !isManagedImportedProjectFile(package))
+      continue;
+    ProjectStore::flushPendingSettings(package);
+    if (package.deleteFile()) {
+      SessionAuthLogger::write(
+          "[ProjectLibrary] removed superseded imported package path=" +
+          package.getFullPathName());
+    }
+  }
+  return true;
 }
 
 bool SongLibraryStore::registerCloudCachedSong(ImportedSongData &song) {
@@ -1901,10 +2040,38 @@ LibraryState SongLibraryStore::loadLibrary() {
       auto song = songFromVar(songVar, songChanged);
       if (songChanged)
         needsSave = true;
+      if (repairManagedImportedProjectPath(song))
+        needsSave = true;
       if (ensureSongHasStemIds(song))
         needsSave = true;
       if (repairArtworkPathForSong(song))
         needsSave = true;
+      if (isProjectBackedSong(song)) {
+        const juce::File projectFile(song.projectPath);
+        const juce::File artworkFile(song.artworkPath);
+        if (projectFile.existsAsFile() && !artworkFile.existsAsFile()) {
+          juce::String artworkError;
+          if (ProjectStore::restoreArtwork(projectFile, song, &artworkError)) {
+            needsSave = true;
+            SessionAuthLogger::write(
+                "[ProjectLibrary] restored project artwork id=" +
+                song.projectId);
+          } else if (artworkError.isNotEmpty()) {
+            SessionAuthLogger::write(
+                "[ProjectLibrary] couldn't restore project artwork id=" +
+                song.projectId + " error=" + artworkError);
+          }
+        }
+      } else if (!hasPlayableLocalStem(song)) {
+        // A reinstall can preserve songs.json while local legacy/Cloud blobs
+        // were removed with the previous sandbox. Do not leave an entry that
+        // cannot be played; its setlist references are pruned on deserialization.
+        SessionAuthLogger::write(
+            "[SongLibrary] discarded unavailable local song id=" + song.id +
+            " projectId=" + song.projectId);
+        needsSave = true;
+        continue;
+      }
       bool hasSongArrangement = false;
       if (auto *songObj = songVar.getDynamicObject()) {
         hasSongArrangement = songObj->hasProperty("arrangement");

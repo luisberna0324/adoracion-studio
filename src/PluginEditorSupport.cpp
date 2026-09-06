@@ -31,7 +31,10 @@ const juce::int64 kAudioDeviceMissingGraceMs = 3000;
 const juce::int64 kAudioDeviceFallbackRetryMs = 12000;
 
 #ifndef MTCONTROLS_API_BASE_URL
-#define MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app"
+#define MTCONTROLS_API_BASE_URL "https://api.playworship.app"
+#endif
+#ifndef MTCONTROLS_AUTH_BASE_URL
+#define MTCONTROLS_AUTH_BASE_URL ""
 #endif
 
 #ifndef MTCONTROLS_SESSION_REAUTH_MINUTES
@@ -373,9 +376,9 @@ juce::String buildStableDeviceId() {
   return normalized.isNotEmpty() ? normalized : juce::String("unknown-device");
 }
 
-juce::String getApiBaseUrl() {
-  const juce::String configured = juce::String(MTCONTROLS_API_BASE_URL).trim();
-  const juce::String fallback = "https://playworship-345830648064.us-east1.run.app";
+juce::String sanitizeBackendBaseUrl(const juce::String &raw, bool allowLocalHttp) {
+  const juce::String configured = raw.trim();
+  const juce::String fallback = "https://api.playworship.app";
   if (configured.isEmpty())
     return fallback;
 
@@ -396,10 +399,22 @@ juce::String getApiBaseUrl() {
       (host.startsWith("172.") && secondOctet >= 16 && secondOctet <= 31);
   const bool isLocalHost = host == "localhost" || host == "127.0.0.1" ||
                            host.endsWith(".local") || isPrivateNetworkHost;
-  if (isHttp && !isLocalHost)
+  if (isHttp && (!allowLocalHttp || !isLocalHost))
     return fallback;
 
   return configured.trimCharactersAtEnd("/");
+}
+
+juce::String getApiBaseUrl() {
+  return sanitizeBackendBaseUrl(juce::String(MTCONTROLS_API_BASE_URL), true);
+}
+
+juce::String getAuthBaseUrl() {
+  const juce::String configuredAuth = juce::String(MTCONTROLS_AUTH_BASE_URL).trim();
+  if (configuredAuth.isNotEmpty())
+    return sanitizeBackendBaseUrl(configuredAuth, false);
+
+  return getApiBaseUrl();
 }
 
 } // namespace PluginEditorSupport

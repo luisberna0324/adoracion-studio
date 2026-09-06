@@ -86,8 +86,40 @@ if((NOT MTCONTROLS_CLICKS_PACK OR MTCONTROLS_CLICKS_PACK STREQUAL "") AND
         FORCE)
 endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
-set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
-    "Base URL for PlayWorship backend/login frontend")
+set(MTCONTROLS_BACKEND_MODE "cloud" CACHE STRING
+    "PlayWorship backend target: cloud, local, or custom")
+set_property(CACHE MTCONTROLS_BACKEND_MODE PROPERTY STRINGS cloud local custom)
+set(MTCONTROLS_CLOUD_API_BASE_URL "https://api.playworship.app" CACHE STRING
+    "Stable public PlayWorship API URL used by the cloud backend mode")
+set(MTCONTROLS_LOCAL_API_BASE_URL "http://127.0.0.1:3000" CACHE STRING
+    "Local PlayWorship API URL used by the local backend mode")
+set(MTCONTROLS_API_BASE_URL "" CACHE STRING
+    "Custom PlayWorship API URL; required only when MTCONTROLS_BACKEND_MODE=custom")
+if(MTCONTROLS_BACKEND_MODE STREQUAL "cloud")
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_CLOUD_API_BASE_URL}")
+elseif(MTCONTROLS_BACKEND_MODE STREQUAL "local")
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_LOCAL_API_BASE_URL}")
+elseif(MTCONTROLS_BACKEND_MODE STREQUAL "custom")
+    if(MTCONTROLS_API_BASE_URL STREQUAL "")
+        message(FATAL_ERROR
+            "MTCONTROLS_API_BASE_URL must be set when MTCONTROLS_BACKEND_MODE=custom")
+    endif()
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_API_BASE_URL}")
+else()
+    message(FATAL_ERROR
+        "Unknown MTCONTROLS_BACKEND_MODE='${MTCONTROLS_BACKEND_MODE}'. Use cloud, local, or custom.")
+endif()
+message(STATUS "PlayWorship backend: ${MTCONTROLS_BACKEND_MODE} (${MTCONTROLS_RESOLVED_API_BASE_URL})")
+set(MTCONTROLS_AUTH_BASE_URL "" CACHE STRING
+    "Optional base URL for PlayWorship OAuth start endpoint; defaults to the resolved API backend URL")
+# Migrate builds generated before the stable API domain existed. Custom and
+# local OAuth endpoints remain untouched.
+if(MTCONTROLS_AUTH_BASE_URL STREQUAL "https://playworship-py5yabecxq-ue.a.run.app" OR
+   MTCONTROLS_AUTH_BASE_URL STREQUAL "https://playworship-345830648064.us-east1.run.app")
+    set(MTCONTROLS_AUTH_BASE_URL "" CACHE STRING
+        "Optional base URL for PlayWorship OAuth start endpoint; defaults to the resolved API backend URL"
+        FORCE)
+endif()
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
     "Minutes before forcing re-login in app (default: 5 days)")
 set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
@@ -362,6 +394,19 @@ juce_add_plugin(MTControls
     PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
+    # iPad multitasking and current App Store validation expect every device
+    # orientation to be declared. The responsive editor handles the resulting
+    # bounds; landscape remains the primary performance layout.
+    IPAD_SCREEN_ORIENTATIONS
+        UIInterfaceOrientationPortrait
+        UIInterfaceOrientationPortraitUpsideDown
+        UIInterfaceOrientationLandscapeLeft
+        UIInterfaceOrientationLandscapeRight
+    IPHONE_SCREEN_ORIENTATIONS
+        UIInterfaceOrientationPortrait
+        UIInterfaceOrientationPortraitUpsideDown
+        UIInterfaceOrientationLandscapeLeft
+        UIInterfaceOrientationLandscapeRight
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
     BLUETOOTH_PERMISSION_ENABLED TRUE
@@ -619,7 +664,8 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
+        MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
+        MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}

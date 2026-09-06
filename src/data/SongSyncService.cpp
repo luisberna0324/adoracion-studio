@@ -116,6 +116,22 @@ void SongSyncService::download(CloudTransferCredentials credentials, juce::Strin
                     downloaded, song, waveformBins, &error)) {
               deliver(std::move(callback), {}, localError(error)); return jobHasFinished;
             }
+            bool hasIncludedStem = false;
+            bool allIncludedStemsUsable = true;
+            for (const auto& stem : song.stems) {
+              if (!stem.include) continue;
+              hasIncludedStem = true;
+              const juce::File file(stem.storedPath);
+              if (!file.existsAsFile() || file.getSize() <= 0) {
+                allIncludedStemsUsable = false;
+                break;
+              }
+            }
+            if (!hasIncludedStem || !allIncludedStemsUsable) {
+              deliver(std::move(callback), {}, localError(
+                  "Downloaded cloud song has no usable local stems."));
+              return jobHasFinished;
+            }
             if (!SongLibraryStore::registerCloudCachedSong(song)) {
               deliver(std::move(callback), {}, localError("Couldn't register downloaded cloud song.")); return jobHasFinished;
             }

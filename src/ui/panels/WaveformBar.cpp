@@ -16,7 +16,14 @@ constexpr double kPartSnapSeconds = 0.1;
 constexpr float kMinViewportSpan = 1.0f / 18.0f;
 constexpr float kEditToolbarHeight = 24.0f;
 constexpr float kEditToolbarBottomGap = 6.0f;
+#if JUCE_IOS
+// iPad uses a compact ruler: preserve each musical pulse but omit finer edit
+// subdivisions so a 4/4 bar reads as four deliberate divisions.
+constexpr float kSeekRulerHeight = 22.0f;
+constexpr float kTouchRulerMinimumLabelSpacing = 82.0f;
+#else
 constexpr float kSeekRulerHeight = 28.0f;
+#endif
 constexpr float kSeekRulerGap = 4.0f;
 constexpr float kMiniMapHeight = 24.0f;
 constexpr float kMiniMapGap = 10.0f;
@@ -5006,11 +5013,24 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
         const double visibleStartSec = songLength * windowStart;
         const double visibleEndSec = songLength * (windowStart + windowSpan);
         const double visibleDurationSec = visibleEndSec - visibleStartSec;
+#if JUCE_IOS
+        const float pixelsPerBar = static_cast<float>(
+            (bounds.getWidth() * barDurationSec) /
+            juce::jmax(0.0001, visibleDurationSec));
+        const int64_t labelEveryBars = juce::jlimit<int64_t>(
+            4, 16, static_cast<int64_t>(std::ceil(
+                       kTouchRulerMinimumLabelSpacing /
+                       juce::jmax(1.0f, pixelsPerBar))));
+#else
+        constexpr int64_t labelEveryBars = 4;
+#endif
+#if !JUCE_IOS
         const double pixelsPerDivision =
             (bounds.getWidth() * divisionSec) / juce::jmax(0.0001, visibleDurationSec);
         const int64_t divisionSkip = juce::jmax<int64_t>(
             1, static_cast<int64_t>(
                    std::ceil(8.0 / juce::jmax(0.35, pixelsPerDivision))));
+#endif
         const int64_t divisionsPerBar = juce::jmax<int64_t>(
             1, static_cast<int64_t>(std::llround(barDurationSec / divisionSec)));
         const int64_t divisionsPerBeat = juce::jmax<int64_t>(
@@ -5025,12 +5045,21 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
         for (int64_t division = firstDivision; division <= lastDivision;
              ++division) {
           const bool isBar = (division % divisionsPerBar) == 0;
+          const bool isBeat = (division % divisionsPerBeat) == 0;
+#if JUCE_IOS
+          // Keep musical beats, but not snap-only subdivisions such as 1/8 or
+          // 1/16. This gives four visible divisions in a 4/4 bar without
+          // making the iPad ruler as dense as the desktop editing ruler.
+          if (!isBar && !isBeat)
+            continue;
+#else
           if (!isBar && (division % divisionSkip) != 0)
             continue;
+#endif
 
-          const bool isBeat = (division % divisionsPerBeat) == 0;
           const int64_t barIndex = division / divisionsPerBar;
-          const bool isEveryFourBars = isBar && ((barIndex % 4) == 0);
+          const bool isLabelledBar =
+              isBar && ((barIndex % labelEveryBars) == 0);
           const float x =
               sourceSecondsToWindowX(bounds, static_cast<double>(division) * divisionSec);
           if (x < bounds.getX() || x > bounds.getRight())
@@ -5040,9 +5069,9 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
           float thickness = 0.7f;
           float bottom = minorBottom - 2.5f;
           if (isBar) {
-            alpha = isEveryFourBars ? 0.82f : 0.56f;
-            thickness = isEveryFourBars ? 1.2f : 0.95f;
-            bottom = isEveryFourBars ? majorBottom : minorBottom;
+            alpha = isLabelledBar ? 0.82f : 0.56f;
+            thickness = isLabelledBar ? 1.2f : 0.95f;
+            bottom = isLabelledBar ? majorBottom : minorBottom;
           } else if (isBeat) {
             alpha = 0.44f;
             thickness = 0.8f;
@@ -5052,7 +5081,7 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
           g.setColour(juce::Colours::white.withAlpha(alpha));
           g.drawLine(x, topY, x, bottom, thickness);
 
-          if (isEveryFourBars) {
+          if (isLabelledBar) {
             g.setColour(juce::Colours::white.withAlpha(0.78f));
             g.setFont(juce::FontOptions(9.5f));
             g.drawText(juce::String(barIndex + 1),

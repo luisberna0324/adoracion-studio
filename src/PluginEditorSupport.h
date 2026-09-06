@@ -63,5 +63,6 @@ bool canUseSnapshotForLocalBootstrap(const PersistedSessionSnapshot &snap);
 
 juce::String buildStableDeviceId();
 juce::String getApiBaseUrl();
+juce::String getAuthBaseUrl();
 
 } // namespace PluginEditorSupport

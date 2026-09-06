@@ -2,6 +2,7 @@
 
 #include "AuthSessionApi.h"
 #include "CloudSignedUpload.h"
+#include "SessionAuthLogger.h"
 
 #include <map>
 
@@ -190,7 +191,11 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
     JobStatus runJob() override {
       CloudTransferError error;
       juce::String idToken;
-      if (!refreshToken(credentials, idToken, error)) { deliverUpload(std::move(callback), {}, error); return jobHasFinished; }
+      if (!refreshToken(credentials, idToken, error)) {
+        SessionAuthLogger::write("[CloudUpload] token refresh failed code=" +
+                                 error.code + " message=" + error.message);
+        deliverUpload(std::move(callback), {}, error); return jobHasFinished;
+      }
       if (request.descriptor.songId.isEmpty())
         request.descriptor.songId = juce::Uuid().toString();
       if (request.descriptor.projectId.isEmpty() || request.objects.empty()) {
@@ -217,8 +222,14 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       prepare->setProperty("baseRevision", request.baseRevision);
       prepare->setProperty("objects", juce::var(objects));
       juce::String response;
+      SessionAuthLogger::write("[CloudUpload] prepare request api=" +
+                               normalizedBase(credentials.apiBaseUrl) +
+                               " objects=" + juce::String(request.objects.size()));
       if (!postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/prepare-upload", idToken,
                     juce::JSON::toString(juce::var(prepare)), response, error)) {
+        SessionAuthLogger::write("[CloudUpload] prepare failed status=" +
+                                 juce::String(error.httpCode) + " code=" +
+                                 error.code + " message=" + error.message);
         deliverUpload(std::move(callback), {}, error); return jobHasFinished;
       }
       // Keep the parsed var alive while its DynamicObject and Array views are used.
@@ -246,6 +257,10 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
         if (it == objectByHash.end()) { deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Unexpected upload object")); return jobHasFinished; }
         const auto signedUrl = upload->getProperty("uploadUrl").toString().trim();
         if (signedUrl.isNotEmpty() && !putFile(signedUrl, *it->second, error)) {
+          SessionAuthLogger::write("[CloudUpload] object upload failed file=" +
+                                   it->second->file.getFileName() + " status=" +
+                                   juce::String(error.httpCode) + " code=" +
+                                   error.code + " message=" + error.message);
           deliverUpload(std::move(callback), {}, error); return jobHasFinished;
         }
         ++completed;
@@ -262,6 +277,8 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       auto descriptorStream = descriptorRequest.createInputStream(descriptorOptions);
       if (!descriptorStream || descriptorStatus < 200 || descriptorStatus >= 300) {
         const auto body = descriptorStream ? descriptorStream->readEntireStreamAsString() : juce::String();
+        SessionAuthLogger::write("[CloudUpload] descriptor upload failed status=" +
+                                 juce::String(descriptorStatus));
         deliverUpload(std::move(callback), {}, descriptorStream ? responseError(body, descriptorStatus) : makeError("NETWORK", "Descriptor upload unavailable"));
         return jobHasFinished;
       }
@@ -277,6 +294,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       commit->setProperty("objectHashes", juce::var(hashes));
       if (!postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/commit", idToken,
                     juce::JSON::toString(juce::var(commit)), response, error)) {
+        SessionAuthLogger::write("[CloudUpload] commit failed status=" +
+                                 juce::String(error.httpCode) + " code=" +
+                                 error.code + " message=" + error.message);
         deliverUpload(std::move(callback), {}, error); return jobHasFinished;
       }
       const auto committedJson = juce::JSON::parse(response);
@@ -299,11 +319,22 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
         : ThreadPoolJob("CloudDownload"), credentials(std::move(c)), songId(std::move(id)), destination(std::move(d)), progress(std::move(p)), callback(std::move(done)) {}
     JobStatus runJob() override {
       CloudTransferError error; juce::String idToken;
-      if (!refreshToken(credentials, idToken, error)) { deliverDownload(std::move(callback), {}, error); return jobHasFinished; }
+      if (!refreshToken(credentials, idToken, error)) {
+        SessionAuthLogger::write("[CloudDownload] token refresh failed code=" +
+                                 error.code + " message=" + error.message);
+        deliverDownload(std::move(callback), {}, error); return jobHasFinished;
+      }
       auto* request = new JsonObject(); request->setProperty("songId", songId);
       juce::String response;
+      SessionAuthLogger::write("[CloudDownload] request songId=" + songId +
+                               " api=" + normalizedBase(credentials.apiBaseUrl));
       if (!postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/download", idToken,
-                    juce::JSON::toString(juce::var(request)), response, error)) { deliverDownload(std::move(callback), {}, error); return jobHasFinished; }
+                    juce::JSON::toString(juce::var(request)), response, error)) {
+        SessionAuthLogger::write("[CloudDownload] request failed status=" +
+                                 juce::String(error.httpCode) + " code=" +
+                                 error.code + " message=" + error.message);
+        deliverDownload(std::move(callback), {}, error); return jobHasFinished;
+      }
       const auto responseJson = juce::JSON::parse(response);
       const auto* root = responseJson.getDynamicObject();
       CloudProjectDescriptor descriptor;
@@ -327,10 +358,18 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
         else if (reference.contentType == "application/octet-stream") extension = ".bin";
         const auto file = destination.getChildFile("objects").getChildFile(
             reference.sha256 + extension);
-        if (url.isEmpty() || !downloadFile(url, reference, file, error)) { deliverDownload(std::move(callback), {}, error); return jobHasFinished; }
+        if (url.isEmpty() || !downloadFile(url, reference, file, error)) {
+          SessionAuthLogger::write("[CloudDownload] object failed hash=" +
+                                   reference.sha256.substring(0, 12) + " status=" +
+                                   juce::String(error.httpCode) + " code=" +
+                                   error.code + " message=" + error.message);
+          deliverDownload(std::move(callback), {}, error); return jobHasFinished;
+        }
         result.objects.push_back({reference, file}); ++completed;
         deliverProgress(progress, {"downloading", reference.sha256, completed, total, total > 0 ? static_cast<double>(completed) / total : 1.0});
       }
+      SessionAuthLogger::write("[CloudDownload] complete songId=" + songId +
+                               " objects=" + juce::String(result.objects.size()));
       deliverDownload(std::move(callback), std::move(result), {}); return jobHasFinished;
     }
   };
