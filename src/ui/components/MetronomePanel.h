@@ -56,7 +56,7 @@ public:
 
   private:
     juce::TextButton tapButton;
-    juce::ComboBox timeSigBox;
+    IpadNativeComboBox timeSigBox;
     juce::TextButton minusButton;
     juce::TextButton plusButton;
     juce::TextEditor bpmEditor;

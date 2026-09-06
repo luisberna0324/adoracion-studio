@@ -257,8 +257,8 @@ private:
 
   juce::String name;
   juce::Label categoryLabel;
-  juce::ComboBox modeBox;
-  juce::ComboBox channelBox;
+  IpadNativeComboBox modeBox;
+  IpadNativeComboBox channelBox;
   std::function<void(const CategoryRoutingDefaults &)> onChanged;
   int availableOutputChannels = 2;
   CategoryRoutingDefaults current;

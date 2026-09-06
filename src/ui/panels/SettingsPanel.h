@@ -131,9 +131,9 @@ private:
   juce::Component routingPage;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
   juce::Label themeLabel;
-  juce::ComboBox themeBox;
+  IpadNativeComboBox themeBox;
   juce::Label languageLabel;
-  juce::ComboBox languageBox;
+  IpadNativeComboBox languageBox;
   juce::Label expandLaunchLabel;
   juce::ToggleButton expandLaunchToggle;
   juce::Label primeImportLabel;
@@ -141,9 +141,9 @@ private:
   juce::Label stemOptimizationLabel;
   juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
-  juce::ComboBox padsCrossfadeBox;
+  IpadNativeComboBox padsCrossfadeBox;
   juce::Label metronomeClickStyleLabel;
-  juce::ComboBox metronomeClickStyleBox;
+  IpadNativeComboBox metronomeClickStyleBox;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;

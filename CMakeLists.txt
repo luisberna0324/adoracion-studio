@@ -25,6 +25,19 @@ option(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
     "Log aggregate VU meter repaint counters every two seconds" OFF)
 option(MTCONTROLS_USE_BUNGEE
     "Use Bungee Basic as the pitch/tempo backend" ON)
+
+# The distributed Bungee iOS framework currently contains device arm64 only.
+# Allow the simulator to use the existing software fallback so UI builds can
+# run in Xcode without linking a device-only binary.
+set(_mtcontrols_ios_simulator OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
+   CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+    set(_mtcontrols_ios_simulator ON)
+    set(MTCONTROLS_USE_BUNGEE OFF CACHE BOOL
+        "Use Bungee Basic as the pitch/tempo backend" FORCE)
+    message(STATUS
+        "Audio backend: PitchShiftProcessor fallback (iOS simulator; Bungee device framework unavailable)")
+endif()
 set(MTCONTROLS_BUNGEE_DIR "${CMAKE_SOURCE_DIR}/third_party/bungee" CACHE PATH
     "Path to the unpacked Bungee SDK")
 if(MTCONTROLS_BUNGEE_DIR STREQUAL "")
@@ -153,7 +166,7 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
         "Use Bungee Basic as the pitch/tempo backend" FORCE)
     message(STATUS
         "Audio backend: SoundTouch legacy (Windows x86; Bungee runtime unavailable)")
-elseif(NOT MTCONTROLS_USE_BUNGEE)
+elseif(NOT MTCONTROLS_USE_BUNGEE AND NOT _mtcontrols_ios_simulator)
     message(FATAL_ERROR
         "Bungee is mandatory on this platform. "
         "SoundTouch fallback is supported only for Windows x86.")
@@ -575,6 +588,7 @@ target_sources(MTControls
         src/ui/DeviceNotificationBanner.h
         src/ui/UiCommon.cpp
         src/ui/UiCommon.h
+        src/platform/NativeIpadChoicePicker.h
         src/ui/components/ChannelStripCard.cpp
         src/ui/components/ChannelStripCard.h
         src/ui/components/ClickDivisionPanel.cpp
@@ -640,12 +654,14 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_sources(MTControls PRIVATE
         src/platform/NativeAuthSession.mm
-        src/platform/NativeAuthSession.h)
+        src/platform/NativeAuthSession.h
+        src/platform/NativeIpadChoicePicker.mm)
     target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
 else()
     target_sources(MTControls PRIVATE
         src/platform/NativeAuthSession.cpp
-        src/platform/NativeAuthSession.h)
+        src/platform/NativeAuthSession.h
+        src/platform/NativeIpadChoicePicker.cpp)
 endif()
 
 if(MTCONTROLS_BUNGEE_AVAILABLE)

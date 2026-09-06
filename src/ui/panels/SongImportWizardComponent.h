@@ -4,6 +4,7 @@
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
 #include "../../data/SecuenciasClient.h"
+#include "../UiCommon.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -63,7 +64,7 @@ private:
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder);
-  void configureCombo(juce::ComboBox &combo);
+  void configureCombo(IpadNativeComboBox &combo);
   void layoutStepImport(juce::Rectangle<int> bounds);
   void layoutStepMetadata(juce::Rectangle<int> bounds);
   void layoutStepMapping(juce::Rectangle<int> bounds);
@@ -152,8 +153,8 @@ private:
   juce::TextEditor songTitleEditor;
   juce::TextEditor artistEditor;
   juce::TextEditor bpmEditor;
-  juce::ComboBox keyBox;
-  juce::ComboBox timeSignatureBox;
+  IpadNativeComboBox keyBox;
+  IpadNativeComboBox timeSignatureBox;
 
   juce::Viewport mapViewport;
   juce::Component mapContent;

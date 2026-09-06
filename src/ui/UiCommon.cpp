@@ -248,7 +248,35 @@ int touchOptimisedPopupItemHeight() {
   return useTouchOptimisedControls() ? 40 : 28;
 }
 
-void applyComboBoxTheme(juce::ComboBox &combo, const juce::Colour background,
+void IpadNativeComboBox::showPopup() {
+  // JUCE sets menuActive before dispatching showPopup asynchronously. The
+  // UIKit sheet does not clear that private JUCE flag when it is dismissed.
+  hidePopup();
+
+  if (NativeIpadChoicePicker::isAvailable()) {
+    std::vector<juce::String> items;
+    items.reserve(static_cast<size_t>(getNumItems()));
+    int selectedIndex = 0;
+    for (int i = 0; i < getNumItems(); ++i) {
+      items.push_back(getItemText(i));
+      if (getItemId(i) == getSelectedId())
+        selectedIndex = i;
+    }
+    if (NativeIpadChoicePicker::show(*this, items, selectedIndex,
+                                     [safe = juce::Component::SafePointer<IpadNativeComboBox>(this)](int index) {
+                                       if (safe == nullptr)
+                                         return;
+
+                                       safe->hidePopup();
+                                       if (index >= 0)
+                                         safe->setSelectedItemIndex(index, juce::sendNotificationAsync);
+                                     }))
+      return;
+  }
+  juce::ComboBox::showPopup();
+}
+
+void applyComboBoxTheme(IpadNativeComboBox &combo, const juce::Colour background,
                         const juce::Colour) {
   combo.setLookAndFeel(&getRoundedComboLookAndFeel());
   combo.setColour(juce::ComboBox::backgroundColourId,

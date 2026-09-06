@@ -232,13 +232,13 @@ private:
   SvgToolbarButton guideMapButton{"guideMap", SvgIconName::Music};
   SvgToolbarButton tempoMapButton{"tempoMap", SvgIconName::Metronome};
   juce::Label snapModeLabel;
-  juce::ComboBox snapModeBox;
+  IpadNativeComboBox snapModeBox;
   juce::TextButton sectionMenuButton;
   juce::TextButton splitTempoRegionButton;
   juce::Label tempoBpmLabel;
   juce::TextEditor tempoBpmEditor;
   juce::Label tempoSignatureLabel;
-  juce::ComboBox tempoSignatureBox;
+  IpadNativeComboBox tempoSignatureBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   SnapMode snapMode = SnapMode::Bar;
   TimelineViewMode timelineViewMode = TimelineViewMode::GuideMap;

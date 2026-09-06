@@ -93,7 +93,7 @@ public:
 private:
   juce::Label fileLabel;
   juce::TextEditor displayNameEditor;
-  juce::ComboBox categoryBox;
+  IpadNativeComboBox categoryBox;
   juce::ToggleButton includeToggle;
 };
 
@@ -804,7 +804,7 @@ void SongImportWizardComponent::configureTextEditor(
   applyEditorTheme(editor, placeholder);
 }
 
-void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
+void SongImportWizardComponent::configureCombo(IpadNativeComboBox &combo) {
   applyComboBoxTheme(combo, UITheme::cardBgHover,
                      UITheme::cardBorder.withAlpha(0.7f));
 }

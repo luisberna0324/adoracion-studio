@@ -1460,7 +1460,7 @@ void TopBar::showMetronomePopover() {
 
   private:
     juce::TextButton tapButton, minusButton, plusButton;
-    juce::ComboBox timeSigBox;
+    IpadNativeComboBox timeSigBox;
     juce::TextEditor bpmEditor;
     juce::Label meterLabel, bpmLabel;
     std::function<void()> onTap;

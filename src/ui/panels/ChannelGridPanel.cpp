@@ -377,7 +377,7 @@ private:
   std::unique_ptr<GuideSettingsButton> guideSettingsButton;
   std::unique_ptr<ClickDivisionPanel> divisionPanel;
   juce::Label outputChannelLabel;
-  juce::ComboBox outputChannelSelector;
+  IpadNativeComboBox outputChannelSelector;
   std::function<void(int)> onOutputChannelChanged;
   std::function<void(juce::Component &)> onGuideSettingsRequested;
   bool showOutputRouting = true;
