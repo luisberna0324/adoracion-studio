@@ -199,6 +199,16 @@ rompe el contrato de producto.
 
 ## 2. Contrato: contenido cloud vs estado local
 
+### Conflictos de revisión
+
+El backend compara `baseRevision` de la app con la revisión actual de
+Firestore antes de emitir URLs de subida y vuelve a comprobarla al hacer
+commit. Si no coinciden, responde `REVISION_CONFLICT` y la app no reintenta ni
+actualiza la revisión local automáticamente: muestra que existe una versión
+más reciente y solicita descargarla antes de volver a subir. Esto evita que
+una instalación o dispositivo con un índice local antiguo sobrescriba cambios
+hechos desde otro dispositivo.
+
 ### 2.1 Contenido cloud (portable, sube a R2)
 
 Estos objetos forman parte del contenido musical compartible y

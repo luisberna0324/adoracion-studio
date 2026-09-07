@@ -943,6 +943,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                "This project is already up to date in the cloud."));
                   return;
                 }
+                if (failure.code == "REVISION_CONFLICT") {
+                  juce::NativeMessageBox::showMessageBoxAsync(
+                      juce::MessageBoxIconType::WarningIcon,
+                      L10n::tr("El proyecto cambió en la nube",
+                               "Project changed in the cloud"),
+                      L10n::tr(
+                          "Existe una versión más reciente de este proyecto en la nube. Descárgala antes de volver a subirlo para evitar sobrescribir cambios.",
+                          "A newer version of this project exists in the cloud. Download it before uploading again to avoid overwriting changes."));
+                  return;
+                }
                 juce::NativeMessageBox::showMessageBoxAsync(
                     juce::MessageBoxIconType::WarningIcon,
                     L10n::tr("No se pudo subir el proyecto",
@@ -3299,6 +3309,9 @@ void MTControlsAudioProcessorEditor::resized() {
     setlistMaxW = 460;
     contentInset = 9;
   }
+
+  if (useTouchOptimisedControls())
+    topBarH = 78;
 
   topBar->setBounds(area.removeFromTop(topBarH));
   int waveH = isWaveformHeightExpanded ? waveformExpandedH : waveformH;

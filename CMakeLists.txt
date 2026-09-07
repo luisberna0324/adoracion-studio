@@ -407,12 +407,10 @@ juce_add_plugin(MTControls
     PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
-    # iPad multitasking and current App Store validation expect every device
-    # orientation to be declared. The responsive editor handles the resulting
-    # bounds; landscape remains the primary performance layout.
+    # PlayWorship is a landscape-first performance surface on iPad. Keep both
+    # landscape directions available so the device can rotate 180 degrees,
+    # while preventing portrait layouts that compress the mixer and waveform.
     IPAD_SCREEN_ORIENTATIONS
-        UIInterfaceOrientationPortrait
-        UIInterfaceOrientationPortraitUpsideDown
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
     IPHONE_SCREEN_ORIENTATIONS
