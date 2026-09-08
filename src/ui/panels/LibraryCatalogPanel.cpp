@@ -1237,6 +1237,11 @@ void LibraryCatalogPanel::rebuildRows() {
     if (!matchesSearch(song))
       continue;
 
+    const bool isCloudReference =
+        song.fileType.containsIgnoreCase("remote-reference");
+    if (cloudFilterButton.isActive() != isCloudReference)
+      continue;
+
     CatalogItem item;
     item.songIndex = static_cast<int>(i);
     item.songId = song.id;
