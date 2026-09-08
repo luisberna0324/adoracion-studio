@@ -19,6 +19,7 @@ docs/okf/
 ├── audio-systems/    # Sistemas de audio (Metronome, Pads, DynamicGuide)
 ├── midi/             # Sistema MIDI y bindings
 ├── transport/        # Control de transporte y arrange
+├── ui/               # Layout responsive y contratos visuales
 └── integrations/     # Integraciones externas (lyrics, cues, control)
 ```
 
@@ -37,6 +38,7 @@ docs/okf/
 | [audio-systems/StemCache](audio-systems/StemCache.md) | Cache FLAC on-disk de stems + migración legacy |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
+| [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |
 

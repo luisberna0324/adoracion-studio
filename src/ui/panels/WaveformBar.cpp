@@ -1042,6 +1042,15 @@ void WaveformBar::setOnWaveformHeightToggle(WaveformHeightToggleCallback cb) {
   onWaveformHeightToggle = std::move(cb);
 }
 
+void WaveformBar::setMinimalPhoneMode(const bool enabled) {
+  minimalPhoneMode = enabled;
+  if (enabled)
+    waveformVerticalExpanded = false;
+  waveHeightButton.setVisible(!enabled);
+  waveHeightButton.setEnabled(!enabled);
+  resized();
+}
+
 void WaveformBar::setOnArrangementChanged(ArrangementChangedCallback cb) {
   onArrangementChanged = std::move(cb);
 }
@@ -1475,8 +1484,8 @@ void WaveformBar::resized() {
   exportButton.setEnabled(!exportBusy);
   editButton.setVisible(true);
   editButton.setEnabled(true);
-  waveHeightButton.setVisible(true);
-  waveHeightButton.setEnabled(true);
+  waveHeightButton.setVisible(!minimalPhoneMode);
+  waveHeightButton.setEnabled(!minimalPhoneMode);
   waveHeightButton.setToggleState(waveformVerticalExpanded,
                                   juce::dontSendNotification);
   const bool editing = isEditingArrangement();

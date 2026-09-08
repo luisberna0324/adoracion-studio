@@ -59,6 +59,7 @@ public:
   void setSeekCallback(SeekCallback cb);
   void setOnEditToggle(EditToggleCallback cb);
   void setOnWaveformHeightToggle(WaveformHeightToggleCallback cb);
+  void setMinimalPhoneMode(bool enabled);
   void setOnArrangementChanged(ArrangementChangedCallback cb);
   void setOnArrangementReset(ArrangementResetCallback cb);
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
@@ -324,6 +325,7 @@ private:
   bool lastTimerStartValid = false;
   double lastTimerStartSeconds = 0.0;
   bool waveformVerticalExpanded = false;
+  bool minimalPhoneMode = false;
   bool exportBusy = false;
 
   // The follow view moves every frame, but its waveform data is static. Keep

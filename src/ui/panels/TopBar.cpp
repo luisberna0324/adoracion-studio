@@ -682,6 +682,14 @@ void TopBar::setResponsiveProfile(const ResponsiveLayoutProfile profile) {
   repaint();
 }
 
+void TopBar::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled)
+    return;
+  minimalPhoneMode = enabled;
+  resized();
+  repaint();
+}
+
 void TopBar::setSystemUsage(const double cpuUsage01, const double memoryUsage01) {
   const double nextCpu = juce::jlimit(0.0, 1.0, cpuUsage01);
   const double nextMem = juce::jlimit(0.0, 1.0, memoryUsage01);
@@ -907,7 +915,46 @@ void TopBar::resized() {
     songArtworkSize = 34;
   }
 
-  if (useTouchOptimisedControls()) {
+  if (minimalPhoneMode) {
+    const int phoneWidth = getWidth();
+    if (phoneWidth < 760) {
+      y = 7;
+      square = 44;
+      gap = 4;
+      keyWidth = 56;
+      metroTotalW = 88;
+      metroIconW = 44;
+      timeWidth = 132;
+      minCardW = 112;
+      maxCardW = 170;
+      songCardHeight = 40;
+      songArtworkSize = 30;
+    } else if (phoneWidth < 880) {
+      y = 8;
+      square = 46;
+      gap = 6;
+      keyWidth = 62;
+      metroTotalW = 94;
+      metroIconW = 46;
+      timeWidth = 146;
+      minCardW = 124;
+      maxCardW = 200;
+      songCardHeight = 42;
+      songArtworkSize = 32;
+    } else {
+      y = 9;
+      square = 50;
+      gap = 8;
+      keyWidth = 70;
+      metroTotalW = 104;
+      metroIconW = 48;
+      timeWidth = 164;
+      minCardW = 140;
+      maxCardW = 230;
+      songCardHeight = 46;
+      songArtworkSize = 34;
+    }
+  } else if (useTouchOptimisedControls()) {
 #if JUCE_ANDROID
     y = 10;
     square = 44;
@@ -939,7 +986,13 @@ void TopBar::resized() {
 #endif
   }
 
-  constexpr int transportButtonCount = 7;
+  const bool minimalPhoneProfile = minimalPhoneMode;
+  // The phone transport keeps only the four actions needed during playback.
+  // Seek/fade remain available through their existing secondary controls.
+  setVisibleIfChanged(seekBackButton, !minimalPhoneProfile);
+  setVisibleIfChanged(seekForwardButton, !minimalPhoneProfile);
+  setVisibleIfChanged(fadeButton, !minimalPhoneProfile);
+  const int transportButtonCount = minimalPhoneProfile ? 4 : 7;
   const int leftPadding = 12;
   const int rightPadding = 12;
   const int transportControlsW =
@@ -958,12 +1011,15 @@ void TopBar::resized() {
                 0.0f, last ? 0.0f : static_cast<float>(gap), 0.0f, 0.0f)));
   };
   addTransportButton(prevButton);
-  addTransportButton(seekBackButton);
+  if (!minimalPhoneProfile)
+    addTransportButton(seekBackButton);
   addTransportButton(playButton);
   addTransportButton(stopButton);
-  addTransportButton(seekForwardButton);
+  if (!minimalPhoneProfile)
+    addTransportButton(seekForwardButton);
   addTransportButton(nextButton);
-  addTransportButton(fadeButton, true);
+  if (!minimalPhoneProfile)
+    addTransportButton(fadeButton, true);
   transportRow.performLayout(juce::Rectangle<float>(
       static_cast<float>(leftPadding), static_cast<float>(y - 2),
       static_cast<float>(transportControlsW), static_cast<float>(square)));

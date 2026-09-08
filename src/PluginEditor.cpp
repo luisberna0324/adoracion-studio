@@ -87,6 +87,13 @@ bool supportsSetlistDrawer(const juce::Component &component) {
   return useTouchOptimisedControls() && shortSide >= 700 && longSide >= 960;
 }
 
+bool isPhoneSizedLayout(const juce::Component &component) {
+  if (!useTouchOptimisedControls())
+    return false;
+  const auto bounds = component.getLocalBounds();
+  return juce::jmin(bounds.getWidth(), bounds.getHeight()) < 600;
+}
+
 class SettingsOverlayComponent final : public juce::Component {
 public:
   SettingsOverlayComponent(std::unique_ptr<SettingsPanel> content,
@@ -206,7 +213,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   const int authW = userArea.getWidth();
   const int authH = userArea.getHeight();
 #else
@@ -215,7 +222,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #endif
   setSize(authW, authH);
   setResizable(true, true);
+#if JUCE_IOS || JUCE_ANDROID
+  setResizeLimits(320, 280, 32000, 32000);
+#else
   setResizeLimits(480, 500, 32000, 32000);
+#endif
 
   if (const auto audioCtx = getStandaloneAudioContext();
       audioCtx.manager != nullptr) {
@@ -622,11 +633,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (reauthPromptModal)
       reauthPromptModal->setVisible(false);
     setResizable(true, true);
+#if JUCE_IOS || JUCE_ANDROID
+    setResizeLimits(320, 280, 32000, 32000);
+#else
     setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+#endif
 
     const auto userArea =
         juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
     setSize(userArea.getWidth(), userArea.getHeight());
 #else
     const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
@@ -2041,9 +2056,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   const auto userArea =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   setResizable(true, true);
-  setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
+  setResizeLimits(320, 280, 32000, 32000);
   setSize(userArea.getWidth(), userArea.getHeight());
 #else
   const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
@@ -2060,7 +2075,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     autoSetlistCollapseInitialized = true;
   }
 
-#if !JUCE_IOS
+#if !JUCE_IOS && !JUCE_ANDROID
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
@@ -2510,8 +2525,12 @@ void MTControlsAudioProcessorEditor::closeSettings() {
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
   setResizable(true, true);
+#if JUCE_IOS || JUCE_ANDROID
+  setResizeLimits(320, 280, 32000, 32000);
+#else
   setResizeLimits(480, 500, 32000, 32000);
-#if JUCE_IOS
+#endif
+#if JUCE_IOS || JUCE_ANDROID
   if (const auto *display =
           juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
     setSize(display->userArea.getWidth(), display->userArea.getHeight());
@@ -3411,6 +3430,36 @@ void MTControlsAudioProcessorEditor::resized() {
 
   auto area = getLocalBounds();
   updateResponsiveLayoutProfile();
+  const bool minimalPhoneProfile =
+      responsiveLayoutProfile == ResponsiveLayoutProfile::Compact &&
+      isPhoneSizedLayout(*this);
+  if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
+    bar->setMinimalPhoneMode(minimalPhoneProfile);
+  if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
+    wave->setMinimalPhoneMode(minimalPhoneProfile);
+#if JUCE_IOS || JUCE_ANDROID
+  if (minimalPhoneProfile) {
+    // Standalone iOS windows can extend under the sensor housing/notch. Keep
+    // every primary control inside the display's safe area.
+    if (const auto *display =
+            juce::Desktop::getInstance().getDisplays().getDisplayForRect(
+                getScreenBounds())) {
+      const auto safeInsets = display->safeAreaInsets;
+#if JUCE_IOS
+      // A performance surface must work identically in both landscape
+      // directions. Use the larger horizontal inset on both sides so the
+      // Dynamic Island/camera housing can never cover a primary control.
+      const int horizontalSafe =
+          juce::jmax(safeInsets.getLeft(), safeInsets.getRight());
+      area = juce::BorderSize<int>(safeInsets.getTop(), horizontalSafe,
+                                   safeInsets.getBottom(), horizontalSafe)
+                 .subtractedFrom(area);
+#else
+      area = safeInsets.subtractedFrom(area);
+#endif
+    }
+  }
+#endif
   const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
   if (!setlistDrawerSupported)
     isSetlistDrawerOpen = false;
@@ -3448,7 +3497,25 @@ void MTControlsAudioProcessorEditor::resized() {
     contentInset = 9;
   }
 
-  if (useTouchOptimisedControls()) {
+  if (minimalPhoneProfile) {
+    const int phoneHeight = area.getHeight();
+    if (phoneHeight <= 375) {
+      topBarH = 58;
+      waveformH = 108;
+      waveformExpandedH = waveformH;
+      contentInset = 4;
+    } else if (phoneHeight <= 410) {
+      topBarH = 64;
+      waveformH = 124;
+      waveformExpandedH = waveformH;
+      contentInset = 5;
+    } else {
+      topBarH = 70;
+      waveformH = 140;
+      waveformExpandedH = waveformH;
+      contentInset = 6;
+    }
+  } else if (useTouchOptimisedControls()) {
 #if JUCE_ANDROID
     // Keep Android's touch targets comfortable without consuming as much
     // vertical space as the tablet profile used by iOS.
@@ -3474,7 +3541,8 @@ void MTControlsAudioProcessorEditor::resized() {
   int setlistWidth =
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
-  if (isSetlistCollapsed || (setlistDrawerSupported && isSetlistDrawerOpen))
+  if (minimalPhoneProfile || isSetlistCollapsed ||
+      (setlistDrawerSupported && isSetlistDrawerOpen))
     setlistWidth = 0;
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
@@ -3485,7 +3553,7 @@ void MTControlsAudioProcessorEditor::resized() {
   rightChannelsArea.removeFromBottom(contentInset);
   padsDrawerBackgroundBounds = {};
 
-  if (padsHandlePanel) {
+  if (padsHandlePanel && !minimalPhoneProfile) {
     int handleH = 16;
     int padsW = 584; // base width for standard profile
     if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
@@ -3536,6 +3604,25 @@ void MTControlsAudioProcessorEditor::resized() {
   }
 
   channelGridPanel->setBounds(rightChannelsArea);
+
+  if (minimalPhoneProfile) {
+    // Keep the phone focused on playback and the channel mixer. The setlist
+    // and pads remain available in the desktop/tablet layouts.
+    songListPanel->setVisible(false);
+    songListPanel->setBounds({});
+    setlistHandlePanel->setVisible(false);
+    setlistHandlePanel->setBounds({});
+    if (setlistDrawerScrim)
+      setlistDrawerScrim->setVisible(false);
+    if (padsHandlePanel)
+      padsHandlePanel->setVisible(false);
+    if (padsComponent)
+      padsComponent->setVisible(false);
+  } else {
+    setlistHandlePanel->setVisible(true);
+    if (padsHandlePanel)
+      padsHandlePanel->setVisible(true);
+  }
 
   if (setlistDrawerSupported && isSetlistDrawerOpen) {
     const int drawerTop = topBarH + contentInset;

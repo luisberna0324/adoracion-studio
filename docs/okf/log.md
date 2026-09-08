@@ -959,3 +959,12 @@ docs/okf/
     ├── index.md
     └── LyricsControllers.md
 ```
+## 2026-09-08
+
+### Cambiado
+
+- Layout de telefono compartido entre iOS y Android basado en espacio util.
+- Area segura dinamica para Dynamic Island, cutouts y barras del sistema.
+- Tres escalas de top bar y waveform para telefonos pequenos, regulares y grandes.
+- iPhone pasa a soportar exclusivamente ambas orientaciones landscape.
+- Los limites minimos del editor movil dejan de heredar `940 x 600` de desktop.
