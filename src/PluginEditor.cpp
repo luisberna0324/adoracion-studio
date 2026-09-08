@@ -3537,7 +3537,7 @@ void MTControlsAudioProcessorEditor::resized() {
   waveformBar->setBounds(waveformArea);
 
   auto mainArea = area;
-  constexpr int handleW = 14;
+  const int handleW = minimalPhoneProfile ? 0 : 14;
   int setlistWidth =
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
@@ -3548,8 +3548,10 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea;
-  rightChannelsArea.removeFromLeft(2);
-  rightChannelsArea.removeFromRight(contentInset);
+  if (!minimalPhoneProfile) {
+    rightChannelsArea.removeFromLeft(2);
+    rightChannelsArea.removeFromRight(contentInset);
+  }
   rightChannelsArea.removeFromBottom(contentInset);
   padsDrawerBackgroundBounds = {};
 
