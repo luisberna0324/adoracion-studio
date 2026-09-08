@@ -3,6 +3,9 @@ build/
 build-ios/
 build-*/
 **/Builds/
+android/.gradle/
+android/**/.cxx/
+android/**/build/
 perf-bungee*/
 
 # JUCE generated / artifacts

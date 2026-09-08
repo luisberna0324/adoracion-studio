@@ -4,6 +4,7 @@
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
 #include "../../data/SecuenciasClient.h"
+#include "../UiCommon.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -37,6 +38,7 @@ public:
   void mouseExit(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
   void refreshThemeColours();
+  void setOnDismissRequested(std::function<void()> callback);
 
 private:
   enum class Step { Metadata = 0, Stems, Mapping, Review };
@@ -63,7 +65,7 @@ private:
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder);
-  void configureCombo(juce::ComboBox &combo);
+  void configureCombo(IpadNativeComboBox &combo);
   void layoutStepImport(juce::Rectangle<int> bounds);
   void layoutStepMetadata(juce::Rectangle<int> bounds);
   void layoutStepMapping(juce::Rectangle<int> bounds);
@@ -114,6 +116,7 @@ private:
   std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
       resolveProjectDestination;
   std::function<bool(ImportedSongData, juce::String &)> onMetadataOnlySubmit;
+  std::function<void()> onDismissRequested;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;
@@ -152,8 +155,8 @@ private:
   juce::TextEditor songTitleEditor;
   juce::TextEditor artistEditor;
   juce::TextEditor bpmEditor;
-  juce::ComboBox keyBox;
-  juce::ComboBox timeSignatureBox;
+  IpadNativeComboBox keyBox;
+  IpadNativeComboBox timeSignatureBox;
 
   juce::Viewport mapViewport;
   juce::Component mapContent;

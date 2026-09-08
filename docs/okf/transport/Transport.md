@@ -103,6 +103,13 @@ al siguiente: durante reproducción se interpola con `smoothstep` a lo largo de
 100 ms. El `TransportClock` avanza con los frames fuente realmente solicitados
 por cada bloque de la rampa.
 
+En Android, la representación visual del transporte se actualiza a 30 Hz desde
+el temporizador de UI y suaviza variaciones pequeñas durante reproducción. La
+caché de seguimiento limita su escala a `1.25` y usa overscan `2x` para evitar
+imágenes intermedias de más de 7k píxeles en tablets de alta densidad. Los seeks,
+loops y saltos de arrange conservan el cambio inmediato. El reloj de audio
+continúa siendo la fuente de verdad y no se interpola.
+
 ## Arrangement
 
 ### Concepto
@@ -283,6 +290,11 @@ La marca de inserción de la regla aplica a todos los tipos de sección,
 incluidas `Cuenta` y `Utilidad`. Estas dos conservan su duración corta de grilla
 y dividen la sección existente alrededor de la marca sin crear solapamientos.
 
+En iPad, la regla de la waveform se presenta como referencia de navegación:
+muestra marcas de compás y numera compases con una separación mínima de 82 px.
+No dibuja las subdivisiones de beat o snap, aunque estas continúan disponibles
+para seek y edición. El layout de escritorio conserva la regla detallada.
+
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
 barra contextual de cada sección y abre el selector contextual. La lista inicial
@@ -318,6 +330,11 @@ bool loadSongStems(
 
 void finishPendingSongTransition();
 ```
+
+La UI activa el indicador de carga del waveform y procesa su primer frame
+antes de abrir un `.pwproj` o resolver los stems. Así una extracción cold no
+deja la interfaz sin feedback. Las actualizaciones posteriores reflejan audio,
+configuración, interfaz y waveform sin bombear el message loop por cada stem.
 
 ## Transición entre canciones
 

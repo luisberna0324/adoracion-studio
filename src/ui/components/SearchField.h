@@ -5,7 +5,7 @@
 
 #include <functional>
 
-class SearchField final : public juce::Component {
+class SearchField final : public juce::Component, private juce::Timer {
 public:
   SearchField();
 
@@ -17,6 +17,7 @@ public:
   void clear();
 
   void setIconGlyph(IconGlyph glyph);
+  void setLoading(bool isLoading);
   void setOnTextChange(std::function<void(const juce::String &)> cb);
   void refreshThemeColours();
 
@@ -27,10 +28,22 @@ public:
   void resized() override;
 
 private:
+  class RoundedLookAndFeel final : public juce::LookAndFeel_V4 {
+  public:
+    void fillTextEditorBackground(juce::Graphics &, int width, int height,
+                                  juce::TextEditor &) override;
+    void drawTextEditorOutline(juce::Graphics &, int width, int height,
+                               juce::TextEditor &) override;
+  } roundedLookAndFeel;
+
   juce::TextEditor textEditor;
   IconGlyph iconGlyph = IconGlyph::Search;
   std::function<void(const juce::String &)> onTextChange;
+  bool loading = false;
+  int loadingFrame = 0;
 
   int iconInsetX = 10;
   int iconSizePx = 14;
+
+  void timerCallback() override;
 };

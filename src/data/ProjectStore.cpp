@@ -1201,6 +1201,55 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   return true;
 }
 
+bool ProjectStore::restoreArtwork(const juce::File &file,
+                                  ImportedSongData &song,
+                                  juce::String *errorMessage) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  if (!file.existsAsFile() || !file.hasFileExtension(kFileExtension))
+    return false;
+
+  juce::ZipFile zip(file);
+  const int manifestIndex = zip.getIndexOfFileName(kManifestName);
+  if (manifestIndex < 0)
+    return false;
+  std::unique_ptr<juce::InputStream> manifestStream(
+      zip.createStreamForEntry(manifestIndex));
+  if (manifestStream == nullptr)
+    return false;
+
+  const auto root = juce::JSON::parse(manifestStream->readEntireStreamAsString());
+  const auto *object = root.getDynamicObject();
+  if (object == nullptr ||
+      static_cast<int>(object->getProperty("schemaVersion")) != kSchemaVersion)
+    return false;
+
+  bool changed = false;
+  const auto manifestSong =
+      SongLibraryStore::songDataFromVar(object->getProperty("song"), changed);
+  const auto artworkName = juce::File(manifestSong.artworkPath).getFileName();
+  if (artworkName.isEmpty() || artworkName != manifestSong.artworkPath ||
+      !artworkName.startsWith("artwork.")) {
+    song.artworkPath.clear();
+    return true;
+  }
+
+  const auto projectId = projectIdentityForSong(song).trim();
+  if (projectId.isEmpty())
+    return false;
+  const auto target = getCacheDirectory(projectId).getChildFile(artworkName);
+  juce::String copyError;
+  if (!target.existsAsFile() &&
+      !copyZipEntry(zip, artworkName, target, copyError)) {
+    if (errorMessage != nullptr)
+      *errorMessage = copyError;
+    return false;
+  }
+
+  song.artworkPath = target.getFullPathName();
+  return true;
+}
+
 bool ProjectStore::convertLegacySongToProject(
     const juce::String &legacySongId, const juce::File &destination,
     ImportedSongData &outProjectSong, juce::String &outSourceSetlistName,
@@ -1242,7 +1291,7 @@ bool ProjectStore::convertLegacySongToProject(
                               "Preparing legacy song..."));
   ProjectDocument document;
   document.song = legacySong;
-  document.song.projectId = legacySong.id;
+  document.song.projectId = projectIdentityForSong(legacySong);
   document.settings = settingsFromLegacySetlistItem(sourceSettings, legacySong);
   document.waveformBins = SongLibraryStore::loadWaveformCache(legacySong.id);
   if (document.waveformBins.empty()) {
@@ -1582,4 +1631,22 @@ void ProjectStore::forgetRecentProject(const juce::File &file) {
   auto *root = new juce::DynamicObject(); juce::Array<juce::var> items;
   for (const auto &entry : entries) { auto *o = new juce::DynamicObject(); o->setProperty("id", entry.id); o->setProperty("title", entry.title); o->setProperty("path", entry.file.getFullPathName()); o->setProperty("lastOpenedMs", entry.lastOpenedMs); items.add(o); }
   root->setProperty("recent", items); getRegistryFile().replaceWithText(juce::JSON::toString(juce::var(root), true));
+}
+
+void ProjectStore::discardLocalState(const juce::String &projectId,
+                                     const juce::File &projectFile) {
+  const auto identity = projectId.trim();
+  if (identity.isNotEmpty()) {
+    const juce::ScopedLock lock(dirtyProjectsGuard());
+    for (auto it = dirtyProjects().begin(); it != dirtyProjects().end();) {
+      if (it->second.projectId == identity ||
+          (projectFile != juce::File{} && it->second.file == projectFile))
+        it = dirtyProjects().erase(it);
+      else
+        ++it;
+    }
+    getCacheDirectory(identity).deleteRecursively();
+  }
+  if (projectFile != juce::File{})
+    forgetRecentProject(projectFile);
 }

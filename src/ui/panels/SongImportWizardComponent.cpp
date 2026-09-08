@@ -93,7 +93,7 @@ public:
 private:
   juce::Label fileLabel;
   juce::TextEditor displayNameEditor;
-  juce::ComboBox categoryBox;
+  IpadNativeComboBox categoryBox;
   juce::ToggleButton includeToggle;
 };
 
@@ -662,12 +662,24 @@ SongImportWizardComponent::SongImportWizardComponent(
 
 SongImportWizardComponent::~SongImportWizardComponent() = default;
 
+void SongImportWizardComponent::setOnDismissRequested(std::function<void()> callback) {
+  onDismissRequested = std::move(callback);
+}
+
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
-  g.setColour(UITheme::cardBg);
+  constexpr bool usesNavigationToolbar = true;
+  g.setColour(usesNavigationToolbar ? UITheme::panelDark : UITheme::cardBg);
   g.fillRoundedRectangle(b, 8.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.8f));
+  g.setColour(UITheme::cardBorder.withAlpha(usesNavigationToolbar ? 0.62f : 0.8f));
   g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
+
+  if (usesNavigationToolbar) {
+    const float toolbarBottom = 68.0f;
+    g.setColour(UITheme::cardBorder.withAlpha(0.72f));
+    g.drawLine(12.0f, toolbarBottom, b.getRight() - 12.0f, toolbarBottom,
+               1.0f);
+  }
 }
 
 void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
@@ -684,39 +696,73 @@ void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
 }
 
 void SongImportWizardComponent::resized() {
-  auto area = getLocalBounds().reduced(16);
-  auto header = area.removeFromTop(74);
-  titleLabel.setBounds(header.removeFromTop(42));
-  subtitleLabel.setBounds(header);
+  constexpr bool usesNavigationToolbar = true;
+  auto area = getLocalBounds().reduced(usesNavigationToolbar ? 12 : 16);
 
-  auto footer = area.removeFromBottom(46);
-  auto content = area;
+  if (usesNavigationToolbar) {
+    // The same navigation model is used across platforms so dismissal and
+    // progression stay in a predictable, stable position.
+    auto toolbar = area.removeFromTop(56);
+    const int touchTarget = 44;
+    const int buttonY = toolbar.getY() + (toolbar.getHeight() - touchTarget) / 2;
 
-  cancelButton.setBounds(footer.removeFromLeft(96));
+    cancelButton.setBounds(toolbar.getX(), buttonY, 88, touchTarget);
+    auto leftEdge = cancelButton.getRight() + 4;
+    if (backButton.isVisible()) {
+      backButton.setBounds(leftEdge, buttonY, 70, touchTarget);
+      leftEdge = backButton.getRight() + 4;
+    }
 
-  auto rightEdge = footer.getRight();
-  const int buttonH = footer.getHeight();
-  const int y = footer.getY();
-  const int gap = 8;
-  auto placeRight = [&](juce::Component &button, const int width) {
-    button.setBounds(rightEdge - width, y, width, buttonH);
-    rightEdge -= (width + gap);
-  };
+    auto rightEdge = toolbar.getRight();
+    auto placeTrailing = [&](juce::Component &button, const int width) {
+      button.setBounds(rightEdge - width, buttonY, width, touchTarget);
+      rightEdge -= width + 4;
+    };
+    if (submitButton.isVisible())
+      placeTrailing(submitButton, 144);
+    else if (nextButton.isVisible())
+      placeTrailing(nextButton, 104);
+    if (saveMetadataButton.isVisible())
+      placeTrailing(saveMetadataButton, 82);
 
-  if (submitButton.isVisible())
-    placeRight(submitButton, 156);
-  else
-    placeRight(nextButton, 96);
+    const int centredTitleInset = juce::jmax(
+        leftEdge - toolbar.getX(), toolbar.getRight() - rightEdge);
+    titleLabel.setBounds(toolbar.withTrimmedLeft(centredTitleInset)
+                             .withTrimmedRight(centredTitleInset));
+    subtitleLabel.setBounds(area.removeFromTop(22));
+    area.removeFromTop(8);
+  } else {
+    auto header = area.removeFromTop(74);
+    titleLabel.setBounds(header.removeFromTop(42));
+    subtitleLabel.setBounds(header);
 
-  if (backButton.isVisible())
-    placeRight(backButton, 96);
-  if (saveMetadataButton.isVisible())
-    placeRight(saveMetadataButton, 112);
+    auto footer = area.removeFromBottom(46);
+    cancelButton.setBounds(footer.removeFromLeft(96));
 
-  layoutStepImport(content);
-  layoutStepMetadata(content);
-  layoutStepMapping(content);
-  layoutStepReview(content);
+    auto rightEdge = footer.getRight();
+    const int buttonH = footer.getHeight();
+    const int y = footer.getY();
+    const int gap = 8;
+    auto placeRight = [&](juce::Component &button, const int width) {
+      button.setBounds(rightEdge - width, y, width, buttonH);
+      rightEdge -= width + gap;
+    };
+
+    if (submitButton.isVisible())
+      placeRight(submitButton, 156);
+    else
+      placeRight(nextButton, 96);
+
+    if (backButton.isVisible())
+      placeRight(backButton, 96);
+    if (saveMetadataButton.isVisible())
+      placeRight(saveMetadataButton, 112);
+  }
+
+  layoutStepImport(area);
+  layoutStepMetadata(area);
+  layoutStepMapping(area);
+  layoutStepReview(area);
 }
 
 void SongImportWizardComponent::mouseMove(const juce::MouseEvent &event) {
@@ -746,7 +792,9 @@ void SongImportWizardComponent::mouseUp(const juce::MouseEvent &event) {
 
 void SongImportWizardComponent::refreshThemeColours() {
   titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  titleLabel.setJustificationType(juce::Justification::centred);
   subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  subtitleLabel.setJustificationType(juce::Justification::centred);
   for (auto *label :
        {&stemsSectionLabel, &primeSectionLabel, &infoSectionLabel,
         &songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
@@ -787,11 +835,23 @@ void SongImportWizardComponent::refreshThemeColours() {
   styleSecondaryButton(refreshPrimeButton);
   stylePrimaryButton(usePrimeSongButton);
   styleSecondaryButton(clearSongSearchButton);
-  styleSecondaryButton(cancelButton);
-  styleSecondaryButton(backButton);
-  stylePrimaryButton(saveMetadataButton);
-  stylePrimaryButton(nextButton);
-  stylePrimaryButton(submitButton);
+  {
+    const auto styleToolbarButton = [](juce::TextButton &button,
+                                       const bool emphasised) {
+      button.setColour(juce::TextButton::buttonColourId,
+                      UITheme::panelDark);
+      button.setColour(juce::TextButton::buttonOnColourId,
+                      UITheme::cardBgPressed);
+      button.setColour(juce::TextButton::textColourOffId,
+                      emphasised ? UITheme::accent : UITheme::textPrimary);
+      button.setColour(juce::TextButton::textColourOnId, UITheme::accent);
+    };
+    styleToolbarButton(cancelButton, false);
+    styleToolbarButton(backButton, false);
+    styleToolbarButton(saveMetadataButton, true);
+    styleToolbarButton(nextButton, true);
+    styleToolbarButton(submitButton, true);
+  }
 
   for (auto &row : mappingRows)
     row->refreshThemeColours();
@@ -804,7 +864,7 @@ void SongImportWizardComponent::configureTextEditor(
   applyEditorTheme(editor, placeholder);
 }
 
-void SongImportWizardComponent::configureCombo(juce::ComboBox &combo) {
+void SongImportWizardComponent::configureCombo(IpadNativeComboBox &combo) {
   applyComboBoxTheme(combo, UITheme::cardBgHover,
                      UITheme::cardBorder.withAlpha(0.7f));
 }
@@ -1331,16 +1391,49 @@ void SongImportWizardComponent::applyPrimeSong(const size_t index) {
                                 juce::dontSendNotification);
   triggerSecuenciasSearch();
 
-  // Elegir una canción de Prime sólo autocompleta metadata. Los stems deben
-  // ser seleccionados explícitamente por la persona usuaria en el paso
-  // siguiente; no prellenamos tracks ni referencias de la biblioteca externa.
+  // PrimeLibrarySource only returns tracks whose local source files exist.
+  // Bring those sources into the draft so ProjectStore can package copies in
+  // the new .pwproj; the finished project never depends on Prime's library.
   stems.clear();
+  juce::AudioFormatManager formatManager;
+  formatManager.registerBasicFormats();
+  for (const auto &track : song.tracks) {
+    const juce::File sourceFile(track.sourcePath);
+    if (!sourceFile.existsAsFile())
+      continue;
+
+    StemDraft draft;
+    draft.file = sourceFile;
+    draft.sourcePath = sourceFile.getFullPathName();
+    draft.stemId = track.stemId.isNotEmpty() ? track.stemId
+                                             : juce::Uuid().toString();
+    draft.displayName = track.displayName.isNotEmpty()
+                            ? track.displayName
+                            : makeDisplayNameFromFile(sourceFile);
+    draft.category = track.category.isNotEmpty()
+                         ? track.category
+                         : suggestCategoryFromFilename(
+                               sourceFile.getFileNameWithoutExtension());
+    draft.include = true;
+
+    if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
+            formatManager.createReaderFor(sourceFile))) {
+      draft.sampleRate = static_cast<int>(std::round(reader->sampleRate));
+      draft.channels = static_cast<int>(reader->numChannels);
+      draft.durationSec = reader->sampleRate > 0.0
+                              ? static_cast<double>(reader->lengthInSamples) /
+                                    reader->sampleRate
+                              : 0.0;
+    }
+    stems.push_back(std::move(draft));
+  }
   updateSelectedFilesText();
   rebuildMappingRows();
   primeStatusLabel.setText(
-      L10n::tr("Cargada \"", "Loaded \"") + song.title +
-          L10n::tr("\" desde disco local para importar.",
-                   "\" from local disk for import."),
+      L10n::tr("Cargada \"", "Loaded \"") + song.title + " • " +
+          juce::String(static_cast<int>(stems.size())) + " " +
+          L10n::tr("stems listos para importar.",
+                   "stems ready to import."),
       juce::dontSendNotification);
 }
 
@@ -1427,8 +1520,8 @@ void SongImportWizardComponent::saveMetadataOnly() {
   if (!validateStepMetadata())
     return;
   if (!onMetadataOnlySubmit) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo guardar", "Couldn't save"),
         L10n::tr("El guardado rápido no está disponible para esta canción.",
                  "Quick save is not available for this song."));
@@ -1440,8 +1533,8 @@ void SongImportWizardComponent::saveMetadataOnly() {
   juce::String errorMessage;
   const bool ok = onMetadataOnlySubmit(std::move(songData), errorMessage);
   if (!ok) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Error al guardar", "Save error"),
         errorMessage.isNotEmpty()
             ? errorMessage
@@ -1468,8 +1561,8 @@ bool SongImportWizardComponent::validateStepImport() {
         return false;
       });
   if (!hasAnyRealSource) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Stems no disponibles", "Stems unavailable"),
         L10n::tr(u8"No se encontraron archivos de audio válidos para importar.",
                  "No valid audio files were found for import."));
@@ -1480,8 +1573,8 @@ bool SongImportWizardComponent::validateStepImport() {
 
 bool SongImportWizardComponent::validateStepMetadata() {
   if (songTitleEditor.getText().trim().isEmpty()) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr(u8"Falta el título", "Missing song title"),
         L10n::tr(u8"Agrega un título de canción antes de continuar.",
                  "Add a song title before continuing."));
@@ -1499,8 +1592,8 @@ bool SongImportWizardComponent::validateStepMapping() {
       std::any_of(stems.begin(), stems.end(),
                   [](const StemDraft &stem) { return stem.include; });
   if (!hasAnyLoaded) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No hay stems seleccionados", "No stems selected"),
         L10n::tr("Activa al menos un stem para cargar o deja la lista vacía para metadata-only.",
                  "Enable at least one stem or leave the list empty for metadata-only."));
@@ -1599,8 +1692,8 @@ void SongImportWizardComponent::submitSong() {
     juce::String destinationError;
     if (!resolveProjectDestination(songData, destination, destinationError)) {
       if (destinationError.isNotEmpty()) {
-        juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::WarningIcon,
+        juce::NativeMessageBox::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Ubicación del proyecto", "Project location"),
             destinationError);
       }
@@ -1658,7 +1751,7 @@ void SongImportWizardComponent::submitSong() {
                     u8"¿Deseas descargarlo ahora?",
                     "Encoder for storage optimization wasn't found.\n\n"
                     "Do you want to download it now?"),
-          juce::AlertWindow::QuestionIcon);
+          juce::MessageBoxIconType::QuestionIcon);
       prompt.addButton(L10n::tr("Descargar", "Download"), 1);
       if (!projectNeedsFlacConversion)
         prompt.addButton(
@@ -1666,7 +1759,12 @@ void SongImportWizardComponent::submitSong() {
             2);
       prompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
 
-      const int decision = prompt.runModalLoop();
+      const int decision =
+#if JUCE_ANDROID
+          1;
+#else
+          prompt.runModalLoop();
+#endif
       if (decision == 0)
         return;
 
@@ -1688,7 +1786,11 @@ void SongImportWizardComponent::submitSong() {
 
         auto pumpUi = [] {
           if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+#if ! JUCE_ANDROID
             mm->runDispatchLoopUntil(14);
+#else
+            juce::ignoreUnused(mm);
+#endif
         };
 
         juce::String bootstrapError;
@@ -1706,8 +1808,8 @@ void SongImportWizardComponent::submitSong() {
 
         if (!encoderReady) {
           if (projectNeedsFlacConversion) {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
+            juce::NativeMessageBox::showMessageBoxAsync(
+                juce::MessageBoxIconType::WarningIcon,
                 L10n::tr("No se pudo preparar el encoder",
                          "Couldn't prepare encoder"),
                 (bootstrapError.isNotEmpty()
@@ -1724,13 +1826,19 @@ void SongImportWizardComponent::submitSong() {
               (bootstrapError.isNotEmpty() ? bootstrapError + "\n\n" : juce::String()) +
                   L10n::tr("¿Deseas continuar sin optimización de almacenamiento?",
                            "Do you want to continue without storage optimization?"),
-              juce::AlertWindow::WarningIcon);
+              juce::MessageBoxIconType::WarningIcon);
           failedPrompt.addButton(
               L10n::tr("Continuar sin optimizar", "Continue without optimization"),
               1);
           failedPrompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
 
-          if (failedPrompt.runModalLoop() != 1)
+          if (
+#if JUCE_ANDROID
+              false
+#else
+              failedPrompt.runModalLoop() != 1
+#endif
+          )
             return;
           temporarilyDisableOptimization = true;
         }
@@ -1755,8 +1863,16 @@ void SongImportWizardComponent::submitSong() {
   overlay.toFront(true);
 
   auto pumpUi = [] {
-    if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+      if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+#if ! JUCE_ANDROID
+#if ! JUCE_ANDROID
       mm->runDispatchLoopUntil(14);
+#else
+      juce::ignoreUnused(mm);
+#endif
+#else
+      juce::ignoreUnused(mm);
+#endif
   };
 
   int lastLoggedPct = -5;
@@ -1809,8 +1925,8 @@ void SongImportWizardComponent::submitSong() {
   cancelButton.setEnabled(true);
 
   if (!ok) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         mode == Mode::Edit
             ? L10n::tr("Error al actualizar", "Update error")
             : L10n::tr(u8"Error al crear", "Create error"),
@@ -1865,6 +1981,10 @@ juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
 }
 
 void SongImportWizardComponent::closeDialog() {
+  if (onDismissRequested) {
+    onDismissRequested();
+    return;
+  }
   if (auto *dw = findParentComponentOfClass<juce::DialogWindow>()) {
     dw->exitModalState(0);
     dw->setVisible(false);

@@ -108,6 +108,7 @@ private:
   IconButton windowModeButton;
   IconButton settingsButton;
   IconButton midiLearnButton;
+  IconButton tabletMoreButton;
 
   ClickableLabel timeDisplay;
   ClickableLabel keyDisplay;
@@ -184,6 +185,7 @@ private:
   void showSongWindowPopover();
   void toggleWindowMode();
   void openSettingsPanel();
+  void showTabletMorePopover();
   void refreshFromProviders();
   void paintSongInfoCard(juce::Graphics &g);
   juce::Rectangle<int> getSongInfoAnchorBounds() const;

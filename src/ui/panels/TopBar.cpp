@@ -236,7 +236,7 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   const auto controlPath = roundedControlPath(b, connectedEdges, 10.0f);
   const bool active = isButtonDown || getToggleState();
 
-  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  auto fill = UITheme::cardBg;
   if (active && !isPrimary)
     fill = fill.brighter(0.08f);
   else if (isMouseOverButton && !isPrimary)
@@ -292,7 +292,19 @@ void TopBar::IconButton::paintButton(juce::Graphics &gr,
   if (hasBadge)
     iconArea.translate(0.0f, -4.0f);
 
-  if (!drawSvgIcon(gr, iconArea, icon, iconColour))
+  if (getName() == "tabletMore") {
+    constexpr float dotDiameter = 3.6f;
+    constexpr float dotGap = 5.0f;
+    const auto centre = iconArea.getCentre();
+    gr.setColour(iconColour);
+    for (int index = -1; index <= 1; ++index) {
+      gr.fillEllipse(centre.x + static_cast<float>(index) *
+                                    (dotDiameter + dotGap) -
+                         dotDiameter * 0.5f,
+                     centre.y - dotDiameter * 0.5f, dotDiameter,
+                     dotDiameter);
+    }
+  } else if (!drawSvgIcon(gr, iconArea, icon, iconColour))
     drawIconGlyph(gr, iconArea, IconGlyph::More, iconColour);
 
   if (hasBadge) {
@@ -338,13 +350,13 @@ void TopBar::BpmSegmentButton::paintButton(juce::Graphics &g,
                                            bool isButtonDown) {
   auto b = getLocalBounds().toFloat().reduced(0.5f);
   const auto path = roundedControlPath(b, getConnectedEdgeFlags(), 10.0f);
-  auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
+  auto fill = UITheme::cardBg;
   if (isButtonDown)
     fill = fill.brighter(0.08f);
   if (isMouseOverButton && !isButtonDown)
     fill = fill.brighter(0.05f);
 
-  g.setColour(juce::Colours::black.withAlpha(0.20f));
+  g.setColour(UITheme::cardBorder.withAlpha(0.55f));
   auto shadowPath = path;
   shadowPath.applyTransform(juce::AffineTransform::translation(0.0f, 1.0f));
   g.fillPath(shadowPath);
@@ -374,11 +386,12 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       windowModeButton("windowMode", SvgIconName::Maximize),
       settingsButton("settings", SvgIconName::Settings),
       midiLearnButton("midiLearn", SvgIconName::Midi),
+      tabletMoreButton("tabletMore", SvgIconName::MoreVertical),
       processor(processorRef) {
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
-        &settingsButton, &midiLearnButton}) {
+        &settingsButton, &midiLearnButton, &tabletMoreButton}) {
     addAndMakeVisible(*btn);
   }
   windowModeButton.setVisible(shouldShowWindowModeButton());
@@ -404,6 +417,8 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
                  L10n::tr("Maximizar / restaurar", "Maximize / restore"));
   setBaseTooltip(settingsButton, L10n::tr("Configuración", "Settings"));
   setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
+  setBaseTooltip(tabletMoreButton,
+                 L10n::tr("Más opciones", "More options"));
   setBaseTooltip(timeDisplay,
                  L10n::tr("Ventana de canción", "Song window"));
   setBaseTooltip(keyDisplay, L10n::tr("Tono", "Key"));
@@ -557,6 +572,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       onMidiLearnModeChanged(midiLearnActive);
     repaint();
   };
+  tabletMoreButton.onClick = [this] { showTabletMorePopover(); };
   bpmSegmentButton.onClick = [this, armLearnTarget] {
     if (midiLearnActive) {
       armLearnTarget(processor.midiTargetUiMetronomePopover);
@@ -876,7 +892,7 @@ void TopBar::resized() {
     songCardHeight = 40;
     songArtworkSize = 30;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
-    y = 10;
+    y = 8;
     square = 44;
     gap = 8;
     keyWidth = 76;
@@ -889,6 +905,38 @@ void TopBar::resized() {
     maxCardW = 325;
     songCardHeight = 44;
     songArtworkSize = 34;
+  }
+
+  if (useTouchOptimisedControls()) {
+#if JUCE_ANDROID
+    y = 10;
+    square = 44;
+    gap = 8;
+    keyWidth = 76;
+    metroTotalW = 108;
+    metroIconW = 44;
+    timeWidth = 166;
+    usageWidth = 90;
+    minUsageWidth = 76;
+    minCardW = 176;
+    maxCardW = 325;
+    songCardHeight = 46;
+    songArtworkSize = 36;
+#else
+    y = 14;
+    square = 50;
+    gap = 10;
+    keyWidth = 82;
+    metroTotalW = 116;
+    metroIconW = 48;
+    timeWidth = 184;
+    usageWidth = 96;
+    minUsageWidth = 82;
+    minCardW = 190;
+    maxCardW = 360;
+    songCardHeight = 54;
+    songArtworkSize = 42;
+#endif
   }
 
   constexpr int transportButtonCount = 7;
@@ -921,12 +969,14 @@ void TopBar::resized() {
       static_cast<float>(transportControlsW), static_cast<float>(square)));
 
   const int transportW = leftPadding + transportControlsW + gap;
-  const bool showWindowButton = shouldShowWindowModeButton();
-  const int fixedButtonCount = showWindowButton ? 3 : 2;
+  const bool tabletProfile = useTouchOptimisedControls();
+  const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
+  const bool showTabletMoreButton = tabletProfile;
+  const int fixedButtonCount = tabletProfile ? 1 : (showWindowButton ? 3 : 2);
   const int minFixedButtonsW =
       (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
   const int availableAfterTransport = getWidth() - rightPadding - transportW - 8;
-  bool showSystemUsage = true;
+  bool showSystemUsage = !tabletProfile;
   const int maxUsageWidth =
       availableAfterTransport - minFixedButtonsW - gap;
   if (maxUsageWidth < minUsageWidth) {
@@ -938,11 +988,15 @@ void TopBar::resized() {
   auto layoutRightSide = [&](const bool usageVisible,
                              const bool bpmVisible) -> int {
     const int metronomeW = bpmVisible ? metroTotalW : metroIconW;
-    int controlsW = timeWidth + gap + metronomeW + gap + keyWidth + gap +
-                    square + gap;
-    if (showWindowButton)
-      controlsW += square + gap;
-    controlsW += square;
+    int controlsW = timeWidth + gap + metronomeW + gap + keyWidth;
+    if (tabletProfile) {
+      controlsW += gap + square;
+    } else {
+      controlsW += gap + square;
+      if (showWindowButton)
+        controlsW += gap + square;
+      controlsW += gap + square;
+    }
     if (usageVisible)
       controlsW += gap + usageWidth;
 
@@ -953,6 +1007,7 @@ void TopBar::resized() {
     setVisibleIfChanged(bpmSegmentButton, bpmVisible);
     setVisibleIfChanged(systemUsageDisplay, usageVisible);
     setVisibleIfChanged(windowModeButton, showWindowButton);
+    setVisibleIfChanged(tabletMoreButton, showTabletMoreButton);
 
     if (!bpmVisible)
       setBoundsIfChanged(bpmSegmentButton, {});
@@ -960,6 +1015,8 @@ void TopBar::resized() {
       setBoundsIfChanged(systemUsageDisplay, {});
     if (!showWindowButton)
       setBoundsIfChanged(windowModeButton, {});
+    if (!showTabletMoreButton)
+      setBoundsIfChanged(tabletMoreButton, {});
 
     juce::FlexBox rightRow;
     rightRow.flexDirection = juce::FlexBox::Direction::row;
@@ -990,11 +1047,16 @@ void TopBar::resized() {
     } else {
       addItem(metroToggleButton, metroIconW);
     }
-    addItem(keyDisplay, keyWidth);
-    addItem(midiLearnButton, square);
+    addItem(keyDisplay, keyWidth, false);
+    if (tabletProfile) {
+      addItem(tabletMoreButton, square, true);
+    } else {
+      addItem(midiLearnButton, square);
+    }
     if (showWindowButton)
       addItem(windowModeButton, square);
-    addItem(settingsButton, square, !usageVisible);
+    if (!tabletProfile)
+      addItem(settingsButton, square, !usageVisible);
     if (usageVisible)
       addItem(systemUsageDisplay, usageWidth, true);
 
@@ -1183,10 +1245,124 @@ void TopBar::toggleWindowMode() {
 
 void TopBar::openSettingsPanel() {
   clearFadeIfActive();
-  if (onSettingsWithAnchor)
-    onSettingsWithAnchor(settingsButton.getBounds(), this);
+  if (onSettingsWithAnchor) {
+    const auto anchor = useTouchOptimisedControls()
+                            ? tabletMoreButton.getBounds()
+                            : settingsButton.getBounds();
+    onSettingsWithAnchor(anchor, this);
+  }
   else if (onSettings)
     onSettings();
+}
+
+void TopBar::showTabletMorePopover() {
+  if (!useTouchOptimisedControls())
+    return;
+
+  class ActionButton final : public juce::Button {
+  public:
+    ActionButton(juce::String titleText, const SvgIconName iconToUse,
+                 std::function<void()> actionToRun)
+        : juce::Button(titleText), title(std::move(titleText)),
+          icon(iconToUse), action(std::move(actionToRun)) {
+      onClick = [this] {
+        auto actionToInvoke = action;
+        if (auto *callout = findParentComponentOfClass<juce::CallOutBox>())
+          callout->dismiss();
+        if (actionToInvoke)
+          juce::MessageManager::callAsync(std::move(actionToInvoke));
+      };
+    }
+
+    void paintButton(juce::Graphics &g, const bool isMouseOverButton,
+                     const bool isButtonDown) override {
+      auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+      auto fill = getToggleState()
+                      ? UITheme::accent.withAlpha(0.24f)
+                      : UITheme::cardBgHover;
+      if (isMouseOverButton)
+        fill = fill.brighter(0.05f);
+      if (isButtonDown)
+        fill = fill.darker(0.06f);
+      g.setColour(fill);
+      g.fillRoundedRectangle(bounds, 10.0f);
+      g.setColour((getToggleState() ? UITheme::accentSoft
+                                    : UITheme::cardBorder)
+                      .withAlpha(0.82f));
+      g.drawRoundedRectangle(bounds, 10.0f, 1.0f);
+
+      auto content = getLocalBounds().reduced(16, 8);
+      auto iconArea = content.removeFromLeft(30).toFloat().reduced(3.0f);
+      drawSvgIcon(g, iconArea, icon,
+                  getToggleState() ? UITheme::accentSoft
+                                   : UITheme::textPrimary);
+      content.removeFromLeft(10);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(title, content, juce::Justification::centredLeft, 1);
+    }
+
+  private:
+    juce::String title;
+    SvgIconName icon;
+    std::function<void()> action;
+  };
+
+  class MorePopover final : public juce::Component {
+  public:
+    MorePopover(const bool midiActive, std::function<void()> onMidi,
+                std::function<void()> onSettings)
+        : midiButton(L10n::tr("MIDI Learn", "MIDI Learn"),
+                     SvgIconName::Midi, std::move(onMidi)),
+          settingsButton(L10n::tr("Configuración", "Settings"),
+                         SvgIconName::Settings, std::move(onSettings)) {
+      midiButton.setToggleState(midiActive, juce::dontSendNotification);
+      addAndMakeVisible(midiButton);
+      addAndMakeVisible(settingsButton);
+    }
+
+    void paint(juce::Graphics &g) override {
+      auto bounds = getLocalBounds().toFloat();
+      g.setColour(UITheme::cardBg);
+      g.fillRoundedRectangle(bounds, 8.0f);
+      g.setColour(UITheme::accent.withAlpha(0.18f));
+      g.fillRoundedRectangle(bounds.removeFromTop(4.0f), 2.0f);
+      g.setColour(UITheme::cardBorder);
+      g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 8.0f,
+                             1.0f);
+    }
+
+    void resized() override {
+      auto area = getLocalBounds().reduced(10, 6);
+      constexpr int gap = 10;
+      const int buttonWidth = (area.getWidth() - gap) / 2;
+      midiButton.setBounds(area.removeFromLeft(buttonWidth));
+      area.removeFromLeft(gap);
+      settingsButton.setBounds(area);
+    }
+
+  private:
+    ActionButton midiButton;
+    ActionButton settingsButton;
+  };
+
+  auto panel = std::make_unique<MorePopover>(
+      midiLearnActive, [this] { midiLearnButton.triggerClick(); },
+      [this] { openSettingsPanel(); });
+  panel->setSize(360, 52);
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  juce::Component *parentComp = editor != nullptr
+                                    ? static_cast<juce::Component *>(editor)
+                                    : static_cast<juce::Component *>(this);
+  const auto buttonAnchor =
+      parentComp->getLocalArea(this, tabletMoreButton.getBounds());
+  const juce::Rectangle<int> anchor(buttonAnchor.getX() - 20,
+                                    buttonAnchor.getBottom() + 4,
+                                    buttonAnchor.getWidth() + 20, 2);
+  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
+                                                         anchor, parentComp);
+  callout.setArrowSize(12.0f);
+  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
 }
 
 void TopBar::applyResponsiveTypography() {
@@ -1207,6 +1383,13 @@ void TopBar::applyResponsiveTypography() {
     usageFont = 13.0f;
     songTitleFontSize = 15.4f;
     songArtistFontSize = 11.4f;
+  }
+  if (useTouchOptimisedControls()) {
+    displayFont = 21.0f;
+    keyFont = 17.0f;
+    usageFont = 14.0f;
+    songTitleFontSize = 17.0f;
+    songArtistFontSize = 12.5f;
   }
   timeDisplay.setFont(juce::FontOptions(displayFont));
   keyDisplay.setFont(juce::FontOptions(keyFont).withStyle("Bold"));
@@ -1460,7 +1643,7 @@ void TopBar::showMetronomePopover() {
 
   private:
     juce::TextButton tapButton, minusButton, plusButton;
-    juce::ComboBox timeSigBox;
+    IpadNativeComboBox timeSigBox;
     juce::TextEditor bpmEditor;
     juce::Label meterLabel, bpmLabel;
     std::function<void()> onTap;

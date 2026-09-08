@@ -13,6 +13,10 @@ endif()
 
 project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
 
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -21,6 +25,19 @@ option(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
     "Log aggregate VU meter repaint counters every two seconds" OFF)
 option(MTCONTROLS_USE_BUNGEE
     "Use Bungee Basic as the pitch/tempo backend" ON)
+
+# The distributed Bungee iOS framework currently contains device arm64 only.
+# Allow the simulator to use the existing software fallback so UI builds can
+# run in Xcode without linking a device-only binary.
+set(_mtcontrols_ios_simulator OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
+   CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
+    set(_mtcontrols_ios_simulator ON)
+    set(MTCONTROLS_USE_BUNGEE OFF CACHE BOOL
+        "Use Bungee Basic as the pitch/tempo backend" FORCE)
+    message(STATUS
+        "Audio backend: PitchShiftProcessor fallback (iOS simulator; Bungee device framework unavailable)")
+endif()
 set(MTCONTROLS_BUNGEE_DIR "${CMAKE_SOURCE_DIR}/third_party/bungee" CACHE PATH
     "Path to the unpacked Bungee SDK")
 if(MTCONTROLS_BUNGEE_DIR STREQUAL "")
@@ -82,8 +99,40 @@ if((NOT MTCONTROLS_CLICKS_PACK OR MTCONTROLS_CLICKS_PACK STREQUAL "") AND
         FORCE)
 endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
-set(MTCONTROLS_API_BASE_URL "https://playworship-345830648064.us-east1.run.app" CACHE STRING
-    "Base URL for PlayWorship backend/login frontend")
+set(MTCONTROLS_BACKEND_MODE "cloud" CACHE STRING
+    "PlayWorship backend target: cloud, local, or custom")
+set_property(CACHE MTCONTROLS_BACKEND_MODE PROPERTY STRINGS cloud local custom)
+set(MTCONTROLS_CLOUD_API_BASE_URL "https://api.playworship.app" CACHE STRING
+    "Stable public PlayWorship API URL used by the cloud backend mode")
+set(MTCONTROLS_LOCAL_API_BASE_URL "http://127.0.0.1:3000" CACHE STRING
+    "Local PlayWorship API URL used by the local backend mode")
+set(MTCONTROLS_API_BASE_URL "" CACHE STRING
+    "Custom PlayWorship API URL; required only when MTCONTROLS_BACKEND_MODE=custom")
+if(MTCONTROLS_BACKEND_MODE STREQUAL "cloud")
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_CLOUD_API_BASE_URL}")
+elseif(MTCONTROLS_BACKEND_MODE STREQUAL "local")
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_LOCAL_API_BASE_URL}")
+elseif(MTCONTROLS_BACKEND_MODE STREQUAL "custom")
+    if(MTCONTROLS_API_BASE_URL STREQUAL "")
+        message(FATAL_ERROR
+            "MTCONTROLS_API_BASE_URL must be set when MTCONTROLS_BACKEND_MODE=custom")
+    endif()
+    set(MTCONTROLS_RESOLVED_API_BASE_URL "${MTCONTROLS_API_BASE_URL}")
+else()
+    message(FATAL_ERROR
+        "Unknown MTCONTROLS_BACKEND_MODE='${MTCONTROLS_BACKEND_MODE}'. Use cloud, local, or custom.")
+endif()
+message(STATUS "PlayWorship backend: ${MTCONTROLS_BACKEND_MODE} (${MTCONTROLS_RESOLVED_API_BASE_URL})")
+set(MTCONTROLS_AUTH_BASE_URL "" CACHE STRING
+    "Optional base URL for PlayWorship OAuth start endpoint; defaults to the resolved API backend URL")
+# Migrate builds generated before the stable API domain existed. Custom and
+# local OAuth endpoints remain untouched.
+if(MTCONTROLS_AUTH_BASE_URL STREQUAL "https://playworship-py5yabecxq-ue.a.run.app" OR
+   MTCONTROLS_AUTH_BASE_URL STREQUAL "https://playworship-345830648064.us-east1.run.app")
+    set(MTCONTROLS_AUTH_BASE_URL "" CACHE STRING
+        "Optional base URL for PlayWorship OAuth start endpoint; defaults to the resolved API backend URL"
+        FORCE)
+endif()
 set(MTCONTROLS_SESSION_REAUTH_MINUTES "7200" CACHE STRING
     "Minutes before forcing re-login in app (default: 5 days)")
 set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
@@ -117,7 +166,7 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
         "Use Bungee Basic as the pitch/tempo backend" FORCE)
     message(STATUS
         "Audio backend: SoundTouch legacy (Windows x86; Bungee runtime unavailable)")
-elseif(NOT MTCONTROLS_USE_BUNGEE)
+elseif(NOT MTCONTROLS_USE_BUNGEE AND NOT _mtcontrols_ios_simulator)
     message(FATAL_ERROR
         "Bungee is mandatory on this platform. "
         "SoundTouch fallback is supported only for Windows x86.")
@@ -336,7 +385,7 @@ set(MTCONTROLS_APP_ICON_PATH
 set(MTCONTROLS_PLIST_TO_MERGE "")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict></dict></plist>")
 endif()
 
 juce_add_plugin(MTControls
@@ -358,10 +407,23 @@ juce_add_plugin(MTControls
     PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
+    # PlayWorship is a landscape-first performance surface on iPad. Keep both
+    # landscape directions available so the device can rotate 180 degrees,
+    # while preventing portrait layouts that compress the mixer and waveform.
+    IPAD_SCREEN_ORIENTATIONS
+        UIInterfaceOrientationLandscapeLeft
+        UIInterfaceOrientationLandscapeRight
+    IPHONE_SCREEN_ORIENTATIONS
+        UIInterfaceOrientationPortrait
+        UIInterfaceOrientationPortraitUpsideDown
+        UIInterfaceOrientationLandscapeLeft
+        UIInterfaceOrientationLandscapeRight
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
     BLUETOOTH_PERMISSION_ENABLED TRUE
     BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
+    LOCAL_NETWORK_PERMISSION_ENABLED TRUE
+    LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to the local development server for authentication and cloud testing."
 )
 
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
@@ -391,6 +453,7 @@ juce_add_binary_data(MTControlsAssets
         assets/fonts/InterMedium.ttf
         assets/fonts/InterSemiBold.ttf
         assets/fonts/InterBold.ttf
+        assets/ui-icons/arrow_left.svg
         assets/ui-icons/skip_back.svg
         assets/ui-icons/rewind.svg
         assets/ui-icons/play.svg
@@ -417,6 +480,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/corner_down_right.svg
         assets/ui-icons/image_edit.svg
         assets/ui-icons/pencil.svg
+        assets/ui-icons/trash.svg
         assets/ui-icons/volume_x.svg
         assets/ui-icons/file_audio.svg
 )
@@ -489,6 +553,18 @@ target_sources(MTControls
         src/data/AssetBootstrapManager.h
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
+        src/data/CloudSyncTypes.h
+        src/data/CloudProjectArchive.cpp
+        src/data/CloudProjectArchive.h
+        src/data/CloudLibraryClient.cpp
+        src/data/CloudLibraryClient.h
+        src/data/CloudSyncIndexStore.cpp
+        src/data/CloudSyncIndexStore.h
+        src/data/CloudTransferClient.cpp
+        src/data/CloudTransferClient.h
+        src/data/CloudSignedUpload.h
+        src/data/SongSyncService.cpp
+        src/data/SongSyncService.h
         src/data/LocalAuthCallbackServer.cpp
         src/data/LocalAuthCallbackServer.h
         src/data/SessionAuthLogger.cpp
@@ -510,6 +586,7 @@ target_sources(MTControls
         src/ui/DeviceNotificationBanner.h
         src/ui/UiCommon.cpp
         src/ui/UiCommon.h
+        src/platform/NativeIpadChoicePicker.h
         src/ui/components/ChannelStripCard.cpp
         src/ui/components/ChannelStripCard.h
         src/ui/components/ClickDivisionPanel.cpp
@@ -566,6 +643,25 @@ target_sources(MTControls
         src/ui/components/WelcomeModal.h
 )
 
+if(APPLE)
+    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.mm)
+else()
+    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.cpp)
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_sources(MTControls PRIVATE
+        src/platform/NativeAuthSession.mm
+        src/platform/NativeAuthSession.h
+        src/platform/NativeIpadChoicePicker.mm)
+    target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
+else()
+    target_sources(MTControls PRIVATE
+        src/platform/NativeAuthSession.cpp
+        src/platform/NativeAuthSession.h
+        src/platform/NativeIpadChoicePicker.cpp)
+endif()
+
 if(MTCONTROLS_BUNGEE_AVAILABLE)
     target_sources(MTControls PRIVATE
         src/audio/BungeeProcessor.cpp
@@ -582,7 +678,8 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_API_BASE_URL}\"
+        MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
+        MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
@@ -611,6 +708,7 @@ endif()
 target_link_libraries(MTControls
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_cryptography
         juce::juce_dsp
         MTControlsAssets
     PUBLIC
