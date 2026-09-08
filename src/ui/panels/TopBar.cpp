@@ -871,7 +871,6 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void TopBar::resized() {
-  int y = 10;
   int square = 40;
   int gap = 8;
   int keyWidth = 72;
@@ -886,7 +885,6 @@ void TopBar::resized() {
   songArtworkSize = 32;
 
   if (responsiveProfile == ResponsiveLayoutProfile::Compact) {
-    y = 8;
     square = 38;
     gap = 6;
     keyWidth = 64;
@@ -900,7 +898,6 @@ void TopBar::resized() {
     songCardHeight = 40;
     songArtworkSize = 30;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
-    y = 8;
     square = 44;
     gap = 8;
     keyWidth = 76;
@@ -918,9 +915,8 @@ void TopBar::resized() {
   if (minimalPhoneMode) {
     const int phoneWidth = getWidth();
     if (phoneWidth < 760) {
-      y = 7;
       square = 44;
-      gap = 4;
+      gap = 6;
       keyWidth = 56;
       metroTotalW = 88;
       metroIconW = 44;
@@ -930,9 +926,8 @@ void TopBar::resized() {
       songCardHeight = 40;
       songArtworkSize = 30;
     } else if (phoneWidth < 880) {
-      y = 8;
       square = 46;
-      gap = 6;
+      gap = 8;
       keyWidth = 62;
       metroTotalW = 94;
       metroIconW = 46;
@@ -942,9 +937,8 @@ void TopBar::resized() {
       songCardHeight = 42;
       songArtworkSize = 32;
     } else {
-      y = 9;
       square = 50;
-      gap = 8;
+      gap = 10;
       keyWidth = 70;
       metroTotalW = 104;
       metroIconW = 48;
@@ -956,7 +950,6 @@ void TopBar::resized() {
     }
   } else if (useTouchOptimisedControls()) {
 #if JUCE_ANDROID
-    y = 10;
     square = 44;
     gap = 8;
     keyWidth = 76;
@@ -970,7 +963,6 @@ void TopBar::resized() {
     songCardHeight = 46;
     songArtworkSize = 36;
 #else
-    y = 14;
     square = 50;
     gap = 10;
     keyWidth = 82;
@@ -997,6 +989,7 @@ void TopBar::resized() {
   const int rightPadding = 12;
   const int transportControlsW =
       (transportButtonCount * square) + ((transportButtonCount - 1) * gap);
+  const int controlY = juce::jmax(0, (getHeight() - square) / 2);
 
   juce::FlexBox transportRow;
   transportRow.flexDirection = juce::FlexBox::Direction::row;
@@ -1021,7 +1014,7 @@ void TopBar::resized() {
   if (!minimalPhoneProfile)
     addTransportButton(fadeButton, true);
   transportRow.performLayout(juce::Rectangle<float>(
-      static_cast<float>(leftPadding), static_cast<float>(y - 2),
+      static_cast<float>(leftPadding), static_cast<float>(controlY),
       static_cast<float>(transportControlsW), static_cast<float>(square)));
 
   const int transportW = leftPadding + transportControlsW + gap;
@@ -1117,7 +1110,7 @@ void TopBar::resized() {
       addItem(systemUsageDisplay, usageWidth, true);
 
     rightRow.performLayout(juce::Rectangle<float>(
-        static_cast<float>(leftX), static_cast<float>(y - 2),
+        static_cast<float>(leftX), static_cast<float>(controlY),
         static_cast<float>(controlsW), static_cast<float>(square)));
 
     return leftX - gap;
@@ -1145,7 +1138,7 @@ void TopBar::resized() {
   const int cardLeft = transportW + 8;
   const int cardRight = rightX - 8;
   const int centerW = cardRight - cardLeft;
-  if (centerW > 0) {
+  if (!minimalPhoneMode && centerW > 0) {
     const auto titleText = songTitleText.isNotEmpty()
                                ? songTitleText
                                : L10n::tr("Sin canción", "No song loaded");
