@@ -51,6 +51,15 @@ void deliverDownload(CloudTransferClient::DownloadCallback callback,
       });
 }
 
+void deliverDelete(CloudTransferClient::DeleteCallback callback,
+                   CloudTransferError error) {
+  if (!callback) return;
+  juce::MessageManager::callAsync(
+      [done = std::move(callback), transferError = std::move(error)]() mutable {
+        done(std::move(transferError));
+      });
+}
+
 void deliverProgress(CloudTransferClient::ProgressCallback callback,
                      CloudTransferProgress progress) {
   if (!callback) return;
@@ -374,4 +383,52 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
     }
   };
   pool.addJob(new Job(std::move(credentials), std::move(songId), std::move(destinationDirectory), std::move(progress), std::move(callback)), true);
+}
+
+
+void CloudTransferClient::deleteSong(CloudTransferCredentials credentials,
+                                     juce::String songId,
+                                     DeleteCallback callback) {
+  struct Job final : juce::ThreadPoolJob {
+    CloudTransferCredentials credentials;
+    juce::String songId;
+    DeleteCallback callback;
+    Job(CloudTransferCredentials c, juce::String id, DeleteCallback done)
+        : ThreadPoolJob("CloudDelete"), credentials(std::move(c)),
+          songId(std::move(id)), callback(std::move(done)) {}
+    JobStatus runJob() override {
+      CloudTransferError error;
+      juce::String idToken;
+      if (songId.trim().isEmpty()) {
+        deliverDelete(std::move(callback),
+                      makeError("DELETE_INVALID", "Missing cloud song id"));
+        return jobHasFinished;
+      }
+      if (!refreshToken(credentials, idToken, error)) {
+        SessionAuthLogger::write("[CloudDelete] token refresh failed code=" +
+                                 error.code + " message=" + error.message);
+        deliverDelete(std::move(callback), std::move(error));
+        return jobHasFinished;
+      }
+      auto* request = new JsonObject();
+      request->setProperty("songId", songId.trim());
+      juce::String response;
+      SessionAuthLogger::write("[CloudDelete] request songId=" + songId.trim());
+      if (!postJson(normalizedBase(credentials.apiBaseUrl) +
+                        "/api/song-sync/delete",
+                    idToken, juce::JSON::toString(juce::var(request)),
+                    response, error)) {
+        SessionAuthLogger::write("[CloudDelete] failed status=" +
+                                 juce::String(error.httpCode) + " code=" +
+                                 error.code + " message=" + error.message);
+        deliverDelete(std::move(callback), std::move(error));
+        return jobHasFinished;
+      }
+      SessionAuthLogger::write("[CloudDelete] complete songId=" + songId.trim());
+      deliverDelete(std::move(callback), {});
+      return jobHasFinished;
+    }
+  };
+  pool.addJob(new Job(std::move(credentials), std::move(songId),
+                      std::move(callback)), true);
 }

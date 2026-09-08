@@ -1029,6 +1029,65 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
               });
             });
       });
+  songListRaw->setOnCloudDeleteRequested(
+      [this](const juce::String &remoteSongId, const juce::String &title) {
+        const auto id = remoteSongId.trim();
+        if (id.isEmpty())
+          return;
+        const auto songTitle = title.trim().isNotEmpty()
+                                   ? title.trim()
+                                   : L10n::tr("esta canción", "this song");
+        const auto message = L10n::tr(
+            juce::String("Eliminar \"") + songTitle +
+                "\" de la nube? Dejará de estar disponible en tus otros dispositivos. La copia local se conservará.",
+            juce::String("Delete \"") + songTitle +
+                "\" from the cloud? It will no longer be available on your other devices. The local copy will be kept.");
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::WarningIcon)
+                .withTitle(L10n::tr("Eliminar de la nube", "Delete from cloud"))
+                .withMessage(message)
+                .withButton(L10n::tr("Eliminar", "Delete"))
+                .withButton(L10n::tr("Cancelar", "Cancel")),
+            [this, id](int result) {
+              if (result != 1 || !activeSession.allowed ||
+                  activeSession.firebaseApiKey.isEmpty() ||
+                  activeSession.refreshToken.isEmpty() ||
+                  !cloudDeletesInProgress.insert(id.toStdString()).second)
+                return;
+              if (songSyncService == nullptr)
+                songSyncService = std::make_unique<SongSyncService>();
+              const CloudTransferCredentials credentials{getApiBaseUrl(),
+                                                         activeSession.firebaseApiKey,
+                                                         activeSession.refreshToken};
+              const auto safeThis =
+                  juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+              songSyncService->deleteRemoteSong(
+                  credentials, id, [safeThis, id](CloudTransferError failure) {
+                    if (safeThis == nullptr)
+                      return;
+                    safeThis->cloudDeletesInProgress.erase(id.toStdString());
+                    if (failure.code.isNotEmpty()) {
+                      juce::NativeMessageBox::showMessageBoxAsync(
+                          juce::MessageBoxIconType::WarningIcon,
+                          L10n::tr("No se pudo eliminar de la nube",
+                                   "Couldn't delete from cloud"),
+                          failure.message.isNotEmpty() ? failure.message : failure.code);
+                      return;
+                    }
+                    CloudSyncIndexStore::removeByRemoteSongId(id);
+                    if (safeThis->songListPanelRaw != nullptr)
+                      safeThis->songListPanelRaw->refreshFromStorageView();
+                    safeThis->refreshCloudLibrary({});
+                    juce::NativeMessageBox::showMessageBoxAsync(
+                        juce::MessageBoxIconType::InfoIcon,
+                        L10n::tr("Canción eliminada de la nube",
+                                 "Song deleted from cloud"),
+                        L10n::tr("La copia local se conservó en la Biblioteca.",
+                                 "The local copy was kept in the Library."));
+                  });
+            });
+      });
   songListRaw->setOnCloudSearchRequested(
       [this](const juce::String &query) { refreshCloudLibrary(query); });
   songListRaw->setOnCloudDownloadRequested(

@@ -60,6 +60,7 @@ public:
   using ProgressCallback = std::function<void(CloudTransferProgress)>;
   using UploadCallback = std::function<void(CloudUploadResult, CloudTransferError)>;
   using DownloadCallback = std::function<void(CloudDownloadResult, CloudTransferError)>;
+  using DeleteCallback = std::function<void(CloudTransferError)>;
 
   CloudTransferClient();
   ~CloudTransferClient();
@@ -69,6 +70,9 @@ public:
   void download(CloudTransferCredentials credentials, juce::String songId,
                 juce::File destinationDirectory, ProgressCallback progress,
                 DownloadCallback callback);
+  /** Deletes one remote song owned by the authenticated account. */
+  void deleteSong(CloudTransferCredentials credentials, juce::String songId,
+                  DeleteCallback callback);
   void cancelAll();
 
 private:

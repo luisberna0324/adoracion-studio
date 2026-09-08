@@ -153,3 +153,11 @@ void SongSyncService::download(CloudTransferCredentials credentials, juce::Strin
                                           std::move(done)), true);
       });
 }
+
+
+void SongSyncService::deleteRemoteSong(CloudTransferCredentials credentials,
+                                       juce::String remoteSongId,
+                                       DeleteCallback callback) {
+  transfer.deleteSong(std::move(credentials), std::move(remoteSongId),
+                      std::move(callback));
+}

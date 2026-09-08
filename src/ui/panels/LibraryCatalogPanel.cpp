@@ -1001,6 +1001,10 @@ void LibraryCatalogPanel::setOnCloudSearchRequested(CloudSearchRequested cb) {
   onCloudSearchRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnCloudDeleteRequested(CloudDeleteRequested cb) {
+  onCloudDeleteRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnSongDeleteRequested(SongDeleteRequested cb) {
   onSongDeleteRequested = std::move(cb);
 }
@@ -1201,6 +1205,7 @@ void LibraryCatalogPanel::rebuildRows() {
       item.artworkPath = song.artworkPath;
       item.accentColour = UITheme::accent;
       item.isCloudOnly = true;
+      item.remoteSongId = song.songId;
       const auto link = std::find_if(
           cloudLinks.begin(), cloudLinks.end(), [&song](const auto& candidate) {
             return candidate.remoteSongId == song.songId;
@@ -1256,6 +1261,8 @@ void LibraryCatalogPanel::rebuildRows() {
           return candidate.projectId == projectId;
         });
     item.isCloudSynced = item.isProjectBacked && link != cloudLinks.end();
+    if (link != cloudLinks.end())
+      item.remoteSongId = link->remoteSongId;
     item.isCloudDownloaded = item.isCloudSynced && link->downloadedAtMs > 0;
     if (const auto upload = cloudUploadIndicators.find(item.songId.toStdString());
         upload != cloudUploadIndicators.end()) {
@@ -1484,6 +1491,20 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
            },
            SvgIconName::FileAudio});
     }
+    actions.push_back(
+        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
+         false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto& targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.remoteSongId.isNotEmpty())
+             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
+         },
+         SvgIconName::Trash});
     auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
     panel->setSize(240, panel->preferredHeight());
     auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
@@ -1544,6 +1565,22 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
            if (targetItem.songId.isNotEmpty())
              safeThis->onProjectUploadRequested(targetItem.songId);
          }, SvgIconName::FileAudio});
+  }
+  if (selectedItem.isCloudSynced) {
+    actions.push_back(
+        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
+         false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto& targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.remoteSongId.isNotEmpty())
+             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
+         },
+         SvgIconName::Trash});
   }
   actions.push_back({L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
                      [safeThis, rowIndex] {

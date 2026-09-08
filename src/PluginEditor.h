@@ -90,6 +90,7 @@ private:
   std::unique_ptr<CloudLibraryClient> cloudLibraryClient;
   std::unordered_set<std::string> cloudUploadsInProgress;
   std::unordered_set<std::string> cloudDownloadsInProgress;
+  std::unordered_set<std::string> cloudDeletesInProgress;
   uint64_t cloudLibrarySearchGeneration = 0;
   bool mainUiInitialized = false;
   ResponsiveLayoutProfile responsiveLayoutProfile =

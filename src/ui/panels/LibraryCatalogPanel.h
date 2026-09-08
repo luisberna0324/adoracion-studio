@@ -26,6 +26,8 @@ public:
       std::function<void(const juce::String &songId,
                          const juce::String &targetSetlistId)>;
   using CloudSearchRequested = std::function<void(const juce::String &query)>;
+  using CloudDeleteRequested = std::function<void(const juce::String &songId,
+                                                   const juce::String &title)>;
   using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using CreateSongRequested = std::function<void()>;
@@ -41,6 +43,7 @@ public:
   void setOnProjectUploadRequested(ProjectUploadRequested cb);
   void setOnCloudDownloadRequested(CloudDownloadRequested cb);
   void setOnCloudSearchRequested(CloudSearchRequested cb);
+  void setOnCloudDeleteRequested(CloudDeleteRequested cb);
   void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnCreateSongRequested(CreateSongRequested cb);
@@ -101,6 +104,7 @@ private:
     bool isCloudSynced = false;
     bool isCloudDownloaded = false;
     juce::String localSongId;
+    juce::String remoteSongId;
     double cloudUploadFraction = -1.0;
     juce::String cloudUploadPhase;
   };
@@ -285,6 +289,7 @@ private:
   ProjectUploadRequested onProjectUploadRequested;
   CloudDownloadRequested onCloudDownloadRequested;
   CloudSearchRequested onCloudSearchRequested;
+  CloudDeleteRequested onCloudDeleteRequested;
   SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
   CreateSongRequested onCreateSongRequested;

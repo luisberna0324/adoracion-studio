@@ -101,6 +101,20 @@ bool CloudSyncIndexStore::removeByProjectId(const juce::String& projectId) {
   return oldSize == links.size() || saveAll(links);
 }
 
+
+bool CloudSyncIndexStore::removeByRemoteSongId(const juce::String& remoteSongId) {
+  const auto trimmedRemoteSongId = remoteSongId.trim();
+  if (trimmedRemoteSongId.isEmpty()) return false;
+  auto links = loadAll();
+  const auto oldSize = links.size();
+  links.erase(std::remove_if(links.begin(), links.end(),
+                             [&trimmedRemoteSongId](const auto& link) {
+                               return link.remoteSongId == trimmedRemoteSongId;
+                             }),
+              links.end());
+  return oldSize == links.size() || saveAll(links);
+}
+
 CloudLocalPurgeResult CloudSyncIndexStore::purgeLocalState() {
   CloudLocalPurgeResult result;
   const auto root = SongLibraryStore::getRootDirectory();

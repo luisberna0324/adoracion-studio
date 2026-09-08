@@ -718,6 +718,11 @@ SongListPanel::SongListPanel() {
         if (onCloudSearchRequested != nullptr)
           onCloudSearchRequested(query);
       });
+  libraryCatalogPanel.setOnCloudDeleteRequested(
+      [this](const juce::String &songId, const juce::String &title) {
+        if (onCloudDeleteRequested != nullptr)
+          onCloudDeleteRequested(songId, title);
+      });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
     const auto trimmedSongId = songId.trim();
     if (trimmedSongId.isEmpty())
@@ -868,6 +873,11 @@ void SongListPanel::setOnCloudDownloadRequested(
 void SongListPanel::setOnCloudSearchRequested(
     std::function<void(const juce::String &)> cb) {
   onCloudSearchRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudDeleteRequested(
+    std::function<void(const juce::String &, const juce::String &)> cb) {
+  onCloudDeleteRequested = std::move(cb);
 }
 
 void SongListPanel::setCloudUploadProgress(const juce::String &songId,

@@ -192,35 +192,49 @@ void WelcomeModal::paint(juce::Graphics &g) {
 }
 
 void WelcomeModal::resized() {
-  const bool wide = getWidth() >= 900 && getHeight() >= 560;
+  const bool portrait = getHeight() >= getWidth();
+  const bool wide = !portrait && getWidth() >= 900 && getHeight() >= 560;
+  const bool compactLandscape = !portrait;
   const int outerPad = juce::jlimit(18, 48, juce::jmin(getWidth(), getHeight()) / 14);
   auto available = getLocalBounds().reduced(outerPad);
-  const int cardW = juce::jmin(wide ? 900 : 520, available.getWidth());
-  const int cardH = juce::jmin(wide ? 500 : 610, available.getHeight());
+  const int cardW = juce::jmin((wide || compactLandscape) ? 900 : 520,
+                               available.getWidth());
+  const int cardH = juce::jmin(wide ? 500 : (compactLandscape
+                                                 ? available.getHeight()
+                                                 : 610),
+                               available.getHeight());
   contentBounds = juce::Rectangle<int>(cardW, cardH)
                       .withCentre(available.getCentre());
 
-  if (wide) {
-    auto inner = contentBounds.reduced(48, 42);
+  if (wide || compactLandscape) {
+    const int horizontalInset = compactLandscape ? 24 : 48;
+    const int verticalInset = compactLandscape ? 20 : 42;
+    auto inner = contentBounds.reduced(horizontalInset, verticalInset);
     auto brandArea = inner.removeFromLeft(inner.getWidth() * 45 / 100);
-    inner.removeFromLeft(42);
+    inner.removeFromLeft(compactLandscape ? 20 : 42);
     auto column = inner;
 
     if (logoImage.isValid()) {
       logo.setImage(logoImage, juce::RectanglePlacement::centred);
-      logo.setBounds(brandArea.reduced(8, 72));
+      logo.setBounds(brandArea.reduced(8, compactLandscape ? 20 : 72));
     }
 
-    column.removeFromTop(24);
-    title.setBounds(column.removeFromTop(82));
-    column.removeFromTop(8);
-    subtitle.setBounds(column.removeFromTop(58));
-    column.removeFromTop(14);
-    status.setBounds(column.removeFromTop(46));
-    column.removeFromTop(22);
-    loginButton.setBounds(column.removeFromTop(50));
-    column.removeFromTop(12);
-    moreInfoButton.setBounds(column.removeFromTop(50));
+    const int topGap = compactLandscape ? 4 : 24;
+    const int titleH = compactLandscape ? 58 : 82;
+    const int subtitleH = compactLandscape ? 38 : 58;
+    const int statusH = compactLandscape ? 30 : 46;
+    const int buttonH = compactLandscape ? 40 : 50;
+    const int gap = compactLandscape ? 6 : 12;
+    column.removeFromTop(topGap);
+    title.setBounds(column.removeFromTop(titleH));
+    column.removeFromTop(gap);
+    subtitle.setBounds(column.removeFromTop(subtitleH));
+    column.removeFromTop(gap);
+    status.setBounds(column.removeFromTop(statusH));
+    column.removeFromTop(gap);
+    loginButton.setBounds(column.removeFromTop(buttonH));
+    column.removeFromTop(gap);
+    moreInfoButton.setBounds(column.removeFromTop(buttonH));
     return;
   }
 

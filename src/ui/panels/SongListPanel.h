@@ -56,6 +56,8 @@ public:
   void setOnCloudDownloadRequested(
       std::function<void(const juce::String &, const juce::String &)> cb);
   void setOnCloudSearchRequested(std::function<void(const juce::String &)> cb);
+  void setOnCloudDeleteRequested(
+      std::function<void(const juce::String &, const juce::String &)> cb);
   void setSaveProjectStateProvider(std::function<bool()> availableProvider,
                                    std::function<bool()> pendingProvider);
   int getSongCount() const;
@@ -282,6 +284,8 @@ private:
       onCloudDownloadRequested;
   juce::String libraryTargetSetlistId;
   std::function<void(const juce::String &)> onCloudSearchRequested;
+  std::function<void(const juce::String &, const juce::String &)>
+      onCloudDeleteRequested;
   std::function<bool()> saveProjectAvailableProvider;
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;

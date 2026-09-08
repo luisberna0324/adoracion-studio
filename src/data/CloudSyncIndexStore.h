@@ -26,6 +26,7 @@ public:
   static bool findByRemoteSongId(const juce::String& remoteSongId, CloudProjectLink& result);
   static bool upsert(CloudProjectLink link);
   static bool removeByProjectId(const juce::String& projectId);
+  static bool removeByRemoteSongId(const juce::String& remoteSongId);
   /** Resets local library and caches without deleting any .pwproj package. */
   static CloudLocalPurgeResult purgeLocalState();
 

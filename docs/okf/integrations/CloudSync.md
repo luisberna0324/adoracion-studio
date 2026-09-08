@@ -514,6 +514,28 @@ separados y con tests; el orden propuesto es:
   migración: los campos nuevos se siembran vacíos y se llenan en
   el primer import.
 
+
+## Eliminación remota de canciones
+
+La acción **Eliminar de la nube** del catálogo sólo se muestra para una canción
+publicada o para una entrada visible en Cloud. Antes de iniciarla, la app pide
+confirmación explícita y aclara que el proyecto y las canciones locales siguen
+en la Biblioteca.
+
+La app envía `POST /api/song-sync/delete` con `{ "songId": "…" }` y un token
+Firebase vigente. El backend autentica el usuario, elimina únicamente su
+documento `cloudSongs/<songId>`, descuenta `storageBytes` y `syncedSongCount`
+del perfil en la misma transacción de Firestore. Después elimina todos los
+manifests de todas las revisiones bajo el prefijo R2 de la canción y usa esos
+manifests para borrar los blobs indexados por SHA-256 que no estén referenciados
+por ninguna otra canción del mismo usuario.
+Los hashes que siguen compartidos se conservan para no corromper otra canción.
+
+Al recibir éxito, el cliente quita el vínculo local `remoteSongId` de
+`cloud-sync-index.json`, actualiza el catálogo Cloud y mantiene intactos el
+`.pwproj`, audio cacheado y la entrada local. Una publicación posterior de ese
+proyecto crea una nueva canción remota.
+
 ## 7. Referencias
 
 - `src/data/CloudProjectArchive.cpp:59-148` — `buildUpload`

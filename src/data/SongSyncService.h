@@ -8,6 +8,7 @@ class SongSyncService final {
 public:
   using ProgressCallback = CloudTransferClient::ProgressCallback;
   using CompletionCallback = std::function<void(ImportedSongData, CloudTransferError)>;
+  using DeleteCallback = std::function<void(CloudTransferError)>;
 
   SongSyncService();
   ~SongSyncService();
@@ -17,6 +18,8 @@ public:
   void download(CloudTransferCredentials credentials, juce::String remoteSongId,
                 juce::File cacheDirectory, ProgressCallback progress,
                 CompletionCallback callback);
+  void deleteRemoteSong(CloudTransferCredentials credentials, juce::String remoteSongId,
+                        DeleteCallback callback);
   void cancelAll();
 
 private:
