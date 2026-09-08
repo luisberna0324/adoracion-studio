@@ -2413,7 +2413,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 "You'll need to sign in again to access your library and Cloud songs."),
             L10n::tr(u8"Cerrar sesión", "Sign out"),
             L10n::tr("Cancelar", "Cancel"), this);
-        juce::NativeMessageBox::showAsync(
+        juce::AlertWindow::showAsync(
             options,
             [safe = juce::Component::SafePointer<
                  MTControlsAudioProcessorEditor>(this)](const int result) {
@@ -2432,7 +2432,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 "The Library will be empty. No .pwproj file or cloud content will be deleted."),
             L10n::tr("Purgar", "Purge"), L10n::tr("Cancelar", "Cancel"),
             this);
-        juce::NativeMessageBox::showAsync(
+        juce::AlertWindow::showAsync(
             options,
             [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
               if (result != 0 || safeThis == nullptr)
