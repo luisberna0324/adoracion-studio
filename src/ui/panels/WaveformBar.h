@@ -232,13 +232,13 @@ private:
   SvgToolbarButton guideMapButton{"guideMap", SvgIconName::Music};
   SvgToolbarButton tempoMapButton{"tempoMap", SvgIconName::Metronome};
   juce::Label snapModeLabel;
-  juce::ComboBox snapModeBox;
+  IpadNativeComboBox snapModeBox;
   juce::TextButton sectionMenuButton;
   juce::TextButton splitTempoRegionButton;
   juce::Label tempoBpmLabel;
   juce::TextEditor tempoBpmEditor;
   juce::Label tempoSignatureLabel;
-  juce::ComboBox tempoSignatureBox;
+  IpadNativeComboBox tempoSignatureBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   SnapMode snapMode = SnapMode::Bar;
   TimelineViewMode timelineViewMode = TimelineViewMode::GuideMap;
@@ -312,6 +312,11 @@ private:
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
   double followLastFrameTimestampSec = 0.0;
+#if JUCE_ANDROID
+  bool androidVisualProgressValid = false;
+  float androidVisualProgressRatio = 0.0f;
+  double androidVisualProgressTimestampSec = 0.0;
+#endif
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
   bool lastTimerEndValid = false;

@@ -1,5 +1,6 @@
 #include "LibraryCatalogPanel.h"
 
+#include "../../data/CloudSyncIndexStore.h"
 #include "../../data/Localization.h"
 #include "../../data/SongLibraryStore.h"
 
@@ -493,6 +494,21 @@ void LibraryCatalogPanel::CatalogContent::setNowPlayingSong(const juce::String &
   repaint();
 }
 
+void LibraryCatalogPanel::CatalogContent::setCloudUploadProgress(
+    const juce::String &songId, const double fraction,
+    const juce::String &phase) {
+  for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+    auto &row = rows[static_cast<size_t>(index)];
+    if (row.songId != songId)
+      continue;
+    row.cloudUploadFraction =
+        fraction < 0.0 ? -1.0 : juce::jlimit(0.0, 1.0, fraction);
+    row.cloudUploadPhase = phase;
+    repaint(itemBoundsForIndex(index).expanded(3));
+    break;
+  }
+}
+
 void LibraryCatalogPanel::CatalogContent::setOnLoadRequested(LoadCallback cb) {
   onLoadRequested = std::move(cb);
 }
@@ -527,7 +543,9 @@ LibraryCatalogPanel::CatalogContent::itemBoundsForIndex(const int index) const {
 
 juce::Rectangle<int>
 LibraryCatalogPanel::CatalogContent::toggleBoundsForIndex(const int index) const {
-  if (!selectionEnabled)
+  if (!selectionEnabled ||
+      !juce::isPositiveAndBelow(index, static_cast<int>(rows.size())) ||
+      rows[static_cast<size_t>(index)].isCloudOnly)
     return {};
   auto row = itemBoundsForIndex(index).reduced(16, 12);
   constexpr int buttonWidth = 74;
@@ -537,7 +555,12 @@ LibraryCatalogPanel::CatalogContent::toggleBoundsForIndex(const int index) const
 
 juce::Rectangle<int>
 LibraryCatalogPanel::CatalogContent::menuBoundsForIndex(const int index) const {
-  if (hideOptionsButtons)
+  const bool isCloudRow =
+      juce::isPositiveAndBelow(index, static_cast<int>(rows.size())) &&
+      rows[static_cast<size_t>(index)].isCloudOnly;
+  // In setlist-target mode local rows use the Add action, while Cloud still
+  // needs its menu to materialize the project before it can be added.
+  if (hideOptionsButtons && !isCloudRow)
     return {};
   auto row = itemBoundsForIndex(index).reduced(14, 7);
   row.removeFromLeft(6);
@@ -581,8 +604,6 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     auto fill = juce::Colours::transparentBlack;
     if (pendingSelected)
       fill = fill.interpolatedWith(UITheme::accent, 0.14f);
-    if (nowPlaying)
-      fill = fill.interpolatedWith(UITheme::accent, 0.11f);
     if (hovered)
       fill = fill.interpolatedWith(UITheme::cardBgHover, 0.28f);
 
@@ -701,6 +722,20 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     g.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
     g.drawFittedText(item.title, titleArea, juce::Justification::centredLeft, 1);
 
+    juce::String sourceLabel;
+    auto sourceColour = UITheme::textSecondary;
+    if (item.isProjectBacked && !item.isCloudSynced) {
+      sourceLabel = ".pwproj";
+    }
+    juce::Rectangle<int> sourceBadgeArea;
+    if (sourceLabel.isNotEmpty()) {
+      g.setFont(makeAppFont(8.0f, AppFontWeight::SemiBold));
+      const int badgeWidth = juce::jmax(
+          42, juce::roundToInt(measureTextWidth(g.getCurrentFont(), sourceLabel)) + 12);
+      sourceBadgeArea = metaArea.removeFromRight(badgeWidth);
+      metaArea.removeFromRight(7);
+    }
+
     g.setColour(UITheme::textSecondary.withAlpha(0.95f * rowAlpha));
     g.setFont(makeAppFont(10.8f, AppFontWeight::Medium));
     g.drawFittedText(item.artist.toUpperCase(), artistArea,
@@ -713,6 +748,16 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));
     g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     g.drawFittedText(metadataText, metaArea, juce::Justification::centredLeft, 1);
+    if (!sourceBadgeArea.isEmpty()) {
+      g.setColour(sourceColour.withAlpha(0.16f * rowAlpha));
+      g.fillRoundedRectangle(sourceBadgeArea.toFloat(), 4.0f);
+      g.setColour(sourceColour.withAlpha(rowAlpha));
+      g.drawRoundedRectangle(sourceBadgeArea.toFloat().reduced(0.5f), 4.0f,
+                             0.75f);
+      g.setFont(makeAppFont(8.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(sourceLabel, sourceBadgeArea,
+                       juce::Justification::centred, 1);
+    }
 
     if (!menuBounds.isEmpty()) {
       auto menuRect = menuBounds.toFloat();
@@ -730,7 +775,19 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
       juce::ignoreUnused(ultraCompact);
     }
 
-    if (i + 1 < static_cast<int>(rows.size())) {
+    if (item.cloudUploadFraction >= 0.0) {
+      const auto progressArea = juce::Rectangle<float>(
+          static_cast<float>(artworkArea.getRight() + 12),
+          static_cast<float>(rowBounds.getBottom() - 4),
+          static_cast<float>(juce::jmax(1, rowBounds.getRight() -
+                                           artworkArea.getRight() - 24)),
+          3.0f);
+      g.setColour(AppColours::separator.withAlpha(0.82f));
+      g.fillRect(progressArea);
+      g.setColour(UITheme::accent);
+      g.fillRect(progressArea.withWidth(
+          progressArea.getWidth() * static_cast<float>(item.cloudUploadFraction)));
+    } else if (i + 1 < static_cast<int>(rows.size())) {
       g.setColour(AppColours::separator);
       g.drawLine(static_cast<float>(artworkArea.getRight() + 12),
                  static_cast<float>(rowBounds.getBottom() - 1),
@@ -738,6 +795,7 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                  static_cast<float>(rowBounds.getBottom() - 1), 1.0f);
     }
   }
+
 }
 
 void LibraryCatalogPanel::CatalogContent::mouseMove(const juce::MouseEvent &event) {
@@ -766,7 +824,6 @@ void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event)
   const int rowIndex = rowIndexAt(point);
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
     return;
-
   if (const auto toggleBounds = toggleBoundsForIndex(rowIndex);
       !toggleBounds.isEmpty() && toggleBounds.contains(point)) {
     if (onToggleRequested)
@@ -779,6 +836,9 @@ void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event)
       onOptionsRequested(rowIndex, menuBounds);
     return;
   }
+
+  if (rows[static_cast<size_t>(rowIndex)].isCloudOnly)
+    return;
 }
 
 void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
@@ -786,6 +846,8 @@ void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
   const auto point = event.position.toInt();
   const int rowIndex = rowIndexAt(point);
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
+    return;
+  if (rows[static_cast<size_t>(rowIndex)].isCloudOnly)
     return;
 
   if (const auto toggleBounds = toggleBoundsForIndex(rowIndex);
@@ -850,7 +912,13 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
       L10n::tr(u8"Buscar canción en biblioteca", "Search song in library"));
   searchField.editor().setTooltip(
       L10n::tr(u8"Buscar canción en biblioteca", "Search song in library"));
-  searchField.setOnTextChange([this](const juce::String &) { rebuildRows(); });
+  searchField.setOnTextChange([this](const juce::String &query) {
+    rebuildRows();
+    if (cloudFilterButton.isActive() && onCloudSearchRequested != nullptr) {
+      setCloudSearchLoading(true);
+      onCloudSearchRequested(query);
+    }
+  });
   addAndMakeVisible(searchField);
 
   localFilterButton.setActive(true);
@@ -858,10 +926,15 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
     cloudFilterButton.setActive(true);
     localFilterButton.setActive(false);
     rebuildRows();
+    if (onCloudSearchRequested != nullptr) {
+      setCloudSearchLoading(true);
+      onCloudSearchRequested(searchField.getText());
+    }
   };
   localFilterButton.onClick = [this] {
     cloudFilterButton.setActive(false);
     localFilterButton.setActive(true);
+    setCloudSearchLoading(false);
     rebuildRows();
   };
   addAndMakeVisible(cloudFilterButton);
@@ -914,6 +987,24 @@ void LibraryCatalogPanel::setOnSongConvertRequested(SongConvertRequested cb) {
   onSongConvertRequested = std::move(cb);
 }
 
+void LibraryCatalogPanel::setOnProjectUploadRequested(
+    ProjectUploadRequested cb) {
+  onProjectUploadRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnCloudDownloadRequested(
+    CloudDownloadRequested cb) {
+  onCloudDownloadRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnCloudSearchRequested(CloudSearchRequested cb) {
+  onCloudSearchRequested = std::move(cb);
+}
+
+void LibraryCatalogPanel::setOnCloudDeleteRequested(CloudDeleteRequested cb) {
+  onCloudDeleteRequested = std::move(cb);
+}
+
 void LibraryCatalogPanel::setOnSongDeleteRequested(SongDeleteRequested cb) {
   onSongDeleteRequested = std::move(cb);
 }
@@ -944,6 +1035,10 @@ void LibraryCatalogPanel::setActiveSetlistId(const juce::String &setlistId) {
   refreshFromStorage();
 }
 
+void LibraryCatalogPanel::setTargetSetlistId(const juce::String &setlistId) {
+  targetSetlistId = setlistId.trim();
+}
+
 void LibraryCatalogPanel::setHeaderMode(const HeaderMode mode) {
   if (headerMode == mode)
     return;
@@ -960,6 +1055,17 @@ void LibraryCatalogPanel::setNowPlayingSong(const juce::String &songId,
   nowPlayingSongId = songId;
   playbackActive = isPlaying;
   content.setNowPlayingSong(songId, isPlaying);
+}
+
+void LibraryCatalogPanel::setCloudSongs(std::vector<CloudSongSummary> songs) {
+  cloudSongs = std::move(songs);
+  setCloudSearchLoading(false);
+  if (cloudFilterButton.isActive())
+    rebuildRows();
+}
+
+void LibraryCatalogPanel::setCloudSearchLoading(const bool isLoading) {
+  searchField.setLoading(isLoading);
 }
 
 void LibraryCatalogPanel::refreshFromStorage() {
@@ -1078,10 +1184,56 @@ void LibraryCatalogPanel::resized() {
 
 void LibraryCatalogPanel::rebuildRows() {
   visibleRows.clear();
-  visibleRows.reserve(librarySongs.size());
+  visibleRows.reserve(librarySongs.size() + cloudSongs.size());
+  const auto cloudLinks = CloudSyncIndexStore::loadAll();
+
+  if (cloudFilterButton.isActive()) {
+    const auto query = searchField.getText().trim().toLowerCase();
+    for (const auto &song : cloudSongs) {
+      if (query.isNotEmpty() &&
+          !(song.title + " " + song.artist).toLowerCase().contains(query))
+        continue;
+      CatalogItem item;
+      item.songId = song.songId;
+      item.title = toSentenceCase(song.title);
+      item.artist = song.artist;
+      item.key = song.key;
+      item.createdMs = song.updatedAtMs;
+      item.bpm = song.bpm;
+      item.stemCount = song.stemCount;
+      item.durationSeconds = song.durationSeconds;
+      item.artworkPath = song.artworkPath;
+      item.accentColour = UITheme::accent;
+      item.isCloudOnly = true;
+      item.remoteSongId = song.songId;
+      const auto link = std::find_if(
+          cloudLinks.begin(), cloudLinks.end(), [&song](const auto& candidate) {
+            return candidate.remoteSongId == song.songId;
+          });
+      if (link != cloudLinks.end()) {
+        const auto localSong = std::find_if(
+            librarySongs.begin(), librarySongs.end(), [&link](const auto& candidate) {
+              return projectIdentityForSong(candidate) == link->projectId;
+            });
+        if (localSong != librarySongs.end()) {
+          item.isCloudDownloaded = link->downloadedAtMs > 0;
+          item.localSongId = localSong->id;
+          item.inSetlist = activeSetlistSongIds.contains(item.localSongId);
+        }
+      }
+      if (const auto progress = cloudUploadIndicators.find(item.songId.toStdString());
+          progress != cloudUploadIndicators.end()) {
+        item.cloudUploadFraction = progress->second.fraction;
+        item.cloudUploadPhase = progress->second.phase;
+      }
+      visibleRows.push_back(std::move(item));
+    }
+  }
 
   for (size_t i = 0; i < librarySongs.size(); ++i) {
     const auto &song = librarySongs[i];
+    if (cloudFilterButton.isActive())
+      continue;
     if (!matchesSearch(song))
       continue;
 
@@ -1108,6 +1260,20 @@ void LibraryCatalogPanel::rebuildRows() {
     item.isNowPlaying =
         playbackActive && nowPlayingSongId.isNotEmpty() && item.songId == nowPlayingSongId;
     item.isProjectBacked = isProjectBackedSong(song);
+    const auto projectId = projectIdentityForSong(song);
+    const auto link = std::find_if(
+        cloudLinks.begin(), cloudLinks.end(), [&projectId](const auto &candidate) {
+          return candidate.projectId == projectId;
+        });
+    item.isCloudSynced = item.isProjectBacked && link != cloudLinks.end();
+    if (link != cloudLinks.end())
+      item.remoteSongId = link->remoteSongId;
+    item.isCloudDownloaded = item.isCloudSynced && link->downloadedAtMs > 0;
+    if (const auto upload = cloudUploadIndicators.find(item.songId.toStdString());
+        upload != cloudUploadIndicators.end()) {
+      item.cloudUploadFraction = upload->second.fraction;
+      item.cloudUploadPhase = upload->second.phase;
+    }
     visibleRows.push_back(std::move(item));
   }
 
@@ -1157,6 +1323,23 @@ void LibraryCatalogPanel::rebuildRows() {
   refreshFooterState();
   updateContentSize();
   repaint();
+}
+
+void LibraryCatalogPanel::setCloudUploadProgress(const juce::String &songId,
+                                                  const double fraction,
+                                                  const juce::String &phase) {
+  if (songId.isEmpty())
+    return;
+  cloudUploadIndicators[songId.toStdString()] = {
+      juce::jlimit(0.0, 1.0, fraction), phase};
+  content.setCloudUploadProgress(songId, fraction, phase);
+}
+
+void LibraryCatalogPanel::clearCloudUploadProgress(const juce::String &songId) {
+  if (songId.isEmpty())
+    return;
+  cloudUploadIndicators.erase(songId.toStdString());
+  content.setCloudUploadProgress(songId, -1.0, {});
 }
 
 void LibraryCatalogPanel::updateContentSize() {
@@ -1261,6 +1444,85 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size())))
     return;
   auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
+  const auto &selectedItem = visibleRows[static_cast<size_t>(rowIndex)];
+  if (selectedItem.isCloudOnly) {
+    std::vector<ContextActionItem> actions;
+    if (selectedItem.localSongId.isNotEmpty() && targetSetlistId.isNotEmpty()) {
+      const bool alreadyAdded = selectedItem.inSetlist;
+      actions.push_back(
+          {alreadyAdded ? L10n::tr("Ya agregada", "Already added")
+                        : L10n::tr("Agregar al setlist", "Add to setlist"),
+           !alreadyAdded, false, false,
+           [safeThis, rowIndex] {
+             if (safeThis == nullptr ||
+                 safeThis->onAddSongsToSetlist == nullptr ||
+                 !juce::isPositiveAndBelow(
+                     rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+               return;
+             const auto& targetItem =
+                 safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+             if (targetItem.localSongId.isNotEmpty()) {
+               juce::StringArray songIds;
+               songIds.add(targetItem.localSongId);
+               safeThis->onAddSongsToSetlist(songIds);
+             }
+           },
+           SvgIconName::Plus});
+    } else if (selectedItem.localSongId.isNotEmpty()) {
+      // A cloud entry remains visible for discovery, but its local materialized
+      // song already owns the cache. Do not offer a second download.
+      actions.push_back(
+          {L10n::tr("Ya descargada", "Already downloaded"), false, false,
+           false, {}, SvgIconName::FileAudio});
+    } else {
+      const auto downloadLabel = targetSetlistId.isNotEmpty()
+                                     ? L10n::tr("Descargar y agregar",
+                                                "Download and add")
+                                     : L10n::tr("Descargar canción",
+                                                "Download song");
+      actions.push_back(
+          {downloadLabel, true, false, false,
+           [safeThis, rowIndex] {
+           if (safeThis == nullptr ||
+               safeThis->onCloudDownloadRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto &targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.songId.isNotEmpty())
+             safeThis->onCloudDownloadRequested(targetItem.songId,
+                                                 safeThis->targetSetlistId);
+           },
+           SvgIconName::FileAudio});
+    }
+    actions.push_back(
+        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
+         false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto& targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.remoteSongId.isNotEmpty())
+             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
+         },
+         SvgIconName::Trash});
+    auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
+    panel->setSize(240, panel->preferredHeight());
+    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+    juce::Component *parentComp = editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this);
+    const auto anchor = parentComp->getLocalArea(&content, targetBounds);
+    auto &callout = juce::CallOutBox::launchAsynchronously(
+        std::move(panel), anchor, parentComp);
+    callout.setLookAndFeel(&getActionCalloutLookAndFeel());
+    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    return;
+  }
   std::vector<ContextActionItem> actions;
   actions.push_back({L10n::tr(u8"Editar canción", "Edit song"), true, false, false,
                      [safeThis, rowIndex] {
@@ -1274,8 +1536,6 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                        if (targetItem.songId.isNotEmpty())
                          safeThis->onSongEditRequested(targetItem.songId);
                      }, SvgIconName::Pencil});
-  const auto &selectedItem =
-      visibleRows[static_cast<size_t>(rowIndex)];
   if (!selectedItem.isProjectBacked) {
     actions.push_back(
         {L10n::tr("Convertir a proyecto...", "Convert to project..."),
@@ -1292,6 +1552,40 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
            if (targetItem.songId.isNotEmpty())
              safeThis->onSongConvertRequested(targetItem.songId);
          }, SvgIconName::CornerDownRight});
+  } else {
+    actions.push_back(
+        {selectedItem.isCloudSynced
+             ? L10n::tr("Sincronizar de nuevo", "Sync again")
+             : L10n::tr("Subir a nube", "Upload to cloud"),
+         true, true, false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr ||
+               safeThis->onProjectUploadRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex,
+                   static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto &targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.songId.isNotEmpty())
+             safeThis->onProjectUploadRequested(targetItem.songId);
+         }, SvgIconName::FileAudio});
+  }
+  if (selectedItem.isCloudSynced) {
+    actions.push_back(
+        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
+         false,
+         [safeThis, rowIndex] {
+           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
+               !juce::isPositiveAndBelow(
+                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
+             return;
+           const auto& targetItem =
+               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
+           if (targetItem.remoteSongId.isNotEmpty())
+             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
+         },
+         SvgIconName::Trash});
   }
   actions.push_back({L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
                      [safeThis, rowIndex] {

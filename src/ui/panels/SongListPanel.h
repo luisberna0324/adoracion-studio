@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
+class SongImportWizardComponent;
+class SongWizardOverlay;
+
 class SongListPanel final : public juce::Component, private juce::Timer {
 public:
   class SwipeHintHandle final : public juce::Component {
@@ -48,6 +51,13 @@ public:
       std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
   void setOnSaveProjectRequested(std::function<void()> cb);
+  void setOnProjectUploadRequested(
+      std::function<void(const ImportedSongData &)> cb);
+  void setOnCloudDownloadRequested(
+      std::function<void(const juce::String &, const juce::String &)> cb);
+  void setOnCloudSearchRequested(std::function<void(const juce::String &)> cb);
+  void setOnCloudDeleteRequested(
+      std::function<void(const juce::String &, const juce::String &)> cb);
   void setSaveProjectStateProvider(std::function<bool()> availableProvider,
                                    std::function<bool()> pendingProvider);
   int getSongCount() const;
@@ -57,6 +67,11 @@ public:
   bool isAutoPlayNextEnabledForSong(const juce::String &songId) const;
   int resolveAutoPlayNextIndex(const juce::String &currentSongId) const;
   void setNowPlayingSong(const juce::String &songId, bool isPlaying);
+  void setCloudUploadProgress(const juce::String &songId, double fraction,
+                              const juce::String &phase);
+  void clearCloudUploadProgress(const juce::String &songId);
+  void setCloudSongs(std::vector<CloudSongSummary> songs);
+  void setCloudSearchLoading(bool isLoading);
   int getLastActivatedIndex() const;
   juce::String getActiveSetlistName() const;
   void refreshFromStorageView();
@@ -106,6 +121,8 @@ private:
     int songIndex = -1;
     double durationSeconds = 0.0;
     juce::Colour accentColour = UITheme::accent;
+    double cloudUploadFraction = -1.0;
+    juce::String cloudUploadPhase;
   };
 
   class ListContent : public juce::Component {
@@ -113,6 +130,8 @@ private:
     void setSongs(std::vector<SongRow> rows);
     void setNowPlayingSong(const juce::String &songId, bool isPlaying);
     void setSelectedSongId(const juce::String &songId);
+    void setCloudUploadProgress(const juce::String &songId, double fraction,
+                                const juce::String &phase);
     void setOnSongActivated(std::function<void(int)> cb);
     void setOnSongsReordered(std::function<void(int, int)> cb);
     void setOnDragStateChanged(std::function<void(bool)> cb);
@@ -166,6 +185,7 @@ private:
 
   void openSongImportWizard();
   void openSongImportWizard(const juce::File &destination);
+  void showSongImportOverlay(std::unique_ptr<SongImportWizardComponent> panel);
   void openProjectFileChooser();
   void openProjectFileFromUrl(const juce::URL &url);
   void openSongEditWizard(const juce::String &songId);
@@ -251,12 +271,25 @@ private:
   int songsSwipeDurationMs = 250;
   int transitionDurationMs = 150;
   juce::StringArray autoPlayNextMarks;
+  struct CloudUploadIndicator {
+    double fraction = 0.0;
+    juce::String phase;
+  };
+  std::unordered_map<std::string, CloudUploadIndicator> cloudUploadIndicators;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   std::function<void()> onSaveProjectRequested;
+  std::function<void(const ImportedSongData &)> onProjectUploadRequested;
+  std::function<void(const juce::String &, const juce::String &)>
+      onCloudDownloadRequested;
+  juce::String libraryTargetSetlistId;
+  std::function<void(const juce::String &)> onCloudSearchRequested;
+  std::function<void(const juce::String &, const juce::String &)>
+      onCloudDeleteRequested;
   std::function<bool()> saveProjectAvailableProvider;
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
+  std::unique_ptr<SongWizardOverlay> songImportOverlay;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
 };

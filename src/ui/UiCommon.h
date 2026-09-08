@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../platform/NativeIpadChoicePicker.h"
 
 enum class ThemePreset { Default = 1, Spotify, Ableton };
 enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
@@ -44,6 +45,13 @@ inline const juce::Colour accentDestructive{0xffB23B3B};
 juce::String formatTimeSeconds(double seconds);
 void applyTheme(ThemePreset preset);
 juce::Font makeAppFont(float size, AppFontWeight weight = AppFontWeight::Regular);
+
+class IpadNativeComboBox final : public juce::ComboBox {
+public:
+  using juce::ComboBox::ComboBox;
+
+  void showPopup() override;
+};
 
 enum class IconGlyph {
   ArrowLeft,
@@ -116,7 +124,7 @@ void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 bool useTouchOptimisedControls();
 int touchOptimisedControlHeight();
 int touchOptimisedPopupItemHeight();
-void applyComboBoxTheme(juce::ComboBox &combo,
+void applyComboBoxTheme(IpadNativeComboBox &combo,
                         juce::Colour background = UITheme::cardBgHover,
                         juce::Colour outline =
                             UITheme::cardBorder.withAlpha(0.7f));

@@ -2,10 +2,395 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-08-29T19:40:00Z
+timestamp: 2026-09-05T14:58:00Z
 ---
 
 # Changelog
+
+## 2026-09-05
+
+### Biblioteca iOS: proyectos importados idempotentes y diagnóstico de Cloud upload
+
+- Los `.pwproj` importados desde Files se identifican por `projectId`, no por
+  su ruta absoluta ni por el nombre con timestamp. Reabrir el mismo proyecto
+  ya no añade otra canción ni conserva otra copia administrada bajo
+  `imports/projects`; las referencias de setlists existentes se preservan.
+- Si un build de desarrollo cambia el UUID del contenedor iOS y el paquete aún
+  existe bajo el root actual, la Biblioteca repara el `projectPath` en
+  `songs.json`. Una desinstalación que borra el sandbox no es recuperable sin
+  Cloud o una copia del `.pwproj` fuera de la app.
+- `CloudTransferClient` registra en `session_auth.log` el resultado de refresh,
+  prepare-upload, cada objeto firmado, descriptor y commit. Esto diferencia un
+  fallo de autenticación, API, URL firmada o commit sin registrar tokens.
+
+### Biblioteca Cloud: descarga única por canción
+
+- Una fila Cloud vinculada a una canción local ya materializada muestra
+  `Ya descargada` fuera de un flujo de setlist, y `Agregar al setlist` o
+  `Ya agregada` dentro de él. Nunca vuelve a ofrecer descarga.
+- El callback de descarga comprueba nuevamente `remoteSongId -> projectId ->`
+  canción local antes de transferir, evitando una segunda caché aun si la lista
+  Cloud quedó desactualizada.
+
+### Cloud download: stems reproducibles antes de registrar
+
+- La importación Cloud valida que cada stem materializado exista y tenga tamaño
+  antes de añadir la canción a Biblioteca. Una descarga incompleta falla en vez
+  de crear una fila que el motor no pueda reproducir.
+- `session_auth.log` registra solicitud, objetos y finalización de descarga, y
+  el cargador registra cuántos stems pudo resolver antes y después de llamar al
+  motor. Esto permite diagnosticar una carga detenida en 0% sin exponer URLs
+  firmadas ni tokens.
+
+### Auth: Google OAuth backend-driven para iOS y macOS
+
+- `PluginEditor::launchExternalLogin` ahora apunta a
+  `getAuthBaseUrl() + "/api/auth/google/start?..."` en lugar de
+  `/login?..." tanto en la rama `JUCE_IOS` (vía
+  `ASWebAuthenticationSession`) como en la rama desktop/macOS (vía
+  `LocalAuthCallbackServer` + `launchInDefaultBrowser`). El primer
+  frame es el account picker de Google en ambas plataformas; ya no se
+  muestra el formulario de PlayWorship.
+- Backend nuevo: `lib/googleOAuth.ts` con allowlist de
+  `redirect_uri`, token `state` HMAC autocontenido (TTL 10 min), armado del
+  auth URL de Google con `prompt=select_account`, exchange de code →
+  tokens, verificación RS256 del `id_token` contra el JWKS de Google
+  y armado del `session` JSON.
+- `app/api/auth/google/start/route.ts`: valida `redirect_uri`, persiste
+  `state` con `deviceId`/`licenseKey`, redirige 302 a Google.
+- `app/api/auth/google/callback/route.ts`: valida `state`, intercambia
+  el code, valida el `id_token` de Google, hace upsert del usuario
+  Firebase, minte un custom token, lo cambia por `idToken` +
+  `refreshToken` vía Identity Toolkit, llama `/api/validate-access` y
+  redirige 302 a `playworship://auth/callback?session=...` con el
+  mismo payload que ya producía `/login`.
+- Errores se traducen a 302 al `redirect_uri` original con
+  `error=<codigo>&message=<detalle>&state=<state del iOS>` para no
+  romper la validación de state en el cliente.
+- Variables de entorno requeridas: `GOOGLE_CLIENT_ID`,
+  `GOOGLE_CLIENT_SECRET`, `GOOGLE_OAUTH_CALLBACK_URL` (debe coincidir
+  con un Authorized redirect URI del client de Google).
+- `MTCONTROLS_AUTH_BASE_URL` permite que un build de iPad consuma APIs en
+  una IP local (seleccionada con `MTCONTROLS_BACKEND_MODE=local`) pero arranque OAuth desde un
+  backend HTTPS compatible con Google.
+- Documentación: nueva página
+  [`docs/okf/integrations/Auth.md`](integrations/Auth.md) con el
+  contrato end-to-end, allowlist, errores y la lista de lo que este
+  flujo NO hace.
+
+## 2026-09-04
+
+### Autenticacion nativa en iPad
+
+- iOS usa `ASWebAuthenticationSession` para presentar Google dentro de una
+  hoja segura del sistema, permitir selección de cuenta y regresar a la app.
+- El callback registrado es `playworship://auth/callback` y conserva la
+  validación `state`. macOS mantiene su callback HTTP efímero en localhost.
+- El frontend sólo admite ese callback de aplicación exacto, además de
+  `localhost` y `127.0.0.1`, evitando redirects arbitrarios.
+- El flujo no usa `signInWithRedirect`: Safari y Chrome bloquean el estado
+  cross-origin del helper alojado en `firebaseapp.com`. El frontend conserva
+  `signInWithPopup` hasta mover el intercambio OAuth completamente al backend.
+
+### Alertas nativas multiplataforma
+
+- Los avisos y confirmaciones simples de la UI principal, Biblioteca e
+  importación usan `juce::NativeMessageBox`, por lo que iOS, macOS y Windows
+  presentan el diálogo propio del sistema.
+- Los formularios con campos, selección de destino, descarga de encoder o
+  progreso permanecen como componentes JUCE porque requieren controles que una
+  alerta nativa simple no ofrece.
+
+### Backend local accesible desde iPad
+
+- El plist iOS permite conexiones HTTP exclusivamente hacia la red local y
+  declara el motivo del permiso de red local.
+- La resolución de `MTCONTROLS_API_BASE_URL` permite HTTP para loopback,
+  nombres `.local` y direcciones privadas RFC1918. HTTP público continúa
+  rechazado y usa el backend HTTPS de producción como fallback.
+- Los builds físicos de desarrollo pueden definir `MTCONTROLS_API_BASE_URL` con
+  el hostname Bonjour del Mac; la URL HTTPS de producción sigue siendo el valor
+  predeterminado.
+- La URL HTTPS predeterminada de producción es
+  `https://api.playworship.app`, tanto para la API como para OAuth cuando
+  `MTCONTROLS_AUTH_BASE_URL` no se define.
+
+### Acceso responsive en iPad y escritorio
+
+- El modo de bienvenida usa todo el viewport disponible en iPad y conserva una
+  ventana redimensionable en escritorio; cerrar sesión ya no fuerza el editor
+  a volver a un tamaño fijo.
+- Al completar el login, las rutas de inicialización nueva y reutilizada del
+  workspace conservan el `userArea` completo en iPad en lugar de aplicar el
+  tamaño inicial `1120x700` de escritorio.
+- La bienvenida se presenta como tarjeta centrada, horizontal en superficies
+  anchas y vertical en tamaños compactos. Pads, mixer, setlist y sus handles se
+  ocultan completamente mientras no existe una sesión activa.
+- Cerrar sesión desde Settings difiere el cambio al siguiente ciclo de UI y
+  destruye primero la ventana u overlay de configuración; la bienvenida ya no
+  queda superpuesta sobre Settings.
+- Antes de cerrar sesión se solicita confirmación. Cancelar conserva la sesión
+  y Settings sin cambios; confirmar ejecuta la limpieza y vuelve al login.
+
+### Carga de canción: feedback desde el primer frame
+
+- El indicador del waveform ahora se activa antes de abrir un `.pwproj` o
+  resolver stems y muestra inmediatamente el título solicitado.
+- Se procesa un único frame inicial para que una extracción cold no parezca un
+  bloqueo. El progreso por stem conserva el camino optimizado sin bombear la UI
+  repetidamente.
+
+### Cloud download: caché por hash sin `.pwproj` automático
+
+- Descargar una canción Cloud registra una entrada local que reproduce los
+  blobs FLAC verificados desde `cloud-content/objects/`; ya no reconstruye ni
+  conserva un ZIP `.pwproj` duplicado.
+- El transporte reutiliza un objeto existente cuando tamaño y SHA-256
+  coinciden. Los FLAC cloud tampoco pasan por `decoded/`, por lo que cada stem
+  queda almacenado una sola vez.
+- `Convertir a proyecto...` sigue disponible como acción explícita y conserva
+  el `projectId` portable. La purga elimina `cloud-content/`, pero nunca los
+  `.pwproj` creados deliberadamente por el usuario.
+- Al completar correctamente una descarga se elimina, como limpieza de mejor
+  esfuerzo, el staging legado `projects/.cloud-downloads`; el caché activo por
+  hash no se toca.
+
+### Cloud sync: purga local segura
+
+- Configuración incluye `Purgar` como reset local integral: borra
+  `songs.json`, todos los setlists, el índice cloud, registros de proyectos,
+  cache de audio/ondas/portadas/proyectos y staging temporal.
+- La acción no toca R2, Firestore ni la carpeta física `projects/`; por eso
+  ningún paquete `.pwproj` se elimina o modifica. Sus referencias de
+  Biblioteca sí desaparecen y sólo vuelven mediante abrir, crear o descargar.
+
+### Biblioteca Cloud: descarga de canciones
+
+- Las filas de `Cloud` muestran el menú de tres puntos con la acción
+  `Descargar canción`. La descarga conserva objetos verificados en el cache
+  local y registra la canción en Biblioteca al completar.
+- La fila remota usa el indicador de progreso durante la transferencia y se
+  bloquean solicitudes duplicadas por `remoteSongId`.
+
+### Biblioteca Cloud: cantidad de stems
+
+- El resumen remoto incluye `stemCount`, derivado del descriptor validado al
+  publicar. Las tarjetas Cloud ya no muestran `0 stems` para proyectos que
+  contienen pistas.
+- Para documentos Firestore publicados antes del campo, el listado resuelve
+  una vez el descriptor R2 vigente y usa `descriptor.stems.length`; así la
+  migración es compatible sin re-publicar canciones existentes.
+
+### Cloud download: manifiesto legacy sin projectId
+
+- Los `.pwproj` históricos guardaban `song.id` pero no necesariamente
+  `song.projectId`; `ProjectStore` lo infería sólo en memoria. El descriptor
+  cloud sí usa esa identidad, por lo que la descarga fallaba al compararlos.
+- La subida normaliza `song.projectId` dentro del manifiesto enviado a R2. La
+  descarga de revisiones existentes completa únicamente un `projectId` ausente
+  desde el descriptor firmado; no acepta un ID explícito que difiera.
+
+### Biblioteca: conservar destino de setlist
+
+- Al entrar mediante `Añadir canciones`, `SongListPanel` captura el
+  `setlistId` activo como contexto efímero. Las selecciones locales, abrir un
+  `.pwproj` y descargar desde Cloud agregan la canción resultante a ese mismo
+  setlist.
+- La Biblioteca abierta desde el icono de música no tiene destino; abrir o
+  descargar allí sólo registra localmente. El contexto se limpia al volver a
+  las canciones del setlist, evitando que una operación posterior use un
+  setlist obsoleto.
+- En modo destino se ocultan los menús de filas locales para priorizar
+  `Agregar`, pero las filas Cloud conservan los tres puntos: primero deben
+  descargar el proyecto y luego se agregan al setlist de origen.
+- La acción Cloud se nombra `Descargar y agregar` cuando existe destino de
+  setlist; en Biblioteca general conserva `Descargar canción`.
+- Antes de presentar la acción Cloud, la Biblioteca resuelve el vínculo
+  `remoteSongId -> projectId -> localSongId`: una descarga ya materializada
+  ofrece `Agregar al setlist` o `Ya agregada`, sin repetir la descarga.
+- El área de interacción de `Agregar` también se anula para filas Cloud; sin
+  ello se solapaba con los tres puntos y absorbía el clic antes de abrir el
+  menú de descarga.
+
+### Cloud sync: contrato cloud vs local y plan de preflight (sólo análisis)
+
+Auditoría del flujo actual de subida a R2 + Firestore. Se detecta que
+`CloudProjectArchive::buildUpload` (`src/data/CloudProjectArchive.cpp:59-148`)
+toma el `manifest.json` íntegro del `.pwproj` y lo registra como el
+objeto `settings` del `CloudProjectDescriptor`. Ese bloque arrastra
+`mix.master`, `mix.stems[]` (volume/gain/mute/solo/outputChannel),
+`window`, `arrangement`, `dynamicGuide*` y `clickDynMix` — todo lo
+que el producto considera estado por dispositivo. El log del
+2026-09-03 lo describe como decisión explícita para "preservar
+arrangement, tempo map y settings sin duplicar los serializadores
+internos de `ProjectStore`"; hoy ese mismo `settings` se reinyecta
+tal cual en `rebuildProject` (`CloudProjectArchive.cpp:150-217`),
+así que cualquier cambio futuro que use el `settings` remoto para
+escribir el sidecar local sobrescribirá el mixer/UI de otro
+dispositivo.
+
+El nuevo contrato queda en
+[`docs/okf/integrations/CloudSync.md`](integrations/CloudSync.md).
+Decisiones:
+
+- El objeto `settings` que sube a R2 deja de ser el `manifest.json`
+  del `.pwproj` y pasa a ser un JSON portable nuevo con
+  `schemaVersion: 2`, conteniendo sólo `song`, `stemsPortable`,
+  `artworkFileName`, `waveformHash` opcional y
+  `arrangementPortable.parts`/`tempoRegions` con los campos
+  musicales compartibles.
+- `mix`, `window`, `pitchSemitones`, `tempoBpm` como override,
+  `dynamicGuide*`, `clickDynMix`, y los flags `*Customized` se
+  quedan exclusivamente en el sidecar local
+  `project-cache/<projectId>/song-settings.json`. Nunca forman
+  parte de ningún blob subido.
+- `rebuildProject` deja de reinyectar `manifest.json`: construye un
+  `manifest.json` portable desde el descriptor cloud nuevo, abre el
+  ZIP con `ProjectStore` y siembra el sidecar local con
+  `ProjectStore::getCachedSettings(projectId, …)` si existe; si no,
+  con los defaults de `SongLibraryStore`. Nunca llama a
+  `ProjectStore::updateSettings` desde el import.
+- Preflight: `GET /api/song-sync/songs/:songId/descriptor` (endpoint
+  nuevo) devuelve el descriptor remoto vigente sin URLs firmadas.
+  El cliente construye un descriptor local candidato y compara
+  `settings.sha256`, `waveform`, `artwork`, cada `stem` (ordenado
+  por `stemId`) y los campos portables de metadata/arrangement.
+  Si nada cambió, no se llama a `prepare-upload`, no se sube nada y
+  la UI muestra `Al día` con la acción deshabilitada. Si difiere,
+  se continúa con la subida y `commit` contra `baseRevision =
+  link.remoteRevision`; un `REVISION_CONFLICT` dispara un
+  reintento único del preflight.
+- UX: `Subir a nube` (sin vínculo), `Publicar cambios` (con
+  vínculo + cambios), `Al día` deshabilitado (con vínculo + sin
+  cambios). Sin modales de éxito; el progreso sigue siendo la
+  barra de fila.
+
+No se introducen commits de código en esta iteración: el
+documento fija el contrato a implementar en commits separados con
+tests, manteniendo las validaciones de hashes, el streaming de
+`NSURLSessionUploadTask` en macOS/iOS y los límites de
+`kMaxInMemoryUploadBytes` para Windows/Linux.
+
+### Biblioteca: procedencia de canciones cloud
+
+- El filtro `Cloud` ya expresa la procedencia de sus filas y no muestra un
+  badge redundante. El filtro `Local` etiqueta `.pwproj` sólo para proyectos
+  locales que aún no estén sincronizados; una publicación o vínculo cloud no
+  obtiene esa etiqueta.
+- El resumen remoto incluye una URL firmada exclusiva para `artwork` cuando
+  existe. `CloudLibraryClient` descarga esa imagen pequeña a
+  `cloud-artwork/`, valida que sea decodificable y la referencia desde la fila.
+  Nunca descarga stems, waveform ni el proyecto completo al navegar Cloud.
+- Mientras `CloudLibraryClient` renueva credenciales y consulta el catálogo,
+  Biblioteca muestra un spinner animado en el extremo derecho del buscador. El
+  campo tiene borde redondeado y el indicador se cierra ante éxito, error,
+  cambio a `Local` o sesión no válida, sin bloquear la búsqueda.
+
+### Cloud sync: preflight sin cambios
+
+- Tras una publicación, el índice local conserva una huella SHA-256 del
+  descriptor normalizado, sin `songId`, revisión ni timestamp. Antes de volver
+  a publicar, el cliente crea el candidato local y compara esa huella sin
+  realizar llamadas de red. Si coincide, no llama a `prepare-upload`, no
+  genera revisión ni sube objetos; la app indica `Sin nada que sincronizar`.
+  Los vínculos creados antes de esta mejora se publican una vez para sembrar la
+  huella local.
+
+### Cloud sync: progreso integral
+
+- La barra de la fila cubre el flujo completo: apertura/extracción y armado
+  del descriptor ocupa 0–50%; la transferencia de blobs y descriptor ocupa
+  50–100%. Los eventos de preparación se reenvían al hilo de UI, evitando una
+  barra vacía mientras se transforma el `.pwproj`.
+
+## 2026-09-03
+
+### Biblioteca cloud: contrato y cliente inicial
+
+- `CloudSyncTypes` define el descriptor remoto versionado con referencias por
+  SHA-256 para settings, waveform y stems FLAC.
+- `CloudSyncIndexStore` persiste por separado el vínculo entre `projectId`
+  local y `remoteSongId`; `ProjectStore` continúa sin dependencias de red.
+- `CloudLibraryClient` renueva Firebase en background y consulta el catálogo
+  paginado del backend. El filtro `Cloud` consume ese catálogo al abrirse y
+  al buscar, y se refresca al terminar una publicación; sus filas son sólo
+  referencias remotas, sin crear ni sobrescribir recursos locales. La
+  biblioteca Local continúa leyendo sólo recursos presentes en el dispositivo.
+  El cliente usa `POST /api/song-sync/songs` para mantener el bearer Firebase
+  en JUCE; `GET` se conserva para clientes HTTP existentes.
+
+### Cloud sync: descriptor completo y validación server-authoritative
+
+- El contrato compartido de `CloudProjectDescriptor` incorpora `artwork`
+  opcional, `createdAt` y helpers de serialización/deserialización JSON en C++
+  para mantener compatibilidad explícita con el backend TypeScript.
+- El backend de sync ya no publica una revisión confiando sólo en metadata
+  enviada por el cliente: durante `commit` relee el descriptor vigente desde
+  R2, valida schema/campos obligatorios, exige coincidencia exacta entre hashes
+  declarados y objetos confirmados, y revalida tamaños/content types contra R2
+  antes de escribir Firestore.
+- La preparación de descarga deja de exponer `objectKey` arbitrario como input
+  del cliente. El endpoint resuelve la revisión vigente desde Firestore,
+  devuelve el descriptor validado y genera URLs firmadas únicamente para el
+  manifiesto y los blobs autorizados de esa canción.
+
+### Cloud sync: cliente de transferencia JUCE
+
+- `CloudTransferClient` es el límite de red para publicar y recuperar blobs:
+  renueva Firebase, prepara la revisión con la API, hace PUT/GET directos a
+  URLs firmadas de R2 y sólo después ejecuta el commit server-authoritative.
+  Sus callbacks siempre regresan al hilo de mensajes; `ProjectStore` no
+  conoce credenciales, HTTP ni identidades remotas.
+- Cada blob subido y descargado se verifica contra su SHA-256 y tamaño del
+  descriptor. La primera publicación genera un `songId` UUID antes de crear
+  el descriptor versionado.
+- En macOS/iOS, el PUT firmado usa `NSURLSessionUploadTask` desde archivo y
+  transmite el blob directo a R2 sin materializarlo en memoria. La ventana de
+  transferencia es independiente del timeout de API para permitir stems grandes.
+  Windows/Linux conservan el límite explícito de 128 MiB hasta incorporar sus
+  propios backends de streaming.
+
+### Cloud sync: archivo portable y coordinación local
+
+- `CloudProjectArchive` exporta un `.pwproj` existente como blobs inmutables:
+  conserva `manifest.json` íntegro como el objeto `settings`, extrae waveform,
+  artwork y stems FLAC del cache portable, y construye el descriptor cloud con
+  hashes SHA-256. Esto preserva arrangement, tempo map y settings sin duplicar
+  los serializadores internos de `ProjectStore`.
+- La importación valida descriptor y manifiesto, reconstruye el ZIP con paths
+  internos seguros, lo abre mediante `ProjectStore` y recién entonces lo
+  registra en Biblioteca. `SongSyncService` ejecuta export/import fuera del
+  hilo de mensajes, coordina la transferencia y actualiza
+  `CloudSyncIndexStore` al completar una revisión.
+
+### Cloud sync: publicación desde la biblioteca
+
+- El menú contextual de Biblioteca expone `Subir a nube` sólo para canciones
+  respaldadas por un `.pwproj`; las canciones legacy mantienen `Convertir a
+  proyecto...` como paso obligatorio previo. La acción valida sesión Firebase
+  y archivo local, reutiliza la URL de API configurada para el build y delega
+  el trabajo a `SongSyncService` fuera del hilo de mensajes.
+- Cuando el proyecto ya tiene un vínculo local con una canción remota, la
+  acción se presenta como `Sincronizar de nuevo`; conserva el `songId` remoto
+  y publica una revisión nueva, en lugar de crear otra canción cloud. La
+  detección de cambios requiere comparar los hashes del descriptor local con
+  el descriptor remoto antes de habilitar una nueva revisión.
+- El resultado se comunica en la UI y el progreso se registra en
+  `SessionAuthLogger`; los errores de red o autorización no modifican la
+  biblioteca local ni el proyecto fuente.
+- Mientras una publicación está activa, las filas de Biblioteca y del setlist
+  sustituyen su separador inferior por una barra de progreso. El avance
+  representa objetos confirmados por R2 (stems y descriptor), no bytes
+  parcialmente enviados; se inicia sin modal bloqueante, conserva brevemente
+  el 100% al completar y se elimina al terminar o fallar. Una misma canción no
+  puede iniciar dos publicaciones concurrentes y un éxito no genera diálogos.
+- `CloudTransferClient` conserva el `juce::var` resultante de cada respuesta
+  JSON durante toda la lectura de sus `DynamicObject` y `Array`. Esto evita
+  referencias colgantes al consumir `prepare-upload`, `commit` y `download`.
+- En macOS, el callback de `NSURLSessionUploadTask` copia body y error a tipos
+  JUCE antes de despertar el worker. El target no usa ARC, por lo que mantener
+  `NSData` o `NSError` en punteros `__block` fuera del callback causaba un
+  acceso inválido durante el PUT firmado.
 
 ## 2026-08-29
 
@@ -181,6 +566,21 @@ cancelar.
 Al terminar la permanencia mínima del indicador de carga, `WaveformBar` ahora
 solicita un repintado al limpiar el estado. Así el mensaje final de fase, como
 `Finalizando...`, se elimina aun cuando no ocurra otro evento de interfaz.
+
+### Waveform: regla compacta en iPad
+
+La regla superior del waveform en iPad usa una altura de 22 px y dibuja los
+pulsos musicales del compás, omitiendo sólo subdivisiones de edición. En 4/4
+se ven cuatro divisiones por compás, con el inicio destacado. Las etiquetas se
+espacian dinamicamente para mantener al menos 82 px entre ellas. Seek y snap
+conservan toda su precisión; la regla detallada de escritorio no cambia.
+
+### iPadOS: orientaciones declaradas
+
+El `Info.plist` generado declara las cuatro orientaciones para iPad y iPhone,
+incluyendo `UIInterfaceOrientationPortraitUpsideDown`. Esto elimina el aviso de
+Xcode sobre soporte incompleto de orientacion; la composicion de rendimiento
+mantiene landscape como su layout principal.
 
 ### Persistencia legacy: controles compartidos entre setlists
 

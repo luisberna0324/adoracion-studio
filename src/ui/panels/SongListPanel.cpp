@@ -11,6 +11,53 @@
 #include <cmath>
 #include <utility>
 
+#if JUCE_ANDROID
+#include <jni.h>
+#include <juce_core/native/juce_JNIHelpers_android.h>
+#endif
+
+class SongWizardOverlay final : public juce::Component {
+public:
+  SongWizardOverlay(std::unique_ptr<SongImportWizardComponent> content,
+                    std::function<void()> dismissCallback)
+      : panel(std::move(content)), onDismiss(std::move(dismissCallback)) {
+    jassert(panel != nullptr);
+    panel->setOnDismissRequested(onDismiss);
+    addAndMakeVisible(*panel);
+    setInterceptsMouseClicks(true, true);
+  }
+
+  void paint(juce::Graphics &g) override {
+    g.fillAll(juce::Colours::black.withAlpha(0.44f));
+  }
+
+  void resized() override {
+    auto area = getLocalBounds();
+    const int margin = useTouchOptimisedControls() ? 14 : 28;
+    area.reduce(margin, margin);
+    const int maxWidth = useTouchOptimisedControls() ? 920 : 860;
+    const int maxHeight = useTouchOptimisedControls() ? 700 : 640;
+    auto panelBounds = juce::Rectangle<int>(juce::jmin(maxWidth, area.getWidth()),
+                                             juce::jmin(maxHeight, area.getHeight()));
+    panelBounds.setCentre(area.getCentre());
+    panel->setBounds(panelBounds);
+  }
+
+  void parentSizeChanged() override {
+    if (auto *parent = getParentComponent())
+      setBounds(parent->getLocalBounds());
+  }
+
+  void mouseUp(const juce::MouseEvent &event) override {
+    if (!panel->getBounds().contains(event.getPosition()) && onDismiss)
+      onDismiss();
+  }
+
+private:
+  std::unique_ptr<SongImportWizardComponent> panel;
+  std::function<void()> onDismiss;
+};
+
 namespace {
 class LegacyProjectMigrationTask final
     : public juce::ThreadWithProgressWindow {
@@ -140,6 +187,40 @@ juce::File importProjectUrlToSandbox(const juce::URL &url,
                                      juce::String &error) {
   error.clear();
   const auto target = makeImportedProjectTarget(url);
+#if JUCE_ANDROID
+  auto *env = juce::getEnv();
+  const auto helper = env->FindClass("com/rmsl/juce/ProjectImport");
+  const auto copy = helper != nullptr
+                        ? env->GetStaticMethodID(
+                              helper, "copyToFile",
+                              "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z")
+                        : nullptr;
+  if (copy == nullptr) {
+    env->ExceptionClear();
+    error = L10n::tr("No se pudo preparar la importación del proyecto.",
+                     "Couldn't prepare the project import.");
+    return {};
+  }
+
+  const auto source = env->NewStringUTF(url.toString(true).toRawUTF8());
+  const auto destination = env->NewStringUTF(target.getFullPathName().toRawUTF8());
+  const auto copied = env->CallStaticBooleanMethod(
+      helper, copy, juce::getAppContext().get(), source, destination) != 0;
+  env->DeleteLocalRef(source);
+  env->DeleteLocalRef(destination);
+  env->DeleteLocalRef(helper);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    error = L10n::tr("No se pudo acceder al archivo seleccionado desde Archivos.",
+                     "Couldn't access the selected file from Files.");
+    return {};
+  }
+  if (!copied) {
+    error = L10n::tr("No se pudo copiar el proyecto al almacenamiento local.",
+                     "Couldn't copy the project to local storage.");
+    return {};
+  }
+#else
   auto input = url.createInputStream(
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
           .withConnectionTimeoutMs(60000));
@@ -172,6 +253,7 @@ juce::File importProjectUrlToSandbox(const juce::URL &url,
   }
 
   output->flush();
+#endif
   if (!target.existsAsFile() || target.getSize() <= 0) {
     error = L10n::tr("La copia local del proyecto quedó incompleta.",
                      "The local project copy is incomplete.");
@@ -571,7 +653,7 @@ SongListPanel::SongListPanel() {
   });
   setlistsPage.addAndMakeVisible(setlistSearchField);
 
-  songsHeaderPanel.setOnAddSongsClicked([this] { openLibraryBrowser(); });
+  songsHeaderPanel.setOnAddSongsClicked([this] { openAddFromLibraryMenu(); });
   songsHeaderPanel.setOnSongsClicked([this] { listViewport.setViewPosition(0, 0); });
   songsHeaderPanel.setLibraryActionVisible(false);
   songsPage.addAndMakeVisible(songsHeaderPanel);
@@ -593,12 +675,15 @@ SongListPanel::SongListPanel() {
         }
       });
   libraryCatalogPanel.setOnAddSongsToSetlist([this](const juce::StringArray &songIds) {
-    if (activeSetlistId.isEmpty() || songIds.isEmpty())
+    const auto targetSetlistId = libraryTargetSetlistId.isNotEmpty()
+                                     ? libraryTargetSetlistId
+                                     : activeSetlistId;
+    if (targetSetlistId.isEmpty() || songIds.isEmpty())
       return;
     for (const auto &songId : songIds) {
       if (songId.isEmpty())
         continue;
-      SongLibraryStore::addSongToSetlist(activeSetlistId, songId);
+      SongLibraryStore::addSongToSetlist(targetSetlistId, songId);
     }
 
     refreshFromStorage();
@@ -612,6 +697,31 @@ SongListPanel::SongListPanel() {
   libraryCatalogPanel.setOnSongConvertRequested(
       [this](const juce::String &songId) {
         beginLegacySongConversion(songId);
+      });
+  libraryCatalogPanel.setOnProjectUploadRequested(
+      [this](const juce::String &songId) {
+        const auto song = std::find_if(
+            librarySongs.begin(), librarySongs.end(),
+            [&songId](const ImportedSongData &candidate) {
+              return candidate.id == songId;
+            });
+        if (song != librarySongs.end() && onProjectUploadRequested != nullptr)
+          onProjectUploadRequested(*song);
+      });
+  libraryCatalogPanel.setOnCloudDownloadRequested(
+      [this](const juce::String &songId, const juce::String &targetSetlistId) {
+        if (onCloudDownloadRequested != nullptr)
+          onCloudDownloadRequested(songId, targetSetlistId);
+      });
+  libraryCatalogPanel.setOnCloudSearchRequested(
+      [this](const juce::String &query) {
+        if (onCloudSearchRequested != nullptr)
+          onCloudSearchRequested(query);
+      });
+  libraryCatalogPanel.setOnCloudDeleteRequested(
+      [this](const juce::String &songId, const juce::String &title) {
+        if (onCloudDeleteRequested != nullptr)
+          onCloudDeleteRequested(songId, title);
       });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
     const auto trimmedSongId = songId.trim();
@@ -649,7 +759,11 @@ SongListPanel::SongListPanel() {
           refreshFromStorage();
         });
   });
-  libraryCatalogPanel.setOnBackRequested([this] { showSongsSubview(true); });
+  libraryCatalogPanel.setOnBackRequested([this] {
+    libraryTargetSetlistId.clear();
+    libraryCatalogPanel.setTargetSetlistId({});
+    showSongsSubview(true);
+  });
   libraryPage.addAndMakeVisible(libraryCatalogPanel);
   setlistsContent = std::make_unique<SetlistsContent>();
   setlistsContent->onSetlistChosen = [this](const juce::String &setlistId) {
@@ -744,6 +858,51 @@ SongListPanel::~SongListPanel() = default;
 void SongListPanel::setOnSongActivated(
     std::function<void(const ImportedSongData &, int)> cb) {
   onSongActivated = std::move(cb);
+}
+
+void SongListPanel::setOnProjectUploadRequested(
+    std::function<void(const ImportedSongData &)> cb) {
+  onProjectUploadRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudDownloadRequested(
+    std::function<void(const juce::String &, const juce::String &)> cb) {
+  onCloudDownloadRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudSearchRequested(
+    std::function<void(const juce::String &)> cb) {
+  onCloudSearchRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudDeleteRequested(
+    std::function<void(const juce::String &, const juce::String &)> cb) {
+  onCloudDeleteRequested = std::move(cb);
+}
+
+void SongListPanel::setCloudUploadProgress(const juce::String &songId,
+                                           const double fraction,
+                                           const juce::String &phase) {
+  if (songId.isEmpty())
+    return;
+  cloudUploadIndicators[songId.toStdString()] = {
+      juce::jlimit(0.0, 1.0, fraction), phase};
+  listContent.setCloudUploadProgress(songId, fraction, phase);
+  libraryCatalogPanel.setCloudUploadProgress(songId, fraction, phase);
+}
+
+void SongListPanel::clearCloudUploadProgress(const juce::String &songId) {
+  cloudUploadIndicators.erase(songId.toStdString());
+  listContent.setCloudUploadProgress(songId, -1.0, {});
+  libraryCatalogPanel.clearCloudUploadProgress(songId);
+}
+
+void SongListPanel::setCloudSongs(std::vector<CloudSongSummary> songs) {
+  libraryCatalogPanel.setCloudSongs(std::move(songs));
+}
+
+void SongListPanel::setCloudSearchLoading(const bool isLoading) {
+  libraryCatalogPanel.setCloudSearchLoading(isLoading);
 }
 
 void SongListPanel::setOnSetlistNameChanged(
@@ -1248,11 +1407,15 @@ void SongListPanel::setSaveProjectStateProvider(
 }
 
 void SongListPanel::openLibraryBrowser() {
+  libraryTargetSetlistId.clear();
+  libraryCatalogPanel.setTargetSetlistId({});
   libraryCatalogPanel.setHeaderMode(LibraryCatalogPanel::HeaderMode::Library);
   showLibraryView(true);
 }
 
 void SongListPanel::openAddFromLibraryMenu() {
+  libraryTargetSetlistId = activeSetlistId;
+  libraryCatalogPanel.setTargetSetlistId(libraryTargetSetlistId);
   libraryCatalogPanel.setHeaderMode(
       LibraryCatalogPanel::HeaderMode::SetlistTarget);
   showLibraryView(true);
@@ -1328,26 +1491,27 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
 
   const auto library = SongLibraryStore::loadLibrarySnapshot();
   if (library.setlists.size() <= 1) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se puede eliminar", "Can't delete"),
         L10n::tr("Se requiere al menos un setlist.",
                  "At least one setlist is required."));
     return;
   }
 
-  juce::AlertWindow::showOkCancelBox(
-      juce::AlertWindow::WarningIcon,
+  const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+      juce::MessageBoxIconType::WarningIcon,
       L10n::tr("Eliminar setlist", "Delete setlist"),
       L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                "Delete this setlist? This won't remove songs from the library."),
-      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
-      juce::ModalCallbackFunction::create([this, setlistId](int result) {
-        if (result != 1)
+      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
+  juce::NativeMessageBox::showAsync(
+      options, [this, setlistId](int result) {
+        if (result != 0)
           return;
         SongLibraryStore::deleteSetlist(setlistId);
         refreshFromStorage();
-      }));
+      });
 }
 
 void SongListPanel::promptTextAsync(const juce::String &title,
@@ -1451,6 +1615,21 @@ void SongListPanel::ListContent::setSelectedSongId(const juce::String &songId) {
   }
   if (changed)
     repaint();
+}
+
+void SongListPanel::ListContent::setCloudUploadProgress(
+    const juce::String &songId, const double fraction,
+    const juce::String &phase) {
+  for (int index = 0; index < static_cast<int>(songs.size()); ++index) {
+    auto &row = songs[static_cast<size_t>(index)];
+    if (row.songId != songId)
+      continue;
+    row.cloudUploadFraction = fraction < 0.0 ? -1.0 : juce::jlimit(0.0, 1.0, fraction);
+    row.cloudUploadPhase = phase;
+    repaint(juce::Rectangle<int>(rowSideInset, rowTopAtIndex(index),
+                                 getWidth() - (rowSideInset * 2), rowHeight));
+    break;
+  }
 }
 
 void SongListPanel::ListContent::setOnSongActivated(
@@ -1644,10 +1823,27 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                         u8" • " + formatDurationMMSS(rowData.durationSeconds);
     g.drawFittedText(detail, metaRect, juce::Justification::centredLeft, 1);
 
+    const bool uploadInProgress = rowData.cloudUploadFraction >= 0.0;
+    const auto progressBounds = juce::Rectangle<float>(
+        static_cast<float>(artworkArea.getRight() + 11),
+        static_cast<float>(row.getBottom() - 4),
+        static_cast<float>(juce::jmax(0, row.getRight() - artworkArea.getRight() - 22)),
+        3.0f);
+    if (uploadInProgress && progressBounds.getWidth() > 0.0f) {
+      g.setColour(UITheme::cardBorder.withAlpha(0.75f));
+      g.fillRoundedRectangle(progressBounds, 1.5f);
+      const auto completedWidth = static_cast<float>(
+          progressBounds.getWidth() * rowData.cloudUploadFraction);
+      if (completedWidth > 0.0f) {
+        g.setColour(UITheme::accent.withAlpha(0.98f));
+        g.fillRoundedRectangle(progressBounds.withWidth(completedWidth), 1.5f);
+      }
+    }
+
     const auto menuAlpha = rowIndex == hoveredRow ? 0.88f : 0.64f;
     drawIconGlyph(g, optionsHitArea.toFloat().withSizeKeepingCentre(18.0f, 18.0f),
                   IconGlyph::More, UITheme::textSecondary.withAlpha(menuAlpha), 1.35f);
-    if (rowIndex + 1 < static_cast<int>(songs.size())) {
+    if (!uploadInProgress && rowIndex + 1 < static_cast<int>(songs.size())) {
       g.setColour(AppColours::separator);
       g.drawLine(static_cast<float>(artworkArea.getRight() + 11),
                  static_cast<float>(row.getBottom() - 1),
@@ -2688,27 +2884,28 @@ private:
     if (id.isEmpty())
       return;
     if (library.setlists.size() <= 1) {
-      juce::AlertWindow::showMessageBoxAsync(
-          juce::AlertWindow::WarningIcon,
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
           L10n::tr("No se puede eliminar", "Can't delete"),
           L10n::tr("Se requiere al menos un setlist.",
                    "At least one setlist is required."));
       return;
     }
-    juce::AlertWindow::showOkCancelBox(
-        juce::AlertWindow::WarningIcon,
+    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Eliminar setlist", "Delete setlist"),
         L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
-        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this,
-        juce::ModalCallbackFunction::create([this, id](int result) {
-          if (result != 1)
+        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
+    juce::NativeMessageBox::showAsync(
+        options, [this, id](int result) {
+          if (result != 0)
             return;
           SongLibraryStore::deleteSetlist(id);
           selectedSetlistId = {};
           dirty = true;
           reloadLibrary();
-        }));
+        });
   }
 
   void loadSelectedSetlist() {
@@ -2769,6 +2966,29 @@ private:
   bool dirty = false;
 };
 
+void SongListPanel::showSongImportOverlay(
+    std::unique_ptr<SongImportWizardComponent> panel) {
+  if (panel == nullptr)
+    return;
+
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  auto *host = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                 : static_cast<juce::Component *>(this);
+  auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  const auto dismiss = [safeThis] {
+    juce::MessageManager::callAsync([safeThis] {
+      if (safeThis != nullptr)
+        safeThis->songImportOverlay.reset();
+    });
+  };
+
+  songImportOverlay.reset();
+  songImportOverlay = std::make_unique<SongWizardOverlay>(std::move(panel), dismiss);
+  host->addAndMakeVisible(*songImportOverlay);
+  songImportOverlay->setBounds(host->getLocalBounds());
+  songImportOverlay->toFront(false);
+}
+
 void SongListPanel::openSongImportWizard() {
   openSongImportWizard({});
 }
@@ -2802,15 +3022,15 @@ void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
   SessionAuthLogger::write("[ProjectOpenUI] picker url=" + url.toString(false) +
                            " localPath=" + file.getFullPathName());
 
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   juce::String importError;
   const auto importedFile = importProjectUrlToSandbox(url, importError);
   if (importedFile == juce::File{}) {
     SessionAuthLogger::write("[ProjectOpenUI] import failed url=" +
                              url.toString(false) + " error=\"" +
                              importError + "\"");
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo importar el proyecto", "Couldn't import project"),
         importError);
     return;
@@ -2833,8 +3053,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
   if (!file.existsAsFile()) {
     SessionAuthLogger::write("[ProjectOpenUI] file missing path=" +
                              file.getFullPathName());
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Proyecto no encontrado", "Project not found"),
         L10n::tr("El archivo seleccionado ya no existe o no está disponible.",
                  "The selected file no longer exists or is unavailable."));
@@ -2843,8 +3063,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
   if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
     SessionAuthLogger::write("[ProjectOpenUI] invalid extension path=" +
                              file.getFullPathName());
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Archivo no compatible", "Unsupported file"),
         L10n::tr("Selecciona un proyecto con extensión .pwproj.",
                  "Select a project with the .pwproj extension."));
@@ -2859,7 +3079,7 @@ void SongListPanel::openProjectFile(const juce::File &file) {
     SessionAuthLogger::write("[ProjectOpenUI] failed path=" +
                              file.getFullPathName() + " error=\"" + error +
                              "\" songId=" + document.song.id);
-    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"), error);
     return;
   }
@@ -2869,6 +3089,8 @@ void SongListPanel::openProjectFile(const juce::File &file) {
                            juce::String(static_cast<int>(document.song.stems.size())));
   selectedSongId = document.song.id;
   AppSettings::setLastSelectedSongId(selectedSongId);
+  if (libraryTargetSetlistId.isNotEmpty())
+    SongLibraryStore::addSongToSetlist(libraryTargetSetlistId, selectedSongId);
   refreshFromStorage();
   if (onSongActivated != nullptr) {
     const int index = getSongIndexById(selectedSongId);
@@ -2888,8 +3110,8 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
 
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
   if (editor != nullptr && editor->isSongCurrentlyLoaded(trimmedSongId)) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Canción actualmente cargada", "Song currently loaded"),
         L10n::tr(
             "Carga otra canción antes de convertir esta. Así PlayWorship puede cerrar sus archivos legacy y eliminarlos con seguridad.",
@@ -2910,11 +3132,16 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
       L10n::tr(
           "Se creará y validará el proyecto antes de eliminar la estructura legacy. ¿Dónde quieres guardarlo?",
           "The project will be created and validated before the legacy structure is removed. Where do you want to save it?"),
-      juce::AlertWindow::QuestionIcon);
+      juce::MessageBoxIconType::QuestionIcon);
   choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
   choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
   choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
-  const int choiceId = choice.runModalLoop();
+  const int choiceId =
+#if JUCE_ANDROID
+      1;
+#else
+      choice.runModalLoop();
+#endif
   if (choiceId == 0)
     return;
 
@@ -2958,10 +3185,15 @@ void SongListPanel::convertLegacySongAtDestination(
                                   editor != nullptr
                                       ? static_cast<juce::Component *>(editor)
                                       : static_cast<juce::Component *>(this));
-  const bool threadCompleted = task.runThread();
+  const bool threadCompleted =
+#if JUCE_ANDROID
+      (task.startThread(), task.waitForThreadToExit(-1), true);
+#else
+      task.runThread();
+#endif
   if (!threadCompleted || !task.success) {
-    juce::AlertWindow::showMessageBoxAsync(
-        juce::AlertWindow::WarningIcon,
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No se pudo convertir la canción",
                  "Couldn't convert song"),
         task.error.isNotEmpty()
@@ -2978,8 +3210,8 @@ void SongListPanel::convertLegacySongAtDestination(
                                ? task.sourceSetlistName
                                : L10n::tr("Valores predeterminados",
                                           "Default settings");
-  juce::AlertWindow::showMessageBoxAsync(
-      juce::AlertWindow::InfoIcon,
+  juce::NativeMessageBox::showMessageBoxAsync(
+      juce::MessageBoxIconType::InfoIcon,
       L10n::tr("Conversión completada", "Conversion completed"),
       L10n::tr("La canción ahora vive en el proyecto:\n",
                "The song now lives in the project:\n") +
@@ -2990,19 +3222,7 @@ void SongListPanel::convertLegacySongAtDestination(
 
 void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
-  auto *centerTarget =
-      editor != nullptr ? static_cast<juce::Component *>(editor)
-                        : static_cast<juce::Component *>(this);
-
-  juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr(u8"Crear canción", "Create Song");
-  options.dialogBackgroundColour = UITheme::appBg;
-  options.escapeKeyTriggersCloseButton = true;
-  options.useNativeTitleBar = true;
-  options.resizable = true;
-  options.componentToCentreAround = centerTarget;
-  auto *panel = new SongImportWizardComponent(
+  auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
         if (safeThis == nullptr) {
@@ -3095,7 +3315,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
-      {}, [](const ImportedSongData &song, juce::File &destination,
+      ImportedSongData{}, [](const ImportedSongData &song, juce::File &destination,
              juce::String &) {
         const auto title = juce::File::createLegalFileName(song.title.trim());
         const auto artist = juce::File::createLegalFileName(song.artist.trim());
@@ -3106,11 +3326,16 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             L10n::tr("Guardar proyecto", "Save project"),
             L10n::tr("¿Dónde quieres guardar este proyecto?",
                      "Where do you want to save this project?"),
-            juce::AlertWindow::QuestionIcon);
+            juce::MessageBoxIconType::QuestionIcon);
         choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
         choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
         choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
-        const int choiceId = choice.runModalLoop();
+        const int choiceId =
+#if JUCE_ANDROID
+            1;
+#else
+            choice.runModalLoop();
+#endif
         if (choiceId == 0)
           return false;
         if (choiceId == 1) {
@@ -3125,7 +3350,13 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
                 .getChildFile(baseName + ProjectStore::kFileExtension),
             "*.pwproj");
-        if (!chooser.browseForFileToSave(true))
+        if (
+#if JUCE_ANDROID
+            true
+#else
+            !chooser.browseForFileToSave(true)
+#endif
+        )
           return false;
         destination = chooser.getResult();
         if (!destination.hasFileExtension(ProjectStore::kFileExtension))
@@ -3133,12 +3364,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         return true;
       });
   panel->refreshThemeColours();
-  options.content.setOwned(panel);
-
-  if (auto *window = options.launchAsync()) {
-    window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 860, 640);
-  }
+  showSongImportOverlay(std::move(panel));
 }
 
 void SongListPanel::openSongEditWizard(const juce::String &songId) {
@@ -3169,20 +3395,8 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
     return;
 
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
-  auto *centerTarget =
-      editor != nullptr ? static_cast<juce::Component *>(editor)
-                        : static_cast<juce::Component *>(this);
 
-  juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr(u8"Editar canción", "Edit Song");
-  options.dialogBackgroundColour = UITheme::appBg;
-  options.escapeKeyTriggersCloseButton = true;
-  options.useNativeTitleBar = true;
-  options.resizable = true;
-  options.componentToCentreAround = centerTarget;
-
-  auto *panel = new SongImportWizardComponent(
+  auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
                                                juce::String &errorMessage,
                                                const SongImportProgressFn &progress) {
@@ -3227,7 +3441,8 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
-      baseSong, {},
+      baseSong,
+      std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>{},
       [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
                                                juce::String &errorMessage) {
         if (safeThis == nullptr) {
@@ -3252,12 +3467,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         return true;
       });
   panel->refreshThemeColours();
-  options.content.setOwned(panel);
-
-  if (auto *window = options.launchAsync()) {
-    window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 860, 640);
-  }
+  showSongImportOverlay(std::move(panel));
 }
 
 void SongListPanel::openSetlistManager() {
@@ -3502,23 +3712,31 @@ void SongListPanel::refreshFromStorage() {
 
       const int rowIndex = static_cast<int>(rows.size());
       const auto autoPlayKey = makeAutoPlayNextMarkKey(activeSetlistId, song.id);
-      rows.push_back({order++,
-                      toSentenceCase(song.title.isNotEmpty()
-                                         ? song.title
-                                         : L10n::tr(u8"Canción sin título",
-                                                    "Untitled Song")),
-                      song.artist.trim().toUpperCase(),
-                      song.artworkPath.trim(),
-                      song.key,
-                      song.bpm,
-                      includedStems,
-                      song.id,
-                      autoPlayNextMarks.contains(autoPlayKey),
-                      isPlaybackActive && song.id == nowPlayingSongId,
-                      song.id == selectedSongId,
-                      rowIndex,
-                      estimateSongLengthSeconds(song),
-                      songAccentFromId(song.id)});
+      SongRow row{order++,
+                  toSentenceCase(song.title.isNotEmpty()
+                                     ? song.title
+                                     : L10n::tr(u8"Canción sin título",
+                                                "Untitled Song")),
+                  song.artist.trim().toUpperCase(),
+                  song.artworkPath.trim(),
+                  song.key,
+                  song.bpm,
+                  includedStems,
+                  song.id,
+                  autoPlayNextMarks.contains(autoPlayKey),
+                  isPlaybackActive && song.id == nowPlayingSongId,
+                  song.id == selectedSongId,
+                  rowIndex,
+                  estimateSongLengthSeconds(song),
+                  songAccentFromId(song.id),
+                  -1.0,
+                  {}};
+      if (const auto indicator = cloudUploadIndicators.find(song.id.toStdString());
+          indicator != cloudUploadIndicators.end()) {
+        row.cloudUploadFraction = indicator->second.fraction;
+        row.cloudUploadPhase = indicator->second.phase;
+      }
+      rows.push_back(std::move(row));
     }
   }
 

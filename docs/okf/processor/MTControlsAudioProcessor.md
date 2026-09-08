@@ -134,6 +134,31 @@ una canción legacy puede coexistir con ella. La UI compara ID y origen al
 detectar un cambio de canción; así reinicializa la tonalidad restaurada incluso
 cuando ambas variantes comparten el mismo ID histórico.
 
+En iOS, los paquetes elegidos desde Files se copian a
+`MTControls/imports/projects`. Al volver a importar el mismo manifiesto, la
+Biblioteca usa `projectId` como identidad canónica: conserva la entrada y sus
+referencias de setlist, reemplaza el paquete administrado anterior y elimina
+las entradas duplicadas que hubieran quedado de versiones previas. Si iOS
+reubica el contenedor de datos de una actualización de desarrollo, la ruta
+absoluta persistida se repara usando el nombre del paquete dentro de ese
+directorio. Una desinstalación real elimina el sandbox completo; ningún código
+local puede recuperar entonces el paquete ni sus stems, por lo que debe usarse
+Cloud, Files o una copia externa como respaldo.
+
+Al restaurar la Biblioteca después de que iOS reasigne el contenedor de la app,
+las entradas legacy o Cloud que no tengan ningún stem local reproducible se
+descartan junto con sus referencias de setlist: no queda una canción fantasma.
+Los `.pwproj` son distintos: nunca se eliminan en esta validación. Si el
+paquete sigue disponible, la Biblioteca rehidrata sólo `artwork.*` desde el ZIP
+al cache actual, sin extraer todos los stems; éstos se extraen normalmente al
+abrir el proyecto.
+
+Eliminar una canción desde Biblioteca es una operación local: elimina la
+entrada, sus apariciones en setlists, waveform, audio/cache, sidecar de
+proyecto, recientes, vínculo de sincronización y blobs Cloud locales no usados
+por otra canción. No envía solicitudes de borrado, no elimina la versión Cloud
+y nunca borra el archivo `.pwproj`.
+
 ### Conversión de canciones legacy
 
 La acción **Convertir a proyecto...** de Biblioteca no crea una copia legacy y
