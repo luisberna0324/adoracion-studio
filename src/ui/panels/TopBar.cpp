@@ -892,7 +892,7 @@ void TopBar::resized() {
     songCardHeight = 40;
     songArtworkSize = 30;
   } else if (responsiveProfile == ResponsiveLayoutProfile::Large) {
-    y = 10;
+    y = 8;
     square = 44;
     gap = 8;
     keyWidth = 76;
@@ -908,6 +908,21 @@ void TopBar::resized() {
   }
 
   if (useTouchOptimisedControls()) {
+#if JUCE_ANDROID
+    y = 10;
+    square = 44;
+    gap = 8;
+    keyWidth = 76;
+    metroTotalW = 108;
+    metroIconW = 44;
+    timeWidth = 166;
+    usageWidth = 90;
+    minUsageWidth = 76;
+    minCardW = 176;
+    maxCardW = 325;
+    songCardHeight = 46;
+    songArtworkSize = 36;
+#else
     y = 14;
     square = 50;
     gap = 10;
@@ -921,6 +936,7 @@ void TopBar::resized() {
     maxCardW = 360;
     songCardHeight = 54;
     songArtworkSize = 42;
+#endif
   }
 
   constexpr int transportButtonCount = 7;

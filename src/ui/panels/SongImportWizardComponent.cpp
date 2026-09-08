@@ -1666,7 +1666,12 @@ void SongImportWizardComponent::submitSong() {
             2);
       prompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
 
-      const int decision = prompt.runModalLoop();
+      const int decision =
+#if JUCE_ANDROID
+          1;
+#else
+          prompt.runModalLoop();
+#endif
       if (decision == 0)
         return;
 
@@ -1688,7 +1693,11 @@ void SongImportWizardComponent::submitSong() {
 
         auto pumpUi = [] {
           if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+#if ! JUCE_ANDROID
             mm->runDispatchLoopUntil(14);
+#else
+            juce::ignoreUnused(mm);
+#endif
         };
 
         juce::String bootstrapError;
@@ -1730,7 +1739,13 @@ void SongImportWizardComponent::submitSong() {
               1);
           failedPrompt.addButton(L10n::tr("Cancelar", "Cancel"), 0);
 
-          if (failedPrompt.runModalLoop() != 1)
+          if (
+#if JUCE_ANDROID
+              false
+#else
+              failedPrompt.runModalLoop() != 1
+#endif
+          )
             return;
           temporarilyDisableOptimization = true;
         }
@@ -1755,8 +1770,16 @@ void SongImportWizardComponent::submitSong() {
   overlay.toFront(true);
 
   auto pumpUi = [] {
-    if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+      if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
+#if ! JUCE_ANDROID
+#if ! JUCE_ANDROID
       mm->runDispatchLoopUntil(14);
+#else
+      juce::ignoreUnused(mm);
+#endif
+#else
+      juce::ignoreUnused(mm);
+#endif
   };
 
   int lastLoggedPct = -5;

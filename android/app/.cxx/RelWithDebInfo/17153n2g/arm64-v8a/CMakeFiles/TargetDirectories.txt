@@ -1,0 +1,3 @@
+/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/android/app/.cxx/RelWithDebInfo/17153n2g/arm64-v8a/CMakeFiles/playworship.dir
+/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/android/app/.cxx/RelWithDebInfo/17153n2g/arm64-v8a/CMakeFiles/edit_cache.dir
+/Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/android/app/.cxx/RelWithDebInfo/17153n2g/arm64-v8a/CMakeFiles/rebuild_cache.dir

@@ -103,6 +103,13 @@ al siguiente: durante reproducción se interpola con `smoothstep` a lo largo de
 100 ms. El `TransportClock` avanza con los frames fuente realmente solicitados
 por cada bloque de la rampa.
 
+En Android, la representación visual del transporte se actualiza a 30 Hz desde
+el temporizador de UI y suaviza variaciones pequeñas durante reproducción. La
+caché de seguimiento limita su escala a `1.25` y usa overscan `2x` para evitar
+imágenes intermedias de más de 7k píxeles en tablets de alta densidad. Los seeks,
+loops y saltos de arrange conservan el cambio inmediato. El reloj de audio
+continúa siendo la fuente de verdad y no se interpola.
+
 ## Arrangement
 
 ### Concepto

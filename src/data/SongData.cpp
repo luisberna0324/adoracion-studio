@@ -89,7 +89,7 @@ juce::String suggestCategoryFromFilename(const juce::String &filename) {
   normalized.preallocateBytes(lower.getNumBytesAsUTF8());
   for (int i = 0; i < lower.length(); ++i) {
     const juce::juce_wchar c = lower[i];
-    normalized += juce::CharacterFunctions::isLetterOrDigit(c) ? c : ' ';
+    normalized += static_cast<juce::juce_wchar>(juce::CharacterFunctions::isLetterOrDigit(c) ? c : ' ');
   }
   auto tokens = juce::StringArray::fromTokens(normalized, " ", "");
   tokens.removeEmptyStrings();

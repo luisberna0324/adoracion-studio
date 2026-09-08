@@ -11,6 +11,11 @@
 #include <cmath>
 #include <utility>
 
+#if JUCE_ANDROID
+#include <jni.h>
+#include <juce_core/native/juce_JNIHelpers_android.h>
+#endif
+
 namespace {
 class LegacyProjectMigrationTask final
     : public juce::ThreadWithProgressWindow {
@@ -140,6 +145,40 @@ juce::File importProjectUrlToSandbox(const juce::URL &url,
                                      juce::String &error) {
   error.clear();
   const auto target = makeImportedProjectTarget(url);
+#if JUCE_ANDROID
+  auto *env = juce::getEnv();
+  const auto helper = env->FindClass("com/rmsl/juce/ProjectImport");
+  const auto copy = helper != nullptr
+                        ? env->GetStaticMethodID(
+                              helper, "copyToFile",
+                              "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z")
+                        : nullptr;
+  if (copy == nullptr) {
+    env->ExceptionClear();
+    error = L10n::tr("No se pudo preparar la importación del proyecto.",
+                     "Couldn't prepare the project import.");
+    return {};
+  }
+
+  const auto source = env->NewStringUTF(url.toString(true).toRawUTF8());
+  const auto destination = env->NewStringUTF(target.getFullPathName().toRawUTF8());
+  const auto copied = env->CallStaticBooleanMethod(
+      helper, copy, juce::getAppContext().get(), source, destination) != 0;
+  env->DeleteLocalRef(source);
+  env->DeleteLocalRef(destination);
+  env->DeleteLocalRef(helper);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    error = L10n::tr("No se pudo acceder al archivo seleccionado desde Archivos.",
+                     "Couldn't access the selected file from Files.");
+    return {};
+  }
+  if (!copied) {
+    error = L10n::tr("No se pudo copiar el proyecto al almacenamiento local.",
+                     "Couldn't copy the project to local storage.");
+    return {};
+  }
+#else
   auto input = url.createInputStream(
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
           .withConnectionTimeoutMs(60000));
@@ -172,6 +211,7 @@ juce::File importProjectUrlToSandbox(const juce::URL &url,
   }
 
   output->flush();
+#endif
   if (!target.existsAsFile() || target.getSize() <= 0) {
     error = L10n::tr("La copia local del proyecto quedó incompleta.",
                      "The local project copy is incomplete.");
@@ -2907,7 +2947,7 @@ void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
   SessionAuthLogger::write("[ProjectOpenUI] picker url=" + url.toString(false) +
                            " localPath=" + file.getFullPathName());
 
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   juce::String importError;
   const auto importedFile = importProjectUrlToSandbox(url, importError);
   if (importedFile == juce::File{}) {
@@ -3021,7 +3061,12 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
   choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
   choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
   choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
-  const int choiceId = choice.runModalLoop();
+  const int choiceId =
+#if JUCE_ANDROID
+      1;
+#else
+      choice.runModalLoop();
+#endif
   if (choiceId == 0)
     return;
 
@@ -3065,7 +3110,12 @@ void SongListPanel::convertLegacySongAtDestination(
                                   editor != nullptr
                                       ? static_cast<juce::Component *>(editor)
                                       : static_cast<juce::Component *>(this));
-  const bool threadCompleted = task.runThread();
+  const bool threadCompleted =
+#if JUCE_ANDROID
+      (task.startThread(), task.waitForThreadToExit(-1), true);
+#else
+      task.runThread();
+#endif
   if (!threadCompleted || !task.success) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
@@ -3217,7 +3267,12 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
         choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
         choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
-        const int choiceId = choice.runModalLoop();
+        const int choiceId =
+#if JUCE_ANDROID
+            1;
+#else
+            choice.runModalLoop();
+#endif
         if (choiceId == 0)
           return false;
         if (choiceId == 1) {
@@ -3232,7 +3287,13 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
                 .getChildFile(baseName + ProjectStore::kFileExtension),
             "*.pwproj");
-        if (!chooser.browseForFileToSave(true))
+        if (
+#if JUCE_ANDROID
+            true
+#else
+            !chooser.browseForFileToSave(true)
+#endif
+        )
           return false;
         destination = chooser.getResult();
         if (!destination.hasFileExtension(ProjectStore::kFileExtension))

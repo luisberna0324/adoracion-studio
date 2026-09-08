@@ -499,6 +499,9 @@ separados y con tests; el orden propuesto es:
 
 ## 6. Compatibilidad y migración
 
+- En Android, el puente `HttpURLConnection` habilita la salida cuando recibe
+  `POSTData`, aunque los parámetros se mantengan en la dirección. Basarse sólo
+  en el modo de parámetros puede anunciar `Content-Length` y enviar cero bytes.
 - Canciones con `schemaVersion: 1` ya publicadas no se invalidan.
   La próxima vez que el usuario toque `Publicar cambios`, el
   cliente las reescribirá a `schemaVersion: 2` con el descriptor

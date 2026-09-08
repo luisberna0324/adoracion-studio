@@ -312,6 +312,11 @@ private:
   bool followLastSongProgressValid = false;
   float followLastSongProgressRatio = 0.0f;
   double followLastFrameTimestampSec = 0.0;
+#if JUCE_ANDROID
+  bool androidVisualProgressValid = false;
+  float androidVisualProgressRatio = 0.0f;
+  double androidVisualProgressTimestampSec = 0.0;
+#endif
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
   bool lastTimerEndValid = false;

@@ -39,7 +39,11 @@ constexpr double kFollowSuspendAfterManualViewportMs = 2500.0;
 constexpr float kFollowEnabledViewportSpan = 0.25f;
 constexpr float kFollowCenterRatio = 0.5f;
 constexpr double kFollowCameraSmoothingTimeSec = 0.065;
+#if JUCE_ANDROID
+constexpr float kFollowWaveformCacheOverscan = 2.0f;
+#else
 constexpr float kFollowWaveformCacheOverscan = 3.0f;
+#endif
 constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
 constexpr float kWheelPanSensitivity = 0.22f;
 constexpr float kPlayheadHeadHeight = 9.5f;
@@ -897,11 +901,20 @@ WaveformBar::WaveformBar() {
   rebuildSectionAddButtons();
 
   refreshThemeColours();
+#if ! JUCE_ANDROID
   playbackVBlankAttachment = juce::VBlankAttachment(
       this, [this](const double frameTimestampSec) {
         updatePlaybackAnimation(frameTimestampSec);
       });
+#endif
+#if JUCE_ANDROID
+  // A stable 30 Hz leaves enough render time for the waveform and 15 meters
+  // on tablet GPUs. Requesting 60 Hz here can cause missed frames and visible
+  // multi-frame jumps under load.
+  startTimerHz(30);
+#else
   startTimerHz(60);
+#endif
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
@@ -2738,6 +2751,11 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
 
 void WaveformBar::timerCallback() {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
+#if JUCE_ANDROID
+  // VBlank delivery varies across Android devices and emulators. Drive the
+  // visual transport from the message timer so follow mode remains regular.
+  updatePlaybackAnimation(nowMs * 0.001);
+#endif
   bool loadingStateCleared = false;
 
   if (songLoadingHideAfterMs > 0.0 &&
@@ -2830,6 +2848,35 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
       hasSongProgress = true;
     }
   }
+
+#if JUCE_ANDROID
+  if (hasSongProgress) {
+    if (!isPlayingNow || !androidVisualProgressValid ||
+        androidVisualProgressTimestampSec <= 0.0) {
+      androidVisualProgressRatio = songProgress;
+    } else {
+      const double elapsedSec = juce::jlimit(
+          0.0, 0.1, frameTimestampSec - androidVisualProgressTimestampSec);
+      const float delta = songProgress - androidVisualProgressRatio;
+      if (std::abs(delta) >= 0.02f) {
+        // Preserve intentional seeks, arrangement jumps and loop wraps.
+        androidVisualProgressRatio = songProgress;
+      } else {
+        constexpr double smoothingTimeSec = 0.085;
+        const float alpha = static_cast<float>(
+            1.0 - std::exp(-elapsedSec / smoothingTimeSec));
+        androidVisualProgressRatio += delta * alpha;
+      }
+    }
+
+    androidVisualProgressValid = true;
+    androidVisualProgressTimestampSec = frameTimestampSec;
+    songProgress = androidVisualProgressRatio;
+  } else {
+    androidVisualProgressValid = false;
+    androidVisualProgressTimestampSec = frameTimestampSec;
+  }
+#endif
 
   const bool followTrackingActive = isFollowTrackingActive();
   if ((followTrackingActive || followJumpJustExecuted) && hasSongProgress) {
@@ -3033,6 +3080,14 @@ WaveformBar::PlaybackVisualState WaveformBar::getPlaybackVisualState() const {
       state.transportProgressRatio = state.progressRatio;
     }
   }
+
+#if JUCE_ANDROID
+  if (!isShowingLoadingState && androidVisualProgressValid &&
+      playingProvider != nullptr && playingProvider()) {
+    state.progressRatio = androidVisualProgressRatio;
+    state.transportProgressRatio = androidVisualProgressRatio;
+  }
+#endif
 
   if (followPlaybackEnabled && !isEditingArrangement() &&
       playingProvider != nullptr && playingProvider()) {
@@ -4764,8 +4819,16 @@ bool WaveformBar::drawCachedFollowWaveform(
   const float cacheStart = juce::jlimit(
       0.0f, 1.0f - cacheSpan,
       windowStart - ((cacheSpan - windowSpan) * 0.5f));
+#if JUCE_ANDROID
+  // Rendering the overscanned cache at the full physical tablet density can
+  // create images wider than 7k pixels. A bounded scale is visually adequate
+  // for the waveform while making every follow frame substantially cheaper.
+  const float cacheScale = juce::jlimit(
+      1.0f, 1.25f, juce::Component::getApproximateScaleFactorForComponent(this));
+#else
   const float cacheScale = juce::jlimit(
       1.0f, 4.0f, juce::Component::getApproximateScaleFactorForComponent(this));
+#endif
   const int cacheWidth = static_cast<int>(
       std::ceil(bounds.getWidth() * (cacheSpan / windowSpan) * cacheScale));
   const int cacheHeight =

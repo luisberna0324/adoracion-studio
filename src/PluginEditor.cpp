@@ -953,6 +953,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                           "A newer version of this project exists in the cloud. Download it before uploading again to avoid overwriting changes."));
                   return;
                 }
+                if (failure.code == "STORAGE_QUOTA_EXCEEDED") {
+                  juce::NativeMessageBox::showMessageBoxAsync(
+                      juce::MessageBoxIconType::WarningIcon,
+                      L10n::tr("Espacio en la nube insuficiente",
+                               "Not enough cloud storage"),
+                      L10n::tr(
+                          "Este proyecto supera el espacio disponible de tu cuenta. Libera espacio en la nube o amplía el límite y vuelve a sincronizar.",
+                          "This project exceeds your account's available storage. Free some cloud space or increase the limit, then sync again."));
+                  return;
+                }
                 juce::NativeMessageBox::showMessageBoxAsync(
                     juce::MessageBoxIconType::WarningIcon,
                     L10n::tr("No se pudo subir el proyecto",
@@ -1145,8 +1155,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     // the user immediately sees the progress bar reach 100% and the new
     // channel strips. Not used during the per-stem loop (see P1.0 above).
     auto pumpUiOnce = [] {
+#if JUCE_ANDROID
+      juce::MessageManager::callAsync([] {});
+#else
       if (auto *mm = juce::MessageManager::getInstanceWithoutCreating())
         mm->runDispatchLoopUntil(1);
+#endif
     };
 
     // Show feedback before a cold .pwproj extraction or stem resolution.
@@ -3310,8 +3324,15 @@ void MTControlsAudioProcessorEditor::resized() {
     contentInset = 9;
   }
 
-  if (useTouchOptimisedControls())
+  if (useTouchOptimisedControls()) {
+#if JUCE_ANDROID
+    // Keep Android's touch targets comfortable without consuming as much
+    // vertical space as the tablet profile used by iOS.
+    topBarH = 60;
+#else
     topBarH = 78;
+#endif
+  }
 
   topBar->setBounds(area.removeFromTop(topBarH));
   int waveH = isWaveformHeightExpanded ? waveformExpandedH : waveformH;
