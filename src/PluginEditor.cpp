@@ -2404,7 +2404,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.reasonCode,
                                     activeSession.reason,
                                     activeSession.licenseKey},
-      [this] {
+      [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::QuestionIcon,
             L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
@@ -2412,16 +2412,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 u8"Tendrás que iniciar sesión nuevamente para acceder a tu biblioteca y a las canciones de Cloud.",
                 "You'll need to sign in again to access your library and Cloud songs."),
             L10n::tr(u8"Cerrar sesión", "Sign out"),
-            L10n::tr("Cancelar", "Cancel"), this);
-        juce::NativeMessageBox::showAsync(
+            L10n::tr("Cancelar", "Cancel"), safeThis.getComponent());
+        juce::AlertWindow::showAsync(
             options,
-            [safe = juce::Component::SafePointer<
-                 MTControlsAudioProcessorEditor>(this)](const int result) {
-              if (result == 0 && safe != nullptr)
-                safe->handleLogout();
+            [safeThis](const int result) {
+              if (result == 0 && safeThis != nullptr)
+                safeThis->handleLogout();
             });
       },
-      [this] {
+      [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Purgar datos locales de Cloud", "Purge local Cloud data"),
@@ -2431,10 +2430,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 "All Library songs and setlists, caches, downloads, and sync links will be removed. "
                 "The Library will be empty. No .pwproj file or cloud content will be deleted."),
             L10n::tr("Purgar", "Purge"), L10n::tr("Cancelar", "Cancel"),
-            this);
-        juce::NativeMessageBox::showAsync(
+            safeThis.getComponent());
+        juce::AlertWindow::showAsync(
             options,
-            [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
+            [safeThis](int result) {
               if (result != 0 || safeThis == nullptr)
                 return;
               const auto purge = CloudSyncIndexStore::purgeLocalState();
