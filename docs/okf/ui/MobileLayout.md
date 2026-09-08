@@ -14,8 +14,11 @@ La vista de performance en telefonos es exclusivamente horizontal. iOS admite
 ## Deteccion
 
 Un dispositivo tactil se trata como telefono cuando el lado corto disponible es
-menor de `600 pt/dp`. Esto separa telefonos de tablets sin depender del nombre o
-modelo del dispositivo.
+menor de `600 pt/dp`. En iOS se prioriza la familia nativa del dispositivo,
+se convierte el canvas fisico a points y se conserva un respaldo por pixeles
+fisicos para simuladores que reportan escala unitaria. Android ya entrega el
+layout en dp. Esto separa telefonos de tablets sin depender del nombre o modelo
+del dispositivo.
 
 El layout del telefono usa tres rangos sobre el ancho util, despues de aplicar el
 area segura:
@@ -40,7 +43,10 @@ area segura:
 
 - Objetivo tactil frecuente minimo: `44 x 44 pt/dp`.
 - El telefono muestra transporte basico, tiempo, waveform y mixer.
-- Setlist lateral, pads y expansion vertical de waveform se ocultan en telefono.
+- El setlist lateral se reemplaza por un boton `SETLIST` flotante sobre el
+  mixer; abre un overlay desde la derecha sin reducir ni desplazar el mixer.
+  Tocar fuera del overlay lo cierra.
+- Pads y expansion vertical de waveform se ocultan en telefono.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
 
@@ -53,4 +59,3 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - `874 x 402` (iPhone Pro actual)
 - `912 x 420` y `956 x 440` (telefonos grandes)
 - Android compacto, medio y tablet con cutout/navigation insets activos
-

@@ -91,7 +91,26 @@ bool isPhoneSizedLayout(const juce::Component &component) {
   if (!useTouchOptimisedControls())
     return false;
   const auto bounds = component.getLocalBounds();
-  return juce::jmin(bounds.getWidth(), bounds.getHeight()) < 600;
+  int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
+#if JUCE_IOS
+  // iOS exposes the device family independently of the simulator's backing
+  // pixel scale. Prefer it so an iPhone can never be classified as a tablet
+  // merely because the simulator reports a high-resolution surface.
+  if (juce::SystemStats::getDeviceDescription().containsIgnoreCase("iPhone"))
+    return true;
+  // JUCE reports the standalone iOS editor in physical pixels. Convert to
+  // points before applying the shared 600 pt/dp phone breakpoint.
+  if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(component.getScreenBounds()))
+    shortSide = juce::roundToInt(static_cast<float>(shortSide) /
+                                 static_cast<float>(display->scale));
+  // Older JUCE simulator backends can report a unit scale. The smallest
+  // supported iPad has a 1488 px short side, while current iPhones are at
+  // most 1320 px, so retain a safe physical-pixel fallback.
+  if (shortSide <= 1320)
+    return true;
+#endif
+  return shortSide < 600;
 }
 
 class SettingsOverlayComponent final : public juce::Component {
@@ -1959,7 +1978,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
     autoSetlistCollapseInitialized = true;
-    if (!supportsSetlistDrawer(*this)) {
+    if (isPhoneSizedLayout(*this)) {
+      // Phones keep the mixer full width. The setlist is therefore presented
+      // as an overlay instead of reserving a permanent side column.
+      isSetlistDrawerOpen = !isSetlistDrawerOpen;
+      isSetlistCollapsed = false;
+    } else if (!supportsSetlistDrawer(*this)) {
       isSetlistDrawerOpen = false;
       isSetlistCollapsed = !isSetlistCollapsed;
     } else if (isSetlistDrawerOpen) {
@@ -3430,9 +3454,10 @@ void MTControlsAudioProcessorEditor::resized() {
 
   auto area = getLocalBounds();
   updateResponsiveLayoutProfile();
-  const bool minimalPhoneProfile =
-      responsiveLayoutProfile == ResponsiveLayoutProfile::Compact &&
-      isPhoneSizedLayout(*this);
+  // Phone behaviour is determined by the available short side, not by the
+  // user-selectable desktop density profile. A wide landscape phone can use
+  // the Standard profile while still needing the phone-safe surface.
+  const bool minimalPhoneProfile = isPhoneSizedLayout(*this);
   if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
@@ -3460,8 +3485,11 @@ void MTControlsAudioProcessorEditor::resized() {
     }
   }
 #endif
+  const auto safeContentArea = area;
   const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
-  if (!setlistDrawerSupported)
+  const bool setlistOverlaySupported =
+      setlistDrawerSupported || minimalPhoneProfile;
+  if (!setlistOverlaySupported)
     isSetlistDrawerOpen = false;
 
   if (topBar == nullptr || waveformBar == nullptr || channelGridPanel == nullptr ||
@@ -3542,7 +3570,7 @@ void MTControlsAudioProcessorEditor::resized() {
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
   if (minimalPhoneProfile || isSetlistCollapsed ||
-      (setlistDrawerSupported && isSetlistDrawerOpen))
+      (setlistOverlaySupported && isSetlistDrawerOpen))
     setlistWidth = 0;
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
@@ -3608,12 +3636,18 @@ void MTControlsAudioProcessorEditor::resized() {
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (minimalPhoneProfile) {
-    // Keep the phone focused on playback and the channel mixer. The setlist
-    // and pads remain available in the desktop/tablet layouts.
+    // Keep the mixer aligned to the waveform. The setlist is exposed through
+    // a floating action instead of a persistent side column.
     songListPanel->setVisible(false);
     songListPanel->setBounds({});
-    setlistHandlePanel->setVisible(false);
-    setlistHandlePanel->setBounds({});
+    setlistHandlePanel->setPhoneOverlayMode(true);
+    setlistHandlePanel->setVisible(!isSetlistDrawerOpen);
+    const int actionW = juce::jmin(92, juce::jmax(72, rightChannelsArea.getWidth() / 7));
+    const int actionH = 48;
+    setlistHandlePanel->setBounds(
+        rightChannelsArea.getRight() - actionW - contentInset,
+        rightChannelsArea.getY() + contentInset, actionW, actionH);
+    setlistHandlePanel->toFront(false);
     if (setlistDrawerScrim)
       setlistDrawerScrim->setVisible(false);
     if (padsHandlePanel)
@@ -3621,43 +3655,60 @@ void MTControlsAudioProcessorEditor::resized() {
     if (padsComponent)
       padsComponent->setVisible(false);
   } else {
+    setlistHandlePanel->setPhoneOverlayMode(false);
     setlistHandlePanel->setVisible(true);
     if (padsHandlePanel)
       padsHandlePanel->setVisible(true);
   }
 
-  if (setlistDrawerSupported && isSetlistDrawerOpen) {
-    const int drawerTop = topBarH + contentInset;
-    const int drawerBottomInset = contentInset;
-    const int drawerWidth = juce::jlimit(
-        useTouchOptimisedControls() ? 360 : 340,
-        useTouchOptimisedControls() ? 560 : 460,
-        static_cast<int>(getWidth() * (useTouchOptimisedControls() ? 0.46f : 0.38f)));
-    const auto drawerBounds = juce::Rectangle<int>(
-        contentInset, drawerTop,
-        juce::jmin(drawerWidth, getWidth() - (2 * contentInset)),
-        juce::jmax(1, getHeight() - drawerTop - drawerBottomInset));
+  if (setlistOverlaySupported && isSetlistDrawerOpen) {
+    juce::Rectangle<int> drawerBounds;
+    if (minimalPhoneProfile) {
+      const int drawerTop = safeContentArea.getY() + topBarH + contentInset;
+      const int drawerWidth = juce::jlimit(
+          360, 620, static_cast<int>(safeContentArea.getWidth() * 0.82f));
+      drawerBounds = juce::Rectangle<int>(
+          safeContentArea.getRight() - contentInset - drawerWidth, drawerTop,
+          drawerWidth, juce::jmax(1, safeContentArea.getBottom() - drawerTop - contentInset));
+    } else {
+      const int drawerTop = topBarH + contentInset;
+      const int drawerWidth = juce::jlimit(
+          useTouchOptimisedControls() ? 360 : 340,
+          useTouchOptimisedControls() ? 560 : 460,
+          static_cast<int>(getWidth() * (useTouchOptimisedControls() ? 0.46f : 0.38f)));
+      drawerBounds = juce::Rectangle<int>(
+          contentInset, drawerTop,
+          juce::jmin(drawerWidth, getWidth() - (2 * contentInset)),
+          juce::jmax(1, getHeight() - drawerTop - contentInset));
+    }
 
     songListPanel->setVisible(true);
     songListPanel->setBounds(drawerBounds);
-    setlistDrawerScrim->setBounds(
-        juce::Rectangle<int>(0, topBarH, getWidth(),
-                             juce::jmax(1, getHeight() - topBarH)));
+    const auto scrimBounds = minimalPhoneProfile
+        ? juce::Rectangle<int>(safeContentArea.getX(),
+                               safeContentArea.getY() + topBarH,
+                               safeContentArea.getWidth(),
+                               juce::jmax(1, safeContentArea.getHeight() - topBarH))
+        : juce::Rectangle<int>(0, topBarH, getWidth(),
+                               juce::jmax(1, getHeight() - topBarH));
+    setlistDrawerScrim->setBounds(scrimBounds);
     setlistDrawerScrim->setDrawerBounds(
-        drawerBounds.translated(0, -topBarH));
+        drawerBounds.translated(-scrimBounds.getX(), -scrimBounds.getY()));
     setlistDrawerScrim->setVisible(true);
     setlistDrawerScrim->toFront(false);
     songListPanel->toFront(false);
 
-    setlistHandlePanel->setBounds(
-        juce::Rectangle<int>(drawerBounds.getRight(), drawerBounds.getY() + 8,
-                             handleW, juce::jmax(48, drawerBounds.getHeight() - 16)));
-    setlistHandlePanel->toFront(false);
+    if (!minimalPhoneProfile) {
+      setlistHandlePanel->setBounds(
+          juce::Rectangle<int>(drawerBounds.getRight(), drawerBounds.getY() + 8,
+                               handleW, juce::jmax(48, drawerBounds.getHeight() - 16)));
+      setlistHandlePanel->toFront(false);
+    }
   } else if (isSetlistCollapsed) {
     songListPanel->setVisible(false);
     songListPanel->setBounds({});
     setlistDrawerScrim->setVisible(false);
-  } else {
+  } else if (!minimalPhoneProfile) {
     songListPanel->setVisible(true);
     auto setlistBounds = leftSetlistArea;
     setlistBounds.removeFromLeft(contentInset);
@@ -3668,7 +3719,7 @@ void MTControlsAudioProcessorEditor::resized() {
     setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   }
 
-  if (!(setlistDrawerSupported && isSetlistDrawerOpen))
+  if (!(setlistOverlaySupported && isSetlistDrawerOpen) && !minimalPhoneProfile)
     setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
 

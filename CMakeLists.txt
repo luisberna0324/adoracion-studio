@@ -139,7 +139,7 @@ set(MTCONTROLS_REAUTH_GRACE_MINUTES "300" CACHE STRING
     "Minutes of grace window after re-login is requested (default: 5 hours)")
 set(MTCONTROLS_MAX_OFFLINE_HOURS "168" CACHE STRING
     "Max hours without network after last online validation (default: 7 days)")
-set(MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY "2" CACHE STRING
+set(MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY "1,2" CACHE STRING
     "Xcode TARGETED_DEVICE_FAMILY for iOS: 2=iPad only, 1=iPhone only, 1,2=Universal")
 
 include(FetchContent)

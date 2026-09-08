@@ -14,6 +14,7 @@ public:
 
   void setTitle(juce::String setlistName);
   void setCollapsed(bool collapsedState);
+  void setPhoneOverlayMode(bool enabled);
 
   void paint(juce::Graphics &g) override;
   void mouseEnter(const juce::MouseEvent &) override;
@@ -24,6 +25,7 @@ public:
 private:
   juce::String title;
   bool isCollapsed = false;
+  bool phoneOverlayMode = false;
   bool isHovered = false;
   bool isMouseDown = false;
 };
