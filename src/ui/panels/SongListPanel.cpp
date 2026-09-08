@@ -16,6 +16,48 @@
 #include <juce_core/native/juce_JNIHelpers_android.h>
 #endif
 
+class SongWizardOverlay final : public juce::Component {
+public:
+  SongWizardOverlay(std::unique_ptr<SongImportWizardComponent> content,
+                    std::function<void()> dismissCallback)
+      : panel(std::move(content)), onDismiss(std::move(dismissCallback)) {
+    jassert(panel != nullptr);
+    panel->setOnDismissRequested(onDismiss);
+    addAndMakeVisible(*panel);
+    setInterceptsMouseClicks(true, true);
+  }
+
+  void paint(juce::Graphics &g) override {
+    g.fillAll(juce::Colours::black.withAlpha(0.44f));
+  }
+
+  void resized() override {
+    auto area = getLocalBounds();
+    const int margin = useTouchOptimisedControls() ? 14 : 28;
+    area.reduce(margin, margin);
+    const int maxWidth = useTouchOptimisedControls() ? 920 : 860;
+    const int maxHeight = useTouchOptimisedControls() ? 700 : 640;
+    auto panelBounds = juce::Rectangle<int>(juce::jmin(maxWidth, area.getWidth()),
+                                             juce::jmin(maxHeight, area.getHeight()));
+    panelBounds.setCentre(area.getCentre());
+    panel->setBounds(panelBounds);
+  }
+
+  void parentSizeChanged() override {
+    if (auto *parent = getParentComponent())
+      setBounds(parent->getLocalBounds());
+  }
+
+  void mouseUp(const juce::MouseEvent &event) override {
+    if (!panel->getBounds().contains(event.getPosition()) && onDismiss)
+      onDismiss();
+  }
+
+private:
+  std::unique_ptr<SongImportWizardComponent> panel;
+  std::function<void()> onDismiss;
+};
+
 namespace {
 class LegacyProjectMigrationTask final
     : public juce::ThreadWithProgressWindow {
@@ -2914,6 +2956,29 @@ private:
   bool dirty = false;
 };
 
+void SongListPanel::showSongImportOverlay(
+    std::unique_ptr<SongImportWizardComponent> panel) {
+  if (panel == nullptr)
+    return;
+
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  auto *host = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                 : static_cast<juce::Component *>(this);
+  auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  const auto dismiss = [safeThis] {
+    juce::MessageManager::callAsync([safeThis] {
+      if (safeThis != nullptr)
+        safeThis->songImportOverlay.reset();
+    });
+  };
+
+  songImportOverlay.reset();
+  songImportOverlay = std::make_unique<SongWizardOverlay>(std::move(panel), dismiss);
+  host->addAndMakeVisible(*songImportOverlay);
+  songImportOverlay->setBounds(host->getLocalBounds());
+  songImportOverlay->toFront(false);
+}
+
 void SongListPanel::openSongImportWizard() {
   openSongImportWizard({});
 }
@@ -3147,19 +3212,7 @@ void SongListPanel::convertLegacySongAtDestination(
 
 void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
-  auto *centerTarget =
-      editor != nullptr ? static_cast<juce::Component *>(editor)
-                        : static_cast<juce::Component *>(this);
-
-  juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr(u8"Crear canción", "Create Song");
-  options.dialogBackgroundColour = UITheme::appBg;
-  options.escapeKeyTriggersCloseButton = true;
-  options.useNativeTitleBar = true;
-  options.resizable = true;
-  options.componentToCentreAround = centerTarget;
-  auto *panel = new SongImportWizardComponent(
+  auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
         if (safeThis == nullptr) {
@@ -3252,7 +3305,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
-      {}, [](const ImportedSongData &song, juce::File &destination,
+      ImportedSongData{}, [](const ImportedSongData &song, juce::File &destination,
              juce::String &) {
         const auto title = juce::File::createLegalFileName(song.title.trim());
         const auto artist = juce::File::createLegalFileName(song.artist.trim());
@@ -3301,12 +3354,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         return true;
       });
   panel->refreshThemeColours();
-  options.content.setOwned(panel);
-
-  if (auto *window = options.launchAsync()) {
-    window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 860, 640);
-  }
+  showSongImportOverlay(std::move(panel));
 }
 
 void SongListPanel::openSongEditWizard(const juce::String &songId) {
@@ -3337,20 +3385,8 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
     return;
 
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
-  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
-  auto *centerTarget =
-      editor != nullptr ? static_cast<juce::Component *>(editor)
-                        : static_cast<juce::Component *>(this);
 
-  juce::DialogWindow::LaunchOptions options;
-  options.dialogTitle = L10n::tr(u8"Editar canción", "Edit Song");
-  options.dialogBackgroundColour = UITheme::appBg;
-  options.escapeKeyTriggersCloseButton = true;
-  options.useNativeTitleBar = true;
-  options.resizable = true;
-  options.componentToCentreAround = centerTarget;
-
-  auto *panel = new SongImportWizardComponent(
+  auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
                                                juce::String &errorMessage,
                                                const SongImportProgressFn &progress) {
@@ -3395,7 +3431,8 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
-      baseSong, {},
+      baseSong,
+      std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>{},
       [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
                                                juce::String &errorMessage) {
         if (safeThis == nullptr) {
@@ -3420,12 +3457,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         return true;
       });
   panel->refreshThemeColours();
-  options.content.setOwned(panel);
-
-  if (auto *window = options.launchAsync()) {
-    window->setResizable(true, true);
-    window->centreAroundComponent(centerTarget, 860, 640);
-  }
+  showSongImportOverlay(std::move(panel));
 }
 
 void SongListPanel::openSetlistManager() {

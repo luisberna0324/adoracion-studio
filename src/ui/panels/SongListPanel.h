@@ -15,6 +15,9 @@
 #include <unordered_map>
 #include <vector>
 
+class SongImportWizardComponent;
+class SongWizardOverlay;
+
 class SongListPanel final : public juce::Component, private juce::Timer {
 public:
   class SwipeHintHandle final : public juce::Component {
@@ -180,6 +183,7 @@ private:
 
   void openSongImportWizard();
   void openSongImportWizard(const juce::File &destination);
+  void showSongImportOverlay(std::unique_ptr<SongImportWizardComponent> panel);
   void openProjectFileChooser();
   void openProjectFileFromUrl(const juce::URL &url);
   void openSongEditWizard(const juce::String &songId);
@@ -281,6 +285,7 @@ private:
   std::function<bool()> saveProjectAvailableProvider;
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
+  std::unique_ptr<SongWizardOverlay> songImportOverlay;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
 };

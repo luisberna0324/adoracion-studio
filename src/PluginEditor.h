@@ -13,6 +13,7 @@
 class TopBar;
 class WaveformBar;
 class SetlistHandlePanel;
+class SetlistDrawerScrim;
 class SongListPanel;
 class PadsComponent;
 class PadsHandlePanel;
@@ -52,9 +53,11 @@ private:
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;
+  std::unique_ptr<SetlistDrawerScrim> setlistDrawerScrim;
   int currentThemeId = 1;
   std::function<void()> refreshTopBarTheme;
   bool isSetlistCollapsed = false;
+  bool isSetlistDrawerOpen = false;
   int currentSongIndex = -1;
   std::function<void()> prevSongAction;
   std::function<void()> nextSongAction;

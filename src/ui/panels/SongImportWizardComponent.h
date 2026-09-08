@@ -38,6 +38,7 @@ public:
   void mouseExit(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
   void refreshThemeColours();
+  void setOnDismissRequested(std::function<void()> callback);
 
 private:
   enum class Step { Metadata = 0, Stems, Mapping, Review };
@@ -115,6 +116,7 @@ private:
   std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>
       resolveProjectDestination;
   std::function<bool(ImportedSongData, juce::String &)> onMetadataOnlySubmit;
+  std::function<void()> onDismissRequested;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;

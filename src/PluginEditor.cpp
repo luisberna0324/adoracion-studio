@@ -42,7 +42,51 @@
 
 using namespace PluginEditorSupport;
 
+class SetlistDrawerScrim final : public juce::Component {
+public:
+  explicit SetlistDrawerScrim(std::function<void()> dismissCallback)
+      : onDismiss(std::move(dismissCallback)) {
+    setInterceptsMouseClicks(true, true);
+  }
+
+  void setDrawerBounds(juce::Rectangle<int> bounds) {
+    drawerBounds = bounds;
+    repaint();
+  }
+
+  void paint(juce::Graphics &g) override {
+    g.fillAll(juce::Colours::black.withAlpha(0.38f));
+    if (!drawerBounds.isEmpty()) {
+      const auto shadow = drawerBounds.toFloat().withX(
+          static_cast<float>(drawerBounds.getRight()));
+      juce::ColourGradient gradient(juce::Colours::black.withAlpha(0.30f),
+                                    shadow.getX(), shadow.getY(),
+                                    juce::Colours::transparentBlack,
+                                    shadow.getRight() + 18.0f, shadow.getY(),
+                                    false);
+      g.setGradientFill(gradient);
+      g.fillRect(shadow.withWidth(18.0f));
+    }
+  }
+
+  void mouseUp(const juce::MouseEvent &event) override {
+    if (!drawerBounds.contains(event.getPosition()) && onDismiss)
+      onDismiss();
+  }
+
+private:
+  juce::Rectangle<int> drawerBounds;
+  std::function<void()> onDismiss;
+};
+
 namespace {
+bool supportsSetlistDrawer(const juce::Component &component) {
+  const auto bounds = component.getLocalBounds();
+  const int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
+  const int longSide = juce::jmax(bounds.getWidth(), bounds.getHeight());
+  return useTouchOptimisedControls() && shortSide >= 700 && longSide >= 960;
+}
+
 class SettingsOverlayComponent final : public juce::Component {
 public:
   SettingsOverlayComponent(std::unique_ptr<SettingsPanel> content,
@@ -1841,10 +1885,27 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   setlistHandlePanel = std::make_unique<SetlistHandlePanel>("Setlist A");
   setlistHandlePanel->onToggle = [this] {
     autoSetlistCollapseInitialized = true;
-    isSetlistCollapsed = !isSetlistCollapsed;
+    if (!supportsSetlistDrawer(*this)) {
+      isSetlistDrawerOpen = false;
+      isSetlistCollapsed = !isSetlistCollapsed;
+    } else if (isSetlistDrawerOpen) {
+      isSetlistDrawerOpen = false;
+      isSetlistCollapsed = false;
+    } else if (isSetlistCollapsed) {
+      // On tablets, reopening the panel keeps the mixer and pads at full
+      // width by presenting the existing SongListPanel as an overlay drawer.
+      isSetlistDrawerOpen = true;
+    } else {
+      isSetlistCollapsed = true;
+    }
     resized();
     repaint();
   };
+  setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
+    isSetlistDrawerOpen = false;
+    resized();
+    repaint();
+  });
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
@@ -1885,6 +1946,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
+  addChildComponent(*setlistDrawerScrim);
 
   if (reauthPromptModal == nullptr) {
     auto prompt = std::make_unique<ReauthPromptModal>();
@@ -3290,6 +3352,9 @@ void MTControlsAudioProcessorEditor::resized() {
 
   auto area = getLocalBounds();
   updateResponsiveLayoutProfile();
+  const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
+  if (!setlistDrawerSupported)
+    isSetlistDrawerOpen = false;
 
   if (topBar == nullptr || waveformBar == nullptr || channelGridPanel == nullptr ||
       songListPanel == nullptr || setlistHandlePanel == nullptr)
@@ -3350,7 +3415,7 @@ void MTControlsAudioProcessorEditor::resized() {
   int setlistWidth =
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
-  if (isSetlistCollapsed)
+  if (isSetlistCollapsed || (setlistDrawerSupported && isSetlistDrawerOpen))
     setlistWidth = 0;
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
@@ -3413,9 +3478,37 @@ void MTControlsAudioProcessorEditor::resized() {
 
   channelGridPanel->setBounds(rightChannelsArea);
 
-  if (isSetlistCollapsed) {
+  if (setlistDrawerSupported && isSetlistDrawerOpen) {
+    const int drawerTop = topBarH + contentInset;
+    const int drawerBottomInset = contentInset;
+    const int drawerWidth = juce::jlimit(
+        useTouchOptimisedControls() ? 360 : 340,
+        useTouchOptimisedControls() ? 560 : 460,
+        static_cast<int>(getWidth() * (useTouchOptimisedControls() ? 0.46f : 0.38f)));
+    const auto drawerBounds = juce::Rectangle<int>(
+        contentInset, drawerTop,
+        juce::jmin(drawerWidth, getWidth() - (2 * contentInset)),
+        juce::jmax(1, getHeight() - drawerTop - drawerBottomInset));
+
+    songListPanel->setVisible(true);
+    songListPanel->setBounds(drawerBounds);
+    setlistDrawerScrim->setBounds(
+        juce::Rectangle<int>(0, topBarH, getWidth(),
+                             juce::jmax(1, getHeight() - topBarH)));
+    setlistDrawerScrim->setDrawerBounds(
+        drawerBounds.translated(0, -topBarH));
+    setlistDrawerScrim->setVisible(true);
+    setlistDrawerScrim->toFront(false);
+    songListPanel->toFront(false);
+
+    setlistHandlePanel->setBounds(
+        juce::Rectangle<int>(drawerBounds.getRight(), drawerBounds.getY() + 8,
+                             handleW, juce::jmax(48, drawerBounds.getHeight() - 16)));
+    setlistHandlePanel->toFront(false);
+  } else if (isSetlistCollapsed) {
     songListPanel->setVisible(false);
     songListPanel->setBounds({});
+    setlistDrawerScrim->setVisible(false);
   } else {
     songListPanel->setVisible(true);
     auto setlistBounds = leftSetlistArea;
@@ -3423,9 +3516,12 @@ void MTControlsAudioProcessorEditor::resized() {
     setlistBounds.removeFromBottom(contentInset);
     setlistBounds.removeFromRight(3);
     songListPanel->setBounds(setlistBounds);
+    setlistDrawerScrim->setVisible(false);
+    setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   }
 
-  setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
+  if (!(setlistDrawerSupported && isSetlistDrawerOpen))
+    setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
 
   if (reauthPromptModal != nullptr) {
