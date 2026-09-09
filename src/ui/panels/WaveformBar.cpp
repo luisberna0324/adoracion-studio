@@ -3823,8 +3823,10 @@ WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
                   .withTrimmedBottom(kBottomSafetyInset);
   if (isEditingArrangement())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
-  // Always reserve bottom space for the minimap (visible in both modes).
-  area = area.withTrimmedBottom(kMiniMapHeight + kMiniMapGap);
+  // Phones use the full waveform height; the minimap/navigation strip is
+  // deliberately omitted to preserve room for the mixer.
+  if (!minimalPhoneMode)
+    area = area.withTrimmedBottom(kMiniMapHeight + kMiniMapGap);
   return area;
 }
 
@@ -3854,6 +3856,9 @@ juce::Rectangle<float> WaveformBar::getMainWaveBodyBounds(
 
 juce::Rectangle<float>
 WaveformBar::getMiniMapBounds(const juce::Rectangle<float> &bounds) const {
+  if (minimalPhoneMode)
+    return {};
+
   auto area = bounds.reduced(8.0f, 6.0f);
   area = area.withTrimmedBottom(kBottomSafetyInset);
   if (isEditingArrangement())

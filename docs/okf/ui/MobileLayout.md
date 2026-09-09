@@ -46,7 +46,8 @@ area segura:
 - El setlist lateral se reemplaza por un boton `SETLIST` flotante sobre el
   mixer; abre un overlay desde la derecha sin reducir ni desplazar el mixer.
   Tocar fuera del overlay lo cierra.
-- Pads y expansion vertical de waveform se ocultan en telefono.
+- Pads, expansion vertical de waveform y minimap/navegador inferior de la
+  waveform se ocultan en telefono. La onda principal usa ese alto liberado.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
 
