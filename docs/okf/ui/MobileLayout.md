@@ -49,6 +49,8 @@ area segura:
 - Pads, expansion vertical de waveform y minimap/navegador inferior de la
   waveform se ocultan en telefono. Tambien se oculta la regla de compases
   superior; la onda principal usa todo ese alto liberado.
+- El mixer de telefono no dibuja una tarjeta o division propia: sus canales
+  comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
 

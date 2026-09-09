@@ -413,6 +413,14 @@ void ChannelGridPanel::setResponsiveProfile(
   repaint();
 }
 
+void ChannelGridPanel::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled)
+    return;
+  minimalPhoneMode = enabled;
+  resized();
+  repaint();
+}
+
 void ChannelGridPanel::setOnLibrarySongLoadRequested(
     std::function<void(const ImportedSongData &, int)> cb) {
   onLibrarySongLoadRequested = std::move(cb);
@@ -669,6 +677,11 @@ void ChannelGridPanel::timerCallback() {
 }
 
 void ChannelGridPanel::layoutHeaderAndViewport() {
+  if (minimalPhoneMode) {
+    viewport.setBounds(getLocalBounds());
+    return;
+  }
+
   const int panelPad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 10 : 14;
   auto r = getLocalBounds();
   r.reduce(panelPad, 0);
@@ -1244,11 +1257,13 @@ void ChannelGridPanel::refreshThemeColours() {
 }
 
 void ChannelGridPanel::paint(juce::Graphics &g) {
-  const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
-  g.fillRoundedRectangle(bounds, 8.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.86f));
-  g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
+  if (!minimalPhoneMode) {
+    const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
+    g.fillRoundedRectangle(bounds, 8.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.86f));
+    g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
+  }
 
   const auto viewportBounds = viewport.getBounds();
 
@@ -1269,9 +1284,11 @@ void ChannelGridPanel::resized() {
   // Mantener altura estable: actualmente el ruteo por canal esta oculto.
   const bool gridShowsRouting = false;
 
-  const int pad = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 8;
+  const int pad = minimalPhoneMode ? 0 :
+      (responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 8);
   const int gapX = responsiveProfile == ResponsiveLayoutProfile::Compact ? 4 : 6;
-  const int gapY = responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10;
+  const int gapY = minimalPhoneMode ? 4 :
+      (responsiveProfile == ResponsiveLayoutProfile::Compact ? 8 : 10);
   const auto baseLayout = ChannelStripCard::Layout{};
   const int baseCellW = baseLayout.width + 2;
   const int maxColumnsAtBase =

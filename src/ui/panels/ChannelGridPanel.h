@@ -30,6 +30,7 @@ public:
   void nudgeFaders(float delta);
   void refreshThemeColours();
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
+  void setMinimalPhoneMode(bool enabled);
   void refreshLibraryFromStorage();
   void setLibraryNowPlayingSong(const juce::String &songId, bool isPlaying);
   void setOnLibrarySongLoadRequested(
@@ -132,6 +133,7 @@ private:
   int dynamicGuideVirtualSlotIndex = -1;
   GuideSourceMode guideSourceMode = GuideSourceMode::SongGuide;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
+  bool minimalPhoneMode = false;
   const float nudgeStep = 0.05f;
   static constexpr double volumePersistenceDebounceMs = 120.0;
   static constexpr int timerHz = 20;

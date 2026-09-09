@@ -3462,6 +3462,8 @@ void MTControlsAudioProcessorEditor::resized() {
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
     wave->setMinimalPhoneMode(minimalPhoneProfile);
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->setMinimalPhoneMode(minimalPhoneProfile);
 #if JUCE_IOS || JUCE_ANDROID
   if (minimalPhoneProfile) {
     // Standalone iOS windows can extend under the sensor housing/notch. Keep
