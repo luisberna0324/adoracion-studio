@@ -46,6 +46,7 @@ constexpr float kFollowWaveformCacheOverscan = 3.0f;
 #endif
 constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
 constexpr float kWheelPanSensitivity = 0.22f;
+constexpr float kTouchPanSlopPx = 6.0f;
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
 constexpr float kPlayheadHeadInsetY = 1.5f;
@@ -1043,6 +1044,13 @@ void WaveformBar::setOnWaveformHeightToggle(WaveformHeightToggleCallback cb) {
 }
 
 void WaveformBar::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode != enabled) {
+    phoneTouchPositions.clear();
+    phonePinchActive = false;
+    viewportDragMoved = false;
+    if (dragMode == DragMode::panViewport)
+      dragMode = DragMode::none;
+  }
   minimalPhoneMode = enabled;
   if (enabled)
     waveformVerticalExpanded = false;
@@ -1648,6 +1656,35 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
+  if (minimalPhoneMode && !isEditingArrangement() && event.source.isTouch()) {
+    const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
+    const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
+    if (mainWaveBodyBounds.contains(event.position)) {
+      phoneTouchPositions[event.source.getIndex()] = event.position;
+      if (phoneTouchPositions.size() >= 2) {
+        auto first = phoneTouchPositions.begin();
+        const auto firstPosition = first->second;
+        const auto secondPosition = std::next(first)->second;
+        const auto midpoint = (firstPosition + secondPosition) * 0.5f;
+        phonePinchStartDistance = juce::jmax(
+            1.0f, firstPosition.getDistanceFrom(secondPosition));
+        phonePinchStartViewportSpan = viewportSpan;
+        phonePinchAnchorRatio = juce::jlimit(
+            0.0f, 1.0f,
+            (midpoint.x - mainWaveBodyBounds.getX()) /
+                juce::jmax(1.0f, mainWaveBodyBounds.getWidth()));
+        phonePinchAnchorSource =
+            viewportStart + (phonePinchAnchorRatio * phonePinchStartViewportSpan);
+        phonePinchActive = true;
+        viewportDragMoved = true;
+        dragMode = DragMode::none;
+        followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                                 kFollowSuspendAfterManualViewportMs;
+        return;
+      }
+    }
+  }
+
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragPartOrigins.clear();
@@ -1723,6 +1760,27 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 
   if (!mainWaveBounds.contains(event.position))
     return;
+
+  // Phones do not expose the desktop minimap. Pan the visible waveform
+  // directly with one finger instead, while preserving the arrange editor's
+  // section manipulation gestures.
+  if (minimalPhoneMode && !isEditingArrangement() &&
+      mainWaveBodyBounds.contains(event.position) && !event.mods.isPopupMenu()) {
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
+    dragMode = DragMode::panViewport;
+    dragViewportStart = viewportStart;
+    dragViewportSpan = viewportSpan;
+    dragAnchorNormalized = juce::jlimit(
+        0.0f, 1.0f,
+        (event.position.x - mainWaveBodyBounds.getX()) /
+            juce::jmax(1.0f, mainWaveBodyBounds.getWidth()));
+    viewportDragStartPosition = event.position;
+    viewportDragMoved = false;
+    phoneTouchPositions[event.source.getIndex()] = event.position;
+    setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    return;
+  }
 
   if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap &&
       mainWaveBodyBounds.contains(event.position)) {
@@ -1945,6 +2003,27 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   const auto seekBounds =
       mainWaveBodyBounds.getWidth() > 2.0f ? mainWaveBodyBounds : mainWaveBounds;
 
+  if (minimalPhoneMode && phonePinchActive && event.source.isTouch()) {
+    phoneTouchPositions[event.source.getIndex()] = event.position;
+    if (phoneTouchPositions.size() < 2)
+      return;
+
+    auto first = phoneTouchPositions.begin();
+    const auto firstPosition = first->second;
+    const auto secondPosition = std::next(first)->second;
+    const float currentDistance = juce::jmax(
+        1.0f, firstPosition.getDistanceFrom(secondPosition));
+    const float factor = currentDistance / phonePinchStartDistance;
+    const float nextSpan = juce::jlimit(
+        kMinViewportSpan, 1.0f, phonePinchStartViewportSpan / factor);
+    setVisibleWindow(phonePinchAnchorSource -
+                         (phonePinchAnchorRatio * nextSpan),
+                     nextSpan);
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
+    return;
+  }
+
   if (dragMode == DragMode::seek) {
     setMouseCursor(juce::MouseCursor::NormalCursor);
     handleSeek(event.position.x, seekBounds);
@@ -1961,17 +2040,30 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     else
       setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
 
-    if (miniMapBounds.getWidth() <= 2.0f)
+    const bool directWaveformPan = minimalPhoneMode &&
+                                   miniMapBounds.getWidth() <= 2.0f;
+    const auto panBounds = directWaveformPan ? mainWaveBodyBounds : miniMapBounds;
+    if (panBounds.getWidth() <= 2.0f)
       return;
 
     const float normalized = juce::jlimit(
         0.0f, 1.0f,
-        (event.position.x - miniMapBounds.getX()) /
-            juce::jmax(1.0f, miniMapBounds.getWidth()));
+        (event.position.x - panBounds.getX()) /
+            juce::jmax(1.0f, panBounds.getWidth()));
 
     if (dragMode == DragMode::panViewport) {
+      if (directWaveformPan &&
+          event.position.getDistanceFrom(viewportDragStartPosition) >=
+              kTouchPanSlopPx)
+        viewportDragMoved = true;
       const float delta = normalized - dragAnchorNormalized;
-      setVisibleWindow(dragViewportStart + delta, dragViewportSpan);
+      // Direct manipulation moves the waveform one-to-one with the finger.
+      // Convert the screen ratio into the currently visible source span; using
+      // the full timeline here would make a zoomed waveform race ahead.
+      const float viewportDelta = directWaveformPan
+                                      ? -(delta * dragViewportSpan)
+                                      : delta;
+      setVisibleWindow(dragViewportStart + viewportDelta, dragViewportSpan);
       return;
     }
 
@@ -2405,12 +2497,25 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   repaint();
 }
 
-void WaveformBar::mouseUp(const juce::MouseEvent &) {
+void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
   if (midiLearnActive)
     return;
+
+  if (minimalPhoneMode && event.source.isTouch()) {
+    const bool wasPhonePinch = phonePinchActive;
+    phoneTouchPositions.erase(event.source.getIndex());
+    if (wasPhonePinch) {
+      if (phoneTouchPositions.size() < 2)
+        phonePinchActive = false;
+      dragMode = DragMode::none;
+      viewportDragMoved = false;
+      setMouseCursor(juce::MouseCursor::NormalCursor);
+      return;
+    }
+  }
 
   const bool wasArrangementDrag =
       dragMode == DragMode::movePart || dragMode == DragMode::resizePartLeft ||
@@ -2420,6 +2525,9 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
       dragMode == DragMode::resizeTempoRegionLeft ||
       dragMode == DragMode::resizeTempoRegionRight;
   const bool wasSelectionDrag = dragMode == DragMode::selectParts;
+  const bool wasPhoneWaveformTap =
+      minimalPhoneMode && dragMode == DragMode::panViewport &&
+      !viewportDragMoved;
   const auto completedArrangementDragMode = dragMode;
   const auto completedArrangementDragPartId = activeDragPartId;
   dragMode = DragMode::none;
@@ -2429,6 +2537,12 @@ void WaveformBar::mouseUp(const juce::MouseEvent &) {
   dragAnchorActive = false;
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
+  viewportDragMoved = false;
+  if (wasPhoneWaveformTap) {
+    const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
+    const auto seekBounds = getMainWaveBodyBounds(mainWaveBounds);
+    handleSeek(event.position.x, seekBounds);
+  }
   if (wasArrangementDrag && arrangementDragPendingCommit) {
     if (hasArrangementDragUndoSnapshot)
       pushArrangementUndoSnapshot(arrangementDragUndoSnapshot);

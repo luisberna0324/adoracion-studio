@@ -5,6 +5,7 @@
 #include <JuceHeader.h>
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -272,6 +273,14 @@ private:
   float dragViewportStart = 0.0f;
   float dragViewportSpan = 1.0f;
   float dragAnchorNormalized = 0.0f;
+  juce::Point<float> viewportDragStartPosition;
+  bool viewportDragMoved = false;
+  std::map<int, juce::Point<float>> phoneTouchPositions;
+  bool phonePinchActive = false;
+  float phonePinchStartDistance = 1.0f;
+  float phonePinchStartViewportSpan = 1.0f;
+  float phonePinchAnchorRatio = 0.5f;
+  float phonePinchAnchorSource = 0.5f;
   juce::Point<float> selectionDragStart;
   juce::Point<float> selectionDragCurrent;
   std::vector<juce::String> selectionDragBaseIds;

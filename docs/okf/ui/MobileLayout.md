@@ -68,6 +68,11 @@ area segura:
   superior; la onda principal usa todo ese alto liberado.
 - La waveform de telefono tampoco usa tarjeta, borde ni padding externo: la
   onda ocupa directamente toda su region segura.
+- En telefono, un arrastre horizontal sobre la onda desplaza su contenido en la
+  misma direccion del dedo;
+  un toque conserva el seek y un gesto de pinza amplia o reduce la escala con
+  el punto de contacto como ancla. Los gestos de edicion de secciones siguen
+  teniendo prioridad mientras el editor de arrange esta activo.
 - El mixer de telefono no dibuja una tarjeta o division propia: sus canales
   comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - Los channel strips forman una sola fila, ajustan su altura al mixer y se

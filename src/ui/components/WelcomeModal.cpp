@@ -254,27 +254,39 @@ void WelcomeModal::resized() {
   auto column = juce::Rectangle<int>(juce::jmax(1, columnWidth),
                                      juce::jmax(1, cardH - 44))
                     .withCentre(contentBounds.getCentre());
+  const bool compact = cardH < 600;
+  const int logoMinH = compact ? 64 : 82;
+  const int logoMaxH = compact ? 94 : 126;
+  const int logoGap = compact ? 6 : 10;
+  const int titleH = compact ? 56 : 64;
+  const int titleGap = compact ? 4 : 6;
+  const int subtitleH = compact ? 32 : 40;
+  const int subtitleGap = compact ? 6 : 10;
+  const int statusH = compact ? 24 : 30;
+  const int statusGap = compact ? 8 : 14;
+  const int btnH = compact ? 42 : 46;
+  const int buttonGap = compact ? 8 : 10;
 
   if (logoImage.isValid()) {
-    auto logoArea = column.removeFromTop(juce::jlimit(82, 126, cardH / 5));
+    auto logoArea = column.removeFromTop(
+        juce::jlimit(logoMinH, logoMaxH, cardH / (compact ? 6 : 5)));
     const int logoW = juce::jmin(300, logoArea.getWidth());
     const int logoH = logoArea.getHeight();
     logo.setImage(logoImage, juce::RectanglePlacement::centred);
     logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
-    column.removeFromTop(10);
+    column.removeFromTop(logoGap);
   } else {
     column.removeFromTop(8);
   }
 
-  title.setBounds(column.removeFromTop(64));
-  column.removeFromTop(6);
-  subtitle.setBounds(column.removeFromTop(40));
-  column.removeFromTop(10);
-  status.setBounds(column.removeFromTop(30));
-  column.removeFromTop(14);
+  title.setBounds(column.removeFromTop(titleH));
+  column.removeFromTop(titleGap);
+  subtitle.setBounds(column.removeFromTop(subtitleH));
+  column.removeFromTop(subtitleGap);
+  status.setBounds(column.removeFromTop(statusH));
+  column.removeFromTop(statusGap);
 
-  const int btnH = 46;
   loginButton.setBounds(column.removeFromTop(btnH));
-  column.removeFromTop(10);
+  column.removeFromTop(buttonGap);
   moreInfoButton.setBounds(column.removeFromTop(btnH));
 }

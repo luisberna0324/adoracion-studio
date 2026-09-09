@@ -141,6 +141,8 @@ set(MTCONTROLS_MAX_OFFLINE_HOURS "168" CACHE STRING
     "Max hours without network after last online validation (default: 7 days)")
 set(MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY "1,2" CACHE STRING
     "Xcode TARGETED_DEVICE_FAMILY for iOS: 2=iPad only, 1=iPhone only, 1,2=Universal")
+set(MTCONTROLS_IOS_DEVELOPMENT_TEAM "" CACHE STRING
+    "Apple development team used to sign the iOS app on physical devices")
 
 include(FetchContent)
 
@@ -431,7 +433,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
     if(TARGET MTControls_Standalone)
         set_target_properties(MTControls_Standalone PROPERTIES
-            XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
+            XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5"
+            XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES")
+        if(MTCONTROLS_IOS_DEVELOPMENT_TEAM)
+            set_target_properties(MTControls_Standalone PROPERTIES
+                XCODE_ATTRIBUTE_DEVELOPMENT_TEAM
+                "${MTCONTROLS_IOS_DEVELOPMENT_TEAM}")
+        endif()
     endif()
 endif()
 
