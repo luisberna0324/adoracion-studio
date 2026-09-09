@@ -644,6 +644,14 @@ SongListPanel::SongListPanel() {
   createSetlistButton.onClick = [this] { createSetlist(); };
   setlistsPage.addAndMakeVisible(createSetlistButton);
 
+  closeOverlayButton.setTooltip(L10n::tr("Cerrar", "Close"));
+  closeOverlayButton.onClick = [this] {
+    if (onOverlayCloseRequested)
+      onOverlayCloseRequested();
+  };
+  addAndMakeVisible(closeOverlayButton);
+  closeOverlayButton.setVisible(false);
+
   setlistSearchField.setPlaceholderText(
       L10n::tr("Buscar setlist...", "Search setlist..."));
   setlistSearchField.setIconGlyph(IconGlyph::Search);
@@ -855,6 +863,19 @@ SongListPanel::SongListPanel() {
 
 SongListPanel::~SongListPanel() = default;
 
+void SongListPanel::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled)
+    return;
+  minimalPhoneMode = enabled;
+  songsHeaderPanel.setVisible(!minimalPhoneMode);
+  closeOverlayButton.setVisible(minimalPhoneMode);
+  resized();
+}
+
+void SongListPanel::setOnOverlayCloseRequested(std::function<void()> cb) {
+  onOverlayCloseRequested = std::move(cb);
+}
+
 void SongListPanel::setOnSongActivated(
     std::function<void(const ImportedSongData &, int)> cb) {
   onSongActivated = std::move(cb);
@@ -1056,6 +1077,17 @@ void SongListPanel::paint(juce::Graphics &g) {
 void SongListPanel::resized() {
   pageContainer->setBounds(getLocalBounds());
 
+  if (minimalPhoneMode) {
+    constexpr int headerActionSize = 40;
+    constexpr int headerInset = 10;
+    closeOverlayButton.setBounds(getWidth() - headerInset - headerActionSize,
+                                 headerInset, headerActionSize,
+                                 headerActionSize);
+    closeOverlayButton.toFront(false);
+  } else {
+    closeOverlayButton.setBounds({});
+  }
+
   auto songsLayout = computeSongsLayout();
   applySongsLayout(songsLayout);
   applySetlistsLayout(computeSetlistsLayout());
@@ -1074,13 +1106,13 @@ void SongListPanel::resized() {
 
 SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   SongsLayout layout;
-  auto area = getLocalBounds().reduced(16);
+  auto area = getLocalBounds().reduced(minimalPhoneMode ? 10 : 16);
   layout.workspace = area;
 
-  int headerRowHeight = 56;
-  int headerPanelHeight = area.getHeight() < 560 ? 44 : 50;
-  int gapAfterHeader = area.getHeight() < 560 ? 6 : 8;
-  int gapAfterPanel = area.getHeight() < 560 ? 8 : 12;
+  int headerRowHeight = minimalPhoneMode ? 48 : 56;
+  int headerPanelHeight = minimalPhoneMode ? 0 : (area.getHeight() < 560 ? 44 : 50);
+  int gapAfterHeader = minimalPhoneMode ? 4 : (area.getHeight() < 560 ? 6 : 8);
+  int gapAfterPanel = minimalPhoneMode ? 0 : (area.getHeight() < 560 ? 8 : 12);
   constexpr int minListHeight = 140;
 
   int availableListHeight = area.getHeight() - headerRowHeight -
@@ -1111,6 +1143,8 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   constexpr int libraryButtonWidth = 40;
   constexpr int addButtonWidth = 40;
   constexpr int actionGap = 12;
+  if (minimalPhoneMode)
+    headerGrid.removeFromRight(48);
   const auto rightColumn =
       headerGrid.removeFromRight(libraryButtonWidth + actionGap + addButtonWidth);
   layout.back = leftColumn.withSizeKeepingCentre(40, 40);
@@ -1154,6 +1188,8 @@ SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
 
   auto headerRow = area.removeFromTop(headerHeight);
   constexpr int createButtonSize = 40;
+  if (minimalPhoneMode)
+    headerRow.removeFromRight(48);
   auto headerAction = headerRow.removeFromRight(createButtonSize);
   layout.createRow =
       headerAction.withSizeKeepingCentre(createButtonSize, createButtonSize);
@@ -1189,10 +1225,12 @@ void SongListPanel::applySongsLayout(const SongsLayout &layout) {
                        juce::dontSendNotification);
   titleLabel.toFront(false);
 
+  songsHeaderPanel.setVisible(!minimalPhoneMode);
   juce::FlexBox contentFlex;
   contentFlex.flexDirection = juce::FlexBox::Direction::column;
-  contentFlex.items.add(
-      juce::FlexItem(songsHeaderPanel).withHeight(layout.headerPanel.getHeight()));
+  if (!minimalPhoneMode)
+    contentFlex.items.add(
+        juce::FlexItem(songsHeaderPanel).withHeight(layout.headerPanel.getHeight()));
   contentFlex.items.add(juce::FlexItem(listViewport).withFlex(1.0f)
                            .withMargin({static_cast<float>(
                                             layout.listArea.getY() -
@@ -3529,7 +3567,7 @@ void SongListPanel::applyModeVisibility() {
   backButton.setVisible(true);
   headerMenuButton.setVisible(true);
   addSongsButton.setVisible(true);
-  songsHeaderPanel.setVisible(true);
+  songsHeaderPanel.setVisible(!minimalPhoneMode);
   listViewport.setVisible(true);
   libraryCatalogPanel.setVisible(true);
   setlistsHeaderLabel.setVisible(true);

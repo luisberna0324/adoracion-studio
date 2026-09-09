@@ -598,6 +598,10 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
 
 TopBar::~TopBar() { stopTimer(); }
 
+juce::Rectangle<int> TopBar::getPhoneSetlistButtonBounds() const {
+  return phoneSetlistSpacer.getBounds();
+}
+
 void TopBar::setTransportCallbacks(
     std::function<void()> playPauseCallback,
     std::function<void()> stopCallback,
@@ -686,6 +690,7 @@ void TopBar::setMinimalPhoneMode(const bool enabled) {
   if (minimalPhoneMode == enabled)
     return;
   minimalPhoneMode = enabled;
+  applyResponsiveTypography();
   resized();
   repaint();
 }
@@ -820,7 +825,7 @@ void TopBar::paint(juce::Graphics &g) {
              static_cast<float>(getWidth()),
              static_cast<float>(getHeight()) - 0.5f, 1.0f);
 
-  if (!songInfoBounds.isEmpty()) {
+  if (!minimalPhoneMode && !songInfoBounds.isEmpty()) {
     g.setColour(UITheme::dividerSoft.withAlpha(0.58f));
     const float separatorX = static_cast<float>(songInfoBounds.getX() - 8);
     g.drawLine(separatorX, 12.0f, separatorX,
@@ -920,7 +925,7 @@ void TopBar::resized() {
       keyWidth = 56;
       metroTotalW = 88;
       metroIconW = 44;
-      timeWidth = 132;
+      timeWidth = 72;
       minCardW = 112;
       maxCardW = 170;
       songCardHeight = 40;
@@ -931,7 +936,7 @@ void TopBar::resized() {
       keyWidth = 62;
       metroTotalW = 94;
       metroIconW = 46;
-      timeWidth = 146;
+      timeWidth = 78;
       minCardW = 124;
       maxCardW = 200;
       songCardHeight = 42;
@@ -942,7 +947,7 @@ void TopBar::resized() {
       keyWidth = 70;
       metroTotalW = 104;
       metroIconW = 48;
-      timeWidth = 164;
+      timeWidth = 86;
       minCardW = 140;
       maxCardW = 230;
       songCardHeight = 46;
@@ -979,12 +984,16 @@ void TopBar::resized() {
   }
 
   const bool minimalPhoneProfile = minimalPhoneMode;
-  // The phone transport keeps only the four actions needed during playback.
-  // Seek/fade remain available through their existing secondary controls.
+  phoneSetlistSpacer.setInterceptsMouseClicks(false, false);
+  if (phoneSetlistSpacer.getParentComponent() == nullptr)
+    addAndMakeVisible(phoneSetlistSpacer);
+  setVisibleIfChanged(phoneSetlistSpacer, minimalPhoneProfile);
+  // Phones keep seek in secondary controls, but expose the contextual
+  // Fade Down/Fade Up toggle immediately after Next.
   setVisibleIfChanged(seekBackButton, !minimalPhoneProfile);
   setVisibleIfChanged(seekForwardButton, !minimalPhoneProfile);
-  setVisibleIfChanged(fadeButton, !minimalPhoneProfile);
-  const int transportButtonCount = minimalPhoneProfile ? 4 : 7;
+  setVisibleIfChanged(fadeButton, true);
+  const int transportButtonCount = minimalPhoneProfile ? 5 : 7;
   const int leftPadding = 12;
   const int rightPadding = 12;
   const int transportControlsW =
@@ -1011,8 +1020,7 @@ void TopBar::resized() {
   if (!minimalPhoneProfile)
     addTransportButton(seekForwardButton);
   addTransportButton(nextButton);
-  if (!minimalPhoneProfile)
-    addTransportButton(fadeButton, true);
+  addTransportButton(fadeButton, true);
   transportRow.performLayout(juce::Rectangle<float>(
       static_cast<float>(leftPadding), static_cast<float>(controlY),
       static_cast<float>(transportControlsW), static_cast<float>(square)));
@@ -1038,6 +1046,8 @@ void TopBar::resized() {
                              const bool bpmVisible) -> int {
     const int metronomeW = bpmVisible ? metroTotalW : metroIconW;
     int controlsW = timeWidth + gap + metronomeW + gap + keyWidth;
+    if (minimalPhoneProfile)
+      controlsW += square + gap;
     if (tabletProfile) {
       controlsW += gap + square;
     } else {
@@ -1081,6 +1091,8 @@ void TopBar::resized() {
                   0.0f, last ? 0.0f : static_cast<float>(gap), 0.0f, 0.0f)));
     };
 
+    if (minimalPhoneProfile)
+      addItem(phoneSetlistSpacer, square);
     addItem(timeDisplay, timeWidth);
     if (bpmVisible) {
       rightRow.items.add(
@@ -1138,7 +1150,12 @@ void TopBar::resized() {
   const int cardLeft = transportW + 8;
   const int cardRight = rightX - 8;
   const int centerW = cardRight - cardLeft;
-  if (!minimalPhoneMode && centerW > 0) {
+  if (minimalPhoneMode && centerW >= square) {
+    // Artwork-only tile immediately after Fade Up/Down. It intentionally has
+    // no song card, title or artist on phones.
+    songArtworkSize = square;
+    songInfoBounds = juce::Rectangle<int>(cardLeft, controlY, square, square);
+  } else if (!minimalPhoneMode && centerW > 0) {
     const auto titleText = songTitleText.isNotEmpty()
                                ? songTitleText
                                : L10n::tr("Sin canción", "No song loaded");
@@ -1196,6 +1213,32 @@ juce::Rectangle<int> TopBar::getSongInfoAnchorBounds() const {
 void TopBar::paintSongInfoCard(juce::Graphics &g) {
   if (songInfoBounds.isEmpty())
     return;
+
+  if (minimalPhoneMode) {
+    const auto artworkArea = songInfoBounds.reduced(2);
+    const auto artworkFloat = artworkArea.toFloat();
+    if (songArtwork.isValid()) {
+      juce::Graphics::ScopedSaveState saveState(g);
+      juce::Path clip;
+      clip.addRoundedRectangle(artworkFloat, 7.0f);
+      g.reduceClipRegion(clip);
+      g.drawImageWithin(songArtwork, artworkArea.getX(), artworkArea.getY(),
+                        artworkArea.getWidth(), artworkArea.getHeight(),
+                        juce::RectanglePlacement::fillDestination);
+    } else {
+      const auto placeholder = songTitleText.trim().isNotEmpty()
+                                   ? songTitleText.trim().substring(0, 1).toUpperCase()
+                                   : "?";
+      g.setColour(songAccentColour.withAlpha(0.28f));
+      g.fillRoundedRectangle(artworkFloat, 7.0f);
+      g.setColour(songAccentColour.withAlpha(0.96f));
+      g.setFont(makeAppFont(17.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
+    }
+    g.setColour(juce::Colours::white.withAlpha(0.16f));
+    g.drawRoundedRectangle(artworkFloat.reduced(0.5f), 7.0f, 1.0f);
+    return;
+  }
 
   auto cardBounds = songInfoBounds.toFloat().reduced(0.5f);
   juce::ColourGradient cardFill(
@@ -1440,6 +1483,8 @@ void TopBar::applyResponsiveTypography() {
     songTitleFontSize = 17.0f;
     songArtistFontSize = 12.5f;
   }
+  if (minimalPhoneMode)
+    displayFont = 14.0f;
   timeDisplay.setFont(juce::FontOptions(displayFont));
   keyDisplay.setFont(juce::FontOptions(keyFont).withStyle("Bold"));
   systemUsageDisplay.setFont(makeAppFont(usageFont, AppFontWeight::SemiBold));
@@ -2167,8 +2212,11 @@ void TopBar::refreshFromProviders() {
 
   const double pos = positionProvider ? positionProvider() : 0.0;
   const double len = lengthProvider ? lengthProvider() : 0.0;
-  setLabelTextIfChanged(timeDisplay, formatTimeSeconds(pos) + " / " +
-                                         formatTimeSeconds(len));
+  setLabelTextIfChanged(
+      timeDisplay,
+      minimalPhoneMode
+          ? formatTimeSeconds(pos) + " /\n" + formatTimeSeconds(len)
+          : formatTimeSeconds(pos) + " / " + formatTimeSeconds(len));
 
   updateBpmDisplay();
 

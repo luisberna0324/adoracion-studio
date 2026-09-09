@@ -626,6 +626,14 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                                             juce::PathStrokeType::rounded));
     break;
   }
+  case IconGlyph::Close: {
+    const auto inset = area.reduced(area.getWidth() * 0.18f);
+    g.drawLine(inset.getX(), inset.getY(), inset.getRight(), inset.getBottom(),
+               2.0f);
+    g.drawLine(inset.getRight(), inset.getY(), inset.getX(), inset.getBottom(),
+               2.0f);
+    break;
+  }
   case IconGlyph::Clock: {
     const auto dial = area.withSizeKeepingCentre(area.getWidth() * 0.78f,
                                                  area.getHeight() * 0.78f);

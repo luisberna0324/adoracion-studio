@@ -96,6 +96,9 @@ public:
       return;
     }
 
+#if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
+    mainWindow->setFullScreen(true);
+#endif
     mainWindow->setVisible(true);
     queueProjectOpen(mainWindow.get(),
                      findInitialProjectArgument(commandLine));

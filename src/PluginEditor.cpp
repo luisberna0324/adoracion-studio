@@ -131,13 +131,14 @@ public:
 
   void resized() override {
     auto area = getLocalBounds();
-    const int margin = useTouchOptimisedControls() ? 18 : 28;
+    // Keep the settings sheet inside the host surface on compact devices.
+    const int margin = 28;
     area.reduce(margin, margin);
 
-    const int maxWidth = useTouchOptimisedControls() ? 980 : 1080;
-    const int maxHeight = useTouchOptimisedControls() ? 860 : 780;
-    const int width = juce::jmin(maxWidth, area.getWidth());
-    const int height = juce::jmin(maxHeight, area.getHeight());
+    const int maxWidth = useTouchOptimisedControls() ? 920 : 1080;
+    const int maxHeight = useTouchOptimisedControls() ? 820 : 780;
+    const int width = juce::jmin(maxWidth, juce::jmax(1, area.getWidth()));
+    const int height = juce::jmin(maxHeight, juce::jmax(1, area.getHeight()));
 
     auto panelBounds = juce::Rectangle<int>(width, height);
     panelBounds.setCentre(area.getCentre());
@@ -2004,6 +2005,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     resized();
     repaint();
   });
+  if (songListRaw != nullptr) {
+    songListRaw->setOnOverlayCloseRequested([this] {
+      isSetlistDrawerOpen = false;
+      resized();
+      repaint();
+    });
+  }
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
@@ -3464,6 +3472,7 @@ void MTControlsAudioProcessorEditor::resized() {
     wave->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
     grid->setMinimalPhoneMode(minimalPhoneProfile);
+  int phoneBottomBleed = 0;
 #if JUCE_IOS || JUCE_ANDROID
   if (minimalPhoneProfile) {
     // Standalone iOS windows can extend under the sensor housing/notch. Keep
@@ -3472,6 +3481,7 @@ void MTControlsAudioProcessorEditor::resized() {
             juce::Desktop::getInstance().getDisplays().getDisplayForRect(
                 getScreenBounds())) {
       const auto safeInsets = display->safeAreaInsets;
+      phoneBottomBleed = safeInsets.getBottom();
 #if JUCE_IOS
       // A performance surface must work identically in both landscape
       // directions. Use the larger horizontal inset on both sides so the
@@ -3487,6 +3497,9 @@ void MTControlsAudioProcessorEditor::resized() {
     }
   }
 #endif
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+    grid->setPhoneBottomContentInset(
+        minimalPhoneProfile ? phoneBottomBleed + 8 : 0);
   const auto safeContentArea = area;
   const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
   const bool setlistOverlaySupported =
@@ -3578,11 +3591,17 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea;
+  if (minimalPhoneProfile && phoneBottomBleed > 0)
+    rightChannelsArea.setBottom(
+        juce::jmin(getHeight(), rightChannelsArea.getBottom() + phoneBottomBleed));
   if (!minimalPhoneProfile) {
     rightChannelsArea.removeFromLeft(2);
     rightChannelsArea.removeFromRight(contentInset);
   }
-  rightChannelsArea.removeFromBottom(contentInset);
+  // En teléfonos el mixer debe aprovechar hasta el borde inferior seguro.
+  // En tablet/escritorio conservamos el margen visual del layout tradicional.
+  if (!minimalPhoneProfile)
+    rightChannelsArea.removeFromBottom(contentInset);
   padsDrawerBackgroundBounds = {};
 
   if (padsHandlePanel && !minimalPhoneProfile) {
@@ -3637,6 +3656,9 @@ void MTControlsAudioProcessorEditor::resized() {
 
   channelGridPanel->setBounds(rightChannelsArea);
 
+  if (songListPanelRaw != nullptr)
+    songListPanelRaw->setMinimalPhoneMode(minimalPhoneProfile);
+
   if (minimalPhoneProfile) {
     // Keep the mixer aligned to the waveform. The setlist is exposed through
     // a floating action instead of a persistent side column.
@@ -3644,11 +3666,17 @@ void MTControlsAudioProcessorEditor::resized() {
     songListPanel->setBounds({});
     setlistHandlePanel->setPhoneOverlayMode(true);
     setlistHandlePanel->setVisible(!isSetlistDrawerOpen);
-    const int actionW = juce::jmin(92, juce::jmax(72, rightChannelsArea.getWidth() / 7));
+    const int actionW = 48;
     const int actionH = 48;
-    setlistHandlePanel->setBounds(
-        rightChannelsArea.getRight() - actionW - contentInset,
-        rightChannelsArea.getY() + contentInset, actionW, actionH);
+    auto setlistButtonBounds = juce::Rectangle<int>();
+    if (auto *phoneTopBar = dynamic_cast<TopBar *>(topBar.get()))
+      setlistButtonBounds = getLocalArea(
+          phoneTopBar, phoneTopBar->getPhoneSetlistButtonBounds());
+    if (setlistButtonBounds.isEmpty())
+      setlistButtonBounds = juce::Rectangle<int>(
+          rightChannelsArea.getRight() - actionW - contentInset,
+          rightChannelsArea.getY() + contentInset, actionW, actionH);
+    setlistHandlePanel->setBounds(setlistButtonBounds);
     setlistHandlePanel->toFront(false);
     if (setlistDrawerScrim)
       setlistDrawerScrim->setVisible(false);
@@ -3666,12 +3694,7 @@ void MTControlsAudioProcessorEditor::resized() {
   if (setlistOverlaySupported && isSetlistDrawerOpen) {
     juce::Rectangle<int> drawerBounds;
     if (minimalPhoneProfile) {
-      const int drawerTop = safeContentArea.getY() + topBarH + contentInset;
-      const int drawerWidth = juce::jlimit(
-          360, 620, static_cast<int>(safeContentArea.getWidth() * 0.82f));
-      drawerBounds = juce::Rectangle<int>(
-          safeContentArea.getRight() - contentInset - drawerWidth, drawerTop,
-          drawerWidth, juce::jmax(1, safeContentArea.getBottom() - drawerTop - contentInset));
+      drawerBounds = safeContentArea;
     } else {
       const int drawerTop = topBarH + contentInset;
       const int drawerWidth = juce::jlimit(
@@ -3687,10 +3710,7 @@ void MTControlsAudioProcessorEditor::resized() {
     songListPanel->setVisible(true);
     songListPanel->setBounds(drawerBounds);
     const auto scrimBounds = minimalPhoneProfile
-        ? juce::Rectangle<int>(safeContentArea.getX(),
-                               safeContentArea.getY() + topBarH,
-                               safeContentArea.getWidth(),
-                               juce::jmax(1, safeContentArea.getHeight() - topBarH))
+        ? safeContentArea
         : juce::Rectangle<int>(0, topBarH, getWidth(),
                                juce::jmax(1, getHeight() - topBarH));
     setlistDrawerScrim->setBounds(scrimBounds);

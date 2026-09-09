@@ -59,6 +59,7 @@ public:
   const Layout &getLayout() const { return layout; }
   juce::Rectangle<int> getGainKnobBounds() const { return gainKnob.getBounds(); }
   void setLayoutScale(float scale);
+  void setBottomContentInset(int inset);
   void setVolume(float volume);
   void setGain(float gain);
   void setMuteState(bool muted);
@@ -120,6 +121,7 @@ private:
   Layout baseLayout;
   Layout layout;
   float layoutScale = 1.0f;
+  int bottomContentInset = 0;
   ChannelStripLookAndFeel &lookAndFeel;
   juce::String name;
 

@@ -185,7 +185,8 @@ void ChannelStripCard::paint(juce::Graphics &g) {
   g.drawRoundedRectangle(card, 4.0f, 1.0f);
 
   const auto band = juce::Rectangle<float>(
-      0.0f, static_cast<float>(getHeight() - layout.channelBandHeight),
+      0.0f, static_cast<float>(getHeight() - bottomContentInset -
+                               layout.channelBandHeight),
       static_cast<float>(getWidth()),
       static_cast<float>(layout.channelBandHeight));
   g.setColour(channelBandColour);
@@ -270,7 +271,8 @@ void ChannelStripCard::drawGainValueTooltip(juce::Graphics &g) const {
 
 void ChannelStripCard::resized() {
   const bool hasButtonRow = soloVisible || muteVisible;
-  const int bandTop = juce::jmax(0, getHeight() - layout.channelBandHeight);
+  const int bandTop = juce::jmax(
+      0, getHeight() - bottomContentInset - layout.channelBandHeight);
   const int buttonsY = hasButtonRow
                            ? bandTop - layout.buttonToBandGap -
                                  layout.soloHeight
@@ -407,6 +409,15 @@ void ChannelStripCard::setLayoutScale(float scale) {
   layout.meterToKnobGap = scaled(baseLayout.meterToKnobGap, 4);
 
   layoutScale = nextScale;
+  resized();
+  repaint();
+}
+
+void ChannelStripCard::setBottomContentInset(const int inset) {
+  const int nextInset = juce::jmax(0, inset);
+  if (bottomContentInset == nextInset)
+    return;
+  bottomContentInset = nextInset;
   resized();
   repaint();
 }

@@ -78,6 +78,8 @@ public:
   void openSongImportWizardFromExternal();
   void refreshLanguageTexts();
   void refreshThemeColours();
+  void setMinimalPhoneMode(bool enabled);
+  void setOnOverlayCloseRequested(std::function<void()> cb);
   /** Abre un .pwproj recibido desde el sistema operativo. */
   void openProjectFile(const juce::File &file);
 
@@ -241,6 +243,7 @@ private:
   HeaderIconButton headerMenuButton{"headerMenu", IconGlyph::MusicNote};
   HeaderIconButton addSongsButton{"addSongs", IconGlyph::Add};
   HeaderIconButton createSetlistButton{"createSetlist", IconGlyph::Add};
+  HeaderIconButton closeOverlayButton{"closeOverlay", IconGlyph::Close};
   SearchField setlistSearchField;
   SwipeHintHandle songsToLibrarySwipeHint{SwipeHintHandle::Direction::Right};
   SwipeHintHandle libraryToSongsSwipeHint{SwipeHintHandle::Direction::Left};
@@ -268,6 +271,7 @@ private:
   bool isPlaybackActive = false;
   bool initialViewApplied = false;
   bool transitionInFlight = false;
+  bool minimalPhoneMode = false;
   int songsSwipeDurationMs = 250;
   int transitionDurationMs = 150;
   juce::StringArray autoPlayNextMarks;
@@ -279,6 +283,7 @@ private:
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   std::function<void()> onSaveProjectRequested;
+  std::function<void()> onOverlayCloseRequested;
   std::function<void(const ImportedSongData &)> onProjectUploadRequested;
   std::function<void(const juce::String &, const juce::String &)>
       onCloudDownloadRequested;

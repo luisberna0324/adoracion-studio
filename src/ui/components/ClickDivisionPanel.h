@@ -38,6 +38,7 @@ public:
   void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
   void setLayoutScale(float scale);
+  void setBottomContentInset(int inset);
 
 private:
   class LearnAwareButton : public juce::TextButton {
@@ -77,6 +78,7 @@ private:
   bool muted = false;
   bool soloed = false;
   float layoutScale = 1.0f;
+  int bottomContentInset = 0;
   bool suppressVolumeCallback = false;
   std::function<void(int)> onDivisionChanged;
   std::function<void(float)> onVolumeChanged;

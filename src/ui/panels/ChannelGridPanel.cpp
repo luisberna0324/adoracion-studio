@@ -146,9 +146,10 @@ public:
     if (!showOutputRouting) {
       const int cardW = isDivisionPanelVisible() ? getDivisionPanelWidth()
                                                  : strip->getLayout().width;
-      const int cardH = strip->getLayout().height;
+      const int cardH = fillAvailableHeight ? getHeight()
+                                             : strip->getLayout().height;
       const int cardX = (getWidth() - cardW) / 2;
-      stripBounds = {cardX, 4, cardW, cardH};
+      stripBounds = {cardX, fillAvailableHeight ? 0 : 4, cardW, cardH};
       strip->setBounds(stripBounds);
     } else {
       const int topInset = 4;
@@ -240,6 +241,20 @@ public:
     resized();
   }
 
+  void setFillAvailableHeight(const bool shouldFill) {
+    if (fillAvailableHeight == shouldFill)
+      return;
+    fillAvailableHeight = shouldFill;
+    resized();
+  }
+
+  void setBottomContentInset(const int inset) {
+    bottomContentInset = juce::jmax(0, inset);
+    strip->setBottomContentInset(bottomContentInset);
+    if (divisionPanel != nullptr)
+      divisionPanel->setBottomContentInset(bottomContentInset);
+  }
+
   int getPreferredWidth() const {
     return (isDivisionPanelVisible() ? getDivisionPanelWidth()
                                      : strip->getLayout().width) +
@@ -251,6 +266,9 @@ public:
       divisionPanel = std::make_unique<ClickDivisionPanel>(
           stripLookAndFeel, divisionLevelProvider);
       divisionPanel->setLayoutScale(stripScale);
+      divisionPanel->setBottomContentInset(fillAvailableHeight
+                                               ? bottomContentInset
+                                               : 0);
       divisionPanel->refreshThemeColours();
       addAndMakeVisible(*divisionPanel);
     }
@@ -381,6 +399,8 @@ private:
   std::function<void(int)> onOutputChannelChanged;
   std::function<void(juce::Component &)> onGuideSettingsRequested;
   bool showOutputRouting = true;
+  bool fillAvailableHeight = false;
+  int bottomContentInset = 0;
   float stripScale = 1.0f;
 };
 
@@ -417,8 +437,21 @@ void ChannelGridPanel::setMinimalPhoneMode(const bool enabled) {
   if (minimalPhoneMode == enabled)
     return;
   minimalPhoneMode = enabled;
+  // El teléfono usa una cinta horizontal de una sola fila; el desplazamiento
+  // se realiza con drag y no necesita consumir espacio con scrollbars.
+  viewport.setScrollBarsShown(!enabled, false, false, false);
   resized();
   repaint();
+}
+
+void ChannelGridPanel::setPhoneBottomContentInset(const int inset) {
+  const int nextInset = juce::jmax(0, inset);
+  if (phoneBottomContentInset == nextInset)
+    return;
+  phoneBottomContentInset = nextInset;
+  for (auto &slot : slots)
+    slot->setBottomContentInset(minimalPhoneMode ? phoneBottomContentInset : 0);
+  resized();
 }
 
 void ChannelGridPanel::setOnLibrarySongLoadRequested(
@@ -1312,12 +1345,18 @@ void ChannelGridPanel::resized() {
       isWideViewport ? juce::jlimit(0.82f, 1.22f, widthScale) : juce::jlimit(0.82f, 1.08f, widthScale);
   const float stripScale = juce::jlimit(0.82f, 1.25f, widthAdaptiveScale * profileScale);
 
-  for (auto &slot : slots)
+  for (auto &slot : slots) {
     slot->setStripScale(stripScale);
+    slot->setFillAvailableHeight(minimalPhoneMode);
+    slot->setBottomContentInset(minimalPhoneMode ? phoneBottomContentInset : 0);
+  }
 
   const auto stripLayout =
       slots.empty() ? baseLayout : slots.front()->getStrip().getLayout();
-  const int cellH = stripLayout.height + (gridShowsRouting ? 34 : 8);
+  const int naturalCellH = stripLayout.height + (gridShowsRouting ? 34 : 8);
+  const int cellH = minimalPhoneMode
+                        ? juce::jmax(naturalCellH, viewport.getHeight())
+                        : naturalCellH;
 
   int x = pad;
   int y = pad;
@@ -1325,7 +1364,7 @@ void ChannelGridPanel::resized() {
   const int rightEdge = juce::jmax(pad + 1, contentWidth - pad);
   for (auto &slot : slots) {
     const int slotW = juce::jmax(stripLayout.width + 2, slot->getPreferredWidth());
-    if (x > pad && x + slotW > rightEdge) {
+    if (!minimalPhoneMode && x > pad && x + slotW > rightEdge) {
       x = pad;
       y += cellH + gapY;
       ++rows;
@@ -1333,6 +1372,13 @@ void ChannelGridPanel::resized() {
 
     slot->setBounds(x, y, slotW, cellH);
     x += slotW + gapX;
+  }
+
+  if (minimalPhoneMode) {
+    const int singleRowWidth = visibleSlots > 0 ? x - gapX + pad : contentWidth;
+    content.setSize(juce::jmax(contentWidth, singleRowWidth),
+                    viewport.getHeight());
+    return;
   }
 
   const int neededH = pad + (rows * cellH) +

@@ -170,7 +170,9 @@ void ClickDivisionPanel::paint(juce::Graphics &g) {
   g.drawRoundedRectangle(bounds.reduced(0.5f), cardCornerRadius, 1.0f);
 
   const int bandH = juce::jmax(12, juce::roundToInt(16.0f * layoutScale));
-  auto footer = getLocalBounds().removeFromBottom(bandH).toFloat();
+  auto footerArea = getLocalBounds();
+  footerArea.removeFromBottom(bottomContentInset);
+  auto footer = footerArea.removeFromBottom(bandH).toFloat();
   g.setColour(UITheme::accent);
   g.fillRect(footer);
 
@@ -213,7 +215,8 @@ void ClickDivisionPanel::resized() {
       juce::jmax(54, getWidth() - (sidePad * 2)));
   const int rowX = (getWidth() - rowW) / 2;
   const int rowY =
-      getHeight() - bandH - juce::jmax(6, juce::roundToInt(6.0f * layoutScale)) -
+      getHeight() - bottomContentInset - bandH -
+      juce::jmax(6, juce::roundToInt(6.0f * layoutScale)) -
       rowH;
 
   const int knobSize = juce::jmax(22, juce::roundToInt(34.0f * layoutScale));
@@ -351,6 +354,15 @@ void ClickDivisionPanel::setLayoutScale(float scale) {
   if (std::abs(nextScale - layoutScale) < 0.001f)
     return;
   layoutScale = nextScale;
+  resized();
+  repaint();
+}
+
+void ClickDivisionPanel::setBottomContentInset(const int inset) {
+  const int nextInset = juce::jmax(0, inset);
+  if (bottomContentInset == nextInset)
+    return;
+  bottomContentInset = nextInset;
   resized();
   repaint();
 }

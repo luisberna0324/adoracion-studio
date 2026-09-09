@@ -39,6 +39,7 @@ public:
   void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
   void setMinimalPhoneMode(bool enabled);
+  juce::Rectangle<int> getPhoneSetlistButtonBounds() const;
   void setSystemUsage(double cpuUsage01, double memoryUsage01);
   void triggerWindowModeToggleFromMidi();
   void triggerSettingsFromMidi();
@@ -112,6 +113,7 @@ private:
   IconButton tabletMoreButton;
 
   ClickableLabel timeDisplay;
+  juce::Component phoneSetlistSpacer;
   ClickableLabel keyDisplay;
   RoundedLabel systemUsageDisplay;
   BpmSegmentButton bpmSegmentButton;

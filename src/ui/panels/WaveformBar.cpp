@@ -1494,24 +1494,30 @@ void WaveformBar::resized() {
                                      const bool includeViewButtons) {
     auto floating = mainWaveBodyBounds.toNearestInt();
     if (floating.getWidth() > 4 && floating.getHeight() > 4) {
-      const int controlH = 26;
+      const int controlH = minimalPhoneMode ? 30 : 26;
+      const int buttonGap = minimalPhoneMode ? 6 : 4;
       auto bottomControls = floating.removeFromBottom(controlH);
       bottomControls = bottomControls.reduced(2, 1);
+      if (minimalPhoneMode)
+        bottomControls.translate(0, -5);
       editButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
-      bottomControls.removeFromRight(4);
-      waveHeightButton.setBounds(
-          bottomControls.removeFromRight(iconButtonW).reduced(1));
+      bottomControls.removeFromRight(buttonGap);
+      if (!minimalPhoneMode) {
+        waveHeightButton.setBounds(
+            bottomControls.removeFromRight(iconButtonW).reduced(1));
+        bottomControls.removeFromRight(buttonGap);
+      } else {
+        waveHeightButton.setBounds({});
+      }
       if (includeViewButtons) {
-        bottomControls.removeFromRight(followGap);
         tempoMapButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
-        bottomControls.removeFromRight(4);
+        bottomControls.removeFromRight(buttonGap);
         guideMapButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       if (includeFollow) {
-        bottomControls.removeFromRight(followGap);
         followButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
-        bottomControls.removeFromRight(4);
+        bottomControls.removeFromRight(buttonGap);
         exportButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
@@ -3819,8 +3825,10 @@ WaveformBar::getEditToolbarBounds(const juce::Rectangle<float> &bounds) const {
 
 juce::Rectangle<float>
 WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
-  auto area = bounds.reduced(8.0f, 6.0f)
-                  .withTrimmedBottom(kBottomSafetyInset);
+  auto area = minimalPhoneMode
+                  ? bounds
+                  : bounds.reduced(8.0f, 6.0f)
+                        .withTrimmedBottom(kBottomSafetyInset);
   if (isEditingArrangement())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   // Phones use the full waveform height; the minimap/navigation strip is
@@ -4533,8 +4541,10 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
     return;
 
   const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);
-  g.setColour(waveformBg);
-  g.fillRoundedRectangle(bounds, 4.0f);
+  if (!minimalPhoneMode) {
+    g.setColour(waveformBg);
+    g.fillRoundedRectangle(bounds, 4.0f);
+  }
   const double songLength = getSongLengthSeconds();
 
   if (showGrid) {
@@ -4709,8 +4719,10 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
     juce::ignoreUnused(showGrid);
   }
 
-  g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
-  g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+  if (!minimalPhoneMode) {
+    g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
+    g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+  }
 
   if (showPlayhead) {
     drawPlayheadNeedle(g, bounds, playheadX, false, false, 1.0f);

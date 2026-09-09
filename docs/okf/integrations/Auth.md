@@ -164,3 +164,23 @@ recuperación: el usuario vuelve a tocar **Iniciar sesión**.
   memoria con TTL de 10 min (`lib/googleOAuth.ts::STATE_TTL_MS`).
   Producción debe mover esto a Redis o a una cookie firmada con
   `AUTH_STATE_SECRET`.
+
+## Layout de bienvenida
+
+`WelcomeModal` limita el ancho del formulario y centra verticalmente sus
+controles. Usa dos columnas solo cuando dispone de al menos `760 px` de ancho,
+`360 px` de alto y una relacion horizontal suficiente; en el resto de tamaños
+organiza logo, textos y acciones en una sola columna centrada. El formulario no
+supera `420 px` en dos columnas ni `440 px` en una columna, evitando botones
+excesivamente anchos en ventanas grandes.
+
+La aplicacion standalone de escritorio abre su ventana principal en pantalla
+completa antes de hacerla visible. De esta forma, la pantalla de bienvenida usa
+desde el primer frame toda la resolucion disponible.
+
+## Configuracion en pantallas reducidas
+
+El contenedor de configuracion usa desplazamiento vertical para sus cuatro
+secciones (General, Sesion, Audio y Ruteo) cuando el dispositivo es tactil o la
+ventana tiene menos de `760 px` de alto. El desplazamiento se hace sobre el
+contenido de la pestaña y conserva fijas la cabecera, el cierre y la navegacion.

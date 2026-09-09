@@ -340,7 +340,12 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       refreshRoutingForDevice();
     }
   };
-  addAndMakeVisible(tabs);
+  settingsViewport.setViewedComponent(&tabs, false);
+  settingsViewport.setScrollBarsShown(false, true, false, false);
+  settingsViewport.setScrollBarThickness(8);
+  settingsViewport.setScrollOnDragMode(
+      juce::Viewport::ScrollOnDragMode::all);
+  addAndMakeVisible(settingsViewport);
 
   auto configureTabButton = [this](juce::TextButton &button,
                                     const int tabIndex) {
@@ -715,7 +720,12 @@ void SettingsPanel::resized() {
     rail.removeFromTop(tabGap);
     routingTabButton.setBounds(rail.removeFromTop(tabHeight));
   }
-  tabs.setBounds(area);
+  const bool needsVerticalScroll = useTouchOptimisedControls() || getHeight() < 760;
+  settingsViewport.setBounds(area);
+  const int contentHeight = needsVerticalScroll
+                                ? juce::jmax(area.getHeight(), 900)
+                                : area.getHeight();
+  tabs.setBounds(0, 0, juce::jmax(1, area.getWidth()), contentHeight);
 
   layoutGeneralPage();
   layoutAccountPage();

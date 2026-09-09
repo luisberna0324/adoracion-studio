@@ -37,14 +37,9 @@ void SetlistHandlePanel::paint(juce::Graphics &g) {
     g.setColour(UITheme::cardBorder.withAlpha(isHovered ? 0.78f : 0.50f));
     g.drawRoundedRectangle(b.reduced(0.5f), 9.0f, 1.0f);
 
-    auto iconArea = b.reduced(9.0f, 10.0f).removeFromLeft(22.0f);
+    auto iconArea = b.withSizeKeepingCentre(24.0f, 24.0f);
     drawSvgIcon(g, iconArea, SvgIconName::Music,
                 UITheme::textPrimary.withAlpha(isHovered ? 0.96f : 0.82f));
-    g.setColour(UITheme::textPrimary.withAlpha(isHovered ? 0.98f : 0.86f));
-    g.setFont(juce::Font(juce::FontOptions(12.5f).withStyle("Bold")));
-    g.drawFittedText("SETLIST",
-                     b.reduced(7.0f, 4.0f).withTrimmedLeft(28.0f).toNearestInt(),
-                     juce::Justification::centred, 1);
     return;
   }
   const auto track = b.reduced(0.5f, 0.0f);

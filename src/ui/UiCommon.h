@@ -75,6 +75,7 @@ enum class IconGlyph {
   Add,
   Check,
   Remove,
+  Close,
   Metronome,
   /** Cuadrado (maximizar ventana). */
   WindowMaximize,

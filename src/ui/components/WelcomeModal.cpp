@@ -192,74 +192,89 @@ void WelcomeModal::paint(juce::Graphics &g) {
 }
 
 void WelcomeModal::resized() {
-  const bool portrait = getHeight() >= getWidth();
-  const bool wide = !portrait && getWidth() >= 900 && getHeight() >= 560;
-  const bool compactLandscape = !portrait;
-  const int outerPad = juce::jlimit(18, 48, juce::jmin(getWidth(), getHeight()) / 14);
+  const bool useTwoColumns = getWidth() >= 760 && getHeight() >= 360 &&
+                             getWidth() >= (getHeight() * 13 / 10);
+  const int outerPad = juce::jlimit(
+      16, 48, juce::jmin(getWidth(), getHeight()) / 14);
   auto available = getLocalBounds().reduced(outerPad);
-  const int cardW = juce::jmin((wide || compactLandscape) ? 900 : 520,
+  const int cardW = juce::jmin(useTwoColumns ? 900 : 560,
                                available.getWidth());
-  const int cardH = juce::jmin(wide ? 500 : (compactLandscape
-                                                 ? available.getHeight()
-                                                 : 610),
-                               available.getHeight());
+  const int preferredCardH = useTwoColumns
+                                 ? juce::jlimit(360, 520,
+                                                available.getHeight() * 9 / 10)
+                                 : juce::jlimit(430, 680,
+                                                available.getHeight() * 9 / 10);
+  const int cardH = juce::jmin(preferredCardH, available.getHeight());
   contentBounds = juce::Rectangle<int>(cardW, cardH)
                       .withCentre(available.getCentre());
 
-  if (wide || compactLandscape) {
-    const int horizontalInset = compactLandscape ? 24 : 48;
-    const int verticalInset = compactLandscape ? 20 : 42;
-    auto inner = contentBounds.reduced(horizontalInset, verticalInset);
-    auto brandArea = inner.removeFromLeft(inner.getWidth() * 45 / 100);
-    inner.removeFromLeft(compactLandscape ? 20 : 42);
-    auto column = inner;
+  if (useTwoColumns) {
+    auto inner = contentBounds.reduced(juce::jlimit(24, 44, cardW / 18),
+                                       juce::jlimit(22, 40, cardH / 12));
+    auto brandArea = inner.removeFromLeft(inner.getWidth() * 38 / 100);
+    inner.removeFromLeft(juce::jlimit(24, 40, cardW / 22));
+
+    const int formWidth = juce::jmin(420, inner.getWidth());
+    constexpr int titleH = 72;
+    constexpr int subtitleH = 42;
+    constexpr int statusH = 28;
+    constexpr int buttonH = 46;
+    constexpr int textGap = 8;
+    constexpr int sectionGap = 12;
+    constexpr int buttonGap = 10;
+    constexpr int formHeight = titleH + textGap + subtitleH + sectionGap +
+                               statusH + sectionGap + buttonH + buttonGap +
+                               buttonH;
+    auto column = juce::Rectangle<int>(formWidth, juce::jmin(formHeight,
+                                                             inner.getHeight()))
+                      .withCentre(inner.getCentre());
 
     if (logoImage.isValid()) {
       logo.setImage(logoImage, juce::RectanglePlacement::centred);
-      logo.setBounds(brandArea.reduced(8, compactLandscape ? 20 : 72));
+      const int logoW = juce::jmin(300, brandArea.getWidth() - 8);
+      const int logoH = juce::jmin(150, brandArea.getHeight() - 24);
+      logo.setBounds(juce::Rectangle<int>(juce::jmax(1, logoW),
+                                          juce::jmax(1, logoH))
+                         .withCentre(brandArea.getCentre()));
     }
 
-    const int topGap = compactLandscape ? 4 : 24;
-    const int titleH = compactLandscape ? 58 : 82;
-    const int subtitleH = compactLandscape ? 38 : 58;
-    const int statusH = compactLandscape ? 30 : 46;
-    const int buttonH = compactLandscape ? 40 : 50;
-    const int gap = compactLandscape ? 6 : 12;
-    column.removeFromTop(topGap);
     title.setBounds(column.removeFromTop(titleH));
-    column.removeFromTop(gap);
+    column.removeFromTop(textGap);
     subtitle.setBounds(column.removeFromTop(subtitleH));
-    column.removeFromTop(gap);
+    column.removeFromTop(sectionGap);
     status.setBounds(column.removeFromTop(statusH));
-    column.removeFromTop(gap);
+    column.removeFromTop(sectionGap);
     loginButton.setBounds(column.removeFromTop(buttonH));
-    column.removeFromTop(gap);
+    column.removeFromTop(buttonGap);
     moreInfoButton.setBounds(column.removeFromTop(buttonH));
     return;
   }
 
-  auto column = contentBounds.reduced(juce::jlimit(24, 46, cardW / 10), 28);
+  const int columnWidth = juce::jmin(440, cardW - 40);
+  auto column = juce::Rectangle<int>(juce::jmax(1, columnWidth),
+                                     juce::jmax(1, cardH - 44))
+                    .withCentre(contentBounds.getCentre());
 
   if (logoImage.isValid()) {
-    auto logoArea = column.removeFromTop(juce::jlimit(100, 142, cardH / 4));
-    const int logoW = juce::jmin(360, logoArea.getWidth());
+    auto logoArea = column.removeFromTop(juce::jlimit(82, 126, cardH / 5));
+    const int logoW = juce::jmin(300, logoArea.getWidth());
     const int logoH = logoArea.getHeight();
     logo.setImage(logoImage, juce::RectanglePlacement::centred);
     logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
-    column.removeFromTop(12);
+    column.removeFromTop(10);
   } else {
     column.removeFromTop(8);
   }
 
-  title.setBounds(column.removeFromTop(68));
-  column.removeFromTop(8);
-  subtitle.setBounds(column.removeFromTop(48));
-  column.removeFromTop(12);
-  status.setBounds(column.removeFromTop(42));
-  column.removeFromTop(18);
+  title.setBounds(column.removeFromTop(64));
+  column.removeFromTop(6);
+  subtitle.setBounds(column.removeFromTop(40));
+  column.removeFromTop(10);
+  status.setBounds(column.removeFromTop(30));
+  column.removeFromTop(14);
 
-  const int btnH = 48;
+  const int btnH = 46;
   loginButton.setBounds(column.removeFromTop(btnH));
-  column.removeFromTop(12);
+  column.removeFromTop(10);
   moreInfoButton.setBounds(column.removeFromTop(btnH));
 }

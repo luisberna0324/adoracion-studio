@@ -125,6 +125,7 @@ private:
   SettingsTabButton audioTabButton;
   SettingsTabButton routingTabButton;
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
+  juce::Viewport settingsViewport;
   juce::Component generalPage;
   juce::Component accountPage;
   juce::Component audioPage;
