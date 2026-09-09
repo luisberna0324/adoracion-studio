@@ -3833,6 +3833,9 @@ WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
 juce::Rectangle<float>
 WaveformBar::getSeekRulerBounds(
     const juce::Rectangle<float> &mainWaveBounds) const {
+  if (minimalPhoneMode)
+    return {};
+
   if (mainWaveBounds.getWidth() <= 2.0f || mainWaveBounds.getHeight() <= 8.0f)
     return {};
 

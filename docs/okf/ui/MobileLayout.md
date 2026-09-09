@@ -47,7 +47,8 @@ area segura:
   mixer; abre un overlay desde la derecha sin reducir ni desplazar el mixer.
   Tocar fuera del overlay lo cierra.
 - Pads, expansion vertical de waveform y minimap/navegador inferior de la
-  waveform se ocultan en telefono. La onda principal usa ese alto liberado.
+  waveform se ocultan en telefono. Tambien se oculta la regla de compases
+  superior; la onda principal usa todo ese alto liberado.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
 
