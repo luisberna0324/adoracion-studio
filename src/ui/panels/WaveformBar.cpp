@@ -932,8 +932,8 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
       onEditToggle(false);
   }
 
-  editButton.setVisible(hasLoadedSong);
-  editButton.setEnabled(hasLoadedSong);
+  editButton.setVisible(hasLoadedSong && !minimalPhoneMode);
+  editButton.setEnabled(hasLoadedSong && !minimalPhoneMode);
   if (!hasLoadedSong) {
     cancelDeferredPartJumpFromDoubleClick();
     clearSectionInsertionAnchor();
@@ -1052,10 +1052,20 @@ void WaveformBar::setMinimalPhoneMode(const bool enabled) {
       dragMode = DragMode::none;
   }
   minimalPhoneMode = enabled;
-  if (enabled)
+  if (enabled) {
     waveformVerticalExpanded = false;
+    if (isEditingArrangement()) {
+      editButton.setToggleState(false, juce::dontSendNotification);
+      timelineViewMode = TimelineViewMode::GuideMap;
+      clearSectionInsertionAnchor();
+      if (onEditToggle)
+        onEditToggle(false);
+    }
+  }
   waveHeightButton.setVisible(!enabled);
   waveHeightButton.setEnabled(!enabled);
+  editButton.setVisible(!enabled && !waveformBins.empty());
+  editButton.setEnabled(!enabled && !waveformBins.empty());
   resized();
 }
 
@@ -1490,8 +1500,8 @@ void WaveformBar::resized() {
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
   exportButton.setVisible(true);
   exportButton.setEnabled(!exportBusy);
-  editButton.setVisible(true);
-  editButton.setEnabled(true);
+  editButton.setVisible(!minimalPhoneMode);
+  editButton.setEnabled(!minimalPhoneMode);
   waveHeightButton.setVisible(!minimalPhoneMode);
   waveHeightButton.setEnabled(!minimalPhoneMode);
   waveHeightButton.setToggleState(waveformVerticalExpanded,
@@ -1508,8 +1518,12 @@ void WaveformBar::resized() {
       bottomControls = bottomControls.reduced(2, 1);
       if (minimalPhoneMode)
         bottomControls.translate(0, -5);
-      editButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
-      bottomControls.removeFromRight(buttonGap);
+      if (!minimalPhoneMode) {
+        editButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
+        bottomControls.removeFromRight(buttonGap);
+      } else {
+        editButton.setBounds({});
+      }
       if (!minimalPhoneMode) {
         waveHeightButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));

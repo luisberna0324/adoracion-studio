@@ -57,9 +57,10 @@ area segura:
 - El overlay incluye un boton `X` de `40 x 40 pt/dp`, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
-- Los botones flotantes de exportar, seguimiento y editar forman un grupo
-  horizontal con separacion uniforme y margen respecto al borde inferior de la
-  waveform.
+- Los botones flotantes de exportar y seguimiento forman un grupo horizontal
+  con separacion uniforme y margen respecto al borde inferior de la waveform.
+  El editor de secciones se reserva para tablet y escritorio, por lo que el
+  boton de editar no se muestra en telefono.
 - En el overlay de telefono se oculta el resumen de duracion total, cantidad de
   canciones y BPM promedio, de modo que la lista comienza inmediatamente bajo
   el encabezado.
@@ -71,8 +72,8 @@ area segura:
 - En telefono, un arrastre horizontal sobre la onda desplaza su contenido en la
   misma direccion del dedo;
   un toque conserva el seek y un gesto de pinza amplia o reduce la escala con
-  el punto de contacto como ancla. Los gestos de edicion de secciones siguen
-  teniendo prioridad mientras el editor de arrange esta activo.
+  el punto de contacto como ancla. La edicion de secciones y el mapa de tempo
+  no estan disponibles en telefono.
 - El mixer de telefono no dibuja una tarjeta o division propia: sus canales
   comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - Los channel strips forman una sola fila, ajustan su altura al mixer y se
