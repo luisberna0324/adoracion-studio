@@ -5927,9 +5927,7 @@ void WaveformBar::rebuildSectionAddButtons() {
                                         : static_cast<juce::Component *>(this);
       const auto anchor =
           parentComp->getLocalArea(buttonPtr, buttonPtr->getLocalBounds());
-      auto &callout = juce::CallOutBox::launchAsynchronously(
-          std::move(panel), anchor, parentComp);
-      callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+      presentActionPopover(std::move(panel), anchor, parentComp);
     };
     addAndMakeVisible(*btn);
     btn->setVisible(isEditingArrangement());
@@ -5958,9 +5956,7 @@ void WaveformBar::rebuildSectionAddButtons() {
                                       : static_cast<juce::Component *>(this);
     const auto anchor =
         parentComp->getLocalArea(countBtnPtr, countBtnPtr->getLocalBounds());
-    auto &callout = juce::CallOutBox::launchAsynchronously(
-        std::move(panel), anchor, parentComp);
-    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    presentActionPopover(std::move(panel), anchor, parentComp);
   };
   addAndMakeVisible(*countBtn);
   countBtn->setVisible(isEditingArrangement());
@@ -5990,9 +5986,7 @@ void WaveformBar::rebuildSectionAddButtons() {
                                       : static_cast<juce::Component *>(this);
     const auto anchor =
         parentComp->getLocalArea(utilityBtnPtr, utilityBtnPtr->getLocalBounds());
-    auto &callout = juce::CallOutBox::launchAsynchronously(
-        std::move(panel), anchor, parentComp);
-    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    presentActionPopover(std::move(panel), anchor, parentComp);
   };
   addAndMakeVisible(*utilityBtn);
   utilityBtn->setVisible(isEditingArrangement());

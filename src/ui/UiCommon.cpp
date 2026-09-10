@@ -401,7 +401,9 @@ public:
   void drawCallOutBoxBackground(juce::CallOutBox &, juce::Graphics &g,
                                 const juce::Path &path,
                                 juce::Image &) override {
-    juce::DropShadow(juce::Colours::black.withAlpha(0.62f), 10, {0, 3})
+    juce::DropShadow(juce::Colours::black.withAlpha(0.28f), 18, {0, 7})
+        .drawForPath(g, path);
+    juce::DropShadow(juce::Colours::black.withAlpha(0.42f), 7, {0, 2})
         .drawForPath(g, path);
 
     const auto bounds = path.getBounds();
@@ -411,15 +413,100 @@ public:
                                   bounds.getCentreX(), bounds.getBottom(), false);
     g.setGradientFill(gradient);
     g.fillPath(path);
-    g.setColour(UITheme::cardBorder.brighter(0.34f).withAlpha(0.94f));
-    g.strokePath(path, juce::PathStrokeType(2.0f));
+    g.setColour(juce::Colours::white.withAlpha(0.055f));
+    g.strokePath(path, juce::PathStrokeType(1.0f));
+    g.setColour(UITheme::cardBorder.brighter(0.22f).withAlpha(0.72f));
+    g.strokePath(path, juce::PathStrokeType(1.0f));
+  }
+
+  int getCallOutBoxBorderSize(const juce::CallOutBox &) override { return 12; }
+  float getCallOutBoxCornerSize(const juce::CallOutBox &) override {
+    return 14.0f;
   }
 };
+
+juce::Component::SafePointer<juce::CallOutBox> activeActionPopover;
+
+juce::Rectangle<int>
+popoverAvailableArea(juce::Component *parent,
+                     const juce::Rectangle<int> &anchorInParent) {
+  auto available = parent != nullptr ? parent->getLocalBounds()
+                                     : juce::Rectangle<int>{};
+  const auto globalAnchor = parent != nullptr
+                                ? parent->localAreaToGlobal(anchorInParent)
+                                : anchorInParent;
+  if (const auto *display = juce::Desktop::getInstance()
+                                .getDisplays()
+                                .getDisplayForRect(globalAnchor)) {
+    const auto safeGlobal =
+        display->safeAreaInsets.subtractedFrom(display->userArea).reduced(8);
+    if (parent != nullptr) {
+      const auto localTopLeft =
+          parent->getLocalPoint(nullptr, safeGlobal.getPosition());
+      available = available.getIntersection(
+          {localTopLeft.x, localTopLeft.y, safeGlobal.getWidth(),
+           safeGlobal.getHeight()});
+    } else {
+      available = safeGlobal;
+    }
+  }
+  return available.reduced(4);
+}
 } // namespace
 
 juce::LookAndFeel &getActionCalloutLookAndFeel() {
   static ActionCalloutLookAndFeel lookAndFeel;
   return lookAndFeel;
+}
+
+void dismissActiveActionPopover() {
+  if (activeActionPopover != nullptr) {
+    activeActionPopover->dismiss();
+    activeActionPopover = nullptr;
+  }
+}
+
+juce::CallOutBox &presentActionPopover(
+    std::unique_ptr<juce::Component> content,
+    juce::Rectangle<int> anchor,
+    juce::Component *parentComponent) {
+  jassert(content != nullptr);
+  dismissActiveActionPopover();
+
+  auto available = popoverAvailableArea(parentComponent, anchor);
+  const bool compactTouchSurface =
+      parentComponent != nullptr && useTouchOptimisedControls() &&
+      juce::jmin(parentComponent->getWidth(), parentComponent->getHeight()) < 600;
+
+  if (compactTouchSurface && !available.isEmpty()) {
+    const int width = juce::jlimit(
+        280, juce::jmax(280, available.getWidth() - 24),
+        juce::jmax(content->getWidth(), juce::jmin(520, available.getWidth() - 24)));
+    const int height = juce::jmin(content->getHeight(),
+                                  juce::jmax(44, available.getHeight() - 24));
+    content->setSize(width, height);
+    anchor = {available.getCentreX() - 1, available.getBottom() - 2, 2, 2};
+  }
+
+  auto *contentPointer = content.get();
+  auto &callout = juce::CallOutBox::launchAsynchronously(
+      std::move(content), anchor, parentComponent);
+  callout.setLookAndFeel(&getActionCalloutLookAndFeel());
+  callout.setArrowSize(compactTouchSurface ? 2.0f : 12.0f);
+  callout.setDismissalMouseClicksAreAlwaysConsumed(false);
+  if (!available.isEmpty())
+    callout.updatePosition(anchor, available);
+
+  callout.setAlpha(0.01f);
+  juce::Desktop::getInstance().getAnimator().fadeIn(&callout, 160);
+  activeActionPopover = &callout;
+
+  juce::Component::SafePointer<juce::Component> safeContent(contentPointer);
+  juce::MessageManager::callAsync([safeContent] {
+    if (safeContent != nullptr)
+      safeContent->grabKeyboardFocus();
+  });
+  return callout;
 }
 
 bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,

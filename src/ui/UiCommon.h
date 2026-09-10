@@ -121,6 +121,11 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
 bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
                  SvgIconName icon, juce::Colour colour);
 juce::LookAndFeel &getActionCalloutLookAndFeel();
+juce::CallOutBox &presentActionPopover(
+    std::unique_ptr<juce::Component> content,
+    juce::Rectangle<int> anchor,
+    juce::Component *parentComponent);
+void dismissActiveActionPopover();
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 bool useTouchOptimisedControls();
 int touchOptimisedControlHeight();

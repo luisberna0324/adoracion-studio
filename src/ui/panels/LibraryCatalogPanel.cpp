@@ -1517,10 +1517,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                                       ? static_cast<juce::Component *>(editor)
                                       : static_cast<juce::Component *>(this);
     const auto anchor = parentComp->getLocalArea(&content, targetBounds);
-    auto &callout = juce::CallOutBox::launchAsynchronously(
-        std::move(panel), anchor, parentComp);
-    callout.setLookAndFeel(&getActionCalloutLookAndFeel());
-    callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+    presentActionPopover(std::move(panel), anchor, parentComp);
     return;
   }
   std::vector<ContextActionItem> actions;
@@ -1607,15 +1604,7 @@ void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                                     ? static_cast<juce::Component *>(editor)
                                     : static_cast<juce::Component *>(this);
   const auto anchor = parentComp->getLocalArea(&content, targetBounds);
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel), anchor,
-                                                          parentComp);
-  callout.setLookAndFeel(&getActionCalloutLookAndFeel());
-  // Keep the bubble to the right of the row action so its pointer faces left.
-  auto rightSideArea = parentComp->getLocalBounds();
-  rightSideArea.setX(anchor.getRight());
-  rightSideArea.setWidth(parentComp->getWidth() - rightSideArea.getX());
-  callout.updatePosition(anchor, rightSideArea);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void LibraryCatalogPanel::togglePendingSelection(const int rowIndex) {

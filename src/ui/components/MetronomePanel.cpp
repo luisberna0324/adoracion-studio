@@ -287,9 +287,7 @@ void MetronomePanel::showPopover() {
   panel->setSize(180, 120);
   panel->refreshThemeColours();
 
-  auto &callout = juce::CallOutBox::launchAsynchronously(
-      std::move(panel), bpmButton.getBounds(), this);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), bpmButton.getBounds(), this);
 }
 
 void MetronomePanel::refreshFromProcessor() {

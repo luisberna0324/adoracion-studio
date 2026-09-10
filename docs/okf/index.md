@@ -39,6 +39,7 @@ docs/okf/
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
+| [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |
 

@@ -1451,10 +1451,7 @@ void TopBar::showTabletMorePopover() {
   const juce::Rectangle<int> anchor(buttonAnchor.getX() - 20,
                                     buttonAnchor.getBottom() + 4,
                                     buttonAnchor.getWidth() + 20, 2);
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
-                                                         anchor, parentComp);
-  callout.setArrowSize(12.0f);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void TopBar::applyResponsiveTypography() {
@@ -1802,9 +1799,7 @@ void TopBar::showMetronomePopover() {
                                     ? static_cast<juce::Component *>(editor)
                                     : static_cast<juce::Component *>(this);
   const auto anchor = parentComp->getLocalArea(this, bpmSegmentButton.getBounds());
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
-                                                         anchor, parentComp);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void TopBar::showKeyPopover() {
@@ -1916,9 +1911,7 @@ void TopBar::showKeyPopover() {
       keyDisplay.getBounds().isEmpty() ? getSongInfoAnchorBounds()
                                        : keyDisplay.getBounds();
   const auto anchor = parentComp->getLocalArea(this, keyAnchor);
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
-                                                         anchor, parentComp);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void TopBar::showSongWindowPopover() {
@@ -2188,9 +2181,7 @@ void TopBar::showSongWindowPopover() {
       timeDisplay.getBounds().isEmpty() ? getSongInfoAnchorBounds()
                                         : timeDisplay.getBounds();
   const auto anchor = parentComp->getLocalArea(this, timeAnchor);
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel),
-                                                         anchor, parentComp);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void TopBar::refreshFromProviders() {

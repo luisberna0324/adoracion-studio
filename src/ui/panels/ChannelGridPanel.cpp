@@ -671,9 +671,7 @@ void ChannelGridPanel::showGuideSourcePopover(juce::Component *anchorComponent) 
                                     : static_cast<juce::Component *>(this);
   const auto anchor =
       parentComp->getLocalArea(anchorComponent, anchorComponent->getLocalBounds());
-  auto &callout = juce::CallOutBox::launchAsynchronously(std::move(panel), anchor,
-                                                         parentComp);
-  callout.setDismissalMouseClicksAreAlwaysConsumed(true);
+  presentActionPopover(std::move(panel), anchor, parentComp);
 }
 
 void ChannelGridPanel::timerCallback() {
