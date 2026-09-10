@@ -209,6 +209,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #if JUCE_IOS
   const int authW = userArea.getWidth();
   const int authH = userArea.getHeight();
+#elif JucePlugin_Build_Standalone
+  const int authW = userArea.getWidth();
+  const int authH = userArea.getHeight();
 #else
   const int authW = juce::jmin(kAuthWindowW, userArea.getWidth());
   const int authH = juce::jmin(kAuthWindowH, userArea.getHeight());
@@ -480,12 +483,9 @@ void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
   if (display == nullptr)
     return;
 
-  auto bounds = top->getBounds();
-  const int w = juce::jmax(1, bounds.getWidth());
-  const int h = juce::jmax(1, bounds.getHeight());
-  bounds.setSize(w, h);
-  bounds.setCentre(display->userArea.getCentre());
-  top->setBounds(bounds);
+  // Standalone is intentionally work-area maximised from the first welcome
+  // screen onward. Do not apply this to an editor hosted by a DAW.
+  expandTopLevelWindowToPrimaryWorkArea(this);
   initialStandaloneWindowCentered = true;
 #endif
 }
@@ -629,21 +629,28 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 #if JUCE_IOS
     setSize(userArea.getWidth(), userArea.getHeight());
 #else
+#if JucePlugin_Build_Standalone
+    juce::MessageManager::callAsync(
+        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+          if (safe != nullptr)
+            expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+        });
+#else
     const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
     const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
     const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
     const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
-
     if (AppSettings::getExpandWindowOnLaunch()) {
       juce::MessageManager::callAsync(
           [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
                this)] {
             if (safe != nullptr)
               expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-          });
+        });
     } else {
       setSize(w, h);
     }
+#endif
 #endif
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
@@ -2060,7 +2067,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     autoSetlistCollapseInitialized = true;
   }
 
-#if !JUCE_IOS
+#if JucePlugin_Build_Standalone
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+        if (safe != nullptr)
+          expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+      });
+#elif !JUCE_IOS
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
@@ -2330,7 +2343,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
-  options.resizable = false;
+  options.resizable = true;
 #endif
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
@@ -2470,7 +2483,28 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
                  useTouchOptimisedControls() ? 860 : 780);
+  const auto settingsWidth = panel->getWidth();
+  const auto settingsHeight = panel->getHeight();
   panel->refreshThemeColours();
+
+  if (cloudLibraryClient != nullptr && activeSession.allowed &&
+      activeSession.firebaseApiKey.isNotEmpty() && activeSession.refreshToken.isNotEmpty()) {
+    auto safePanel = juce::Component::SafePointer<SettingsPanel>(panel);
+    const auto sessionSnapshot = activeSession;
+    cloudLibraryClient->fetchCapabilities(
+        getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken,
+        [safePanel, sessionSnapshot](CloudCapabilities caps, CloudRequestError error) mutable {
+          if (safePanel == nullptr || error.code.isNotEmpty()) return;
+          safePanel->updateSessionSummary(SettingsPanel::SessionSummary{
+              sessionSnapshot.uid, sessionSnapshot.email, sessionSnapshot.plan,
+              sessionSnapshot.subscriptionStatus,
+              caps.trialEndsAt.isNotEmpty() ? caps.trialEndsAt : sessionSnapshot.expiresAt,
+              sessionSnapshot.allowed, sessionSnapshot.reasonCode, sessionSnapshot.reason,
+              sessionSnapshot.licenseKey, caps.accountType, caps.isOverride,
+              caps.usedDevices, caps.maxDevices, caps.syncedSongCount, caps.maxSyncedSongs,
+              caps.usedStorageBytes, caps.maxStorageBytes});
+        });
+  }
 
 #if JUCE_IOS
   auto overlay = std::make_unique<SettingsOverlayComponent>(
@@ -2487,7 +2521,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   if (auto *window = options.launchAsync()) {
     settingsWindow = window;
     settingsPanelRaw = panel;
-    window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
+    window->centreAroundComponent(parent != nullptr ? parent : this,
+                                  settingsWidth, settingsHeight);
   }
 #endif
 }

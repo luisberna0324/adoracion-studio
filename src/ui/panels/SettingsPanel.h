@@ -40,6 +40,10 @@ public:
     juce::String reasonCode;
     juce::String reason;
     juce::String licenseKey;
+    juce::String accountType;
+    bool isOverride = false;
+    int usedDevices = 0, maxDevices = 0, syncedSongCount = 0, maxSyncedSongs = 0;
+    juce::int64 usedStorageBytes = 0, maxStorageBytes = 0;
   };
 
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
@@ -65,6 +69,7 @@ public:
   void paint(juce::Graphics &g) override;
   void resized() override;
   void refreshThemeColours();
+  void updateSessionSummary(SessionSummary sessionSummary);
 
 private:
   class SettingsTabButton final : public juce::TextButton {
@@ -161,6 +166,8 @@ private:
   SettingsCopyButton sessionLicenseCopyButton;
   juce::Label sessionVersionLabel;
   juce::Label sessionVersionValue;
+  juce::Label sessionQuotaLabel;
+  juce::Label sessionQuotaValue;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
   juce::Label actionPurgeLabel;

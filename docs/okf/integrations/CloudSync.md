@@ -58,6 +58,16 @@ continúa usando HTTPS por defecto.
 
 ## 1. Contexto actual (auditoría 2026-09-04)
 
+### Capacidades visibles de cuenta
+
+`GET /api/song-sync/capabilities` devuelve las cuotas efectivas para que el
+cliente pueda mostrarlas en el panel de sesión. Incluye `accountType`
+(`trial`, `free`, `paid` o `unavailable`), `trialEndsAt`, `isOverride`,
+`usedDevices`, `maxDevices`, `usedStorageBytes`, `maxStorageBytes`,
+`syncedSongCount`, `maxSyncedSongs` y `updatedAt`. Un override individual
+vigente tiene prioridad sobre los límites globales; al vencer, vuelven los
+límites del plan.
+
 ### 1.1 Formato `.pwproj` y `manifest.json`
 
 `ProjectStore::open()` abre el ZIP y parsea `manifest.json` en

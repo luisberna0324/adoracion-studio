@@ -197,9 +197,9 @@ void WelcomeModal::resized() {
   const bool compactLandscape = !portrait;
   const int outerPad = juce::jlimit(18, 48, juce::jmin(getWidth(), getHeight()) / 14);
   auto available = getLocalBounds().reduced(outerPad);
-  const int cardW = juce::jmin((wide || compactLandscape) ? 900 : 520,
+  const int cardW = juce::jmin((wide || compactLandscape) ? 860 : 520,
                                available.getWidth());
-  const int cardH = juce::jmin(wide ? 500 : (compactLandscape
+  const int cardH = juce::jmin(wide ? 420 : (compactLandscape
                                                  ? available.getHeight()
                                                  : 610),
                                available.getHeight());
@@ -214,18 +214,22 @@ void WelcomeModal::resized() {
     inner.removeFromLeft(compactLandscape ? 20 : 42);
     auto column = inner;
 
+    const int titleH = compactLandscape ? 58 : 72;
+    const int subtitleH = compactLandscape ? 38 : 34;
+    const int statusH = compactLandscape ? 30 : 30;
+    const int buttonH = compactLandscape ? 40 : 48;
+    const int gap = compactLandscape ? 6 : 12;
+    const int contentH = titleH + gap + subtitleH + gap + statusH + gap +
+                         buttonH + gap + buttonH;
+    column.removeFromTop(juce::jmax(0, (column.getHeight() - contentH) / 2));
+
     if (logoImage.isValid()) {
       logo.setImage(logoImage, juce::RectanglePlacement::centred);
-      logo.setBounds(brandArea.reduced(8, compactLandscape ? 20 : 72));
+      const auto logoHeight = juce::jmin(150, brandArea.getHeight());
+      logo.setBounds(brandArea.withSizeKeepingCentre(brandArea.getWidth() - 16,
+                                                      logoHeight));
     }
 
-    const int topGap = compactLandscape ? 4 : 24;
-    const int titleH = compactLandscape ? 58 : 82;
-    const int subtitleH = compactLandscape ? 38 : 58;
-    const int statusH = compactLandscape ? 30 : 46;
-    const int buttonH = compactLandscape ? 40 : 50;
-    const int gap = compactLandscape ? 6 : 12;
-    column.removeFromTop(topGap);
     title.setBounds(column.removeFromTop(titleH));
     column.removeFromTop(gap);
     subtitle.setBounds(column.removeFromTop(subtitleH));
