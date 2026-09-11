@@ -584,6 +584,13 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   sessionVersionValue.setJustificationType(juce::Justification::centredLeft);
   sessionVersionValue.setFont(makeAppFont(14.0f));
   accountPage.addAndMakeVisible(sessionVersionValue);
+  sessionQuotaLabel.setJustificationType(juce::Justification::centredLeft);
+  sessionQuotaLabel.setFont(metadataFont);
+  accountPage.addAndMakeVisible(sessionQuotaLabel);
+  sessionQuotaValue.setJustificationType(juce::Justification::centredLeft);
+  sessionQuotaValue.setFont(makeAppFont(13.0f));
+  sessionQuotaValue.setMinimumHorizontalScale(0.75f);
+  accountPage.addAndMakeVisible(sessionQuotaValue);
 
   actionsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   actionsSectionLabel.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
@@ -623,7 +630,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingPage.addAndMakeVisible(routingHintLabel);
 
   routingViewport.setViewedComponent(&routingContent, false);
-  routingViewport.setScrollBarsShown(false, false, false, false);
+  // Routing can contain more category rows than the dialog height. Keep the
+  // vertical scrollbar visible so mouse, trackpad and touch users can reach
+  // every output assignment.
+  routingViewport.setScrollBarsShown(true, false, true, false);
   routingPage.addAndMakeVisible(routingViewport);
 
   themeBox.onChange = [this] {
@@ -804,6 +814,7 @@ void SettingsPanel::refreshThemeColours() {
   sessionExpiresLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionLicenseLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionVersionLabel.setColour(juce::Label::textColourId, sessionSecondary);
+  sessionQuotaLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionUidValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionEmailValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionPlanValue.setColour(juce::Label::textColourId, sessionPrimary);
@@ -813,6 +824,7 @@ void SettingsPanel::refreshThemeColours() {
           ? UITheme::accentSoft
           : sessionPrimary);
   sessionExpiresValue.setColour(juce::Label::textColourId, sessionPrimary);
+  sessionQuotaValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionLicenseValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionVersionValue.setColour(juce::Label::textColourId, sessionPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, sessionPrimary);
@@ -928,6 +940,20 @@ void SettingsPanel::applyLanguageTexts() {
   sessionLicenseCopyButton.setValueToCopy(session.licenseKey);
   sessionVersionValue.setText(juce::String(JucePlugin_VersionString),
                               juce::dontSendNotification);
+  sessionQuotaLabel.setText(L10n::tr("Cuotas", "Quotas"), juce::dontSendNotification);
+  const auto formatBytes = [](juce::int64 bytes) {
+    return bytes >= 1024LL * 1024LL * 1024LL
+      ? juce::String(bytes / (1024.0 * 1024.0 * 1024.0), 1) + " GB"
+      : juce::String(bytes / (1024.0 * 1024.0), 0) + " MB";
+  };
+  if (session.maxStorageBytes > 0) {
+    const auto account = session.isOverride ? L10n::tr("Cuenta de prueba", "Test account")
+      : session.accountType.isNotEmpty() ? session.accountType : session.plan;
+    sessionQuotaValue.setText(account + " · " + L10n::tr("Dispositivos", "Devices") + ": " +
+        juce::String(session.usedDevices) + "/" + juce::String(session.maxDevices) + " · " +
+        L10n::tr("Almacenamiento", "Storage") + ": " + formatBytes(session.usedStorageBytes) + "/" + formatBytes(session.maxStorageBytes) + " · " +
+        L10n::tr("Canciones", "Songs") + ": " + juce::String(session.syncedSongCount) + "/" + juce::String(session.maxSyncedSongs), juce::dontSendNotification);
+  } else sessionQuotaValue.setText(L10n::tr("Consultando cuotas…", "Loading quotas…"), juce::dontSendNotification);
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
   actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
@@ -1040,6 +1066,8 @@ void SettingsPanel::layoutAccountPage() {
   sessionLicenseCopyButton.setBounds({});
   sessionVersionLabel.setBounds({});
   sessionVersionValue.setBounds({});
+  sessionQuotaLabel.setBounds({});
+  sessionQuotaValue.setBounds({});
   actionsSectionLabel.setBounds({});
   actionLogoutLabel.setBounds({});
   actionPurgeLabel.setBounds({});
@@ -1057,7 +1085,8 @@ void SettingsPanel::layoutAccountPage() {
   const int pairH = labelH + valueH;
   const int sessionH = cardPaddingY + titleH + 16 + pairH + pairGap + pairH +
                        dividerMargin + 1 + dividerMargin + pairH + pairGap +
-                       pairH + pairGap + pairH + pairGap + pairH + cardPaddingY;
+                       pairH + pairGap + pairH + pairGap + pairH + pairGap +
+                       pairH + cardPaddingY;
   auto infoArea = area.removeFromTop(sessionH);
   if (sessionCard != nullptr)
     sessionCard->setBounds(infoArea);
@@ -1109,6 +1138,8 @@ void SettingsPanel::layoutAccountPage() {
 
   layoutInfoPair(info.removeFromTop(pairH), sessionVersionLabel,
                  sessionVersionValue);
+  info.removeFromTop(pairGap);
+  layoutInfoPair(info.removeFromTop(pairH), sessionQuotaLabel, sessionQuotaValue);
 
   const auto elideValue = [](juce::Label &label, const juce::String &fullText) {
     const auto availableWidth = static_cast<float>(label.getWidth());
@@ -1207,6 +1238,12 @@ void SettingsPanel::layoutRoutingPage() {
 SettingsPanel::~SettingsPanel() {
   if (deviceManager != nullptr)
     deviceManager->removeChangeListener(this);
+}
+
+void SettingsPanel::updateSessionSummary(SessionSummary sessionSummary) {
+  session = std::move(sessionSummary);
+  applyLanguageTexts();
+  resized();
 }
 
 void SettingsPanel::changeListenerCallback(juce::ChangeBroadcaster* source) {

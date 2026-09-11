@@ -236,6 +236,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #if JUCE_IOS || JUCE_ANDROID
   const int authW = userArea.getWidth();
   const int authH = userArea.getHeight();
+#elif JucePlugin_Build_Standalone
+  const int authW = userArea.getWidth();
+  const int authH = userArea.getHeight();
 #else
   const int authW = juce::jmin(kAuthWindowW, userArea.getWidth());
   const int authH = juce::jmin(kAuthWindowH, userArea.getHeight());
@@ -511,12 +514,9 @@ void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
   if (display == nullptr)
     return;
 
-  auto bounds = top->getBounds();
-  const int w = juce::jmax(1, bounds.getWidth());
-  const int h = juce::jmax(1, bounds.getHeight());
-  bounds.setSize(w, h);
-  bounds.setCentre(display->userArea.getCentre());
-  top->setBounds(bounds);
+  // Standalone is intentionally work-area maximised from the first welcome
+  // screen onward. Do not apply this to an editor hosted by a DAW.
+  expandTopLevelWindowToPrimaryWorkArea(this);
   initialStandaloneWindowCentered = true;
 #endif
 }
@@ -664,21 +664,28 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 #if JUCE_IOS || JUCE_ANDROID
     setSize(userArea.getWidth(), userArea.getHeight());
 #else
+#if JucePlugin_Build_Standalone
+    juce::MessageManager::callAsync(
+        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+          if (safe != nullptr)
+            expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+        });
+#else
     const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
     const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
     const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
     const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
-
     if (AppSettings::getExpandWindowOnLaunch()) {
       juce::MessageManager::callAsync(
           [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
                this)] {
             if (safe != nullptr)
               expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-          });
+        });
     } else {
       setSize(w, h);
     }
+#endif
 #endif
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
@@ -2107,7 +2114,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     autoSetlistCollapseInitialized = true;
   }
 
-#if !JUCE_IOS && !JUCE_ANDROID
+#if JucePlugin_Build_Standalone
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+        if (safe != nullptr)
+          expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+      });
+#elif !JUCE_IOS && !JUCE_ANDROID
   if (AppSettings::getExpandWindowOnLaunch()) {
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
@@ -2377,7 +2390,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   options.dialogBackgroundColour = UITheme::appBg;
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
-  options.resizable = false;
+  options.resizable = true;
 #endif
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
@@ -2451,7 +2464,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.reasonCode,
                                     activeSession.reason,
                                     activeSession.licenseKey},
-      [this] {
+      [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::QuestionIcon,
             L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
@@ -2459,16 +2472,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 u8"Tendrás que iniciar sesión nuevamente para acceder a tu biblioteca y a las canciones de Cloud.",
                 "You'll need to sign in again to access your library and Cloud songs."),
             L10n::tr(u8"Cerrar sesión", "Sign out"),
-            L10n::tr("Cancelar", "Cancel"), this);
-        juce::NativeMessageBox::showAsync(
+            L10n::tr("Cancelar", "Cancel"), safeThis.getComponent());
+        juce::AlertWindow::showAsync(
             options,
-            [safe = juce::Component::SafePointer<
-                 MTControlsAudioProcessorEditor>(this)](const int result) {
-              if (result == 0 && safe != nullptr)
-                safe->handleLogout();
+            [safeThis](const int result) {
+              if (result == 0 && safeThis != nullptr)
+                safeThis->handleLogout();
             });
       },
-      [this] {
+      [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Purgar datos locales de Cloud", "Purge local Cloud data"),
@@ -2478,10 +2490,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                 "All Library songs and setlists, caches, downloads, and sync links will be removed. "
                 "The Library will be empty. No .pwproj file or cloud content will be deleted."),
             L10n::tr("Purgar", "Purge"), L10n::tr("Cancelar", "Cancel"),
-            this);
-        juce::NativeMessageBox::showAsync(
+            safeThis.getComponent());
+        juce::AlertWindow::showAsync(
             options,
-            [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](int result) {
+            [safeThis](int result) {
               if (result != 0 || safeThis == nullptr)
                 return;
               const auto purge = CloudSyncIndexStore::purgeLocalState();
@@ -2518,7 +2530,28 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
                  useTouchOptimisedControls() ? 860 : 780);
+  const auto settingsWidth = panel->getWidth();
+  const auto settingsHeight = panel->getHeight();
   panel->refreshThemeColours();
+
+  if (cloudLibraryClient != nullptr && activeSession.allowed &&
+      activeSession.firebaseApiKey.isNotEmpty() && activeSession.refreshToken.isNotEmpty()) {
+    auto safePanel = juce::Component::SafePointer<SettingsPanel>(panel);
+    const auto sessionSnapshot = activeSession;
+    cloudLibraryClient->fetchCapabilities(
+        getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken,
+        [safePanel, sessionSnapshot](CloudCapabilities caps, CloudRequestError error) mutable {
+          if (safePanel == nullptr || error.code.isNotEmpty()) return;
+          safePanel->updateSessionSummary(SettingsPanel::SessionSummary{
+              sessionSnapshot.uid, sessionSnapshot.email, sessionSnapshot.plan,
+              sessionSnapshot.subscriptionStatus,
+              caps.trialEndsAt.isNotEmpty() ? caps.trialEndsAt : sessionSnapshot.expiresAt,
+              sessionSnapshot.allowed, sessionSnapshot.reasonCode, sessionSnapshot.reason,
+              sessionSnapshot.licenseKey, caps.accountType, caps.isOverride,
+              caps.usedDevices, caps.maxDevices, caps.syncedSongCount, caps.maxSyncedSongs,
+              caps.usedStorageBytes, caps.maxStorageBytes});
+        });
+  }
 
 #if JUCE_IOS
   auto overlay = std::make_unique<SettingsOverlayComponent>(
@@ -2535,7 +2568,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   if (auto *window = options.launchAsync()) {
     settingsWindow = window;
     settingsPanelRaw = panel;
-    window->centreAroundComponent(parent != nullptr ? parent : this, 760, 620);
+    window->centreAroundComponent(parent != nullptr ? parent : this,
+                                  settingsWidth, settingsHeight);
   }
 #endif
 }

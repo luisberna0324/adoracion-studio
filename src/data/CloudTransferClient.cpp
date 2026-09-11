@@ -215,9 +215,16 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       std::map<juce::String, const CloudUploadObject*> objectByHash;
       for (const auto& object : request.objects) {
         const auto hash = object.reference.sha256.trim().toLowerCase();
-        if (hash.isEmpty() || objectByHash.find(hash) != objectByHash.end()) {
-          deliverUpload(std::move(callback), {}, makeError("UPLOAD_INVALID", "Duplicate or empty object hash"));
+        if (hash.isEmpty()) {
+          deliverUpload(std::move(callback), {}, makeError("UPLOAD_INVALID", "Empty object hash"));
           return jobHasFinished;
+        }
+        // Several stems may legitimately reference identical bytes. Preserve
+        // every descriptor reference, but transfer each content hash once.
+        if (objectByHash.find(hash) != objectByHash.end()) {
+          SessionAuthLogger::write("[CloudUpload] deduplicating object hash=" +
+                                   hash.substring(0, 12));
+          continue;
         }
         objectByHash.emplace(hash, &object);
         auto* value = new JsonObject();
