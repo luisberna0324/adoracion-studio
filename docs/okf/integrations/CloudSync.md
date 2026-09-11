@@ -137,6 +137,12 @@ estado por dispositivo.
 2. `PUT` directo a las URLs firmadas de R2 (objetos + descriptor).
 3. `POST /api/song-sync/commit` con metadata y hashes.
 
+Si varios stems o recursos tienen el mismo contenido, el cliente conserva
+las referencias del descriptor pero deduplica la transferencia por SHA-256:
+el objeto idéntico se envía una sola vez y su hash aparece una sola vez en
+`prepare-upload`/`commit`. Un hash vacío continúa siendo un error porque
+indica un objeto inválido.
+
 `CloudProjectArchive::rebuildProject` (`:150-217`) rehidrata el ZIP
 local a partir del descriptor remoto + el `manifest.json` recibido:
 
