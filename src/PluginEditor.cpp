@@ -3928,7 +3928,7 @@ void MTControlsAudioProcessorEditor::runSongMixExport(const juce::File &outputFi
   if (waveformBarPtr != nullptr)
     waveformBarPtr->setExportBusy(true);
   if (waveformBarPtr != nullptr)
-    waveformBarPtr->setSongLoadingState(true, 0.0, "Preparando exportación… 0%");
+    waveformBarPtr->setSongLoadingState(true, 0.0, "Preparando exportación…");
 
   std::thread([safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this), request] {
     const auto formatLabel = request.format == SongMixExportRequest::Format::Mp3
