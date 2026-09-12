@@ -94,10 +94,15 @@ void SongSyncService::upload(CloudTransferCredentials credentials, juce::File pr
 void SongSyncService::download(CloudTransferCredentials credentials, juce::String remoteSongId,
                                juce::File cacheDirectory, ProgressCallback progress,
                                CompletionCallback callback) {
+  // Keep the request ID independent from the callback capture.  Moving
+  // remoteSongId in the lambda capture in the same expression as the call to
+  // transfer.download() leaves the argument evaluation order unspecified and
+  // can send an empty songId to the API.
+  const auto requestSongId = remoteSongId;
   const auto legacyDownloadDirectory = cacheDirectory.getParentDirectory()
                                            .getChildFile("projects")
                                            .getChildFile(".cloud-downloads");
-  transfer.download(std::move(credentials), remoteSongId, cacheDirectory,
+  transfer.download(std::move(credentials), requestSongId, cacheDirectory,
       std::move(progress), [this, cloudSongId = std::move(remoteSongId),
                             legacyDownloadDirectory,
                             done = std::move(callback)](CloudDownloadResult result, CloudTransferError failure) mutable {
