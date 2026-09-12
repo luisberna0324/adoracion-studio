@@ -55,26 +55,40 @@ def referenced_paths(songs: list, contains: str) -> set:
     return ref
 
 
+def looks_like_uuid(s: str) -> bool:
+    """Cheap heuristic for UUID hex strings (32 lowercase hex chars).
+    Matches what StemCache::migrateTitleKeyedDirectoriesToIds uses."""
+    if len(s) != 32:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in s)
+
+
 def analyze_decoded(root: str, songs: list) -> None:
     decoded = os.path.join(root, "decoded")
     if not os.path.isdir(decoded):
         print("decoded/  (missing)")
         return
     titles = [s.get("title", "").strip() for s in songs]
+    song_ids = [s.get("id", "").strip() for s in songs]
+    project_ids = [s.get("projectId", "").strip() for s in songs]
     print("decoded/")
     for entry in sorted(os.listdir(decoded)):
         path = os.path.join(decoded, entry)
         if not os.path.isdir(path):
             continue
         size = dir_size(path)
-        norm_entry = normalize(entry)
-        # StemCache uses sanitizeCacheKey which replaces problematic chars
-        # with `_`. Try exact (normalized) match first, then fuzzy.
-        is_ref = any(
-            normalize(t) == norm_entry
-            or normalize(t).replace(" ", "_") == entry
-            for t in titles
-        )
+        # Modern layout: directory name is the songId (UUID hex).
+        # Historical layout (pre-2026-09-12): directory name is
+        # sanitizeCacheKey(title). Match both, since the migration in
+        # StemCache.cpp converts the old layout on first startup.
+        is_ref = entry in song_ids or entry in project_ids
+        if not is_ref and not looks_like_uuid(entry):
+            norm_entry = normalize(entry)
+            is_ref = any(
+                normalize(t) == norm_entry
+                or normalize(t).replace(" ", "_") == entry
+                for t in titles
+            )
         marker = "" if is_ref else "  <-- ORPHAN"
         print(f"  {entry:50s}  {size//1024//1024:>5} MB{marker}")
 
