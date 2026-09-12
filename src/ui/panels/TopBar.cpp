@@ -942,7 +942,17 @@ void TopBar::resized() {
       maxCardW = 170;
       songCardHeight = 40;
       songArtworkSize = 30;
-    } else if (phoneWidth < 880) {
+    }
+
+    bool useRegularPhoneControls = phoneWidth < 880;
+#if JUCE_ANDROID
+    // Android landscape windows around 900 dp can report little or no
+    // horizontal safe-area inset. The large control set then consumes the
+    // complete row and clips the final metronome/key action at the right edge.
+    useRegularPhoneControls = phoneWidth < 940;
+#endif
+
+    if (phoneWidth >= 760 && useRegularPhoneControls) {
       square = 46;
       gap = 8;
       keyWidth = 62;
@@ -953,7 +963,7 @@ void TopBar::resized() {
       maxCardW = 200;
       songCardHeight = 42;
       songArtworkSize = 32;
-    } else {
+    } else if (phoneWidth >= 760) {
       square = 50;
       gap = 10;
       keyWidth = 70;
@@ -1150,7 +1160,12 @@ void TopBar::resized() {
   for (int attempt = 0; attempt < 3; ++attempt) {
     rightX = layoutRightSide(showSystemUsage, showBpmText);
     const int centerW = rightX - (transportW + 16);
-    if (centerW >= minCardW)
+    // Phones only render a square artwork tile in the centre. Requiring the
+    // desktop song-card width here unnecessarily hides the BPM segment on
+    // otherwise valid iPhone and Android layouts.
+    const int requiredCenterWidth =
+        minimalPhoneProfile ? square : minCardW;
+    if (centerW >= requiredCenterWidth)
       break;
     if (showBpmText) {
       showBpmText = false;

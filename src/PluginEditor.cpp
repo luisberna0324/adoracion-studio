@@ -108,10 +108,15 @@ bool isPhoneSizedLayout(const juce::Component &component) {
   int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
 #if JUCE_IOS
   // iOS exposes the device family independently of the simulator's backing
-  // pixel scale. Prefer it so an iPhone can never be classified as a tablet
-  // merely because the simulator reports a high-resolution surface.
-  if (juce::SystemStats::getDeviceDescription().containsIgnoreCase("iPhone"))
+  // pixel scale. Resolve both families before applying size heuristics: some
+  // simulator runtimes expose editor bounds in points while others expose
+  // backing pixels, so dividing an iPad point size by display scale can make
+  // it look like a phone.
+  const auto deviceDescription = juce::SystemStats::getDeviceDescription();
+  if (deviceDescription.containsIgnoreCase("iPhone"))
     return true;
+  if (deviceDescription.containsIgnoreCase("iPad"))
+    return false;
   // JUCE reports the standalone iOS editor in physical pixels. Convert to
   // points before applying the shared 600 pt/dp phone breakpoint.
   if (const auto *display = juce::Desktop::getInstance().getDisplays()
@@ -3681,9 +3686,11 @@ void MTControlsAudioProcessorEditor::resized() {
     }
   }
 #endif
+  // Phone mixer bounds already end at the platform safe area. Applying that
+  // inset again inside every strip lifts the title and S/M row away from the
+  // visible bottom edge.
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
-    grid->setPhoneBottomContentInset(
-        minimalPhoneProfile ? phoneBottomBleed + 8 : 0);
+    grid->setPhoneBottomContentInset(0);
   const auto safeContentArea = area;
   const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
   const bool setlistOverlaySupported =
@@ -3775,9 +3782,14 @@ void MTControlsAudioProcessorEditor::resized() {
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
   auto handleArea = mainArea.removeFromLeft(handleW);
   auto rightChannelsArea = mainArea;
+#if JUCE_IOS
+  // Let the channel backgrounds and their title bands cover the lower safe
+  // area. The strips themselves use no internal footer inset, so the footer
+  // remains attached to the visual bottom instead of leaving an empty band.
   if (minimalPhoneProfile && phoneBottomBleed > 0)
     rightChannelsArea.setBottom(
         juce::jmin(getHeight(), rightChannelsArea.getBottom() + phoneBottomBleed));
+#endif
   if (!minimalPhoneProfile) {
     rightChannelsArea.removeFromLeft(2);
     rightChannelsArea.removeFromRight(contentInset);

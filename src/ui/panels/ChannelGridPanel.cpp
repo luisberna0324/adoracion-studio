@@ -1341,7 +1341,14 @@ void ChannelGridPanel::resized() {
   const bool isWideViewport = contentWidth >= 1500;
   const float widthAdaptiveScale =
       isWideViewport ? juce::jlimit(0.82f, 1.22f, widthScale) : juce::jlimit(0.82f, 1.08f, widthScale);
-  const float stripScale = juce::jlimit(0.82f, 1.25f, widthAdaptiveScale * profileScale);
+  float stripScale = juce::jlimit(
+      0.82f, 1.25f, widthAdaptiveScale * profileScale);
+#if JUCE_IOS
+  // iPad uses the tablet/desktop mixer layout. Keep the base control size
+  // readable instead of shrinking strips to expose every stem at once.
+  if (!minimalPhoneMode)
+    stripScale = juce::jmax(1.0f, stripScale);
+#endif
 
   for (auto &slot : slots) {
     slot->setStripScale(stripScale);
@@ -1352,9 +1359,11 @@ void ChannelGridPanel::resized() {
   const auto stripLayout =
       slots.empty() ? baseLayout : slots.front()->getStrip().getLayout();
   const int naturalCellH = stripLayout.height + (gridShowsRouting ? 34 : 8);
-  const int cellH = minimalPhoneMode
-                        ? juce::jmax(naturalCellH, viewport.getHeight())
-                        : naturalCellH;
+  // On phones the viewport height is the hard vertical boundary. Using the
+  // scaled natural height here can make a wider Android strip taller than the
+  // screen and clip its S/M row and title band. ChannelStripCard already
+  // shortens its fader and meter to fit the supplied height.
+  const int cellH = minimalPhoneMode ? viewport.getHeight() : naturalCellH;
 
   int x = pad;
   int y = pad;
@@ -1376,6 +1385,10 @@ void ChannelGridPanel::resized() {
     const int singleRowWidth = visibleSlots > 0 ? x - gapX + pad : contentWidth;
     content.setSize(juce::jmax(contentWidth, singleRowWidth),
                     viewport.getHeight());
+    // Phone mixers scroll only along the channel row. JUCE can preserve an old
+    // vertical viewport offset after a resize or orientation change, which
+    // moves the fixed S/M row and channel title below the visible edge.
+    viewport.setViewPosition(viewport.getViewPositionX(), 0);
     return;
   }
 

@@ -29,9 +29,18 @@ area segura:
 | Regular | `760...879` | iPhone estandar/Pro y Android medio |
 | Large | `>= 880` | Plus, Air, Pro Max y Android ancho/foldable |
 
+En el `TopBar`, Android conserva las medidas del rango Regular hasta `939 dp`.
+El conjunto Large se activa desde `940 dp`, porque algunos dispositivos
+landscape no reportan un inset horizontal suficiente y el conjunto de botones
+grandes puede recortar la accion final del bloque de metronomo/tono.
+
 ## Area segura
 
 - El contenido interactivo se coloca dentro de `Displays::Display::safeAreaInsets`.
+- En iOS, la familia reportada por el sistema tiene prioridad sobre los
+  breakpoints: `iPad` siempre usa el perfil tablet/escritorio e `iPhone` usa el
+  perfil movil. Esto evita clasificaciones incorrectas por la escala del
+  framebuffer del simulador.
 - El fondo del mixer se prolonga visualmente por el inset inferior hasta el
   borde fisico de la ventana, evitando una franja vacia bajo los canales.
 - En iOS landscape se usa el mayor inset horizontal en ambos lados para que la
@@ -47,6 +56,9 @@ area segura:
 - El telefono muestra transporte basico, tiempo, waveform y mixer.
 - El toggle contextual `Fade Down/Fade Up` aparece junto a `Siguiente`. El
   tiempo usa dos lineas (`actual /` y `total`) con tipografia reducida.
+- El bloque de metronomo conserva en telefono tanto el boton de BPM como el
+  toggle de click. La decision de compactarlo usa como reserva central solo el
+  artwork cuadrado; no exige el ancho de la tarjeta de cancion de escritorio.
 - El artwork cuadrado de la cancion activa aparece inmediatamente despues del
   toggle de fade, sin mostrar titulo ni artista.
 - El setlist lateral se reemplaza por un boton compacto con icono de musica,
@@ -78,9 +90,20 @@ area segura:
   comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - Los channel strips forman una sola fila, ajustan su altura al mixer y se
   recorren horizontalmente mediante drag; nunca se envuelven en filas nuevas.
-- El fondo de cada strip llega al borde inferior, pero su footer y controles se
-  mantienen por encima del inset inferior, con `8 pt/dp` adicionales para que
-  los titulos no queden recortados por la mascara curva del dispositivo.
+- Android e iPhone calculan la misma escala proporcional del strip a partir
+  del ancho disponible. No se amplian verticalmente de forma independiente;
+  los canales adicionales permanecen accesibles con desplazamiento horizontal.
+- En iPad, que conserva el layout de tablet/escritorio, la escala minima del
+  strip es `1.0x` para mantener knobs, medidores y titulos legibles.
+- En Android, los limites del panel incorporan el safe area. En iPhone, el
+  fondo del mixer y la banda del titulo se extienden por el safe area inferior
+  para evitar una franja vacia. En ambos casos la banda queda fija al borde
+  visual inferior del strip y la fila S/M se coloca inmediatamente encima; no
+  se vuelve a aplicar un inset dentro del canal. El
+  viewport mantiene su posicion vertical en cero y solo conserva el
+  desplazamiento horizontal entre canales. La altura del strip se limita a la
+  altura visible del viewport aunque su escala horizontal sea mayor; fader y
+  medidor se comprimen para reservar siempre el footer completo.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
 
