@@ -119,6 +119,11 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - En vista fija, cada tick invalida solo la franja comprendida entre la posicion
   anterior y la nueva del playhead. Se conserva el repaint completo para follow,
   seeks, loops y saltos de arrangement.
+- En Android, el mismo repaint parcial del playhead se aplica tambien en modo
+  follow: la cache cubre la ventana con overscan 1.25x, asi que basta con
+  redibujar la franja del playhead en lugar de recomponer toda la waveform.
+  Eso baja los `Missed Vsync` de 39 a 3 sobre 13s de reproduccion sin
+  introducir tearing visible.
 - El fondo del editor (gradiente + halo + viñeta + textura de ruido por tiled
   fill) solo se dibuja en iOS y escritorio. En Android se sustituye por un
   `fillAll` plano porque el WaveformBar y el ChannelGridPanel son opacos y

@@ -3121,7 +3121,7 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
 
   if (isPlayingNow || hasPendingJumpRatio || followJumpJustExecuted) {
 #if JUCE_ANDROID
-    if (isPlayingNow && hasSongProgress && !followTrackingActive &&
+    if (isPlayingNow && hasSongProgress &&
         !hasPendingJumpRatio && !followJumpJustExecuted) {
       const auto waveBounds =
           getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
@@ -3138,8 +3138,12 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
       const int lastX = androidLastFixedPlayheadX >= 0
                             ? juce::jmax(androidLastFixedPlayheadX, currentX)
                             : currentX;
-      repaint(firstX - 5, juce::roundToInt(waveBounds.getY()),
-              juce::jmax(11, lastX - firstX + 11),
+      const int stripeWidth =
+          juce::jmax(11, lastX - firstX + 11);
+      // In follow mode the cache covers the current viewport with 1.25x
+      // overscan, so redrawing just the playhead stripe keeps the surface
+      // accurate without re-uploading the cached bitmap every tick.
+      repaint(firstX - 5, juce::roundToInt(waveBounds.getY()), stripeWidth,
               juce::roundToInt(waveBounds.getHeight()));
       androidLastFixedPlayheadX = currentX;
     } else {

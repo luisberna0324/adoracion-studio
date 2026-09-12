@@ -3615,6 +3615,7 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
 void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 #if JUCE_ANDROID
   // The Android peer software-paints the editor on every playback frame.
+  // The Android peer software-paints the editor on every playback frame.
   // Skipping the tiled-noise studio background there is enough to remove
   // the dominant cost without changing the visual output (the opaque
   // WaveformBar and ChannelGridPanel cover their own area on top of it).

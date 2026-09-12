@@ -821,7 +821,15 @@ void TopBar::refreshThemeColours() {
 
 void TopBar::paint(juce::Graphics &g) {
   const auto b = getLocalBounds().toFloat();
+#if JUCE_ANDROID
+  // The Android peer software-paints each frame. The studio background
+  // (tiled noise + gradients) is the dominant cost here, and the bar is
+  // re-laid out over the same flat colour every tick. Use a flat base so
+  // the timer-driven repaints stay cheap.
+  g.fillAll(UITheme::panelDark);
+#else
   drawStudioBackground(g, b);
+#endif
   g.setColour(UITheme::panelDark.withAlpha(0.10f));
   g.fillRect(b);
   g.setColour(UITheme::dividerSoft);
