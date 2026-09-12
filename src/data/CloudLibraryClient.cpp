@@ -160,3 +160,40 @@ void CloudLibraryClient::search(
   pool.addJob(new Job(apiBaseUrl, firebaseApiKey, refreshToken, query, cursor,
                       limit, std::move(callback)), true);
 }
+
+void CloudLibraryClient::fetchCapabilities(
+    const juce::String& apiBaseUrl, const juce::String& firebaseApiKey,
+    const juce::String& refreshToken, CapabilitiesCallback callback) {
+  struct Job final : juce::ThreadPoolJob {
+    juce::String base, apiKey, refresh; CapabilitiesCallback callback;
+    Job(juce::String b, juce::String k, juce::String r, CapabilitiesCallback cb)
+      : ThreadPoolJob("CloudCapabilities"), base(std::move(b)), apiKey(std::move(k)),
+        refresh(std::move(r)), callback(std::move(cb)) {}
+    JobStatus runJob() override {
+      const auto token = AuthSessionApi::refreshFirebaseIdToken(apiKey, refresh, kTimeoutMs);
+      if (!token.ok) { deliverCapabilities({}, {0, "AUTH_REFRESH_FAILED", token.errorMessage}); return jobHasFinished; }
+      int status = 0;
+      const auto url = juce::URL(base.trim().trimCharactersAtEnd("/") + "/api/song-sync/capabilities");
+      auto stream = url.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+        .withExtraHeaders("Authorization: Bearer " + token.idToken + "\r\n")
+        .withConnectionTimeoutMs(kTimeoutMs).withStatusCode(&status));
+      if (!stream) { deliverCapabilities({}, {0, "NETWORK", "Cloud capabilities unavailable"}); return jobHasFinished; }
+      const auto body = stream->readEntireStreamAsString();
+      if (status < 200 || status >= 300) { deliverCapabilities({}, serverError(body, status)); return jobHasFinished; }
+      const auto* root = juce::JSON::parse(body).getDynamicObject();
+      if (!root) { deliverCapabilities({}, {status, "INVALID_RESPONSE", "Invalid cloud response"}); return jobHasFinished; }
+      CloudCapabilities caps;
+      caps.enabled = static_cast<bool>(root->getProperty("enabled")); caps.isOverride = static_cast<bool>(root->getProperty("isOverride"));
+      caps.accountType = root->getProperty("accountType").toString(); caps.trialEndsAt = root->getProperty("trialEndsAt").toString(); caps.updatedAt = root->getProperty("updatedAt").toString();
+      caps.usedDevices = static_cast<int>(root->getProperty("usedDevices")); caps.maxDevices = static_cast<int>(root->getProperty("maxDevices"));
+      caps.syncedSongCount = static_cast<int>(root->getProperty("syncedSongCount")); caps.maxSyncedSongs = static_cast<int>(root->getProperty("maxSyncedSongs"));
+      caps.usedStorageBytes = root->getProperty("usedStorageBytes").toString().getLargeIntValue(); caps.maxStorageBytes = root->getProperty("maxStorageBytes").toString().getLargeIntValue();
+      deliverCapabilities(std::move(caps), {}); return jobHasFinished;
+    }
+    void deliverCapabilities(CloudCapabilities caps, CloudRequestError error) {
+      if (!callback) return;
+      juce::MessageManager::callAsync([cb = std::move(callback), caps = std::move(caps), error = std::move(error)]() mutable { cb(std::move(caps), std::move(error)); });
+    }
+  };
+  pool.addJob(new Job(apiBaseUrl, firebaseApiKey, refreshToken, std::move(callback)), true);
+}
