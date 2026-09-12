@@ -128,6 +128,16 @@ juce::String fallbackStyleForWeight(const AppFontWeight weight) {
 } // namespace
 
 juce::Font makeAppFont(const float size, const AppFontWeight weight) {
+#if JUCE_ANDROID
+  // Android resolves embedded typefaces repeatedly while constructing the
+  // component tree. Use the native sans-serif cache there to keep startup and
+  // repaint work bounded; the embedded Inter family remains unchanged on iOS
+  // and desktop.
+  const int styleFlags = weight == AppFontWeight::Regular
+                             ? juce::Font::plain
+                             : juce::Font::bold;
+  return juce::Font(juce::FontOptions(size, styleFlags));
+#else
   if (const auto typeface = getInterTypeface(weight); typeface != nullptr)
     return juce::Font(juce::FontOptions(size).withTypeface(typeface));
 
@@ -136,6 +146,7 @@ juce::Font makeAppFont(const float size, const AppFontWeight weight) {
   if (style.isNotEmpty())
     options = options.withStyle(style);
   return juce::Font(options);
+#endif
 }
 
 namespace {

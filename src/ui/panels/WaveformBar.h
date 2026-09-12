@@ -326,6 +326,7 @@ private:
   bool androidVisualProgressValid = false;
   float androidVisualProgressRatio = 0.0f;
   double androidVisualProgressTimestampSec = 0.0;
+  int androidLastFixedPlayheadX = -1;
 #endif
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;

@@ -97,7 +97,11 @@ public:
       // minimum height 5px (will be scaled during paint)
       amplitudes.push_back(0.1f + envelope * 0.5f + noise);
     }
+#if JUCE_ANDROID
+    startTimerHz(30);
+#else
     startTimerHz(60);
+#endif
   }
 
   void timerCallback() override {

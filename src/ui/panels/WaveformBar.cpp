@@ -674,6 +674,12 @@ void SvgToolbarButton::paintButton(juce::Graphics &g,
 }
 
 WaveformBar::WaveformBar() {
+#if JUCE_ANDROID
+  // The Android peer is software-painted before upload. This component covers
+  // every pixel in its bounds, so marking it opaque prevents JUCE from also
+  // repainting the editor background behind every transport frame.
+  setOpaque(true);
+#endif
   setWantsKeyboardFocus(true);
   setMouseClickGrabsKeyboardFocus(true);
 
@@ -1344,6 +1350,11 @@ void WaveformBar::paint(juce::Graphics &g) {
   if (bounds.getWidth() < 2.0f)
     return;
 
+#if JUCE_ANDROID
+  // Avoid four full-surface gradient/noise passes for every playback frame.
+  // The waveform and overlays retain their normal colours above this base.
+  g.fillAll(UITheme::panelDark);
+#else
   drawStudioBackground(g, bounds);
   {
     juce::ColourGradient base(UITheme::panelDark.withAlpha(0.42f),
@@ -1353,6 +1364,7 @@ void WaveformBar::paint(juce::Graphics &g) {
     g.setGradientFill(base);
     g.fillRect(bounds);
   }
+#endif
 
   const auto mainWaveBounds = getMainWaveBounds(bounds);
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -3107,8 +3119,37 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
     followLastSongProgressValid = false;
   }
 
-  if (isPlayingNow || hasPendingJumpRatio || followJumpJustExecuted)
+  if (isPlayingNow || hasPendingJumpRatio || followJumpJustExecuted) {
+#if JUCE_ANDROID
+    if (isPlayingNow && hasSongProgress && !followTrackingActive &&
+        !hasPendingJumpRatio && !followJumpJustExecuted) {
+      const auto waveBounds =
+          getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
+      const auto window = getVisibleWindow();
+      const float playheadNorm =
+          juce::jlimit(0.0f, 1.0f,
+                       (songProgress - window.first) /
+                           juce::jmax(0.0001f, window.second));
+      const int currentX = juce::roundToInt(
+          waveBounds.getX() + playheadNorm * waveBounds.getWidth());
+      const int firstX = androidLastFixedPlayheadX >= 0
+                             ? juce::jmin(androidLastFixedPlayheadX, currentX)
+                             : currentX;
+      const int lastX = androidLastFixedPlayheadX >= 0
+                            ? juce::jmax(androidLastFixedPlayheadX, currentX)
+                            : currentX;
+      repaint(firstX - 5, juce::roundToInt(waveBounds.getY()),
+              juce::jmax(11, lastX - firstX + 11),
+              juce::roundToInt(waveBounds.getHeight()));
+      androidLastFixedPlayheadX = currentX;
+    } else {
+      androidLastFixedPlayheadX = -1;
+      repaint();
+    }
+#else
     repaint();
+#endif
+  }
 }
 
 void WaveformBar::scheduleDeferredPartJumpFromDoubleClick(const int partIndex) {
@@ -4982,7 +5023,12 @@ float WaveformBar::sampleWaveformAmplitude(
 bool WaveformBar::drawCachedFollowWaveform(
     juce::Graphics &g, const juce::Rectangle<float> &bounds,
     const float windowStart, const float windowSpan) const {
-  if (!isFollowTrackingActive() || waveformBins.size() < 2 ||
+#if JUCE_ANDROID
+  const bool mayUsePlaybackCache = playingProvider != nullptr && playingProvider();
+#else
+  const bool mayUsePlaybackCache = isFollowTrackingActive();
+#endif
+  if (!mayUsePlaybackCache || waveformBins.size() < 2 ||
       bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f ||
       windowSpan <= 0.0f)
     return false;
@@ -5006,17 +5052,21 @@ bool WaveformBar::drawCachedFollowWaveform(
     }
   }
 
+#if JUCE_ANDROID
+  constexpr float androidFollowCacheOverscan = 1.25f;
+  const float cacheSpan = juce::jlimit(
+      windowSpan, 1.0f, windowSpan * androidFollowCacheOverscan);
+#else
   const float cacheSpan = juce::jlimit(
       windowSpan, 1.0f, windowSpan * kFollowWaveformCacheOverscan);
+#endif
   const float cacheStart = juce::jlimit(
       0.0f, 1.0f - cacheSpan,
       windowStart - ((cacheSpan - windowSpan) * 0.5f));
 #if JUCE_ANDROID
-  // Rendering the overscanned cache at the full physical tablet density can
-  // create images wider than 7k pixels. A bounded scale is visually adequate
-  // for the waveform while making every follow frame substantially cheaper.
-  const float cacheScale = juce::jlimit(
-      1.0f, 1.25f, juce::Component::getApproximateScaleFactorForComponent(this));
+  // Android's JUCE peer transforms this bitmap on the CPU before upload. Keep
+  // it at logical resolution; the display compositor performs final scaling.
+  constexpr float cacheScale = 1.0f;
 #else
   const float cacheScale = juce::jlimit(
       1.0f, 4.0f, juce::Component::getApproximateScaleFactorForComponent(this));
@@ -5103,6 +5153,7 @@ bool WaveformBar::drawCachedFollowWaveform(
 
   const int playedRight = static_cast<int>(std::floor(playheadX));
   if (playedRight > clipBounds.getX()) {
+#if !JUCE_ANDROID
     g.saveState();
     g.reduceClipRegion(clipBounds.withRight(
         juce::jmin(clipBounds.getRight(), playedRight)));
@@ -5112,6 +5163,7 @@ bool WaveformBar::drawCachedFollowWaveform(
     g.drawImageTransformed(followWaveformHighlightMaskCache, sourceToBounds,
                            true);
     g.restoreState();
+#endif
   }
 
   const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);

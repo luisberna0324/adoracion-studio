@@ -598,8 +598,13 @@ void ChannelStripCard::timerCallback() {
 void ChannelStripCard::updateMidiLearnBlinkTimer() {
   const bool shouldBlink = midiLearnSelectable;
   if (shouldBlink) {
-    if (!isTimerRunning())
+    if (!isTimerRunning()) {
+#if JUCE_ANDROID
+      startTimerHz(12);
+#else
       startTimerHz(24);
+#endif
+    }
   } else if (isTimerRunning()) {
     stopTimer();
   }

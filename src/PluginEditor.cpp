@@ -289,7 +289,27 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     lastSuccessfulLoginMs =
         juce::jmax(lastSuccessfulLoginMs, bootSnap.lastOnlineValidationMs);
     AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
+#if JUCE_ANDROID
+    // Let Android present the lightweight welcome surface before constructing
+    // the full mixer, waveform and library component tree on the message
+    // thread. JUCE components must still be created on that thread.
+    showWelcomeOnlyMode();
+    if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get())) {
+      modal->setStatusText(
+          L10n::tr(u8"Preparando tu espacio...", "Preparing your workspace..."),
+          false);
+      modal->setChecking(true);
+    }
+    juce::Timer::callAfterDelay(
+        120,
+        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
+             this)] {
+          if (safe != nullptr)
+            safe->initializeMainUi();
+        });
+#else
     initializeMainUi();
+#endif
   } else {
     showWelcomeOnlyMode();
   }
@@ -317,8 +337,13 @@ void MTControlsAudioProcessorEditor::openProjectFromExternalApplication(
 
   // Authentication/bootstrap may still be showing. The regular editor timer
   // will open the project as soon as the complete library UI is available.
-  if (!isTimerRunning())
+  if (!isTimerRunning()) {
+#if JUCE_ANDROID
+    startTimerHz(mainUiInitialized ? 12 : 8);
+#else
     startTimerHz(mainUiInitialized ? 20 : 12);
+#endif
+  }
 }
 
 bool MTControlsAudioProcessorEditor::isSongCurrentlyLoaded(
@@ -608,6 +633,16 @@ void MTControlsAudioProcessorEditor::refreshCloudLibrary(
 }
 
 void MTControlsAudioProcessorEditor::initializeMainUi() {
+#if JUCE_ANDROID
+  const auto androidUiBuildStartedMs = juce::Time::getMillisecondCounterHiRes();
+  const auto logAndroidUiPhase = [androidUiBuildStartedMs](const char *phase) {
+    SessionAuthLogger::write(
+        "initializeMainUi(android): " + juce::String(phase) + " elapsedMs=" +
+        juce::String(juce::Time::getMillisecondCounterHiRes() -
+                         androidUiBuildStartedMs,
+                     1));
+  };
+#endif
   if (lastSuccessfulLoginMs > 0) {
     const auto nowMs = juce::Time::currentTimeMillis();
     const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
@@ -731,6 +766,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   auto topBarImpl = std::make_unique<TopBar>(p);
+#if JUCE_ANDROID
+  logAndroidUiPhase("topBar.created");
+#endif
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
   topBarRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
@@ -754,6 +792,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setMidiLearnBindingLabelProvider(midiLearnBindingLabelForTarget);
 
   auto waveformBarImpl = std::make_unique<WaveformBar>();
+#if JUCE_ANDROID
+  logAndroidUiPhase("waveform.created");
+#endif
   auto *waveformBarRaw = waveformBarImpl.get();
   waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
@@ -853,6 +894,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto channelGridImpl =
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
+#if JUCE_ANDROID
+  logAndroidUiPhase("channelGrid.created");
+#endif
   auto *channelGridRaw = channelGridImpl.get();
   channelGridPanel = std::move(channelGridImpl);
   channelGridRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
@@ -969,6 +1013,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   auto songListImpl = std::make_unique<SongListPanel>();
+#if JUCE_ANDROID
+  logAndroidUiPhase("songList.created");
+#endif
   auto *songListRaw = songListImpl.get();
   songListPanel = std::move(songListImpl);
   songListPanelRaw = songListRaw;
@@ -2070,6 +2117,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
   padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel);
+#if JUCE_ANDROID
+  logAndroidUiPhase("pads.created");
+#endif
   padsComponent->setMidiLearnBindingLabelProvider(midiLearnBindingLabelForTarget);
   padsComponent->setOnMidiLearnTargetSelected(
       [this, &p, topBarRaw, channelGridRaw, waveformBarRaw](const int targetId) {
@@ -2214,6 +2264,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   mainUiInitialized = true;
   resized();
   updateSystemUsageMetrics();
+#if JUCE_ANDROID
+  logAndroidUiPhase("complete");
+#endif
 }
 
 void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
@@ -2225,6 +2278,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
+  sessionResumeCancelled = false;
 #if JUCE_IOS
   NativeAuthSession::cancel();
   authExpectedState = juce::Uuid().toString();
@@ -2551,8 +2605,12 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         juce::AlertWindow::showAsync(
             options,
             [safeThis](const int result) {
-              if (result == 0 && safeThis != nullptr)
-                safeThis->handleLogout();
+              if (result != 1 || safeThis == nullptr)
+                return;
+              juce::MessageManager::callAsync([safeThis] {
+                if (safeThis != nullptr)
+                  safeThis->handleLogout();
+              });
             });
       },
       [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
@@ -2703,6 +2761,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 
 void MTControlsAudioProcessorEditor::handleLogout() {
   SessionAuthLogger::write("handleLogout");
+  sessionResumeCancelled = true;
   closeSettings();
 
   if (localAuthServer != nullptr)
@@ -2942,6 +3001,12 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
 void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
     const bool success, const bool validatedOnline, PersistedSessionSnapshot snapshot,
     const juce::String &welcomeError, const bool clearSnapshotFile) {
+  if (sessionResumeCancelled) {
+    SessionAuthLogger::write(
+        "applySessionResumeOnMessageThread: skipped (session was signed out)");
+    return;
+  }
+
   if (authExpectedState.isNotEmpty()) {
     SessionAuthLogger::write(
         "applySessionResumeOnMessageThread: skipped (user started web login, "
@@ -3548,7 +3613,16 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
 }
 
 void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
+#if JUCE_ANDROID
+  // The Android peer software-paints the editor on every playback frame.
+  // Skipping the tiled-noise studio background there is enough to remove
+  // the dominant cost without changing the visual output (the opaque
+  // WaveformBar and ChannelGridPanel cover their own area on top of it).
+  const auto androidBounds = getLocalBounds().toFloat();
+  g.fillAll(UITheme::appBgBottom);
+#else
   drawStudioBackground(g, getLocalBounds().toFloat());
+#endif
 
   if (mainUiInitialized && !padsDrawerBackgroundBounds.isEmpty()) {
     const auto drawer = padsDrawerBackgroundBounds.toFloat().reduced(0.5f);

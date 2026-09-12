@@ -151,6 +151,7 @@ private:
   double smoothedAudioCpuUsage01 = 0.0;
   double smoothedProcessMemoryMb = 0.0;
   int totalSystemMemoryMb = 0;
+  bool sessionResumeCancelled = false;
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,

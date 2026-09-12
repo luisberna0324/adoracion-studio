@@ -93,3 +93,35 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - `874 x 402` (iPhone Pro actual)
 - `912 x 420` y `956 x 440` (telefonos grandes)
 - Android compacto, medio y tablet con cutout/navigation insets activos
+
+## Rendimiento en Android
+
+- Con una sesion local valida, Android presenta primero la superficie ligera de
+  bienvenida y difiere brevemente la construccion del mixer, waveform y
+  biblioteca. Los componentes JUCE siguen creandose en el message thread.
+- `makeAppFont` usa la familia sans-serif nativa y su cache en Android para
+  evitar resolver repetidamente las tipografias embebidas durante el arranque y
+  los repaints. iOS y escritorio conservan la familia Inter embebida.
+- Los timers puramente visuales reducen su frecuencia en Android: seguimiento
+  decorativo de waveform a `30 Hz`, medidores VU a `8 Hz` y parpadeo de MIDI
+  Learn a `12 Hz`. Los VU ceden presupuesto del message thread al transporte.
+- La waveform es opaca en Android y usa una base plana durante sus repaints de
+  transporte. Esto evita repintar el fondo del editor y repetir gradientes y
+  textura de ruido sobre toda la superficie en cada frame; la geometria,
+  colores de onda, overlays y comportamiento de iOS/escritorio no cambian.
+- La cache de seguimiento usa resolucion logica y overscan `1.25x` en Android.
+  Durante playback dibuja una sola imagen transformada y el playhead; el realce
+  progresivo de la porcion reproducida se reserva para iOS y escritorio, donde
+  no obliga a transformar una segunda mascara por CPU.
+- Android reutiliza esa cache durante playback aun cuando el seguimiento esta
+  apagado. La vista fija deja de reconstruir miles de lineas de waveform en
+  cada tick y actualiza solamente la imagen preparada y el playhead.
+- En vista fija, cada tick invalida solo la franja comprendida entre la posicion
+  anterior y la nueva del playhead. Se conserva el repaint completo para follow,
+  seeks, loops y saltos de arrangement.
+- El fondo del editor (gradiente + halo + viñeta + textura de ruido por tiled
+  fill) solo se dibuja en iOS y escritorio. En Android se sustituye por un
+  `fillAll` plano porque el WaveformBar y el ChannelGridPanel son opacos y
+  cubren su area. Esto evita repintar ~2.6M de pixeles cada frame de playback
+  y reduce la mediana por frame de ~750 ms a ~150 ms en el emulador (API 36,
+  1080x2400). El coste sigue siendo CPU y no GPU.

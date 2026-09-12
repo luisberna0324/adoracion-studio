@@ -81,9 +81,15 @@ StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
                              MuteProvider muteProvider, bool isCompact)
     : layout(isCompact ? Layout::createCompact() : Layout{}),
       levels(std::move(levelProvider)), isMuted(std::move(muteProvider)) {
+  // Android software-paints each meter and its transparent parent chain. With
+  // one meter per stem, 30 Hz can starve the transport/waveform message timer.
+#if JUCE_ANDROID
+  startTimerHz(8);
+#else
   // 30 Hz is plenty for VU visual smoothing; 60 Hz caused idle CPU spikes
   // when many VUs are present (one per stem).
   startTimerHz(30);
+#endif
 }
 
 int StereoVUMeter::getVisibleSegmentCount() const noexcept {

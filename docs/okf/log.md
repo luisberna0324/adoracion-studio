@@ -131,6 +131,8 @@ timestamp: 2026-09-05T14:58:00Z
   queda superpuesta sobre Settings.
 - Antes de cerrar sesión se solicita confirmación. Cancelar conserva la sesión
   y Settings sin cambios; confirmar ejecuta la limpieza y vuelve al login.
+- Una validación iniciada antes de confirmar el cierre se descarta al regresar
+  al message thread, para que no pueda restaurar la sesión eliminada.
 
 ### Carga de canción: feedback desde el primer frame
 
@@ -968,3 +970,17 @@ docs/okf/
 - Tres escalas de top bar y waveform para telefonos pequenos, regulares y grandes.
 - iPhone pasa a soportar exclusivamente ambas orientaciones landscape.
 - Los limites minimos del editor movil dejan de heredar `940 x 600` de desktop.
+
+## 2026-09-12
+
+### Cambiado
+
+- Fondo del editor: en Android se sustituye `drawStudioBackground` por un
+  `fillAll(UITheme::appBgBottom)`. El WaveformBar y el ChannelGridPanel son
+  opacos y cubren el area visible del fondo, asi que el gradiente, halo,
+  viñeta y ruido tiled no aportan nada visible pero costaban ~50-60 ms por
+  frame de playback en el emulador (API 36, 1080x2400). iOS y escritorio
+  conservan el fondo completo.
+- En el emulador la mediana por frame de playback bajo de ~750 ms a
+  ~150 ms (4-5x), los `Missed Vsync` de 64 bajaron a 2, y el histograma se
+  concentra en 150-200 ms (98% de los frames).
