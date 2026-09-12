@@ -196,11 +196,13 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   StemCache::migrateLegacyCacheDirectories();
   // P0 (perf): one-shot reconciliation of orphaned cache files. Walks
   // decoded/, cloud-content/objects/, cloud-artwork/, cloud-sync-staging/
-  // and removes anything no song references. Runs in dry-run by default
-  // so the operator must opt-in to apply. Idempotent. See
+  // and removes anything no song references. Applied (dryRun=false) so
+  // the user gets the disk space back on every startup. The action is
+  // idempotent and only deletes content no song references. See
   // perf/analysis_20260912/INFORME.md §2.
   {
-    const auto report = SongLibraryStore::reconcileOrphanedAssets(true);
+    const auto report =
+        SongLibraryStore::reconcileOrphanedAssets(false);
     juce::ignoreUnused(report);
   }
   // 18 stems across N workers → each worker round-robins over
