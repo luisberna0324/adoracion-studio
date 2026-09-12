@@ -5,6 +5,7 @@
 #include "AssetBootstrapManager.h"
 #include "Localization.h"
 #include "SessionAuthLogger.h"
+#include "audio/StemCache.h"
 
 #include <algorithm>
 #include <cmath>
@@ -603,6 +604,11 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
   ProjectStore::discardLocalState(projectIdentityForSong(removedSong),
                                   juce::File(removedSong.projectPath));
   CloudSyncIndexStore::removeByProjectId(projectIdentityForSong(removedSong));
+  // StemCache FLAC precompute lives under decoded/<sanitize(title)> and
+  // was not cleaned up before. It only existed when the song was once
+  // loaded as legacy (non-FLAC), so this is a no-op for songs that were
+  // never precomputed. See perf/analysis_20260912/INFORME.md §2.1.
+  StemCache::removeSongCache(removedSong.title);
 
   // Cloud objects are content-addressed and may be shared by another local
   // download. Delete only the objects that no remaining library entry uses.
@@ -995,6 +1001,11 @@ bool SongLibraryStore::finalizeLegacyProjectMigration(
       migrationDirectory.getNumberOfChildFiles(
           juce::File::findFilesAndDirectories) == 0)
     migrationDirectory.deleteRecursively();
+  // The legacy song was precomputed into decoded/<sanitize(title)>/ when
+  // it was first loaded as non-FLAC. After conversion the project ships
+  // its own FLAC stems, so the cache is permanently dead weight. See
+  // perf/analysis_20260912/INFORME.md §2.2.
+  StemCache::removeSongCache(legacySongBackup.title);
   return true;
 }
 
@@ -3748,4 +3759,209 @@ bool SongLibraryStore::updateMasterMixValue(
       songId, [&updater](SetlistItem &item, const ImportedSongData &) {
         updater(item.mix.master);
       });
+}
+
+namespace {
+// Compute total bytes of a single file (0 if it cannot be stat'd).
+juce::int64 fileSizeSafe(const juce::File &file) {
+  return file.existsAsFile() ? file.getSize() : 0;
+}
+// Compute total bytes of a directory (recursive). Missing = 0.
+juce::int64 dirSizeSafe(const juce::File &dir) {
+  if (!dir.isDirectory())
+    return 0;
+  juce::int64 total = 0;
+  for (juce::DirectoryIterator it(dir, true); it.next();)
+    total += fileSizeSafe(it.getFile());
+  return total;
+}
+}  // namespace
+
+SongLibraryStore::OrphanReport
+SongLibraryStore::reconcileOrphanedAssets(bool dryRun) {
+  OrphanReport report;
+
+  const auto library = loadLibrary();
+
+  // Collect every basename referenced by songs.json across the four
+  // directories we reconcile. The reconciliation is name-based because
+  // the file layout is content-addressed by hash (cloud-content,
+  // cloud-artwork) or by sanitized title (decoded/).
+  std::unordered_set<std::string> referencedCloudObjectNames;
+  std::unordered_set<std::string> referencedCloudArtworkNames;
+  std::unordered_set<std::string> referencedSongIds;
+  for (const auto &song : library.songs) {
+    if (song.id.isNotEmpty())
+      referencedSongIds.insert(song.id.trim().toStdString());
+    if (song.projectId.isNotEmpty())
+      referencedSongIds.insert(song.projectId.trim().toStdString());
+    for (const auto &stem : song.stems) {
+      for (const auto &path : {stem.storedPath, stem.sourcePath}) {
+        if (path.isEmpty())
+          continue;
+        const auto file = juce::File(path);
+        const auto name = file.getFileName().toStdString();
+        if (name.empty())
+          continue;
+        if (path.contains("cloud-content/objects/"))
+          referencedCloudObjectNames.insert(name);
+      }
+    }
+    if (song.artworkPath.isNotEmpty() &&
+        song.artworkPath.contains("cloud-content/objects/")) {
+      referencedCloudObjectNames.insert(
+          juce::File(song.artworkPath).getFileName().toStdString());
+    }
+  }
+
+  const auto root = getRootDirectory();
+
+  // ---- 1. cloud-content/objects/ -----------------------------------
+  // Only orphan-by-name. The objects are content-addressed and the
+  // song references the same hash whether it is a stem or an artwork.
+  const auto cloudObjects =
+      root.getChildFile("cloud-content").getChildFile("objects");
+  if (cloudObjects.isDirectory()) {
+    juce::Array<juce::File> entries;
+    cloudObjects.findChildFiles(entries, juce::File::findFiles, false);
+    for (const auto &file : entries) {
+      const auto name = file.getFileName().toStdString();
+      if (name.empty() || referencedCloudObjectNames.count(name) != 0)
+        continue;
+      const auto bytes = fileSizeSafe(file);
+      report.cloudObjectBytes += bytes;
+      report.cloudObjectFiles += 1;
+      if (!dryRun)
+        file.deleteFile();
+    }
+  }
+
+  // ---- 2. cloud-artwork/ -------------------------------------------
+  // cloud-artwork entries are referenced indirectly via the
+  // `artworkSource` URL — songs.json stores the URL, not the local
+  // cache path. A cloud-artwork/<sha>.jpg file is "orphan" when no
+  // remaining song has a cloud-content artworkPath that the URL would
+  // resolve to (i.e. we conservatively treat cloud-artwork as a cache
+  // and remove only what songs.json can confirm is unused).
+  // For safety we only remove cloud-artwork files when the song that
+  // produced them is gone — we cross-check via the URL hash.
+  const auto cloudArtwork = root.getChildFile("cloud-artwork");
+  if (cloudArtwork.isDirectory()) {
+    // Build set of artworkSource URLs that still apply.
+    std::unordered_set<std::string> liveArtworkUrls;
+    for (const auto &song : library.songs)
+      if (song.artworkSource.isNotEmpty())
+        liveArtworkUrls.insert(song.artworkSource.trim().toStdString());
+    // For each cached artwork, look up the song that would have
+    // produced it via artworkSource == its URL. The cache file name
+    // is sha256(content) so we cannot reconstruct the URL from the
+    // file alone; conservatively only delete files that DO NOT match
+    // any song's artworkPath or are clearly old. To stay safe we
+    // require the file name to appear in some artworkPath across the
+    // library OR keep it. This is the same conservative policy the
+    // original deleteSong used: skip cloud-artwork entirely on a
+    // single-song delete.
+    juce::ignoreUnused(liveArtworkUrls);
+    // We do not auto-delete cloud-artwork here because the cache key
+    // (sha256) cannot be reverse-mapped to a song URL without an
+    // index. Operators that want to reclaim this space can use the
+    // explicit "Limpiar caché de artwork" button (future). Reporting
+    // only.
+    juce::Array<juce::File> entries;
+    cloudArtwork.findChildFiles(entries, juce::File::findFiles, false);
+    report.cloudArtworkFiles = entries.size();
+    for (const auto &f : entries)
+      report.cloudArtworkBytes += fileSizeSafe(f);
+  }
+
+  // ---- 3. cloud-sync-staging/<id>/ ---------------------------------
+  // Staging directories for prepareUploadRequest. The directory name
+  // equals projectId. Orphan when projectId is not referenced by any
+  // song or by cloud-sync-index.json.
+  std::unordered_set<std::string> liveCloudProjectIds;
+  for (const auto &song : library.songs) {
+    if (song.projectId.isNotEmpty())
+      liveCloudProjectIds.insert(song.projectId.trim().toStdString());
+  }
+  // Also include cloud-sync-index.json entries — a project that is in
+  // the cloud index but temporarily removed from the library should
+  // not have its staging purged.
+  const auto cloudSyncIndex =
+      root.getChildFile("cloud-sync-index.json");
+  if (cloudSyncIndex.existsAsFile()) {
+    const auto parsed = juce::JSON::parse(cloudSyncIndex);
+    if (const auto *rootObj = parsed.getDynamicObject()) {
+      if (const auto *links = rootObj->getProperty("links").getArray()) {
+        for (const auto &link : *links) {
+          if (const auto *o = link.getDynamicObject()) {
+            const auto id = o->getProperty("projectId").toString().trim();
+            if (id.isNotEmpty())
+              liveCloudProjectIds.insert(id.toStdString());
+          }
+        }
+      }
+    }
+  }
+  const auto syncStaging = root.getChildFile("cloud-sync-staging");
+  if (syncStaging.isDirectory()) {
+    juce::Array<juce::File> dirs;
+    syncStaging.findChildFiles(dirs, juce::File::findDirectories, false);
+    for (const auto &dir : dirs) {
+      const auto dirName = dir.getFileName().toStdString();
+      if (!dirName.empty() && liveCloudProjectIds.count(dirName) != 0)
+        continue;
+      const auto bytes = dirSizeSafe(dir);
+      report.syncStagingBytes += bytes;
+      report.syncStagingDirs += 1;
+      if (!dryRun)
+        dir.deleteRecursively();
+    }
+  }
+
+  // ---- 4. decoded/<title>/ (StemCache) ------------------------------
+  // The cache directory is named after sanitizeCacheKey(songTitle).
+  // An entry is orphan when no song has a title that sanitizeCacheKey
+  // would map to that exact directory name. This matches the lookup
+  // path used by loadSongStems (PluginProcessor.cpp:3412).
+  std::unordered_set<std::string> referencedCacheDirs;
+  for (const auto &song : library.songs)
+    referencedCacheDirs.insert(
+        StemCache::sanitizeCacheKey(song.title).toStdString());
+  const auto decodedRoot = root.getChildFile("decoded");
+  if (decodedRoot.isDirectory()) {
+    juce::Array<juce::File> dirs;
+    decodedRoot.findChildFiles(dirs, juce::File::findDirectories, false);
+    for (const auto &dir : dirs) {
+      const auto dirName = dir.getFileName().toStdString();
+      if (!dirName.empty() && referencedCacheDirs.count(dirName) != 0)
+        continue;
+      const auto bytes = dirSizeSafe(dir);
+      report.stemCacheBytes += bytes;
+      report.stemCacheDirs += 1;
+      if (!dryRun)
+        dir.deleteRecursively();
+    }
+  }
+
+  // ---- Report -------------------------------------------------------
+  const auto log = [&](const juce::String &line) {
+    SessionAuthLogger::write("[OrphanReconcile" +
+                              juce::String(dryRun ? "/dry-run" : "") + "] " +
+                              line);
+  };
+  log("cloud-content/objects/: " +
+      juce::String(report.cloudObjectFiles) + " files, " +
+      juce::String(report.cloudObjectBytes / 1024 / 1024) + " MB");
+  log("cloud-artwork/: " + juce::String(report.cloudArtworkFiles) +
+      " files (not auto-deleted; see INFORME.md §2.4), " +
+      juce::String(report.cloudArtworkBytes / 1024) + " KB reported");
+  log("cloud-sync-staging/: " + juce::String(report.syncStagingDirs) +
+      " dirs, " +
+      juce::String(report.syncStagingBytes / 1024) + " KB");
+  log("decoded/: " + juce::String(report.stemCacheDirs) + " dirs, " +
+      juce::String(report.stemCacheBytes / 1024 / 1024) + " MB");
+  log("TOTAL: " + juce::String(report.totalBytes() / 1024 / 1024) + " MB " +
+      juce::String(dryRun ? "(dry run; pass dryRun=false to apply)"
+                          : "(APPLIED)"));
+  return report;
 }

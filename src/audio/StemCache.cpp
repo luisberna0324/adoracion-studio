@@ -368,3 +368,34 @@ void StemCache::precomputeAsync(
         }
       });
 }
+
+void StemCache::removeSongCache(const juce::String &songTitle) {
+  // Mirror getCacheDirectory()'s sanitization. The two paths must agree
+  // or we would delete a directory we never wrote to.
+  const auto cacheDir =
+      getDecodeRoot().getChildFile(sanitizeCacheKey(songTitle));
+  if (!cacheDir.exists())
+    return;
+  // deleteRecursively is a no-op on missing files; the if-exists guard
+  // avoids a pointless stat() and keeps the call free of side effects on
+  // the common "no cache yet" path.
+  if (cacheDir.deleteRecursively()) {
+    juce::Logger::writeToLog("[StemCache] removed song cache for title=\"" +
+                              songTitle + "\" path=" +
+                              cacheDir.getFullPathName());
+  } else {
+    juce::Logger::writeToLog(
+        "[StemCache] failed to remove song cache for title=\"" + songTitle +
+        "\" path=" + cacheDir.getFullPathName());
+  }
+}
+
+void StemCache::removeCachedFile(const juce::File &sourceFile,
+                                  const juce::String &songTitle) {
+  const auto cache = getCacheFile(sourceFile, songTitle);
+  const auto meta = getMetadataFile(cache);
+  if (cache.existsAsFile())
+    cache.deleteFile();
+  if (meta.existsAsFile())
+    meta.deleteFile();
+}

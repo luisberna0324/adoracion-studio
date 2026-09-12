@@ -117,6 +117,29 @@ public:
    */
   static void migrateLegacyCacheDirectories();
 
+  /**
+   * Removes the cache directory associated with a song. Safe to call
+   * when the directory does not exist (no-op). The cache is content-
+   * addressable by source path hash, not by song identity, so deleting
+   * it is always safe — any subsequent loadSongStems() will re-precompute
+   * as needed.
+   *
+   * Background: prior to this helper, deleting a song from the library
+   * only removed audio/, waveforms/ and project-cache/ — the FLAC cache
+   * at decoded/<sanitize(songTitle)>/ accumulated forever and could
+   * reach several hundred MB per song that was once loaded as legacy
+   * (non-FLAC) and later converted to a .pwproj.
+   */
+  static void removeSongCache(const juce::String &songTitle);
+
+  /**
+   * Removes a specific cached FLAC file (and its sidecar) for a source.
+   * Used when the sidecar is stale (mtime/size mismatch) so the next
+   * precompute doesn't have to wait for an overwrite.
+   */
+  static void removeCachedFile(const juce::File &sourceFile,
+                                const juce::String &songTitle);
+
 private:
   // The sidecar metadata file (sits next to the .flac with .meta.txt
   // suffix). Format is plain text key=value, one per line. The

@@ -5,6 +5,7 @@
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/SongLibraryStore.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -193,6 +194,15 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   // reemplaza (ej. títulos con `/`, `:`, etc.). Renombrar en lugar de
   // regenerar mantiene las FLACs y sidecars existentes. Idempotente.
   StemCache::migrateLegacyCacheDirectories();
+  // P0 (perf): one-shot reconciliation of orphaned cache files. Walks
+  // decoded/, cloud-content/objects/, cloud-artwork/, cloud-sync-staging/
+  // and removes anything no song references. Runs in dry-run by default
+  // so the operator must opt-in to apply. Idempotent. See
+  // perf/analysis_20260912/INFORME.md §2.
+  {
+    const auto report = SongLibraryStore::reconcileOrphanedAssets(true);
+    juce::ignoreUnused(report);
+  }
   // 18 stems across N workers → each worker round-robins over
   // (18 / N) stems. With N=4 (legacy cap) each worker handles 4-5
   // stems and the round-trip latency between consecutive refills of

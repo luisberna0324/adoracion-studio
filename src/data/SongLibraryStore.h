@@ -251,6 +251,37 @@ public:
    */
   static juce::File getRootDirectory();
 
+  /**
+   * One-shot reconciliation that walks every cache directory under
+   * getRootDirectory() and removes files that no song in songs.json
+   * references. This catches orphans left behind by old deleteSong
+   * versions, partial cloud downloads, abandoned cloud uploads, and
+   * any other path that writes files without cleaning them up.
+   *
+   * When `dryRun` is true, nothing is deleted and a structured report
+   * is logged via SessionAuthLogger. Default is dry-run for safety
+   * unless the operator passes false explicitly. Idempotent: safe to
+   * call on every startup.
+   *
+   * See perf/analysis_20260912/INFORME.md §2 for the orphan categories
+   * this addresses.
+   */
+  struct OrphanReport {
+    juce::int64 cloudObjectBytes = 0;
+    int cloudObjectFiles = 0;
+    juce::int64 cloudArtworkBytes = 0;
+    int cloudArtworkFiles = 0;
+    juce::int64 syncStagingBytes = 0;
+    int syncStagingDirs = 0;
+    juce::int64 stemCacheBytes = 0;
+    int stemCacheDirs = 0;
+    juce::int64 totalBytes() const {
+      return cloudObjectBytes + cloudArtworkBytes + syncStagingBytes +
+             stemCacheBytes;
+    }
+  };
+  static OrphanReport reconcileOrphanedAssets(bool dryRun = true);
+
 private:
   static LibraryState loadLibrary();
   static bool saveLibrary(const LibraryState &library);
