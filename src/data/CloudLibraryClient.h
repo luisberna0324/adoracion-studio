@@ -22,25 +22,15 @@ struct CloudRequestError {
   juce::String code, message;
 };
 
-struct CloudCapabilities {
-  juce::String accountType, trialEndsAt, updatedAt;
-  bool enabled = false, isOverride = false;
-  int usedDevices = 0, maxDevices = 0, syncedSongCount = 0, maxSyncedSongs = 0;
-  juce::int64 usedStorageBytes = 0, maxStorageBytes = 0;
-};
-
 class CloudLibraryClient final {
 public:
   using SearchCallback = std::function<void(CloudSongPage, CloudRequestError)>;
-  using CapabilitiesCallback = std::function<void(CloudCapabilities, CloudRequestError)>;
 
   CloudLibraryClient();
   ~CloudLibraryClient();
   void search(const juce::String& apiBaseUrl, const juce::String& firebaseApiKey,
               const juce::String& refreshToken, const juce::String& query,
               const juce::String& cursor, int limit, SearchCallback callback);
-  void fetchCapabilities(const juce::String& apiBaseUrl, const juce::String& firebaseApiKey,
-                         const juce::String& refreshToken, CapabilitiesCallback callback);
   void cancelAll();
 
 private:

@@ -58,16 +58,6 @@ continúa usando HTTPS por defecto.
 
 ## 1. Contexto actual (auditoría 2026-09-04)
 
-### Capacidades visibles de cuenta
-
-`GET /api/song-sync/capabilities` devuelve las cuotas efectivas para que el
-cliente pueda mostrarlas en el panel de sesión. Incluye `accountType`
-(`trial`, `free`, `paid` o `unavailable`), `trialEndsAt`, `isOverride`,
-`usedDevices`, `maxDevices`, `usedStorageBytes`, `maxStorageBytes`,
-`syncedSongCount`, `maxSyncedSongs` y `updatedAt`. Un override individual
-vigente tiene prioridad sobre los límites globales; al vencer, vuelven los
-límites del plan.
-
 ### 1.1 Formato `.pwproj` y `manifest.json`
 
 `ProjectStore::open()` abre el ZIP y parsea `manifest.json` en
@@ -136,12 +126,6 @@ estado por dispositivo.
 1. `POST /api/song-sync/prepare-upload` con hashes y tamaños.
 2. `PUT` directo a las URLs firmadas de R2 (objetos + descriptor).
 3. `POST /api/song-sync/commit` con metadata y hashes.
-
-Si varios stems o recursos tienen el mismo contenido, el cliente conserva
-las referencias del descriptor pero deduplica la transferencia por SHA-256:
-el objeto idéntico se envía una sola vez y su hash aparece una sola vez en
-`prepare-upload`/`commit`. Un hash vacío continúa siendo un error porque
-indica un objeto inválido.
 
 `CloudProjectArchive::rebuildProject` (`:150-217`) rehidrata el ZIP
 local a partir del descriptor remoto + el `manifest.json` recibido:
