@@ -602,6 +602,10 @@ juce::Rectangle<int> TopBar::getPhoneSetlistButtonBounds() const {
   return phoneSetlistSpacer.getBounds();
 }
 
+juce::Rectangle<int> TopBar::getPhonePadsButtonBounds() const {
+  return phonePadsSpacer.getBounds();
+}
+
 void TopBar::setTransportCallbacks(
     std::function<void()> playPauseCallback,
     std::function<void()> stopCallback,
@@ -985,9 +989,13 @@ void TopBar::resized() {
 
   const bool minimalPhoneProfile = minimalPhoneMode;
   phoneSetlistSpacer.setInterceptsMouseClicks(false, false);
+  phonePadsSpacer.setInterceptsMouseClicks(false, false);
   if (phoneSetlistSpacer.getParentComponent() == nullptr)
     addAndMakeVisible(phoneSetlistSpacer);
+  if (phonePadsSpacer.getParentComponent() == nullptr)
+    addAndMakeVisible(phonePadsSpacer);
   setVisibleIfChanged(phoneSetlistSpacer, minimalPhoneProfile);
+  setVisibleIfChanged(phonePadsSpacer, minimalPhoneProfile);
   // Phones keep seek in secondary controls, but expose the contextual
   // Fade Down/Fade Up toggle immediately after Next.
   setVisibleIfChanged(seekBackButton, !minimalPhoneProfile);
@@ -1047,7 +1055,7 @@ void TopBar::resized() {
     const int metronomeW = bpmVisible ? metroTotalW : metroIconW;
     int controlsW = timeWidth + gap + metronomeW + gap + keyWidth;
     if (minimalPhoneProfile)
-      controlsW += square + gap;
+      controlsW += (square * 2) + (gap * 2);
     if (tabletProfile) {
       controlsW += gap + square;
     } else {
@@ -1091,8 +1099,10 @@ void TopBar::resized() {
                   0.0f, last ? 0.0f : static_cast<float>(gap), 0.0f, 0.0f)));
     };
 
-    if (minimalPhoneProfile)
+    if (minimalPhoneProfile) {
       addItem(phoneSetlistSpacer, square);
+      addItem(phonePadsSpacer, square);
+    }
     addItem(timeDisplay, timeWidth);
     if (bpmVisible) {
       rightRow.items.add(

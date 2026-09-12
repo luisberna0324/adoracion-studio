@@ -1789,6 +1789,10 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
         0.0f, 1.0f,
         (event.position.x - mainWaveBodyBounds.getX()) /
             juce::jmax(1.0f, mainWaveBodyBounds.getWidth()));
+    phonePanInertiaActive = false;
+    phonePanVelocity = 0.0f;
+    phonePanLastNormalized = dragAnchorNormalized;
+    phonePanLastTimestampMs = juce::Time::getMillisecondCounterHiRes();
     viewportDragStartPosition = event.position;
     viewportDragMoved = false;
     phoneTouchPositions[event.source.getIndex()] = event.position;
@@ -2078,6 +2082,17 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
                                       ? -(delta * dragViewportSpan)
                                       : delta;
       setVisibleWindow(dragViewportStart + viewportDelta, dragViewportSpan);
+      if (directWaveformPan) {
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const float dt = static_cast<float>(juce::jlimit(
+            0.001, 0.1, (nowMs - phonePanLastTimestampMs) * 0.001));
+        const float sampleVelocity = -(normalized - phonePanLastNormalized) /
+                                     dt;
+        phonePanVelocity = (phonePanVelocity * 0.65f) +
+                           (sampleVelocity * 0.35f);
+        phonePanLastNormalized = normalized;
+        phonePanLastTimestampMs = nowMs;
+      }
       return;
     }
 
@@ -2542,6 +2557,9 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   const bool wasPhoneWaveformTap =
       minimalPhoneMode && dragMode == DragMode::panViewport &&
       !viewportDragMoved;
+  const bool wasPhonePanDrag =
+      minimalPhoneMode && dragMode == DragMode::panViewport &&
+      viewportDragMoved && event.source.isTouch();
   const auto completedArrangementDragMode = dragMode;
   const auto completedArrangementDragPartId = activeDragPartId;
   dragMode = DragMode::none;
@@ -2552,6 +2570,8 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
   viewportDragMoved = false;
+  if (wasPhonePanDrag && std::abs(phonePanVelocity) > 0.01f)
+    phonePanInertiaActive = true;
   if (wasPhoneWaveformTap) {
     const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
     const auto seekBounds = getMainWaveBodyBounds(mainWaveBounds);
@@ -2894,6 +2914,21 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
 
 void WaveformBar::timerCallback() {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  if (phonePanInertiaActive && minimalPhoneMode && dragMode == DragMode::none) {
+    const float dt = 1.0f / 30.0f;
+    const float displacement = phonePanVelocity * dt;
+    const float nextStart = viewportStart + (displacement * viewportSpan);
+    const float clampedStart = juce::jlimit(0.0f, 1.0f - viewportSpan, nextStart);
+    setVisibleWindow(clampedStart, viewportSpan);
+    phonePanVelocity *= 0.86f;
+    if (std::abs(phonePanVelocity) < 0.01f ||
+        !juce::approximatelyEqual(clampedStart, nextStart)) {
+      phonePanVelocity = 0.0f;
+      phonePanInertiaActive = false;
+    }
+    followSuspendedUntilMs = nowMs + kFollowSuspendAfterManualViewportMs;
+    repaint();
+  }
 #if JUCE_ANDROID
   // VBlank delivery varies across Android devices and emulators. Drive the
   // visual transport from the message timer so follow mode remains regular.

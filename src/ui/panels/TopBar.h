@@ -40,6 +40,7 @@ public:
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
   void setMinimalPhoneMode(bool enabled);
   juce::Rectangle<int> getPhoneSetlistButtonBounds() const;
+  juce::Rectangle<int> getPhonePadsButtonBounds() const;
   void setSystemUsage(double cpuUsage01, double memoryUsage01);
   void triggerWindowModeToggleFromMidi();
   void triggerSettingsFromMidi();
@@ -114,6 +115,7 @@ private:
 
   ClickableLabel timeDisplay;
   juce::Component phoneSetlistSpacer;
+  juce::Component phonePadsSpacer;
   ClickableLabel keyDisplay;
   RoundedLabel systemUsageDisplay;
   BpmSegmentButton bpmSegmentButton;

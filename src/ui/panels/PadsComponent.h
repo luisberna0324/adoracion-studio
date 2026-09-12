@@ -11,7 +11,6 @@
 #include <atomic>
 #include <array>
 #include <memory>
-#include <thread>
 
 class PadsComponent : public juce::Component, private juce::Timer {
 public:
@@ -45,7 +44,6 @@ private:
   OctaveControl octaveCtrl;
   PowerButton powerBtn;
   std::unique_ptr<ChannelStripCard> channelStrip;
-  std::thread padsLoaderThread;
 
   int currentOctave = 0;
   int activeNoteIndex = -1;
@@ -66,7 +64,6 @@ private:
 
     void timerCallback() override;
     void startPadsLoadingAsync();
-    void stopPadsLoadingThread();
     void onPadPressed(int noteIndex);
     void onPadReleased(int noteIndex);
     void applyPowerState(bool on);

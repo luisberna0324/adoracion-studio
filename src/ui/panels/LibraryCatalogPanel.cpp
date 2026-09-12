@@ -483,6 +483,10 @@ void LibraryCatalogPanel::CatalogContent::setRows(std::vector<CatalogItem> nextR
   selectedSongIds = nextSelectedSongIds;
   hideOptionsButtons = nextHideOptionsButtons;
   selectionEnabled = allowSelection;
+  revealedActionsRow = -1;
+  swipeCandidateRow = -1;
+  swipeOffset = 0.0f;
+  swipeDragging = false;
   artworkCache.clear();
   repaint();
 }
@@ -596,6 +600,20 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
   for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
     const auto &item = rows[static_cast<size_t>(i)];
     auto rowBounds = itemBoundsForIndex(i);
+    const bool actionsRevealed = i == revealedActionsRow && swipeOffset > 0.0f;
+    if (actionsRevealed) {
+      auto tray = rowBounds.removeFromRight(144);
+      auto openBounds = tray.removeFromLeft(72);
+      g.setColour(juce::Colour::fromRGB(21, 94, 117));
+      g.fillRect(openBounds);
+      drawSvgIcon(g, openBounds.toFloat().withSizeKeepingCentre(17.0f, 17.0f),
+                  SvgIconName::Play, UITheme::textPrimary);
+      g.setColour(juce::Colour::fromRGB(55, 65, 81));
+      g.fillRect(tray);
+      drawSvgIcon(g, tray.toFloat().withSizeKeepingCentre(17.0f, 17.0f),
+                  SvgIconName::MoreVertical, UITheme::textPrimary);
+      rowBounds = itemBoundsForIndex(i).translated(-juce::roundToInt(swipeOffset), 0);
+    }
     const bool hovered = i == hoveredRowIndex;
     const bool pendingSelected = selectedSongIds.contains(item.songId);
     const bool alreadyAdded = item.inSetlist;
@@ -642,7 +660,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     auto contentArea = rowBounds.reduced(14, 7);
     contentArea.removeFromLeft(6);
-    const auto toggleBounds = toggleBoundsForIndex(i);
+    auto toggleBounds = toggleBoundsForIndex(i);
+    if (actionsRevealed)
+      toggleBounds.translate(-juce::roundToInt(swipeOffset), 0);
     if (!toggleBounds.isEmpty()) {
       auto toggleArea = toggleBounds.toFloat();
       g.setColour(alreadyAdded ? AppColours::accentSuccess.withAlpha(0.16f)
@@ -696,7 +716,9 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
     contentArea.removeFromLeft(kCatalogItemArtworkSize + 11);
 
-    const auto menuBounds = menuBoundsForIndex(i);
+    auto menuBounds = menuBoundsForIndex(i);
+    if (actionsRevealed)
+      menuBounds.translate(-juce::roundToInt(swipeOffset), 0);
     if (!menuBounds.isEmpty())
       contentArea.removeFromRight(menuBounds.getWidth() + 2);
 
@@ -798,6 +820,36 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
 
 }
 
+void LibraryCatalogPanel::CatalogContent::mouseDown(
+    const juce::MouseEvent &event) {
+  swipeCandidateRow = rowIndexAt(event.position.toInt());
+  swipeDragging = false;
+  swipeStartPosition = event.position;
+  swipeStartOffset = swipeCandidateRow == revealedActionsRow ? swipeOffset : 0.0f;
+  if (revealedActionsRow >= 0 && swipeCandidateRow != revealedActionsRow) {
+    revealedActionsRow = -1;
+    swipeOffset = 0.0f;
+    repaint();
+  }
+}
+
+void LibraryCatalogPanel::CatalogContent::mouseDrag(
+    const juce::MouseEvent &event) {
+  if (!juce::isPositiveAndBelow(swipeCandidateRow,
+                                static_cast<int>(rows.size())))
+    return;
+  const auto delta = event.position - swipeStartPosition;
+  if (!swipeDragging) {
+    if (delta.getDistanceFromOrigin() < 7.0f ||
+        std::abs(delta.x) <= std::abs(delta.y))
+      return;
+    swipeDragging = true;
+  }
+  revealedActionsRow = swipeCandidateRow;
+  swipeOffset = juce::jlimit(0.0f, 144.0f, swipeStartOffset - delta.x);
+  repaint();
+}
+
 void LibraryCatalogPanel::CatalogContent::mouseMove(const juce::MouseEvent &event) {
   const int nextHovered = rowIndexAt(event.position.toInt());
   if (nextHovered == hoveredRowIndex)
@@ -820,10 +872,33 @@ void LibraryCatalogPanel::CatalogContent::mouseExit(const juce::MouseEvent &) {
 }
 
 void LibraryCatalogPanel::CatalogContent::mouseUp(const juce::MouseEvent &event) {
+  if (swipeDragging) {
+    swipeOffset = swipeOffset >= 54.0f ? 144.0f : 0.0f;
+    if (swipeOffset == 0.0f)
+      revealedActionsRow = -1;
+    swipeDragging = false;
+    repaint();
+    return;
+  }
   const auto point = event.position.toInt();
   const int rowIndex = rowIndexAt(point);
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(rows.size())))
     return;
+  if (rowIndex == revealedActionsRow && swipeOffset > 0.0f) {
+    const auto tray = itemBoundsForIndex(rowIndex).removeFromRight(144);
+    if (tray.contains(point)) {
+      if (point.x < tray.getX() + 72) {
+        if (!rows[static_cast<size_t>(rowIndex)].isCloudOnly && onLoadRequested)
+          onLoadRequested(rowIndex);
+      } else if (onOptionsRequested) {
+        onOptionsRequested(rowIndex, menuBoundsForIndex(rowIndex));
+      }
+      revealedActionsRow = -1;
+      swipeOffset = 0.0f;
+      repaint();
+      return;
+    }
+  }
   if (const auto toggleBounds = toggleBoundsForIndex(rowIndex);
       !toggleBounds.isEmpty() && toggleBounds.contains(point)) {
     if (onToggleRequested)
@@ -1150,6 +1225,7 @@ void LibraryCatalogPanel::resized() {
   loadSongButton.setVisible(true);
 
   auto toolbarBounds = bounds.removeFromTop(56);
+  toolbarBounds.removeFromRight(headerTrailingInset);
   constexpr int btnSize = 40;
   const int vOffset = (toolbarBounds.getHeight() - btnSize) / 2;
   backButton.setBounds(toolbarBounds.removeFromLeft(btnSize)
@@ -1180,6 +1256,14 @@ void LibraryCatalogPanel::resized() {
   bounds.removeFromTop(12);
   contentViewport.setBounds(bounds);
   updateContentSize();
+}
+
+void LibraryCatalogPanel::setHeaderTrailingInset(const int inset) {
+  const int nextInset = juce::jmax(0, inset);
+  if (headerTrailingInset == nextInset)
+    return;
+  headerTrailingInset = nextInset;
+  resized();
 }
 
 void LibraryCatalogPanel::rebuildRows() {

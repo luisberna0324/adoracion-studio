@@ -336,6 +336,10 @@ private:
   bool waveformVerticalExpanded = false;
   bool minimalPhoneMode = false;
   bool exportBusy = false;
+  bool phonePanInertiaActive = false;
+  float phonePanVelocity = 0.0f;
+  float phonePanLastNormalized = 0.0f;
+  double phonePanLastTimestampMs = 0.0;
 
   // The follow view moves every frame, but its waveform data is static. Keep
   // a bounded overscanned raster around the visible window so each frame only

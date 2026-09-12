@@ -119,6 +119,10 @@ El arrange permite definir secciones no lineales:
 - Hacer loops de secciones
 - Reordenar playback
 
+En el layout compacto de iPhone, el desplazamiento horizontal de la forma de
+onda mantiene una breve inercia al soltar el dedo y desacelera dentro de los
+límites de la ventana visible.
+
 ### Rangos de fuente al copiar
 
 Una copia conserva el rango de audio de su sección fuente. Al resolver el

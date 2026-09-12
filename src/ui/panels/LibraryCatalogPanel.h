@@ -61,6 +61,7 @@ public:
   void clearCloudUploadProgress(const juce::String &songId);
   void refreshFromStorage();
   void refreshLanguageTexts();
+  void setHeaderTrailingInset(int inset);
   void refreshThemeColours();
 
   void paint(juce::Graphics &g) override;
@@ -203,6 +204,8 @@ private:
     int getPreferredHeight(int width) const;
 
     void paint(juce::Graphics &g) override;
+    void mouseDown(const juce::MouseEvent &event) override;
+    void mouseDrag(const juce::MouseEvent &event) override;
     void mouseMove(const juce::MouseEvent &event) override;
     void mouseExit(const juce::MouseEvent &event) override;
     void mouseUp(const juce::MouseEvent &event) override;
@@ -220,6 +223,12 @@ private:
     LoadCallback onLoadRequested;
     ToggleCallback onToggleRequested;
     OptionsCallback onOptionsRequested;
+    juce::Point<float> swipeStartPosition;
+    int swipeCandidateRow = -1;
+    int revealedActionsRow = -1;
+    float swipeOffset = 0.0f;
+    float swipeStartOffset = 0.0f;
+    bool swipeDragging = false;
 
     juce::Rectangle<int> itemBoundsForIndex(int index) const;
     juce::Rectangle<int> toggleBoundsForIndex(int index) const;
@@ -258,6 +267,7 @@ private:
   juce::TextButton loadProjectButton{"Cargar"};
   HeaderIconButton loadSongButton{"loadSong", IconGlyph::ArrowLeft};
   HeaderIconButton createSongButton{"createSong", IconGlyph::Add};
+  int headerTrailingInset = 0;
   FooterActionButton confirmButton;
   juce::Rectangle<int> headerTitleBounds;
   juce::Rectangle<int> headerSubtitleBounds;

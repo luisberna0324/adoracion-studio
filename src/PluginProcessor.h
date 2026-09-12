@@ -18,6 +18,7 @@
 #include "audio/TimeStretchProcessor.h"
 #include "audio/TransportClock.h"
 #include <JuceHeader.h>
+#include <thread>
 #include <array>
 #include <functional>
 
@@ -180,6 +181,8 @@ public:
   bool reloadLastPadsPack();
   bool ensurePadsPackReady();
   bool ensurePadsNoteReady(int noteIndex);
+  void startPadsPreloadAsync();
+  bool isPadsPreloadRunning() const noexcept;
   void refreshPadsRoutingFromSettings() noexcept;
   void setPadsEnabled(bool enabled) noexcept;
   bool isPadsEnabled() const noexcept;
@@ -377,6 +380,11 @@ private:
   juce::String padsPackStatusText{"Not loaded"};
   std::atomic<bool> padsPackLoaded{false};
   std::atomic<bool> padsPackLoading{false};
+  std::atomic<bool> padsPreloadRunning{false};
+  std::atomic<bool> padsPreloadShouldExit{false};
+  std::thread padsPreloadThread;
+  std::atomic<int> pendingPadNote{-1};
+  std::atomic<int> pendingPadOctave{0};
   mutable juce::SpinLock padsStateLock;
   std::atomic<uint16_t> midiPendingPadTriggerMask{0};
   std::atomic<uint16_t> midiPendingPadStopMask{0};

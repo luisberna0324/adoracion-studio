@@ -94,24 +94,18 @@ Carga samples desde carpeta. Busca archivos con nombres de notas:
 - `C.mp3`, `C#.flac`, etc.
 
 La carga del pack debe tratarse como trabajo pesado de I/O y decodificación.
-`loadFromFolder()` ahora indexa y valida los 12 archivos del pack sin
-decodificarlos completos; cada nota se decodifica bajo demanda la primera vez
-que va a sonar. `MTControlsAudioProcessor::ensurePadsPackReady()` coalesce
-solicitudes mediante un flag atómico para que sólo una preparación del pack
-pueda correr a la vez; si otra solicitud llega mientras el pack está cargando,
-retorna sin iniciar una segunda descarga/importación.
+`loadFromFolder()` indexa y valida los 12 archivos. Al iniciar el procesador,
+`startPadsPreloadAsync()` prepara el pack y decodifica las doce notas mediante
+un worker dedicado. No bloquea el message thread y nunca realiza I/O desde el
+hilo de audio. Los buffers permanecen residentes durante la vida del procesador.
+`MTControlsAudioProcessor::ensurePadsPackReady()` coalesce solicitudes mediante
+un flag atómico para que sólo una preparación pueda correr a la vez.
 
-Los triggers de notas (`triggerPadNote`) no arrancan carga síncrona del pack
-completo: si el índice todavía no está listo, ignoran el trigger y dejan que la
-UI o el comando dedicado prepare el pack en background. Cuando el pack ya fue
-indexado pero una nota concreta todavía no fue decodificada, esa nota se carga
-fuera del hilo de audio antes de dispararse. Los triggers MIDI que llegan antes
-de esa decodificación se reencolan automáticamente para reintentarse después.
-Esto evita castigar el cold start de la app, especialmente en iPad.
-
-La UI de Pads ya no dispara la preparación automáticamente al construir la
-pantalla; el preload ocurre bajo demanda en la primera interacción del usuario
-con Pads.
+Si la UI solicita una nota antes de completar la precarga, el procesador conserva
+la última nota y octava solicitadas y la dispara automáticamente cuando los
+buffers quedan listos. La UI consulta `isPadsPreloadRunning()` para representar
+el estado, pero no posee ni espera al worker. Los triggers MIDI mantienen además
+su mecanismo de reintento por máscara.
 
 ### Trigger de notas
 

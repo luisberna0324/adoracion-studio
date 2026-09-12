@@ -6,6 +6,7 @@
 #include "data/SongData.h"
 #include "data/SongSyncService.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
+#include "ui/UiCommon.h"
 #include <JuceHeader.h>
 
 #include <unordered_set>
@@ -17,6 +18,7 @@ class SetlistDrawerScrim;
 class SongListPanel;
 class PadsComponent;
 class PadsHandlePanel;
+class PadsOverlayFrame;
 class LocalAuthCallbackServer;
 class SettingsPanel;
 
@@ -114,7 +116,12 @@ private:
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
+  std::unique_ptr<SetlistHandlePanel> phonePadsButton;
+  std::unique_ptr<PadsOverlayFrame> padsOverlayFrame;
+  juce::Label padsOverlayTitle;
+  HeaderIconButton padsOverlayCloseButton{"padsOverlayClose", IconGlyph::Close};
   bool isPadsCollapsed = false;
+  bool phonePadsOpen = false;
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;

@@ -51,6 +51,7 @@ public:
       std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
   void setOnSaveProjectRequested(std::function<void()> cb);
+  void setOnPadsRequested(std::function<void()> cb);
   void setOnProjectUploadRequested(
       std::function<void(const ImportedSongData &)> cb);
   void setOnCloudDownloadRequested(
@@ -99,11 +100,13 @@ private:
     juce::Rectangle<int> edit;
     juce::Rectangle<int> menu;
     juce::Rectangle<int> add;
+    juce::Rectangle<int> close;
   };
   struct SetlistsLayout {
     juce::Rectangle<int> headerTitle;
     juce::Rectangle<int> headerSubtitle;
     juce::Rectangle<int> createRow;
+    juce::Rectangle<int> close;
     juce::Rectangle<int> searchRow;
     juce::Rectangle<int> viewport;
   };
@@ -175,6 +178,12 @@ private:
     int dragSourceIndex = -1;
     int dragInsertionIndex = -1;
     int pendingActionsMenuRow = -1;
+    int revealedActionsRow = -1;
+    int swipeCandidateRow = -1;
+    float swipeOffset = 0.0f;
+    float swipeStartOffset = 0.0f;
+    bool swipeDragging = false;
+    bool gestureDirectionDecided = false;
     int hoveredRow = -1;
     float dragRowOffsetY = 0.0f;
     float dragMouseY = 0.0f;
@@ -243,7 +252,9 @@ private:
   HeaderIconButton headerMenuButton{"headerMenu", IconGlyph::MusicNote};
   HeaderIconButton addSongsButton{"addSongs", IconGlyph::Add};
   HeaderIconButton createSetlistButton{"createSetlist", IconGlyph::Add};
-  HeaderIconButton closeOverlayButton{"closeOverlay", IconGlyph::Close};
+  HeaderIconButton closeSetlistsButton{"closeSetlists", IconGlyph::Close};
+  HeaderIconButton closeSongsButton{"closeSongs", IconGlyph::Close};
+  HeaderIconButton closeLibraryButton{"closeLibrary", IconGlyph::Close};
   SearchField setlistSearchField;
   SwipeHintHandle songsToLibrarySwipeHint{SwipeHintHandle::Direction::Right};
   SwipeHintHandle libraryToSongsSwipeHint{SwipeHintHandle::Direction::Left};
@@ -283,6 +294,7 @@ private:
   std::function<void(const ImportedSongData &, int)> onSongActivated;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   std::function<void()> onSaveProjectRequested;
+  std::function<void()> onPadsRequested;
   std::function<void()> onOverlayCloseRequested;
   std::function<void(const ImportedSongData &)> onProjectUploadRequested;
   std::function<void(const juce::String &, const juce::String &)>

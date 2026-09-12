@@ -27,6 +27,13 @@ void SetlistHandlePanel::setPhoneOverlayMode(const bool enabled) {
   repaint();
 }
 
+void SetlistHandlePanel::setPhoneIcon(const SvgIconName icon) {
+  if (phoneIcon == icon)
+    return;
+  phoneIcon = icon;
+  repaint();
+}
+
 void SetlistHandlePanel::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
   if (phoneOverlayMode) {
@@ -38,7 +45,7 @@ void SetlistHandlePanel::paint(juce::Graphics &g) {
     g.drawRoundedRectangle(b.reduced(0.5f), 9.0f, 1.0f);
 
     auto iconArea = b.withSizeKeepingCentre(24.0f, 24.0f);
-    drawSvgIcon(g, iconArea, SvgIconName::Music,
+    drawSvgIcon(g, iconArea, phoneIcon,
                 UITheme::textPrimary.withAlpha(isHovered ? 0.96f : 0.82f));
     return;
   }

@@ -32,6 +32,12 @@ void SetlistSongsHeaderPanel::setOnAddSongsClicked(std::function<void()> cb) {
   onAddSongsClicked = std::move(cb);
 }
 
+void SetlistSongsHeaderPanel::setOnPadsClicked(std::function<void()> cb) {
+  onPadsClicked = std::move(cb);
+  resized();
+  repaint();
+}
+
 void SetlistSongsHeaderPanel::setOnDurationClicked(std::function<void()> cb) {
   onDurationClicked = std::move(cb);
 }
@@ -63,18 +69,23 @@ void SetlistSongsHeaderPanel::setLibraryActionVisible(const bool visible) {
 }
 
 void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
-  if (libraryActionVisible && !addSongsButtonBounds.isEmpty()) {
-    auto actionRect = addSongsButtonBounds.toFloat().reduced(0.5f);
-    const bool enabled = isAddActionEnabled();
+  const auto paintAction = [&g](const juce::Rectangle<int> &bounds,
+                                const juce::String &label,
+                                const SvgIconName icon,
+                                const bool enabled, const bool hovered,
+                                const bool pressed) {
+    if (bounds.isEmpty())
+      return;
+    auto actionRect = bounds.toFloat().reduced(0.5f);
     auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.34f);
     if (!enabled)
       fill = fill.withMultipliedAlpha(0.45f);
-    else if (pressedAddAction)
+    else if (pressed)
       fill = fill.interpolatedWith(UITheme::accent, 0.18f);
-    else if (hoveredAddAction)
+    else if (hovered)
       fill = fill.interpolatedWith(UITheme::accent, 0.10f);
 
-    if (enabled && pressedAddAction)
+    if (enabled && pressed)
       actionRect = actionRect.withSizeKeepingCentre(actionRect.getWidth() * 0.985f,
                                                     actionRect.getHeight() * 0.985f);
 
@@ -85,12 +96,11 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
     g.setGradientFill(actionFill);
     g.fillRoundedRectangle(actionRect, 8.0f);
 
-    g.setColour(UITheme::cardBorder.withAlpha(hoveredAddAction ? 0.86f : 0.62f));
-    g.drawRoundedRectangle(actionRect, 8.0f, hoveredAddAction ? 1.2f : 1.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(hovered ? 0.86f : 0.62f));
+    g.drawRoundedRectangle(actionRect, 8.0f, hovered ? 1.2f : 1.0f);
 
     const auto textColour = UITheme::textPrimary.withAlpha(enabled ? 1.0f : 0.66f);
     const auto iconColour = UITheme::accent.withAlpha(enabled ? 0.98f : 0.54f);
-    const auto label = L10n::tr("Biblioteca", "Library");
     const auto font = makeAppFont(12.4f, AppFontWeight::SemiBold);
     const float textWidth = measureTextWidth(font, label);
     constexpr float iconSize = 15.0f;
@@ -102,7 +112,7 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
                 juce::Rectangle<float>(actionStartX,
                                        actionCenterY - (iconSize * 0.5f),
                                        iconSize, iconSize),
-                SvgIconName::Music, iconColour);
+                icon, iconColour);
 
     g.setColour(textColour);
     g.setFont(font);
@@ -110,7 +120,13 @@ void SetlistSongsHeaderPanel::paint(juce::Graphics &g) {
                juce::Rectangle<float>(actionStartX + iconSize + iconGap,
                                       actionCenterY - 11.0f, textWidth, 22.0f),
                juce::Justification::centredLeft);
-  }
+  };
+  if (libraryActionVisible)
+    paintAction(addSongsButtonBounds, L10n::tr("Biblioteca", "Library"),
+                SvgIconName::Music, isAddActionEnabled(), hoveredAddAction,
+                pressedAddAction);
+  paintAction(padsButtonBounds, "Pads", SvgIconName::AudioWaveform,
+              isPadsActionEnabled(), hoveredPadsAction, pressedPadsAction);
 
   const auto panel = metricsPanelBounds.toFloat();
   g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.18f));
@@ -223,11 +239,17 @@ void SetlistSongsHeaderPanel::resized() {
   area = area.reduced(sideInset, 0);
   if (libraryActionVisible) {
     auto actionRow = area.removeFromTop(38);
-    const int actionWidth = juce::jlimit(150, 220, actionRow.getWidth() / 2);
-    addSongsButtonBounds = actionRow.withSizeKeepingCentre(actionWidth, 38);
+    const int gap = 8;
+    const int actionWidth = juce::jlimit(92, 170, (actionRow.getWidth() - gap) / 2);
+    const int actionsWidth = (actionWidth * 2) + gap;
+    auto actions = actionRow.withSizeKeepingCentre(actionsWidth, 38);
+    addSongsButtonBounds = actions.removeFromLeft(actionWidth);
+    actions.removeFromLeft(gap);
+    padsButtonBounds = actions.removeFromLeft(actionWidth);
     area.removeFromTop(8);
   } else {
     addSongsButtonBounds = {};
+    padsButtonBounds = {};
   }
   metricsPanelBounds = area.removeFromTop(42);
 
@@ -250,8 +272,9 @@ void SetlistSongsHeaderPanel::mouseMove(const juce::MouseEvent &event) {
 }
 
 void SetlistSongsHeaderPanel::mouseExit(const juce::MouseEvent &) {
-  const bool changed = hoveredAddAction || hoveredBlock >= 0;
+  const bool changed = hoveredAddAction || hoveredPadsAction || hoveredBlock >= 0;
   hoveredAddAction = false;
+  hoveredPadsAction = false;
   hoveredBlock = -1;
   if (changed)
     repaint();
@@ -261,6 +284,7 @@ void SetlistSongsHeaderPanel::mouseExit(const juce::MouseEvent &) {
 void SetlistSongsHeaderPanel::mouseDown(const juce::MouseEvent &event) {
   const auto p = event.position.toInt();
   pressedAddAction = isAddActionEnabled() && addSongsButtonBounds.contains(p);
+  pressedPadsAction = isPadsActionEnabled() && padsButtonBounds.contains(p);
   pressedBlock = blockIndexAt(p);
   repaint();
 }
@@ -269,32 +293,41 @@ void SetlistSongsHeaderPanel::mouseUp(const juce::MouseEvent &event) {
   const auto p = event.position.toInt();
   const bool fireAction = pressedAddAction && isAddActionEnabled() &&
                           addSongsButtonBounds.contains(p);
+  const bool firePads = pressedPadsAction && isPadsActionEnabled() &&
+                        padsButtonBounds.contains(p);
   const int releasedBlock = blockIndexAt(p);
   const bool fireBlock = (pressedBlock >= 0 && releasedBlock == pressedBlock &&
                           isBlockClickable(releasedBlock));
 
   pressedAddAction = false;
+  pressedPadsAction = false;
   pressedBlock = -1;
   updateHoverState(p);
   repaint();
 
   if (fireAction)
     onAddSongsClicked();
+  if (firePads)
+    onPadsClicked();
   if (fireBlock)
     triggerBlock(releasedBlock);
 }
 
 void SetlistSongsHeaderPanel::updateHoverState(const juce::Point<int> p) {
   const bool nextHoveredAdd = isAddActionEnabled() && addSongsButtonBounds.contains(p);
+  const bool nextHoveredPads = isPadsActionEnabled() && padsButtonBounds.contains(p);
   const int nextHoveredBlock = blockIndexAt(p);
 
-  if (hoveredAddAction == nextHoveredAdd && hoveredBlock == nextHoveredBlock)
+  if (hoveredAddAction == nextHoveredAdd && hoveredPadsAction == nextHoveredPads &&
+      hoveredBlock == nextHoveredBlock)
     return;
 
   hoveredAddAction = nextHoveredAdd;
+  hoveredPadsAction = nextHoveredPads;
   hoveredBlock = nextHoveredBlock;
 
-  if (hoveredAddAction || (hoveredBlock >= 0 && isBlockClickable(hoveredBlock)))
+  if (hoveredAddAction || hoveredPadsAction ||
+      (hoveredBlock >= 0 && isBlockClickable(hoveredBlock)))
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
   else
     setMouseCursor(juce::MouseCursor::NormalCursor);
@@ -304,6 +337,10 @@ void SetlistSongsHeaderPanel::updateHoverState(const juce::Point<int> p) {
 
 bool SetlistSongsHeaderPanel::isAddActionEnabled() const {
   return libraryActionVisible && actionsEnabled && static_cast<bool>(onAddSongsClicked);
+}
+
+bool SetlistSongsHeaderPanel::isPadsActionEnabled() const {
+  return libraryActionVisible && actionsEnabled && static_cast<bool>(onPadsClicked);
 }
 
 int SetlistSongsHeaderPanel::blockIndexAt(const juce::Point<int> p) const {

@@ -97,7 +97,6 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
 
 PadsComponent::~PadsComponent() {
     stopTimer();
-    stopPadsLoadingThread();
 }
 
 void PadsComponent::paint(juce::Graphics& g) {
@@ -278,13 +277,22 @@ void PadsComponent::setResponsiveProfile(const ResponsiveLayoutProfile profile) 
 
 void PadsComponent::timerCallback() {
     if (padsLoading.load(std::memory_order_relaxed)) {
-        loadingBeatPhase += 0.24f;
-        const float pulse = 0.66f + (0.34f * (0.5f + 0.5f * std::sin(loadingBeatPhase)));
-        subtitleAlpha = juce::jlimit(0.45f, 1.0f, pulse);
-        const auto runtimeStatus = processor.getPadsPackStatusText();
-        presetSubtitle = runtimeStatus.isNotEmpty() ? runtimeStatus : "Descargando recursos... / Downloading resources...";
-        repaint();
-        return;
+        if (!processor.isPadsPreloadRunning()) {
+            padsLoading.store(false, std::memory_order_release);
+            lastPackReady = processor.isPadsPackLoaded();
+            presetSubtitle = processor.getPadsPackStatusText();
+            subtitleAlpha = 1.0f;
+            applyPowerState(padsPoweredOn);
+            repaint();
+        } else {
+            loadingBeatPhase += 0.24f;
+            const float pulse = 0.66f + (0.34f * (0.5f + 0.5f * std::sin(loadingBeatPhase)));
+            subtitleAlpha = juce::jlimit(0.45f, 1.0f, pulse);
+            const auto runtimeStatus = processor.getPadsPackStatusText();
+            presetSubtitle = runtimeStatus.isNotEmpty() ? runtimeStatus : "Descargando recursos... / Downloading resources...";
+            repaint();
+            return;
+        }
     }
 
     subtitleAlpha = 1.0f;
@@ -327,25 +335,15 @@ void PadsComponent::timerCallback() {
 }
 
 void PadsComponent::startPadsLoadingAsync() {
-    if (processor.isPadsPackLoaded())
+    if (processor.isPadsPackLoaded()) {
+        padsLoading.store(false, std::memory_order_release);
         return;
-    if (padsLoading.exchange(true, std::memory_order_acq_rel))
-        return;
-
-    stopPadsLoadingThread();
+    }
+    padsLoading.store(true, std::memory_order_release);
     presetSubtitle = "Loading pads...";
     subtitleAlpha = 0.7f;
     loadingBeatPhase = 0.0f;
-
-    padsLoaderThread = std::thread([this] {
-        processor.ensurePadsPackReady();
-        padsLoading.store(false, std::memory_order_release);
-    });
-}
-
-void PadsComponent::stopPadsLoadingThread() {
-    if (padsLoaderThread.joinable())
-        padsLoaderThread.join();
+    processor.startPadsPreloadAsync();
 }
 
 void PadsComponent::onPadPressed(int noteIndex) {
@@ -357,12 +355,14 @@ void PadsComponent::onPadPressed(int noteIndex) {
         return;
     }
     if (padsLoading.load(std::memory_order_relaxed)) {
+        processor.triggerPadNote(noteIndex, currentOctave);
         presetSubtitle = "Loading pads...";
         return;
     }
 
     if (!processor.isPadsPackLoaded()) {
         startPadsLoadingAsync();
+        processor.triggerPadNote(noteIndex, currentOctave);
         presetSubtitle = "Loading pads...";
         applyPowerState(padsPoweredOn);
         repaint();

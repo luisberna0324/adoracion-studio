@@ -94,7 +94,9 @@ cmake --build --preset ios-release
 ```
 
 El proyecto de Xcode se genera en `build/ios-ipad-flatbundle` para firmar y ejecutar
-en dispositivo.
+en dispositivo. El preset conserva la firma automática con el equipo
+`V2R682J6HG` y permite que Xcode actualice el provisioning profile durante el
+build. La identidad privada correspondiente debe estar instalada en el Mac.
 
 Abrir en Xcode:
 ```bash

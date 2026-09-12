@@ -965,6 +965,11 @@ void HeaderIconButton::setAccent(const bool shouldAccent) {
   accent = shouldAccent;
 }
 
+void HeaderIconButton::setSubtleHighlight(const bool shouldHighlight) {
+  forceSubtleHighlight = shouldHighlight;
+  repaint();
+}
+
 void HeaderIconButton::setSvgLabel(const SvgIconName iconToUse,
                                    juce::String textToUse) {
   svgIcon = iconToUse;
@@ -980,7 +985,8 @@ void HeaderIconButton::paintButton(juce::Graphics &g,
   // El "highlight sutil" (fondo claro + borde blanco translucido) se aplica a
   // todos los HeaderIconButton no-accent, dando un look consistente a los
   // iconos del header (back, music, file-audio, etc.).
-  const bool subtleMusicHighlight = useSvgLabel && !accent;
+  const bool subtleMusicHighlight =
+      (useSvgLabel || forceSubtleHighlight) && !accent;
   auto fill = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.20f);
   if (subtleMusicHighlight)
     fill = AppColours::circleButton.interpolatedWith(juce::Colours::white,

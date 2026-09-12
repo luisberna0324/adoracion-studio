@@ -259,10 +259,14 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   resumeTimeProcessorMaintenance();
 #endif
   startTimerHz(100);
+  startPadsPreloadAsync();
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
   stopTimer();
+  padsPreloadShouldExit.store(true, std::memory_order_release);
+  if (padsPreloadThread.joinable())
+    padsPreloadThread.join();
   pauseTimeProcessorMaintenance();
   if (timeProcessorMaintenanceThread != nullptr) {
     timeProcessorMaintenanceThread->stopThread(3000);
@@ -4932,6 +4936,41 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
   return false;
 }
 
+void MTControlsAudioProcessor::startPadsPreloadAsync() {
+  if (padsPackLoaded.load(std::memory_order_acquire) ||
+      padsPreloadRunning.exchange(true, std::memory_order_acq_rel))
+    return;
+
+  if (padsPreloadThread.joinable())
+    padsPreloadThread.join();
+
+  padsPreloadShouldExit.store(false, std::memory_order_release);
+  padsPreloadThread = std::thread([this] {
+    const bool packReady = ensurePadsPackReady();
+    if (packReady) {
+      for (int note = 0; note < PadsEngine::kNoteCount; ++note) {
+        if (padsPreloadShouldExit.load(std::memory_order_acquire))
+          break;
+        ensurePadsNoteReady(note);
+      }
+    }
+
+    padsPreloadRunning.store(false, std::memory_order_release);
+    if (padsPreloadShouldExit.load(std::memory_order_acquire) || !packReady)
+      return;
+
+    const int pendingNote = pendingPadNote.exchange(-1, std::memory_order_acq_rel);
+    if (juce::isPositiveAndBelow(pendingNote, PadsEngine::kNoteCount))
+      triggerPadNote(pendingNote,
+                     pendingPadOctave.load(std::memory_order_acquire));
+  });
+}
+
+bool MTControlsAudioProcessor::isPadsPreloadRunning() const noexcept {
+  return padsPreloadRunning.load(std::memory_order_acquire) ||
+         padsPackLoading.load(std::memory_order_acquire);
+}
+
 bool MTControlsAudioProcessor::ensurePadsNoteReady(const int noteIndex) {
   if (!padsPackLoaded.load(std::memory_order_relaxed))
     return false;
@@ -5046,8 +5085,15 @@ void MTControlsAudioProcessor::beginPadsSongTransitionFadeIn() noexcept {
 
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
                                               const int octave) {
-  if (!padsPackLoaded.load(std::memory_order_relaxed))
+  if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount))
     return;
+  if (!padsPackLoaded.load(std::memory_order_acquire) ||
+      padsPreloadRunning.load(std::memory_order_acquire)) {
+    pendingPadOctave.store(octave, std::memory_order_release);
+    pendingPadNote.store(noteIndex, std::memory_order_release);
+    startPadsPreloadAsync();
+    return;
+  }
   if (!ensurePadsNoteReady(noteIndex))
     return;
   const juce::SpinLock::ScopedLockType lock(padsStateLock);

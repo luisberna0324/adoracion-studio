@@ -15,6 +15,7 @@ public:
   void setTitle(juce::String setlistName);
   void setCollapsed(bool collapsedState);
   void setPhoneOverlayMode(bool enabled);
+  void setPhoneIcon(SvgIconName icon);
 
   void paint(juce::Graphics &g) override;
   void mouseEnter(const juce::MouseEvent &) override;
@@ -26,6 +27,7 @@ private:
   juce::String title;
   bool isCollapsed = false;
   bool phoneOverlayMode = false;
+  SvgIconName phoneIcon = SvgIconName::Music;
   bool isHovered = false;
   bool isMouseDown = false;
 };

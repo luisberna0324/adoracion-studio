@@ -9,15 +9,14 @@ set(SOUNDTOUCH_ROOT "${PROJECT_ROOT}/build-local-backend/_deps/soundtouch-src")
 file(GLOB_RECURSE PLAYWORSHIP_SOURCES
     "${PROJECT_ROOT}/src/*.cpp")
 list(FILTER PLAYWORSHIP_SOURCES EXCLUDE REGEX "/StandaloneApp\\.cpp$")
+# Android uses the bundled Bungee backend for pitch and time stretching.
+# Keep the legacy SoundTouch processor out of this target so Android does not
+# depend on the local desktop-only SoundTouch checkout.
+list(FILTER PLAYWORSHIP_SOURCES EXCLUDE REGEX "/PitchShiftProcessor\\.cpp$")
 file(GLOB BINARY_DATA_SOURCES "${CMAKE_CURRENT_LIST_DIR}/BinaryData*.cpp")
 file(GLOB SHEENBIDI_SOURCES "${JUCE_ROOT}/modules/juce_graphics/unicode/sheenbidi/Source/*.c")
 file(GLOB_RECURSE OBOE_SOURCES "${JUCE_ROOT}/modules/juce_audio_devices/native/oboe/src/*.cpp")
-file(GLOB_RECURSE SOUNDTOUCH_SOURCES "${SOUNDTOUCH_ROOT}/source/*.cpp")
-list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX "/Android-lib/")
-list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX "/SoundStretch/")
-list(FILTER SOUNDTOUCH_SOURCES EXCLUDE REGEX "/SoundTouchDLL/")
-
-add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${SOUNDTOUCH_SOURCES} ${BINARY_DATA_SOURCES} ${SHEENBIDI_SOURCES} ${OBOE_SOURCES}
+add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${BINARY_DATA_SOURCES} ${SHEENBIDI_SOURCES} ${OBOE_SOURCES}
     "${JUCE_ROOT}/modules/juce_core/juce_core.cpp"
     "${JUCE_ROOT}/modules/juce_core/juce_core_CompilationTime.cpp"
     "${JUCE_ROOT}/modules/juce_data_structures/juce_data_structures.cpp"
@@ -44,11 +43,11 @@ target_include_directories(playworship PRIVATE
     "${JUCE_ROOT}/modules/juce_audio_devices/native/oboe/include"
     "${JUCE_ROOT}/modules/juce_audio_devices/native/oboe/src"
     "${PROJECT_ROOT}/third_party/bungee/include")
-target_include_directories(playworship PRIVATE "${SOUNDTOUCH_ROOT}/include")
 target_include_directories(playworship PRIVATE "${CMAKE_ANDROID_NDK}/sources/android/cpufeatures")
 
 target_compile_definitions(playworship PRIVATE
     JUCE_ANDROID=1 JUCE_STANDALONE_APPLICATION=1
+    MTCONTROLS_USE_BUNGEE=1
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_USE_ANDROID_OBOE=1 JUCE_USE_ANDROID_OPENSLES=0

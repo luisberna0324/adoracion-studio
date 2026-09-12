@@ -155,6 +155,7 @@ public:
   void paintButton(juce::Graphics &g, bool isMouseOverButton,
                    bool isButtonDown) override;
   void setAccent(bool shouldAccent);
+  void setSubtleHighlight(bool shouldHighlight);
   void setSvgLabel(SvgIconName iconToUse, juce::String textToUse);
 
 private:
@@ -162,6 +163,7 @@ private:
   SvgIconName svgIcon = SvgIconName::Music;
   juce::String labelText;
   bool accent = false;
+  bool forceSubtleHighlight = false;
   bool useSvgLabel = false;
 };
 

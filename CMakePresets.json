@@ -52,6 +52,8 @@
         "CMAKE_SYSTEM_NAME": "iOS",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGN_STYLE": "Automatic",
+        "CMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM": "V2R682J6HG",
         "JUCE_DIR": "$env{JUCE_DIR}"
       }
     },
@@ -84,7 +86,10 @@
     {
       "name": "ios-release",
       "configurePreset": "ios-release",
-      "configuration": "Release"
+      "configuration": "Release",
+      "nativeToolOptions": [
+        "-allowProvisioningUpdates"
+      ]
     },
     {
       "name": "linux-release",

@@ -79,6 +79,20 @@ private:
   std::function<void()> onDismiss;
 };
 
+class PadsOverlayFrame final : public juce::Component {
+public:
+  PadsOverlayFrame() { setInterceptsMouseClicks(false, false); }
+
+  void paint(juce::Graphics &g) override {
+    const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.14f)
+                    .withAlpha(0.98f));
+    g.fillRoundedRectangle(bounds, 12.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.76f));
+    g.drawRoundedRectangle(bounds, 12.0f, 1.0f);
+  }
+};
+
 namespace {
 bool supportsSetlistDrawer(const juce::Component &component) {
   const auto bounds = component.getLocalBounds();
@@ -965,6 +979,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       channelGridRaw->refreshLibraryFromStorage();
   });
   songListRaw->setOnSaveProjectRequested([this] { saveCurrentProject(); });
+  songListRaw->setOnPadsRequested([this] {
+    if (padsHandlePanel == nullptr || padsComponent == nullptr)
+      return;
+    // On phones the setlist is an overlay. Dismiss it before presenting Pads
+    // so the requested surface is immediately visible instead of remaining
+    // behind the song drawer.
+    if (isPhoneSizedLayout(*this)) {
+      isSetlistDrawerOpen = false;
+      phonePadsOpen = true;
+    }
+    isPadsCollapsed = false;
+    padsHandlePanel->setCollapsed(false);
+    padsComponent->setVisible(true);
+    resized();
+  });
   songListRaw->setOnProjectUploadRequested(
       [this](const ImportedSongData &song) {
         const juce::File projectFile(song.projectPath);
@@ -2007,8 +2036,26 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     resized();
     repaint();
   };
+  phonePadsButton = std::make_unique<SetlistHandlePanel>("Pads");
+  phonePadsButton->setPhoneOverlayMode(true);
+  phonePadsButton->setPhoneIcon(SvgIconName::AudioWaveform);
+  phonePadsButton->onToggle = [this] {
+    if (!isPhoneSizedLayout(*this))
+      return;
+    isSetlistDrawerOpen = false;
+    phonePadsOpen = true;
+    isPadsCollapsed = false;
+    if (padsHandlePanel)
+      padsHandlePanel->setCollapsed(false);
+    resized();
+    repaint();
+  };
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
+    phonePadsOpen = false;
+    isPadsCollapsed = true;
+    if (padsHandlePanel)
+      padsHandlePanel->setCollapsed(true);
     resized();
     repaint();
   });
@@ -2047,18 +2094,46 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   padsHandlePanel->setCollapsed(isPadsCollapsed);
   padsComponent->setVisible(!isPadsCollapsed);
   padsHandlePanel->onToggle = [this] {
-    isPadsCollapsed = !isPadsCollapsed;
+    if (isPhoneSizedLayout(*this)) {
+      phonePadsOpen = !phonePadsOpen;
+      isPadsCollapsed = !phonePadsOpen;
+    } else {
+      isPadsCollapsed = !isPadsCollapsed;
+    }
     padsHandlePanel->setCollapsed(isPadsCollapsed);
     padsComponent->setVisible(!isPadsCollapsed);
     resized();
   };
   addAndMakeVisible(*padsHandlePanel);
 
+  padsOverlayFrame = std::make_unique<PadsOverlayFrame>();
+  addAndMakeVisible(*padsOverlayFrame);
+  padsOverlayFrame->setVisible(false);
+  padsOverlayTitle.setText("Pads", juce::dontSendNotification);
+  padsOverlayTitle.setFont(makeAppFont(18.0f, AppFontWeight::Bold));
+  padsOverlayTitle.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  padsOverlayTitle.setJustificationType(juce::Justification::centredLeft);
+  padsOverlayTitle.setInterceptsMouseClicks(false, false);
+  addAndMakeVisible(padsOverlayTitle);
+  padsOverlayTitle.setVisible(false);
+  padsOverlayCloseButton.setSubtleHighlight(true);
+  padsOverlayCloseButton.onClick = [this] {
+    phonePadsOpen = false;
+    isPadsCollapsed = true;
+    if (padsHandlePanel)
+      padsHandlePanel->setCollapsed(true);
+    resized();
+    repaint();
+  };
+  addAndMakeVisible(padsOverlayCloseButton);
+  padsOverlayCloseButton.setVisible(false);
+
   addAndMakeVisible(*topBar);
   addAndMakeVisible(*waveformBar);
   addAndMakeVisible(*channelGridPanel);
   addAndMakeVisible(*songListPanel);
   addAndMakeVisible(*setlistHandlePanel);
+  addAndMakeVisible(*phonePadsButton);
   addChildComponent(*setlistDrawerScrim);
 
   if (reauthPromptModal == nullptr) {
@@ -3693,13 +3768,20 @@ void MTControlsAudioProcessorEditor::resized() {
   if (songListPanelRaw != nullptr)
     songListPanelRaw->setMinimalPhoneMode(minimalPhoneProfile);
 
+  if (!minimalPhoneProfile || !phonePadsOpen) {
+    padsOverlayFrame->setVisible(false);
+    padsOverlayTitle.setVisible(false);
+    padsOverlayCloseButton.setVisible(false);
+  }
+
   if (minimalPhoneProfile) {
     // Keep the mixer aligned to the waveform. The setlist is exposed through
     // a floating action instead of a persistent side column.
     songListPanel->setVisible(false);
     songListPanel->setBounds({});
     setlistHandlePanel->setPhoneOverlayMode(true);
-    setlistHandlePanel->setVisible(!isSetlistDrawerOpen);
+    setlistHandlePanel->setVisible(!isSetlistDrawerOpen && !phonePadsOpen);
+    phonePadsButton->setVisible(!isSetlistDrawerOpen && !phonePadsOpen);
     const int actionW = 48;
     const int actionH = 48;
     auto setlistButtonBounds = juce::Rectangle<int>();
@@ -3712,6 +3794,14 @@ void MTControlsAudioProcessorEditor::resized() {
           rightChannelsArea.getY() + contentInset, actionW, actionH);
     setlistHandlePanel->setBounds(setlistButtonBounds);
     setlistHandlePanel->toFront(false);
+    auto padsButtonBounds = juce::Rectangle<int>();
+    if (auto *phoneTopBar = dynamic_cast<TopBar *>(topBar.get()))
+      padsButtonBounds = getLocalArea(phoneTopBar,
+          phoneTopBar->getPhonePadsButtonBounds());
+    if (padsButtonBounds.isEmpty())
+      padsButtonBounds = setlistButtonBounds.translated(-(actionW + 8), 0);
+    phonePadsButton->setBounds(padsButtonBounds);
+    phonePadsButton->toFront(false);
     if (setlistDrawerScrim)
       setlistDrawerScrim->setVisible(false);
     if (padsHandlePanel)
@@ -3721,14 +3811,27 @@ void MTControlsAudioProcessorEditor::resized() {
   } else {
     setlistHandlePanel->setPhoneOverlayMode(false);
     setlistHandlePanel->setVisible(true);
+    phonePadsButton->setVisible(false);
     if (padsHandlePanel)
       padsHandlePanel->setVisible(true);
   }
 
-  if (setlistOverlaySupported && isSetlistDrawerOpen) {
+  if (setlistOverlaySupported && (isSetlistDrawerOpen || phonePadsOpen)) {
+    const bool showingPadsOverlay = minimalPhoneProfile && phonePadsOpen;
     juce::Rectangle<int> drawerBounds;
     if (minimalPhoneProfile) {
-      drawerBounds = safeContentArea;
+      // Keep a narrow scrim visible on both sides so the song picker feels
+      // like an overlay drawer instead of replacing the whole phone surface.
+      const int overlayWidth = juce::jmax(
+          1, static_cast<int>(safeContentArea.getWidth() * 0.60f));
+      drawerBounds = safeContentArea.withWidth(overlayWidth).withCentre(
+          safeContentArea.getCentre());
+      if (showingPadsOverlay) {
+        const int overlayHeight = juce::jmax(
+            1, static_cast<int>(safeContentArea.getHeight() * 0.76f));
+        drawerBounds = drawerBounds.withHeight(overlayHeight).withCentre(
+            safeContentArea.getCentre());
+      }
     } else {
       const int drawerTop = topBarH + contentInset;
       const int drawerWidth = juce::jlimit(
@@ -3741,8 +3844,9 @@ void MTControlsAudioProcessorEditor::resized() {
           juce::jmax(1, getHeight() - drawerTop - contentInset));
     }
 
-    songListPanel->setVisible(true);
-    songListPanel->setBounds(drawerBounds);
+    songListPanel->setVisible(!showingPadsOverlay);
+    songListPanel->setBounds(showingPadsOverlay ? juce::Rectangle<int>{}
+                                                : drawerBounds);
     const auto scrimBounds = minimalPhoneProfile
         ? safeContentArea
         : juce::Rectangle<int>(0, topBarH, getWidth(),
@@ -3752,7 +3856,34 @@ void MTControlsAudioProcessorEditor::resized() {
         drawerBounds.translated(-scrimBounds.getX(), -scrimBounds.getY()));
     setlistDrawerScrim->setVisible(true);
     setlistDrawerScrim->toFront(false);
-    songListPanel->toFront(false);
+    if (showingPadsOverlay && padsComponent) {
+      padsDrawerBackgroundBounds = drawerBounds;
+      padsOverlayFrame->setBounds(drawerBounds);
+      padsOverlayFrame->setVisible(true);
+      padsOverlayFrame->toFront(false);
+      constexpr int padsOverlayHeaderHeight = 54;
+      auto padsContentBounds = drawerBounds.reduced(14, 0);
+      padsContentBounds.removeFromTop(padsOverlayHeaderHeight);
+      padsContentBounds.removeFromBottom(10);
+      padsComponent->setBounds(padsContentBounds);
+      padsComponent->setVisible(true);
+      padsComponent->toFront(false);
+      padsOverlayTitle.setBounds(drawerBounds.getX() + 22,
+                                 drawerBounds.getY() + 8,
+                                 juce::jmax(1, drawerBounds.getWidth() - 100),
+                                 38);
+      padsOverlayTitle.setVisible(true);
+      padsOverlayTitle.toFront(false);
+      padsOverlayCloseButton.setBounds(drawerBounds.getRight() - 50,
+                                       drawerBounds.getY() + 7, 40, 40);
+      padsOverlayCloseButton.setVisible(true);
+      padsOverlayCloseButton.toFront(false);
+    } else {
+      padsOverlayFrame->setVisible(false);
+      padsOverlayTitle.setVisible(false);
+      padsOverlayCloseButton.setVisible(false);
+      songListPanel->toFront(false);
+    }
 
     if (!minimalPhoneProfile) {
       setlistHandlePanel->setBounds(

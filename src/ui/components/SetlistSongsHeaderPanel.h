@@ -22,6 +22,7 @@ public:
   void setSummary(const Summary &nextSummary);
 
   void setOnAddSongsClicked(std::function<void()> cb);
+  void setOnPadsClicked(std::function<void()> cb);
   void setOnDurationClicked(std::function<void()> cb);
   void setOnSongsClicked(std::function<void()> cb);
   void setOnBpmClicked(std::function<void()> cb);
@@ -40,6 +41,7 @@ public:
 private:
   void updateHoverState(juce::Point<int> p);
   bool isAddActionEnabled() const;
+  bool isPadsActionEnabled() const;
   int blockIndexAt(juce::Point<int> p) const;
   bool isBlockClickable(int index) const;
   void triggerBlock(int index);
@@ -47,6 +49,7 @@ private:
   Summary summary;
 
   std::function<void()> onAddSongsClicked;
+  std::function<void()> onPadsClicked;
   std::function<void()> onDurationClicked;
   std::function<void()> onSongsClicked;
   std::function<void()> onBpmClicked;
@@ -55,10 +58,13 @@ private:
   bool libraryActionVisible = true;
   bool hoveredAddAction = false;
   bool pressedAddAction = false;
+  bool hoveredPadsAction = false;
+  bool pressedPadsAction = false;
   int hoveredBlock = -1;
   int pressedBlock = -1;
 
   juce::Rectangle<int> addSongsButtonBounds;
+  juce::Rectangle<int> padsButtonBounds;
   juce::Rectangle<int> metricsPanelBounds;
   std::array<juce::Component, 3> metricColumns;
   std::array<juce::Rectangle<int>, 3> metricBlockBounds;
