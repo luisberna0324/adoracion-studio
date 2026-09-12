@@ -38,6 +38,11 @@ public:
    * source. The file may not yet exist on disk — callers should check
    * isValid() before using it. The returned path is stable for a given
    * (sourceFile, songId) pair, so callers can hold on to it.
+   *
+   * Note: the songId parameter is treated as an opaque filesystem-safe
+   * key (a UUID in production). It is NOT sanitized; callers must pass
+   * a stable identifier, never a user-editable title. See
+   * perf/analysis_20260912/INFORME.md §4.1.
    */
   static juce::File getCacheFile(const juce::File &sourceFile,
                                  const juce::String &songId);
@@ -79,7 +84,9 @@ public:
 
   /**
    * Returns the cache directory for a given song id, creating it if
-   * necessary. Exposed for diagnostics and tests.
+   * necessary. Exposed for diagnostics and tests. The id is used
+   * verbatim — no sanitization — so it must already be filesystem-safe
+   * (e.g. a UUID hex string).
    */
   static juce::File getCacheDirectory(const juce::String &songId);
 
@@ -126,11 +133,11 @@ public:
    *
    * Background: prior to this helper, deleting a song from the library
    * only removed audio/, waveforms/ and project-cache/ — the FLAC cache
-   * at decoded/<sanitize(songTitle)>/ accumulated forever and could
-   * reach several hundred MB per song that was once loaded as legacy
-   * (non-FLAC) and later converted to a .pwproj.
+   * at decoded/<songId>/ accumulated forever and could reach several
+   * hundred MB per song that was once loaded as legacy (non-FLAC) and
+   * later converted to a .pwproj.
    */
-  static void removeSongCache(const juce::String &songTitle);
+  static void removeSongCache(const juce::String &songId);
 
   /**
    * Removes a specific cached FLAC file (and its sidecar) for a source.
@@ -138,7 +145,23 @@ public:
    * precompute doesn't have to wait for an overwrite.
    */
   static void removeCachedFile(const juce::File &sourceFile,
-                                const juce::String &songTitle);
+                                const juce::String &songId);
+
+  /**
+   * One-shot migration that renames any decoded/<dir>/ directory whose
+   * name does NOT look like a UUID back to decoded/<songId>/, where
+   * songId is the id of a song whose sanitizeCacheKey(title) matches
+   * the directory name. This is for the historical cache layout that
+   * keyed on song title (a human-readable, mutable string) — the new
+   * layout keys on the immutable songId. Idempotent: directories that
+   * already have a UUID-shaped name are left alone.
+   *
+   * See perf/analysis_20260912/INFORME.md §4.1.
+   */
+  static int migrateTitleKeyedDirectoriesToIds(
+      const std::vector<juce::String> &validSongIds,
+      const std::vector<std::pair<juce::String, juce::String>>
+          &titleToIdMapping);
 
 private:
   // The sidecar metadata file (sits next to the .flac with .meta.txt

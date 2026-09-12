@@ -604,11 +604,11 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
   ProjectStore::discardLocalState(projectIdentityForSong(removedSong),
                                   juce::File(removedSong.projectPath));
   CloudSyncIndexStore::removeByProjectId(projectIdentityForSong(removedSong));
-  // StemCache FLAC precompute lives under decoded/<sanitize(title)> and
-  // was not cleaned up before. It only existed when the song was once
-  // loaded as legacy (non-FLAC), so this is a no-op for songs that were
-  // never precomputed. See perf/analysis_20260912/INFORME.md §2.1.
-  StemCache::removeSongCache(removedSong.title);
+  // StemCache FLAC precompute lives under decoded/<songId>/. The
+  // precompute only ran when the song was once loaded as legacy
+  // (non-FLAC), so this is a no-op for songs that were never
+  // precomputed. See perf/analysis_20260912/INFORME.md §2.1.
+  StemCache::removeSongCache(trimmedSongId);
 
   // Cloud objects are content-addressed and may be shared by another local
   // download. Delete only the objects that no remaining library entry uses.
@@ -1001,11 +1001,11 @@ bool SongLibraryStore::finalizeLegacyProjectMigration(
       migrationDirectory.getNumberOfChildFiles(
           juce::File::findFilesAndDirectories) == 0)
     migrationDirectory.deleteRecursively();
-  // The legacy song was precomputed into decoded/<sanitize(title)>/ when
-  // it was first loaded as non-FLAC. After conversion the project ships
-  // its own FLAC stems, so the cache is permanently dead weight. See
+  // The legacy song was precomputed into decoded/<songId>/ when it was
+  // first loaded as non-FLAC. After conversion the project ships its
+  // own FLAC stems, so the cache is permanently dead weight. See
   // perf/analysis_20260912/INFORME.md §2.2.
-  StemCache::removeSongCache(legacySongBackup.title);
+  StemCache::removeSongCache(trimmedSongId);
   return true;
 }
 
@@ -3918,15 +3918,34 @@ SongLibraryStore::reconcileOrphanedAssets(bool dryRun) {
     }
   }
 
-  // ---- 4. decoded/<title>/ (StemCache) ------------------------------
-  // The cache directory is named after sanitizeCacheKey(songTitle).
-  // An entry is orphan when no song has a title that sanitizeCacheKey
-  // would map to that exact directory name. This matches the lookup
-  // path used by loadSongStems (PluginProcessor.cpp:3412).
+  // ---- 4. decoded/<songId>/ (StemCache) ------------------------------
+  // The cache directory is named after the song's immutable id (UUID
+  // hex). An entry is orphan when no song has that exact id. This
+  // matches the lookup path used by loadSongStems (PluginProcessor.cpp).
+  //
+  // Before reconciling, run a one-shot migration that renames any
+  // legacy decoded/<sanitize(title)>/ directory to decoded/<songId>/
+  // so the historical cache survives the layout change. This is a
+  // no-op on subsequent runs (idempotent). See
+  // perf/analysis_20260912/INFORME.md §4.1.
+  {
+    std::vector<juce::String> validSongIds;
+    std::vector<std::pair<juce::String, juce::String>> titleToId;
+    validSongIds.reserve(library.songs.size());
+    for (const auto &song : library.songs) {
+      const auto id = song.id.trim();
+      if (id.isNotEmpty())
+        validSongIds.push_back(id);
+      if (song.title.isNotEmpty() && song.id.isNotEmpty())
+        titleToId.emplace_back(song.title, song.id);
+    }
+    const int renamed =
+        StemCache::migrateTitleKeyedDirectoriesToIds(validSongIds, titleToId);
+    juce::ignoreUnused(renamed);
+  }
   std::unordered_set<std::string> referencedCacheDirs;
   for (const auto &song : library.songs)
-    referencedCacheDirs.insert(
-        StemCache::sanitizeCacheKey(song.title).toStdString());
+    referencedCacheDirs.insert(song.id.trim().toStdString());
   const auto decodedRoot = root.getChildFile("decoded");
   if (decodedRoot.isDirectory()) {
     juce::Array<juce::File> dirs;

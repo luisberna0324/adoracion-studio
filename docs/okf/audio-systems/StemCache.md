@@ -4,8 +4,14 @@ title: StemCache
 description: Cache on-disk de stems decodificados a FLAC, evita el costo de AAC en el hot path
 resource: src/audio/StemCache.h
 tags: [juce, audio, cache, flac, performance, song-load, storage]
-timestamp: 2026-08-13T22:45:00Z
+timestamp: 2026-09-12T17:45:00Z
 ---
+
+> **Layout change (2026-09-12):** the cache directory is now keyed on
+> `songId` (UUID), not `songTitle`. See
+> `perf/analysis_20260912/INFORME.md §4.1` for the rationale. The
+> one-shot `migrateTitleKeyedDirectoriesToIds` runs at startup to
+> preserve the existing cache.
 
 # StemCache
 
