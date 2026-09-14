@@ -23,7 +23,8 @@ Es **el sistema que más impacto tuvo** en el rendimiento del load path: sin cac
 
 - **Nombre canónico**: `StemCache` (matches la clase, el header, y este doc).
 - **Alias informales**: "el cache FLAC", "el cache de stems", "el precompute".
-- **Activación**: `precomputeAsync()` se llama desde `loadSongStems()` automáticamente cuando `isValid()` retorna `false`. No requiere setup manual.
+- **Activación**: `loadSongStems()` consulta y precomputa la caché sólo para
+  una fuente que todavía no sea FLAC. Un stem FLAC se reproduce directamente.
 
 ---
 
@@ -74,6 +75,36 @@ La elección de FLAC no es accidental:
 | Compatibilidad con time-stretch (Bungee) | Buena (decoded PCM) | Buena (decoded PCM) | Nativa |
 
 La penalización en tamaño (~430 MB de M4A → ~250 MB de FLAC) es aceptable porque el cache se beneficia cada vez que la canción se carga. El ahorro en CPU es permanente.
+
+## Política de audio canónico
+
+El formato interno de canciones y proyectos es FLAC en macOS, Windows y Linux.
+Los imports nuevos aceptan únicamente WAV, AIFF o FLAC y `ProjectStore::save()`
+convierte los formatos de intercambio a FLAC antes de empaquetarlos. Al abrir,
+`ProjectStore` valida que cada recurso del paquete sea FLAC decodificable; no
+existe un fallback a M4A ni una conversión específica de Windows.
+
+`StemCache` ya no duplica un source FLAC. Sigue siendo una defensa para callers
+no canónicos y para diagnósticos legacy: ante una fuente no FLAC puede servir
+una copia válida o generar una en background. El flujo normal de producto no
+usa esa degradación porque la UI bloquea las entradas legacy hasta optimizarlas.
+
+### Flujo **Optimizar**
+
+Una entrada sin `projectPath` se muestra atenuada en el setlist. Su botón
+**Optimizar**, o un click sobre la fila, abre una confirmación neutral y crea el
+`.pwproj` dentro de `MTControls/projects/`. La migración existente es
+transaccional:
+
+1. `ProjectStore::save()` convierte y empaqueta los stems FLAC.
+2. `ProjectStore::open()` vuelve a abrir y valida el paquete.
+3. La biblioteca sustituye la entrada sin cambiar su ID, sus posiciones de
+   setlist ni sus transiciones.
+4. El audio legacy se mueve a staging y se elimina sólo después de guardar la
+   biblioteca; cualquier fallo revierte el reemplazo.
+
+Al terminar, `isProjectBackedSong()` devuelve `true`, la fila vuelve a su estilo
+normal y llamadas posteriores al flujo no realizan otra migración.
 
 ---
 

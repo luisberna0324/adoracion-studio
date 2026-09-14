@@ -4,7 +4,7 @@ title: DynamicGuide
 description: Motor de guías dinámicas localizadas por idioma
 resource: src/audio/DynamicGuideEngine.h
 tags: [juce, audio, guide, localization, section]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-08-17T02:00:00Z
 ---
 
 # DynamicGuideEngine
@@ -50,8 +50,9 @@ bool loadGuideDirectories(
 Carga guías desde directorio(s). Cada archivo representa una sección.
 
 El pack distribuido usa MP3 para que las guías funcionen tanto con CoreAudio en
-macOS como con Windows Media Foundation. No usar ALAC/M4A para assets de guía:
-Windows no lo decodifica de forma fiable.
+macOS como con Windows Media Foundation. El loader acepta WAV, AIFF, FLAC y
+MP3. No usar ALAC/M4A para assets de guía: Windows no lo decodifica de forma
+fiable.
 
 ### Naming de archivos
 
@@ -226,6 +227,12 @@ biblioteca; en `.pwproj` se guardan en `ProjectSongSettings` y en su caché
 local antes de actualizar el paquete. La UI también compara periódicamente el
 estado publicado por el processor para persistir cambios que no provengan de
 un fin de arrastre, por ejemplo controles MIDI.
+
+Restaurar ajustes de otra canción no vuelve a decodificar el pack. Los assets
+son globales para el idioma de la aplicación: `setDynamicGuideSettings()` sólo
+los carga si el engine está vacío, mientras `setDynamicGuideLanguage()` los
+recarga cuando cambia efectivamente el idioma. Esto mantiene la restauración de
+mezcla fuera del costo de I/O y decode del pack.
 
 ## Casos de uso
 

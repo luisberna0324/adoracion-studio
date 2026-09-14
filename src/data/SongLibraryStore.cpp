@@ -18,15 +18,12 @@ namespace {
 constexpr double kMinPartDurationSec = 0.25;
 constexpr double kArrangementEpsilon = 0.0001;
 
-#if JUCE_WINDOWS
+// Internal song storage is portable and lossless on every platform.  Keeping
+// this uniform prevents a project created on macOS from reintroducing ALAC in
+// a load path that must also work on Windows and Linux.
 constexpr const char *kStoredStemExtension = ".flac";
 constexpr const char *kFfmpegAudioCodec = "flac";
 constexpr const char *kStorageFormatLabel = "FLAC";
-#else
-constexpr const char *kStoredStemExtension = ".m4a";
-constexpr const char *kFfmpegAudioCodec = "alac";
-constexpr const char *kStorageFormatLabel = "ALAC";
-#endif
 
 // Project packages are exchanged between platforms, so their audio format
 // must not depend on the operating system that created them. JUCE ships a
@@ -1053,10 +1050,15 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   song.artist = song.artist.trim();
   song.key = song.key.trim();
   song.timeSignature = song.timeSignature.trim();
-  if (song.fileType.trim().isEmpty()) {
+  const bool hasIncludedStems =
+      std::any_of(song.stems.begin(), song.stems.end(),
+                  [](const ImportedStemData &stem) { return stem.include; });
+  if (hasIncludedStems) {
+    song.fileType = "FLAC";
+  } else if (song.fileType.trim().isEmpty()) {
     song.fileType = previousSong.fileType.trim().isNotEmpty()
                         ? previousSong.fileType.trim()
-                        : "Multitrack ALAC";
+                        : "FLAC";
   }
   if (song.createdMs <= 0)
     song.createdMs = previousSong.createdMs;

@@ -4,7 +4,7 @@ title: StemTrack
 description: Track individual con resampling y read-ahead no bloqueante
 resource: src/StemTrack.h
 tags: [juce, audio, stem, source, buffering, resampling]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-08-17T02:00:00Z
 ---
 
 # StemTrack
@@ -241,14 +241,13 @@ otro archivo de audio. Así se preservan el read-ahead, el prefetch y las
 garantías de no bloquear el callback; la caché puede eliminarse y se recreará
 al abrir el proyecto nuevamente.
 
-Los proyectos nuevos almacenan todos sus stems como FLAC, sin depender de la
+Todos los proyectos almacenan sus stems como FLAC, sin depender de la
 plataforma que creó el paquete. FLAC es el formato lossless portable que JUCE
-decodifica de forma nativa tanto en macOS como en Windows. Para mantener
-compatibilidad, al abrir en Windows un proyecto antiguo con ALAC/M4A,
-`ProjectStore` lo convierte a FLAC únicamente dentro de la caché y entrega esa
-ruta a `StemTrack`; el `.pwproj` original no se modifica durante la apertura.
-Antes de construir el track se comprueba que el archivo extraído o convertido
-tenga un `AudioFormatReader` válido.
+decodifica de forma nativa en macOS, Windows y Linux. `ProjectStore` rechaza un
+stem que no tenga extensión FLAC o no produzca un `AudioFormatReader`; no
+convierte ni sustituye paths durante la apertura. La migración desde audio
+ALAC/M4A sucede únicamente en el flujo explícito **Optimizar**, antes de que la
+entrada legacy pueda cargarse.
 
 ## Constantes internas
 

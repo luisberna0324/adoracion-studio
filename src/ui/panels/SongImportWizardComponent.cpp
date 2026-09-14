@@ -1072,7 +1072,7 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
   stemChooser = std::make_unique<juce::FileChooser>(
       L10n::tr("Selecciona stems", "Select stems"),
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-      "*.wav;*.aif;*.aiff;*.flac;*.mp3;*.m4a");
+      "*.wav;*.aif;*.aiff;*.flac");
 
   const auto chooserFlags = juce::FileBrowserComponent::openMode |
                             juce::FileBrowserComponent::canSelectFiles |
@@ -1110,9 +1110,17 @@ void SongImportWizardComponent::handleSelectedStemFiles(
     return;
   }
 
+  juce::StringArray unsupportedFiles;
   for (const auto &file : files) {
     if (!file.existsAsFile())
       continue;
+    const bool supportedLosslessInput =
+        file.hasFileExtension("wav") || file.hasFileExtension("aif") ||
+        file.hasFileExtension("aiff") || file.hasFileExtension("flac");
+    if (!supportedLosslessInput) {
+      unsupportedFiles.add(file.getFileName());
+      continue;
+    }
     const auto normalizedPath = file.getFullPathName();
     const bool alreadyThere =
         std::any_of(stems.begin(), stems.end(), [&normalizedPath](const StemDraft &s) {
@@ -1144,6 +1152,16 @@ void SongImportWizardComponent::handleSelectedStemFiles(
     }
 
     stems.push_back(std::move(draft));
+  }
+
+  if (!unsupportedFiles.isEmpty()) {
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::AlertWindow::WarningIcon,
+        L10n::tr("Formato no compatible", "Unsupported format"),
+        L10n::tr(
+            "Solo se pueden importar stems WAV, AIFF o FLAC. Archivos omitidos:\n",
+            "Only WAV, AIFF, or FLAC stems can be imported. Skipped files:\n") +
+            unsupportedFiles.joinIntoString("\n"));
   }
 
   if (songTitleEditor.getText().trim().isEmpty() && !files.isEmpty()) {
@@ -1461,7 +1479,7 @@ void SongImportWizardComponent::updateSummaryText() {
             L10n::tr(u8"Compás: ", "Time: ") + timeSignatureBox.getText());
   lines.add(L10n::tr("Tipo de archivo: ", "File type: ") +
             (stems.empty() ? juce::String("remote-reference")
-                           : juce::String("Multitrack ALAC")));
+                           : juce::String("FLAC")));
   lines.add(L10n::tr("Stems a cargar: ", "Stems to load: ") +
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
@@ -1614,7 +1632,7 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.bpm = bpmEditor.getText().getIntValue();
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
-  song.fileType = stems.empty() ? "remote-reference" : "Multitrack ALAC";
+  song.fileType = stems.empty() ? "remote-reference" : "FLAC";
   song.artworkSource = selectedArtworkUrl.trim();
   if (song.artworkSource.isEmpty())
     song.artworkPath.clear();

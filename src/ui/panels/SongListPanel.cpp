@@ -1828,6 +1828,16 @@ void SongListPanel::ListContent::setOnSongRemoveRequested(
   onSongRemoveRequested = std::move(cb);
 }
 
+void SongListPanel::ListContent::setOnAddSongsRequested(
+    std::function<void()> cb) {
+  onAddSongsRequested = std::move(cb);
+}
+
+void SongListPanel::ListContent::setOnOptimizeRequested(
+    std::function<void(int)> cb) {
+  onOptimizeRequested = std::move(cb);
+}
+
 int SongListPanel::ListContent::getPreferredHeight() const {
   const int songCount = static_cast<int>(songs.size());
   const int rowsHeight = rowStart + songCount * (rowHeight + rowGap);

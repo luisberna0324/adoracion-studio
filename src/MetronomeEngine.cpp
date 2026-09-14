@@ -4,7 +4,7 @@
 #include <memory>
 
 namespace {
-constexpr const char *kAudioFilePattern = "*.m4a;*.wav;*.aif;*.aiff;*.mp3";
+constexpr const char *kAudioFilePattern = "*.wav;*.aif;*.aiff;*.flac;*.mp3";
 constexpr float kEighthClickGainScale = 0.49f;
 constexpr float kSixteenthClickGainScale = 0.20f;
 
