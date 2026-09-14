@@ -601,6 +601,13 @@ bool SongLibraryStore::deleteSong(const juce::String &songId) {
 
   getWaveformCacheDir().getChildFile(trimmedSongId + ".bin").deleteFile();
   getAudioRoot().getChildFile(trimmedSongId).deleteRecursively();
+  // Flush any pending settings writes for this song's project before
+  // discarding local state. Without this, a settings update queued by
+  // the message thread could write song-settings.json into
+  // project-cache/<id>/ AFTER we have already deleted the directory,
+  // leaving an orphan file. See perf/analysis_20260912/INFORME.md §4.5.
+  if (removedSong.projectPath.isNotEmpty())
+    ProjectStore::flushPendingSettings(juce::File(removedSong.projectPath));
   ProjectStore::discardLocalState(projectIdentityForSong(removedSong),
                                   juce::File(removedSong.projectPath));
   CloudSyncIndexStore::removeByProjectId(projectIdentityForSong(removedSong));
