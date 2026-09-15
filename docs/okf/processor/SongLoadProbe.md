@@ -4,7 +4,7 @@ title: SongLoadProbe
 description: Telemetría del UI thread para la carga de canciones - stages, memoria, hit/miss de cache FLAC
 resource: src/SongLoadProbe.h
 tags: [juce, audio, benchmark, diagnostics, performance, telemetry, song-load, cache]
-timestamp: 2026-08-13T22:45:00Z
+timestamp: 2026-08-17T03:00:00Z
 ---
 
 # SongLoadProbe
@@ -34,21 +34,24 @@ Las sub-etapas bracketeadas con `juce::Time::getHighResolutionTicks()` en el pat
 | `loadSong.total` | `total` | Tiempo total del swap end-to-end (UI thread) |
 | `loadSong.project.open` | `project.open` | Apertura del .pwproj: lectura del manifest, validación de recursos, extracción de stems desde el ZIP al `project-cache/<id>/audio/` |
 | `loadSong.processor.loadSongStems` | `processor.loadSongStems` | Total del pipeline en el audio processor (suma de las sub-etapas siguientes) |
-| `loadSongStems.stem#N.cache.lookup` | `stem#N.cache.lookup` | `StemCache::isValid()` para el stem N — primer hit/miss check |
-| `loadSongStems.stem#N.createReader` | `stem#N.createReader` | `playbackFormatManager.createReaderFor()` — apertura del archivo (M4A, FLAC, WAV) |
-| `loadSongStems.stem#N.prepareToPlay` | `stem#N.prepareToPlay` | `StemTrack::prepareToPlay()` — abre el AV decoder, construye `ResamplingPositionableSource` + `StemBufferingSource` |
+| `loadSongStems.stem#N.cache.lookup` | `stem#N.cache.lookup` | Selección de source/cache para el stem N. `sourceFlac=1` implica bypass directo de `StemCache`; los callers legacy consultan hit/miss. |
+| `loadSongStems.stem#N.createReader` | `stem#N.createReader` | `playbackFormatManager.createReaderFor()` — apertura del archivo de reproducción (FLAC canónico; otros formatos sólo para callers legacy/no canónicos). |
+| `loadSongStems.stem#N.prepareToPlay` | `stem#N.prepareToPlay` | `StemTrack::prepareToPlay()` — inicializa el reader y construye `ResamplingPositionableSource` + `StemBufferingSource`. |
 | `loadSongStems.stem#N.waitForReady` | `stem#N.waitForReady` | `waitForNextAudioBlockReady()` — read-ahead warm-up (timeout 250ms) |
 | `loadSongStems.waitForReady.total` | `waitForReady.total` | Suma de todos los `waitForReady` per-stem |
 | `loadSongStems.fadeOut.wait` | `fadeOut.wait` | Espera al fade-out del song previo (hasta 1500ms) |
 | `loadSongStems.suspendProcessing.wait` | `suspendProcessing.wait` | Espera al drain del audio thread (hasta 2000ms) |
 | `loadSongStems.bungee.prepare` | `bungee.prepare` | `prepareRoutingTimeProcessors()` — allocación de voces Bungee (2 por stem) |
-| `loadSong.settings.restore` | `settings.restore` | Restauración de mix, click, guide, arrangement post-load (60+ atomic stores) |
+| `loadSong.settings.restore` | `settings.restore` | Restauración de mix, click, guide y arrangement post-load. El pack global de guía se reutiliza si ya está cargado. |
 
 CSV: `song_load_<ts>.csv`, una fila por sub-stage. Columnas: `wall_ms, phase, sub_phase, duration_us, rss_kb, extra`. `extra` carga metadata variante (hit/miss, ext, size, etc).
 
 ### 2. StemCache hit/miss (one-shot events)
 
-`StemCache::isValid()` se invoca por stem durante el load. Cada call registra un evento con la razón de la decisión:
+`StemCache::isValid()` se invoca sólo para fuentes no FLAC recibidas por rutas
+legacy o callers no canónicos. Los stems FLAC de un `.pwproj` se reproducen
+directamente y registran `sourceFlac=1`, sin crear una segunda copia FLAC.
+Cada consulta real de cache registra un evento con la razón de la decisión:
 
 | Evento | Cuándo |
 |---|---|
@@ -56,8 +59,8 @@ CSV: `song_load_<ts>.csv`, una fila por sub-stage. Columnas: `wall_ms, phase, su
 | `StemCache.isValid.miss.noFlac` | `decoded/<songId>/stem_<hash>.flac` no existe (cache vacía o split-path legacy) |
 | `StemCache.isValid.miss.noMeta` | El FLAC existe pero el sidecar `.flac.meta.txt` no |
 | `StemCache.isValid.miss.badMeta` | El sidecar existe pero no tiene `source_mtime_ms` o `source_size` |
-| `StemCache.isValid.miss.sizeMismatch` | El sidecar tiene un size distinto al actual (m4a source fue re-encodado) |
-| `StemCache.isValid.miss.mtimeMismatch` | El mtime del source no coincide con el del sidecar (m4a re-editado) |
+| `StemCache.isValid.miss.sizeMismatch` | El sidecar tiene un size distinto al source legacy actual. |
+| `StemCache.isValid.miss.mtimeMismatch` | El mtime del source legacy no coincide con el del sidecar. |
 
 CSV: `song_load_<ts>.csv`. El campo `extra` lleva `us=<lookup_microseconds>` y, para los miss con detalle, los valores `got=...` vs `want=...` que permiten reconstruir por qué falló el cache.
 
@@ -65,7 +68,9 @@ CSV: `song_load_<ts>.csv`. El campo `extra` lleva `us=<lookup_microseconds>` y, 
 
 Cada `recordXxx` cierra con un `getCurrentRssKb()` que se escribe en la columna `rss_kb`. Implementado via `getrusage(RUSAGE_SELF)` que en macOS retorna `ru_maxrss` en KiB.
 
-Los deltas entre filas del mismo stage permiten ver asignaciones grandes. Ejemplo típico de "Al Que Es Digno / Vencio" (12 stems M4A):
+Los deltas entre filas del mismo stage permiten ver asignaciones grandes. Una
+captura histórica de "Al Que Es Digno / Vencio" (12 stems M4A previos a la
+política FLAC estricta) mostró:
 - Inicio: ~470 MB
 - Post `project.open`: ~478 MB (+8 MB del manifest)
 - Post 12× `prepareToPlay`: ~572 MB (+94 MB de los 12 buffers read-ahead de 256K cada uno)
@@ -128,7 +133,8 @@ for k, (c, t) in sorted(totals.items(), key=lambda x: -x[1][1])[:15]:
     print(f"{k:<48} {c:>3} {t:>10}us  avg={t//c if c else 0}us")
 ```
 
-Salida típica para "Al Que Es Digno / Vencio" post-fix:
+Salida histórica para "Al Que Es Digno / Vencio" antes de reutilizar el pack
+global de guía:
 ```
 loadSong.settings.restore                       1   408000us  avg=408000us
 loadSongStems.bungee.prepare                    1    38000us  avg=38000us
@@ -145,8 +151,8 @@ loadSongStems.stem#3.cache.lookup               1      250us  avg=250us
 
 | Hallazgo | Métrica que lo expuso | Optimización resultante |
 |---|---|---|
-| StemCache `mtimeMismatch` masivo en stems precomputados hace semanas | `StemCache.isValid.miss.mtimeMismatch` count = 8/12 | Pendiente: invalidar cache cuando el source M4A cambia (re-precompute) |
-| `settings.restore` consume 34% del total del swap (408ms / 1.2s) | `loadSong.settings.restore` duration | Pendiente: batching de setStem* atómicos (ver log.md 2026-08-13) |
+| StemCache `mtimeMismatch` masivo en stems legacy precomputados | `StemCache.isValid.miss.mtimeMismatch` count = 8/12 | La política actual evita el problema: los `.pwproj` contienen FLAC y omiten `StemCache`. |
+| `settings.restore` consume 34% del total del swap (408ms / 1.2s) | `loadSong.settings.restore` duration | Corregido: `setDynamicGuideSettings()` ya no suspende audio ni recarga el pack global en cada canción. |
 | Split-path legacy de StemCache (subdirs anidados por `/` en titles) | `miss.noFlac` con `path=decoded/Al Que Es Digno / Vencio/...` | `StemCache::migrateLegacyCacheDirectories` 3-stage (recupera espacio + walk + cleanup) |
 
 ---

@@ -190,7 +190,8 @@ juce::File PrimeLibrarySource::locateTracksDirectory(
   juce::File best;
   int bestCount = -1;
   for (const auto &dir : trackDirCandidates) {
-    const int count = dir.getNumberOfChildFiles(juce::File::findFiles, "*.m4a");
+    const int count = dir.getNumberOfChildFiles(
+        juce::File::findFiles, "*.flac;*.wav;*.aif;*.aiff");
     if (count > bestCount) {
       best = dir;
       bestCount = count;
@@ -290,7 +291,13 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
     if (songIt == indexBySongId.end() || stemId.isEmpty())
       continue;
 
-    const auto trackFile = tracksDir.getChildFile(stemId + ".m4a");
+    juce::File trackFile = tracksDir.getChildFile(stemId + ".flac");
+    if (!trackFile.existsAsFile())
+      trackFile = tracksDir.getChildFile(stemId + ".wav");
+    if (!trackFile.existsAsFile())
+      trackFile = tracksDir.getChildFile(stemId + ".aif");
+    if (!trackFile.existsAsFile())
+      trackFile = tracksDir.getChildFile(stemId + ".aiff");
     if (!trackFile.existsAsFile())
       continue;
 

@@ -4,7 +4,7 @@ title: MTControlsAudioProcessor
 description: Procesador principal del plugin - JUCE AudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, processor, audio, plugin, main]
-timestamp: 2026-08-18T00:00:00Z
+timestamp: 2026-08-17T02:00:00Z
 ---
 
 # MTControlsAudioProcessor
@@ -50,7 +50,8 @@ void finishPendingSongTransition();
 Carga múltiples archivos de audio como stems separados. El `onLoadProgress` callback recibe valores de 0.0 a 1.0.
 
 **Parámetros:**
-- `stemPaths`: Array de rutas a archivos de audio (WAV, MP3, FLAC, etc.)
+- `stemPaths`: rutas runtime ya validadas. El flujo de producto entrega FLAC;
+  callers de compatibilidad todavía pueden usar otros formatos decodificables.
 - `songTitle`: Título de la canción
 - `songKey`: Tonalidad (ej: "C", "Am", "F#m")
 - `songBpm`: BPM original de la canción
@@ -68,39 +69,25 @@ lo valida y extrae sus stems a una caché local. El procesador continúa
 recibiendo paths de archivos normales y no abre ZIPs ni realiza I/O de
 empaquetado en el audio thread. El manifiesto restaura mezcla, pitch, tempo,
 ventana, arrange, guía dinámica y click antes de completar la transición.
-FLAC es obligatorio para todo proyecto nuevo, incluso si la biblioteca legacy
-de macOS usa ALAC/M4A o la preferencia de optimización de stems está
-desactivada. Un stem que ya es FLAC se empaqueta directamente; los demás se
+FLAC es obligatorio para todo proyecto y para el almacenamiento interno en
+todas las plataformas. Un stem que ya es FLAC se empaqueta directamente; los demás se
 convierten una sola vez durante la creación del proyecto. El manifiesto agrega
 `audioFormat: "flac"` sin cambiar `schemaVersion`, por lo que los lectores
 actuales que ignoran campos adicionales siguen siendo compatibles.
 
-En Windows, un proyecto legacy que todavía contiene ALAC/M4A se extrae y se
-convierte mediante FFmpeg a FLAC dentro de `project-cache`; sólo la ruta runtime
-apunta al FLAC convertido y la apertura no reescribe el paquete. Cada stem se
-valida con `AudioFormatManager` antes de entregarlo al procesador. La caché
+`ProjectStore::open()` exige extensión FLAC y un `AudioFormatReader` válido para
+cada stem extraído. No existe conversión ni fallback durante la apertura: un
+paquete antiguo con ALAC/M4A debe recrearse mediante el flujo explícito de
+optimización/migración. La caché
 guarda además `project-source.json` con ruta, tamaño y modificación del
 `.pwproj`: una segunda apertura reutiliza los recursos si ese marcador sigue
 vigente, y reconstruye la caché si el paquete cambió o falta algún archivo.
 La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
 la copia local en `MTControls/waveforms` es sólo una caché regenerable.
 Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
-tempo, ventana, arrange, guía y click) se escriben inmediatamente en el sidecar
-local `project-cache/<project-id>/song-settings.json`. El snapshot por ruta se
-actualiza en la misma operación para que cambios consecutivos de mixer, guía y
-click se acumulen y ninguna categoría reconstruya desde un estado anterior.
-Cada diferencia respecto del `manifest.json` embebido marca el proyecto como
-pendiente de consolidación portable.
-
-La acción **Guardar proyecto** toma el último snapshot local y reconstruye el
-`.pwproj` fuera del hilo de UI, publicando fase y porcentaje. El guardado sólo
-limpia la marca pendiente si no apareció una generación nueva mientras se
-escribía. En Standalone, cerrar la ventana o salir de la aplicación ofrece
-**Guardar y salir**, **Salir sin actualizar** y **Cancelar**; el primer camino
-consolida secuencialmente todos los proyectos modificados antes de terminar. En
-iOS el sidecar inmediato es la protección ante suspensión, porque el sistema no
-garantiza tiempo para completar un ZIP grande al llevar la app a background.
-
+tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
+fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
+cerrar un proyecto, el cambio pendiente se termina de escribir antes de soltarlo.
 La escritura del ZIP ocurre en `<proyecto>.tmp`; tanto el stream de progreso
 como el `FileOutputStream` se destruyen antes de llamar `replaceFileIn()`. Esto
 es obligatorio en Windows, donde el handle de escritura de JUCE no comparte
@@ -108,21 +95,12 @@ permiso de borrado o renombrado. Antes de escribir se elimina cualquier temporal
 obsoleto y el reemplazo se reintenta brevemente para tolerar locks transitorios
 de antivirus o proveedores de sincronización. Si aun así falla, el proyecto
 anterior permanece intacto, el temporal se limpia y el log registra ambas rutas.
-Después de una consolidación exitosa se actualiza `project-source.json` con el
-nuevo tamaño y `mtime`; así el cambio de manifiesto no invalida los stems ya
-extraídos. `ProjectStore` conserva el snapshot completo más reciente en memoria y en
+`ProjectStore` conserva el snapshot completo más reciente en memoria y en
 `project-cache/<project-id>/song-settings.json`, por lo que cambios consecutivos
 se acumulan aun cuando la canción no pertenezca al setlist activo o el `.pwproj`
 haya sido movido. El setlist sólo aporta referencia y orden; no es la fuente de
 ajustes de un proyecto. Si el paquete no está disponible, la caché local sigue
 restaurando los controles y el ZIP queda pendiente hasta relocalizarlo.
-
-Para canciones legacy, los campos de control de canción que aún viven dentro de
-`SetlistItem` se mantienen sincronizados entre todas las apariciones de la misma
-canción: mezcla de master/stems, pitch, tempo, ventana, arrange, guía dinámica y
-click. Al agregar una canción legacy a otro setlist se copia el estado más
-reciente de esa canción. `transitionToNext`, `itemId` y el orden siguen siendo
-propios de cada setlist.
 
 El origen de ajustes se decide exclusivamente por la referencia explícita
 `projectPath` de la entrada cargada. Una canción legacy con `projectPath` vacío
@@ -134,36 +112,17 @@ una canción legacy puede coexistir con ella. La UI compara ID y origen al
 detectar un cambio de canción; así reinicializa la tonalidad restaurada incluso
 cuando ambas variantes comparten el mismo ID histórico.
 
-En iOS, los paquetes elegidos desde Files se copian a
-`MTControls/imports/projects`. Al volver a importar el mismo manifiesto, la
-Biblioteca usa `projectId` como identidad canónica: conserva la entrada y sus
-referencias de setlist, reemplaza el paquete administrado anterior y elimina
-las entradas duplicadas que hubieran quedado de versiones previas. Si iOS
-reubica el contenedor de datos de una actualización de desarrollo, la ruta
-absoluta persistida se repara usando el nombre del paquete dentro de ese
-directorio. Una desinstalación real elimina el sandbox completo; ningún código
-local puede recuperar entonces el paquete ni sus stems, por lo que debe usarse
-Cloud, Files o una copia externa como respaldo.
+### Optimización de canciones legacy
 
-Al restaurar la Biblioteca después de que iOS reasigne el contenedor de la app,
-las entradas legacy o Cloud que no tengan ningún stem local reproducible se
-descartan junto con sus referencias de setlist: no queda una canción fantasma.
-Los `.pwproj` son distintos: nunca se eliminan en esta validación. Si el
-paquete sigue disponible, la Biblioteca rehidrata sólo `artwork.*` desde el ZIP
-al cache actual, sin extraer todos los stems; éstos se extraen normalmente al
-abrir el proyecto.
+Las canciones legacy aparecen atenuadas en el setlist y exponen la acción
+**Optimizar**. Activar la fila también abre el mismo diálogo y nunca carga el
+audio legacy. Tras confirmar, el proyecto se guarda automáticamente en
+`MTControls/projects`; el copy de UI no expone el formato interno. La acción
+**Convertir a proyecto...** de Biblioteca conserva además la alternativa de
+elegir otra ubicación.
 
-Eliminar una canción desde Biblioteca es una operación local: elimina la
-entrada, sus apariciones en setlists, waveform, audio/cache, sidecar de
-proyecto, recientes, vínculo de sincronización y blobs Cloud locales no usados
-por otra canción. No envía solicitudes de borrado, no elimina la versión Cloud
-y nunca borra el archivo `.pwproj`.
-
-### Conversión de canciones legacy
-
-La acción **Convertir a proyecto...** de Biblioteca no crea una copia legacy y
-otra portable. Obtiene audio, portada, metadatos y waveform del almacenamiento
-interno, toma mezcla, pitch, tempo, ventana, arrange, guía y click del setlist
+Ambas rutas obtienen audio, portada, metadatos y waveform del almacenamiento
+interno, toman mezcla, pitch, tempo, ventana, arrange, guía y click del setlist
 activo (o del primer setlist que contenga la canción) y construye un `.pwproj`.
 El paquete se vuelve a abrir y validar antes de modificar la Biblioteca.
 
@@ -279,18 +238,6 @@ Retorna el nivel actual del stem para metering (0.0-1.0).
 | `getStemOutputChannel(int)` | — | Canal actual |
 | `setStemOutputWidth(int, int)` | width: 1=mono, 2=stereo | Ancho |
 | `getStemOutputWidth(int)` | — | Ancho actual |
-
-`setStemOutputWidth` re-normaliza el canal almacenado con el ancho nuevo
-(clamp a `maxChannels - (width >= 2 ? 1 : 0)`), de modo que cambiar un
-stem de mono a estéreo no lo deja apuntando a un canal base ilegal.
-
-**Categorías (ruteo por dispositivo):** el panel de Ajustes persiste
-defaults por categoría en `AppSettings::routingByDevice[deviceKey]`.
-Estos defaults alimentan `applyRoutingDefaultsToSong` (en el editor) y
-se aplican a **todos** los stems al cargar una canción y cuando el
-usuario toca el panel. La fuente de verdad para el ancho por stem es el
-default de la categoría; el canal base sigue siendo responsabilidad
-del mix snapshot de la canción (legacy) o del proyecto (`.pwproj`).
 
 **Canales disponibles:**
 
@@ -696,11 +643,6 @@ siguiente, anterior y selección desde biblioteca.
 ```cpp
 void refreshPadsRoutingFromSettings() noexcept;
 ```
-
-En `processBlock`, el procesador renderiza Pads siempre sobre un bus temporal
-estéreo y recién después lo enruta al par físico configurado. Esto evita
-multiplicar el costo del motor de pads por la cantidad total de salidas del
-dispositivo, algo especialmente importante en interfaces multisalida.
 
 ## Master Controls
 

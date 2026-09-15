@@ -1,6 +1,7 @@
 #include "CloudProjectArchive.h"
 
 #include "ProjectStore.h"
+#include "SessionAuthLogger.h"
 #include "SongLibraryStore.h"
 
 namespace {
@@ -173,6 +174,17 @@ bool CloudProjectArchive::buildUpload(const juce::File& projectFile,
   }
   outRequest = std::move(request);
   report(0.50, "prepared-upload");
+  // Cleanup: the staging directory only existed to feed the upload
+  // builder. The CloudTransferClient reads manifest.json and
+  // waveform.bin via outRequest.objects which holds its own copies.
+  // Removing here avoids the leak where every upload leaves a
+  // cloud-sync-staging/<projectId>/ directory behind (see
+  // perf/analysis_20260912/INFORME.md §2.5).
+  if (staging.exists() && !staging.deleteRecursively()) {
+    SessionAuthLogger::write(
+        "[CloudProjectArchive] staging cleanup failed path=" +
+        staging.getFullPathName());
+  }
   return true;
 }
 

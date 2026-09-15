@@ -1,6 +1,7 @@
 #include "StemCache.h"
 
 #include "../SongLoadProbe.h"
+#include "../data/SessionAuthLogger.h"
 #include "../data/SongLibraryStore.h"
 
 namespace {
@@ -26,12 +27,13 @@ juce::File getDecodeRoot() {
 } // namespace
 
 juce::File StemCache::getCacheDirectory(const juce::String &songId) {
-  // P0 (perf): sanear el songId antes de construir el path. Sin esto,
-  // títulos con `/`, `:`, etc. rompen getChildFile() (en POSIX la `/`
-  // se interpreta como separador de directorio, en Windows es un
-  // caracter inválido en general) y la cache termina en una ruta
-  // distinta de la que isValid() busca después.
-  auto dir = getDecodeRoot().getChildFile(sanitizeCacheKey(songId));
+  // The songId parameter is treated as an opaque filesystem-safe key
+  // (a UUID hex string in production). We do NOT sanitize it: that
+  // would re-introduce the very collision/rename/encoding problems
+  // we just escaped. Callers must pass a stable identifier — typically
+  // ImportedSongData.id or ImportedSongData.projectId. See
+  // perf/analysis_20260912/INFORME.md §4.1.
+  auto dir = getDecodeRoot().getChildFile(songId);
   dir.createDirectory();
   return dir;
 }
@@ -367,4 +369,97 @@ void StemCache::precomputeAsync(
               [cb, result, ok]() { cb(result, ok); });
         }
       });
+}
+
+void StemCache::removeSongCache(const juce::String &songId) {
+  // Mirror getCacheDirectory()'s path construction. The two must
+  // agree byte-for-byte or we would delete a directory we never
+  // wrote to. songId is treated as opaque here — see getCacheDirectory
+  // for the contract.
+  const auto cacheDir = getDecodeRoot().getChildFile(songId);
+  if (!cacheDir.exists())
+    return;
+  // deleteRecursively is a no-op on missing files; the if-exists guard
+  // avoids a pointless stat() and keeps the call free of side effects on
+  // the common "no cache yet" path.
+  if (cacheDir.deleteRecursively()) {
+    juce::Logger::writeToLog("[StemCache] removed song cache songId=" +
+                              songId + " path=" +
+                              cacheDir.getFullPathName());
+  } else {
+    juce::Logger::writeToLog(
+        "[StemCache] failed to remove song cache songId=" + songId +
+        " path=" + cacheDir.getFullPathName());
+  }
+}
+
+void StemCache::removeCachedFile(const juce::File &sourceFile,
+                                  const juce::String &songId) {
+  const auto cache = getCacheFile(sourceFile, songId);
+  const auto meta = getMetadataFile(cache);
+  if (cache.existsAsFile())
+    cache.deleteFile();
+  if (meta.existsAsFile())
+    meta.deleteFile();
+}
+
+int StemCache::migrateTitleKeyedDirectoriesToIds(
+    const std::vector<juce::String> & /*validSongIds*/,
+    const std::vector<std::pair<juce::String, juce::String>>
+        &titleToIdMapping) {
+  const auto root = getDecodeRoot();
+  if (!root.isDirectory())
+    return 0;
+  int renamed = 0;
+  juce::Array<juce::File> dirs;
+  root.findChildFiles(dirs, juce::File::findDirectories, false);
+  for (const auto &dir : dirs) {
+    const auto dirName = dir.getFileName();
+    // Skip already-migrated (UUID-shaped) directories. We use a cheap
+    // heuristic: 32 chars, all hex. UUIDs are always lowercase hex per
+    // juce::Uuid::toString(); a future migration that uses uppercase or
+    // a different shape would need a more permissive check.
+    if (dirName.length() == 32) {
+      bool isHex = true;
+      for (int i = 0; i < dirName.length(); ++i) {
+        const auto c = static_cast<char>(dirName[i]);
+        const bool hex =
+            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+            (c >= 'A' && c <= 'F');
+        if (!hex) {
+          isHex = false;
+          break;
+        }
+      }
+      if (isHex)
+        continue;
+    }
+    // Find a song whose sanitizeCacheKey(title) matches this dir name.
+    for (const auto &[title, songId] : titleToIdMapping) {
+      if (sanitizeCacheKey(title) != dirName)
+        continue;
+      const auto target = root.getChildFile(songId);
+      if (target == dir)
+        break;
+      if (target.exists()) {
+        juce::Logger::writeToLog(
+            "[StemCache] title->id migration: target already exists for "
+            "title=\"" +
+            title + "\" songId=" + songId);
+        break;
+      }
+      if (dir.moveFileTo(target)) {
+        SessionAuthLogger::write(
+            "[StemCache] title->id migration: renamed decoded/" + dirName +
+            " -> decoded/" + songId);
+        ++renamed;
+      } else {
+        SessionAuthLogger::write(
+            "[StemCache] title->id migration: failed to rename decoded/" +
+            dirName + " -> decoded/" + songId);
+      }
+      break;
+    }
+  }
+  return renamed;
 }

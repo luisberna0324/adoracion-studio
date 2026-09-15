@@ -60,9 +60,16 @@ public:
   static juce::AudioProcessorValueTreeState::ParameterLayout
   createParameterLayout();
 
+  // songId is the stable identifier used by StemCache (UUID in
+  // production). songTitle is the human-readable label shown in the
+  // UI and used for the SongLoadProbe's "title=" extra. They are
+  // separate parameters because the cache must NOT be keyed on the
+  // mutable, user-editable title (see perf/analysis_20260912/INFORME.md
+  // §4.1).
   bool loadSongStems(
-      const juce::StringArray &stemPaths, const juce::String &songTitle,
-      const juce::String &songKey, double songBpm,
+      const juce::StringArray &stemPaths, const juce::String &songId,
+      const juce::String &songTitle, const juce::String &songKey,
+      double songBpm,
       const std::function<void(double progress01)> &onLoadProgress = {},
       bool deferTransitionFadeInUntilConfigured = false);
   void finishPendingSongTransition();

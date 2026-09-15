@@ -1523,7 +1523,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         "stems=" + juce::String(stemPaths.size()) +
             " prev=" + juce::String(hadLoadedSongBeforeLoad ? 1 : 0));
     const bool loaded = p.loadSongStems(
-        stemPaths, sourceSong.title, sourceSong.key, static_cast<double>(sourceSong.bpm),
+        stemPaths, sourceSong.id, sourceSong.title, sourceSong.key,
+        static_cast<double>(sourceSong.bpm),
         [&pushLoadUi](double stemPhase01) {
           pushLoadUi(0.55 * stemPhase01,
                      L10n::tr(u8"Leyendo audio de las pistas...",

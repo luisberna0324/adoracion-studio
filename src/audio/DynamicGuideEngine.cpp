@@ -111,7 +111,7 @@ bool DynamicGuideEngine::loadGuideDirectories(
     }
 
     const auto files = directory.findChildFiles(
-        juce::File::findFiles, false, "*.m4a;*.wav;*.aif;*.aiff;*.mp3");
+        juce::File::findFiles, false, "*.wav;*.aif;*.aiff;*.flac;*.mp3");
     for (const auto &file : files) {
       auto reader = std::unique_ptr<juce::AudioFormatReader>(
           formatManager.createReaderFor(file));

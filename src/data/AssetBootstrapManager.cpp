@@ -137,7 +137,8 @@ bool hasEnoughGuideSectionFiles(const juce::File &dir) noexcept {
   if (!dir.isDirectory())
     return false;
   const auto files =
-      dir.findChildFiles(juce::File::findFiles, false, "*.m4a;*.wav;*.aif;*.aiff;*.mp3");
+      dir.findChildFiles(juce::File::findFiles, false,
+                         "*.wav;*.aif;*.aiff;*.flac;*.mp3");
   return files.size() >= 20;
 }
 

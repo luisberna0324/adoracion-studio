@@ -5,6 +5,7 @@
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/SongLibraryStore.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -193,6 +194,17 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   // reemplaza (ej. títulos con `/`, `:`, etc.). Renombrar en lugar de
   // regenerar mantiene las FLACs y sidecars existentes. Idempotente.
   StemCache::migrateLegacyCacheDirectories();
+  // P0 (perf): one-shot reconciliation of orphaned cache files. Walks
+  // decoded/, cloud-content/objects/, cloud-artwork/, cloud-sync-staging/
+  // and removes anything no song references. Applied (dryRun=false) so
+  // the user gets the disk space back on every startup. The action is
+  // idempotent and only deletes content no song references. See
+  // perf/analysis_20260912/INFORME.md §2.
+  {
+    const auto report =
+        SongLibraryStore::reconcileOrphanedAssets(false);
+    juce::ignoreUnused(report);
+  }
   // 18 stems across N workers → each worker round-robins over
   // (18 / N) stems. With N=4 (legacy cap) each worker handles 4-5
   // stems and the round-trip latency between consecutive refills of
@@ -3333,8 +3345,9 @@ MTControlsAudioProcessor::createParameterLayout() {
   return {params.begin(), params.end()};
 }
 bool MTControlsAudioProcessor::loadSongStems(
-    const juce::StringArray &stemPaths, const juce::String &songTitle,
-    const juce::String &songKey, const double songBpm,
+    const juce::StringArray &stemPaths, const juce::String &songId,
+    const juce::String &songTitle, const juce::String &songKey,
+    const double songBpm,
     const std::function<void(double)> &onLoadProgress,
     const bool deferTransitionFadeInUntilConfigured) {
   // Snapshot playback configuration safely before we start building transports.
@@ -3398,18 +3411,13 @@ bool MTControlsAudioProcessor::loadSongStems(
     // On a miss, we use the original source (degraded but functional)
     // and enqueue a background precompute so the next load is fast.
     //
-    // P0 (perf): StemCache::sanitizeCacheKey se ocupa de que títulos
-    // con `/`, `:`, etc. (ej. "Al Que Es Digno / Vencio") no rompan
-    // la cache creando directorios con split de path.
+    // Cache key is the immutable songId (UUID), not the mutable
+    // songTitle. See perf/analysis_20260912/INFORME.md §4.1.
     juce::File playbackFile = file;
     const bool sourceIsFlac = file.hasFileExtension("flac");
-    // SongLoadProbe: the cache lookup is one of the first places where a
-    // legacy split-path directory (e.g. "Al Que Es Digno / Vencio" split
-    // into "Al Que Es Digno /" + " Vencio/") silently misses. Time the
-    // lookup and record hit/miss so the next slow load is traceable.
     {
       const int64_t lookupStart = juce::Time::getHighResolutionTicks();
-      const bool hit = !sourceIsFlac && StemCache::isValid(file, songTitle);
+      const bool hit = !sourceIsFlac && StemCache::isValid(file, songId);
       const int64_t lookupUs = static_cast<int64_t>(
           (juce::Time::getHighResolutionTicks() - lookupStart) * 1000000.0 /
           juce::Time::getHighResolutionTicksPerSecond());
@@ -3417,14 +3425,14 @@ bool MTControlsAudioProcessor::loadSongStems(
           i, "cache.lookup", lookupUs,
           juce::String("hit=") + (hit ? "1" : "0") +
               " sourceFlac=" + (sourceIsFlac ? "1" : "0") +
-              " title=" + songTitle);
+              " title=" + songTitle + " songId=" + songId);
       if (hit) {
-        playbackFile = StemCache::getCacheFile(file, songTitle);
+        playbackFile = StemCache::getCacheFile(file, songId);
       } else if (!sourceIsFlac) {
         // Fire-and-forget compatibility path for non-canonical callers.  A
         // .pwproj already supplies FLAC and must not be duplicated into a
         // second FLAC cache.
-        StemCache::precomputeAsync(file, songTitle, nullptr);
+        StemCache::precomputeAsync(file, songId, nullptr);
       }
     }
 

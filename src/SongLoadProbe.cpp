@@ -1,37 +1,68 @@
 #include "SongLoadProbe.h"
 
+#include <cstdio>
+
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/task.h>
+#endif
 #if !defined(_WIN32)
 #include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 namespace {
 constexpr int kFlushEveryNRows = 32;
+
+// Read current resident memory in KB. The historical implementation
+// used ru_maxrss which is the *peak* RSS since process start — it
+// never decreases, so the CSV column was a constant and useless for
+// detecting per-load allocations. We now query the live RSS:
+//   - macOS: task_info(mach_task_self(), TASK_VM_INFO).phys_footprint
+//   - Linux: /proc/self/statm (resident pages × page size)
+//   - Windows: not implemented; keep the column as -1 to preserve
+//              the CSV schema documented in docs/okf/processor/SongLoadProbe.md
+// See perf/analysis_20260912/INFORME.md §2.7.
+int64_t readCurrentRssKb() {
+#if defined(_WIN32)
+  return -1;
+#elif defined(__APPLE__)
+  task_vm_info_data_t info;
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) ==
+      KERN_SUCCESS) {
+    // phys_footprint is the best "current RSS" approximation that
+    // excludes mmap pages not actively touched; it tracks allocations
+    // made by the load path (StemTrack buffers, Bungee voices, etc.).
+    return static_cast<int64_t>(info.phys_footprint) / 1024;
+  }
+  return -1;
+#else
+  // Linux: /proc/self/statm reports (size, resident, shared, text, lib,
+  // data, dt) in pages. Resident × page_size = current RSS.
+  FILE *f = std::fopen("/proc/self/statm", "r");
+  if (f == nullptr)
+    return -1;
+  long size_pages = 0;
+  long resident_pages = 0;
+  const int n = std::fscanf(f, "%ld %ld", &size_pages, &resident_pages);
+  std::fclose(f);
+  if (n != 2)
+    return -1;
+  const long page_bytes = sysconf(_SC_PAGESIZE);
+  if (page_bytes <= 0)
+    return -1;
+  return (resident_pages * page_bytes) / 1024;
+#endif
 }
+}  // namespace
 
 SongLoadProbe &SongLoadProbe::instance() {
   static SongLoadProbe inst;
   return inst;
 }
 
-int64_t SongLoadProbe::getCurrentRssKb() {
-#if defined(_WIN32)
-  // getrusage is not provided by MSVC. Keep the CSV schema stable and mark
-  // the optional diagnostic unavailable rather than changing load behavior.
-  return -1;
-#else
-  struct rusage ru {};
-  if (getrusage(RUSAGE_SELF, &ru) == 0) {
-#if defined(__APPLE__)
-    // macOS: ru_maxrss is in KB
-    return static_cast<int64_t>(ru.ru_maxrss);
-#else
-    // Linux: ru_maxrss is in KB too (despite the man page, glibc reports KB)
-    return static_cast<int64_t>(ru.ru_maxrss);
-#endif
-  }
-  return -1;
-#endif
-}
+int64_t SongLoadProbe::getCurrentRssKb() { return readCurrentRssKb(); }
 
 void SongLoadProbe::ensureStarted() {
   if (active_)
@@ -69,8 +100,13 @@ static double ticksToMicros(int64_t delta) {
          static_cast<double>(juce::Time::getHighResolutionTicksPerSecond());
 }
 
-static double nowWallMs() {
-  return static_cast<double>(juce::Time::currentTimeMillis());
+static int64_t nowWallMs() {
+  // Return epoch ms as int64_t. The previous implementation returned a
+  // double that streamed to CSV in scientific notation ("1.78924e+12"),
+  // which made it impossible to cross-reference song_load_*.csv rows
+  // with audio_gaps_*.csv timestamps. See
+  // perf/analysis_20260912/INFORME.md §2.8.
+  return juce::Time::currentTimeMillis();
 }
 
 void SongLoadProbe::beginPhase(const juce::String &phase,

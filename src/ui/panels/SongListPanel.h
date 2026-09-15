@@ -128,6 +128,7 @@ private:
     juce::Colour accentColour = UITheme::accent;
     double cloudUploadFraction = -1.0;
     juce::String cloudUploadPhase;
+    bool requiresOptimization = false;
   };
 
   class ListContent : public juce::Component {
@@ -142,6 +143,8 @@ private:
     void setOnDragStateChanged(std::function<void(bool)> cb);
     void setOnAutoPlayNextToggled(std::function<void(int)> cb);
     void setOnSongRemoveRequested(std::function<void(int)> cb);
+    void setOnAddSongsRequested(std::function<void()> cb);
+    void setOnOptimizeRequested(std::function<void(int)> cb);
     int getPreferredHeight() const;
 
     void paint(juce::Graphics &g) override;
@@ -172,6 +175,8 @@ private:
     std::function<void(bool)> onDragStateChanged;
     std::function<void(int)> onAutoPlayNextToggled;
     std::function<void(int)> onSongRemoveRequested;
+    std::function<void()> onAddSongsRequested;
+    std::function<void(int)> onOptimizeRequested;
     juce::Point<float> mouseDownPosition;
     bool dragCandidate = false;
     bool isDragging = false;
