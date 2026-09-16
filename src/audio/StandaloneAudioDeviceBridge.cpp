@@ -7,30 +7,6 @@ StandaloneAudioDeviceBridge::StandaloneAudioDeviceBridge()
   juce::String err = audioDeviceManager.initialise(0, 2, nullptr, true);
   juce::ignoreUnused(err);
 
-#if JUCE_ANDROID
-  // The device's low-latency default can be only 2 ms. On the Galaxy A50,
-  // decoding and time-processing a 19-stem song takes around 20-30 ms on a
-  // busy block, so a 20 ms callback still underruns. Keep enough headroom for
-  // those bursts before the host registers its audio callback.
-  if (auto* device = audioDeviceManager.getCurrentAudioDevice()) {
-    auto setup = audioDeviceManager.getAudioDeviceSetup();
-    constexpr double androidMultitrackCallbackSeconds = 0.040;
-    const int minimumFrames = static_cast<int>(std::ceil(
-        setup.sampleRate * androidMultitrackCallbackSeconds));
-    int selected = 0;
-    for (const int size : device->getAvailableBufferSizes())
-      if (size >= minimumFrames && (selected == 0 || size < selected))
-        selected = size;
-    if (selected > 0 && selected != setup.bufferSize) {
-      setup.bufferSize = selected;
-      const auto setupError = audioDeviceManager.setAudioDeviceSetup(setup, true);
-      juce::Logger::writeToLog("Android playback buffer: " +
-          juce::String(setup.bufferSize) + " frames; " +
-          (setupError.isEmpty() ? juce::String("configured") : setupError));
-    }
-  }
-#endif
-
   // Fallback UX: if there are MIDI input devices detected but none enabled yet,
   // enable them so MIDI Learn works out of the box on first launch.
   const auto midiInputs = juce::MidiInput::getAvailableDevices();
