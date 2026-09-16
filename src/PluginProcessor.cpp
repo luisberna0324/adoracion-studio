@@ -797,7 +797,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const double targetTempoRatio = getPlaybackTempoRatio();
     if (targetPitch != pitchActiveSemiTones) {
       pitchActiveSemiTones = targetPitch;
-      mixEngine.setPitchSemiTones(pitchActiveSemiTones);
       // Routing processors accept live pitch updates below. Do not flush their
       // overlap/FIFO state: doing so inserts a re-prime silence.
     }
@@ -835,8 +834,15 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (!juce::approximatelyEqual(blockTempoRatio,
                                   playbackTempoRatioActive)) {
       playbackTempoRatioActive = blockTempoRatio;
-      mixEngine.setTempoRatio(playbackTempoRatioActive);
     }
+    // Song loads reset the transport's active ratio independently of the
+    // engine. Synchronize before calculating source consumption even when
+    // the transport value did not change in this callback. Otherwise a song
+    // at its original BPM can inherit the previous song's stretch ratio,
+    // drift from its readers, and repeatedly seek all stems back into sync.
+    // Both setters return immediately when their engine value is unchanged.
+    mixEngine.setPitchSemiTones(pitchActiveSemiTones);
+    mixEngine.setTempoRatio(playbackTempoRatioActive);
     sourceFramesThisBlock = mixEngine.requiredInputFrames(numSamples);
 
     const int stemCount = static_cast<int>(stemTracks.size());
@@ -998,6 +1004,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // call instead of N per-stem BungeeProcessor runs. See
     // `// ---- Routing-grouped path` below.
     bool routingHomogeneous = stemCount > 0;
+    bool groupedPitchCompatible = true;
     int routingCommonChannelOneBased = 0;
     int routingCommonWidth = 0;
     for (int i = 0; i < stemCount; ++i) {
@@ -1006,6 +1013,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       const int assignedWidth = juce::jlimit(
           1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
                     std::memory_order_relaxed));
+      // The grouped guide bus is unpitched. Preserve per-stem processing
+      // when a user explicitly opts a click/guide into pitch shifting.
+      if (pitchActiveSemiTones != 0 &&
+          stemClickGuideStates[static_cast<size_t>(i)].load(std::memory_order_relaxed) &&
+          stemPitchShiftStates[static_cast<size_t>(i)].load(std::memory_order_relaxed))
+        groupedPitchCompatible = false;
       if (i == 0) {
         routingCommonChannelOneBased = juce::jlimit(1, numChannels, assignedChannel);
         routingCommonWidth =
@@ -1032,11 +1045,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const int routingCommonChannelIndex =
         juce::jlimit(0, juce::jmax(0, numChannels - 1),
                      routingCommonChannelOneBasedClamped - 1);
-    // Grouped mix is only safe when every stem resolves to the same
-    // destination AND that destination fits inside the device's physical
-    // channels. The per-stem path handles every other case.
+    // On a stereo device, route each source into its group BEFORE stretching.
+    // Click on L, guide on R and stereo instruments need only three voices.
+    const bool routingGroupedStereo = numChannels == 2;
     const bool routingGroupedEligible =
-        routingActive && routingHomogeneous && stemCount > 0;
+        routingActive && (routingHomogeneous || routingGroupedStereo) &&
+        groupedPitchCompatible && stemCount > 0;
 
     if (isPlaying) {
       const bool customArrangement = realtimeCustomArrangement;
@@ -1576,7 +1590,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             stemPitchShiftableFlags[stemIndex] = pitchShiftable;
             const bool shouldProcess = tempoActive || pitchShiftable;
             stemNeedsTimeProcess[stemIndex] = shouldProcess;
-            if (!shouldProcess)
+            if (!shouldProcess || routingGroupedEligible)
               continue;
             auto &proc = stemPitchProcessors[stemIndex];
             proc.setContentType(
@@ -1595,6 +1609,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
         timeProcessingBlockedThisBlock =
             timeProcessActive && !timeProcessorsReady;
+
+        if (timeProcessActive && routingGroupedEligible)
+          targetLatency = mixEngine.getOutputLatencySamples();
 
         if (targetLatency != routingPitchLatencySamples) {
           routingPitchLatencySamples = targetLatency;
@@ -1648,11 +1665,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             if (!stemPitchShiftableFlags[stemIndex] && tempoActive)
               flags |= 0x4u;
             stemTimingEvent.flags[stemIndex] = flags;
+            stemTimingEvent.streamingMisses[stemIndex] =
+                stemTracks[stemIndex]->getRealtimeReadMissCount();
+            stemTimingEvent.streamingMissingFrames[stemIndex] =
+                stemTracks[stemIndex]->getRealtimeMissingFrameCount();
 
-            // Per-stem routing snapshot taken just before the path
-            // decision. The grouped path requires every stem to share
-            // (channel, width); when it refuses to engage, these two
-            // columns make the divergence immediately visible.
+            // Capture each destination alongside the selected DSP path.
             const int dbgChannel = stemOutputChannels[stemIndex].load(
                 std::memory_order_relaxed);
             const int dbgWidth = juce::jlimit(
@@ -1671,6 +1689,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             // round-robin is taking too long to come back to this stem.
             auto *buffering = stemTracks[stemIndex]->bufferingSourceForBenchmark();
             if (buffering != nullptr) {
+              stemTimingEvent.streamingLockMisses[stemIndex] =
+                  buffering->getRealtimeLockMissCount();
               const int64_t drainStart =
                   buffering->getLastWorkerDrainStartTick();
               const int64_t drainDur =
@@ -1801,24 +1821,14 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         if (routingGroupedEligible && !timeProcessingBlockedThisBlock &&
             timeProcessActive) {
           // ---- Routing-grouped path ------------------------------------
-          // Every loaded stem resolves to the same (channel, width)
-          // destination. The previous per-stem loop ran Bungee once per
-          // stem — for a 19-stem song at 1920 frames/block each Bungee
-          // call cost ~2.6 ms (~49 ms total, well over the 40 ms
-          // callback budget on the Galaxy A50). StemMixEngine keeps the
-          // exact same audio behaviour but uses three shared
-          // TimeStretchProcessor voices:
-          //   * stemMixBuffer      = melodic + pitch-shiftable stems
-          //   * percussionBuffer   = percussive stems (tempo only)
-          //   * dryBuffer          = click / guide (tempo only)
-          // This caps Bungee calls at 3 per block regardless of the
-          // number of stems, dropping read_next from ~49 ms to ~6 ms.
-          // The combined 2-channel mix is then routed once via
-          // StemOutputRouter — which folds L+R for mono destinations
-          // exactly like the per-stem loop did for stemBus[0].
+          // Three voices for melodic, percussion and guide buses. On stereo
+          // devices the input mix already contains the physical L/R routing;
+          // homogeneous multichannel routing is folded after rendering.
           mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
                              stemPitchShiftStates.data(), stemCount,
-                             sourceFramesThisBlock, numChannels);
+                             sourceFramesThisBlock, numChannels,
+                             routingGroupedStereo ? stemOutputChannels.data() : nullptr,
+                             routingGroupedStereo ? stemOutputWidths.data() : nullptr);
           // ---- Benchmark: per-stem Bungee timing (grouped) -------------
           // Grouped path makes per-stem Bungee timings non-applicable,
           // so we zero them out so the decimated StemTimingEvent only
@@ -1835,20 +1845,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           // the audio_*.csv "decode_render" column still reflects the
           // audio-thread cost of pitch/tempo work.
           int64_t drStart = juce::Time::getHighResolutionTicks();
-          // renderToOutput clears its destination; routeStemToOutputChannels
-          // then *adds* into the cleared `buffer`, so a fresh write matches
-          // the per-stem path's clear-and-route semantics.
-          mixEngine.renderToOutput(routingGroupedRenderStorage,
-                                   timeProcessActive, sourceFramesThisBlock,
+          // Always pass the real callback length, even when rendering to the
+          // larger scratch storage used by homogeneous multichannel routing.
+          mixEngine.renderToOutput(routingGroupedStereo ? buffer : routingGroupedRenderStorage,
+                                   timeProcessActive, sourceFramesThisBlock, numSamples,
                                    fadeStart, fadeEnd, windowFadeStart,
                                    windowFadeEnd);
           int64_t drEnd = juce::Time::getHighResolutionTicks();
           stageDecodeRenderEndTick += (drEnd - drStart);
           timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
           stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
-          stemOutputRouter.routeStemToOutputChannels(
-              routingGroupedRenderStorage, routingCommonChannelIndex,
-              routingCommonWidth, buffer);
+          if (!routingGroupedStereo)
+            stemOutputRouter.routeStemToOutputChannels(
+                routingGroupedRenderStorage, routingCommonChannelIndex,
+                routingCommonWidth, buffer);
         } else if (timeProcessingBlockedThisBlock) {
           // Keep every source and the transport moving as one unit, but do not
           // let a subset of recovered processors or dry stems leak through.
@@ -1861,12 +1871,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           }
         } else {
           // ---- Per-stem routing path ------------------------------------
-          // Stems distribute across multiple channels or widths, so the
-          // shared grouped TimeStretchProcessor voices cannot produce the
-          // right output routing. Each stem keeps its own per-stem
-          // Bungee call. This branch is unchanged from the pre-grouped
-          // implementation; it is only kept because the grouped path
-          // needs every stem to share (channel, width).
+          // Preserve independent DSP for heterogeneous multichannel outputs
+          // and explicitly pitched guide stems. With pitch/tempo off, this
+          // same loop only reads, applies fades and routes each source.
           for (int i = 0; i < stemCount; ++i) {
             stemRoutingInputBuffer.clear(0, routingInputSamples);
             stemRoutingTempBuffer.clear(0, numSamples);
@@ -2087,7 +2094,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
     // ---- Benchmark: mix_output (master bus) -----------------------------
     stageMixOutputStartTick = juce::Time::getHighResolutionTicks();
-    mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock,
+    mixEngine.renderToOutput(buffer, timeProcessActive, sourceFramesThisBlock, numSamples,
                              fadeStart, fadeEnd, windowFadeStart,
                              windowFadeEnd);
     stageMixOutputEndTick = juce::Time::getHighResolutionTicks();
@@ -4540,8 +4547,9 @@ void MTControlsAudioProcessor::setSongArrangement(
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
     }
 
-    // Loading/restoring a changed custom arrange while stopped starts at its
-    // first part. A structural update must never stop an active transport:
+    // Restoring sections must start at the playback window's beginning, not
+    // at the first annotation (which may be minutes into the song).
+    // A structural update must never stop an active transport:
     // live edits normally set preserveEditingPlayback, but keeping this guard
     // also covers an edit published during a UI mode transition. The audio
     // callback adopts the coherent scheduler snapshot and preserves the
@@ -4549,7 +4557,7 @@ void MTControlsAudioProcessor::setSongArrangement(
     if (isCustomArrangement && arrangementTimelineChanged &&
         !preserveEditingPlayback &&
         getTransportState() != TransportState::playing) {
-      const double target = arrangementParts.front().startSec;
+      const double target = songStartSeconds.load(std::memory_order_relaxed);
       seekTargetSeconds.store(target, std::memory_order_relaxed);
       seekRequestGeneration.fetch_add(1, std::memory_order_release);
       songCurrentPositionSeconds.store(target, std::memory_order_relaxed);

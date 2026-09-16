@@ -139,6 +139,7 @@ void StemBufferingSource::getNextAudioBlock(
 
   if (mainValidStart < mainValidEnd) {
     if (!callbackLock.tryEnter()) {
+      realtimeLockMissCount.fetch_add(1, std::memory_order_relaxed);
       mainValidStart = mainValidEnd = 0;
     } else {
       // The worker may have republished its window between the optimistic

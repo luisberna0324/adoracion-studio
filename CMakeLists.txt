@@ -242,6 +242,9 @@ endif()
 
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
+    add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
+    target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
+    add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)
     add_executable(MTControlsAudioEngineCoreTests
         tests/audio_engine_core_tests.cpp
         src/audio/TransportClock.cpp
@@ -349,6 +352,7 @@ if(MTCONTROLS_BUILD_TESTS)
             src/audio/BungeeProcessor.h
         )
         juce_generate_juce_header(MTControlsStemMixEngineTests)
+        target_sources(MTControlsStemMixEngineTests PRIVATE src/audio/StemOutputRouter.cpp)
         target_include_directories(MTControlsStemMixEngineTests PRIVATE src)
         target_compile_definitions(MTControlsStemMixEngineTests
             PRIVATE MTCONTROLS_USE_BUNGEE=1)

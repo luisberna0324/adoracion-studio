@@ -147,7 +147,9 @@ void mixStems(
     const std::atomic<bool> *pitchShiftStates,
     int stemCount,
     int inputSamples,
-    int numChannels
+    int numChannels,
+    const std::atomic<int> *outputChannels = nullptr,
+    const std::atomic<int> *outputWidths = nullptr
 );
 ```
 
@@ -175,6 +177,7 @@ void renderToOutput(
     juce::AudioBuffer<float> &output,
     bool timeProcessActive,
     int inputSamples,
+    int outputSamples,
     float fadeStart,
     float fadeEnd,
     float windowFadeStart,
@@ -185,20 +188,20 @@ void renderToOutput(
 Renderiza a buffer de salida con fade window. El grupo `dryBuffer`, que contiene
 los stems marcados como click/guía, no recibe el fade de instrumentos. Esta
 misma excepción debe conservarse en el camino de routing multicanal del
-procesador.
+procesador. `outputSamples` indica explícitamente los frames del callback;
+la capacidad del búfer de salida puede ser mayor. Sólo se escribe ese prefijo.
+Estirar hasta la capacidad reservada (8192) y entregar únicamente los 1920
+frames pedidos altera el tempo y descarta audio. El caller debe pasar el tamaño
+real también durante exportación y warm-up.
 
 ### Ruta agrupada de routing (consumer contract)
 
-`MTControlsAudioProcessor` consume `mixStems` + `renderToOutput` también
-cuando cada stem tiene su propio `(channel, width)` destino, siempre y
-cuando todos resuelvan al mismo `(channel, width)`. Esa es la "ruta
-agrupada": el motor escribe en un scratch 2-canales (o ancho del bus
-físico, lo que sea mayor) y `StemOutputRouter` enruta el resultado
-con una sola llamada, incluyendo el plegado L+R cuando el destino
-común es mono. El sonido es indistinguible del routing por stem, pero
-las llamadas Bungee bajan de N a 3 por callback. Si los stems divergen
-en `(channel, width)`, el procesador cae automáticamente a la ruta
-por stem y todo el contrato existente se preserva.
+`MTControlsAudioProcessor` usa esta ruta con pitch/tempo activo. En un
+dispositivo estéreo enruta cada entrada dentro del grupo antes de procesar y
+escribe directamente al bloque de salida. En un dispositivo multicanal sólo
+agrupa destinos homogéneos; usa un scratch limitado a `outputSamples` y enruta
+el resultado después. El máximo es tres llamadas Bungee por callback. Las
+salidas multicanal heterogéneas conservan la ruta individual.
 
 ## Latencia
 
@@ -277,6 +280,23 @@ El servicio preconstruye y precalienta estado DSP limpio con silencio, pero
 todavía no prealimenta audio del destino. El salto queda libre de historia
 vieja y conoce su latencia desde el primer bloque; no se declara gapless hasta
 disponer también de una segunda caché fuente prellenada.
+
+### Routing estéreo antes del procesamiento
+
+`mixStems` acepta opcionalmente los arrays atómicos `outputChannels` y
+`outputWidths`. En una salida estéreo, cada stem se pliega/enruta mediante
+`StemOutputRouter` al bus de su grupo antes de Bungee. Esto conserva click en
+L, guía en R e instrumentos estéreo con un máximo de tres voces. Ganancia,
+mute y solo se aplican individualmente antes de la suma. El fade de instrumentos
+se aplica después del DSP y excluye la guía. Las vistas de los buffers se
+limitan a `inputSamples` y no reservan memoria en el callback estéreo.
+
+La mezcla agrupada procesa el contenido combinado, por lo que no se promete
+equivalencia sample a sample con N instancias independientes de Bungee. Los
+cambios de routing se aplican a la entrada del DSP y atraviesan su latencia.
+Click/guía marcados explícitamente para pitch con transposición activa usan la
+ruta individual, porque el grupo guía no transpone. Se conservan las rutas
+individuales para configuraciones multicanal heterogéneas.
 
 ## Archivos relacionados
 

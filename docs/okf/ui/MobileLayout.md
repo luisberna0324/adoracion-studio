@@ -144,13 +144,23 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - `makeAppFont` usa la familia sans-serif nativa y su cache en Android para
   evitar resolver repetidamente las tipografias embebidas durante el arranque y
   los repaints. iOS y escritorio conservan la familia Inter embebida.
-- Los timers visuales conservan su frecuencia: waveform a `30 Hz`, medidores
-  VU a `8 Hz` y parpadeo de MIDI Learn a `12 Hz`. La aceleracion grafica no
-  modifica el transporte ni la frecuencia del callback de audio.
+- La waveform y los VU usan `30 Hz`; MIDI Learn usa `12 Hz`. Los VU
+  omiten lectura y repaint cuando quedan fuera del viewport o están ocultos.
+  Sólo invalidan la columna de LEDs al cambiar un segmento o el indicador de
+  pico, conservando la escala y el fader en caché. El suavizado depende del
+  tiempo transcurrido (ataque 55 ms y caída 350 ms, constantes exponenciales),
+  para que un timer demorado no ralentice artificialmente la respuesta.
+  Estas frecuencias no modifican el transporte ni el callback de audio.
 - Editor, top bar y waveform usan fondos planos en Android. La waveform es
-  opaca y su cache de playback usa resolucion logica con overscan `1.25x`.
+  opaca y su cache de playback usa resolución lógica con overscan de hasta `2x`,
+  reservando más espacio hacia delante. Su origen está alineado a una grilla de
+  dos píxeles anclada al tiempo cero de la canción y conserva la misma escala
+  de muestreo entre reconstrucciones: las crestas no cambian de fase al renovar
+  la imagen. El redondeo admite unas columnas extra en los extremos para cubrir
+  viewports de ancho fraccionario.
   La cache se reutiliza con follow encendido o apagado; no se transforma una
-  segunda mascara para realzar progresivamente la porcion reproducida.
+  segunda máscara para realzar progresivamente la porción reproducida; Android
+  tampoco asigna ni rasteriza esa máscara auxiliar.
 - En una ventana fija, el transporte invalida solamente la franja entre las
   posiciones anterior y nueva del playhead. Si follow mueve la ventana,
   `setVisibleWindow` solicita un repaint completo para desplazar tambien la
@@ -159,6 +169,9 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - Los cambios entre reproduccion y pausa/stop invalidan toda la waveform,
   porque alternan entre su imagen de playback y el dibujo detallado. Despues
   de esa transicion vuelven a usarse las invalidaciones parciales del playhead.
+- La carga de una canción reinicia la cámara al comienzo y descarta el historial
+  de suavizado y la inercia de la canción anterior. Conserva el estado de follow;
+  recibir bins de waveform en background para la misma canción no rebobina la vista.
 
 Mediciones y limites de la verificacion:
 [`perf/analysis_20260915/INFORME.md`](../../../perf/analysis_20260915/INFORME.md).

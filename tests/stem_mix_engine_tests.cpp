@@ -97,6 +97,7 @@ enum class RenderGroup { Melodic, Percussion, Guide };
 
 struct RenderResult {
   std::vector<float> samples;
+  std::vector<float> rightSamples;
   int outputLatencySamples = 0;
 };
 
@@ -104,7 +105,9 @@ RenderResult renderImpulse(const RenderGroup group,
                            const int impulseFrame = kImpulseFrame,
                            const bool resetBeforeRender = false,
                            const float fadeStart = 1.0f,
-                           const float fadeEnd = 1.0f) {
+                           const float fadeEnd = 1.0f,
+                           const int outputChannel = 0,
+                           const double tempo = 1.0) {
   juce::TimeSliceThread unusedReadThread("stem-mix-test-read");
   std::vector<std::unique_ptr<StemTrack>> stems;
   stems.push_back(std::make_unique<StemTrack>(
@@ -115,12 +118,16 @@ RenderResult renderImpulse(const RenderGroup group,
   StemMixEngine engine;
   engine.prepare(kSampleRate, kBlockSize, 2);
   engine.setPitchSemiTones(3);
-  engine.setTempoRatio(1.0);
+  engine.setTempoRatio(tempo);
   if (resetBeforeRender)
     engine.reset();
 
   std::array<std::atomic<bool>, 1> guideStates;
   std::array<std::atomic<bool>, 1> pitchStates;
+  std::array<std::atomic<int>, 1> routingChannels{};
+  std::array<std::atomic<int>, 1> routingWidths{};
+  routingChannels[0].store(outputChannel);
+  routingWidths[0].store(1);
   guideStates[0].store(group == RenderGroup::Guide,
                        std::memory_order_relaxed);
   pitchStates[0].store(group == RenderGroup::Melodic,
@@ -132,11 +139,15 @@ RenderResult renderImpulse(const RenderGroup group,
   for (int block = 0; block < kRenderBlocks; ++block) {
     const int inputFrames = engine.requiredInputFrames(kBlockSize);
     engine.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
-                    inputFrames, 2);
-    engine.renderToOutput(output, true, inputFrames, fadeStart, fadeEnd, 1.0f,
+                    inputFrames, 2,
+                    outputChannel > 0 ? routingChannels.data() : nullptr,
+                    outputChannel > 0 ? routingWidths.data() : nullptr);
+    engine.renderToOutput(output, true, inputFrames, kBlockSize, fadeStart, fadeEnd, 1.0f,
                           1.0f);
-    for (int sample = 0; sample < kBlockSize; ++sample)
+    for (int sample = 0; sample < kBlockSize; ++sample) {
       result.samples.push_back(output.getSample(0, sample));
+      result.rightSamples.push_back(output.getSample(1, sample));
+    }
   }
   result.outputLatencySamples = engine.getOutputLatencySamples();
   stems.front()->releaseResources();
@@ -156,6 +167,80 @@ int peakIndex(const std::vector<float> &samples) {
 } // namespace
 
 int main() {
+  for (auto group : {RenderGroup::Melodic, RenderGroup::Percussion, RenderGroup::Guide}) {
+    for (int channel : {1, 2}) {
+      const auto routed = renderImpulse(group, kImpulseFrame, false, 1.0f, 1.0f,
+                                         channel, 125.0 / 127.0);
+      const auto &audible = channel == 1 ? routed.samples : routed.rightSamples;
+      const auto &silent = channel == 1 ? routed.rightSamples : routed.samples;
+      expect(peakIndex(audible) >= 0, "routed group remains audible with pitch and tempo");
+      expect(peakIndex(silent) == -1, "grouped time stretch cannot leak mono routing to the other channel");
+    }
+  }
+
+  {
+    // Regression: an 8192-frame scratch buffer used to make the Android
+    // grouped route stretch a short callback to 8192 and discard its tail.
+    // Compare both storage sizes across changing callback sizes with 23 stems.
+    constexpr int capacity = 8192;
+    constexpr int stemCount = 23;
+    juce::TimeSliceThread unusedReadThread("callback-size-test");
+    std::array<std::atomic<bool>, stemCount> guideStates{};
+    std::array<std::atomic<bool>, stemCount> pitchStates{};
+    std::array<std::vector<std::unique_ptr<StemTrack>>, 2> stems;
+    std::array<StemMixEngine, 2> engines;
+    for (int stem = 0; stem < stemCount; ++stem) {
+      guideStates[stem].store(stem % 3 == 2);
+      pitchStates[stem].store(stem % 3 == 0);
+      for (auto &tracks : stems) {
+        auto track = std::make_unique<StemTrack>(
+            std::make_unique<ImpulseAudioFormatReader>(kImpulseFrame + stem * 17),
+            unusedReadThread, kSampleRate, 32768, false);
+        track->prepareToPlay(capacity, kSampleRate);
+        track->setVolume(0.02f);
+        tracks.push_back(std::move(track));
+      }
+    }
+    for (auto &engine : engines) {
+      engine.prepare(kSampleRate, capacity, 2);
+      engine.setPitchSemiTones(-2);
+      engine.setTempoRatio(125.0 / 127.0);
+    }
+    juce::AudioBuffer<float> scratch(2, capacity);
+    constexpr std::array<int, 4> sizes{96, 512, 1920, 960};
+    float peak = 0.0f;
+    for (int block = 0; block < 48; ++block) {
+      const int frames = sizes[static_cast<size_t>(block) % sizes.size()];
+      juce::AudioBuffer<float> exact(2, frames);
+      for (int channel = 0; channel < 2; ++channel)
+        std::fill_n(scratch.getWritePointer(channel), capacity, -9.0f);
+      for (int path = 0; path < 2; ++path) {
+        auto &engine = engines[path];
+        const int input = engine.requiredInputFrames(frames);
+        engine.mixStems(stems[path], guideStates.data(), pitchStates.data(),
+                        stemCount, input, 2);
+        engine.renderToOutput(path == 0 ? exact : scratch, true, input, frames,
+                              1.0f, 1.0f, 1.0f, 1.0f);
+        expect(!engine.wasLastRenderBlocked(), "short callback renders all groups");
+      }
+      for (int channel = 0; channel < 2; ++channel) {
+        for (int sample = 0; sample < frames; ++sample) {
+          expect(std::abs(exact.getSample(channel, sample) -
+                          scratch.getSample(channel, sample)) < 1.0e-6f,
+                 "scratch capacity cannot change audio or tempo");
+        }
+        for (int sample = frames; sample < capacity; ++sample)
+          expect(scratch.getSample(channel, sample) == -9.0f,
+                 "grouped renderer must leave unused scratch tail untouched");
+      }
+      peak = std::max(peak, exact.getMagnitude(0, frames));
+    }
+    expect(peak > 0.001f, "23-stem regression renders audible signal, not only silence");
+    for (auto &tracks : stems)
+      for (auto &track : tracks)
+        track->releaseResources();
+  }
+
   {
     StemMixEngine lifecycle;
     lifecycle.prepare(kSampleRate, kBlockSize, 2);
@@ -192,7 +277,7 @@ int main() {
         blockedMix.requiredInputFrames(kBlockSize);
     blockedMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
                         blockedInputFrames, 2);
-    blockedMix.renderToOutput(output, true, blockedInputFrames, 1.0f, 1.0f,
+    blockedMix.renderToOutput(output, true, blockedInputFrames, kBlockSize, 1.0f, 1.0f,
                               1.0f, 1.0f);
     expect(blockedMix.wasLastRenderBlocked(),
            "grouped render blocks as one unit without clean voices");
@@ -205,7 +290,7 @@ int main() {
         blockedMix.requiredInputFrames(kBlockSize);
     blockedMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
                         recoveredInputFrames, 2);
-    blockedMix.renderToOutput(output, true, recoveredInputFrames, 1.0f, 1.0f,
+    blockedMix.renderToOutput(output, true, recoveredInputFrames, kBlockSize, 1.0f, 1.0f,
                               1.0f, 1.0f);
     expect(!blockedMix.wasLastRenderBlocked(),
            "grouped render resumes only after preflight resolves reset");
@@ -235,7 +320,7 @@ int main() {
           transitioningMix.requiredInputFrames(kBlockSize);
       transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(),
                                 1, inputFrames, 2);
-      transitioningMix.renderToOutput(output, false, inputFrames, 1.0f, 1.0f,
+      transitioningMix.renderToOutput(output, false, inputFrames, kBlockSize, 1.0f, 1.0f,
                                       1.0f, 1.0f);
     }
 
@@ -246,7 +331,7 @@ int main() {
         transitioningMix.requiredInputFrames(kBlockSize);
     transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
                               pitchedInputFrames, 2);
-    transitioningMix.renderToOutput(output, true, pitchedInputFrames, 1.0f,
+    transitioningMix.renderToOutput(output, true, pitchedInputFrames, kBlockSize, 1.0f,
                                     1.0f, 1.0f, 1.0f);
 
     const int latency = transitioningMix.getOutputLatencySamples();
@@ -278,7 +363,7 @@ int main() {
         transitioningMix.requiredInputFrames(kBlockSize);
     transitioningMix.mixStems(stems, guideStates.data(), pitchStates.data(), 1,
                               directInputFrames, 2);
-    transitioningMix.renderToOutput(output, false, directInputFrames, 1.0f,
+    transitioningMix.renderToOutput(output, false, directInputFrames, kBlockSize, 1.0f,
                                     1.0f, 1.0f, 1.0f);
     expect(std::abs(output.getSample(0, 0) -
                     expectedRampSample(delayDecreaseSourceStart - latency)) <

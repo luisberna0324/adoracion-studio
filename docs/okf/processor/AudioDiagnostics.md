@@ -61,11 +61,25 @@ CSV: `audio_gaps_<ts>.csv`. Columnas: `wall_ms,delta_ms,song_position_sec,stem_c
 
 CSV: `audio_stems_<ts>.csv`. Muestreado por stem cada `kStemTimingSnapshotEveryBlocks = 20` bloques. La columna
 `routing_grouped_eligible` deja explícito qué bloque del callback usó la ruta
-agrupada de `StemMixEngine` (los 3 voces `TimeStretchProcessor` y una sola
-llamada a `StemOutputRouter`) en lugar de la ruta por stem legacy; el script
+agrupada de `StemMixEngine` (hasta 3 voces `TimeStretchProcessor`) en lugar
+de la ruta por stem legacy. En dispositivos estéreo admite destinos mezclados:
+cada stem se enruta antes del DSP. Con más canales requiere un destino común;
+las guías con pitch explícito conservan procesamiento individual. El script
 de análisis puede filtrar por `routing_active=1,routing_grouped_eligible=1`
 para aislar los bloques que aprovecharon el agrupado y comparar `decode_render`
 contra `routing_active=1,routing_grouped_eligible=0`.
+
+`audio_stems_<ts>.csv` también incluye `streaming_misses` y
+`streaming_missing_frames` por pista. Son contadores acumulativos durante la
+vida del stem, al igual que sus sumas en `audio_<ts>.csv`: comparar diferencias
+entre dos muestras de la misma canción, nunca sumar filas ni restar a través
+de una carga de canción. Permiten localizar qué fuente entrega silencio por
+falta de datos aunque el callback termine dentro del presupuesto.
+
+`streaming_lock_misses` cuenta los intentos fallidos de adquirir el lock corto
+del ring principal por pista. Es acumulativo y puede coexistir con cobertura
+del banco de prefetch; no equivale necesariamente a frames perdidos. Separa la
+contención de copia de las invalidaciones por seek y del agotamiento del buffer.
 
 ### 4. AAC decode + resample (background thread)
 

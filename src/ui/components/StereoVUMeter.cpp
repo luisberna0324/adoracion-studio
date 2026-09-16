@@ -81,15 +81,9 @@ StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
                              MuteProvider muteProvider, bool isCompact)
     : layout(isCompact ? Layout::createCompact() : Layout{}),
       levels(std::move(levelProvider)), isMuted(std::move(muteProvider)) {
-  // Android software-paints each meter and its transparent parent chain. With
-  // one meter per stem, 30 Hz can starve the transport/waveform message timer.
-#if JUCE_ANDROID
-  startTimerHz(8);
-#else
   // 30 Hz is plenty for VU visual smoothing; 60 Hz caused idle CPU spikes
   // when many VUs are present (one per stem).
   startTimerHz(30);
-#endif
 }
 
 int StereoVUMeter::getVisibleSegmentCount() const noexcept {
@@ -212,6 +206,18 @@ void StereoVUMeter::resized() {
 }
 
 void StereoVUMeter::timerCallback() {
+  // isShowing alone includes strips outside a Viewport. Intersect each
+  // ancestor's clip so hidden channels cannot invalidate cached strip images.
+  auto visible = getLocalBounds();
+  for (auto *parent = getParentComponent(); parent != nullptr;
+       parent = parent->getParentComponent()) {
+    visible = visible.getIntersection(getLocalArea(parent, parent->getLocalBounds()));
+  }
+  if (!isShowing() || visible.isEmpty()) {
+    lastUpdateMs = 0.0;
+    return;
+  }
+
   float inputL = 0.0f;
   float inputR = 0.0f;
 
@@ -228,14 +234,19 @@ void StereoVUMeter::timerCallback() {
 
   const float targetL = linearToNorm(juce::jmax(inputL, inputR));
 
-  const auto smooth = [](float current, float target) {
-    const float coeff = target > current ? 0.2f : 0.06f;
+  const double now = juce::Time::getMillisecondCounterHiRes();
+  const double elapsedMs = lastUpdateMs > 0.0
+      ? juce::jlimit(1.0, 250.0, now - lastUpdateMs) : 1000.0 / 30.0;
+  lastUpdateMs = now;
+  const auto smooth = [elapsedMs](float current, float target) {
+    // Time-based ballistics: a delayed UI tick must not slow the envelope.
+    const double timeConstantMs = target > current ? 55.0 : 350.0;
+    const float coeff = static_cast<float>(-std::expm1(-elapsedMs / timeConstantMs));
     const float next = current + (target - current) * coeff;
     return next < 0.0005f ? 0.0f : next;
   };
 
   levelL = smooth(levelL, targetL);
-  const double now = juce::Time::getMillisecondCounterHiRes();
   if (targetL >= 0.985f)
     holdUntilL = now + 1500.0;
 
@@ -260,5 +271,7 @@ void StereoVUMeter::timerCallback() {
 
   lastPaintedActiveSegments = activeSegments;
   lastPaintedPeakOn = peakOn;
-  repaint();
+  // Keep the dB labels and the surrounding fader cached during meter motion.
+  repaint(layout.scaleWidth + layout.gap - 2, 0,
+          layout.columnWidth + 4, getHeight());
 }

@@ -19,12 +19,14 @@ public:
   void mixStems(const std::vector<std::unique_ptr<StemTrack>> &stems,
                 const std::atomic<bool> *clickGuideStates,
                 const std::atomic<bool> *pitchShiftStates, int stemCount,
-                int inputSamples, int numChannels);
+                int inputSamples, int numChannels,
+                const std::atomic<int> *outputChannels = nullptr,
+                const std::atomic<int> *outputWidths = nullptr);
   void renderDirect(const std::vector<std::unique_ptr<StemTrack>> &stems,
                     int stemCount, juce::AudioBuffer<float> &output);
 
   void renderToOutput(juce::AudioBuffer<float> &output, bool timeProcessActive,
-                      int inputSamples,
+                      int inputSamples, int outputSamples,
                       float fadeStart, float fadeEnd, float windowFadeStart,
                       float windowFadeEnd);
   int requiredInputFrames(int outputFrames) noexcept;

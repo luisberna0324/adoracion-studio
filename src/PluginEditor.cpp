@@ -1715,6 +1715,9 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
     p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
+    // Loading a song always starts at its beginning, independent of section
+    // count, the first section's timestamp, or the previous editing state.
+    p.seekSongTo(p.getSongStartSeconds());
     trackSongWindow(currentLoadedSong.id, p.getSongStartSeconds(),
                     p.getSongEndSeconds(), p.getSongFadeOutSeconds());
 
@@ -1817,6 +1820,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                   loadedSong.timeSignature);
     waveformBarRaw->setArrangement(arrangement, isCustomArrangement);
     waveformBarRaw->setTempoMap(loadedSong.tempoMap);
+    waveformBarRaw->resetPlaybackViewForSong();
     // SongLoadProbe: the ScopedSongLoadTimer at the top of the lambda closes
     // the total bracket and pops any leftover inner phases on scope exit.
     // Flush here so the user can read the CSV immediately if they switch

@@ -109,6 +109,9 @@ public:
   juce::int64 getRealtimeMissingFrameCount() const noexcept {
     return realtimeMissingFrameCount.load(std::memory_order_relaxed);
   }
+  juce::int64 getRealtimeLockMissCount() const noexcept {
+    return realtimeLockMissCount.load(std::memory_order_relaxed);
+  }
 
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
   using BeforeCursorAdvanceTestHook = void (*)(StemBufferingSource &) noexcept;
@@ -181,6 +184,7 @@ private:
   std::atomic<uint64_t> publishedPrefetchGeneration{0};
   std::atomic<juce::int64> realtimeMissCount{0};
   std::atomic<juce::int64> realtimeMissingFrameCount{0};
+  std::atomic<juce::int64> realtimeLockMissCount{0};
 
   // ---- Benchmark: worker drain instrumentation -------------------------
   // The audio thread reads these periodically to capture how long each

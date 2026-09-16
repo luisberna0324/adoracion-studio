@@ -120,12 +120,8 @@ public:
     int stemCount = 0;
     int targetLatencySamples = 0;
     bool routingActive = false;
-    // True when every active stem resolves to the same (channel, width)
-    // destination AND the device has at least two physical output
-    // channels. Under these conditions the audio thread uses the
-    // StemMixEngine grouped path (a single Bungee call per group instead
-    // of one per stem) and routes the result via StemOutputRouter once.
-    // False means the older per-stem Bungee loop is still running.
+    // Grouped DSP supports mixed routing on stereo devices, or a common
+    // destination on multichannel devices, when guide pitch is compatible.
     bool routingGroupedEligible = false;
     bool timeProcessActive = false;
     bool tempoActive = false;
@@ -143,6 +139,10 @@ public:
     //  bit1 = pitchShiftable
     //  bit2 = percussive content profile
     std::array<uint8_t, kMaxStemMetrics> flags{};
+    // Cumulative per loaded stem; compare deltas within the same song.
+    std::array<int64_t, kMaxStemMetrics> streamingMisses{};
+    std::array<int64_t, kMaxStemMetrics> streamingMissingFrames{};
+    std::array<int64_t, kMaxStemMetrics> streamingLockMisses{};
 
     // ---- Benchmark: worker drain instrumentation ----------------------
     // For each stem the audio thread samples the worker's most recent
@@ -333,7 +333,7 @@ public:
     }
     if (auto stream = stemLogFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,tempo_ratio,pitch_semitones,routing_active,routing_grouped_eligible,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,routing_channel_one_based,routing_width,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count,bungee_us,bungee_gap_us,bungee_count\n",
+          "wall_ms,tempo_ratio,pitch_semitones,routing_active,routing_grouped_eligible,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,routing_channel_one_based,routing_width,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count,bungee_us,bungee_gap_us,bungee_count,streaming_misses,streaming_missing_frames,streaming_lock_misses\n",
           false, false, nullptr);
     }
     if (auto stream = gapLogFile.createOutputStream()) {
@@ -569,7 +569,10 @@ private:
             << ev.decodeCount[static_cast<size_t>(stemIndex)] << ","
             << ev.bungeeUs[static_cast<size_t>(stemIndex)] << ","
             << ev.bungeeGapUs[static_cast<size_t>(stemIndex)] << ","
-            << ev.bungeeCount[static_cast<size_t>(stemIndex)] << "\n";
+            << ev.bungeeCount[static_cast<size_t>(stemIndex)] << ","
+            << ev.streamingMisses[static_cast<size_t>(stemIndex)] << ","
+            << ev.streamingMissingFrames[static_cast<size_t>(stemIndex)] << ","
+            << ev.streamingLockMisses[static_cast<size_t>(stemIndex)] << "\n";
       }
 
       idx = (idx + 1) & kStemMask;

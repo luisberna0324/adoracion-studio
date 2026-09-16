@@ -54,6 +54,7 @@ private:
   int lastPaintedActiveSegments = -1;
   bool lastPaintedPeakOn = false;
   double holdUntilL = 0.0;
+  double lastUpdateMs = 0.0;
 
   void timerCallback() override;
   int getVisibleSegmentCount() const noexcept;

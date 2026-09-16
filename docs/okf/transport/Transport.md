@@ -275,6 +275,14 @@ Un clic o arrastre fuera de la ventana se limita a la guía correspondiente.
 `Stop` devuelve el transporte a `Inicio`, no a `0.0 s`, y la posición publicada
 a la UI cambia de inmediato aunque el dispositivo no esté ejecutando callbacks.
 
+Al cargar una canción, el playhead se sitúa en `Inicio` (0:00 por defecto)
+después de restaurar la ventana y las secciones. La primera sección es una
+anotación del timeline y no determina el punto de arranque: si la única sección
+empieza en 3:52, el audio anterior sigue disponible desde 0:00. La vista de la
+onda también reinicia su cámara y su interpolación visual; no arrastra la
+posición ni la inercia de seguimiento de la canción anterior. Pausar y reanudar
+sin cargar otra canción conserva la posición actual.
+
 ### Edición
 
 ```cpp

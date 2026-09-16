@@ -357,6 +357,21 @@ void testSongTransitionEnvelope() {
 } // namespace
 
 int main() {
+  {
+    using Scheduler = playworship::audio::SectionScheduler;
+    Scheduler scheduler;
+    constexpr auto sectionStart = 232 * 48000;
+    constexpr auto songEnd = 255 * 48000;
+    scheduler.publish({{sectionStart, songEnd, sectionStart, songEnd}});
+    const auto snapshot = scheduler.acquireSnapshot();
+    Scheduler::Frame source = -1;
+    expect(Scheduler::mapFrameToSourceFrame(snapshot, 0, songEnd, songEnd, source)
+               && source == 0,
+           "a single late section must preserve the beginning of the source");
+    const auto decision = Scheduler::evaluate(snapshot, 0, 1920, true, -1, -1);
+    expect(!decision.transition && !decision.stop,
+           "playback before the only section must continue from zero");
+  }
   testTransportClock();
   testSectionScheduler();
   testSectionSchedulerLoopEscape();

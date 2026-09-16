@@ -46,6 +46,7 @@ public:
   WaveformBar();
 
   void setWaveformBins(std::vector<float> bins);
+  void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
                       bool isCustomArrangement);
   void setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot);

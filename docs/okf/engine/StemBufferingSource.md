@@ -78,6 +78,7 @@ con los demás stems.
 ```cpp
 juce::int64 getRealtimeMissCount() const noexcept;
 juce::int64 getRealtimeMissingFrameCount() const noexcept;
+juce::int64 getRealtimeLockMissCount() const noexcept;
 ```
 
 - `getRealtimeMissCount()` cuenta una vez cada callback que no pudo entregar
@@ -88,6 +89,9 @@ juce::int64 getRealtimeMissingFrameCount() const noexcept;
   faltantes, porque no se copia audio parcial sin proteger el ring.
 - Los contadores son atómicos, acumulativos durante la vida de la instancia y
   sus getters no bloquean.
+- `getRealtimeLockMissCount()` cuenta intentos fallidos de `callbackLock.tryEnter()`
+  en el ring principal. El prefetch puede cubrir esos frames; este contador
+  distingue contención de falta de datos sin convertirla en una espera.
 
 El silencio normal de EOF que el worker ya publicó dentro de un rango válido no
 es un miss: desde la perspectiva del callback esos frames sí estaban

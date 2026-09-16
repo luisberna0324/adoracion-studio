@@ -1,4 +1,5 @@
 #include "StemMixEngine.h"
+#include "audio/StemOutputRouter.h"
 
 void StemMixEngine::SimpleDelayLine::prepare(int channels,
                                              int maxDelaySamplesToUse) {
@@ -283,7 +284,8 @@ void StemMixEngine::mixStems(
     const std::vector<std::unique_ptr<StemTrack>> &stems,
     const std::atomic<bool> *clickGuideStates,
     const std::atomic<bool> *pitchShiftStates, int stemCount, int inputSamples,
-    int numChannels) {
+    int numChannels, const std::atomic<int> *outputChannels,
+    const std::atomic<int> *outputWidths) {
   ensureBuffers(numChannels, inputSamples);
   stemMixBuffer.clear(0, inputSamples);
   percussionBuffer.clear(0, inputSamples);
@@ -305,8 +307,23 @@ void StemMixEngine::mixStems(
                        ? dryBuffer
                        : (pitchShiftable ? stemMixBuffer : percussionBuffer);
 
-    for (int ch = 0; ch < numChannels; ++ch)
-      target.addFrom(ch, 0, stemTempBuffer, ch, 0, inputSamples);
+    if (outputChannels != nullptr && outputWidths != nullptr) {
+      const int width = numChannels < 2 ? 1 : juce::jlimit(
+          1, 2, outputWidths[i].load(std::memory_order_relaxed));
+      const int channel = juce::jlimit(
+          1, juce::jmax(1, numChannels - (width == 2 ? 1 : 0)),
+          outputChannels[i].load(std::memory_order_relaxed));
+      // Views bound the router to actual source frames, not scratch capacity.
+      juce::AudioBuffer<float> sourceView(
+          stemTempBuffer.getArrayOfWritePointers(), numChannels, inputSamples);
+      juce::AudioBuffer<float> targetView(
+          target.getArrayOfWritePointers(), numChannels, inputSamples);
+      StemOutputRouter{}.routeStemToOutputChannels(
+          sourceView, channel - 1, width, targetView);
+    } else {
+      for (int ch = 0; ch < numChannels; ++ch)
+        target.addFrom(ch, 0, stemTempBuffer, ch, 0, inputSamples);
+    }
   }
 }
 
@@ -328,14 +345,24 @@ void StemMixEngine::renderDirect(
 
 void StemMixEngine::renderToOutput(juce::AudioBuffer<float> &output,
                                    bool timeProcessActive,
-                                   const int inputSamples, float fadeStart,
+                                   const int inputSamples, const int numSamples,
+                                   float fadeStart,
                                    float fadeEnd, float windowFadeStart,
                                    float windowFadeEnd) {
-  const int numSamples = output.getNumSamples();
+  jassert(numSamples > 0 && numSamples <= output.getNumSamples() &&
+          numSamples <= currentBlockSize);
+  if (numSamples <= 0 || numSamples > output.getNumSamples() ||
+      numSamples > currentBlockSize) {
+    output.clear();
+    lastRenderBlocked = true;
+    return;
+  }
   const int numChannels = output.getNumChannels();
   const float instrumentFadeStart = fadeStart * windowFadeStart;
   const float instrumentFadeEnd = fadeEnd * windowFadeEnd;
-  output.clear();
+  // Storage capacity can exceed the callback size (8192 vs 1920 on Android).
+  // Stretch exactly the requested timeline, leaving the unused tail alone.
+  output.clear(0, numSamples);
   lastRenderBlocked = false;
 
   if (timeProcessActive) {

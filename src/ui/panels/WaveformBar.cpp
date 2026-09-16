@@ -3,6 +3,7 @@
 #include "../../audio/DynamicGuideEngine.h"
 #include "../../data/ArrangementSourceMapping.h"
 #include "../../data/Localization.h"
+#include "../WaveformCacheWindow.h"
 
 #include <algorithm>
 #include <array>
@@ -922,6 +923,24 @@ WaveformBar::WaveformBar() {
 #else
   startTimerHz(60);
 #endif
+}
+
+void WaveformBar::resetPlaybackViewForSong() {
+  followPendingJumpWasActive = false;
+  followLastSongProgressValid = false;
+  followLastFrameTimestampSec = 0.0;
+  followSuspendedUntilMs = 0.0;
+  lastTimerSongProgressValid = false;
+  phonePanInertiaActive = false;
+  phonePanVelocity = 0.0f;
+#if JUCE_ANDROID
+  androidVisualProgressValid = false;
+  androidVisualProgressTimestampSec = 0.0;
+  androidLastFixedPlayheadX = -1;
+#endif
+  const float span = followPlaybackEnabled ? kFollowEnabledViewportSpan : 1.0f;
+  setVisibleWindow(0.0f, span);
+  repaint();
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
@@ -4895,12 +4914,19 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
                    centerDashes, 2, 1.0f);
 
   const int step = 2;
+#if JUCE_ANDROID
+  // Match cache transforms: a pixel is a cell, not an inclusive endpoint.
+  // Together with the globally aligned cache origin this keeps peaks at the
+  // same song coordinates when the scrolling bitmap is rebuilt.
+  const double samplingWidth = juce::jmax(1.0f, bounds.getWidth());
+#else
+  const double samplingWidth = juce::jmax(1, widthPixels - 1);
+#endif
   const double sourceSecondsPerColumn =
       songLength * static_cast<double>(windowSpan) *
-      (static_cast<double>(step) /
-       static_cast<double>(juce::jmax(1, widthPixels - 1)));
+      (static_cast<double>(step) / samplingWidth);
   for (int x = 0; x < widthPixels; x += step) {
-    const float t = static_cast<float>(x) / static_cast<float>(widthPixels - 1);
+    const double t = static_cast<double>(x) / samplingWidth;
     const double arrangementSec = songLength * (windowStart + (t * windowSpan));
     double sourceSec = arrangementSec;
     if (hasCustomArrangement &&
@@ -5066,16 +5092,17 @@ bool WaveformBar::drawCachedFollowWaveform(
   }
 
 #if JUCE_ANDROID
-  constexpr float androidFollowCacheOverscan = 1.25f;
-  const float cacheSpan = juce::jlimit(
-      windowSpan, 1.0f, windowSpan * androidFollowCacheOverscan);
+  const auto cacheWindow = playworship::ui::makeWaveformCacheWindow(
+      windowStart, windowSpan, bounds.getWidth());
+  const float cacheSpan = static_cast<float>(cacheWindow.span);
+  const float cacheStart = static_cast<float>(cacheWindow.start);
 #else
   const float cacheSpan = juce::jlimit(
       windowSpan, 1.0f, windowSpan * kFollowWaveformCacheOverscan);
-#endif
   const float cacheStart = juce::jlimit(
       0.0f, 1.0f - cacheSpan,
       windowStart - ((cacheSpan - windowSpan) * 0.5f));
+#endif
 #if JUCE_ANDROID
   // Android's JUCE peer transforms this bitmap on the CPU before upload. Keep
   // it at logical resolution; the display compositor performs final scaling.
@@ -5084,8 +5111,12 @@ bool WaveformBar::drawCachedFollowWaveform(
   const float cacheScale = juce::jlimit(
       1.0f, 4.0f, juce::Component::getApproximateScaleFactorForComponent(this));
 #endif
+#if JUCE_ANDROID
+  const int cacheWidth = cacheWindow.width;
+#else
   const int cacheWidth = static_cast<int>(
       std::ceil(bounds.getWidth() * (cacheSpan / windowSpan) * cacheScale));
+#endif
   const int cacheHeight =
       static_cast<int>(std::ceil(bounds.getHeight() * cacheScale));
   if (cacheWidth <= 2 || cacheHeight <= 2)
@@ -5100,7 +5131,9 @@ bool WaveformBar::drawCachedFollowWaveform(
       windowEnd <= (cachedEnd + kFollowViewportPositionEpsilon);
   const bool cacheNeedsRebuild =
       !followWaveformBaseCache.isValid() ||
+#if !JUCE_ANDROID
       !followWaveformHighlightMaskCache.isValid() ||
+#endif
       followWaveformCacheWidth != cacheWidth ||
       followWaveformCacheHeight != cacheHeight ||
       !nearlyEqual(followWaveformCacheSpan, cacheSpan,
@@ -5111,8 +5144,10 @@ bool WaveformBar::drawCachedFollowWaveform(
   if (cacheNeedsRebuild) {
     followWaveformBaseCache =
         juce::Image(juce::Image::ARGB, cacheWidth, cacheHeight, true);
+#if !JUCE_ANDROID
     followWaveformHighlightMaskCache =
         juce::Image(juce::Image::SingleChannel, cacheWidth, cacheHeight, true);
+#endif
 
     const auto cacheBounds = juce::Rectangle<float>(
         0.0f, 0.0f, static_cast<float>(cacheWidth) / cacheScale,
@@ -5122,11 +5157,13 @@ bool WaveformBar::drawCachedFollowWaveform(
     drawWaveformDirect(cacheGraphics, cacheBounds, cacheStart, cacheSpan, false,
                        false);
 
+#if !JUCE_ANDROID
     juce::Graphics highlightMaskGraphics(followWaveformHighlightMaskCache);
     highlightMaskGraphics.addTransform(
         juce::AffineTransform::scale(cacheScale));
     drawWaveformHighlightMask(highlightMaskGraphics, cacheBounds, cacheStart,
                               cacheSpan);
+#endif
 
     followWaveformCacheWidth = cacheWidth;
     followWaveformCacheHeight = cacheHeight;

@@ -292,7 +292,7 @@ SongMixExporter::Result SongMixExporter::exportToWav(
       mix.mixStems(tracks, clickGuide.get(), pitchShiftable.get(),
                    static_cast<int>(tracks.size()), inputFrames, 2);
       warmupBuffer.clear();
-      mix.renderToOutput(warmupBuffer, true, inputFrames, 1.0f, 1.0f, 1.0f,
+      mix.renderToOutput(warmupBuffer, true, inputFrames, kExportBlockSize, 1.0f, 1.0f, 1.0f,
                          1.0f);
       warmedOutputFrames += kExportBlockSize;
 
@@ -433,7 +433,7 @@ SongMixExporter::Result SongMixExporter::exportToWav(
 
     mix.mixStems(tracks, clickGuide.get(), pitchShiftable.get(),
                  static_cast<int>(tracks.size()), inputFrames, 2);
-    mix.renderToOutput(buffer, timeProcessing, inputFrames, 1.0f, 1.0f,
+    mix.renderToOutput(buffer, timeProcessing, inputFrames, buffer.getNumSamples(), 1.0f, 1.0f,
                        windowFadeAt(fadeBlockStartSeconds, fadeStartSeconds,
                                     renderEndSeconds,
                                     fadeOutSeconds),

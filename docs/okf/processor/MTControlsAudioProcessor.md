@@ -314,6 +314,15 @@ bool isSongPlaying() const noexcept;
 El pitch público se normaliza a `-12..+12` semitonos. El tempo usa la relación
 `source/output` y se limita a `0.75..2.0`.
 
+Cada callback sincroniza los valores activos de pitch y tempo con
+`StemMixEngine` **antes** de calcular `requiredInputFrames()`. Los setters
+son idempotentes y conservan el historial cuando el valor no cambia. Esto
+también cubre la carga de una canción: reiniciar `playbackTempoRatioActive`
+a `1.0` no basta si el motor todavía conserva la relación de la canción
+anterior. Un transporte a BPM original debe consumir exactamente los mismos
+frames que sus lectores; de lo contrario deriva y dispara seeks correctivos
+repetidos con silencios de read-ahead.
+
 Al completar naturalmente la ventana `[Inicio, Fin]`, el transporte queda
 detenido y estacionado exactamente en `Fin`. La UI diferencia este estado de
 un stop manual —que retorna a `Inicio`— y, si la canción tiene configurado
@@ -424,26 +433,27 @@ wall_ms,delta_ms,song_position_sec,stem_count,is_playing
 gaps y el peor gap observado en milisegundos, p.ej.
 `Blocks: 110719 | Overruns: 0 (0.0%) | Avg: 0.70ms | Max: 4.34ms | Gaps: 9 (max 484ms)`.
 
-### Routing agrupado (homogeneidad de stems)
+### Routing agrupado
 
 `processBlock` resuelve dos rutas cuando `routingActive == true`:
 
-1. **Ruta por stem** (la ruta legacy): se mantiene para stems distribuidos
-   entre canales o anchos, o cuando no hay pitch/tempo activo. Cada stem
+1. **Ruta por stem**: se mantiene para salidas multicanal heterogéneas,
+   click/guía que requieren transposición, o cuando no hay pitch/tempo activo. Cada stem
    corre su propio `BungeeProcessor::process()` y se enruta con
    `StemOutputRouter.routeStemToOutputChannels(...)` de forma individual.
-2. **Ruta agrupada** (nueva): cuando todos los stems activos resuelven al
-   mismo `(channel, width)` destino **y** hay pitch/tempo activo, el
+2. **Ruta agrupada**: con salida estéreo o destinos multicanal homogéneos,
+   **y** con pitch/tempo activo, el
    callback reparte los stems en `stemMixBuffer`, `percussionBuffer` y
    `dryBuffer` con `StemMixEngine::mixStems`, corre las tres voces
    `TimeStretchProcessor` que `StemMixEngine` mantiene agrupadas y
-   enruta el resultado con una única llamada a `StemOutputRouter`
-   (que pliega L+R cuando el destino común es mono). En una canción
-   de 19 stems con tempo ≠ original las llamadas Bungee caen de 19 a
-   3 por callback, devolviendo el callback promedio al presupuesto
-   del dispositivo Android (40 ms en Galaxy A50).
+   conserva un máximo de tres voces. En estéreo, `StemOutputRouter` aplica
+   canal y ancho de cada stem a la entrada de su grupo: click L, guía R e
+   instrumentos estéreo pueden coexistir. En multicanal homogéneo se enruta
+   el resultado después. El render recibe explícitamente `numSamples`, nunca
+   la capacidad de scratch de 8192 frames. El preflight consulta únicamente
+   las voces agrupadas utilizadas, sin depender de spares individuales.
 
-Las garantías auditivas siguientes se conservan exactamente en la
+Los controles siguientes se conservan en la
 ruta agrupada:
 
 - Volumen, trim, mute y solo por stem (vía `StemTrack::setMuted/
@@ -458,7 +468,11 @@ ruta agrupada:
   aplicada a `metronomeLatencyDelay` y `dynamicGuideLatencyDelay`.
 - Routing mono/estéreo hacia el canal físico configurado por el
   usuario (con plegado L+R para mono).
-- Routing individual cuando los stems tienen salidas diferentes.
+- Routing individual para salidas multicanal heterogéneas.
+
+El procesamiento espectral de una suma puede diferir de sumar procesadores
+independientes; no se promete igualdad sample a sample. Los cambios de routing
+estéreo atraviesan ahora la latencia de Bungee, igual que el volumen por stem.
 
 El campo `routing_grouped_eligible` de `audio_stems_<ts>.csv` deja
 explícito qué bloque del callback usó la ruta agrupada, para que el
@@ -767,8 +781,12 @@ versión nueva sólo si puede leer de forma coherente el snapshot de
 Una actualización estructural de arrange no detiene un transporte que ya está
 reproduciendo, incluso si coincide con una transición de modo de la UI. El
 callback conserva el playhead actual y adopta el siguiente snapshot coherente;
-la inicialización o restauración estando detenido conserva el comportamiento de
-posicionar el arrange personalizado en su primera parte.
+la inicialización o restauración estando detenido posiciona el transporte en
+`Inicio` (normalmente 0:00), nunca en el timestamp de la primera sección.
+La carga del editor vuelve a publicar ese destino después de restaurar la
+ventana y el arrange, antes del fade-in. Esto cubre también canciones con una
+única sección tardía y la carga desde un editor de arrange abierto. Un recorte
+de `Inicio` guardado explícitamente sigue definiendo el comienzo reproducible.
 
 Los loops, jumps y discontinuidades implícitas de clips insertados se resuelven
 como transiciones de bloque con `transitionOffsetFrames`. El processor prearma
@@ -798,15 +816,12 @@ void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
 
 ## Audio Device
 
-Android selecciona al inicializar el menor búfer soportado de al menos 40 ms y
-lo usa también como quantum del callback de Oboe. Esto evita que el stream
-mantenga un búfer grande pero invoque al procesador una vez por burst nativo
-(por ejemplo, 96 frames / 2 ms), un plazo insuficiente para pitch/tempo sobre
-muchos stems. El margen de 40 ms cubre bloques de lectura/decodificación de
-20-30 ms medidos en un teléfono Android con 19 stems y procesamiento de tempo.
-Si no hay un tamaño soportado que alcance ese umbral, conserva el
-predeterminado. La mejora de cortes debe verificarse en dispositivo con
-`AudioDiagnostics`.
+`StandaloneAudioDeviceBridge` conserva la configuración predeterminada del
+dispositivo; se retiró el override Android de 40 ms. Los 40 ms observados en
+algunas capturas son el tamaño efectivo de esa sesión, no una garantía del
+bridge. `AudioDiagnostics.budget_ms` permite comprobarlo en cada dispositivo.
+El callback siempre procesa sus frames efectivos, independientemente de la
+capacidad máxima reservada en `prepareToPlay`.
 
 El stream auxiliar que JUCE usa para obtener un hilo con prioridad de tiempo
 real se abre en modo compartido. En algunos Samsung, abrir ese probe como
