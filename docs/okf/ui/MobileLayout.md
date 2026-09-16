@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-09-08T19:30:00-03:00
+timestamp: 2026-09-15T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -119,37 +119,46 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 
 ## Rendimiento en Android
 
+- El wrapper Android compila `juce_opengl` y conecta un `OpenGLContext` al
+  componente raiz que contiene el editor. JUCE conserva un framebuffer y
+  repinta sus regiones invalidadas con el renderer 2D de OpenGL. El peer
+  software anterior rasterizaba y transferia la ventana completa incluso ante
+  invalidaciones pequenas, ocupando el message thread durante los gestos.
+- Cada slot del mixer conserva una imagen rasterizada en memoria de CPU. El
+  desplazamiento horizontal reutiliza esa imagen y los cambios de VU, volumen
+  o botones invalidan solo su region. Se usa `SoftwareImageType` explicitamente
+  para evitar render targets OpenGL anidados. La cache se recrea cuando cambia
+  el tamano fisico del slot y se libera con el componente. El cache de texturas
+  del contexto tiene un presupuesto de `32 MiB`.
+- El contexto solo dibuja cuando hay invalidaciones (`setContinuousRepainting(false)`).
+  No hay un bucle de render permanente mientras la UI esta quieta. La raiz es
+  opaca y desconecta el contexto antes de destruir el editor y sus controles.
+- `assembleDebug` optimiza el codigo nativo con `-O2`, incluidos los modulos JUCE
+  y el motor de audio. Conserva los simbolos de debug y el APK depurable. No
+  activa `fast-math` ni cambia las opciones de Release. Para depuracion paso a
+  paso sin optimizacion: `./gradlew :app:assembleDebug -PplayworshipOptimizeDebug=OFF`.
+  El siguiente build sin esa propiedad vuelve a activar la optimizacion.
 - Con una sesion local valida, Android presenta primero la superficie ligera de
   bienvenida y difiere brevemente la construccion del mixer, waveform y
   biblioteca. Los componentes JUCE siguen creandose en el message thread.
 - `makeAppFont` usa la familia sans-serif nativa y su cache en Android para
   evitar resolver repetidamente las tipografias embebidas durante el arranque y
   los repaints. iOS y escritorio conservan la familia Inter embebida.
-- Los timers puramente visuales reducen su frecuencia en Android: seguimiento
-  decorativo de waveform a `30 Hz`, medidores VU a `8 Hz` y parpadeo de MIDI
-  Learn a `12 Hz`. Los VU ceden presupuesto del message thread al transporte.
-- La waveform es opaca en Android y usa una base plana durante sus repaints de
-  transporte. Esto evita repintar el fondo del editor y repetir gradientes y
-  textura de ruido sobre toda la superficie en cada frame; la geometria,
-  colores de onda, overlays y comportamiento de iOS/escritorio no cambian.
-- La cache de seguimiento usa resolucion logica y overscan `1.25x` en Android.
-  Durante playback dibuja una sola imagen transformada y el playhead; el realce
-  progresivo de la porcion reproducida se reserva para iOS y escritorio, donde
-  no obliga a transformar una segunda mascara por CPU.
-- Android reutiliza esa cache durante playback aun cuando el seguimiento esta
-  apagado. La vista fija deja de reconstruir miles de lineas de waveform en
-  cada tick y actualiza solamente la imagen preparada y el playhead.
-- En vista fija, cada tick invalida solo la franja comprendida entre la posicion
-  anterior y la nueva del playhead. Se conserva el repaint completo para follow,
-  seeks, loops y saltos de arrangement.
-- En Android, el mismo repaint parcial del playhead se aplica tambien en modo
-  follow: la cache cubre la ventana con overscan 1.25x, asi que basta con
-  redibujar la franja del playhead en lugar de recomponer toda la waveform.
-  Eso baja los `Missed Vsync` de 39 a 3 sobre 13s de reproduccion sin
-  introducir tearing visible.
-- El fondo del editor (gradiente + halo + viñeta + textura de ruido por tiled
-  fill) solo se dibuja en iOS y escritorio. En Android se sustituye por un
-  `fillAll` plano porque el WaveformBar y el ChannelGridPanel son opacos y
-  cubren su area. Esto evita repintar ~2.6M de pixeles cada frame de playback
-  y reduce la mediana por frame de ~750 ms a ~150 ms en el emulador (API 36,
-  1080x2400). El coste sigue siendo CPU y no GPU.
+- Los timers visuales conservan su frecuencia: waveform a `30 Hz`, medidores
+  VU a `8 Hz` y parpadeo de MIDI Learn a `12 Hz`. La aceleracion grafica no
+  modifica el transporte ni la frecuencia del callback de audio.
+- Editor, top bar y waveform usan fondos planos en Android. La waveform es
+  opaca y su cache de playback usa resolucion logica con overscan `1.25x`.
+  La cache se reutiliza con follow encendido o apagado; no se transforma una
+  segunda mascara para realzar progresivamente la porcion reproducida.
+- En una ventana fija, el transporte invalida solamente la franja entre las
+  posiciones anterior y nueva del playhead. Si follow mueve la ventana,
+  `setVisibleWindow` solicita un repaint completo para desplazar tambien la
+  onda y sus secciones. El overscan reduce reconstrucciones de la cache, pero
+  no sustituye ese repaint cuando cambia la ventana visible.
+- Los cambios entre reproduccion y pausa/stop invalidan toda la waveform,
+  porque alternan entre su imagen de playback y el dibujo detallado. Despues
+  de esa transicion vuelven a usarse las invalidaciones parciales del playhead.
+
+Mediciones y limites de la verificacion:
+[`perf/analysis_20260915/INFORME.md`](../../../perf/analysis_20260915/INFORME.md).

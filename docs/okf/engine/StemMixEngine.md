@@ -187,6 +187,19 @@ los stems marcados como click/guía, no recibe el fade de instrumentos. Esta
 misma excepción debe conservarse en el camino de routing multicanal del
 procesador.
 
+### Ruta agrupada de routing (consumer contract)
+
+`MTControlsAudioProcessor` consume `mixStems` + `renderToOutput` también
+cuando cada stem tiene su propio `(channel, width)` destino, siempre y
+cuando todos resuelvan al mismo `(channel, width)`. Esa es la "ruta
+agrupada": el motor escribe en un scratch 2-canales (o ancho del bus
+físico, lo que sea mayor) y `StemOutputRouter` enruta el resultado
+con una sola llamada, incluyendo el plegado L+R cuando el destino
+común es mono. El sonido es indistinguible del routing por stem, pero
+las llamadas Bungee bajan de N a 3 por callback. Si los stems divergen
+en `(channel, width)`, el procesador cae automáticamente a la ruta
+por stem y todo el contrato existente se preserva.
+
 ## Latencia
 
 ### Frames requeridos

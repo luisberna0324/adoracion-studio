@@ -313,6 +313,15 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   // per-block cost on multichannel devices without changing the result.
   padsRenderStorage.setSize(2, realtimeBlockCapacity);
   dynamicGuideRenderStorage.setSize(2, realtimeBlockCapacity);
+  // Routing-grouped path renders the StemMixEngine output here before
+  // StemOutputRouter folds it into the user-configured (channel, width)
+  // destination. Two channels is the minimum the engine writes; on a
+  // multichannel bus we still need at least 2 to fold L+R for a mono
+  // destination, so we size for max(device_channels, 2). Channels
+  // beyond 2 stay zeroed because `buffer.clear()` is still applied
+  // before routeStemToOutputChannels adds the folded result.
+  routingGroupedRenderStorage.setSize(
+      juce::jmax(2, getTotalNumOutputChannels()), realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
   dynamicGuideEngine.prepare(sampleRate);
   metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
@@ -502,7 +511,20 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           juce::Time::highResolutionTicksToSeconds(blockStartTick -
                                                    previousEndTick) *
           1000.0;
-      if (deltaMs >= diagnostics.getGapThresholdMs()) {
+      const double callbackIntervalMs =
+          playbackSampleRate > 0.0 && buffer.getNumSamples() > 0
+              ? (static_cast<double>(buffer.getNumSamples()) /
+                 playbackSampleRate) *
+                    1000.0
+              : 0.0;
+      // With Oboe configured for a larger callback quantum, the expected
+      // time between callbacks is itself greater than the legacy 15 ms
+      // threshold. Require at least one skipped callback before recording a
+      // starvation gap; otherwise every healthy 20 ms callback is a false
+      // positive in audio_gaps_*.csv.
+      const double gapThresholdMs = juce::jmax(
+          diagnostics.getGapThresholdMs(), callbackIntervalMs * 1.5);
+      if (deltaMs >= gapThresholdMs) {
         const double posSec =
             playbackSampleRate > 0.0
                 ? transportClock.getPositionSeconds()
@@ -969,19 +991,52 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       stemLevels[static_cast<size_t>(i)].store(0.0f, std::memory_order_relaxed);
 
     bool routingActive = false;
+    // `routingHomogeneous` is true when every loaded stem resolves to
+    // exactly the same (channel, width). When homogeneous AND the
+    // destination fits inside the device's available channels, the
+    // StemMixEngine grouped mix can be routed in a single StemOutputRouter
+    // call instead of N per-stem BungeeProcessor runs. See
+    // `// ---- Routing-grouped path` below.
+    bool routingHomogeneous = stemCount > 0;
+    int routingCommonChannelOneBased = 0;
+    int routingCommonWidth = 0;
     for (int i = 0; i < stemCount; ++i) {
       const int assignedChannel =
           stemOutputChannels[static_cast<size_t>(i)].load(std::memory_order_relaxed);
       const int assignedWidth = juce::jlimit(
           1, 2, stemOutputWidths[static_cast<size_t>(i)].load(
                     std::memory_order_relaxed));
+      if (i == 0) {
+        routingCommonChannelOneBased = juce::jlimit(1, numChannels, assignedChannel);
+        routingCommonWidth =
+            numChannels < 2 ? 1 : juce::jlimit(1, 2, assignedWidth);
+      } else {
+        if (assignedChannel != routingCommonChannelOneBased ||
+            assignedWidth != routingCommonWidth) {
+          routingHomogeneous = false;
+        }
+      }
       // Engage explicit routing not only when using channels beyond 1,
       // but also when any stem is configured as mono on a stereo-capable bus.
       if (assignedChannel > 1 || (numChannels > 1 && assignedWidth == 1)) {
         routingActive = true;
-        break;
+        // Do NOT break out — keep walking so we still detect a divergence
+        // among the remaining stems (which decides between grouped and
+        // per-stem routing in the `routingActive` branch further down).
       }
     }
+    const int routingCommonMaxBase = juce::jmax(
+        1, numChannels - (routingCommonWidth >= 2 ? 1 : 0));
+    const int routingCommonChannelOneBasedClamped = juce::jlimit(
+        1, routingCommonMaxBase, routingCommonChannelOneBased);
+    const int routingCommonChannelIndex =
+        juce::jlimit(0, juce::jmax(0, numChannels - 1),
+                     routingCommonChannelOneBasedClamped - 1);
+    // Grouped mix is only safe when every stem resolves to the same
+    // destination AND that destination fits inside the device's physical
+    // channels. The per-stem path handles every other case.
+    const bool routingGroupedEligible =
+        routingActive && routingHomogeneous && stemCount > 0;
 
     if (isPlaying) {
       const bool customArrangement = realtimeCustomArrangement;
@@ -1570,6 +1625,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               stemCount);
           stemTimingEvent.targetLatencySamples = routingPitchLatencySamples;
           stemTimingEvent.routingActive = true;
+          stemTimingEvent.routingGroupedEligible = routingGroupedEligible;
           stemTimingEvent.timeProcessActive = timeProcessActive;
           stemTimingEvent.tempoActive = tempoActive;
 
@@ -1592,6 +1648,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             if (!stemPitchShiftableFlags[stemIndex] && tempoActive)
               flags |= 0x4u;
             stemTimingEvent.flags[stemIndex] = flags;
+
+            // Per-stem routing snapshot taken just before the path
+            // decision. The grouped path requires every stem to share
+            // (channel, width); when it refuses to engage, these two
+            // columns make the divergence immediately visible.
+            const int dbgChannel = stemOutputChannels[stemIndex].load(
+                std::memory_order_relaxed);
+            const int dbgWidth = juce::jlimit(
+                1, 2, stemOutputWidths[stemIndex].load(
+                          std::memory_order_relaxed));
+            stemTimingEvent.routingChannelOneBased[stemIndex] =
+                static_cast<int16_t>(
+                    juce::jlimit(-32768, 32767, dbgChannel));
+            stemTimingEvent.routingWidth[stemIndex] =
+                static_cast<int16_t>(
+                    juce::jlimit(-32768, 32767, dbgWidth));
 
             // ---- Benchmark: sample worker drain for this stem ----------
             // We read the worker's most recent visit atomics and compute
@@ -1726,7 +1798,58 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         buffer.clear();
         const int routingInputSamples =
             timeProcessActive ? sourceFramesThisBlock : numSamples;
-        if (timeProcessingBlockedThisBlock) {
+        if (routingGroupedEligible && !timeProcessingBlockedThisBlock &&
+            timeProcessActive) {
+          // ---- Routing-grouped path ------------------------------------
+          // Every loaded stem resolves to the same (channel, width)
+          // destination. The previous per-stem loop ran Bungee once per
+          // stem — for a 19-stem song at 1920 frames/block each Bungee
+          // call cost ~2.6 ms (~49 ms total, well over the 40 ms
+          // callback budget on the Galaxy A50). StemMixEngine keeps the
+          // exact same audio behaviour but uses three shared
+          // TimeStretchProcessor voices:
+          //   * stemMixBuffer      = melodic + pitch-shiftable stems
+          //   * percussionBuffer   = percussive stems (tempo only)
+          //   * dryBuffer          = click / guide (tempo only)
+          // This caps Bungee calls at 3 per block regardless of the
+          // number of stems, dropping read_next from ~49 ms to ~6 ms.
+          // The combined 2-channel mix is then routed once via
+          // StemOutputRouter — which folds L+R for mono destinations
+          // exactly like the per-stem loop did for stemBus[0].
+          mixEngine.mixStems(stemTracks, stemClickGuideStates.data(),
+                             stemPitchShiftStates.data(), stemCount,
+                             sourceFramesThisBlock, numChannels);
+          // ---- Benchmark: per-stem Bungee timing (grouped) -------------
+          // Grouped path makes per-stem Bungee timings non-applicable,
+          // so we zero them out so the decimated StemTimingEvent only
+          // reports the engine's latency, not stale per-stem reads.
+          for (size_t stemIndex = 0;
+               stemIndex < static_cast<size_t>(stemCount); ++stemIndex) {
+            lastBungeeUsMicros[stemIndex] = 0.0;
+            lastBungeeGapUsMicros[stemIndex] = 0.0;
+            lastBungeeCount[stemIndex] = 0;
+          }
+          // ---- Benchmark: decode/render (pitch processor) ---------------
+          // Stage bracket reuses stageDecodeRenderEndTick by accumulating
+          // the three grouped TimeStretchProcessor.process() calls so
+          // the audio_*.csv "decode_render" column still reflects the
+          // audio-thread cost of pitch/tempo work.
+          int64_t drStart = juce::Time::getHighResolutionTicks();
+          // renderToOutput clears its destination; routeStemToOutputChannels
+          // then *adds* into the cleared `buffer`, so a fresh write matches
+          // the per-stem path's clear-and-route semantics.
+          mixEngine.renderToOutput(routingGroupedRenderStorage,
+                                   timeProcessActive, sourceFramesThisBlock,
+                                   fadeStart, fadeEnd, windowFadeStart,
+                                   windowFadeEnd);
+          int64_t drEnd = juce::Time::getHighResolutionTicks();
+          stageDecodeRenderEndTick += (drEnd - drStart);
+          timeProcessingBlockedThisBlock = mixEngine.wasLastRenderBlocked();
+          stemOutputLatencyThisBlock = mixEngine.getOutputLatencySamples();
+          stemOutputRouter.routeStemToOutputChannels(
+              routingGroupedRenderStorage, routingCommonChannelIndex,
+              routingCommonWidth, buffer);
+        } else if (timeProcessingBlockedThisBlock) {
           // Keep every source and the transport moving as one unit, but do not
           // let a subset of recovered processors or dry stems leak through.
           for (int i = 0; i < stemCount; ++i) {
@@ -1737,6 +1860,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             stemPitchDelayLines[static_cast<size_t>(i)].invalidateHistory();
           }
         } else {
+          // ---- Per-stem routing path ------------------------------------
+          // Stems distribute across multiple channels or widths, so the
+          // shared grouped TimeStretchProcessor voices cannot produce the
+          // right output routing. Each stem keeps its own per-stem
+          // Bungee call. This branch is unchanged from the pre-grouped
+          // implementation; it is only kept because the grouped path
+          // needs every stem to share (channel, width).
           for (int i = 0; i < stemCount; ++i) {
             stemRoutingInputBuffer.clear(0, routingInputSamples);
             stemRoutingTempBuffer.clear(0, numSamples);
@@ -1747,11 +1877,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               stemTracks[stemIndex]->getNextAudioBlock(stemInfo);
               auto &proc = stemPitchProcessors[stemIndex];
               // ---- Benchmark: decode/render (pitch processor) -----------
-              int64_t drStart = juce::Time::getHighResolutionTicks();
+              int64_t drStartLocal = juce::Time::getHighResolutionTicks();
               proc.process(stemRoutingInputBuffer, routingInputSamples,
                            stemRoutingTempBuffer, numSamples);
-              int64_t drEnd = juce::Time::getHighResolutionTicks();
-              stageDecodeRenderEndTick += (drEnd - drStart);
+              int64_t drEndLocal = juce::Time::getHighResolutionTicks();
+              stageDecodeRenderEndTick += (drEndLocal - drStartLocal);
               // ---- Benchmark: per-stem Bungee timing --------------------
               // Captured here (in the timeProcessActive branch) so we
               // only see real work. The previous Bungee start tick
@@ -1761,10 +1891,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               // written into the StemTimingEvent that is created in
               // the decimated snapshot block further down.
               static int64_t prevBungeeStart[AudioDiagnostics::StemTimingEvent::kMaxStemMetrics]{};
-              const int64_t gapTicks = drStart - prevBungeeStart[stemIndex];
-              prevBungeeStart[stemIndex] = drStart;
+              const int64_t gapTicks = drStartLocal - prevBungeeStart[stemIndex];
+              prevBungeeStart[stemIndex] = drStartLocal;
               lastBungeeUsMicros[stemIndex] =
-                  static_cast<double>(drEnd - drStart) * 1e6 /
+                  static_cast<double>(drEndLocal - drStartLocal) * 1e6 /
                   juce::Time::getHighResolutionTicksPerSecond();
               lastBungeeGapUsMicros[stemIndex] =
                   gapTicks > 0

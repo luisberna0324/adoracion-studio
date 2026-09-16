@@ -2,10 +2,59 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-09-05T14:58:00Z
+timestamp: 2026-09-16T12:30:00-03:00
 ---
 
 # Changelog
+
+## 2026-09-16
+
+### Routing agrupado para tempo/pitch en Android
+
+- Cuando todos los stems activos resuelven al mismo `(channel, width)`
+  destino, `processBlock` deja de lado el loop por stem que ejecuta
+  `BungeeProcessor::process()` una vez por stem. En su lugar, reparte
+  los stems entre `stemMixBuffer`, `percussionBuffer` y `dryBuffer`
+  con `StemMixEngine::mixStems` y corre las **tres** voces
+  `TimeStretchProcessor` que `StemMixEngine` ya mantenía agrupadas.
+  El resultado se enruta con `StemOutputRouter.routeStemToOutputChannels`
+  **una sola vez**, plegando L+R cuando el destino común es mono. En
+  una canción de 19 stems con tempo ≠ original, las llamadas Bungee
+  caen de 19 a 3 por callback; el callback promedio baja de ~45 ms a
+  el rango del presupuesto de 40 ms.
+
+- Si los stems se distribuyen entre canales o anchos, se conserva la
+  ruta por stem original — el agrupado es opt-in por homogeneidad del
+  routing, no invasivo. Cuando no hay pitch/tempo activo también se
+  cae a la ruta por stem para no pagar el costo extra de los tres
+  `addFrom` internos.
+
+- Las mismas garantías auditivas se preservan: volumen, trim, mute,
+  solo por stem (vía `StemTrack::setMuted/setSoloed/setVolume/setTrim`);
+  fade de instrumentos y excepción de fade para click/guía (vía
+  `applyFade` dentro de `renderToOutput`); compensación de latencia
+  reportada por `mixEngine.getOutputLatencySamples()`; y routing mono/
+  estéreo hacia el canal configurado.
+
+- `AudioDiagnostics::StemTimingEvent` agrega `routing_grouped_eligible`
+  a `audio_stems_<ts>.csv` para que el script de análisis distinga
+  bloques agrupados de bloques por stem dentro del mismo escenario.
+- Contratos actualizados: [StemMixEngine](engine/StemMixEngine.md),
+  [MTControlsAudioProcessor](processor/MTControlsAudioProcessor.md),
+  [AudioDiagnostics](processor/AudioDiagnostics.md).
+
+### Fluidez de la interfaz Android
+
+- El APK Debug optimiza el codigo nativo con `-O2` y conserva los simbolos y la
+  depuracion. `-PplayworshipOptimizeDebug=OFF` permite desactivarlo explicitamente.
+- La raiz Android usa el renderer 2D OpenGL de JUCE con repintado por demanda;
+  desconecta el contexto antes de destruir el editor.
+- El mixer conserva imagenes software de sus slots para reutilizarlas al hacer
+  scroll. VU y controles invalidan sus regiones; no se crean render targets GL
+  anidados por canal.
+- Los cambios entre playback y pausa/stop repintan la waveform completa antes
+  de volver a las franjas parciales del playhead.
+- Contrato: [Mobile Layout](ui/MobileLayout.md).
 
 ## 2026-09-05
 

@@ -120,10 +120,24 @@ public:
     int stemCount = 0;
     int targetLatencySamples = 0;
     bool routingActive = false;
+    // True when every active stem resolves to the same (channel, width)
+    // destination AND the device has at least two physical output
+    // channels. Under these conditions the audio thread uses the
+    // StemMixEngine grouped path (a single Bungee call per group instead
+    // of one per stem) and routes the result via StemOutputRouter once.
+    // False means the older per-stem Bungee loop is still running.
+    bool routingGroupedEligible = false;
     bool timeProcessActive = false;
     bool tempoActive = false;
     std::array<int16_t, kMaxStemMetrics> processLatencySamples{};
     std::array<int16_t, kMaxStemMetrics> delaySamples{};
+    // Per-stem routing snapshot taken just before the path decision.
+    // Used to diagnose `routing_grouped_eligible=0` cases: when the
+    // grouped path refuses to engage because some stems have a
+    // different (channel, width) destination, these two arrays make it
+    // obvious which stems are responsible.
+    std::array<int16_t, kMaxStemMetrics> routingChannelOneBased{};
+    std::array<int16_t, kMaxStemMetrics> routingWidth{};
     // Bit flags per stem:
     //  bit0 = processed
     //  bit1 = pitchShiftable
@@ -319,7 +333,7 @@ public:
     }
     if (auto stream = stemLogFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,tempo_ratio,pitch_semitones,routing_active,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count,bungee_us,bungee_gap_us,bungee_count\n",
+          "wall_ms,tempo_ratio,pitch_semitones,routing_active,routing_grouped_eligible,time_process_active,tempo_active,stem_count,target_latency_samples,stem_index,processed,pitch_shiftable,content_type,proc_latency_samples,delay_samples,routing_channel_one_based,routing_width,worker_drain_us,worker_gap_us,worker_visit_count,real_drain_us,real_drain_gap_us,real_drain_count,decode_us,decode_gap_us,decode_count,bungee_us,bungee_gap_us,bungee_count\n",
           false, false, nullptr);
     }
     if (auto stream = gapLogFile.createOutputStream()) {
@@ -531,6 +545,7 @@ private:
             << juce::String(ev.tempoRatio, 6).toStdString() << ","
             << ev.pitchSemiTones << ","
             << (ev.routingActive ? "1" : "0") << ","
+            << (ev.routingGroupedEligible ? "1" : "0") << ","
             << (ev.timeProcessActive ? "1" : "0") << ","
             << (ev.tempoActive ? "1" : "0") << ","
             << clampedStemCount << ","
@@ -541,6 +556,8 @@ private:
             << contentType << ","
             << ev.processLatencySamples[static_cast<size_t>(stemIndex)] << ","
             << ev.delaySamples[static_cast<size_t>(stemIndex)] << ","
+            << ev.routingChannelOneBased[static_cast<size_t>(stemIndex)] << ","
+            << ev.routingWidth[static_cast<size_t>(stemIndex)] << ","
             << ev.workerDrainUs[static_cast<size_t>(stemIndex)] << ","
             << ev.workerGapUs[static_cast<size_t>(stemIndex)] << ","
             << ev.workerVisitCount[static_cast<size_t>(stemIndex)] << ","

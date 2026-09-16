@@ -424,6 +424,46 @@ wall_ms,delta_ms,song_position_sec,stem_count,is_playing
 gaps y el peor gap observado en milisegundos, p.ej.
 `Blocks: 110719 | Overruns: 0 (0.0%) | Avg: 0.70ms | Max: 4.34ms | Gaps: 9 (max 484ms)`.
 
+### Routing agrupado (homogeneidad de stems)
+
+`processBlock` resuelve dos rutas cuando `routingActive == true`:
+
+1. **Ruta por stem** (la ruta legacy): se mantiene para stems distribuidos
+   entre canales o anchos, o cuando no hay pitch/tempo activo. Cada stem
+   corre su propio `BungeeProcessor::process()` y se enruta con
+   `StemOutputRouter.routeStemToOutputChannels(...)` de forma individual.
+2. **Ruta agrupada** (nueva): cuando todos los stems activos resuelven al
+   mismo `(channel, width)` destino **y** hay pitch/tempo activo, el
+   callback reparte los stems en `stemMixBuffer`, `percussionBuffer` y
+   `dryBuffer` con `StemMixEngine::mixStems`, corre las tres voces
+   `TimeStretchProcessor` que `StemMixEngine` mantiene agrupadas y
+   enruta el resultado con una única llamada a `StemOutputRouter`
+   (que pliega L+R cuando el destino común es mono). En una canción
+   de 19 stems con tempo ≠ original las llamadas Bungee caen de 19 a
+   3 por callback, devolviendo el callback promedio al presupuesto
+   del dispositivo Android (40 ms en Galaxy A50).
+
+Las garantías auditivas siguientes se conservan exactamente en la
+ruta agrupada:
+
+- Volumen, trim, mute y solo por stem (vía `StemTrack::setMuted/
+  setSoloed/setVolume/setTrim` antes del `getNextAudioBlock`).
+- Fade de instrumentos y la excepción para stems click/guía (vía
+  `StemMixEngine::applyFade`, que excluye `dryBuffer` cuando el
+  tempo está activo).
+- Pitch sólo en stems marcados como pitch-shiftable (los otros van a
+  `percussionBuffer` y `dryBuffer`, no a `stemMixBuffer`).
+- Cambio de tempo para los grupos que lo requieren.
+- Compensación de latencia vía `mixEngine.getOutputLatencySamples()`,
+  aplicada a `metronomeLatencyDelay` y `dynamicGuideLatencyDelay`.
+- Routing mono/estéreo hacia el canal físico configurado por el
+  usuario (con plegado L+R para mono).
+- Routing individual cuando los stems tienen salidas diferentes.
+
+El campo `routing_grouped_eligible` de `audio_stems_<ts>.csv` deja
+explícito qué bloque del callback usó la ruta agrupada, para que el
+script de análisis distinga ambos modos dentro del mismo escenario.
+
 ## Metrónomo API
 
 ### Habilitación y estado
@@ -757,6 +797,21 @@ void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
 ```
 
 ## Audio Device
+
+Android selecciona al inicializar el menor búfer soportado de al menos 40 ms y
+lo usa también como quantum del callback de Oboe. Esto evita que el stream
+mantenga un búfer grande pero invoque al procesador una vez por burst nativo
+(por ejemplo, 96 frames / 2 ms), un plazo insuficiente para pitch/tempo sobre
+muchos stems. El margen de 40 ms cubre bloques de lectura/decodificación de
+20-30 ms medidos en un teléfono Android con 19 stems y procesamiento de tempo.
+Si no hay un tamaño soportado que alcance ese umbral, conserva el
+predeterminado. La mejora de cortes debe verificarse en dispositivo con
+`AudioDiagnostics`.
+
+El stream auxiliar que JUCE usa para obtener un hilo con prioridad de tiempo
+real se abre en modo compartido. En algunos Samsung, abrir ese probe como
+exclusivo desplaza el stream de reproducción recién configurado antes de su
+primer callback y deja la sesión sin audio.
 
 ```cpp
 StandaloneAudioDeviceBridge &getAudioDeviceBridge() noexcept;

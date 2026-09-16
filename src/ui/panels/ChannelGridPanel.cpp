@@ -12,6 +12,57 @@
 #include <cmath>
 
 namespace {
+#if JUCE_ANDROID
+// Avoid a nested OpenGL render target for each strip. Keep the rasterised
+// images in CPU memory; JUCE uploads them only when their contents change.
+class AndroidStripImage final : public juce::CachedComponentImage {
+public:
+  explicit AndroidStripImage(juce::Component &component) : owner(component) {}
+
+  void paint(juce::Graphics &g) override {
+    const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
+    const auto bounds = owner.getLocalBounds();
+    const auto imageBounds = bounds * scale;
+    if (image.isNull() || image.getBounds() != imageBounds) {
+      image = juce::Image(juce::Image::ARGB,
+                          juce::jmax(1, imageBounds.getWidth()),
+                          juce::jmax(1, imageBounds.getHeight()), true,
+                          juce::SoftwareImageType());
+      validArea.clear();
+    }
+    if (!validArea.containsRectangle(bounds)) {
+      juce::Graphics cached(image);
+      auto &context = cached.getInternalContext();
+      context.addTransform(juce::AffineTransform::scale(scale));
+      for (const auto &area : validArea)
+        context.excludeClipRectangle(area);
+      context.setFill(juce::Colours::transparentBlack);
+      context.fillRect(bounds, true);
+      context.setFill(juce::Colours::black);
+      owner.paintEntireComponent(cached, true);
+      validArea = bounds;
+    }
+    g.setColour(juce::Colours::black.withAlpha(owner.getAlpha()));
+    g.drawImageTransformed(
+        image, juce::AffineTransform::scale(
+                   static_cast<float>(bounds.getWidth()) / image.getWidth(),
+                   static_cast<float>(bounds.getHeight()) / image.getHeight()));
+  }
+
+  bool invalidateAll() override { validArea.clear(); return true; }
+  bool invalidate(const juce::Rectangle<int> &area) override {
+    validArea.subtract(area);
+    return true;
+  }
+  void releaseResources() override { image = {}; validArea.clear(); }
+
+private:
+  juce::Component &owner;
+  juce::Image image;
+  juce::RectangleList<int> validArea;
+};
+#endif
+
 bool clickDynMixControlStateEquals(const ClickDynMixSnapshot &a,
                                    const ClickDynMixSnapshot &b) {
   return a.divisionMask == b.divisionMask && a.enabled == b.enabled &&
@@ -119,6 +170,12 @@ public:
         divisionLevelProvider(std::move(levelProvider)),
         guideSettingsButton(std::make_unique<GuideSettingsButton>()),
         outputChannelLabel({}, "Canal") {
+#if JUCE_ANDROID
+    // A horizontal drag moves whole strips without changing their contents.
+    // Reuse their rasterised controls instead of rebuilding all paths and
+    // glyphs on every frame. Child repaints still invalidate the changed area.
+    setCachedComponentImage(new AndroidStripImage(*this));
+#endif
     addAndMakeVisible(*strip);
     addAndMakeVisible(*guideSettingsButton);
     guideSettingsButton->setVisible(false);

@@ -117,7 +117,7 @@ bool putFile(const juce::String& urlText, const CloudUploadObject& object,
   return true;
 }
 
-bool downloadFile(const juce::String& urlText, const CloudObjectRef& reference,
+bool downloadFileOnce(const juce::String& urlText, const CloudObjectRef& reference,
                   const juce::File& destination, CloudTransferError& error) {
   if (destination.existsAsFile() && destination.getSize() == reference.sizeBytes &&
       juce::SHA256(destination).toHexString() == reference.sha256.toLowerCase())
@@ -167,6 +167,23 @@ bool downloadFile(const juce::String& urlText, const CloudObjectRef& reference,
     return false;
   }
   return true;
+}
+
+bool downloadFile(const juce::String& urlText, const CloudObjectRef& reference,
+                  const juce::File& destination, CloudTransferError& error) {
+  // Mobile networks and signed object URLs can occasionally yield a truncated
+  // response. Retry from scratch before surfacing a hash mismatch to the UI.
+  constexpr int maxAttempts = 3;
+  for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+    if (downloadFileOnce(urlText, reference, destination, error))
+      return true;
+    if (error.code != "DOWNLOADED_OBJECT_HASH_MISMATCH" &&
+        error.code != "NETWORK" && error.code != "LOCAL_WRITE_FAILED")
+      break;
+    if (attempt < maxAttempts)
+      juce::Thread::sleep(250 * attempt);
+  }
+  return false;
 }
 
 bool refreshToken(const CloudTransferCredentials& credentials, juce::String& idToken,

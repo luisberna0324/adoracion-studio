@@ -1,0 +1,27 @@
+[
+  {
+    "scenario": "idle",
+    "sampled_frames": 0
+  },
+  {
+    "scenario": "playback",
+    "sampled_frames": 0,
+    "surface_samples": 127,
+    "present_interval_p50_ms": 41.09,
+    "present_interval_p95_ms": 78.44
+  },
+  {
+    "scenario": "scroll",
+    "sampled_frames": 0,
+    "surface_samples": 98,
+    "present_interval_p50_ms": 50.16,
+    "present_interval_p95_ms": 149.01
+  },
+  {
+    "scenario": "panels",
+    "sampled_frames": 0,
+    "surface_samples": 30,
+    "present_interval_p50_ms": 62.07,
+    "present_interval_p95_ms": 719.39
+  }
+]

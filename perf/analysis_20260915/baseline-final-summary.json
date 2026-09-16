@@ -1,0 +1,39 @@
+[
+  {
+    "scenario": "idle",
+    "sampled_frames": 0
+  },
+  {
+    "scenario": "playback",
+    "sampled_frames": 86,
+    "surface_samples": 88,
+    "present_interval_p50_ms": 139.73,
+    "present_interval_p95_ms": 151.25,
+    "frame_p50_ms": 144.24,
+    "frame_p95_ms": 155.74,
+    "draw_p50_ms": 126.0,
+    "draw_p95_ms": 135.22
+  },
+  {
+    "scenario": "scroll",
+    "sampled_frames": 53,
+    "surface_samples": 54,
+    "present_interval_p50_ms": 124.54,
+    "present_interval_p95_ms": 136.9,
+    "frame_p50_ms": 223.34,
+    "frame_p95_ms": 266.93,
+    "draw_p50_ms": 114.78,
+    "draw_p95_ms": 129.32
+  },
+  {
+    "scenario": "panels",
+    "sampled_frames": 31,
+    "surface_samples": 31,
+    "present_interval_p50_ms": 174.57,
+    "present_interval_p95_ms": 712.68,
+    "frame_p50_ms": 183.7,
+    "frame_p95_ms": 308.69,
+    "draw_p50_ms": 120.17,
+    "draw_p95_ms": 175.17
+  }
+]

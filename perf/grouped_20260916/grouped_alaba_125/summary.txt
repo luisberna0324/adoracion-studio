@@ -1,0 +1,36 @@
+# Grouped-routing comparison
+baseline = /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/grouped_20260916/baseline_alaba_125
+candidate = /Users/luisberna/dev/multitracks/multitracks/juce-controls-plugin/perf/grouped_20260916/grouped_alaba_125
+
+## Tempo scenario
+baseline tempo_ratio = ['0.984252']
+candidate tempo_ratio = ['0.984252']
+baseline routing_grouped_eligible_blocks = 0 (flag present in CSV: False)
+candidate routing_grouped_eligible_blocks = 0
+
+## Callback block_ms (audio_*.csv)
+   avg: baseline=     3.363ms  candidate=    51.361ms
+   p90: baseline=    10.411ms  candidate=    70.582ms
+   p95: baseline=    10.545ms  candidate=    72.669ms
+   p99: baseline=    10.860ms  candidate=    80.592ms
+   max: baseline=    16.237ms  candidate=    93.206ms
+  overrun%: baseline=    32.683 candidate=    75.537
+  streaming_misses total: baseline=27,206,449,429 candidate=57,126,101
+
+## read_next stage us
+   avg: baseline=  3275.286us  candidate= 31133.896us
+   p99: baseline= 10747.000us  candidate= 32767.000us
+
+## decode_render stage us
+   avg: baseline=  2966.948us  candidate= 31051.515us
+   p99: baseline= 10073.000us  candidate= 32767.000us
+
+## Bungee per block (from audio_stems_*.csv)
+   avg: baseline=    18.997  candidate=        19
+   min: baseline=         0  candidate=        19
+   max: baseline=        19  candidate=        19
+  candidate grouping: 0/146 tempo-on blocks ran grouped
+
+## Gaps (audio_gaps_*.csv)
+  count: baseline=3  candidate=6
+  max delta_ms: baseline=   697.902 candidate=   567.113

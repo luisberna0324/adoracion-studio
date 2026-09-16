@@ -6,6 +6,7 @@
 #if JUCE_ANDROID
 #include <android/log.h>
 #include <jni.h>
+#include <juce_opengl/juce_opengl.h>
 #define PW_ANDROID_LOG(message) __android_log_print (ANDROID_LOG_INFO, "PlayWorship", "%s", message)
 #else
 #define PW_ANDROID_LOG(message) do {} while (false)
@@ -123,7 +124,21 @@ private:
             explicit AndroidRootComponent (juce::AudioProcessorEditor* editor)
                 : child (editor)
             {
+                setOpaque (true);
                 addAndMakeVisible (child.get());
+                // The Android software peer repaints and uploads the whole
+                // window even for small meter/playhead invalidations. JUCE's
+                // GL component renderer retains the surface and honours dirty
+                // regions, leaving the message thread available for touch.
+                openGLContext.setContinuousRepainting (false);
+                openGLContext.setImageCacheSize (32 * 1024 * 1024);
+                openGLContext.attachTo (*this);
+            }
+
+            ~AndroidRootComponent() override
+            {
+                // Stop rendering before the editor and its children disappear.
+                openGLContext.detach();
             }
 
             void paint (juce::Graphics& graphics) override
@@ -138,6 +153,7 @@ private:
 
         private:
             std::unique_ptr<juce::AudioProcessorEditor> child;
+            juce::OpenGLContext openGLContext;
         };
 #endif
     };

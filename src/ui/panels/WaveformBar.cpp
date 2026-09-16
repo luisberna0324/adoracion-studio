@@ -3018,6 +3018,16 @@ void WaveformBar::timerCallback() {
 
 void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
+#if JUCE_ANDROID
+  if (isPlayingNow != androidWasPlaying) {
+    // Playback uses a cached image; pause/stop use the detailed waveform.
+    // Retained GPU rendering requires replacing the entire old representation
+    // at the transition before resuming narrow playhead invalidations.
+    androidWasPlaying = isPlayingNow;
+    androidLastFixedPlayheadX = -1;
+    repaint();
+  }
+#endif
   float pendingJumpRatio = 0.0f;
   const bool hasPendingJumpRatio = getPendingJumpProgressRatio(pendingJumpRatio);
   const bool followJumpJustExecuted =
@@ -3140,9 +3150,8 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
                             : currentX;
       const int stripeWidth =
           juce::jmax(11, lastX - firstX + 11);
-      // In follow mode the cache covers the current viewport with 1.25x
-      // overscan, so redrawing just the playhead stripe keeps the surface
-      // accurate without re-uploading the cached bitmap every tick.
+      // A fixed viewport only needs the playhead stripe. If follow moved the
+      // viewport above, setVisibleWindow already requested a full repaint.
       repaint(firstX - 5, juce::roundToInt(waveBounds.getY()), stripeWidth,
               juce::roundToInt(waveBounds.getHeight()));
       androidLastFixedPlayheadX = currentX;

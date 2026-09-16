@@ -106,7 +106,7 @@ bool isPhoneSizedLayout(const juce::Component &component) {
     return false;
   const auto bounds = component.getLocalBounds();
   int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   // iOS exposes the device family independently of the simulator's backing
   // pixel scale. Resolve both families before applying size heuristics: some
   // simulator runtimes expose editor bounds in points while others expose

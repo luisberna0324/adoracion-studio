@@ -378,6 +378,11 @@ private:
   juce::AudioBuffer<float> metronomeRenderStorage;
   juce::AudioBuffer<float> padsRenderStorage;
   juce::AudioBuffer<float> dynamicGuideRenderStorage;
+  // Stereo scratch holding the StemMixEngine output before StemOutputRouter
+  // copies/folds it into the user-configured (channel, width) destination.
+  // Lives in the per-processor storage so prepareToPlay sizes it once and
+  // the audio thread never allocates inside the callback.
+  juce::AudioBuffer<float> routingGroupedRenderStorage;
   std::atomic<bool> padsEnabledState{true};
   std::atomic<float> padsVolume{1.0f};
   std::atomic<float> padsGain{0.75f};

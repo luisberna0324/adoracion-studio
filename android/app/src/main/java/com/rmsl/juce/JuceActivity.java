@@ -48,6 +48,7 @@ import android.view.View;
 public class JuceActivity   extends Activity
 {
     private native void startJUCEApplication();
+    private native void onAuthCallback (String callbackUrl);
 
     private void initEdgeToEdge()
     {
@@ -83,6 +84,8 @@ public class JuceActivity   extends Activity
 
         super.onCreate (savedInstanceState);
         startJUCEApplication();
+        if (getIntent().getData() != null && "playworship".equals(getIntent().getData().getScheme()))
+            onAuthCallback (getIntent().getData().toString());
     }
 
     @Override
@@ -90,6 +93,8 @@ public class JuceActivity   extends Activity
     {
         super.onNewIntent (intent);
         setIntent (intent);
+        if (intent.getData() != null && "playworship".equals(intent.getData().getScheme()))
+            onAuthCallback (intent.getData().toString());
 
         // Notification intent handling is disabled for this standalone target.
     }

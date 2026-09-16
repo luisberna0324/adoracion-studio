@@ -25,6 +25,7 @@ add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${BINARY_DATA_SOURCES} ${S
     "${JUCE_ROOT}/modules/juce_graphics/juce_graphics_Harfbuzz.cpp"
     "${JUCE_ROOT}/modules/juce_gui_basics/juce_gui_basics.cpp"
     "${JUCE_ROOT}/modules/juce_gui_extra/juce_gui_extra.cpp"
+    "${JUCE_ROOT}/modules/juce_opengl/juce_opengl.cpp"
     "${JUCE_ROOT}/modules/juce_audio_basics/juce_audio_basics.cpp"
     "${JUCE_ROOT}/modules/juce_audio_devices/juce_audio_devices.cpp"
     "${JUCE_ROOT}/modules/juce_audio_formats/juce_audio_formats.cpp"
@@ -35,6 +36,15 @@ add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${BINARY_DATA_SOURCES} ${S
     "${JUCE_ROOT}/modules/juce_dsp/juce_dsp.cpp"
     "${CMAKE_ANDROID_NDK}/sources/android/cpufeatures/cpu-features.c")
 set_target_properties(playworship PROPERTIES OUTPUT_NAME "juce_jni")
+
+# The routinely installed APK is assembleDebug. Unoptimised native UI rendering
+# and audio DSP make even simple interactions stall. Keep debug symbols and the
+# debuggable APK while optimising native code. Disable only for
+# instruction-by-instruction debugging.
+option(PLAYWORSHIP_ANDROID_OPTIMIZE_DEBUG "Optimise native Android debug builds" ON)
+if(PLAYWORSHIP_ANDROID_OPTIMIZE_DEBUG)
+    target_compile_options(playworship PRIVATE "$<$<CONFIG:Debug>:-O2>")
+endif()
 
 target_include_directories(playworship PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
@@ -52,6 +62,7 @@ target_compile_definitions(playworship PRIVATE
     JUCE_MODAL_LOOPS_PERMITTED=1
     JUCE_USE_ANDROID_OBOE=1 JUCE_USE_ANDROID_OPENSLES=0
     JUCE_MODULE_AVAILABLE_juce_events=1
+    JUCE_MODULE_AVAILABLE_juce_opengl=1
     JUCE_MODULE_AVAILABLE_juce_audio_devices=1
     JUCE_ANDROID_ACTIVITY_CLASSNAME=com/rmsl/juce/JuceActivity
     JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0

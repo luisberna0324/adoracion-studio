@@ -42,7 +42,7 @@ CSV: `audio_<ts>.csv`, fila por bloque. Columnas también: `block_ms`, `budget_m
 
 ### 2. Gap detector (underrun del callback)
 
-Cuando el gap entre el `blockStartTick` de un callback y el `blockEndTick` del anterior supera `kDefaultGapThresholdMs = 15.0` ms, se emite un `GapEvent`. Esto detecta "mini cortes" audibles (el callback fue starving) y los mapea a la posición de la canción.
+Cuando el gap entre el `blockStartTick` de un callback y el `blockEndTick` del anterior supera `max(kDefaultGapThresholdMs = 15.0, 1.5 × duración del callback)`, se emite un `GapEvent`. El umbral se adapta a callbacks grandes de Oboe: un callback sano de 20 ms no se registra como corte, pero perder un callback completo sí. Esto detecta "mini cortes" audibles (el callback fue starving) y los mapea a la posición de la canción.
 
 CSV: `audio_gaps_<ts>.csv`. Columnas: `wall_ms,delta_ms,song_position_sec,stem_count,is_playing`.
 
@@ -59,7 +59,13 @@ CSV: `audio_gaps_<ts>.csv`. Columnas: `wall_ms,delta_ms,song_position_sec,stem_c
 | `real_drain_gap_us` | `real_drain_gap_us` | Inter-gap entre drains REALes consecutivos (sin sesgo de decimación) |
 | `real_drain_count` | `real_drain_count` | Count de drains REALes |
 
-CSV: `audio_stems_<ts>.csv`. Muestreado por stem cada `kStemTimingSnapshotEveryBlocks = 20` bloques.
+CSV: `audio_stems_<ts>.csv`. Muestreado por stem cada `kStemTimingSnapshotEveryBlocks = 20` bloques. La columna
+`routing_grouped_eligible` deja explícito qué bloque del callback usó la ruta
+agrupada de `StemMixEngine` (los 3 voces `TimeStretchProcessor` y una sola
+llamada a `StemOutputRouter`) en lugar de la ruta por stem legacy; el script
+de análisis puede filtrar por `routing_active=1,routing_grouped_eligible=1`
+para aislar los bloques que aprovecharon el agrupado y comparar `decode_render`
+contra `routing_active=1,routing_grouped_eligible=0`.
 
 ### 4. AAC decode + resample (background thread)
 
