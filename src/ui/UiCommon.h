@@ -7,6 +7,19 @@ enum class ThemePreset { Default = 1, Spotify, Ableton };
 enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
 enum class AppFontWeight { Regular = 0, Medium, SemiBold, Bold };
 
+enum class ActionPopoverPresentation {
+  Automatic = 0,
+  Anchored,
+  CompactAnchored
+};
+
+struct ActionPopoverOptions {
+  ActionPopoverPresentation presentation =
+      ActionPopoverPresentation::Automatic;
+  int compactMaximumWidth = 560;
+  int edgeInset = 12;
+};
+
 struct UITheme {
   static juce::Colour appBg;
   static juce::Colour appBgTop;
@@ -124,10 +137,12 @@ juce::LookAndFeel &getActionCalloutLookAndFeel();
 juce::CallOutBox &presentActionPopover(
     std::unique_ptr<juce::Component> content,
     juce::Rectangle<int> anchor,
-    juce::Component *parentComponent);
+    juce::Component *parentComponent,
+    ActionPopoverOptions options = {});
 void dismissActiveActionPopover();
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 bool useTouchOptimisedControls();
+bool isPhoneSizedTouchLayout(const juce::Component &component);
 int touchOptimisedControlHeight();
 int touchOptimisedPopupItemHeight();
 void applyComboBoxTheme(IpadNativeComboBox &combo,

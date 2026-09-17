@@ -674,7 +674,11 @@ Las voces de pad repiten indefinidamente el sample con un crossfade de loop en
 el borde. Al cargar otra canción, la UI mantiene cualquier pad activo y lo
 cambia mediante crossfade a la tonalidad efectiva de la nueva canción
 (`songKey + pitchSemitones`). El cambio de transporte por sí solo nunca detiene
-el pad.
+el pad. Todas las plataformas mantienen el inicio de las doce notas preparado
+para disparar desde RAM. El worker completa la nota activa y reutiliza una caché
+WAV PCM en cambios posteriores. Se conservan el cursor y el crossfade al publicar
+el buffer completo, y sólo sus buffers activos permanecen residentes además de
+los doce inicios. La preparación no bloquea el message thread.
 
 En una transición automática, el editor solicita el fade down del bus de Pads
 cuando el transporte entra en los últimos segundos definidos por el preset de

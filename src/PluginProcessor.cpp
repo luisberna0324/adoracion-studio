@@ -2237,6 +2237,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           if ((triggerMask & bit) != 0)
             if (padsEngine.isNoteLoaded(note)) {
               padsEngine.triggerNote(note, 0);
+              if (!padsEngine.isNoteFullyLoaded(note))
+                padsFullLoadRequested.store(true, std::memory_order_release);
             } else {
               midiPendingPadLoadMask.fetch_or(bit, std::memory_order_release);
               midiPendingPadTriggerMask.fetch_or(bit, std::memory_order_release);
@@ -2906,26 +2908,13 @@ void MTControlsAudioProcessor::timerCallback() {
     executeMidiControlCommand(command);
 
   if (midiPadsPackLoadRequested.exchange(false,
-                                         std::memory_order_acq_rel) &&
-      !ensurePadsPackReady()) {
-    if (!padsPackLoading.load(std::memory_order_acquire)) {
-      // A failed/cancelled load must not leave an old note armed indefinitely;
-      // otherwise it could fire much later when a different pack is loaded.
-      midiPendingPadTriggerMask.store(0, std::memory_order_release);
-      midiPendingPadStopMask.store(0, std::memory_order_release);
-    }
-  }
+                                         std::memory_order_acq_rel))
+    startPadsPreloadAsync();
 
-  const auto requestedNotes =
-      midiPendingPadLoadMask.exchange(0, std::memory_order_acq_rel);
-  for (int note = 0; note < PadsEngine::kNoteCount; ++note) {
-    const auto bit = static_cast<uint16_t>(1U << note);
-    if ((requestedNotes & bit) == 0)
-      continue;
-    if (!ensurePadsNoteReady(note))
-      midiPendingPadTriggerMask.fetch_and(static_cast<uint16_t>(~bit),
-                                          std::memory_order_release);
-  }
+  if (midiPendingPadLoadMask.load(std::memory_order_acquire) != 0 ||
+      padsFullLoadRequested.load(std::memory_order_acquire) ||
+      pendingPadNote.load(std::memory_order_acquire) >= 0)
+    startPadsPreloadAsync();
 }
 
 bool MTControlsAudioProcessor::enqueueMidiControlCommand(
@@ -4929,6 +4918,7 @@ bool MTControlsAudioProcessor::loadPadsPackInternal(
   const auto loadStartTicks = juce::Time::getHighResolutionTicks();
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   auto load = padsEngine.loadFromFolder(folderToLoad, playbackFormatManager);
+  padsAttacksPrepared.store(false, std::memory_order_release);
   padsPackLoaded.store(load.ok, std::memory_order_relaxed);
   padsPackStatusText = load.statusText;
 
@@ -5083,7 +5073,10 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
 }
 
 void MTControlsAudioProcessor::startPadsPreloadAsync() {
-  if (padsPackLoaded.load(std::memory_order_acquire) ||
+  if ((padsAttacksPrepared.load(std::memory_order_acquire) &&
+       pendingPadNote.load(std::memory_order_acquire) < 0 &&
+       !padsFullLoadRequested.load(std::memory_order_acquire) &&
+       midiPendingPadLoadMask.load(std::memory_order_acquire) == 0) ||
       padsPreloadRunning.exchange(true, std::memory_order_acq_rel))
     return;
 
@@ -5092,23 +5085,64 @@ void MTControlsAudioProcessor::startPadsPreloadAsync() {
 
   padsPreloadShouldExit.store(false, std::memory_order_release);
   padsPreloadThread = std::thread([this] {
-    const bool packReady = ensurePadsPackReady();
-    if (packReady) {
-      for (int note = 0; note < PadsEngine::kNoteCount; ++note) {
-        if (padsPreloadShouldExit.load(std::memory_order_acquire))
-          break;
-        ensurePadsNoteReady(note);
-      }
+    if (!ensurePadsPackReady()) {
+      pendingPadNote.store(-1, std::memory_order_release);
+      midiPendingPadTriggerMask.store(0, std::memory_order_release);
+      midiPendingPadLoadMask.store(0, std::memory_order_release);
+      padsFullLoadRequested.store(false, std::memory_order_release);
+      padsPreloadRunning.store(false, std::memory_order_release);
+      return;
     }
 
-    padsPreloadRunning.store(false, std::memory_order_release);
-    if (padsPreloadShouldExit.load(std::memory_order_acquire) || !packReady)
-      return;
+    int nextAttack = padsAttacksPrepared.load(std::memory_order_acquire)
+                         ? PadsEngine::kNoteCount : 0;
+    while (!padsPreloadShouldExit.load(std::memory_order_acquire)) {
+      const int requested = pendingPadNote.load(std::memory_order_acquire);
+      if (juce::isPositiveAndBelow(requested, PadsEngine::kNoteCount)) {
+        const bool ready = ensurePadsNoteReady(requested);
+        const juce::SpinLock::ScopedLockType lock(padsStateLock);
+        int expected = requested;
+        if (pendingPadNote.compare_exchange_strong(
+                expected, -1, std::memory_order_acq_rel) && ready &&
+            !padsPreloadShouldExit.load(std::memory_order_acquire)) {
+          padsEngine.triggerNote(requested,
+              pendingPadOctave.load(std::memory_order_acquire));
+          padsFullLoadRequested.store(true, std::memory_order_release);
+        }
+        continue;
+      }
 
-    const int pendingNote = pendingPadNote.exchange(-1, std::memory_order_acq_rel);
-    if (juce::isPositiveAndBelow(pendingNote, PadsEngine::kNoteCount))
-      triggerPadNote(pendingNote,
-                     pendingPadOctave.load(std::memory_order_acquire));
+      // Complete the sounding note before continuing the bank warmup. Its
+      // resident attack covers decoding without changing the voice position.
+      if (padsFullLoadRequested.exchange(false, std::memory_order_acq_rel)) {
+        const int active = padsEngine.getActiveNoteIndex();
+        if (juce::isPositiveAndBelow(active, PadsEngine::kNoteCount))
+          ensurePadsNoteReady(active, true);
+        continue;
+      }
+
+      const auto midiNotes = midiPendingPadLoadMask.exchange(0, std::memory_order_acq_rel);
+      if (midiNotes != 0) {
+        for (int note = 0; note < PadsEngine::kNoteCount; ++note) {
+          const auto bit = static_cast<uint16_t>(1U << note);
+          if ((midiNotes & bit) != 0 && !ensurePadsNoteReady(note))
+            midiPendingPadTriggerMask.fetch_and(static_cast<uint16_t>(~bit),
+                                                std::memory_order_release);
+        }
+        continue;
+      }
+
+      if (nextAttack < PadsEngine::kNoteCount) {
+        ensurePadsNoteReady(nextAttack++);
+        if (nextAttack == PadsEngine::kNoteCount)
+          padsAttacksPrepared.store(true, std::memory_order_release);
+        continue;
+      }
+      break;
+    }
+    // Requests arriving during shutdown are picked up by the processor timer;
+    // never recursively start/join this worker from its own thread.
+    padsPreloadRunning.store(false, std::memory_order_release);
   });
 }
 
@@ -5117,25 +5151,53 @@ bool MTControlsAudioProcessor::isPadsPreloadRunning() const noexcept {
          padsPackLoading.load(std::memory_order_acquire);
 }
 
-bool MTControlsAudioProcessor::ensurePadsNoteReady(const int noteIndex) {
+bool MTControlsAudioProcessor::ensurePadsNoteReady(const int noteIndex, const bool full) {
   if (!padsPackLoaded.load(std::memory_order_relaxed))
     return false;
   if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount))
     return false;
 
   const auto noteLoadStartTicks = juce::Time::getHighResolutionTicks();
-  const juce::SpinLock::ScopedLockType lock(padsStateLock);
-  if (padsEngine.isNoteLoaded(noteIndex))
-    return true;
+  juce::File sourceFile;
+  PadsEngine::RetiredSamples retired;
+  {
+    const juce::SpinLock::ScopedLockType lock(padsStateLock);
+    if (full ? padsEngine.isNoteFullyLoaded(noteIndex) : padsEngine.isNoteLoaded(noteIndex))
+      return true;
+    retired = padsEngine.releaseUnusedSamples(noteIndex);
+    sourceFile = padsEngine.getNoteSourceFile(noteIndex);
+    if (!full)
+      padsPackStatusText = "Preparing pads...";
+  }
+  retired = {}; // Free large buffers outside the audio-state lock.
 
-  const bool loaded =
-      padsEngine.ensureNoteLoaded(noteIndex, playbackFormatManager);
+  PadsEngine::DecodedNote decoded;
+  const auto cancelled = [this, full, noteIndex] {
+    return padsPreloadShouldExit.load(std::memory_order_acquire) ||
+           (full && padsEngine.getActiveNoteIndex() != noteIndex);
+  };
+  const bool decodedOk = PadsEngine::decodeNoteFile(
+      sourceFile, playbackFormatManager, decoded, full ? 0.0 : 64.0, cancelled);
+  if (cancelled())
+    return false;
+  bool loaded = false;
+  {
+    const juce::SpinLock::ScopedLockType lock(padsStateLock);
+    // A voice may have completed its fade while the next MP3 was decoding.
+    // Trim it again before publishing the new buffer so it does not remain
+    // resident until another pad selection.
+    retired = padsEngine.releaseUnusedSamples(noteIndex);
+    loaded = (full ? padsEngine.isNoteFullyLoaded(noteIndex) : padsEngine.isNoteLoaded(noteIndex)) ||
+             (decodedOk && padsEngine.getNoteSourceFile(noteIndex) == sourceFile &&
+              padsEngine.installDecodedNote(
+                               noteIndex, std::move(decoded)));
+    padsPackStatusText = loaded ? "Loaded" : "Pad load failed";
+  }
   juce::Logger::writeToLog(
       "Pads ensureNoteLoaded note=" + juce::String(noteIndex) +
+      " mode=" + (full ? juce::String("full") : juce::String("attack")) +
       " ok=" + juce::String(loaded ? "true" : "false") +
       " elapsedMs=" + juce::String(elapsedMsSince(noteLoadStartTicks), 1));
-  if (!loaded)
-    padsPackStatusText = "Pad load failed";
   return loaded;
 }
 
@@ -5177,6 +5239,8 @@ void MTControlsAudioProcessor::refreshPadsRoutingFromSettings() noexcept {
 void MTControlsAudioProcessor::setPadsEnabled(const bool enabled) noexcept {
   padsEnabledState.store(enabled, std::memory_order_relaxed);
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
+  if (!enabled)
+    pendingPadNote.store(-1, std::memory_order_release);
   padsEngine.setEnabled(enabled);
 }
 
@@ -5231,37 +5295,48 @@ void MTControlsAudioProcessor::beginPadsSongTransitionFadeIn() noexcept {
 
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
                                               const int octave) {
+  const auto triggerStart = juce::Time::getHighResolutionTicks();
   if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount))
     return;
-  if (!padsPackLoaded.load(std::memory_order_acquire) ||
-      padsPreloadRunning.load(std::memory_order_acquire)) {
-    pendingPadOctave.store(octave, std::memory_order_release);
-    pendingPadNote.store(noteIndex, std::memory_order_release);
-    startPadsPreloadAsync();
+  bool resident = false;
+  if (padsPackLoaded.load(std::memory_order_acquire)) {
+    const juce::SpinLock::ScopedLockType lock(padsStateLock);
+    if (padsEngine.isNoteLoaded(noteIndex)) {
+      pendingPadNote.store(-1, std::memory_order_release);
+      padsEngine.triggerNote(noteIndex, octave);
+      if (!padsEngine.isNoteFullyLoaded(noteIndex))
+        padsFullLoadRequested.store(true, std::memory_order_release);
+      resident = true;
+    }
+  }
+  if (resident) {
+    juce::Logger::writeToLog("Pads trigger resident note=" + juce::String(noteIndex) +
+        " elapsedMs=" + juce::String(elapsedMsSince(triggerStart), 3));
     return;
   }
-  if (!ensurePadsNoteReady(noteIndex))
-    return;
-  const juce::SpinLock::ScopedLockType lock(padsStateLock);
-  padsEngine.triggerNote(noteIndex, octave);
+
+  pendingPadOctave.store(octave, std::memory_order_release);
+  pendingPadNote.store(noteIndex, std::memory_order_release);
+  startPadsPreloadAsync();
 }
 
 void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
     const int noteIndex, const int octave) {
-  if (!padsPackLoaded.load(std::memory_order_relaxed))
-    return;
-  if (!ensurePadsNoteReady(noteIndex))
-    return;
-  const juce::SpinLock::ScopedLockType lock(padsStateLock);
-  padsEngine.triggerNoteForSongTransition(noteIndex, octave);
+  triggerPadNote(noteIndex, octave);
 }
 
 void MTControlsAudioProcessor::stopPadNote(const int noteIndex) {
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
+  int pendingNote = noteIndex;
+  pendingPadNote.compare_exchange_strong(pendingNote, -1,
+                                         std::memory_order_acq_rel);
   padsEngine.stopNote(noteIndex);
 }
 
 int MTControlsAudioProcessor::getActivePadNoteIndex() const noexcept {
+  const int pendingNote = pendingPadNote.load(std::memory_order_acquire);
+  if (juce::isPositiveAndBelow(pendingNote, PadsEngine::kNoteCount))
+    return pendingNote;
   return padsEngine.getActiveNoteIndex();
 }
 

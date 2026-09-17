@@ -251,6 +251,35 @@ bool useTouchOptimisedControls() {
 #endif
 }
 
+bool isPhoneSizedTouchLayout(const juce::Component &component) {
+  if (!useTouchOptimisedControls())
+    return false;
+
+  const auto bounds = component.getLocalBounds();
+  int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
+
+#if JUCE_IOS || JUCE_ANDROID
+  const auto deviceDescription = juce::SystemStats::getDeviceDescription();
+  if (deviceDescription.containsIgnoreCase("iPhone"))
+    return true;
+  if (deviceDescription.containsIgnoreCase("iPad"))
+    return false;
+
+  if (const auto *display = juce::Desktop::getInstance()
+                                .getDisplays()
+                                .getDisplayForRect(component.getScreenBounds())) {
+    const auto scale = juce::jmax(1.0, display->scale);
+    shortSide = juce::roundToInt(static_cast<double>(shortSide) / scale);
+  }
+
+  // Fallback for older mobile peers that report physical pixels with scale 1.
+  if (shortSide <= 1320)
+    return true;
+#endif
+
+  return shortSide < 600;
+}
+
 int touchOptimisedControlHeight() {
   return useTouchOptimisedControls() ? 44 : 30;
 }
@@ -412,21 +441,21 @@ public:
   void drawCallOutBoxBackground(juce::CallOutBox &, juce::Graphics &g,
                                 const juce::Path &path,
                                 juce::Image &) override {
-    juce::DropShadow(juce::Colours::black.withAlpha(0.28f), 18, {0, 7})
+    juce::DropShadow(juce::Colours::black.withAlpha(0.24f), 22, {0, 8})
         .drawForPath(g, path);
-    juce::DropShadow(juce::Colours::black.withAlpha(0.42f), 7, {0, 2})
+    juce::DropShadow(juce::Colours::black.withAlpha(0.34f), 6, {0, 2})
         .drawForPath(g, path);
 
     const auto bounds = path.getBounds();
-    juce::ColourGradient gradient(UITheme::cardBg.brighter(0.045f),
+    const auto surface =
+        UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.34f);
+    juce::ColourGradient gradient(surface.brighter(0.055f),
                                   bounds.getCentreX(), bounds.getY(),
-                                  UITheme::panelDark.darker(0.04f),
+                                  surface.darker(0.035f),
                                   bounds.getCentreX(), bounds.getBottom(), false);
     g.setGradientFill(gradient);
     g.fillPath(path);
-    g.setColour(juce::Colours::white.withAlpha(0.055f));
-    g.strokePath(path, juce::PathStrokeType(1.0f));
-    g.setColour(UITheme::cardBorder.brighter(0.22f).withAlpha(0.72f));
+    g.setColour(juce::Colours::white.withAlpha(0.105f));
     g.strokePath(path, juce::PathStrokeType(1.0f));
   }
 
@@ -463,6 +492,32 @@ popoverAvailableArea(juce::Component *parent,
   }
   return available.reduced(4);
 }
+
+bool shouldUseCompactPopover(const juce::Component *parent,
+                             const ActionPopoverOptions &options) {
+  switch (options.presentation) {
+  case ActionPopoverPresentation::Anchored:
+    return false;
+  case ActionPopoverPresentation::CompactAnchored:
+    return true;
+  case ActionPopoverPresentation::Automatic:
+  default:
+    return parent != nullptr && isPhoneSizedTouchLayout(*parent);
+  }
+}
+
+juce::Rectangle<int> constrainPopoverAnchor(juce::Rectangle<int> anchor,
+                                            juce::Rectangle<int> available) {
+  if (available.isEmpty())
+    return anchor;
+
+  if (const auto intersection = anchor.getIntersection(available);
+      !intersection.isEmpty())
+    return intersection;
+
+  const auto point = available.getConstrainedPoint(anchor.getCentre());
+  return {point.x, point.y, 1, 1};
+}
 } // namespace
 
 juce::LookAndFeel &getActionCalloutLookAndFeel() {
@@ -480,30 +535,41 @@ void dismissActiveActionPopover() {
 juce::CallOutBox &presentActionPopover(
     std::unique_ptr<juce::Component> content,
     juce::Rectangle<int> anchor,
-    juce::Component *parentComponent) {
+    juce::Component *parentComponent,
+    const ActionPopoverOptions options) {
   jassert(content != nullptr);
   dismissActiveActionPopover();
 
   auto available = popoverAvailableArea(parentComponent, anchor);
   const bool compactTouchSurface =
-      parentComponent != nullptr && useTouchOptimisedControls() &&
-      juce::jmin(parentComponent->getWidth(), parentComponent->getHeight()) < 600;
+      shouldUseCompactPopover(parentComponent, options);
 
-  if (compactTouchSurface && !available.isEmpty()) {
-    const int width = juce::jlimit(
-        280, juce::jmax(280, available.getWidth() - 24),
-        juce::jmax(content->getWidth(), juce::jmin(520, available.getWidth() - 24)));
-    const int height = juce::jmin(content->getHeight(),
-                                  juce::jmax(44, available.getHeight() - 24));
+  if (!available.isEmpty()) {
+    const int edgeInset = juce::jmax(0, options.edgeInset);
+    const int maximumWidth = juce::jmax(1, available.getWidth() - edgeInset * 2);
+    const int maximumHeight = juce::jmax(1, available.getHeight() - edgeInset * 2);
+    int width = juce::jlimit(1, maximumWidth, juce::jmax(1, content->getWidth()));
+    const int height =
+        juce::jlimit(1, maximumHeight, juce::jmax(1, content->getHeight()));
+
+    if (compactTouchSurface) {
+      const int sheetMaximum =
+          juce::jlimit(1, maximumWidth,
+                       juce::jmax(1, options.compactMaximumWidth));
+      const int sheetMinimum = juce::jmin(280, sheetMaximum);
+      width = juce::jlimit(sheetMinimum, sheetMaximum,
+                           juce::jmax(content->getWidth(), sheetMinimum));
+    }
+
     content->setSize(width, height);
-    anchor = {available.getCentreX() - 1, available.getBottom() - 2, 2, 2};
+    anchor = constrainPopoverAnchor(anchor, available);
   }
 
   auto *contentPointer = content.get();
   auto &callout = juce::CallOutBox::launchAsynchronously(
       std::move(content), anchor, parentComponent);
   callout.setLookAndFeel(&getActionCalloutLookAndFeel());
-  callout.setArrowSize(compactTouchSurface ? 2.0f : 12.0f);
+  callout.setArrowSize(compactTouchSurface ? 10.0f : 12.0f);
   callout.setDismissalMouseClicksAreAlwaysConsumed(false);
   if (!available.isEmpty())
     callout.updatePosition(anchor, available);

@@ -275,7 +275,12 @@ bool AssetBootstrapManager::downloadFile(const juce::String &url,
   if (progress)
     progress(0.0, phaseText);
 
-  while (!input->isExhausted()) {
+  // Android's HTTP stream can report a negative read at the boundary even
+  // after every byte advertised by Content-Length was delivered. Avoid the
+  // extra read once the known payload is complete; a negative read before
+  // that boundary remains a real transfer error.
+  while (!input->isExhausted() &&
+         (totalBytes <= 0 || downloadedBytes < totalBytes)) {
     const auto bytesRead = input->read(buffer.getData(), kChunkSize);
     if (bytesRead < 0) {
       errorMessage = "Error while reading remote asset stream.";
@@ -459,11 +464,53 @@ bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
     return true;
   }
 
-  persistState(AppSettings::getAssetsBootstrapState().encoderStatus,
-               "Downloading", {});
   const auto tempZip =
       getAssetsRootDirectory().getChildFile("pads").getChildFile("pads-pack.zip.download");
+
+  const auto installDownloadedPack = [&]() {
+    localError.clear();
+    if (!unpackZipToDirectory(tempZip, padsDir, localError))
+      return false;
+
+    if (!hasEnoughPadAudioFiles(padsDir)) {
+      localError = "Pads package doesn't contain enough note files.";
+      return false;
+    }
+
+    tempZip.deleteFile();
+    persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Ready", {});
+    return true;
+  };
+
+  // A previous Android transfer may contain the complete ZIP even when the
+  // platform stream reported an error while reading past its final byte.
+  // Install that local file first so opening Pads never downloads it again.
+  if (tempZip.existsAsFile() && tempZip.getSize() > 0) {
+    persistState(AppSettings::getAssetsBootstrapState().encoderStatus,
+                 "Installing", {});
+    if (installDownloadedPack())
+      return true;
+
+    tempZip.deleteFile();
+    if (padsDir.exists())
+      padsDir.deleteRecursively();
+    padsDir.createDirectory();
+    localError.clear();
+  }
+
+  persistState(AppSettings::getAssetsBootstrapState().encoderStatus,
+               "Downloading", {});
   if (!downloadFile(buildPadsZipUrl(), tempZip, localError)) {
+    const auto transferError = localError;
+    if (tempZip.existsAsFile() && tempZip.getSize() > 0 &&
+        installDownloadedPack())
+      return true;
+
+    tempZip.deleteFile();
+    if (padsDir.exists())
+      padsDir.deleteRecursively();
+    padsDir.createDirectory();
+    localError = transferError;
     persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Error",
                  localError);
     if (errorMessage != nullptr)
@@ -471,7 +518,7 @@ bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
     return false;
   }
 
-  if (!unpackZipToDirectory(tempZip, padsDir, localError)) {
+  if (!installDownloadedPack()) {
     tempZip.deleteFile();
     persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Error",
                  localError);
@@ -480,17 +527,6 @@ bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
     return false;
   }
 
-  tempZip.deleteFile();
-  if (!hasEnoughPadAudioFiles(padsDir)) {
-    localError = "Pads package doesn't contain enough note files.";
-    persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Error",
-                 localError);
-    if (errorMessage != nullptr)
-      *errorMessage = localError;
-    return false;
-  }
-
-  persistState(AppSettings::getAssetsBootstrapState().encoderStatus, "Ready", {});
   return true;
 }
 

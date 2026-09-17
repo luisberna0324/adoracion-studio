@@ -38,9 +38,26 @@ public:
 
   LoadResult loadFromFolder(const juce::File &folder,
                             juce::AudioFormatManager &formatManager);
+  struct DecodedNote {
+    juce::AudioBuffer<float> data;
+    double sourceSampleRate = 44100.0;
+    int totalSamples = 0;
+    bool keepResident = false;
+  };
+
+  juce::File getNoteSourceFile(int noteIndex) const;
+  static bool decodeNoteFile(const juce::File &file,
+                             juce::AudioFormatManager &formatManager,
+                             DecodedNote &decoded, double maxSeconds = 0.0,
+                             const std::function<bool()> &cancelled = {});
+  bool installDecodedNote(int noteIndex, DecodedNote &&decoded);
   bool ensureNoteLoaded(int noteIndex,
                         juce::AudioFormatManager &formatManager);
   bool isNoteLoaded(int noteIndex) const noexcept;
+  bool isNoteFullyLoaded(int noteIndex) const noexcept;
+  /** Releases decoded buffers that are neither requested nor used by a voice. */
+  using RetiredSamples = std::array<juce::AudioBuffer<float>, kNoteCount>;
+  RetiredSamples releaseUnusedSamples(int noteToKeep = -1);
 
   void triggerNote(int noteIndex, int octave);
   /** Compatibility alias for a continuous song-key retune. */
@@ -61,6 +78,8 @@ private:
 
   struct NoteSample {
     juce::AudioBuffer<float> data;
+    juce::AudioBuffer<float> attack;
+    int totalSamples = 0;
     juce::File sourceFile;
     double sourceSampleRate = 44100.0;
     bool valid = false;
@@ -92,8 +111,6 @@ private:
 
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);
-  static bool loadNoteSampleFromFile(NoteSample &target, const juce::File &file,
-                                     juce::AudioFormatManager &formatManager);
   void updateFadeDurations() noexcept;
   void updateVoiceIncrement(Voice &voice);
   static void beginFadeOut(Voice &voice);

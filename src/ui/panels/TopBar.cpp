@@ -1450,8 +1450,6 @@ void TopBar::showTabletMorePopover() {
       auto bounds = getLocalBounds().toFloat();
       g.setColour(UITheme::cardBg);
       g.fillRoundedRectangle(bounds, 8.0f);
-      g.setColour(UITheme::accent.withAlpha(0.18f));
-      g.fillRoundedRectangle(bounds.removeFromTop(4.0f), 2.0f);
       g.setColour(UITheme::cardBorder);
       g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 8.0f,
                              1.0f);
@@ -1741,8 +1739,6 @@ void TopBar::showMetronomePopover() {
       auto b = getLocalBounds().toFloat();
       g.setColour(UITheme::cardBg);
       g.fillRoundedRectangle(b, 6.0f);
-      g.setColour(UITheme::accent.withAlpha(0.18f));
-      g.fillRoundedRectangle(b.removeFromTop(4.0f), 2.0f);
       g.setColour(UITheme::cardBorder);
       g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 6.0f,
                              1.0f);

@@ -102,34 +102,7 @@ bool supportsSetlistDrawer(const juce::Component &component) {
 }
 
 bool isPhoneSizedLayout(const juce::Component &component) {
-  if (!useTouchOptimisedControls())
-    return false;
-  const auto bounds = component.getLocalBounds();
-  int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
-#if JUCE_IOS || JUCE_ANDROID
-  // iOS exposes the device family independently of the simulator's backing
-  // pixel scale. Resolve both families before applying size heuristics: some
-  // simulator runtimes expose editor bounds in points while others expose
-  // backing pixels, so dividing an iPad point size by display scale can make
-  // it look like a phone.
-  const auto deviceDescription = juce::SystemStats::getDeviceDescription();
-  if (deviceDescription.containsIgnoreCase("iPhone"))
-    return true;
-  if (deviceDescription.containsIgnoreCase("iPad"))
-    return false;
-  // JUCE reports the standalone iOS editor in physical pixels. Convert to
-  // points before applying the shared 600 pt/dp phone breakpoint.
-  if (const auto *display = juce::Desktop::getInstance().getDisplays()
-                                .getDisplayForRect(component.getScreenBounds()))
-    shortSide = juce::roundToInt(static_cast<float>(shortSide) /
-                                 static_cast<float>(display->scale));
-  // Older JUCE simulator backends can report a unit scale. The smallest
-  // supported iPad has a 1488 px short side, while current iPhones are at
-  // most 1320 px, so retain a safe physical-pixel fallback.
-  if (shortSide <= 1320)
-    return true;
-#endif
-  return shortSide < 600;
+  return isPhoneSizedTouchLayout(component);
 }
 
 class SettingsOverlayComponent final : public juce::Component {

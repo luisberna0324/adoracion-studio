@@ -38,6 +38,16 @@ struct PadsEngineTestPeer {
         ++count;
     return count;
   }
+
+  static bool hasSourceFile(const PadsEngine &engine, const int noteIndex) {
+    return engine.noteSamples[static_cast<size_t>(noteIndex)]
+        .sourceFile.existsAsFile();
+  }
+
+  static void setSourceFile(PadsEngine &engine, const int noteIndex,
+                            const juce::File &file) {
+    engine.noteSamples[static_cast<size_t>(noteIndex)].sourceFile = file;
+  }
 };
 
 namespace {
@@ -120,12 +130,121 @@ void testSongKeyTransitionCrossfadesVoicesWithoutSilence() {
            "a song-key change keeps the pads bus audible throughout");
 }
 
+void testUnusedDecodedSamplesCanBeReleasedSafely() {
+  PadsEngine engine;
+  engine.prepare(8.0, 8);
+  const auto source = juce::File::getSpecialLocation(
+      juce::File::currentExecutableFile);
+  for (int note = 0; note < 3; ++note) {
+    PadsEngineTestPeer::setSourceFile(engine, note, source);
+    PadsEngineTestPeer::installConstantSample(engine, note, 64, 8.0);
+  }
+
+  engine.triggerNote(0, 0);
+  engine.releaseUnusedSamples(2);
+
+  expect(engine.isNoteLoaded(0),
+         "sample used by an active voice remains decoded");
+  expect(!engine.isNoteLoaded(1), "inactive sample buffer is released");
+  expect(engine.isNoteLoaded(2), "explicitly requested sample remains decoded");
+  expect(PadsEngineTestPeer::hasSourceFile(engine, 1),
+         "releasing PCM keeps the indexed source file for reloading");
+}
+
+void testResidentAttackPromotesWithoutRestartAndSurvivesEviction() {
+  PadsEngine engine;
+  engine.prepare(8.0, 32);
+  engine.setCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
+  PadsEngineTestPeer::setSourceFile(engine, 0,
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile));
+  PadsEngine::DecodedNote attack;
+  attack.sourceSampleRate = 8.0;
+  attack.totalSamples = 128;
+  attack.data.setSize(1, 32);
+  for (int i = 0; i < 32; ++i)
+    attack.data.setSample(0, i, 0.5f);
+  expect(engine.installDecodedNote(0, std::move(attack)), "attack installs");
+  expect(engine.isNoteLoaded(0) && !engine.isNoteFullyLoaded(0),
+         "attack is playable before the full file is available");
+  engine.triggerNote(0, 0);
+  juce::AudioBuffer<float> output(1, 16);
+  output.clear();
+  engine.process(output);
+  expect(output.getSample(0, 15) > 0.49f, "attack produces audio immediately");
+
+  PadsEngine::DecodedNote full;
+  full.sourceSampleRate = 8.0;
+  full.totalSamples = 128;
+  full.data.setSize(1, 128);
+  for (int i = 0; i < 128; ++i)
+    full.data.setSample(0, i, 0.5f);
+  engine.installDecodedNote(0, std::move(full));
+  expect(PadsEngineTestPeer::activeVoicePosition(engine) == 16.0,
+         "publishing full PCM preserves the playback position");
+  for (int block = 0; block < 3; ++block) {
+    output.clear();
+    engine.process(output);
+    for (int i = 0; i < output.getNumSamples(); ++i)
+      expect(std::abs(output.getSample(0, i) - 0.5f) < 0.0001f,
+             "audio continues past the attack boundary without a gap");
+  }
+  engine.stopAll();
+  engine.releaseUnusedSamples();
+  expect(engine.isNoteLoaded(0) && !engine.isNoteFullyLoaded(0),
+         "eviction keeps the attack ready for another immediate trigger");
+  engine.triggerNote(0, 0);
+  output.clear();
+  engine.process(output);
+  expect(output.getSample(0, 15) > 0.49f, "retrigger works after full PCM eviction");
+}
+
+void testPartialDecodePreservesLengthAndCancellation() {
+  const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory)
+      .getNonexistentChildFile("pads-decode-test", ".wav");
+  {
+    std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+    juce::WavAudioFormat wav;
+    auto writer = wav.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(8000).withNumChannels(1).withBitsPerSample(32)
+        .withSampleFormat(juce::AudioFormatWriterOptions::SampleFormat::floatingPoint));
+    expect(writer != nullptr, "test WAV opens");
+    juce::AudioBuffer<float> source(1, 32000);
+    for (int i = 0; i < 32000; ++i)
+      source.setSample(0, i, static_cast<float>(i) / 32000.0f);
+    expect(writer->writeFromAudioSampleBuffer(source, 0, 32000), "test WAV writes");
+  }
+  juce::AudioFormatManager formats;
+  formats.registerBasicFormats();
+  PadsEngine::DecodedNote attack, full;
+  expect(PadsEngine::decodeNoteFile(file, formats, attack, 1.0), "partial WAV reads");
+  expect(attack.data.getNumSamples() == 8000 && attack.totalSamples == 32000,
+         "partial decode keeps the true loop length");
+  expect(PadsEngine::decodeNoteFile(file, formats, full), "full WAV reads");
+  expect(attack.data.getSample(0, 7999) == full.data.getSample(0, 7999),
+         "attack and full PCM agree at their shared boundary");
+  expect(!PadsEngine::decodeNoteFile(file, formats, full, 0.0, [] { return true; }),
+         "obsolete decode can be cancelled");
+  PadsEngine::DecodedNote shortAttack;
+  expect(PadsEngine::decodeNoteFile(file, formats, shortAttack, 64.0),
+         "short files are fully prepared during bank warmup");
+  PadsEngine engine;
+  PadsEngineTestPeer::setSourceFile(engine, 0, file);
+  engine.installDecodedNote(0, std::move(shortAttack));
+  engine.releaseUnusedSamples();
+  expect(engine.isNoteFullyLoaded(0),
+         "a short prepared file stays resident without repeated disk loads");
+  file.deleteFile();
+}
+
 } // namespace
 
 int main() {
   testSongKeyParsing();
   testPadLoopsWithEndCrossfade();
   testSongKeyTransitionCrossfadesVoicesWithoutSilence();
+  testUnusedDecodedSamplesCanBeReleasedSafely();
+  testResidentAttackPromotesWithoutRestartAndSurvivesEviction();
+  testPartialDecodePreservesLengthAndCancellation();
   std::cout << "Pads engine tests passed\n";
   return 0;
 }

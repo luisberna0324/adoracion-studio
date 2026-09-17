@@ -187,9 +187,13 @@ Transporte, tempo y operaciones de pads que pueden tomar locks, preparar el
 dispositivo o realizar I/O se convierten en comandos de control. Note-on/note-off
 de pads se acumulan en bitmasks atómicos; el render los consume sólo después de
 obtener el `tryLock` existente de `PadsEngine`. La carga del pack usa un request
-atómico coalescido y, si falla, descarta las notas pendientes para impedir que
-se disparen mucho después sobre otro pack. El probe deriva su timestamp de una
-calibración monotónica y no llama al reloj de pared desde audio.
+atómico coalescido. El timer sólo despierta el mismo worker usado por la UI: la
+descarga y la decodificación no se ejecutan en el message thread. Las notas MIDI
+usan el inicio residente igual que los botones; el callback solicita completar
+la nota activa mediante un flag atómico. Si la carga falla, descarta las notas
+pendientes para impedir que se disparen mucho después sobre otro pack. El probe
+deriva su timestamp de una calibración monotónica y no llama al reloj de pared
+desde audio.
 
 ### Lookup rápido
 

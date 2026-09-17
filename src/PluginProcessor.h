@@ -187,7 +187,7 @@ public:
   bool loadPadsPackFromFolder(const juce::File &sourceFolder);
   bool reloadLastPadsPack();
   bool ensurePadsPackReady();
-  bool ensurePadsNoteReady(int noteIndex);
+  bool ensurePadsNoteReady(int noteIndex, bool full = false);
   void startPadsPreloadAsync();
   bool isPadsPreloadRunning() const noexcept;
   void refreshPadsRoutingFromSettings() noexcept;
@@ -393,6 +393,8 @@ private:
   std::atomic<bool> padsPackLoaded{false};
   std::atomic<bool> padsPackLoading{false};
   std::atomic<bool> padsPreloadRunning{false};
+  std::atomic<bool> padsAttacksPrepared{false};
+  std::atomic<bool> padsFullLoadRequested{false};
   std::atomic<bool> padsPreloadShouldExit{false};
   std::thread padsPreloadThread;
   std::atomic<int> pendingPadNote{-1};

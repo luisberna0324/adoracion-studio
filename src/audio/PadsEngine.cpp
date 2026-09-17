@@ -199,29 +199,104 @@ PadsEngine::loadFromFolder(const juce::File &folder,
   return result;
 }
 
-bool PadsEngine::loadNoteSampleFromFile(NoteSample &target,
-                                        const juce::File &file,
-                                        juce::AudioFormatManager &formatManager) {
-  auto reader = std::unique_ptr<juce::AudioFormatReader>(
-      formatManager.createReaderFor(file));
+juce::File PadsEngine::getNoteSourceFile(const int noteIndex) const {
+  if (!juce::isPositiveAndBelow(noteIndex, kNoteCount))
+    return {};
+  return noteSamples[static_cast<size_t>(noteIndex)].sourceFile;
+}
+
+bool PadsEngine::decodeNoteFile(const juce::File &file,
+                                juce::AudioFormatManager &formatManager,
+                                DecodedNote &decoded, const double maxSeconds,
+                                const std::function<bool()> &cancelled) {
+  const auto cacheKey = juce::String::toHexString(
+      (file.getFullPathName() + ":" + juce::String(file.getSize()) + ":" +
+       juce::String(file.getLastModificationTime().toMilliseconds()) + ":pcm-v1")
+          .hashCode64());
+  const auto cache = file.getParentDirectory().getChildFile(".pcm-cache")
+      .getChildFile(cacheKey + ".wav");
+  const bool compressed = file.hasFileExtension("mp3");
+  bool fromCache = false;
+  std::unique_ptr<juce::AudioFormatReader> reader;
+  if (compressed && cache.existsAsFile()) {
+    reader.reset(formatManager.createReaderFor(cache));
+    fromCache = reader != nullptr && reader->lengthInSamples > 0;
+  }
+  if (!fromCache)
+    reader.reset(formatManager.createReaderFor(file));
   if (!reader)
     return false;
 
   const int channels =
       juce::jlimit(1, 2, static_cast<int>(reader->numChannels));
-  const int lengthSamples = static_cast<int>(juce::jlimit<juce::int64>(
+  const int totalSamples = static_cast<int>(juce::jlimit<juce::int64>(
       0, std::numeric_limits<int>::max(), reader->lengthInSamples));
+  const int lengthSamples = maxSeconds > 0.0
+      ? juce::jmin(totalSamples, static_cast<int>(reader->sampleRate * maxSeconds))
+      : totalSamples;
   if (lengthSamples <= 0)
     return false;
 
-  NoteSample decoded;
-  decoded.sourceFile = file;
   decoded.data.setSize(channels, lengthSamples);
-  reader->read(&decoded.data, 0, lengthSamples, 0, true, channels > 1);
+  constexpr int chunkSize = 32768;
+  for (int offset = 0; offset < lengthSamples; offset += chunkSize) {
+    if ((cancelled && cancelled()) ||
+        !reader->read(&decoded.data, offset, juce::jmin(chunkSize, lengthSamples - offset),
+                      offset, true, channels > 1))
+      return false;
+  }
+  decoded.totalSamples = totalSamples;
+  decoded.keepResident = maxSeconds > 0.0;
   decoded.sourceSampleRate =
       reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
-  decoded.valid = true;
-  target = std::move(decoded);
+  if (compressed && !fromCache && lengthSamples == totalSamples &&
+      cache.getParentDirectory().createDirectory().wasOk() &&
+      cache.getParentDirectory().getBytesFreeOnVolume() >
+          static_cast<juce::int64>(lengthSamples) * channels * 4 + 16 * 1024 * 1024) {
+    // Only the complete decode is persisted. A partial/temp file is never
+    // exposed as a valid cache after interruption or a full disk.
+    juce::TemporaryFile temporary(cache);
+    std::unique_ptr<juce::OutputStream> output(temporary.getFile().createOutputStream());
+    juce::WavAudioFormat wav;
+    auto writer = wav.createWriterFor(output,
+        juce::AudioFormatWriterOptions{}
+            .withSampleRate(decoded.sourceSampleRate)
+            .withNumChannels(channels)
+            .withBitsPerSample(32)
+            .withSampleFormat(juce::AudioFormatWriterOptions::SampleFormat::floatingPoint));
+    bool written = writer != nullptr;
+    for (int offset = 0; written && offset < lengthSamples; offset += chunkSize) {
+      if (cancelled && cancelled())
+        return false;
+      written = writer->writeFromAudioSampleBuffer(decoded.data, offset,
+                          juce::jmin(chunkSize, lengthSamples - offset));
+    }
+    if (written && writer->flush()) {
+      writer.reset();
+      temporary.overwriteTargetFileWithTemporary();
+    }
+  }
+  juce::Logger::writeToLog("Pads source=" + juce::String(fromCache ? "pcm-cache" : "original") +
+                          " samples=" + juce::String(lengthSamples));
+  return true;
+}
+
+bool PadsEngine::installDecodedNote(const int noteIndex,
+                                    DecodedNote &&decoded) {
+  if (!juce::isPositiveAndBelow(noteIndex, kNoteCount) ||
+      decoded.data.getNumSamples() <= 0)
+    return false;
+
+  auto &sample = noteSamples[static_cast<size_t>(noteIndex)];
+  if (sample.sourceFile == juce::File{})
+    return false;
+  if (decoded.keepResident || decoded.totalSamples > decoded.data.getNumSamples())
+    sample.attack = std::move(decoded.data);
+  else
+    sample.data = std::move(decoded.data);
+  sample.totalSamples = decoded.totalSamples;
+  sample.sourceSampleRate = decoded.sourceSampleRate;
+  sample.valid = true;
   return true;
 }
 
@@ -235,12 +310,51 @@ bool PadsEngine::ensureNoteLoaded(int noteIndex,
     return true;
   if (!sample.sourceFile.existsAsFile())
     return false;
-  return loadNoteSampleFromFile(sample, sample.sourceFile, formatManager);
+  DecodedNote decoded;
+  if (!decodeNoteFile(sample.sourceFile, formatManager, decoded))
+    return false;
+  return installDecodedNote(noteIndex, std::move(decoded));
 }
 
 bool PadsEngine::isNoteLoaded(int noteIndex) const noexcept {
   return juce::isPositiveAndBelow(noteIndex, kNoteCount) &&
          noteSamples[static_cast<size_t>(noteIndex)].valid;
+}
+
+bool PadsEngine::isNoteFullyLoaded(const int noteIndex) const noexcept {
+  if (!isNoteLoaded(noteIndex))
+    return false;
+  const auto &sample = noteSamples[static_cast<size_t>(noteIndex)];
+  return sample.data.getNumSamples() > 0 ||
+         (sample.totalSamples > 0 && sample.attack.getNumSamples() == sample.totalSamples);
+}
+
+PadsEngine::RetiredSamples PadsEngine::releaseUnusedSamples(const int noteToKeep) {
+  RetiredSamples retired;
+  std::array<bool, kNoteCount> keep{};
+  if (juce::isPositiveAndBelow(noteToKeep, kNoteCount))
+    keep[static_cast<size_t>(noteToKeep)] = true;
+  for (const auto &voice : voices) {
+    if (voice.state != VoiceState::stopped &&
+        juce::isPositiveAndBelow(voice.noteIndex, kNoteCount)) {
+      const auto &sample = noteSamples[static_cast<size_t>(voice.noteIndex)];
+      // An outgoing voice can finish entirely from its resident attack.
+      const bool fadesWithinAttack = voice.state == VoiceState::fadingOut &&
+          voice.position + voice.increment * fadeOutSamples + 2 <
+              sample.attack.getNumSamples();
+      if (!fadesWithinAttack)
+        keep[static_cast<size_t>(voice.noteIndex)] = true;
+    }
+  }
+
+  for (int note = 0; note < kNoteCount; ++note) {
+    auto &sample = noteSamples[static_cast<size_t>(note)];
+    if (keep[static_cast<size_t>(note)] || !sample.valid)
+      continue;
+    retired[static_cast<size_t>(note)] = std::move(sample.data);
+    sample.valid = sample.attack.getNumSamples() > 0;
+  }
+  return retired;
 }
 
 void PadsEngine::updateVoiceIncrement(Voice &voice) {
@@ -383,15 +497,16 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
     return;
 
   const auto &sample = noteSamples[static_cast<size_t>(voice.noteIndex)];
-  if (!sample.valid || sample.data.getNumSamples() <= 0) {
+  const auto &data = sample.data.getNumSamples() > 0 ? sample.data : sample.attack;
+  if (!sample.valid || data.getNumSamples() <= 0) {
     voice.state = VoiceState::stopped;
     return;
   }
 
   const int outSamples = outputBuffer.getNumSamples();
   const int outChans = outputBuffer.getNumChannels();
-  const int srcSamples = sample.data.getNumSamples();
-  const int srcChans = sample.data.getNumChannels();
+  const int srcSamples = sample.totalSamples > 0 ? sample.totalSamples : data.getNumSamples();
+  const int srcChans = data.getNumChannels();
   if (outSamples <= 0 || outChans <= 0 || srcChans <= 0)
     return;
 
@@ -410,7 +525,7 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
   const double loopSpan = static_cast<double>(
       juce::jmax(1, srcSamples - loopCrossfadeSamples));
 
-  const auto readInterpolated = [&sample, srcSamples](const int channel,
+  const auto readInterpolated = [&data, srcSamples](const int channel,
                                                        double position) {
     while (position >= static_cast<double>(srcSamples))
       position -= static_cast<double>(srcSamples);
@@ -419,7 +534,9 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
     const int pos0 = static_cast<int>(position);
     const int pos1 = pos0 + 1 < srcSamples ? pos0 + 1 : 0;
     const float frac = static_cast<float>(position - static_cast<double>(pos0));
-    const auto *src = sample.data.getReadPointer(channel);
+    if (pos0 >= data.getNumSamples() || pos1 >= data.getNumSamples())
+      return 0.0f;
+    const auto *src = data.getReadPointer(channel);
     return src[pos0] + (src[pos1] - src[pos0]) * frac;
   };
 

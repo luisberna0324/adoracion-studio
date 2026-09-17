@@ -95,17 +95,56 @@ Carga samples desde carpeta. Busca archivos con nombres de notas:
 
 La carga del pack debe tratarse como trabajo pesado de I/O y decodificación.
 `loadFromFolder()` indexa y valida los 12 archivos. Al iniciar el procesador,
-`startPadsPreloadAsync()` prepara el pack y decodifica las doce notas mediante
-un worker dedicado. No bloquea el message thread y nunca realiza I/O desde el
-hilo de audio. Los buffers permanecen residentes durante la vida del procesador.
+`startPadsPreloadAsync()` prepara el pack mediante un worker dedicado. En todas
+las plataformas precarga los primeros 64 segundos de las doce notas (o el
+archivo completo si es más corto). Una nota preparada se dispara directamente
+desde RAM; el worker completa su archivo mientras suena ese inicio. Los 64
+segundos equivalen a ocho segundos a la octava máxima (+3). Se mantiene la
+duración original del archivo y su cursor al publicar el buffer completo: el
+inicio precargado no se convierte en un loop más corto. La precarga del banco
+tiene prioridad inferior a completar la nota activa.
 `MTControlsAudioProcessor::ensurePadsPackReady()` coalesce solicitudes mediante
 un flag atómico para que sólo una preparación pueda correr a la vez.
 
+El pack administrado usa el mismo flujo en escritorio, iOS y Android. Primero
+se valida la carpeta local. Si existe un `pads-pack.zip.download` de una
+transferencia anterior, se intenta instalar ese ZIP antes de iniciar otra
+descarga. Esto permite recuperar una transferencia que Android completó aunque
+su stream HTTP haya informado fin con un valor negativo después del último byte.
+Cuando el servidor publica `Content-Length`, la copia termina al alcanzar
+exactamente ese tamaño y no solicita una lectura adicional. Un error antes de
+ese límite continúa tratándose como descarga incompleta.
+
+El pack administrado contiene MP3. Todas las compilaciones habilitan el lector
+software `JUCE_USE_MP3AUDIOFORMAT`; Android no dispone del `CoreAudioFormat` que
+decodifica esos archivos en macOS/iOS. Encontrar las doce rutas no basta para
+disparar una nota: su MP3 debe decodificarse correctamente.
+
+Al completar un MP3, el worker guarda una caché WAV PCM float32 en `.pcm-cache`
+dentro de la carpeta del pack. El nombre incluye ruta, tamaño, fecha del original
+y versión de caché. Una nueva sesión puede leer tanto el inicio como el archivo
+completo desde WAV sin repetir la decodificación MP3. La caché se publica mediante
+un archivo temporal sólo al terminar la escritura; si falta espacio o falla la
+escritura, se conserva la reproducción desde el original. No se altera la
+frecuencia de muestreo ni se agrega compresión con pérdida. El banco completo
+puede ocupar aproximadamente 2.7 GB en disco; se convierte conforme se utiliza.
+
 Si la UI solicita una nota antes de completar la precarga, el procesador conserva
-la última nota y octava solicitadas y la dispara automáticamente cuando los
-buffers quedan listos. La UI consulta `isPadsPreloadRunning()` para representar
-el estado, pero no posee ni espera al worker. Los triggers MIDI mantienen además
-su mecanismo de reintento por máscara.
+la última nota y octava solicitadas y la dispara automáticamente cuando su
+buffer queda listo. Solicitudes posteriores reemplazan la nota pendiente, lo
+que evita reproducir una secuencia obsoleta después de una carga lenta. La UI
+consulta `isPadsPreloadRunning()` para representar el estado, pero no posee ni
+espera al worker. Los triggers MIDI mantienen además su mecanismo de reintento
+por máscara.
+
+Los doce inicios permanecen residentes (~258 MiB a 44.1 kHz estéreo). Los buffers
+completos inactivos se retiran del motor bajo `padsStateLock` y se liberan fuera
+del lock. Una voz saliente puede terminar desde su inicio residente si éste cubre
+todo el fade restante. Las lecturas y escrituras usan bloques cancelables: si
+cambia la nota activa, se abandona su carga completa y se atiende la nueva.
+La decodificación y la caché nunca se ejecutan en el hilo de audio ni bajo el
+lock del motor. El disparo desde RAM conserva los presets de crossfade de 1/3/5 s;
+esa entrada gradual es independiente de la latencia de carga.
 
 ### Trigger de notas
 
