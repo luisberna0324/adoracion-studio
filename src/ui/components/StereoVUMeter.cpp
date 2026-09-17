@@ -78,12 +78,15 @@ void recordVuMeterTimerResult(const bool requestedRepaint,
 } // namespace
 
 StereoVUMeter::StereoVUMeter(LevelProvider levelProvider,
-                             MuteProvider muteProvider, bool isCompact)
+                             MuteProvider muteProvider, bool isCompact,
+                             const Response responseToUse)
     : layout(isCompact ? Layout::createCompact() : Layout{}),
-      levels(std::move(levelProvider)), isMuted(std::move(muteProvider)) {
+      levels(std::move(levelProvider)), isMuted(std::move(muteProvider)),
+      response(responseToUse) {
   // 30 Hz is plenty for VU visual smoothing; 60 Hz caused idle CPU spikes
-  // when many VUs are present (one per stem).
-  startTimerHz(30);
+  // when many VUs are present (one per stem). Only the single percussive
+  // Click Dyn meter uses 60 Hz so short click peaks stay visually aligned.
+  startTimerHz(response == Response::percussive ? 60 : 30);
 }
 
 int StereoVUMeter::getVisibleSegmentCount() const noexcept {
@@ -238,9 +241,13 @@ void StereoVUMeter::timerCallback() {
   const double elapsedMs = lastUpdateMs > 0.0
       ? juce::jlimit(1.0, 250.0, now - lastUpdateMs) : 1000.0 / 30.0;
   lastUpdateMs = now;
-  const auto smooth = [elapsedMs](float current, float target) {
+  const auto smooth = [this, elapsedMs](float current, float target) {
     // Time-based ballistics: a delayed UI tick must not slow the envelope.
-    const double timeConstantMs = target > current ? 55.0 : 350.0;
+    if (response == Response::percussive && target > current)
+      return target;
+    const double timeConstantMs =
+        target > current ? 55.0
+                         : (response == Response::percussive ? 120.0 : 350.0);
     const float coeff = static_cast<float>(-std::expm1(-elapsedMs / timeConstantMs));
     const float next = current + (target - current) * coeff;
     return next < 0.0005f ? 0.0f : next;

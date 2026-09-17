@@ -56,16 +56,20 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - El telefono muestra transporte basico, tiempo, waveform y mixer.
 - El toggle contextual `Fade Down/Fade Up` aparece junto a `Siguiente`. El
   tiempo usa dos lineas (`actual /` y `total`) con tipografia reducida.
-- El bloque de metronomo conserva en telefono tanto el boton de BPM como el
-  toggle de click. La decision de compactarlo usa como reserva central solo el
-  artwork cuadrado; no exige el ancho de la tarjeta de cancion de escritorio.
+- El bloque de metronomo conserva siempre en telefono tanto el boton de BPM
+  como el toggle de click. La falta de espacio central puede omitir el artwork
+  en el rango mas pequeno, pero no convierte el bloque en un icono sin BPM.
 - El artwork cuadrado de la cancion activa aparece inmediatamente despues del
-  toggle de fade, sin mostrar titulo ni artista.
-- El setlist lateral se reemplaza por un boton compacto con icono de musica,
-  ubicado inmediatamente a la izquierda del cronometro y con el mismo estilo de
-  los controles del header. Abre un overlay que ocupa
+  toggle de fade, sin mostrar titulo ni artista. Al tocarlo abre un popover con
+  portada, titulo, artista, tono activo, BPM, compas, duracion y datos del
+  proyecto disponibles.
+- El setlist lateral se reemplaza por botones compactos de Biblioteca y Pads,
+  ubicados inmediatamente a la izquierda del cronometro. Ambos son controles
+  reales del `TopBar`, comparten exactamente el estilo y la geometria del resto
+  del header, conservan su posicion durante relayouts y reflejan el overlay
+  activo sin ocultarse entre aperturas. Biblioteca abre un overlay que ocupa
   toda el area segura sin reducir ni desplazar
-  el mixer. Mientras el overlay esta abierto, el boton musical se oculta.
+  el mixer; Pads usa la misma presentacion para su superficie de interpretacion.
 - El overlay incluye un boton `X` de `40 x 40 pt/dp`, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
@@ -144,7 +148,9 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 - `makeAppFont` usa la familia sans-serif nativa y su cache en Android para
   evitar resolver repetidamente las tipografias embebidas durante el arranque y
   los repaints. iOS y escritorio conservan la familia Inter embebida.
-- La waveform y los VU usan `30 Hz`; MIDI Learn usa `12 Hz`. Los VU
+- La waveform y los VU usan `30 Hz`; MIDI Learn usa `12 Hz`. El único VU de
+  Click Dyn usa `60 Hz`, ataque inmediato y caída de 120 ms para seguir sus
+  transitorios; consume un pico acumulado por el audio thread. Los demás VU
   omiten lectura y repaint cuando quedan fuera del viewport o están ocultos.
   Sólo invalidan la columna de LEDs al cambiar un segmento o el indicador de
   pico, conservando la escala y el fader en caché. El suavizado depende del

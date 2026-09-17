@@ -60,11 +60,13 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   btn116 = std::make_unique<DivisionButton>("1/16", 4);
   volumeKnob = std::make_unique<LearnAwareSlider>();
   meter = std::make_unique<StereoVUMeter>(
-      std::move(levelProvider), [this] { return muted; });
+      std::move(levelProvider), [this] { return muted; }, false,
+      StereoVUMeter::Response::percussive);
   soloButton = std::make_unique<LearnAwareButton>("S");
   muteButton = std::make_unique<LearnAwareButton>("M");
 
   for (auto *button : {btn14.get(), btn18.get(), btn116.get()}) {
+    button->setViewportIgnoreDragFlag(true);
     button->setLookAndFeel(&lookAndFeel);
     button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
     button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
@@ -106,6 +108,7 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   addAndMakeVisible(*meter);
 
   soloButton->setClickingTogglesState(true);
+  soloButton->setViewportIgnoreDragFlag(true);
   soloButton->setComponentID("soloButton");
   soloButton->setLookAndFeel(&lookAndFeel);
   soloButton->setColour(juce::TextButton::textColourOffId,
@@ -125,6 +128,7 @@ ClickDivisionPanel::ClickDivisionPanel(ChannelStripLookAndFeel &lnf,
   addAndMakeVisible(*soloButton);
 
   muteButton->setClickingTogglesState(true);
+  muteButton->setViewportIgnoreDragFlag(true);
   muteButton->setComponentID("muteButton");
   muteButton->setLookAndFeel(&lookAndFeel);
   muteButton->setColour(juce::TextButton::textColourOffId,

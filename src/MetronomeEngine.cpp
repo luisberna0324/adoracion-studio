@@ -56,6 +56,8 @@ void MetronomeEngine::resetAudioState() noexcept {
   clickSamplesRemaining = 0;
   beatIndex = juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed)) - 1;
   subIndex = 0;
+  boundaryClickPending = false;
+  boundarySubdivision = activeSubdivision;
   currentClickIsMainBeat = true;
   clickGain = 1.00f;
   currentClickTone = ClickTone::downbeat;
@@ -154,6 +156,20 @@ void MetronomeEngine::syncPhaseForBeatPosition(
   beatIndex = ((wholeBeats % beats) + beats) % beats;
   phase = beatPos - std::floor(beatPos);
 
+  // The processor synchronizes the metronome at the beginning of every audio
+  // callback. When a beat lands exactly on that boundary, phase is zero and
+  // the normal increment-before-trigger loop would otherwise wait one full
+  // beat before sounding it. Half a sample is enough tolerance for floating
+  // point conversion between transport frames, seconds and beat position.
+  const double samplesPerBeat = (sampleRate * 60.0) / activeBpm;
+  const double boundaryTolerance =
+      samplesPerBeat > 0.0 ? 0.5 / samplesPerBeat : 0.0;
+  boundaryClickPending = phase <= boundaryTolerance;
+  if (boundaryClickPending) {
+    boundarySubdivision = normalizeSubdivision(
+        requestedSubdivision.load(std::memory_order_acquire));
+  }
+
   const int subdiv = juce::jmax(1, activeSubdivision);
   const double subBeatPos = phase * static_cast<double>(subdiv);
   subIndex = static_cast<int>(std::floor(subBeatPos)) % subdiv;
@@ -197,6 +213,21 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
 
   const bool consumeImmediateClick =
       pendingImmediateClick.exchange(false, std::memory_order_relaxed);
+  const bool consumeBoundaryClick = boundaryClickPending;
+  boundaryClickPending = false;
+  if (consumeBoundaryClick) {
+    // A callback-aligned beat is still a real musical boundary. Publish a
+    // pending subdivision change here just as the in-buffer boundary path
+    // does below.
+    const int requested = boundarySubdivision;
+    if (requested != activeSubdivision) {
+      activeSubdivision = requested;
+      subdiv = activeSubdivision;
+      subIndex = 0;
+      subPhase = 0.0;
+      subPhaseInc = phaseInc * static_cast<double>(subdiv);
+    }
+  }
   if (consumeImmediateClick && shouldRenderAudio && activeMask != 0) {
     const ClickLayer layer =
         (activeMask & 0x01) != 0 ? ClickLayer::downbeat
@@ -204,6 +235,13 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
                                        ? ClickLayer::eighth
                                        : ClickLayer::sixteenth;
     triggerClick(layer, true, (beatIndex == 0) ? 0.95f : 0.80f);
+    sampleVoicesActive = true;
+  } else if (consumeBoundaryClick && shouldRenderAudio &&
+             isLayerEnabled(activeMask, ClickLayer::downbeat)) {
+    // Immediate and boundary triggers are coalesced so play/seek at an exact
+    // beat cannot start two overlapping copies of the same click sample.
+    triggerClick(ClickLayer::downbeat, true,
+                 (beatIndex == 0) ? 0.95f : 0.80f);
     sampleVoicesActive = true;
   }
 

@@ -31,6 +31,9 @@ public:
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
+  void setOnPhoneLibrary(std::function<void()> cb);
+  void setOnPhonePads(std::function<void()> cb);
+  void setPhoneOverlayStates(bool libraryOpen, bool padsOpen);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
   void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
   void setOnMidiLearnTargetSelected(std::function<void(int)> cb);
@@ -39,8 +42,6 @@ public:
   void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
   void setMinimalPhoneMode(bool enabled);
-  juce::Rectangle<int> getPhoneSetlistButtonBounds() const;
-  juce::Rectangle<int> getPhonePadsButtonBounds() const;
   void setSystemUsage(double cpuUsage01, double memoryUsage01);
   void triggerWindowModeToggleFromMidi();
   void triggerSettingsFromMidi();
@@ -112,10 +113,10 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
+  IconButton phoneLibraryButton;
+  IconButton phonePadsButton;
 
   ClickableLabel timeDisplay;
-  juce::Component phoneSetlistSpacer;
-  juce::Component phonePadsSpacer;
   ClickableLabel keyDisplay;
   RoundedLabel systemUsageDisplay;
   BpmSegmentButton bpmSegmentButton;
@@ -130,6 +131,8 @@ private:
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
+  std::function<void()> onPhoneLibrary;
+  std::function<void()> onPhonePads;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;
@@ -189,6 +192,7 @@ private:
   void showMetronomePopover();
   void showKeyPopover();
   void showSongWindowPopover();
+  void showSongInfoPopover();
   void toggleWindowMode();
   void openSettingsPanel();
   void showTabletMorePopover();

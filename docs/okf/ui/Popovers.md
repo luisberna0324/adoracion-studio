@@ -42,6 +42,17 @@ tarea con multiples selecciones. Cualquier edicion que pueda cerrarse tocando
 fuera debe persistir sus cambios conforme se realizan; descartar cambios exige
 una accion explicita de cancelar.
 
+El selector de formato de exportacion de la waveform usa un popover de acciones
+anclado al boton de archivo. Presenta WAV, MP3 y M4A/AAC en filas tactiles con
+una breve descripcion y cierra la superficie antes de iniciar la exportacion.
+No usa `PopupMenu`, para conservar la misma flecha, area segura y estilo en
+telefono, tablet y escritorio.
+
+En telefono, tocar el artwork del `TopBar` abre un popover informativo anclado
+a la portada. La superficie muestra portada, titulo, artista, tono activo, BPM,
+compas, duracion y datos disponibles del proyecto sin ampliar la barra de
+transporte.
+
 ## Integracion
 
 No llamar directamente a `juce::CallOutBox::launchAsynchronously()` desde un

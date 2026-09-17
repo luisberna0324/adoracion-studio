@@ -27,6 +27,17 @@ constexpr int kArrangementTransitionFadeFrames = 64;
 constexpr const char *kDynamicGuideLoadWarningPrefix =
     "__dynamic_guide_load_error__:";
 
+void publishMeterPeak(std::atomic<float> &destination,
+                      const float peak) noexcept {
+  const float normalizedPeak = juce::jmax(0.0f, peak);
+  float published = destination.load(std::memory_order_relaxed);
+  while (normalizedPeak > published &&
+         !destination.compare_exchange_weak(
+             published, normalizedPeak, std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+  }
+}
+
 class ArrangementStructurePublicationGuard {
 public:
   explicit ArrangementStructurePublicationGuard(
@@ -667,6 +678,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   int dynamicGuideOutputWidth = 2;
   float dynamicGuideOutputGain = 1.0f;
   bool dynamicGuideOutputAudible = false;
+  bool anySoloActiveThisBlock = false;
   bool seekAppliedThisBlock = false;
   bool timeProcessingStateFlushedThisBlock = false;
   bool virtualTimelineStateFlushedThisBlock = false;
@@ -922,24 +934,26 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
     }
 
-    const int clickStemIndexLocal =
-        metronomeClickStemIndex.load(std::memory_order_relaxed);
-    const bool hasRealClickStem = juce::isPositiveAndBelow(clickStemIndexLocal,
-                                                           stemCount);
+    const bool dynamicClickSourceActive =
+        isMetronomeEnabled() &&
+        clickDivisionEnabledState.load(std::memory_order_relaxed) &&
+        (clickDivisionState.load(std::memory_order_relaxed) & 0x07) != 0;
     const bool virtualMetronomeSoloActive =
-        !hasRealClickStem &&
+        dynamicClickSourceActive &&
         metronomeSoloState.load(std::memory_order_relaxed);
     const bool dynamicGuideSoloActive =
         dynamicGuideAnnouncementsActive &&
         dynamicGuideSoloState.load(std::memory_order_relaxed);
 
-    // Evaluate global solo state (includes virtual metronome solo when no real
-    // click stem exists so stems mute and only click remains audible).
-    bool anySoloActive = virtualMetronomeSoloActive || dynamicGuideSoloActive;
+    // Every audible source participates in the same global solo domain. Click
+    // Dyn remains an independent bus even when the song also contains a click
+    // stem, and disabled virtual buses do not silence the song.
+    anySoloActiveThisBlock =
+        virtualMetronomeSoloActive || dynamicGuideSoloActive;
     for (int i = 0; i < stemCount; ++i) {
       if (stemSoloStates[static_cast<size_t>(i)].load(
               std::memory_order_relaxed)) {
-        anySoloActive = true;
+        anySoloActiveThisBlock = true;
         break;
       }
     }
@@ -962,7 +976,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       track->setSoloed(stemSoloStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
       track->setVolume(juce::jlimit(0.0f, 1.0f, stemVolumes[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
       track->setTrim(juce::jlimit(0.0f, 2.0f, stemGains[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
-      track->setGlobalMixState(mixGain, anySoloActive);
+      track->setGlobalMixState(mixGain, anySoloActiveThisBlock);
       
       // Update UI meter level (computed in the PREVIOUS getNextAudioBlock call)
       stemLevels[static_cast<size_t>(i)].store(isPlaying ? track->getMagnitude() : 0.0f,
@@ -988,7 +1002,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           dynamicGuideMutedState.load(std::memory_order_relaxed);
       const bool guideSoloed =
           dynamicGuideSoloState.load(std::memory_order_relaxed);
-      dynamicGuideOutputAudible = !guideMuted && (!anySoloActive || guideSoloed);
+      dynamicGuideOutputAudible =
+          !guideMuted && (!anySoloActiveThisBlock || guideSoloed);
       dynamicGuideShouldRender = dynamicGuideOutputAudible &&
                                  dynamicGuideOutputGain > 0.0001f;
     }
@@ -2125,16 +2140,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   if (metronomePlaybackActive) {
     metronomeRenderBuffer.clear();
 
-    const int activeStemCount = loadedStemCount.load(std::memory_order_relaxed);
-    bool anySoloActive = false;
-    for (int i = 0; i < activeStemCount; ++i) {
-      if (stemSoloStates[static_cast<size_t>(i)].load(
-              std::memory_order_relaxed)) {
-        anySoloActive = true;
-        break;
-      }
-    }
-
     float effectiveVolume =
         metronomeVolumeState.load(std::memory_order_relaxed);
     float effectiveGain =
@@ -2155,7 +2160,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (outputWidth >= 2 && outputChannelOneBased >= numChannels)
       outputChannelOneBased = juce::jmax(1, numChannels - 1);
 
-    const bool metronomeAudible = !muted && (!anySoloActive || soloed);
+    const bool metronomeAudible =
+        !muted && (!anySoloActiveThisBlock || soloed);
     metronome.setVolume(effectiveVolume);
     metronome.setMuted(!metronomeAudible);
     if (inBlockArrangementTransitionApplied) {
@@ -2202,10 +2208,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                   juce::jmin(1, metronomeRenderBuffer.getNumChannels() - 1), 0,
                   numSamples)
             : 0.0f;
-    metronomeMeterLevelLeft.store(metronomeMeterLeft,
-                                  std::memory_order_relaxed);
-    metronomeMeterLevelRight.store(metronomeMeterRight,
-                                   std::memory_order_relaxed);
+    // A click can begin and end between two UI timer ticks. Accumulate the
+    // highest rendered post-latency/post-gain peak until the Click Dyn VU
+    // consumes it instead of overwriting it with the next silent block.
+    publishMeterPeak(metronomeMeterLevelLeft, metronomeMeterLeft);
+    publishMeterPeak(metronomeMeterLevelRight, metronomeMeterRight);
 
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
@@ -3439,9 +3446,9 @@ void MTControlsAudioProcessor::getDynamicGuideMeterLevels(
 }
 
 void MTControlsAudioProcessor::getMetronomeMeterLevels(
-    float &left, float &right) const noexcept {
-  left = metronomeMeterLevelLeft.load(std::memory_order_relaxed);
-  right = metronomeMeterLevelRight.load(std::memory_order_relaxed);
+    float &left, float &right) noexcept {
+  left = metronomeMeterLevelLeft.exchange(0.0f, std::memory_order_relaxed);
+  right = metronomeMeterLevelRight.exchange(0.0f, std::memory_order_relaxed);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout

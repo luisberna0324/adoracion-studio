@@ -1669,15 +1669,15 @@ void ChannelGridPanel::syncDivisionSlotFromProcessor() {
                                 static_cast<int>(slots.size())))
     return;
 
-  slots[static_cast<size_t>(divisionSlotIndex)]->setDivision(
-      processor.getClickDivision());
-  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionVolume(
-      processor.getMetronomeVolume());
-  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionPowerOn(
-      processor.isClickDivisionEnabled());
-  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionMuteState(
+  auto &slot = *slots[static_cast<size_t>(divisionSlotIndex)];
+  if (!slot.isUserInteracting()) {
+    slot.setDivision(processor.getClickDivision());
+    slot.setDivisionVolume(processor.getMetronomeVolume());
+    slot.setDivisionPowerOn(processor.isClickDivisionEnabled());
+  }
+  slot.setDivisionMuteState(
       processor.isMetronomeMuted());
-  slots[static_cast<size_t>(divisionSlotIndex)]->setDivisionSoloState(
+  slot.setDivisionSoloState(
       processor.isMetronomeSolo());
 }
 

@@ -8,6 +8,8 @@
 
 class StereoVUMeter : public juce::Component, private juce::Timer {
 public:
+  enum class Response { smooth, percussive };
+
   struct Layout {
     int scaleWidth = 14;
     int gap = 3;
@@ -39,7 +41,8 @@ public:
   using MuteProvider = std::function<bool()>;
 
   StereoVUMeter(LevelProvider levelProvider, MuteProvider muteProvider,
-                bool isCompact = false);
+                bool isCompact = false,
+                Response response = Response::smooth);
   void paint(juce::Graphics &g) override;
   void resized() override;
 
@@ -49,6 +52,7 @@ private:
   Layout layout;
   LevelProvider levels;
   MuteProvider isMuted;
+  Response response = Response::smooth;
 
   float levelL = 0.0f;
   int lastPaintedActiveSegments = -1;

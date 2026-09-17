@@ -56,7 +56,7 @@ public:
   juce::AudioProcessorValueTreeState &getValueTreeState();
   void getOutputMeterLevels(float &left, float &right) const;
   void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
-  void getMetronomeMeterLevels(float &left, float &right) const noexcept;
+  void getMetronomeMeterLevels(float &left, float &right) noexcept;
   static juce::AudioProcessorValueTreeState::ParameterLayout
   createParameterLayout();
 

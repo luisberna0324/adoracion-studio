@@ -508,6 +508,17 @@ script de análisis distinga ambos modos dentro del mismo escenario.
 | `setMetronomeGain(float)` | gainValue | Gain lineal |
 | `getMetronomeGain()` | — | Gain actual |
 
+El processor calcula una sola condición global de solo por callback para
+stems, Click Dyn y Guía Dyn. Cada bus conserva su propio mute y queda audible
+cuando no hay ningún solo o cuando ese bus también está en solo. Click Dyn
+participa aunque exista un stem de click en la canción; sólo se excluye cuando
+está deshabilitado o su máscara de divisiones es cero.
+
+`getMetronomeMeterLevels()` consume el máximo pico publicado desde su llamada
+anterior. El pico se mide sobre el buffer de Click Dyn después de su gain y de
+la compensación de latencia, de modo que el VU representa la señal que se
+enruta y no pierde transitorios entre ticks de interfaz.
+
 ### Enrutamiento de salida
 
 | Método | Parámetros | Descripción |

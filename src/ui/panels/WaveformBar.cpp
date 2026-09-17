@@ -638,6 +638,113 @@ private:
   std::vector<std::unique_ptr<CountChip>> chips;
   std::function<void(juce::String)> onSelectCue;
 };
+
+class ExportFormatButton final : public juce::Button {
+public:
+  ExportFormatButton(juce::String titleToUse, juce::String detailToUse,
+                     juce::String formatToUse,
+                     std::function<void(juce::String)> onSelectCallback)
+      : juce::Button(titleToUse), title(std::move(titleToUse)),
+        detail(std::move(detailToUse)), format(std::move(formatToUse)),
+        onSelect(std::move(onSelectCallback)) {
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    onClick = [this] {
+      const auto callback = onSelect;
+      const auto selectedFormat = format;
+      dismissActiveActionPopover();
+      if (callback)
+        callback(selectedFormat);
+    };
+  }
+
+  void paintButton(juce::Graphics &g, const bool isMouseOverButton,
+                   const bool isButtonDown) override {
+    auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+    auto fill = UITheme::cardBgHover;
+    if (isButtonDown)
+      fill = fill.darker(0.06f);
+    else if (isMouseOverButton)
+      fill = fill.brighter(0.05f);
+
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, 9.0f);
+    g.setColour((isMouseOverButton ? UITheme::accentSoft : UITheme::cardBorder)
+                    .withAlpha(isMouseOverButton ? 0.82f : 0.64f));
+    g.drawRoundedRectangle(bounds, 9.0f, 1.0f);
+
+    auto content = getLocalBounds().reduced(12, 6);
+    auto iconArea = content.removeFromLeft(30).toFloat().reduced(4.0f);
+    drawSvgIcon(g, iconArea, SvgIconName::FileAudio,
+                isMouseOverButton ? UITheme::accentSoft
+                                  : UITheme::textPrimary.withAlpha(0.92f));
+    content.removeFromLeft(8);
+    auto titleArea = content.removeFromTop(19);
+    g.setColour(UITheme::textPrimary);
+    g.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
+    g.drawFittedText(title, titleArea, juce::Justification::centredLeft, 1);
+    g.setColour(UITheme::textSecondary.withAlpha(0.92f));
+    g.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
+    g.drawFittedText(detail, content, juce::Justification::centredLeft, 1);
+  }
+
+private:
+  juce::String title;
+  juce::String detail;
+  juce::String format;
+  std::function<void(juce::String)> onSelect;
+};
+
+class ExportFormatPopover final : public juce::Component {
+public:
+  explicit ExportFormatPopover(std::function<void(juce::String)> onSelect)
+      : wavButton("WAV (24 bits)",
+                  L10n::tr("Máxima calidad", "Maximum quality"), "wav",
+                  onSelect),
+        mp3Button("MP3 (320 kbps)",
+                  L10n::tr("Compatible y compacto", "Compatible and compact"),
+                  "mp3", onSelect),
+        m4aButton("M4A / AAC (256 kbps)",
+                  L10n::tr("Optimizado para Apple", "Optimized for Apple"),
+                  "m4a", std::move(onSelect)) {
+    title.setText(L10n::tr("Formato de exportación", "Export format"),
+                  juce::dontSendNotification);
+    title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+    title.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
+    title.setJustificationType(juce::Justification::centredLeft);
+    title.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(title);
+    addAndMakeVisible(wavButton);
+    addAndMakeVisible(mp3Button);
+    addAndMakeVisible(m4aButton);
+  }
+
+  void paint(juce::Graphics &g) override {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(bounds, 10.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.76f));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 10.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12, 10);
+    title.setBounds(area.removeFromTop(22));
+    area.removeFromTop(8);
+    constexpr int buttonHeight = 46;
+    constexpr int gap = 7;
+    wavButton.setBounds(area.removeFromTop(buttonHeight));
+    area.removeFromTop(gap);
+    mp3Button.setBounds(area.removeFromTop(buttonHeight));
+    area.removeFromTop(gap);
+    m4aButton.setBounds(area.removeFromTop(buttonHeight));
+  }
+
+private:
+  juce::Label title;
+  ExportFormatButton wavButton;
+  ExportFormatButton mp3Button;
+  ExportFormatButton m4aButton;
+};
 } // namespace
 
 SvgToolbarButton::SvgToolbarButton(const juce::String &name,
@@ -728,23 +835,23 @@ WaveformBar::WaveformBar() {
   exportButton.onClick = [this] {
     if (exportBusy || !onExportMixRequested)
       return;
-    juce::PopupMenu formats;
-    formats.addItem(1, "WAV (24 bits)");
-    formats.addItem(2, "MP3 (320 kbps)");
-    formats.addItem(3, "M4A / AAC (256 kbps)");
     const juce::Component::SafePointer<WaveformBar> safeBar(this);
-    formats.showMenuAsync(
-        juce::PopupMenu::Options().withTargetComponent(&exportButton),
-        [safeBar](const int choice) {
-          if (safeBar == nullptr || !safeBar->onExportMixRequested)
-            return;
-          if (choice == 1)
-            safeBar->onExportMixRequested("wav");
-          else if (choice == 2)
-            safeBar->onExportMixRequested("mp3");
-          else if (choice == 3)
-            safeBar->onExportMixRequested("m4a");
+    auto panel = std::make_unique<ExportFormatPopover>(
+        [safeBar](const juce::String &format) {
+          if (safeBar != nullptr && safeBar->onExportMixRequested)
+            safeBar->onExportMixRequested(format);
         });
+    panel->setSize(330, 202);
+
+    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+    juce::Component *parentComp = editor != nullptr
+                                      ? static_cast<juce::Component *>(editor)
+                                      : static_cast<juce::Component *>(this);
+    const auto anchor =
+        parentComp->getLocalArea(&exportButton, exportButton.getLocalBounds());
+    ActionPopoverOptions options;
+    options.compactMaximumWidth = 380;
+    presentActionPopover(std::move(panel), anchor, parentComp, options);
   };
   addAndMakeVisible(exportButton);
 

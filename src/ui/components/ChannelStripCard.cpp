@@ -73,6 +73,7 @@ ChannelStripCard::ChannelStripCard(
   configureLabel(gainLabel, "GAIN", 7.5f, 0.08f, true);
 
   soloButton.setButtonText("S");
+  soloButton.setViewportIgnoreDragFlag(true);
   soloButton.setClickingTogglesState(true);
   soloButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   soloButton.setColour(juce::TextButton::textColourOnId,
@@ -82,6 +83,7 @@ ChannelStripCard::ChannelStripCard(
   addAndMakeVisible(soloButton);
 
   muteButton.setButtonText("M");
+  muteButton.setViewportIgnoreDragFlag(true);
   muteButton.setClickingTogglesState(true);
   muteButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   muteButton.setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
@@ -89,6 +91,7 @@ ChannelStripCard::ChannelStripCard(
   muteButton.setComponentID("muteButton");
   addAndMakeVisible(muteButton);
   addAndMakeVisible(powerButton);
+  powerButton.setViewportIgnoreDragFlag(true);
   powerButton.setVisible(false);
 
   volSlider.onValueChange = [this] {

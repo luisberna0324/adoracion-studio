@@ -112,6 +112,8 @@ private:
   int beatIndex = 0;
   int subIndex = 0;
   int activeSubdivision = 1;
+  bool boundaryClickPending = false;
+  int boundarySubdivision = 1;
   bool currentClickIsMainBeat = true;
   float clickGain = 0.22f;
   ClickTone currentClickTone = ClickTone::downbeat;

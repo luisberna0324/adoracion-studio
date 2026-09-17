@@ -148,6 +148,11 @@ source y BPM original, y `effectiveBpm` desde el ratio de tempo audio-owned.
 Así fase y velocidad no pueden pertenecer a dos targets de tempo distintos
 dentro del mismo callback.
 
+Si la posición sincronizada cae exactamente en un límite de negra, el motor
+arma ese golpe para el primer frame del callback. Esto evita perder clicks
+cuando el tamaño de bloque coincide con la grilla. El trigger inmediato de
+play/seek se combina con ese golpe para no duplicar voces.
+
 ### Trigger manual
 
 ```cpp
@@ -301,6 +306,17 @@ processor.setMetronomeBpm(120.0);
 processor.setMetronomeBeatsPerBar(4);
 processor.setClickDivision(1 | 4);  // 1/4 + 1/16
 ```
+
+Click Dyn, Guía Dyn y todos los stems comparten el mismo dominio global de
+solo. Un Click Dyn habilitado y con alguna división activa puede silenciar los
+demás buses al ponerse en solo incluso si la canción contiene un stem de
+click. Los buses virtuales deshabilitados no activan el solo global. Mute y
+solo se evalúan por callback antes de enrutar cualquier bus.
+
+El medidor de Click Dyn observa el buffer renderizado después de volumen,
+gain, mute/solo y compensación de latencia. El audio thread acumula el pico más
+alto hasta que la UI lo consume, por lo que un click corto no puede ser
+reemplazado por un bloque silencioso antes del siguiente frame visual.
 
 ## Archivos relacionados
 

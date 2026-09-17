@@ -2048,6 +2048,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (isPhoneSizedLayout(*this)) {
       // Phones keep the mixer full width. The setlist is therefore presented
       // as an overlay instead of reserving a permanent side column.
+      phonePadsOpen = false;
+      isPadsCollapsed = true;
+      if (padsHandlePanel)
+        padsHandlePanel->setCollapsed(true);
       isSetlistDrawerOpen = !isSetlistDrawerOpen;
       isSetlistCollapsed = false;
     } else if (!supportsSetlistDrawer(*this)) {
@@ -2073,13 +2077,21 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (!isPhoneSizedLayout(*this))
       return;
     isSetlistDrawerOpen = false;
-    phonePadsOpen = true;
-    isPadsCollapsed = false;
+    phonePadsOpen = !phonePadsOpen;
+    isPadsCollapsed = !phonePadsOpen;
     if (padsHandlePanel)
-      padsHandlePanel->setCollapsed(false);
+      padsHandlePanel->setCollapsed(isPadsCollapsed);
     resized();
     repaint();
   };
+  topBarRaw->setOnPhoneLibrary([this] {
+    if (setlistHandlePanel != nullptr && setlistHandlePanel->onToggle)
+      setlistHandlePanel->onToggle();
+  });
+  topBarRaw->setOnPhonePads([this] {
+    if (phonePadsButton != nullptr && phonePadsButton->onToggle)
+      phonePadsButton->onToggle();
+  });
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
     phonePadsOpen = false;
@@ -3841,32 +3853,13 @@ void MTControlsAudioProcessorEditor::resized() {
 
   if (minimalPhoneProfile) {
     // Keep the mixer aligned to the waveform. The setlist is exposed through
-    // a floating action instead of a persistent side column.
+    // stable TopBar actions instead of a persistent side column.
     songListPanel->setVisible(false);
     songListPanel->setBounds({});
-    setlistHandlePanel->setPhoneOverlayMode(true);
-    setlistHandlePanel->setVisible(!isSetlistDrawerOpen && !phonePadsOpen);
-    phonePadsButton->setVisible(!isSetlistDrawerOpen && !phonePadsOpen);
-    const int actionW = 48;
-    const int actionH = 48;
-    auto setlistButtonBounds = juce::Rectangle<int>();
+    setlistHandlePanel->setVisible(false);
+    phonePadsButton->setVisible(false);
     if (auto *phoneTopBar = dynamic_cast<TopBar *>(topBar.get()))
-      setlistButtonBounds = getLocalArea(
-          phoneTopBar, phoneTopBar->getPhoneSetlistButtonBounds());
-    if (setlistButtonBounds.isEmpty())
-      setlistButtonBounds = juce::Rectangle<int>(
-          rightChannelsArea.getRight() - actionW - contentInset,
-          rightChannelsArea.getY() + contentInset, actionW, actionH);
-    setlistHandlePanel->setBounds(setlistButtonBounds);
-    setlistHandlePanel->toFront(false);
-    auto padsButtonBounds = juce::Rectangle<int>();
-    if (auto *phoneTopBar = dynamic_cast<TopBar *>(topBar.get()))
-      padsButtonBounds = getLocalArea(phoneTopBar,
-          phoneTopBar->getPhonePadsButtonBounds());
-    if (padsButtonBounds.isEmpty())
-      padsButtonBounds = setlistButtonBounds.translated(-(actionW + 8), 0);
-    phonePadsButton->setBounds(padsButtonBounds);
-    phonePadsButton->toFront(false);
+      phoneTopBar->setPhoneOverlayStates(isSetlistDrawerOpen, phonePadsOpen);
     if (setlistDrawerScrim)
       setlistDrawerScrim->setVisible(false);
     if (padsHandlePanel)
@@ -3874,6 +3867,8 @@ void MTControlsAudioProcessorEditor::resized() {
     if (padsComponent)
       padsComponent->setVisible(false);
   } else {
+    if (auto *desktopTopBar = dynamic_cast<TopBar *>(topBar.get()))
+      desktopTopBar->setPhoneOverlayStates(false, false);
     setlistHandlePanel->setPhoneOverlayMode(false);
     setlistHandlePanel->setVisible(true);
     phonePadsButton->setVisible(false);

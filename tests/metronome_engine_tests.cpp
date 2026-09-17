@@ -178,6 +178,39 @@ void testRangeProcessingDoesNotTouchAdjacentSamples() {
   }
 }
 
+void testSyncedBeatBoundaryRendersAtBlockStart() {
+  MetronomeEngine engine;
+  engine.prepare(1000.0);
+  engine.setEnabled(true);
+  engine.setVolume(1.0f);
+  engine.setDivisionMask(1);
+  engine.setSubdivision(4);
+
+  // This is the callback pattern that used to drop a beat: transport sync
+  // publishes an exact integer beat before rendering the next block.
+  engine.syncPhaseForBeatPosition(2.0, 60.0);
+  juce::AudioBuffer<float> boundaryBlock(2, 32);
+  boundaryBlock.clear();
+  engine.process(boundaryBlock);
+
+  expect(MetronomeEngineTestPeer::activeSubdivision(engine) == 4,
+         "a callback-aligned beat publishes the pending subdivision");
+
+  for (int channel = 0; channel < boundaryBlock.getNumChannels(); ++channel)
+    expect(boundaryBlock.getMagnitude(channel, 0,
+                                      boundaryBlock.getNumSamples()) > 0.0f,
+           "an exact callback-aligned beat emits its click in that block");
+
+  engine.syncPhaseForBeatPosition(2.25, 60.0);
+  juce::AudioBuffer<float> betweenBeats(2, 32);
+  betweenBeats.clear();
+  engine.process(betweenBeats);
+  for (int channel = 0; channel < betweenBeats.getNumChannels(); ++channel)
+    expect(betweenBeats.getMagnitude(channel, 0,
+                                     betweenBeats.getNumSamples()) == 0.0f,
+           "sync inside a beat does not create a false boundary click");
+}
+
 } // namespace
 
 int main() {
@@ -186,6 +219,7 @@ int main() {
   testResetGenerationIsConsumedByCoherentBeatSync();
   testProcessDoesNotConsumeControlResetBetweenSyncAndRender();
   testRangeProcessingDoesNotTouchAdjacentSamples();
+  testSyncedBeatBoundaryRendersAtBlockStart();
   std::cout << "Metronome engine tests passed\n";
   return 0;
 }
