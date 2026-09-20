@@ -6,6 +6,7 @@
 #include "data/AppSettings.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/SongLibraryStore.h"
+#include "telemetry/Telemetry.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -199,6 +200,7 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
               .withInput("Input", juce::AudioChannelSet::stereo(), false)
               .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
+  playworship::telemetry::initialize();
   playbackFormatManager.registerBasicFormats();
   // P0 (perf): one-shot migration de directorios de cache legacy
   // cuyos nombres contengan caracteres que sanitizeCacheKey() ahora
@@ -300,10 +302,16 @@ MTControlsAudioProcessor::~MTControlsAudioProcessor() {
   for (auto &worker : stemReadThreads)
     worker->stopThread(3000);
   stemReadThreads.clear();
+  playworship::telemetry::shutdown();
 }
 
 void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
                                              int samplesPerBlock) {
+  diagnosticEngineGeneration.fetch_add(1, std::memory_order_relaxed);
+  diagnosticMarkerGeneration.store(0, std::memory_order_relaxed);
+  distortionSnapshotDecimator = 0;
+  diagnosticMasterSignalState.reset();
+  diagnosticOutputSignalState.reset();
   pauseTimeProcessorMaintenance();
   const int realtimeBlockCapacity =
       juce::jmax(samplesPerBlock, maxRealtimeBlockSize);
@@ -549,6 +557,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         gap.stemCount = static_cast<int>(stemTracks.size());
         gap.isPlaying = isPlayingForGap;
         diagnostics.pushGapEvent(gap);
+        // Atomic counter only: no I/O, allocations, locks, SDK calls, or
+        // logging from processBlock. timerCallback sends a coarse aggregate.
+        playworship::telemetry::recordAudioCallbackGap();
       }
     }
   }
@@ -644,6 +655,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
 
   int diagnosticStemCount = 0;
   bool diagnosticWasPlaying = false;
+  playworship::audio::SignalIntegrityMetrics diagnosticMasterMetrics;
+  playworship::audio::SignalIntegrityMetrics diagnosticOutputMetrics;
+  const bool captureFullStemIntegrityThisBlock =
+      diagnosticsActive &&
+      distortionSnapshotDecimator + 1 >=
+          kDistortionStemSnapshotEveryBlocks;
 
   for (auto i = getTotalNumInputChannels(); i < getTotalNumOutputChannels();
        ++i)
@@ -977,6 +994,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       track->setVolume(juce::jlimit(0.0f, 1.0f, stemVolumes[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
       track->setTrim(juce::jlimit(0.0f, 2.0f, stemGains[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
       track->setGlobalMixState(mixGain, anySoloActiveThisBlock);
+      track->setSignalIntegrityCaptureEnabled(
+          diagnosticsActive, captureFullStemIntegrityThisBlock);
       
       // Update UI meter level (computed in the PREVIOUS getNextAudioBlock call)
       stemLevels[static_cast<size_t>(i)].store(isPlaying ? track->getMagnitude() : 0.0f,
@@ -2393,6 +2412,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                buffer);
   }
 
+  if (songLoadedForDiagnostics && diagnosticsActive) {
+    diagnosticMasterMetrics = playworship::audio::measureSignalIntegrity(
+        buffer, 0, numSamples, masterOutGain, diagnosticMasterSignalState);
+  }
+
   if (!juce::approximatelyEqual(masterOutGain, 1.0f))
     buffer.applyGain(masterOutGain);
 
@@ -2403,6 +2427,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   stageRampTransitionStartTick = juce::Time::getHighResolutionTicks();
   applySongTransitionRamp(buffer, songLoadGainRamp);
   stageRampTransitionEndTick = juce::Time::getHighResolutionTicks();
+
+  if (songLoadedForDiagnostics && diagnosticsActive) {
+    diagnosticOutputMetrics = playworship::audio::measureSignalIntegrity(
+        buffer, 0, numSamples, 1.0f, diagnosticOutputSignalState);
+  }
 
   if (transitionToNextArrangementPart) {
     // Capture the source section before we overwrite the current part index.
@@ -2492,6 +2521,72 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                  blockStartTick) *
         1000.0;
 
+    const auto sourceGeneration =
+        diagnosticSourceGeneration.load(std::memory_order_relaxed);
+    const auto markerId =
+        diagnosticMarkerGeneration.load(std::memory_order_relaxed);
+    const double wallMs =
+        diagnostics.wallTimeForHighResolutionTick(blockEndTick);
+    const double songPositionSec = transportClock.getPositionSeconds();
+    const auto pushSignalMetrics =
+        [&](const playworship::audio::SignalIntegrityMetrics& metrics,
+            const int sourceKind, const int sourceIndex,
+            const float controlVolume, const float controlGain,
+            const bool muted, const bool soloed, const bool audible) {
+          AudioDiagnostics::DistortionEvent event;
+          event.wallMs = wallMs;
+          event.songPositionSec = songPositionSec;
+          event.sourceGeneration = sourceGeneration;
+          event.markerId = markerId;
+          event.sourceKind = sourceKind;
+          event.sourceIndex = sourceIndex;
+          event.channels = metrics.channels;
+          event.samplesPerChannel = metrics.samplesPerChannel;
+          event.inputPeak = metrics.inputPeak;
+          event.outputPeak = metrics.outputPeak;
+          event.outputRms = metrics.outputRms;
+          event.maxDelta = metrics.maxDelta;
+          event.boundaryDelta = metrics.boundaryDelta;
+          event.nearClipSamples = metrics.nearClipSamples;
+          event.overSamples = metrics.overSamples;
+          event.largeDeltaSamples = metrics.largeDeltaSamples;
+          event.nonFiniteSamples = metrics.nonFiniteSamples;
+          event.controlVolume = controlVolume;
+          event.controlGain = controlGain;
+          event.muted = muted;
+          event.soloed = soloed;
+          event.audible = audible;
+          diagnostics.pushDistortionEvent(event);
+        };
+
+    pushSignalMetrics(
+        diagnosticMasterMetrics, 1, -1,
+        masterVolume.load(std::memory_order_relaxed),
+        masterGain.load(std::memory_order_relaxed),
+        masterMuted.load(std::memory_order_relaxed), false,
+        !masterMuted.load(std::memory_order_relaxed));
+    pushSignalMetrics(diagnosticOutputMetrics, 2, -1, 1.0f, 1.0f,
+                      false, false, true);
+
+    ++distortionSnapshotDecimator;
+    const bool periodicStemSnapshot =
+        distortionSnapshotDecimator >= kDistortionStemSnapshotEveryBlocks;
+    if (periodicStemSnapshot)
+      distortionSnapshotDecimator = 0;
+    if (periodicStemSnapshot) {
+      const int metricStemCount = juce::jmin(
+          diagnosticStemCount, static_cast<int>(stemTracks.size()));
+      for (int i = 0; i < metricStemCount; ++i) {
+        const auto& track = stemTracks[static_cast<size_t>(i)];
+        const bool muted = track->isMuted();
+        const bool soloed = track->isSoloed();
+        pushSignalMetrics(
+            track->getSignalIntegrityMetricsForDiagnostics(), 0, i,
+            track->getVolume(), track->getTrim(),
+            muted, soloed, !muted && (!anySoloActiveThisBlock || soloed));
+      }
+    }
+
     // ---- Benchmark: compute per-stage microseconds ----------------------
     // Each stage delta is the high-resolution tick difference converted to
     // microseconds and saturated to int16_t. A stage that didn't run in
@@ -2530,7 +2625,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             : static_cast<int16_t>(0);
 
     diagnostics.pushEvent(
-        {diagnostics.wallTimeForHighResolutionTick(blockEndTick), blockMs,
+        {wallMs, blockMs,
          budgetMs, 0.0,
          diagnosticStemCount, streamingMisses, blockMs > budgetMs,
          diagnosticWasPlaying, streamingMissingFrames,
@@ -2541,7 +2636,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
              timeProcessorServiceFailures,
              static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))),
          stagePreReadUs, stageReadNextUs, stageDecodeRenderUs,
-         stageMixStemsUs, stageMixOutputUs, stageRampTransitionUs});
+         stageMixStemsUs, stageMixOutputUs, stageRampTransitionUs,
+         sourceGeneration});
 
     // ---- Benchmark: store this block's end tick for the next gap check --
     diagnostics.setPreviousBlockEndTick(blockEndTick);
@@ -2910,6 +3006,35 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
 }
 
 void MTControlsAudioProcessor::timerCallback() {
+  playworship::telemetry::flushAudioIncidents();
+  const double diagnosticNow = juce::Time::getMillisecondCounterHiRes();
+  if (diagnosticNow - lastDiagnosticDeviceSampleMs >= 1000.0) {
+    lastDiagnosticDeviceSampleMs = diagnosticNow;
+    auto* manager = &standaloneAudioDeviceBridge.getAudioDeviceManager();
+#if JucePlugin_Build_Standalone
+    if (auto* holder = juce::StandalonePluginHolder::getInstance())
+      manager = &holder->deviceManager;
+#endif
+    AudioDiagnostics::DeviceEvent event;
+    event.wallMs = static_cast<double>(juce::Time::currentTimeMillis());
+    event.monotonicMs = diagnosticNow;
+    event.engineGeneration = diagnosticEngineGeneration.load(std::memory_order_relaxed);
+    event.sourceGeneration = diagnosticSourceGeneration.load(std::memory_order_relaxed);
+    event.songPositionSec = getSongCurrentPositionSeconds();
+    event.bpm = getPlaybackTempoBpm();
+    event.pitch = pitchTargetSemiTones.load(std::memory_order_relaxed);
+    event.playing = isSongPlaying();
+    event.clickDynMuted = isMetronomeMuted();
+    event.clickDynSolo = isMetronomeSolo();
+    if (auto* device = manager->getCurrentAudioDevice(); device != nullptr && device->isOpen()) {
+      event.sampleRate = device->getCurrentSampleRate();
+      event.bufferFrames = device->getCurrentBufferSizeSamples();
+      event.outputLatencyFrames = device->getOutputLatencyInSamples();
+      // Query the device, not AudioDeviceManager's combined native/DSP count.
+      event.nativeXruns = device->getXRunCount();
+    }
+    diagnostics.pushDeviceEvent(event);
+  }
   int command = 0;
   while (dequeueMidiControlCommand(command))
     executeMidiControlCommand(command);
@@ -2922,6 +3047,34 @@ void MTControlsAudioProcessor::timerCallback() {
       padsFullLoadRequested.load(std::memory_order_acquire) ||
       pendingPadNote.load(std::memory_order_acquire) >= 0)
     startPadsPreloadAsync();
+}
+
+uint64_t MTControlsAudioProcessor::markAudioArtifact() {
+  const auto markerId =
+      diagnosticMarkerGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+  AudioDiagnostics::MarkerEvent event;
+  event.wallMs = static_cast<double>(juce::Time::currentTimeMillis());
+  event.monotonicMs = juce::Time::getMillisecondCounterHiRes();
+  event.songPositionSec = getSongCurrentPositionSeconds();
+  event.engineGeneration =
+      diagnosticEngineGeneration.load(std::memory_order_relaxed);
+  event.sourceGeneration =
+      diagnosticSourceGeneration.load(std::memory_order_relaxed);
+  event.markerId = markerId;
+
+  auto* manager = &standaloneAudioDeviceBridge.getAudioDeviceManager();
+#if JucePlugin_Build_Standalone
+  if (auto* holder = juce::StandalonePluginHolder::getInstance())
+    manager = &holder->deviceManager;
+#endif
+  if (auto* device = manager->getCurrentAudioDevice();
+      device != nullptr && device->isOpen()) {
+    event.nativeXruns = device->getXRunCount();
+    event.bufferFrames = device->getCurrentBufferSizeSamples();
+    event.outputLatencyFrames = device->getOutputLatencyInSamples();
+  }
+  diagnostics.pushMarkerEvent(event);
+  return markerId;
 }
 
 bool MTControlsAudioProcessor::enqueueMidiControlCommand(
@@ -3856,6 +4009,7 @@ bool MTControlsAudioProcessor::loadSongStems(
       loadedSongKey = songKey;
       loadedSongTitle = songTitle;
     }
+    diagnosticSourceGeneration.fetch_add(1, std::memory_order_relaxed);
     songLoaded.store(true, std::memory_order_relaxed);
     {
       ArrangementStructurePublicationGuard publication(

@@ -727,6 +727,29 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
       }
       packagedSource = converted;
     }
+    // AAC/WMA and other desktop inputs may have no native JUCE reader before
+    // conversion. Fill metadata from the portable FLAC so the saved song has
+    // a valid duration/channel count on every device that opens the project.
+    if (stem.durationSec <= 0.0 || stem.sampleRate <= 0 || stem.channels <= 0) {
+      juce::AudioFormatManager formats;
+      formats.registerBasicFormats();
+      const auto reader = std::unique_ptr<juce::AudioFormatReader>(
+          formats.createReaderFor(packagedSource));
+      if (reader == nullptr || reader->sampleRate <= 0.0 ||
+          reader->lengthInSamples <= 0 || reader->numChannels == 0) {
+        cleanupStage();
+        if (errorMessage != nullptr)
+          *errorMessage = L10n::tr("No se puede decodificar el stem: ",
+                                   "Couldn't decode stem: ") + source.getFileName();
+        return false;
+      }
+      stem.durationSec = static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+      stem.sampleRate = static_cast<int>(reader->sampleRate);
+      stem.channels = static_cast<int>(reader->numChannels);
+      manifestSong.stems[i].durationSec = stem.durationSec;
+      manifestSong.stems[i].sampleRate = stem.sampleRate;
+      manifestSong.stems[i].channels = stem.channels;
+    }
     completedStemWork += stemWork[i];
     progress.publish(0.60 * completedStemWork / totalStemWork,
                      L10n::tr("Preparando stems...", "Preparing stems..."));
@@ -1449,6 +1472,18 @@ bool ProjectStore::settingsJsonEqual(const ProjectSongSettings &a,
   // by being conservative: when in doubt, write.
   return juce::JSON::toString(settingsToVar(a)) ==
          juce::JSON::toString(settingsToVar(b));
+}
+
+juce::var ProjectStore::serializeSettings(const ProjectSongSettings &settings) {
+  return settingsToVar(settings);
+}
+
+bool ProjectStore::deserializeSettings(const juce::var &value,
+                                       ProjectSongSettings &outSettings) {
+  if (value.getDynamicObject() == nullptr)
+    return false;
+  outSettings = settingsFromVar(value);
+  return true;
 }
 
 bool ProjectStore::getCachedSettings(const juce::File &file,

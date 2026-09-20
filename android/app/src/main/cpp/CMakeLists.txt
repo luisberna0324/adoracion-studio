@@ -6,7 +6,7 @@ set(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../../")
 set(JUCE_ROOT "${PROJECT_ROOT}/../third_party/JUCE")
 set(SOUNDTOUCH_ROOT "${PROJECT_ROOT}/build-local-backend/_deps/soundtouch-src")
 
-file(GLOB_RECURSE PLAYWORSHIP_SOURCES
+file(GLOB_RECURSE PLAYWORSHIP_SOURCES CONFIGURE_DEPENDS
     "${PROJECT_ROOT}/src/*.cpp")
 list(FILTER PLAYWORSHIP_SOURCES EXCLUDE REGEX "/StandaloneApp\\.cpp$")
 # Android uses the bundled Bungee backend for pitch and time stretching.
@@ -57,6 +57,7 @@ target_include_directories(playworship PRIVATE "${CMAKE_ANDROID_NDK}/sources/and
 
 target_compile_definitions(playworship PRIVATE
     JUCE_ANDROID=1 JUCE_STANDALONE_APPLICATION=1
+    JUCE_CONTENT_SHARING=1
     MTCONTROLS_USE_BUNGEE=1
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_MODAL_LOOPS_PERMITTED=1

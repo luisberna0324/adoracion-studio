@@ -141,6 +141,9 @@ void CloudLibraryClient::search(
           song.bpm = static_cast<int>(object->getProperty("bpm"));
           song.stemCount = juce::jmax(0, static_cast<int>(object->getProperty("stemCount")));
           song.revision = static_cast<int>(object->getProperty("revision"));
+          song.settingsRevision =
+              juce::jmax(0, static_cast<int>(object->getProperty("settingsRevision")));
+          song.settingsHash = object->getProperty("settingsHash").toString().trim();
           song.durationSeconds = object->getProperty("durationSeconds").toString().getDoubleValue();
           song.storageBytes = object->getProperty("storageBytes").toString().getLargeIntValue();
           song.updatedAtMs = juce::Time::fromISO8601(object->getProperty("updatedAt").toString()).toMilliseconds();
@@ -180,7 +183,8 @@ void CloudLibraryClient::fetchCapabilities(
       if (!stream) { deliverCapabilities({}, {0, "NETWORK", "Cloud capabilities unavailable"}); return jobHasFinished; }
       const auto body = stream->readEntireStreamAsString();
       if (status < 200 || status >= 300) { deliverCapabilities({}, serverError(body, status)); return jobHasFinished; }
-      const auto* root = juce::JSON::parse(body).getDynamicObject();
+      const auto parsed = juce::JSON::parse(body);
+      const auto* root = parsed.getDynamicObject();
       if (!root) { deliverCapabilities({}, {status, "INVALID_RESPONSE", "Invalid cloud response"}); return jobHasFinished; }
       CloudCapabilities caps;
       caps.enabled = static_cast<bool>(root->getProperty("enabled")); caps.isOverride = static_cast<bool>(root->getProperty("isOverride"));

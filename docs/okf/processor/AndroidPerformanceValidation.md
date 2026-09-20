@@ -10,6 +10,26 @@
 - El checkout local de JUCE contiene cambios previos de Oboe externos a este
   repositorio; estas mediciones describen ese build local.
 
+## Compatibilidad de callback Oboe — 2026-09-18
+
+Una prueba A/B en un Motorola Edge 50 con Android 16 confirmó que la versión
+original de `juce_Oboe_android.cpp` reproduce sin el crujido o los cortes
+reportados. La variante local que llamaba
+`AudioStreamBuilder::setFramesPerDataCallback(newBufferSize)` provocaba el
+síntoma en ese dispositivo, incluso con un solo stem y usando el altavoz.
+
+El build Android debe conservar el comportamiento original de JUCE/Oboe:
+Oboe y su capa de quirks negocian el tamaño real del callback con el dispositivo.
+No se debe forzar `framesPerDataCallback` para igualarlo al buffer solicitado
+por `AudioDeviceManager`. El tamaño informado por el dispositivo puede seguir
+registrándose en `audio_device_<ts>.csv`; la telemetría es observacional y no
+debe modificar la configuración del stream.
+
+La validación que aisló la causa mantuvo iguales la aplicación y su diagnóstico;
+solamente cambió la implementación de Oboe entre ambas APK. Después de la
+confirmación se restauró el archivo upstream y se hizo una compilación Android
+limpia para impedir que una librería nativa anterior quedara reutilizada.
+
 ## Problemas corregidos
 
 1. El agrupado sólo funcionaba si todas las pistas compartían destino. La

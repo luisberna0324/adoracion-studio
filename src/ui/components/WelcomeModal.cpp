@@ -3,13 +3,8 @@
 #include "../../data/Localization.h"
 
 namespace {
-constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
-
 class WelcomePillLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
-  enum class Style { Primary, Secondary };
-  explicit WelcomePillLookAndFeel(Style s) : style(s) {}
-
   void drawButtonBackground(juce::Graphics &g, juce::Button &button,
                             const juce::Colour &backgroundColour,
                             bool isMouseOverButton,
@@ -17,50 +12,29 @@ public:
     juce::ignoreUnused(backgroundColour);
     auto r = button.getLocalBounds().toFloat().reduced(0.5f, 1.0f);
     const float rad = r.getHeight() * 0.5f;
-    if (style == Style::Primary) {
-      auto fill = juce::Colour(0xfff5f5f7);
-      if (isButtonDown)
-        fill = fill.darker(0.14f);
-      else if (isMouseOverButton)
-        fill = juce::Colour(0xffffffff);
-      g.setColour(fill);
-      g.fillRoundedRectangle(r, rad);
-      g.setColour(juce::Colour(0xff000000).withAlpha(0.06f));
-      g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
-    } else {
-      auto fill = juce::Colour(0x00000000);
-      if (isButtonDown)
-        fill = juce::Colour(0xff2a2a30).withAlpha(0.9f);
-      else if (isMouseOverButton)
-        fill = juce::Colour(0xff34343c).withAlpha(0.55f);
-      g.setColour(fill);
-      g.fillRoundedRectangle(r, rad);
-      const auto border = juce::Colour(0xff5c5c66);
-      g.setColour(border.withMultipliedAlpha(isMouseOverButton ? 1.1f : 0.85f));
-      g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
-    }
+    auto fill = juce::Colour(0xfff5f5f7);
+    if (isButtonDown)
+      fill = fill.darker(0.14f);
+    else if (isMouseOverButton)
+      fill = juce::Colour(0xffffffff);
+    g.setColour(fill);
+    g.fillRoundedRectangle(r, rad);
+    g.setColour(juce::Colour(0xff000000).withAlpha(0.06f));
+    g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
   }
 
   juce::Font getTextButtonFont(juce::TextButton &, int buttonHeight) override {
     const float px =
         juce::jlimit(15.0f, 17.0f, static_cast<float>(buttonHeight) * 0.34f);
-    return juce::Font(
-        juce::FontOptions(px).withStyle(style == Style::Primary ? "Bold"
-                                                                 : "Regular"));
+    return juce::Font(juce::FontOptions(px).withStyle("Bold"));
   }
-
-private:
-  Style style;
 };
 } // namespace
 
 WelcomeModal::WelcomeModal() {
   setOpaque(false);
 
-  primaryLaf = std::make_unique<WelcomePillLookAndFeel>(
-      WelcomePillLookAndFeel::Style::Primary);
-  secondaryLaf = std::make_unique<WelcomePillLookAndFeel>(
-      WelcomePillLookAndFeel::Style::Secondary);
+  primaryLaf = std::make_unique<WelcomePillLookAndFeel>();
 
   logoImage = juce::ImageFileFormat::loadFrom(
       BinaryData::pwLogoSinFondo_png, BinaryData::pwLogoSinFondo_pngSize);
@@ -127,26 +101,10 @@ WelcomeModal::WelcomeModal() {
   };
   addAndMakeVisible(loginButton);
 
-  moreInfoButton.setButtonText(
-      L10n::tr(u8"Más información", "More information"));
-  moreInfoButton.setLookAndFeel(secondaryLaf.get());
-  moreInfoButton.setColour(juce::TextButton::buttonColourId,
-                           juce::Colours::transparentWhite);
-  moreInfoButton.setColour(juce::TextButton::buttonOnColourId,
-                           juce::Colours::transparentWhite);
-  moreInfoButton.setColour(juce::TextButton::textColourOffId,
-                           juce::Colour::fromRGB(236, 236, 242));
-  moreInfoButton.setColour(juce::TextButton::textColourOnId,
-                           juce::Colour::fromRGB(252, 252, 255));
-  moreInfoButton.onClick = [] {
-    juce::URL(kSubscriptionInfoUrl).launchInDefaultBrowser();
-  };
-  addAndMakeVisible(moreInfoButton);
 }
 
 WelcomeModal::~WelcomeModal() {
   loginButton.setLookAndFeel(nullptr);
-  moreInfoButton.setLookAndFeel(nullptr);
 }
 
 void WelcomeModal::setStatusText(const juce::String &text, bool isError) {
@@ -165,7 +123,6 @@ void WelcomeModal::resetStatusToDefault() {
 
 void WelcomeModal::setChecking(bool isChecking) {
   loginButton.setVisible(!isChecking);
-  moreInfoButton.setVisible(!isChecking);
   subtitle.setVisible(!isChecking);
 }
 
@@ -221,10 +178,8 @@ void WelcomeModal::resized() {
     constexpr int buttonH = 46;
     constexpr int textGap = 8;
     constexpr int sectionGap = 12;
-    constexpr int buttonGap = 10;
-    constexpr int formHeight = titleH + textGap + subtitleH + sectionGap +
-                               statusH + sectionGap + buttonH + buttonGap +
-                               buttonH;
+    const int formHeight = titleH + textGap + subtitleH + sectionGap +
+                           statusH + sectionGap + buttonH;
     auto column = juce::Rectangle<int>(formWidth, juce::jmin(formHeight,
                                                              inner.getHeight()))
                       .withCentre(inner.getCentre());
@@ -245,8 +200,6 @@ void WelcomeModal::resized() {
     status.setBounds(column.removeFromTop(statusH));
     column.removeFromTop(sectionGap);
     loginButton.setBounds(column.removeFromTop(buttonH));
-    column.removeFromTop(buttonGap);
-    moreInfoButton.setBounds(column.removeFromTop(buttonH));
     return;
   }
 
@@ -265,7 +218,6 @@ void WelcomeModal::resized() {
   const int statusH = compact ? 24 : 30;
   const int statusGap = compact ? 8 : 14;
   const int btnH = compact ? 42 : 46;
-  const int buttonGap = compact ? 8 : 10;
 
   if (logoImage.isValid()) {
     auto logoArea = column.removeFromTop(
@@ -287,6 +239,4 @@ void WelcomeModal::resized() {
   column.removeFromTop(statusGap);
 
   loginButton.setBounds(column.removeFromTop(btnH));
-  column.removeFromTop(buttonGap);
-  moreInfoButton.setBounds(column.removeFromTop(btnH));
 }

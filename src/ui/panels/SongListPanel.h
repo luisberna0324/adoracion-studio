@@ -59,6 +59,12 @@ public:
   void setOnCloudSearchRequested(std::function<void(const juce::String &)> cb);
   void setOnCloudDeleteRequested(
       std::function<void(const juce::String &, const juce::String &)> cb);
+  void setOnCloudSettingsSyncRequested(
+      std::function<void(const ImportedSongData &)> cb);
+  void setOnCloudSettingsVersionsRequested(
+      std::function<void(const ImportedSongData &, juce::Rectangle<int>)> cb);
+  void setCloudSettingsPendingProvider(
+      std::function<bool(const ImportedSongData &)> provider);
   void setSaveProjectStateProvider(std::function<bool()> availableProvider,
                                    std::function<bool()> pendingProvider);
   int getSongCount() const;
@@ -76,6 +82,8 @@ public:
   int getLastActivatedIndex() const;
   juce::String getActiveSetlistName() const;
   void refreshFromStorageView();
+  void showSongPicker(juce::Component &anchor, std::function<void()> onAdd);
+  void showActiveSetlist();
   void openSongImportWizardFromExternal();
   void refreshLanguageTexts();
   void refreshThemeColours();
@@ -209,6 +217,7 @@ private:
   void convertLegacySongAtDestination(const juce::String &songId,
                                       const juce::File &destination);
   void openSetlistManager();
+  void activateSongAtIndex(int songIndex);
   void openHeaderMenu();
   void openLibraryBrowser();
   void openAddFromLibraryMenu();
@@ -308,6 +317,9 @@ private:
   std::function<void(const juce::String &)> onCloudSearchRequested;
   std::function<void(const juce::String &, const juce::String &)>
       onCloudDeleteRequested;
+  std::function<void(const ImportedSongData &)> onCloudSettingsSyncRequested;
+  std::function<void(const ImportedSongData &, juce::Rectangle<int>)> onCloudSettingsVersionsRequested;
+  std::function<bool(const ImportedSongData &)> cloudSettingsPendingProvider;
   std::function<bool()> saveProjectAvailableProvider;
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;

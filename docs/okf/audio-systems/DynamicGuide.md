@@ -4,7 +4,7 @@ title: DynamicGuide
 description: Motor de guías dinámicas localizadas por idioma
 resource: src/audio/DynamicGuideEngine.h
 tags: [juce, audio, guide, localization, section]
-timestamp: 2026-08-17T02:00:00Z
+timestamp: 2026-09-19T15:39:00Z
 ---
 
 # DynamicGuideEngine
@@ -234,6 +234,14 @@ los carga si el engine está vacío, mientras `setDynamicGuideLanguage()` los
 recarga cuando cambia efectivamente el idioma. Esto mantiene la restauración de
 mezcla fuera del costo de I/O y decode del pack.
 
+La carga de una canción debe respetar siempre `DynamicGuideMixSnapshot::mute`,
+incluso cuando la guía usa la configuración global por defecto
+(`dynamicGuideCustomized == false`). Activar el modo de guía desde la UI puede
+desmutearlo como consecuencia explícita de ese gesto; abrir o restaurar una
+canción no puede hacerlo ni persistir después ese cambio como si fuera del
+usuario. Este límite evita alternancias falsas en las versiones cloud de
+ajustes.
+
 ## Casos de uso
 
 ### Live performance
@@ -256,6 +264,11 @@ Outro → "Final"
 ```
 
 Cambiar idioma = cambiar directorio de guías.
+
+La utilidad `Slowly Build`, mostrada como `Sube lento` en español, usa primero
+su grabación exacta. Si el paquete del idioma no la incluye, el resolver cae de
+forma controlada a `Build` (`Sube intensidad`) para evitar que la indicación
+quede en silencio. El mismo fallback se aplica al playback y al bounce offline.
 
 ## Compensación de latencia
 

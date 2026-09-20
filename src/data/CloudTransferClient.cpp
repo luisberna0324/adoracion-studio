@@ -263,6 +263,7 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       const auto* prepared = preparedJson.getDynamicObject();
       if (!prepared) { deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Prepare response is not JSON")); return jobHasFinished; }
       const auto songId = prepared->getProperty("songId").toString().trim();
+      const auto uploadLeaseId = prepared->getProperty("uploadLeaseId").toString().trim();
       const auto* descriptorUpload = prepared->getProperty("descriptor").getDynamicObject();
       const auto* uploads = prepared->getProperty("uploads").getArray();
       if (songId.isEmpty() || !descriptorUpload || !uploads) {
@@ -318,6 +319,8 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       commit->setProperty("bpm", request.descriptor.bpm); commit->setProperty("key", request.descriptor.key);
       commit->setProperty("durationSeconds", request.descriptor.durationSeconds); commit->setProperty("storageBytes", 0);
       commit->setProperty("objectHashes", juce::var(hashes));
+      if (uploadLeaseId.isNotEmpty())
+        commit->setProperty("uploadLeaseId", uploadLeaseId);
       if (!postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/commit", idToken,
                     juce::JSON::toString(juce::var(commit)), response, error)) {
         SessionAuthLogger::write("[CloudUpload] commit failed status=" +

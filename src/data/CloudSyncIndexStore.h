@@ -11,6 +11,11 @@ struct CloudProjectLink {
   juce::int64 downloadedAtMs = 0;
   juce::int64 lastSyncedAtMs = 0;
   juce::String descriptorFingerprint;
+  bool settingsStateKnown = false;
+  int settingsRevision = 0;
+  juce::String settingsHash;
+  juce::String settingsJson;
+  juce::StringArray knownSettingsFingerprints;
 };
 
 struct CloudLocalPurgeResult {

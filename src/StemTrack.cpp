@@ -143,13 +143,6 @@ void StemTrack::getNextAudioBlock(
     }
   }
 
-  // Find max amplitude for VU (before gain is applied to match old logic)
-  float magnitude = 0.0f;
-  for (int channel = 0; channel < numChannels; ++channel) {
-    magnitude = juce::jmax(
-        magnitude, bufferToFill.buffer->getMagnitude(channel, startSample, numSamples));
-  }
-
   const bool isAudible =
       !isMuted() && (!isAnySoloActive.load(std::memory_order_relaxed) || isSoloed());
       
@@ -157,6 +150,27 @@ void StemTrack::getNextAudioBlock(
   const float trimGain = juce::jlimit(0.0f, 2.0f, getTrim());
   const float mixGain = globalMixGain.load(std::memory_order_relaxed);
   const float stemGain = isAudible ? (userVolume * trimGain * mixGain) : 0.0f;
+
+  // The VU needs the same input peak. When diagnostics are active, reuse the
+  // integrity pass instead of traversing every stem buffer twice.
+  float magnitude = 0.0f;
+  if (signalIntegrityFullCaptureEnabled) {
+    signalIntegrityMetrics = playworship::audio::measureSignalIntegrity(
+        *bufferToFill.buffer, startSample, numSamples, stemGain,
+        signalIntegrityState);
+    magnitude = signalIntegrityMetrics.inputPeak;
+  } else {
+    for (int channel = 0; channel < numChannels; ++channel) {
+      magnitude = juce::jmax(
+          magnitude,
+          bufferToFill.buffer->getMagnitude(channel, startSample, numSamples));
+    }
+    if (signalIntegrityTrackingEnabled) {
+      playworship::audio::updateSignalIntegrityStateFromBufferEnd(
+          *bufferToFill.buffer, startSample, numSamples, stemGain,
+          signalIntegrityState);
+    }
+  }
 
   if (stemGain > 0.0f) {
     bufferToFill.buffer->applyGain(startSample, numSamples, stemGain);
@@ -172,6 +186,7 @@ void StemTrack::getNextAudioBlock(
 void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
+  signalIntegrityState.reset();
   activeSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
   // P0.2 (perf): capturar el block size real del host para que cuando
   // la cadena de prefetch se construya en lazy, use el valor vigente
@@ -183,12 +198,14 @@ void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
 void StemTrack::releaseResources() {
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
+  signalIntegrityState.reset();
   activeSource->releaseResources();
 }
 
 void StemTrack::setNextReadPosition(juce::int64 newPosition) {
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
+  signalIntegrityState.reset();
   activeSource->setNextReadPosition(newPosition);
 }
 

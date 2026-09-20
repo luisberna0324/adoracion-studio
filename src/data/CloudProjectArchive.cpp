@@ -7,6 +7,7 @@
 namespace {
 constexpr const char* kManifestName = "manifest.json";
 constexpr const char* kWaveformName = "waveform.bin";
+constexpr int kStaleUploadStagingHours = 24;
 
 void setError(juce::String* target, const juce::String& value) {
   if (target != nullptr) *target = value;
@@ -55,6 +56,10 @@ bool safeAudioPath(const juce::String& path) {
   return path.startsWith("audio/") && !path.contains("..") &&
          juce::File(path).getFileName() != path;
 }
+
+juce::File uploadStagingRoot() {
+  return SongLibraryStore::getRootDirectory().getChildFile("cloud-sync-staging");
+}
 }  // namespace
 
 bool CloudProjectArchive::buildUpload(const juce::File& projectFile,
@@ -81,9 +86,12 @@ bool CloudProjectArchive::buildUpload(const juce::File& projectFile,
   }
   report(0.10, "reading-project");
   juce::ZipFile zip(projectFile);
-  const auto staging = SongLibraryStore::getRootDirectory().getChildFile("cloud-sync-staging")
-                           .getChildFile(document.song.projectId);
-  staging.createDirectory();
+  const auto staging = uploadStagingRoot().getChildFile(document.song.projectId)
+                           .getChildFile(juce::Uuid().toString());
+  if (!staging.createDirectory()) {
+    setError(errorMessage, "Couldn't create cloud upload staging.");
+    return false;
+  }
   const auto manifestFile = staging.getChildFile("manifest.json");
   if (!copyZipEntryToFile(zip, kManifestName, manifestFile)) {
     setError(errorMessage, "Couldn't extract project manifest.");
@@ -173,19 +181,41 @@ bool CloudProjectArchive::buildUpload(const juce::File& projectFile,
            "transforming-stems");
   }
   outRequest = std::move(request);
+  outRequest.stagingDirectory = staging;
   report(0.50, "prepared-upload");
-  // Cleanup: the staging directory only existed to feed the upload
-  // builder. The CloudTransferClient reads manifest.json and
-  // waveform.bin via outRequest.objects which holds its own copies.
-  // Removing here avoids the leak where every upload leaves a
-  // cloud-sync-staging/<projectId>/ directory behind (see
-  // perf/analysis_20260912/INFORME.md §2.5).
-  if (staging.exists() && !staging.deleteRecursively()) {
+  // outRequest contains File handles pointing into staging. The transfer is
+  // asynchronous, so its owner must retain this directory until the upload
+  // callback has fired.
+  return true;
+}
+
+void CloudProjectArchive::cleanupUploadStaging(const juce::File& stagingDirectory) {
+  if (stagingDirectory == juce::File() || !stagingDirectory.exists()) return;
+  if (!stagingDirectory.deleteRecursively()) {
     SessionAuthLogger::write(
         "[CloudProjectArchive] staging cleanup failed path=" +
-        staging.getFullPathName());
+        stagingDirectory.getFullPathName());
   }
-  return true;
+}
+
+void CloudProjectArchive::cleanupStaleUploadStaging() {
+  const auto root = uploadStagingRoot();
+  if (!root.isDirectory()) return;
+  const auto cutoff = juce::Time::getCurrentTime() -
+                      juce::RelativeTime::hours(kStaleUploadStagingHours);
+  juce::Array<juce::File> projectDirectories;
+  root.findChildFiles(projectDirectories, juce::File::findDirectories, false);
+  for (const auto& projectDirectory : projectDirectories) {
+    juce::Array<juce::File> sessions;
+    projectDirectory.findChildFiles(sessions, juce::File::findDirectories, false);
+    for (const auto& session : sessions) {
+      if (session.getLastModificationTime() >= cutoff) continue;
+      cleanupUploadStaging(session);
+    }
+    if (projectDirectory.isDirectory() && projectDirectory.getNumberOfChildFiles(
+            juce::File::findFilesAndDirectories) == 0)
+      projectDirectory.deleteRecursively();
+  }
 }
 
 bool CloudProjectArchive::rebuildProject(const CloudDownloadResult& downloaded,

@@ -148,6 +148,15 @@ jobs:
           path: third_party/JUCE
           fetch-depth: 1
 
+      - name: Checkout Sentry Native
+        uses: actions/checkout@v4
+        with:
+          repository: getsentry/sentry-native
+          ref: 0.9.1
+          path: third_party/sentry-native
+          submodules: recursive
+          fetch-depth: 1
+
       - name: Install Ninja
         run: brew install ninja
 
@@ -158,10 +167,26 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}/third_party/JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
-        run: cmake --preset macos-release
+          MTCONTROLS_IOS_BUILD_NUMBER: ${{ github.run_number }}
+          MTCONTROLS_ENABLE_SENTRY: ON
+          SENTRY_NATIVE_DIR: ${{ github.workspace }}/third_party/sentry-native
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN_APP }}
+          SENTRY_ENVIRONMENT: production
+        run: >-
+          cmake --preset macos-release
+          -DMTCONTROLS_ENABLE_SENTRY=ON
+          -DSENTRY_NATIVE_DIR="${{ github.workspace }}/third_party/sentry-native"
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
+
+      - name: Upload Sentry debug symbols (macOS)
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: lujuma
+          SENTRY_PROJECT: playworship-app
+          SENTRY_RELEASE: playworship-app@${{ needs.prepare.outputs.semver }}+${{ github.run_number }}.${{ github.sha }}
+        run: bash scripts/upload_sentry_debug_symbols.sh build/macos-release/MTControls_artefacts/Release/Standalone
 
       - name: Verify Bungee bundled (macOS)
         shell: bash
@@ -237,6 +262,15 @@ jobs:
           path: third_party/JUCE
           fetch-depth: 1
 
+      - name: Checkout Sentry Native
+        uses: actions/checkout@v4
+        with:
+          repository: getsentry/sentry-native
+          ref: 0.9.1
+          path: third_party/sentry-native
+          submodules: recursive
+          fetch-depth: 1
+
       - name: Bootstrap required Bungee SDK
         if: matrix.arch == 'x64'
         shell: bash
@@ -246,7 +280,15 @@ jobs:
         env:
           JUCE_DIR: ${{ github.workspace }}\\third_party\\JUCE
           MTCONTROLS_APP_VERSION: ${{ needs.prepare.outputs.semver }}
-        run: cmake --preset ${{ matrix.preset }}
+          MTCONTROLS_IOS_BUILD_NUMBER: ${{ github.run_number }}
+          MTCONTROLS_ENABLE_SENTRY: ON
+          SENTRY_NATIVE_DIR: ${{ github.workspace }}\\third_party\\sentry-native
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN_APP }}
+          SENTRY_ENVIRONMENT: production
+        run: >-
+          cmake --preset ${{ matrix.preset }}
+          -DMTCONTROLS_ENABLE_SENTRY=ON
+          -DSENTRY_NATIVE_DIR="${{ github.workspace }}\\third_party\\sentry-native"
 
       - name: Build (Windows)
         run: cmake --build --preset ${{ matrix.preset }}

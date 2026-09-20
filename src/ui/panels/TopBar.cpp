@@ -387,17 +387,16 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       settingsButton("settings", SvgIconName::Settings),
       midiLearnButton("midiLearn", SvgIconName::Midi),
       tabletMoreButton("tabletMore", SvgIconName::MoreVertical),
-      phoneLibraryButton("phoneLibrary", SvgIconName::Music),
       phonePadsButton("phonePads", SvgIconName::AudioWaveform),
       processor(processorRef) {
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
         &settingsButton, &midiLearnButton, &tabletMoreButton,
-        &phoneLibraryButton, &phonePadsButton}) {
+        &phonePadsButton}) {
     addAndMakeVisible(*btn);
   }
-  phoneLibraryButton.setVisible(false);
+  addChildComponent(songPickerButton);
   phonePadsButton.setVisible(false);
   windowModeButton.setVisible(shouldShowWindowModeButton());
 
@@ -424,8 +423,8 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
   setBaseTooltip(tabletMoreButton,
                  L10n::tr("Más opciones", "More options"));
-  setBaseTooltip(phoneLibraryButton,
-                 L10n::tr("Biblioteca y setlists", "Library and setlists"));
+  songPickerButton.setTooltip(L10n::tr("Canciones del setlist", "Setlist songs"));
+  songPickerButton.setMouseCursor(juce::MouseCursor::PointingHandCursor);
   setBaseTooltip(phonePadsButton, L10n::tr("Pads", "Pads"));
   setBaseTooltip(timeDisplay,
                  L10n::tr("Ventana de canción", "Song window"));
@@ -581,9 +580,9 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
     repaint();
   };
   tabletMoreButton.onClick = [this] { showTabletMorePopover(); };
-  phoneLibraryButton.onClick = [this] {
+  songPickerButton.onClick = [this] {
     if (onPhoneLibrary)
-      onPhoneLibrary();
+      onPhoneLibrary(songPickerButton);
   };
   phonePadsButton.onClick = [this] {
     if (onPhonePads)
@@ -654,7 +653,7 @@ void TopBar::setOnSettingsWithAnchor(
   onSettingsWithAnchor = std::move(cb);
 }
 
-void TopBar::setOnPhoneLibrary(std::function<void()> cb) {
+void TopBar::setOnPhoneLibrary(std::function<void(juce::Component &)> cb) {
   onPhoneLibrary = std::move(cb);
 }
 
@@ -662,9 +661,8 @@ void TopBar::setOnPhonePads(std::function<void()> cb) {
   onPhonePads = std::move(cb);
 }
 
-void TopBar::setPhoneOverlayStates(const bool libraryOpen,
+void TopBar::setPhoneOverlayStates(const bool /*libraryOpen*/,
                                    const bool padsOpen) {
-  phoneLibraryButton.setToggleState(libraryOpen, juce::dontSendNotification);
   phonePadsButton.setToggleState(padsOpen, juce::dontSendNotification);
 }
 
@@ -910,6 +908,10 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void TopBar::resized() {
+  const auto previousSongBounds = songInfoBounds;
+  const bool compactTouchTablet =
+      useTouchOptimisedControls() && !minimalPhoneMode &&
+      responsiveProfile == ResponsiveLayoutProfile::Compact;
   int square = 40;
   int gap = 8;
   int keyWidth = 72;
@@ -1025,10 +1027,26 @@ void TopBar::resized() {
     songCardHeight = 54;
     songArtworkSize = 42;
 #endif
+    if (compactTouchTablet) {
+      // Small tablets have the full tablet feature set, but their landscape
+      // width cannot accommodate the large tablet timer and still preserve
+      // the complete BPM/metronome control. Use the mobile-sized header
+      // geometry while keeping the tablet song card and More popover.
+      square = 44;
+      gap = 8;
+      keyWidth = 68;
+      metroTotalW = 102;
+      metroIconW = 44;
+      timeWidth = 78;
+      minCardW = 130;
+      maxCardW = 250;
+      songCardHeight = 44;
+      songArtworkSize = 34;
+    }
   }
 
   const bool minimalPhoneProfile = minimalPhoneMode;
-  setVisibleIfChanged(phoneLibraryButton, minimalPhoneProfile);
+  setVisibleIfChanged(songPickerButton, minimalPhoneProfile);
   setVisibleIfChanged(phonePadsButton, minimalPhoneProfile);
   // Phones keep seek in secondary controls, but expose the contextual
   // Fade Down/Fade Up toggle immediately after Next.
@@ -1089,7 +1107,7 @@ void TopBar::resized() {
     const int metronomeW = bpmVisible ? metroTotalW : metroIconW;
     int controlsW = timeWidth + gap + metronomeW + gap + keyWidth;
     if (minimalPhoneProfile)
-      controlsW += (square * 2) + (gap * 2);
+      controlsW += square + gap;
     if (tabletProfile) {
       controlsW += gap + square;
     } else {
@@ -1134,7 +1152,6 @@ void TopBar::resized() {
     };
 
     if (minimalPhoneProfile) {
-      addItem(phoneLibraryButton, square);
       addItem(phonePadsButton, square);
     }
     addItem(timeDisplay, timeWidth);
@@ -1176,11 +1193,7 @@ void TopBar::resized() {
   for (int attempt = 0; attempt < 3; ++attempt) {
     rightX = layoutRightSide(showSystemUsage, showBpmText);
     const int centerW = rightX - (transportW + 16);
-    // Phones only render a square artwork tile in the centre. Requiring the
-    // desktop song-card width here unnecessarily hides the BPM segment on
-    // otherwise valid iPhone and Android layouts.
-    const int requiredCenterWidth =
-        minimalPhoneProfile ? square : minCardW;
+    const int requiredCenterWidth = minCardW;
     if (centerW >= requiredCenterWidth)
       break;
     if (showBpmText && !minimalPhoneProfile) {
@@ -1196,15 +1209,10 @@ void TopBar::resized() {
 
   rightX = layoutRightSide(showSystemUsage, showBpmText);
 
-  const int cardLeft = transportW + 8;
-  const int cardRight = rightX - 8;
+  const int cardLeft = transportW + (minimalPhoneMode ? 0 : 8);
+  const int cardRight = rightX - (minimalPhoneMode ? 0 : 8);
   const int centerW = cardRight - cardLeft;
-  if (minimalPhoneMode && centerW >= square) {
-    // Artwork-only tile immediately after Fade Up/Down. It intentionally has
-    // no song card, title or artist on phones.
-    songArtworkSize = square;
-    songInfoBounds = juce::Rectangle<int>(cardLeft, controlY, square, square);
-  } else if (!minimalPhoneMode && centerW > 0) {
+  if (centerW > 0) {
     const auto titleText = songTitleText.isNotEmpty()
                                ? songTitleText
                                : L10n::tr("Sin canción", "No song loaded");
@@ -1227,22 +1235,25 @@ void TopBar::resized() {
         juce::jlimit(minCardW, juce::jmin(maxCardW, contentW + contentW / 3),
                      contentW);
     int cardW = preferredCardW;
-    if (centerW >= minCardW)
+    if (minimalPhoneMode)
+      cardW = juce::jmin(preferredCardW, centerW);
+    else if (centerW >= minCardW)
       cardW = juce::jmin(preferredCardW, centerW - 8);
     else
       cardW = juce::jmax(0, centerW - 8);
     const int cardX = cardLeft;
-    const int cardY = juce::jmax(4, (getHeight() - songCardHeight) / 2);
-    songInfoBounds = juce::Rectangle<int>(cardX, cardY, cardW, songCardHeight);
+    const int cardY = minimalPhoneMode ? controlY
+                                      : juce::jmax(4, (getHeight() - songCardHeight) / 2);
+    songInfoBounds = juce::Rectangle<int>(cardX, cardY, cardW,
+                                         minimalPhoneMode ? square : songCardHeight);
   } else {
     songInfoBounds = {};
   }
-}
-
-void TopBar::mouseDown(const juce::MouseEvent &event) {
-  if (minimalPhoneMode && !event.mods.isPopupMenu() &&
-      songInfoBounds.contains(event.getPosition()))
-    showSongInfoPopover();
+  songPickerButton.setBounds(minimalPhoneMode ? songInfoBounds
+                                             : juce::Rectangle<int>{});
+  songPickerButton.setTitle(songTitleText + " — " + songArtistText);
+  if (songInfoBounds != previousSongBounds)
+    songTextScrollStartMs = juce::Time::getMillisecondCounterHiRes();
 }
 
 void TopBar::mouseDoubleClick(const juce::MouseEvent &event) {
@@ -1264,34 +1275,9 @@ juce::Rectangle<int> TopBar::getSongInfoAnchorBounds() const {
 }
 
 void TopBar::paintSongInfoCard(juce::Graphics &g) {
+  songTextOverflows = false;
   if (songInfoBounds.isEmpty())
     return;
-
-  if (minimalPhoneMode) {
-    const auto artworkArea = songInfoBounds.reduced(2);
-    const auto artworkFloat = artworkArea.toFloat();
-    if (songArtwork.isValid()) {
-      juce::Graphics::ScopedSaveState saveState(g);
-      juce::Path clip;
-      clip.addRoundedRectangle(artworkFloat, 7.0f);
-      g.reduceClipRegion(clip);
-      g.drawImageWithin(songArtwork, artworkArea.getX(), artworkArea.getY(),
-                        artworkArea.getWidth(), artworkArea.getHeight(),
-                        juce::RectanglePlacement::fillDestination);
-    } else {
-      const auto placeholder = songTitleText.trim().isNotEmpty()
-                                   ? songTitleText.trim().substring(0, 1).toUpperCase()
-                                   : "?";
-      g.setColour(songAccentColour.withAlpha(0.28f));
-      g.fillRoundedRectangle(artworkFloat, 7.0f);
-      g.setColour(songAccentColour.withAlpha(0.96f));
-      g.setFont(makeAppFont(17.0f, AppFontWeight::SemiBold));
-      g.drawFittedText(placeholder, artworkArea, juce::Justification::centred, 1);
-    }
-    g.setColour(juce::Colours::white.withAlpha(0.16f));
-    g.drawRoundedRectangle(artworkFloat.reduced(0.5f), 7.0f, 1.0f);
-    return;
-  }
 
   auto cardBounds = songInfoBounds.toFloat().reduced(0.5f);
   juce::ColourGradient cardFill(
@@ -1364,154 +1350,46 @@ void TopBar::paintSongInfoCard(juce::Graphics &g) {
                               : L10n::tr("Selecciona una canción",
                                          "Select a song");
 
-  g.setColour(UITheme::textPrimary);
-  g.setFont(makeAppFont(songTitleFontSize, AppFontWeight::SemiBold));
-  g.drawFittedText(titleText, titleRect, juce::Justification::centredLeft, 1);
-
-  g.setColour(UITheme::textSecondary.withAlpha(0.95f));
-  g.setFont(makeAppFont(songArtistFontSize, AppFontWeight::Medium));
-  g.drawFittedText(artistText, artistRect, juce::Justification::centredLeft, 1);
+  const double elapsed = juce::jmax(0.0,
+      (juce::Time::getMillisecondCounterHiRes() - songTextScrollStartMs) * 0.001);
+  auto drawScrollingLine = [&](const juce::String &text,
+                               const juce::Font &font,
+                               juce::Rectangle<int> viewport,
+                               juce::Colour colour) {
+    juce::GlyphArrangement glyphs;
+    glyphs.addLineOfText(font, text, 0.0f, 0.0f);
+    const auto ink = glyphs.getBoundingBox(0, -1, true);
+    const float overflow = juce::jmax(
+        0.0f, ink.getWidth() - static_cast<float>(viewport.getWidth()));
+    float offset = 0.0f;
+    if (overflow > 0.0f) {
+      songTextOverflows = true;
+      constexpr double pauseSeconds = 1.5;
+      constexpr double pointsPerSecond = 24.0;
+      const double travel = juce::jmax(0.6, overflow / pointsPerSecond);
+      const double phase = std::fmod(elapsed, 2.0 * (pauseSeconds + travel));
+      // Pause at either end and ease into each direction; no wrap or jump.
+      const double progress = phase < pauseSeconds ? 0.0
+          : phase < pauseSeconds + travel ? (phase - pauseSeconds) / travel
+          : phase < 2.0 * pauseSeconds + travel ? 1.0
+          : 1.0 - (phase - 2.0 * pauseSeconds - travel) / travel;
+      offset = overflow * static_cast<float>(progress * progress * (3.0 - 2.0 * progress));
+    }
+    juce::Graphics::ScopedSaveState save(g);
+    g.reduceClipRegion(viewport);
+    g.setColour(colour);
+    glyphs.draw(g, juce::AffineTransform::translation(
+        static_cast<float>(viewport.getX()) - ink.getX() - offset,
+        static_cast<float>(viewport.getCentreY()) - ink.getCentreY()));
+  };
+  drawScrollingLine(titleText,
+                    makeAppFont(songTitleFontSize, AppFontWeight::SemiBold),
+                    titleRect, UITheme::textPrimary);
+  drawScrollingLine(artistText,
+                    makeAppFont(songArtistFontSize, AppFontWeight::Medium),
+                    artistRect, UITheme::textSecondary.withAlpha(0.95f));
 }
 
-void TopBar::showSongInfoPopover() {
-  class SongInfoPopover final : public juce::Component {
-  public:
-    SongInfoPopover(juce::Image artworkToUse, juce::Colour accentToUse,
-                    juce::String titleToUse, juce::String artistToUse,
-                    juce::String musicalDetailsToUse,
-                    juce::String technicalDetailsToUse)
-        : artwork(std::move(artworkToUse)), accent(accentToUse),
-          titleText(std::move(titleToUse)) {
-      configureLabel(title, titleText, UITheme::textPrimary,
-                     makeAppFont(18.0f, AppFontWeight::SemiBold));
-      configureLabel(artist, std::move(artistToUse), UITheme::textSecondary,
-                     makeAppFont(13.0f, AppFontWeight::Medium));
-      configureLabel(musicalDetails, std::move(musicalDetailsToUse),
-                     UITheme::textPrimary.withAlpha(0.92f),
-                     makeAppFont(12.5f, AppFontWeight::Medium));
-      configureLabel(technicalDetails, std::move(technicalDetailsToUse),
-                     UITheme::textSecondary.withAlpha(0.90f),
-                     makeAppFont(11.5f, AppFontWeight::Regular));
-    }
-
-    void paint(juce::Graphics &g) override {
-      const auto bounds = getLocalBounds().toFloat();
-      g.setColour(UITheme::cardBg);
-      g.fillRoundedRectangle(bounds, 10.0f);
-      g.setColour(UITheme::cardBorder.withAlpha(0.78f));
-      g.drawRoundedRectangle(bounds.reduced(0.5f), 10.0f, 1.0f);
-
-      const auto artBounds = getArtworkBounds().toFloat();
-      if (artBounds.isEmpty())
-        return;
-
-      if (artwork.isValid()) {
-        juce::Graphics::ScopedSaveState save(g);
-        juce::Path clip;
-        clip.addRoundedRectangle(artBounds, 8.0f);
-        g.reduceClipRegion(clip);
-        g.drawImageWithin(artwork, juce::roundToInt(artBounds.getX()),
-                          juce::roundToInt(artBounds.getY()),
-                          juce::roundToInt(artBounds.getWidth()),
-                          juce::roundToInt(artBounds.getHeight()),
-                          juce::RectanglePlacement::fillDestination);
-      } else {
-        g.setColour(accent.withAlpha(0.24f));
-        g.fillRoundedRectangle(artBounds, 8.0f);
-        g.setColour(accent.withAlpha(0.96f));
-        g.setFont(makeAppFont(28.0f, AppFontWeight::SemiBold));
-        const auto initial = titleText.trim().isNotEmpty()
-                                 ? titleText.trim().substring(0, 1).toUpperCase()
-                                 : juce::String("?");
-        g.drawFittedText(initial, artBounds.toNearestInt(),
-                         juce::Justification::centred, 1);
-      }
-      g.setColour(juce::Colours::white.withAlpha(0.14f));
-      g.drawRoundedRectangle(artBounds.reduced(0.5f), 8.0f, 1.0f);
-    }
-
-    void resized() override {
-      auto area = getLocalBounds().reduced(16, 14);
-      artworkBounds = area.removeFromLeft(
-          juce::jmin(86, juce::jmax(64, area.getHeight())));
-      area.removeFromLeft(14);
-      title.setBounds(area.removeFromTop(25));
-      artist.setBounds(area.removeFromTop(20));
-      area.removeFromTop(7);
-      musicalDetails.setBounds(area.removeFromTop(20));
-      technicalDetails.setBounds(area.removeFromTop(18));
-    }
-
-  private:
-    void configureLabel(juce::Label &label, const juce::String &text,
-                        const juce::Colour colour, const juce::Font &font) {
-      label.setText(text, juce::dontSendNotification);
-      label.setColour(juce::Label::textColourId, colour);
-      label.setFont(font);
-      label.setJustificationType(juce::Justification::centredLeft);
-      label.setInterceptsMouseClicks(false, false);
-      addAndMakeVisible(label);
-    }
-
-    juce::Rectangle<int> getArtworkBounds() const { return artworkBounds; }
-
-    juce::Image artwork;
-    juce::Colour accent;
-    juce::String titleText;
-    juce::Rectangle<int> artworkBounds;
-    juce::Label title, artist, musicalDetails, technicalDetails;
-  };
-
-  const auto title = songTitleText.isNotEmpty()
-                         ? songTitleText
-                         : L10n::tr("Sin canción", "No song loaded");
-  const auto artist = songArtistText.isNotEmpty()
-                          ? songArtistText
-                          : L10n::tr("Sin artista", "Unknown artist");
-
-  juce::String musicalDetails;
-  auto appendDetail = [](juce::String &target, const juce::String &detail) {
-    if (detail.trim().isEmpty())
-      return;
-    if (target.isNotEmpty())
-      target << "  ·  ";
-    target << detail.trim();
-  };
-  appendDetail(musicalDetails, activeKeyLabel);
-  const int bpm = static_cast<int>(std::round(processor.getPlaybackTempoBpm()));
-  if (bpm > 0)
-    appendDetail(musicalDetails, juce::String(bpm) + " BPM");
-  appendDetail(musicalDetails, timeSignature);
-
-  juce::String technicalDetails;
-  const double length = lengthProvider ? juce::jmax(0.0, lengthProvider()) : 0.0;
-  if (length > 0.0)
-    appendDetail(technicalDetails, formatTimeSeconds(length));
-  if (songProvider) {
-    if (const auto *song = songProvider(); song != nullptr) {
-      if (!song->stems.empty())
-        appendDetail(technicalDetails,
-                     juce::String(static_cast<int>(song->stems.size())) + " " +
-                         L10n::tr("pistas", "tracks"));
-      appendDetail(technicalDetails, song->fileType);
-    }
-  }
-
-  auto panel = std::make_unique<SongInfoPopover>(
-      songArtwork, songAccentColour, title, artist, musicalDetails,
-      technicalDetails);
-  panel->setSize(410, 126);
-
-  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
-  juce::Component *parentComp = editor != nullptr
-                                    ? static_cast<juce::Component *>(editor)
-                                    : static_cast<juce::Component *>(this);
-  const auto anchor = parentComp->getLocalArea(this, songInfoBounds);
-  ActionPopoverOptions options;
-  options.compactMaximumWidth = 420;
-  options.edgeInset = 10;
-  presentActionPopover(std::move(panel), anchor, parentComp, options);
-}
 
 void TopBar::clearFadeIfActive() {
   if (!processor.isFadeActive())
@@ -1671,6 +1549,9 @@ void TopBar::applyResponsiveTypography() {
     songTitleFontSize = 17.0f;
     songArtistFontSize = 12.5f;
   }
+  if (useTouchOptimisedControls() && !minimalPhoneMode &&
+      responsiveProfile == ResponsiveLayoutProfile::Compact)
+    displayFont = 14.0f;
   if (minimalPhoneMode)
     displayFont = 14.0f;
   timeDisplay.setFont(juce::FontOptions(displayFont));
@@ -1715,6 +1596,8 @@ void TopBar::configureMetronomeControls() {
 
 void TopBar::timerCallback() {
   refreshFromProviders();
+  if (songTextOverflows && isShowing())
+    repaint(songInfoBounds);
 
   if (windowModeButton.isVisible()) {
     const bool maxed = isTopLevelWindowMaximised(this);
@@ -2394,7 +2277,9 @@ void TopBar::refreshFromProviders() {
   const double len = lengthProvider ? lengthProvider() : 0.0;
   setLabelTextIfChanged(
       timeDisplay,
-      minimalPhoneMode
+      (minimalPhoneMode ||
+       (useTouchOptimisedControls() &&
+        responsiveProfile == ResponsiveLayoutProfile::Compact))
           ? formatTimeSeconds(pos) + " /\n" + formatTimeSeconds(len)
           : formatTimeSeconds(pos) + " / " + formatTimeSeconds(len));
 
@@ -2540,6 +2425,10 @@ void TopBar::refreshFromProviders() {
   if (!midiLearnActive)
     metroToggleButton.setBadgeText(metronomeEnabled ? "ON" : juce::String{});
 
-  if (songCardNeedsRepaint)
-    repaint(songInfoBounds.expanded(2));
+  if (songCardNeedsRepaint) {
+    songTextScrollStartMs = juce::Time::getMillisecondCounterHiRes();
+    const auto previousBounds = songInfoBounds;
+    resized();
+    repaint(previousBounds.getUnion(songInfoBounds).expanded(2));
+  }
 }

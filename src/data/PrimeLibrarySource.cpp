@@ -1,6 +1,7 @@
 #include "PrimeLibrarySource.h"
 
 #include "SongData.h"
+#include "telemetry/Telemetry.h"
 
 #include <algorithm>
 #include <map>
@@ -218,6 +219,7 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
 
   if (!isSupportedOnCurrentPlatform()) {
     errorMessage = "Local library import is only supported on macOS.";
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return songs;
   }
 
@@ -226,10 +228,12 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
   const auto tracksDir = locateTracksDirectory(docs);
   if (!db.existsAsFile()) {
     errorMessage = "Local library database not found.";
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return songs;
   }
   if (!tracksDir.isDirectory()) {
     errorMessage = "Local tracks folder not found.";
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return songs;
   }
 
@@ -242,8 +246,10 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
       "COALESCE(key, 0),"
       "COALESCE(REPLACE(timeSignature, char(9), ' '), '') "
       "FROM multitrack ORDER BY name COLLATE NOCASE;";
-  if (!runSqliteQuery(db, songSql, songRows, errorMessage))
+  if (!runSqliteQuery(db, songSql, songRows, errorMessage)) {
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return songs;
+  }
 
   std::map<juce::String, size_t> indexBySongId;
   for (const auto &row : songRows) {
@@ -275,8 +281,10 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
       "COALESCE(REPLACE(category, char(9), ' '), ''),"
       "COALESCE(REPLACE(type, char(9), ' '), '') "
       "FROM track ORDER BY multitrackId, name COLLATE NOCASE;";
-  if (!runSqliteQuery(db, trackSql, trackRows, errorMessage))
+  if (!runSqliteQuery(db, trackSql, trackRows, errorMessage)) {
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return {};
+  }
 
   for (const auto &row : trackRows) {
     if (row.isEmpty())
@@ -315,8 +323,10 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
                              }),
               songs.end());
 
-  if (songs.empty())
+  if (songs.empty()) {
     errorMessage = "No songs with local tracks were found.";
+    playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
+  }
 
   return songs;
 }

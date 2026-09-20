@@ -15,6 +15,26 @@
 #include <set>
 #include <thread>
 
+namespace {
+#if JUCE_IOS || JUCE_ANDROID
+constexpr auto kStemImportExtensions = "wav;aif;aiff;flac";
+constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC";
+#else
+// Desktop project saving decodes these inputs with FFmpeg and packages FLAC.
+// The picker and validation must use the same list, including formats that
+// JUCE cannot inspect natively on every desktop OS (e.g. WMA or AAC).
+constexpr auto kStemImportExtensions = "wav;aif;aiff;flac;mp3;m4a;aac;ogg;wma";
+constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC, MP3, M4A, AAC, OGG, WMA";
+#endif
+
+juce::String stemImportWildcard() {
+  auto extensions = juce::StringArray::fromTokens(kStemImportExtensions, ";", "");
+  for (auto& extension : extensions)
+    extension = "*." + extension;
+  return extensions.joinIntoString(";");
+}
+} // namespace
+
 class SongImportWizardComponent::MappingRow final : public juce::Component {
 public:
   explicit MappingRow(const StemDraft &stem) {
@@ -572,11 +592,13 @@ SongImportWizardComponent::SongImportWizardComponent(
   setMetadataReadOnlyFromLocal(false);
 
   addFilesButton.setButtonText(L10n::tr(u8"Agregar stems...", u8"Add stems..."));
+  addFilesButton.setTooltip(kStemImportFormatNames);
   addFilesButton.onClick = [this] { openStemChooser(false); };
   addAndMakeVisible(addFilesButton);
 
   replaceFilesButton.setButtonText(
       L10n::tr(u8"Reemplazar stems...", u8"Replace stems..."));
+  replaceFilesButton.setTooltip(kStemImportFormatNames);
   replaceFilesButton.onClick = [this] { openStemChooser(true); };
   addAndMakeVisible(replaceFilesButton);
 
@@ -1072,7 +1094,7 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
   stemChooser = std::make_unique<juce::FileChooser>(
       L10n::tr("Selecciona stems", "Select stems"),
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-      "*.wav;*.aif;*.aiff;*.flac");
+      stemImportWildcard());
 
   const auto chooserFlags = juce::FileBrowserComponent::openMode |
                             juce::FileBrowserComponent::canSelectFiles |
@@ -1090,39 +1112,23 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
 
 void SongImportWizardComponent::handleSelectedStemFiles(
     const juce::Array<juce::File> &files, const bool replaceCurrent) {
-  if (replaceCurrent) {
-    stems.clear();
-  } else {
-    // Si solo hay placeholders remotos (sin archivo real), al agregar stems
-    // locales evitamos mezclar referencias de otra carga.
-    const bool hasOnlyPlaceholderStems =
-        !stems.empty() &&
-        std::all_of(stems.begin(), stems.end(), [](const StemDraft &stem) {
-          return stem.sourcePath.trim().isEmpty() &&
-                 stem.storedPath.trim().isEmpty() && !stem.file.existsAsFile();
-        });
-    if (hasOnlyPlaceholderStems)
-      stems.clear();
-  }
-  if (files.isEmpty()) {
-    updateSelectedFilesText();
-    rebuildMappingRows();
+  // Cancelling or selecting only unsupported files must preserve the draft.
+  if (files.isEmpty())
     return;
-  }
 
+  std::vector<StemDraft> selectedStems;
   juce::StringArray unsupportedFiles;
+  juce::AudioFormatManager formatManager;
+  formatManager.registerBasicFormats();
   for (const auto &file : files) {
     if (!file.existsAsFile())
       continue;
-    const bool supportedLosslessInput =
-        file.hasFileExtension("wav") || file.hasFileExtension("aif") ||
-        file.hasFileExtension("aiff") || file.hasFileExtension("flac");
-    if (!supportedLosslessInput) {
+    if (!file.hasFileExtension(kStemImportExtensions)) {
       unsupportedFiles.add(file.getFileName());
       continue;
     }
     const auto normalizedPath = file.getFullPathName();
-    const bool alreadyThere =
+    const bool alreadyThere = !replaceCurrent &&
         std::any_of(stems.begin(), stems.end(), [&normalizedPath](const StemDraft &s) {
           return s.file.existsAsFile() &&
                  s.file.getFullPathName().equalsIgnoreCase(normalizedPath);
@@ -1139,8 +1145,8 @@ void SongImportWizardComponent::handleSelectedStemFiles(
     draft.fromExistingSong = false;
     draft.include = true;
 
-    juce::AudioFormatManager formatManager;
-    formatManager.registerBasicFormats();
+    // Metadata is best-effort here; FFmpeg validates and decodes the actual
+    // stream when saving. Some desktop inputs have no native JUCE reader.
     if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
             formatManager.createReaderFor(file))) {
       draft.sampleRate = static_cast<int>(reader->sampleRate);
@@ -1151,7 +1157,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
       }
     }
 
-    stems.push_back(std::move(draft));
+    selectedStems.push_back(std::move(draft));
   }
 
   if (!unsupportedFiles.isEmpty()) {
@@ -1159,10 +1165,25 @@ void SongImportWizardComponent::handleSelectedStemFiles(
         juce::AlertWindow::WarningIcon,
         L10n::tr("Formato no compatible", "Unsupported format"),
         L10n::tr(
-            "Solo se pueden importar stems WAV, AIFF o FLAC. Archivos omitidos:\n",
-            "Only WAV, AIFF, or FLAC stems can be imported. Skipped files:\n") +
+            "Formatos de audio admitidos: ", "Supported audio formats: ") +
+            kStemImportFormatNames +
+            L10n::tr(". Archivos omitidos:\n", ". Skipped files:\n") +
             unsupportedFiles.joinIntoString("\n"));
   }
+
+  if (selectedStems.empty())
+    return;
+
+  const bool hasOnlyPlaceholderStems =
+      !stems.empty() &&
+      std::all_of(stems.begin(), stems.end(), [](const StemDraft &stem) {
+        return stem.sourcePath.trim().isEmpty() &&
+               stem.storedPath.trim().isEmpty() && !stem.file.existsAsFile();
+      });
+  if (replaceCurrent || hasOnlyPlaceholderStems)
+    stems.clear();
+  for (auto& draft : selectedStems)
+    stems.push_back(std::move(draft));
 
   if (songTitleEditor.getText().trim().isEmpty() && !files.isEmpty()) {
     songTitleEditor.setText(files[0].getParentDirectory().getFileName(),

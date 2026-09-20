@@ -78,6 +78,10 @@ public:
    */
   static bool settingsJsonEqual(const ProjectSongSettings &a,
                                 const ProjectSongSettings &b);
+  /** Canonical representation shared by local persistence and cloud versions. */
+  static juce::var serializeSettings(const ProjectSongSettings &settings);
+  static bool deserializeSettings(const juce::var &value,
+                                  ProjectSongSettings &outSettings);
   // Internal helper: persist settings to the per-project sidecar
   // without touching the .pwproj. Used by updateSettings to avoid the
   // mtime-bump that invalidated the cache for every subsequent load.

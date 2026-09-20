@@ -70,19 +70,21 @@ private:
             audioManager.addAudioCallback (&audioPlayer);
             setUsingNativeTitleBar (true);
 #if JUCE_ANDROID
-            setFullScreen (true);
-            juce::Desktop::getInstance().setKioskModeComponent (this);
-#else
-            setFullScreen (true);
-#endif
-#if JUCE_ANDROID
-            setContentOwned (new AndroidRootComponent (processor.createEditor()), true);
+            // The window owns the size; content must not resize the native peer.
+            setContentOwned (new AndroidRootComponent (processor.createEditor()), false);
 #else
             setContentOwned (processor.createEditor(), true);
 #endif
 #if JUCE_ANDROID
             if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
                 setBounds (display->userArea);
+#endif
+            // Enter fullscreen AFTER all explicit bounds changes. Component's
+            // updateBounds() passes fullscreen=false to the Android peer, which
+            // otherwise leaves a fixed landscape-sized view after rotation.
+            setFullScreen (true);
+#if JUCE_ANDROID
+            juce::Desktop::getInstance().setKioskModeComponent (this);
 #endif
             setVisible (true);
             PW_ANDROID_LOG ("main window visible");
@@ -102,8 +104,12 @@ private:
 #if JUCE_ANDROID
         void parentSizeChanged() override
         {
-            if (auto* content = getContentComponent())
-                content->resized();
+            juce::DocumentWindow::parentSizeChanged();
+            if (auto* peer = getPeer())
+                peer->setFullScreen (true);
+            // The native MATCH_PARENT view reports its new size to the peer;
+            // DocumentWindow then resizes root, editor, and the GL surface.
+            juce::DocumentWindow::resized();
         }
 #endif
 

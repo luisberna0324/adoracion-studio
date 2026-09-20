@@ -25,6 +25,4 @@ private:
   juce::Label status;
   juce::TextButton loginNowButton;
   juce::TextButton laterButton;
-  juce::HyperlinkButton infoLink{"Mas informacion",
-                                 juce::URL("https://playwordship.gumroad.com/")};
 };

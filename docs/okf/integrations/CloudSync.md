@@ -6,7 +6,7 @@ description: Contrato técnico del sync con R2 + Firestore. Define qué se
   cambio real antes de crear una nueva revisión y cómo se reconstruye el
   proyecto local al descargar sin pisar el estado de mixer/UI.
 tags: [cloud, r2, firestore, sync, mixer, pwproj, descriptor]
-timestamp: 2026-09-04T12:48:00Z
+timestamp: 2026-09-19T15:47:12Z
 ---
 
 # Cloud Sync — contenido cloud vs estado local
@@ -126,6 +126,48 @@ estado por dispositivo.
 1. `POST /api/song-sync/prepare-upload` con hashes y tamaños.
 2. `PUT` directo a las URLs firmadas de R2 (objetos + descriptor).
 3. `POST /api/song-sync/commit` con metadata y hashes.
+
+Los blobs temporales de `cloud-sync-staging/<projectId>/<uploadId>/` que contienen el
+`manifest.json` normalizado y `waveform.bin` permanecen disponibles durante
+todo ese flujo asíncrono. `SongSyncService` los elimina sólo cuando la
+transferencia termina (con éxito, error o resultado `NO_CHANGES`); no se
+pueden limpiar desde `CloudProjectArchive::buildUpload`, porque
+`CloudUploadRequest` conserva referencias a esos archivos.
+
+Cada carga recibe un `uploadId`, por lo que cargas distintas no comparten
+staging. Al arrancar, la app elimina sesiones de staging que tengan más de 24
+horas; esa retención evita borrar una carga legítima en curso si hubiera dos
+instancias de la app de forma transitoria.
+
+El backend registra una lease de 24 horas con los hashes de los blobs que aún
+necesitan un `PUT` y el descriptor de esa tentativa. La app devuelve el ID de
+lease durante `commit`; al completar se elimina. Un job interno diario purga
+leases vencidas y sólo elimina blobs que no estén referenciados por ninguna
+canción actual del mismo usuario. Las URLs firmadas, los tokens y los nombres
+de archivos no se guardan en esa lease.
+
+## Cuotas visibles en la app
+
+La pantalla Configuración → Sesión consulta `GET /api/song-sync/capabilities`
+al abrirse. Muestra por separado el consumo y límite de dispositivos,
+canciones sincronizadas y almacenamiento cloud; no concatena esas cuotas en
+una única línea que pueda truncarse en pantallas compactas. El cliente cloud
+se inicializa desde esa pantalla, sin depender de que el usuario haya abierto
+antes la búsqueda de canciones. Si faltan credenciales o falla la consulta,
+la pantalla reemplaza el estado de carga por un error recuperable.
+
+## Progreso visible al sincronizar ajustes
+
+La publicación manual de versiones de ajustes reutiliza la barra de progreso
+que vive debajo del item de la canción. `CloudSettingsClient::publish` informa
+las fases `preparing-settings`, `authenticating`, `uploading-settings`,
+`processing-response` y `finalizing`; `PluginEditor` las proyecta sobre el
+indicador de la canción tanto en la lista del setlist como en Biblioteca.
+
+Al completar, la barra llega a `1.0` y permanece visible brevemente antes de
+limpiarse. Ante cualquier error se retira de inmediato. Estas fracciones
+representan etapas del request —el snapshot de ajustes es un único payload
+JSON pequeño— y no bytes individuales como en la subida de stems.
 
 `CloudProjectArchive::rebuildProject` (`:150-217`) rehidrata el ZIP
 local a partir del descriptor remoto + el `manifest.json` recibido:
@@ -424,10 +466,29 @@ permite reusar `validateCloudProjectDescriptor` para la respuesta.
 
 ## 4. UX
 
+### Regla vigente de publicación desde Biblioteca
+
+`Subir a nube` se ofrece únicamente para una canción sin vínculo remoto y con
+un `.pwproj` disponible. Después de completar la publicación, la acción
+desaparece: una canción vinculada no ofrece `Sincronizar de nuevo`, aunque el
+archivo original haya sido movido o eliminado. En ese caso tampoco se exige
+localizar el archivo para usar sus versiones de ajustes. El callback vuelve a
+consultar el vínculo antes de validar el archivo o iniciar una subida, para
+cubrir menús abiertos antes de completar la sincronización.
+
+Una entrada de proyecto sin vínculo y con archivo faltante ofrece
+`Localizar .pwproj...`, usando el selector existente de proyectos. Las
+descargas cloud sin paquete pueden exportarse con `Convertir a proyecto...`.
+Los cambios de mezcla se publican mediante `Sincronizar ajustes` sólo cuando
+hay cambios pendientes, de forma independiente a la publicación del contenido.
+
+### Propuesta de preflight para futuras publicaciones de contenido
+
 `LibraryCatalogPanel` y `SongListPanel` consumen el callback
 `onProjectUploadRequested` (`src/ui/panels/LibraryCatalogPanel.cpp:1396-1412`).
-La rama actual decide por `isCloudSynced`, sin mirar cambios
-reales. Cambios:
+La propuesta siguiente describe una futura acción de publicación de cambios
+de contenido; no habilita la antigua acción incondicional de volver a subir.
+Requiere detectar cambios reales antes de ofrecerla:
 
 - Sin vínculo remoto (no aparece en `CloudSyncIndexStore`):
   `Subir a nube`. Acción primaria, siempre disponible cuando la
@@ -516,6 +577,73 @@ separados y con tests; el orden propuesto es:
 
 
 ## Eliminación remota de canciones
+
+## Versiones manuales de ajustes
+
+Los ajustes operativos continúan excluidos del `CloudProjectDescriptor` y de
+las revisiones de contenido: mover un fader no vuelve a subir stems, waveform
+ni el `.pwproj`. Una canción que ya tiene vínculo en
+`cloud-sync-index.json` ofrece dos acciones independientes en su menú:
+
+- **Sincronizar ajustes**: toma el último `ProjectSongSettings` persistido,
+  publica manualmente un snapshot completo y crea una revisión de ajustes sólo
+  cuando no coincide con una versión sincronizada conocida. La acción sólo se muestra cuando la comparación
+  local detecta cambios pendientes; mientras todavía se consulta el estado
+  remoto se mantiene oculta.
+- **Versiones de ajustes**: lista las revisiones de ajustes por versión y fecha,
+  y permite aplicar una versión en el dispositivo.
+
+La [hoja de acciones de versiones](../ui/SettingsVersionsSheet.md) muestra un
+selector compacto con revisión y fecha. Al elegir una revisión, el selector se
+cierra y el diálogo estándar solicita una confirmación simple. Sólo
+**Confirmar** aplica ajustes; seleccionar o cancelar no los modifica.
+
+El endpoint autenticado `POST /api/song-sync/settings` acepta las operaciones
+`publish` y `list`. Las versiones viven en
+`users/{uid}/cloudSongs/{songId}/settingsVersions`; son documentos inmutables
+con `projectId`, `revision`, `snapshotHash`, `snapshot`, `summary`, `source` y
+`createdAt`. El documento de la canción conserva únicamente
+`settingsRevision`, `settingsHash` y `settingsUpdatedAt` como puntero a la
+versión vigente. La publicación valida que el `projectId` coincida con el
+descriptor de contenido actual y limita el snapshot a 256 KiB.
+
+Cada snapshot usa `{ schemaVersion: 1, settings, stemLabels }`. `settings`
+reutiliza la representación canónica de `ProjectStore`; `stemLabels` sólo
+permite producir un resumen legible. La app conserva en
+`cloud-sync-index.json` la revisión, el hash y el último `settings` remoto para
+compararlos con el sidecar o setlist local cuando se abre el menú. Ese baseline
+se actualiza en segundo plano al refrescar el catálogo Cloud y después de
+publicar o consultar el historial.
+
+Además conserva `knownSettingsFingerprints`: hashes SHA-256 del JSON canónico
+de `settings` (sin etiquetas ni metadata) de las versiones publicadas o recibidas
+en el historial. Volver a una versión anterior —o deshacer un cambio hasta
+recuperar sus valores— no genera un pendiente: esa configuración ya existe en
+la nube. Esto no cambia el puntero remoto a la versión más reciente ni publica
+otra revisión. La comparación se repite justo antes de enviar para cubrir menús
+abiertos antes de restaurar una versión. Los fingerprints sobreviven al reinicio
+y a la actualización del catálogo; un índice antiguo sin ellos consulta el
+historial aunque la revisión remota no haya cambiado. El historial del servidor
+devuelve las últimas 50 versiones; las versiones conocidas previamente también
+se conservan localmente. Una canción sin ninguna versión de ajustes sigue
+ofreciendo la primera sincronización.
+
+El backend calcula el hash y el delta contra la versión anterior. Además del
+hash exacto, compara canónicamente el objeto `settings`, ignorando el orden de
+claves y `stemLabels`. Así, renombrar o reordenar etiquetas de presentación no
+crea una revisión falsa. Si la configuración vigente es equivalente, devuelve
+la misma versión con `created: false` y no ensucia el historial. El cliente
+repite la comparación inmediatamente antes de publicar para cubrir un menú que
+haya quedado abierto mientras cambiaba el estado.
+
+Aplicar una versión es una acción local: actualiza el sidecar del `.pwproj` o
+el estado de la canción cloud cacheada y recarga la canción si estaba activa.
+No publica otra versión automáticamente. Los cambios posteriores permanecen
+locales hasta que el usuario vuelva a elegir **Sincronizar ajustes**.
+
+Por tanto, la regla de §2.2 significa que los ajustes nunca forman parte de la
+revisión portable de contenido ni se suben implícitamente. Sólo abandonan el
+dispositivo mediante esta acción explícita de versionado.
 
 La acción **Eliminar de la nube** del catálogo sólo se muestra para una canción
 publicada o para una entrada visible en Cloud. Antes de iniciarla, la app pide

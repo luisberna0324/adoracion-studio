@@ -18,13 +18,11 @@ public:
 
 private:
   std::unique_ptr<juce::LookAndFeel_V4> primaryLaf;
-  std::unique_ptr<juce::LookAndFeel_V4> secondaryLaf;
   juce::ImageComponent logo;
   juce::Image logoImage;
   juce::Label title;
   juce::Label subtitle;
   juce::Label status;
   juce::TextButton loginButton;
-  juce::TextButton moreInfoButton;
   juce::Rectangle<int> contentBounds;
 };

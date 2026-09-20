@@ -2,6 +2,7 @@
 
 #include "ResamplingPositionableSource.h"
 #include "StemBufferingSource.h"
+#include "audio/SignalIntegrityMetrics.h"
 #include <JuceHeader.h>
 #include <atomic>
 
@@ -65,6 +66,15 @@ public:
   }
 
   float getMagnitude() const noexcept { return currentMagnitude.load(std::memory_order_relaxed); }
+  void setSignalIntegrityCaptureEnabled(bool enabled,
+                                        bool fullCapture = true) noexcept {
+    signalIntegrityTrackingEnabled = enabled;
+    signalIntegrityFullCaptureEnabled = enabled && fullCapture;
+  }
+  const playworship::audio::SignalIntegrityMetrics&
+  getSignalIntegrityMetricsForDiagnostics() const noexcept {
+    return signalIntegrityMetrics;
+  }
   juce::int64 getRealtimeReadMissCount() const noexcept {
     return bufferingSource != nullptr ? bufferingSource->getRealtimeMissCount()
                                       : 0;
@@ -120,6 +130,10 @@ private:
   std::atomic<float> globalMixGain{1.0f};
   std::atomic<bool> isAnySoloActive{false};
   std::atomic<float> currentMagnitude{0.0f};
+  bool signalIntegrityTrackingEnabled = false;
+  bool signalIntegrityFullCaptureEnabled = false;
+  playworship::audio::SignalIntegrityMetrics signalIntegrityMetrics;
+  playworship::audio::SignalIntegrityState signalIntegrityState;
   bool readDiscontinuityPending = false;
   int readDiscontinuityPrefixFrames = 0;
   int readDiscontinuityFadeFrames = 0;

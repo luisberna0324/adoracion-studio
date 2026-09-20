@@ -2,8 +2,6 @@
 #include "../../data/Localization.h"
 
 namespace {
-constexpr const char *kSubscriptionInfoUrl = "https://playwordship.gumroad.com/";
-
 #ifndef MTCONTROLS_REAUTH_GRACE_MINUTES
 #define MTCONTROLS_REAUTH_GRACE_MINUTES 300
 #endif
@@ -66,11 +64,6 @@ ReauthPromptModal::ReauthPromptModal() {
   };
   addAndMakeVisible(laterButton);
 
-  infoLink.setURL(juce::URL(kSubscriptionInfoUrl));
-  infoLink.setButtonText(L10n::tr(u8"Más información", "More information"));
-  infoLink.setFont(juce::FontOptions(13.0f).withStyle("Underlined"), false,
-                   juce::Justification::centred);
-  addAndMakeVisible(infoLink);
 }
 
 void ReauthPromptModal::paint(juce::Graphics &g) {
@@ -90,15 +83,12 @@ void ReauthPromptModal::resized() {
   status.setBounds(area.removeFromTop(26));
   area.removeFromTop(12);
 
-  auto controlsRow = area.removeFromTop(42).withSizeKeepingCentre(520, 36);
+  auto controlsRow = area.removeFromTop(42).withSizeKeepingCentre(340, 36);
   auto loginArea = controlsRow.removeFromLeft(185);
   controlsRow.removeFromLeft(10);
-  auto laterArea = controlsRow.removeFromLeft(145);
-  controlsRow.removeFromLeft(10);
-  auto linkArea = controlsRow;
+  auto laterArea = controlsRow;
   loginNowButton.setBounds(loginArea);
   laterButton.setBounds(laterArea);
-  infoLink.setBounds(linkArea);
 }
 
 void ReauthPromptModal::setStatusText(const juce::String &text, bool isError) {

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.22)
 
 set(MTCONTROLS_APP_VERSION "1.1.4" CACHE STRING
     "Semantic version used for build metadata (MAJOR.MINOR.PATCH)")
+set(MTCONTROLS_IOS_BUILD_NUMBER "1" CACHE STRING
+    "Monotonically increasing App Store build number")
 
 if(DEFINED ENV{MTCONTROLS_APP_VERSION} AND NOT "$ENV{MTCONTROLS_APP_VERSION}" STREQUAL "")
     set(MTCONTROLS_APP_VERSION "$ENV{MTCONTROLS_APP_VERSION}")
@@ -9,6 +11,10 @@ endif()
 
 if(NOT MTCONTROLS_APP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "MTCONTROLS_APP_VERSION must match MAJOR.MINOR.PATCH, got: ${MTCONTROLS_APP_VERSION}")
+endif()
+if(NOT MTCONTROLS_IOS_BUILD_NUMBER MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR
+        "MTCONTROLS_IOS_BUILD_NUMBER must be a positive integer, got: ${MTCONTROLS_IOS_BUILD_NUMBER}")
 endif()
 
 project(MTControls VERSION ${MTCONTROLS_APP_VERSION})
@@ -23,6 +29,25 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 option(MTCONTROLS_BUILD_TESTS "Build lightweight audio engine core tests" OFF)
 option(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
     "Log aggregate VU meter repaint counters every two seconds" OFF)
+option(MTCONTROLS_ENABLE_SENTRY
+    "Enable Sentry Native telemetry (requires SENTRY_NATIVE_DIR and SENTRY_DSN)" OFF)
+set(SENTRY_NATIVE_DIR "" CACHE PATH
+    "Path to a checked-out sentry-native SDK; never fetched automatically")
+set(MTCONTROLS_SENTRY_DSN "$ENV{SENTRY_DSN}" CACHE STRING
+    "Sentry DSN supplied by CI/environment; do not commit a value")
+set(MTCONTROLS_SENTRY_ENVIRONMENT "$ENV{SENTRY_ENVIRONMENT}" CACHE STRING
+    "Sentry environment: development, staging, or production")
+if(MTCONTROLS_SENTRY_ENVIRONMENT STREQUAL "")
+    set(MTCONTROLS_SENTRY_ENVIRONMENT "development")
+endif()
+set(MTCONTROLS_GIT_COMMIT "$ENV{GITHUB_SHA}" CACHE STRING
+    "Commit SHA supplied by CI for the Sentry release")
+if(MTCONTROLS_GIT_COMMIT STREQUAL "")
+    execute_process(COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE MTCONTROLS_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+endif()
 option(MTCONTROLS_USE_BUNGEE
     "Use Bungee Basic as the pitch/tempo backend" ON)
 
@@ -146,6 +171,20 @@ set(MTCONTROLS_IOS_DEVELOPMENT_TEAM "" CACHE STRING
 
 include(FetchContent)
 
+set(MTCONTROLS_SENTRY_ENABLED OFF)
+if(MTCONTROLS_ENABLE_SENTRY)
+    if(MTCONTROLS_SENTRY_DSN STREQUAL "")
+        message(FATAL_ERROR "MTCONTROLS_ENABLE_SENTRY requires SENTRY_DSN in CI/environment")
+    endif()
+    if(NOT EXISTS "${SENTRY_NATIVE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR "MTCONTROLS_ENABLE_SENTRY requires SENTRY_NATIVE_DIR pointing to sentry-native")
+    endif()
+    # Build the SDK locally with its transport/crash backend chosen by the
+    # platform. Keeping it external makes third-party updates explicit.
+    add_subdirectory("${SENTRY_NATIVE_DIR}" sentry-native EXCLUDE_FROM_ALL)
+    set(MTCONTROLS_SENTRY_ENABLED ON)
+endif()
+
 if(NOT DEFINED JUCE_DIR OR JUCE_DIR STREQUAL "")
     message(FATAL_ERROR "JUCE_DIR is not set. Configure with: cmake -S . -B build -DJUCE_DIR=/path/to/JUCE")
 endif()
@@ -242,6 +281,30 @@ endif()
 
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
+    juce_add_console_app(MTControlsCloudSettingsSyncTests PRODUCT_NAME "Cloud Settings Sync Tests")
+    target_sources(MTControlsCloudSettingsSyncTests PRIVATE tests/cloud_settings_sync_state_tests.cpp)
+    juce_generate_juce_header(MTControlsCloudSettingsSyncTests)
+    target_include_directories(MTControlsCloudSettingsSyncTests PRIVATE src)
+    target_link_libraries(MTControlsCloudSettingsSyncTests
+        PRIVATE juce::juce_core juce::juce_cryptography)
+    add_test(NAME cloud_settings_sync_state COMMAND MTControlsCloudSettingsSyncTests)
+    juce_add_console_app(MTControlsSettingsSheetTests PRODUCT_NAME "Settings Sheet Tests")
+    target_sources(MTControlsSettingsSheetTests PRIVATE
+        tests/settings_versions_sheet_tests.cpp src/ui/components/SettingsVersionsSheet.cpp)
+    juce_generate_juce_header(MTControlsSettingsSheetTests)
+    target_include_directories(MTControlsSettingsSheetTests PRIVATE src)
+    target_compile_definitions(MTControlsSettingsSheetTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsSettingsSheetTests PRIVATE
+        juce::juce_gui_basics juce::juce_audio_basics juce::juce_cryptography)
+    add_test(NAME settings_versions_sheet COMMAND MTControlsSettingsSheetTests)
+    set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
+    target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
+    juce_generate_juce_header(MTControlsDiagnosticReportTests)
+    target_include_directories(MTControlsDiagnosticReportTests PRIVATE src)
+    target_link_libraries(MTControlsDiagnosticReportTests
+        PRIVATE juce::juce_core juce::juce_audio_basics)
+    add_test(NAME playback_diagnostic_report COMMAND MTControlsDiagnosticReportTests)
     add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
     target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
     add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)
@@ -391,7 +454,7 @@ set(MTCONTROLS_APP_ICON_PATH
 set(MTCONTROLS_PLIST_TO_MERGE "")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict></dict></plist>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
 endif()
 
 juce_add_plugin(MTControls
@@ -413,13 +476,13 @@ juce_add_plugin(MTControls
     PLIST_TO_MERGE "${MTCONTROLS_PLIST_TO_MERGE}"
     DOCUMENT_EXTENSIONS pwproj
     BUNDLE_ID "com.multitracks.playworship"
-    # PlayWorship is a landscape performance surface on iPhone and iPad. Keep
-    # both landscape directions available so the safe-area layout follows the
-    # camera housing on either side.
+    # Performance uses both landscape directions. iPhone also allows portrait
+    # for Library/setlist management; the editor switches the runtime mask.
     IPAD_SCREEN_ORIENTATIONS
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
     IPHONE_SCREEN_ORIENTATIONS
+        UIInterfaceOrientationPortrait
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
     BACKGROUND_AUDIO_ENABLED TRUE
@@ -427,7 +490,7 @@ juce_add_plugin(MTControls
     BLUETOOTH_PERMISSION_ENABLED TRUE
     BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
     LOCAL_NETWORK_PERMISSION_ENABLED TRUE
-    LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to the local development server for authentication and cloud testing."
+    LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to compatible music and presentation services on your local network."
 )
 
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
@@ -438,8 +501,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     if(TARGET MTControls_Standalone)
         set_target_properties(MTControls_Standalone PROPERTIES
             XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5"
+            XCODE_ATTRIBUTE_MARKETING_VERSION "${MTCONTROLS_APP_VERSION}"
+            XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${MTCONTROLS_IOS_BUILD_NUMBER}"
             XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
             XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES")
+        set(_mtcontrols_privacy_manifest
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/ios/PrivacyInfo.xcprivacy")
+        set_source_files_properties("${_mtcontrols_privacy_manifest}"
+            PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+        target_sources(MTControls_Standalone PRIVATE
+            "${_mtcontrols_privacy_manifest}")
         if(MTCONTROLS_IOS_DEVELOPMENT_TEAM)
             set_target_properties(MTControls_Standalone PROPERTIES
                 XCODE_ATTRIBUTE_DEVELOPMENT_TEAM
@@ -515,6 +586,8 @@ target_sources(MTControls
         src/PluginEditorSupport.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        src/telemetry/Telemetry.cpp
+        src/telemetry/Telemetry.h
         src/MetronomeEngine.cpp
         src/MetronomeEngine.h
         src/PitchShiftProcessor.cpp
@@ -569,6 +642,8 @@ target_sources(MTControls
         src/data/CloudProjectArchive.h
         src/data/CloudLibraryClient.cpp
         src/data/CloudLibraryClient.h
+        src/data/CloudSettingsClient.cpp
+        src/data/CloudSettingsClient.h
         src/data/CloudSyncIndexStore.cpp
         src/data/CloudSyncIndexStore.h
         src/data/CloudTransferClient.cpp
@@ -647,6 +722,8 @@ target_sources(MTControls
         src/ui/components/PadsHandlePanel.cpp
         src/ui/components/PadsHandlePanel.h
         src/ui/components/ReauthPromptModal.cpp
+        src/ui/components/SettingsVersionsSheet.cpp
+        src/ui/components/SettingsVersionsSheet.h
         src/ui/components/ReauthPromptModal.h
         src/ui/panels/PadsComponent.cpp
         src/ui/panels/PadsComponent.h
@@ -699,7 +776,15 @@ target_compile_definitions(MTControls
         SOUNDTOUCH_FLOAT_SAMPLES=1
         MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
         MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS=$<BOOL:${MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS}>
+        MTCONTROLS_SENTRY_ENABLED=$<BOOL:${MTCONTROLS_SENTRY_ENABLED}>
+        MTCONTROLS_SENTRY_DSN="${MTCONTROLS_SENTRY_DSN}"
+        MTCONTROLS_SENTRY_ENVIRONMENT="${MTCONTROLS_SENTRY_ENVIRONMENT}"
+        MTCONTROLS_SENTRY_RELEASE="playworship-app@${MTCONTROLS_APP_VERSION}+${MTCONTROLS_IOS_BUILD_NUMBER}.${MTCONTROLS_GIT_COMMIT}"
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_compile_definitions(MTControls PRIVATE JUCE_CONTENT_SHARING=1)
+endif()
 
 if (WIN32)
     target_compile_definitions(MTControls
@@ -728,6 +813,10 @@ target_link_libraries(MTControls
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+if(MTCONTROLS_SENTRY_ENABLED)
+    target_link_libraries(MTControls PRIVATE sentry::sentry)
+endif()
 
 if(MTCONTROLS_BUNGEE_AVAILABLE)
     target_link_libraries(MTControls PRIVATE MTControlsBungee)

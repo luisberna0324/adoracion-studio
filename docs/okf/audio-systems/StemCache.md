@@ -79,8 +79,16 @@ La penalización en tamaño (~430 MB de M4A → ~250 MB de FLAC) es aceptable po
 ## Política de audio canónico
 
 El formato interno de canciones y proyectos es FLAC en macOS, Windows y Linux.
-Los imports nuevos aceptan únicamente WAV, AIFF o FLAC y `ProjectStore::save()`
-convierte los formatos de intercambio a FLAC antes de empaquetarlos. Al abrir,
+Los imports nuevos de escritorio aceptan WAV, AIFF, FLAC, MP3, M4A, AAC, OGG
+y WMA. El selector y la validación del asistente comparten esa lista.
+`ProjectStore::save()` convierte los formatos de intercambio a FLAC con FFmpeg
+antes de empaquetarlos. JUCE obtiene metadatos cuando dispone de lector nativo;
+la ausencia de ese lector no impide importar un formato que FFmpeg decodifica.
+Si faltan duración, frecuencia o canales, `ProjectStore::save()` los completa
+leyendo el FLAC convertido antes de escribir el manifiesto del proyecto.
+Los formatos con pérdida no recuperan calidad al convertirse a FLAC. La lista
+de importación móvil sigue limitada a WAV, AIFF y FLAC en este ajuste.
+Al abrir,
 `ProjectStore` valida que cada recurso del paquete sea FLAC decodificable; no
 existe un fallback a M4A ni una conversión específica de Windows.
 

@@ -38,3 +38,5 @@ web/out/
 
 # Downloaded third-party SDKs (see scripts/bootstrap_bungee.sh)
 third_party/bungee/
+third_party/sentry-native/
+CMakeUserPresets.json

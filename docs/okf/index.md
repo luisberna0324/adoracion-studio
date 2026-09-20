@@ -20,7 +20,8 @@ docs/okf/
 ├── midi/             # Sistema MIDI y bindings
 ├── transport/        # Control de transporte y arrange
 ├── ui/               # Layout responsive y contratos visuales
-└── integrations/     # Integraciones externas (lyrics, cues, control)
+├── integrations/     # Integraciones externas (lyrics, cues, control)
+└── release/          # Contratos de distribucion y tiendas
 ```
 
 ## Módulos Principales
@@ -29,6 +30,8 @@ docs/okf/
 |--------|-------------|
 | [processor/MTControlsAudioProcessor](processor/MTControlsAudioProcessor.md) | Procesador principal del plugin |
 | [processor/AudioDiagnostics](processor/AudioDiagnostics.md) | Benchmark lock-free de performance (stages, gaps, decode, render) |
+| [integrations/PlaybackDiagnosticSharing](integrations/PlaybackDiagnosticSharing.md) | ZIP manual de soporte con últimos 120 s disponibles, compartir en móvil y guardar en escritorio |
+| [integrations/SentryTelemetry](integrations/SentryTelemetry.md) | Eventos categóricos privados y bridge realtime seguro hacia Sentry |
 | [processor/SongLoadProbe](processor/SongLoadProbe.md) | Telemetría del UI thread para la carga de canciones |
 | [engine/StemMixEngine](engine/StemMixEngine.md) | Motor de mezcla de stems |
 | [engine/StemTrack](engine/StemTrack.md) | Track individual de audio |
@@ -40,8 +43,10 @@ docs/okf/
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
+| [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |
+| [release/AppStore](release/AppStore.md) | Preflight de firma, privacidad y revision de App Store |
 
 ## Uso Rápido
 

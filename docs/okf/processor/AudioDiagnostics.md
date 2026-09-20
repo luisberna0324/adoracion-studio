@@ -9,6 +9,54 @@ timestamp: 2026-07-26T23:00:00Z
 
 # AudioDiagnostics
 
+## Exportación manual para soporte
+
+Desde Ajustes → Diagnóstico, **Compartir diagnóstico** genera un ZIP con los
+últimos 120 segundos disponibles de la sesión actual del motor. La captura
+automática de gaps, XRuns e integridad de señal reemplaza el marcador manual
+en la interfaz. El contrato
+del archivo y sus límites están en
+[PlaybackDiagnosticSharing](../integrations/PlaybackDiagnosticSharing.md).
+
+`audio_device_<ts>.csv` añade muestras a 1 Hz desde el message thread:
+frecuencia, tamaño de bloque informado por el dispositivo, latencia de salida,
+XRuns nativos, generaciones de motor/canción, posición, BPM, pitch y mute/solo
+de Click Dyn. `native_xruns=-1` significa no disponible, no cero fallos.
+No usa `AudioDeviceManager::getXRunCount()`, que combina fallos nativos y DSP.
+El muestreo se encola y el thread existente lo escribe; no hay nuevas consultas
+al dispositivo, compresión ni I/O en `processBlock`.
+
+`audio_distortion_<ts>.csv` mide la integridad numérica de la señal sin grabar
+audio: peak de entrada/salida, RMS, muestras cercanas o superiores a 0 dBFS,
+valores no finitos, delta máximo y delta entre callbacks. `source_kind=0`
+representa un stem después de volumen/trim/mute/solo; `1`, el master después de
+su ganancia y antes de la transición; `2`, la salida final que se entrega al
+dispositivo. Master y salida se registran cada callback; los stems cada cinco
+callbacks. En los bloques intermedios sólo se conserva la última muestra por
+canal para que el delta del límite siguiente siga comparando callbacks
+adyacentes. La salida final permite detectar una anomalía en cualquier bloque.
+
+`audio_markers_<ts>.csv` se conserva por compatibilidad con capturas internas:
+si existe un marcador incluye reloj de pared/monotónico, posición de canción,
+generaciones, XRuns, buffer y latencia. La interfaz de Configuración ya no
+expone una acción manual para crear esos marcadores.
+
+### Retención local
+
+Al iniciar una nueva sesión del motor, fuera de `processBlock`, el logger
+elimina los CSV de más de siete días y luego aplica un límite total de 500 MiB
+para los CSV de diagnóstico, borrando primero las sesiones más antiguas. La
+carpeta y los archivos de la sesión activa no se eliminan durante esa sesión.
+Los ZIP compartidos mantienen su propia retención de siete días al generar un
+nuevo informe.
+
+`audio_<ts>.csv` añade `source_generation` al final. Cada carga exitosa de
+canción cambia esta generación; cada `prepareToPlay` cambia la generación del
+motor. Comparar contadores acumulativos sólo dentro de la misma generación.
+Las colas contabilizan eventos descartados; el manifiesto exporta esos valores
+durante la vida del processor. Los nombres de sesión incorporan un sufijo UUID
+para evitar mezclar cabeceras al reiniciar audio dos veces en el mismo segundo.
+
 `AudioDiagnostics` es el **sistema canónico de telemetría de performance** del audio engine. Permite medir cuánto tarda cada sub-etapa del audio thread y de los workers de read-ahead, con captura lock-free y volcado periódico a CSV.
 
 Es la herramienta de referencia para reproducir, medir y validar cualquier optimización de performance en `processBlock` o en el pipeline de stems. Toda métrica de performance del proyecto debe pasar por este sistema para ser comparable entre commits.
@@ -23,7 +71,9 @@ Es la herramienta de referencia para reproducir, medir y validar cualquier optim
 
 ## Qué mide
 
-`AudioDiagnostics` captura **siete dimensiones** de la pipeline de audio, todas con captura no-bloqueante en el audio thread (relajada) o el worker thread (relajada), y volcado a disco por un thread de flush dedicado.
+`AudioDiagnostics` captura métricas de la pipeline de audio con escritura no
+bloqueante en el audio thread o el worker thread y volcado a disco por un thread
+de flush dedicado.
 
 ### 1. Per-stage del audio thread
 
@@ -111,6 +161,17 @@ contención de copia de las invalidaciones por seek y del agotamiento del buffer
 Blocks: N | Overruns: K (P%) | Avg: Xms | Max: Yms | Gaps: M (max Zms)
 ```
 
+### 7. Integridad de señal y marcadores internos
+
+`SignalIntegrityMetrics` recorre los buffers ya renderizados y mantiene sólo
+acumulados numéricos. No conserva muestras PCM. La medición no toma locks, no
+reserva memoria y no consulta el reloj. Los eventos pasan al mismo ring buffer
+lock-free y el thread de flush escribe `audio_distortion_<ts>.csv`.
+
+Si un consumidor interno solicita un marcador, se origina en el message thread
+y se guarda en `audio_markers_<ts>.csv`; no se llama desde `processBlock` ni se
+expone actualmente como acción de Configuración.
+
 ---
 
 ## Archivos del sistema
@@ -122,6 +183,7 @@ Blocks: N | Overruns: K (P%) | Avg: Xms | Max: Yms | Gaps: M (max Zms)
 | `src/StemBufferingSource.h/.cpp` | Atomics de worker drain y real drain |
 | `src/ResamplingPositionableSource.h/.cpp` | Atomics de decode + resample |
 | `src/StemTrack.h` | Getters `bufferingSourceForBenchmark()` y `resamplingSourceForBenchmark()` |
+| `src/audio/SignalIntegrityMetrics.h` | Peak/RMS, clipping, no finitos y discontinuidad entre bloques |
 | `src/SimpleDelayLine.h` | Getter `isActive()` (usado por el skip del delay line transparent) |
 
 ---
@@ -135,6 +197,9 @@ Los logs se escriben en `~/Library/Logs/MTControls/` (macOS) — ver `AudioDiagn
 | `audio_<ts>.csv` | 1 fila por callback del audio thread | block metrics, stages, streaming_misses |
 | `audio_gaps_<ts>.csv` | 1 fila por gap detectado | timestamp, delta_ms, song position |
 | `audio_stems_<ts>.csv` | 1 fila por stem cada 20 bloques | per-stem worker drain, decode, bungee, latencia |
+| `audio_device_<ts>.csv` | 1 Hz | configuración, XRuns y contexto de reproducción |
+| `audio_distortion_<ts>.csv` | master/salida cada bloque; stems cada 5 bloques | integridad numérica de señal |
+| `audio_markers_<ts>.csv` | opcional, por marcador interno | instante correlacionable con la captura técnica |
 
 `ts` es el timestamp de inicio de la sesión. Los archivos se rotan automáticamente al iniciar el plugin.
 

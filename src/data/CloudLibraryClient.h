@@ -7,7 +7,9 @@
 struct CloudSongSummary {
   juce::String songId, title, artist, key;
   juce::String artworkPath;
+  juce::String settingsHash;
   int bpm = 0, stemCount = 0, revision = 0;
+  int settingsRevision = 0;
   double durationSeconds = 0.0;
   juce::int64 storageBytes = 0, updatedAtMs = 0;
 };

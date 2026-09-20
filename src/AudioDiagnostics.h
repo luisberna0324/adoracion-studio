@@ -14,13 +14,18 @@
  * syscalls.
  *
  * A background JUCE thread drains the ring buffer every 500ms and appends
- * rows to a rotating CSV file under ~/Library/Logs/MTControls/.
+ * rows to a per-session CSV file under ~/Library/Logs/MTControls/.
+ * Old CSV sessions are pruned outside processBlock: seven days of retention
+ * and a 500 MiB total cap, oldest files first.
  *
  * CSV files:
  *   1) audio_<ts>.csv          : block-level performance (incl. per-stage
  *                                microsecond timings and gap events)
  *   2) audio_stems_<ts>.csv    : per-stem timing snapshots (latency + delay)
  *   3) audio_gaps_<ts>.csv     : underrun gap events (callback missed its slot)
+ *   4) audio_device_<ts>.csv   : native output configuration and XRuns
+ *   5) audio_distortion_<ts>.csv: sample-level integrity metrics
+ *   6) audio_markers_<ts>.csv  : optional internal markers
  */
 class AudioDiagnostics {
 public:
@@ -80,7 +85,90 @@ public:
     int16_t stageMixStemsUs = 0;       // mixEngine.mixStems / renderDirect
     int16_t stageMixOutputUs = 0;      // mixEngine.renderToOutput (master bus)
     int16_t stageRampTransitionUs = 0; // applySongTransitionRamp (fade envelope)
+    int64_t sourceGeneration = 0;
   };
+
+  // Sampled on the message thread; never query the device from processBlock.
+  struct DeviceEvent {
+    double wallMs = 0, monotonicMs = 0, sampleRate = 0, songPositionSec = 0;
+    int bufferFrames = 0, outputLatencyFrames = 0, nativeXruns = -1;
+    int64_t engineGeneration = 0, sourceGeneration = 0;
+    double bpm = 0;
+    int pitch = 0;
+    bool playing = false, clickDynMuted = false, clickDynSolo = false;
+  };
+
+  // sourceKind: 0=stem post-control, 1=master post-gain/pre-transition,
+  // 2=final output handed to the device.
+  struct DistortionEvent {
+    double wallMs = 0, songPositionSec = 0;
+    int64_t sourceGeneration = 0;
+    uint64_t markerId = 0;
+    int sourceKind = 0, sourceIndex = -1;
+    int channels = 0, samplesPerChannel = 0;
+    float inputPeak = 0, outputPeak = 0, outputRms = 0;
+    float maxDelta = 0, boundaryDelta = 0;
+    uint32_t nearClipSamples = 0, overSamples = 0;
+    uint32_t largeDeltaSamples = 0, nonFiniteSamples = 0;
+    float controlVolume = 1, controlGain = 1;
+    bool muted = false, soloed = false, audible = true;
+  };
+
+  struct MarkerEvent {
+    double wallMs = 0, monotonicMs = 0, songPositionSec = 0;
+    int64_t engineGeneration = 0, sourceGeneration = 0;
+    uint64_t markerId = 0;
+    int nativeXruns = -1, bufferFrames = 0, outputLatencyFrames = 0;
+  };
+
+  struct ReportFiles {
+    std::array<juce::File, 6> files;
+    int64_t droppedBlocks = 0, droppedStems = 0, droppedGaps = 0;
+    int64_t droppedDevices = 0, droppedDistortion = 0, droppedMarkers = 0;
+  };
+
+  ReportFiles getReportFiles() const {
+    const juce::ScopedLock lock(reportFilesLock);
+    return {reportFiles, droppedBlocks.load(), droppedStems.load(),
+            droppedGaps.load(), droppedDevices.load(),
+            droppedDistortion.load(), droppedMarkers.load()};
+  }
+
+  void pushDeviceEvent(const DeviceEvent& ev) noexcept {
+    if (!isActive()) return;
+    const int write = deviceHead.load(std::memory_order_relaxed);
+    const int next = (write + 1) & 255;
+    if (next == deviceTail.load(std::memory_order_acquire)) {
+      droppedDevices.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    deviceEvents[static_cast<size_t>(write)] = ev;
+    deviceHead.store(next, std::memory_order_release);
+  }
+
+  void pushDistortionEvent(const DistortionEvent& ev) noexcept {
+    if (!isActive()) return;
+    const int write = distortionHead.load(std::memory_order_relaxed);
+    const int next = (write + 1) & kDistortionMask;
+    if (next == distortionTail.load(std::memory_order_acquire)) {
+      droppedDistortion.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    distortionEvents[static_cast<size_t>(write)] = ev;
+    distortionHead.store(next, std::memory_order_release);
+  }
+
+  void pushMarkerEvent(const MarkerEvent& ev) noexcept {
+    if (!isActive()) return;
+    const int write = markerHead.load(std::memory_order_relaxed);
+    const int next = (write + 1) & kMarkerMask;
+    if (next == markerTail.load(std::memory_order_acquire)) {
+      droppedMarkers.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+    markerEvents[static_cast<size_t>(write)] = ev;
+    markerHead.store(next, std::memory_order_release);
+  }
 
   /**
    * Underrun / gap event — fired when the audio callback was not called on
@@ -222,8 +310,10 @@ public:
     const int writeIdx = head.load(std::memory_order_relaxed);
     const int nextIdx = (writeIdx + 1) & kMask;
 
-    if (nextIdx == tail.load(std::memory_order_acquire))
+    if (nextIdx == tail.load(std::memory_order_acquire)) {
+      droppedBlocks.fetch_add(1, std::memory_order_relaxed);
       return; // Ring buffer full — drop event rather than block
+    }
 
     events[static_cast<size_t>(writeIdx)] = ev;
     head.store(nextIdx, std::memory_order_release);
@@ -236,8 +326,10 @@ public:
     const int writeIdx = stemHead.load(std::memory_order_relaxed);
     const int nextIdx = (writeIdx + 1) & kStemMask;
 
-    if (nextIdx == stemTail.load(std::memory_order_acquire))
+    if (nextIdx == stemTail.load(std::memory_order_acquire)) {
+      droppedStems.fetch_add(1, std::memory_order_relaxed);
       return; // Ring buffer full — drop event rather than block.
+    }
 
     stemEvents[static_cast<size_t>(writeIdx)] = ev;
     stemHead.store(nextIdx, std::memory_order_release);
@@ -254,8 +346,10 @@ public:
     const int writeIdx = gapHead.load(std::memory_order_relaxed);
     const int nextIdx = (writeIdx + 1) & kGapMask;
 
-    if (nextIdx == gapTail.load(std::memory_order_acquire))
+    if (nextIdx == gapTail.load(std::memory_order_acquire)) {
+      droppedGaps.fetch_add(1, std::memory_order_relaxed);
       return; // Ring buffer full — drop event rather than block.
+    }
 
     gapEvents[static_cast<size_t>(writeIdx)] = ev;
     gapHead.store(nextIdx, std::memory_order_release);
@@ -319,16 +413,26 @@ public:
     stopBackgroundLogger();
 
     logDirectory.createDirectory();
+    pruneLogDirectory(logDirectory);
     const auto ts = juce::Time::getCurrentTime()
-                        .formatted("%Y%m%d_%H%M%S");
+                        .formatted("%Y%m%d_%H%M%S") + "_" + juce::Uuid().toString().substring(0, 8);
     logFile = logDirectory.getChildFile("audio_" + ts + ".csv");
     stemLogFile = logDirectory.getChildFile("audio_stems_" + ts + ".csv");
     gapLogFile = logDirectory.getChildFile("audio_gaps_" + ts + ".csv");
+    deviceLogFile = logDirectory.getChildFile("audio_device_" + ts + ".csv");
+    distortionLogFile =
+        logDirectory.getChildFile("audio_distortion_" + ts + ".csv");
+    markerLogFile = logDirectory.getChildFile("audio_markers_" + ts + ".csv");
+    {
+      const juce::ScopedLock lock(reportFilesLock);
+      reportFiles = {logFile, stemLogFile, gapLogFile, deviceLogFile,
+                     distortionLogFile, markerLogFile};
+    }
 
     // Write CSV header
     if (auto stream = logFile.createOutputStream()) {
       stream->writeText(
-          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,streaming_misses,is_playing,streaming_missing_frames,time_processor_reset_misses,time_processor_service_failures,stage_pre_read_us,stage_read_next_us,stage_decode_render_us,stage_mix_stems_us,stage_mix_output_us,stage_ramp_transition_us\n",
+          "wall_ms,block_ms,budget_ms,overrun,lock_wait_ms,stem_count,streaming_misses,is_playing,streaming_missing_frames,time_processor_reset_misses,time_processor_service_failures,stage_pre_read_us,stage_read_next_us,stage_decode_render_us,stage_mix_stems_us,stage_mix_output_us,stage_ramp_transition_us,source_generation\n",
           false, false, nullptr);
     }
     if (auto stream = stemLogFile.createOutputStream()) {
@@ -341,6 +445,12 @@ public:
           "wall_ms,delta_ms,song_position_sec,stem_count,is_playing\n",
           false, false, nullptr);
     }
+    if (auto stream = deviceLogFile.createOutputStream())
+      stream->writeText("wall_ms,monotonic_ms,sample_rate,buffer_frames,output_latency_frames,native_xruns,engine_generation,source_generation,song_position_sec,bpm,pitch,is_playing,click_dyn_muted,click_dyn_solo\n", false, false, nullptr);
+    if (auto stream = distortionLogFile.createOutputStream())
+      stream->writeText("wall_ms,song_position_sec,source_generation,marker_id,source_kind,source_index,channels,samples_per_channel,input_peak,output_peak,output_rms,max_delta,boundary_delta,near_clip_samples,over_samples,large_delta_samples,non_finite_samples,control_volume,control_gain,muted,soloed,audible\n", false, false, nullptr);
+    if (auto stream = markerLogFile.createOutputStream())
+      stream->writeText("wall_ms,monotonic_ms,song_position_sec,engine_generation,source_generation,marker_id,native_xruns,buffer_frames,output_latency_frames\n", false, false, nullptr);
 
     // Capture the expensive wall clock once on the message thread. Audio
     // events derive epoch timestamps from the monotonic high-resolution tick.
@@ -384,6 +494,56 @@ public:
   }
 
 private:
+  static constexpr juce::int64 kLogRetentionDays = 7;
+  static constexpr juce::int64 kMaxLogBytes = 500LL * 1024LL * 1024LL;
+
+  static void pruneLogDirectory(const juce::File &directory) {
+    auto files = directory.findChildFiles(juce::File::findFiles, false, "*.csv");
+    const auto now = juce::Time::getCurrentTime();
+    const auto cutoff = now - juce::RelativeTime::days(
+                                   static_cast<double>(kLogRetentionDays));
+
+    for (int i = files.size(); --i >= 0;) {
+      if (files.getReference(i).getLastModificationTime() < cutoff) {
+        files.getReference(i).deleteFile();
+        files.remove(i);
+      }
+    }
+
+    juce::int64 totalBytes = 0;
+    for (const auto &file : files)
+      totalBytes += juce::jmax<juce::int64>(0, file.getSize());
+
+    while (totalBytes > kMaxLogBytes && !files.isEmpty()) {
+      int oldestIndex = 0;
+      for (int i = 1; i < files.size(); ++i) {
+        if (files.getReference(i).getLastModificationTime() <
+            files.getReference(oldestIndex).getLastModificationTime())
+          oldestIndex = i;
+      }
+
+      const auto oldest = files.getReference(oldestIndex);
+      const auto size = juce::jmax<juce::int64>(0, oldest.getSize());
+      oldest.deleteFile();
+      totalBytes -= size;
+      files.remove(oldestIndex);
+    }
+  }
+
+  mutable juce::CriticalSection reportFilesLock;
+  std::array<juce::File, 6> reportFiles;
+  std::atomic<int64_t> droppedBlocks{0}, droppedStems{0}, droppedGaps{0},
+      droppedDevices{0}, droppedDistortion{0}, droppedMarkers{0};
+  std::array<DeviceEvent, 256> deviceEvents{};
+  std::atomic<int> deviceHead{0}, deviceTail{0};
+  static constexpr int kDistortionSize = 2048;
+  static constexpr int kDistortionMask = kDistortionSize - 1;
+  std::array<DistortionEvent, kDistortionSize> distortionEvents{};
+  std::atomic<int> distortionHead{0}, distortionTail{0};
+  static constexpr int kMarkerSize = 64;
+  static constexpr int kMarkerMask = kMarkerSize - 1;
+  std::array<MarkerEvent, kMarkerSize> markerEvents{};
+  std::atomic<int> markerHead{0}, markerTail{0};
   static constexpr int kSize = 512;
   static constexpr int kMask = kSize - 1;
   static constexpr int kStemSize = 128;
@@ -421,11 +581,78 @@ private:
   juce::File logFile;
   juce::File stemLogFile;
   juce::File gapLogFile;
+  juce::File deviceLogFile;
+  juce::File distortionLogFile;
+  juce::File markerLogFile;
 
   void flushPending() {
     flushBlockEvents();
     flushStemTimingEvents();
     flushGapEvents();
+    flushDeviceEvents();
+    flushDistortionEvents();
+    flushMarkerEvents();
+  }
+
+  void flushDistortionEvents() {
+    const int end = distortionHead.load(std::memory_order_acquire);
+    int cursor = distortionTail.load(std::memory_order_relaxed);
+    if (cursor == end) return;
+    std::ofstream out(distortionLogFile.getFullPathName().toStdString(),
+                      std::ios::app | std::ios::binary);
+    if (!out.is_open()) return;
+    while (cursor != end) {
+      const auto& e = distortionEvents[static_cast<size_t>(cursor)];
+      out << static_cast<int64_t>(e.wallMs) << ',' << e.songPositionSec << ','
+          << e.sourceGeneration << ',' << e.markerId << ',' << e.sourceKind
+          << ',' << e.sourceIndex << ',' << e.channels << ','
+          << e.samplesPerChannel << ',' << e.inputPeak << ',' << e.outputPeak
+          << ',' << e.outputRms << ',' << e.maxDelta << ','
+          << e.boundaryDelta << ',' << e.nearClipSamples << ','
+          << e.overSamples << ',' << e.largeDeltaSamples << ','
+          << e.nonFiniteSamples << ',' << e.controlVolume << ','
+          << e.controlGain << ',' << e.muted << ',' << e.soloed << ','
+          << e.audible << '\n';
+      cursor = (cursor + 1) & kDistortionMask;
+    }
+    distortionTail.store(end, std::memory_order_release);
+  }
+
+  void flushMarkerEvents() {
+    const int end = markerHead.load(std::memory_order_acquire);
+    int cursor = markerTail.load(std::memory_order_relaxed);
+    if (cursor == end) return;
+    std::ofstream out(markerLogFile.getFullPathName().toStdString(),
+                      std::ios::app | std::ios::binary);
+    if (!out.is_open()) return;
+    while (cursor != end) {
+      const auto& e = markerEvents[static_cast<size_t>(cursor)];
+      out << static_cast<int64_t>(e.wallMs) << ','
+          << static_cast<int64_t>(e.monotonicMs) << ',' << e.songPositionSec
+          << ',' << e.engineGeneration << ',' << e.sourceGeneration << ','
+          << e.markerId << ',' << e.nativeXruns << ',' << e.bufferFrames << ','
+          << e.outputLatencyFrames << '\n';
+      cursor = (cursor + 1) & kMarkerMask;
+    }
+    markerTail.store(end, std::memory_order_release);
+  }
+
+  void flushDeviceEvents() {
+    const int end = deviceHead.load(std::memory_order_acquire);
+    int cursor = deviceTail.load(std::memory_order_relaxed);
+    if (cursor == end) return;
+    std::ofstream out(deviceLogFile.getFullPathName().toStdString(), std::ios::app | std::ios::binary);
+    if (!out.is_open()) return;
+    while (cursor != end) {
+      const auto& e = deviceEvents[static_cast<size_t>(cursor)];
+      out << static_cast<int64_t>(e.wallMs) << ',' << static_cast<int64_t>(e.monotonicMs)
+          << ',' << e.sampleRate << ',' << e.bufferFrames << ',' << e.outputLatencyFrames
+          << ',' << e.nativeXruns << ',' << e.engineGeneration << ',' << e.sourceGeneration
+          << ',' << e.songPositionSec << ',' << e.bpm << ',' << e.pitch << ',' << e.playing
+          << ',' << e.clickDynMuted << ',' << e.clickDynSolo << '\n';
+      cursor = (cursor + 1) & 255;
+    }
+    deviceTail.store(end, std::memory_order_release);
   }
 
   void flushBlockEvents() {
@@ -460,7 +687,7 @@ private:
           << ev.stageDecodeRenderUs << ","
           << ev.stageMixStemsUs << ","
           << ev.stageMixOutputUs << ","
-          << ev.stageRampTransitionUs << "\n";
+          << ev.stageRampTransitionUs << ',' << ev.sourceGeneration << "\n";
 
       // Update cumulative stats
       totalCount.fetch_add(1, std::memory_order_relaxed);

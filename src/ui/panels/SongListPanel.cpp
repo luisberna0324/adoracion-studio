@@ -845,6 +845,37 @@ SongListPanel::SongListPanel() {
         if (onCloudDeleteRequested != nullptr)
           onCloudDeleteRequested(songId, title);
       });
+  libraryCatalogPanel.setOnCloudSettingsSyncRequested(
+      [this](const juce::String &songId) {
+        const auto song = std::find_if(
+            librarySongs.begin(), librarySongs.end(),
+            [&songId](const ImportedSongData &candidate) {
+              return candidate.id == songId;
+            });
+        if (song != librarySongs.end() && onCloudSettingsSyncRequested != nullptr)
+          onCloudSettingsSyncRequested(*song);
+      });
+  libraryCatalogPanel.setOnCloudSettingsVersionsRequested(
+      [this](const juce::String &songId, juce::Rectangle<int> screenAnchor) {
+        const auto song = std::find_if(
+            librarySongs.begin(), librarySongs.end(),
+            [&songId](const ImportedSongData &candidate) {
+              return candidate.id == songId;
+            });
+        if (song != librarySongs.end() && onCloudSettingsVersionsRequested != nullptr)
+          onCloudSettingsVersionsRequested(*song, screenAnchor);
+      });
+  libraryCatalogPanel.setCloudSettingsPendingProvider(
+      [this](const juce::String &songId) {
+        const auto song = std::find_if(
+            librarySongs.begin(), librarySongs.end(),
+            [&songId](const ImportedSongData &candidate) {
+              return candidate.id == songId;
+            });
+        return song != librarySongs.end() &&
+               cloudSettingsPendingProvider != nullptr &&
+               cloudSettingsPendingProvider(*song);
+      });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
     const auto trimmedSongId = songId.trim();
     if (trimmedSongId.isEmpty())
@@ -905,18 +936,7 @@ SongListPanel::SongListPanel() {
   setlistsPage.addAndMakeVisible(setlistsViewport);
 
   listContent.setOnSongActivated([this](int songIndex) {
-    if (!juce::isPositiveAndBelow(songIndex,
-                                  static_cast<int>(activeSongIndices.size())))
-      return;
-    setSelectedSongIndex(songIndex);
-
-    const int libraryIndex = activeSongIndices[static_cast<size_t>(songIndex)];
-    if (!juce::isPositiveAndBelow(libraryIndex,
-                                  static_cast<int>(librarySongs.size())))
-      return;
-    if (onSongActivated)
-      onSongActivated(librarySongs[static_cast<size_t>(libraryIndex)],
-                      songIndex);
+    activateSongAtIndex(songIndex);
   });
   listContent.setOnSongsReordered([this](int fromIndex, int toIndex) {
     if (activeSetlistId.isEmpty())
@@ -1019,6 +1039,21 @@ void SongListPanel::setOnCloudSearchRequested(
 void SongListPanel::setOnCloudDeleteRequested(
     std::function<void(const juce::String &, const juce::String &)> cb) {
   onCloudDeleteRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudSettingsSyncRequested(
+    std::function<void(const ImportedSongData &)> cb) {
+  onCloudSettingsSyncRequested = std::move(cb);
+}
+
+void SongListPanel::setOnCloudSettingsVersionsRequested(
+    std::function<void(const ImportedSongData &, juce::Rectangle<int>)> cb) {
+  onCloudSettingsVersionsRequested = std::move(cb);
+}
+
+void SongListPanel::setCloudSettingsPendingProvider(
+    std::function<bool(const ImportedSongData &)> provider) {
+  cloudSettingsPendingProvider = std::move(provider);
 }
 
 void SongListPanel::setCloudUploadProgress(const juce::String &songId,
@@ -1139,6 +1174,192 @@ juce::String SongListPanel::getActiveSetlistName() const {
 }
 
 void SongListPanel::refreshFromStorageView() { refreshFromStorage(); }
+
+void SongListPanel::activateSongAtIndex(const int songIndex) {
+  const auto *song = getSongPtr(songIndex);
+  if (song == nullptr)
+    return;
+  setSelectedSongIndex(songIndex);
+  if (onSongActivated)
+    onSongActivated(*song, songIndex);
+}
+
+void SongListPanel::showActiveSetlist() {
+  showSongsView(activeSetlistId);
+}
+
+void SongListPanel::showSongPicker(juce::Component &anchor,
+                                  std::function<void()> onAdd) {
+  class SongPicker final : public juce::Component,
+                           private juce::ListBoxModel {
+  public:
+    struct Entry {
+      juce::String id, title, artist, artworkPath;
+      bool current = false;
+    };
+
+    SongPicker(std::vector<Entry> items,
+               std::function<void(juce::String)> callback,
+               std::function<void()> addCallback)
+        : entries(std::move(items)), onSelect(std::move(callback)) {
+      setWantsKeyboardFocus(true);
+      addButton.setTooltip(L10n::tr("Biblioteca y setlists", "Library and setlists"));
+      addButton.setAccent(true);
+      addButton.onClick = [addCallback] {
+        dismissActiveActionPopover();
+        juce::MessageManager::callAsync(addCallback);
+      };
+      addAndMakeVisible(addButton);
+      list.setModel(this);
+      list.setRowHeight(48);
+      list.setColour(juce::ListBox::backgroundColourId,
+                     juce::Colours::transparentBlack);
+      list.setOutlineThickness(0);
+      list.getViewport()->setScrollBarsShown(true, false);
+      list.getViewport()->setScrollBarThickness(2);
+      list.getViewport()->setScrollOnDragMode(
+          juce::Viewport::ScrollOnDragMode::all);
+      addAndMakeVisible(list);
+      setSize(280, 44 + (entries.empty() ? 64 :
+                        juce::jmin(5, static_cast<int>(entries.size())) * 48));
+      for (int i = 0; i < getNumRows(); ++i)
+        if (entries[static_cast<size_t>(i)].current) {
+          list.selectRow(i);
+          break;
+        }
+    }
+
+    void paint(juce::Graphics &g) override {
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
+      g.drawText(L10n::tr("Canciones del setlist", "Setlist songs"),
+                 getLocalBounds().removeFromTop(44).withTrimmedRight(44).reduced(10, 0),
+                 juce::Justification::centredLeft);
+      if (entries.empty()) {
+        g.setColour(UITheme::textSecondary);
+        g.setFont(makeAppFont(13.0f));
+        g.drawFittedText(L10n::tr("No hay canciones en el setlist activo.",
+                                 "There are no songs in the active setlist."),
+                         getLocalBounds().withTrimmedTop(44).reduced(12),
+                         juce::Justification::centred, 2);
+      }
+    }
+
+    void resized() override {
+      addButton.setBounds(getWidth() - 44, 0, 44, 44);
+      list.setBounds(getLocalBounds().withTrimmedTop(44));
+      list.setVisible(!entries.empty());
+    }
+
+  private:
+    int getNumRows() override { return static_cast<int>(entries.size()); }
+
+    void paintListBoxItem(int index, juce::Graphics &g, int width,
+                          int height, bool selected) override {
+      if (!juce::isPositiveAndBelow(index, getNumRows()))
+        return;
+      const auto &entry = entries[static_cast<size_t>(index)];
+      auto row = juce::Rectangle<int>(width, height).reduced(4, 2);
+      g.setColour(entry.current || selected ? UITheme::accent.withAlpha(0.16f)
+                                            : UITheme::cardBg);
+      g.fillRoundedRectangle(row.toFloat(), 8.0f);
+      auto text = row.reduced(8, 5);
+      g.setColour(UITheme::textSecondary);
+      g.setFont(makeAppFont(12.0f));
+      g.drawText(juce::String(index + 1), text.removeFromLeft(20),
+                 juce::Justification::centredLeft);
+
+      const auto artworkBounds = text.removeFromLeft(32)
+                                     .withSizeKeepingCentre(32, 32).toFloat();
+      text.removeFromLeft(8);
+      const auto artworkKey = entry.artworkPath.toStdString();
+      auto cached = artworkCache.find(artworkKey);
+      if (cached == artworkCache.end()) {
+        juce::Image artwork;
+        if (juce::File::isAbsolutePath(entry.artworkPath)) {
+          const juce::File file(entry.artworkPath);
+          if (file.existsAsFile())
+            artwork = juce::ImageFileFormat::loadFrom(file);
+        }
+        cached = artworkCache.emplace(artworkKey, std::move(artwork)).first;
+      }
+      {
+        juce::Graphics::ScopedSaveState saved(g);
+        juce::Path clip;
+        clip.addRoundedRectangle(artworkBounds, 4.0f);
+        g.reduceClipRegion(clip);
+        if (cached->second.isValid()) {
+          g.drawImage(cached->second, artworkBounds,
+                       juce::RectanglePlacement::centred |
+                           juce::RectanglePlacement::fillDestination);
+        } else {
+          g.setColour(UITheme::cardBgHover);
+          g.fillRect(artworkBounds);
+          drawIconGlyph(g, artworkBounds.reduced(7.0f), IconGlyph::MusicNote,
+                         UITheme::textSecondary);
+        }
+      }
+      if (entry.current)
+        drawIconGlyph(g, text.removeFromRight(18).withSizeKeepingCentre(14, 14).toFloat(),
+                       IconGlyph::Check, UITheme::accent);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
+      g.drawFittedText(entry.title, text.removeFromTop(19),
+                       juce::Justification::centredLeft, 1);
+      g.setColour(UITheme::textSecondary);
+      g.setFont(makeAppFont(10.5f));
+      g.drawFittedText(entry.artist, text, juce::Justification::centredLeft, 1);
+    }
+
+    void listBoxItemClicked(int index, const juce::MouseEvent &) override {
+      choose(index);
+    }
+    void returnKeyPressed(int index) override { choose(index); }
+
+    void choose(int index) {
+      if (selectionStarted || !juce::isPositiveAndBelow(index, getNumRows()))
+        return;
+      selectionStarted = true;
+      const auto id = entries[static_cast<size_t>(index)].id;
+      auto callback = onSelect;
+      dismissActiveActionPopover();
+      // Finish the row event and dismiss the callout before loading a project.
+      juce::MessageManager::callAsync([callback, id] { callback(id); });
+    }
+
+    std::vector<Entry> entries;
+    std::unordered_map<std::string, juce::Image> artworkCache;
+    std::function<void(juce::String)> onSelect;
+    juce::ListBox list;
+    HeaderIconButton addButton{"addToSetlist", IconGlyph::Add};
+    bool selectionStarted = false;
+  };
+
+  std::vector<SongPicker::Entry> entries;
+  for (int i = 0; i < getSongCount(); ++i)
+    if (const auto *song = getSongPtr(i))
+      entries.push_back({song->id,
+                         song->title.isNotEmpty() ? song->title
+                             : L10n::tr("Canción sin título", "Untitled song"),
+                         song->artist, song->artworkPath.trim(),
+                         song->id == selectedSongId});
+
+  const auto setlistId = activeSetlistId;
+  auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  auto picker = std::make_unique<SongPicker>(
+      std::move(entries), [safeThis, setlistId](const juce::String &id) {
+        if (safeThis != nullptr && safeThis->activeSetlistId == setlistId)
+          safeThis->activateSongAtIndex(safeThis->getSongIndexById(id));
+      }, std::move(onAdd));
+  auto *parent = anchor.findParentComponentOfClass<juce::AudioProcessorEditor>();
+  if (parent == nullptr)
+    return;
+  ActionPopoverOptions options;
+  options.compactMaximumWidth = 280;
+  presentActionPopover(std::move(picker),
+                        parent->getLocalArea(&anchor, anchor.getLocalBounds()),
+                        parent, options);
+}
 
 void SongListPanel::openSongImportWizardFromExternal() { openSongImportWizard(); }
 

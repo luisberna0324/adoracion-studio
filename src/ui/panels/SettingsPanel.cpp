@@ -311,6 +311,26 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   addAndMakeVisible(closeButton);
 
+  diagnosticsCard = std::make_unique<SettingsCard>();
+  diagnosticsPage.addAndMakeVisible(*diagnosticsCard);
+  diagnosticsSectionLabel.setFont(
+      makeAppFont(useTouchOptimisedControls() ? 18.0f : 16.0f,
+                  AppFontWeight::SemiBold));
+  diagnosticsSectionLabel.setJustificationType(juce::Justification::centredLeft);
+  diagnosticsPage.addAndMakeVisible(diagnosticsSectionLabel);
+  diagnosticsHint.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f));
+  diagnosticsHint.setJustificationType(juce::Justification::topLeft);
+  diagnosticsHint.setMinimumHorizontalScale(1.0f);
+  diagnosticsPage.addAndMakeVisible(diagnosticsHint);
+  diagnosticsPrivacyHint.setFont(
+      makeAppFont(useTouchOptimisedControls() ? 13.0f : 12.0f));
+  diagnosticsPrivacyHint.setJustificationType(juce::Justification::topLeft);
+  diagnosticsPrivacyHint.setMinimumHorizontalScale(1.0f);
+  diagnosticsPage.addAndMakeVisible(diagnosticsPrivacyHint);
+  diagnosticsButton.onClick = [this] {
+    if (onShareAudioDiagnostics) onShareAudioDiagnostics();
+  };
+  diagnosticsPage.addAndMakeVisible(diagnosticsButton);
   if (deviceManager != nullptr) {
     audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
         *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, true, false, true, false);
@@ -330,6 +350,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   tabs.addTab(L10n::tr("Ruteo", "Routing"), juce::Colours::transparentBlack,
               &routingPage,
               false);
+  tabs.addTab(L10n::tr(u8"Diagnóstico", "Diagnostics"),
+              juce::Colours::transparentBlack, &diagnosticsPage, false);
   tabs.setTabBarDepth(useTouchOptimisedControls() ? 196 : 172);
   tabs.getTabbedButtonBar().setVisible(false);
   tabs.setTabBarDepth(0);
@@ -341,7 +363,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     }
   };
   settingsViewport.setViewedComponent(&tabs, false);
-  settingsViewport.setScrollBarsShown(false, true, false, false);
+  settingsViewport.setScrollBarsShown(true, false, true, false);
   settingsViewport.setScrollBarThickness(8);
   settingsViewport.setScrollOnDragMode(
       juce::Viewport::ScrollOnDragMode::all);
@@ -360,10 +382,12 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   configureTabButton(accountTabButton, 1);
   configureTabButton(audioTabButton, 2);
   configureTabButton(routingTabButton, 3);
+  configureTabButton(diagnosticsTabButton, 4);
   generalTabButton.setPosition(SettingsTabButton::Position::First);
   accountTabButton.setPosition(SettingsTabButton::Position::Middle);
   audioTabButton.setPosition(SettingsTabButton::Position::Middle);
-  routingTabButton.setPosition(SettingsTabButton::Position::Last);
+  routingTabButton.setPosition(SettingsTabButton::Position::Middle);
+  diagnosticsTabButton.setPosition(SettingsTabButton::Position::Last);
 
   appearanceCard = std::make_unique<SettingsCard>();
   playbackCard = std::make_unique<SettingsCard>();
@@ -589,8 +613,19 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(sessionQuotaLabel);
   sessionQuotaValue.setJustificationType(juce::Justification::centredLeft);
   sessionQuotaValue.setFont(makeAppFont(13.0f));
-  sessionQuotaValue.setMinimumHorizontalScale(0.75f);
   accountPage.addAndMakeVisible(sessionQuotaValue);
+  for (auto* label : {&sessionDevicesQuotaLabel, &sessionSongsQuotaLabel,
+                      &sessionStorageQuotaLabel}) {
+    label->setJustificationType(juce::Justification::centredLeft);
+    label->setFont(metadataFont);
+    accountPage.addAndMakeVisible(*label);
+  }
+  for (auto* value : {&sessionDevicesQuotaValue, &sessionSongsQuotaValue,
+                      &sessionStorageQuotaValue}) {
+    value->setJustificationType(juce::Justification::centredRight);
+    value->setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+    accountPage.addAndMakeVisible(*value);
+  }
 
   actionsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   actionsSectionLabel.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
@@ -629,12 +664,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingHintLabel.setFont(juce::FontOptions(12.0f));
   routingPage.addAndMakeVisible(routingHintLabel);
 
-  routingViewport.setViewedComponent(&routingContent, false);
-  // Routing can contain more category rows than the dialog height. Keep the
-  // vertical scrollbar visible so mouse, trackpad and touch users can reach
-  // every output assignment.
-  routingViewport.setScrollBarsShown(true, false, true, false);
-  routingPage.addAndMakeVisible(routingViewport);
+  routingPage.addAndMakeVisible(routingContent);
 
   themeBox.onChange = [this] {
     const auto id = themeBox.getSelectedId();
@@ -709,14 +739,16 @@ void SettingsPanel::resized() {
   if (compactNavigation) {
     auto nav = area.removeFromTop(70).reduced(12, 8);
     const int tabGap = 6;
-    const int tabWidth = (nav.getWidth() - tabGap * 3) / 4;
+    const int tabWidth = (nav.getWidth() - tabGap * 4) / 5;
     generalTabButton.setBounds(nav.removeFromLeft(tabWidth));
     nav.removeFromLeft(tabGap);
     accountTabButton.setBounds(nav.removeFromLeft(tabWidth));
     nav.removeFromLeft(tabGap);
     audioTabButton.setBounds(nav.removeFromLeft(tabWidth));
     nav.removeFromLeft(tabGap);
-    routingTabButton.setBounds(nav);
+    routingTabButton.setBounds(nav.removeFromLeft(tabWidth));
+    nav.removeFromLeft(tabGap);
+    diagnosticsTabButton.setBounds(nav);
   } else {
     auto rail = area.removeFromLeft(240);
     rail.reduce(16, 16);
@@ -729,8 +761,10 @@ void SettingsPanel::resized() {
     audioTabButton.setBounds(rail.removeFromTop(tabHeight));
     rail.removeFromTop(tabGap);
     routingTabButton.setBounds(rail.removeFromTop(tabHeight));
+    rail.removeFromTop(tabGap);
+    diagnosticsTabButton.setBounds(rail.removeFromTop(tabHeight));
   }
-  const bool needsVerticalScroll = useTouchOptimisedControls() || getHeight() < 760;
+  const bool needsVerticalScroll = useTouchOptimisedControls() || getHeight() < 820;
   settingsViewport.setBounds(area);
   const int contentHeight = needsVerticalScroll
                                 ? juce::jmax(area.getHeight(), 900)
@@ -741,6 +775,7 @@ void SettingsPanel::resized() {
   layoutAccountPage();
   layoutAudioPage();
   layoutRoutingPage();
+  layoutDiagnosticsPage();
 }
 
 void SettingsPanel::refreshThemeColours() {
@@ -758,7 +793,7 @@ void SettingsPanel::refreshThemeColours() {
                         UITheme::textPrimary);
   closeButton.setButtonText({});
   for (auto *button : {&generalTabButton, &accountTabButton, &audioTabButton,
-                       &routingTabButton}) {
+                       &routingTabButton, &diagnosticsTabButton}) {
     button->setColour(juce::TextButton::textColourOffId,
                       UITheme::textSecondary);
     button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
@@ -815,6 +850,9 @@ void SettingsPanel::refreshThemeColours() {
   sessionLicenseLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionVersionLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionQuotaLabel.setColour(juce::Label::textColourId, sessionSecondary);
+  sessionDevicesQuotaLabel.setColour(juce::Label::textColourId, sessionSecondary);
+  sessionSongsQuotaLabel.setColour(juce::Label::textColourId, sessionSecondary);
+  sessionStorageQuotaLabel.setColour(juce::Label::textColourId, sessionSecondary);
   sessionUidValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionEmailValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionPlanValue.setColour(juce::Label::textColourId, sessionPrimary);
@@ -825,6 +863,9 @@ void SettingsPanel::refreshThemeColours() {
           : sessionPrimary);
   sessionExpiresValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionQuotaValue.setColour(juce::Label::textColourId, sessionPrimary);
+  sessionDevicesQuotaValue.setColour(juce::Label::textColourId, sessionPrimary);
+  sessionSongsQuotaValue.setColour(juce::Label::textColourId, sessionPrimary);
+  sessionStorageQuotaValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionLicenseValue.setColour(juce::Label::textColourId, sessionPrimary);
   sessionVersionValue.setColour(juce::Label::textColourId, sessionPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, sessionPrimary);
@@ -835,6 +876,14 @@ void SettingsPanel::refreshThemeColours() {
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   routingHintLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  diagnosticsSectionLabel.setColour(juce::Label::textColourId,
+                                    UITheme::textPrimary);
+  diagnosticsHint.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  diagnosticsPrivacyHint.setColour(juce::Label::textColourId,
+                                   UITheme::textSecondary);
+  diagnosticsButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  diagnosticsButton.setColour(juce::TextButton::textColourOffId,
+                              UITheme::onAccent);
   for (auto &row : routingRows)
     row->refreshThemeColours();
   updateTabButtonStates(tabs.getCurrentTabIndex());
@@ -860,6 +909,7 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
   setState(accountTabButton, 1);
   setState(audioTabButton, 2);
   setState(routingTabButton, 3);
+  setState(diagnosticsTabButton, 4);
 }
 
 void SettingsPanel::applyLanguageTexts() {
@@ -870,6 +920,8 @@ void SettingsPanel::applyLanguageTexts() {
   accountTabButton.setButtonText(L10n::tr(u8"Sesión", "Account"));
   audioTabButton.setButtonText(L10n::tr(u8"Audio", "Audio"));
   routingTabButton.setButtonText(L10n::tr("Ruteo", "Routing"));
+  diagnosticsTabButton.setButtonText(
+      L10n::tr(u8"Diagnóstico", "Diagnostics"));
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
@@ -940,20 +992,39 @@ void SettingsPanel::applyLanguageTexts() {
   sessionLicenseCopyButton.setValueToCopy(session.licenseKey);
   sessionVersionValue.setText(juce::String(JucePlugin_VersionString),
                               juce::dontSendNotification);
-  sessionQuotaLabel.setText(L10n::tr("Cuotas", "Quotas"), juce::dontSendNotification);
+  sessionQuotaLabel.setText(L10n::tr("Cuotas de nube", "Cloud quotas"), juce::dontSendNotification);
   const auto formatBytes = [](juce::int64 bytes) {
     return bytes >= 1024LL * 1024LL * 1024LL
-      ? juce::String(bytes / (1024.0 * 1024.0 * 1024.0), 1) + " GB"
-      : juce::String(bytes / (1024.0 * 1024.0), 0) + " MB";
+      ? juce::String(static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0), 1) + " GB"
+      : juce::String(static_cast<double>(bytes) / (1024.0 * 1024.0), 0) + " MB";
   };
   if (session.maxStorageBytes > 0) {
     const auto account = session.isOverride ? L10n::tr("Cuenta de prueba", "Test account")
       : session.accountType.isNotEmpty() ? session.accountType : session.plan;
-    sessionQuotaValue.setText(account + " · " + L10n::tr("Dispositivos", "Devices") + ": " +
-        juce::String(session.usedDevices) + "/" + juce::String(session.maxDevices) + " · " +
-        L10n::tr("Almacenamiento", "Storage") + ": " + formatBytes(session.usedStorageBytes) + "/" + formatBytes(session.maxStorageBytes) + " · " +
-        L10n::tr("Canciones", "Songs") + ": " + juce::String(session.syncedSongCount) + "/" + juce::String(session.maxSyncedSongs), juce::dontSendNotification);
-  } else sessionQuotaValue.setText(L10n::tr("Consultando cuotas…", "Loading quotas…"), juce::dontSendNotification);
+    sessionQuotaValue.setText(account, juce::dontSendNotification);
+    sessionDevicesQuotaLabel.setText(L10n::tr("Dispositivos", "Devices"), juce::dontSendNotification);
+    sessionDevicesQuotaValue.setText(juce::String(session.usedDevices) + " / " +
+        juce::String(session.maxDevices), juce::dontSendNotification);
+    sessionSongsQuotaLabel.setText(L10n::tr("Canciones sincronizadas", "Synced songs"), juce::dontSendNotification);
+    sessionSongsQuotaValue.setText(juce::String(session.syncedSongCount) + " / " +
+        juce::String(session.maxSyncedSongs), juce::dontSendNotification);
+    sessionStorageQuotaLabel.setText(L10n::tr("Almacenamiento", "Storage"), juce::dontSendNotification);
+    sessionStorageQuotaValue.setText(formatBytes(session.usedStorageBytes) + " / " +
+        formatBytes(session.maxStorageBytes), juce::dontSendNotification);
+  } else {
+    sessionQuotaValue.setText(
+        quotaFetchFailed
+            ? L10n::tr("No se pudieron actualizar las cuotas.",
+                       "Couldn't refresh quotas.")
+            : L10n::tr("Consultando cuotas…", "Loading quotas…"),
+        juce::dontSendNotification);
+    sessionDevicesQuotaLabel.setText({}, juce::dontSendNotification);
+    sessionDevicesQuotaValue.setText({}, juce::dontSendNotification);
+    sessionSongsQuotaLabel.setText({}, juce::dontSendNotification);
+    sessionSongsQuotaValue.setText({}, juce::dontSendNotification);
+    sessionStorageQuotaLabel.setText({}, juce::dontSendNotification);
+    sessionStorageQuotaValue.setText({}, juce::dontSendNotification);
+  }
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
   actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
@@ -968,13 +1039,30 @@ void SettingsPanel::applyLanguageTexts() {
                           juce::dontSendNotification);
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
-  infoLinkButton.setButtonText(L10n::tr(u8"Saber más", "Learn more"));
+  infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
   routingHintLabel.setText(
       L10n::tr("Define salidas por categoría para el dispositivo actual.",
                "Set per-category outputs for the current device."),
       juce::dontSendNotification);
+  diagnosticsSectionLabel.setText(
+      L10n::tr(u8"Diagnóstico de reproducción", "Playback diagnostics"),
+      juce::dontSendNotification);
+  diagnosticsHint.setText(
+      L10n::tr(
+          u8"Genera un informe con los últimos 2 minutos de métricas técnicas para compartir con soporte.",
+          "Generate a report with the last 2 minutes of technical metrics to share with support."),
+      juce::dontSendNotification);
+  diagnosticsPrivacyHint.setText(
+      L10n::tr(
+          u8"Incluye un identificador de cuenta y datos del dispositivo. No incluye audio, credenciales, correos, nombres de canciones ni rutas locales.",
+          "Includes an account identifier and device data. It does not include audio, credentials, email addresses, song names, or local paths."),
+      juce::dontSendNotification);
+  diagnosticsButton.setButtonText(
+      diagnosticsBusy
+          ? L10n::tr(u8"Preparando…", "Preparing…")
+          : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
 }
 
 void SettingsPanel::layoutGeneralPage() {
@@ -1068,6 +1156,12 @@ void SettingsPanel::layoutAccountPage() {
   sessionVersionValue.setBounds({});
   sessionQuotaLabel.setBounds({});
   sessionQuotaValue.setBounds({});
+  sessionDevicesQuotaLabel.setBounds({});
+  sessionDevicesQuotaValue.setBounds({});
+  sessionSongsQuotaLabel.setBounds({});
+  sessionSongsQuotaValue.setBounds({});
+  sessionStorageQuotaLabel.setBounds({});
+  sessionStorageQuotaValue.setBounds({});
   actionsSectionLabel.setBounds({});
   actionLogoutLabel.setBounds({});
   actionPurgeLabel.setBounds({});
@@ -1083,10 +1177,12 @@ void SettingsPanel::layoutAccountPage() {
     actionsRowSeparator->setBounds({});
 
   const int pairH = labelH + valueH;
+  constexpr int quotaRowH = 30;
+  const int quotaH = labelH + valueH + quotaRowH * 3;
   const int sessionH = cardPaddingY + titleH + 16 + pairH + pairGap + pairH +
                        dividerMargin + 1 + dividerMargin + pairH + pairGap +
                        pairH + pairGap + pairH + pairGap + pairH + pairGap +
-                       pairH + cardPaddingY;
+                       quotaH + cardPaddingY;
   auto infoArea = area.removeFromTop(sessionH);
   if (sessionCard != nullptr)
     sessionCard->setBounds(infoArea);
@@ -1139,7 +1235,16 @@ void SettingsPanel::layoutAccountPage() {
   layoutInfoPair(info.removeFromTop(pairH), sessionVersionLabel,
                  sessionVersionValue);
   info.removeFromTop(pairGap);
-  layoutInfoPair(info.removeFromTop(pairH), sessionQuotaLabel, sessionQuotaValue);
+  sessionQuotaLabel.setBounds(info.removeFromTop(labelH));
+  sessionQuotaValue.setBounds(info.removeFromTop(valueH));
+  const auto layoutQuotaRow = [&](juce::Label& label, juce::Label& value) {
+    auto row = info.removeFromTop(quotaRowH);
+    value.setBounds(row.removeFromRight(180));
+    label.setBounds(row);
+  };
+  layoutQuotaRow(sessionDevicesQuotaLabel, sessionDevicesQuotaValue);
+  layoutQuotaRow(sessionSongsQuotaLabel, sessionSongsQuotaValue);
+  layoutQuotaRow(sessionStorageQuotaLabel, sessionStorageQuotaValue);
 
   const auto elideValue = [](juce::Label &label, const juce::String &fullText) {
     const auto availableWidth = static_cast<float>(label.getWidth());
@@ -1206,9 +1311,37 @@ juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
 }
 
 void SettingsPanel::layoutAudioPage() {
+  auto area = audioPage.getLocalBounds().reduced(18, 16);
   if (audioSetupComp != nullptr) {
-    audioSetupComp->setBounds(audioPage.getLocalBounds().reduced(18, 16));
+    audioSetupComp->setBounds(area);
   }
+}
+
+void SettingsPanel::layoutDiagnosticsPage() {
+  auto area = diagnosticsPage.getLocalBounds().reduced(
+      useTouchOptimisedControls() ? 28 : 22,
+      useTouchOptimisedControls() ? 24 : 18);
+  const int cardHeight = useTouchOptimisedControls() ? 252 : 218;
+  const int cardWidth = juce::jmin(area.getWidth(), 720);
+  const auto cardBounds = area.removeFromTop(cardHeight).withWidth(cardWidth);
+  if (diagnosticsCard != nullptr)
+    diagnosticsCard->setBounds(cardBounds);
+
+  auto content = cardBounds.reduced(useTouchOptimisedControls() ? 24 : 22,
+                                    useTouchOptimisedControls() ? 20 : 18);
+  diagnosticsSectionLabel.setBounds(content.removeFromTop(28));
+  content.removeFromTop(10);
+  diagnosticsHint.setBounds(content.removeFromTop(
+      useTouchOptimisedControls() ? 52 : 42));
+  content.removeFromTop(6);
+  diagnosticsPrivacyHint.setBounds(content.removeFromTop(
+      useTouchOptimisedControls() ? 64 : 52));
+  content.removeFromTop(12);
+  const int buttonWidth = juce::jmin(useTouchOptimisedControls() ? 280 : 240,
+                                    content.getWidth());
+  diagnosticsButton.setBounds(
+      content.removeFromTop(useTouchOptimisedControls() ? 46 : 42)
+          .withWidth(buttonWidth));
 }
 
 void SettingsPanel::layoutRoutingPage() {
@@ -1222,17 +1355,15 @@ void SettingsPanel::layoutRoutingPage() {
   routingHintLabel.setBounds(hintArea);
   area.removeFromBottom(6);
   
-  auto listArea = area;
-  routingViewport.setBounds(listArea);
-  
+  const auto listArea = area;
   const int rowH = useTouchOptimisedControls() ? 50 : 42;
   int y = 0;
-  const int contentW = juce::jmax(1, routingViewport.getWidth());
+  const int contentW = juce::jmax(1, listArea.getWidth());
   for (auto &rowComp : routingRows) {
     rowComp->setBounds(0, y, contentW, rowH);
     y += rowH;
   }
-  routingContent.setSize(contentW, juce::jmax(y + 2, routingViewport.getHeight()));
+  routingContent.setBounds(listArea.withHeight(juce::jmax(y + 2, listArea.getHeight())));
 }
 
 SettingsPanel::~SettingsPanel() {
@@ -1240,8 +1371,24 @@ SettingsPanel::~SettingsPanel() {
     deviceManager->removeChangeListener(this);
 }
 
+void SettingsPanel::setDiagnosticsBusy(const bool busy) {
+  diagnosticsBusy = busy;
+  diagnosticsButton.setEnabled(!busy);
+  diagnosticsButton.setButtonText(
+      diagnosticsBusy
+          ? L10n::tr(u8"Preparando…", "Preparing…")
+          : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
+}
+
 void SettingsPanel::updateSessionSummary(SessionSummary sessionSummary) {
+  quotaFetchFailed = false;
   session = std::move(sessionSummary);
+  applyLanguageTexts();
+  resized();
+}
+
+void SettingsPanel::setQuotaUnavailable() {
+  quotaFetchFailed = true;
   applyLanguageTexts();
   resized();
 }

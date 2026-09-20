@@ -1,6 +1,8 @@
 #include "AppSettings.h"
 #include "SongData.h"
 
+#include <atomic>
+
 namespace {
 juce::File getMtControlsDirectory() {
   auto dir =
@@ -21,6 +23,19 @@ constexpr const char *kMetronomeClickStyleKey = "metronomeClickStyle";
 constexpr int kDeprecatedClassicThemeId = 1;
 constexpr int kNightGreenThemeId = 2;
 constexpr int kStudioAmberThemeId = 3;
+
+// Localization helpers are called from high-frequency paint paths (notably
+// the scrolling waveform). Keep the persisted language in memory after the
+// first lookup so repainting never reopens and reparses app_settings.json.
+std::atomic<int> cachedLanguage{-1};
+
+int encodeLanguage(const AppLanguage language) noexcept {
+  return language == AppLanguage::English ? 1 : 0;
+}
+
+AppLanguage decodeLanguage(const int language) noexcept {
+  return language == 1 ? AppLanguage::English : AppLanguage::Spanish;
+}
 
 int normalizeThemePresetId(const int rawId) {
   if (rawId == kDeprecatedClassicThemeId)
@@ -289,21 +304,28 @@ void AppSettings::setPadsCrossfadePreset(const PadsCrossfadePreset preset) {
 }
 
 AppLanguage AppSettings::getLanguage() {
-  const auto f = getSettingsFile();
-  if (!f.existsAsFile())
-    return kDefaultLanguage;
+  const int cached = cachedLanguage.load(std::memory_order_acquire);
+  if (cached >= 0)
+    return decodeLanguage(cached);
 
-  const auto parsed = juce::JSON::parse(f);
-  if (const auto *o = parsed.getDynamicObject()) {
-    if (o->hasProperty("language")) {
-      const auto raw = o->getProperty("language").toString().trim().toLowerCase();
-      if (raw == "en")
-        return AppLanguage::English;
-      if (raw == "es")
-        return AppLanguage::Spanish;
+  auto language = kDefaultLanguage;
+  const auto f = getSettingsFile();
+  if (f.existsAsFile()) {
+    const auto parsed = juce::JSON::parse(f);
+    if (const auto *o = parsed.getDynamicObject()) {
+      if (o->hasProperty("language")) {
+        const auto raw =
+            o->getProperty("language").toString().trim().toLowerCase();
+        if (raw == "en")
+          language = AppLanguage::English;
+        else if (raw == "es")
+          language = AppLanguage::Spanish;
+      }
     }
   }
-  return kDefaultLanguage;
+
+  cachedLanguage.store(encodeLanguage(language), std::memory_order_release);
+  return language;
 }
 
 void AppSettings::setLanguage(const AppLanguage value) {
@@ -320,7 +342,8 @@ void AppSettings::setLanguage(const AppLanguage value) {
                                                  : juce::var("es"));
   }
 
-  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+  if (getSettingsFile().replaceWithText(juce::JSON::toString(root, true)))
+    cachedLanguage.store(encodeLanguage(value), std::memory_order_release);
 }
 
 MetronomeClickStyle AppSettings::getMetronomeClickStyle() {

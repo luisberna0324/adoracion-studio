@@ -34,6 +34,8 @@ struct CloudUploadRequest {
   CloudProjectDescriptor descriptor;
   int baseRevision = 0;
   std::vector<CloudUploadObject> objects;
+  /** Private temporary directory retained until the asynchronous upload ends. */
+  juce::File stagingDirectory;
 };
 
 struct CloudUploadResult {

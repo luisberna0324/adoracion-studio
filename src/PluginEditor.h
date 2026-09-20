@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 #include "data/SessionPersistence.h"
 #include "data/CloudLibraryClient.h"
+#include "data/CloudSettingsClient.h"
 #include "data/SongData.h"
 #include "data/SongSyncService.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
@@ -21,6 +22,7 @@ class PadsHandlePanel;
 class PadsOverlayFrame;
 class LocalAuthCallbackServer;
 class SettingsPanel;
+class SettingsVersionsSheet;
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
                                        private juce::Timer {
@@ -48,6 +50,26 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  bool captureCloudSettings(const ImportedSongData &song,
+                            ProjectSongSettings &outSettings);
+  bool applyCloudSettings(const ImportedSongData &song,
+                          const ProjectSongSettings &settings);
+  bool hasPendingCloudSettings(const ImportedSongData &song);
+  void refreshCloudSettingsBaselines(
+      const std::vector<CloudSongSummary> &cloudSongs);
+  void rememberCloudSettingsBaseline(const juce::String &projectId,
+                                     int revision,
+                                     const juce::String &snapshotHash,
+                                     const ProjectSongSettings &settings,
+                                     const std::vector<CloudSettingsVersion> &knownVersions = {});
+  void syncCloudSettings(const ImportedSongData &song);
+  void showCloudSettingsVersions(const ImportedSongData &song, juce::Rectangle<int> screenAnchor);
+  void showCloudSettingsVersionConfirmation(
+      const ImportedSongData &song, const CloudSettingsVersion &version);
+  void loadCloudSettingsVersions(const ImportedSongData &song,
+                                juce::Component::SafePointer<SettingsVersionsSheet> sheet);
+  juce::Component::SafePointer<SettingsVersionsSheet> cloudSettingsSheet;
+  std::unique_ptr<juce::Component> cloudSettingsSheetOverlay;
   ChannelStripLookAndFeel stripLookAndFeel;
 
   std::unique_ptr<TopBar> topBar;
@@ -90,9 +112,12 @@ private:
   SessionSummary activeSession;
   std::unique_ptr<SongSyncService> songSyncService;
   std::unique_ptr<CloudLibraryClient> cloudLibraryClient;
+  std::unique_ptr<CloudSettingsClient> cloudSettingsClient;
   std::unordered_set<std::string> cloudUploadsInProgress;
   std::unordered_set<std::string> cloudDownloadsInProgress;
   std::unordered_set<std::string> cloudDeletesInProgress;
+  std::unordered_set<std::string> cloudSettingsInProgress;
+  std::unordered_set<std::string> cloudSettingsStatusInProgress;
   uint64_t cloudLibrarySearchGeneration = 0;
   bool mainUiInitialized = false;
   ResponsiveLayoutProfile responsiveLayoutProfile =
@@ -125,6 +150,7 @@ private:
   bool midiLearnActive = false;
   int midiLearnPendingTargetId = -1;
   bool songLoadBusy = false;
+  bool suppressPersistenceBeforeNextSongLoad = false;
   bool mixExportBusy = false;
   bool projectSaveBusy = false;
   // P0.5 (perf): generation token para descartar resultados tardíos de
@@ -132,6 +158,12 @@ private:
   // canción dos veces seguidas, solo el último set de bins debe ganar.
   std::atomic<uint64_t> waveformGeneration{0};
   std::unique_ptr<juce::FileChooser> mixExportFileChooser;
+  juce::ScopedMessageBox mixExportShareSheet;
+  juce::ScopedMessageBox diagnosticShareSheet;
+  std::unique_ptr<juce::FileChooser> diagnosticFileChooser;
+  bool diagnosticExportBusy = false;
+  void shareAudioDiagnostics();
+  juce::File pendingSharedMixExport;
   bool deferredStartupSongLoadPending = false;
   int deferredStartupSongIndex = -1;
   juce::int64 deferredStartupSongLoadAtMs = 0;
@@ -187,7 +219,9 @@ private:
   void applyPersistedSnapshotToActive(const PersistedSessionSnapshot &snap);
   void saveSessionSnapshotToDisk();
   void beginExportCurrentSongMix(const juce::String &formatExtension);
-  void runSongMixExport(const juce::File &outputFile);
+  void runSongMixExport(const juce::File &outputFile,
+                        bool shareWhenComplete = false);
+  void presentExportShareSheet(const juce::File &outputFile);
   void saveCurrentProject();
   void savePortableProjects(std::vector<juce::File> files,
                             bool showCompletionMessage,

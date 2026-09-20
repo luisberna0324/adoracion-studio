@@ -9,7 +9,23 @@ tags: [auth, ios, google, oauth, aswebauthenticationsession, firebase]
 timestamp: 2026-09-05T14:55:00Z
 ---
 
-# Auth — Google OAuth nativo en iOS y macOS
+# Auth — Google OAuth en iOS, Android y escritorio
+
+## Retorno en Android
+
+Android usa `NativeAuthSession::start` con `playworship://auth/callback`.
+Abre el navegador externo y recibe el resultado mediante el intent VIEW de
+`JuceActivity`, que llama al puente JNI `onAuthCallback`. No usa el servidor
+HTTP de loopback de escritorio. La actividad es `singleTask` para recuperar
+la instancia existente al volver desde el navegador. El puente valida scheme,
+host y path antes de consumir el callback pendiente y lo entrega en el message
+thread; el editor valida el state y lo consume una sola vez.
+
+Si no se puede abrir el navegador se descarta el callback pendiente. Los errores
+OAuth del backend se muestran como un fallo recuperable del inicio de sesion.
+Los logs registran apertura, recepcion y rechazo de state sin incluir la URL ni
+credenciales. Si Android mata el proceso mientras el navegador esta abierto,
+se debe iniciar un nuevo intento: no se restaura el state pendiente.
 
 Esta página es el contrato entre `juce-controls-plugin`
 (`src/platform/NativeAuthSession.{h,cpp,mm}`, `PluginEditor::launchExternalLogin`)
@@ -77,7 +93,7 @@ Google en el primer frame.
 
 Definida en `isAllowedRedirectUri` (idéntica a la de `app/login/page.tsx`):
 
-- `playworship://auth/callback` (iOS)
+- `playworship://auth/callback` (iOS y Android)
 - `http://127.0.0.1:<port>/auth/callback` (desktop, port efímero)
 - `http://localhost:<port>/auth/callback` (desktop)
 
@@ -146,11 +162,10 @@ un 302 al `redirect_uri` original con:
 - `state=<authExpectedState original>` (para que el plugin no rechace
   la respuesta por state mismatch)
 
-El plugin trata `error` como un callback URL con sesión ausente y
-muestra "Autenticacion invalida. Reintenta." (mismo mensaje que ya
-usa para state mismatch). Mantener este comportamiento evita agregar
-parsing específico para `error`/`message` y simplifica la rama de
-recuperación: el usuario vuelve a tocar **Iniciar sesión**.
+El plugin valida primero el state y, si el callback contiene `error`, muestra
+"No se pudo completar el inicio de sesion con Google. Reintenta." sin aplicar
+una sesion parcial. Un state incorrecto muestra "Autenticacion invalida.
+Reintenta.". El usuario puede volver a tocar **Iniciar sesión**.
 
 ## Lo que NO hace este flujo
 
@@ -182,5 +197,7 @@ desde el primer frame toda la resolucion disponible.
 
 El contenedor de configuracion usa desplazamiento vertical para sus cuatro
 secciones (General, Sesion, Audio y Ruteo) cuando el dispositivo es tactil o la
-ventana tiene menos de `760 px` de alto. El desplazamiento se hace sobre el
+ventana tiene menos de `820 px` de alto. El desplazamiento se hace sobre el
 contenido de la pestaña y conserva fijas la cabecera, el cierre y la navegacion.
+Ruteo comparte ese viewport principal para que rueda/trackpad y arrastre con
+clic o toque sostenido no compitan con un contenedor anidado.

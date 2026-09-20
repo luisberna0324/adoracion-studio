@@ -91,6 +91,47 @@ void testGuideAnnouncementTiming() {
          "utility cues are announced at section entry");
 }
 
+void testSlowlyBuildGuideFallback() {
+  auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                       .getNonexistentChildFile("playworship-guide-test", {}, false);
+  expect(directory.createDirectory().wasOk(),
+         "guide fallback test creates its temporary directory");
+
+  const auto buildSample = directory.getChildFile("build.wav");
+  juce::WavAudioFormat wav;
+  std::unique_ptr<juce::OutputStream> output = buildSample.createOutputStream();
+  expect(output != nullptr, "guide fallback test creates a WAV output");
+  const auto writerOptions = juce::AudioFormatWriterOptions{}
+                                 .withSampleRate(44100.0)
+                                 .withNumChannels(1)
+                                 .withBitsPerSample(16);
+  auto writer = wav.createWriterFor(output, writerOptions);
+  expect(writer != nullptr, "guide fallback test creates a WAV writer");
+  juce::AudioBuffer<float> sample(1, 64);
+  sample.clear();
+  sample.setSample(0, 0, 0.5f);
+  expect(writer->writeFromAudioSampleBuffer(sample, 0, sample.getNumSamples()),
+         "guide fallback test writes the Build sample");
+  writer.reset();
+
+  juce::AudioFormatManager formats;
+  formats.registerBasicFormats();
+  DynamicGuideEngine guide;
+  guide.prepare(44100.0);
+  juce::String error;
+  expect(guide.loadGuideDirectories({directory}, formats, &error),
+         "guide fallback test loads its sample");
+  const int buildTrigger = guide.resolveTriggerId("Build");
+  expect(buildTrigger >= 0, "Build resolves to a guide trigger");
+  expect(guide.resolveTriggerId("Slowly Build") == buildTrigger,
+         "Slowly Build falls back to Build when its recording is absent");
+  expect(guide.resolveTriggerId("Sube lento") == buildTrigger,
+         "the localized Sube lento label uses the same fallback");
+
+  expect(directory.deleteRecursively(),
+         "guide fallback test removes its temporary directory");
+}
+
 void testGuideTriggersSortByActualAnnouncementTime() {
   const std::vector<SongMixExportGuideSection> sections{
       {"4", 9.0},
@@ -190,6 +231,7 @@ int main() {
   testFastTempoTimeline();
   testTempoNormalization();
   testGuideAnnouncementTiming();
+  testSlowlyBuildGuideFallback();
   testGuideTriggersSortByActualAnnouncementTime();
   testCopySourceRangesRespectInsertedClipBoundaries();
   std::cout << "song mix export timeline tests passed\n";

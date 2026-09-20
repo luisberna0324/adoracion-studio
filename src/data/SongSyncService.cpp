@@ -2,10 +2,14 @@
 
 #include "ProjectStore.h"
 #include "SongLibraryStore.h"
+#include "telemetry/Telemetry.h"
 
 namespace {
 void deliver(SongSyncService::CompletionCallback callback, ImportedSongData song,
              CloudTransferError error) {
+  if (error.code.isNotEmpty() && error.code != "NO_CHANGES")
+    playworship::telemetry::capture(
+        playworship::telemetry::Incident::cloudSyncFailed);
   if (!callback) return;
   juce::MessageManager::callAsync([done = std::move(callback), result = std::move(song), failure = std::move(error)]() mutable {
     done(std::move(result), std::move(failure));
@@ -27,7 +31,7 @@ CloudTransferError localError(const juce::String& message) {
 
 }  // namespace
 
-SongSyncService::SongSyncService() = default;
+SongSyncService::SongSyncService() { CloudProjectArchive::cleanupStaleUploadStaging(); }
 SongSyncService::~SongSyncService() { cancelAll(); }
 void SongSyncService::cancelAll() { archivePool.removeAllJobs(true, 3000); transfer.cancelAll(); }
 
@@ -55,25 +59,46 @@ void SongSyncService::upload(CloudTransferCredentials credentials, juce::File pr
                                                                   const juce::String& phase) {
                                               deliverProgress(progress, {phase, {}, 0, 100, fraction});
                                             })) {
+        CloudProjectArchive::cleanupUploadStaging(request.stagingDirectory);
         deliver(std::move(callback), {}, localError(error)); return jobHasFinished;
       }
       const auto projectId = document.song.projectId;
+      const auto stagingDirectory = request.stagingDirectory;
       const auto uploadedSong = document.song;
       const auto fingerprint = CloudSyncJson::fingerprint(request.descriptor);
       if (link.remoteSongId.isNotEmpty() && link.descriptorFingerprint.isNotEmpty() &&
           link.descriptorFingerprint == fingerprint) {
         link.lastSyncedAtMs = juce::Time::currentTimeMillis();
         CloudSyncIndexStore::upsert(std::move(link));
+        CloudProjectArchive::cleanupUploadStaging(stagingDirectory);
         deliver(std::move(callback), {}, {0, "NO_CHANGES", "Sin nada que sincronizar."});
         return jobHasFinished;
       }
       auto completeUpload = [projectId, uploadedSong, fingerprint,
                              downloadedAtMs = link.downloadedAtMs,
+                             settingsStateKnown = link.settingsStateKnown,
+                             settingsRevision = link.settingsRevision,
+                             settingsHash = link.settingsHash,
+                             settingsJson = link.settingsJson,
+                             knownSettingsFingerprints = link.knownSettingsFingerprints,
+                             stagingDirectory,
                              done = std::move(callback)](CloudUploadResult result, CloudTransferError failure) mutable {
+            CloudProjectArchive::cleanupUploadStaging(stagingDirectory);
             if (failure.code.isNotEmpty()) { deliver(std::move(done), {}, std::move(failure)); return; }
             const auto now = juce::Time::currentTimeMillis();
-            if (!CloudSyncIndexStore::upsert(
-                    {projectId, result.songId, result.revision, downloadedAtMs, now, fingerprint})) {
+            CloudProjectLink updatedLink;
+            updatedLink.projectId = projectId;
+            updatedLink.remoteSongId = result.songId;
+            updatedLink.remoteRevision = result.revision;
+            updatedLink.downloadedAtMs = downloadedAtMs;
+            updatedLink.lastSyncedAtMs = now;
+            updatedLink.descriptorFingerprint = fingerprint;
+            updatedLink.settingsStateKnown = settingsStateKnown;
+            updatedLink.settingsRevision = settingsRevision;
+            updatedLink.settingsHash = settingsHash;
+            updatedLink.settingsJson = settingsJson;
+            updatedLink.knownSettingsFingerprints = knownSettingsFingerprints;
+            if (!CloudSyncIndexStore::upsert(std::move(updatedLink))) {
               deliver(std::move(done), {}, localError("Couldn't save cloud sync link.")); return;
             }
             deliver(std::move(done), uploadedSong, {});
@@ -143,9 +168,15 @@ void SongSyncService::download(CloudTransferCredentials credentials, juce::Strin
             if (!waveformBins.empty())
               SongLibraryStore::saveWaveformCache(song.id, waveformBins);
             const auto now = juce::Time::currentTimeMillis();
-            if (!CloudSyncIndexStore::upsert(
-                    {song.projectId, remoteSongId, downloaded.descriptor.revision, now, now,
-                     CloudSyncJson::fingerprint(downloaded.descriptor)})) {
+            CloudProjectLink downloadedLink;
+            downloadedLink.projectId = song.projectId;
+            downloadedLink.remoteSongId = remoteSongId;
+            downloadedLink.remoteRevision = downloaded.descriptor.revision;
+            downloadedLink.downloadedAtMs = now;
+            downloadedLink.lastSyncedAtMs = now;
+            downloadedLink.descriptorFingerprint =
+                CloudSyncJson::fingerprint(downloaded.descriptor);
+            if (!CloudSyncIndexStore::upsert(std::move(downloadedLink))) {
               deliver(std::move(callback), {}, localError("Couldn't save cloud sync link.")); return jobHasFinished;
             }
             if (legacyDownloadDirectory.isDirectory())

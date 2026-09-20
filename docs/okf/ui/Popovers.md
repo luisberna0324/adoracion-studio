@@ -48,12 +48,32 @@ una breve descripcion y cierra la superficie antes de iniciar la exportacion.
 No usa `PopupMenu`, para conservar la misma flecha, area segura y estilo en
 telefono, tablet y escritorio.
 
-En telefono, tocar el artwork del `TopBar` abre un popover informativo anclado
-a la portada. La superficie muestra portada, titulo, artista, tono activo, BPM,
-compas, duracion y datos disponibles del proyecto sin ampliar la barra de
-transporte.
+En telefono, tocar la tarjeta de portada, titulo y artista del `TopBar` abre
+el selector del setlist activo mediante `SongListPanel::showSongPicker()`,
+anclado a la tarjeta completa. Reemplaza al popover informativo de la cancion
+y al boton separado de nota musical. Muestra
+numero, artwork de 32 pt, titulo y artista, con una marca en la seleccion actual.
+Si falta la portada, muestra un icono musical; las imagenes se reutilizan durante
+la apertura del selector. Tiene ancho de 280 pt, encabezado de 44 pt y altura
+para hasta cinco filas de 48 pt; el presentador limita
+ambas dimensiones al area segura y la lista permite scroll tactil. No ofrece
+edicion ni reordenamiento. Elegir una fila cierra el popover antes de cargar
+el proyecto por el mismo camino que la lista principal, resolviendo la cancion
+por ID. Un setlist vacio muestra un mensaje sin acciones de carga.
+El encabezado incluye un boton `+` con area tactil de 44 pt, disponible incluso
+con el setlist vacio. Cierra el selector y abre el panel de Biblioteca y setlists;
+en iPhone y telefonos Android este panel usa orientacion vertical y restaura
+landscape al cerrarse.
 
 ## Integracion
+
+La [hoja de versiones de ajustes](SettingsVersionsSheet.md) no usa este
+presentador: es una tarjeta lateral plana, sin flecha, colocada junto a su
+origen mediante una capa transparente. Consume el clic exterior para que el
+cierre no active el mixer debajo. Es una elección con confirmación posterior,
+no un panel de edición inmediata. Al activarla, el callout de acciones de la
+canción permanece visible y su rectángulo se usa como ancla lateral; sólo esa
+acción opta por no cerrar el callout al ejecutarse.
 
 No llamar directamente a `juce::CallOutBox::launchAsynchronously()` desde un
 panel. Los menus simples pueden continuar usando `juce::PopupMenu`, pero deben

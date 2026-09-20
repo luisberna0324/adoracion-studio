@@ -140,6 +140,7 @@ juce::CallOutBox &presentActionPopover(
     juce::Component *parentComponent,
     ActionPopoverOptions options = {});
 void dismissActiveActionPopover();
+juce::Rectangle<int> getActiveActionPopoverScreenBounds();
 void drawStudioBackground(juce::Graphics &g, juce::Rectangle<float> area);
 bool useTouchOptimisedControls();
 bool isPhoneSizedTouchLayout(const juce::Component &component);

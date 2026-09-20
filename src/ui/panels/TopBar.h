@@ -31,7 +31,7 @@ public:
   void setOnSettings(std::function<void()> cb);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
-  void setOnPhoneLibrary(std::function<void()> cb);
+  void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
   void setOnPhonePads(std::function<void()> cb);
   void setPhoneOverlayStates(bool libraryOpen, bool padsOpen);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
@@ -54,7 +54,6 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
-  void mouseDown(const juce::MouseEvent &event) override;
   void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
@@ -113,7 +112,12 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
-  IconButton phoneLibraryButton;
+  // The parent paints the song card; this button supplies touch/keyboard access.
+  class SongPickerButton final : public juce::Button {
+  public:
+    SongPickerButton() : juce::Button("songPicker") {}
+    void paintButton(juce::Graphics &, bool, bool) override {}
+  } songPickerButton;
   IconButton phonePadsButton;
 
   ClickableLabel timeDisplay;
@@ -131,7 +135,7 @@ private:
   std::function<void()> onSettings;
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
-  std::function<void()> onPhoneLibrary;
+  std::function<void(juce::Component &)> onPhoneLibrary;
   std::function<void()> onPhonePads;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
@@ -151,6 +155,8 @@ private:
   juce::Image songArtwork;
   juce::String songTitleText;
   juce::String songArtistText;
+  double songTextScrollStartMs = 0.0;
+  bool songTextOverflows = false;
   juce::String lastSongIdentity;
   juce::String lastArtworkPath;
   juce::Colour songAccentColour = UITheme::accent;
@@ -192,7 +198,6 @@ private:
   void showMetronomePopover();
   void showKeyPopover();
   void showSongWindowPopover();
-  void showSongInfoPopover();
   void toggleWindowMode();
   void openSettingsPanel();
   void showTabletMorePopover();

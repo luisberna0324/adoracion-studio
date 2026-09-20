@@ -258,7 +258,7 @@ bool isPhoneSizedTouchLayout(const juce::Component &component) {
   const auto bounds = component.getLocalBounds();
   int shortSide = juce::jmin(bounds.getWidth(), bounds.getHeight());
 
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS
   const auto deviceDescription = juce::SystemStats::getDeviceDescription();
   if (deviceDescription.containsIgnoreCase("iPhone"))
     return true;
@@ -275,6 +275,12 @@ bool isPhoneSizedTouchLayout(const juce::Component &component) {
   // Fallback for older mobile peers that report physical pixels with scale 1.
   if (shortSide <= 1320)
     return true;
+#elif JUCE_ANDROID
+  // JUCE exposes Android component bounds in logical pixels (physical pixels
+  // divided by DisplayMetrics.density). Dividing by the display scale again
+  // classifies normal tablets as phones; use the documented 600 dp breakpoint
+  // directly on Android.
+  return shortSide < 600;
 #endif
 
   return shortSide < 600;
@@ -530,6 +536,12 @@ void dismissActiveActionPopover() {
     activeActionPopover->dismiss();
     activeActionPopover = nullptr;
   }
+}
+
+juce::Rectangle<int> getActiveActionPopoverScreenBounds() {
+  return activeActionPopover != nullptr
+             ? activeActionPopover->getScreenBounds()
+             : juce::Rectangle<int>{};
 }
 
 juce::CallOutBox &presentActionPopover(

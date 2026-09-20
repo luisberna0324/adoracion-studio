@@ -8,8 +8,19 @@ timestamp: 2026-09-15T00:00:00-03:00
 
 # Mobile Layout
 
-La vista de performance en telefonos es exclusivamente horizontal. iOS admite
-`LandscapeLeft` y `LandscapeRight`; Android declara `screenOrientation=landscape`.
+La vista de performance en telefonos es horizontal. En iPhone y Android,
+el runtime habilita `upright` para Biblioteca y setlists mientras su panel
+esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
+orientacion inicial se restringe a landscape. En iPhone, el plist admite
+tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
+y JUCE usa `Activity.setRequestedOrientation` para cambiarla durante la sesion.
+El manifest maneja `orientation|screenSize` mediante `configChanges`, sin
+recrear la actividad al girar. Las tablets conservan la vista horizontal.
+La ventana Android entra en fullscreen despues de asignar contenido y limites
+iniciales: cambiar sus limites despues desactiva el fullscreen del peer nativo.
+El contenido no redimensiona la ventana. Al cambiar el display se reafirma
+fullscreen y el layout nativo `MATCH_PARENT` propaga la nueva medida a la
+ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
 
 ## Deteccion
 
@@ -57,22 +68,40 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - El toggle contextual `Fade Down/Fade Up` aparece junto a `Siguiente`. El
   tiempo usa dos lineas (`actual /` y `total`) con tipografia reducida.
 - El bloque de metronomo conserva siempre en telefono tanto el boton de BPM
-  como el toggle de click. La falta de espacio central puede omitir el artwork
-  en el rango mas pequeno, pero no convierte el bloque en un icono sin BPM.
-- El artwork cuadrado de la cancion activa aparece inmediatamente despues del
-  toggle de fade, sin mostrar titulo ni artista. Al tocarlo abre un popover con
-  portada, titulo, artista, tono activo, BPM, compas, duracion y datos del
-  proyecto disponibles.
-- El setlist lateral se reemplaza por botones compactos de Biblioteca y Pads,
-  ubicados inmediatamente a la izquierda del cronometro. Ambos son controles
-  reales del `TopBar`, comparten exactamente el estilo y la geometria del resto
-  del header, conservan su posicion durante relayouts y reflejan el overlay
-  activo sin ocultarse entre aperturas. Biblioteca abre un overlay que ocupa
-  toda el area segura sin reducir ni desplazar
-  el mixer; Pads usa la misma presentacion para su superficie de interpretacion.
+  como el toggle de click.
+- La tarjeta de cancion activa aparece inmediatamente despues del toggle de
+  fade con portada, titulo y artista, usando la presentacion de escritorio
+  ajustada al ancho disponible. Toda la tarjeta es un boton accesible y abre
+  el popover con flecha del setlist activo, anclado a la tarjeta. Elegir una
+  fila carga esa cancion y cierra el popover; el selector tambien esta disponible
+  sin una cancion cargada. Se elimina el boton separado de nota musical.
+- En la tarjeta del `TopBar`, titulo y artista mantienen su tamano de fuente.
+  Cada linea que excede el ancho se desplaza de lado a lado con aceleracion
+  suave y una pausa de 1,5 segundos en cada extremo; las lineas que caben
+  permanecen quietas. No se comprime el texto ni se agregan puntos suspensivos.
+  El recorrido reinicia al cambiar la cancion o el tamano de la tarjeta y se
+  repinta con el timer de UI existente, sin intervenir en el audio. Este
+  comportamiento tambien aplica a la tarjeta de escritorio y tablet.
+- Pads permanece inmediatamente a la izquierda del cronometro y conserva
+  su overlay de interpretacion.
+- El `+` del encabezado del selector abre Biblioteca y setlists. En telefono gira
+  a vertical y ocupa toda el area segura. El titulo, volver, Biblioteca, Agregar
+  y cerrar comparten una sola fila; las acciones conservan botones circulares
+  de 40 x 40 con iconos, sin etiquetas. En Biblioteca, abrir proyecto
+  y crear cancion tambien se ubican en el encabezado como botones circulares;
+  el buscador ocupa todo el ancho de su propia fila. La `X` cierra el panel desde
+  cualquiera de sus paginas y recupera la vista horizontal de performance.
 - El overlay incluye un boton `X` de `40 x 40 pt/dp`, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
+- Configuración usa desplazamiento vertical con rueda/trackpad y también admite
+  arrastrar el contenido con clic o toque sostenido. No expone desplazamiento
+  horizontal en el contenedor principal. Ruteo participa del mismo viewport,
+  evitando que un contenedor anidado capture gestos sin poder desplazarse.
+- Configuración mantiene Diagnóstico en una pestaña propia, después de Ruteo.
+  Audio contiene sólo los controles del dispositivo; el informe técnico se
+  comparte desde una tarjeta compacta en Diagnóstico y no expone un marcador
+  manual de crujidos.
 - Los botones flotantes de exportar y seguimiento forman un grupo horizontal
   con separacion uniforme y margen respecto al borde inferior de la waveform.
   El editor de secciones se reserva para tablet y escritorio, por lo que el
@@ -94,11 +123,17 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - Los channel strips forman una sola fila, ajustan su altura al mixer y se
   recorren horizontalmente mediante drag; nunca se envuelven en filas nuevas.
-- Android e iPhone calculan la misma escala proporcional del strip a partir
-  del ancho disponible. No se amplian verticalmente de forma independiente;
-  los canales adicionales permanecen accesibles con desplazamiento horizontal.
+- En telefonos Android, los strips usan una escala minima de `1.25x` para
+  ampliar knobs, faders y botones. Los canales adicionales permanecen
+  accesibles con desplazamiento horizontal. iPhone conserva su escala
+  proporcional al ancho disponible.
 - En iPad, que conserva el layout de tablet/escritorio, la escala minima del
   strip es `1.0x` para mantener knobs, medidores y titulos legibles.
+- Las tablets compactas conservan las funciones de tablet, pero el `TopBar`
+  usa controles de `44 pt/dp` y presenta el tiempo actual/total en dos lineas,
+  como telefono. El segmento numerico de BPM y el toggle de click permanecen
+  siempre visibles; el espacio se recupera reduciendo el contador y la tarjeta
+  central de la cancion.
 - En Android, los limites del panel incorporan el safe area. En iPhone, el
   fondo del mixer y la banda del titulo se extienden por el safe area inferior
   para evitar una franja vacia. En ambos casos la banda queda fija al borde
@@ -110,6 +145,8 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   medidor se comprimen para reservar siempre el footer completo.
 - La altura de top bar y waveform se adapta al alto util (`<=375`, `<=410`,
   `>410`) para preservar espacio para el mixer.
+- En telefonos Android, la waveform ocupa como maximo el 24% del alto util
+  para dar mas recorrido a los faders sin ocultar la banda del canal ni S/M.
 
 ## Verificacion
 

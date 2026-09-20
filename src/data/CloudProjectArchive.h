@@ -12,6 +12,10 @@ public:
                           int baseRevision, CloudUploadRequest& outRequest,
                           juce::String* errorMessage = nullptr,
                           BuildProgressCallback progress = {});
+  /** Deletes the exact temporary directory created for one completed upload. */
+  static void cleanupUploadStaging(const juce::File& stagingDirectory);
+  /** Removes upload staging abandoned by an earlier app process. */
+  static void cleanupStaleUploadStaging();
   static bool rebuildProject(const CloudDownloadResult& downloaded,
                              const juce::File& destination, ImportedSongData& outSong,
                              juce::String* errorMessage = nullptr);

@@ -28,6 +28,11 @@ public:
   using CloudSearchRequested = std::function<void(const juce::String &query)>;
   using CloudDeleteRequested = std::function<void(const juce::String &songId,
                                                    const juce::String &title)>;
+  using CloudSettingsRequested = std::function<void(const juce::String &songId)>;
+  using CloudSettingsVersionsRequested =
+      std::function<void(const juce::String &songId, juce::Rectangle<int> screenAnchor)>;
+  using CloudSettingsPendingProvider =
+      std::function<bool(const juce::String &songId)>;
   using SongDeleteRequested = std::function<void(const juce::String &songId)>;
   using AddSongsRequested = std::function<void(const juce::StringArray &)>;
   using CreateSongRequested = std::function<void()>;
@@ -44,6 +49,9 @@ public:
   void setOnCloudDownloadRequested(CloudDownloadRequested cb);
   void setOnCloudSearchRequested(CloudSearchRequested cb);
   void setOnCloudDeleteRequested(CloudDeleteRequested cb);
+  void setOnCloudSettingsSyncRequested(CloudSettingsRequested cb);
+  void setOnCloudSettingsVersionsRequested(CloudSettingsVersionsRequested cb);
+  void setCloudSettingsPendingProvider(CloudSettingsPendingProvider provider);
   void setOnSongDeleteRequested(SongDeleteRequested cb);
   void setOnAddSongsToSetlist(AddSongsRequested cb);
   void setOnCreateSongRequested(CreateSongRequested cb);
@@ -101,6 +109,7 @@ private:
     bool inSetlist = false;
     bool isNowPlaying = false;
     bool isProjectBacked = false;
+    bool isProjectAvailable = false;
     bool isCloudOnly = false;
     bool isCloudSynced = false;
     bool isCloudDownloaded = false;
@@ -300,6 +309,9 @@ private:
   CloudDownloadRequested onCloudDownloadRequested;
   CloudSearchRequested onCloudSearchRequested;
   CloudDeleteRequested onCloudDeleteRequested;
+  CloudSettingsRequested onCloudSettingsSyncRequested;
+  CloudSettingsVersionsRequested onCloudSettingsVersionsRequested;
+  CloudSettingsPendingProvider cloudSettingsPendingProvider;
   SongDeleteRequested onSongDeleteRequested;
   AddSongsRequested onAddSongsToSetlist;
   CreateSongRequested onCreateSongRequested;

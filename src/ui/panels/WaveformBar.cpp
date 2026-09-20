@@ -714,8 +714,10 @@ public:
     title.setInterceptsMouseClicks(false, false);
     addAndMakeVisible(title);
     addAndMakeVisible(wavButton);
+#if !JUCE_IOS && !JUCE_ANDROID
     addAndMakeVisible(mp3Button);
     addAndMakeVisible(m4aButton);
+#endif
   }
 
   void paint(juce::Graphics &g) override {
@@ -731,12 +733,16 @@ public:
     title.setBounds(area.removeFromTop(22));
     area.removeFromTop(8);
     constexpr int buttonHeight = 46;
+#if JUCE_IOS || JUCE_ANDROID
+    wavButton.setBounds(area.removeFromTop(buttonHeight));
+#else
     constexpr int gap = 7;
     wavButton.setBounds(area.removeFromTop(buttonHeight));
     area.removeFromTop(gap);
     mp3Button.setBounds(area.removeFromTop(buttonHeight));
     area.removeFromTop(gap);
     m4aButton.setBounds(area.removeFromTop(buttonHeight));
+#endif
   }
 
 private:
@@ -829,8 +835,15 @@ WaveformBar::WaveformBar() {
   };
   addAndMakeVisible(followButton);
 
+#if JUCE_IOS || JUCE_ANDROID
   exportButton.setTooltip(
-      L10n::tr("Exportar mezcla como WAV, MP3 o M4A", "Export mix as WAV, MP3, or M4A"));
+      L10n::tr("Exportar, guardar o compartir mezcla WAV",
+               "Export, save, or share WAV mix"));
+#else
+  exportButton.setTooltip(
+      L10n::tr("Exportar mezcla como WAV, MP3 o M4A",
+               "Export mix as WAV, MP3, or M4A"));
+#endif
   exportButton.setViewportIgnoreDragFlag(true);
   exportButton.onClick = [this] {
     if (exportBusy || !onExportMixRequested)
@@ -841,7 +854,11 @@ WaveformBar::WaveformBar() {
           if (safeBar != nullptr && safeBar->onExportMixRequested)
             safeBar->onExportMixRequested(format);
         });
+#if JUCE_IOS || JUCE_ANDROID
+    panel->setSize(330, 88);
+#else
     panel->setSize(330, 202);
+#endif
 
     auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
     juce::Component *parentComp = editor != nullptr

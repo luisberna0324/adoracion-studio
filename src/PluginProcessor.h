@@ -34,6 +34,10 @@ public:
 
   bool isBusesLayoutSupported(const BusesLayout &layouts) const override;
   void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
+  AudioDiagnostics::ReportFiles getAudioDiagnosticReportFiles() const {
+    return diagnostics.getReportFiles();
+  }
+  uint64_t markAudioArtifact();
 
   juce::AudioProcessorEditor *createEditor() override;
   bool hasEditor() const override;
@@ -578,8 +582,15 @@ private:
 
   // Audio performance diagnostics (lock-free ring buffer + background logger)
   AudioDiagnostics diagnostics;
+  std::atomic<int64_t> diagnosticEngineGeneration{0}, diagnosticSourceGeneration{0};
+  std::atomic<uint64_t> diagnosticMarkerGeneration{0};
+  double lastDiagnosticDeviceSampleMs = 0;
   int stemTimingSnapshotDecimator = 0;
+  int distortionSnapshotDecimator = 0;
   static constexpr int kStemTimingSnapshotEveryBlocks = 20;
+  static constexpr int kDistortionStemSnapshotEveryBlocks = 5;
+  playworship::audio::SignalIntegrityState diagnosticMasterSignalState;
+  playworship::audio::SignalIntegrityState diagnosticOutputSignalState;
 
   // ---- Benchmark: per-stem Bungee timing buffers ---------------------
   // Written from the audio thread on every Bungee process() call, read

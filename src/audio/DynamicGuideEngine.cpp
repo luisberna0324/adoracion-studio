@@ -179,8 +179,23 @@ int DynamicGuideEngine::resolveTriggerId(
   if (normalized.isEmpty())
     return -1;
 
-  const auto it = triggerIdByKey.find(toKeyString(normalized));
-  return it == triggerIdByKey.end() ? -1 : it->second;
+  if (const auto it = triggerIdByKey.find(toKeyString(normalized));
+      it != triggerIdByKey.end()) {
+    return it->second;
+  }
+
+  // The Spanish guide pack has no dedicated "Slowly Build" recording, while
+  // the arrangement UI exposes it as "Sube lento". Keep the cue audible by
+  // falling back to the existing Build/Sube intensidad sample. Exact matches
+  // (including the English Slowly Build recording) always win above.
+  if (normalized == "slowly build" || normalized == "sube lento") {
+    if (const auto fallback = triggerIdByKey.find("build");
+        fallback != triggerIdByKey.end()) {
+      return fallback->second;
+    }
+  }
+
+  return -1;
 }
 
 bool DynamicGuideEngine::triggerForId(const int triggerId) noexcept {

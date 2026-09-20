@@ -1,5 +1,6 @@
 #include "AuthSessionApi.h"
 #include "SessionAuthLogger.h"
+#include "telemetry/Telemetry.h"
 
 namespace {
 
@@ -49,6 +50,8 @@ FirebaseRefreshResult AuthSessionApi::refreshFirebaseIdToken(
     result.errorMessage = "network";
     SessionAuthLogger::write(
         "AuthSessionApi::refreshFirebaseIdToken: stream null (network/timeout)");
+    playworship::telemetry::capture(
+        playworship::telemetry::Incident::authRefreshFailed);
     return result;
   }
 
@@ -84,6 +87,9 @@ FirebaseRefreshResult AuthSessionApi::refreshFirebaseIdToken(
       SessionAuthLogger::tokenPresence(result.idToken) +
       (result.ok ? juce::String()
                  : juce::String(" error=") + result.errorMessage));
+  if (!result.ok)
+    playworship::telemetry::capture(
+        playworship::telemetry::Incident::authRefreshFailed);
 
   return result;
 }
@@ -121,6 +127,8 @@ ValidateAccessResult AuthSessionApi::fetchValidateAccess(
     out.rawError = "network";
     SessionAuthLogger::write(
         "AuthSessionApi::fetchValidateAccess: stream null GET " + urlForLog);
+    playworship::telemetry::capture(
+        playworship::telemetry::Incident::accessValidationFailed);
     return out;
   }
 
@@ -133,6 +141,8 @@ ValidateAccessResult AuthSessionApi::fetchValidateAccess(
     SessionAuthLogger::write(
         "AuthSessionApi::fetchValidateAccess: non-JSON body head=" +
         body.substring(0, juce::jmin(180, body.length())));
+    playworship::telemetry::capture(
+        playworship::telemetry::Incident::accessValidationFailed);
     return out;
   }
 

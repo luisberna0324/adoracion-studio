@@ -19,6 +19,16 @@ master, tempo, pitch y fade configurados en el procesador.
 - El usuario puede elegir WAV de 24 bits, MP3 a 320 kbps o M4A/AAC a 256 kbps.
   MP3 y M4A se codifican desde el mismo render WAV temporal mediante el encoder
   administrado por `AssetBootstrapManager`.
+- En iOS y Android se ofrece WAV de 24 bits. El archivo se renderiza primero en
+  el directorio temporal privado y, al completarse, se entrega a la hoja nativa
+  para Guardar en Archivos, compartir o enviar. No se escribe directamente en
+  la URL de un document provider. El temporal se elimina al cerrar la hoja.
+  Ambos targets deben compilar `juce_gui_basics` con
+  `JUCE_CONTENT_SHARING=1`; Android ademas declara
+  `JuceSharingContentProvider` con la autoridad del bundle.
+- MP3 y M4A permanecen disponibles en escritorio. No se ofrecen en móvil porque
+  dependen del proceso externo FFmpeg y los binarios móviles no pueden ejecutar
+  ese helper de escritorio.
 - El render se ejecuta en un hilo de fondo. El progreso se entrega mediante un
   callback y la UI debe volver al MessageManager antes de actualizar controles.
 - Durante la exportación se deshabilita el botón del mixer y la waveform muestra

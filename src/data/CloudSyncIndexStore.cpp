@@ -16,6 +16,15 @@ CloudProjectLink readLink(const juce::var& value) {
   link.downloadedAtMs = object->getProperty("downloadedAtMs").toString().getLargeIntValue();
   link.lastSyncedAtMs = object->getProperty("lastSyncedAtMs").toString().getLargeIntValue();
   link.descriptorFingerprint = object->getProperty("descriptorFingerprint").toString().trim();
+  link.settingsStateKnown =
+      static_cast<bool>(object->getProperty("settingsStateKnown"));
+  link.settingsRevision =
+      juce::jmax(0, static_cast<int>(object->getProperty("settingsRevision")));
+  link.settingsHash = object->getProperty("settingsHash").toString().trim();
+  link.settingsJson = object->getProperty("settingsJson").toString();
+  if (const auto *known = object->getProperty("knownSettingsFingerprints").getArray())
+    for (const auto &entry : *known)
+      link.knownSettingsFingerprints.addIfNotAlreadyThere(entry.toString());
   return link;
 }
 
@@ -27,6 +36,12 @@ juce::var writeLink(const CloudProjectLink& link) {
   object->setProperty("downloadedAtMs", link.downloadedAtMs);
   object->setProperty("lastSyncedAtMs", link.lastSyncedAtMs);
   object->setProperty("descriptorFingerprint", link.descriptorFingerprint);
+  object->setProperty("settingsStateKnown", link.settingsStateKnown);
+  object->setProperty("settingsRevision", link.settingsRevision);
+  object->setProperty("settingsHash", link.settingsHash);
+  object->setProperty("settingsJson", link.settingsJson);
+  object->setProperty("knownSettingsFingerprints",
+                      juce::var(link.knownSettingsFingerprints));
   return juce::var(object);
 }
 
@@ -64,7 +79,7 @@ bool CloudSyncIndexStore::saveAll(const std::vector<CloudProjectLink>& links) {
   juce::Array<juce::var> entries;
   for (const auto& link : links) entries.add(writeLink(link));
   auto* root = new juce::DynamicObject();
-  root->setProperty("version", 1);
+  root->setProperty("version", 2);
   root->setProperty("links", juce::var(entries));
   return getFile().replaceWithText(juce::JSON::toString(juce::var(root), true));
 }

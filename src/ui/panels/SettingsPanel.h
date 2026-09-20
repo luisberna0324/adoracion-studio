@@ -70,6 +70,9 @@ public:
   void resized() override;
   void refreshThemeColours();
   void updateSessionSummary(SessionSummary sessionSummary);
+  void setQuotaUnavailable();
+  std::function<void()> onShareAudioDiagnostics;
+  void setDiagnosticsBusy(bool busy);
 
 private:
   class SettingsTabButton final : public juce::TextButton {
@@ -129,12 +132,19 @@ private:
   SettingsTabButton accountTabButton;
   SettingsTabButton audioTabButton;
   SettingsTabButton routingTabButton;
+  SettingsTabButton diagnosticsTabButton;
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Viewport settingsViewport;
   juce::Component generalPage;
   juce::Component accountPage;
   juce::Component audioPage;
   juce::Component routingPage;
+  juce::Component diagnosticsPage;
+  juce::Label diagnosticsSectionLabel;
+  juce::Label diagnosticsHint;
+  juce::Label diagnosticsPrivacyHint;
+  juce::TextButton diagnosticsButton;
+  bool diagnosticsBusy = false;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
   juce::Label themeLabel;
   IpadNativeComboBox themeBox;
@@ -169,25 +179,32 @@ private:
   juce::Label sessionVersionValue;
   juce::Label sessionQuotaLabel;
   juce::Label sessionQuotaValue;
+  juce::Label sessionDevicesQuotaLabel;
+  juce::Label sessionDevicesQuotaValue;
+  juce::Label sessionSongsQuotaLabel;
+  juce::Label sessionSongsQuotaValue;
+  juce::Label sessionStorageQuotaLabel;
+  juce::Label sessionStorageQuotaValue;
+  bool quotaFetchFailed = false;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
   juce::Label actionPurgeLabel;
   juce::Label actionInfoLabel;
   juce::HyperlinkButton infoLinkButton{
-      "Saber mas", juce::URL("https://playwordship.gumroad.com/")};
+      "Soporte", juce::URL("mailto:hola@playworship.app")};
   SettingsLogoutButton logoutButton;
   SettingsLogoutButton purgeButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;
   std::unique_ptr<SettingsCard> actionsCard;
+  std::unique_ptr<SettingsCard> diagnosticsCard;
   std::unique_ptr<SettingsRowSeparator> sessionIdentitySeparator;
   std::unique_ptr<SettingsRowSeparator> actionsTitleSeparator;
   std::unique_ptr<SettingsRowSeparator> actionsRowSeparator;
   std::vector<std::unique_ptr<SettingsRowSeparator>> generalRowSeparators;
   juce::Label routingSectionLabel;
   juce::Label routingHintLabel;
-  juce::Viewport routingViewport;
   juce::Component routingContent;
   ThemeChanged onThemeChanged;
   LanguageChanged onLanguageChanged;
@@ -214,6 +231,7 @@ private:
   void layoutAccountPage();
   void layoutAudioPage();
   void layoutRoutingPage();
+  void layoutDiagnosticsPage();
   void applyLanguageTexts();
   void updateTabButtonStates(int activeIndex);
   static juce::String formatIsoDateTime(const juce::String &isoDateTime);
