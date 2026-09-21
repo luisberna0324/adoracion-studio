@@ -188,6 +188,8 @@ public:
     outputChannelLabel.setFont(juce::FontOptions(10.0f));
     outputChannelLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
     addAndMakeVisible(outputChannelLabel);
+    applyComboBoxTheme(outputChannelSelector, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.7f));
     outputChannelSelector.onChange = [this] {
       if (onOutputChannelChanged == nullptr)
         return;
@@ -210,7 +212,9 @@ public:
       strip->setBounds(stripBounds);
     } else {
       const int topInset = 4;
-      const int controlH = 20;
+      const int controlH = useTouchOptimisedControls()
+                               ? touchOptimisedControlHeight()
+                               : 24;
       const int gap = 2;
       const int controlW = getWidth() - 12;
       const int controlX = 6;
@@ -452,7 +456,7 @@ private:
   std::unique_ptr<GuideSettingsButton> guideSettingsButton;
   std::unique_ptr<ClickDivisionPanel> divisionPanel;
   juce::Label outputChannelLabel;
-  IpadNativeComboBox outputChannelSelector;
+  AdaptiveComboBox outputChannelSelector;
   std::function<void(int)> onOutputChannelChanged;
   std::function<void(juce::Component &)> onGuideSettingsRequested;
   bool showOutputRouting = true;

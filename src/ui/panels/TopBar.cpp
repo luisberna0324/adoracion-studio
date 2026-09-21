@@ -1806,7 +1806,7 @@ void TopBar::showMetronomePopover() {
 
   private:
     juce::TextButton tapButton, minusButton, plusButton;
-    IpadNativeComboBox timeSigBox;
+    AdaptiveComboBox timeSigBox;
     juce::TextEditor bpmEditor;
     juce::Label meterLabel, bpmLabel;
     std::function<void()> onTap;
@@ -1828,17 +1828,11 @@ void TopBar::showMetronomePopover() {
                           UITheme::onAccent);
       for (auto *label : {&meterLabel, &bpmLabel})
         label->setColour(juce::Label::textColourId, UITheme::textSecondary);
-      timeSigBox.setColour(juce::ComboBox::backgroundColourId,
-                           UITheme::cardBgHover);
-      timeSigBox.setColour(juce::ComboBox::outlineColourId,
-                           UITheme::cardBorder.withAlpha(0.65f));
-      timeSigBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-      timeSigBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-      bpmEditor.setColour(juce::TextEditor::backgroundColourId,
-                          UITheme::cardBgHover);
-      bpmEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-      bpmEditor.setColour(juce::TextEditor::outlineColourId,
-                          UITheme::cardBorder.withAlpha(0.7f));
+      applyComboBoxTheme(timeSigBox, UITheme::cardBgHover,
+                         UITheme::cardBorder.withAlpha(0.65f));
+      applyTextEditorTheme(bpmEditor, UITheme::cardBgHover,
+                           UITheme::cardBorder.withAlpha(0.7f));
+      bpmEditor.setJustification(juce::Justification::centred);
     }
 
     void syncBpmEditor() {
@@ -2063,13 +2057,8 @@ void TopBar::showSongWindowPopover() {
         value->setFont(juce::FontOptions(12.0f));
       }
       for (auto *editor : {&startEditor, &endEditor}) {
-        editor->setColour(juce::TextEditor::backgroundColourId,
-                          UITheme::cardBgHover);
-        editor->setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-        editor->setColour(juce::TextEditor::outlineColourId,
-                          UITheme::cardBorder.withAlpha(0.65f));
-        editor->setColour(juce::TextEditor::focusedOutlineColourId,
-                          UITheme::accent.withAlpha(0.75f));
+        applyTextEditorTheme(*editor, UITheme::cardBgHover,
+                             UITheme::cardBorder.withAlpha(0.65f));
         editor->setColour(juce::CaretComponent::caretColourId,
                           UITheme::textPrimary);
         editor->setJustification(juce::Justification::centred);

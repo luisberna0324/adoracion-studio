@@ -95,25 +95,18 @@ public:
 
   void refreshThemeColours() {
     fileLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-    displayNameEditor.setColour(juce::TextEditor::backgroundColourId,
-                                UITheme::cardBg);
-    displayNameEditor.setColour(juce::TextEditor::textColourId,
-                                UITheme::textPrimary);
-    displayNameEditor.setColour(juce::TextEditor::outlineColourId,
-                                UITheme::cardBorder.withAlpha(0.7f));
-    categoryBox.setColour(juce::ComboBox::backgroundColourId, UITheme::cardBg);
-    categoryBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-    categoryBox.setColour(juce::ComboBox::outlineColourId,
-                          UITheme::cardBorder.withAlpha(0.7f));
-    categoryBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-    includeToggle.setColour(juce::ToggleButton::textColourId,
-                            UITheme::textPrimary);
+    applyTextEditorTheme(displayNameEditor, UITheme::cardBg,
+                         UITheme::cardBorder.withAlpha(0.7f));
+    displayNameEditor.setJustification(juce::Justification::centredLeft);
+    applyComboBoxTheme(categoryBox, UITheme::cardBg,
+                       UITheme::cardBorder.withAlpha(0.7f));
+    applyToggleSwitchTheme(includeToggle);
   }
 
 private:
   juce::Label fileLabel;
   juce::TextEditor displayNameEditor;
-  IpadNativeComboBox categoryBox;
+  AdaptiveComboBox categoryBox;
   juce::ToggleButton includeToggle;
 };
 
@@ -845,9 +838,9 @@ void SongImportWizardComponent::refreshThemeColours() {
     }
   }
 
-  summaryEditor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
   applyTextEditorTheme(summaryEditor, UITheme::cardBgHover,
                        UITheme::cardBorder.withAlpha(0.7f));
+  summaryEditor.setJustification(juce::Justification::topLeft);
 
   configureCombo(keyBox);
   configureCombo(timeSignatureBox);
@@ -886,7 +879,7 @@ void SongImportWizardComponent::configureTextEditor(
   applyEditorTheme(editor, placeholder);
 }
 
-void SongImportWizardComponent::configureCombo(IpadNativeComboBox &combo) {
+void SongImportWizardComponent::configureCombo(AdaptiveComboBox &combo) {
   applyComboBoxTheme(combo, UITheme::cardBgHover,
                      UITheme::cardBorder.withAlpha(0.7f));
 }
@@ -2032,13 +2025,11 @@ void SongImportWizardComponent::closeDialog() {
 
 void SongImportWizardComponent::applyEditorTheme(
     juce::TextEditor &editor, const juce::String &placeholder) {
-  editor.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+  applyTextEditorTheme(editor, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.7f));
+  editor.setJustification(juce::Justification::centredLeft);
   editor.setTextToShowWhenEmpty(placeholder,
                                 UITheme::textSecondary.withAlpha(0.6f));
-  editor.setColour(juce::TextEditor::backgroundColourId, UITheme::cardBgHover);
-  editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-  editor.setColour(juce::TextEditor::outlineColourId,
-                   UITheme::cardBorder.withAlpha(0.7f));
 }
 
 void SongImportWizardComponent::stylePrimaryButton(juce::TextButton &button) {

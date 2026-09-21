@@ -3,7 +3,7 @@ type: Technical Contract
 title: Hoja de acciones — selector de versiones
 description: Selector compacto y confirmación estándar de versiones cloud
 resource: src/ui/components/SettingsVersionsSheet.cpp
-timestamp: 2026-09-19
+timestamp: 2026-09-21
 ---
 
 # Hoja de acciones de versiones
@@ -23,12 +23,18 @@ No usa APIs privadas ni depende de UIKit en Mac/Android.
 ## Entrada y presentación
 
 - Biblioteca → menú de la canción → **Versiones de ajustes**.
+- Canción cargada → botón **…** sobre la onda → **Ver versiones**. El botón
+  **…** reemplaza al botón exclusivo de exportación y conserva esa función como
+  **Exportar canción** dentro del mismo popover; queda inmediatamente antes del
+  control de seguimiento.
 - El menú transmite el ID estable de la canción y conserva como respaldo el
   rectángulo global de su botón de origen. La apertura se difiere hasta que
   termine el callback del botón.
 - **Versiones de ajustes** es la única acción de ese menú que no lo descarta al
   ejecutarse. El panel de acciones permanece visible como contexto y el
   selector se ancla a su rectángulo global.
+- El popover de la onda sigue la misma regla: permanece como contexto mientras
+  se presenta el selector lateral y se cierra al elegir una versión.
 - Todas las plataformas usan una capa transparente y una tarjeta plana de 300
   puntos, sin flecha ni fondo oscurecido. La tarjeta intenta ubicarse a la
   derecha del panel de acciones que la invocó; si no cabe, usa el lado izquierdo

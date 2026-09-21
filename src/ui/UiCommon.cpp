@@ -150,7 +150,13 @@ juce::Font makeAppFont(const float size, const AppFontWeight weight) {
 }
 
 namespace {
-class RoundedComboLookAndFeel final : public juce::LookAndFeel_V4 {
+float inputCornerRadius(const int height) {
+  return useTouchOptimisedControls()
+             ? juce::jmin(12.0f, static_cast<float>(height) * 0.24f)
+             : juce::jmin(8.0f, static_cast<float>(height) * 0.24f);
+}
+
+class InputControlLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
   void drawComboBox(juce::Graphics &g, const int width, const int height,
                     const bool isButtonDown, const int, const int, const int,
@@ -161,18 +167,34 @@ public:
     auto fill = box.findColour(juce::ComboBox::backgroundColourId);
     if (isButtonDown)
       fill = fill.brighter(0.08f);
+    else if (box.isMouseOver())
+      fill = fill.brighter(0.035f);
+    if (!box.isEnabled())
+      fill = fill.withMultipliedAlpha(0.55f);
 
     g.setColour(fill);
-    g.fillRoundedRectangle(bounds, 8.0f);
+    const auto radius = inputCornerRadius(height);
+    g.fillRoundedRectangle(bounds, radius);
+
+    auto outline = box.hasKeyboardFocus(true)
+                       ? UITheme::accent.withAlpha(0.82f)
+                       : box.findColour(juce::ComboBox::outlineColourId);
+    if (!box.isEnabled())
+      outline = outline.withMultipliedAlpha(0.45f);
+    g.setColour(outline);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), radius,
+                           box.hasKeyboardFocus(true) ? 2.0f : 1.0f);
+
     const auto arrowColour = box.findColour(juce::ComboBox::arrowColourId);
     const auto arrowArea = juce::Rectangle<float>(
-        static_cast<float>(width - 24), static_cast<float>(height) * 0.5f - 4.0f,
-        12.0f, 8.0f);
+        static_cast<float>(width - (useTouchOptimisedControls() ? 31 : 26)),
+        static_cast<float>(height) * 0.5f - 4.0f, 12.0f, 8.0f);
     juce::Path arrow;
     arrow.startNewSubPath(arrowArea.getX() + 1.0f, arrowArea.getCentreY() - 1.5f);
     arrow.lineTo(arrowArea.getCentreX(), arrowArea.getCentreY() + 2.0f);
     arrow.lineTo(arrowArea.getRight() - 1.0f, arrowArea.getCentreY() - 1.5f);
-    g.setColour(arrowColour);
+    g.setColour(box.isEnabled() ? arrowColour
+                                : arrowColour.withMultipliedAlpha(0.42f));
     g.strokePath(arrow, juce::PathStrokeType(1.8f,
                                              juce::PathStrokeType::curved,
                                              juce::PathStrokeType::rounded));
@@ -184,7 +206,10 @@ public:
   }
 
   void positionComboBoxText(juce::ComboBox &box, juce::Label &label) override {
-    label.setBounds(12, 1, juce::jmax(1, box.getWidth() - box.getHeight() - 18),
+    const int leftInset = useTouchOptimisedControls() ? 14 : 12;
+    const int trailingInset = useTouchOptimisedControls() ? 42 : 36;
+    label.setBounds(leftInset, 1,
+                    juce::jmax(1, box.getWidth() - leftInset - trailingInset),
                     juce::jmax(1, box.getHeight() - 2));
     label.setFont(getComboBoxFont(box));
   }
@@ -193,12 +218,44 @@ public:
       juce::ComboBox &box, juce::Label &label) override {
     return juce::LookAndFeel_V4::getOptionsForComboBoxPopupMenu(box, label)
         .withMinimumWidth(box.getWidth())
-        .withStandardItemHeight(useTouchOptimisedControls() ? 50 : 38);
+        .withStandardItemHeight(touchOptimisedPopupItemHeight());
+  }
+
+  void fillTextEditorBackground(juce::Graphics &g, const int width,
+                                const int height,
+                                juce::TextEditor &editor) override {
+    auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
+                                         static_cast<float>(width) - 1.0f,
+                                         static_cast<float>(height) - 1.0f);
+    auto fill = editor.findColour(juce::TextEditor::backgroundColourId);
+    if (editor.isMouseOver() && !editor.hasKeyboardFocus(true))
+      fill = fill.brighter(0.035f);
+    if (!editor.isEnabled())
+      fill = fill.withMultipliedAlpha(0.55f);
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, inputCornerRadius(height));
+  }
+
+  void drawTextEditorOutline(juce::Graphics &g, const int width,
+                             const int height,
+                             juce::TextEditor &editor) override {
+    auto bounds = juce::Rectangle<float>(1.0f, 1.0f,
+                                         static_cast<float>(width) - 2.0f,
+                                         static_cast<float>(height) - 2.0f);
+    auto outline = editor.hasKeyboardFocus(true)
+                       ? editor.findColour(
+                             juce::TextEditor::focusedOutlineColourId)
+                       : editor.findColour(juce::TextEditor::outlineColourId);
+    if (!editor.isEnabled())
+      outline = outline.withMultipliedAlpha(0.45f);
+    g.setColour(outline);
+    g.drawRoundedRectangle(bounds, inputCornerRadius(height),
+                           editor.hasKeyboardFocus(true) ? 2.0f : 1.0f);
   }
 };
 
-RoundedComboLookAndFeel &getRoundedComboLookAndFeel() {
-  static RoundedComboLookAndFeel lookAndFeel;
+InputControlLookAndFeel &getInputControlLookAndFeel() {
+  static InputControlLookAndFeel lookAndFeel;
   return lookAndFeel;
 }
 } // namespace
@@ -291,10 +348,10 @@ int touchOptimisedControlHeight() {
 }
 
 int touchOptimisedPopupItemHeight() {
-  return useTouchOptimisedControls() ? 40 : 28;
+  return useTouchOptimisedControls() ? 44 : 32;
 }
 
-void IpadNativeComboBox::showPopup() {
+void AdaptiveComboBox::showPopup() {
   // JUCE sets menuActive before dispatching showPopup asynchronously. The
   // UIKit sheet does not clear that private JUCE flag when it is dismissed.
   hidePopup();
@@ -302,14 +359,14 @@ void IpadNativeComboBox::showPopup() {
   if (NativeIpadChoicePicker::isAvailable()) {
     std::vector<juce::String> items;
     items.reserve(static_cast<size_t>(getNumItems()));
-    int selectedIndex = 0;
+    int selectedIndex = -1;
     for (int i = 0; i < getNumItems(); ++i) {
       items.push_back(getItemText(i));
       if (getItemId(i) == getSelectedId())
         selectedIndex = i;
     }
     if (NativeIpadChoicePicker::show(*this, items, selectedIndex,
-                                     [safe = juce::Component::SafePointer<IpadNativeComboBox>(this)](int index) {
+                                     [safe = juce::Component::SafePointer<AdaptiveComboBox>(this)](int index) {
                                        if (safe == nullptr)
                                          return;
 
@@ -322,15 +379,14 @@ void IpadNativeComboBox::showPopup() {
   juce::ComboBox::showPopup();
 }
 
-void applyComboBoxTheme(IpadNativeComboBox &combo, const juce::Colour background,
-                        const juce::Colour) {
-  combo.setLookAndFeel(&getRoundedComboLookAndFeel());
+void applyComboBoxTheme(AdaptiveComboBox &combo, const juce::Colour background,
+                        const juce::Colour outline) {
+  combo.setLookAndFeel(&getInputControlLookAndFeel());
   combo.setColour(juce::ComboBox::backgroundColourId,
                   background.withAlpha(useTouchOptimisedControls() ? 0.96f
                                                                     : 0.88f));
   combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  combo.setColour(juce::ComboBox::outlineColourId,
-                  juce::Colours::transparentBlack);
+  combo.setColour(juce::ComboBox::outlineColourId, outline);
   combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   combo.setJustificationType(juce::Justification::centredLeft);
 }
@@ -338,11 +394,10 @@ void applyComboBoxTheme(IpadNativeComboBox &combo, const juce::Colour background
 void applyTextEditorTheme(juce::TextEditor &editor,
                           const juce::Colour background,
                           const juce::Colour outline) {
-  editor.setMultiLine(false);
-  editor.setReturnKeyStartsNewLine(false);
-  editor.setScrollbarsShown(false);
+  editor.setLookAndFeel(&getInputControlLookAndFeel());
   editor.setPopupMenuEnabled(true);
-  editor.setJustification(juce::Justification::centredLeft);
+  editor.setFont(makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f,
+                             AppFontWeight::Regular));
   editor.setColour(juce::TextEditor::backgroundColourId, background);
   editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
   editor.setColour(juce::TextEditor::highlightedTextColourId,
@@ -351,7 +406,8 @@ void applyTextEditorTheme(juce::TextEditor &editor,
   editor.setColour(juce::TextEditor::focusedOutlineColourId,
                    UITheme::accent.withAlpha(useTouchOptimisedControls() ? 0.82f
                                                                          : 0.64f));
-  editor.setIndents(useTouchOptimisedControls() ? 12 : 8, 0);
+  editor.setIndents(useTouchOptimisedControls() ? 14 : 12,
+                    useTouchOptimisedControls() ? 12 : 10);
 }
 
 void applyToggleSwitchTheme(juce::ToggleButton &toggle) {
@@ -408,6 +464,9 @@ SvgIconData getSvgIconData(const SvgIconName icon) {
     return {BinaryData::check_svg, BinaryData::check_svgSize};
   case SvgIconName::Minus:
     return {BinaryData::minus_svg, BinaryData::minus_svgSize};
+  case SvgIconName::MoreHorizontal:
+    return {BinaryData::more_horizontal_svg,
+            BinaryData::more_horizontal_svgSize};
   case SvgIconName::MoreVertical:
     return {BinaryData::more_vertical_svg, BinaryData::more_vertical_svgSize};
   case SvgIconName::Clock:

@@ -40,6 +40,41 @@ juce::File managedImportedProjectsDirectory() {
   return directory;
 }
 
+bool repairManagedFilePathForCurrentSandbox(juce::String &path) {
+#if JUCE_IOS
+  path = path.trim();
+  if (path.isEmpty() || juce::File(path).existsAsFile())
+    return false;
+
+  // Installing a development build can assign a new data-container UUID while
+  // preserving Library/MTControls. Paths serialized in songs.json still carry
+  // the previous UUID, so rebuild them from their stable path below the
+  // managed root instead of treating the song as deleted.
+  const auto normalized = path.replaceCharacter('\\', '/');
+  const juce::String rootMarker("/MTControls/");
+  const int markerIndex = normalized.lastIndexOf(rootMarker);
+  if (markerIndex < 0)
+    return false;
+
+  const auto relativePath =
+      normalized.substring(markerIndex + rootMarker.length());
+  if (relativePath.isEmpty())
+    return false;
+
+  const auto currentRoot = SongLibraryStore::getRootDirectory();
+  const auto relocated = currentRoot.getChildFile(relativePath);
+  if (!relocated.isAChildOf(currentRoot) || !relocated.existsAsFile() ||
+      relocated.getSize() <= 0)
+    return false;
+
+  path = relocated.getFullPathName();
+  return true;
+#else
+  juce::ignoreUnused(path);
+  return false;
+#endif
+}
+
 bool isManagedImportedProjectFile(const juce::File &file) {
   return file.existsAsFile() && file.isAChildOf(managedImportedProjectsDirectory());
 }
@@ -48,6 +83,12 @@ bool repairManagedImportedProjectPath(ImportedSongData &song) {
 #if JUCE_IOS
   if (!isProjectBackedSong(song) || song.projectPath.isEmpty())
     return false;
+
+  if (repairManagedFilePathForCurrentSandbox(song.projectPath)) {
+    SessionAuthLogger::write(
+        "[ProjectLibrary] rebased iOS project path id=" + song.projectId);
+    return true;
+  }
 
   const juce::File previousPath(song.projectPath);
   if (previousPath.existsAsFile())
@@ -70,6 +111,27 @@ bool repairManagedImportedProjectPath(ImportedSongData &song) {
   juce::ignoreUnused(song);
   return false;
 #endif
+}
+
+bool repairManagedStemPathsForSong(ImportedSongData &song) {
+  bool changed = false;
+  int repairedPathCount = 0;
+  for (auto &stem : song.stems) {
+    if (repairManagedFilePathForCurrentSandbox(stem.storedPath)) {
+      changed = true;
+      ++repairedPathCount;
+    }
+    if (repairManagedFilePathForCurrentSandbox(stem.sourcePath)) {
+      changed = true;
+      ++repairedPathCount;
+    }
+  }
+  if (changed) {
+    SessionAuthLogger::write(
+        "[SongLibrary] rebased iOS managed stem paths id=" + song.id +
+        " paths=" + juce::String(repairedPathCount));
+  }
+  return changed;
 }
 
 bool hasPlayableLocalStem(const ImportedSongData &song) {
@@ -361,6 +423,8 @@ bool persistSongArtwork(ImportedSongData &song, const juce::File &targetDirector
 bool repairArtworkPathForSong(ImportedSongData &song) {
   const auto songId = song.id.trim();
   song.artworkPath = song.artworkPath.trim();
+  if (repairManagedFilePathForCurrentSandbox(song.artworkPath))
+    return true;
   if (songId.isEmpty()) {
     if (song.artworkPath.isNotEmpty() &&
         !juce::File(song.artworkPath).existsAsFile()) {
@@ -2061,6 +2125,8 @@ LibraryState SongLibraryStore::loadLibrary() {
       if (songChanged)
         needsSave = true;
       if (repairManagedImportedProjectPath(song))
+        needsSave = true;
+      if (repairManagedStemPathsForSong(song))
         needsSave = true;
       if (ensureSongHasStemIds(song))
         needsSave = true;

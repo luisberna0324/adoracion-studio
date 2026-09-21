@@ -39,8 +39,15 @@ Durante la migración a engine-v2, ambos coexisten.
 void playSong();           // Iniciar
 void pauseSong();          // Pausar
 void stopSong();           // Detener y resetear
+bool unloadSong();         // Liberar stems y dejar el transporte vacío
 void toggleSongPlayPause(); // Toggle
 ```
+
+`unloadSong()` suspende el callback, espera a que termine cualquier bloque en
+curso, libera las fuentes bajo `stemListLock` y reinicia transporte, arrange,
+mix y metadatos. Devuelve `false` si el callback no pudo detenerse dentro del
+límite de seguridad; en ese caso el llamador no debe eliminar los archivos que
+respaldan la canción todavía.
 
 ### Posición
 

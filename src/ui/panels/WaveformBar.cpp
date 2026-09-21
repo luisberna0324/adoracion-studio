@@ -751,6 +751,101 @@ private:
   ExportFormatButton mp3Button;
   ExportFormatButton m4aButton;
 };
+
+class WaveformActionButton final : public juce::Button {
+public:
+  WaveformActionButton(juce::String labelToUse, const SvgIconName iconToUse,
+                       const bool enabled, const bool dismissOnTrigger,
+                       std::function<void()> callback)
+      : juce::Button(labelToUse), label(std::move(labelToUse)), icon(iconToUse),
+        dismissAfterClick(dismissOnTrigger), onSelect(std::move(callback)) {
+    setEnabled(enabled);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    onClick = [this] {
+      const auto callbackCopy = onSelect;
+      if (dismissAfterClick)
+        dismissActiveActionPopover();
+      juce::MessageManager::callAsync([callbackCopy] {
+        if (callbackCopy)
+          callbackCopy();
+      });
+    };
+  }
+
+  void paintButton(juce::Graphics &g, const bool isMouseOverButton,
+                   const bool isButtonDown) override {
+    auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+    auto fill = UITheme::cardBgHover;
+    if (isButtonDown)
+      fill = fill.darker(0.06f);
+    else if (isMouseOverButton)
+      fill = fill.brighter(0.05f);
+    if (!isEnabled())
+      fill = fill.withAlpha(0.55f);
+
+    g.setColour(fill);
+    g.fillRoundedRectangle(bounds, 9.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(isEnabled() ? 0.64f : 0.36f));
+    g.drawRoundedRectangle(bounds, 9.0f, 1.0f);
+
+    auto content = getLocalBounds().reduced(12, 5);
+    const auto colour = isEnabled() ? UITheme::textPrimary
+                                    : UITheme::textSecondary.withAlpha(0.7f);
+    const auto iconBounds =
+        content.removeFromLeft(24).toFloat().withSizeKeepingCentre(17.0f, 17.0f);
+    drawSvgIcon(g, iconBounds, icon, colour);
+    content.removeFromLeft(8);
+    g.setColour(colour);
+    g.setFont(makeAppFont(13.5f, AppFontWeight::SemiBold));
+    g.drawFittedText(label, content, juce::Justification::centredLeft, 1);
+  }
+
+private:
+  juce::String label;
+  SvgIconName icon;
+  bool dismissAfterClick = true;
+  std::function<void()> onSelect;
+};
+
+class WaveformActionsPopover final : public juce::Component {
+public:
+  void addAction(juce::String label, const SvgIconName icon, const bool enabled,
+                 const bool dismissOnTrigger, std::function<void()> callback) {
+    auto button = std::make_unique<WaveformActionButton>(
+        std::move(label), icon, enabled, dismissOnTrigger, std::move(callback));
+    addAndMakeVisible(*button);
+    actions.push_back(std::move(button));
+  }
+
+  int preferredHeight() const {
+    constexpr int inset = 8;
+    constexpr int rowHeight = 42;
+    constexpr int gap = 6;
+    return inset * 2 + static_cast<int>(actions.size()) * rowHeight +
+           juce::jmax(0, static_cast<int>(actions.size()) - 1) * gap;
+  }
+
+  void paint(juce::Graphics &g) override {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(UITheme::cardBg);
+    g.fillRoundedRectangle(bounds, 10.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.76f));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 10.0f, 1.0f);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(8);
+    constexpr int rowHeight = 42;
+    constexpr int gap = 6;
+    for (auto &action : actions) {
+      action->setBounds(area.removeFromTop(rowHeight));
+      area.removeFromTop(gap);
+    }
+  }
+
+private:
+  std::vector<std::unique_ptr<WaveformActionButton>> actions;
+};
 } // namespace
 
 SvgToolbarButton::SvgToolbarButton(const juce::String &name,
@@ -835,42 +930,54 @@ WaveformBar::WaveformBar() {
   };
   addAndMakeVisible(followButton);
 
-#if JUCE_IOS || JUCE_ANDROID
-  exportButton.setTooltip(
-      L10n::tr("Exportar, guardar o compartir mezcla WAV",
-               "Export, save, or share WAV mix"));
-#else
-  exportButton.setTooltip(
-      L10n::tr("Exportar mezcla como WAV, MP3 o M4A",
-               "Export mix as WAV, MP3, or M4A"));
-#endif
-  exportButton.setViewportIgnoreDragFlag(true);
-  exportButton.onClick = [this] {
-    if (exportBusy || !onExportMixRequested)
-      return;
-    const juce::Component::SafePointer<WaveformBar> safeBar(this);
-    auto panel = std::make_unique<ExportFormatPopover>(
-        [safeBar](const juce::String &format) {
-          if (safeBar != nullptr && safeBar->onExportMixRequested)
-            safeBar->onExportMixRequested(format);
+  moreButton.setTooltip(L10n::tr("Más acciones", "More actions"));
+  moreButton.setViewportIgnoreDragFlag(true);
+  moreButton.onClick = [this] {
+    const auto state = songActionsStateProvider != nullptr
+                           ? songActionsStateProvider()
+                           : WaveformSongActionsState{};
+    const auto safeBar = juce::Component::SafePointer<WaveformBar>(this);
+    const auto screenAnchor =
+        moreButton.localAreaToGlobal(moreButton.getLocalBounds());
+    auto panel = std::make_unique<WaveformActionsPopover>();
+    panel->addAction(
+        L10n::tr("Exportar canción", "Export song"), SvgIconName::FileAudio,
+        !exportBusy && onExportMixRequested != nullptr, true, [safeBar] {
+          if (safeBar != nullptr)
+            safeBar->showExportFormatPopover();
         });
-#if JUCE_IOS || JUCE_ANDROID
-    panel->setSize(330, 88);
-#else
-    panel->setSize(330, 202);
-#endif
+    if (state.cloudLinked && onCloudSettingsVersionsRequested != nullptr) {
+      panel->addAction(
+          L10n::tr("Ver versiones", "View versions"), SvgIconName::Clock, true,
+          false, [safeBar, screenAnchor] {
+            if (safeBar != nullptr &&
+                safeBar->onCloudSettingsVersionsRequested != nullptr)
+              safeBar->onCloudSettingsVersionsRequested(screenAnchor);
+          });
+    }
+    if (state.cloudLinked && state.settingsPending &&
+        onCloudSettingsSyncRequested != nullptr) {
+      panel->addAction(
+          L10n::tr("Guardar versión", "Save version"), SvgIconName::Check,
+          !state.settingsActionBusy, true, [safeBar] {
+            if (safeBar != nullptr &&
+                safeBar->onCloudSettingsSyncRequested != nullptr)
+              safeBar->onCloudSettingsSyncRequested();
+          });
+    }
+    panel->setSize(250, panel->preferredHeight());
 
     auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
     juce::Component *parentComp = editor != nullptr
                                       ? static_cast<juce::Component *>(editor)
                                       : static_cast<juce::Component *>(this);
     const auto anchor =
-        parentComp->getLocalArea(&exportButton, exportButton.getLocalBounds());
+        parentComp->getLocalArea(&moreButton, moreButton.getLocalBounds());
     ActionPopoverOptions options;
-    options.compactMaximumWidth = 380;
+    options.compactMaximumWidth = 320;
     presentActionPopover(std::move(panel), anchor, parentComp, options);
   };
-  addAndMakeVisible(exportButton);
+  addAndMakeVisible(moreButton);
 
   editButton.setTooltip(
       L10n::tr(
@@ -1254,10 +1361,49 @@ void WaveformBar::setOnExportMixRequested(
   onExportMixRequested = std::move(cb);
 }
 
+void WaveformBar::setSongActionsStateProvider(
+    std::function<WaveformSongActionsState()> provider) {
+  songActionsStateProvider = std::move(provider);
+}
+
+void WaveformBar::setOnCloudSettingsSyncRequested(std::function<void()> cb) {
+  onCloudSettingsSyncRequested = std::move(cb);
+}
+
+void WaveformBar::setOnCloudSettingsVersionsRequested(
+    std::function<void(juce::Rectangle<int>)> cb) {
+  onCloudSettingsVersionsRequested = std::move(cb);
+}
+
 void WaveformBar::setExportBusy(const bool busy) {
   exportBusy = busy;
-  exportButton.setEnabled(!busy);
-  exportButton.repaint();
+  moreButton.repaint();
+}
+
+void WaveformBar::showExportFormatPopover() {
+  if (exportBusy || !onExportMixRequested)
+    return;
+  const juce::Component::SafePointer<WaveformBar> safeBar(this);
+  auto panel = std::make_unique<ExportFormatPopover>(
+      [safeBar](const juce::String &format) {
+        if (safeBar != nullptr && safeBar->onExportMixRequested)
+          safeBar->onExportMixRequested(format);
+      });
+#if JUCE_IOS || JUCE_ANDROID
+  panel->setSize(330, 88);
+#else
+  panel->setSize(330, 202);
+#endif
+
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  juce::Component *parentComp = editor != nullptr
+                                    ? static_cast<juce::Component *>(editor)
+                                    : static_cast<juce::Component *>(this);
+  const auto anchor =
+      parentComp->getLocalArea(&moreButton, moreButton.getLocalBounds());
+  ActionPopoverOptions options;
+  options.compactMaximumWidth = 380;
+  presentActionPopover(std::move(panel), anchor, parentComp, options);
 }
 
 void WaveformBar::setPendingArrangementPartProvider(
@@ -1621,8 +1767,8 @@ void WaveformBar::resized() {
   if (!hasLoadedSong) {
     followButton.setVisible(false);
     followButton.setEnabled(false);
-    exportButton.setVisible(false);
-    exportButton.setEnabled(false);
+    moreButton.setVisible(false);
+    moreButton.setEnabled(false);
     editButton.setVisible(false);
     editButton.setEnabled(false);
     waveHeightButton.setVisible(false);
@@ -1653,8 +1799,8 @@ void WaveformBar::resized() {
   followButton.setVisible(true);
   followButton.setEnabled(true);
   followButton.setToggleState(followPlaybackEnabled, juce::dontSendNotification);
-  exportButton.setVisible(true);
-  exportButton.setEnabled(!exportBusy);
+  moreButton.setVisible(true);
+  moreButton.setEnabled(true);
   editButton.setVisible(!minimalPhoneMode);
   editButton.setEnabled(!minimalPhoneMode);
   waveHeightButton.setVisible(!minimalPhoneMode);
@@ -1695,7 +1841,7 @@ void WaveformBar::resized() {
         followButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
         bottomControls.removeFromRight(buttonGap);
-        exportButton.setBounds(
+        moreButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       return true;
@@ -1707,8 +1853,8 @@ void WaveformBar::resized() {
     placeBottomWaveControls(false, true);
     followButton.setVisible(false);
     followButton.setEnabled(false);
-    exportButton.setVisible(false);
-    exportButton.setEnabled(false);
+    moreButton.setVisible(false);
+    moreButton.setEnabled(false);
     guideMapButton.setVisible(true);
     guideMapButton.setEnabled(true);
     tempoMapButton.setVisible(true);
@@ -1817,7 +1963,7 @@ void WaveformBar::resized() {
     toolbarBounds.removeFromRight(4);
     followButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
     toolbarBounds.removeFromRight(4);
-    exportButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
+    moreButton.setBounds(toolbarBounds.removeFromRight(iconButtonW).reduced(1));
   }
 }
 

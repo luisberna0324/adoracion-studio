@@ -76,6 +76,8 @@ public:
       double songBpm,
       const std::function<void(double progress01)> &onLoadProgress = {},
       bool deferTransitionFadeInUntilConfigured = false);
+  /** Safely releases the active song and leaves the transport stopped. */
+  bool unloadSong();
   void finishPendingSongTransition();
   void playSong();
   void pauseSong();

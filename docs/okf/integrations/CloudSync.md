@@ -6,7 +6,7 @@ description: Contrato técnico del sync con R2 + Firestore. Define qué se
   cambio real antes de crear una nueva revisión y cómo se reconstruye el
   proyecto local al descargar sin pisar el estado de mixer/UI.
 tags: [cloud, r2, firestore, sync, mixer, pwproj, descriptor]
-timestamp: 2026-09-19T15:47:12Z
+timestamp: 2026-09-21
 ---
 
 # Cloud Sync — contenido cloud vs estado local
@@ -42,7 +42,10 @@ usuario solicita deliberadamente una copia portable.
 
 La purga incluye `cloud-content/`, además de metadata, waveform, artwork e
 índice cloud. Los `.pwproj` creados explícitamente siguen excluidos de la
-purga.
+purga. Antes de eliminar esos archivos, la app libera la canción activa del
+motor mediante `MTControlsAudioProcessor::unloadSong()`. Sólo continúa si el
+callback de audio quedó detenido; después invalida cualquier render asíncrono
+de waveform y limpia mixer, onda, arrange, selección y último ID persistido.
 
 Después de completar y registrar correctamente una descarga, la app elimina
 como limpieza de compatibilidad `projects/.cloud-downloads`, usado por
@@ -592,6 +595,19 @@ ni el `.pwproj`. Una canción que ya tiene vínculo en
   remoto se mantiene oculta.
 - **Versiones de ajustes**: lista las revisiones de ajustes por versión y fecha,
   y permite aplicar una versión en el dispositivo.
+
+La onda de la canción cargada ofrece el mismo acceso sin añadir tres controles
+permanentes: el botón circular **…**, ubicado inmediatamente antes de
+**Seguimiento**, abre un popover con **Exportar canción**, **Ver versiones** y,
+únicamente cuando la comparación canónica detecta cambios, **Guardar versión**.
+Exportar continúa abriendo su selector de formato. Ver versiones reutiliza la
+misma hoja compacta de Biblioteca. Guardar versión solicita confirmación antes
+de publicar; **Cancelar** no muta estado local ni remoto.
+
+Durante la publicación iniciada desde cualquiera de los accesos, la fila de
+Biblioteca conserva su progreso y, si se trata de la canción cargada, el mismo
+avance se refleja sobre la onda. La acción se mantiene protegida por
+`cloudSettingsInProgress` y la comparación se repite justo antes del envío.
 
 La [hoja de acciones de versiones](../ui/SettingsVersionsSheet.md) muestra un
 selector compacto con revisión y fecha. Al elegir una revisión, el selector se

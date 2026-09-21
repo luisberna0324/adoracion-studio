@@ -62,6 +62,7 @@ private:
                                      const juce::String &snapshotHash,
                                      const ProjectSongSettings &settings,
                                      const std::vector<CloudSettingsVersion> &knownVersions = {});
+  void confirmCloudSettingsSync(const ImportedSongData &song);
   void syncCloudSettings(const ImportedSongData &song);
   void showCloudSettingsVersions(const ImportedSongData &song, juce::Rectangle<int> screenAnchor);
   void showCloudSettingsVersionConfirmation(
@@ -203,6 +204,7 @@ private:
   void persistClickDynMetronomeEnabledForActiveSong(bool enabled);
   void trackClickDynMetronomeEnabled(bool enabled);
   void maybePersistClickDynMetronomeEnabledForActiveSong();
+  bool unloadActiveSongForLocalPurge();
   void updateSystemUsageMetrics();
   void launchExternalLogin();
   void completeBootstrapLogin(const juce::String &callbackUrl);

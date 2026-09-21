@@ -147,9 +147,9 @@ private:
   bool diagnosticsBusy = false;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
   juce::Label themeLabel;
-  IpadNativeComboBox themeBox;
+  AdaptiveComboBox themeBox;
   juce::Label languageLabel;
-  IpadNativeComboBox languageBox;
+  AdaptiveComboBox languageBox;
   juce::Label expandLaunchLabel;
   juce::ToggleButton expandLaunchToggle;
   juce::Label primeImportLabel;
@@ -157,9 +157,9 @@ private:
   juce::Label stemOptimizationLabel;
   juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
-  IpadNativeComboBox padsCrossfadeBox;
+  AdaptiveComboBox padsCrossfadeBox;
   juce::Label metronomeClickStyleLabel;
-  IpadNativeComboBox metronomeClickStyleBox;
+  AdaptiveComboBox metronomeClickStyleBox;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;

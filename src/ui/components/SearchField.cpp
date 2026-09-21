@@ -1,36 +1,39 @@
 #include "SearchField.h"
 
 SearchField::SearchField() {
-  textEditor.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
-  textEditor.setLookAndFeel(&roundedLookAndFeel);
+  textEditor.setMultiLine(false);
+  textEditor.setReturnKeyStartsNewLine(false);
+  textEditor.setScrollbarsShown(false);
+  textEditor.setJustification(juce::Justification::centredLeft);
   textEditor.onTextChange = [this] {
+    updateTrailingControl();
     if (onTextChange)
       onTextChange(textEditor.getText());
+  };
+  clearButton.setTooltip(TRANS("Clear search"));
+  clearButton.onClick = [this] {
+    textEditor.clear();
+    textEditor.grabKeyboardFocus();
   };
 
   refreshThemeColours();
   addAndMakeVisible(textEditor);
+  addAndMakeVisible(clearButton);
+  updateTrailingControl();
 }
 
-void SearchField::RoundedLookAndFeel::fillTextEditorBackground(
-    juce::Graphics &g, const int width, const int height, juce::TextEditor &editor) {
-  const auto bounds = juce::Rectangle<float>(0.0f, 0.0f,
-                                              static_cast<float>(width),
-                                              static_cast<float>(height));
-  g.setColour(editor.findColour(juce::TextEditor::backgroundColourId));
-  g.fillRoundedRectangle(bounds, 9.0f);
+SearchField::ClearButton::ClearButton() : juce::Button(TRANS("Clear search")) {
+  setWantsKeyboardFocus(false);
 }
 
-void SearchField::RoundedLookAndFeel::drawTextEditorOutline(
-    juce::Graphics &g, const int width, const int height, juce::TextEditor &editor) {
-  const auto bounds = juce::Rectangle<float>(0.5f, 0.5f,
-                                              static_cast<float>(width - 1),
-                                              static_cast<float>(height - 1));
-  const auto colour = editor.hasKeyboardFocus(true)
-                          ? editor.findColour(juce::TextEditor::focusedOutlineColourId)
-                          : editor.findColour(juce::TextEditor::outlineColourId);
-  g.setColour(colour);
-  g.drawRoundedRectangle(bounds, 9.0f, 1.0f);
+void SearchField::ClearButton::paintButton(juce::Graphics &g,
+                                           const bool isMouseOverButton,
+                                           const bool isButtonDown) {
+  auto area = getLocalBounds().toFloat().reduced(
+      useTouchOptimisedControls() ? 10.0f : 8.0f);
+  auto colour = UITheme::textSecondary.withAlpha(
+      isButtonDown ? 1.0f : (isMouseOverButton ? 0.9f : 0.7f));
+  drawIconGlyph(g, area, IconGlyph::Close, colour, 1.55f);
 }
 
 void SearchField::setPlaceholderText(const juce::String &text) {
@@ -40,11 +43,15 @@ void SearchField::setPlaceholderText(const juce::String &text) {
 void SearchField::setText(const juce::String &text,
                           const juce::NotificationType notification) {
   textEditor.setText(text, notification);
+  updateTrailingControl();
 }
 
 juce::String SearchField::getText() const { return textEditor.getText(); }
 
-void SearchField::clear() { textEditor.clear(); }
+void SearchField::clear() {
+  textEditor.clear();
+  updateTrailingControl();
+}
 
 void SearchField::setIconGlyph(const IconGlyph glyph) {
   iconGlyph = glyph;
@@ -59,6 +66,7 @@ void SearchField::setLoading(const bool isLoading) {
     startTimerHz(12);
   else
     stopTimer();
+  updateTrailingControl();
   repaint();
 }
 
@@ -90,7 +98,9 @@ void SearchField::paintOverChildren(juce::Graphics &g) {
   if (!loading)
     return;
 
-  const auto centre = juce::Point<float>(b.getRight() - 18.0f, b.getCentreY());
+  const auto centre = juce::Point<float>(
+      b.getRight() - static_cast<float>(useTouchOptimisedControls() ? 22 : 18),
+      b.getCentreY());
   g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.28f));
   g.fillEllipse(centre.x - 12.0f, centre.y - 12.0f, 24.0f, 24.0f);
   for (int i = 0; i < 12; ++i) {
@@ -106,7 +116,15 @@ void SearchField::paintOverChildren(juce::Graphics &g) {
 
 void SearchField::resized() {
   textEditor.setBounds(getLocalBounds());
-  textEditor.setIndents(iconInsetX + iconSizePx + 10, 0);
+  const int trailingWidth = useTouchOptimisedControls() ? 44 : 36;
+  clearButton.setBounds(getLocalBounds().removeFromRight(trailingWidth));
+  textEditor.setIndents(iconInsetX + iconSizePx + 10,
+                        (loading || clearButton.isVisible()) ? trailingWidth : 10);
+}
+
+void SearchField::updateTrailingControl() {
+  clearButton.setVisible(!loading && textEditor.getText().isNotEmpty());
+  resized();
 }
 
 void SearchField::timerCallback() {

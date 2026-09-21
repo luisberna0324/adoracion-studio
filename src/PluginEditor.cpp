@@ -420,6 +420,28 @@ bool MTControlsAudioProcessorEditor::hasPendingCloudSettings(
       link, juce::JSON::toString(ProjectStore::serializeSettings(localSettings)));
 }
 
+void MTControlsAudioProcessorEditor::confirmCloudSettingsSync(
+    const ImportedSongData &song) {
+  if (!hasPendingCloudSettings(song) ||
+      cloudSettingsInProgress.count(song.id.toStdString()) != 0)
+    return;
+
+  const auto safe =
+      juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+      juce::MessageBoxIconType::QuestionIcon,
+      L10n::tr("Guardar versión de ajustes", "Save settings version"),
+      L10n::tr(
+          "¿Quieres sincronizar estos cambios en la nube y crear una nueva versión de ajustes?",
+          "Sync these changes to the cloud and create a new settings version?"),
+      L10n::tr("Sincronizar", "Sync"), L10n::tr("Cancelar", "Cancel"),
+      this);
+  juce::AlertWindow::showAsync(options, [safe, song](const int result) {
+    if (result == 1 && safe != nullptr)
+      safe->syncCloudSettings(song);
+  });
+}
+
 void MTControlsAudioProcessorEditor::refreshCloudSettingsBaselines(
     const std::vector<CloudSongSummary> &cloudSongs) {
   if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
@@ -556,13 +578,30 @@ void MTControlsAudioProcessorEditor::syncCloudSettings(
   if (songListPanelRaw != nullptr)
     songListPanelRaw->setCloudUploadProgress(song.id, 0.0,
                                               "preparing-settings");
+  if (isSongCurrentlyLoaded(song.id) && waveformBarPtr != nullptr)
+    waveformBarPtr->setSongLoadingState(
+        true, 0.0,
+        L10n::tr("Preparando versión de ajustes…",
+                 "Preparing settings version…"));
   const auto publishedSettings = settings;
   cloudSettingsClient->publish(
       credentials, link.remoteSongId, projectId, song, std::move(settings),
       [safe, songId = song.id](CloudTransferProgress progress) {
-        if (safe != nullptr && safe->songListPanelRaw != nullptr)
-          safe->songListPanelRaw->setCloudUploadProgress(
-              songId, progress.fraction, progress.phase);
+        if (safe == nullptr)
+          return;
+        if (safe->songListPanelRaw != nullptr)
+          safe->songListPanelRaw->setCloudUploadProgress(songId,
+                                                         progress.fraction,
+                                                         progress.phase);
+        if (safe->isSongCurrentlyLoaded(songId) &&
+            safe->waveformBarPtr != nullptr) {
+          const auto percent = juce::String(static_cast<int>(
+              std::round(juce::jlimit(0.0, 1.0, progress.fraction) * 100.0)));
+          safe->waveformBarPtr->setSongLoadingState(
+              true, progress.fraction,
+              L10n::tr("Sincronizando ajustes… ", "Syncing settings… ") +
+                  percent + "%");
+        }
       },
       [safe, songId = song.id, projectId,
        publishedSettings](bool created, CloudSettingsVersion version,
@@ -570,6 +609,9 @@ void MTControlsAudioProcessorEditor::syncCloudSettings(
         if (safe == nullptr)
           return;
         safe->cloudSettingsInProgress.erase(songId.toStdString());
+        if (safe->isSongCurrentlyLoaded(songId) &&
+            safe->waveformBarPtr != nullptr)
+          safe->waveformBarPtr->clearSongLoadingState();
         const bool failed = error.code.isNotEmpty();
         if (safe->songListPanelRaw != nullptr) {
           if (failed)
@@ -1253,6 +1295,30 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       });
   waveformBarRaw->setOnExportMixRequested(
       [this](const juce::String &format) { beginExportCurrentSongMix(format); });
+  waveformBarRaw->setSongActionsStateProvider([this] {
+    WaveformSongActionsState state;
+    if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
+      return state;
+    CloudProjectLink link;
+    state.cloudLinked = CloudSyncIndexStore::findByProjectId(
+        projectIdentityForSong(currentLoadedSong), link);
+    if (!state.cloudLinked)
+      return state;
+    state.settingsPending = hasPendingCloudSettings(currentLoadedSong);
+    state.settingsActionBusy =
+        songLoadBusy || mixExportBusy || projectSaveBusy ||
+        cloudSettingsInProgress.count(currentLoadedSong.id.toStdString()) != 0;
+    return state;
+  });
+  waveformBarRaw->setOnCloudSettingsSyncRequested([this] {
+    if (hasCurrentLoadedSong)
+      confirmCloudSettingsSync(currentLoadedSong);
+  });
+  waveformBarRaw->setOnCloudSettingsVersionsRequested(
+      [this](const juce::Rectangle<int> screenAnchor) {
+        if (hasCurrentLoadedSong)
+          showCloudSettingsVersions(currentLoadedSong, screenAnchor);
+      });
 
   auto channelGridImpl =
       std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
@@ -3058,8 +3124,18 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         juce::AlertWindow::showAsync(
             options,
             [safeThis](int result) {
-              if (result != 0 || safeThis == nullptr)
+              if (result != 1 || safeThis == nullptr)
                 return;
+              if (!safeThis->unloadActiveSongForLocalPurge()) {
+                juce::NativeMessageBox::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
+                    L10n::tr("No se pudo completar la purga",
+                             "Couldn't complete purge"),
+                    L10n::tr(
+                        "No fue posible liberar la canción activa del motor de audio. Inténtalo nuevamente.",
+                        "The active song couldn't be unloaded from the audio engine. Please try again."));
+                return;
+              }
               const auto purge = CloudSyncIndexStore::purgeLocalState();
               if (safeThis->songListPanelRaw != nullptr)
                 safeThis->songListPanelRaw->refreshFromStorageView();
@@ -3679,6 +3755,50 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   // the caller's responsibility so each call site reads the JSON
   // exactly once per user action. The dedup is visible at the two
   // call sites (loadSong and the routing panel onChanged).
+}
+
+bool MTControlsAudioProcessorEditor::unloadActiveSongForLocalPurge() {
+  if (hasCurrentLoadedSong)
+    flushActiveSongPersistenceNow();
+
+  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  if (!processorRef.unloadSong())
+    return false;
+
+  // A waveform preview may still be rendering on a detached worker. Advance
+  // the generation before clearing the UI so its late callback cannot restore
+  // the purged song's bins. Do this only after a successful unload so a failed
+  // purge leaves the current song completely untouched.
+  waveformGeneration.fetch_add(1, std::memory_order_acq_rel);
+
+  deferredStartupSongLoadPending = false;
+  deferredStartupSongIndex = -1;
+  deferredStartupSongLoadAtMs = 0;
+  pendingExternalProjectFile = juce::File{};
+  wasSongPlaying = false;
+  currentSongIndex = -1;
+  hasCurrentLoadedSong = false;
+  currentLoadedSong = {};
+  AppSettings::setLastSelectedSongId({});
+  resetTrackedSongWindow();
+  hasTrackedClickDynMetronomeEnabled = false;
+  trackedClickDynMetronomeEnabled = false;
+
+  if (waveformBarPtr != nullptr) {
+    waveformBarPtr->clearSongLoadingState();
+    waveformBarPtr->setWaveformBins({});
+    waveformBarPtr->setSongRhythm(0.0, {});
+    waveformBarPtr->setArrangement({}, false);
+    waveformBarPtr->setTempoMap({});
+    waveformBarPtr->resetPlaybackViewForSong();
+  }
+  if (auto *grid =
+          dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
+    grid->setSong({});
+  }
+
+  repaint();
+  return true;
 }
 
 void MTControlsAudioProcessorEditor::resetTrackedSongWindow() {

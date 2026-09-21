@@ -39,9 +39,11 @@ docs/okf/
 | [audio-systems/Pads](audio-systems/Pads.md) | Motor de pads/sampleos |
 | [audio-systems/DynamicGuide](audio-systems/DynamicGuide.md) | Guías dinámicas por idioma |
 | [audio-systems/StemCache](audio-systems/StemCache.md) | Cache FLAC on-disk de stems + migración legacy |
+| [importing/LibraryPersistence](importing/LibraryPersistence.md) | Persistencia y reubicacion de canciones locales en iOS |
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
+| [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |

@@ -65,7 +65,7 @@ private:
 
   void configureTextEditor(juce::TextEditor &editor,
                            const juce::String &placeholder);
-  void configureCombo(IpadNativeComboBox &combo);
+  void configureCombo(AdaptiveComboBox &combo);
   void layoutStepImport(juce::Rectangle<int> bounds);
   void layoutStepMetadata(juce::Rectangle<int> bounds);
   void layoutStepMapping(juce::Rectangle<int> bounds);
@@ -155,8 +155,8 @@ private:
   juce::TextEditor songTitleEditor;
   juce::TextEditor artistEditor;
   juce::TextEditor bpmEditor;
-  IpadNativeComboBox keyBox;
-  IpadNativeComboBox timeSignatureBox;
+  AdaptiveComboBox keyBox;
+  AdaptiveComboBox timeSignatureBox;
 
   juce::Viewport mapViewport;
   juce::Component mapContent;

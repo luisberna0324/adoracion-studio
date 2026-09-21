@@ -12,8 +12,13 @@ UIViewController* activeViewController() {
         ![scene isKindOfClass:UIWindowScene.class])
       continue;
     for (UIWindow* window in ((UIWindowScene*)scene).windows) {
-      if (window.isKeyWindow)
-        return window.rootViewController;
+      if (window.isKeyWindow) {
+        UIViewController* controller = window.rootViewController;
+        while (controller.presentedViewController != nil &&
+               !controller.presentedViewController.isBeingDismissed)
+          controller = controller.presentedViewController;
+        return controller;
+      }
     }
   }
   return nil;
@@ -24,7 +29,10 @@ UIViewController* activeViewController() {
 namespace NativeIpadChoicePicker {
 
 bool isAvailable() {
-  return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+  // UIKit action sheets adapt automatically: anchored popover on iPad and
+  // bottom sheet on iPhone. Keeping this native on both devices gives the
+  // expected touch, accessibility, keyboard and dismissal behaviour.
+  return true;
 }
 
 bool show(juce::Component& anchor, const std::vector<juce::String>& items,
@@ -44,7 +52,10 @@ bool show(juce::Component& anchor, const std::vector<juce::String>& items,
   auto callback = std::make_shared<std::function<void(int)>>(std::move(completion));
   for (size_t i = 0; i < items.size(); ++i) {
     NSString* title = [NSString stringWithUTF8String:items[i].toRawUTF8()];
-    UIAlertAction* action = [UIAlertAction actionWithTitle:title
+    NSString* displayedTitle = static_cast<int>(i) == selectedIndex
+                                   ? [NSString stringWithFormat:@"✓ %@", title]
+                                   : title;
+    UIAlertAction* action = [UIAlertAction actionWithTitle:displayedTitle
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(UIAlertAction*) {
       juce::MessageManager::callAsync([callback, i]() {
@@ -56,7 +67,10 @@ bool show(juce::Component& anchor, const std::vector<juce::String>& items,
       action.enabled = YES;
     [menu addAction:action];
   }
-  [menu addAction:[UIAlertAction actionWithTitle:@"Cancel"
+  const auto cancelText = juce::translate("Cancel");
+  NSString* cancelTitle =
+      [NSString stringWithUTF8String:cancelText.toRawUTF8()];
+  [menu addAction:[UIAlertAction actionWithTitle:cancelTitle
                                              style:UIAlertActionStyleCancel
                                            handler:^(UIAlertAction*) {
     juce::MessageManager::callAsync([callback]() {

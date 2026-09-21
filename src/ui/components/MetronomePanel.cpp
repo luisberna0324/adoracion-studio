@@ -178,18 +178,11 @@ void MetronomePanel::MetronomePopover::refreshThemeColours() {
   plusButton.setColour(juce::TextButton::textColourOffId,
                        UITheme::textPrimary);
 
-  timeSigBox.setColour(juce::ComboBox::backgroundColourId,
-                       UITheme::cardBgHover);
-  timeSigBox.setColour(juce::ComboBox::outlineColourId,
-                       UITheme::cardBorder.withAlpha(0.65f));
-  timeSigBox.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  timeSigBox.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
-
-  bpmEditor.setColour(juce::TextEditor::backgroundColourId,
-                      UITheme::cardBgHover);
-  bpmEditor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
-  bpmEditor.setColour(juce::TextEditor::outlineColourId,
-                      UITheme::cardBorder.withAlpha(0.7f));
+  applyComboBoxTheme(timeSigBox, UITheme::cardBgHover,
+                     UITheme::cardBorder.withAlpha(0.65f));
+  applyTextEditorTheme(bpmEditor, UITheme::cardBgHover,
+                       UITheme::cardBorder.withAlpha(0.7f));
+  bpmEditor.setJustification(juce::Justification::centred);
   repaint();
 }
 

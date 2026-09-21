@@ -2,10 +2,37 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-09-16T12:30:00-03:00
+timestamp: 2026-09-21T00:00:00-03:00
 ---
 
 # Changelog
+
+## 2026-09-21
+
+### Biblioteca iOS: conservar canciones entre instalaciones
+
+- Una actualizacion de la app puede conservar `Library/MTControls` y asignarle
+  otro UUID de contenedor. Antes, las rutas absolutas de stems y artwork
+  seguian apuntando al UUID anterior y la carga descartaba la cancion como si
+  sus archivos hubieran sido eliminados.
+- `SongLibraryStore` ahora reubica rutas administradas de stems, artwork y
+  proyectos al root actual antes de validar disponibilidad. Las rutas externas
+  del usuario no se modifican.
+- Contrato: [Library Persistence on iOS](importing/LibraryPersistence.md).
+
+## 2026-09-20
+
+### Campos de texto y selectores adaptativos
+
+- `TextEditor` y `AdaptiveComboBox` comparten fondo, borde, foco, radio,
+  tipografia, padding y estados deshabilitados mediante un unico look-and-feel.
+- Los selectores usan action sheet nativo en iPhone, popover UIKit anclado en
+  iPad y menu JUCE equivalente en escritorio y Android.
+- Las filas de menu y campos tactiles adoptan metricas de `44 pt`; la opcion
+  actual se marca antes de abrir el selector.
+- `SearchField` incorpora una accion final para limpiar texto que cede su lugar
+  al indicador de carga cuando corresponde.
+- Contrato: [Input Controls](ui/InputControls.md).
 
 ## 2026-09-16
 
@@ -211,6 +238,11 @@ timestamp: 2026-09-16T12:30:00-03:00
 - Configuración incluye `Purgar` como reset local integral: borra
   `songs.json`, todos los setlists, el índice cloud, registros de proyectos,
   cache de audio/ondas/portadas/proyectos y staging temporal.
+- Antes de borrar, la canción activa se libera de forma segura del motor de
+  audio. La interfaz limpia mixer, waveform, arrange y selección persistida, e
+  invalida previews asíncronos para que una tarea tardía no restaure la onda.
+- Si el callback de audio no puede detenerse, la purga se cancela y conserva
+  todos los archivos locales.
 - La acción no toca R2, Firestore ni la carpeta física `projects/`; por eso
   ningún paquete `.pwproj` se elimina o modifica. Sus referencias de
   Biblioteca sí desaparecen y sólo vuelven mediante abrir, crear o descargar.

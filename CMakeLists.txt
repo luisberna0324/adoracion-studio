@@ -550,6 +550,7 @@ juce_add_binary_data(MTControlsAssets
         assets/ui-icons/plus.svg
         assets/ui-icons/check.svg
         assets/ui-icons/minus.svg
+        assets/ui-icons/more_horizontal.svg
         assets/ui-icons/more_vertical.svg
         assets/ui-icons/clock.svg
         assets/ui-icons/music.svg

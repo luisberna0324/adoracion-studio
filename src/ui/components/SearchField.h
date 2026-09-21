@@ -28,15 +28,15 @@ public:
   void resized() override;
 
 private:
-  class RoundedLookAndFeel final : public juce::LookAndFeel_V4 {
+  class ClearButton final : public juce::Button {
   public:
-    void fillTextEditorBackground(juce::Graphics &, int width, int height,
-                                  juce::TextEditor &) override;
-    void drawTextEditorOutline(juce::Graphics &, int width, int height,
-                               juce::TextEditor &) override;
-  } roundedLookAndFeel;
+    ClearButton();
+    void paintButton(juce::Graphics &, bool isMouseOverButton,
+                     bool isButtonDown) override;
+  };
 
   juce::TextEditor textEditor;
+  ClearButton clearButton;
   IconGlyph iconGlyph = IconGlyph::Search;
   std::function<void(const juce::String &)> onTextChange;
   bool loading = false;
@@ -45,5 +45,6 @@ private:
   int iconInsetX = 10;
   int iconSizePx = 14;
 
+  void updateTrailingControl();
   void timerCallback() override;
 };

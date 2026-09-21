@@ -3106,12 +3106,9 @@ private:
 
   void applyTheme() {
     titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
-    searchEditor.setColour(juce::TextEditor::backgroundColourId,
-                           UITheme::cardBgHover);
-    searchEditor.setColour(juce::TextEditor::textColourId,
-                           UITheme::textPrimary);
-    searchEditor.setColour(juce::TextEditor::outlineColourId,
-                           UITheme::cardBorder.withAlpha(0.6f));
+    applyTextEditorTheme(searchEditor, UITheme::cardBgHover,
+                         UITheme::cardBorder.withAlpha(0.6f));
+    searchEditor.setJustification(juce::Justification::centredLeft);
     styleButton(createButton, UITheme::cardBgHover);
     styleButton(loadButton, UITheme::accent);
     styleButton(addSongButton, UITheme::cardBgHover);

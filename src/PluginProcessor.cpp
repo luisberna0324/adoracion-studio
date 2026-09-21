@@ -4111,6 +4111,35 @@ bool MTControlsAudioProcessor::loadSongStems(
   return true;
 }
 
+bool MTControlsAudioProcessor::unloadSong() {
+  const bool wasSuspended = isSuspended();
+  suspendProcessing(true);
+  for (int wait = 0;
+       wait < 2000 && audioCallbackActive.load(std::memory_order_acquire);
+       ++wait) {
+    juce::Thread::sleep(1);
+  }
+
+  if (audioCallbackActive.load(std::memory_order_acquire)) {
+    if (!wasSuspended)
+      suspendProcessing(false);
+    return false;
+  }
+
+  pauseTimeProcessorMaintenance();
+  {
+    const juce::SpinLock::ScopedLockType lock(stemListLock);
+    removeAllStemSources();
+    clearLoadedSongState();
+    diagnosticSourceGeneration.fetch_add(1, std::memory_order_relaxed);
+  }
+  resumeTimeProcessorMaintenance();
+
+  if (!wasSuspended)
+    suspendProcessing(false);
+  return true;
+}
+
 void MTControlsAudioProcessor::finishPendingSongTransition() {
   const auto state = static_cast<SongLoadTransitionState>(
       songLoadTransitionState.load(std::memory_order_acquire));
@@ -5798,8 +5827,11 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   tempoTransitionTargetRatio = 1.0;
   tempoTransitionElapsedFrames = 0;
   tempoTransitionTotalFrames = 0;
-  loadedSongKey.clear();
-  loadedSongTitle.clear();
+  {
+    const juce::ScopedWriteLock metaLock(songMetaLock);
+    loadedSongKey.clear();
+    loadedSongTitle.clear();
+  }
   songStartSeconds.store(0.0, std::memory_order_relaxed);
   songEndSeconds.store(0.0, std::memory_order_relaxed);
   songEndCustomized.store(false, std::memory_order_relaxed);
@@ -5815,6 +5847,10 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   dynamicGuideOutputChannelState.store(1, std::memory_order_relaxed);
   dynamicGuideOutputWidthState.store(1, std::memory_order_relaxed);
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
+  globalSamplePosition.store(0, std::memory_order_relaxed);
+  requestedSeekPosition.store(-1, std::memory_order_relaxed);
+  seekTargetSeconds.store(0.0, std::memory_order_relaxed);
+  seekRequestGeneration.fetch_add(1, std::memory_order_release);
   songLoaded.store(false, std::memory_order_relaxed);
   arrangementParts.clear();
   sectionScheduler.clear();
@@ -5830,6 +5866,13 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   arrangementTotalLengthSeconds.store(0.0, std::memory_order_relaxed);
   dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
   pitchTargetSemiTones.store(0, std::memory_order_relaxed);
+  fadeActive.store(false, std::memory_order_relaxed);
+  fadeTarget.store(1.0f, std::memory_order_relaxed);
+  fadeGain = 1.0f;
+  songLoadTransitionGain.store(1.0f, std::memory_order_relaxed);
+  songLoadTransitionState.store(
+      static_cast<int>(SongLoadTransitionState::idle),
+      std::memory_order_release);
   mixEngine.reset();
   metronome.reset();
   metronomeLatencyDelay.reset();

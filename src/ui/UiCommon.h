@@ -59,7 +59,13 @@ juce::String formatTimeSeconds(double seconds);
 void applyTheme(ThemePreset preset);
 juce::Font makeAppFont(float size, AppFontWeight weight = AppFontWeight::Regular);
 
-class IpadNativeComboBox final : public juce::ComboBox {
+/**
+ * Selector de una sola opcion con presentacion adaptativa.
+ *
+ * En Apple usa el selector UIKit cuando esta disponible; en el resto de
+ * plataformas conserva el menu JUCE con las mismas metricas y estilo visual.
+ */
+class AdaptiveComboBox final : public juce::ComboBox {
 public:
   using juce::ComboBox::ComboBox;
 
@@ -112,6 +118,7 @@ enum class SvgIconName {
   Plus,
   Check,
   Minus,
+  MoreHorizontal,
   MoreVertical,
   Clock,
   Music,
@@ -146,7 +153,7 @@ bool useTouchOptimisedControls();
 bool isPhoneSizedTouchLayout(const juce::Component &component);
 int touchOptimisedControlHeight();
 int touchOptimisedPopupItemHeight();
-void applyComboBoxTheme(IpadNativeComboBox &combo,
+void applyComboBoxTheme(AdaptiveComboBox &combo,
                         juce::Colour background = UITheme::cardBgHover,
                         juce::Colour outline =
                             UITheme::cardBorder.withAlpha(0.7f));

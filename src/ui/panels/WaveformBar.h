@@ -22,6 +22,12 @@ private:
   SvgIconName iconName;
 };
 
+struct WaveformSongActionsState {
+  bool cloudLinked = false;
+  bool settingsPending = false;
+  bool settingsActionBusy = false;
+};
+
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
   using PlayingProvider = std::function<bool()>;
@@ -72,6 +78,11 @@ public:
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setOnExportMixRequested(std::function<void(juce::String)> cb);
+  void setSongActionsStateProvider(
+      std::function<WaveformSongActionsState()> provider);
+  void setOnCloudSettingsSyncRequested(std::function<void()> cb);
+  void setOnCloudSettingsVersionsRequested(
+      std::function<void(juce::Rectangle<int>)> cb);
   void setExportBusy(bool busy);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
@@ -206,6 +217,7 @@ private:
   void updatePlaybackAnimation(double frameTimestampSec);
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
+  void showExportFormatPopover();
 
   std::vector<float> waveformBins;
   PlayingProvider playingProvider;
@@ -226,22 +238,26 @@ private:
   TempoMapChangedCallback onTempoMapChanged;
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   std::function<void(juce::String)> onExportMixRequested;
+  std::function<WaveformSongActionsState()> songActionsStateProvider;
+  std::function<void()> onCloudSettingsSyncRequested;
+  std::function<void(juce::Rectangle<int>)>
+      onCloudSettingsVersionsRequested;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   SvgToolbarButton followButton{"follow", SvgIconName::AudioWaveform};
-  SvgToolbarButton exportButton{"export", SvgIconName::FileAudio};
+  SvgToolbarButton moreButton{"more", SvgIconName::MoreHorizontal};
   SvgToolbarButton editButton{"edit", SvgIconName::Pencil};
   SvgToolbarButton waveHeightButton{"waveHeight", SvgIconName::Maximize};
   SvgToolbarButton guideMapButton{"guideMap", SvgIconName::Music};
   SvgToolbarButton tempoMapButton{"tempoMap", SvgIconName::Metronome};
   juce::Label snapModeLabel;
-  IpadNativeComboBox snapModeBox;
+  AdaptiveComboBox snapModeBox;
   juce::TextButton sectionMenuButton;
   juce::TextButton splitTempoRegionButton;
   juce::Label tempoBpmLabel;
   juce::TextEditor tempoBpmEditor;
   juce::Label tempoSignatureLabel;
-  IpadNativeComboBox tempoSignatureBox;
+  AdaptiveComboBox tempoSignatureBox;
   std::vector<std::unique_ptr<juce::TextButton>> sectionAddButtons;
   SnapMode snapMode = SnapMode::Bar;
   TimelineViewMode timelineViewMode = TimelineViewMode::GuideMap;
