@@ -70,8 +70,11 @@ bool show(juce::Component& anchor, const std::vector<juce::String>& items,
   const auto cancelText = juce::translate("Cancel");
   NSString* cancelTitle =
       [NSString stringWithUTF8String:cancelText.toRawUTF8()];
+  // UIAlertActionStyleCancel is rendered by UIKit as a second, detached card.
+  // This picker represents one flat list of mutually exclusive values, so keep
+  // dismissal in that same list while preserving its no-selection behaviour.
   [menu addAction:[UIAlertAction actionWithTitle:cancelTitle
-                                             style:UIAlertActionStyleCancel
+                                             style:UIAlertActionStyleDefault
                                            handler:^(UIAlertAction*) {
     juce::MessageManager::callAsync([callback]() {
       if (*callback)

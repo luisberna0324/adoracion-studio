@@ -1,8 +1,10 @@
 #include "SongLibraryStore.h"
+#include "ApplicationDataPaths.h"
 #include "CloudSyncIndexStore.h"
 #include "ProjectStore.h"
 #include "AppSettings.h"
 #include "AssetBootstrapManager.h"
+#include "PortableFlacConversion.h"
 #include "Localization.h"
 #include "SessionAuthLogger.h"
 #include "audio/StemCache.h"
@@ -435,7 +437,7 @@ bool repairArtworkPathForSong(ImportedSongData &song) {
   }
 
   auto songDir =
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      ApplicationDataPaths::applicationDataDirectory()
           .getChildFile("MTControls")
           .getChildFile("audio")
           .getChildFile(songId);
@@ -2275,12 +2277,27 @@ bool SongLibraryStore::saveLibrary(const LibraryState &library) {
   }
 
   const auto json = juce::JSON::toString(rootVar, true);
-  return getDbFile().replaceWithText(json);
+  // Check the complete write before replacing the current library. JUCE's
+  // replaceWithText does not propagate appendText's result; a full disk must
+  // never replace a healthy songs.json with an incomplete temporary file.
+  const auto target = getDbFile();
+  juce::TemporaryFile temporary(target, juce::TemporaryFile::useHiddenFile);
+  const auto bytes = static_cast<size_t>(json.getNumBytesAsUTF8());
+  {
+    juce::FileOutputStream output(temporary.getFile());
+    if (!output.openedOk() || !output.write(json.toRawUTF8(), bytes))
+      return false;
+    output.flush();
+    if (output.getStatus().failed() ||
+        temporary.getFile().getSize() != static_cast<juce::int64>(bytes))
+      return false;
+  }
+  return temporary.overwriteTargetFileWithTemporary();
 }
 
 juce::File SongLibraryStore::getRootDirectory() {
   auto root =
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      ApplicationDataPaths::applicationDataDirectory()
           .getChildFile("MTControls");
   root.createDirectory();
   root.getChildFile("audio").createDirectory();
@@ -2438,9 +2455,19 @@ bool SongLibraryStore::convertStemToStorageFormat(
     const juce::File &source, const juce::File &destination,
     juce::String &errorMessage, const double durationSec,
     const SongImportProgressFn &onProgress) {
+#if JUCE_IOS || JUCE_ANDROID
+  juce::ignoreUnused(durationSec);
+  return portable_audio::convertToFlac(
+      source, destination, errorMessage,
+      [onProgress](double progress) {
+        if (onProgress)
+          onProgress(progress, {});
+      });
+#else
   return convertStemWithFfmpeg(
       source, destination, kFfmpegAudioCodec, kStorageFormatLabel,
       errorMessage, durationSec, onProgress);
+#endif
 }
 
 bool SongLibraryStore::convertStemForProject(const juce::File &source,
@@ -2448,9 +2475,14 @@ bool SongLibraryStore::convertStemForProject(const juce::File &source,
                                              juce::String &errorMessage,
                                              const double durationSec,
                                              const SongImportProgressFn &onProgress) {
+#if JUCE_IOS || JUCE_ANDROID
+  return convertStemToStorageFormat(source, destination, errorMessage,
+                                    durationSec, onProgress);
+#else
   return convertStemWithFfmpeg(
       source, destination, kProjectFfmpegAudioCodec,
       kProjectStorageFormatLabel, errorMessage, durationSec, onProgress);
+#endif
 }
 
 juce::String SongLibraryStore::projectStorageStemExtension() {

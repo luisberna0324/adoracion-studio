@@ -9,14 +9,13 @@
 namespace BinaryData
 {
 
-//================== midi.svg ==================
+//================== music.svg ==================
 static const unsigned char temp_binary_data_24[] =
-"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 455\">\n"
-"  <path d=\"M137 96h233c19.6 0 31 16.9 31 37v229h-65V163h-38v199h-59V163h-37v199h-65V96z\"/>\n"
-"  <rect x=\"433\" y=\"96\" width=\"65\" height=\"266\"/>\n"
-"  <path d=\"M529 96h193c19.6 0 31 16.9 31 37v196c0 24.9-10.4 33-33 33H529V193h66v104h93V156H529V96z\"/>\n"
-"  <rect x=\"783\" y=\"96\" width=\"66\" height=\"266\"/>\n"
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n"
+"  <path d=\"M9 18V5l12-2v13\"/>\n"
+"  <circle cx=\"6\" cy=\"18\" r=\"3\"/>\n"
+"  <circle cx=\"18\" cy=\"16\" r=\"3\"/>\n"
 "</svg>\n";
 
-const char* midi_svg = (const char*) temp_binary_data_24;
+const char* music_svg = (const char*) temp_binary_data_24;
 }

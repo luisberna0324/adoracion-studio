@@ -36,14 +36,17 @@ void SongLoadProgressOverlay::setTitleText(const juce::String &text) {
   titleLabel.setText(text, juce::dontSendNotification);
 }
 
+juce::Rectangle<int> SongLoadProgressOverlay::cardBounds() const {
+  // Keep the desktop card unchanged; fit portrait phones inside their edges.
+  return juce::Rectangle<int>(juce::jmin(440, juce::jmax(1, getWidth() - 32)),
+                              juce::jmin(132, juce::jmax(1, getHeight() - 32)))
+      .withCentre(getLocalBounds().getCentre());
+}
+
 void SongLoadProgressOverlay::paint(juce::Graphics &g) {
   g.fillAll(juce::Colours::black.withAlpha(0.42f));
 
-  constexpr int cardW = 440;
-  constexpr int cardH = 132;
-  auto card =
-      juce::Rectangle<float>(static_cast<float>(cardW), static_cast<float>(cardH))
-          .withCentre(getLocalBounds().toFloat().getCentre());
+  const auto card = cardBounds().toFloat();
 
   juce::Path rounded;
   rounded.addRoundedRectangle(card, 10.0f, 10.0f);
@@ -54,10 +57,7 @@ void SongLoadProgressOverlay::paint(juce::Graphics &g) {
 }
 
 void SongLoadProgressOverlay::resized() {
-  constexpr int cardW = 440;
-  constexpr int cardH = 132;
-  const auto card =
-      juce::Rectangle<int>(cardW, cardH).withCentre(getLocalBounds().getCentre());
+  const auto card = cardBounds();
   auto content = card.reduced(22, 18);
   titleLabel.setBounds(content.removeFromTop(26));
   content.removeFromTop(6);

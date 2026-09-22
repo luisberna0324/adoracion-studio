@@ -9,12 +9,14 @@
 namespace BinaryData
 {
 
-//================== copy.svg ==================
+//================== maximize.svg ==================
 static const unsigned char temp_binary_data_28[] =
 "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\" stroke-width=\"2.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n"
-"  <rect x=\"8\" y=\"8\" width=\"13\" height=\"13\" rx=\"2\"/>\n"
-"  <path d=\"M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3\"/>\n"
+"  <path d=\"M8 3H5a2 2 0 0 0-2 2v3\"/>\n"
+"  <path d=\"M16 3h3a2 2 0 0 1 2 2v3\"/>\n"
+"  <path d=\"M21 16v3a2 2 0 0 1-2 2h-3\"/>\n"
+"  <path d=\"M8 21H5a2 2 0 0 1-2-2v-3\"/>\n"
 "</svg>\n";
 
-const char* copy_svg = (const char*) temp_binary_data_28;
+const char* maximize_svg = (const char*) temp_binary_data_28;
 }

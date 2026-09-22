@@ -1,7 +1,6 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "../platform/NativeIpadChoicePicker.h"
 
 enum class ThemePreset { Default = 1, Spotify, Ableton };
 enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
@@ -62,8 +61,8 @@ juce::Font makeAppFont(float size, AppFontWeight weight = AppFontWeight::Regular
 /**
  * Selector de una sola opcion con presentacion adaptativa.
  *
- * En Apple usa el selector UIKit cuando esta disponible; en el resto de
- * plataformas conserva el menu JUCE con las mismas metricas y estilo visual.
+ * Una sola lista JUCE en todas las plataformas, con metricas tactiles en movil.
+ * El teclado de texto sigue siendo el del sistema operativo.
  */
 class AdaptiveComboBox final : public juce::ComboBox {
 public:
@@ -179,6 +178,8 @@ public:
                    bool isButtonDown) override;
   void setAccent(bool shouldAccent);
   void setSubtleHighlight(bool shouldHighlight);
+  /** Omite fondo y borde, conservando el target táctil y el glifo. */
+  void setBare(bool shouldBeBare);
   void setSvgLabel(SvgIconName iconToUse, juce::String textToUse);
 
 private:
@@ -187,6 +188,7 @@ private:
   juce::String labelText;
   bool accent = false;
   bool forceSubtleHighlight = false;
+  bool bare = false;
   bool useSvgLabel = false;
 };
 

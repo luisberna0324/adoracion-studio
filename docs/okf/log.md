@@ -9,6 +9,61 @@ timestamp: 2026-09-21T00:00:00-03:00
 
 ## 2026-09-21
 
+### Creacion portable movil y controles JUCE
+
+- El selector ahora usa una sola lista JUCE en todas las plataformas, sin
+  bridge UIKit; conserva la guarda de apertura entre mouseDown/mouseUp.
+  Corrige el indent superior de texto y el espacio del boton limpiar.
+- Mapeo movil con targets de 44–48 pt, scroll estable y borrador conservado al
+  volver a Archivos; escritorio mantiene sus filas y distribucion.
+- Creacion portable movil en background, protegida contra doble envio/cierre,
+  con FLAC JUCE sin encoder externo y portada manual dentro del paquete.
+- Los documentos elegidos en iOS/Android se copian desde sus URLs autorizadas
+  a temporales privados del borrador, sin depender de rutas externas ni borrar
+  originales. Las pruebas de persistencia usan almacenamiento aislado.
+- Verificacion local: 19 pruebas aprobadas; la prueba de interaccion del popup
+  se omite porque el sistema no concede foco a su ventana. Save/open y registro
+  real en Biblioteca pasan con audio/portada y fallos de escritura simulados.
+  Compilan standalone macOS, codigo compartido iOS Simulator y APK Android;
+  quedan pendientes teclado y proveedores de documentos en dispositivo real.
+- Contratos: [Song Creation](importing/SongCreation.md),
+  [Input Controls](ui/InputControls.md), [Mobile Layout](ui/MobileLayout.md).
+
+### Asistente de canciones a pantalla completa
+
+- En telefonos, el fondo del asistente de creacion y edicion ahora cubre la
+  superficie fisica completa, incluidas las regiones del notch y del indicador
+  inferior.
+- Los controles siguen descontando `safeAreaInsets`; el cambio es visual y no
+  coloca acciones interactivas debajo de elementos del sistema.
+- Contrato: [Mobile Layout](ui/MobileLayout.md).
+
+### Teclado movil en el asistente de canciones
+
+- El asistente observa los `keyboardInsets` de JUCE mientras esta abierto y
+  mantiene los campos editables por encima de un teclado acoplado.
+- En Detalles mantiene un formulario desplazable con geometria estable;
+  desplaza suavemente el campo enfocado sin ocultar ni reordenar la portada y
+  los pasos. Portada, camara y metadata comparten el recorte del viewport.
+  En Secciones conserva el viewport y revela automaticamente la fila enfocada.
+- Return finaliza el campo activo y descarta el teclado sin dejar foco
+  residual; BPM solicita teclado numerico. `Listo` sobre el teclado y abrir un
+  combo tambien finalizan la edicion. Deslizar el formulario conserva el teclado.
+- Contratos: [Mobile Layout](ui/MobileLayout.md) e
+  [Input Controls](ui/InputControls.md).
+
+### Selectores moviles en una sola lista
+
+- `AdaptiveComboBox` conserva su superficie compartida de PlayWorship y abre
+  el selector UIKit nativo en iPhone/iPad.
+- `Cancelar` ahora pertenece al mismo grupo de opciones; mantiene la operacion
+  sin cambios pero evita la segunda tarjeta que UIKit reserva para acciones con
+  estilo `Cancel`.
+- Los campos de texto y combos comparten un borde en reposo con mejor contraste,
+  y los combos liberan el foco al cerrar la lista para no dejar el acento verde
+  persistente.
+- Contrato: [Input Controls](ui/InputControls.md).
+
 ### Biblioteca iOS: conservar canciones entre instalaciones
 
 - Una actualizacion de la app puede conservar `Library/MTControls` y asignarle

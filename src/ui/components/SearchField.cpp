@@ -80,6 +80,7 @@ void SearchField::refreshThemeColours() {
                        UITheme::panelDark.interpolatedWith(UITheme::cardBg,
                                                            0.28f),
                        UITheme::cardBorder.withAlpha(0.48f));
+  resized();
 }
 
 juce::TextEditor &SearchField::editor() { return textEditor; }
@@ -118,8 +119,11 @@ void SearchField::resized() {
   textEditor.setBounds(getLocalBounds());
   const int trailingWidth = useTouchOptimisedControls() ? 44 : 36;
   clearButton.setBounds(getLocalBounds().removeFromRight(trailingWidth));
-  textEditor.setIndents(iconInsetX + iconSizePx + 10,
-                        (loading || clearButton.isVisible()) ? trailingWidth : 10);
+  // setIndents takes (left, TOP), not (left, right). Reserve accessory space
+  // with the viewport's border so text never jumps when the clear icon appears.
+  textEditor.setBorder(juce::BorderSize<int>(
+      1, 0, 1, (loading || clearButton.isVisible()) ? trailingWidth : 10));
+  textEditor.setIndents(iconInsetX + iconSizePx + 10, 0);
 }
 
 void SearchField::updateTrailingControl() {

@@ -1,4 +1,5 @@
 #include "SessionAuthLogger.h"
+#include "ApplicationDataPaths.h"
 
 #include <cstdio>
 #include <memory>
@@ -12,19 +13,19 @@ juce::File gResolvedLogFile;
 bool gTriedInit = false;
 
 juce::File appSupportLogFile() {
-  return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+  return ApplicationDataPaths::applicationDataDirectory()
       .getChildFile("MTControls")
       .getChildFile("session_auth.log");
 }
 
 juce::File documentsLogFile() {
-  return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+  return ApplicationDataPaths::documentsDirectory()
       .getChildFile("MTControls")
       .getChildFile("session_auth.log");
 }
 
 juce::File systemLogsLogFile() {
-  return juce::FileLogger::getSystemLogFileFolder()
+  return ApplicationDataPaths::systemLogsDirectory()
       .getChildFile("MTControls")
       .getChildFile("session_auth.log");
 }

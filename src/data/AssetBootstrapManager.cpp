@@ -169,6 +169,11 @@ juce::File AssetBootstrapManager::getEncoderBinaryPath() {
 }
 
 juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
+#if JUCE_IOS || JUCE_ANDROID
+  // A desktop FFmpeg executable cannot run in a mobile app sandbox. Mobile
+  // project import uses the bundled JUCE codecs instead.
+  return {};
+#else
   const auto managed = getEncoderBinaryPath();
   if (managed.existsAsFile() && managed.getSize() > 0)
     return managed;
@@ -198,6 +203,7 @@ juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
 #endif
 
   return {};
+#endif
 }
 
 juce::File AssetBootstrapManager::getPadsPackDirectory() {
@@ -401,6 +407,13 @@ void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
 
 bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
                                                const ProgressFn &progress) {
+#if JUCE_IOS || JUCE_ANDROID
+  juce::ignoreUnused(progress);
+  if (errorMessage != nullptr)
+    *errorMessage = "External audio encoders are unavailable on mobile. "
+                    "Use the built-in WAV/AIFF/FLAC import conversion.";
+  return false;
+#else
   auto encoder = getAvailableEncoderBinary();
   juce::String localError;
 
@@ -452,6 +465,7 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
     progress(1.0, "Encoder ready");
   persistState("Ready", AppSettings::getAssetsBootstrapState().padsStatus, {});
   return true;
+#endif
 }
 
 bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {

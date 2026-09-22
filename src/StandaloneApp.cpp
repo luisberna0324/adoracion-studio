@@ -39,6 +39,17 @@ class PlayWorshipStandaloneWindow final
 public:
   using juce::StandaloneFilterWindow::StandaloneFilterWindow;
 
+#if JUCE_IOS
+  void parentSizeChanged() override {
+    juce::StandaloneFilterWindow::parentSizeChanged();
+    // The scene can rotate while the editor is still being constructed. Keep
+    // the native peer fullscreen after its first real display size arrives.
+    if (auto *peer = getPeer())
+      peer->setFullScreen(true);
+    juce::StandaloneFilterWindow::resized();
+  }
+#endif
+
   void closeButtonPressed() override {
     if (auto *app = juce::JUCEApplicationBase::getInstance())
       app->systemRequestedQuit();
@@ -90,16 +101,30 @@ public:
   bool moreThanOneInstanceAllowed() override { return false; }
 
   void initialise(const juce::String &commandLine) override {
+#if JUCE_IOS || JUCE_ANDROID
+    // Set the launch mask before JUCE creates its window/controller. Waiting
+    // until the editor constructor lets iOS start the scene in portrait.
+    juce::Desktop::getInstance().setOrientationsEnabled(
+        juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
+#endif
     mainWindow.reset(createWindow());
     if (mainWindow == nullptr) {
       pluginHolder = createPluginHolder();
       return;
     }
 
-#if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
+#if JUCE_IOS || JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
     mainWindow->setFullScreen(true);
 #endif
     mainWindow->setVisible(true);
+#if JUCE_IOS
+    juce::MessageManager::callAsync(
+        [window = juce::Component::SafePointer<juce::StandaloneFilterWindow>(mainWindow.get())] {
+          if (window != nullptr)
+            if (auto *peer = window->getPeer())
+              peer->setFullScreen(true);
+        });
+#endif
     queueProjectOpen(mainWindow.get(),
                      findInitialProjectArgument(commandLine));
   }

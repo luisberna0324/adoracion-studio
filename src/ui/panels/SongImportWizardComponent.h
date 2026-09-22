@@ -15,7 +15,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
-class SongImportWizardComponent final : public juce::Component {
+class SongLoadProgressOverlay;
+class MobileImportStaging;
+
+class SongImportWizardComponent final : public juce::Component,
+                                        private juce::Timer {
 public:
   enum class Mode { Import = 0, Edit };
 
@@ -34,13 +38,16 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void mouseDown(const juce::MouseEvent &event) override;
   void mouseMove(const juce::MouseEvent &event) override;
   void mouseExit(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
   void refreshThemeColours();
   void setOnDismissRequested(std::function<void()> callback);
+  bool isSubmissionInProgress() const { return isSubmitting; }
 
 private:
+  friend struct SongImportWizardTestAccess;
   enum class Step { Metadata = 0, Stems, Mapping, Review };
 
   struct StemDraft {
@@ -73,6 +80,10 @@ private:
   void openStemChooser(bool replaceCurrent);
   void handleSelectedStemFiles(const juce::Array<juce::File> &files,
                                bool replaceCurrent);
+#if JUCE_IOS || JUCE_ANDROID
+  void stageSelectedMobileFiles(juce::Array<juce::URL> urls,
+                                bool replaceCurrent, bool artwork);
+#endif
   void preloadFromExistingSong();
   void updateSelectedFilesText();
   void removeStemAtIndex(int rowIndex);
@@ -90,6 +101,8 @@ private:
   bool validateStepMapping();
   ImportedSongData buildSongData();
   void submitSong();
+  bool submitSongInBackground(ImportedSongData song);
+  void setSubmitting(bool submitting);
   void changeStep(Step step);
   void closeDialog();
   juce::String stepSubtitle(Step step) const;
@@ -97,6 +110,22 @@ private:
                         const juce::String &placeholder);
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
+  bool usesPhoneCreationLayout() const;
+  juce::String mobileMetadataSummary() const;
+  void timerCallback() override;
+  void revealFocusedMappingEditor();
+  void revealFocusedMetadataEditor();
+  juce::BorderSize<int> keyboardInsetsForLayout();
+  void paintPhoneMetadata(juce::Graphics &g);
+  juce::Point<int> metadataMousePosition(const juce::MouseEvent &event) const;
+
+  class MetadataViewport final : public juce::Viewport {
+  public:
+    std::function<void()> onScroll;
+    void visibleAreaChanged(const juce::Rectangle<int> &) override {
+      if (onScroll) onScroll();
+    }
+  };
 
   void triggerSecuenciasSearch();
   void hideSecuenciasSuggestions(bool resetStatus);
@@ -120,9 +149,13 @@ private:
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
   bool primeImportEnabled = false;
+  bool isSubmitting = false;
+  std::unique_ptr<SongLoadProgressOverlay> submissionOverlay;
   Step currentStep = Step::Metadata;
   std::unique_ptr<juce::FileChooser> stemChooser;
   std::unique_ptr<juce::FileChooser> artworkChooser;
+  std::shared_ptr<MobileImportStaging> mobileImportStaging;
+  std::unordered_map<std::string, juce::File> stagedMobileFiles;
   std::vector<StemDraft> stems;
   std::vector<std::unique_ptr<MappingRow>> mappingRows;
   std::vector<PrimeSongData> primeSongs;
@@ -158,8 +191,16 @@ private:
   AdaptiveComboBox keyBox;
   AdaptiveComboBox timeSignatureBox;
 
+  MetadataViewport metadataViewport;
+  juce::Component metadataContent;
+  juce::TextButton keyboardDoneButton;
+  juce::Component::SafePointer<juce::Component> lastMetadataFocus;
+  int metadataScrollTarget = 0;
+  bool metadataScrollAnimating = false;
+
   juce::Viewport mapViewport;
   juce::Component mapContent;
+  juce::Component::SafePointer<juce::Component> lastMappingFocus;
 
   juce::TextEditor summaryEditor;
 
@@ -190,7 +231,17 @@ private:
   juce::Label secuenciasStatusLabel;
   juce::ImageComponent secuenciasArtworkPreview;
   juce::Label secuenciasArtworkCaption;
+  juce::Label changeArtworkLabel;
   juce::Label secuenciasDetailLabel;
   juce::ListBox secuenciasList;
+
+  HeaderIconButton mobileCloseButton{"songWizardClose", IconGlyph::Close};
+  std::unique_ptr<juce::LookAndFeel_V4> mobilePrimaryButtonLookAndFeel;
+  bool phoneCreationLayout = false;
+  bool phoneKeyboardVisible = false;
+  juce::BorderSize<int> phoneKeyboardInsets;
+  juce::uint32 keyboardLastVisibleTime = 0;
+  juce::Rectangle<int> stepperBounds;
+  juce::Rectangle<int> metadataCardBounds;
 
 };

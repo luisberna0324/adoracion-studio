@@ -1,4 +1,5 @@
 #include "AppSettings.h"
+#include "ApplicationDataPaths.h"
 #include "SongData.h"
 
 #include <atomic>
@@ -6,7 +7,7 @@
 namespace {
 juce::File getMtControlsDirectory() {
   auto dir =
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      ApplicationDataPaths::applicationDataDirectory()
           .getChildFile("MTControls");
   dir.createDirectory();
   return dir;

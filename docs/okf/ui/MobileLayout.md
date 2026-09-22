@@ -64,6 +64,44 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 ## Controles
 
 - Objetivo tactil frecuente minimo: `44 x 44 pt/dp`.
+- El asistente de creacion/edicion de canciones ocupa toda la superficie fisica
+  del telefono. Su fondo se dibuja edge-to-edge detras del notch, barras de
+  sistema e indicador inferior; encabezado, campos y acciones descuentan
+  `safeAreaInsets`. Usa un encabezado de 56 pt con cierre de 44 pt, un indicador
+  de cuatro pasos de 86 pt y margenes laterales de 17 pt. En `Detalles`, la
+  portada se centra con un lado de 112–136 pt, los editores y combos miden 48 pt
+  de alto, y `BPM`, `Tono` y `Compas` comparten una fila de tres columnas. El
+  resumen de metadata y el boton primario usan 70 pt y 48 pt respectivamente.
+  En pantallas de escritorio y tablet se conserva el dialogo compacto de dos
+  columnas.
+- Con un teclado virtual acoplado, el asistente combina `safeAreaInsets` y
+  `keyboardInsets`. En Detalles conserva encabezado, pasos y la geometria del
+  formulario: un viewport reduce su ventana visible sobre el teclado y desplaza
+  suavemente el campo enfocado junto a su etiqueta. Portada y tarjeta de metadata
+  se dibujan con el mismo desplazamiento y recorte que los controles.
+- La portada de Detalles mide 128 pt y el contenido desplazable 550 pt,
+  independientemente de la altura del teclado. El usuario puede desplazarlo
+  manualmente sin que el seguimiento del foco lo devuelva a otra posicion.
+  Se toleran 200 ms de inset vacio al cambiar el tipo de teclado para evitar
+  que el formulario se expanda y contraiga entre dos campos.
+- Sobre el teclado aparece `Listo` con objetivo tactil de 44 pt. `Listo` y
+  Return finalizan la edicion; abrir un selector tambien descarta el teclado.
+  Deslizar el formulario no lo cierra. BPM usa teclado numerico. Al cerrar el
+  teclado se recupera el pie con `Siguiente` sin reconstruir los campos.
+- En el paso `Secciones`, el viewport termina sobre el teclado y desplaza la
+  fila enfocada solo cuando queda fuera de su area visible. Esto se aplica a
+  iOS y a Android 11 o superior, donde JUCE reporta `keyboardInsets`.
+- Los pasos `Archivos`, `Secciones` y `Revisar` reutilizan el mismo encabezado,
+  indicador y pie. En telefono, las filas de mapeo se apilan para evitar
+  columnas comprimidas: miden 104 pt, con toggle de 44 pt y campos de 48 pt.
+  En escritorio permanecen tabulares de 42 pt; el modo movil no se deduce solo
+  del ancho de una fila. El scroll manual no vuelve continuamente al editor
+  enfocado. Al retroceder, los nombres/categorias/Cargar se guardan en el borrador.
+- La tarjeta de progreso se limita al ancho disponible menos 32 pt; conserva
+  sus 440 pt en escritorio. La creacion portable movil procesa el paquete en
+  background, mantiene el asistente bloqueado contra doble envio/cierre y
+  entrega progreso/resultado al message thread. Ver
+  [Song Creation](../importing/SongCreation.md).
 - El telefono muestra transporte basico, tiempo, waveform y mixer.
 - El toggle contextual `Fade Down/Fade Up` aparece junto a `Siguiente`. El
   tiempo usa dos lineas (`actual /` y `total`) con tipografia reducida.

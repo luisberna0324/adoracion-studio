@@ -88,6 +88,10 @@ Si faltan duración, frecuencia o canales, `ProjectStore::save()` los completa
 leyendo el FLAC convertido antes de escribir el manifiesto del proyecto.
 Los formatos con pérdida no recuperan calidad al convertirse a FLAC. La lista
 de importación móvil sigue limitada a WAV, AIFF y FLAC en este ajuste.
+En iOS/Android, `PortableFlacConversion` realiza la conversion dentro del proceso
+con lectores y escritor JUCE; no depende de un encoder externo. Trabaja en bloques,
+conserva frecuencia/canales y valida un temporal antes de sustituir el destino.
+PCM de mas de 24 bits y punto flotante se almacenan como PCM24.
 Al abrir,
 `ProjectStore` valida que cada recurso del paquete sea FLAC decodificable; no
 existe un fallback a M4A ni una conversión específica de Windows.

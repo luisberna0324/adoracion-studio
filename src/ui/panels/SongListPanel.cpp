@@ -33,6 +33,14 @@ public:
 
   void resized() override {
     auto area = getLocalBounds();
+    if (isPhoneSizedTouchLayout(*this)) {
+      // The wizard owns the full phone surface so its background reaches the
+      // physical edges. It applies safe-area insets only to interactive
+      // content, keeping the notch and home-indicator regions free.
+      panel->setBounds(area);
+      return;
+    }
+
     const int margin = useTouchOptimisedControls() ? 14 : 28;
     area.reduce(margin, margin);
     const int maxWidth = useTouchOptimisedControls() ? 920 : 860;
@@ -49,7 +57,8 @@ public:
   }
 
   void mouseUp(const juce::MouseEvent &event) override {
-    if (!panel->getBounds().contains(event.getPosition()) && onDismiss)
+    if (!panel->isSubmissionInProgress() &&
+        !panel->getBounds().contains(event.getPosition()) && onDismiss)
       onDismiss();
   }
 
@@ -3688,6 +3697,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
   auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
+#if !JUCE_IOS && !JUCE_ANDROID
         if (safeThis == nullptr) {
           SessionAuthLogger::write(
               "[SongImport] abort: SongListPanel no longer available");
@@ -3696,6 +3706,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
                        "Import UI is no longer available.");
           return false;
         }
+#endif
 
         SessionAuthLogger::write(
             "[SongImport] save project begin title=\"" + song.title.trim() +
@@ -3717,14 +3728,14 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
           StemMixSnapshot mix; mix.stemId = stem.stemId; document.settings.mix.stems.push_back(mix);
         }
         if (progress) {
-          progress(0.82, L10n::tr(u8"Generando forma de onda...",
+          progress(0.05, L10n::tr(u8"Generando forma de onda...",
                                   "Generating waveform preview..."));
         }
         document.waveformBins = buildMixedWaveformBins(
             document.song, kWaveformPreviewBinCount,
             [&progress](const double waveformProgress) {
               if (progress)
-                progress(0.82 + 0.12 * juce::jlimit(0.0, 1.0, waveformProgress),
+                progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
                          L10n::tr(u8"Generando forma de onda...",
                                   "Generating waveform preview..."));
             });
@@ -3734,7 +3745,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
             [&progress](const double projectProgress,
                         const juce::String &phase) {
               if (progress)
-                progress(0.94 + 0.035 * juce::jlimit(0.0, 1.0,
+                progress(0.20 + 0.70 * juce::jlimit(0.0, 1.0,
                                                     projectProgress),
                          phase);
             });
@@ -3745,14 +3756,41 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
                             [&progress](const double projectProgress,
                                         const juce::String &phase) {
                               if (progress)
-                                progress(0.975 +
-                                             0.02 * juce::jlimit(
+                                progress(0.90 +
+                                             0.08 * juce::jlimit(
                                                         0.0, 1.0,
                                                         projectProgress),
                                          phase);
                             });
-        const bool success =
-            openedProject && SongLibraryStore::registerProjectSong(opened.song);
+        bool success = false;
+#if JUCE_IOS || JUCE_ANDROID
+        if (openedProject) {
+          if (progress)
+            progress(0.985, L10n::tr(u8"Registrando canción...",
+                                      "Registering song..."));
+          // SongLibraryStore is a read-modify-write store also used by UI
+          // callbacks. Serialize the final registry transaction on that same
+          // thread; only the worker waits, with no locks held. Audio work and
+          // package extraction above remain off the UI thread.
+          const auto registered = juce::MessageManager::callSync(
+              [songToRegister = std::move(opened.song)]() mutable {
+                try {
+                  return SongLibraryStore::registerProjectSong(songToRegister);
+                } catch (...) {
+                  // Never leave callSync's promise unfulfilled on an exception.
+                  return false;
+                }
+              });
+          success = registered.value_or(false);
+          if (!success)
+            importError = L10n::tr(
+                u8"El proyecto se guardó, pero no pudo registrarse en la biblioteca. El archivo se conserva en:\n",
+                "The project was saved but couldn't be registered in the library. Its file is preserved at:\n") +
+                selectedDestination.getFullPathName();
+        }
+#else
+        success = openedProject && SongLibraryStore::registerProjectSong(opened.song);
+#endif
 
         if (!success) {
           SessionAuthLogger::write("[SongImport] appendSong failed error=\"" +
@@ -3773,7 +3811,16 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         if (progress)
           progress(1.0, L10n::tr(u8"Canción creada", "Song created"));
 
+#if JUCE_IOS || JUCE_ANDROID
+        // Mobile creation runs off the message thread. Only storage work is
+        // performed above; refresh the library on the UI thread after success.
+        juce::MessageManager::callAsync([safeThis] {
+          if (safeThis != nullptr)
+            safeThis->refreshFromStorage();
+        });
+#else
         safeThis->refreshFromStorage();
+#endif
         SessionAuthLogger::write("[SongImport] import flow completed successfully");
         return true;
       },
@@ -3794,7 +3841,7 @@ void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
         choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
         choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
         const int choiceId =
-#if JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID
             1;
 #else
             choice.runModalLoop();

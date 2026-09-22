@@ -253,6 +253,7 @@ const char* getNamedResource (const char* resourceNameUTF8, int& numBytes)
         case 0x91cd1e3f:  numBytes = 209; return plus_svg;
         case 0x17c70ead:  numBytes = 193; return check_svg;
         case 0x45949e15:  numBytes = 186; return minus_svg;
+        case 0xb6a245f3:  numBytes = 264; return more_horizontal_svg;
         case 0xc744aac5:  numBytes = 264; return more_vertical_svg;
         case 0xc84a12b3:  numBytes = 223; return clock_svg;
         case 0x1746414a:  numBytes = 260; return music_svg;
@@ -298,6 +299,7 @@ const char* namedResourceList[] =
     "plus_svg",
     "check_svg",
     "minus_svg",
+    "more_horizontal_svg",
     "more_vertical_svg",
     "clock_svg",
     "music_svg",
@@ -338,6 +340,7 @@ const char* originalFilenames[] =
     "plus.svg",
     "check.svg",
     "minus.svg",
+    "more_horizontal.svg",
     "more_vertical.svg",
     "clock.svg",
     "music.svg",

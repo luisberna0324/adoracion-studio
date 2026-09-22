@@ -1,4 +1,5 @@
 #include "ProjectStore.h"
+#include "ProjectArtwork.h"
 #include "Localization.h"
 #include "SessionAuthLogger.h"
 #include "SongLoadProbe.h"
@@ -762,7 +763,17 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
     manifestSong.stems[i].sourcePath.clear();
     manifestSong.stems[i].fileName = juce::File(path).getFileName();
   }
-  if (juce::File artwork(song.artworkPath); juce::File(song.artworkPath).existsAsFile()) {
+  juce::String artworkError;
+  if (!ProjectArtwork::resolveMissingLocalFile(
+          song.artworkSource, song.artworkPath,
+          stageDir.getChildFile("artwork"), artworkError,
+          downloadArtworkToCache)) {
+    cleanupStage();
+    if (errorMessage != nullptr)
+      *errorMessage = artworkError;
+    return false;
+  }
+  if (juce::File artwork(song.artworkPath); artwork.existsAsFile()) {
     const auto artworkPath = "artwork" + juce::File(song.artworkPath).getFileExtension().toLowerCase();
     builder.addFile(juce::File(song.artworkPath), 0, artworkPath);
     estimatedPackageBytes += juce::File(song.artworkPath).getSize();

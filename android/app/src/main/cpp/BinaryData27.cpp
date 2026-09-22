@@ -9,14 +9,16 @@
 namespace BinaryData
 {
 
-//================== metronome.svg ==================
+//================== audio_waveform.svg ==================
 static const unsigned char temp_binary_data_26[] =
-"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n"
-"  <path d=\"M4 21h16\"/>\n"
-"  <path d=\"M6 21 12 3l6 18\"/>\n"
-"  <path d=\"m12 3 4 8\"/>\n"
-"  <path d=\"M9 14h6\"/>\n"
+"<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#000000\" stroke-width=\"2.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\">\n"
+"  <path d=\"M3 10v4\"/>\n"
+"  <path d=\"M7 6v12\"/>\n"
+"  <path d=\"M11 3v18\"/>\n"
+"  <path d=\"M15 8v8\"/>\n"
+"  <path d=\"M19 5v14\"/>\n"
+"  <path d=\"M23 10v4\"/>\n"
 "</svg>\n";
 
-const char* metronome_svg = (const char*) temp_binary_data_26;
+const char* audio_waveform_svg = (const char*) temp_binary_data_26;
 }

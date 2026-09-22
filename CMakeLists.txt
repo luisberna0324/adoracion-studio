@@ -298,6 +298,58 @@ if(MTCONTROLS_BUILD_TESTS)
         juce::juce_gui_basics juce::juce_audio_basics juce::juce_cryptography)
     add_test(NAME settings_versions_sheet COMMAND MTControlsSettingsSheetTests)
     set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsInputControlsTests PRODUCT_NAME "Input Controls Tests")
+    if(APPLE)
+        set_source_files_properties(tests/input_controls_tests.cpp PROPERTIES LANGUAGE OBJCXX)
+    endif()
+    target_sources(MTControlsInputControlsTests PRIVATE
+        tests/input_controls_tests.cpp src/ui/UiCommon.cpp
+        src/ui/components/SearchField.cpp)
+    juce_generate_juce_header(MTControlsInputControlsTests)
+    target_include_directories(MTControlsInputControlsTests PRIVATE src)
+    target_compile_definitions(MTControlsInputControlsTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsInputControlsTests PRIVATE
+        juce::juce_gui_basics juce::juce_audio_basics MTControlsAssets)
+    add_test(NAME input_controls COMMAND MTControlsInputControlsTests)
+    set_tests_properties(input_controls PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME input_controls_popup COMMAND MTControlsInputControlsTests --popup)
+    set_tests_properties(input_controls_popup PROPERTIES SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsProjectArtworkTests PRODUCT_NAME "Project Artwork Tests")
+    target_sources(MTControlsProjectArtworkTests PRIVATE tests/project_artwork_tests.cpp)
+    target_include_directories(MTControlsProjectArtworkTests PRIVATE src)
+    target_link_libraries(MTControlsProjectArtworkTests PRIVATE juce::juce_core)
+    add_test(NAME project_artwork COMMAND MTControlsProjectArtworkTests)
+    juce_add_console_app(MTControlsPortableFlacTests PRODUCT_NAME "Portable FLAC Tests")
+    target_sources(MTControlsPortableFlacTests PRIVATE
+        tests/portable_flac_conversion_tests.cpp src/data/PortableFlacConversion.cpp)
+    target_include_directories(MTControlsPortableFlacTests PRIVATE src)
+    target_link_libraries(MTControlsPortableFlacTests PRIVATE juce::juce_audio_formats)
+    add_test(NAME portable_flac_conversion COMMAND MTControlsPortableFlacTests)
+    juce_add_console_app(MTControlsImportStagingTests PRODUCT_NAME "Import Staging Tests")
+    target_sources(MTControlsImportStagingTests PRIVATE
+        tests/mobile_import_staging_tests.cpp src/data/MobileImportStaging.cpp)
+    target_include_directories(MTControlsImportStagingTests PRIVATE src)
+    target_link_libraries(MTControlsImportStagingTests PRIVATE juce::juce_core)
+    add_test(NAME mobile_import_staging COMMAND MTControlsImportStagingTests)
+    juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
+    target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
+        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+    target_compile_definitions(MTControlsSongCreationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_include_directories(MTControlsSongCreationTests PRIVATE src)
+    target_link_libraries(MTControlsSongCreationTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsSongCreationTests)
+    add_test(NAME song_project_creation COMMAND MTControlsSongCreationTests)
+    set_tests_properties(song_project_creation PROPERTIES SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsSongWizardTests PRODUCT_NAME "Song Wizard Tests")
+    target_sources(MTControlsSongWizardTests PRIVATE tests/song_import_wizard_tests.cpp)
+    target_include_directories(MTControlsSongWizardTests PRIVATE src)
+    target_compile_definitions(MTControlsSongWizardTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsSongWizardTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsSongWizardTests)
+    add_test(NAME song_import_wizard COMMAND MTControlsSongWizardTests)
+    set_tests_properties(song_import_wizard PROPERTIES SKIP_RETURN_CODE 77)
     juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
     target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
     juce_generate_juce_header(MTControlsDiagnosticReportTests)
@@ -482,9 +534,9 @@ juce_add_plugin(MTControls
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
     IPHONE_SCREEN_ORIENTATIONS
-        UIInterfaceOrientationPortrait
         UIInterfaceOrientationLandscapeLeft
         UIInterfaceOrientationLandscapeRight
+        UIInterfaceOrientationPortrait
     BACKGROUND_AUDIO_ENABLED TRUE
     MICROPHONE_PERMISSION_ENABLED FALSE
     BLUETOOTH_PERMISSION_ENABLED TRUE
@@ -521,7 +573,7 @@ endif()
 
 juce_generate_juce_header(MTControls)
 
-if(TARGET MTControls_Standalone AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if(TARGET MTControls_Standalone)
     target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
     target_compile_definitions(MTControls_Standalone
         PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
@@ -668,12 +720,15 @@ target_sources(MTControls
         src/data/SongData.cpp
         src/data/SongData.h
         src/data/SongLibraryStore.cpp
+        src/data/PortableFlacConversion.cpp
+        src/data/PortableFlacConversion.h
+        src/data/MobileImportStaging.cpp
+        src/data/MobileImportStaging.h
         src/data/SongLibraryStore.h
         src/ui/DeviceNotificationBanner.cpp
         src/ui/DeviceNotificationBanner.h
         src/ui/UiCommon.cpp
         src/ui/UiCommon.h
-        src/platform/NativeIpadChoicePicker.h
         src/ui/components/ChannelStripCard.cpp
         src/ui/components/ChannelStripCard.h
         src/ui/components/ClickDivisionPanel.cpp
@@ -741,14 +796,12 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_sources(MTControls PRIVATE
         src/platform/NativeAuthSession.mm
-        src/platform/NativeAuthSession.h
-        src/platform/NativeIpadChoicePicker.mm)
+        src/platform/NativeAuthSession.h)
     target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
 else()
     target_sources(MTControls PRIVATE
         src/platform/NativeAuthSession.cpp
-        src/platform/NativeAuthSession.h
-        src/platform/NativeIpadChoicePicker.cpp)
+        src/platform/NativeAuthSession.h)
 endif()
 
 if(MTCONTROLS_BUNGEE_AVAILABLE)

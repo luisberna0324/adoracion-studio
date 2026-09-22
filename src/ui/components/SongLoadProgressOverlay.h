@@ -18,6 +18,7 @@ public:
   void resized() override;
 
 private:
+  juce::Rectangle<int> cardBounds() const;
   double progressValue = 0.0;
   juce::ProgressBar progressBar;
   juce::Label titleLabel;

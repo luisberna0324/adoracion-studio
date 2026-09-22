@@ -156,6 +156,16 @@ float inputCornerRadius(const int height) {
              : juce::jmin(8.0f, static_cast<float>(height) * 0.24f);
 }
 
+juce::Colour inputOutlineColour(const juce::Colour requested) {
+  // Most callers intentionally pass cardBorder, which is nearly the same
+  // colour as the field in dark themes. Mix in the secondary text colour so
+  // the 1 pt resting border remains visible without competing with focus.
+  const auto secondaryMix = useTouchOptimisedControls() ? 0.42f : 0.28f;
+  const auto minimumAlpha = useTouchOptimisedControls() ? 0.44f : 0.36f;
+  return requested.interpolatedWith(UITheme::textSecondary, secondaryMix)
+      .withAlpha(juce::jmax(requested.getFloatAlpha(), minimumAlpha));
+}
+
 class InputControlLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
   void drawComboBox(juce::Graphics &g, const int width, const int height,
@@ -186,16 +196,18 @@ public:
                            box.hasKeyboardFocus(true) ? 2.0f : 1.0f);
 
     const auto arrowColour = box.findColour(juce::ComboBox::arrowColourId);
+    const bool touch = useTouchOptimisedControls();
     const auto arrowArea = juce::Rectangle<float>(
-        static_cast<float>(width - (useTouchOptimisedControls() ? 31 : 26)),
-        static_cast<float>(height) * 0.5f - 4.0f, 12.0f, 8.0f);
+        static_cast<float>(width - (touch ? 33 : 27)),
+        static_cast<float>(height) * 0.5f - (touch ? 4.5f : 4.0f),
+        touch ? 14.0f : 12.0f, touch ? 9.0f : 8.0f);
     juce::Path arrow;
     arrow.startNewSubPath(arrowArea.getX() + 1.0f, arrowArea.getCentreY() - 1.5f);
     arrow.lineTo(arrowArea.getCentreX(), arrowArea.getCentreY() + 2.0f);
     arrow.lineTo(arrowArea.getRight() - 1.0f, arrowArea.getCentreY() - 1.5f);
     g.setColour(box.isEnabled() ? arrowColour
                                 : arrowColour.withMultipliedAlpha(0.42f));
-    g.strokePath(arrow, juce::PathStrokeType(1.8f,
+    g.strokePath(arrow, juce::PathStrokeType(touch ? 2.1f : 1.8f,
                                              juce::PathStrokeType::curved,
                                              juce::PathStrokeType::rounded));
   }
@@ -212,13 +224,19 @@ public:
                     juce::jmax(1, box.getWidth() - leftInset - trailingInset),
                     juce::jmax(1, box.getHeight() - 2));
     label.setFont(getComboBoxFont(box));
+    label.setBorderSize(juce::BorderSize<int>());
   }
 
   juce::PopupMenu::Options getOptionsForComboBoxPopupMenu(
       juce::ComboBox &box, juce::Label &label) override {
     return juce::LookAndFeel_V4::getOptionsForComboBoxPopupMenu(box, label)
         .withMinimumWidth(box.getWidth())
+        .withMaximumNumColumns(1)
         .withStandardItemHeight(touchOptimisedPopupItemHeight());
+  }
+
+  juce::Font getPopupMenuFont() override {
+    return makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f);
   }
 
   void fillTextEditorBackground(juce::Graphics &g, const int width,
@@ -352,41 +370,36 @@ int touchOptimisedPopupItemHeight() {
 }
 
 void AdaptiveComboBox::showPopup() {
-  // JUCE sets menuActive before dispatching showPopup asynchronously. The
-  // UIKit sheet does not clear that private JUCE flag when it is dismissed.
-  hidePopup();
-
-  if (NativeIpadChoicePicker::isAvailable()) {
-    std::vector<juce::String> items;
-    items.reserve(static_cast<size_t>(getNumItems()));
-    int selectedIndex = -1;
-    for (int i = 0; i < getNumItems(); ++i) {
-      items.push_back(getItemText(i));
-      if (getItemId(i) == getSelectedId())
-        selectedIndex = i;
-    }
-    if (NativeIpadChoicePicker::show(*this, items, selectedIndex,
-                                     [safe = juce::Component::SafePointer<AdaptiveComboBox>(this)](int index) {
-                                       if (safe == nullptr)
-                                         return;
-
-                                       safe->hidePopup();
-                                       if (index >= 0)
-                                         safe->setSelectedItemIndex(index, juce::sendNotificationAsync);
-                                     }))
-      return;
+  if (!isEnabled())
+    return;
+  if (useTouchOptimisedControls()) {
+    // Dismiss only text input; preserve the combo's focus/accessibility state.
+    if (auto *editor = dynamic_cast<juce::TextEditor *>(
+            juce::Component::getCurrentlyFocusedComponent()))
+      editor->giveAwayKeyboardFocus();
   }
+  // Never hidePopup() here: JUCE sets menuActive on mouseDown before this
+  // asynchronous call. Clearing it lets mouseUp queue a second selector.
+  // JUCE owns opening, checked items, keyboard navigation and dismissal.
   juce::ComboBox::showPopup();
 }
 
 void applyComboBoxTheme(AdaptiveComboBox &combo, const juce::Colour background,
                         const juce::Colour outline) {
   combo.setLookAndFeel(&getInputControlLookAndFeel());
+  auto &lookAndFeel = getInputControlLookAndFeel();
+  lookAndFeel.setColour(juce::PopupMenu::backgroundColourId, UITheme::panelDark);
+  lookAndFeel.setColour(juce::PopupMenu::textColourId, UITheme::textPrimary);
+  lookAndFeel.setColour(juce::PopupMenu::highlightedBackgroundColourId,
+                       UITheme::accent.withAlpha(0.22f));
+  lookAndFeel.setColour(juce::PopupMenu::highlightedTextColourId,
+                       UITheme::textPrimary);
   combo.setColour(juce::ComboBox::backgroundColourId,
                   background.withAlpha(useTouchOptimisedControls() ? 0.96f
                                                                     : 0.88f));
   combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
-  combo.setColour(juce::ComboBox::outlineColourId, outline);
+  combo.setColour(juce::ComboBox::outlineColourId,
+                  inputOutlineColour(outline));
   combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
   combo.setJustificationType(juce::Justification::centredLeft);
 }
@@ -396,18 +409,24 @@ void applyTextEditorTheme(juce::TextEditor &editor,
                           const juce::Colour outline) {
   editor.setLookAndFeel(&getInputControlLookAndFeel());
   editor.setPopupMenuEnabled(true);
+  editor.setClicksOutsideDismissVirtualKeyboard(useTouchOptimisedControls());
   editor.setFont(makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f,
                              AppFontWeight::Regular));
   editor.setColour(juce::TextEditor::backgroundColourId, background);
   editor.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
   editor.setColour(juce::TextEditor::highlightedTextColourId,
                    UITheme::textPrimary);
-  editor.setColour(juce::TextEditor::outlineColourId, outline);
+  editor.setColour(juce::TextEditor::highlightColourId,
+                   UITheme::accent.withAlpha(0.32f));
+  editor.setColour(juce::CaretComponent::caretColourId, UITheme::accent);
+  editor.setColour(juce::TextEditor::outlineColourId,
+                   inputOutlineColour(outline));
   editor.setColour(juce::TextEditor::focusedOutlineColourId,
                    UITheme::accent.withAlpha(useTouchOptimisedControls() ? 0.82f
                                                                          : 0.64f));
   editor.setIndents(useTouchOptimisedControls() ? 14 : 12,
-                    useTouchOptimisedControls() ? 12 : 10);
+                    editor.isMultiLine() ? (useTouchOptimisedControls() ? 12 : 10)
+                                         : 0);
 }
 
 void applyToggleSwitchTheme(juce::ToggleButton &toggle) {
@@ -997,6 +1016,13 @@ void expandTopLevelWindowToPrimaryWorkArea(juce::Component *fromComponent) {
   auto *top = fromComponent->getTopLevelComponent();
   if (top == nullptr)
     return;
+#if JUCE_IOS || JUCE_ANDROID
+  // Mobile windows follow the native scene. Applying desktop work-area bounds
+  // clears the peer's fullscreen flag and can freeze the portrait launch size.
+  if (auto *peer = top->getPeer())
+    peer->setFullScreen(true);
+  return;
+#endif
   const auto *display =
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
   if (display == nullptr)
@@ -1118,6 +1144,11 @@ void HeaderIconButton::setSubtleHighlight(const bool shouldHighlight) {
   repaint();
 }
 
+void HeaderIconButton::setBare(const bool shouldBeBare) {
+  bare = shouldBeBare;
+  repaint();
+}
+
 void HeaderIconButton::setSvgLabel(const SvgIconName iconToUse,
                                    juce::String textToUse) {
   svgIcon = iconToUse;
@@ -1152,23 +1183,25 @@ void HeaderIconButton::paintButton(juce::Graphics &g,
           : fill.brighter(0.025f);
   const auto gradientBottom =
       subtleMusicHighlight ? fill.darker(0.055f) : fill.darker(0.075f);
-  juce::ColourGradient bg(gradientTop, b.getX(), b.getY(), gradientBottom,
-                          b.getX(), b.getBottom(), false);
-  g.setGradientFill(bg);
-  if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
-    g.fillEllipse(b);
-  else
-    g.fillRoundedRectangle(b, 8.0f);
-  const auto borderColour =
-      subtleMusicHighlight ? juce::Colours::white
-                           : (accent ? UITheme::accent : UITheme::cardBorder);
-  g.setColour(borderColour.withAlpha(
-      subtleMusicHighlight ? (isMouseOverButton ? 0.26f : 0.14f)
-                           : (isMouseOverButton ? 0.78f : 0.52f)));
-  if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
-    g.drawEllipse(b, 1.0f);
-  else
-    g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  if (!bare) {
+    juce::ColourGradient bg(gradientTop, b.getX(), b.getY(), gradientBottom,
+                            b.getX(), b.getBottom(), false);
+    g.setGradientFill(bg);
+    if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
+      g.fillEllipse(b);
+    else
+      g.fillRoundedRectangle(b, 8.0f);
+    const auto borderColour =
+        subtleMusicHighlight ? juce::Colours::white
+                             : (accent ? UITheme::accent : UITheme::cardBorder);
+    g.setColour(borderColour.withAlpha(
+        subtleMusicHighlight ? (isMouseOverButton ? 0.26f : 0.14f)
+                             : (isMouseOverButton ? 0.78f : 0.52f)));
+    if (std::abs(b.getWidth() - b.getHeight()) < 1.0f)
+      g.drawEllipse(b, 1.0f);
+    else
+      g.drawRoundedRectangle(b, 8.0f, 1.0f);
+  }
 
   const auto glyphColour = accent ? UITheme::accent : UITheme::textPrimary;
   if (!useSvgLabel) {
