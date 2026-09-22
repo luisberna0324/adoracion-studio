@@ -8,8 +8,13 @@
 #include "../UiCommon.h"
 #include "../components/SongLoadProgressOverlay.h"
 
+#if JUCE_IOS || JUCE_ANDROID
+#include "../../data/MobileImportStaging.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <utility>
 #include <set>
@@ -17,8 +22,11 @@
 
 namespace {
 #if JUCE_IOS || JUCE_ANDROID
-constexpr auto kStemImportExtensions = "wav;aif;aiff;flac";
-constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC";
+// Mobile decodes WAV/AIFF/FLAC via JUCE in-process. MP3 is added on 2026-09-22
+// thanks to JUCE's built-in MinMP3 decoder (no external lib, no FFmpeg). The
+// PCM source is fed to the same FLAC packager the desktop uses.
+constexpr auto kStemImportExtensions = "wav;aif;aiff;flac;mp3";
+constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC, MP3";
 #else
 // Desktop project saving decodes these inputs with FFmpeg and packages FLAC.
 // The picker and validation must use the same list, including formats that
@@ -28,16 +36,79 @@ constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC, MP3, M4A, AAC, OGG, WM
 #endif
 
 juce::String stemImportWildcard() {
+#if JUCE_ANDROID
+  // Android SAF filters strictly by MIME at the provider level. The picker
+  // is wired from the extension wildcard via
+  // juce_FileChooser_android.cpp:convertFiltersToMimeTypes(), so passing the
+  // real extension list emits setType("audio/*") plus an EXTRA_MIME_TYPES
+  // array with audio/wav, audio/aiff, audio/flac, audio/mpeg, etc. Several
+  // providers (Samsung My Files, DocumentsUI fronting Google Drive, generic
+  // MediaStore folders where the indexer has not tagged the file) report
+  // audio as application/octet-stream or as audio/* generically, and the
+  // picker silently hides them. Returning "*" makes JUCE's converter skip
+  // every token so the intent ends up with setType("*/*") and no MIME extra;
+  // every file becomes visible. Format validation still happens later in
+  // MobileImportStaging::stage() and PortableFlacConversion's reader, so the
+  // wizard never persists a non-audio source.
+  return "*";
+#else
   auto extensions = juce::StringArray::fromTokens(kStemImportExtensions, ";", "");
   for (auto& extension : extensions)
     extension = "*." + extension;
   return extensions.joinIntoString(";");
+#endif
 }
+
+bool hasKeyboardInsets(const juce::BorderSize<int> &insets) {
+  return insets.getTop() > 0 || insets.getLeft() > 0 ||
+         insets.getBottom() > 0 || insets.getRight() > 0;
+}
+
+juce::BorderSize<int>
+combinedPhoneInsets(const juce::BorderSize<int> &safe,
+                    const juce::BorderSize<int> &keyboard) {
+#if JUCE_ANDROID
+  // JUCE reports Android IME insets after removing system/cutout insets, so
+  // both regions are additive.
+  return {safe.getTop() + keyboard.getTop(),
+          safe.getLeft() + keyboard.getLeft(),
+          safe.getBottom() + keyboard.getBottom(),
+          safe.getRight() + keyboard.getRight()};
+#else
+  // iOS keyboard frames are measured from the physical screen edge and already
+  // cover the home-indicator region. Use the larger obstruction per edge.
+  return {juce::jmax(safe.getTop(), keyboard.getTop()),
+          juce::jmax(safe.getLeft(), keyboard.getLeft()),
+          juce::jmax(safe.getBottom(), keyboard.getBottom()),
+          juce::jmax(safe.getRight(), keyboard.getRight())};
+#endif
+}
+
+class MobileWizardButtonLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  void drawButtonBackground(juce::Graphics &g, juce::Button &button,
+                            const juce::Colour &backgroundColour,
+                            bool isHighlighted, bool isDown) override {
+    auto area = button.getLocalBounds().toFloat().reduced(0.5f);
+    auto colour = backgroundColour;
+    if (isDown)
+      colour = colour.darker(0.16f);
+    else if (isHighlighted)
+      colour = colour.brighter(0.08f);
+    g.setColour(colour);
+    g.fillRoundedRectangle(area, 14.0f);
+  }
+
+  juce::Font getTextButtonFont(juce::TextButton &, int) override {
+    return makeAppFont(17.0f, AppFontWeight::Bold);
+  }
+};
 } // namespace
 
 class SongImportWizardComponent::MappingRow final : public juce::Component {
 public:
-  explicit MappingRow(const StemDraft &stem) {
+  explicit MappingRow(const StemDraft &stem, const bool usePhoneLayout)
+      : phoneLayout(usePhoneLayout) {
     auto fileName = stem.file.getFileName();
     if (fileName.isEmpty()) {
       if (stem.storedPath.isNotEmpty())
@@ -53,6 +124,10 @@ public:
     addAndMakeVisible(fileLabel);
 
     displayNameEditor.setText(stem.displayName, juce::dontSendNotification);
+    displayNameEditor.onReturnKey = [this] {
+      if (phoneLayout)
+        displayNameEditor.giveAwayKeyboardFocus();
+    };
     addAndMakeVisible(displayNameEditor);
 
     for (size_t i = 0; i < kTrackCategories.size(); ++i)
@@ -73,8 +148,30 @@ public:
     stem.include = includeToggle.getToggleState();
   }
 
+  void setPhoneLayout(const bool usePhoneLayout) {
+    if (phoneLayout == usePhoneLayout)
+      return;
+    phoneLayout = usePhoneLayout;
+    refreshThemeColours();
+    resized();
+  }
+
   void resized() override {
     auto r = getLocalBounds().reduced(4, 3);
+    if (phoneLayout) {
+      auto heading = r.removeFromTop(44);
+      includeToggle.setBounds(heading.removeFromRight(90));
+      fileLabel.setBounds(heading);
+      r.removeFromTop(4);
+      auto fields = r.removeFromTop(48);
+      const int gap = 8;
+      const int firstWidth = (fields.getWidth() - gap) / 2;
+      displayNameEditor.setBounds(fields.removeFromLeft(firstWidth));
+      fields.removeFromLeft(gap);
+      categoryBox.setBounds(fields);
+      return;
+    }
+
     auto fileCol = r.removeFromLeft(230);
     auto nameCol = r.removeFromLeft(170);
     auto catCol = r.removeFromLeft(160);
@@ -98,12 +195,15 @@ public:
     applyTextEditorTheme(displayNameEditor, UITheme::cardBg,
                          UITheme::cardBorder.withAlpha(0.7f));
     displayNameEditor.setJustification(juce::Justification::centredLeft);
+    if (phoneLayout)
+      displayNameEditor.setClicksOutsideDismissVirtualKeyboard(false);
     applyComboBoxTheme(categoryBox, UITheme::cardBg,
                        UITheme::cardBorder.withAlpha(0.7f));
     applyToggleSwitchTheme(includeToggle);
   }
 
 private:
+  bool phoneLayout = false;
   juce::Label fileLabel;
   juce::TextEditor displayNameEditor;
   AdaptiveComboBox categoryBox;
@@ -458,6 +558,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   configureTextEditor(artistEditor, L10n::tr("Artista", "Artist"));
   configureTextEditor(bpmEditor, "BPM");
   bpmEditor.setInputRestrictions(3, "0123456789");
+  bpmEditor.setKeyboardType(juce::TextInputTarget::numericKeyboard);
   addAndMakeVisible(songTitleEditor);
   addAndMakeVisible(artistEditor);
   addAndMakeVisible(bpmEditor);
@@ -508,7 +609,10 @@ SongImportWizardComponent::SongImportWizardComponent(
       safeThis->triggerSecuenciasSearch();
     });
   };
-  songTitleEditor.onReturnKey = [this] { hideSecuenciasSuggestions(true); };
+  songTitleEditor.onReturnKey = [this] {
+    hideSecuenciasSuggestions(true);
+    songTitleEditor.giveAwayKeyboardFocus();
+  };
   songTitleEditor.onEscapeKey = [this] { hideSecuenciasSuggestions(true); };
   songTitleEditor.onFocusLost = [this] {
     auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
@@ -520,6 +624,8 @@ SongImportWizardComponent::SongImportWizardComponent(
       safeThis->hideSecuenciasSuggestions(true);
     });
   };
+  artistEditor.onReturnKey = [this] { artistEditor.giveAwayKeyboardFocus(); };
+  bpmEditor.onReturnKey = [this] { bpmEditor.giveAwayKeyboardFocus(); };
 
   secuenciasListModel = std::make_unique<SecuenciasResultListModel>(*this);
   secuenciasList.setModel(secuenciasListModel.get());
@@ -550,6 +656,15 @@ SongImportWizardComponent::SongImportWizardComponent(
   secuenciasArtworkCaption.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
   secuenciasArtworkCaption.setJustificationType(juce::Justification::centredTop);
   addAndMakeVisible(secuenciasArtworkCaption);
+
+  changeArtworkLabel.setText(
+      L10n::tr("Cambiar portada", "Change artwork"),
+      juce::dontSendNotification);
+  changeArtworkLabel.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
+  changeArtworkLabel.setJustificationType(juce::Justification::centred);
+  changeArtworkLabel.setInterceptsMouseClicks(false, false);
+  addAndMakeVisible(changeArtworkLabel);
+  changeArtworkLabel.setVisible(false);
 
   clearSongSearchButton.setButtonText(L10n::tr("Limpiar", "Clear"));
   clearSongSearchButton.onClick = [this] {
@@ -637,6 +752,18 @@ SongImportWizardComponent::SongImportWizardComponent(
   mapViewport.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::all);
   addAndMakeVisible(mapViewport);
 
+  metadataViewport.setViewedComponent(&metadataContent, false);
+  metadataViewport.setScrollBarsShown(true, false, false, false);
+  metadataViewport.setScrollBarThickness(2);
+  metadataViewport.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::all);
+  metadataViewport.onScroll = [this] { repaint(); };
+  metadataContent.addMouseListener(this, true);
+  addChildComponent(metadataViewport);
+  keyboardDoneButton.setButtonText(L10n::tr("Listo", "Done"));
+  keyboardDoneButton.setWantsKeyboardFocus(false);
+  keyboardDoneButton.onClick = [] { juce::Component::unfocusAllComponents(); };
+  addChildComponent(keyboardDoneButton);
+
   summaryEditor.setReadOnly(true);
   summaryEditor.setMultiLine(true);
   addAndMakeVisible(summaryEditor);
@@ -645,7 +772,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   cancelButton.onClick = [this] { closeDialog(); };
   backButton.setButtonText(L10n::tr(u8"Atrás", "Back"));
   backButton.onClick = [this] {
-    if (currentStep == Step::Metadata)
+    if (isSubmitting || currentStep == Step::Metadata)
       return;
     changeStep(static_cast<Step>(static_cast<int>(currentStep) - 1));
   };
@@ -660,6 +787,15 @@ SongImportWizardComponent::SongImportWizardComponent(
   saveMetadataButton.setButtonText(L10n::tr("Guardar", "Save"));
   saveMetadataButton.onClick = [this] { saveMetadataOnly(); };
 
+  mobileCloseButton.setBare(true);
+  mobileCloseButton.setTooltip(L10n::tr("Cerrar", "Close"));
+  mobileCloseButton.onClick = [this] { closeDialog(); };
+  addAndMakeVisible(mobileCloseButton);
+  mobileCloseButton.setVisible(false);
+
+  mobilePrimaryButtonLookAndFeel =
+      std::make_unique<MobileWizardButtonLookAndFeel>();
+
   for (auto *btn : {&cancelButton, &backButton, &nextButton, &submitButton,
                     &saveMetadataButton})
     addAndMakeVisible(*btn);
@@ -673,44 +809,435 @@ SongImportWizardComponent::SongImportWizardComponent(
   }
 
   changeStep(Step::Metadata);
+  if (useTouchOptimisedControls())
+    startTimerHz(30);
 }
 
-SongImportWizardComponent::~SongImportWizardComponent() = default;
+SongImportWizardComponent::~SongImportWizardComponent() {
+  stopTimer();
+  metadataContent.removeMouseListener(this);
+  metadataViewport.onScroll = {};
+  metadataViewport.setViewedComponent(nullptr, false);
+  nextButton.setLookAndFeel(nullptr);
+  submitButton.setLookAndFeel(nullptr);
+  saveMetadataButton.setLookAndFeel(nullptr);
+  backButton.setLookAndFeel(nullptr);
+}
 
 void SongImportWizardComponent::setOnDismissRequested(std::function<void()> callback) {
   onDismissRequested = std::move(callback);
 }
 
+void SongImportWizardComponent::timerCallback() {
+  if (!isShowing() || !useTouchOptimisedControls())
+    return;
+
+  const auto nextInsets = keyboardInsetsForLayout();
+
+  if (nextInsets != phoneKeyboardInsets) {
+    phoneKeyboardInsets = nextInsets;
+    resized();
+    return;
+  }
+
+  if (phoneCreationLayout && currentStep == Step::Mapping) {
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (lastMappingFocus.getComponent() != focused) {
+      lastMappingFocus = focused;
+      if (phoneKeyboardVisible)
+        revealFocusedMappingEditor();
+    }
+  }
+  if (phoneCreationLayout && currentStep == Step::Metadata) {
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    if (lastMetadataFocus.getComponent() != focused) {
+      lastMetadataFocus = focused;
+      revealFocusedMetadataEditor();
+    }
+    if (metadataScrollAnimating) {
+      if (juce::Desktop::getInstance().getMainMouseSource().isDragging()) {
+        metadataScrollAnimating = false;
+      } else {
+        const int current = metadataViewport.getViewPositionY();
+        const int distance = metadataScrollTarget - current;
+        const int next = std::abs(distance) <= 2 ? metadataScrollTarget
+                          : current + juce::roundToInt(distance * 0.35f);
+        metadataViewport.setViewPosition(0, next);
+        metadataScrollAnimating = next != metadataScrollTarget;
+      }
+    }
+  }
+}
+
+juce::BorderSize<int> SongImportWizardComponent::keyboardInsetsForLayout() {
+  juce::BorderSize<int> nextInsets;
+  if (const auto *display = juce::Desktop::getInstance()
+                                .getDisplays()
+                                .getDisplayForRect(getScreenBounds()))
+    nextInsets = display->keyboardInsets;
+
+  const auto now = juce::Time::getMillisecondCounter();
+  if (hasKeyboardInsets(nextInsets))
+    keyboardLastVisibleTime = now;
+  else if (hasKeyboardInsets(phoneKeyboardInsets) &&
+           now - keyboardLastVisibleTime < 200)
+    return phoneKeyboardInsets; // Ignore the brief hide when changing keyboards.
+  return nextInsets;
+}
+
+void SongImportWizardComponent::revealFocusedMetadataEditor() {
+  if (!phoneCreationLayout || !metadataViewport.isVisible()) return;
+  auto *focused = juce::Component::getCurrentlyFocusedComponent();
+  if (focused != &songTitleEditor && focused != &artistEditor &&
+      focused != &bpmEditor) return;
+  auto target = focused->getBounds().expanded(0, 12).withTrimmedTop(-20);
+  const auto visible = metadataViewport.getViewArea();
+  int y = visible.getY();
+  if (target.getY() < y) y = target.getY();
+  else if (target.getBottom() > visible.getBottom())
+    y += target.getBottom() - visible.getBottom();
+  metadataScrollTarget = juce::jlimit(0,
+      juce::jmax(0, metadataContent.getHeight() - visible.getHeight()), y);
+  metadataScrollAnimating = metadataScrollTarget != visible.getY();
+}
+
+void SongImportWizardComponent::revealFocusedMappingEditor() {
+  if (!phoneCreationLayout || currentStep != Step::Mapping ||
+      !mapViewport.isVisible() ||
+      juce::Desktop::getInstance().getMainMouseSource().isDragging())
+    return;
+
+  auto *focused = juce::Component::getCurrentlyFocusedComponent();
+  if (focused == nullptr ||
+      (focused != &mapContent && !mapContent.isParentOf(focused)))
+    return;
+
+  auto target = mapContent.getLocalArea(focused, focused->getLocalBounds())
+                    .expanded(0, 12);
+  const auto visible = mapViewport.getViewArea();
+  int nextY = visible.getY();
+  if (target.getY() < visible.getY())
+    nextY = target.getY();
+  else if (target.getBottom() > visible.getBottom())
+    nextY += target.getBottom() - visible.getBottom();
+
+  if (nextY != visible.getY())
+    mapViewport.setViewPosition(mapViewport.getViewPositionX(),
+                                juce::jmax(0, nextY));
+}
+
+bool SongImportWizardComponent::usesPhoneCreationLayout() const {
+  return getWidth() > 0 && getWidth() < 600 && isPhoneSizedTouchLayout(*this);
+}
+
+juce::String SongImportWizardComponent::mobileMetadataSummary() const {
+  int trackCount = 0;
+  double duration = 0.0;
+
+  if (selectedSongDetail.has_value()) {
+    trackCount = static_cast<int>(selectedSongDetail->tracks.size());
+    duration = selectedSongDetail->durationSeconds;
+  }
+
+  if (trackCount == 0)
+    trackCount = static_cast<int>(std::count_if(
+        stems.begin(), stems.end(),
+        [](const StemDraft &stem) { return stem.include; }));
+  if (duration <= 0.0) {
+    for (const auto &stem : stems)
+      duration = juce::jmax(duration, stem.durationSec);
+  }
+
+  if (trackCount == 0 && duration <= 0.0)
+    return L10n::tr("Se completarán al agregar los archivos",
+                    "Completed after adding files");
+
+  juce::String text;
+  if (trackCount > 0)
+    text << trackCount << " " << L10n::tr("pistas", "tracks");
+  if (duration > 0.0)
+    text << (text.isNotEmpty() ? u8" • " : "")
+         << formatTimeSeconds(duration);
+  return text;
+}
+
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
+  if (phoneCreationLayout) {
+    drawStudioBackground(g, b);
+
+    if (!stepperBounds.isEmpty()) {
+      static const std::array<juce::String, 4> labels{
+          L10n::tr("Detalles", "Details"),
+          L10n::tr("Archivos", "Files"),
+          L10n::tr("Secciones", "Sections"),
+          L10n::tr("Revisar", "Review")};
+      const int active = static_cast<int>(currentStep);
+      auto stepper = stepperBounds.toFloat();
+      const float left = stepper.getX() + 31.0f;
+      const float right = stepper.getRight() - 31.0f;
+      const float circleY = stepper.getY() + 22.0f;
+      const float spacing = (right - left) / 3.0f;
+
+      g.setColour(UITheme::cardBorder.withAlpha(0.95f));
+      g.drawLine(left, circleY, right, circleY, 1.5f);
+      if (active > 0) {
+        g.setColour(UITheme::accent.withAlpha(0.85f));
+        g.drawLine(left, circleY,
+                   left + spacing * static_cast<float>(active), circleY, 1.8f);
+      }
+
+      for (int index = 0; index < 4; ++index) {
+        const float x = left + spacing * static_cast<float>(index);
+        const bool reached = index <= active;
+        auto circle = juce::Rectangle<float>(x - 14.0f, circleY - 14.0f,
+                                             28.0f, 28.0f);
+        g.setColour(reached ? UITheme::accent : UITheme::textSecondary);
+        g.drawEllipse(circle, reached ? 1.8f : 1.3f);
+        g.setColour(UITheme::panelDark.withAlpha(0.96f));
+        g.fillEllipse(circle.reduced(2.0f));
+        g.setColour(reached ? UITheme::accent : UITheme::textSecondary);
+        g.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+        g.drawText(juce::String(index + 1), circle,
+                   juce::Justification::centred, false);
+
+        auto labelArea = juce::Rectangle<float>(x - spacing * 0.47f,
+                                                circle.getBottom() + 7.0f,
+                                                spacing * 0.94f, 20.0f);
+        g.setFont(makeAppFont(12.5f, index == active
+                                        ? AppFontWeight::SemiBold
+                                        : AppFontWeight::Regular));
+        g.drawFittedText(labels[static_cast<size_t>(index)],
+                         labelArea.toNearestInt(),
+                         juce::Justification::centred, 1);
+      }
+    }
+
+    if (metadataViewport.isVisible()) {
+      juce::Graphics::ScopedSaveState state(g);
+      g.reduceClipRegion(metadataViewport.getBounds());
+      g.setOrigin(metadataViewport.getX(), metadataViewport.getY() -
+                  metadataViewport.getViewPositionY());
+      paintPhoneMetadata(g);
+    }
+    return;
+  }
+
   constexpr bool usesNavigationToolbar = true;
   g.setColour(usesNavigationToolbar ? UITheme::panelDark : UITheme::cardBg);
   g.fillRoundedRectangle(b, 8.0f);
   g.setColour(UITheme::cardBorder.withAlpha(usesNavigationToolbar ? 0.62f : 0.8f));
   g.drawRoundedRectangle(b.reduced(0.5f), 8.0f, 1.0f);
+  g.setColour(UITheme::cardBorder.withAlpha(0.72f));
+  g.drawLine(12.0f, 68.0f, b.getRight() - 12.0f, 68.0f, 1.0f);
+}
 
-  if (usesNavigationToolbar) {
-    const float toolbarBottom = 68.0f;
-    g.setColour(UITheme::cardBorder.withAlpha(0.72f));
-    g.drawLine(12.0f, toolbarBottom, b.getRight() - 12.0f, toolbarBottom,
-               1.0f);
-  }
+void SongImportWizardComponent::paintPhoneMetadata(juce::Graphics &g) {
+    if (currentStep == Step::Metadata &&
+        !secuenciasArtworkPreview.getBounds().isEmpty()) {
+      auto artwork = secuenciasArtworkPreview.getBounds().toFloat();
+      g.setColour(UITheme::cardBgHover);
+      g.fillRoundedRectangle(artwork, 11.0f);
+      g.setColour(UITheme::cardBorder.withAlpha(0.52f));
+      g.drawRoundedRectangle(artwork.reduced(0.5f), 11.0f, 1.0f);
+      const auto image = secuenciasArtworkPreview.getImage();
+      if (image.isValid()) {
+        juce::Path clip;
+        clip.addRoundedRectangle(artwork, 11.0f);
+        g.saveState();
+        g.reduceClipRegion(clip);
+        g.drawImageWithin(
+            image, juce::roundToInt(artwork.getX()),
+            juce::roundToInt(artwork.getY()),
+            juce::roundToInt(artwork.getWidth()),
+            juce::roundToInt(artwork.getHeight()),
+            juce::RectanglePlacement::centred |
+                juce::RectanglePlacement::fillDestination);
+        g.restoreState();
+      } else {
+        drawSvgIcon(g, artwork.withSizeKeepingCentre(44.0f, 44.0f),
+                    SvgIconName::Music, UITheme::textSecondary.withAlpha(0.7f));
+      }
+    }
+
+    if (currentStep == Step::Metadata && !metadataCardBounds.isEmpty()) {
+      auto card = metadataCardBounds.toFloat();
+      juce::ColourGradient cardGradient(
+          UITheme::accent.withAlpha(0.10f), card.getX(), card.getCentreY(),
+          UITheme::cardBgHover.withAlpha(0.96f), card.getRight(),
+          card.getCentreY(), false);
+      g.setGradientFill(cardGradient);
+      g.fillRoundedRectangle(card, 14.0f);
+      g.setColour(UITheme::cardBorder.withAlpha(0.62f));
+      g.drawRoundedRectangle(card.reduced(0.5f), 14.0f, 1.0f);
+
+      auto iconTile = card.withWidth(48.0f).reduced(8.0f);
+      g.setColour(UITheme::accent.withAlpha(0.10f));
+      g.fillRoundedRectangle(iconTile.expanded(5.0f), 10.0f);
+      drawSvgIcon(g, iconTile, SvgIconName::AudioWaveform, UITheme::accent);
+
+      auto text = card.reduced(66.0f, 9.0f);
+      text.setRight(card.getRight() - 38.0f);
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
+      g.drawFittedText(L10n::tr("Metadatos detectados", "Detected metadata"),
+                       text.removeFromTop(24.0f).toNearestInt(),
+                       juce::Justification::centredLeft, 1);
+      g.setColour(UITheme::textSecondary);
+      g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
+      g.drawFittedText(mobileMetadataSummary(), text.toNearestInt(),
+                       juce::Justification::centredLeft, 1);
+
+      const float cx = card.getRight() - 25.0f;
+      const float cy = card.getCentreY();
+      juce::Path chevron;
+      chevron.startNewSubPath(cx - 4.0f, cy - 6.0f);
+      chevron.lineTo(cx + 2.0f, cy);
+      chevron.lineTo(cx - 4.0f, cy + 6.0f);
+      g.setColour(UITheme::textSecondary);
+      g.strokePath(chevron, juce::PathStrokeType(2.0f));
+    }
 }
 
 void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
   if (currentStep != Step::Metadata || artworkOverlayButtonBounds.isEmpty())
     return;
 
+  juce::Graphics::ScopedSaveState state(g);
+  if (phoneCreationLayout) {
+    g.reduceClipRegion(metadataViewport.getBounds());
+    g.setOrigin(metadataViewport.getX(), metadataViewport.getY() -
+                metadataViewport.getViewPositionY());
+  }
+
   auto area = artworkOverlayButtonBounds.toFloat();
-  auto bg = UITheme::accent.withAlpha(artworkOverlayHovered ? 0.95f : 0.82f);
+  auto bg = phoneCreationLayout
+                ? juce::Colours::black.withAlpha(artworkOverlayHovered ? 0.96f
+                                                                       : 0.86f)
+                : UITheme::accent.withAlpha(artworkOverlayHovered ? 0.95f
+                                                                  : 0.82f);
   g.setColour(bg);
   g.fillEllipse(area);
   g.setColour(UITheme::cardBorder.withAlpha(0.8f));
   g.drawEllipse(area, 1.0f);
-  drawSvgIcon(g, area.reduced(6.0f), SvgIconName::ImageEdit, UITheme::onAccent);
+  if (phoneCreationLayout) {
+    const auto colour = UITheme::textPrimary;
+    auto camera = area.reduced(10.0f, 12.0f);
+    camera.removeFromTop(2.0f);
+    g.setColour(colour);
+    g.drawRoundedRectangle(camera, 2.5f, 2.0f);
+    auto lens = camera.withSizeKeepingCentre(9.0f, 9.0f);
+    g.drawEllipse(lens, 2.0f);
+    juce::Path top;
+    top.startNewSubPath(camera.getX() + 5.0f, camera.getY());
+    top.lineTo(camera.getX() + 8.0f, camera.getY() - 4.0f);
+    top.lineTo(camera.getRight() - 8.0f, camera.getY() - 4.0f);
+    top.lineTo(camera.getRight() - 5.0f, camera.getY());
+    g.strokePath(top, juce::PathStrokeType(2.0f));
+  } else {
+    drawSvgIcon(g, area.reduced(6.0f), SvgIconName::ImageEdit,
+                UITheme::onAccent);
+  }
 }
 
 void SongImportWizardComponent::resized() {
+  if (submissionOverlay != nullptr)
+    submissionOverlay->setBounds(getLocalBounds());
+  metadataScrollAnimating = false;
+  phoneCreationLayout = usesPhoneCreationLayout();
+  if (phoneCreationLayout) {
+    auto bounds = getLocalBounds();
+    auto safeBounds = bounds;
+    phoneKeyboardInsets = keyboardInsetsForLayout();
+    if (const auto *display = juce::Desktop::getInstance()
+                                  .getDisplays()
+                                  .getDisplayForRect(getScreenBounds())) {
+      safeBounds = combinedPhoneInsets(display->safeAreaInsets,
+                                       phoneKeyboardInsets)
+                       .subtractedFrom(safeBounds);
+    }
+    phoneKeyboardVisible = hasKeyboardInsets(phoneKeyboardInsets);
+    auto content = safeBounds.reduced(17, 0);
+
+    auto header = content.removeFromTop(56);
+    mobileCloseButton.setVisible(true);
+    mobileCloseButton.setBounds(header.getX(), header.getY() + 3, 44, 44);
+    titleLabel.setFont(makeAppFont(20.0f, AppFontWeight::Bold));
+    titleLabel.setBounds(header.reduced(52, 0));
+    subtitleLabel.setVisible(false);
+    cancelButton.setVisible(false);
+
+    stepperBounds = content.removeFromTop(86);
+    content.removeFromTop(4);
+
+    auto *primary = submitButton.isVisible()
+                        ? static_cast<juce::TextButton *>(&submitButton)
+                        : static_cast<juce::TextButton *>(&nextButton);
+    for (auto *button : {&nextButton, &submitButton, &saveMetadataButton,
+                         &backButton})
+      button->setLookAndFeel(mobilePrimaryButtonLookAndFeel.get());
+
+    primary->setColour(juce::TextButton::buttonColourId, UITheme::accent);
+    primary->setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
+    backButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+    backButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    saveMetadataButton.setColour(juce::TextButton::buttonColourId,
+                                 UITheme::cardBgHover);
+    saveMetadataButton.setColour(juce::TextButton::textColourOffId,
+                                 UITheme::accent);
+
+    if (phoneKeyboardVisible) {
+      auto accessory = content.removeFromBottom(44);
+      keyboardDoneButton.setBounds(accessory.removeFromRight(80));
+      for (auto *button : {&nextButton, &submitButton, &saveMetadataButton,
+                           &backButton})
+        button->setBounds({});
+    } else {
+      auto footer = content.removeFromBottom(66).reduced(0, 9);
+      if (backButton.isVisible()) {
+        backButton.setBounds(footer.removeFromLeft(92));
+        footer.removeFromLeft(8);
+      }
+      if (saveMetadataButton.isVisible()) {
+        saveMetadataButton.setBounds(footer.removeFromLeft(82));
+        footer.removeFromLeft(8);
+      }
+      primary->setBounds(footer);
+    }
+    keyboardDoneButton.setVisible(phoneKeyboardVisible);
+
+    for (auto *label : {&songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
+                        &timeSignatureLabel})
+      label->setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+
+    layoutStepImport(content);
+    layoutStepMetadata(content);
+    layoutStepMapping(content);
+    layoutStepReview(content);
+    if (phoneKeyboardVisible)
+      revealFocusedMappingEditor();
+    revealFocusedMetadataEditor();
+    repaint();
+    return;
+  }
+
+  phoneKeyboardVisible = false;
+  keyboardDoneButton.setVisible(false);
+  phoneKeyboardInsets = {};
+  mobileCloseButton.setVisible(false);
+  subtitleLabel.setVisible(true);
+  cancelButton.setVisible(true);
+  stepperBounds = {};
+  metadataCardBounds = {};
+  changeArtworkLabel.setVisible(false);
+  titleLabel.setFont(makeAppFont(30.0f, AppFontWeight::Bold));
+  for (auto *label : {&songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
+                      &timeSignatureLabel})
+    label->setFont(makeAppFont(11.0f, AppFontWeight::Regular));
+  for (auto *button : {&nextButton, &submitButton, &saveMetadataButton,
+                       &backButton})
+    button->setLookAndFeel(nullptr);
+
   constexpr bool usesNavigationToolbar = true;
   auto area = getLocalBounds().reduced(usesNavigationToolbar ? 12 : 16);
 
@@ -780,13 +1307,25 @@ void SongImportWizardComponent::resized() {
   layoutStepReview(area);
 }
 
+void SongImportWizardComponent::mouseDown(const juce::MouseEvent &event) {
+  if (phoneKeyboardVisible && event.originalComponent == this)
+    juce::Component::unfocusAllComponents();
+}
+
+juce::Point<int> SongImportWizardComponent::metadataMousePosition(
+    const juce::MouseEvent &event) const {
+  return event.getEventRelativeTo(phoneCreationLayout
+      ? const_cast<juce::Component *>(&metadataContent)
+      : const_cast<SongImportWizardComponent *>(this)).getPosition();
+}
+
 void SongImportWizardComponent::mouseMove(const juce::MouseEvent &event) {
   const bool nextHovered =
       currentStep == Step::Metadata &&
-      artworkOverlayButtonBounds.contains(event.getPosition());
+      artworkOverlayButtonBounds.contains(metadataMousePosition(event));
   if (nextHovered != artworkOverlayHovered) {
     artworkOverlayHovered = nextHovered;
-    repaint(artworkOverlayButtonBounds.expanded(2));
+    repaint();
   }
 }
 
@@ -794,18 +1333,27 @@ void SongImportWizardComponent::mouseExit(const juce::MouseEvent &) {
   if (!artworkOverlayHovered)
     return;
   artworkOverlayHovered = false;
-  repaint(artworkOverlayButtonBounds.expanded(2));
+  repaint();
 }
 
 void SongImportWizardComponent::mouseUp(const juce::MouseEvent &event) {
   if (currentStep != Step::Metadata)
     return;
-  if (!artworkOverlayButtonBounds.contains(event.getPosition()))
+  if (event.mouseWasDraggedSinceMouseDown()) return;
+  const auto position = metadataMousePosition(event);
+  const bool phoneArtworkAction =
+      phoneCreationLayout &&
+      (secuenciasArtworkPreview.getBounds().contains(position) ||
+       changeArtworkLabel.getBounds().contains(position));
+  if (!artworkOverlayButtonBounds.contains(position) &&
+      !phoneArtworkAction)
     return;
   openArtworkChooser();
 }
 
 void SongImportWizardComponent::refreshThemeColours() {
+  if (submissionOverlay != nullptr)
+    submissionOverlay->refreshThemeColours();
   titleLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   titleLabel.setJustificationType(juce::Justification::centred);
   subtitleLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -815,10 +1363,12 @@ void SongImportWizardComponent::refreshThemeColours() {
         &songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
         &timeSignatureLabel, &mapFileHeader, &mapNameHeader, &mapCategoryHeader,
         &mapLoadHeader, &secuenciasStatusLabel,
-        &secuenciasDetailLabel, &secuenciasArtworkCaption}) {
+        &secuenciasDetailLabel, &secuenciasArtworkCaption,
+        &changeArtworkLabel}) {
     label->setColour(juce::Label::textColourId, UITheme::textSecondary);
   }
   primeStatusLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  changeArtworkLabel.setColour(juce::Label::textColourId, UITheme::accent);
 
   applyEditorTheme(songTitleEditor, L10n::tr(u8"Título de canción", "Song title"));
   applyEditorTheme(artistEditor, L10n::tr("Artista", "Artist"));
@@ -906,6 +1456,27 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
   if (!visible)
     return;
 
+  if (phoneCreationLayout) {
+    stemsSectionLabel.setBounds(bounds.removeFromTop(22));
+    bounds.removeFromTop(8);
+    if (showReplace) {
+      auto actions = bounds.removeFromTop(48);
+      const int gap = 8;
+      const int width = (actions.getWidth() - gap) / 2;
+      addFilesButton.setBounds(actions.removeFromLeft(width));
+      actions.removeFromLeft(gap);
+      replaceFilesButton.setBounds(actions);
+    } else {
+      addFilesButton.setBounds(bounds.removeFromTop(48));
+    }
+    bounds.removeFromTop(8);
+    selectedFilesLabel.setBounds(bounds.removeFromTop(22));
+    bounds.removeFromTop(8);
+    stemsList.setRowHeight(62);
+    stemsList.setBounds(bounds);
+    return;
+  }
+
   const int sectionLabelH = 18;
   const int rowGap = 8;
 
@@ -929,6 +1500,9 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
 
 void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == Step::Metadata;
+  metadataViewport.setVisible(visible && phoneCreationLayout);
+  auto *metadataParent = phoneCreationLayout ? &metadataContent
+                                             : static_cast<juce::Component *>(this);
   const bool showPrime = visible && primeImportEnabled && mode == Mode::Import;
   for (auto *c : {static_cast<juce::Component *>(&infoSectionLabel),
                   static_cast<juce::Component *>(&songTitleLabel),
@@ -945,12 +1519,15 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&secuenciasDetailLabel),
                   static_cast<juce::Component *>(&secuenciasArtworkPreview),
                   static_cast<juce::Component *>(&secuenciasArtworkCaption),
+                  static_cast<juce::Component *>(&changeArtworkLabel),
                   static_cast<juce::Component *>(&clearSongSearchButton),
                   static_cast<juce::Component *>(&refreshPrimeButton),
                   static_cast<juce::Component *>(&usePrimeSongButton),
                   static_cast<juce::Component *>(&primeSongsList),
                   static_cast<juce::Component *>(&primeSectionLabel),
                   static_cast<juce::Component *>(&primeStatusLabel)}) {
+    if (c->getParentComponent() != metadataParent)
+      metadataParent->addChildComponent(c);
     const bool isPrimeControl =
         c == static_cast<juce::Component *>(&refreshPrimeButton) ||
         c == static_cast<juce::Component *>(&usePrimeSongButton) ||
@@ -963,11 +1540,88 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     }
     c->setVisible(visible);
   }
+  if (secuenciasList.getParentComponent() != metadataParent)
+    metadataParent->addChildComponent(secuenciasList);
   secuenciasList.setVisible(visible && !secuenciasResults.empty());
   if (!visible) {
     artworkOverlayButtonBounds = {};
+    metadataCardBounds = {};
     return;
   }
+
+  if (phoneCreationLayout) {
+    infoSectionLabel.setVisible(false);
+    secuenciasStatusLabel.setVisible(false);
+    secuenciasDetailLabel.setVisible(false);
+    secuenciasArtworkCaption.setVisible(false);
+    clearSongSearchButton.setVisible(false);
+    refreshPrimeButton.setVisible(false);
+    usePrimeSongButton.setVisible(false);
+    primeSongsList.setVisible(false);
+    primeSectionLabel.setVisible(false);
+    primeStatusLabel.setVisible(false);
+    changeArtworkLabel.setVisible(true);
+
+    const int fieldLabelH = 20;
+    const int fieldH = 48;
+    const int gap = 8;
+    const int groupGap = 9;
+
+    metadataViewport.setBounds(bounds);
+    // Content geometry is independent of keyboard height. Only its visible
+    // window changes, so editing never swaps the form for a different layout.
+    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), 550);
+    bounds = metadataContent.getLocalBounds();
+    const int artworkSize = 128;
+    auto artworkLine = bounds.removeFromTop(artworkSize);
+    auto artwork = artworkLine.withSizeKeepingCentre(artworkSize, artworkSize);
+    secuenciasArtworkPreview.setBounds(artwork);
+    secuenciasArtworkPreview.setVisible(false);
+    artworkOverlayButtonBounds = juce::Rectangle<int>(
+        artwork.getRight() - 46, artwork.getBottom() - 46, 44, 44);
+    bounds.removeFromTop(4);
+    changeArtworkLabel.setBounds(bounds.removeFromTop(25));
+    bounds.removeFromTop(groupGap);
+
+    songTitleLabel.setBounds(bounds.removeFromTop(fieldLabelH));
+    songTitleEditor.setBounds(bounds.removeFromTop(fieldH));
+    bounds.removeFromTop(groupGap);
+    artistLabel.setBounds(bounds.removeFromTop(fieldLabelH));
+    artistEditor.setBounds(bounds.removeFromTop(fieldH));
+    bounds.removeFromTop(groupGap);
+
+    auto row = bounds.removeFromTop(fieldLabelH + fieldH);
+    const int colW = (row.getWidth() - 2 * gap) / 3;
+    auto col = row.removeFromLeft(colW);
+    bpmLabel.setBounds(col.removeFromTop(fieldLabelH));
+    bpmEditor.setBounds(col.removeFromTop(fieldH));
+    row.removeFromLeft(gap);
+    col = row.removeFromLeft(colW);
+    keyLabel.setBounds(col.removeFromTop(fieldLabelH));
+    keyBox.setBounds(col.removeFromTop(fieldH));
+    row.removeFromLeft(gap);
+    col = row;
+    timeSignatureLabel.setBounds(col.removeFromTop(fieldLabelH));
+    timeSignatureBox.setBounds(col.removeFromTop(fieldH));
+
+    bounds.removeFromTop(12);
+    metadataCardBounds = bounds.removeFromTop(70);
+
+    if (!secuenciasResults.empty()) {
+      const int listH = juce::jmin(
+          phoneKeyboardVisible ? 108 : 220,
+          8 + static_cast<int>(secuenciasResults.size()) *
+                      secuenciasList.getRowHeight());
+      secuenciasList.setBounds(songTitleEditor.getX(),
+                               songTitleEditor.getBottom() + 4,
+                               songTitleEditor.getWidth(), listH);
+      secuenciasList.toFront(false);
+    }
+    return;
+  }
+
+  changeArtworkLabel.setVisible(false);
+  metadataCardBounds = {};
 
   const int sectionLabelH = 18;
   const int fieldLabelH = 16;
@@ -1060,6 +1714,17 @@ void SongImportWizardComponent::layoutStepMapping(juce::Rectangle<int> bounds) {
   if (!visible)
     return;
 
+  if (phoneCreationLayout) {
+    for (auto *c : {static_cast<juce::Component *>(&mapFileHeader),
+                    static_cast<juce::Component *>(&mapNameHeader),
+                    static_cast<juce::Component *>(&mapCategoryHeader),
+                    static_cast<juce::Component *>(&mapLoadHeader)})
+      c->setVisible(false);
+    mapViewport.setBounds(bounds);
+    layoutMappingRows();
+    return;
+  }
+
   auto header = bounds.removeFromTop(20);
   auto fileCol = header.removeFromLeft(230);
   auto nameCol = header.removeFromLeft(170);
@@ -1083,6 +1748,8 @@ void SongImportWizardComponent::layoutStepReview(juce::Rectangle<int> bounds) {
 }
 
 void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
+  if (isSubmitting)
+    return;
   auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
   stemChooser = std::make_unique<juce::FileChooser>(
       L10n::tr("Selecciona stems", "Select stems"),
@@ -1097,11 +1764,156 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
                            [safeThis, replaceCurrent](const juce::FileChooser &chooser) {
                              if (safeThis == nullptr)
                                return;
+#if JUCE_IOS || JUCE_ANDROID
+                             safeThis->stageSelectedMobileFiles(
+                                 chooser.getURLResults(), replaceCurrent, false);
+#else
                              safeThis->handleSelectedStemFiles(chooser.getResults(),
                                                                replaceCurrent);
+#endif
                              safeThis->stemChooser.reset();
                            });
 }
+
+#if JUCE_IOS || JUCE_ANDROID
+void SongImportWizardComponent::stageSelectedMobileFiles(
+    juce::Array<juce::URL> urls, const bool replaceCurrent, const bool artwork) {
+  if (isSubmitting || urls.isEmpty())
+    return;
+  if (mobileImportStaging == nullptr)
+    mobileImportStaging = std::make_shared<MobileImportStaging>();
+
+  setSubmitting(true);
+  juce::Component::unfocusAllComponents();
+  submissionOverlay = std::make_unique<SongLoadProgressOverlay>();
+  addAndMakeVisible(*submissionOverlay);
+  submissionOverlay->refreshThemeColours();
+  submissionOverlay->setTitleText(
+      artwork ? L10n::tr("Importando portada", "Importing artwork")
+              : L10n::tr("Importando archivos", "Importing files"));
+  submissionOverlay->setPhaseText(
+      L10n::tr("Preparando copia local...", "Preparing local copy..."));
+  submissionOverlay->setProgress(0.0);
+  submissionOverlay->setAlwaysOnTop(true);
+  submissionOverlay->setBounds(getLocalBounds());
+  submissionOverlay->toFront(true);
+
+  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  const bool started = juce::Thread::launch(
+      [urls = std::move(urls), staging = mobileImportStaging,
+       cachedFiles = stagedMobileFiles, safeThis, replaceCurrent, artwork]() mutable {
+        // Keep every original URL (including its security bookmark or content
+        // provider permission) alive until the complete batch has been copied.
+        juce::Array<juce::File> localFiles;
+        juce::Image artworkImage;
+        juce::String error;
+        juce::uint32 lastReportTime = 0;
+        int lastReportedFile = -1;
+        try {
+          for (int index = 0; index < urls.size(); ++index) {
+            const auto report = [safeThis, index, count = urls.size(),
+                                 &lastReportTime, &lastReportedFile](double progress) {
+              const auto now = juce::Time::getMillisecondCounter();
+              if (lastReportedFile == index && progress < 1.0 &&
+                  now - lastReportTime < 33)
+                return;
+              lastReportTime = now;
+              lastReportedFile = index;
+              const auto totalProgress =
+                  (index + juce::jlimit(0.0, 1.0, progress)) / count;
+              const auto phase =
+                  L10n::tr("Copiando archivo ", "Copying file ") +
+                  juce::String(index + 1) + " / " + juce::String(count);
+              juce::MessageManager::callAsync([safeThis, totalProgress, phase] {
+                if (safeThis == nullptr || safeThis->submissionOverlay == nullptr)
+                  return;
+                safeThis->submissionOverlay->setProgress(totalProgress);
+                safeThis->submissionOverlay->setPhaseText(phase);
+              });
+            };
+            const auto sourceKey = urls[index].toString(true).toStdString();
+            const auto previous = cachedFiles.find(sourceKey);
+            juce::File local;
+            if (!replaceCurrent && !artwork && previous != cachedFiles.end() &&
+                previous->second.existsAsFile() &&
+                previous->second.getSize() > 0) {
+              local = previous->second;
+              report(1.0);
+            } else {
+              local = staging->stage(urls[index], error, report);
+            }
+            if (!local.existsAsFile() || local.getSize() <= 0) {
+              if (error.isEmpty())
+                error = L10n::tr("No se pudo copiar el archivo seleccionado.",
+                                 "Couldn't copy the selected file.");
+              break;
+            }
+            cachedFiles[sourceKey] = local;
+            localFiles.add(local);
+          }
+          if (error.isEmpty() && artwork && !localFiles.isEmpty()) {
+            artworkImage = juce::ImageFileFormat::loadFrom(localFiles.getFirst());
+            if (!artworkImage.isValid())
+              error = L10n::tr("No se pudo leer la imagen seleccionada.",
+                               "Couldn't read the selected image.");
+          }
+        } catch (const std::exception &exception) {
+          error = juce::String::fromUTF8(exception.what());
+        } catch (...) {
+          error = L10n::tr("No se pudieron importar los archivos.",
+                           "Couldn't import the files.");
+        }
+
+        const bool complete = error.isEmpty() && localFiles.size() == urls.size();
+        juce::MessageManager::callAsync(
+            [safeThis, staging, localFiles = std::move(localFiles),
+             cachedFiles = std::move(cachedFiles), artworkImage, error, complete,
+             replaceCurrent, artwork]() mutable {
+              juce::ignoreUnused(staging); // Keep private sources until UI commit.
+              // The owner may have disappeared while a provider downloaded a
+              // file; only this UI callback may inspect the component pointer.
+              if (safeThis == nullptr)
+                return;
+              safeThis->submissionOverlay.reset();
+              if (complete) {
+                safeThis->stagedMobileFiles = std::move(cachedFiles);
+                if (artwork) {
+                  safeThis->selectedArtworkUrl =
+                      "manual:" + localFiles.getFirst().getFullPathName();
+                  safeThis->secuenciasArtworkPreview.setImage(
+                      artworkImage, juce::RectanglePlacement::centred);
+                  safeThis->secuenciasArtworkCaption.setText(
+                      L10n::tr("Imagen manual", "Manual image"),
+                      juce::dontSendNotification);
+                  safeThis->repaint();
+                } else {
+                  // Commit a replacement only after every source is local;
+                  // partial/failed provider copies never erase the old draft.
+                  safeThis->handleSelectedStemFiles(localFiles, replaceCurrent);
+                }
+              }
+              safeThis->setSubmitting(false);
+              if (!complete)
+                juce::NativeMessageBox::showMessageBoxAsync(
+                    juce::MessageBoxIconType::WarningIcon,
+                    L10n::tr("Error al importar", "Import error"),
+                    error.isNotEmpty()
+                        ? error
+                        : L10n::tr("No se pudieron copiar todos los archivos.",
+                                   "Couldn't copy all files."));
+            });
+      });
+  if (!started) {
+    submissionOverlay.reset();
+    setSubmitting(false);
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
+        L10n::tr("Error al importar", "Import error"),
+        L10n::tr("No se pudo iniciar la copia. Intenta de nuevo.",
+                 "Couldn't start copying. Please try again."));
+  }
+}
+#endif
 
 void SongImportWizardComponent::handleSelectedStemFiles(
     const juce::Array<juce::File> &files, const bool replaceCurrent) {
@@ -1166,6 +1978,10 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 
   if (selectedStems.empty())
     return;
+
+  // Preserve edited names/categories before changing the collection and
+  // rebuilding rows. The old rows still map one-to-one to these drafts here.
+  syncMappingsToDrafts();
 
   const bool hasOnlyPlaceholderStems =
       !stems.empty() &&
@@ -1284,6 +2100,7 @@ void SongImportWizardComponent::updateSelectedFilesText() {
     stemsList.updateContent();
     stemsList.selectRow(-1);
     stemsList.repaint();
+    repaint(metadataCardBounds);
     return;
   }
 
@@ -1305,23 +2122,26 @@ void SongImportWizardComponent::updateSelectedFilesText() {
         juce::jlimit(0, static_cast<int>(stems.size()) - 1,
                      previousRow >= 0 ? previousRow : 0));
   stemsList.repaint();
+  repaint(metadataCardBounds);
 }
 
 void SongImportWizardComponent::removeStemAtIndex(const int rowIndex) {
   if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(stems.size())))
     return;
 
+  syncMappingsToDrafts();
   stems.erase(stems.begin() + rowIndex);
   updateSelectedFilesText();
   rebuildMappingRows();
 }
 
 void SongImportWizardComponent::rebuildMappingRows() {
+  lastMappingFocus = nullptr;
   mappingRows.clear();
   mapContent.removeAllChildren();
 
   for (const auto &stem : stems) {
-    auto row = std::make_unique<MappingRow>(stem);
+    auto row = std::make_unique<MappingRow>(stem, phoneCreationLayout);
     mapContent.addAndMakeVisible(*row);
     mappingRows.push_back(std::move(row));
   }
@@ -1330,11 +2150,12 @@ void SongImportWizardComponent::rebuildMappingRows() {
 }
 
 void SongImportWizardComponent::layoutMappingRows() {
-  const int rowH = 42;
+  const int rowH = phoneCreationLayout ? 104 : 42;
   const int gap = 5;
   const int width = juce::jmax(1, mapViewport.getWidth() - 10);
   int y = 6;
   for (auto &row : mappingRows) {
+    row->setPhoneLayout(phoneCreationLayout);
     row->setBounds(4, y, width, rowH);
     y += rowH + gap;
   }
@@ -1497,6 +2318,10 @@ void SongImportWizardComponent::updateSummaryText() {
   lines.add(L10n::tr("Stems a cargar: ", "Stems to load: ") +
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
+  if (phoneCreationLayout && mode == Mode::Import && resolveProjectDestination) {
+    lines.add(L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
+                      "A .pwproj project will be created in the local library."));
+  }
   if (mode == Mode::Edit && excluded > 0) {
     lines.add(L10n::tr("Stems removidos al guardar: ",
                        "Stems removed on save: ") +
@@ -1523,6 +2348,8 @@ void SongImportWizardComponent::updateSummaryText() {
 }
 
 void SongImportWizardComponent::goToNextStep() {
+  if (isSubmitting)
+    return;
   switch (currentStep) {
   case Step::Metadata:
     if (!validateStepMetadata())
@@ -1547,7 +2374,7 @@ void SongImportWizardComponent::goToNextStep() {
 }
 
 void SongImportWizardComponent::saveMetadataOnly() {
-  if (mode != Mode::Edit || currentStep != Step::Metadata)
+  if (isSubmitting || mode != Mode::Edit || currentStep != Step::Metadata)
     return;
   if (!validateStepMetadata())
     return;
@@ -1559,6 +2386,13 @@ void SongImportWizardComponent::saveMetadataOnly() {
                  "Quick save is not available for this song."));
     return;
   }
+
+  setSubmitting(true);
+  const juce::ScopeGuard resetSubmitting{
+      [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this)] {
+        if (safeThis != nullptr)
+          safeThis->setSubmitting(false);
+      }};
 
   auto songData = buildSongData();
   songData.id = initialSong.id;
@@ -1575,10 +2409,78 @@ void SongImportWizardComponent::saveMetadataOnly() {
     return;
   }
 
+  setSubmitting(false);
   closeDialog();
 }
 
 bool SongImportWizardComponent::validateStepImport() {
+  const bool creatingPortableProject =
+      mode == Mode::Import && static_cast<bool>(resolveProjectDestination);
+  if (creatingPortableProject) {
+    // Archivos must let the user return to Mapping to re-enable a track.
+    // Inclusion is enforced in Mapping/Review, where Cargar can be changed.
+    const bool choosingMapping = currentStep == Step::Stems;
+    const auto eligibleCount = std::count_if(
+        stems.begin(), stems.end(), [choosingMapping](const StemDraft &stem) {
+          return choosingMapping || stem.include;
+        });
+    if (eligibleCount == 0) {
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
+          L10n::tr("Agrega audio al proyecto", "Add audio to the project"),
+          choosingMapping
+              ? L10n::tr(u8"Selecciona al menos un archivo de audio para continuar.",
+                         "Select at least one audio file to continue.")
+              : L10n::tr(u8"Activa Cargar en al menos una pista para crear el proyecto.",
+                         "Enable Load on at least one track to create the project."));
+      return false;
+    }
+
+#if JUCE_IOS || JUCE_ANDROID
+    juce::AudioFormatManager formatManager;
+    formatManager.registerBasicFormats();
+#endif
+    juce::StringArray unreadableFiles;
+    for (const auto &stem : stems) {
+      if (!choosingMapping && !stem.include)
+        continue;
+      juce::File source;
+      for (const auto &candidate : {stem.file, juce::File(stem.storedPath),
+                                    juce::File(stem.sourcePath)}) {
+        if (candidate.existsAsFile() && candidate.getSize() > 0) {
+          source = candidate;
+          break;
+        }
+      }
+      bool readable = source.existsAsFile() && source.createInputStream() != nullptr;
+#if JUCE_IOS || JUCE_ANDROID
+      if (readable) {
+        const auto reader = std::unique_ptr<juce::AudioFormatReader>(
+            formatManager.createReaderFor(source));
+        readable = reader != nullptr && reader->sampleRate > 0.0 &&
+                   reader->lengthInSamples > 0 && reader->numChannels > 0;
+      }
+#endif
+      if (!readable)
+        unreadableFiles.add(stem.displayName.isNotEmpty()
+                                ? stem.displayName
+                                : stem.file.getFileName());
+    }
+    const bool hasReadableSource = eligibleCount > unreadableFiles.size();
+    if ((!choosingMapping && !unreadableFiles.isEmpty()) || !hasReadableSource) {
+      juce::NativeMessageBox::showMessageBoxAsync(
+          juce::MessageBoxIconType::WarningIcon,
+          L10n::tr("Audio no disponible", "Audio unavailable"),
+          (choosingMapping
+               ? L10n::tr(u8"Vuelve a seleccionar al menos un archivo de audio legible:\n",
+                          "Select at least one readable audio file again:\n")
+               : L10n::tr(u8"Vuelve a seleccionar estos archivos o desactiva Cargar antes de continuar:\n",
+                          "Select these files again or disable Load before continuing:\n")) +
+              unreadableFiles.joinIntoString("\n"));
+      return false;
+    }
+    return true;
+  }
   if (stems.empty())
     return true;
 
@@ -1627,10 +2529,16 @@ bool SongImportWizardComponent::validateStepMapping() {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
         L10n::tr("No hay stems seleccionados", "No stems selected"),
-        L10n::tr("Activa al menos un stem para cargar o deja la lista vacía para metadata-only.",
-                 "Enable at least one stem or leave the list empty for metadata-only."));
+        mode == Mode::Import && resolveProjectDestination
+            ? L10n::tr("Activa Cargar en al menos una pista para crear el proyecto.",
+                       "Enable Load on at least one track to create the project.")
+            : L10n::tr("Activa al menos un stem para cargar o deja la lista vacía para metadata-only.",
+                       "Enable at least one stem or leave the list empty for metadata-only."));
     return false;
   }
+  if (currentStep == Step::Mapping && mode == Mode::Import &&
+      resolveProjectDestination)
+    return validateStepImport();
   return true;
 }
 
@@ -1702,7 +2610,12 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
 }
 
 void SongImportWizardComponent::submitSong() {
-  if (currentStep != Step::Review)
+  if (isSubmitting || currentStep != Step::Review)
+    return;
+
+  // Sources may disappear between the file picker and the final review.
+  // Re-check the complete draft before choosing a destination or writing it.
+  if (!validateStepMetadata() || !validateStepMapping() || !validateStepImport())
     return;
 
   if (!onSubmit) {
@@ -1711,6 +2624,17 @@ void SongImportWizardComponent::submitSong() {
     closeDialog();
     return;
   }
+
+  // Destination/encoder prompts may pump the message loop too. Guard the
+  // whole transaction, not only the final persistence callback.
+  setSubmitting(true);
+  bool keepSubmissionActive = false;
+  const juce::ScopeGuard resetSubmitting{
+      [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
+       &keepSubmissionActive] {
+        if (!keepSubmissionActive && safeThis != nullptr)
+          safeThis->setSubmitting(false);
+      }};
 
   SessionAuthLogger::write(
       "[SongImportUI] submitSong begin mode=" +
@@ -1733,9 +2657,19 @@ void SongImportWizardComponent::submitSong() {
     }
     songData.projectPath = destination.getFullPathName();
   }
+
+#if JUCE_IOS || JUCE_ANDROID
+  if (mode == Mode::Import && resolveProjectDestination) {
+    keepSubmissionActive = submitSongInBackground(std::move(songData));
+    return;
+  }
+#endif
   bool temporarilyDisableOptimization = false;
 
   const bool optimizationEnabled = AppSettings::getStemOptimizationEnabled();
+#if !JUCE_IOS && !JUCE_ANDROID
+  // Mobile packages both portable and legacy stems with JUCE's FLAC writer.
+  // Only desktop platforms need to locate or download an external encoder.
   const bool hasLocalStemsToStore = std::any_of(
       songData.stems.begin(), songData.stems.end(),
       [](const ImportedStemData &stem) {
@@ -1877,11 +2811,7 @@ void SongImportWizardComponent::submitSong() {
       }
     }
   }
-
-  submitButton.setEnabled(false);
-  backButton.setEnabled(false);
-  nextButton.setEnabled(false);
-  cancelButton.setEnabled(false);
+#endif
 
   SongLoadProgressOverlay overlay;
   addAndMakeVisible(overlay);
@@ -1951,11 +2881,6 @@ void SongImportWizardComponent::submitSong() {
 
   removeChildComponent(&overlay);
 
-  submitButton.setEnabled(true);
-  backButton.setEnabled(true);
-  nextButton.setEnabled(true);
-  cancelButton.setEnabled(true);
-
   if (!ok) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
@@ -1969,10 +2894,107 @@ void SongImportWizardComponent::submitSong() {
     return;
   }
 
+  setSubmitting(false);
   closeDialog();
 }
 
+bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
+  submissionOverlay = std::make_unique<SongLoadProgressOverlay>();
+  addAndMakeVisible(*submissionOverlay);
+  submissionOverlay->refreshThemeColours();
+  submissionOverlay->setTitleText(L10n::tr(u8"Creando canción", "Creating song"));
+  submissionOverlay->setPhaseText(L10n::tr("Preparando proyecto...", "Preparing project..."));
+  submissionOverlay->setProgress(0.0);
+  submissionOverlay->setAlwaysOnTop(true);
+  submissionOverlay->setBounds(getLocalBounds());
+  submissionOverlay->toFront(true);
+
+  // Neither the wizard nor other components are accessed on this worker.
+  // The persistence callback owns its inputs; all UI work is posted back.
+  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
+  const bool started = juce::Thread::launch(
+      [save = onSubmit, song = std::move(song), safeThis,
+       staging = mobileImportStaging]() mutable {
+        // Retain staged sources if the wizard is destroyed externally while
+        // the project still packages them on this worker.
+        juce::ignoreUnused(staging);
+        juce::uint32 lastReportTime = 0;
+        juce::String lastPhase;
+        const SongImportProgressFn report =
+            [safeThis, &lastReportTime, &lastPhase](double progress,
+                                                  const juce::String &phase) {
+              const auto now = juce::Time::getMillisecondCounter();
+              if (phase == lastPhase && progress < 1.0 &&
+                  now - lastReportTime < 33)
+                return;
+              lastReportTime = now;
+              lastPhase = phase;
+              const auto clampedProgress = juce::jlimit(0.0, 1.0, progress);
+              juce::MessageManager::callAsync([safeThis, clampedProgress, phase] {
+                if (safeThis == nullptr || safeThis->submissionOverlay == nullptr)
+                  return;
+                safeThis->submissionOverlay->setProgress(clampedProgress);
+                safeThis->submissionOverlay->setPhaseText(phase);
+              });
+            };
+
+        juce::String error;
+        bool success = false;
+        try {
+          success = save(std::move(song), error, report);
+        } catch (const std::exception &exception) {
+          error = juce::String::fromUTF8(exception.what());
+        } catch (...) {
+          error = L10n::tr(u8"No se pudo crear el proyecto.",
+                            "Couldn't create the project.");
+        }
+        SessionAuthLogger::write(
+            "[SongImportUI] background submit finished ok=" +
+            juce::String(success ? "true" : "false") +
+            (error.isNotEmpty() ? " error=\"" + error + "\"" : juce::String()));
+        juce::MessageManager::callAsync([safeThis, success, error] {
+          if (safeThis == nullptr)
+            return;
+          safeThis->submissionOverlay.reset();
+          safeThis->setSubmitting(false);
+          if (success) {
+            safeThis->closeDialog();
+            return;
+          }
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
+              L10n::tr(u8"Error al crear", "Create error"),
+              error.isNotEmpty()
+                  ? error
+                  : L10n::tr(u8"No se pudo guardar la canción seleccionada.",
+                             "Couldn't save the selected song."));
+        });
+      });
+  if (!started) {
+    submissionOverlay.reset();
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
+        L10n::tr(u8"Error al crear", "Create error"),
+        L10n::tr(u8"No se pudo iniciar el guardado. Inténtalo de nuevo.",
+                 "Couldn't start saving. Please try again."));
+  }
+  return started;
+}
+
+void SongImportWizardComponent::setSubmitting(const bool submitting) {
+  isSubmitting = submitting;
+  for (auto *button : {&submitButton, &backButton, &nextButton, &cancelButton,
+                       &saveMetadataButton})
+    button->setEnabled(!submitting);
+  mobileCloseButton.setEnabled(!submitting);
+  keyboardDoneButton.setEnabled(!submitting);
+}
+
 void SongImportWizardComponent::changeStep(const Step step) {
+  if (isSubmitting)
+    return;
+  if (currentStep == Step::Mapping && step != Step::Mapping)
+    syncMappingsToDrafts();
   currentStep = static_cast<Step>(
       juce::jlimit(static_cast<int>(Step::Metadata), static_cast<int>(Step::Review),
                    static_cast<int>(step)));
@@ -2013,6 +3035,8 @@ juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
 }
 
 void SongImportWizardComponent::closeDialog() {
+  if (isSubmitting)
+    return;
   if (onDismissRequested) {
     onDismissRequested();
     return;
@@ -2027,6 +3051,9 @@ void SongImportWizardComponent::applyEditorTheme(
     juce::TextEditor &editor, const juce::String &placeholder) {
   applyTextEditorTheme(editor, UITheme::cardBgHover,
                        UITheme::cardBorder.withAlpha(0.7f));
+  // Scrolling the form must not dismiss the keyboard midway through a drag.
+  // Explicit Done/Return and opening a selector finish the edit instead.
+  editor.setClicksOutsideDismissVirtualKeyboard(false);
   editor.setJustification(juce::Justification::centredLeft);
   editor.setTextToShowWhenEmpty(placeholder,
                                 UITheme::textSecondary.withAlpha(0.6f));
@@ -2057,6 +3084,8 @@ void SongImportWizardComponent::setMetadataReadOnlyFromLocal(
 }
 
 void SongImportWizardComponent::openArtworkChooser() {
+  if (isSubmitting)
+    return;
   auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
   artworkChooser = std::make_unique<juce::FileChooser>(
       L10n::tr("Selecciona imagen", "Select image"),
@@ -2068,6 +3097,9 @@ void SongImportWizardComponent::openArtworkChooser() {
   artworkChooser->launchAsync(flags, [safeThis](const juce::FileChooser &chooser) {
     if (safeThis == nullptr)
       return;
+#if JUCE_IOS || JUCE_ANDROID
+    safeThis->stageSelectedMobileFiles(chooser.getURLResults(), false, true);
+#else
     const auto file = chooser.getResult();
     if (!file.existsAsFile()) {
       safeThis->artworkChooser.reset();
@@ -2083,6 +3115,7 @@ void SongImportWizardComponent::openArtworkChooser() {
           L10n::tr("Imagen manual", "Manual image"),
           juce::dontSendNotification);
     }
+#endif
     safeThis->artworkChooser.reset();
   });
 }
