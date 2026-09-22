@@ -1404,18 +1404,19 @@ void ChannelGridPanel::resized() {
       isWideViewport ? juce::jlimit(0.82f, 1.22f, widthScale) : juce::jlimit(0.82f, 1.08f, widthScale);
   float stripScale = juce::jlimit(
       0.82f, 1.25f, widthAdaptiveScale * profileScale);
-#if JUCE_ANDROID
-  // Prefer legible phone controls over fitting more channels in the viewport.
-  // Remaining strips are reachable through the existing horizontal scroll.
-  if (minimalPhoneMode)
-    stripScale = juce::jlimit(1.25f, 1.35f, stripScale);
-#endif
 #if JUCE_IOS
   // iPad uses the tablet/desktop mixer layout. Keep the base control size
-  // readable instead of shrinking strips to expose every stem at once.
+  // readable instead of shrinking strips to expose every stem at once. iPhone
+  // (and now Android phones) skip this floor so the strip scales with the
+  // available viewport width and height while keeping its natural aspect ratio.
   if (!minimalPhoneMode)
     stripScale = juce::jmax(1.0f, stripScale);
 #endif
+  // Android phones mirror the iPhone path: we no longer enforce the historical
+  // 1.25x-1.35x floor here, because it inflated width and height together and
+  // pushed buttons + the title band off-screen on narrow viewports. The natural
+  // widthAdaptiveScale * profileScale already produces a legible strip; the
+  // horizontal scroll continues to expose any extra stems.
 
   for (auto &slot : slots) {
     slot->setStripScale(stripScale);

@@ -147,6 +147,13 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - En el overlay de telefono se oculta el resumen de duracion total, cantidad de
   canciones y BPM promedio, de modo que la lista comienza inmediatamente bajo
   el encabezado.
+- En telefono, tanto el wizard de creacion de canciones como el drawer de
+  Biblioteca/setlists comparten el mismo scrim translucido (`black@44%`) y el
+  mismo fondo `drawStudioBackground(...)` extendido sobre toda su area, lo que
+  da la sensacion de "app vertical" donde el mixer queda como componente
+  complementario visible a traves del scrim. El wizard oculta la topBar para
+  ocupar toda la superficie fisica del telefono; el drawer conserva su topBar
+  encima salvo cuando sus vistas internas piden fullscreen.
 - Pads, expansion vertical de waveform y minimap/navegador inferior de la
   waveform se ocultan en telefono. Tambien se oculta la regla de compases
   superior; la onda principal usa todo ese alto liberado.
@@ -161,10 +168,13 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   comienzan directamente debajo de la waveform, sin relleno superior ni marco.
 - Los channel strips forman una sola fila, ajustan su altura al mixer y se
   recorren horizontalmente mediante drag; nunca se envuelven en filas nuevas.
-- En telefonos Android, los strips usan una escala minima de `1.25x` para
-  ampliar knobs, faders y botones. Los canales adicionales permanecen
-  accesibles con desplazamiento horizontal. iPhone conserva su escala
-  proporcional al ancho disponible.
+- Los telefonos (Android e iOS) usan el mismo calculo natural que el resto de
+  los viewports: `widthAdaptiveScale * profileScale` con tope en `1.25x`. No se
+  fuerza un minimo adicional en Android para no inflar simultaneamente ancho y
+  alto y empujar fuera de pantalla la banda S/M y los botones en viewports
+  angostos. Los canales adicionales permanecen accesibles con desplazamiento
+  horizontal. iPad sigue garantizando al menos `1.0x` para mantener knobs,
+  medidores y titulos legibles.
 - En iPad, que conserva el layout de tablet/escritorio, la escala minima del
   strip es `1.0x` para mantener knobs, medidores y titulos legibles.
 - Las tablets compactas conservan las funciones de tablet, pero el `TopBar`

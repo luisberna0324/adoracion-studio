@@ -61,8 +61,15 @@ public:
   void setFullScreen(bool enabled) { fullScreen = enabled; }
 
   void paint(juce::Graphics &g) override {
-    g.fillAll(fullScreen ? UITheme::panelDark
-                         : juce::Colours::black.withAlpha(0.38f));
+    // Mirror the wizard overlay: a translucent scrim (black@44%) gives the
+    // sense of an "app vertical" while the mixer stays faintly visible behind
+    // any uncovered gap. The phone fullScreen branch used to be opaque
+    // (UITheme::panelDark), which broke the parity with the wizard — it now
+    // uses the same translucency as the non-fullScreen branch on every
+    // platform. The drawer panel itself paints edge-to-edge with
+    // drawStudioBackground, so it covers the scrim on its own surface.
+    juce::ignoreUnused(fullScreen);
+    g.fillAll(juce::Colours::black.withAlpha(0.44f));
     if (!drawerBounds.isEmpty()) {
       const auto shadow = drawerBounds.toFloat().withX(
           static_cast<float>(drawerBounds.getRight()));

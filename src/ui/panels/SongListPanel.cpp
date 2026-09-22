@@ -1406,11 +1406,21 @@ void SongListPanel::refreshThemeColours() {
 }
 
 void SongListPanel::paint(juce::Graphics &g) {
+  // Edge-to-edge fill, matching SongImportWizardComponent::paint: the panel
+  // becomes its own "page" of a vertical app. The rounded-card treatment used
+  // to live here on every platform, but on phone it made the drawer look like
+  // a floating surface rather than a screen-filling overlay. In non-phone
+  // modes we keep the rounded card via drawStudioBackground + the legacy
+  // border so desktop/tablet still have a discrete card around the panel.
   const auto bounds = getLocalBounds().toFloat();
-  g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
-  g.fillRoundedRectangle(bounds, 7.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.86f));
-  g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.0f);
+  if (minimalPhoneMode) {
+    drawStudioBackground(g, bounds);
+  } else {
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
+    g.fillRoundedRectangle(bounds, 7.0f);
+    g.setColour(UITheme::cardBorder.withAlpha(0.86f));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.0f);
+  }
 
   if (viewMode == ViewMode::Songs)
     return;
