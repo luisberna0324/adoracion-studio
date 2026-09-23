@@ -2563,21 +2563,22 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     resized();
     repaint();
   };
-  topBarRaw->setOnPhoneLibrary([this, songListRaw](juce::Component &anchor) {
-    if (songListRaw != nullptr)
-      songListRaw->showSongPicker(anchor,
-          [safeEditor = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
-            if (safeEditor == nullptr)
-              return;
-            safeEditor->phonePadsOpen = false;
-            safeEditor->isPadsCollapsed = true;
-            safeEditor->isSetlistDrawerOpen = true;
-            safeEditor->isSetlistCollapsed = false;
-            safeEditor->songListPanelRaw->showActiveSetlist();
-            safeEditor->resized();
-            safeEditor->repaint();
-          });
-  });
+  topBarRaw->setOnPhoneLibrary(
+      [safeEditor, songListRaw](juce::Component &anchor) {
+        if (safeEditor == nullptr || songListRaw == nullptr)
+          return;
+        songListRaw->showSongPicker(anchor, [safeEditor] {
+          if (safeEditor == nullptr || safeEditor->songListPanelRaw == nullptr)
+            return;
+          safeEditor->phonePadsOpen = false;
+          safeEditor->isPadsCollapsed = true;
+          safeEditor->isSetlistDrawerOpen = true;
+          safeEditor->isSetlistCollapsed = false;
+          safeEditor->songListPanelRaw->showActiveSetlist();
+          safeEditor->resized();
+          safeEditor->repaint();
+        });
+      });
   topBarRaw->setOnPhonePads([this] {
     if (phonePadsButton != nullptr && phonePadsButton->onToggle)
       phonePadsButton->onToggle();
