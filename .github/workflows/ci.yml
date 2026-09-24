@@ -388,6 +388,11 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy `tools` package was removed from the Android SDK.
+          # Declare only the package still required before installing the
+          # versioned platform, build-tools, NDK and CMake below.
+          packages: platform-tools
       - name: Install Android SDK components
         run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.1.13356709' 'cmake;3.22.1'
       - name: Bootstrap Bungee Android SDK
