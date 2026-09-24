@@ -253,6 +253,64 @@ void testLibraryRegistration(const Fixtures &fixtures, ImportedSongData song) {
   expectRegisteredSong(fixtures, song);
 }
 
+void testMusicalWaveform(const Fixtures &fixtures) {
+  auto makeStem = [&](const char *name, const char *category, int samples,
+                      int pulseAt, float amplitude) {
+    const auto file = fixtures.directory.getChildFile(juce::String::fromUTF8(name) + ".wav");
+    {
+      juce::WavAudioFormat format;
+      std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+      auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+          .withSampleRate(8000).withNumChannels(1).withBitsPerSample(16));
+      expect(writer != nullptr, "create waveform fixture");
+      juce::AudioBuffer<float> audio(1, samples);
+      audio.clear();
+      audio.setSample(0, pulseAt, amplitude);
+      expect(writer->writeFromAudioSampleBuffer(audio, 0, samples), "write waveform pulse");
+    }
+    ImportedStemData stem;
+    stem.fileName = file.getFileName();
+    stem.sourcePath = file.getFullPathName();
+    stem.displayName = juce::String::fromUTF8(name);
+    stem.category = category;
+    stem.durationSec = samples / 8000.0;
+    return stem;
+  };
+  auto music = makeStem("Piano", "Piano", 256, 64, 0.1f);
+  auto click = makeStem("Reference pulse", "Click", 256, 192, 0.9f);
+  auto guide = makeStem("Spoken instructions", "Cues", 256, 128, 0.8f);
+  ImportedSongData song;
+  song.stems = {music};
+  const auto reference = buildMixedWaveformBins(song, 8);
+  expect(reference.size() == 8 && reference[2] == 1.0f,
+         "musical pulse has the expected timeline position");
+  for (const auto &excluded : {click, guide,
+         makeStem("GUIDE", "Other", 256, 128, 0.9f),
+         makeStem("Guía", "Other", 256, 128, 0.9f),
+         makeStem("CLIC", "Other", 256, 192, 0.9f)}) {
+    song.stems = {music, excluded};
+    double progress = 0.0;
+    const auto bins = buildMixedWaveformBins(song, 8, [&](double next) {
+      expect(next >= progress, "waveform progress remains monotonic");
+      progress = next;
+    });
+    expect(bins == reference && progress == 1.0,
+           "click/guide neither add peaks nor change music normalization");
+    expect(song.stems.size() == 2 && song.stems[1].include,
+           "visual exclusion never removes or disables playback stems");
+  }
+  click = makeStem("Long click", "Click", 512, 400, 0.9f);
+  song.stems = {music, click};
+  const auto fullTimeline = buildMixedWaveformBins(song, 8);
+  expect(fullTimeline[1] == 1.0f && fullTimeline[2] == 0.0f && fullTimeline[6] == 0.0f,
+         "long click preserves full timeline without drawing its pulse");
+  song.stems = {click, guide};
+  const auto guidesOnly = buildMixedWaveformBins(song, 8);
+  expect(guidesOnly.size() == 8 &&
+             std::all_of(guidesOnly.begin(), guidesOnly.end(), [](float v) { return v == 0.0f; }),
+         "click/guide-only song produces a flat waveform");
+}
+
 void runRoundtripAndFailureChecks(Fixtures &fixtures) {
   const auto source = fixtures.directory.getChildFile("source.flac");
   const auto cover = fixtures.directory.getChildFile("cover.png");
@@ -341,6 +399,7 @@ int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   try {
     Fixtures fixtures(isolatedRoot);
+    testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

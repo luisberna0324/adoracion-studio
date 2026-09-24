@@ -5,6 +5,7 @@
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
+#include "../../data/SongProjectCreation.h"
 
 #include <algorithm>
 #include <array>
@@ -359,10 +360,11 @@ public:
         targetIndex == currentIndex)
       return;
 
-    // Setlists <-> Songs <-> Library is intentionally a linear flow.
+    // Setlists <-> Songs <-> Library <-> Create song is a linear flow.
     if (std::abs(targetIndex - currentIndex) != 1)
       return;
 
+    finishTransition();
     const auto bounds = getLocalBounds();
     auto *incoming = pages[static_cast<size_t>(targetIndex)].get();
     auto *outgoing = pages[static_cast<size_t>(currentIndex)].get();
@@ -391,6 +393,7 @@ public:
   }
 
   void resized() override {
+    finishTransition();
     const auto bounds = getLocalBounds();
     for (int index = 0; index < static_cast<int>(pages.size()); ++index) {
       auto *page = pages[static_cast<size_t>(index)].get();
@@ -402,18 +405,20 @@ public:
   }
 
 private:
-  void timerCallback() override {
+  void finishTransition() {
     stopTimer();
     for (int index = 0; index < static_cast<int>(pages.size()); ++index) {
       auto *page = pages[static_cast<size_t>(index)].get();
-      if (index != currentIndex)
-        page->setVisible(false);
+      juce::Desktop::getInstance().getAnimator().cancelAnimation(page, false);
+      page->setVisible(index == currentIndex);
     }
     pages[static_cast<size_t>(currentIndex)]->setBounds(getLocalBounds());
   }
 
+  void timerCallback() override { finishTransition(); }
+
   static constexpr int transitionDurationMs = 300;
-  std::array<std::unique_ptr<juce::Component>, 3> pages;
+  std::array<std::unique_ptr<juce::Component>, 4> pages;
   int currentIndex = 0;
 };
 
@@ -820,7 +825,7 @@ SongListPanel::SongListPanel() {
     }
   });
   libraryCatalogPanel.setOnCreateSongRequested(
-      [this] { openSongImportWizard(); });
+      [this] { openSongImportWizard(true); });
   libraryCatalogPanel.setOnOpenProjectRequested(
       [this] { openProjectFileChooser(); });
   libraryCatalogPanel.setOnSongEditRequested(
@@ -1436,6 +1441,8 @@ void SongListPanel::paint(juce::Graphics &g) {
 
 void SongListPanel::resized() {
   pageContainer->setBounds(getLocalBounds());
+  if (libraryCreationWizard != nullptr)
+    libraryCreationWizard->setBounds(pageContainer->getPage(3).getLocalBounds());
 
   auto songsLayout = computeSongsLayout();
   applySongsLayout(songsLayout);
@@ -3471,8 +3478,25 @@ void SongListPanel::showSongImportOverlay(
   songImportOverlay->toFront(false);
 }
 
-void SongListPanel::openSongImportWizard() {
-  openSongImportWizard({});
+void SongListPanel::showLibraryCreationPage(
+    std::unique_ptr<SongImportWizardComponent> panel) {
+  if (panel == nullptr || libraryCreationWizard != nullptr)
+    return;
+  auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  panel->setOnDismissRequested([safeThis] {
+    // Defer destruction until the wizard's button/completion callback returns.
+    juce::MessageManager::callAsync([safeThis] {
+      if (safeThis == nullptr)
+        return;
+      safeThis->showPage(2, false);
+      safeThis->libraryCreationWizard.reset();
+    });
+  });
+  libraryCreationWizard = std::move(panel);
+  auto &creationPage = pageContainer->getPage(3);
+  creationPage.addAndMakeVisible(*libraryCreationWizard);
+  libraryCreationWizard->setBounds(creationPage.getLocalBounds());
+  showPage(3, true);
 }
 
 void SongListPanel::openProjectFileChooser() {
@@ -3702,189 +3726,28 @@ void SongListPanel::convertLegacySongAtDestination(
           sourceLabel);
 }
 
-void SongListPanel::openSongImportWizard(const juce::File & /*destination*/) {
+void SongListPanel::openSongImportWizard(const bool withinLibrary) {
+  if (libraryCreationWizard != nullptr)
+    return;
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
   auto panel = std::make_unique<SongImportWizardComponent>(
       [safeThis](ImportedSongData song, juce::String &errorMessage,
                  const SongImportProgressFn &progress) {
-#if !JUCE_IOS && !JUCE_ANDROID
-        if (safeThis == nullptr) {
-          SessionAuthLogger::write(
-              "[SongImport] abort: SongListPanel no longer available");
-          errorMessage =
-              L10n::tr(u8"La vista de importación ya no esta disponible.",
-                       "Import UI is no longer available.");
+        if (!SongProjectCreation::save(std::move(song), errorMessage, progress))
           return false;
-        }
-#endif
-
-        SessionAuthLogger::write(
-            "[SongImport] save project begin title=\"" + song.title.trim() +
-            "\" id=" + song.id + " stems=" +
-            juce::String(static_cast<int>(song.stems.size())));
-
-        const juce::File selectedDestination(song.projectPath);
-        if (selectedDestination == juce::File{}) {
-          errorMessage = L10n::tr("No se eligió una ubicación para el proyecto.",
-                                  "No project location was selected.");
-          return false;
-        }
-        ProjectDocument document;
-        document.song = std::move(song);
-        document.settings.tempoBpm = document.song.bpm > 0 ? document.song.bpm : 120.0;
-        document.settings.window.endSec = estimateSongLengthSeconds(document.song);
-        document.settings.window.fadeOutSec = juce::jmin(1.0, document.settings.window.endSec);
-        for (const auto &stem : document.song.stems) if (stem.include) {
-          StemMixSnapshot mix; mix.stemId = stem.stemId; document.settings.mix.stems.push_back(mix);
-        }
-        if (progress) {
-          progress(0.05, L10n::tr(u8"Generando forma de onda...",
-                                  "Generating waveform preview..."));
-        }
-        document.waveformBins = buildMixedWaveformBins(
-            document.song, kWaveformPreviewBinCount,
-            [&progress](const double waveformProgress) {
-              if (progress)
-                progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
-                         L10n::tr(u8"Generando forma de onda...",
-                                  "Generating waveform preview..."));
-            });
-        juce::String importError;
-        const bool packaged = ProjectStore::save(
-            document, selectedDestination, &importError, nullptr,
-            [&progress](const double projectProgress,
-                        const juce::String &phase) {
-              if (progress)
-                progress(0.20 + 0.70 * juce::jlimit(0.0, 1.0,
-                                                    projectProgress),
-                         phase);
-            });
-        ProjectDocument opened;
-        const bool openedProject =
-            packaged && ProjectStore::open(
-                            selectedDestination, opened, &importError, true,
-                            [&progress](const double projectProgress,
-                                        const juce::String &phase) {
-                              if (progress)
-                                progress(0.90 +
-                                             0.08 * juce::jlimit(
-                                                        0.0, 1.0,
-                                                        projectProgress),
-                                         phase);
-                            });
-        bool success = false;
-#if JUCE_IOS || JUCE_ANDROID
-        if (openedProject) {
-          if (progress)
-            progress(0.985, L10n::tr(u8"Registrando canción...",
-                                      "Registering song..."));
-          // SongLibraryStore is a read-modify-write store also used by UI
-          // callbacks. Serialize the final registry transaction on that same
-          // thread; only the worker waits, with no locks held. Audio work and
-          // package extraction above remain off the UI thread.
-          const auto registered = juce::MessageManager::callSync(
-              [songToRegister = std::move(opened.song)]() mutable {
-                try {
-                  return SongLibraryStore::registerProjectSong(songToRegister);
-                } catch (...) {
-                  // Never leave callSync's promise unfulfilled on an exception.
-                  return false;
-                }
-              });
-          success = registered.value_or(false);
-          if (!success)
-            importError = L10n::tr(
-                u8"El proyecto se guardó, pero no pudo registrarse en la biblioteca. El archivo se conserva en:\n",
-                "The project was saved but couldn't be registered in the library. Its file is preserved at:\n") +
-                selectedDestination.getFullPathName();
-        }
-#else
-        success = openedProject && SongLibraryStore::registerProjectSong(opened.song);
-#endif
-
-        if (!success) {
-          SessionAuthLogger::write("[SongImport] appendSong failed error=\"" +
-                                   importError + "\"");
-          errorMessage = importError.isNotEmpty() ? importError
-                                                  : L10n::tr(
-                                                        u8"No se pudo guardar la canción.",
-                                                        "Couldn't persist the song.");
-          return false;
-        }
-
-        SessionAuthLogger::write(
-            "[SongImport] project saved with embedded waveform");
-
-        if (progress)
-          progress(0.995, L10n::tr(u8"Actualizando lista de canciones...",
-                                   u8"Refreshing song list..."));
-        if (progress)
-          progress(1.0, L10n::tr(u8"Canción creada", "Song created"));
-
-#if JUCE_IOS || JUCE_ANDROID
-        // Mobile creation runs off the message thread. Only storage work is
-        // performed above; refresh the library on the UI thread after success.
         juce::MessageManager::callAsync([safeThis] {
           if (safeThis != nullptr)
             safeThis->refreshFromStorage();
         });
-#else
-        safeThis->refreshFromStorage();
-#endif
-        SessionAuthLogger::write("[SongImport] import flow completed successfully");
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
-      ImportedSongData{}, [](const ImportedSongData &song, juce::File &destination,
-             juce::String &) {
-        const auto title = juce::File::createLegalFileName(song.title.trim());
-        const auto artist = juce::File::createLegalFileName(song.artist.trim());
-        const auto baseName = artist.isNotEmpty() && title.isNotEmpty()
-                                  ? artist + " - " + title
-                                  : (title.isNotEmpty() ? title : "Nueva canción");
-        juce::AlertWindow choice(
-            L10n::tr("Guardar proyecto", "Save project"),
-            L10n::tr("¿Dónde quieres guardar este proyecto?",
-                     "Where do you want to save this project?"),
-            juce::MessageBoxIconType::QuestionIcon);
-        choice.addButton(L10n::tr("Biblioteca local", "Local library"), 1);
-        choice.addButton(L10n::tr("Elegir ubicación...", "Choose location..."), 2);
-        choice.addButton(L10n::tr("Cancelar", "Cancel"), 0);
-        const int choiceId =
-#if JUCE_IOS || JUCE_ANDROID
-            1;
-#else
-            choice.runModalLoop();
-#endif
-        if (choiceId == 0)
-          return false;
-        if (choiceId == 1) {
-          auto localDirectory = SongLibraryStore::getRootDirectory().getChildFile("projects");
-          localDirectory.createDirectory();
-          destination = localDirectory.getNonexistentChildFile(
-              baseName, ProjectStore::kFileExtension, false);
-          return true;
-        }
-        juce::FileChooser chooser(
-            L10n::tr("Guardar proyecto", "Save project"),
-            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                .getChildFile(baseName + ProjectStore::kFileExtension),
-            "*.pwproj");
-        if (
-#if JUCE_ANDROID
-            true
-#else
-            !chooser.browseForFileToSave(true)
-#endif
-        )
-          return false;
-        destination = chooser.getResult();
-        if (!destination.hasFileExtension(ProjectStore::kFileExtension))
-          destination = destination.withFileExtension(ProjectStore::kFileExtension);
-        return true;
-      });
-  panel->refreshThemeColours();
-  showSongImportOverlay(std::move(panel));
+      ImportedSongData{}, SongProjectCreation::resolveDestination);
+
+  if (withinLibrary && !useTouchOptimisedControls())
+    showLibraryCreationPage(std::move(panel));
+  else
+    showSongImportOverlay(std::move(panel));
 }
 
 void SongListPanel::openSongEditWizard(const juce::String &songId) {

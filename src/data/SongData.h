@@ -105,6 +105,7 @@ bool isProjectBackedSong(const ImportedSongData &song);
 juce::String projectIdentityForSong(const ImportedSongData &song);
 juce::String playbackIdentityForSong(const ImportedSongData &song);
 constexpr int kWaveformPreviewBinCount = 22400;
+// Visual mix excludes click/guide samples while retaining the full song timeline.
 std::vector<float> buildMixedWaveformBins(
     const ImportedSongData &song, int binCount = kWaveformPreviewBinCount,
     const std::function<void(double progress01)> &onProgress = {});

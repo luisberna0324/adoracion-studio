@@ -342,9 +342,11 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME song_project_creation COMMAND MTControlsSongCreationTests)
     set_tests_properties(song_project_creation PROPERTIES SKIP_RETURN_CODE 77)
     juce_add_console_app(MTControlsSongWizardTests PRODUCT_NAME "Song Wizard Tests")
-    target_sources(MTControlsSongWizardTests PRIVATE tests/song_import_wizard_tests.cpp)
+    target_sources(MTControlsSongWizardTests PRIVATE tests/song_import_wizard_tests.cpp
+        src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
     target_include_directories(MTControlsSongWizardTests PRIVATE src)
-    target_compile_definitions(MTControlsSongWizardTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_compile_definitions(MTControlsSongWizardTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsSongWizardTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsSongWizardTests)
@@ -715,6 +717,8 @@ target_sources(MTControls
         src/data/Localization.h
         src/data/PrimeLibrarySource.cpp
         src/data/PrimeLibrarySource.h
+        src/data/SongProjectCreation.cpp
+        src/data/SongProjectCreation.h
         src/data/ProjectStore.cpp
         src/data/ProjectStore.h
         src/data/SongData.cpp

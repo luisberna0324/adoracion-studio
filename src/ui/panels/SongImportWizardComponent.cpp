@@ -21,6 +21,8 @@
 #include <thread>
 
 namespace {
+constexpr auto kCreationExtensions = "wav;aif;aiff;flac;mp3";
+constexpr auto kCreationFormatNames = "WAV, AIFF, FLAC, MP3";
 #if JUCE_IOS || JUCE_ANDROID
 // Mobile decodes WAV/AIFF/FLAC via JUCE in-process. MP3 is added on 2026-09-22
 // thanks to JUCE's built-in MinMP3 decoder (no external lib, no FFmpeg). The
@@ -35,7 +37,7 @@ constexpr auto kStemImportExtensions = "wav;aif;aiff;flac;mp3;m4a;aac;ogg;wma";
 constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC, MP3, M4A, AAC, OGG, WMA";
 #endif
 
-juce::String stemImportWildcard() {
+juce::String stemImportWildcard(bool creating) {
 #if JUCE_ANDROID
   // Android SAF filters strictly by MIME at the provider level. The picker
   // is wired from the extension wildcard via
@@ -50,9 +52,11 @@ juce::String stemImportWildcard() {
   // every file becomes visible. Format validation still happens later in
   // MobileImportStaging::stage() and PortableFlacConversion's reader, so the
   // wizard never persists a non-audio source.
+  juce::ignoreUnused(creating);
   return "*";
 #else
-  auto extensions = juce::StringArray::fromTokens(kStemImportExtensions, ";", "");
+  auto extensions = juce::StringArray::fromTokens(
+      creating ? kCreationExtensions : kStemImportExtensions, ";", "");
   for (auto& extension : extensions)
     extension = "*." + extension;
   return extensions.joinIntoString(";");
@@ -159,11 +163,11 @@ public:
   void resized() override {
     auto r = getLocalBounds().reduced(4, 3);
     if (phoneLayout) {
-      auto heading = r.removeFromTop(44);
+      auto heading = r.removeFromTop(getHeight() >= 104 ? 44 : 32);
       includeToggle.setBounds(heading.removeFromRight(90));
       fileLabel.setBounds(heading);
       r.removeFromTop(4);
-      auto fields = r.removeFromTop(48);
+      auto fields = r.removeFromTop(getHeight() >= 104 ? 48 : 36);
       const int gap = 8;
       const int firstWidth = (fields.getWidth() - gap) / 2;
       displayNameEditor.setBounds(fields.removeFromLeft(firstWidth));
@@ -963,7 +967,7 @@ juce::String SongImportWizardComponent::mobileMetadataSummary() const {
 
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     drawStudioBackground(g, b);
 
     if (!stepperBounds.isEmpty()) {
@@ -1104,14 +1108,14 @@ void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
     return;
 
   juce::Graphics::ScopedSaveState state(g);
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     g.reduceClipRegion(metadataViewport.getBounds());
     g.setOrigin(metadataViewport.getX(), metadataViewport.getY() -
                 metadataViewport.getViewPositionY());
   }
 
   auto area = artworkOverlayButtonBounds.toFloat();
-  auto bg = phoneCreationLayout
+  auto bg = usesCreationLayout()
                 ? juce::Colours::black.withAlpha(artworkOverlayHovered ? 0.96f
                                                                        : 0.86f)
                 : UITheme::accent.withAlpha(artworkOverlayHovered ? 0.95f
@@ -1120,7 +1124,7 @@ void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
   g.fillEllipse(area);
   g.setColour(UITheme::cardBorder.withAlpha(0.8f));
   g.drawEllipse(area, 1.0f);
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     const auto colour = UITheme::textPrimary;
     auto camera = area.reduced(10.0f, 12.0f);
     camera.removeFromTop(2.0f);
@@ -1145,13 +1149,14 @@ void SongImportWizardComponent::resized() {
     submissionOverlay->setBounds(getLocalBounds());
   metadataScrollAnimating = false;
   phoneCreationLayout = usesPhoneCreationLayout();
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     auto bounds = getLocalBounds();
     auto safeBounds = bounds;
-    phoneKeyboardInsets = keyboardInsetsForLayout();
-    if (const auto *display = juce::Desktop::getInstance()
+    phoneKeyboardInsets = phoneCreationLayout ? keyboardInsetsForLayout()
+                                               : juce::BorderSize<int>{};
+    if (const auto *display = phoneCreationLayout ? juce::Desktop::getInstance()
                                   .getDisplays()
-                                  .getDisplayForRect(getScreenBounds())) {
+                                  .getDisplayForRect(getScreenBounds()) : nullptr) {
       safeBounds = combinedPhoneInsets(display->safeAreaInsets,
                                        phoneKeyboardInsets)
                        .subtractedFrom(safeBounds);
@@ -1167,7 +1172,7 @@ void SongImportWizardComponent::resized() {
     subtitleLabel.setVisible(false);
     cancelButton.setVisible(false);
 
-    stepperBounds = content.removeFromTop(86);
+    stepperBounds = content.removeFromTop(phoneCreationLayout ? 86 : 72);
     content.removeFromTop(4);
 
     auto *primary = submitButton.isVisible()
@@ -1193,7 +1198,7 @@ void SongImportWizardComponent::resized() {
                            &backButton})
         button->setBounds({});
     } else {
-      auto footer = content.removeFromBottom(66).reduced(0, 9);
+      auto footer = content.removeFromBottom(phoneCreationLayout ? 66 : 54).reduced(0, 9);
       if (backButton.isVisible()) {
         backButton.setBounds(footer.removeFromLeft(92));
         footer.removeFromLeft(8);
@@ -1314,7 +1319,7 @@ void SongImportWizardComponent::mouseDown(const juce::MouseEvent &event) {
 
 juce::Point<int> SongImportWizardComponent::metadataMousePosition(
     const juce::MouseEvent &event) const {
-  return event.getEventRelativeTo(phoneCreationLayout
+  return event.getEventRelativeTo(usesCreationLayout()
       ? const_cast<juce::Component *>(&metadataContent)
       : const_cast<SongImportWizardComponent *>(this)).getPosition();
 }
@@ -1342,7 +1347,7 @@ void SongImportWizardComponent::mouseUp(const juce::MouseEvent &event) {
   if (event.mouseWasDraggedSinceMouseDown()) return;
   const auto position = metadataMousePosition(event);
   const bool phoneArtworkAction =
-      phoneCreationLayout &&
+      usesCreationLayout() &&
       (secuenciasArtworkPreview.getBounds().contains(position) ||
        changeArtworkLabel.getBounds().contains(position));
   if (!artworkOverlayButtonBounds.contains(position) &&
@@ -1456,23 +1461,23 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
   if (!visible)
     return;
 
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     stemsSectionLabel.setBounds(bounds.removeFromTop(22));
     bounds.removeFromTop(8);
     if (showReplace) {
-      auto actions = bounds.removeFromTop(48);
+      auto actions = bounds.removeFromTop(phoneCreationLayout ? 48 : 36);
       const int gap = 8;
       const int width = (actions.getWidth() - gap) / 2;
       addFilesButton.setBounds(actions.removeFromLeft(width));
       actions.removeFromLeft(gap);
       replaceFilesButton.setBounds(actions);
     } else {
-      addFilesButton.setBounds(bounds.removeFromTop(48));
+      addFilesButton.setBounds(bounds.removeFromTop(phoneCreationLayout ? 48 : 36));
     }
     bounds.removeFromTop(8);
     selectedFilesLabel.setBounds(bounds.removeFromTop(22));
     bounds.removeFromTop(8);
-    stemsList.setRowHeight(62);
+    stemsList.setRowHeight(phoneCreationLayout ? 62 : 48);
     stemsList.setBounds(bounds);
     return;
   }
@@ -1500,8 +1505,8 @@ void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
 
 void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) {
   const bool visible = currentStep == Step::Metadata;
-  metadataViewport.setVisible(visible && phoneCreationLayout);
-  auto *metadataParent = phoneCreationLayout ? &metadataContent
+  metadataViewport.setVisible(visible && usesCreationLayout());
+  auto *metadataParent = usesCreationLayout() ? &metadataContent
                                              : static_cast<juce::Component *>(this);
   const bool showPrime = visible && primeImportEnabled && mode == Mode::Import;
   for (auto *c : {static_cast<juce::Component *>(&infoSectionLabel),
@@ -1549,7 +1554,7 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     return;
   }
 
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     infoSectionLabel.setVisible(false);
     secuenciasStatusLabel.setVisible(false);
     secuenciasDetailLabel.setVisible(false);
@@ -1563,16 +1568,16 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     changeArtworkLabel.setVisible(true);
 
     const int fieldLabelH = 20;
-    const int fieldH = 48;
+    const int fieldH = phoneCreationLayout ? 48 : 36;
     const int gap = 8;
     const int groupGap = 9;
 
     metadataViewport.setBounds(bounds);
     // Content geometry is independent of keyboard height. Only its visible
     // window changes, so editing never swaps the form for a different layout.
-    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), 550);
+    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), phoneCreationLayout ? 550 : 460);
     bounds = metadataContent.getLocalBounds();
-    const int artworkSize = 128;
+    const int artworkSize = phoneCreationLayout ? 128 : 104;
     auto artworkLine = bounds.removeFromTop(artworkSize);
     auto artwork = artworkLine.withSizeKeepingCentre(artworkSize, artworkSize);
     secuenciasArtworkPreview.setBounds(artwork);
@@ -1714,7 +1719,7 @@ void SongImportWizardComponent::layoutStepMapping(juce::Rectangle<int> bounds) {
   if (!visible)
     return;
 
-  if (phoneCreationLayout) {
+  if (usesCreationLayout()) {
     for (auto *c : {static_cast<juce::Component *>(&mapFileHeader),
                     static_cast<juce::Component *>(&mapNameHeader),
                     static_cast<juce::Component *>(&mapCategoryHeader),
@@ -1754,7 +1759,7 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
   stemChooser = std::make_unique<juce::FileChooser>(
       L10n::tr("Selecciona stems", "Select stems"),
       juce::File::getSpecialLocation(juce::File::userHomeDirectory),
-      stemImportWildcard());
+      stemImportWildcard(mode == Mode::Import));
 
   const auto chooserFlags = juce::FileBrowserComponent::openMode |
                             juce::FileBrowserComponent::canSelectFiles |
@@ -1928,7 +1933,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
   for (const auto &file : files) {
     if (!file.existsAsFile())
       continue;
-    if (!file.hasFileExtension(kStemImportExtensions)) {
+    if (!file.hasFileExtension(mode == Mode::Import ? kCreationExtensions : kStemImportExtensions)) {
       unsupportedFiles.add(file.getFileName());
       continue;
     }
@@ -1971,7 +1976,7 @@ void SongImportWizardComponent::handleSelectedStemFiles(
         L10n::tr("Formato no compatible", "Unsupported format"),
         L10n::tr(
             "Formatos de audio admitidos: ", "Supported audio formats: ") +
-            kStemImportFormatNames +
+            (mode == Mode::Import ? kCreationFormatNames : kStemImportFormatNames) +
             L10n::tr(". Archivos omitidos:\n", ". Skipped files:\n") +
             unsupportedFiles.joinIntoString("\n"));
   }
@@ -2141,7 +2146,7 @@ void SongImportWizardComponent::rebuildMappingRows() {
   mapContent.removeAllChildren();
 
   for (const auto &stem : stems) {
-    auto row = std::make_unique<MappingRow>(stem, phoneCreationLayout);
+    auto row = std::make_unique<MappingRow>(stem, usesCreationLayout());
     mapContent.addAndMakeVisible(*row);
     mappingRows.push_back(std::move(row));
   }
@@ -2150,12 +2155,12 @@ void SongImportWizardComponent::rebuildMappingRows() {
 }
 
 void SongImportWizardComponent::layoutMappingRows() {
-  const int rowH = phoneCreationLayout ? 104 : 42;
+  const int rowH = usesCreationLayout() ? (phoneCreationLayout ? 104 : 80) : 42;
   const int gap = 5;
   const int width = juce::jmax(1, mapViewport.getWidth() - 10);
   int y = 6;
   for (auto &row : mappingRows) {
-    row->setPhoneLayout(phoneCreationLayout);
+    row->setPhoneLayout(usesCreationLayout());
     row->setBounds(4, y, width, rowH);
     y += rowH + gap;
   }
@@ -2318,7 +2323,7 @@ void SongImportWizardComponent::updateSummaryText() {
   lines.add(L10n::tr("Stems a cargar: ", "Stems to load: ") +
             juce::String(static_cast<int>(included)) + " / " +
             juce::String(static_cast<int>(stems.size())));
-  if (phoneCreationLayout && mode == Mode::Import && resolveProjectDestination) {
+  if (mode == Mode::Import && resolveProjectDestination) {
     lines.add(L10n::tr(u8"Se creará un proyecto .pwproj en la biblioteca local.",
                       "A .pwproj project will be created in the local library."));
   }
@@ -2436,10 +2441,8 @@ bool SongImportWizardComponent::validateStepImport() {
       return false;
     }
 
-#if JUCE_IOS || JUCE_ANDROID
     juce::AudioFormatManager formatManager;
     formatManager.registerBasicFormats();
-#endif
     juce::StringArray unreadableFiles;
     for (const auto &stem : stems) {
       if (!choosingMapping && !stem.include)
@@ -2452,15 +2455,15 @@ bool SongImportWizardComponent::validateStepImport() {
           break;
         }
       }
-      bool readable = source.existsAsFile() && source.createInputStream() != nullptr;
-#if JUCE_IOS || JUCE_ANDROID
+      bool readable = source.existsAsFile() &&
+                      source.hasFileExtension(kCreationExtensions) &&
+                      source.createInputStream() != nullptr;
       if (readable) {
         const auto reader = std::unique_ptr<juce::AudioFormatReader>(
             formatManager.createReaderFor(source));
         readable = reader != nullptr && reader->sampleRate > 0.0 &&
                    reader->lengthInSamples > 0 && reader->numChannels > 0;
       }
-#endif
       if (!readable)
         unreadableFiles.add(stem.displayName.isNotEmpty()
                                 ? stem.displayName
@@ -2658,12 +2661,10 @@ void SongImportWizardComponent::submitSong() {
     songData.projectPath = destination.getFullPathName();
   }
 
-#if JUCE_IOS || JUCE_ANDROID
   if (mode == Mode::Import && resolveProjectDestination) {
     keepSubmissionActive = submitSongInBackground(std::move(songData));
     return;
   }
-#endif
   bool temporarilyDisableOptimization = false;
 
   const bool optimizationEnabled = AppSettings::getStemOptimizationEnabled();

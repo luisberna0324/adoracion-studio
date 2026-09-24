@@ -111,6 +111,9 @@ private:
   void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
+  bool usesCreationLayout() const {
+    return phoneCreationLayout || (mode == Mode::Import && !useTouchOptimisedControls());
+  }
   juce::String mobileMetadataSummary() const;
   void timerCallback() override;
   void revealFocusedMappingEditor();

@@ -1,4 +1,8 @@
 #include "ui/panels/SongImportWizardComponent.h"
+#include "ui/panels/SongListPanel.h"
+#include "data/SongProjectCreation.h"
+#include "data/ProjectStore.h"
+#include "data/ApplicationDataPaths.h"
 
 #include <atomic>
 #include <cstdlib>
@@ -36,7 +40,7 @@ void expectInside(const juce::Component &component,
 }
 
 struct AudioFixtures {
-  juce::File directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+  juce::File directory = ApplicationDataPaths::isolatedTestRoot()
                              .getNonexistentChildFile(
                                  "playworship-wizard-test", {}, false);
   juce::File first = directory.getChildFile("01-piano.wav");
@@ -66,6 +70,32 @@ struct AudioFixtures {
   ~AudioFixtures() { directory.deleteRecursively(); }
 };
 } // namespace
+
+struct SongListPanelTestAccess {
+  static SongImportWizardComponent &clickLibraryPlus(SongListPanel &panel) {
+    // Follow the real Biblioteca header button, including its production callback.
+    panel.viewMode = SongListPanel::ViewMode::Songs;
+    panel.showPage(1, false);
+    panel.openLibraryBrowser();
+    for (auto *child : panel.libraryCatalogPanel.getChildren()) {
+      if (child->getName() != "createSong")
+        continue;
+      auto *button = dynamic_cast<juce::Button *>(child);
+      expect(button != nullptr, "Biblioteca has its + button");
+      button->onClick();
+      expect(panel.libraryCreationWizard != nullptr && panel.songImportOverlay == nullptr,
+             "Biblioteca + opens an internal page instead of an editor overlay");
+      return *panel.libraryCreationWizard;
+    }
+    expect(false, "find Biblioteca + entry point");
+    std::abort();
+  }
+
+  static bool returnedToLibrary(SongListPanel &panel) {
+    return panel.libraryCreationWizard == nullptr &&
+           panel.libraryCatalogPanel.getParentComponent()->isVisible();
+  }
+};
 
 // Friend-only access keeps test knobs out of the production public API.
 struct SongImportWizardTestAccess {
@@ -168,25 +198,43 @@ struct SongImportWizardTestAccess {
              "short viewport does not compress mapping controls");
     }
 
-    wizard.setSize(860, 640);
-    layoutStep(wizard, Step::Metadata, false, {12, 98, 836, 530});
-    expect(!wizard.metadataViewport.isVisible() &&
-               wizard.songTitleEditor.getParentComponent() == &wizard,
-           "desktop metadata remains outside the phone viewport");
-    expect(wizard.secuenciasArtworkPreview.getX() > wizard.songTitleEditor.getRight(),
-           "desktop retains its two-column metadata layout");
-
-    for (const int contentWidth : {836, 500}) {
-      layoutStep(wizard, Step::Mapping, false, {12, 98, contentWidth, 530});
+    for (const auto size : {juce::Point<int>(860, 640), juce::Point<int>(600, 500)}) {
+      wizard.setSize(size.x, size.y);
+      wizard.changeStep(Step::Metadata);
+      expect(wizard.metadataViewport.isVisible() &&
+                 wizard.songTitleEditor.getParentComponent() == &wizard.metadataContent &&
+                 !wizard.stepperBounds.isEmpty() && !wizard.subtitleLabel.isVisible(),
+             "desktop uses the mobile form and four-step indicator");
+      expect(wizard.songTitleEditor.getHeight() == 36,
+             "desktop adapts only control size");
+      expectInside(wizard.metadataViewport, wizard.getLocalBounds(),
+                   "desktop metadata viewport fits the dialog");
+      expectInside(wizard.nextButton, wizard.getLocalBounds(),
+                   "desktop navigation remains reachable");
+      wizard.changeStep(Step::Stems);
+      expect(wizard.stemsList.getRowHeight() == 48,
+             "desktop file rows use compact controls");
+      wizard.changeStep(Step::Mapping);
       auto &row = mappingRow(wizard);
       auto &name = childOf<juce::TextEditor>(row);
       auto &category = childOf<juce::ComboBox>(row);
-      expect(row.getHeight() == 42 && name.getHeight() == 36 &&
-                 category.getHeight() == 36,
-             "desktop mapping retains 42-point rows even when narrow");
-      expect(name.getY() == 3 && category.getY() == 3,
-             "narrow desktop rows never silently use the mobile stack");
+      expect(row.getHeight() == 80 && name.getHeight() == 36 &&
+                 category.getHeight() == 36 && name.getY() > 32,
+             "desktop uses the same stacked mapping at desktop control sizes");
+      expectInside(category, row.getLocalBounds(), "desktop category fits its row");
+      wizard.changeStep(Step::Review);
+      expectInside(wizard.summaryEditor, wizard.getLocalBounds(),
+                   "desktop review fits the dialog");
     }
+  }
+
+  static void testDesktopEditLayout() {
+    Wizard wizard({}, false, Wizard::Mode::Edit);
+    wizard.setSize(860, 640);
+    expect(!wizard.metadataViewport.isVisible() &&
+               wizard.songTitleEditor.getParentComponent() == &wizard &&
+               wizard.secuenciasArtworkPreview.getX() > wizard.songTitleEditor.getRight(),
+           "desktop editing retains its existing layout");
   }
 
   static void testDraftNavigation(const AudioFixtures &files) {
@@ -283,14 +331,16 @@ struct SongImportWizardTestAccess {
           expect(finishSaving.wait(5000), "test releases the mock save worker");
           progress(1.0, "Test complete");
           return true;
-        }, false);
+        }, false, Wizard::Mode::Import, {},
+        [&](const ImportedSongData &, juce::File &destination, juce::String &) {
+          destination = files.directory.getChildFile("mock.pwproj");
+          return true;
+        });
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
     wizard.handleSelectedStemFiles({files.first}, false);
     wizard.changeStep(Step::Review);
-    auto song = wizard.buildSongData();
-    wizard.setSubmitting(true);
-    expect(wizard.submitSongInBackground(std::move(song)), "start mock async save");
+    wizard.submitSong();
     pumpUntil([&] { return calls.load() == 1; }, "mock async save starts");
 
     wizard.submitSong();
@@ -314,6 +364,168 @@ struct SongImportWizardTestAccess {
                wizard.submitButton.isEnabled(),
            "async completion removes progress and clears its guard exactly once");
   }
+  static void testDesktopCreationRoundtrip(const AudioFixtures &files) {
+    const auto root = ApplicationDataPaths::isolatedTestRoot();
+    expect(SongLibraryStore::getRootDirectory().isAChildOf(root),
+           "wizard integration storage is isolated from the user library");
+    const auto source = files.directory.getChildFile("portable.flac");
+    {
+      juce::FlacAudioFormat format;
+      std::unique_ptr<juce::OutputStream> stream = source.createOutputStream();
+      auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+          .withSampleRate(44100).withNumChannels(1).withBitsPerSample(16));
+      expect(writer != nullptr, "create portable audio fixture");
+      juce::AudioBuffer<float> audio(1, 4096);
+      audio.clear();
+      audio.setSample(0, 16, 0.25f);
+      expect(writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()),
+             "write portable audio fixture");
+    }
+    int dismissed = 0;
+    std::atomic<double> reported{0.0};
+    juce::String saveError;
+    Wizard wizard([&](ImportedSongData song, juce::String &error,
+                      const SongImportProgressFn &progress) {
+      const bool ok = SongProjectCreation::save(std::move(song), error,
+          [&](double value, const juce::String &phase) {
+            reported = value;
+            progress(value, phase);
+          });
+      saveError = error;
+      return ok;
+    }, false, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+    wizard.setSize(860, 640);
+    wizard.setOnDismissRequested([&] { ++dismissed; });
+    fillMetadata(wizard);
+    wizard.goToNextStep();
+    expect(wizard.currentStep == Step::Stems, "Detalles advances to Archivos");
+    wizard.handleSelectedStemFiles({source}, false);
+    wizard.goToNextStep();
+    expect(wizard.currentStep == Step::Mapping, "Archivos advances to Secciones");
+    childOf<juce::TextEditor>(mappingRow(wizard)).setText("Preserved piano",
+                                                         juce::dontSendNotification);
+    wizard.goToNextStep();
+    expect(wizard.currentStep == Step::Review, "Secciones advances to Revisar");
+    wizard.backButton.onClick();
+    wizard.backButton.onClick();
+    wizard.backButton.onClick();
+    expect(wizard.currentStep == Step::Metadata &&
+               wizard.songTitleEditor.getText() == "Wizard fixture",
+           "returning through all screens preserves metadata");
+    wizard.goToNextStep();
+    wizard.goToNextStep();
+    expect(childOf<juce::TextEditor>(mappingRow(wizard)).getText() == "Preserved piano",
+           "returning forward preserves track mapping");
+    wizard.goToNextStep();
+    expect(wizard.summaryEditor.getText().contains(".pwproj"),
+           "desktop review explains local project creation");
+    const auto screenshots = juce::SystemStats::getEnvironmentVariable(
+        "PLAYWORSHIP_WIZARD_SCREENSHOTS", {});
+    if (screenshots.isNotEmpty()) {
+      const juce::File directory(screenshots);
+      expect(directory.createDirectory().wasOk(), "create screenshot directory");
+      int index = 0;
+      for (const auto step : {Step::Metadata, Step::Stems, Step::Mapping, Step::Review}) {
+        wizard.changeStep(step);
+        const auto snapshot = wizard.createComponentSnapshot(wizard.getLocalBounds());
+        auto output = directory.getChildFile(juce::String(++index) + ".png").createOutputStream();
+        expect(output != nullptr && juce::PNGImageFormat{}.writeImageToStream(snapshot, *output),
+               "render actual desktop wizard screen");
+      }
+    }
+    wizard.submitSong();
+    expect(wizard.isSubmissionInProgress() && wizard.submissionOverlay != nullptr,
+           "actual desktop submission displays background progress");
+    pumpUntil([&] { return !wizard.isSubmissionInProgress(); },
+              "actual project save completes");
+    expect(saveError.isEmpty() && dismissed == 1 && reported == 1.0,
+           "wizard closes only after successful persistence and final progress");
+    const auto library = SongLibraryStore::loadLibrarySnapshot();
+    expect(library.songs.size() == 1, "created song is visible in reloaded Biblioteca");
+    const auto &registered = library.songs.front();
+    const juce::File project(registered.projectPath);
+    expect(project.existsAsFile() && project.hasFileExtension("pwproj") &&
+               project.isAChildOf(SongLibraryStore::getRootDirectory().getChildFile("projects")),
+           "wizard creates the actual pwproj in local Biblioteca");
+    expect(source.deleteFile(), "remove only test source to prove package independence");
+    ProjectDocument reopened;
+    juce::String error;
+    expect(ProjectStore::open(project, reopened, &error, true),
+           "project reopens from Biblioteca without the original source");
+    expect(reopened.song.title == "Wizard fixture" && reopened.song.stems.size() == 1 &&
+               reopened.song.stems.front().displayName == "Preserved piano",
+           "reopened package retains draft metadata and mapping");
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(formats.createReaderFor(
+        juce::File(reopened.song.stems.front().storedPath)));
+    expect(reader != nullptr && reader->lengthInSamples == 4096,
+           "reopened project has playable embedded audio");
+    juce::File nextDestination;
+    expect(SongProjectCreation::resolveDestination(reopened.song, nextDestination, error) &&
+               nextDestination != project, "same-title creation never overwrites existing project");
+    std::cout << "Verified wizard -> " << project.getFullPathName()
+              << " -> Biblioteca -> reopened audio\n";
+  }
+
+  static void testLibraryPanelFlow() {
+    juce::Component host;
+    host.setSize(1200, 900);
+    SongListPanel panel;
+    host.addAndMakeVisible(panel);
+    panel.setBounds(40, 40, 380, 780);
+    auto &cancelled = SongListPanelTestAccess::clickLibraryPlus(panel);
+    expect(cancelled.getParentComponent()->getParentComponent()->getParentComponent() == &panel,
+           "creation is owned by a page inside the same song panel");
+    expect(cancelled.getLocalBounds() == panel.getLocalBounds() && host.getNumChildComponents() == 1,
+           "wizard uses the library panel dimensions, without a second surface");
+    cancelled.closeDialog();
+    pumpUntil([&] { return SongListPanelTestAccess::returnedToLibrary(panel); },
+              "cancelling immediately during the transition returns to Biblioteca");
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(350);
+    expect(SongListPanelTestAccess::returnedToLibrary(panel),
+           "an old animation cannot hide Biblioteca after cancellation");
+
+    const auto existing = SongLibraryStore::loadSongs();
+    expect(existing.size() == 1 && !existing.front().stems.empty(),
+           "use the previous test's embedded audio for panel creation");
+    auto &wizard = SongListPanelTestAccess::clickLibraryPlus(panel);
+    juce::Component::SafePointer<Wizard> pending(&wizard);
+    panel.setSize(420, 680);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(350);
+    expect(wizard.getLocalBounds() == panel.getLocalBounds(),
+           "embedded creation follows panel resizing after the transition ends");
+    fillMetadata(wizard);
+    const auto screenshots = juce::SystemStats::getEnvironmentVariable(
+        "PLAYWORSHIP_WIZARD_SCREENSHOTS", {});
+    if (screenshots.isNotEmpty()) {
+      auto output = juce::File(screenshots).getChildFile("library-plus.png").createOutputStream();
+      expect(output != nullptr && juce::PNGImageFormat{}.writeImageToStream(
+                 panel.createComponentSnapshot(panel.getLocalBounds()), *output),
+             "render the wizard inside the actual Biblioteca panel");
+    }
+    wizard.songTitleEditor.setText("Created from Biblioteca +", juce::dontSendNotification);
+    wizard.goToNextStep();
+    wizard.handleSelectedStemFiles({juce::File(existing.front().stems.front().storedPath)}, false);
+    wizard.goToNextStep();
+    wizard.goToNextStep();
+    expect(wizard.currentStep == Step::Review, "panel + reaches all four wizard screens");
+    wizard.submitSong();
+    expect(wizard.isSubmissionInProgress(), "panel save starts with guarded progress");
+    pumpUntil([&] { return pending == nullptr; }, "successful panel creation closes its page");
+    expect(SongListPanelTestAccess::returnedToLibrary(panel),
+           "successful save returns to the same Biblioteca page");
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto saved = std::find_if(songs.begin(), songs.end(), [](const ImportedSongData &song) {
+      return song.title == "Created from Biblioteca +";
+    });
+    expect(saved != songs.end(), "song created from + is in Biblioteca");
+    ProjectDocument reopened;
+    juce::String error;
+    expect(ProjectStore::open(juce::File(saved->projectPath), reopened, &error),
+           "project created by the real panel callback reopens");
+  }
+
 };
 
 int main() {
@@ -321,12 +533,17 @@ int main() {
   if (std::getenv("DISPLAY") == nullptr)
     return 77;
 #endif
+  if (juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CREATION_TEST_ROOT", {}).isEmpty())
+    return 77;
   juce::ScopedJuceInitialiser_GUI gui;
   applyTheme(ThemePreset::Spotify);
   AudioFixtures fixtures;
   SongImportWizardTestAccess::testStepLayouts(fixtures);
+  SongImportWizardTestAccess::testDesktopEditLayout();
   SongImportWizardTestAccess::testDraftNavigation(fixtures);
   SongImportWizardTestAccess::testCancelledDestination(fixtures);
   SongImportWizardTestAccess::testAsyncGuardAndSuccess(fixtures);
+  SongImportWizardTestAccess::testDesktopCreationRoundtrip(fixtures);
+  SongImportWizardTestAccess::testLibraryPanelFlow();
   std::cout << "Song creation wizard: all checks passed\n";
 }

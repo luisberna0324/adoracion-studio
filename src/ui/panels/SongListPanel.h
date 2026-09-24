@@ -96,6 +96,7 @@ public:
   void resized() override;
 
 private:
+  friend struct SongListPanelTestAccess;
   enum class ViewMode { Setlists, Songs };
   enum class SongsSubview { SetlistSongs, Library };
   struct SongsLayout {
@@ -207,8 +208,8 @@ private:
   class SetlistsContent;
   class PageContainer;
 
-  void openSongImportWizard();
-  void openSongImportWizard(const juce::File &destination);
+  void openSongImportWizard(bool withinLibrary = false);
+  void showLibraryCreationPage(std::unique_ptr<SongImportWizardComponent> panel);
   void showSongImportOverlay(std::unique_ptr<SongImportWizardComponent> panel);
   void openProjectFileChooser();
   void openProjectFileFromUrl(const juce::URL &url);
@@ -324,6 +325,7 @@ private:
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
   std::unique_ptr<SongWizardOverlay> songImportOverlay;
+  std::unique_ptr<SongImportWizardComponent> libraryCreationWizard;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
 };

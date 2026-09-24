@@ -403,7 +403,11 @@ std::vector<float> buildMixedWaveformBins(
   juce::AudioFormatManager formatManager;
   formatManager.registerBasicFormats();
 
-  std::vector<juce::File> files;
+  struct WaveformSource {
+    juce::File file;
+    bool contributesToWaveform = true;
+  };
+  std::vector<WaveformSource> files;
   for (const auto &stem : song.stems) {
     if (!stem.include)
       continue;
@@ -414,7 +418,13 @@ std::vector<float> buildMixedWaveformBins(
     if (!file.existsAsFile())
       continue;
 
-    files.push_back(std::move(file));
+    // Use the same click/guide roles as playback, including the accented
+    // Spanish guide label. Keep their duration for timeline alignment, but
+    // never add their samples to the visual mix.
+    const auto label = stem.displayName + " " + stem.category + " " + stem.fileName;
+    const bool isMusical = stemPriorityForStripOrder(stem) > 1 &&
+                           !label.containsIgnoreCase(juce::String::fromUTF8("guía"));
+    files.push_back({std::move(file), isMusical});
   }
 
   if (files.empty())
@@ -422,9 +432,9 @@ std::vector<float> buildMixedWaveformBins(
 
   report(0.03);
   juce::int64 maxLengthSamples = 0;
-  for (const auto &file : files) {
+  for (const auto &source : files) {
     if (auto reader = std::unique_ptr<juce::AudioFormatReader>(
-            formatManager.createReaderFor(file))) {
+            formatManager.createReaderFor(source.file))) {
       maxLengthSamples = std::max(maxLengthSamples, (juce::int64)reader->lengthInSamples);
     }
   }
@@ -439,16 +449,22 @@ std::vector<float> buildMixedWaveformBins(
   constexpr int blockSize = 4096;
   const int nFiles = static_cast<int>(files.size());
   int fileIndex = 0;
-  for (const auto &file : files) {
+  for (const auto &source : files) {
     const double spanStart = static_cast<double>(fileIndex) / static_cast<double>(nFiles);
     const double spanEnd =
         static_cast<double>(fileIndex + 1) / static_cast<double>(nFiles);
     report(0.07 + 0.88 * spanStart);
 
+    if (!source.contributesToWaveform) {
+      report(0.07 + 0.88 * spanEnd);
+      ++fileIndex;
+      continue;
+    }
+
     std::fill(stemBins.begin(), stemBins.end(), 0.0f);
 
     auto reader = std::unique_ptr<juce::AudioFormatReader>(
-        formatManager.createReaderFor(file));
+        formatManager.createReaderFor(source.file));
     if (reader == nullptr) {
       ++fileIndex;
       continue;

@@ -72,8 +72,9 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   portada se centra con un lado de 112–136 pt, los editores y combos miden 48 pt
   de alto, y `BPM`, `Tono` y `Compas` comparten una fila de tres columnas. El
   resumen de metadata y el boton primario usan 70 pt y 48 pt respectivamente.
-  En pantallas de escritorio y tablet se conserva el dialogo compacto de dos
-  columnas.
+  En escritorio, el + de Biblioteca abre la creacion dentro del mismo panel,
+  con esta jerarquia y controles de menor altura. La edicion de escritorio y
+  tablet conservan su presentacion anterior.
 - Con un teclado virtual acoplado, el asistente combina `safeAreaInsets` y
   `keyboardInsets`. En Detalles conserva encabezado, pasos y la geometria del
   formulario: un viewport reduce su ventana visible sobre el teclado y desplaza
@@ -94,11 +95,11 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - Los pasos `Archivos`, `Secciones` y `Revisar` reutilizan el mismo encabezado,
   indicador y pie. En telefono, las filas de mapeo se apilan para evitar
   columnas comprimidas: miden 104 pt, con toggle de 44 pt y campos de 48 pt.
-  En escritorio permanecen tabulares de 42 pt; el modo movil no se deduce solo
-  del ancho de una fila. El scroll manual no vuelve continuamente al editor
+  La creacion de escritorio tambien apila las filas, con 80 pt y campos de
+  36 pt; la edicion de escritorio conserva las filas tabulares de 42 pt. El scroll manual no vuelve continuamente al editor
   enfocado. Al retroceder, los nombres/categorias/Cargar se guardan en el borrador.
 - La tarjeta de progreso se limita al ancho disponible menos 32 pt; conserva
-  sus 440 pt en escritorio. La creacion portable movil procesa el paquete en
+  sus 440 pt en escritorio. La creacion portable movil y de escritorio procesa el paquete en
   background, mantiene el asistente bloqueado contra doble envio/cierre y
   entrega progreso/resultado al message thread. Ver
   [Song Creation](../importing/SongCreation.md).

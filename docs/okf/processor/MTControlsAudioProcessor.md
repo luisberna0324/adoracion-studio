@@ -84,6 +84,10 @@ guarda además `project-source.json` con ruta, tamaño y modificación del
 vigente, y reconstruye la caché si el paquete cambió o falta algún archivo.
 La previsualización de waveform viaja como `waveform.bin` dentro del paquete;
 la copia local en `MTControls/waveforms` es sólo una caché regenerable.
+Al generar una onda, `buildMixedWaveformBins` omite las muestras de clic y guía
+(categorías Click/Cues y nombres reconocidos como clic/guide/guia/guía). Conserva
+la duración total para alinear la visual con el transporte. Esto no modifica los
+stems reproducidos ni reescribe automáticamente las ondas guardadas previamente.
 Los cambios de controles de canción (volumen, gain, mute/solo, salidas, pitch,
 tempo, ventana, arrange, guía y click) se agrupan durante 750 ms y se escriben
 fuera del hilo de audio mediante un reemplazo atómico del paquete. Al cambiar o
