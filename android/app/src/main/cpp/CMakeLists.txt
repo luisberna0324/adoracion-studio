@@ -3,7 +3,10 @@ project(PlayWorshipAndroid LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../../")
-set(JUCE_ROOT "${PROJECT_ROOT}/../third_party/JUCE")
+set(JUCE_ROOT "${PROJECT_ROOT}/third_party/JUCE")
+if(NOT EXISTS "${JUCE_ROOT}/modules/juce_core/juce_core.cpp")
+    set(JUCE_ROOT "${PROJECT_ROOT}/../third_party/JUCE")
+endif()
 set(SOUNDTOUCH_ROOT "${PROJECT_ROOT}/build-local-backend/_deps/soundtouch-src")
 
 file(GLOB_RECURSE PLAYWORSHIP_SOURCES CONFIGURE_DEPENDS

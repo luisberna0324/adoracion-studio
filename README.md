@@ -56,6 +56,25 @@ cmake --build --preset windows-x86-release
 
 ## Instaladores (MVP)
 
+### Publicación automática
+
+Al crear un tag estable `vX.Y.Z`, GitHub Actions construye macOS, Windows
+(x64 y x86) y Android (arm64). El workflow de PR lanza el build explícitamente
+después de crear el tag, porque un push hecho con `GITHUB_TOKEN` no dispara
+otro workflow de tipo `push`.
+
+Después de verificar y subir todos los instaladores a GCS, el CI publica
+`gs://$GCS_BUCKET/${GCS_INSTALLERS_PREFIX:-installers}/latest.json`. La landing
+consulta ese archivo para mostrar las URLs y la versión actual. iOS permanece
+sin descarga hasta contar con un canal de distribución.
+
+El job Android requiere estos secretos de GitHub: `ANDROID_RELEASE_KEYSTORE_BASE64`
+(archivo `.jks` codificado en base64), `ANDROID_RELEASE_STORE_PASSWORD`,
+`ANDROID_RELEASE_KEY_ALIAS` y `ANDROID_RELEASE_KEY_PASSWORD`. Conserva una copia
+segura del keystore: futuras APK deben firmarse con la misma clave para
+actualizar una instalación existente. La configuración CORS del bucket para la
+landing está en `packaging/download-manifest-cors.json`.
+
 ### macOS (PKG installer)
 
 Genera el build y luego empaqueta el instalador `.pkg`:

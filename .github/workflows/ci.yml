@@ -1,6 +1,9 @@
 name: Build Artifacts
 
 on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
       ref:
@@ -27,7 +30,7 @@ permissions:
   contents: write
   
 concurrency:
-  group: build-artifacts-${{ github.run_id }}
+  group: build-artifacts-release
   cancel-in-progress: false
 
 jobs:
@@ -63,6 +66,17 @@ jobs:
           fi
           RELEASE_KIND_INPUT="$(trim "${{ inputs.release_kind }}")"
           PUBLISH_INPUT="${{ inputs.publish_release }}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            SEMVER="${GITHUB_REF_NAME#v}"
+            echo "release_ref=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+            echo "semver=${SEMVER}" >> "${GITHUB_OUTPUT}"
+            echo "tag=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+            echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
+            echo "publish_release=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
 
           if [[ "${RELEASE_KIND_INPUT}" != "major" && "${RELEASE_KIND_INPUT}" != "minor" && "${RELEASE_KIND_INPUT}" != "patch" ]]; then
             echo "release_kind invalido '${RELEASE_KIND_INPUT}'. Valores permitidos: major|minor|patch." >&2
@@ -354,12 +368,89 @@ jobs:
           [[ -f "${FILE}" ]] || { echo "Missing Windows installer: ${FILE}" >&2; exit 1; }
           gcloud storage cp "${FILE}" "gs://${GCS_BUCKET}/${PREFIX}/windows/v${SEMVER}/"
 
+  build-android:
+    name: Build signed Android APK
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK components
+        run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.1.13356709' 'cmake;3.22.1'
+      - name: Bootstrap Bungee Android SDK
+        run: bash scripts/bootstrap_bungee.sh
+      - name: Prepare release signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ -n "${KEYSTORE_BASE64}" ]] || { echo 'Missing ANDROID_RELEASE_KEYSTORE_BASE64' >&2; exit 1; }
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/playworship-release.jks"
+          echo "PLAYWORSHIP_ANDROID_KEYSTORE=${RUNNER_TEMP}/playworship-release.jks" >> "${GITHUB_ENV}"
+      - name: Build release APK
+        working-directory: android
+        env:
+          PLAYWORSHIP_VERSION_NAME: ${{ needs.prepare.outputs.semver }}
+          PLAYWORSHIP_VERSION_CODE: ${{ github.run_number }}
+          PLAYWORSHIP_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          PLAYWORSHIP_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          PLAYWORSHIP_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for value in PLAYWORSHIP_ANDROID_STORE_PASSWORD PLAYWORSHIP_ANDROID_KEY_ALIAS PLAYWORSHIP_ANDROID_KEY_PASSWORD; do
+            [[ -n "${!value}" ]] || { echo "Missing Android signing secret: ${value}" >&2; exit 1; }
+          done
+          ./gradlew :app:assembleRelease --no-daemon
+      - name: Verify and name release APK
+        shell: bash
+        env:
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          set -euo pipefail
+          APK='android/app/build/outputs/apk/release/app-release.apk'
+          test -s "${APK}"
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify --verbose "${APK}"
+          "${ANDROID_HOME}/build-tools/36.0.0/aapt" dump badging "${APK}" | grep -F "versionName='${SEMVER}'"
+          mkdir -p dist
+          cp "${APK}" "dist/playworship-android-${SEMVER}-arm64.apk"
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Upload installer to GCS (Android)
+        shell: bash
+        env:
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: |
+          set -euo pipefail
+          PREFIX="${GCS_PREFIX:-installers}"
+          gcloud storage cp "dist/playworship-android-${SEMVER}-arm64.apk" "gs://${GCS_BUCKET}/${PREFIX}/android/v${SEMVER}/"
+
   retention-gcs:
     name: Retain latest 3 versions in GCS
     needs:
       - prepare
       - build-macos
       - build-windows
+      - build-android
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate to Google Cloud
@@ -384,7 +475,7 @@ jobs:
             local platform="$1"
             local platform_base="${BASE_URI}/${platform}/"
             local dirs_raw=""
-            dirs_raw="$(gsutil ls "${platform_base}" 2>/dev/null || true)"
+            dirs_raw="$(gcloud storage ls "${platform_base}" 2>/dev/null || true)"
             if [[ -z "${dirs_raw}" ]]; then
               return 0
             fi
@@ -402,12 +493,35 @@ jobs:
             )
             local delete_count=$((count - 3))
             for ((i = 0; i < delete_count; ++i)); do
-              gsutil -m rm -r "${sorted_dirs[$i]}"
+              gcloud storage rm --recursive "${sorted_dirs[$i]}"
             done
           }
 
           retain_latest_three "macos"
           retain_latest_three "windows"
+          retain_latest_three "android"
+
+  publish-downloads:
+    name: Publish landing download manifest
+    needs:
+      - prepare
+      - retention-gcs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref }}
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Publish latest release metadata
+        shell: bash
+        env:
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCS_PREFIX: ${{ vars.GCS_INSTALLERS_PREFIX }}
+          SEMVER: ${{ needs.prepare.outputs.semver }}
+        run: bash scripts/publish_download_manifest.sh
 
   publish:
     if: needs.prepare.outputs.publish_release == 'true'
@@ -415,6 +529,7 @@ jobs:
     needs:
       - prepare
       - retention-gcs
+      - publish-downloads
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -476,6 +591,7 @@ jobs:
           MAC_URL="${BASE_HTTPS}/macos/${VERSION_DIR}/playworship-macos-installer-${SEMVER}.pkg"
           WIN_X64_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x64.exe"
           WIN_X86_URL="${BASE_HTTPS}/windows/${VERSION_DIR}/playworship-windows-installer-${SEMVER}-x86.exe"
+          ANDROID_URL="${BASE_HTTPS}/android/${VERSION_DIR}/playworship-android-${SEMVER}-arm64.apk"
 
           marker_start="<!-- bucket-links:start -->"
           marker_end="<!-- bucket-links:end -->"
@@ -496,6 +612,7 @@ jobs:
             echo "- macOS (.pkg): ${MAC_URL}"
             echo "- Windows x64 (.exe): ${WIN_X64_URL}"
             echo "- Windows x86 legado (.exe, SoundTouch): ${WIN_X86_URL}"
+            echo "- Android arm64 (.apk): ${ANDROID_URL}"
             echo "${marker_end}"
           } > "${links_md}"
 

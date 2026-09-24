@@ -1,0 +1,12 @@
+[
+  {
+    "origin": [
+      "https://play-worship.web.app",
+      "https://play-worship.firebaseapp.com",
+      "http://localhost:8080"
+    ],
+    "method": ["GET"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]

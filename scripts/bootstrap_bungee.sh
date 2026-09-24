@@ -21,7 +21,7 @@ archive_targets() {
           printf '%s\n' include version.txt linux-aarch64
           ;;
         *)
-          printf '%s\n' include version.txt linux-x86_64
+          printf '%s\n' include version.txt linux-x86_64 android-arm64-v8a
           ;;
       esac
       ;;
