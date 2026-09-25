@@ -1,4 +1,5 @@
 #pragma once
+#include "../../network/PlaybackSession.h"
 
 #include "../UiCommon.h"
 #include <JuceHeader.h>
@@ -10,7 +11,7 @@ class MTControlsAudioProcessor;
 
 class TopBar final : public juce::Component, private juce::Timer {
 public:
-  explicit TopBar(MTControlsAudioProcessor &processorRef);
+  explicit TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *session = nullptr);
   ~TopBar() override;
 
   void setTransportCallbacks(std::function<void()> playPauseCallback,
@@ -151,6 +152,8 @@ private:
   std::function<juce::String()> songIdProvider;
   std::function<const ImportedSongData *()> songProvider;
   MTControlsAudioProcessor &processor;
+  PlaybackSession localSession;
+  PlaybackSession &session;
   juce::Rectangle<int> songInfoBounds;
   juce::Image songArtwork;
   juce::String songTitleText;

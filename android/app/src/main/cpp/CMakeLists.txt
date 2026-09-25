@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
 project(PlayWorshipAndroid LANGUAGES C CXX)
 
+include(FetchContent)
+set(USE_ZLIB OFF CACHE BOOL "Disable WebSocket compression" FORCE)
+set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "Do not install IXWebSocket" FORCE)
+FetchContent_Declare(ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG 64fae7676bd8fe31f7cb4bcde7a6841892dad65e)
+FetchContent_MakeAvailable(ixwebsocket)
+
 set(CMAKE_CXX_STANDARD 17)
 set(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../../")
 set(JUCE_ROOT "${PROJECT_ROOT}/third_party/JUCE")
@@ -81,4 +89,4 @@ find_library(log-lib log)
 find_library(android-lib android)
 find_library(opensles-lib OpenSLES)
 find_library(aaudio-lib aaudio)
-target_link_libraries(playworship PRIVATE bungee ${log-lib} ${android-lib} ${opensles-lib} ${aaudio-lib} EGL GLESv2 z)
+target_link_libraries(playworship PRIVATE bungee ixwebsocket::ixwebsocket ${log-lib} ${android-lib} ${opensles-lib} ${aaudio-lib} EGL GLESv2 z)

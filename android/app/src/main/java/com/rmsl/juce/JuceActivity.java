@@ -42,11 +42,39 @@ import android.app.Activity;
 import android.os.Build;
 import android.os.Bundle;
 import android.content.Intent;
+import android.content.Context;
+import android.net.wifi.WifiManager;
 import android.view.View;
 
 //==============================================================================
 public class JuceActivity   extends Activity
 {
+    private WifiManager.MulticastLock remoteMulticastLock;
+    private boolean remoteMulticastRequested;
+
+    public void setRemoteMulticastEnabled (boolean enabled)
+    {
+        remoteMulticastRequested = enabled;
+        if (enabled)
+        {
+            if (remoteMulticastLock == null)
+            {
+                WifiManager manager = (WifiManager) getApplicationContext().getSystemService (Context.WIFI_SERVICE);
+                if (manager != null)
+                {
+                    remoteMulticastLock = manager.createMulticastLock ("PlayWorship remote discovery");
+                    remoteMulticastLock.setReferenceCounted (false);
+                }
+            }
+            if (remoteMulticastLock != null && !remoteMulticastLock.isHeld())
+                remoteMulticastLock.acquire();
+        }
+        else if (remoteMulticastLock != null && remoteMulticastLock.isHeld())
+        {
+            remoteMulticastLock.release();
+        }
+    }
+
     private native void startJUCEApplication();
     private native void onAuthCallback (String callbackUrl);
 
@@ -103,6 +131,16 @@ public class JuceActivity   extends Activity
     protected void onResume()
     {
         super.onResume();
+        if (remoteMulticastRequested)
+            setRemoteMulticastEnabled (true);
         // Notification resume handling is disabled for this standalone target.
+    }
+
+    @Override
+    protected void onPause()
+    {
+        if (remoteMulticastLock != null && remoteMulticastLock.isHeld())
+            remoteMulticastLock.release();
+        super.onPause();
     }
 }

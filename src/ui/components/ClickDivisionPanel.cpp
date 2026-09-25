@@ -261,6 +261,7 @@ void ClickDivisionPanel::resized() {
 }
 
 void ClickDivisionPanel::setVolume(const float volume) {
+  if (volumeKnob->isMouseButtonDown()) return;
   suppressVolumeCallback = true;
   volumeKnob->setValue(juce::jlimit(0.0f, 1.0f, volume),
                        juce::dontSendNotification);

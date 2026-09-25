@@ -39,8 +39,8 @@ juce::String idlePadsStatusText() {
 }
 } // namespace
 
-PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf)
-    : processor(proc) {
+PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAndFeel& laf, PlaybackSession *sessionToUse)
+    : processor(proc), localSession(proc), session(sessionToUse ? *sessionToUse : localSession) {
     for (int i = 0; i < kNoteCount; ++i) {
         const auto index = static_cast<size_t>(i);
         notePads[index] = std::make_unique<NotePadButton>(kNoteNames[index], i);
@@ -58,7 +58,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     channelStrip = std::make_unique<ChannelStripCard>(
         "Pads", laf,
         [this]() -> std::pair<float, float> {
-            const float lvl = processor.getPadsOutputLevel();
+            const float lvl = session.getPadsOutputLevel();
             return { lvl, lvl };
         },
         /*isCompact=*/false);
@@ -68,12 +68,12 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     channelStrip->setGainVisible(true);
     channelStrip->setCardBgColour(UITheme::cardBg);
     channelStrip->setChannelBandColours(UITheme::accent, UITheme::onAccent);
-    channelStrip->setVolume(processor.getPadsVolume());
-    channelStrip->setGain(processor.getPadsGain());
+    channelStrip->setVolume(session.getPadsVolume());
+    channelStrip->setGain(session.getPadsGain());
     channelStrip->setOnVolumeChanged(
-        [this](float value) { processor.setPadsVolume(value); });
+        [this](float value) { session.setPadsVolume(value); });
     channelStrip->setOnGainChanged(
-        [this](float value) { processor.setPadsGain(value); });
+        [this](float value) { session.setPadsGain(value); });
     channelStrip->setMidiLearnTargetIds(processor.midiTargetPadsVolume,
                                         processor.midiTargetPadsGain, -1, -1,
                                         -1);
@@ -83,9 +83,9 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     });
     addAndMakeVisible(*channelStrip);
 
-    processor.refreshPadsRoutingFromSettings();
-    presetSubtitle = processor.getPadsPackStatusText();
-    lastPackReady = processor.isPadsPackLoaded();
+    session.refreshPadsRoutingFromSettings();
+    presetSubtitle = session.getPadsPackStatusText();
+    lastPackReady = session.isPadsPackLoaded();
     if (!lastPackReady && presetSubtitle.trim().isEmpty())
         presetSubtitle = idlePadsStatusText();
 
@@ -255,7 +255,7 @@ void PadsComponent::mouseDown(const juce::MouseEvent&) {
 }
 
 void PadsComponent::refreshThemeColours() {
-    presetSubtitle = processor.getPadsPackStatusText();
+    presetSubtitle = session.getPadsPackStatusText();
     applyPowerState(padsPoweredOn);
     if (channelStrip) {
         channelStrip->setCardBgColour(UITheme::cardBg);
@@ -277,10 +277,10 @@ void PadsComponent::setResponsiveProfile(const ResponsiveLayoutProfile profile) 
 
 void PadsComponent::timerCallback() {
     if (padsLoading.load(std::memory_order_relaxed)) {
-        if (!processor.isPadsPreloadRunning()) {
+        if (!session.isPadsPreloadRunning()) {
             padsLoading.store(false, std::memory_order_release);
-            lastPackReady = processor.isPadsPackLoaded();
-            presetSubtitle = processor.getPadsPackStatusText();
+            lastPackReady = session.isPadsPackLoaded();
+            presetSubtitle = session.getPadsPackStatusText();
             subtitleAlpha = 1.0f;
             applyPowerState(padsPoweredOn);
             repaint();
@@ -288,7 +288,7 @@ void PadsComponent::timerCallback() {
             loadingBeatPhase += 0.24f;
             const float pulse = 0.66f + (0.34f * (0.5f + 0.5f * std::sin(loadingBeatPhase)));
             subtitleAlpha = juce::jlimit(0.45f, 1.0f, pulse);
-            const auto runtimeStatus = processor.getPadsPackStatusText();
+            const auto runtimeStatus = session.getPadsPackStatusText();
             presetSubtitle = runtimeStatus.isNotEmpty() ? runtimeStatus : "Descargando recursos... / Downloading resources...";
             repaint();
             return;
@@ -296,13 +296,13 @@ void PadsComponent::timerCallback() {
     }
 
     subtitleAlpha = 1.0f;
-    const bool packReady = processor.isPadsPackLoaded();
+    const bool packReady = session.isPadsPackLoaded();
     if (packReady != lastPackReady) {
         lastPackReady = packReady;
         applyPowerState(padsPoweredOn);
     }
 
-    const auto status = processor.getPadsPackStatusText();
+    const auto status = session.getPadsPackStatusText();
     if (status != presetSubtitle) {
         presetSubtitle = status.isNotEmpty()
                              ? status
@@ -311,16 +311,16 @@ void PadsComponent::timerCallback() {
     }
 
     if (channelStrip != nullptr && !channelStrip->isMouseButtonDown()) {
-        channelStrip->setVolume(processor.getPadsVolume());
-        channelStrip->setGain(processor.getPadsGain());
+        channelStrip->setVolume(session.getPadsVolume());
+        channelStrip->setGain(session.getPadsGain());
     }
 
     if (!midiLearnActive) {
-        const bool runtimePadsEnabled = processor.isPadsEnabled();
+        const bool runtimePadsEnabled = session.isPadsEnabled();
         if (runtimePadsEnabled != padsPoweredOn)
             applyPowerState(runtimePadsEnabled);
 
-        const int runtimeActiveNote = processor.getActivePadNoteIndex();
+        const int runtimeActiveNote = session.getActivePadNoteIndex();
         if (runtimeActiveNote != activeNoteIndex) {
             if (juce::isPositiveAndBelow(activeNoteIndex, kNoteCount))
                 notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
@@ -335,7 +335,7 @@ void PadsComponent::timerCallback() {
 }
 
 void PadsComponent::startPadsLoadingAsync() {
-    if (processor.isPadsPackLoaded()) {
+    if (session.isPadsPackLoaded()) {
         padsLoading.store(false, std::memory_order_release);
         return;
     }
@@ -343,7 +343,7 @@ void PadsComponent::startPadsLoadingAsync() {
     presetSubtitle = "Loading pads...";
     subtitleAlpha = 0.7f;
     loadingBeatPhase = 0.0f;
-    processor.startPadsPreloadAsync();
+    session.startPadsPreloadAsync();
 }
 
 void PadsComponent::onPadPressed(int noteIndex) {
@@ -355,31 +355,31 @@ void PadsComponent::onPadPressed(int noteIndex) {
         return;
     }
     if (padsLoading.load(std::memory_order_relaxed)) {
-        processor.triggerPadNote(noteIndex, currentOctave);
+        session.triggerPadNote(noteIndex, currentOctave);
         presetSubtitle = "Loading pads...";
         return;
     }
 
-    if (!processor.isPadsPackLoaded()) {
+    if (!session.isPadsPackLoaded()) {
         startPadsLoadingAsync();
-        processor.triggerPadNote(noteIndex, currentOctave);
+        session.triggerPadNote(noteIndex, currentOctave);
         presetSubtitle = "Loading pads...";
         applyPowerState(padsPoweredOn);
         repaint();
         return;
     }
 
-    if (!processor.ensurePadsPackReady()) {
-        presetSubtitle = processor.getPadsPackStatusText();
+    if (!session.ensurePadsPackReady()) {
+        presetSubtitle = session.getPadsPackStatusText();
         applyPowerState(padsPoweredOn);
         repaint();
         return;
     }
-    presetSubtitle = processor.getPadsPackStatusText();
+    presetSubtitle = session.getPadsPackStatusText();
     applyPowerState(padsPoweredOn);
 
     if (activeNoteIndex == noteIndex) {
-        processor.stopPadNote(noteIndex);
+        session.stopPadNote(noteIndex);
         notePads[static_cast<size_t>(noteIndex)]->setActive(false);
         activeNoteIndex = -1;
         return;
@@ -390,7 +390,7 @@ void PadsComponent::onPadPressed(int noteIndex) {
 
     notePads[static_cast<size_t>(noteIndex)]->setActive(true);
     activeNoteIndex = noteIndex;
-    processor.triggerPadNote(noteIndex, currentOctave);
+    session.triggerPadNote(noteIndex, currentOctave);
 }
 
 void PadsComponent::onPadReleased(int noteIndex) {
@@ -399,7 +399,7 @@ void PadsComponent::onPadReleased(int noteIndex) {
 
 bool PadsComponent::followSongKey(const juce::String& songKey,
                                   const int semitoneOffset) {
-    const int runtimeActiveNote = processor.getActivePadNoteIndex();
+    const int runtimeActiveNote = session.getActivePadNoteIndex();
     if (!padsPoweredOn ||
         !juce::isPositiveAndBelow(runtimeActiveNote, kNoteCount))
         return false;
@@ -420,7 +420,7 @@ bool PadsComponent::followSongKey(const juce::String& songKey,
     notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
     notePads[static_cast<size_t>(targetNoteIndex)]->setActive(true);
     activeNoteIndex = targetNoteIndex;
-    processor.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
+    session.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
     return true;
 }
 
@@ -432,9 +432,9 @@ void PadsComponent::applyPowerState(bool on) {
         return;
     }
     padsPoweredOn = on;
-    processor.setPadsEnabled(on);
+    session.setPadsEnabled(on);
     const bool interactionEnabled = on;
-    const bool packReady = processor.isPadsPackLoaded();
+    const bool packReady = session.isPadsPackLoaded();
     for (auto& pad : notePads) {
         pad->setInterceptsMouseClicks(interactionEnabled, false);
         pad->setAlpha(interactionEnabled ? (packReady ? 1.0f : 0.82f) : 0.4f);

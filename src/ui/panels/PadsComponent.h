@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../PluginProcessor.h"
+#include "../../network/PlaybackSession.h"
 #include "../UiCommon.h"
 #include "../components/ChannelStripCard.h"
 #include "../components/ChannelStripLookAndFeel.h"
@@ -14,7 +15,7 @@
 
 class PadsComponent : public juce::Component, private juce::Timer {
 public:
-    PadsComponent(MTControlsAudioProcessor& processor, ChannelStripLookAndFeel& laf);
+    PadsComponent(MTControlsAudioProcessor& processor, ChannelStripLookAndFeel& laf, PlaybackSession *session = nullptr);
     ~PadsComponent() override;
 
     void paint(juce::Graphics& g) override;
@@ -40,6 +41,8 @@ private:
   static constexpr int kNoteCount = 12;
 
   MTControlsAudioProcessor &processor;
+  PlaybackSession localSession;
+  PlaybackSession &session;
   std::array<std::unique_ptr<NotePadButton>, kNoteCount> notePads;
   OctaveControl octaveCtrl;
   PowerButton powerBtn;

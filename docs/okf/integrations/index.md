@@ -18,3 +18,4 @@ Integraciones externas para software de letras, cues y control en vivo.
 | [LyricsControllers](LyricsControllers.md) | Contrato de integración con software de letras |
 | [CloudSync](CloudSync.md) | Contrato cloud vs local, preflight y sanitización de `.pwproj` para R2 + Firestore |
 | [Auth](Auth.md) | Login nativo en iOS vía `ASWebAuthenticationSession` + Google OAuth backend-driven |
+| [RemoteControl](RemoteControl.md) | Control remoto LAN, discovery mDNS, WebSocket y transferencia de waveform |

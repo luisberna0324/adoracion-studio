@@ -27,7 +27,9 @@
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/SettingsPanel.h"
+
 #include "ui/panels/SongListPanel.h"
+#include "network/RemoteStateCodec.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
 #include <algorithm>
@@ -230,7 +232,7 @@ double getCurrentProcessMemoryUsageMb() noexcept {
 
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MTControlsAudioProcessor &p)
-    : AudioProcessorEditor(p) {
+    : AudioProcessorEditor(p), playbackSession(p) {
 #if JUCE_IOS || JUCE_ANDROID
   juce::Desktop::getInstance().setOrientationsEnabled(
       juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
@@ -350,6 +352,7 @@ bool MTControlsAudioProcessorEditor::isSongCurrentlyLoaded(
 }
 
 void MTControlsAudioProcessorEditor::flushActiveSongPersistenceNow() {
+  if (playbackSession.isRemote()) return;
   maybePersistSongWindowForActiveSong();
   maybePersistClickDynMetronomeEnabledForActiveSong();
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
@@ -429,6 +432,7 @@ bool MTControlsAudioProcessorEditor::hasPendingCloudSettings(
 
 void MTControlsAudioProcessorEditor::confirmCloudSettingsSync(
     const ImportedSongData &song) {
+  if (playbackSession.isRemote()) return;
   if (!hasPendingCloudSettings(song) ||
       cloudSettingsInProgress.count(song.id.toStdString()) != 0)
     return;
@@ -657,6 +661,7 @@ void MTControlsAudioProcessorEditor::syncCloudSettings(
 
 void MTControlsAudioProcessorEditor::showCloudSettingsVersions(
     const ImportedSongData &song, juce::Rectangle<int> screenAnchor) {
+  if (playbackSession.isRemote()) return;
   if (cloudSettingsSheet != nullptr)
     cloudSettingsSheet->dismiss();
   cloudSettingsSheetOverlay.reset();
@@ -1176,7 +1181,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                : ("CC" + juce::String(it->ccNumber));
   };
 
-  auto topBarImpl = std::make_unique<TopBar>(p);
+  auto topBarImpl = std::make_unique<TopBar>(p, &playbackSession);
 #if JUCE_ANDROID
   logAndroidUiPhase("topBar.created");
 #endif
@@ -1184,13 +1189,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBar = std::move(topBarImpl);
   topBarRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
   topBarRaw->setTransportProviders(
-      [&p] { return p.isSongPlaying(); },
-      [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] {
-        return p.isCustomArrangementActive() ? p.getSongLengthSeconds()
-                                             : p.getSongEndSeconds();
+      [this] { return playbackSession.isSongPlaying(); },
+      [this] { return playbackSession.getSongCurrentPositionSeconds(); },
+      [this] {
+        return playbackSession.isCustomArrangementActive() ? playbackSession.getSongLengthSeconds()
+                                             : playbackSession.getSongEndSeconds();
       },
-      [&p] { return p.getLoadedSongKey(); },
+      [this] { return playbackSession.getLoadedSongKey(); },
       [this] { return currentLoadedSong.id; },
       [this]() -> const ImportedSongData * {
         if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
@@ -1212,18 +1217,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
-      [&p] { return p.getSongCurrentPositionSeconds(); },
-      [&p] { return p.getSongLengthSeconds(); },
-      [&p] { return p.isSongPlaying(); });
+      [this] { return playbackSession.getSongCurrentPositionSeconds(); },
+      [this] { return playbackSession.getSongLengthSeconds(); },
+      [this] { return playbackSession.isSongPlaying(); });
   waveformBarRaw->setSongSourceLengthProvider(
-      [&p] { return p.getLoadedSongLengthSeconds(); });
+      [this] { return playbackSession.getLoadedSongLengthSeconds(); });
   waveformBarRaw->setSongEndCustomizedProvider(
-      [&p] { return p.isSongEndCustomized(); });
+      [this] { return playbackSession.isSongEndCustomized(); });
   waveformBarRaw->setSongWindowProviders(
-      [&p] { return p.getSongStartSeconds(); },
-      [&p] { return p.getSongEndSeconds(); });
-  waveformBarRaw->setSeekCallback([&p](double targetSeconds) {
-    p.seekSongTo(targetSeconds);
+      [this] { return playbackSession.getSongStartSeconds(); },
+      [this] { return playbackSession.getSongEndSeconds(); });
+  waveformBarRaw->setSeekCallback([this](double targetSeconds) {
+    playbackSession.seekSongTo(targetSeconds);
   });
   // The jump button now respects the active loop: the request is queued as a
   // pending jump and the audio thread resolves whether it should escape the
@@ -1232,26 +1237,26 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   // pre-arranging a jump to the next one" workflow, and it also hides the
   // pending-jump escape branch from the scheduler.
   waveformBarRaw->setOnArrangementPartJumpRequest(
-      [&p](int partIndex) { p.requestArrangementPartJump(partIndex); });
-  waveformBarRaw->setOnArrangementPartLoopToggleRequest([&p](int partIndex) {
+      [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
+  waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {
     // Marking a loop must NOT auto-jump the playhead; the loop waits for
     // natural playback to reach the section. We still drop any previously
     // queued jump so the user can replace a pending jump with a loop target
     // without the two intents fighting each other.
-    p.clearPendingArrangementPartJump();
-    p.toggleArrangementPartLoop(partIndex);
+    playbackSession.clearPendingArrangementPartJump();
+    playbackSession.toggleArrangementPartLoop(partIndex);
   });
-  waveformBarRaw->setOnArrangementPlaybackSelectionClearRequest([&p] {
-    p.clearArrangementPartLoop();
-    p.clearPendingArrangementPartJump();
+  waveformBarRaw->setOnArrangementPlaybackSelectionClearRequest([this] {
+    playbackSession.clearArrangementPartLoop();
+    playbackSession.clearPendingArrangementPartJump();
   });
   waveformBarRaw->setPendingArrangementPartProvider(
-      [&p] { return p.getPendingArrangementPartJumpIndex(); });
+      [this] { return playbackSession.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
-      [&p] { return p.getArrangementPartLoopIndex(); });
+      [this] { return playbackSession.getArrangementPartLoopIndex(); });
   waveformBarRaw->setOnEditToggle([this](const bool editing) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-    processorRef.setArrangementEditingActive(editing);
+    if (!playbackSession.isRemote()) processorRef.setArrangementEditingActive(editing);
     resized();
     repaint();
   });
@@ -1263,6 +1268,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnArrangementChanged(
       [this, &p](const SongArrangementSnapshot &arrangement,
                  bool isCustomArrangement) {
+        if (playbackSession.isRemote()) {
+          ProjectSongSettings settings; settings.arrangement = arrangement; settings.arrangementCustomized = isCustomArrangement;
+          playbackSession.send("arrange.set", ProjectStore::serializeSettings(settings)); return;
+        }
         if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
           return;
         if (!SongLibraryStore::updateSongArrangement(
@@ -1274,6 +1283,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         p.setSongArrangement(arrangement, isCustomArrangement);
       });
   waveformBarRaw->setOnArrangementReset([this, &p] {
+    if (playbackSession.isRemote()) { playbackSession.send("arrange.reset"); return; }
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return;
     if (!SongLibraryStore::resetSongArrangement(currentLoadedSong.id)) {
@@ -1289,13 +1299,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
   });
   waveformBarRaw->setOnTempoMapChanged([this](const SongTempoMapSnapshot &tempoMap) {
+    if (playbackSession.isRemote()) { playbackSession.send("tempoMap.set", playworship::remote::encodeTempoMap(tempoMap)); return; }
     if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
       return;
     currentLoadedSong.tempoMap = tempoMap;
     SongLibraryStore::updateSong(currentLoadedSong);
   });
   waveformBarRaw->setOnActiveTempoRegionChanged(
-      [&p](const SongTempoRegionSnapshot &region) {
+      [this, &p](const SongTempoRegionSnapshot &region) {
+        if (playbackSession.isRemote()) return;
         p.setMetronomeBpm(region.bpm);
         p.setMetronomeBeatsPerBar(
             timeSignatureBeatsPerBar(region.timeSignature));
@@ -1328,7 +1340,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       });
 
   auto channelGridImpl =
-      std::make_unique<ChannelGridPanel>(stripLookAndFeel, p);
+      std::make_unique<ChannelGridPanel>(stripLookAndFeel, p, &playbackSession);
 #if JUCE_ANDROID
   logAndroidUiPhase("channelGrid.created");
 #endif
@@ -1354,6 +1366,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   });
   channelGridRaw->setOnGuideSourceModeChanged(
       [this, &p](const ChannelGridPanel::GuideSourceMode mode) {
+        if (playbackSession.isRemote()) { playbackSession.send("guide.enabled", mode == ChannelGridPanel::GuideSourceMode::DynamicBySections); return; }
         DynamicGuideSettings settings = p.getDynamicGuideSettings();
         settings.enabled =
             mode == ChannelGridPanel::GuideSourceMode::DynamicBySections;
@@ -1782,6 +1795,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
+    if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return true; }
     if (songLoadBusy)
       return false;
     // Bug fix: the previous version returned false here for any
@@ -2291,6 +2305,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   loadSongAction = loadSong;
   requestSongLoadAction = [this](const ImportedSongData &song,
                                  const int songIndex) {
+    if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return; }
     const auto requestedSongIdentity = playbackIdentityForSong(song);
     const auto loadedSongIdentity =
         hasCurrentLoadedSong ? playbackIdentityForSong(currentLoadedSong)
@@ -2472,12 +2487,12 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   nextSongAction = nextSong;
 
   topBarRaw->setTransportCallbacks(
-      [&p] { p.toggleSongPlayPause(); }, [&p] { p.stopSong(); }, prevSong,
-      nextSong, [&p](bool fadeOut) {
-        p.setFadeStopsPlayback(false);
-        p.setFadeActive(fadeOut);
+      [this] { playbackSession.toggleSongPlayPause(); }, [this] { playbackSession.stopSong(); }, prevSong,
+      nextSong, [this](bool fadeOut) {
+        playbackSession.setFadeStopsPlayback(false);
+        playbackSession.setFadeActive(fadeOut);
       },
-      [&p](double deltaSec) { p.seekSongRelative(deltaSec); });
+      [this](double deltaSec) { playbackSession.seekSongRelative(deltaSec); });
   topBarRaw->setOnSettingsWithAnchor(
       [this](juce::Rectangle<int> anchor, juce::Component *parent) {
         showSettings(anchor, parent);
@@ -2602,7 +2617,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   if (songListRaw)
     setlistHandlePanel->setTitle(songListRaw->getActiveSetlistName());
 
-  padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel);
+  padsComponent = std::make_unique<PadsComponent>(p, stripLookAndFeel, &playbackSession);
 #if JUCE_ANDROID
   logAndroidUiPhase("pads.created");
 #endif
@@ -3180,6 +3195,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
+  panel->onRemoteModeChanged = [this](playworship::remote::RemoteSession::Mode mode) { setRemoteMode(mode); };
+  panel->onRemoteConnect = [this](const playworship::remote::DiscoveredServer &server) {
+    playbackSession.setConnected(false);
+    remoteHadSnapshot = false;
+    remoteConnectionStatus.clear();
+    remoteSession.connectTo(server);
+    refreshRemoteSettings();
+  };
+  panel->updateRemoteState(remoteSession.getMode(), remoteSession.getDiscoveredServers(), remoteConnectionStatus);
   panel->setSize(useTouchOptimisedControls() ? 980 : 1080,
                  useTouchOptimisedControls() ? 860 : 780);
   const auto settingsWidth = panel->getWidth();
@@ -3289,6 +3313,9 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 
 void MTControlsAudioProcessorEditor::handleLogout() {
   SessionAuthLogger::write("handleLogout");
+  if (remoteSession.getMode() !=
+      playworship::remote::RemoteSession::Mode::Local)
+    setRemoteMode(playworship::remote::RemoteSession::Mode::Local);
   sessionResumeCancelled = true;
   closeSettings();
 
@@ -3704,6 +3731,7 @@ void MTControlsAudioProcessorEditor::applyThemePreset(int presetId) {
 
 void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
     const ImportedSongData &song) {
+  if (playbackSession.isRemote()) return;
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   const int stemCount = processorRef.getLoadedStemCount();
   const auto audioCtx = getStandaloneAudioContext();
@@ -3828,6 +3856,7 @@ void MTControlsAudioProcessorEditor::trackSongWindow(
 }
 
 void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
+  if (playbackSession.isRemote()) return;
   if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty()) {
     resetTrackedSongWindow();
     return;
@@ -3872,6 +3901,7 @@ void MTControlsAudioProcessorEditor::maybePersistSongWindowForActiveSong() {
 
 void MTControlsAudioProcessorEditor::persistClickDynMetronomeEnabledForActiveSong(
     const bool enabled) {
+  if (playbackSession.isRemote()) return;
   if (!hasCurrentLoadedSong || currentLoadedSong.id.isEmpty())
     return;
 
@@ -4051,6 +4081,26 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   if (!mainUiInitialized)
     return;
 
+  processRemoteEvents();
+  if (remoteSession.getMode() ==
+          playworship::remote::RemoteSession::Mode::Server &&
+      nowMs >= nextRemotePublishMs) {
+    nextRemotePublishMs = nowMs + 200;
+    publishRemoteState();
+  }
+
+  if (remoteSession.getMode() == playworship::remote::RemoteSession::Mode::Server)
+    publishRemoteMeters();
+  if (nowMs >= nextRemoteSettingsRefreshMs) {
+    nextRemoteSettingsRefreshMs = nowMs + 500;
+    refreshRemoteSettings();
+  }
+  if (playbackSession.isRemote()) {
+    if (remoteVisualStatePending && waveformBarPtr && !waveformBarPtr->isMouseButtonDown(true)) applyRemoteSnapshot(playbackSession.snapshot());
+    if (songListPanelRaw) songListPanelRaw->setNowPlayingSong(currentLoadedSong.id, playbackSession.isSongPlaying());
+    updateSystemUsageMetrics();
+    return;
+  }
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   MTControlsAudioProcessor::MidiBinding learnedBinding;
   if (processorRef.consumePendingMidiLearnBinding(learnedBinding)) {
@@ -4168,6 +4218,13 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  remoteSession.stop();
+  if (remoteClientAudioMuted) {
+    auto &audioProcessor = static_cast<MTControlsAudioProcessor &>(processor);
+    audioProcessor.setRemoteClientMode(false);
+    audioProcessor.setPadsEnabled(remotePreviousPadsEnabled);
+    audioProcessor.setMetronomeEnabled(remotePreviousMetronomeEnabled);
+  }
   diagnosticShareSheet.close();
   mixExportShareSheet.close();
   if (pendingSharedMixExport.existsAsFile())
@@ -4571,10 +4628,12 @@ void MTControlsAudioProcessorEditor::resized() {
     reauthPromptModal->toFront(false);
   }
 
+
 }
 
 void MTControlsAudioProcessorEditor::beginExportCurrentSongMix(
     const juce::String &formatExtension) {
+  if (playbackSession.isRemote()) return;
   if (mixExportBusy || songLoadBusy)
     return;
 
@@ -4885,8 +4944,7 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
-
-  auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  auto &processorRef = playbackSession;
   const auto keyCode = key.getKeyCode();
   const auto modifiers = key.getModifiers();
   const bool altDown = modifiers.isAltDown();

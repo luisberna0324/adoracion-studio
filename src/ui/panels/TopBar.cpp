@@ -375,7 +375,7 @@ void TopBar::BpmSegmentButton::paintButton(juce::Graphics &g,
                    juce::Justification::centred, 1);
 }
 
-TopBar::TopBar(MTControlsAudioProcessor &processorRef)
+TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionToUse)
     : prevButton("prev", SvgIconName::SkipBack),
       seekBackButton("seekBack", SvgIconName::Rewind),
       playButton("play", SvgIconName::Play, true),
@@ -388,7 +388,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       midiLearnButton("midiLearn", SvgIconName::Midi),
       tabletMoreButton("tabletMore", SvgIconName::MoreVertical),
       phonePadsButton("phonePads", SvgIconName::AudioWaveform),
-      processor(processorRef) {
+      processor(processorRef), localSession(processorRef), session(sessionToUse ? *sessionToUse : localSession) {
   for (auto *btn :
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
@@ -530,7 +530,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
       armLearnTarget(processor.midiTargetTransportFadeToggle);
       return;
     }
-    const bool shouldFadeOut = !processor.isFadeActive();
+    const bool shouldFadeOut = !session.isFadeActive();
     if (onFadeToggle)
       onFadeToggle(shouldFadeOut);
   };
@@ -598,12 +598,12 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef)
   metroToggleButton.onClick = [this, armLearnTarget] {
     if (midiLearnActive) {
       armLearnTarget(processor.midiTargetMetronomeEnabled);
-      metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
+      metroToggleButton.setToggleState(session.isMetronomeEnabled(),
                                        juce::dontSendNotification);
       return;
     }
     const bool enabled = metroToggleButton.getToggleState();
-    processor.setMetronomeEnabled(enabled);
+    session.setMetronomeEnabled(enabled);
     if (onMetronomeEnabledChanged)
       onMetronomeEnabledChanged(enabled);
   };
@@ -1392,7 +1392,7 @@ void TopBar::paintSongInfoCard(juce::Graphics &g) {
 
 
 void TopBar::clearFadeIfActive() {
-  if (!processor.isFadeActive())
+  if (!session.isFadeActive())
     return;
   if (onFadeToggle)
     onFadeToggle(false);
@@ -1613,9 +1613,9 @@ void TopBar::timerCallback() {
   const double dt = now - lastTickTime;
   lastTickTime = now;
 
-  const bool metronomeEnabled = processor.isMetronomeEnabled();
+  const bool metronomeEnabled = session.isMetronomeEnabled();
   if (metronomeEnabled) {
-    const double bpm = processor.getMetronomeBpm();
+    const double bpm = session.getMetronomeBpm();
     if (bpm > 0.0) {
       const bool transportPlaying = playingProvider ? playingProvider() : false;
       double beatPosition = 0.0;
@@ -1645,12 +1645,12 @@ void TopBar::timerCallback() {
   lastMetronomeEnabled = metronomeEnabled;
 
   beatFlash = juce::jmax(0.0f, beatFlash - static_cast<float>(dt * 1.6));
-  metroToggleButton.setToggleState(processor.isMetronomeEnabled(),
+  metroToggleButton.setToggleState(session.isMetronomeEnabled(),
                                    juce::dontSendNotification);
-  metroToggleButton.setBadgeText(processor.isMetronomeEnabled() ? "ON"
+  metroToggleButton.setBadgeText(session.isMetronomeEnabled() ? "ON"
                                                                : juce::String{});
   metroToggleButton.setPulseAmount(
-      processor.isMetronomeEnabled() ? beatFlash : 0.0f,
+      session.isMetronomeEnabled() ? beatFlash : 0.0f,
       lastBeatWasDownbeat);
 
   if (midiLearnActive)
@@ -1659,7 +1659,7 @@ void TopBar::timerCallback() {
 
 void TopBar::updateBpmDisplay() {
   const int bpm =
-      static_cast<int>(std::round(processor.getPlaybackTempoBpm()));
+      static_cast<int>(std::round(session.getPlaybackTempoBpm()));
   setButtonTextIfChanged(bpmSegmentButton, bpm > 0 ? juce::String(bpm) : "120");
 }
 
@@ -1668,7 +1668,7 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
   if (timeSignature.isEmpty())
     timeSignature = "4/4";
   beatsPerBar = timeSignatureBeatsPerBar(timeSignature);
-  processor.setMetronomeBeatsPerBar(beatsPerBar);
+  session.setMetronomeBeatsPerBar(beatsPerBar);
   beatCounter = 0.0;
   lastBeatIndex = -1;
   lastBeatWasDownbeat = true;
@@ -1677,18 +1677,18 @@ void TopBar::applyTimeSignature(const juce::String &sigText) {
 void TopBar::setBpmAbsolute(double bpm) {
   if (bpm <= 0.0)
     return;
-  processor.setPlaybackTempoBpm(bpm);
+  session.setPlaybackTempoBpm(bpm);
   const auto songId = songIdProvider ? songIdProvider() : juce::String{};
-  if (songId.isNotEmpty())
+  if (!session.isRemote() && songId.isNotEmpty())
     SongLibraryStore::updateTempoBpmForActiveSetlist(
-        songId, processor.getPlaybackTempoBpm());
+        songId, session.getPlaybackTempoBpm());
   updateBpmDisplay();
 }
 
 void TopBar::adjustBpm(double delta) {
   const auto mods = juce::ModifierKeys::getCurrentModifiers();
   const double step = mods.isShiftDown() ? (delta < 0.0 ? -5.0 : 5.0) : delta;
-  setBpmAbsolute(processor.getPlaybackTempoBpm() + step);
+  setBpmAbsolute(session.getPlaybackTempoBpm() + step);
 }
 
 void TopBar::registerTap() {
@@ -1858,7 +1858,7 @@ void TopBar::showMetronomePopover() {
       [this](const juce::String &sig) { applyTimeSignature(sig); },
       [this](double bpm) { setBpmAbsolute(bpm); },
       [this](double delta) { adjustBpm(delta); },
-      [this] { return processor.getPlaybackTempoBpm(); }, timeSignature);
+      [this] { return session.getPlaybackTempoBpm(); }, timeSignature);
   panel->setSize(230, 92);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
@@ -1953,7 +1953,7 @@ void TopBar::showKeyPopover() {
     }
   };
 
-  if (!processor.hasLoadedSong())
+  if (!session.hasLoadedSong())
     return;
 
   auto panel = std::make_unique<KeyPopover>(
@@ -1961,9 +1961,9 @@ void TopBar::showKeyPopover() {
         activeKeySemitone = normalizeSemitone(semitone);
         activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
         activePitchDelta = semitoneDelta(baseKeySemitone, activeKeySemitone);
-        processor.setPitchSemiTones(activePitchDelta);
+        session.setPitchSemiTones(activePitchDelta);
         const auto songId = songIdProvider ? songIdProvider() : juce::String{};
-        if (songId.isNotEmpty())
+        if (!session.isRemote() && songId.isNotEmpty())
           SongLibraryStore::updatePitchSemitonesForActiveSetlist(songId, activePitchDelta);
         refreshFromProviders();
       });
@@ -1983,9 +1983,9 @@ void TopBar::showKeyPopover() {
 void TopBar::showSongWindowPopover() {
   class SongWindowPopover final : public juce::Component {
   public:
-    SongWindowPopover(MTControlsAudioProcessor &processorRef,
+    SongWindowPopover(PlaybackSession &sessionRef,
                       const bool customArrangement)
-        : processor(processorRef),
+        : session(sessionRef),
           customArrangementActive(customArrangement) {
       configureRow(startLabel, startMinus, startEditor, startPlus,
                    L10n::tr("Inicio", "Start"));
@@ -2025,8 +2025,8 @@ void TopBar::showSongWindowPopover() {
     }
 
     void refreshValues() {
-      const double start = processor.getSongStartSeconds();
-      const double end = processor.getSongEndSeconds();
+      const double start = session.getSongStartSeconds();
+      const double end = session.getSongEndSeconds();
       startValue.setText(formatTimeSeconds(start),
                          juce::dontSendNotification);
       endValue.setText(formatTimeSeconds(end),
@@ -2036,7 +2036,7 @@ void TopBar::showSongWindowPopover() {
       endEditor.setText(formatTimeSeconds(end),
                         juce::dontSendNotification);
       const int fadeSecs =
-          static_cast<int>(std::round(processor.getSongFadeOutSeconds()));
+          static_cast<int>(std::round(session.getSongFadeOutSeconds()));
       fadeValue.setText(juce::String(fadeSecs) + " " + L10n::tr("seg", "sec"),
                         juce::dontSendNotification);
       updateButtonStates(start, end);
@@ -2103,7 +2103,7 @@ void TopBar::showSongWindowPopover() {
     }
 
   private:
-    MTControlsAudioProcessor &processor;
+    PlaybackSession &session;
     bool customArrangementActive = false;
     juce::Label startLabel, endLabel, fadeLabel;
     juce::TextButton startMinus, startPlus, endMinus, endPlus, fadeMinus,
@@ -2186,8 +2186,8 @@ void TopBar::showSongWindowPopover() {
 
     void updateButtonStates(const double start, const double end) {
       constexpr double epsilon = 0.0001;
-      const double length = juce::jmax(0.0, processor.getSongLengthSeconds());
-      const double fade = processor.getSongFadeOutSeconds();
+      const double length = juce::jmax(0.0, session.getSongLengthSeconds());
+      const double fade = session.getSongFadeOutSeconds();
       const double windowLength = juce::jmax(0.0, end - start);
 
       startPlus.setEnabled(start > epsilon);
@@ -2199,40 +2199,40 @@ void TopBar::showSongWindowPopover() {
     }
 
     void adjustStart(double delta) {
-      processor.setSongStartSeconds(processor.getSongStartSeconds() + delta);
+      session.setSongStartSeconds(session.getSongStartSeconds() + delta);
       refreshValues();
     }
 
     void adjustEnd(double delta) {
-      processor.setSongEndSeconds(processor.getSongEndSeconds() + delta);
+      session.setSongEndSeconds(session.getSongEndSeconds() + delta);
       refreshValues();
     }
 
     void adjustFade(double delta) {
-      processor.setSongFadeOutSeconds(processor.getSongFadeOutSeconds() + delta);
+      session.setSongFadeOutSeconds(session.getSongFadeOutSeconds() + delta);
       refreshValues();
     }
 
     void submitStartEditor() {
       const double secs = parseTimeText(startEditor.getText());
       if (secs >= 0.0)
-        processor.setSongStartSeconds(secs);
+        session.setSongStartSeconds(secs);
       refreshValues();
     }
 
     void submitEndEditor() {
       const double secs = parseTimeText(endEditor.getText());
       if (secs >= 0.0)
-        processor.setSongEndSeconds(secs);
+        session.setSongEndSeconds(secs);
       refreshValues();
     }
   };
 
-  if (!processor.hasLoadedSong())
+  if (!session.hasLoadedSong())
     return;
-  const bool customArrangementActive = processor.isCustomArrangementActive();
+  const bool customArrangementActive = session.isCustomArrangementActive();
   auto panel =
-      std::make_unique<SongWindowPopover>(processor, customArrangementActive);
+      std::make_unique<SongWindowPopover>(session, customArrangementActive);
   panel->setSize(230, customArrangementActive ? 156 : 128);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
@@ -2274,7 +2274,7 @@ void TopBar::refreshFromProviders() {
 
   updateBpmDisplay();
 
-  const bool songLoaded = processor.hasLoadedSong();
+  const bool songLoaded = session.hasLoadedSong();
   const ImportedSongData *loadedSong = songProvider ? songProvider() : nullptr;
   const auto songIdFromProvider =
       songIdProvider ? songIdProvider().trim() : juce::String{};
@@ -2299,7 +2299,7 @@ void TopBar::refreshFromProviders() {
       baseKeySemitone = 0;
       activeKeySemitone = 0;
       activeKeyLabel = L10n::tr("Tono", "Key");
-      processor.setPitchSemiTones(0);
+
     }
     assignSongText(songTitleText, L10n::tr("Sin canción", "No song loaded"));
     assignSongText(songArtistText,
@@ -2314,7 +2314,7 @@ void TopBar::refreshFromProviders() {
     const auto songTitle =
         loadedSong != nullptr && loadedSong->title.trim().isNotEmpty()
             ? loadedSong->title.trim()
-            : processor.getLoadedSongTitle().trim();
+            : session.getLoadedSongTitle().trim();
     const auto songArtist =
         loadedSong != nullptr && loadedSong->artist.trim().isNotEmpty()
             ? loadedSong->artist.trim()
@@ -2336,10 +2336,10 @@ void TopBar::refreshFromProviders() {
       }
       hasKey = true;
       activePitchDelta =
-          juce::jlimit(-12, 12, processor.getPitchSemiTones());
+          juce::jlimit(-12, 12, session.getPitchSemiTones());
       activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
       activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
-      processor.setPitchSemiTones(activePitchDelta);
+
       updateBpmDisplay();
     } else if (keyText != lastKeyToken) {
       // Metadata key text may refresh asynchronously; keep user-selected
@@ -2361,8 +2361,11 @@ void TopBar::refreshFromProviders() {
 
     if (activeKeyLabel.isEmpty())
       activeKeyLabel = L10n::tr("Tono", "Key");
-    activePitchDelta = semitoneDelta(baseKeySemitone, activeKeySemitone);
-    processor.setPitchSemiTones(activePitchDelta);
+    // The processor/session is authoritative, including changes from another
+    // controller. A repaint must not write yesterday's label back into audio.
+    activePitchDelta = session.getPitchSemiTones();
+    activeKeySemitone = normalizeSemitone(baseKeySemitone + activePitchDelta);
+    activeKeyLabel = noteLabelForSemitone(activeKeySemitone);
     setLabelTextIfChanged(keyDisplay, activeKeyLabel);
 
     assignSongText(songTitleText,
@@ -2400,14 +2403,14 @@ void TopBar::refreshFromProviders() {
   const bool stopped = !playing && pos <= 0.05;
   if (stopButton.getToggleState() != stopped)
     stopButton.setToggleState(stopped, juce::dontSendNotification);
-  const bool fadeOutActive = processor.isFadeActive();
+  const bool fadeOutActive = session.isFadeActive();
   fadeButton.setIcon(fadeOutActive ? SvgIconName::FadeIn
                                    : SvgIconName::FadeOut);
   if (fadeButton.getToggleState() != fadeOutActive)
     fadeButton.setToggleState(fadeOutActive, juce::dontSendNotification);
   if (!midiLearnActive)
     fadeButton.setBadgeText(fadeOutActive ? "ON" : juce::String{});
-  const bool metronomeEnabled = processor.isMetronomeEnabled();
+  const bool metronomeEnabled = session.isMetronomeEnabled();
   if (metroToggleButton.getToggleState() != metronomeEnabled)
     metroToggleButton.setToggleState(metronomeEnabled,
                                      juce::dontSendNotification);

@@ -1,4 +1,5 @@
 #pragma once
+#include "../../network/PlaybackSession.h"
 
 #include "../UiCommon.h"
 #include "../../data/SongLibraryStore.h"
@@ -23,7 +24,7 @@ public:
   };
 
   ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
-                   MTControlsAudioProcessor &processorRef);
+                   MTControlsAudioProcessor &processorRef, PlaybackSession *session = nullptr);
   ~ChannelGridPanel() override;
 
   void setSong(const ImportedSongData &song);
@@ -46,7 +47,7 @@ public:
   void triggerMidiNudgeUp();
   void triggerMidiNudgeDown();
   void triggerMidiApplyRouting();
-  void setGuideSourceMode(GuideSourceMode mode);
+  void setGuideSourceMode(GuideSourceMode mode, bool notify = true);
   void setOnGuideSourceModeChanged(std::function<void(GuideSourceMode)> cb);
   GuideSourceMode getGuideSourceMode() const noexcept { return guideSourceMode; }
 
@@ -56,6 +57,7 @@ public:
   /** Actualiza visibilidad de combos y nombres de canal tras cambio de interfaz / buffer. */
   void refreshStemRoutingVisibility();
   void flushPendingPersistenceNow();
+  void noteRemoteMixChange();
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -80,9 +82,9 @@ private:
   void persistClickDynMixForCurrentSong();
   SongMixSnapshot makeCurrentSongMixSnapshot() const;
   DynamicGuideMixSnapshot makeCurrentDynamicGuideMixSnapshot() const;
-  void maybePersistSongMixStateChange();
-  void maybePersistClickDynMixStateChange();
-  void maybePersistDynamicGuideMixStateChange();
+  void maybePersistSongMixStateChange(bool force = false);
+  void maybePersistClickDynMixStateChange(bool force = false);
+  void maybePersistDynamicGuideMixStateChange(bool force = false);
   ClickDynMixSnapshot makeCurrentClickDynMixSnapshot() const;
   void flushPendingVolumePersistence();
   bool hasActivePointerInteraction() const;
@@ -91,6 +93,8 @@ private:
 
   ChannelStripLookAndFeel &lookAndFeel;
   MTControlsAudioProcessor &processor;
+  PlaybackSession localSession;
+  PlaybackSession &session;
   juce::ToggleButton dynamicGuideToggle;
   juce::Viewport viewport;
   juce::Component content;
@@ -138,6 +142,8 @@ private:
   int phoneBottomContentInset = 0;
   const float nudgeStep = 0.05f;
   static constexpr double volumePersistenceDebounceMs = 120.0;
+  bool remoteMixPersistencePending = false;
+  double remoteMixPersistenceDueMs = 0.0;
   static constexpr int timerHz = 20;
   static constexpr int slowTaskHz = 2;
 

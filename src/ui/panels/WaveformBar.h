@@ -30,6 +30,7 @@ struct WaveformSongActionsState {
 
 class WaveformBar final : public juce::Component, private juce::Timer {
 public:
+  enum class RemoteIndicator { Hidden, Searching, Connecting, Reconnecting, Connected };
   using PlayingProvider = std::function<bool()>;
   using PositionProvider = std::function<double()>;
   using LengthProvider = std::function<double()>;
@@ -52,6 +53,7 @@ public:
   WaveformBar();
 
   void setWaveformBins(std::vector<float> bins);
+  std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
   void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
                       bool isCustomArrangement);
@@ -96,6 +98,7 @@ public:
   void setSongLoadingState(bool active, double progress01,
                            const juce::String &phaseText);
   void clearSongLoadingState();
+  void setRemoteIndicator(RemoteIndicator state);
 
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
@@ -329,6 +332,7 @@ private:
   std::function<juce::String(int)> midiLearnBindingLabelProvider;
   std::function<void(int)> onMidiLearnTargetSelected;
   bool songLoadingActive = false;
+  RemoteIndicator remoteIndicator = RemoteIndicator::Hidden;
   double songLoadingProgress01 = 0.0;
   juce::String songLoadingPhaseText;
   double songLoadingShownAtMs = 0.0;

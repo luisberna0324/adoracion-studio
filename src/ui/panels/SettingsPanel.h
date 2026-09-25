@@ -2,6 +2,7 @@
 
 #include "../UiCommon.h"
 #include "../../data/AppSettings.h"
+#include "../../network/RemoteSession.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -72,6 +73,12 @@ public:
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
   std::function<void()> onShareAudioDiagnostics;
+  std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
+  std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
+  void updateRemoteState(playworship::remote::RemoteSession::Mode mode,
+                         const std::vector<playworship::remote::DiscoveredServer> &servers,
+                         const juce::String &status,
+                         const juce::String &selectedServerName = {});
   void setDiagnosticsBusy(bool busy);
 
 private:
@@ -160,6 +167,13 @@ private:
   AdaptiveComboBox padsCrossfadeBox;
   juce::Label metronomeClickStyleLabel;
   AdaptiveComboBox metronomeClickStyleBox;
+  juce::Label remoteControlLabel;
+  juce::Component remoteModeControl;
+  juce::TextButton remoteLocalButton, remoteClientButton, remoteServerButton;
+  AdaptiveComboBox remoteServersBox;
+  juce::Label remoteStatus;
+  std::vector<playworship::remote::DiscoveredServer> remoteServers;
+  playworship::remote::RemoteSession::Mode remoteMode = playworship::remote::RemoteSession::Mode::Local;
   juce::Label sessionSectionLabel;
   juce::Label sessionUidLabel;
   juce::Label sessionUidValue;

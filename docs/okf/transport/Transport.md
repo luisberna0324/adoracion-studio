@@ -9,6 +9,12 @@ timestamp: 2026-07-25T00:00:00Z
 
 # Transport API
 
+La app standalone puede exponer este transporte mediante el
+[control remoto LAN](../integrations/RemoteControl.md). El servidor sigue
+siendo la única fuente de verdad: procesa los comandos en el message thread y
+publica posición/estado. El cliente alimenta la interfaz habitual y no
+avanza `TransportClock` ni carga stems de esa sesión.
+
 Control de reproducción y arrange musical.
 
 ## Conceptos
@@ -485,3 +491,11 @@ processor.requestArrangementPartJump(2);
 - [TransportClock](../engine/TransportClock.md)
 - [SectionScheduler](../engine/SectionScheduler.md)
 - [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md)
+
+### Interfaz local o remota
+
+`PlaybackSession` conecta los mismos proveedores/callbacks visuales al
+procesador local o al estado autoritativo del servidor. El cliente extrapola
+como máximo 250 ms entre mensajes de posición y congela al desconectar. Los
+comandos solo se aceptan tras recibir el snapshot inicial; no hay una segunda
+vista de transporte. Ver [Control remoto](../integrations/RemoteControl.md).

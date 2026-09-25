@@ -1163,7 +1163,7 @@ void LibraryCatalogPanel::setCloudSearchLoading(const bool isLoading) {
 }
 
 void LibraryCatalogPanel::refreshFromStorage() {
-  const auto library = SongLibraryStore::loadLibrarySnapshot();
+  const auto library = remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot();
   librarySongs = library.songs;
   setlists = library.setlists;
 
@@ -1387,9 +1387,9 @@ void LibraryCatalogPanel::rebuildRows() {
     item.inSetlist = item.songId.isNotEmpty() && activeSetlistSongIds.contains(item.songId);
     item.isNowPlaying =
         playbackActive && nowPlayingSongId.isNotEmpty() && item.songId == nowPlayingSongId;
-    item.isProjectBacked = isProjectBackedSong(song);
+    item.isProjectBacked = remoteLibrary != nullptr || isProjectBackedSong(song);
     item.isProjectAvailable =
-        item.isProjectBacked && juce::File(song.projectPath).existsAsFile();
+        remoteLibrary != nullptr || (item.isProjectBacked && juce::File(song.projectPath).existsAsFile());
     const auto projectId = projectIdentityForSong(song);
     const auto link = std::find_if(
         cloudLinks.begin(), cloudLinks.end(), [&projectId](const auto &candidate) {
@@ -1868,4 +1868,8 @@ juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
   return juce::String(activeSetlistSongIds.size()) + " " +
          L10n::tr(u8"canciónes actuales", "current songs") + u8" • " +
          formatDurationHMSLocal(totalSeconds);
+}
+
+void LibraryCatalogPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library) {
+  remoteLibrary = std::move(library);
 }

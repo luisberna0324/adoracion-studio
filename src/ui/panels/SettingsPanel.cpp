@@ -404,8 +404,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(*actionsTitleSeparator);
   accountPage.addAndMakeVisible(*actionsRowSeparator);
 
-  generalRowSeparators.reserve(6);
-  for (int i = 0; i < 6; ++i) {
+  generalRowSeparators.reserve(7);
+  for (int i = 0; i < 7; ++i) {
     auto separator = std::make_unique<SettingsRowSeparator>();
     generalPage.addAndMakeVisible(*separator);
     generalRowSeparators.push_back(std::move(separator));
@@ -547,6 +547,27 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
         static_cast<MetronomeClickStyle>(juce::jlimit(0, 7, id - 1)));
   };
   generalPage.addAndMakeVisible(metronomeClickStyleBox);
+  remoteControlLabel.setJustificationType(juce::Justification::centredLeft);
+  remoteControlLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
+                                         AppFontWeight::Medium));
+  generalPage.addAndMakeVisible(remoteControlLabel);
+  using Mode = playworship::remote::RemoteSession::Mode;
+  remoteLocalButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+  remoteClientButton.setConnectedEdges(juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+  remoteServerButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
+  remoteLocalButton.onClick = [this] { if (onRemoteModeChanged) onRemoteModeChanged(Mode::Local); };
+  remoteClientButton.onClick = [this] { if (onRemoteModeChanged) onRemoteModeChanged(Mode::Client); };
+  remoteServerButton.onClick = [this] { if (onRemoteModeChanged) onRemoteModeChanged(Mode::Server); };
+  for (auto *button : { &remoteLocalButton, &remoteClientButton, &remoteServerButton })
+    remoteModeControl.addAndMakeVisible(button);
+  generalPage.addAndMakeVisible(remoteModeControl);
+  generalPage.addAndMakeVisible(remoteServersBox);
+  generalPage.addAndMakeVisible(remoteStatus);
+  remoteServersBox.onChange = [this] {
+    const int index = remoteServersBox.getSelectedId() - 1;
+    if (juce::isPositiveAndBelow(index, static_cast<int>(remoteServers.size())) && onRemoteConnect)
+      onRemoteConnect(remoteServers[static_cast<size_t>(index)]);
+  };
 
   sessionSectionLabel.setJustificationType(juce::Justification::centredLeft);
   sessionSectionLabel.setFont(makeAppFont(15.0f, AppFontWeight::Medium));
@@ -806,6 +827,16 @@ void SettingsPanel::refreshThemeColours() {
   applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   languageLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  remoteControlLabel.setColour(juce::Label::textColourId,
+                               UITheme::textSecondary);
+  remoteStatus.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  for (auto *button : { &remoteLocalButton, &remoteClientButton, &remoteServerButton }) {
+    button->setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+    button->setColour(juce::TextButton::buttonOnColourId, UITheme::accent);
+    button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+    button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
+  }
+  applyComboBoxTheme(remoteServersBox, UITheme::cardBgHover, UITheme::cardBorder);
   applyComboBoxTheme(languageBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -1063,6 +1094,12 @@ void SettingsPanel::applyLanguageTexts() {
       diagnosticsBusy
           ? L10n::tr(u8"Preparando…", "Preparing…")
           : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
+  remoteControlLabel.setText(L10n::tr("Control remoto", "Remote control"),
+                             juce::dontSendNotification);
+  remoteLocalButton.setButtonText("Local");
+  remoteClientButton.setButtonText(L10n::tr("Cliente", "Client"));
+  remoteServerButton.setButtonText(L10n::tr("Servidor", "Server"));
+  remoteServersBox.setTextWhenNothingSelected(L10n::tr("Buscar servidor…", "Find server…"));
 }
 
 void SettingsPanel::layoutGeneralPage() {
@@ -1106,6 +1143,27 @@ void SettingsPanel::layoutGeneralPage() {
     area.removeFromTop(rowGap);
   };
 
+  auto layoutRemoteControls = [&] {
+    layoutChoiceRow(area.removeFromTop(rowH), remoteControlLabel,
+                    remoteModeControl);
+    auto buttons = remoteModeControl.getLocalBounds();
+    const int width = buttons.getWidth() / 3;
+    remoteLocalButton.setBounds(buttons.removeFromLeft(width));
+    remoteClientButton.setBounds(buttons.removeFromLeft(width));
+    remoteServerButton.setBounds(buttons);
+    auto connection = area.removeFromTop(40);
+    remoteServersBox.setBounds(connection.removeFromRight(rightW));
+    remoteStatus.setBounds(connection);
+  };
+
+  // On iPhone the settings viewport initially shows only a few rows. Keep
+  // the mode selector and discovery status visible without requiring a scroll.
+  const bool compactHeight = useTouchOptimisedControls() && getHeight() < 700;
+  if (compactHeight) {
+    layoutRemoteControls();
+    addSeparator();
+  }
+
   layoutChoiceRow(area.removeFromTop(rowH), themeLabel, themeBox);
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox);
@@ -1121,6 +1179,10 @@ void SettingsPanel::layoutGeneralPage() {
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), metronomeClickStyleLabel,
                   metronomeClickStyleBox);
+  if (!compactHeight) {
+    addSeparator();
+    layoutRemoteControls();
+  }
 }
 
 void SettingsPanel::layoutAccountPage() {
@@ -1442,4 +1504,35 @@ void SettingsPanel::setRoutingDefaultsLocal(
   routingDefaults = next;
   if (onRoutingDefaultsChanged)
     onRoutingDefaultsChanged(currentDeviceKey, routingDefaults);
+}
+
+void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode mode,
+    const std::vector<playworship::remote::DiscoveredServer> &servers, const juce::String &status,
+    const juce::String &selectedServerName) {
+  using Mode = playworship::remote::RemoteSession::Mode;
+  remoteMode = mode;
+  remoteLocalButton.setToggleState(mode == Mode::Local, juce::dontSendNotification);
+  remoteClientButton.setToggleState(mode == Mode::Client, juce::dontSendNotification);
+  remoteServerButton.setToggleState(mode == Mode::Server, juce::dontSendNotification);
+  remoteServersBox.setVisible(mode == Mode::Client);
+  remoteStatus.setText(status, juce::dontSendNotification);
+  juce::StringArray names;
+  for (const auto &server : servers) names.add(server.instance + " (" + server.address + ")");
+  juce::StringArray oldNames;
+  for (const auto &server : remoteServers) oldNames.add(server.instance + " (" + server.address + ")");
+  if (names != oldNames) {
+    const auto selected = remoteServersBox.getText();
+    remoteServers = servers;
+    remoteServersBox.clear(juce::dontSendNotification);
+    for (int i = 0; i < names.size(); ++i) remoteServersBox.addItem(names[i], i + 1);
+    remoteServersBox.setSelectedId(names.indexOf(selected) + 1, juce::dontSendNotification);
+  }
+  if (selectedServerName.isNotEmpty()) {
+    for (size_t i = 0; i < remoteServers.size(); ++i) {
+      if (remoteServers[i].instance == selectedServerName) {
+        remoteServersBox.setSelectedId(static_cast<int>(i) + 1, juce::dontSendNotification);
+        break;
+      }
+    }
+  }
 }

@@ -426,12 +426,14 @@ void ChannelStripCard::setBottomContentInset(const int inset) {
 }
 
 void ChannelStripCard::setVolume(float volume) {
+  if (volSlider.isMouseButtonDown()) return;
   suppressVolumeCallback = true;
   volSlider.setValue(volume, juce::dontSendNotification);
   suppressVolumeCallback = false;
 }
 
 void ChannelStripCard::setGain(float gain) {
+  if (gainKnob.isMouseButtonDown()) return;
   gainKnob.setValue(gain, juce::dontSendNotification);
 }
 

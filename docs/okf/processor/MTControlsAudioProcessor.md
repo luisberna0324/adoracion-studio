@@ -252,6 +252,14 @@ int getAvailableOutputChannelCount() const noexcept;
 
 ## Transport API
 
+La superficie de control remoto standalone aplica los setters de transporte y
+mezcla desde el message thread del servidor. El cliente recibe metadatos y
+waveform por WebSocket; ningún callback de red toca `processBlock`. Ver
+[RemoteControl](../integrations/RemoteControl.md).
+En modo cliente, `setRemoteClientMode(true)` hace que `processBlock` borre el
+buffer y salga antes de procesar MIDI, stems, click, guía o pads; el editor
+restaura ese indicador al salir del modo o al destruirse.
+
 ### Reproducción
 
 ```cpp
@@ -964,3 +972,10 @@ proc.loadMetronomeClickSamplesFromFolder(
 - [Metronome](../audio-systems/Metronome.md)
 - [Pads](../audio-systems/Pads.md)
 - [DynamicGuide](../audio-systems/DynamicGuide.md)
+
+### VU de control remoto
+
+`getRemoteMetronomeMeterLevels()` usa acumuladores de pico independientes del
+VU local. La publicación LAN los lee desde el message thread; no consume los
+picos reservados a `getMetronomeMeterLevels()`. El resto de niveles son lecturas
+de los atómicos de metering existentes. Ver [Control remoto](../integrations/RemoteControl.md).

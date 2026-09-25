@@ -202,6 +202,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(soundtouch)
 
+# WebSocket client/server is shared by all standalone targets, including iOS.
+set(USE_ZLIB OFF CACHE BOOL "Disable WebSocket compression" FORCE)
+set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "Do not install IXWebSocket" FORCE)
+FetchContent_Declare(ixwebsocket
+    GIT_REPOSITORY https://github.com/machinezone/IXWebSocket.git
+    GIT_TAG 64fae7676bd8fe31f7cb4bcde7a6841892dad65e)
+FetchContent_MakeAvailable(ixwebsocket)
+
 if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     set(MTCONTROLS_USE_BUNGEE OFF CACHE BOOL
         "Use Bungee Basic as the pitch/tempo backend" FORCE)
@@ -281,6 +289,33 @@ endif()
 
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
+    juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
+    target_sources(MTControlsRemoteSessionTests PRIVATE
+        tests/remote_session_tests.cpp
+        src/network/LanDiscovery.cpp
+        src/network/RemoteSession.cpp)
+    juce_generate_juce_header(MTControlsRemoteSessionTests)
+    target_include_directories(MTControlsRemoteSessionTests PRIVATE src)
+    target_link_libraries(MTControlsRemoteSessionTests PRIVATE
+        juce::juce_core juce::juce_data_structures juce::juce_cryptography
+        ixwebsocket::ixwebsocket)
+    add_test(NAME remote_session COMMAND MTControlsRemoteSessionTests)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_console_app(MTControlsPortableRemoteSessionTests PRODUCT_NAME "Portable Remote Session Tests")
+        target_sources(MTControlsPortableRemoteSessionTests PRIVATE
+            tests/remote_session_tests.cpp src/network/LanDiscovery.cpp src/network/RemoteSession.cpp)
+        juce_generate_juce_header(MTControlsPortableRemoteSessionTests)
+        target_include_directories(MTControlsPortableRemoteSessionTests PRIVATE src)
+        target_compile_definitions(MTControlsPortableRemoteSessionTests PRIVATE PLAYWORSHIP_FORCE_PORTABLE_MDNS=1)
+        target_link_libraries(MTControlsPortableRemoteSessionTests PRIVATE
+            juce::juce_core juce::juce_data_structures juce::juce_cryptography ixwebsocket::ixwebsocket)
+        add_test(NAME remote_session_portable COMMAND MTControlsPortableRemoteSessionTests)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_test(NAME remote_discovery_interop COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_discovery_interop.py"
+            "$<TARGET_FILE:MTControlsRemoteSessionTests>"
+            "$<TARGET_FILE:MTControlsPortableRemoteSessionTests>")
+    endif()
     juce_add_console_app(MTControlsCloudSettingsSyncTests PRODUCT_NAME "Cloud Settings Sync Tests")
     target_sources(MTControlsCloudSettingsSyncTests PRIVATE tests/cloud_settings_sync_state_tests.cpp)
     juce_generate_juce_header(MTControlsCloudSettingsSyncTests)
@@ -508,7 +543,7 @@ set(MTCONTROLS_APP_ICON_PATH
 set(MTCONTROLS_PLIST_TO_MERGE "")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
 endif()
 
 juce_add_plugin(MTControls
@@ -637,10 +672,15 @@ target_sources(MTControls
     PRIVATE
         src/PluginEditor.cpp
         src/PluginEditor.h
+        src/RemoteEditorIntegration.cpp
         src/PluginEditorSupport.cpp
         src/PluginEditorSupport.h
         src/PluginProcessor.cpp
         src/PluginProcessor.h
+        src/network/LanDiscovery.cpp
+        src/network/LanDiscovery.h
+        src/network/RemoteSession.cpp
+        src/network/RemoteSession.h
         src/telemetry/Telemetry.cpp
         src/telemetry/Telemetry.h
         src/MetronomeEngine.cpp
@@ -862,6 +902,7 @@ endif()
 
 target_link_libraries(MTControls
     PRIVATE
+        ixwebsocket::ixwebsocket
         juce::juce_audio_utils
         juce::juce_cryptography
         juce::juce_dsp

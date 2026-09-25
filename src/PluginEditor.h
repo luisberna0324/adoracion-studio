@@ -6,6 +6,8 @@
 #include "data/CloudSettingsClient.h"
 #include "data/SongData.h"
 #include "data/SongSyncService.h"
+#include "network/RemoteSession.h"
+#include "network/PlaybackSession.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include "ui/UiCommon.h"
 #include <JuceHeader.h>
@@ -23,6 +25,7 @@ class PadsOverlayFrame;
 class LocalAuthCallbackServer;
 class SettingsPanel;
 class SettingsVersionsSheet;
+
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
                                        private juce::Timer {
@@ -50,6 +53,15 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  void applyRemoteSnapshot(const juce::var &snapshot);
+  void applyRemoteWaveform(const std::vector<uint8_t> &bytes);
+  void refreshRemoteSettings();
+  void refreshRemoteIndicator();
+  void publishRemoteMeters();
+  void setRemoteMode(playworship::remote::RemoteSession::Mode mode);
+  void processRemoteEvents();
+  void publishRemoteState();
+  bool applyRemoteCommand(const juce::var &command, juce::String &error);
   bool captureCloudSettings(const ImportedSongData &song,
                             ProjectSongSettings &outSettings);
   bool applyCloudSettings(const ImportedSongData &song,
@@ -71,6 +83,7 @@ private:
                                 juce::Component::SafePointer<SettingsVersionsSheet> sheet);
   juce::Component::SafePointer<SettingsVersionsSheet> cloudSettingsSheet;
   std::unique_ptr<juce::Component> cloudSettingsSheetOverlay;
+  PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 
   std::unique_ptr<TopBar> topBar;
@@ -132,6 +145,34 @@ private:
   int authCallbackPort = 0;
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
   std::unique_ptr<juce::Component> settingsOverlay;
+  playworship::remote::RemoteSession remoteSession;
+  ImportedSongData remoteSavedLocalSong;
+  bool remoteSavedHasSong = false;
+  bool remoteHadSnapshot = false;
+  bool remoteVisualStatePending = false;
+  juce::var remoteSavedLocalSettings;
+  std::vector<float> remoteSavedLocalWaveform;
+  juce::String remoteLibrarySignature, remoteSettingsSignature, remoteChannelSignature, remoteStateSignature;
+  juce::String remoteExpectedWaveformHash, remoteConnectionStatus;
+  juce::int64 nextRemoteSettingsRefreshMs = 0;
+  std::shared_ptr<const LibraryState> remoteDisplayedLibrary;
+  juce::int64 nextRemotePublishMs = 0;
+  juce::int64 nextRemoteLibraryMs = 0;
+  juce::var remoteLibraryCache;
+  juce::var remoteReceivedSong;
+  juce::String remoteLibraryMetadataSignature;
+  juce::int64 remoteLibraryRevision = 0;
+  bool remoteLibraryDirty = true;
+  juce::var remoteSettingsCache;
+  juce::String remoteSettingsSongId;
+  juce::int64 nextRemoteSettingsMs = 0;
+  juce::int64 remoteSnapshotSequence = 0;
+  juce::String remoteWaveformSongId;
+  juce::String remoteWaveformHash;
+  std::vector<float> remoteWaveformBins;
+  bool remoteClientAudioMuted = false;
+  bool remotePreviousPadsEnabled = false;
+  bool remotePreviousMetronomeEnabled = false;
   juce::Component::SafePointer<SettingsPanel> settingsPanelRaw;
   juce::int64 lastSuccessfulLoginMs = 0;
   /** Espejo del snapshot; ultima validacion online exitosa (login web o validate-access). */

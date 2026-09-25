@@ -72,10 +72,13 @@ public:
   void setHeaderTrailingInset(int inset);
   void refreshThemeColours();
 
+  void setRemoteLibrary(std::shared_ptr<const LibraryState> library);
+  std::function<void(const juce::String &, const juce::var &, const juce::String &)> onRemoteAction;
   void paint(juce::Graphics &g) override;
   void resized() override;
 
 private:
+  std::shared_ptr<const LibraryState> remoteLibrary;
   enum class FilterChip {
     All = 0,
     Recent,

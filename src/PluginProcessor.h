@@ -34,6 +34,9 @@ public:
 
   bool isBusesLayoutSupported(const BusesLayout &layouts) const override;
   void processBlock(juce::AudioBuffer<float> &, juce::MidiBuffer &) override;
+  void setRemoteClientMode(bool enabled) noexcept {
+    remoteClientMode.store(enabled, std::memory_order_release);
+  }
   AudioDiagnostics::ReportFiles getAudioDiagnosticReportFiles() const {
     return diagnostics.getReportFiles();
   }
@@ -61,6 +64,7 @@ public:
   void getOutputMeterLevels(float &left, float &right) const;
   void getDynamicGuideMeterLevels(float &left, float &right) const noexcept;
   void getMetronomeMeterLevels(float &left, float &right) noexcept;
+  void getRemoteMetronomeMeterLevels(float &left, float &right) noexcept;
   static juce::AudioProcessorValueTreeState::ParameterLayout
   createParameterLayout();
 
@@ -328,6 +332,7 @@ private:
   std::atomic<float> meterLevelRight{0.0f};
   std::atomic<float> dynamicGuideMeterLevelLeft{0.0f};
   std::atomic<float> dynamicGuideMeterLevelRight{0.0f};
+  std::atomic<float> remoteMetronomeMeterLeft{0.0f}, remoteMetronomeMeterRight{0.0f};
   std::atomic<float> metronomeMeterLevelLeft{0.0f};
   std::atomic<float> metronomeMeterLevelRight{0.0f};
   std::atomic<float> metronomeVolumeState{1.0f};
@@ -420,6 +425,7 @@ private:
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   std::atomic<bool> audioCallbackActive{false};
+  std::atomic<bool> remoteClientMode{false};
   std::atomic<int> songLoadTransitionState{
       static_cast<int>(SongLoadTransitionState::idle)};
   std::atomic<float> songLoadTransitionGain{1.0f};

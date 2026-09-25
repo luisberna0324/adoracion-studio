@@ -466,8 +466,8 @@ private:
 };
 
 ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
-                                   MTControlsAudioProcessor &processorRef)
-    : lookAndFeel(lookAndFeelRef), processor(processorRef) {
+                                   MTControlsAudioProcessor &processorRef, PlaybackSession *sessionToUse)
+    : lookAndFeel(lookAndFeelRef), processor(processorRef), localSession(processorRef), session(sessionToUse ? *sessionToUse : localSession) {
   dynamicGuideToggle.setVisible(false);
 
   viewport.setViewedComponent(&content, false);
@@ -482,7 +482,7 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
 }
 
 ChannelGridPanel::~ChannelGridPanel() {
-  flushPendingVolumePersistence();
+  flushPendingPersistenceNow();
 }
 
 void ChannelGridPanel::setResponsiveProfile(
@@ -573,7 +573,7 @@ void ChannelGridPanel::triggerMidiNudgeDown() { nudgeFaders(-nudgeStep); }
 
 void ChannelGridPanel::triggerMidiApplyRouting() { applyRoutingDraft(); }
 
-void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode) {
+void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode, bool notify) {
   if (guideSourceMode == mode)
     return;
 
@@ -582,7 +582,7 @@ void ChannelGridPanel::setGuideSourceMode(const GuideSourceMode mode) {
       guideSourceMode == GuideSourceMode::DynamicBySections,
       juce::dontSendNotification);
   applyGuideSourceModeToVisibleGuideSlots();
-  if (onGuideSourceModeChanged != nullptr)
+  if (notify && onGuideSourceModeChanged != nullptr)
     onGuideSourceModeChanged(guideSourceMode);
 }
 
@@ -736,6 +736,10 @@ void ChannelGridPanel::showGuideSourcePopover(juce::Component *anchorComponent) 
 }
 
 void ChannelGridPanel::timerCallback() {
+  if (remoteMixPersistencePending &&
+      juce::Time::getMillisecondCounterHiRes() >= remoteMixPersistenceDueMs &&
+      !hasActivePointerInteraction())
+    flushPendingPersistenceNow();
   syncMasterSlotFromProcessor();
   syncDivisionSlotFromProcessor();
   syncDynamicGuideVirtualSlotFromProcessor();
@@ -759,7 +763,7 @@ void ChannelGridPanel::timerCallback() {
   const int slowDivider = juce::jmax(1, timerHz / slowTaskHz);
   if (slowTickCounter >= slowDivider) {
     slowTickCounter = 0;
-    const int n = processor.getAvailableOutputChannelCount();
+    const int n = session.getAvailableOutputChannelCount();
     if (n != lastSeenOutputChannelCount) {
       lastSeenOutputChannelCount = n;
       if (!slots.empty())
@@ -794,8 +798,8 @@ void ChannelGridPanel::onStemOutputComboChanged(const size_t slotIndex,
     return;
   }
 
-  processor.setStemOutputChannel(stemIdx, selectedChannel);
-  if (currentSongId.isNotEmpty() && slotIndex < slotStemIds.size())
+  session.setStemOutputChannel(stemIdx, selectedChannel);
+  if (!session.isRemote() && currentSongId.isNotEmpty() && slotIndex < slotStemIds.size())
     SongLibraryStore::updateStemOutputChannelForActiveSetlist(
         currentSongId, slotStemIds[slotIndex], selectedChannel);
 }
@@ -811,9 +815,9 @@ void ChannelGridPanel::applyRoutingDraft() {
     const int ch =
         i < pendingOutputBySlotIndex.size()
             ? pendingOutputBySlotIndex[i]
-            : processor.getStemOutputChannel(stemIdx);
-    processor.setStemOutputChannel(stemIdx, ch);
-    if (currentSongId.isNotEmpty() && i < slotStemIds.size())
+            : session.getStemOutputChannel(stemIdx);
+    session.setStemOutputChannel(stemIdx, ch);
+    if (!session.isRemote() && currentSongId.isNotEmpty() && i < slotStemIds.size())
       SongLibraryStore::updateStemOutputChannelForActiveSetlist(
           currentSongId, slotStemIds[i], ch);
   }
@@ -823,7 +827,7 @@ void ChannelGridPanel::applyRoutingDraft() {
 
 void ChannelGridPanel::refreshStemRoutingVisibility() {
   const bool showStemRouting = false;
-  const auto names = processor.getAvailableOutputChannelNames();
+  const auto names = session.getAvailableOutputChannelNames();
 
   for (size_t i = 0; i < slots.size(); ++i) {
     const int stemIdx = slotStemIndices[i];
@@ -835,7 +839,7 @@ void ChannelGridPanel::refreshStemRoutingVisibility() {
         (routingDraftActive &&
          juce::isPositiveAndBelow(i, pendingOutputBySlotIndex.size()))
             ? pendingOutputBySlotIndex[i]
-            : processor.getStemOutputChannel(stemIdx);
+            : session.getStemOutputChannel(stemIdx);
     slots[i]->setOutputOptions(names, ch);
     slots[i]->setShowOutputRouting(showStemRouting);
   }
@@ -844,11 +848,26 @@ void ChannelGridPanel::refreshStemRoutingVisibility() {
 }
 
 void ChannelGridPanel::flushPendingPersistenceNow() {
+  if (remoteMixPersistencePending) {
+    remoteMixPersistencePending = false;
+    maybePersistSongMixStateChange(true);
+    maybePersistClickDynMixStateChange(true);
+    maybePersistDynamicGuideMixStateChange(true);
+  }
   flushPendingVolumePersistence();
 }
 
+void ChannelGridPanel::noteRemoteMixChange() {
+  // Reuse the normal mix snapshots and persistence path, once the burst ends.
+  // Runtime values already include any pending local edits on other channels.
+  pendingStemVolumeWrites.clear();
+  hasPendingMasterVolumeWrite = hasPendingDynamicGuideVolumeWrite = hasPendingClickDynVolumeWrite = false;
+  remoteMixPersistencePending = true;
+  remoteMixPersistenceDueMs = juce::Time::getMillisecondCounterHiRes() + 150.0;
+}
+
 void ChannelGridPanel::beginAutomaticRoutingDraft() {
-  if (processor.getAvailableOutputChannelCount() <= 2)
+  if (session.getAvailableOutputChannelCount() <= 2)
     return;
 
   struct Row {
@@ -871,23 +890,23 @@ void ChannelGridPanel::beginAutomaticRoutingDraft() {
   currents.reserve(rows.size());
   for (const auto &row : rows) {
     names.push_back(row.name);
-    currents.push_back(processor.getStemOutputChannel(row.stemIndex));
+    currents.push_back(session.getStemOutputChannel(row.stemIndex));
   }
 
   const auto suggestions = RoutingSuggestionEngine::suggest(
-      processor.getAvailableOutputChannelCount(), names, currents);
+      session.getAvailableOutputChannelCount(), names, currents);
 
   pendingOutputBySlotIndex.assign(slots.size(), 1);
   for (size_t i = 0; i < slots.size(); ++i) {
     const int si = i < slotStemIndices.size() ? slotStemIndices[i] : -1;
     pendingOutputBySlotIndex[i] =
-        si >= 0 ? processor.getStemOutputChannel(si) : 1;
+        si >= 0 ? session.getStemOutputChannel(si) : 1;
   }
 
   for (size_t j = 0; j < suggestions.size() && j < rows.size(); ++j) {
     const size_t slotIdx = rows[j].slotIndex;
     pendingOutputBySlotIndex[slotIdx] = suggestions[j].suggestedChannel;
-    slots[slotIdx]->setOutputOptions(processor.getAvailableOutputChannelNames(),
+    slots[slotIdx]->setOutputOptions(session.getAvailableOutputChannelNames(),
                                       suggestions[j].suggestedChannel);
   }
 
@@ -916,7 +935,7 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   slotStemIds.clear();
   pendingOutputBySlotIndex.clear();
   content.removeAllChildren();
-  const int stemCount = processor.getLoadedStemCount();
+  const int stemCount = session.getLoadedStemCount();
   int mappedStemIndex = 0;
   currentSongId = song.id;
 
@@ -972,15 +991,15 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
 
     auto slot = std::make_unique<StripSlot>(
         channelName.toUpperCase(), lookAndFeel, [this, stemIndex] {
-          const float level = processor.getStemLevel(stemIndex);
+          const float level = session.getStemLevel(stemIndex);
           return std::pair<float, float>{level, level};
         });
     if (isClickGuide)
       slot->getStrip().setCardBgColour(UITheme::cardBgClickGuide);
     slot->getStrip().setChannelBandColours(UITheme::accent, UITheme::onAccent);
     slot->getStrip().refreshThemeColours();
-    slot->setOutputOptions(processor.getAvailableOutputChannelNames(),
-                           processor.getStemOutputChannel(stemIndex));
+    slot->setOutputOptions(session.getAvailableOutputChannelNames(),
+                           session.getStemOutputChannel(stemIndex));
     slot->setShowOutputRouting(showStemRouting);
     slot->setOnOutputChannelChanged(
         [this, slotIndex](const int ch) { onStemOutputComboChanged(slotIndex, ch); });
@@ -988,40 +1007,40 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
     slot->setGuideSettingsActive(false);
     slot->setGuideSettingsTooltip({});
     slot->setOnGuideSettingsRequested({});
-    slot->getStrip().setVolume(processor.getStemVolume(stemIndex));
-    slot->getStrip().setGain(processor.getStemGain(stemIndex));
-    slot->getStrip().setMuteState(processor.isStemMuted(stemIndex));
-    slot->getStrip().setSoloState(processor.isStemSoloed(stemIndex));
+    slot->getStrip().setVolume(session.getStemVolume(stemIndex));
+    slot->getStrip().setGain(session.getStemGain(stemIndex));
+    slot->getStrip().setMuteState(session.isStemMuted(stemIndex));
+    slot->getStrip().setSoloState(session.isStemSoloed(stemIndex));
     slot->getStrip().setOnVolumeChanged(
         [this, stemIndex, stemId](float value) {
-      processor.setStemVolume(stemIndex, value);
+      session.setStemVolume(stemIndex, value);
     });
     slot->getStrip().setOnVolumeDragEnded(
         [this, stemId](float value) {
-      if (currentSongId.isNotEmpty() && stemId.isNotEmpty())
+      if (!session.isRemote() && currentSongId.isNotEmpty() && stemId.isNotEmpty())
         queueStemVolumePersistence(stemId, value);
     });
     slot->getStrip().setOnGainChanged(
         [this, stemIndex, stemId](float value) {
-      processor.setStemGain(stemIndex, value);
+      session.setStemGain(stemIndex, value);
     });
     slot->getStrip().setOnGainDragEnded(
         [this, stemId](float value) {
-      if (currentSongId.isNotEmpty())
+      if (!session.isRemote() && currentSongId.isNotEmpty())
         SongLibraryStore::updateStemGainForActiveSetlist(currentSongId, stemId,
                                                          value);
     });
     slot->getStrip().setOnMuteChanged(
         [this, stemIndex, stemId](bool muted) {
-      processor.setStemMute(stemIndex, muted);
-      if (currentSongId.isNotEmpty())
+      session.setStemMute(stemIndex, muted);
+      if (!session.isRemote() && currentSongId.isNotEmpty())
         SongLibraryStore::updateStemMuteForActiveSetlist(currentSongId, stemId,
                                                          muted);
     });
     slot->getStrip().setOnSoloChanged(
         [this, stemIndex, stemId](bool soloed) {
-      processor.setStemSolo(stemIndex, soloed);
-      if (currentSongId.isNotEmpty())
+      session.setStemSolo(stemIndex, soloed);
+      if (!session.isRemote() && currentSongId.isNotEmpty())
         SongLibraryStore::updateStemSoloForActiveSetlist(currentSongId, stemId,
                                                          soloed);
     });
@@ -1066,10 +1085,10 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   for (size_t i = 0; i < slots.size(); ++i) {
     const int si = slotStemIndices[i];
     if (si >= 0)
-      pendingOutputBySlotIndex[i] = processor.getStemOutputChannel(si);
+      pendingOutputBySlotIndex[i] = session.getStemOutputChannel(si);
   }
 
-  lastSeenOutputChannelCount = processor.getAvailableOutputChannelCount();
+  lastSeenOutputChannelCount = session.getAvailableOutputChannelCount();
   applyGuideSourceModeToVisibleGuideSlots();
   dynamicGuideToggle.setVisible(dynamicGuideVirtualSlotIndex >= 0);
   setMidiLearnActive(midiLearnActive);
@@ -1093,13 +1112,13 @@ void ChannelGridPanel::nudgeFaders(float delta) {
         !adjustableStems[static_cast<size_t>(i)]) {
       continue;
     }
-    const float current = processor.getStemVolume(stemIndex);
+    const float current = session.getStemVolume(stemIndex);
     const float next = juce::jlimit(0.0f, 1.0f, current + delta);
     if (juce::approximatelyEqual(current, next))
       continue;
-    processor.setStemVolume(stemIndex, next);
+    session.setStemVolume(stemIndex, next);
     slots[static_cast<size_t>(i)]->getStrip().setVolume(next);
-    if (currentSongId.isNotEmpty() &&
+    if (!session.isRemote() && currentSongId.isNotEmpty() &&
         i < static_cast<int>(slotStemIds.size()) &&
         slotStemIds[static_cast<size_t>(i)].isNotEmpty()) {
       queueStemVolumePersistence(slotStemIds[static_cast<size_t>(i)], next);
@@ -1109,6 +1128,7 @@ void ChannelGridPanel::nudgeFaders(float delta) {
 
 void ChannelGridPanel::queueStemVolumePersistence(const juce::String &stemId,
                                                   const float volume) {
+  if (session.isRemote()) return;
   if (stemId.isEmpty())
     return;
   pendingStemVolumeWrites[stemId] = juce::jlimit(0.0f, 1.0f, volume);
@@ -1116,24 +1136,28 @@ void ChannelGridPanel::queueStemVolumePersistence(const juce::String &stemId,
 }
 
 void ChannelGridPanel::queueMasterVolumePersistence(const float volume) {
+  if (session.isRemote()) return;
   pendingMasterVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
   hasPendingMasterVolumeWrite = true;
   lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
 }
 
 void ChannelGridPanel::queueDynamicGuideVolumePersistence(const float volume) {
+  if (session.isRemote()) return;
   pendingDynamicGuideVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
   hasPendingDynamicGuideVolumeWrite = true;
   lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
 }
 
 void ChannelGridPanel::queueClickDynVolumePersistence(const float volume) {
+  if (session.isRemote()) return;
   pendingClickDynVolumeValue = juce::jlimit(0.0f, 1.0f, volume);
   hasPendingClickDynVolumeWrite = true;
   lastVolumeInteractionMs = juce::Time::getMillisecondCounterHiRes();
 }
 
 void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty())
     return;
 
@@ -1144,6 +1168,7 @@ void ChannelGridPanel::persistDynamicGuideMixForCurrentSong() {
 }
 
 void ChannelGridPanel::persistClickDynMixForCurrentSong() {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty())
     return;
 
@@ -1155,9 +1180,9 @@ void ChannelGridPanel::persistClickDynMixForCurrentSong() {
 
 SongMixSnapshot ChannelGridPanel::makeCurrentSongMixSnapshot() const {
   SongMixSnapshot mix;
-  mix.master.volume = processor.getMasterVolume();
-  mix.master.gain = processor.getMasterGain();
-  mix.master.mute = processor.isMasterMuted();
+  mix.master.volume = session.getMasterVolume();
+  mix.master.gain = session.getMasterGain();
+  mix.master.mute = session.isMasterMuted();
 
   for (size_t i = 0; i < slotStemIndices.size(); ++i) {
     const int stemIndex = slotStemIndices[i];
@@ -1166,11 +1191,11 @@ SongMixSnapshot ChannelGridPanel::makeCurrentSongMixSnapshot() const {
 
     StemMixSnapshot stem;
     stem.stemId = slotStemIds[i];
-    stem.volume = processor.getStemVolume(stemIndex);
-    stem.gain = processor.getStemGain(stemIndex);
-    stem.mute = processor.isStemMuted(stemIndex);
-    stem.solo = processor.isStemSoloed(stemIndex);
-    stem.outputChannel = processor.getStemOutputChannel(stemIndex);
+    stem.volume = session.getStemVolume(stemIndex);
+    stem.gain = session.getStemGain(stemIndex);
+    stem.mute = session.isStemMuted(stemIndex);
+    stem.solo = session.isStemSoloed(stemIndex);
+    stem.outputChannel = session.getStemOutputChannel(stemIndex);
     mix.stems.push_back(std::move(stem));
   }
 
@@ -1179,37 +1204,38 @@ SongMixSnapshot ChannelGridPanel::makeCurrentSongMixSnapshot() const {
 
 ClickDynMixSnapshot ChannelGridPanel::makeCurrentClickDynMixSnapshot() const {
   ClickDynMixSnapshot mix;
-  mix.divisionMask = processor.getClickDivision();
-  mix.enabled = processor.isClickDivisionEnabled();
-  mix.metronomeEnabled = processor.isMetronomeEnabled();
-  mix.volume = processor.getMetronomeVolume();
-  mix.gain = processor.getMetronomeGain();
-  mix.mute = processor.isMetronomeMuted();
-  mix.solo = processor.isMetronomeSolo();
-  mix.outputChannel = processor.getMetronomeOutputChannel();
-  mix.outputWidth = processor.getMetronomeOutputWidth();
+  mix.divisionMask = session.getClickDivision();
+  mix.enabled = session.isClickDivisionEnabled();
+  mix.metronomeEnabled = session.isMetronomeEnabled();
+  mix.volume = session.getMetronomeVolume();
+  mix.gain = session.getMetronomeGain();
+  mix.mute = session.isMetronomeMuted();
+  mix.solo = session.isMetronomeSolo();
+  mix.outputChannel = session.getMetronomeOutputChannel();
+  mix.outputWidth = session.getMetronomeOutputWidth();
   return mix;
 }
 
 DynamicGuideMixSnapshot
 ChannelGridPanel::makeCurrentDynamicGuideMixSnapshot() const {
   DynamicGuideMixSnapshot mix;
-  mix.volume = processor.getDynamicGuideVolume();
-  mix.gain = processor.getDynamicGuideGain();
-  mix.mute = processor.isDynamicGuideMuted();
-  mix.solo = processor.isDynamicGuideSolo();
-  mix.outputChannel = processor.getDynamicGuideOutputChannel();
-  mix.outputWidth = processor.getDynamicGuideOutputWidth();
+  mix.volume = session.getDynamicGuideVolume();
+  mix.gain = session.getDynamicGuideGain();
+  mix.mute = session.isDynamicGuideMuted();
+  mix.solo = session.isDynamicGuideSolo();
+  mix.outputChannel = session.getDynamicGuideOutputChannel();
+  mix.outputWidth = session.getDynamicGuideOutputWidth();
   return mix;
 }
 
-void ChannelGridPanel::maybePersistSongMixStateChange() {
+void ChannelGridPanel::maybePersistSongMixStateChange(bool force) {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty()) {
     hasLastObservedSongMix = false;
     return;
   }
 
-  if (hasActivePointerInteraction())
+  if (!force && (remoteMixPersistencePending || hasActivePointerInteraction()))
     return;
 
   const auto current = makeCurrentSongMixSnapshot();
@@ -1223,12 +1249,14 @@ void ChannelGridPanel::maybePersistSongMixStateChange() {
   hasLastObservedSongMix = true;
 }
 
-void ChannelGridPanel::maybePersistClickDynMixStateChange() {
+void ChannelGridPanel::maybePersistClickDynMixStateChange(bool force) {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty()) {
     hasLastObservedClickDynMix = false;
     return;
   }
 
+  if (!force && (remoteMixPersistencePending || hasActivePointerInteraction())) return;
   const auto current = makeCurrentClickDynMixSnapshot();
   if (hasLastObservedClickDynMix &&
       clickDynMixControlStateEquals(lastObservedClickDynMix, current)) {
@@ -1240,12 +1268,14 @@ void ChannelGridPanel::maybePersistClickDynMixStateChange() {
   hasLastObservedClickDynMix = true;
 }
 
-void ChannelGridPanel::maybePersistDynamicGuideMixStateChange() {
+void ChannelGridPanel::maybePersistDynamicGuideMixStateChange(bool force) {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty()) {
     hasLastObservedDynamicGuideMix = false;
     return;
   }
 
+  if (!force && (remoteMixPersistencePending || hasActivePointerInteraction())) return;
   const auto current = makeCurrentDynamicGuideMixSnapshot();
   if (hasLastObservedDynamicGuideMix &&
       dynamicGuideMixStateEquals(lastObservedDynamicGuideMix, current)) {
@@ -1259,6 +1289,7 @@ void ChannelGridPanel::maybePersistDynamicGuideMixStateChange() {
 }
 
 void ChannelGridPanel::flushPendingVolumePersistence() {
+  if (session.isRemote()) return;
   if (currentSongId.isEmpty()) {
     pendingStemVolumeWrites.clear();
     hasPendingMasterVolumeWrite = false;
@@ -1285,11 +1316,11 @@ void ChannelGridPanel::flushPendingVolumePersistence() {
   if (hasPendingDynamicGuideVolumeWrite) {
     DynamicGuideMixSnapshot mix;
     mix.volume = pendingDynamicGuideVolumeValue;
-    mix.gain = processor.getDynamicGuideGain();
-    mix.mute = processor.isDynamicGuideMuted();
-    mix.solo = processor.isDynamicGuideSolo();
-    mix.outputChannel = processor.getDynamicGuideOutputChannel();
-    mix.outputWidth = processor.getDynamicGuideOutputWidth();
+    mix.gain = session.getDynamicGuideGain();
+    mix.mute = session.isDynamicGuideMuted();
+    mix.solo = session.isDynamicGuideSolo();
+    mix.outputChannel = session.getDynamicGuideOutputChannel();
+    mix.outputWidth = session.getDynamicGuideOutputWidth();
     SongLibraryStore::updateDynamicGuideMixForActiveSetlist(currentSongId, mix);
     hasPendingDynamicGuideVolumeWrite = false;
   }
@@ -1472,7 +1503,7 @@ void ChannelGridPanel::addMasterSlot() {
       [this] {
         float l = 0.0f;
         float r = 0.0f;
-        processor.getOutputMeterLevels(l, r);
+        session.getOutputMeterLevels(l, r);
         return std::pair<float, float>{l, r};
       });
   auto &strip = slot->getStrip();
@@ -1484,26 +1515,26 @@ void ChannelGridPanel::addMasterSlot() {
   strip.setMuteAlignedToFader(true);
   slot->setShowOutputRouting(false);
   slot->setGuideSettingsVisible(false);
-  strip.setVolume(processor.getMasterVolume());
-  strip.setGain(processor.getMasterGain());
-  strip.setMuteState(processor.isMasterMuted());
+  strip.setVolume(session.getMasterVolume());
+  strip.setGain(session.getMasterGain());
+  strip.setMuteState(session.isMasterMuted());
   strip.setOnVolumeChanged([this](float value) {
-    processor.setMasterVolume(value);
+    session.setMasterVolume(value);
   });
   strip.setOnVolumeDragEnded([this](float value) {
-    if (currentSongId.isNotEmpty())
+    if (!session.isRemote() && currentSongId.isNotEmpty())
       queueMasterVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
-    processor.setMasterGain(value);
+    session.setMasterGain(value);
   });
   strip.setOnGainDragEnded([this](float value) {
-    if (currentSongId.isNotEmpty())
+    if (!session.isRemote() && currentSongId.isNotEmpty())
       SongLibraryStore::updateMasterGainForActiveSetlist(currentSongId, value);
   });
   strip.setOnMuteChanged([this](bool muted) {
-    processor.setMasterMute(muted);
-    if (currentSongId.isNotEmpty())
+    session.setMasterMute(muted);
+    if (!session.isRemote() && currentSongId.isNotEmpty())
       SongLibraryStore::updateMasterMuteForActiveSetlist(currentSongId, muted);
   });
   strip.setMidiLearnTargetIds(processor.midiTargetMasterVolume,
@@ -1534,38 +1565,38 @@ void ChannelGridPanel::addDivisionSlot() {
       [this] {
         float left = 0.0f;
         float right = 0.0f;
-        processor.getMetronomeMeterLevels(left, right);
+        session.getMetronomeMeterLevels(left, right);
         return std::pair<float, float>{left, right};
       });
 
   slot->setShowOutputRouting(false);
   slot->setGuideSettingsVisible(false);
   slot->setDivisionPanelVisible(true);
-  slot->setDivision(processor.getClickDivision());
-  slot->setDivisionVolume(processor.getMetronomeVolume());
-  slot->setDivisionPowerOn(processor.isClickDivisionEnabled());
-  slot->setDivisionMuteState(processor.isMetronomeMuted());
-  slot->setDivisionSoloState(processor.isMetronomeSolo());
+  slot->setDivision(session.getClickDivision());
+  slot->setDivisionVolume(session.getMetronomeVolume());
+  slot->setDivisionPowerOn(session.isClickDivisionEnabled());
+  slot->setDivisionMuteState(session.isMetronomeMuted());
+  slot->setDivisionSoloState(session.isMetronomeSolo());
   slot->setOnDivisionChanged([this](const int division) {
-    processor.setClickDivision(division);
+    session.setClickDivision(division);
     persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionVolumeChanged([this](const float volume) {
-    processor.setMetronomeVolume(volume);
+    session.setMetronomeVolume(volume);
   });
   slot->setOnDivisionVolumeDragEnded([this](const float volume) {
     queueClickDynVolumePersistence(volume);
   });
   slot->setOnDivisionPowerChanged([this](const bool enabled) {
-    processor.setClickDivisionEnabled(enabled);
+    session.setClickDivisionEnabled(enabled);
     persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionMuteChanged([this](const bool muted) {
-    processor.setMetronomeMuted(muted);
+    session.setMetronomeMuted(muted);
     persistClickDynMixForCurrentSong();
   });
   slot->setOnDivisionSoloChanged([this](const bool soloed) {
-    processor.setMetronomeSolo(soloed);
+    session.setMetronomeSolo(soloed);
     persistClickDynMixForCurrentSong();
   });
   slot->setDivisionMidiLearnTargetIds(
@@ -1599,7 +1630,7 @@ void ChannelGridPanel::addDynamicGuideVirtualSlot() {
       [this] {
         float left = 0.0f;
         float right = 0.0f;
-        processor.getDynamicGuideMeterLevels(left, right);
+        session.getDynamicGuideMeterLevels(left, right);
         return std::pair<float, float>{left, right};
       });
   auto &strip = slot->getStrip();
@@ -1607,11 +1638,11 @@ void ChannelGridPanel::addDynamicGuideVirtualSlot() {
   strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
   strip.setMuteAlignedToFader(true);
   slot->setShowOutputRouting(false);
-  slot->setOutputOptions(processor.getAvailableOutputChannelNames(),
-                         processor.getDynamicGuideOutputChannel());
+  slot->setOutputOptions(session.getAvailableOutputChannelNames(),
+                         session.getDynamicGuideOutputChannel());
   slot->setOnOutputChannelChanged([this](const int channel) {
-    processor.setDynamicGuideOutputRouting(channel,
-                                           processor.getDynamicGuideOutputWidth());
+    session.setDynamicGuideOutputRouting(channel,
+                                           session.getDynamicGuideOutputWidth());
     persistDynamicGuideMixForCurrentSong();
   });
   slot->setGuideSettingsVisible(false);
@@ -1619,28 +1650,28 @@ void ChannelGridPanel::addDynamicGuideVirtualSlot() {
   slot->setGuideSettingsTooltip({});
   slot->setOnGuideSettingsRequested({});
 
-  strip.setVolume(processor.getDynamicGuideVolume());
-  strip.setGain(processor.getDynamicGuideGain());
-  strip.setMuteState(processor.isDynamicGuideMuted());
-  strip.setSoloState(processor.isDynamicGuideSolo());
+  strip.setVolume(session.getDynamicGuideVolume());
+  strip.setGain(session.getDynamicGuideGain());
+  strip.setMuteState(session.isDynamicGuideMuted());
+  strip.setSoloState(session.isDynamicGuideSolo());
   strip.setOnVolumeChanged([this](float value) {
-    processor.setDynamicGuideVolume(value);
+    session.setDynamicGuideVolume(value);
   });
   strip.setOnVolumeDragEnded([this](float value) {
     queueDynamicGuideVolumePersistence(value);
   });
   strip.setOnGainChanged([this](float value) {
-    processor.setDynamicGuideGain(value);
+    session.setDynamicGuideGain(value);
   });
   strip.setOnGainDragEnded([this](float) {
     persistDynamicGuideMixForCurrentSong();
   });
   strip.setOnMuteChanged([this](bool muted) {
-    processor.setDynamicGuideMuted(muted);
+    session.setDynamicGuideMuted(muted);
     persistDynamicGuideMixForCurrentSong();
   });
   strip.setOnSoloChanged([this](bool soloed) {
-    processor.setDynamicGuideSolo(soloed);
+    session.setDynamicGuideSolo(soloed);
     persistDynamicGuideMixForCurrentSong();
   });
   strip.setMidiLearnTargetIds(-1, -1, -1, -1, -1);
@@ -1669,10 +1700,10 @@ void ChannelGridPanel::syncMasterSlotFromProcessor() {
 
   auto &strip = slots[static_cast<size_t>(masterSlotIndex)]->getStrip();
   if (!strip.isMouseButtonDown()) {
-    strip.setVolume(processor.getMasterVolume());
-    strip.setGain(processor.getMasterGain());
+    strip.setVolume(session.getMasterVolume());
+    strip.setGain(session.getMasterGain());
   }
-  strip.setMuteState(processor.isMasterMuted());
+  strip.setMuteState(session.isMasterMuted());
 }
 
 void ChannelGridPanel::syncDivisionSlotFromProcessor() {
@@ -1682,14 +1713,14 @@ void ChannelGridPanel::syncDivisionSlotFromProcessor() {
 
   auto &slot = *slots[static_cast<size_t>(divisionSlotIndex)];
   if (!slot.isUserInteracting()) {
-    slot.setDivision(processor.getClickDivision());
-    slot.setDivisionVolume(processor.getMetronomeVolume());
-    slot.setDivisionPowerOn(processor.isClickDivisionEnabled());
+    slot.setDivision(session.getClickDivision());
+    slot.setDivisionVolume(session.getMetronomeVolume());
+    slot.setDivisionPowerOn(session.isClickDivisionEnabled());
   }
   slot.setDivisionMuteState(
-      processor.isMetronomeMuted());
+      session.isMetronomeMuted());
   slot.setDivisionSoloState(
-      processor.isMetronomeSolo());
+      session.isMetronomeSolo());
 }
 
 void ChannelGridPanel::syncDynamicGuideVirtualSlotFromProcessor() {
@@ -1700,11 +1731,11 @@ void ChannelGridPanel::syncDynamicGuideVirtualSlotFromProcessor() {
   auto &strip =
       slots[static_cast<size_t>(dynamicGuideVirtualSlotIndex)]->getStrip();
   if (!strip.isMouseButtonDown()) {
-    strip.setVolume(processor.getDynamicGuideVolume());
-    strip.setGain(processor.getDynamicGuideGain());
+    strip.setVolume(session.getDynamicGuideVolume());
+    strip.setGain(session.getDynamicGuideGain());
   }
-  strip.setMuteState(processor.isDynamicGuideMuted());
-  strip.setSoloState(processor.isDynamicGuideSolo());
+  strip.setMuteState(session.isDynamicGuideMuted());
+  strip.setSoloState(session.isDynamicGuideSolo());
 }
 
 void ChannelGridPanel::syncStemSlotsFromProcessor() {
@@ -1721,10 +1752,10 @@ void ChannelGridPanel::syncStemSlotsFromProcessor() {
 
     auto &strip = slots[i]->getStrip();
     if (!strip.isMouseButtonDown()) {
-      strip.setVolume(processor.getStemVolume(stemIndex));
-      strip.setGain(processor.getStemGain(stemIndex));
+      strip.setVolume(session.getStemVolume(stemIndex));
+      strip.setGain(session.getStemGain(stemIndex));
     }
-    strip.setMuteState(processor.isStemMuted(stemIndex));
-    strip.setSoloState(processor.isStemSoloed(stemIndex));
+    strip.setMuteState(session.isStemMuted(stemIndex));
+    strip.setSoloState(session.isStemSoloed(stemIndex));
   }
 }

@@ -44,6 +44,8 @@ public:
     std::function<void(const juce::MouseEvent &)> onGestureEnd;
   };
 
+  void setRemoteLibrary(std::shared_ptr<const LibraryState> library);
+  std::function<void(const juce::String &, const juce::var &, const juce::String &)> onRemoteAction;
   SongListPanel();
   ~SongListPanel() override;
 
@@ -96,6 +98,7 @@ public:
   void resized() override;
 
 private:
+  std::shared_ptr<const LibraryState> remoteLibrary;
   friend struct SongListPanelTestAccess;
   enum class ViewMode { Setlists, Songs };
   enum class SongsSubview { SetlistSongs, Library };

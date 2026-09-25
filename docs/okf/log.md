@@ -7,6 +7,17 @@ timestamp: 2026-09-21T00:00:00-03:00
 
 # Changelog
 
+## 2026-09-24
+
+### Control remoto LAN
+
+- Modo Local/Servidor/Cliente de la app standalone, descubrimiento mDNS y
+  sesión WebSocket con varios clientes y servidor autoritativo.
+- Snapshot de canción, transporte, biblioteca, setlists y mezcla; waveform
+  binaria verificada sin transferir stems o audio al cliente.
+- UI cliente con etiqueta REMOTO, reconexión y controles bloqueados sin red.
+  Contrato: [RemoteControl](integrations/RemoteControl.md).
+
 ## 2026-09-21
 
 ### Creacion portable movil y controles JUCE
@@ -1120,3 +1131,34 @@ docs/okf/
 - En el emulador la mediana por frame de playback bajo de ~750 ms a
   ~150 ms (4-5x), los `Missed Vsync` de 64 bajaron a 2, y el histograma se
   concentra en 150-200 ms (98% de los frames).
+
+## 2026-09-25
+
+- Control remoto integrado en la interfaz original: selector Local/Cliente/Servidor
+  en Settings, datos remotos para los mismos strips, VU, transporte, onda y listas.
+- Eliminada la vista remota separada y su badge. Biblioteca remota en memoria,
+  comandos autoritativos y telemetría de VU/posición independiente de los snapshots.
+- Click Dyn dispone de acumuladores de pico separados para UI local y LAN.
+- Descubrimiento Apple mediante Bonjour nativo: corrige la búsqueda permanente
+  en iPhone físico causada por multicast directo sin entitlement. El backend
+  Android/Windows anuncia también TXT y A para resolución interoperable.
+  Errores de permiso visibles en Settings y prueba de conexión entre backends.
+- Faders remotos: previsualización inmediata de volumen/gain hasta recibir el
+  snapshot posterior al ack del último movimiento. Los sliders conservan el
+  gesto activo y el servidor agrupa el guardado de mezcla tras 150 ms sin cambios.
+  Regresión verificada para respuestas atrasadas, rechazos, desconexión y cambio
+  de canción; las tres pruebas de sesión y descubrimiento pasaron.
+- Bloqueos de UI del servidor remoto: envío/JSON por conexión fuera del message
+  thread, caché de portadas, catálogo solo cuando cambia y firma de controles
+  sin serializar biblioteca/portadas. Ráfagas de volumen/gain agrupadas por peer
+  con barreras para acciones discretas; máximo 32 eventos procesados por tick.
+  Cliente TCP que deja de leer: publicación máxima inferior a 0,05 ms y cliente sano
+  actualizado; ráfaga de 122 comandos reducida a 4 eventos conservando el orden.
+  Snapshots incrementales negociados: canción/portada y ajustes solo cuando
+  cambian, con reconstrucción en el cliente y compatibilidad con clientes previos.
+  Prueba local en la app compilada: 477 comandos/477 confirmaciones en 16 s,
+  p95 de confirmación 34,15 ms, sin desconexiones; tráfico de 47,7 MB a 4,1 MB
+  frente al envío completo. Tres pruebas de sesión/descubrimiento aprobadas.
+- Cliente indica `BUSCANDO`, `CONECTANDO`, `REMOTO` o `RECONECTANDO` en una etiqueta pequeña
+  sobre la onda, incluso antes de recibirla. El estado conectado exige un
+  snapshot aplicado; la etiqueta no cambia layout ni captura gestos.

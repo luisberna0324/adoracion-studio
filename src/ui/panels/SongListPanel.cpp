@@ -798,7 +798,7 @@ SongListPanel::SongListPanel() {
       [this](const ImportedSongData &song, int songIndex) {
         juce::ignoreUnused(songIndex);
         selectedSongId = song.id;
-        AppSettings::setLastSelectedSongId(selectedSongId);
+        if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
         if (onSongActivated != nullptr) {
           const int indexForSetlist = getSongIndexById(song.id);
           onSongActivated(song, indexForSetlist >= 0 ? indexForSetlist : -1);
@@ -814,7 +814,8 @@ SongListPanel::SongListPanel() {
     for (const auto &songId : songIds) {
       if (songId.isEmpty())
         continue;
-      SongLibraryStore::addSongToSetlist(targetSetlistId, songId);
+      if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.add", songId, targetSetlistId); }
+      else SongLibraryStore::addSongToSetlist(targetSetlistId, songId);
     }
 
     refreshFromStorage();
@@ -841,22 +842,22 @@ SongListPanel::SongListPanel() {
             [&songId](const ImportedSongData &candidate) {
               return candidate.id == songId;
             });
-        if (song != librarySongs.end() && onProjectUploadRequested != nullptr)
+        if (song != librarySongs.end() && !remoteLibrary && onProjectUploadRequested != nullptr)
           onProjectUploadRequested(*song);
       });
   libraryCatalogPanel.setOnCloudDownloadRequested(
       [this](const juce::String &songId, const juce::String &targetSetlistId) {
-        if (onCloudDownloadRequested != nullptr)
+        if (!remoteLibrary && !remoteLibrary && onCloudDownloadRequested != nullptr)
           onCloudDownloadRequested(songId, targetSetlistId);
       });
   libraryCatalogPanel.setOnCloudSearchRequested(
       [this](const juce::String &query) {
-        if (onCloudSearchRequested != nullptr)
+        if (!remoteLibrary && !remoteLibrary && onCloudSearchRequested != nullptr)
           onCloudSearchRequested(query);
       });
   libraryCatalogPanel.setOnCloudDeleteRequested(
       [this](const juce::String &songId, const juce::String &title) {
-        if (onCloudDeleteRequested != nullptr)
+        if (!remoteLibrary && !remoteLibrary && onCloudDeleteRequested != nullptr)
           onCloudDeleteRequested(songId, title);
       });
   libraryCatalogPanel.setOnCloudSettingsSyncRequested(
@@ -866,7 +867,7 @@ SongListPanel::SongListPanel() {
             [&songId](const ImportedSongData &candidate) {
               return candidate.id == songId;
             });
-        if (song != librarySongs.end() && onCloudSettingsSyncRequested != nullptr)
+        if (song != librarySongs.end() && !remoteLibrary && onCloudSettingsSyncRequested != nullptr)
           onCloudSettingsSyncRequested(*song);
       });
   libraryCatalogPanel.setOnCloudSettingsVersionsRequested(
@@ -876,7 +877,7 @@ SongListPanel::SongListPanel() {
             [&songId](const ImportedSongData &candidate) {
               return candidate.id == songId;
             });
-        if (song != librarySongs.end() && onCloudSettingsVersionsRequested != nullptr)
+        if (song != librarySongs.end() && !remoteLibrary && onCloudSettingsVersionsRequested != nullptr)
           onCloudSettingsVersionsRequested(*song, screenAnchor);
       });
   libraryCatalogPanel.setCloudSettingsPendingProvider(
@@ -891,6 +892,7 @@ SongListPanel::SongListPanel() {
                cloudSettingsPendingProvider(*song);
       });
   libraryCatalogPanel.setOnSongDeleteRequested([this](const juce::String &songId) {
+    if (remoteLibrary) return;
     const auto trimmedSongId = songId.trim();
     if (trimmedSongId.isEmpty())
       return;
@@ -962,6 +964,7 @@ SongListPanel::SongListPanel() {
         !juce::isPositiveAndBelow(toIndex,
                                   static_cast<int>(activeSongIndices.size())))
       return;
+    if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.move", juce::var(juce::Array<juce::var>{fromIndex,toIndex}), activeSetlistId); return; }
     if (SongLibraryStore::moveSongInSetlist(activeSetlistId, fromIndex,
                                             toIndex)) {
       refreshFromStorage();
@@ -985,6 +988,10 @@ SongListPanel::SongListPanel() {
     if (key.isEmpty())
       return;
     const bool shouldEnable = !autoPlayNextMarks.contains(key);
+    if (remoteLibrary) {
+      auto *v = new juce::DynamicObject(); v->setProperty("songId", songId); v->setProperty("enabled", shouldEnable);
+      if (onRemoteAction) onRemoteAction("setlist.autoplay", juce::var(v), activeSetlistId); return;
+    }
     if (!SongLibraryStore::setAutoPlayNextForSetlist(
             activeSetlistId, songId, shouldEnable))
       return;
@@ -1003,6 +1010,7 @@ SongListPanel::SongListPanel() {
     const auto songId = librarySongs[static_cast<size_t>(libraryIndex)].id;
     if (songId.isEmpty())
       return;
+    if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.remove", songId, activeSetlistId); return; }
     SongLibraryStore::removeSongFromSetlist(activeSetlistId, songId);
     autoPlayNextMarks.removeString(
         makeAutoPlayNextMarkKey(activeSetlistId, songId));
@@ -1143,7 +1151,7 @@ void SongListPanel::setSelectedSongIndex(const int songIndex) {
 
   selectedSongId = librarySongs[static_cast<size_t>(libraryIndex)].id;
   lastActivatedIndex = songIndex;
-  AppSettings::setLastSelectedSongId(selectedSongId);
+  if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
   listContent.setSelectedSongId(selectedSongId);
 }
 
@@ -1869,6 +1877,7 @@ void SongListPanel::createSetlist() {
         name = name.trim();
         if (name.isEmpty())
           return;
+        if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.create", name, {}); return; }
         const auto newId = SongLibraryStore::createSetlist(name);
         if (newId.isNotEmpty())
           SongLibraryStore::setActiveSetlistId(newId);
@@ -1879,7 +1888,7 @@ void SongListPanel::createSetlist() {
 void SongListPanel::renameSetlistById(const juce::String &setlistId) {
   if (setlistId.isEmpty())
     return;
-  auto library = SongLibraryStore::loadLibrarySnapshot();
+  auto library = (remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot());
   auto it = std::find_if(library.setlists.begin(), library.setlists.end(),
                          [&setlistId](const SetlistData &s) {
                            return s.id == setlistId;
@@ -1894,6 +1903,7 @@ void SongListPanel::renameSetlistById(const juce::String &setlistId) {
         name = name.trim();
         if (name.isEmpty())
           return;
+        if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.rename", name, setlistId); return; }
         SongLibraryStore::renameSetlist(setlistId, name);
         refreshFromStorage();
       });
@@ -1903,7 +1913,7 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
   if (setlistId.isEmpty())
     return;
 
-  const auto library = SongLibraryStore::loadLibrarySnapshot();
+  const auto library = (remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot());
   if (library.setlists.size() <= 1) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
@@ -1923,6 +1933,7 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
       options, [this, setlistId](int result) {
         if (result != 0)
           return;
+        if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.delete", {}, setlistId); return; }
         SongLibraryStore::deleteSetlist(setlistId);
         refreshFromStorage();
       });
@@ -3500,6 +3511,7 @@ void SongListPanel::showLibraryCreationPage(
 }
 
 void SongListPanel::openProjectFileChooser() {
+  if (remoteLibrary) return;
   // Some Windows native file dialogs hide every entry when filtering by an
   // application-specific extension that is not yet registered on the system.
   // Keep all files visible there, then enforce .pwproj in openProjectFile().
@@ -3552,6 +3564,7 @@ void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
 }
 
 void SongListPanel::openProjectFile(const juce::File &file) {
+  if (remoteLibrary) return;
   SessionAuthLogger::write("[ProjectOpenUI] requested path=" +
                            file.getFullPathName() + " exists=" +
                            juce::String(file.existsAsFile() ? 1 : 0) +
@@ -3594,7 +3607,7 @@ void SongListPanel::openProjectFile(const juce::File &file) {
                            document.song.id + " stems=" +
                            juce::String(static_cast<int>(document.song.stems.size())));
   selectedSongId = document.song.id;
-  AppSettings::setLastSelectedSongId(selectedSongId);
+  if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
   if (libraryTargetSetlistId.isNotEmpty())
     SongLibraryStore::addSongToSetlist(libraryTargetSetlistId, selectedSongId);
   refreshFromStorage();
@@ -3605,6 +3618,7 @@ void SongListPanel::openProjectFile(const juce::File &file) {
 }
 
 void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
+  if (remoteLibrary) return;
   const auto trimmedSongId = songId.trim();
   const auto songIt = std::find_if(
       librarySongs.begin(), librarySongs.end(),
@@ -3710,7 +3724,7 @@ void SongListPanel::convertLegacySongAtDestination(
   }
 
   selectedSongId = songId;
-  AppSettings::setLastSelectedSongId(selectedSongId);
+  if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
   refreshFromStorage();
   const auto sourceLabel = task.sourceSetlistName.isNotEmpty()
                                ? task.sourceSetlistName
@@ -3727,6 +3741,7 @@ void SongListPanel::convertLegacySongAtDestination(
 }
 
 void SongListPanel::openSongImportWizard(const bool withinLibrary) {
+  if (remoteLibrary) return;
   if (libraryCreationWizard != nullptr)
     return;
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
@@ -3751,6 +3766,7 @@ void SongListPanel::openSongImportWizard(const bool withinLibrary) {
 }
 
 void SongListPanel::openSongEditWizard(const juce::String &songId) {
+  if (remoteLibrary) return;
   const auto trimmedSongId = songId.trim();
   if (trimmedSongId.isEmpty())
     return;
@@ -3866,8 +3882,10 @@ void SongListPanel::showSetlistsView() {
 }
 
 void SongListPanel::showSongsView(const juce::String &setlistId) {
-  if (setlistId.isNotEmpty())
-    SongLibraryStore::setActiveSetlistId(setlistId);
+  if (setlistId.isNotEmpty()) {
+    if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.select", {}, setlistId); }
+    else SongLibraryStore::setActiveSetlistId(setlistId);
+  }
   viewMode = ViewMode::Songs;
   songsSubview = SongsSubview::SetlistSongs;
   initialViewApplied = true;
@@ -4013,7 +4031,7 @@ void SongListPanel::timerCallback() {
 }
 
 void SongListPanel::refreshFromStorage() {
-  auto library = SongLibraryStore::loadLibrarySnapshot();
+  auto library = (remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot());
   librarySongs = library.songs;
   activeSetlistId = library.activeSetlistId;
   activeSetlistName = L10n::tr("Setlist", "Setlist");
@@ -4137,6 +4155,7 @@ void SongListPanel::refreshFromStorage() {
 
   listContent.setSongs(std::move(rows));
   listContent.setSelectedSongId(selectedSongId);
+  libraryCatalogPanel.setRemoteLibrary(remoteLibrary);
   libraryCatalogPanel.setActiveSetlistId(activeSetlistId);
   libraryCatalogPanel.setNowPlayingSong(nowPlayingSongId, isPlaybackActive);
   libraryCatalogPanel.refreshFromStorage();
@@ -4149,4 +4168,10 @@ void SongListPanel::refreshFromStorage() {
     resized();
   if (onSetlistNameChanged)
     onSetlistNameChanged(activeSetlistName);
+}
+
+void SongListPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library) {
+  remoteLibrary = std::move(library);
+  libraryCatalogPanel.onRemoteAction = onRemoteAction;
+  refreshFromStorage();
 }

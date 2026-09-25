@@ -511,6 +511,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     std::atomic<bool> &flag;
   } callbackActivityGuard(audioCallbackActive);
 
+  if (remoteClientMode.load(std::memory_order_acquire)) {
+    buffer.clear();
+    return;
+  }
+
   const int64_t blockStartTick = juce::Time::getHighResolutionTicks();
   const bool songLoadedForDiagnostics =
       songLoaded.load(std::memory_order_relaxed);
@@ -2232,6 +2237,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     // consumes it instead of overwriting it with the next silent block.
     publishMeterPeak(metronomeMeterLevelLeft, metronomeMeterLeft);
     publishMeterPeak(metronomeMeterLevelRight, metronomeMeterRight);
+    publishMeterPeak(remoteMetronomeMeterLeft, metronomeMeterLeft);
+    publishMeterPeak(remoteMetronomeMeterRight, metronomeMeterRight);
 
     const int outputIndex = juce::jlimit(
         0, juce::jmax(0, numChannels - 1), outputChannelOneBased - 1);
@@ -2241,6 +2248,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   } else {
     metronomeMeterLevelLeft.store(0.0f, std::memory_order_relaxed);
     metronomeMeterLevelRight.store(0.0f, std::memory_order_relaxed);
+    remoteMetronomeMeterLeft.store(0.0f, std::memory_order_relaxed);
+    remoteMetronomeMeterRight.store(0.0f, std::memory_order_relaxed);
   }
 
   if (padsPackLoaded.load(std::memory_order_relaxed)) {
@@ -6229,4 +6238,9 @@ void MTControlsAudioProcessor::setTransportState(
 
 juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {
   return new MTControlsAudioProcessor();
+}
+
+void MTControlsAudioProcessor::getRemoteMetronomeMeterLevels(float &left, float &right) noexcept {
+  left = remoteMetronomeMeterLeft.exchange(0.0f, std::memory_order_relaxed);
+  right = remoteMetronomeMeterRight.exchange(0.0f, std::memory_order_relaxed);
 }

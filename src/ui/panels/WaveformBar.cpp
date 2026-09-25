@@ -1634,6 +1634,13 @@ void WaveformBar::clearSongLoadingState() {
   repaint();
 }
 
+void WaveformBar::setRemoteIndicator(const RemoteIndicator state) {
+  if (remoteIndicator == state)
+    return;
+  remoteIndicator = state;
+  repaint();
+}
+
 void WaveformBar::paint(juce::Graphics &g) {
   const auto bounds = getLocalBounds().toFloat();
   if (bounds.getWidth() < 2.0f)
@@ -1659,6 +1666,43 @@ void WaveformBar::paint(juce::Graphics &g) {
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   const auto seekRulerBounds = getSeekRulerBounds(mainWaveBounds);
   const auto miniMapBounds = getMiniMapBounds(bounds);
+
+  // Status is painted directly on the waveform, so it does not alter layout
+  // or take taps away from seeking and section controls.
+  const auto paintRemoteIndicator = [&] {
+    if (remoteIndicator == RemoteIndicator::Hidden ||
+        mainWaveBodyBounds.getWidth() < 80.0f ||
+        mainWaveBodyBounds.getHeight() < 24.0f)
+      return;
+    const bool connected = remoteIndicator == RemoteIndicator::Connected;
+    const auto label = connected ? L10n::tr("REMOTO", "REMOTE")
+        : remoteIndicator == RemoteIndicator::Searching
+            ? L10n::tr("BUSCANDO", "SEARCHING")
+            : remoteIndicator == RemoteIndicator::Connecting
+                ? L10n::tr("CONECTANDO", "CONNECTING")
+            : L10n::tr("RECONECTANDO", "RECONNECTING");
+    const auto font = makeAppFont(minimalPhoneMode ? 10.0f : 10.5f,
+                                  AppFontWeight::Bold);
+    const float width = juce::jmin(mainWaveBodyBounds.getWidth() - 12.0f,
+                                   juce::jmax(68.0f,
+                                              font.getStringWidthFloat(label) + 29.0f));
+    const juce::Rectangle<float> pill(mainWaveBodyBounds.getRight() - width - 6.0f,
+                                       mainWaveBodyBounds.getY() + 5.0f,
+                                       width, 20.0f);
+    const auto statusColour = connected ? juce::Colour(0xff62d995)
+                                        : juce::Colour(0xffffbe63);
+    g.setColour(UITheme::panelDark.withAlpha(0.92f));
+    g.fillRoundedRectangle(pill, 10.0f);
+    g.setColour(statusColour.withAlpha(0.78f));
+    g.drawRoundedRectangle(pill, 10.0f, 1.0f);
+    g.setColour(statusColour);
+    g.fillEllipse(pill.getX() + 8.0f, pill.getCentreY() - 3.0f, 6.0f, 6.0f);
+    g.setColour(juce::Colours::white.withAlpha(0.96f));
+    g.setFont(font);
+    g.drawFittedText(label,
+                     pill.withTrimmedLeft(19.0f).withTrimmedRight(6.0f).toNearestInt(),
+                     juce::Justification::centredLeft, 1);
+  };
 
   if (mainWaveBodyBounds.getWidth() < 2.0f ||
       mainWaveBodyBounds.getHeight() < 2.0f)
@@ -1690,6 +1734,7 @@ void WaveformBar::paint(juce::Graphics &g) {
     }
   g.setColour(UITheme::accent);
   g.fillRect(0.0f, 0.0f, 2.0f, bounds.getHeight());
+  paintRemoteIndicator();
   return;
 }
 
@@ -1736,6 +1781,7 @@ void WaveformBar::paint(juce::Graphics &g) {
     g.drawFittedText(text, pill.toNearestInt().reduced(10, 2),
                      juce::Justification::centred, 1);
   }
+  paintRemoteIndicator();
 }
 
 void WaveformBar::paintOverChildren(juce::Graphics &g) {
