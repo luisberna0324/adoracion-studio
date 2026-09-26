@@ -1,9 +1,10 @@
-#include "RemoteSession.h"
-#include "RemoteSendQueue.h"
-
 #include <ixwebsocket/IXNetSystem.h>
 #include <ixwebsocket/IXWebSocket.h>
 #include <ixwebsocket/IXWebSocketServer.h>
+
+#include "RemoteSession.h"
+#include "RemoteSendQueue.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -309,7 +310,7 @@ RemoteSession::encodeWaveform(const std::vector<float> &bins,
   frames.reserve(total);
   for (uint16_t index = 0; index < total; ++index) {
     const size_t offset = static_cast<size_t>(index) * kWaveChunkBytes;
-    const size_t length = std::min(kWaveChunkBytes, data.size() - offset);
+    const size_t length = (std::min)(kWaveChunkBytes, data.size() - offset);
     std::string frame("PWW1", 4);
     putU32(frame, serial);
     frame.push_back(static_cast<char>(index >> 8));
