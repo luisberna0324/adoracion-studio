@@ -1,4 +1,5 @@
 #include "../src/data/MobileImportStaging.h"
+#include "IsolatedTestRoot.h"
 
 #include <iostream>
 #include <memory>
@@ -122,11 +123,11 @@ void testFailuresAndPartialCleanup(const juce::File &sources) {
 
 int main() {
   try {
-    const juce::TemporaryFile sources(".mobile-import-test-sources");
-    expect(sources.getFile().createDirectory().wasOk(),
+    const auto sources = isolatedTestRoot().getChildFile("sources");
+    expect(sources.createDirectory().wasOk(),
            "test creates its isolated source directory");
-    testCopiesAndOwnership(sources.getFile());
-    testFailuresAndPartialCleanup(sources.getFile());
+    testCopiesAndOwnership(sources);
+    testFailuresAndPartialCleanup(sources);
     std::cout << "Mobile import staging tests passed\n";
     return 0;
   } catch (const std::exception &error) {

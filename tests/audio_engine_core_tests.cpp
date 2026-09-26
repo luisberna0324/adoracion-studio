@@ -34,6 +34,55 @@ void testTransportClock() {
   expect(clock.getPositionFrames() == 24000, "stop returns to requested frame");
 }
 
+void testTransportClockAndArrangeBoundaries() {
+  using Clock = playworship::audio::TransportClock;
+  using Scheduler = playworship::audio::SectionScheduler;
+  Clock clock;
+  clock.prepare(48000.0);
+  clock.seek(-100);
+  expect(clock.getPositionFrames() == 0, "negative seek clamps to song start");
+  clock.play();
+  clock.advance(512);
+  clock.pause();
+  clock.advance(512);
+  expect(clock.getPositionFrames() == 512,
+         "pause freezes the sample accurate clock");
+  clock.play();
+  clock.advance(488);
+  expect(clock.getPositionFrames() == 1000,
+         "resume advances from the paused frame");
+  clock.reset(-1);
+  expect(clock.getState() == Clock::State::stopped &&
+             clock.getPositionFrames() == 0,
+         "reset clears state and clamps its return frame");
+  expect(Clock::secondsToFrames(0.5, 48000.0) == 24000 &&
+             Clock::secondsToFrames(NAN, 48000.0) == 0,
+         "time conversion handles valid and invalid positions");
+
+  Scheduler scheduler;
+  scheduler.publish(
+      {{0, 1000, 0, 1000, -1, -1, false, false, false, false},
+       {1000, 1200, 400, 600, 1000, 11, true, true, false, false},
+       {1200, 2200, 1000, 2000, 1200, 12, true, false, false, false}});
+  const auto snapshot = scheduler.acquireSnapshot();
+  expect(Scheduler::findGuideTrigger(snapshot, 900, 100) == -1 &&
+             Scheduler::findGuideTrigger(snapshot, 1000, 1) == 1,
+         "a guide at the block end fires in the following block");
+  Scheduler::Frame source = -1;
+  expect(Scheduler::mapFrameToSourceFrame(snapshot, 1100, 2200, 2000,
+                                          source) &&
+             source == 500,
+         "seek inside an inserted clip uses its source range");
+  expect(Scheduler::mapFrameToSourceFrame(snapshot, 1200, 2200, 2000,
+                                          source) &&
+             source == 1000,
+         "seek at an inserted clip's right edge resumes the original source");
+  scheduler.clear();
+  expect(Scheduler::size(snapshot) == 3 &&
+             Scheduler::size(scheduler.acquireSnapshot()) == 0,
+         "clearing arrange publishes an empty generation without changing the old snapshot");
+}
+
 void testSectionScheduler() {
   using Scheduler = playworship::audio::SectionScheduler;
   Scheduler scheduler;
@@ -373,6 +422,7 @@ int main() {
            "playback before the only section must continue from zero");
   }
   testTransportClock();
+  testTransportClockAndArrangeBoundaries();
   testSectionScheduler();
   testSectionSchedulerLoopEscape();
   testSectionSchedulerConcurrentReadersSeeCoherentSnapshots();

@@ -69,6 +69,9 @@ master, tempo, pitch y fade configurados en el procesador.
   click usa BPM, métrica, división y estilo actuales, y la guía usa idioma y
   secciones del arrange. Ambas reciben la misma compensación de latencia que
   los stems procesados por tempo/pitch.
+- Con el click dinámico deshabilitado, el bounce no abre ni crea el directorio
+  de muestras de click. Un render instrumental puede ejecutarse con datos de
+  prueba aislados sin consultar esos assets locales.
 - Cuando tono o tempo activan el time-stretch, el exportador calienta las voces
   con silencio hasta estabilizar su latencia de salida. Después reposiciona los
   stems al inicio solicitado, descarta esa latencia inicial y, al terminar el

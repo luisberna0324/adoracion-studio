@@ -1,6 +1,7 @@
 #include "../src/audio/SongMixExporter.h"
 #include "../src/audio/DynamicGuideTiming.h"
 #include "../src/data/ArrangementSourceMapping.h"
+#include "IsolatedTestRoot.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -92,8 +93,7 @@ void testGuideAnnouncementTiming() {
 }
 
 void testSlowlyBuildGuideFallback() {
-  auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                       .getNonexistentChildFile("playworship-guide-test", {}, false);
+  auto directory = isolatedTestRoot().getChildFile("guide");
   expect(directory.createDirectory().wasOk(),
          "guide fallback test creates its temporary directory");
 
