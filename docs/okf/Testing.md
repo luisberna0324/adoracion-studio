@@ -16,7 +16,9 @@ archivos, MIDI, creación y exportación reciben una raíz temporal nueva por pr
 `tests/run_isolated_test.py`. Un retorno 77 de esos tests es un fallo:
 el CI debe comprobar el flujo en lugar de informar una omisión como éxito.
 En macOS, los tests de interfaz no interactivos tampoco aceptan una omisión;
-en Linux sin display conservan el código de skip para ejecución local.
+en Linux sin display conservan el código de skip para ejecución local. Cada PR
+también compila el target `MTControls` con los presets Windows x64 y x86, sin
+empaquetar ni publicar artefactos.
 
 En macOS, con JUCE y Bungee disponibles:
 
