@@ -42,6 +42,14 @@ La sesión de UI vive más que los componentes que mantienen referencias a ella.
 
 - El servidor escucha TCP en el primer puerto libre de 49172–49182 y anuncia
   `_playworship._tcp.local.` por mDNS/DNS-SD.
+- El nombre anunciado usa el nombre visible del dispositivo: en macOS, el
+  nombre del equipo de Compartir; en Android, `Settings.Global.DEVICE_NAME`
+  (con fabricante/modelo como alternativa); en iOS, `UIDevice.name`. No se
+  anuncia `localhost`. Configuración → General permite escribir un alias
+  local para el servidor, aplicado sin cerrar las conexiones WebSocket.
+  Si el alias queda vacío se vuelve al nombre del dispositivo. En iOS 16+
+  `UIDevice.name` puede devolver solo `iPhone` o `iPad` sin el entitlement
+  especial de Apple; el alias distingue equipos con ese nombre genérico.
 - macOS e iOS usan el Bonjour del sistema (`DNSServiceRegister`, browse,
   resolve y resolución IPv4). No envían multicast desde la app: en un iPhone
   físico ese envío requiere el entitlement restringido de multicast, aunque

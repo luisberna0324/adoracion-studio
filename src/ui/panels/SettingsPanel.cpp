@@ -562,6 +562,26 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     remoteModeControl.addAndMakeVisible(button);
   generalPage.addAndMakeVisible(remoteModeControl);
   generalPage.addAndMakeVisible(remoteServersBox);
+  remoteServerAlias = AppSettings::getRemoteServerAlias();
+  remoteServerNameEditor.setText(remoteServerAlias, juce::dontSendNotification);
+  remoteServerNameEditor.setInputRestrictions(28);
+  remoteServerNameEditor.setSelectAllWhenFocused(true);
+  const auto saveRemoteServerAlias = [this] {
+    const auto alias = remoteServerNameEditor.getText().trim()
+                           .removeCharacters("\r\n\t").replaceCharacter('.', '-');
+    if (alias == remoteServerAlias)
+      return;
+    remoteServerAlias = alias;
+    remoteServerNameEditor.setText(alias, juce::dontSendNotification);
+    if (onRemoteServerAliasChanged)
+      onRemoteServerAliasChanged(alias);
+  };
+  remoteServerNameEditor.onReturnKey = [this, saveRemoteServerAlias] {
+    saveRemoteServerAlias();
+    remoteServerNameEditor.giveAwayKeyboardFocus();
+  };
+  remoteServerNameEditor.onFocusLost = saveRemoteServerAlias;
+  generalPage.addAndMakeVisible(remoteServerNameEditor);
   generalPage.addAndMakeVisible(remoteStatus);
   remoteServersBox.onChange = [this] {
     const int index = remoteServersBox.getSelectedId() - 1;
@@ -837,6 +857,8 @@ void SettingsPanel::refreshThemeColours() {
     button->setColour(juce::TextButton::textColourOnId, UITheme::onAccent);
   }
   applyComboBoxTheme(remoteServersBox, UITheme::cardBgHover, UITheme::cardBorder);
+  applyTextEditorTheme(remoteServerNameEditor, UITheme::cardBgHover,
+                       UITheme::cardBorder);
   applyComboBoxTheme(languageBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -1100,6 +1122,12 @@ void SettingsPanel::applyLanguageTexts() {
   remoteClientButton.setButtonText(L10n::tr("Cliente", "Client"));
   remoteServerButton.setButtonText(L10n::tr("Servidor", "Server"));
   remoteServersBox.setTextWhenNothingSelected(L10n::tr("Buscar servidor…", "Find server…"));
+  remoteServerNameEditor.setTextToShowWhenEmpty(
+      L10n::tr("Cambiar nombre del servidor…", "Change server name…"),
+      UITheme::textSecondary);
+  remoteServerNameEditor.setTooltip(L10n::tr(
+      "Nombre que verán los clientes. Vacío usa el nombre del dispositivo.",
+      "Name shown to clients. Leave empty to use the device name."));
 }
 
 void SettingsPanel::layoutGeneralPage() {
@@ -1152,7 +1180,9 @@ void SettingsPanel::layoutGeneralPage() {
     remoteClientButton.setBounds(buttons.removeFromLeft(width));
     remoteServerButton.setBounds(buttons);
     auto connection = area.removeFromTop(40);
-    remoteServersBox.setBounds(connection.removeFromRight(rightW));
+    const auto nameBounds = connection.removeFromRight(rightW);
+    remoteServersBox.setBounds(nameBounds);
+    remoteServerNameEditor.setBounds(nameBounds);
     remoteStatus.setBounds(connection);
   };
 
@@ -1515,6 +1545,7 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
   remoteClientButton.setToggleState(mode == Mode::Client, juce::dontSendNotification);
   remoteServerButton.setToggleState(mode == Mode::Server, juce::dontSendNotification);
   remoteServersBox.setVisible(mode == Mode::Client);
+  remoteServerNameEditor.setVisible(mode == Mode::Server);
   remoteStatus.setText(status, juce::dontSendNotification);
   juce::StringArray names;
   for (const auto &server : servers) names.add(server.instance + " (" + server.address + ")");

@@ -1325,6 +1325,14 @@ void WaveformBar::setMinimalPhoneMode(const bool enabled) {
   resized();
 }
 
+void WaveformBar::setPhoneSafeAreaInsets(const juce::BorderSize<int> insets) {
+  if (phoneSafeAreaInsets == insets)
+    return;
+  phoneSafeAreaInsets = insets;
+  resized();
+  repaint();
+}
+
 void WaveformBar::setOnArrangementChanged(ArrangementChangedCallback cb) {
   onArrangementChanged = std::move(cb);
 }
@@ -1667,12 +1675,17 @@ void WaveformBar::paint(juce::Graphics &g) {
   const auto seekRulerBounds = getSeekRulerBounds(mainWaveBounds);
   const auto miniMapBounds = getMiniMapBounds(bounds);
 
+  const auto safeOverlayBounds = minimalPhoneMode
+      ? phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()
+            .getIntersection(mainWaveBodyBounds)
+      : mainWaveBodyBounds;
+
   // Status is painted directly on the waveform, so it does not alter layout
   // or take taps away from seeking and section controls.
   const auto paintRemoteIndicator = [&] {
     if (remoteIndicator == RemoteIndicator::Hidden ||
-        mainWaveBodyBounds.getWidth() < 80.0f ||
-        mainWaveBodyBounds.getHeight() < 24.0f)
+        safeOverlayBounds.getWidth() < 80.0f ||
+        safeOverlayBounds.getHeight() < 24.0f)
       return;
     const bool connected = remoteIndicator == RemoteIndicator::Connected;
     const auto label = connected ? L10n::tr("REMOTO", "REMOTE")
@@ -1683,11 +1696,11 @@ void WaveformBar::paint(juce::Graphics &g) {
             : L10n::tr("RECONECTANDO", "RECONNECTING");
     const auto font = makeAppFont(minimalPhoneMode ? 10.0f : 10.5f,
                                   AppFontWeight::Bold);
-    const float width = juce::jmin(mainWaveBodyBounds.getWidth() - 12.0f,
+    const float width = juce::jmin(safeOverlayBounds.getWidth() - 12.0f,
                                    juce::jmax(68.0f,
                                               font.getStringWidthFloat(label) + 29.0f));
-    const juce::Rectangle<float> pill(mainWaveBodyBounds.getRight() - width - 6.0f,
-                                       mainWaveBodyBounds.getY() + 5.0f,
+    const juce::Rectangle<float> pill(safeOverlayBounds.getRight() - width - 6.0f,
+                                       safeOverlayBounds.getY() + 5.0f,
                                        width, 20.0f);
     const auto statusColour = connected ? juce::Colour(0xff62d995)
                                         : juce::Colour(0xffffbe63);
@@ -1724,7 +1737,7 @@ void WaveformBar::paint(juce::Graphics &g) {
                   juce::String(percent) + "%";
     }
     g.drawFittedText(emptyText,
-                     mainWaveBodyBounds.toNearestInt().reduced(18),
+                     safeOverlayBounds.toNearestInt().reduced(18),
                      juce::Justification::centred, 2);
     if (miniMapBounds.getHeight() > 0.0f) {
       g.setColour(UITheme::cardBg.withAlpha(0.45f));
@@ -1858,6 +1871,9 @@ void WaveformBar::resized() {
   auto placeBottomWaveControls = [&](const bool includeFollow,
                                      const bool includeViewButtons) {
     auto floating = mainWaveBodyBounds.toNearestInt();
+    if (minimalPhoneMode)
+      floating = floating.getIntersection(
+          phoneSafeAreaInsets.subtractedFrom(getLocalBounds()));
     if (floating.getWidth() > 4 && floating.getHeight() > 4) {
       const int controlH = minimalPhoneMode ? 30 : 26;
       const int buttonGap = minimalPhoneMode ? 6 : 4;
@@ -4880,6 +4896,10 @@ void WaveformBar::rebuildPartOverlayBounds(
     constexpr float actionGap = 8.0f;
     const bool editingNow = isEditingArrangement();
     if (!editingNow) {
+      const auto actionBounds = minimalPhoneMode
+          ? body.getIntersection(
+                phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
+          : body;
       constexpr int actionCount = 3;
       const float horizontalW =
           (actionHitSize * static_cast<float>(actionCount)) +
@@ -4888,26 +4908,26 @@ void WaveformBar::rebuildPartOverlayBounds(
           (actionHitSize * static_cast<float>(actionCount)) +
           (actionGap * static_cast<float>(actionCount - 1));
       const bool horizontal =
-          body.getWidth() >= (horizontalW + 8.0f) &&
-          body.getHeight() >= (actionHitSize + 8.0f);
+          actionBounds.getWidth() >= (horizontalW + 8.0f) &&
+          actionBounds.getHeight() >= (actionHitSize + 8.0f);
       const bool vertical =
-          !horizontal && body.getWidth() >= (actionHitSize + 8.0f) &&
-          body.getHeight() >= (verticalH + 8.0f);
+          !horizontal && actionBounds.getWidth() >= (actionHitSize + 8.0f) &&
+          actionBounds.getHeight() >= (verticalH + 8.0f);
       if (!part.skipPlayback && (horizontal || vertical)) {
         overlay.showsMuteButton = true;
         overlay.showsLoopButton = true;
         overlay.showsJumpButton = true;
         if (horizontal) {
-          const float y = body.getCentreY() - (actionHitSize * 0.5f);
-          float x = body.getCentreX() - (horizontalW * 0.5f);
+          const float y = actionBounds.getCentreY() - (actionHitSize * 0.5f);
+          float x = actionBounds.getCentreX() - (horizontalW * 0.5f);
           overlay.muteButton = {x, y, actionHitSize, actionHitSize};
           x += actionHitSize + actionGap;
           overlay.loopButton = {x, y, actionHitSize, actionHitSize};
           x += actionHitSize + actionGap;
           overlay.jumpButton = {x, y, actionHitSize, actionHitSize};
         } else {
-          const float x = body.getCentreX() - (actionHitSize * 0.5f);
-          float y = body.getCentreY() - (verticalH * 0.5f);
+          const float x = actionBounds.getCentreX() - (actionHitSize * 0.5f);
+          float y = actionBounds.getCentreY() - (verticalH * 0.5f);
           overlay.muteButton = {x, y, actionHitSize, actionHitSize};
           y += actionHitSize + actionGap;
           overlay.loopButton = {x, y, actionHitSize, actionHitSize};
@@ -5976,20 +5996,24 @@ void WaveformBar::drawArrangementOverlay(
       partName = utilityLabel;
     }
 
-    auto textArea = overlay.body.toNearestInt().reduced(6, 4);
-    if (overlay.body.getWidth() >= 18.0f && textArea.getHeight() >= 13) {
-      const bool useAbbreviation = overlay.body.getWidth() < 54.0f;
+    const auto labelBounds = minimalPhoneMode
+        ? overlay.body.getIntersection(
+              phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
+        : overlay.body;
+    auto textArea = labelBounds.toNearestInt().reduced(6, 4);
+    if (labelBounds.getWidth() >= 18.0f && textArea.getHeight() >= 13) {
+      const bool useAbbreviation = labelBounds.getWidth() < 54.0f;
       const auto visibleName =
           useAbbreviation ? abbreviatedArrangementLabel(partName) : partName;
       const auto labelFont = makeAppFont(useAbbreviation ? 9.2f : 10.6f,
                                          AppFontWeight::SemiBold);
       const float textWidth = labelFont.getStringWidthFloat(visibleName);
-      const float maxFlagWidth = juce::jmax(16.0f, overlay.body.getWidth() - 2.0f);
+      const float maxFlagWidth = juce::jmax(16.0f, labelBounds.getWidth() - 2.0f);
       const float flagWidth = juce::jlimit(16.0f, maxFlagWidth, textWidth + 16.0f);
-      auto flag = juce::Rectangle<float>(separatorX, overlay.body.getY() + 3.0f,
+      auto flag = juce::Rectangle<float>(labelBounds.getX(), labelBounds.getY() + 3.0f,
                                          flagWidth, 16.0f);
-      if (flag.getRight() > overlay.body.getRight() - 1.0f)
-        flag.setRight(overlay.body.getRight() - 1.0f);
+      if (flag.getRight() > labelBounds.getRight() - 1.0f)
+        flag.setRight(labelBounds.getRight() - 1.0f);
 
       const auto labelFill = sectionColour.withAlpha(highlighted ? 0.96f : 0.88f);
       g.setColour(juce::Colours::black.withAlpha(0.28f));

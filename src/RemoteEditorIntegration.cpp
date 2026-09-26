@@ -1,11 +1,13 @@
 #include "PluginEditor.h"
 
 #include "data/Localization.h"
+#include "data/AppSettings.h"
 #include "data/ProjectStore.h"
 #include "data/SongLibraryStore.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/SettingsPanel.h"
 #include "network/RemoteStateCodec.h"
+#include "network/RemoteDeviceName.h"
 #include <cstring>
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/WaveformBar.h"
@@ -107,7 +109,8 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     if (waveformBarPtr) { waveformBarPtr->setWaveformBins({}); waveformBarPtr->setArrangement({}, false); waveformBarPtr->setTempoMap({}); waveformBarPtr->resetPlaybackViewForSong(); }
     remoteSession.becomeClient();
   } else if (mode == Mode::Server) {
-    if (!remoteSession.becomeServer(juce::SystemStats::getComputerName() + " PlayWorship"))
+    if (!remoteSession.becomeServer(playworship::remote::makeRemoteServerName(
+            AppSettings::getRemoteServerAlias())))
       remoteConnectionStatus = L10n::tr("No se pudo iniciar el servidor", "Could not start server");
     nextRemotePublishMs = nextRemoteLibraryMs = nextRemoteSettingsMs = 0;
     remoteLibraryDirty = true;
@@ -135,7 +138,10 @@ void MTControlsAudioProcessorEditor::refreshRemoteSettings() {
       status = L10n::tr("Habilita Red local para PlayWorship en Ajustes", "Enable Local Network for PlayWorship in Settings");
     else if (discoveryStatus == DiscoveryStatus::Failed)
       status = L10n::tr("No se pudo iniciar el descubrimiento en la red local", "Unable to start local network discovery");
-    else if (mode == Mode::Server) status = L10n::tr("Servidor activo · Clientes: ", "Server active · Clients: ") + juce::String(remoteSession.getClientCount());
+    else if (mode == Mode::Server)
+      status = L10n::tr("Servidor: ", "Server: ") + remoteSession.getServerDisplayName()
+          + L10n::tr(" · Clientes: ", " · Clients: ")
+          + juce::String(remoteSession.getClientCount());
     else if (playbackSession.isConnected()) status = L10n::tr("Conectado a ", "Connected to ") + remoteSession.getSelectedServerName();
     else if (remoteSession.getSelectedServerName().isEmpty()) status = L10n::tr("Buscando servidores…", "Finding servers…");
     else status = remoteHadSnapshot ? L10n::tr("Reconectando…", "Reconnecting…")

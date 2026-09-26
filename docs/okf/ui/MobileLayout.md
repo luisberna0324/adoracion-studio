@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-09-15T00:00:00-03:00
+timestamp: 2026-09-25T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -21,6 +21,20 @@ iniciales: cambiar sus limites despues desactiva el fullscreen del peer nativo.
 El contenido no redimensiona la ventana. Al cambiar el display se reafirma
 fullscreen y el layout nativo `MATCH_PARENT` propaga la nueva medida a la
 ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
+
+En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
+y agrupa solicitudes usando el estado mas reciente de Biblioteca. La ventana
+standalone sincroniza su geometria con `UIWindowScene.coordinateSpace` al
+terminar la transicion nativa y al volver del background. Propaga el tamano al
+contenedor y al editor aun si los limites de la ventana no cambiaron. Una vez
+adjunto, el editor obtiene su tamano del host y no del cache de displays: este
+puede conservar temporalmente las dimensiones de la orientacion anterior.
+La mascara de orientaciones puede fijarse antes de crear `UIWindowScene`.
+Por eso, en iOS 16+ tambien se compara la orientacion efectiva de la escena
+con la mascara del controlador y se solicita `requestGeometryUpdate` si no
+coinciden, aunque la mascara de JUCE no haya cambiado. Se agrupan solicitudes
+iguales hasta completar la transicion. Esto evita arrancar con la escena en
+portrait y el contenido de performance recortado a un cuadrado.
 
 ## Deteccion
 
@@ -47,18 +61,28 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 
 ## Area segura
 
-- El contenido interactivo se coloca dentro de `Displays::Display::safeAreaInsets`.
+- Los controles fijos se colocan dentro de `Displays::Display::safeAreaInsets`.
 - En iOS, la familia reportada por el sistema tiene prioridad sobre los
   breakpoints: `iPad` siempre usa el perfil tablet/escritorio e `iPhone` usa el
   perfil movil. Esto evita clasificaciones incorrectas por la escala del
   framebuffer del simulador.
 - El fondo del mixer se prolonga visualmente por el inset inferior hasta el
   borde fisico de la ventana, evitando una franja vacia bajo los canales.
-- En iOS landscape se usa el mayor inset horizontal en ambos lados para que la
-  superficie sea equivalente con la camara a izquierda o derecha.
+- En iPhone cada lateral usa su inset real, actualizado al girar. El `TopBar`
+  dibuja su fondo a ancho completo y coloca los botones en su area segura con
+  4 pt de aire adicional. No se igualan ambos insets usando el mayor.
+- La waveform de iPhone llega a ambos bordes. Sus botones flotantes, mensajes,
+  etiquetas y acciones de seccion e indicador remoto permanecen dentro del
+  area segura; el tintado de las secciones conserva el ancho completo.
+- El viewport del mixer de iPhone llega a ambos bordes. El contenido lleva
+  padding desplazable inicial y final equivalente a los insets reales, de
+  modo que el primer y ultimo canal pueden quedar completamente accesibles.
+  La escala de los strips se calcula con el ancho seguro y los canales se
+  desplazan por debajo de las zonas laterales durante el scroll.
 - En Android se respetan los cuatro insets reportados por el sistema, incluyendo
   cutouts y barras de navegacion.
-- Los fondos pueden dibujarse edge-to-edge; transporte, waveform y mixer no.
+- Los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
+  fijas mantienen su proteccion respecto de la camara y esquinas.
 - No se mantienen tablas de margenes por modelo ni gutters fijos para notch.
 
 ## Controles
@@ -158,8 +182,8 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - Pads, expansion vertical de waveform y minimap/navegador inferior de la
   waveform se ocultan en telefono. Tambien se oculta la regla de compases
   superior; la onda principal usa todo ese alto liberado.
-- La waveform de telefono tampoco usa tarjeta, borde ni padding externo: la
-  onda ocupa directamente toda su region segura.
+- La waveform de telefono tampoco usa tarjeta, borde ni padding externo: en
+  iPhone usa todo el ancho; en Android conserva su region segura.
 - En telefono, un arrastre horizontal sobre la onda desplaza su contenido en la
   misma direccion del dedo;
   un toque conserva el seek y un gesto de pinza amplia o reduce la escala con

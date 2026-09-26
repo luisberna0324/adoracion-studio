@@ -679,6 +679,7 @@ target_sources(MTControls
         src/PluginProcessor.h
         src/network/LanDiscovery.cpp
         src/network/LanDiscovery.h
+        src/network/RemoteDeviceName.h
         src/network/RemoteSession.cpp
         src/network/RemoteSession.h
         src/telemetry/Telemetry.cpp
@@ -832,13 +833,23 @@ target_sources(MTControls
 )
 
 if(APPLE)
-    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.mm)
+    target_sources(MTControls PRIVATE
+        src/data/CloudSignedUpload.mm
+        src/network/RemoteDeviceName.mm)
 else()
-    target_sources(MTControls PRIVATE src/data/CloudSignedUpload.cpp)
+    target_sources(MTControls PRIVATE
+        src/data/CloudSignedUpload.cpp
+        src/network/RemoteDeviceName.cpp)
+endif()
+
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    target_link_libraries(MTControls PRIVATE "-framework SystemConfiguration")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_sources(MTControls PRIVATE
+        src/platform/IOSWindowLayout.mm
+        src/platform/IOSWindowLayout.h
         src/platform/NativeAuthSession.mm
         src/platform/NativeAuthSession.h)
     target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")

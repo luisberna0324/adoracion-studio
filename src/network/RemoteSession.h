@@ -33,6 +33,7 @@ public:
   RemoteSession();
   ~RemoteSession();
   bool becomeServer(const juce::String &displayName);
+  void renameServer(const juce::String &displayName);
   void becomeClient();
   void connectTo(const DiscoveredServer &server);
   void stop();
@@ -40,6 +41,7 @@ public:
   bool isConnected() const noexcept { return connected; }
   int getClientCount() const;
   int getPort() const noexcept { return serverPort; }
+  juce::String getServerDisplayName() const { return serverDisplayName; }
   juce::String getSelectedServerName() const { return selectedServerName; }
   std::vector<DiscoveredServer> getDiscoveredServers() const;
   LanDiscovery::Status getDiscoveryStatus() const noexcept { return discovery.getStatus(); }
@@ -69,6 +71,7 @@ private:
   Mode mode = Mode::Local;
   std::atomic<bool> connected{false};
   int serverPort = 0;
+  juce::String serverDisplayName;
   juce::String selectedServerName;
   LanDiscovery discovery;
   std::unique_ptr<ix::WebSocketServer> serverSocket;

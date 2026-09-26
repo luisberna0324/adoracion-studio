@@ -43,6 +43,7 @@ public:
   void setMidiLearnPendingTarget(int targetId);
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
   void setMinimalPhoneMode(bool enabled);
+  void setPhoneSafeAreaInsets(juce::BorderSize<int> insets);
   void setSystemUsage(double cpuUsage01, double memoryUsage01);
   void triggerWindowModeToggleFromMidi();
   void triggerSettingsFromMidi();
@@ -185,6 +186,7 @@ private:
   double lastMemoryUsage01 = -1.0;
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   bool minimalPhoneMode = false;
+  juce::BorderSize<int> phoneSafeAreaInsets;
   int beatsPerBar = 4;
   juce::String timeSignature = "4/4";
 

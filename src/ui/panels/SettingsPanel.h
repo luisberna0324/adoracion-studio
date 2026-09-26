@@ -75,6 +75,7 @@ public:
   std::function<void()> onShareAudioDiagnostics;
   std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
   std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
+  std::function<void(const juce::String &)> onRemoteServerAliasChanged;
   void updateRemoteState(playworship::remote::RemoteSession::Mode mode,
                          const std::vector<playworship::remote::DiscoveredServer> &servers,
                          const juce::String &status,
@@ -171,6 +172,8 @@ private:
   juce::Component remoteModeControl;
   juce::TextButton remoteLocalButton, remoteClientButton, remoteServerButton;
   AdaptiveComboBox remoteServersBox;
+  juce::TextEditor remoteServerNameEditor;
+  juce::String remoteServerAlias;
   juce::Label remoteStatus;
   std::vector<playworship::remote::DiscoveredServer> remoteServers;
   playworship::remote::RemoteSession::Mode remoteMode = playworship::remote::RemoteSession::Mode::Local;

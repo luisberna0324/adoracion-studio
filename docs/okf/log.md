@@ -7,6 +7,34 @@ timestamp: 2026-09-21T00:00:00-03:00
 
 # Changelog
 
+## 2026-09-25
+
+### Superficie de iPhone y rotacion
+
+- La onda y el viewport del mixer de iPhone llegan a los laterales de la
+  pantalla. Los controles fijos usan el inset real de cada lado y el mixer
+  agrega padding desplazable para poder mostrar completos los canales extremos.
+- La ventana iOS se ajusta a la escena activa despues de la rotacion y al
+  reanudar; el editor adjunto sigue las dimensiones de su host. Los cambios de
+  orientacion se agrupan fuera del callback de layout para evitar dimensiones
+  antiguas y superficies recortadas.
+- El arranque reconcilia la orientacion real de `UIWindowScene` con la mascara
+  ya configurada en JUCE: si se fijo antes de crear la escena, solicita la
+  rotacion nativa cuando la ventana ya esta adjunta.
+- Verificacion: el simulador reproduce el recorte anterior y confirma el
+  arranque corregido desde vertical y ambas orientaciones horizontales.
+  Compilacion, firma, instalacion y apertura verificadas en iPhone 16 por
+  Wi-Fi, sin USB; queda pendiente la comprobacion visual en ese dispositivo.
+- Contrato: [Mobile Layout](ui/MobileLayout.md).
+
+### Nombre del servidor remoto
+
+- El anuncio LAN toma el nombre visible del dispositivo según plataforma y
+  evita `localhost`; Configuración permite fijar un alias local que se anuncia
+  sin interrumpir los WebSocket conectados. En iOS 16+ el alias resuelve el
+  nombre genérico entregado por el sistema sin entitlement especial.
+  Contrato: [RemoteControl](integrations/RemoteControl.md).
+
 ## 2026-09-24
 
 ### Control remoto LAN

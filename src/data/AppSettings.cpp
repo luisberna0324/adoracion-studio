@@ -480,6 +480,27 @@ void AppSettings::setLastSelectedSongId(const juce::String &songId) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+juce::String AppSettings::getRemoteServerAlias() {
+  const auto file = getSettingsFile();
+  if (!file.existsAsFile())
+    return {};
+  return juce::JSON::parse(file).getProperty("remoteServerAlias", {})
+      .toString().trim();
+}
+
+void AppSettings::setRemoteServerAlias(const juce::String &alias) {
+  juce::var root;
+  if (getSettingsFile().existsAsFile())
+    root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject())
+    root = juce::var(new juce::DynamicObject());
+  if (auto *object = root.getDynamicObject()) {
+    object->setProperty("version", 16);
+    object->setProperty("remoteServerAlias", alias.trim());
+  }
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 juce::int64 AppSettings::getLastSuccessfulLoginMs() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())

@@ -719,6 +719,14 @@ void TopBar::setMinimalPhoneMode(const bool enabled) {
   repaint();
 }
 
+void TopBar::setPhoneSafeAreaInsets(const juce::BorderSize<int> insets) {
+  if (phoneSafeAreaInsets == insets)
+    return;
+  phoneSafeAreaInsets = insets;
+  resized();
+  repaint();
+}
+
 void TopBar::setSystemUsage(const double cpuUsage01, const double memoryUsage01) {
   const double nextCpu = juce::jlimit(0.0, 1.0, cpuUsage01);
   const double nextMem = juce::jlimit(0.0, 1.0, memoryUsage01);
@@ -909,6 +917,9 @@ void TopBar::paintOverChildren(juce::Graphics &g) {
 
 void TopBar::resized() {
   const auto previousSongBounds = songInfoBounds;
+  const auto contentBounds = minimalPhoneMode
+                                 ? phoneSafeAreaInsets.subtractedFrom(getLocalBounds())
+                                 : getLocalBounds();
   const bool compactTouchTablet =
       useTouchOptimisedControls() && !minimalPhoneMode &&
       responsiveProfile == ResponsiveLayoutProfile::Compact;
@@ -954,7 +965,7 @@ void TopBar::resized() {
   }
 
   if (minimalPhoneMode) {
-    const int phoneWidth = getWidth();
+    const int phoneWidth = contentBounds.getWidth();
     if (phoneWidth < 760) {
       square = 44;
       gap = 6;
@@ -1054,11 +1065,17 @@ void TopBar::resized() {
   setVisibleIfChanged(seekForwardButton, !minimalPhoneProfile);
   setVisibleIfChanged(fadeButton, true);
   const int transportButtonCount = minimalPhoneProfile ? 5 : 7;
-  const int leftPadding = 12;
-  const int rightPadding = 12;
+  int horizontalPadding = 12;
+#if JUCE_IOS
+  if (minimalPhoneProfile)
+    horizontalPadding = 4;
+#endif
+  const int leftPadding = contentBounds.getX() + horizontalPadding;
+  const int rightPadding = horizontalPadding;
   const int transportControlsW =
       (transportButtonCount * square) + ((transportButtonCount - 1) * gap);
-  const int controlY = juce::jmax(0, (getHeight() - square) / 2);
+  const int controlY = contentBounds.getY() +
+                      juce::jmax(0, (contentBounds.getHeight() - square) / 2);
 
   juce::FlexBox transportRow;
   transportRow.flexDirection = juce::FlexBox::Direction::row;
@@ -1092,7 +1109,7 @@ void TopBar::resized() {
   const int fixedButtonCount = tabletProfile ? 1 : (showWindowButton ? 3 : 2);
   const int minFixedButtonsW =
       (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
-  const int availableAfterTransport = getWidth() - rightPadding - transportW - 8;
+  const int availableAfterTransport = contentBounds.getRight() - rightPadding - transportW - 8;
   bool showSystemUsage = !tabletProfile;
   const int maxUsageWidth =
       availableAfterTransport - minFixedButtonsW - gap;
@@ -1119,7 +1136,7 @@ void TopBar::resized() {
     if (usageVisible)
       controlsW += gap + usageWidth;
 
-    const int leftX = getWidth() - rightPadding - controlsW;
+    const int leftX = contentBounds.getRight() - rightPadding - controlsW;
 
     setVisibleIfChanged(timeDisplay, true);
     setVisibleIfChanged(keyDisplay, true);

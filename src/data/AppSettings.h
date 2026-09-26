@@ -83,6 +83,8 @@ public:
   static void setThemePresetId(int presetId);
   static juce::String getLastSelectedSongId();
   static void setLastSelectedSongId(const juce::String &songId);
+  static juce::String getRemoteServerAlias();
+  static void setRemoteServerAlias(const juce::String &alias);
   static juce::int64 getLastSuccessfulLoginMs();
   static void setLastSuccessfulLoginMs(juce::int64 value);
   static juce::int64 getReauthGraceDeadlineMs();

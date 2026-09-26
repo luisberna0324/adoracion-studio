@@ -3,6 +3,9 @@
 
 #include <JuceHeader.h>
 #include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#if JUCE_IOS
+#include "platform/IOSWindowLayout.h"
+#endif
 
 namespace {
 
@@ -35,18 +38,24 @@ juce::String makeWindowTitle() {
 }
 
 class PlayWorshipStandaloneWindow final
-    : public juce::StandaloneFilterWindow {
+    : public juce::StandaloneFilterWindow
+#if JUCE_IOS
+    , private juce::AsyncUpdater
+#endif
+{
 public:
   using juce::StandaloneFilterWindow::StandaloneFilterWindow;
 
 #if JUCE_IOS
   void parentSizeChanged() override {
     juce::StandaloneFilterWindow::parentSizeChanged();
-    // The scene can rotate while the editor is still being constructed. Keep
-    // the native peer fullscreen after its first real display size arrives.
-    if (auto *peer = getPeer())
-      peer->setFullScreen(true);
+    triggerAsyncUpdate();
+  }
+
+  void resized() override {
     juce::StandaloneFilterWindow::resized();
+    if (!synchronisingLayout)
+      triggerAsyncUpdate();
   }
 #endif
 
@@ -54,6 +63,16 @@ public:
     if (auto *app = juce::JUCEApplicationBase::getInstance())
       app->systemRequestedQuit();
   }
+
+#if JUCE_IOS
+private:
+  void handleAsyncUpdate() override {
+    const juce::ScopedValueSetter<bool> guard(synchronisingLayout, true);
+    synchroniseIOSFullscreenWindow(*this);
+  }
+
+  bool synchronisingLayout = false;
+#endif
 };
 
 void queueProjectOpen(juce::StandaloneFilterWindow *window,
@@ -121,8 +140,7 @@ public:
     juce::MessageManager::callAsync(
         [window = juce::Component::SafePointer<juce::StandaloneFilterWindow>(mainWindow.get())] {
           if (window != nullptr)
-            if (auto *peer = window->getPeer())
-              peer->setFullScreen(true);
+            synchroniseIOSFullscreenWindow(*window);
         });
 #endif
     queueProjectOpen(mainWindow.get(),
@@ -136,6 +154,13 @@ public:
       mainWindow->toFront(true);
     }
     queueProjectOpen(mainWindow.get(), findProjectArgument(commandLine));
+  }
+
+  void resumed() override {
+#if JUCE_IOS
+    if (mainWindow != nullptr)
+      synchroniseIOSFullscreenWindow(*mainWindow);
+#endif
   }
 
   void shutdown() override {

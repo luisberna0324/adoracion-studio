@@ -515,6 +515,18 @@ void ChannelGridPanel::setPhoneBottomContentInset(const int inset) {
   resized();
 }
 
+void ChannelGridPanel::setPhoneHorizontalContentInsets(const int left,
+                                                       const int right) {
+  const int nextLeft = juce::jmax(0, left);
+  const int nextRight = juce::jmax(0, right);
+  if (phoneLeftContentInset == nextLeft && phoneRightContentInset == nextRight)
+    return;
+  phoneLeftContentInset = nextLeft;
+  phoneRightContentInset = nextRight;
+  resized();
+  repaint();
+}
+
 void ChannelGridPanel::setOnLibrarySongLoadRequested(
     std::function<void(const ImportedSongData &, int)> cb) {
   onLibrarySongLoadRequested = std::move(cb);
@@ -1380,6 +1392,10 @@ void ChannelGridPanel::refreshThemeColours() {
 }
 
 void ChannelGridPanel::paint(juce::Graphics &g) {
+#if JUCE_IOS
+  if (minimalPhoneMode)
+    g.fillAll(UITheme::cardBg);
+#endif
   if (!minimalPhoneMode) {
     const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
     g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.38f));
@@ -1403,7 +1419,9 @@ void ChannelGridPanel::paint(juce::Graphics &g) {
 void ChannelGridPanel::resized() {
   layoutHeaderAndViewport();
 
-  const int contentWidth = juce::jmax(1, viewport.getWidth());
+  const int leadingInset = minimalPhoneMode ? phoneLeftContentInset : 0;
+  const int trailingInset = minimalPhoneMode ? phoneRightContentInset : 0;
+  const int contentWidth = juce::jmax(1, viewport.getWidth() - leadingInset - trailingInset);
   // Mantener altura estable: actualmente el ruteo por canal esta oculto.
   const bool gridShowsRouting = false;
 
@@ -1464,7 +1482,7 @@ void ChannelGridPanel::resized() {
   // shortens its fader and meter to fit the supplied height.
   const int cellH = minimalPhoneMode ? viewport.getHeight() : naturalCellH;
 
-  int x = pad;
+  int x = pad + leadingInset;
   int y = pad;
   int rows = visibleSlots > 0 ? 1 : 0;
   const int rightEdge = juce::jmax(pad + 1, contentWidth - pad);
@@ -1481,8 +1499,11 @@ void ChannelGridPanel::resized() {
   }
 
   if (minimalPhoneMode) {
-    const int singleRowWidth = visibleSlots > 0 ? x - gapX + pad : contentWidth;
-    content.setSize(juce::jmax(contentWidth, singleRowWidth),
+    // The viewport reaches both screen edges. Scroll padding lets the first
+    // and last strips move entirely clear of the cutout in either orientation.
+    const int singleRowWidth = visibleSlots > 0 ? x - gapX + pad + trailingInset
+                                               : viewport.getWidth();
+    content.setSize(juce::jmax(viewport.getWidth(), singleRowWidth),
                     viewport.getHeight());
     // Phone mixers scroll only along the channel row. JUCE can preserve an old
     // vertical viewport offset after a resize or orientation change, which

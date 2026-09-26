@@ -79,6 +79,7 @@ bool RemoteSession::becomeServer(const juce::String &displayName) {
       serverPort = candidate;
       serverSocket = std::move(socket);
       mode = Mode::Server;
+      serverDisplayName = displayName;
       discovery.startAdvertising(displayName, serverPort);
       return true;
     }
@@ -90,6 +91,13 @@ void RemoteSession::becomeClient() {
   stop();
   mode = Mode::Client;
   discovery.startBrowsing();
+}
+
+void RemoteSession::renameServer(const juce::String &displayName) {
+  if (mode == Mode::Server && serverPort > 0) {
+    serverDisplayName = displayName;
+    discovery.startAdvertising(displayName, serverPort);
+  }
 }
 
 void RemoteSession::connectTo(const DiscoveredServer &server) {
@@ -175,6 +183,7 @@ void RemoteSession::stop() {
   connected = false;
   mode = Mode::Local;
   serverPort = 0;
+  serverDisplayName.clear();
   selectedServerName.clear();
   {
     const std::lock_guard<std::mutex> lock(eventsMutex);

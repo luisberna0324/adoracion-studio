@@ -30,6 +30,7 @@
 
 #include "ui/panels/SongListPanel.h"
 #include "network/RemoteStateCodec.h"
+#include "network/RemoteDeviceName.h"
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
 #include <algorithm>
@@ -975,6 +976,54 @@ void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
 #endif
 }
 
+void MTControlsAudioProcessorEditor::fitMobileEditorToHost() {
+#if JUCE_IOS
+  // Once attached, the host owns the editor's size. A cached display rectangle
+  // can still describe the previous orientation while UIKit is rotating.
+  if (auto *parent = getParentComponent()) {
+    parent->resized();
+    return;
+  }
+#endif
+#if JUCE_IOS || JUCE_ANDROID
+  if (const auto *display =
+          juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()) {
+    setSize(display->userArea.getWidth(), display->userArea.getHeight());
+  }
+#endif
+}
+
+void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
+#if JUCE_IOS || JUCE_ANDROID
+  if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
+    return;
+  const int desired = isSetlistDrawerOpen
+                          ? juce::Desktop::upright
+                          : juce::Desktop::rotatedClockwise |
+                                juce::Desktop::rotatedAntiClockwise;
+  if (juce::Desktop::getInstance().getOrientationsEnabled() == desired)
+    return;
+#if JUCE_ANDROID
+  juce::Desktop::getInstance().setOrientationsEnabled(desired);
+#else
+  phoneOrientationUpdatePending = true;
+  // Changing the scene's orientation from inside resized() can nest native
+  // layout callbacks. Coalesce requests and use the latest drawer state.
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+        if (safe == nullptr)
+          return;
+        safe->phoneOrientationUpdatePending = false;
+        juce::Desktop::getInstance().setOrientationsEnabled(
+            safe->isSetlistDrawerOpen
+                ? juce::Desktop::upright
+                : juce::Desktop::rotatedClockwise |
+                      juce::Desktop::rotatedAntiClockwise);
+      });
+#endif
+#endif
+}
+
 ResponsiveLayoutProfile MTControlsAudioProcessorEditor::resolveResponsiveLayoutProfile()
     const {
   switch (AppSettings::getLayoutMode()) {
@@ -1127,7 +1176,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     const auto userArea =
         juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
 #if JUCE_IOS || JUCE_ANDROID
-    setSize(userArea.getWidth(), userArea.getHeight());
+    fitMobileEditorToHost();
 #else
 #if JucePlugin_Build_Standalone
     juce::MessageManager::callAsync(
@@ -2724,7 +2773,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 #if JUCE_IOS || JUCE_ANDROID
   setResizable(true, true);
   setResizeLimits(320, 280, 32000, 32000);
-  setSize(userArea.getWidth(), userArea.getHeight());
+  fitMobileEditorToHost();
 #else
   const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
   const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
@@ -3196,6 +3245,11 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
   panel->onRemoteModeChanged = [this](playworship::remote::RemoteSession::Mode mode) { setRemoteMode(mode); };
+  panel->onRemoteServerAliasChanged = [this](const juce::String &alias) {
+    AppSettings::setRemoteServerAlias(alias);
+    remoteSession.renameServer(playworship::remote::makeRemoteServerName(alias));
+    refreshRemoteSettings();
+  };
   panel->onRemoteConnect = [this](const playworship::remote::DiscoveredServer &server) {
     playbackSession.setConnected(false);
     remoteHadSnapshot = false;
@@ -3282,9 +3336,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
   setResizeLimits(480, 500, 32000, 32000);
 #endif
 #if JUCE_IOS || JUCE_ANDROID
-  if (const auto *display =
-          juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
-    setSize(display->userArea.getWidth(), display->userArea.getHeight());
+  fitMobileEditorToHost();
 #endif
   if (topBar)
     topBar->setVisible(false);
@@ -4287,13 +4339,7 @@ void MTControlsAudioProcessorEditor::resized() {
   // user-selectable desktop density profile. A wide landscape phone can use
   // the Standard profile while still needing the phone-safe surface.
   const bool minimalPhoneProfile = isPhoneSizedLayout(*this);
-#if JUCE_IOS || JUCE_ANDROID
-  if (minimalPhoneProfile)
-    juce::Desktop::getInstance().setOrientationsEnabled(
-        isSetlistDrawerOpen ? juce::Desktop::upright
-                           : (juce::Desktop::rotatedClockwise |
-                              juce::Desktop::rotatedAntiClockwise));
-#endif
+  updatePhoneOrientation();
   if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
@@ -4301,24 +4347,22 @@ void MTControlsAudioProcessorEditor::resized() {
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
     grid->setMinimalPhoneMode(minimalPhoneProfile);
   int phoneBottomBleed = 0;
+  juce::BorderSize<int> phoneSafeInsets;
+  juce::BorderSize<int> phoneHorizontalInsets;
 #if JUCE_IOS || JUCE_ANDROID
   if (minimalPhoneProfile) {
-    // Standalone iOS windows can extend under the sensor housing/notch. Keep
-    // every primary control inside the display's safe area.
     if (const auto *display =
             juce::Desktop::getInstance().getDisplays().getDisplayForRect(
                 getScreenBounds())) {
       const auto safeInsets = display->safeAreaInsets;
+      phoneSafeInsets = safeInsets;
       phoneBottomBleed = safeInsets.getBottom();
 #if JUCE_IOS
-      // A performance surface must work identically in both landscape
-      // directions. Use the larger horizontal inset on both sides so the
-      // Dynamic Island/camera housing can never cover a primary control.
-      const int horizontalSafe =
-          juce::jmax(safeInsets.getLeft(), safeInsets.getRight());
-      area = juce::BorderSize<int>(safeInsets.getTop(), horizontalSafe,
-                                   safeInsets.getBottom(), horizontalSafe)
-                 .subtractedFrom(area);
+      // Visual surfaces and the scrolling mixer reach the screen edges.
+      // Each panel protects its controls using the actual inset on each side.
+      phoneHorizontalInsets = {0, safeInsets.getLeft(), 0, safeInsets.getRight()};
+      area = juce::BorderSize<int>(safeInsets.getTop(), 0,
+                                   safeInsets.getBottom(), 0).subtractedFrom(area);
 #else
       area = safeInsets.subtractedFrom(area);
 #endif
@@ -4328,9 +4372,16 @@ void MTControlsAudioProcessorEditor::resized() {
   // Phone mixer bounds already end at the platform safe area. Applying that
   // inset again inside every strip lifts the title and S/M row away from the
   // visible bottom edge.
-  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+  if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
+    bar->setPhoneSafeAreaInsets(phoneHorizontalInsets);
+  if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
+    wave->setPhoneSafeAreaInsets(phoneHorizontalInsets);
+  if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) {
     grid->setPhoneBottomContentInset(0);
-  const auto safeContentArea = area;
+    grid->setPhoneHorizontalContentInsets(phoneHorizontalInsets.getLeft(),
+                                          phoneHorizontalInsets.getRight());
+  }
+  const auto safeContentArea = phoneSafeInsets.subtractedFrom(getLocalBounds());
   const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
   const bool setlistOverlaySupported =
       setlistDrawerSupported || minimalPhoneProfile;

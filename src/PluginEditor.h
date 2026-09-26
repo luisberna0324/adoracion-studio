@@ -53,6 +53,9 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  void updatePhoneOrientation();
+  void fitMobileEditorToHost();
+  bool phoneOrientationUpdatePending = false;
   void applyRemoteSnapshot(const juce::var &snapshot);
   void applyRemoteWaveform(const std::vector<uint8_t> &bytes);
   void refreshRemoteSettings();

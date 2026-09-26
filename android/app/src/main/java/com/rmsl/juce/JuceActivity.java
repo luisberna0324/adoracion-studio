@@ -44,6 +44,7 @@ import android.os.Bundle;
 import android.content.Intent;
 import android.content.Context;
 import android.net.wifi.WifiManager;
+import android.provider.Settings;
 import android.view.View;
 
 //==============================================================================
@@ -51,6 +52,26 @@ public class JuceActivity   extends Activity
 {
     private WifiManager.MulticastLock remoteMulticastLock;
     private boolean remoteMulticastRequested;
+
+    public String getRemoteDeviceName()
+    {
+        String name = null;
+        if (Build.VERSION.SDK_INT >= 25)
+        {
+            try
+            {
+                name = Settings.Global.getString (getContentResolver(), Settings.Global.DEVICE_NAME);
+            }
+            catch (SecurityException ignored) {}
+        }
+        if (name != null && !name.trim().isEmpty())
+            return name.trim();
+        String manufacturer = Build.MANUFACTURER != null ? Build.MANUFACTURER.trim() : "";
+        String model = Build.MODEL != null ? Build.MODEL.trim() : "";
+        if (model.toLowerCase().startsWith (manufacturer.toLowerCase()))
+            return model;
+        return (manufacturer + " " + model).trim();
+    }
 
     public void setRemoteMulticastEnabled (boolean enabled)
     {

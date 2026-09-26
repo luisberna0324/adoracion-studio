@@ -99,6 +99,7 @@ public:
                            const juce::String &phaseText);
   void clearSongLoadingState();
   void setRemoteIndicator(RemoteIndicator state);
+  void setPhoneSafeAreaInsets(juce::BorderSize<int> insets);
 
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
@@ -358,6 +359,7 @@ private:
   double lastTimerStartSeconds = 0.0;
   bool waveformVerticalExpanded = false;
   bool minimalPhoneMode = false;
+  juce::BorderSize<int> phoneSafeAreaInsets;
   bool exportBusy = false;
   bool phonePanInertiaActive = false;
   float phonePanVelocity = 0.0f;

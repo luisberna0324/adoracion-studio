@@ -33,6 +33,7 @@ public:
   void setResponsiveProfile(ResponsiveLayoutProfile profile);
   void setMinimalPhoneMode(bool enabled);
   void setPhoneBottomContentInset(int inset);
+  void setPhoneHorizontalContentInsets(int left, int right);
   void refreshLibraryFromStorage();
   void setLibraryNowPlayingSong(const juce::String &songId, bool isPlaying);
   void setOnLibrarySongLoadRequested(
@@ -140,6 +141,8 @@ private:
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
   bool minimalPhoneMode = false;
   int phoneBottomContentInset = 0;
+  int phoneLeftContentInset = 0;
+  int phoneRightContentInset = 0;
   const float nudgeStep = 0.05f;
   static constexpr double volumePersistenceDebounceMs = 120.0;
   bool remoteMixPersistencePending = false;
