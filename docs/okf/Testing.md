@@ -11,10 +11,12 @@ timestamp: 2026-09-26
 ## Suite automatizada
 
 El workflow `.github/workflows/tests.yml` compila el target
-`PlayWorshipTests` y ejecuta CTest en cada PR hacia `main`. Los tests de
+`PlayWorshipTests` y ejecuta CTest en cada PR. Los tests de
 archivos, MIDI, creación y exportación reciben una raíz temporal nueva por proceso mediante
 `tests/run_isolated_test.py`. Un retorno 77 de esos tests es un fallo:
 el CI debe comprobar el flujo en lugar de informar una omisión como éxito.
+En macOS, los tests de interfaz no interactivos tampoco aceptan una omisión;
+en Linux sin display conservan el código de skip para ejecución local.
 
 En macOS, con JUCE y Bungee disponibles:
 
@@ -37,7 +39,7 @@ ctest --test-dir build/functional-tests --output-on-failure \
 | --- | --- |
 | [Transporte](transport/Transport.md) y [arrange](engine/SectionScheduler.md) | `audio_engine_core`, `song_mix_export_timeline` |
 | [Motor de audio](engine/StemMixEngine.md), click y pads | `stem_mix_engine`, `stem_buffering_source`, `metronome_engine`, `pads_engine`, `bungee_processor` |
-| [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia de bindings, modos y límites |
+| [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |

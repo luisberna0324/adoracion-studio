@@ -362,7 +362,9 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsSettingsSheetTests PRIVATE
         juce::juce_gui_basics juce::juce_audio_basics juce::juce_cryptography)
     add_test(NAME settings_versions_sheet COMMAND MTControlsSettingsSheetTests)
-    set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsInputControlsTests PRODUCT_NAME "Input Controls Tests")
     if(APPLE)
         set_source_files_properties(tests/input_controls_tests.cpp PROPERTIES LANGUAGE OBJCXX)
@@ -376,7 +378,9 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsInputControlsTests PRIVATE
         juce::juce_gui_basics juce::juce_audio_basics MTControlsAssets)
     add_test(NAME input_controls COMMAND MTControlsInputControlsTests)
-    set_tests_properties(input_controls PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(input_controls PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     add_test(NAME input_controls_popup COMMAND MTControlsInputControlsTests --popup)
     set_tests_properties(input_controls_popup PROPERTIES
         LABELS interactive SKIP_RETURN_CODE 77)
@@ -779,6 +783,7 @@ target_sources(MTControls
         src/audio/AudioDeviceMonitor.h
         src/audio/SongMixExporter.cpp
         src/audio/SongMixExporter.h
+        src/audio/MidiBindingTrigger.h
         src/audio/StemCache.cpp
         src/audio/StemCache.h
         src/SongLoadProbe.cpp

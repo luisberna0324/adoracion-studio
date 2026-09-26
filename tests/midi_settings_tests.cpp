@@ -1,5 +1,6 @@
 #include "data/AppSettings.h"
 #include "data/ApplicationDataPaths.h"
+#include "audio/MidiBindingTrigger.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -11,9 +12,53 @@ void expect(const bool condition, const char *message) {
     std::exit(1);
   }
 }
+
+void testMidiMessageTriggers() {
+  using playworship::midi::mappedValue;
+  MidiBindingSetting cc;
+  cc.sourceType = MidiBindingSourceType::CC;
+  cc.mode = MidiBindingMode::Toggle;
+  int previous = -1;
+  expect(!mappedValue(cc, false, false, false, 0, &previous) &&
+             !mappedValue(cc, false, false, false, 63, &previous),
+         "CC toggle ignores values below its press threshold");
+  expect(mappedValue(cc, false, false, false, 64, &previous) == 64 &&
+             !mappedValue(cc, false, false, false, 127, &previous) &&
+             !mappedValue(cc, false, false, false, 0, &previous) &&
+             mappedValue(cc, false, false, false, 127, &previous) == 127,
+         "CC toggle fires once per rising edge and can be retriggered");
+
+  cc.mode = MidiBindingMode::Momentary;
+  previous = -1;
+  expect(mappedValue(cc, false, false, false, 127, &previous) == 127 &&
+             mappedValue(cc, false, false, false, 0, &previous) == 0,
+         "CC momentary applies press and release");
+
+  cc.mode = MidiBindingMode::Absolute;
+  previous = -1;
+  expect(mappedValue(cc, false, false, false, 42, &previous) == 42 &&
+             previous == -1,
+         "absolute fader follows the raw CC value without edge state");
+  cc.mode = MidiBindingMode::Toggle;
+  expect(mappedValue(cc, true, false, false, 90, &previous) == 90 &&
+             previous == -1,
+         "continuous targets follow the CC value regardless of button mode");
+
+  MidiBindingSetting note;
+  note.sourceType = MidiBindingSourceType::Note;
+  note.mode = MidiBindingMode::Toggle;
+  expect(mappedValue(note, false, true, false, 80, nullptr) == 127 &&
+             !mappedValue(note, false, false, true, 0, nullptr),
+         "note toggle acts on Note On but not Note Off");
+  note.mode = MidiBindingMode::Momentary;
+  expect(mappedValue(note, false, true, false, 80, nullptr) == 127 &&
+             mappedValue(note, false, false, true, 0, nullptr) == 0,
+         "note momentary releases its target on Note Off");
+}
 } // namespace
 
 int main() {
+  testMidiMessageTriggers();
   const auto root = ApplicationDataPaths::isolatedTestRoot();
   const auto settingsDirectory =
       ApplicationDataPaths::applicationDataDirectory().getChildFile("MTControls");

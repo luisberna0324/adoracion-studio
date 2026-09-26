@@ -15,11 +15,8 @@ Sistema de mapeo de mensajes MIDI a targets del plugin.
 
 ### Source (Fuente)
 
-El mensaje MIDI que se recibe:
-- **CC (Control Change)**: Perillas, faders, botones
-- **Note**: Teclado, pads
-- **Pitch Bend**: Wheel de pitch
-- **Aftertouch**: Presión post-tecla
+Los bindings aceptan **CC (Control Change)** y **Note On/Off**. Otros mensajes
+pueden aparecer en el probe de diagnóstico, pero no activan un binding.
 
 ### Target (Destino)
 
@@ -32,20 +29,25 @@ Cómo se interpreta el valor MIDI:
 | Modo | Descripción |
 |------|-------------|
 | `Absolute` | Valor directo (0-127) |
-| `Relative` | Cambio incremental (+/-) |
-| `Toggle` | On/Off alternado |
+| `Toggle` | Activa sólo al pulsar; un CC se dispara al cruzar de 0-63 a 64-127 |
+| `Momentary` | Activa al pulsar y desactiva al soltar |
+
+Los targets continuos, como volumen y gain, siguen el valor recibido aun si
+el binding estaba configurado como `Toggle` o `Momentary`. En notas, `Toggle`
+ignora Note Off; `Momentary` entrega 127 en Note On y 0 en Note Off. En CC,
+`Momentary` entrega también el valor de la bajada bajo 64. La decisión de
+disparo se resuelve en `src/audio/MidiBindingTrigger.h`, usado por el callback
+de audio sin asignaciones de memoria.
 
 ## MidiBinding Struct
 
 ```cpp
-struct MidiBinding {
-    MidiBindingSourceType sourceType;
-    int channel;          // 0-15
-    int data1;            // CC# o note#
+struct MidiBindingSetting {
     int targetId;
-    MidiBindingMode mode;
-    float min;            // Mapeo mínimo
-    float max;            // Mapeo máximo
+    int midiChannel;      // 1..16
+    int ccNumber;         // 0..127: número de CC o nota
+    MidiBindingSourceType sourceType; // CC o Note
+    MidiBindingMode mode; // Absolute, Toggle o Momentary
 };
 ```
 
@@ -177,6 +179,9 @@ std::atomic<int> publishedMidiBindingSnapshot{0};
 - **Writer**: UI thread escribe nuevos bindings
 - **Reader**: Audio thread lee snapshot actual
 - **Atomic swap**: Cambio de índice atómico
+
+`midi_settings` verifica persistencia de bindings y disparos de CC/Note en los
+tres modos, incluidos los bordes de pulsación y liberación.
 
 ### Contrato realtime
 
