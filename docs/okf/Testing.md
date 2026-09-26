@@ -99,4 +99,5 @@ un test automatizado del contrato afectado cuando sea posible.
   se conservaron con etiqueta `lan` y se añadió cobertura portátil de WebSocket
   directa al gate. La configuración revisada pasó 24/24 pruebas del gate en
   macOS local, y las dos pruebas `lan` pasaron por separado (26/26 en total).
-  Falta el resultado del nuevo run de CI.
+- El segundo run del PR #41 pasó 24/24 pruebas del gate en el runner macOS y
+  también pasó la política SemVer. Las comprobaciones físicas siguen pendientes.
