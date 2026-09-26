@@ -182,7 +182,10 @@ int main() {
   first.becomeClient();
   second.becomeClient();
   DiscoveredServer address;
-  if (!waitUntil([&] {
+  if (std::getenv("PW_REMOTE_DIRECT_CONNECT") != nullptr) {
+    address = {"Remote test", "127.0.0.1", server.getPort(),
+               juce::Time::currentTimeMillis()};
+  } else if (!waitUntil([&] {
         for (const auto &found : first.getDiscoveredServers())
           if (found.instance == "Remote test" &&
               found.port == server.getPort()) {

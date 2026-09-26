@@ -310,11 +310,16 @@ if(MTCONTROLS_BUILD_TESTS)
         target_compile_definitions(MTControlsPortableRemoteSessionTests PRIVATE PLAYWORSHIP_FORCE_PORTABLE_MDNS=1)
         target_link_libraries(MTControlsPortableRemoteSessionTests PRIVATE
             juce::juce_core juce::juce_data_structures juce::juce_cryptography ixwebsocket::ixwebsocket)
+        add_test(NAME remote_session_portable_transport COMMAND MTControlsPortableRemoteSessionTests)
+        set_tests_properties(remote_session_portable_transport PROPERTIES
+            ENVIRONMENT "PW_REMOTE_DIRECT_CONNECT=1")
         add_test(NAME remote_session_portable COMMAND MTControlsPortableRemoteSessionTests)
+        set_tests_properties(remote_session_portable PROPERTIES LABELS lan)
         add_test(NAME remote_discovery_interop COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_discovery_interop.py"
             "$<TARGET_FILE:MTControlsRemoteSessionTests>"
             "$<TARGET_FILE:MTControlsPortableRemoteSessionTests>")
+        set_tests_properties(remote_discovery_interop PROPERTIES LABELS lan)
     endif()
     juce_add_console_app(MTControlsCloudSettingsSyncTests PRODUCT_NAME "Cloud Settings Sync Tests")
     target_sources(MTControlsCloudSettingsSyncTests PRIVATE tests/cloud_settings_sync_state_tests.cpp)

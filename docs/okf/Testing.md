@@ -26,12 +26,21 @@ cmake -S . -B build/functional-tests -G Ninja \
   -DMTCONTROLS_BUILD_TESTS=ON
 cmake --build build/functional-tests --target PlayWorshipTests --parallel 3
 ctest --test-dir build/functional-tests --output-on-failure \
-  --no-tests=error -LE interactive
+  --no-tests=error -LE 'interactive|lan'
 ```
 
 `input_controls_popup` requiere foco de una ventana real y lleva la etiqueta
 `interactive`. Se ejecuta localmente con
 `ctest --test-dir build/functional-tests -R '^input_controls_popup$'`.
+
+En el primer run del PR, el runner alojado de macOS no entregó los paquetes
+multicast mDNS del backend portátil a procesos de la misma máquina. Las pruebas
+`remote_session_portable` y `remote_discovery_interop` llevan la etiqueta `lan`
+y se ejecutan en una Mac con red local mediante `ctest --test-dir
+build/functional-tests --output-on-failure -L lan`. El gate de PR ejecuta
+`remote_session` con Bonjour nativo y `remote_session_portable_transport` con
+conexión WebSocket directa a loopback; este último ejercita comandos, snapshots,
+onda, VU y reconexión con la compilación portátil.
 
 ## Cobertura por contrato
 
@@ -43,7 +52,7 @@ ctest --test-dir build/functional-tests --output-on-failure \
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
-| [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable`, `remote_discovery_interop` |
+| [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |
 
 Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmaciones,
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,
@@ -83,5 +92,11 @@ un test automatizado del contrato afectado cuando sea posible.
   pasaron con acceso a sockets locales. El sandbox impedía iniciar el servidor
   WebSocket, así que ese primer fallo no era una regresión de protocolo.
 - `input_controls_popup` quedó fuera del gate automático porque requiere foco
-  interactivo. El workflow de GitHub y las comprobaciones en dispositivos
-  físicos aún no tienen un resultado de ejecución registrado aquí.
+  interactivo. Las comprobaciones en dispositivos físicos aún no tienen un
+  resultado de ejecución registrado aquí.
+- El primer run de PR (#41) compiló correctamente y pasó 23/25 pruebas. Fallaron
+  las dos pruebas de descubrimiento mDNS portátil en el runner alojado de macOS;
+  se conservaron con etiqueta `lan` y se añadió cobertura portátil de WebSocket
+  directa al gate. La configuración revisada pasó 24/24 pruebas del gate en
+  macOS local, y las dos pruebas `lan` pasaron por separado (26/26 en total).
+  Falta el resultado del nuevo run de CI.
