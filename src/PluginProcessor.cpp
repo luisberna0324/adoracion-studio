@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "audio/MidiBindingTrigger.h"
 #include "PluginEditor.h"
 #include "SongLoadProbe.h"
 #include "audio/DynamicGuideTiming.h"
@@ -3475,35 +3476,19 @@ void MTControlsAudioProcessor::processMidiMapping(
           binding.ccNumber != sourceData1)
         continue;
 
-      if (binding.mode == MidiBindingMode::Absolute ||
-          isContinuousMidiTargetId(binding.targetId)) {
-        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
-        continue;
+      const bool continuousTarget = isContinuousMidiTargetId(binding.targetId);
+      int *lastCcValue = nullptr;
+      if (binding.sourceType == MidiBindingSourceType::CC &&
+          binding.mode != MidiBindingMode::Absolute && !continuousTarget) {
+        const int stateIndex =
+            midiSourceStateIndex(binding.sourceType, channel, sourceData1);
+        lastCcValue = &midiLastSourceValues[static_cast<size_t>(stateIndex)];
       }
-
-      if (binding.sourceType == MidiBindingSourceType::Note) {
-        if (binding.mode == MidiBindingMode::Toggle) {
-          if (isNoteOn)
-            applyMidiBindingValue(binding.targetId, 127, binding.mode);
-        } else if (binding.mode == MidiBindingMode::Momentary) {
-          if (isNoteOn)
-            applyMidiBindingValue(binding.targetId, 127, binding.mode);
-          else if (isNoteOff)
-            applyMidiBindingValue(binding.targetId, 0, binding.mode);
-        }
-        continue;
+      if (const auto value = playworship::midi::mappedValue(
+              binding, continuousTarget, isNoteOn, isNoteOff, sourceValue,
+              lastCcValue)) {
+        applyMidiBindingValue(binding.targetId, *value, binding.mode);
       }
-
-      const int stateIndex =
-          midiSourceStateIndex(binding.sourceType, channel, sourceData1);
-      const int previous = midiLastSourceValues[static_cast<size_t>(stateIndex)];
-      midiLastSourceValues[static_cast<size_t>(stateIndex)] = sourceValue;
-      const bool prevHigh = previous >= 64;
-      const bool nowHigh = sourceValue >= 64;
-      if (!prevHigh && nowHigh)
-        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
-      else if (binding.mode == MidiBindingMode::Momentary && prevHigh && !nowHigh)
-        applyMidiBindingValue(binding.targetId, sourceValue, binding.mode);
     }
     releaseMidiBindingSnapshot();
   }

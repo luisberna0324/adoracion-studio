@@ -1,4 +1,5 @@
 #include "data/ProjectArtwork.h"
+#include "IsolatedTestRoot.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -12,8 +13,7 @@ void expect(bool value, const char *message) {
 }
 
 struct TemporaryArtworkDirectory {
-  juce::File root = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                        .getNonexistentChildFile("playworship-artwork-test", {}, false);
+  juce::File root = isolatedTestRoot().getChildFile("artwork");
   TemporaryArtworkDirectory() {
     expect(root.createDirectory().wasOk(), "create isolated artwork test directory");
   }

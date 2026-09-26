@@ -79,6 +79,10 @@ processor.setMetronomeVolume(0.5f);
 
 ## Convenciones
 
+La suite de regresión y la validación en dispositivos se describen en
+[Pruebas funcionales](Testing.md).
+
+
 - **Stem indices**: 0 a 63 (maxStemCount = 64)
 - **Output channels**: 1-indexed en UI, 0-indexed internamente
 - **Volumen vs Gain**: Volume es 0-1 visual, Gain es dB linear

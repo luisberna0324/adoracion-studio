@@ -240,10 +240,12 @@ SongMixExporter::Result SongMixExporter::exportToWav(
   click.setSubdivision(subdivisionForMask(request.clickDivisionMask));
   click.setVolume(1.0f);
   click.setMuted(false);
-  juce::String clickLoadError;
-  click.loadClickSamplesFromFolder(AssetBootstrapManager::getClicksPackDirectory(),
-                                   request.clickStyle, virtualFormats,
-                                   &clickLoadError);
+  if (request.dynamicClick.enabled) {
+    juce::String clickLoadError;
+    click.loadClickSamplesFromFolder(AssetBootstrapManager::getClicksPackDirectory(),
+                                     request.clickStyle, virtualFormats,
+                                     &clickLoadError);
+  }
   const double playbackStartSeconds =
       timeline.playbackSecondsAtOutputBoundary(0);
   click.syncPhaseForTimeSeconds(playbackStartSeconds);

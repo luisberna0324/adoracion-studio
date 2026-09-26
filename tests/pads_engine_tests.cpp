@@ -1,4 +1,5 @@
 #include "../src/audio/PadsEngine.h"
+#include "IsolatedTestRoot.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -199,8 +200,7 @@ void testResidentAttackPromotesWithoutRestartAndSurvivesEviction() {
 }
 
 void testPartialDecodePreservesLengthAndCancellation() {
-  const auto file = juce::File::getSpecialLocation(juce::File::tempDirectory)
-      .getNonexistentChildFile("pads-decode-test", ".wav");
+  const auto file = isolatedTestRoot().getChildFile("pads-decode-test.wav");
   {
     std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
     juce::WavAudioFormat wav;
