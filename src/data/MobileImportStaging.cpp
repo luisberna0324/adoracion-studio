@@ -1,4 +1,5 @@
 #include "MobileImportStaging.h"
+#include "ApplicationDataPaths.h"
 
 #include <array>
 #include <limits>
@@ -17,9 +18,13 @@ struct StagedEntry final {
 } // namespace
 
 MobileImportStaging::MobileImportStaging() {
+#if defined(MTCONTROLS_ISOLATED_STORAGE_TESTS) && MTCONTROLS_ISOLATED_STORAGE_TESTS
+  const auto temporaryRoot = ApplicationDataPaths::isolatedTestRoot();
+#else
+  const auto temporaryRoot = juce::File::getSpecialLocation(juce::File::tempDirectory);
+#endif
   const auto candidate =
-      juce::File::getSpecialLocation(juce::File::tempDirectory)
-          .getChildFile("playworship-import-" + juce::Uuid().toString());
+      temporaryRoot.getChildFile("playworship-import-" + juce::Uuid().toString());
   // Never assume ownership of a directory that existed before this draft.
   if (candidate.exists()) {
     directoryError = "Couldn't reserve a unique import directory.";

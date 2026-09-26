@@ -1,4 +1,5 @@
 #include "../src/data/PortableFlacConversion.h"
+#include "IsolatedTestRoot.h"
 
 #include <cmath>
 #include <iostream>
@@ -182,11 +183,11 @@ void testFailures(const juce::File &directory) {
 
 int main() {
   try {
-    const juce::TemporaryFile directory(".portable-flac-tests");
-    expect(directory.getFile().createDirectory().wasOk(),
+    const auto directory = isolatedTestRoot().getChildFile("portable-flac");
+    expect(directory.createDirectory().wasOk(),
            "test creates its isolated temporary directory");
-    testInputs(directory.getFile());
-    testFailures(directory.getFile());
+    testInputs(directory);
+    testFailures(directory);
     std::cout << "Portable FLAC conversion tests passed\n";
     return 0;
   } catch (const std::exception &error) {

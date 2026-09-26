@@ -26,7 +26,7 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
-option(MTCONTROLS_BUILD_TESTS "Build lightweight audio engine core tests" OFF)
+option(MTCONTROLS_BUILD_TESTS "Build the PlayWorship regression tests" OFF)
 option(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
     "Log aggregate VU meter repaint counters every two seconds" OFF)
 option(MTCONTROLS_ENABLE_SENTRY
@@ -289,6 +289,7 @@ endif()
 
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
     target_sources(MTControlsRemoteSessionTests PRIVATE
         tests/remote_session_tests.cpp
@@ -309,12 +310,16 @@ if(MTCONTROLS_BUILD_TESTS)
         target_compile_definitions(MTControlsPortableRemoteSessionTests PRIVATE PLAYWORSHIP_FORCE_PORTABLE_MDNS=1)
         target_link_libraries(MTControlsPortableRemoteSessionTests PRIVATE
             juce::juce_core juce::juce_data_structures juce::juce_cryptography ixwebsocket::ixwebsocket)
+        add_test(NAME remote_session_portable_transport COMMAND MTControlsPortableRemoteSessionTests)
+        set_tests_properties(remote_session_portable_transport PROPERTIES
+            ENVIRONMENT "PW_REMOTE_DIRECT_CONNECT=1")
         add_test(NAME remote_session_portable COMMAND MTControlsPortableRemoteSessionTests)
-        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set_tests_properties(remote_session_portable PROPERTIES LABELS lan)
         add_test(NAME remote_discovery_interop COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_discovery_interop.py"
             "$<TARGET_FILE:MTControlsRemoteSessionTests>"
             "$<TARGET_FILE:MTControlsPortableRemoteSessionTests>")
+        set_tests_properties(remote_discovery_interop PROPERTIES LABELS lan)
     endif()
     juce_add_console_app(MTControlsCloudSettingsSyncTests PRODUCT_NAME "Cloud Settings Sync Tests")
     target_sources(MTControlsCloudSettingsSyncTests PRIVATE tests/cloud_settings_sync_state_tests.cpp)
@@ -323,6 +328,36 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsCloudSettingsSyncTests
         PRIVATE juce::juce_core juce::juce_cryptography)
     add_test(NAME cloud_settings_sync_state COMMAND MTControlsCloudSettingsSyncTests)
+    juce_add_console_app(MTControlsCloudSyncIndexTests
+        PRODUCT_NAME "Cloud Sync Index Tests")
+    target_sources(MTControlsCloudSyncIndexTests PRIVATE
+        tests/cloud_sync_index_tests.cpp
+        src/data/CloudSyncIndexStore.cpp
+        src/data/SongLibraryStore.cpp
+        src/data/AppSettings.cpp
+        src/data/SessionAuthLogger.cpp)
+    juce_generate_juce_header(MTControlsCloudSyncIndexTests)
+    target_include_directories(MTControlsCloudSyncIndexTests PRIVATE src)
+    target_compile_definitions(MTControlsCloudSyncIndexTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsCloudSyncIndexTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils
+        juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME cloud_sync_index COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsCloudSyncIndexTests>")
+    juce_add_console_app(MTControlsMidiSettingsTests PRODUCT_NAME "MIDI Settings Tests")
+    target_sources(MTControlsMidiSettingsTests PRIVATE
+        tests/midi_settings_tests.cpp src/data/AppSettings.cpp
+        src/data/SongData.cpp)
+    juce_generate_juce_header(MTControlsMidiSettingsTests)
+    target_include_directories(MTControlsMidiSettingsTests PRIVATE src)
+    target_compile_definitions(MTControlsMidiSettingsTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsMidiSettingsTests PRIVATE juce::juce_audio_utils)
+    add_test(NAME midi_settings COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsMidiSettingsTests>")
     juce_add_console_app(MTControlsSettingsSheetTests PRODUCT_NAME "Settings Sheet Tests")
     target_sources(MTControlsSettingsSheetTests PRIVATE
         tests/settings_versions_sheet_tests.cpp src/ui/components/SettingsVersionsSheet.cpp)
@@ -332,7 +367,9 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsSettingsSheetTests PRIVATE
         juce::juce_gui_basics juce::juce_audio_basics juce::juce_cryptography)
     add_test(NAME settings_versions_sheet COMMAND MTControlsSettingsSheetTests)
-    set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(settings_versions_sheet PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsInputControlsTests PRODUCT_NAME "Input Controls Tests")
     if(APPLE)
         set_source_files_properties(tests/input_controls_tests.cpp PROPERTIES LANGUAGE OBJCXX)
@@ -346,26 +383,41 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsInputControlsTests PRIVATE
         juce::juce_gui_basics juce::juce_audio_basics MTControlsAssets)
     add_test(NAME input_controls COMMAND MTControlsInputControlsTests)
-    set_tests_properties(input_controls PROPERTIES SKIP_RETURN_CODE 77)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(input_controls PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     add_test(NAME input_controls_popup COMMAND MTControlsInputControlsTests --popup)
-    set_tests_properties(input_controls_popup PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(input_controls_popup PROPERTIES
+        LABELS interactive SKIP_RETURN_CODE 77)
     juce_add_console_app(MTControlsProjectArtworkTests PRODUCT_NAME "Project Artwork Tests")
     target_sources(MTControlsProjectArtworkTests PRIVATE tests/project_artwork_tests.cpp)
     target_include_directories(MTControlsProjectArtworkTests PRIVATE src)
+    target_compile_definitions(MTControlsProjectArtworkTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsProjectArtworkTests PRIVATE juce::juce_core)
-    add_test(NAME project_artwork COMMAND MTControlsProjectArtworkTests)
+    add_test(NAME project_artwork COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsProjectArtworkTests>")
     juce_add_console_app(MTControlsPortableFlacTests PRODUCT_NAME "Portable FLAC Tests")
     target_sources(MTControlsPortableFlacTests PRIVATE
         tests/portable_flac_conversion_tests.cpp src/data/PortableFlacConversion.cpp)
     target_include_directories(MTControlsPortableFlacTests PRIVATE src)
+    target_compile_definitions(MTControlsPortableFlacTests PRIVATE
+        JUCE_USE_MP3AUDIOFORMAT=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsPortableFlacTests PRIVATE juce::juce_audio_formats)
-    add_test(NAME portable_flac_conversion COMMAND MTControlsPortableFlacTests)
+    add_test(NAME portable_flac_conversion COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsPortableFlacTests>")
     juce_add_console_app(MTControlsImportStagingTests PRODUCT_NAME "Import Staging Tests")
     target_sources(MTControlsImportStagingTests PRIVATE
         tests/mobile_import_staging_tests.cpp src/data/MobileImportStaging.cpp)
     target_include_directories(MTControlsImportStagingTests PRIVATE src)
+    target_compile_definitions(MTControlsImportStagingTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsImportStagingTests PRIVATE juce::juce_core)
-    add_test(NAME mobile_import_staging COMMAND MTControlsImportStagingTests)
+    add_test(NAME mobile_import_staging COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsImportStagingTests>")
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -374,8 +426,9 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsSongCreationTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsSongCreationTests)
-    add_test(NAME song_project_creation COMMAND MTControlsSongCreationTests)
-    set_tests_properties(song_project_creation PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME song_project_creation COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSongCreationTests>")
     juce_add_console_app(MTControlsSongWizardTests PRODUCT_NAME "Song Wizard Tests")
     target_sources(MTControlsSongWizardTests PRIVATE tests/song_import_wizard_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -385,15 +438,20 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsSongWizardTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsSongWizardTests)
-    add_test(NAME song_import_wizard COMMAND MTControlsSongWizardTests)
-    set_tests_properties(song_import_wizard PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME song_import_wizard COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSongWizardTests>")
     juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
     target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
     juce_generate_juce_header(MTControlsDiagnosticReportTests)
     target_include_directories(MTControlsDiagnosticReportTests PRIVATE src)
+    target_compile_definitions(MTControlsDiagnosticReportTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsDiagnosticReportTests
         PRIVATE juce::juce_core juce::juce_audio_basics)
-    add_test(NAME playback_diagnostic_report COMMAND MTControlsDiagnosticReportTests)
+    add_test(NAME playback_diagnostic_report COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsDiagnosticReportTests>")
     add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
     target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
     add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)
@@ -457,9 +515,13 @@ if(MTCONTROLS_BUILD_TESTS)
     )
     juce_generate_juce_header(MTControlsPadsEngineTests)
     target_include_directories(MTControlsPadsEngineTests PRIVATE src)
+    target_compile_definitions(MTControlsPadsEngineTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsPadsEngineTests
         PRIVATE juce::juce_audio_utils)
-    add_test(NAME pads_engine COMMAND MTControlsPadsEngineTests)
+    add_test(NAME pads_engine COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsPadsEngineTests>")
 
     juce_add_console_app(MTControlsSongMixExportTimelineTests
         PRODUCT_NAME "MTControls Song Mix Export Timeline Tests")
@@ -472,10 +534,26 @@ if(MTCONTROLS_BUILD_TESTS)
     )
     juce_generate_juce_header(MTControlsSongMixExportTimelineTests)
     target_include_directories(MTControlsSongMixExportTimelineTests PRIVATE src)
+    target_compile_definitions(MTControlsSongMixExportTimelineTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     target_link_libraries(MTControlsSongMixExportTimelineTests
         PRIVATE juce::juce_audio_utils)
     add_test(NAME song_mix_export_timeline
-        COMMAND MTControlsSongMixExportTimelineTests)
+        COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSongMixExportTimelineTests>")
+
+    juce_add_console_app(MTControlsSongMixExporterTests
+        PRODUCT_NAME "Song Mix Exporter Tests")
+    target_sources(MTControlsSongMixExporterTests PRIVATE
+        tests/song_mix_exporter_tests.cpp)
+    juce_generate_juce_header(MTControlsSongMixExporterTests)
+    target_include_directories(MTControlsSongMixExporterTests PRIVATE src)
+    target_link_libraries(MTControlsSongMixExporterTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp)
+    add_test(NAME song_mix_exporter COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSongMixExporterTests>")
 
     if(MTCONTROLS_BUNGEE_AVAILABLE)
         add_executable(MTControlsBungeeTests
@@ -526,6 +604,17 @@ if(MTCONTROLS_BUILD_TESTS)
         PRIVATE juce::juce_audio_basics)
     add_test(NAME stem_output_router
         COMMAND MTControlsStemOutputRouterTests)
+
+    # Build only the regression executables in CI; this avoids packaging and
+    # signing the standalone app while still building MTControls where needed.
+    get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    set(_mtcontrols_test_targets)
+    foreach(_mtcontrols_target IN LISTS _mtcontrols_directory_targets)
+        if(_mtcontrols_target MATCHES "^MTControls.*Tests$")
+            list(APPEND _mtcontrols_test_targets "${_mtcontrols_target}")
+        endif()
+    endforeach()
+    add_custom_target(PlayWorshipTests DEPENDS ${_mtcontrols_test_targets})
 endif()
 
 if (TARGET soundstretch)
@@ -700,6 +789,7 @@ target_sources(MTControls
         src/audio/AudioDeviceMonitor.h
         src/audio/SongMixExporter.cpp
         src/audio/SongMixExporter.h
+        src/audio/MidiBindingTrigger.h
         src/audio/StemCache.cpp
         src/audio/StemCache.h
         src/SongLoadProbe.cpp

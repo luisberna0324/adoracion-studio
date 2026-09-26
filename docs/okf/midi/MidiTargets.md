@@ -142,28 +142,23 @@ Base: `midiTargetStemSoloBase` (500)
 ## Estructura MidiBinding
 
 ```cpp
-struct MidiBinding {
-    MidiBindingSourceType sourceType;  // CC, Note, PitchBend, etc.
-    int channel;                        // 0-15
-    int data1;                         // CC number o note number
+struct MidiBindingSetting {
     int targetId;                      // ID del target
-    MidiBindingMode mode;              // Absolute, Relative, Toggle
-    float min;                         // Valor mínimo
-    float max;                         // Valor máximo
+    int midiChannel;                   // 1..16
+    int ccNumber;                      // 0..127, CC o nota
+    MidiBindingSourceType sourceType;  // CC o Note
+    MidiBindingMode mode;              // Absolute, Toggle, Momentary
 };
 
 enum class MidiBindingSourceType {
     CC = 0,
-    Note = 1,
-    PitchBend = 2,
-    Aftertouch = 3,
-    // ...
+    Note = 1
 };
 
 enum class MidiBindingMode {
     Absolute = 0,
-    Relative = 1,
-    Toggle = 2
+    Toggle = 1,
+    Momentary = 2
 };
 ```
 
@@ -171,22 +166,20 @@ enum class MidiBindingMode {
 
 ```cpp
 // Bind CC1 (mod wheel) a volumen master
-MidiBinding binding;
+MTControlsAudioProcessor::MidiBinding binding;
 binding.sourceType = MidiBindingSourceType::CC;
-binding.channel = 0;
-binding.data1 = 1;
+binding.midiChannel = 1;
+binding.ccNumber = 1;
 binding.targetId = midiTargetMasterVolume;
 binding.mode = MidiBindingMode::Absolute;
-binding.min = 0.0f;
-binding.max = 1.0f;
 
 processor.setMidiBinding(binding);
 
 // Bind Note On a play/pause
-MidiBinding playBinding;
+MTControlsAudioProcessor::MidiBinding playBinding;
 playBinding.sourceType = MidiBindingSourceType::Note;
-playBinding.channel = 0;
-playBinding.data1 = 60;  // C3
+playBinding.midiChannel = 1;
+playBinding.ccNumber = 60;  // C3
 playBinding.targetId = midiTargetTransportPlayPause;
 playBinding.mode = MidiBindingMode::Toggle;
 

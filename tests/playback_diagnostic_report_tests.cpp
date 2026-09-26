@@ -1,5 +1,6 @@
 #include "../src/data/PlaybackDiagnosticReport.h"
 #include "../src/audio/SignalIntegrityMetrics.h"
+#include "IsolatedTestRoot.h"
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -9,8 +10,7 @@ static void expect(bool value, const char* message) {
 }
 
 int main() {
-  const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                          .getChildFile("pw-diagnostic-test-" + juce::Uuid().toString());
+  const auto folder = isolatedTestRoot().getChildFile("diagnostics");
   expect(folder.createDirectory().wasOk(), "create isolated test folder");
   const auto csv = folder.getChildFile("source.csv");
   expect(csv.replaceWithText("wall_ms,value\n1,5\n100000,2\n150000,3\n160000,secret\n170000,1,2\n200001,4\n199999,9"), "write fixture");

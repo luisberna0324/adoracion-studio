@@ -1,0 +1,43 @@
+name: Functional tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-ctest:
+    name: CTest on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout JUCE
+        uses: actions/checkout@v4
+        with:
+          repository: juce-framework/JUCE
+          ref: 501c07674e1ad693085a7e7c398f205c2677f5da
+          path: third_party/JUCE
+          fetch-depth: 1
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Bootstrap Bungee
+        run: bash scripts/bootstrap_bungee.sh
+
+      - name: Configure regression tests
+        run: >-
+          cmake -S . -B build/functional-tests -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DJUCE_DIR="${{ github.workspace }}/third_party/JUCE"
+          -DMTCONTROLS_BUILD_TESTS=ON
+
+      - name: Build regression tests
+        run: cmake --build build/functional-tests --target PlayWorshipTests --parallel 3
+
+      - name: Run regression tests
+        run: ctest --test-dir build/functional-tests --output-on-failure --no-tests=error -LE 'interactive|lan'
