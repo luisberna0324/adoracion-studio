@@ -164,6 +164,10 @@ private:
   bool songTextOverflows = false;
   juce::String lastSongIdentity;
   juce::String lastArtworkPath;
+  juce::String lastArtworkSource;
+  juce::Time lastArtworkModifiedTime;
+  juce::int64 lastArtworkSize = -1;
+  juce::uint32 lastArtworkStatAtMs = 0;
   juce::Colour songAccentColour = UITheme::accent;
   juce::String lastKeyToken;
   juce::String activeKeyLabel;

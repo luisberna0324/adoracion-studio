@@ -5,9 +5,11 @@
 #include "data/ApplicationDataPaths.h"
 
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <utility>
 
 namespace {
 void expect(bool condition, const char *message) {
@@ -100,6 +102,31 @@ struct SongListPanelTestAccess {
     return panel.libraryCreationWizard != nullptr &&
            panel.libraryCreationWizard->getParentComponent()->isVisible() &&
            panel.libraryCatalogPanel.getParentComponent()->isVisible();
+  }
+
+  static SongImportWizardComponent &openEditor(SongListPanel &panel,
+                                                const juce::String &songId) {
+    panel.selectedSongId = songId;
+    panel.nowPlayingSongId = songId;
+    panel.openSongEditWizard(songId);
+    std::function<SongImportWizardComponent *(juce::Component &)> findWizard;
+    findWizard = [&findWizard](juce::Component &component)
+        -> SongImportWizardComponent * {
+      if (auto *wizard = dynamic_cast<SongImportWizardComponent *>(&component))
+        return wizard;
+      for (auto *child : component.getChildren())
+        if (auto *wizard = findWizard(*child))
+          return wizard;
+      return nullptr;
+    };
+    auto *wizard = findWizard(panel);
+    expect(wizard != nullptr, "song row Edit opens the actual wizard");
+    return *wizard;
+  }
+
+  static void clearSelection(SongListPanel &panel) {
+    panel.selectedSongId.clear();
+    panel.nowPlayingSongId.clear();
   }
 };
 
@@ -475,6 +502,98 @@ struct SongImportWizardTestAccess {
               << " -> Biblioteca -> reopened audio\n";
   }
 
+  static void testProjectEditingRoundtrip(const AudioFixtures &files) {
+    auto songs = SongLibraryStore::loadSongs();
+    expect(songs.size() == 1, "edit fixture uses the created portable song");
+    const auto songId = songs.front().id;
+    const juce::File project(songs.front().projectPath);
+    auto makeCover = [&files](const char *name, juce::Colour colour) {
+      const auto file = files.directory.getChildFile(name);
+      juce::Image image(juce::Image::RGB, 16, 16, true);
+      juce::Graphics graphics(image);
+      graphics.fillAll(colour);
+      auto output = file.createOutputStream();
+      expect(output != nullptr &&
+                 juce::PNGImageFormat{}.writeImageToStream(image, *output),
+             "create a real cover image");
+      return file;
+    };
+    const auto firstCover = makeCover("edited-first.png", juce::Colours::red);
+    const auto secondCover = makeCover("edited-second.png", juce::Colours::blue);
+
+    auto edit = [&](const juce::File &cover, const juce::String &title,
+                    const juce::String &bpm, bool quickSave) {
+      int dismissed = 0;
+      juce::String saveError;
+      Wizard wizard(
+          [&](ImportedSongData draft, juce::String &error,
+              const SongImportProgressFn &progress) {
+            const bool saved = SongLibraryStore::updateSong(std::move(draft),
+                                                             &error, progress);
+            saveError = error;
+            return saved;
+          },
+          false, Wizard::Mode::Edit, SongLibraryStore::loadSongs().front(),
+          {}, [&](ImportedSongData draft, juce::String &error) {
+            return SongLibraryStore::updateSongMetadata(std::move(draft), &error);
+          });
+      wizard.setOnDismissRequested([&] { ++dismissed; });
+      wizard.songTitleEditor.setText(title, juce::dontSendNotification);
+      wizard.bpmEditor.setText(bpm, juce::dontSendNotification);
+      wizard.selectedArtworkUrl = "manual:" + cover.getFullPathName();
+      if (quickSave) {
+        wizard.saveMetadataOnly();
+      } else {
+        wizard.changeStep(Step::Mapping);
+        childOf<juce::TextEditor>(mappingRow(wizard)).setText(
+            "Edited piano", juce::dontSendNotification);
+        wizard.changeStep(Step::Review);
+        wizard.submitSong();
+      }
+      pumpUntil([&] { return dismissed == 1 && !wizard.isSubmissionInProgress(); },
+                "portable edit completes and closes the wizard");
+      expect(saveError.isEmpty(), "portable edit reports no persistence error");
+      const auto library = SongLibraryStore::loadSongs();
+      expect(library.size() == 1 && library.front().id == songId &&
+                 library.front().title == title &&
+                 library.front().bpm == bpm.getIntValue() &&
+                 library.front().tempoMap.regions.size() == 1 &&
+                 std::abs(library.front().tempoMap.regions.front().bpm -
+                          bpm.getIntValue()) < 0.01,
+             "edited metadata persists under the same library identity");
+      const auto artwork = juce::ImageFileFormat::loadFrom(
+          juce::File(library.front().artworkPath));
+      expect(artwork.isValid() &&
+                 artwork.getPixelAt(4, 4) ==
+                     (cover == firstCover ? juce::Colours::red : juce::Colours::blue),
+             "library artwork matches the newly chosen cover");
+      ProjectDocument reopened;
+      juce::String error;
+      expect(ProjectStore::open(project, reopened, &error, true),
+             "edited portable package reopens");
+      const auto packagedArtwork = juce::ImageFileFormat::loadFrom(
+          juce::File(reopened.song.artworkPath));
+      expect(reopened.song.title == title &&
+                 reopened.song.bpm == bpm.getIntValue() &&
+                 packagedArtwork.isValid() &&
+                 packagedArtwork.getPixelAt(4, 4) == artwork.getPixelAt(4, 4),
+             "portable manifest and embedded artwork match the library");
+      if (!quickSave)
+        expect(reopened.song.stems.front().displayName == "Edited piano",
+               "full edit persists the mapped stem name inside the project");
+    };
+
+    edit(firstCover, "Edited once", "132", true);
+    ProjectSongSettings settings;
+    expect(ProjectStore::getCachedSettings(project, settings) &&
+               settings.tempoBpm == 132.0,
+           "changing the original BPM updates playback tempo when it was unchanged");
+    edit(secondCover, "Edited twice", "144", false);
+    expect(ProjectStore::getCachedSettings(project, settings) &&
+               settings.tempoBpm == 144.0,
+           "full edit also preserves the new BPM in project settings");
+  }
+
   static void testLibraryPanelFlow() {
     juce::Component host;
     host.setSize(1200, 900);
@@ -535,6 +654,109 @@ struct SongImportWizardTestAccess {
            "project created by the real panel callback reopens");
   }
 
+  static void testLegacyMetadataEditing(const AudioFixtures &files) {
+    const auto originalCover = files.directory.getChildFile("legacy-original.png");
+    const auto newCover = files.directory.getChildFile("legacy-replacement.png");
+    for (const auto &entry : {std::pair{originalCover, juce::Colours::red},
+                              std::pair{newCover, juce::Colours::blue}}) {
+      juce::Image image(juce::Image::RGB, 12, 12, true);
+      juce::Graphics graphics(image);
+      graphics.fillAll(entry.second);
+      auto output = entry.first.createOutputStream();
+      expect(output != nullptr &&
+                 juce::PNGImageFormat{}.writeImageToStream(image, *output),
+             "create legacy artwork fixtures");
+    }
+    ImportedSongData draft;
+    draft.id = juce::Uuid().toString();
+    draft.title = "Legacy edit fixture";
+    draft.bpm = 120;
+    draft.artworkSource = "manual:" + originalCover.getFullPathName();
+    ImportedStemData stem;
+    stem.stemId = juce::Uuid().toString();
+    stem.sourcePath = files.first.getFullPathName();
+    stem.fileName = files.first.getFileName();
+    stem.displayName = "Piano";
+    stem.category = "Piano";
+    stem.durationSec = 256.0 / 44100.0;
+    stem.sampleRate = 44100;
+    stem.channels = 1;
+    draft.stems.push_back(stem);
+    juce::String error;
+    expect(SongLibraryStore::appendSong(draft, &error),
+           "create a legacy song with an embedded local cover");
+    const auto activeSetlistId =
+        SongLibraryStore::loadLibrarySnapshot().activeSetlistId;
+    expect(SongLibraryStore::addSongToSetlist(activeSetlistId, draft.id),
+           "add legacy edit fixture to the active setlist");
+    expect(originalCover.deleteFile(), "remove the original artwork selection");
+
+    auto persisted = SongLibraryStore::loadSongs().back();
+    persisted.title = "Edited without changing cover";
+    expect(SongLibraryStore::updateSongMetadata(persisted, &error),
+           "metadata edit keeps a cover when its original picker file vanished");
+    persisted = SongLibraryStore::loadSongs().back();
+    expect(juce::ImageFileFormat::loadFrom(juce::File(persisted.artworkPath)).isValid(),
+           "self-copy of saved artwork does not delete the source");
+
+    persisted.artworkSource = "manual:" + newCover.getFullPathName();
+    persisted.bpm = 132;
+    expect(SongLibraryStore::updateSongMetadata(persisted, &error),
+           "replace legacy cover and original BPM");
+    persisted = SongLibraryStore::loadSongs().back();
+    const auto replaced = juce::ImageFileFormat::loadFrom(
+        juce::File(persisted.artworkPath));
+    double playbackBpm = 0.0;
+    expect(replaced.isValid(), "replacement legacy cover is decodable");
+    expect(replaced.getPixelAt(3, 3) == juce::Colours::blue,
+           "replacement legacy cover has the newly selected pixels");
+    expect(persisted.tempoMap.regions.size() == 1,
+           "legacy default tempo map still has one region");
+    expect(std::abs(persisted.tempoMap.regions.front().bpm - 132.0) < 0.01,
+           "legacy default tempo map follows the edited original BPM");
+    const bool hasPlaybackOverride =
+        SongLibraryStore::getActiveSetlistTempoBpm(draft.id, playbackBpm);
+    expect(!hasPlaybackOverride || std::abs(playbackBpm - 132.0) < 0.01,
+           "unmodified playback tempo follows the edited original BPM");
+    expect(SongLibraryStore::updateTempoBpmForActiveSetlist(draft.id, 145.0),
+           "set a custom playback tempo");
+    persisted.bpm = 160;
+    expect(SongLibraryStore::updateSongMetadata(persisted, &error) &&
+               SongLibraryStore::getActiveSetlistTempoBpm(draft.id, playbackBpm) &&
+               playbackBpm == 145.0,
+           "editing original BPM retains a user-customized playback tempo");
+  }
+
+  static void testLoadedSongEditNotification() {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto songId = songs.back().id;
+    juce::Component host;
+    host.setSize(1000, 760);
+    SongListPanel panel;
+    host.addAndMakeVisible(panel);
+    panel.setBounds(host.getLocalBounds());
+    int editStarted = 0, editReloaded = 0, ordinaryActivation = 0;
+    panel.setOnSongEditStarted([&](const juce::String &id) {
+      expect(id == songId, "editing begins for the requested song");
+      ++editStarted;
+    });
+    panel.setOnSongEdited([&](const ImportedSongData &song, int) {
+      expect(song.id == songId && song.title == "Edited through song row",
+             "loaded-song edit callback receives fresh library metadata");
+      ++editReloaded;
+    });
+    panel.setOnSongActivated([&](const ImportedSongData &, int) {
+      ++ordinaryActivation;
+    });
+    auto &wizard = SongListPanelTestAccess::openEditor(panel, songId);
+    SongListPanelTestAccess::clearSelection(panel);
+    wizard.songTitleEditor.setText("Edited through song row",
+                                   juce::dontSendNotification);
+    wizard.saveMetadataOnly();
+    expect(editStarted == 1 && editReloaded == 1 && ordinaryActivation == 0,
+           "editing a loaded song uses the dedicated reload callback");
+  }
+
 };
 
 int main() {
@@ -553,6 +775,9 @@ int main() {
   SongImportWizardTestAccess::testCancelledDestination(fixtures);
   SongImportWizardTestAccess::testAsyncGuardAndSuccess(fixtures);
   SongImportWizardTestAccess::testDesktopCreationRoundtrip(fixtures);
+  SongImportWizardTestAccess::testProjectEditingRoundtrip(fixtures);
   SongImportWizardTestAccess::testLibraryPanelFlow();
+  SongImportWizardTestAccess::testLegacyMetadataEditing(fixtures);
+  SongImportWizardTestAccess::testLoadedSongEditNotification();
   std::cout << "Song creation wizard: all checks passed\n";
 }

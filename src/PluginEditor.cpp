@@ -171,11 +171,24 @@ public:
   SettingsPanel *getPanel() const noexcept { return panel.get(); }
 
   void paint(juce::Graphics &g) override {
-    g.fillAll(juce::Colours::black.withAlpha(0.44f));
+    g.fillAll(isPhoneSizedLayout(*this) ? UITheme::panelDark
+                                      : juce::Colours::black.withAlpha(0.44f));
   }
 
   void resized() override {
     auto area = getLocalBounds();
+    if (useTouchOptimisedControls()) {
+      if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                    .getDisplayForRect(getScreenBounds())) {
+        auto insets = display->safeAreaInsets;
+        insets.setBottom(juce::jmax(insets.getBottom(), display->keyboardInsets.getBottom()));
+        area = insets.subtractedFrom(area);
+      }
+      if (isPhoneSizedLayout(*this)) {
+        panel->setBounds(area);
+        return;
+      }
+    }
     // Keep the settings sheet inside the host surface on compact devices.
     const int margin = 28;
     area.reduce(margin, margin);
@@ -1032,7 +1045,7 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #if JUCE_IOS || JUCE_ANDROID
   if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
     return;
-  const int desired = isSetlistDrawerOpen
+  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr)
                           ? juce::Desktop::upright
                           : juce::Desktop::rotatedClockwise |
                                 juce::Desktop::rotatedAntiClockwise;
@@ -1050,7 +1063,7 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
           return;
         safe->phoneOrientationUpdatePending = false;
         juce::Desktop::getInstance().setOrientationsEnabled(
-            safe->isSetlistDrawerOpen
+            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr)
                 ? juce::Desktop::upright
                 : juce::Desktop::rotatedClockwise |
                       juce::Desktop::rotatedAntiClockwise);
@@ -2460,6 +2473,31 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         if (requestSongLoadAction)
           requestSongLoadAction(song, songIndex);
       });
+  songListRaw->setOnSongEditStarted([this](const juce::String &songId) {
+    if (isSongCurrentlyLoaded(songId))
+      flushActiveSongPersistenceNow();
+  });
+  songListRaw->setOnSongEdited(
+      [this](const ImportedSongData &song, const int songIndex) {
+        if (!isSongCurrentlyLoaded(song.id) || !loadSongAction)
+          return;
+        // Reloading the same song must read its new cover/BPM and stem map.
+        // The just-saved metadata is authoritative; a pending old snapshot
+        // must not be written over it during the reload.
+        suppressPersistenceBeforeNextSongLoad = true;
+        if (isProjectBackedSong(song) &&
+            !static_cast<MTControlsAudioProcessor &>(processor).unloadSong()) {
+          suppressPersistenceBeforeNextSongLoad = false;
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
+              L10n::tr("Proyecto actualizado", "Project updated"),
+              L10n::tr("Detén la reproducción y vuelve a abrir la canción para cargar los cambios.",
+                       "Stop playback and reopen the song to load the changes."));
+          return;
+        }
+        if (!loadSongAction(song, songIndex))
+          suppressPersistenceBeforeNextSongLoad = false;
+      });
 
   auto loadSongByIndex = [songListRaw, loadSong](int index) -> bool {
     if (!songListRaw)
@@ -3127,7 +3165,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                                   juce::Component *parent) {
   if (!mainUiInitialized)
     return;
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   closeSettings();
 #else
   juce::DialogWindow::LaunchOptions options;
@@ -3339,7 +3377,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     panel->setQuotaUnavailable();
   }
 
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   auto overlay = std::make_unique<SettingsOverlayComponent>(
       std::unique_ptr<SettingsPanel>(panel), [this] { closeSettings(); });
   settingsPanelRaw = overlay->getPanel();
@@ -3347,6 +3385,8 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   addAndMakeVisible(*settingsOverlay);
   settingsOverlay->toFront(true);
   settingsOverlay->setBounds(getLocalBounds());
+  panel->grabKeyboardFocus();
+  updatePhoneOrientation();
   return;
 #else
   options.content.setOwned(panel);
@@ -3373,6 +3413,13 @@ void MTControlsAudioProcessorEditor::closeSettings() {
   }
 
   settingsPanelRaw = nullptr;
+  updatePhoneOrientation();
+}
+
+bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
+  if (settingsOverlay == nullptr || settingsPanelRaw == nullptr)
+    return false;
+  return settingsPanelRaw->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
 }
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
@@ -5008,6 +5055,11 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
+  if (settingsOverlay != nullptr) {
+    if (key == juce::KeyPress::escapeKey)
+      navigateBackInSettings();
+    return true;
+  }
   auto &processorRef = playbackSession;
   const auto keyCode = key.getKeyCode();
   const auto modifiers = key.getModifiers();

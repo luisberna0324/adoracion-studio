@@ -2,10 +2,182 @@
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
+#include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
 
 #include <algorithm>
 #include <map>
+
+namespace {
+constexpr int mobileChoiceHeight = 142;
+constexpr int mobileToggleHeight = 108;
+constexpr int mobileCardPadding = 32;
+}
+
+class SettingsPanel::SettingsHomePage final : public juce::Component {
+public:
+  explicit SettingsHomePage(SettingsPanel &ownerToUse) : owner(ownerToUse) {
+    for (auto page : {Destination::Appearance, Destination::Playback,
+                      Destination::Library, Destination::Audio,
+                      Destination::Routing, Destination::Remote,
+                      Destination::Account, Destination::Diagnostics}) {
+      auto row = std::make_unique<Row>(page);
+      row->onClick = [&ownerToUse, page] { ownerToUse.showSettingsPage(page); };
+      addAndMakeVisible(*row);
+      rows.push_back(std::move(row));
+    }
+    refreshTexts();
+  }
+
+  static int contentHeight() { return 16 + 3 * (34 + 22) + 8 * 72 + 8; }
+
+  void refreshTexts() {
+    const juce::StringArray titles{
+        L10n::tr("Apariencia e idioma", "Appearance & language"),
+        L10n::tr(u8"Reproducción", "Playback"),
+        L10n::tr("Biblioteca", "Library"),
+        L10n::tr("Dispositivo de audio", "Audio device"),
+        L10n::tr("Ruteo de salidas", "Output routing"),
+        L10n::tr("Control remoto", "Remote control"),
+        L10n::tr("Mi cuenta", "My account"),
+        L10n::tr(u8"Diagnóstico", "Diagnostics")};
+    using Mode = playworship::remote::RemoteSession::Mode;
+    const auto mode = owner.remoteMode == Mode::Client ? L10n::tr("Cliente", "Client")
+        : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
+    const juce::StringArray subtitles{
+        L10n::tr("Tema e idioma de la app", "App theme and language"),
+        L10n::tr("Click y transiciones de pads", "Click and pad transitions"),
+        L10n::tr(u8"Importación y almacenamiento", "Import and storage"),
+        L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"),
+        L10n::tr(u8"Salidas por categoría", "Outputs by category"),
+        mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections"),
+        owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+        L10n::tr("Informe para soporte", "Report for support")};
+    for (size_t i = 0; i < rows.size(); ++i) {
+      rows[i]->setButtonText(titles[static_cast<int>(i)]);
+      rows[i]->subtitle = subtitles[static_cast<int>(i)];
+      rows[i]->setTitle(titles[static_cast<int>(i)]);
+      rows[i]->setDescription(subtitles[static_cast<int>(i)]);
+    }
+    repaint();
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(16, 0);
+    area = area.withSizeKeepingCentre(juce::jmin(640, area.getWidth()), area.getHeight());
+    area.removeFromTop(16);
+    size_t index = 0;
+    for (size_t group = 0; group < cards.size(); ++group) {
+      headings[group] = area.removeFromTop(34).reduced(12, 0);
+      const int count = group == 2 ? 2 : 3;
+      cards[group] = area.removeFromTop(count * 72);
+      auto card = cards[group];
+      for (int row = 0; row < count; ++row)
+        rows[index++]->setBounds(card.removeFromTop(72));
+      area.removeFromTop(22);
+    }
+  }
+
+  void paint(juce::Graphics &g) override {
+    const juce::StringArray names{
+        L10n::tr(u8"Personalización", "Personalization"),
+        L10n::tr("Audio y conexiones", "Audio & connections"),
+        L10n::tr("Cuenta y soporte", "Account & support")};
+    for (size_t group = 0; group < cards.size(); ++group) {
+      g.setColour(UITheme::textSecondary);
+      g.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+      g.drawText(names[static_cast<int>(group)], headings[group], juce::Justification::centredLeft);
+      g.setColour(UITheme::cardBg);
+      g.fillRoundedRectangle(cards[group].toFloat(), 18.0f);
+      g.setColour(UITheme::textPrimary.withAlpha(0.08f));
+      for (int y = cards[group].getY() + 72; y < cards[group].getBottom(); y += 72)
+        g.fillRect(cards[group].getX() + 54, y, cards[group].getWidth() - 70, 1);
+    }
+  }
+
+private:
+  class Row final : public juce::TextButton {
+  public:
+    explicit Row(Destination pageToUse) : page(pageToUse) { setWantsKeyboardFocus(true); }
+    juce::String subtitle;
+
+    void mouseUp(const juce::MouseEvent &event) override {
+      if (event.mouseWasDraggedSinceMouseDown()) {
+        setState(juce::Button::buttonNormal);
+        return;
+      }
+      juce::TextButton::mouseUp(event);
+    }
+
+    void paintButton(juce::Graphics &g, bool hovered, bool down) override {
+      if (hovered || down || hasKeyboardFocus(false)) {
+        g.setColour(UITheme::textPrimary.withAlpha(down ? 0.10f : 0.04f));
+        g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(2.0f), 14.0f);
+      }
+      auto area = getLocalBounds().reduced(16, 0);
+      const auto icon = area.removeFromLeft(24).withSizeKeepingCentre(24, 24).toFloat();
+      area.removeFromLeft(14);
+      auto chevron = area.removeFromRight(12).toFloat();
+      area.removeFromRight(10);
+      g.setColour(UITheme::textSecondary.withAlpha(0.65f));
+      juce::Path path;
+      path.startNewSubPath(chevron.getX() + 3, chevron.getCentreY() - 5);
+      path.lineTo(chevron.getX() + 8, chevron.getCentreY());
+      path.lineTo(chevron.getX() + 3, chevron.getCentreY() + 5);
+      g.strokePath(path, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+      g.setColour(UITheme::textPrimary);
+      g.setFont(makeAppFont(16.0f, AppFontWeight::Medium));
+      g.drawText(getButtonText(), area.withY(15).withHeight(23), juce::Justification::centredLeft);
+      g.setColour(UITheme::textSecondary);
+      g.setFont(makeAppFont(12.5f));
+      g.drawText(subtitle, area.withY(39).withHeight(18), juce::Justification::centredLeft);
+      paintIcon(g, icon);
+    }
+
+  private:
+    Destination page;
+    void paintIcon(juce::Graphics &g, juce::Rectangle<float> icon) {
+      const auto colour = UITheme::accentSoft;
+      if (page == Destination::Appearance || page == Destination::Playback ||
+          page == Destination::Audio || page == Destination::Diagnostics) {
+        const auto glyph = page == Destination::Appearance ? IconGlyph::Settings
+            : page == Destination::Playback ? IconGlyph::Metronome
+            : page == Destination::Audio ? IconGlyph::Waveform : IconGlyph::Clock;
+        drawIconGlyph(g, icon, glyph, colour, 1.7f);
+        return;
+      }
+      juce::Graphics::ScopedSaveState saved(g);
+      g.addTransform(juce::AffineTransform::scale(icon.getWidth() / 24.0f)
+                         .translated(icon.getX(), icon.getY()));
+      g.setColour(colour);
+      juce::Path p;
+      if (page == Destination::Library) {
+        p.startNewSubPath(3, 5); p.lineTo(10, 5); p.lineTo(12, 8);
+        p.lineTo(21, 8); p.lineTo(21, 20); p.lineTo(3, 20); p.closeSubPath();
+        p.startNewSubPath(3, 10); p.lineTo(21, 10);
+      } else if (page == Destination::Routing) {
+        p.addRoundedRectangle(2, 9, 6, 6, 1.5f);
+        p.addRoundedRectangle(16, 2, 6, 6, 1.5f);
+        p.addRoundedRectangle(16, 16, 6, 6, 1.5f);
+        p.startNewSubPath(8, 12); p.lineTo(12, 12); p.lineTo(12, 5); p.lineTo(16, 5);
+        p.startNewSubPath(12, 12); p.lineTo(12, 19); p.lineTo(16, 19);
+      } else if (page == Destination::Remote) {
+        p.startNewSubPath(2, 8); p.quadraticTo(12, -1, 22, 8);
+        p.startNewSubPath(5, 12); p.quadraticTo(12, 5, 19, 12);
+        p.startNewSubPath(8, 16); p.quadraticTo(12, 12, 16, 16);
+        g.fillEllipse(10.5f, 19.0f, 3.0f, 3.0f);
+      } else {
+        p.addEllipse(8, 2, 8, 8);
+        p.startNewSubPath(3, 22); p.lineTo(3, 19);
+        p.cubicTo(3, 11, 21, 11, 21, 19); p.lineTo(21, 22);
+      }
+      g.strokePath(p, juce::PathStrokeType(1.7f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+  };
+  SettingsPanel &owner;
+  std::vector<std::unique_ptr<Row>> rows;
+  std::array<juce::Rectangle<int>, 3> headings, cards;
+};
 
 void SettingsPanel::SettingsTabButton::paintButton(
     juce::Graphics &g, const bool shouldDrawButtonAsHighlighted,
@@ -99,7 +271,7 @@ void SettingsPanel::SettingsCopyButton::setValueToCopy(
 void SettingsPanel::SettingsCopyButton::paintButton(
     juce::Graphics &g, const bool shouldDrawButtonAsHighlighted,
     const bool shouldDrawButtonAsDown) {
-  auto bounds = getLocalBounds().toFloat().reduced(5.0f);
+  auto bounds = getLocalBounds().toFloat().withSizeKeepingCentre(18.0f, 18.0f);
   if (showingConfirmation) {
     juce::Path check;
     check.startNewSubPath(bounds.getX(), bounds.getCentreY());
@@ -316,6 +488,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(makeAppFont(18.0f, AppFontWeight::SemiBold));
   addAndMakeVisible(title);
+  pageDescription.setJustificationType(juce::Justification::topLeft);
+  pageDescription.setMinimumHorizontalScale(1.0f);
+  pageDescription.setInterceptsMouseClicks(false, false);
+  addAndMakeVisible(pageDescription);
   closeButton.onClick = [this] {
     if (onCloseRequested)
       onCloseRequested();
@@ -342,6 +518,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     if (onShareAudioDiagnostics) onShareAudioDiagnostics();
   };
   diagnosticsPage.addAndMakeVisible(diagnosticsButton);
+  audioHelp.setFont(makeAppFont(12.5f));
+  audioHelp.setJustificationType(juce::Justification::topLeft);
+  audioHelp.setMinimumHorizontalScale(1.0f);
+  audioHelp.setInterceptsMouseClicks(false, false);
+  audioPage.addAndMakeVisible(audioHelp);
   if (deviceManager != nullptr) {
     audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
         *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, true, false, true, false);
@@ -381,13 +562,25 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   settingsViewport.setScrollOnDragMode(
       juce::Viewport::ScrollOnDragMode::all);
   addAndMakeVisible(settingsViewport);
+  homePage = std::make_unique<SettingsHomePage>(*this);
+  backButton.setBare(true);
+  backButton.onClick = [this] { showSettingsPage(Destination::Home); };
+  addChildComponent(backButton);
+  setWantsKeyboardFocus(true);
 
   auto configureTabButton = [this](juce::TextButton &button,
                                     const int tabIndex) {
     button.setClickingTogglesState(false);
     button.setWantsKeyboardFocus(false);
     button.onClick = [this, tabIndex] {
-      tabs.setCurrentTabIndex(tabIndex);
+      if (usesGroupedNavigation()) {
+        const Destination pages[]{Destination::Appearance, Destination::Account,
+                                  Destination::Audio, Destination::Routing,
+                                  Destination::Diagnostics};
+        showSettingsPage(pages[tabIndex]);
+      } else {
+        tabs.setCurrentTabIndex(tabIndex);
+      }
     };
     addAndMakeVisible(button);
   };
@@ -486,6 +679,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   primeImportToggle.setClickingTogglesState(true);
   primeImportToggle.setToggleState(primeImportEnabled,
                                    juce::dontSendNotification);
+  primeImportToggle.setEnabled(PrimeLibrarySource::isSupportedOnCurrentPlatform());
   applyToggleSwitchTheme(primeImportToggle);
   primeImportToggle.onClick = [this] {
     if (onPrimeImportChanged)
@@ -596,6 +790,16 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   remoteServerNameEditor.onFocusLost = saveRemoteServerAlias;
   generalPage.addAndMakeVisible(remoteServerNameEditor);
   generalPage.addAndMakeVisible(remoteStatus);
+  for (auto *help : {&themeHelp, &languageHelp, &expandLaunchHelp,
+                     &primeImportHelp, &stemOptimizationHelp,
+                     &padsCrossfadeHelp, &metronomeClickStyleHelp,
+                     &remoteControlHelp, &remoteTargetHelp}) {
+    help->setFont(makeAppFont(12.5f));
+    help->setJustificationType(juce::Justification::topLeft);
+    help->setMinimumHorizontalScale(1.0f);
+    help->setInterceptsMouseClicks(false, false);
+    generalPage.addAndMakeVisible(*help);
+  }
   remoteServersBox.onChange = [this] {
     const int index = remoteServersBox.getSelectedId() - 1;
     if (juce::isPositiveAndBelow(index, static_cast<int>(remoteServers.size())) && onRemoteConnect)
@@ -705,6 +909,13 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   actionPurgeLabel.setJustificationType(juce::Justification::centredLeft);
   actionPurgeLabel.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
   accountPage.addAndMakeVisible(actionPurgeLabel);
+  for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp}) {
+    help->setFont(makeAppFont(12.5f));
+    help->setJustificationType(juce::Justification::topLeft);
+    help->setMinimumHorizontalScale(1.0f);
+    help->setInterceptsMouseClicks(false, false);
+    accountPage.addAndMakeVisible(*help);
+  }
   purgeButton.onClick = [this] {
     if (onPurgeLocalDataRequested)
       onPurgeLocalDataRequested();
@@ -714,6 +925,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
   routingPage.addAndMakeVisible(routingSectionLabel);
+  routingControlsHelp.setFont(makeAppFont(12.5f));
+  routingControlsHelp.setJustificationType(juce::Justification::topLeft);
+  routingControlsHelp.setMinimumHorizontalScale(1.0f);
+  routingControlsHelp.setInterceptsMouseClicks(false, false);
+  routingPage.addAndMakeVisible(routingControlsHelp);
   routingHintLabel.setJustificationType(juce::Justification::centredLeft);
   routingHintLabel.setFont(juce::FontOptions(12.0f));
   routingPage.addAndMakeVisible(routingHintLabel);
@@ -780,6 +996,60 @@ void SettingsPanel::paint(juce::Graphics &g) {
 }
 
 void SettingsPanel::resized() {
+  const bool grouped = usesGroupedNavigation();
+  settingsViewport.setScrollBarThickness(grouped ? 4 : 8);
+  for (auto *button : {&generalTabButton, &accountTabButton, &audioTabButton,
+                       &routingTabButton, &diagnosticsTabButton})
+    button->setVisible(!grouped);
+  backButton.setVisible(grouped && destination != Destination::Home);
+  pageDescription.setVisible(grouped && destination != Destination::Home);
+  title.setText(grouped ? pageTitle() : L10n::tr(u8"Configuración", "Settings"),
+                juce::dontSendNotification);
+  if (grouped) {
+    auto area = getLocalBounds();
+    const bool home = destination == Destination::Home;
+    auto header = area.removeFromTop(64).reduced(8, 0);
+    const int target = mobileTopBarActionSize();
+    backButton.setBounds(header.removeFromLeft(target).withSizeKeepingCentre(target, target));
+    closeButton.setBounds(header.removeFromRight(target).withSizeKeepingCentre(target, target));
+    title.setBounds(header.reduced(4, 0));
+    if (!home) {
+      pageDescription.setText(pageHelpText(), juce::dontSendNotification);
+      auto description = area.removeFromTop(48).reduced(24, 2);
+      pageDescription.setBounds(description.withSizeKeepingCentre(
+          juce::jmin(640, description.getWidth()), description.getHeight()));
+    } else {
+      pageDescription.setBounds({});
+    }
+    auto *content = home ? static_cast<juce::Component *>(homePage.get()) : &tabs;
+    settingsViewport.setViewedComponent(content, false);
+    const int previousY = settingsViewport.getViewPositionY();
+    settingsViewport.setBounds(area);
+    int width = juce::jmax(1, area.getWidth());
+    if (mobilePageContentHeight(width) > area.getHeight())
+      width = juce::jmax(1, width - settingsViewport.getScrollBarThickness());
+    content->setSize(width, juce::jmax(area.getHeight(), mobilePageContentHeight(width)));
+    if (!home) {
+      layoutMobileGeneralPage();
+      layoutAccountPage();
+      layoutAudioPage();
+      layoutRoutingPage();
+      layoutDiagnosticsPage();
+    }
+    settingsViewport.setViewPosition(0, previousY);
+    // The viewport changes its content component during navigation. Keep the
+    // fixed navigation chrome above it on the mobile OpenGL surface.
+    title.toFront(false);
+    pageDescription.toFront(false);
+    backButton.toFront(false);
+    closeButton.toFront(false);
+    return;
+  }
+  settingsViewport.setViewedComponent(&tabs, false);
+  pageDescription.setBounds({});
+  for (auto *child : generalPage.getChildren()) child->setVisible(true);
+  remoteServersBox.setVisible(remoteMode == playworship::remote::RemoteSession::Mode::Client);
+  remoteServerNameEditor.setVisible(remoteMode == playworship::remote::RemoteSession::Mode::Server);
   auto area = getLocalBounds();
   const int headerH = useTouchOptimisedControls() ? 78 : 64;
   const int closeSize = useTouchOptimisedControls() ? 42 : 34;
@@ -843,7 +1113,11 @@ void SettingsPanel::resized() {
 }
 
 void SettingsPanel::refreshThemeColours() {
+  settingsViewport.getVerticalScrollBar().setColour(
+      juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  pageDescription.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  pageDescription.setFont(makeAppFont(12.5f));
   title.setJustificationType(juce::Justification::centred);
   title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
                             AppFontWeight::Bold));
@@ -867,6 +1141,12 @@ void SettingsPanel::refreshThemeColours() {
     button->setClickingTogglesState(false);
   }
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  for (auto *help : {&themeHelp, &languageHelp, &expandLaunchHelp,
+                     &primeImportHelp, &stemOptimizationHelp,
+                     &padsCrossfadeHelp, &metronomeClickStyleHelp,
+                     &remoteControlHelp, &remoteTargetHelp,
+                     &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp})
+    help->setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
   languageLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -951,7 +1231,9 @@ void SettingsPanel::refreshThemeColours() {
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  routingControlsHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
   routingHintLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  audioHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
   diagnosticsSectionLabel.setColour(juce::Label::textColourId,
                                     UITheme::textPrimary);
   diagnosticsHint.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -963,7 +1245,189 @@ void SettingsPanel::refreshThemeColours() {
   for (auto &row : routingRows)
     row->refreshThemeColours();
   updateTabButtonStates(tabs.getCurrentTabIndex());
+  if (homePage != nullptr) homePage->repaint();
   repaint();
+}
+
+bool SettingsPanel::usesGroupedNavigation() const {
+  return useTouchOptimisedControls() || getWidth() < 760;
+}
+
+juce::String SettingsPanel::pageTitle() const {
+  switch (destination) {
+    case Destination::Home: return L10n::tr(u8"Configuración", "Settings");
+    case Destination::Appearance: return L10n::tr("Apariencia e idioma", "Appearance & language");
+    case Destination::Playback: return L10n::tr(u8"Reproducción", "Playback");
+    case Destination::Library: return L10n::tr("Biblioteca", "Library");
+    case Destination::Audio: return L10n::tr("Dispositivo de audio", "Audio device");
+    case Destination::Routing: return L10n::tr("Ruteo de salidas", "Output routing");
+    case Destination::Remote: return L10n::tr("Control remoto", "Remote control");
+    case Destination::Account: return L10n::tr("Mi cuenta", "My account");
+    case Destination::Diagnostics: return L10n::tr(u8"Diagnóstico", "Diagnostics");
+  }
+  return {};
+}
+
+juce::String SettingsPanel::pageHelpText() const {
+  switch (destination) {
+    case Destination::Home: return {};
+    case Destination::Appearance:
+      return L10n::tr("Personaliza los colores y el idioma de la aplicación.",
+                      "Choose the app's colours and language.");
+    case Destination::Playback:
+      return L10n::tr("Ajusta las transiciones de pads y el sonido del click.",
+                      "Adjust pad transitions and the click sound.");
+    case Destination::Library:
+      return L10n::tr("Decide cómo importar y guardar archivos locales.",
+                      "Choose how local files are imported and saved.");
+    case Destination::Audio:
+      return L10n::tr("Selecciona la interfaz de audio y sus entradas y salidas.",
+                      "Choose the audio device and its inputs and outputs.");
+    case Destination::Routing:
+      return L10n::tr("Asigna una salida a cada tipo de stem.",
+                      "Assign an output to each stem category.");
+    case Destination::Remote:
+      return L10n::tr("Conecta equipos de la misma red para controlar la reproducción.",
+                      "Connect devices on the same network to control playback.");
+    case Destination::Account:
+      return L10n::tr("Consulta tu sesión, plan y cuotas de sincronización.",
+                      "Review your session, plan, and sync quotas.");
+    case Destination::Diagnostics:
+      return L10n::tr("Prepara un informe técnico para soporte.",
+                      "Prepare a technical report for support.");
+  }
+  return {};
+}
+
+void SettingsPanel::showSettingsPage(Destination next) {
+  if (destination == Destination::Home)
+    homeScrollY = settingsViewport.getViewPositionY();
+  // Commit an edited server alias and dismiss its keyboard before navigating.
+  if (remoteServerNameEditor.hasKeyboardFocus(true))
+    grabKeyboardFocus();
+  destination = next;
+  const int tab = next == Destination::Account ? 1 : next == Destination::Audio ? 2
+      : next == Destination::Routing ? 3 : next == Destination::Diagnostics ? 4 : 0;
+  tabs.setCurrentTabIndex(tab);
+  resized();
+  settingsViewport.setViewPosition(0, next == Destination::Home ? homeScrollY : 0);
+  backButton.setTitle(L10n::tr(u8"Volver a configuración", "Back to settings"));
+  repaint();
+}
+
+bool SettingsPanel::keyPressed(const juce::KeyPress &key) {
+  if (key != juce::KeyPress::escapeKey) return false;
+  if (usesGroupedNavigation() && destination != Destination::Home)
+    showSettingsPage(Destination::Home);
+  else if (onCloseRequested)
+    onCloseRequested();
+  return true;
+}
+
+int SettingsPanel::mobileGeneralCardHeight() const {
+  switch (destination) {
+    case Destination::Home:
+    case Destination::Audio:
+    case Destination::Routing:
+    case Destination::Account:
+    case Destination::Diagnostics:
+      return 0;
+    case Destination::Appearance:
+      return mobileCardPadding + 2 * mobileChoiceHeight +
+             (useTouchOptimisedControls() ? 0 : mobileToggleHeight);
+    case Destination::Playback:
+      return mobileCardPadding + 2 * mobileChoiceHeight;
+    case Destination::Library:
+      return mobileCardPadding + 2 * mobileToggleHeight;
+    case Destination::Remote: return 348;
+  }
+  return 0;
+}
+
+int SettingsPanel::mobilePageContentHeight(int width) const {
+  switch (destination) {
+    case Destination::Home: return SettingsHomePage::contentHeight();
+    case Destination::Routing: return routingPageContentHeight(width);
+    case Destination::Account: return width < 520 ? 1120 : 920;
+    case Destination::Audio: return 900;
+    case Destination::Diagnostics: return width < 520 ? 456 : 320;
+    case Destination::Appearance:
+    case Destination::Playback:
+    case Destination::Library:
+    case Destination::Remote:
+      return mobileGeneralCardHeight() + 32;
+    default: return 360;
+  }
+}
+
+void SettingsPanel::layoutMobileGeneralPage() {
+  for (auto *child : generalPage.getChildren()) child->setVisible(false);
+  auto area = generalPage.getLocalBounds().reduced(16);
+  const int contentWidth = juce::jmin(640, area.getWidth());
+  area = area.withSizeKeepingCentre(contentWidth, area.getHeight());
+  auto cardBounds = area.removeFromTop(mobileGeneralCardHeight());
+  appearanceCard->setBounds(cardBounds);
+  appearanceCard->setVisible(true);
+  auto content = cardBounds.reduced(16);
+  auto choice = [&](juce::Label &label, juce::Component &control,
+                    juce::Label &help) {
+    label.setVisible(true); control.setVisible(true); help.setVisible(true);
+    label.setBounds(content.removeFromTop(24));
+    content.removeFromTop(6);
+    control.setBounds(content.removeFromTop(48));
+    content.removeFromTop(8);
+    help.setBounds(content.removeFromTop(42));
+    content.removeFromTop(14);
+  };
+  auto toggle = [&](juce::Label &label, juce::ToggleButton &control,
+                    juce::Label &help) {
+    label.setVisible(true); control.setVisible(true); help.setVisible(true);
+    auto row = content.removeFromTop(48);
+    control.setBounds(row.removeFromRight(56).withSizeKeepingCentre(56, 48));
+    row.removeFromRight(8);
+    label.setBounds(row);
+    label.setMinimumHorizontalScale(1.0f);
+    content.removeFromTop(8);
+    help.setBounds(content.removeFromTop(42));
+    content.removeFromTop(10);
+  };
+  for (auto *box : {&themeBox, &languageBox, &padsCrossfadeBox,
+                    &metronomeClickStyleBox, &remoteServersBox})
+    box->setMobileFormMode(true);
+
+  if (destination == Destination::Appearance) {
+    choice(themeLabel, themeBox, themeHelp);
+    choice(languageLabel, languageBox, languageHelp);
+    if (!useTouchOptimisedControls()) {
+      toggle(expandLaunchLabel, expandLaunchToggle, expandLaunchHelp);
+    }
+  } else if (destination == Destination::Playback) {
+    choice(padsCrossfadeLabel, padsCrossfadeBox, padsCrossfadeHelp);
+    choice(metronomeClickStyleLabel, metronomeClickStyleBox,
+           metronomeClickStyleHelp);
+  } else if (destination == Destination::Library) {
+    toggle(primeImportLabel, primeImportToggle, primeImportHelp);
+    toggle(stemOptimizationLabel, stemOptimizationToggle, stemOptimizationHelp);
+  } else if (destination == Destination::Remote) {
+    choice(remoteControlLabel, remoteModeControl, remoteControlHelp);
+    auto buttons = remoteModeControl.getLocalBounds();
+    const int width = buttons.getWidth() / 3;
+    remoteLocalButton.setBounds(buttons.removeFromLeft(width));
+    remoteClientButton.setBounds(buttons.removeFromLeft(width));
+    remoteServerButton.setBounds(buttons);
+    remoteStatus.setVisible(true);
+    remoteStatus.setBounds(content.removeFromTop(60));
+    remoteStatus.setMinimumHorizontalScale(1.0f);
+    content.removeFromTop(10);
+    using Mode = playworship::remote::RemoteSession::Mode;
+    remoteServersBox.setBounds(content.removeFromTop(48));
+    remoteServerNameEditor.setBounds(remoteServersBox.getBounds());
+    content.removeFromTop(6);
+    remoteTargetHelp.setBounds(content.removeFromTop(42));
+    remoteServersBox.setVisible(remoteMode == Mode::Client);
+    remoteServerNameEditor.setVisible(remoteMode == Mode::Server);
+    remoteTargetHelp.setVisible(remoteMode != Mode::Local);
+  }
 }
 
 void SettingsPanel::updateTabButtonStates(const int activeIndex) {
@@ -999,31 +1463,52 @@ void SettingsPanel::applyLanguageTexts() {
   diagnosticsTabButton.setButtonText(
       L10n::tr(u8"Diagnóstico", "Diagnostics"));
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
+  themeHelp.setText(L10n::tr("Cambia los colores de la interfaz.",
+                              "Changes the interface colours."),
+                    juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
+  languageHelp.setText(L10n::tr("Cambia el idioma de menús y mensajes.",
+                                 "Changes the language of menus and messages."),
+                       juce::dontSendNotification);
   expandLaunchLabel.setText(L10n::tr("Ventana al iniciar", "Window on launch"),
                             juce::dontSendNotification);
+  expandLaunchHelp.setText(L10n::tr("Usa el área de trabajo disponible al abrir la app.",
+                                     "Uses the available desktop space when opening the app."),
+                           juce::dontSendNotification);
   expandLaunchToggle.setButtonText(
       L10n::tr("Expandir al area de trabajo", "Expand to work area"));
   primeImportLabel.setText(
-      L10n::tr("Importar desde disco local", "Import from local disk"),
+      L10n::tr("Importar desde Prime", "Import from Prime"),
                            juce::dontSendNotification);
+  primeImportHelp.setText(L10n::tr("Solo en macOS: importa la biblioteca local de Prime.",
+                                   "macOS only: imports the local Prime library."),
+                         juce::dontSendNotification);
   primeImportToggle.setButtonText(
-      L10n::tr(u8"Habilitar importación desde disco local",
-               "Enable import from local disk"));
+      L10n::tr(u8"Habilitar importación de Prime",
+               "Enable Prime import"));
   stemOptimizationLabel.setText(
       L10n::tr("Optimizacion de stems",
                "Stem optimization"),
       juce::dontSendNotification);
+  stemOptimizationHelp.setText(L10n::tr("En importaciones compatibles, reduce el espacio de los stems.",
+                                        "Reduces stem storage in supported imports."),
+                               juce::dontSendNotification);
   stemOptimizationToggle.setButtonText(
       L10n::tr("Convertir stems para ahorrar almacenamiento",
                "Convert stems to save storage"));
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
+  padsCrossfadeHelp.setText(L10n::tr("Define cuánto dura la transición entre pads.",
+                                   "Sets how long transitions between pads take."),
+                            juce::dontSendNotification);
   metronomeClickStyleLabel.setText(
       L10n::tr("Estilo del click", "Click style"),
       juce::dontSendNotification);
+  metronomeClickStyleHelp.setText(L10n::tr("Elige el timbre del metrónomo; no cambia el tempo.",
+                                         "Changes the metronome sound, not its tempo."),
+                                  juce::dontSendNotification);
   padsCrossfadeBox.changeItemText(1, L10n::tr(u8"Rápido (1s)", "Fast (1s)"));
   padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
   padsCrossfadeBox.changeItemText(3, L10n::tr("Largo (5s)", "Long (5s)"));
@@ -1106,21 +1591,38 @@ void SettingsPanel::applyLanguageTexts() {
   actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
                                      "Sign out on this app"),
                             juce::dontSendNotification);
+  actionLogoutHelp.setText(L10n::tr("Desconecta esta cuenta de la aplicación.",
+                                    "Disconnects this account from the app."),
+                           juce::dontSendNotification);
   actionPurgeLabel.setText(
       L10n::tr(u8"Purgar descargas, caché y vínculos de Cloud",
                "Purge Cloud downloads, cache, and links"),
       juce::dontSendNotification);
+  actionPurgeHelp.setText(L10n::tr("Vacía la Biblioteca local; conserva los .pwproj y la nube.",
+                                   "Empties the local Library; keeps .pwproj files and cloud data."),
+                          juce::dontSendNotification);
   actionInfoLabel.setText(L10n::tr(u8"¿Necesitas ayuda con tu cuenta?",
                                   "Need help with your account?"),
                           juce::dontSendNotification);
+  actionInfoHelp.setText(L10n::tr("Abre un correo para contactar a soporte.",
+                                  "Opens an email to contact support."),
+                         juce::dontSendNotification);
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
+  routingControlsHelp.setText(
+      L10n::tr("Mono usa una salida; estéreo, dos consecutivas. Canal elige la primera.",
+               "Mono uses one output; stereo uses two adjacent outputs. Channel selects the first."),
+      juce::dontSendNotification);
   routingHintLabel.setText(
       L10n::tr("Define salidas por categoría para el dispositivo actual.",
                "Set per-category outputs for the current device."),
+      juce::dontSendNotification);
+  audioHelp.setText(
+      L10n::tr("Las salidas activas aquí estarán disponibles en Ruteo. Revisa las asignaciones al cambiar de dispositivo.",
+               "Outputs enabled here are available in Routing. Check assignments when changing devices."),
       juce::dontSendNotification);
   diagnosticsSectionLabel.setText(
       L10n::tr(u8"Diagnóstico de reproducción", "Playback diagnostics"),
@@ -1141,6 +1643,17 @@ void SettingsPanel::applyLanguageTexts() {
           : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
   remoteControlLabel.setText(L10n::tr("Control remoto", "Remote control"),
                              juce::dontSendNotification);
+  remoteControlHelp.setText(L10n::tr("Local reproduce aquí; Cliente controla otro equipo; Servidor comparte el control.",
+                                      "Local plays here; Client controls another device; Server shares control."),
+                            juce::dontSendNotification);
+  using Mode = playworship::remote::RemoteSession::Mode;
+  remoteTargetHelp.setText(
+      remoteMode == Mode::Server
+          ? L10n::tr("Nombre visible para clientes; vacío usa el del equipo.",
+                     "Name shown to clients; blank uses the device name.")
+          : L10n::tr("Elige un servidor detectado en la red local.",
+                     "Choose a server found on the local network."),
+      juce::dontSendNotification);
   remoteLocalButton.setButtonText("Local");
   remoteClientButton.setButtonText(L10n::tr("Cliente", "Client"));
   remoteServerButton.setButtonText(L10n::tr("Servidor", "Server"));
@@ -1151,13 +1664,16 @@ void SettingsPanel::applyLanguageTexts() {
   remoteServerNameEditor.setTooltip(L10n::tr(
       "Nombre que verán los clientes. Vacío usa el nombre del dispositivo.",
       "Name shown to clients. Leave empty to use the device name."));
+  closeButton.setTitle(L10n::tr(u8"Cerrar configuración", "Close settings"));
+  backButton.setTitle(L10n::tr(u8"Volver a configuración", "Back to settings"));
+  if (homePage != nullptr) homePage->refreshTexts();
 }
 
 void SettingsPanel::layoutGeneralPage() {
   auto area = generalPage.getLocalBounds().reduced(
       useTouchOptimisedControls() ? 28 : 22,
       useTouchOptimisedControls() ? 24 : 18);
-  const int rowH = useTouchOptimisedControls() ? 68 : 58;
+  const int rowH = useTouchOptimisedControls() ? 82 : 74;
   // ComboBox popups use the field height as their default item height.
   const int controlH = useTouchOptimisedControls() ? 50 : 38;
   const int rightW = juce::jlimit(220, 360, area.getWidth() / 3);
@@ -1172,16 +1688,18 @@ void SettingsPanel::layoutGeneralPage() {
     sessionCard->setBounds({});
 
   auto layoutChoiceRow = [&](juce::Rectangle<int> row, juce::Label &label,
-                             juce::Component &control) {
+                             juce::Component &control, juce::Label &help) {
     auto right = row.removeFromRight(rightW);
-    label.setBounds(row.reduced(0, 8));
+    label.setBounds(row.removeFromTop(28));
+    help.setBounds(row);
     control.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
   };
 
   auto layoutToggleRow = [&](juce::Rectangle<int> row, juce::Label &label,
-                             juce::ToggleButton &toggle) {
+                             juce::ToggleButton &toggle, juce::Label &help) {
     auto right = row.removeFromRight(rightW);
-    label.setBounds(row.reduced(0, 8));
+    label.setBounds(row.removeFromTop(28));
+    help.setBounds(row);
     toggle.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
   };
 
@@ -1196,7 +1714,7 @@ void SettingsPanel::layoutGeneralPage() {
 
   auto layoutRemoteControls = [&] {
     layoutChoiceRow(area.removeFromTop(rowH), remoteControlLabel,
-                    remoteModeControl);
+                    remoteModeControl, remoteControlHelp);
     auto buttons = remoteModeControl.getLocalBounds();
     const int width = buttons.getWidth() / 3;
     remoteLocalButton.setBounds(buttons.removeFromLeft(width));
@@ -1207,6 +1725,9 @@ void SettingsPanel::layoutGeneralPage() {
     remoteServersBox.setBounds(nameBounds);
     remoteServerNameEditor.setBounds(nameBounds);
     remoteStatus.setBounds(connection);
+    remoteTargetHelp.setBounds(area.removeFromTop(28));
+    remoteTargetHelp.setVisible(remoteMode !=
+        playworship::remote::RemoteSession::Mode::Local);
   };
 
   // On iPhone the settings viewport initially shows only a few rows. Keep
@@ -1217,21 +1738,25 @@ void SettingsPanel::layoutGeneralPage() {
     addSeparator();
   }
 
-  layoutChoiceRow(area.removeFromTop(rowH), themeLabel, themeBox);
+  layoutChoiceRow(area.removeFromTop(rowH), themeLabel, themeBox, themeHelp);
   addSeparator();
-  layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox);
+  layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox,
+                  languageHelp);
   addSeparator();
-  layoutToggleRow(area.removeFromTop(rowH), expandLaunchLabel, expandLaunchToggle);
+  layoutToggleRow(area.removeFromTop(rowH), expandLaunchLabel,
+                  expandLaunchToggle, expandLaunchHelp);
   addSeparator();
-  layoutToggleRow(area.removeFromTop(rowH), primeImportLabel, primeImportToggle);
+  layoutToggleRow(area.removeFromTop(rowH), primeImportLabel,
+                  primeImportToggle, primeImportHelp);
   addSeparator();
   layoutToggleRow(area.removeFromTop(rowH), stemOptimizationLabel,
-                  stemOptimizationToggle);
+                  stemOptimizationToggle, stemOptimizationHelp);
   addSeparator();
-  layoutChoiceRow(area.removeFromTop(rowH), padsCrossfadeLabel, padsCrossfadeBox);
+  layoutChoiceRow(area.removeFromTop(rowH), padsCrossfadeLabel,
+                  padsCrossfadeBox, padsCrossfadeHelp);
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), metronomeClickStyleLabel,
-                  metronomeClickStyleBox);
+                  metronomeClickStyleBox, metronomeClickStyleHelp);
   if (!compactHeight) {
     addSeparator();
     layoutRemoteControls();
@@ -1239,10 +1764,11 @@ void SettingsPanel::layoutGeneralPage() {
 }
 
 void SettingsPanel::layoutAccountPage() {
+  const bool compact = usesGroupedNavigation() && accountPage.getWidth() < 520;
   auto area = accountPage.getLocalBounds().reduced(
-      useTouchOptimisedControls() ? 24 : 20,
+      compact ? 16 : useTouchOptimisedControls() ? 24 : 20,
       useTouchOptimisedControls() ? 18 : 14);
-  constexpr int cardPaddingX = 22;
+  const int cardPaddingX = compact ? 16 : 22;
   constexpr int cardPaddingY = 20;
   constexpr int titleH = 20;
   constexpr int labelH = 14;
@@ -1250,7 +1776,7 @@ void SettingsPanel::layoutAccountPage() {
   constexpr int pairGap = 12;
   constexpr int dividerMargin = 16;
   constexpr int sectionGap = 16;
-  constexpr int copyButtonSize = 28;
+  const int copyButtonSize = usesGroupedNavigation() ? 44 : 28;
 
   sessionSectionLabel.setBounds({});
   sessionUidLabel.setBounds({});
@@ -1279,8 +1805,11 @@ void SettingsPanel::layoutAccountPage() {
   sessionStorageQuotaValue.setBounds({});
   actionsSectionLabel.setBounds({});
   actionLogoutLabel.setBounds({});
+  actionLogoutHelp.setBounds({});
   actionPurgeLabel.setBounds({});
+  actionPurgeHelp.setBounds({});
   actionInfoLabel.setBounds({});
+  actionInfoHelp.setBounds({});
   infoLinkButton.setBounds({});
   logoutButton.setBounds({});
   purgeButton.setBounds({});
@@ -1292,7 +1821,7 @@ void SettingsPanel::layoutAccountPage() {
     actionsRowSeparator->setBounds({});
 
   const int pairH = labelH + valueH;
-  constexpr int quotaRowH = 30;
+  const int quotaRowH = compact ? 52 : 30;
   const int quotaH = labelH + valueH + quotaRowH * 3;
   const int sessionH = cardPaddingY + titleH + 16 + pairH + pairGap + pairH +
                        dividerMargin + 1 + dividerMargin + pairH + pairGap +
@@ -1316,7 +1845,8 @@ void SettingsPanel::layoutAccountPage() {
   auto uidPair = info.removeFromTop(pairH);
   sessionUidLabel.setBounds(uidPair.removeFromTop(labelH));
   auto uidValueRow = uidPair.removeFromTop(valueH);
-  sessionUidCopyButton.setBounds(uidValueRow.removeFromRight(copyButtonSize));
+  sessionUidCopyButton.setBounds(uidValueRow.removeFromRight(copyButtonSize)
+      .withSizeKeepingCentre(copyButtonSize, usesGroupedNavigation() ? 44 : valueH));
   sessionUidValue.setBounds(uidValueRow);
   info.removeFromTop(pairGap);
 
@@ -1343,7 +1873,8 @@ void SettingsPanel::layoutAccountPage() {
   sessionLicenseLabel.setBounds(licensePair.removeFromTop(labelH));
   auto licenseValueRow = licensePair.removeFromTop(valueH);
   sessionLicenseCopyButton.setBounds(
-      licenseValueRow.removeFromRight(copyButtonSize));
+      licenseValueRow.removeFromRight(copyButtonSize)
+          .withSizeKeepingCentre(copyButtonSize, usesGroupedNavigation() ? 44 : valueH));
   sessionLicenseValue.setBounds(licenseValueRow);
   info.removeFromTop(pairGap);
 
@@ -1354,8 +1885,15 @@ void SettingsPanel::layoutAccountPage() {
   sessionQuotaValue.setBounds(info.removeFromTop(valueH));
   const auto layoutQuotaRow = [&](juce::Label& label, juce::Label& value) {
     auto row = info.removeFromTop(quotaRowH);
-    value.setBounds(row.removeFromRight(180));
-    label.setBounds(row);
+    if (compact) {
+      label.setBounds(row.removeFromTop(22));
+      value.setBounds(row.removeFromTop(26));
+      value.setJustificationType(juce::Justification::centredLeft);
+    } else {
+      value.setBounds(row.removeFromRight(180));
+      label.setBounds(row);
+      value.setJustificationType(juce::Justification::centredRight);
+    }
   };
   layoutQuotaRow(sessionDevicesQuotaLabel, sessionDevicesQuotaValue);
   layoutQuotaRow(sessionSongsQuotaLabel, sessionSongsQuotaValue);
@@ -1385,7 +1923,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    constexpr int actionsH = 194;
+    const int actionsH = compact ? 410 : 250;
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -1394,21 +1932,38 @@ void SettingsPanel::layoutAccountPage() {
     if (actionsTitleSeparator != nullptr)
       actionsTitleSeparator->setBounds(actions.removeFromTop(1));
 
-    auto logoutRow = actions.removeFromTop(48);
+    if (compact) {
+      const auto action = [&](juce::Label &label, juce::Label &help,
+                              juce::Component &button) {
+        label.setBounds(actions.removeFromTop(24));
+        help.setBounds(actions.removeFromTop(40));
+        button.setBounds(actions.removeFromTop(44));
+        actions.removeFromTop(8);
+      };
+      action(actionLogoutLabel, actionLogoutHelp, logoutButton);
+      action(actionPurgeLabel, actionPurgeHelp, purgeButton);
+      action(actionInfoLabel, actionInfoHelp, infoLinkButton);
+      return;
+    }
+
+    auto logoutRow = actions.removeFromTop(60);
     auto logoutControl = logoutRow.removeFromRight(112).reduced(0, 8);
-    actionLogoutLabel.setBounds(logoutRow);
+    actionLogoutLabel.setBounds(logoutRow.removeFromTop(24));
+    actionLogoutHelp.setBounds(logoutRow);
     logoutButton.setBounds(logoutControl);
     if (actionsRowSeparator != nullptr)
       actionsRowSeparator->setBounds(actions.removeFromTop(1));
 
-    auto purgeRow = actions.removeFromTop(48);
+    auto purgeRow = actions.removeFromTop(60);
     auto purgeControl = purgeRow.removeFromRight(112).reduced(0, 8);
-    actionPurgeLabel.setBounds(purgeRow);
+    actionPurgeLabel.setBounds(purgeRow.removeFromTop(24));
+    actionPurgeHelp.setBounds(purgeRow);
     purgeButton.setBounds(purgeControl);
 
-    auto helpRow = actions.removeFromTop(48);
+    auto helpRow = actions.removeFromTop(60);
     auto helpControl = helpRow.removeFromRight(112);
-    actionInfoLabel.setBounds(helpRow);
+    actionInfoLabel.setBounds(helpRow.removeFromTop(24));
+    actionInfoHelp.setBounds(helpRow);
     infoLinkButton.setBounds(helpControl);
   }
 }
@@ -1427,42 +1982,46 @@ juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {
 
 void SettingsPanel::layoutAudioPage() {
   auto area = audioPage.getLocalBounds().reduced(18, 16);
+  audioHelp.setBounds(area.removeFromTop(area.getWidth() < 520 ? 52 : 34));
+  area.removeFromTop(8);
   if (audioSetupComp != nullptr) {
     audioSetupComp->setBounds(area);
   }
 }
 
 void SettingsPanel::layoutDiagnosticsPage() {
+  const bool compact = usesGroupedNavigation() && diagnosticsPage.getWidth() < 520;
   auto area = diagnosticsPage.getLocalBounds().reduced(
-      useTouchOptimisedControls() ? 28 : 22,
+      compact ? 16 : useTouchOptimisedControls() ? 28 : 22,
       useTouchOptimisedControls() ? 24 : 18);
-  const int cardHeight = useTouchOptimisedControls() ? 252 : 218;
+  const int cardHeight = compact ? 410 : useTouchOptimisedControls() ? 252 : 218;
   const int cardWidth = juce::jmin(area.getWidth(), 720);
   const auto cardBounds = area.removeFromTop(cardHeight).withWidth(cardWidth);
   if (diagnosticsCard != nullptr)
     diagnosticsCard->setBounds(cardBounds);
 
-  auto content = cardBounds.reduced(useTouchOptimisedControls() ? 24 : 22,
+  auto content = cardBounds.reduced(compact ? 16 : useTouchOptimisedControls() ? 24 : 22,
                                     useTouchOptimisedControls() ? 20 : 18);
-  diagnosticsSectionLabel.setBounds(content.removeFromTop(28));
+  diagnosticsSectionLabel.setBounds(content.removeFromTop(compact ? 48 : 28));
   content.removeFromTop(10);
   diagnosticsHint.setBounds(content.removeFromTop(
-      useTouchOptimisedControls() ? 52 : 42));
+      compact ? 88 : useTouchOptimisedControls() ? 52 : 42));
   content.removeFromTop(6);
   diagnosticsPrivacyHint.setBounds(content.removeFromTop(
-      useTouchOptimisedControls() ? 64 : 52));
+      compact ? 120 : useTouchOptimisedControls() ? 64 : 52));
   content.removeFromTop(12);
   const int buttonWidth = juce::jmin(useTouchOptimisedControls() ? 280 : 240,
                                     content.getWidth());
   diagnosticsButton.setBounds(
-      content.removeFromTop(useTouchOptimisedControls() ? 46 : 42)
+      content.removeFromTop(usesGroupedNavigation() ? 48 : 42)
           .withWidth(buttonWidth));
 }
 
 int SettingsPanel::routingPageContentHeight(const int width) const {
   const int listWidth = juce::jmax(1, width - 36);
   const int hintHeight = listWidth < 520 ? 44 : 24;
-  return 32 + 22 + 8 +
+  const int controlsHelpHeight = listWidth < 520 ? 52 : 34;
+  return 32 + 22 + 6 + controlsHelpHeight + 8 +
          static_cast<int>(routingRows.size()) * RoutingRow::preferredHeightForWidth(listWidth) +
          12 + hintHeight;
 }
@@ -1472,7 +2031,9 @@ void SettingsPanel::layoutRoutingPage() {
 
   auto labelArea = area.removeFromTop(22);
   routingSectionLabel.setBounds(labelArea);
-  
+  area.removeFromTop(6);
+  routingControlsHelp.setBounds(area.removeFromTop(
+      area.getWidth() < 520 ? 52 : 34));
   area.removeFromTop(8);
   const int rowH = RoutingRow::preferredHeightForWidth(area.getWidth());
   const int listHeight = rowH * static_cast<int>(routingRows.size());
@@ -1490,6 +2051,7 @@ void SettingsPanel::layoutRoutingPage() {
 
 SettingsPanel::~SettingsPanel() {
   tabs.onTabChanged = nullptr;
+  settingsViewport.setViewedComponent(nullptr, false);
   if (deviceManager != nullptr)
     deviceManager->removeChangeListener(this);
 }
@@ -1575,9 +2137,23 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
   remoteLocalButton.setToggleState(mode == Mode::Local, juce::dontSendNotification);
   remoteClientButton.setToggleState(mode == Mode::Client, juce::dontSendNotification);
   remoteServerButton.setToggleState(mode == Mode::Server, juce::dontSendNotification);
-  remoteServersBox.setVisible(mode == Mode::Client);
-  remoteServerNameEditor.setVisible(mode == Mode::Server);
-  remoteStatus.setText(status, juce::dontSendNotification);
+  const bool remoteVisible = !usesGroupedNavigation() || destination == Destination::Remote;
+  remoteServersBox.setVisible(remoteVisible && mode == Mode::Client);
+  remoteServerNameEditor.setVisible(remoteVisible && mode == Mode::Server);
+  remoteTargetHelp.setVisible(remoteVisible && mode != Mode::Local);
+  remoteTargetHelp.setText(
+      mode == Mode::Server
+          ? L10n::tr("Nombre visible para clientes; vacío usa el del equipo.",
+                     "Name shown to clients; blank uses the device name.")
+          : L10n::tr("Elige un servidor detectado en la red local.",
+                     "Choose a server found on the local network."),
+      juce::dontSendNotification);
+  remoteStatus.setText(status.isNotEmpty() ? status
+      : mode == Mode::Local ? L10n::tr("Este dispositivo reproduce y controla sus canciones.",
+                                      "This device plays and controls its songs.")
+      : mode == Mode::Client ? L10n::tr("Buscando servidores en la red local…", "Looking for servers on the local network…")
+      : L10n::tr("Disponible para clientes en la red local.", "Available to clients on the local network."),
+      juce::dontSendNotification);
   juce::StringArray names;
   for (const auto &server : servers) names.add(server.instance + " (" + server.address + ")");
   juce::StringArray oldNames;
@@ -1597,4 +2173,5 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
       }
     }
   }
+  if (homePage != nullptr) homePage->refreshTexts();
 }

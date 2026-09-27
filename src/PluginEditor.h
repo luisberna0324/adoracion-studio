@@ -36,6 +36,7 @@ public:
   void paint(juce::Graphics &) override;
   void resized() override;
   bool keyPressed(const juce::KeyPress &key) override;
+  bool navigateBackInSettings();
   void parentHierarchyChanged() override;
 
   /** Recibe un proyecto solicitado por asociación de archivo/doble clic. */

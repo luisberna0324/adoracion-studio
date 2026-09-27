@@ -521,7 +521,9 @@ SongImportWizardComponent::SongImportWizardComponent(
   artistLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(artistLabel);
 
-  bpmLabel.setText("BPM", juce::dontSendNotification);
+  bpmLabel.setText(mode == Mode::Edit ? L10n::tr("BPM base", "Original BPM")
+                                       : juce::String("BPM"),
+                   juce::dontSendNotification);
   bpmLabel.setFont(makeAppFont(11.0f, AppFontWeight::Regular));
   bpmLabel.setJustificationType(juce::Justification::centredLeft);
   addAndMakeVisible(bpmLabel);
@@ -567,6 +569,9 @@ SongImportWizardComponent::SongImportWizardComponent(
   configureTextEditor(bpmEditor, "BPM");
   bpmEditor.setInputRestrictions(3, "0123456789");
   bpmEditor.setKeyboardType(juce::TextInputTarget::numericKeyboard);
+  bpmEditor.setTooltip(L10n::tr(
+      "BPM original de la canción: ajusta la referencia musical. El tempo de reproducción se cambia en el reproductor.",
+      "Original song BPM: changes the musical reference. Playback tempo is adjusted in the player."));
   addAndMakeVisible(songTitleEditor);
   addAndMakeVisible(artistEditor);
   addAndMakeVisible(bpmEditor);
@@ -1173,13 +1178,18 @@ void SongImportWizardComponent::paintPhoneMetadata(juce::Graphics &g) {
       text.setRight(card.getRight() - 38.0f);
       g.setColour(UITheme::textPrimary);
       g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
-      g.drawFittedText(L10n::tr("Metadatos detectados", "Detected metadata"),
+      g.drawFittedText(mode == Mode::Edit
+                           ? L10n::tr("BPM original", "Original BPM")
+                           : L10n::tr("Metadatos detectados", "Detected metadata"),
                        text.removeFromTop(24.0f).toNearestInt(),
                        juce::Justification::centredLeft, 1);
       g.setColour(UITheme::textSecondary);
       g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
-      g.drawFittedText(mobileMetadataSummary(), text.toNearestInt(),
-                       juce::Justification::centredLeft, 1);
+      g.drawFittedText(mode == Mode::Edit
+                           ? L10n::tr("Tempo de reproducción: en el reproductor.",
+                                      "Playback tempo: in the player.")
+                           : mobileMetadataSummary(), text.toNearestInt(),
+                       juce::Justification::centredLeft, 2);
 
       const float cx = card.getRight() - 25.0f;
       const float cy = card.getCentreY();
@@ -2504,6 +2514,14 @@ void SongImportWizardComponent::saveMetadataOnly() {
     return;
   if (!validateStepMetadata())
     return;
+  if (isProjectBackedSong(initialSong)) {
+    // Updating a portable project repacks its manifest and artwork. Keep that
+    // disk work off the UI thread and retain staged mobile picker files.
+    setSubmitting(true);
+    if (!submitSongInBackground(buildSongData()))
+      setSubmitting(false);
+    return;
+  }
   if (!onMetadataOnlySubmit) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
@@ -2638,6 +2656,16 @@ bool SongImportWizardComponent::validateStepMetadata() {
                  "Add a song title before continuing."));
     return false;
   }
+  const auto bpmText = bpmEditor.getText().trim();
+  if (bpmText.isNotEmpty() &&
+      (bpmText.getIntValue() < 20 || bpmText.getIntValue() > 300)) {
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
+        L10n::tr("BPM fuera de rango", "BPM out of range"),
+        L10n::tr("Usa un BPM original entre 20 y 300, o déjalo vacío si es desconocido.",
+                 "Use an original BPM between 20 and 300, or leave it empty if unknown."));
+    return false;
+  }
   return true;
 }
 
@@ -2680,7 +2708,10 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.timeSignature = timeSignatureBox.getText().trim();
   song.fileType = stems.empty() ? "remote-reference" : "FLAC";
   song.artworkSource = selectedArtworkUrl.trim();
-  if (song.artworkSource.isEmpty())
+  // A newly selected cover must not be shadowed by the old local image when
+  // the project package is rebuilt. An unchanged source keeps its local copy.
+  if (song.artworkSource.isEmpty() ||
+      (mode == Mode::Edit && song.artworkSource != initialSong.artworkSource.trim()))
     song.artworkPath.clear();
   if (song.createdMs <= 0)
     song.createdMs = juce::Time::getCurrentTime().toMilliseconds();
@@ -2783,6 +2814,10 @@ void SongImportWizardComponent::submitSong() {
   }
 
   if (mode == Mode::Import && resolveProjectDestination) {
+    keepSubmissionActive = submitSongInBackground(std::move(songData));
+    return;
+  }
+  if (mode == Mode::Edit && isProjectBackedSong(initialSong)) {
     keepSubmissionActive = submitSongInBackground(std::move(songData));
     return;
   }
@@ -3024,7 +3059,9 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
   submissionOverlay = std::make_unique<SongLoadProgressOverlay>();
   addAndMakeVisible(*submissionOverlay);
   submissionOverlay->refreshThemeColours();
-  submissionOverlay->setTitleText(L10n::tr(u8"Creando canción", "Creating song"));
+  submissionOverlay->setTitleText(mode == Mode::Edit
+                                      ? L10n::tr(u8"Actualizando canción", "Updating song")
+                                      : L10n::tr(u8"Creando canción", "Creating song"));
   submissionOverlay->setPhaseText(L10n::tr("Preparando proyecto...", "Preparing project..."));
   submissionOverlay->setProgress(0.0);
   submissionOverlay->setAlwaysOnTop(true);
@@ -3067,8 +3104,8 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
         } catch (const std::exception &exception) {
           error = juce::String::fromUTF8(exception.what());
         } catch (...) {
-          error = L10n::tr(u8"No se pudo crear el proyecto.",
-                            "Couldn't create the project.");
+          error = L10n::tr(u8"No se pudo guardar la canción.",
+                            "Couldn't save the song.");
         }
         SessionAuthLogger::write(
             "[SongImportUI] background submit finished ok=" +
@@ -3085,7 +3122,9 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
           }
           juce::NativeMessageBox::showMessageBoxAsync(
               juce::MessageBoxIconType::WarningIcon,
-              L10n::tr(u8"Error al crear", "Create error"),
+              safeThis->mode == Mode::Edit
+                  ? L10n::tr("Error al actualizar", "Update error")
+                  : L10n::tr(u8"Error al crear", "Create error"),
               error.isNotEmpty()
                   ? error
                   : L10n::tr(u8"No se pudo guardar la canción seleccionada.",

@@ -9,8 +9,8 @@ timestamp: 2026-09-25T00:00:00-03:00
 
 # Control remoto LAN
 
-Configuración → General contiene el selector segmentado **Local | Cliente |
-Servidor**. Local es el valor al iniciar. El descubrimiento, selección de servidor,
+Configuración → Control remoto en móvil (General en escritorio ancho) contiene
+el selector segmentado **Local | Cliente | Servidor**. Local es el valor al iniciar. El descubrimiento, selección de servidor,
 conexión y errores detallados se muestran dentro de Configuración. Cliente
 añade solo una etiqueta pequeña pintada en la esquina superior derecha de la
 onda; no altera su distribución ni intercepta gestos. Muestra `REMOTO` en verde
@@ -18,8 +18,9 @@ tras el primer snapshot, `BUSCANDO` antes de elegir servidor, `CONECTANDO` en el
 primer intento y `RECONECTANDO` en ámbar si se pierde una sesión ya activa. Se
 ve también con la onda vacía.
 Local y Servidor no muestran esa etiqueta.
-En la ventana compacta del iPhone, el selector y el estado de descubrimiento
-ocupan la primera fila de General para que aparezcan sin desplazamiento.
+En móvil, la fila Control remoto se encuentra en el grupo Audio y conexiones.
+Su página conserva selector, estado, descubrimiento y alias apilados. Navegar
+a otra sección no interrumpe la conexión ni cambia el modo.
 
 ## Interfaz compartida
 
@@ -45,7 +46,7 @@ La sesión de UI vive más que los componentes que mantienen referencias a ella.
 - El nombre anunciado usa el nombre visible del dispositivo: en macOS, el
   nombre del equipo de Compartir; en Android, `Settings.Global.DEVICE_NAME`
   (con fabricante/modelo como alternativa); en iOS, `UIDevice.name`. No se
-  anuncia `localhost`. Configuración → General permite escribir un alias
+  anuncia `localhost`. La página de control remoto permite escribir un alias
   local para el servidor, aplicado sin cerrar las conexiones WebSocket.
   Si el alias queda vacío se vuelve al nombre del dispositivo. En iOS 16+
   `UIDevice.name` puede devolver solo `iPhone` o `iPad` sin el entitlement

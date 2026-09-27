@@ -6,6 +6,7 @@
 #include <JuceHeader.h>
 
 #include <functional>
+#include <array>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -69,6 +70,7 @@ public:
 
   void paint(juce::Graphics &g) override;
   void resized() override;
+  bool keyPressed(const juce::KeyPress &) override;
   void refreshThemeColours();
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
@@ -134,8 +136,23 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
+  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics };
+  class SettingsHomePage;
+
+  bool usesGroupedNavigation() const;
+  void showSettingsPage(Destination destination);
+  void layoutMobileGeneralPage();
+  int mobileGeneralCardHeight() const;
+  int mobilePageContentHeight(int width) const;
+  juce::String pageTitle() const;
+  juce::String pageHelpText() const;
+  Destination destination = Destination::Home;
+  int homeScrollY = 0;
+  std::unique_ptr<SettingsHomePage> homePage;
+  HeaderIconButton backButton{"settingsBack", IconGlyph::ArrowLeft};
 
   juce::Label title;
+  juce::Label pageDescription;
   SettingsCloseButton closeButton;
   SettingsTabButton generalTabButton;
   SettingsTabButton accountTabButton;
@@ -155,21 +172,31 @@ private:
   juce::TextButton diagnosticsButton;
   bool diagnosticsBusy = false;
   std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSetupComp;
+  juce::Label audioHelp;
   juce::Label themeLabel;
+  juce::Label themeHelp;
   AdaptiveComboBox themeBox;
   juce::Label languageLabel;
+  juce::Label languageHelp;
   AdaptiveComboBox languageBox;
   juce::Label expandLaunchLabel;
+  juce::Label expandLaunchHelp;
   juce::ToggleButton expandLaunchToggle;
   juce::Label primeImportLabel;
+  juce::Label primeImportHelp;
   juce::ToggleButton primeImportToggle;
   juce::Label stemOptimizationLabel;
+  juce::Label stemOptimizationHelp;
   juce::ToggleButton stemOptimizationToggle;
   juce::Label padsCrossfadeLabel;
+  juce::Label padsCrossfadeHelp;
   AdaptiveComboBox padsCrossfadeBox;
   juce::Label metronomeClickStyleLabel;
+  juce::Label metronomeClickStyleHelp;
   AdaptiveComboBox metronomeClickStyleBox;
   juce::Label remoteControlLabel;
+  juce::Label remoteControlHelp;
+  juce::Label remoteTargetHelp;
   juce::Component remoteModeControl;
   juce::TextButton remoteLocalButton, remoteClientButton, remoteServerButton;
   AdaptiveComboBox remoteServersBox;
@@ -206,8 +233,11 @@ private:
   bool quotaFetchFailed = false;
   juce::Label actionsSectionLabel;
   juce::Label actionLogoutLabel;
+  juce::Label actionLogoutHelp;
   juce::Label actionPurgeLabel;
+  juce::Label actionPurgeHelp;
   juce::Label actionInfoLabel;
+  juce::Label actionInfoHelp;
   juce::HyperlinkButton infoLinkButton{
       "Soporte", juce::URL("mailto:hola@playworship.app")};
   SettingsLogoutButton logoutButton;
@@ -222,6 +252,7 @@ private:
   std::unique_ptr<SettingsRowSeparator> actionsRowSeparator;
   std::vector<std::unique_ptr<SettingsRowSeparator>> generalRowSeparators;
   juce::Label routingSectionLabel;
+  juce::Label routingControlsHelp;
   juce::Label routingHintLabel;
   juce::Component routingContent;
   ThemeChanged onThemeChanged;

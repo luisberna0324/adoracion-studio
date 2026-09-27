@@ -83,7 +83,10 @@ guarda se bloquean doble envio, navegacion y cierre. Si el paquete se guarda
 pero falla el registro, se conserva el `.pwproj` y se informa su ubicacion.
 `songs.json` solo se reemplaza tras comprobar escritura completa y flush de
 un temporal, manteniendo intacta la biblioteca anterior ante errores de I/O.
-La edicion conserva su ejecucion existente, con proteccion contra reentrancia.
+La edicion de proyectos tambien guarda en background con progreso y proteccion
+contra reentrancia. Al guardar metadatos o stems de un `.pwproj`, se reconstruye
+el paquete portable, se comprueba su reapertura y se conserva temporalmente el
+paquete anterior para restaurarlo si falla la actualizacion de Biblioteca.
 
 ## Audio y portada
 
@@ -125,6 +128,28 @@ incluye en el ZIP; si desaparecio se informa error. Una portada HTTP(S) usa la
 descarga/cache existente, best-effort: si no esta disponible no impide guardar
 audio y queda la referencia para reintentar. Una portada ya local se conserva.
 
+## Editar una cancion
+
+`BPM base` en el formulario es el BPM original de la cancion: fija la referencia
+de compases y el ratio para el audio. El control de tempo del reproductor es el
+valor de reproduccion. Al corregir el BPM base, el tempo guardado se mueve al
+nuevo valor solo si aun coincidia con el BPM base anterior; un tempo ajustado
+por el usuario se conserva. El formulario admite BPM vacio (desconocido) o de
+20 a 300, el rango aceptado por el reproductor. El mapa de tempo automatico
+de una sola region sigue el BPM y compas base corregidos; un mapa de tempo
+personalizado se conserva.
+
+La portada elegida invalida la ruta local anterior antes de empaquetar el
+proyecto. En canciones legacy, la copia se lee antes de limpiar la portada
+previa, incluso si origen y destino son el mismo archivo. Las dos rutas de
+guardado actualizan Biblioteca y la cancion seleccionada/cargada; la barra
+superior vuelve a leer la imagen si cambian fuente, ruta, fecha o tamaño.
+La edicion de stems en un proyecto actualiza el manifiesto y la forma de onda
+del paquete. El proyecto mantiene su ID y ruta de Biblioteca. El guardado lee
+el manifiesto nuevo sin borrar stems que el motor pueda tener abiertos; si la
+cancion estaba cargada, el editor libera esos stems antes de recargar el
+paquete para aplicar los cambios.
+
 ## Verificacion
 
 - `input_controls`: teclado, callbacks y espaciado; `input_controls_popup`
@@ -146,8 +171,9 @@ audio y queda la referencia para reintentar. Una portada ya local se conserva.
 - Validacion manual en iOS y Android: teclado, pickers de archivos, todos los
   pasos, cancion creada visible en Biblioteca y reapertura tras reinicio.
 
-Estas pruebas de creacion no certifican la edicion posterior de un `.pwproj`,
-ni sustituyen la prueba tactil en dispositivos reales.
+`song_import_wizard` tambien edita un `.pwproj` real, cambia BPM y portada dos
+veces y comprueba Biblioteca, ajustes y reapertura del paquete. La prueba no
+sustituye la validacion tactil en dispositivos reales.
 
 Las pruebas de persistencia y del asistente compilan sus unidades de almacenamiento con
 `MTCONTROLS_ISOLATED_STORAGE_TESTS=1` y exigen

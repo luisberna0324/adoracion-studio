@@ -110,6 +110,12 @@ double getOriginalSongBpm() const noexcept;
 ```
 
 Cambia el tempo de reproducción sin alterar el pitch (time stretch).
+El BPM base del formulario de edicion corresponde al BPM original de la cancion.
+Al guardarlo, si el tempo de reproduccion persistido aun coincide con el BPM
+base anterior, se actualiza al nuevo BPM base. Un tempo personalizado se
+mantiene; el usuario lo modifica desde el control del reproductor. El mapa
+automatico de una sola region sigue el nuevo BPM/compas base, mientras un
+mapa de tempo editado por el usuario conserva sus regiones.
 
 El target se mantiene en atomics, pero el ratio efectivo no salta de un bloque
 al siguiente: durante reproducción se interpola con `smoothstep` a lo largo de

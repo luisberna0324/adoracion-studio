@@ -23,6 +23,20 @@ juce::MouseEvent mouseEvent(juce::Component &component, bool dragged = false) {
 }
 
 struct SettingsPanelTestAccess {
+  static void snapshot(SettingsPanel &panel, const juce::String &name) {
+    const auto output = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_SETTINGS_SNAPSHOTS", {});
+    if (output.isEmpty()) return;
+    juce::File folder(output);
+    folder.createDirectory();
+    auto stream = folder.getChildFile(name + ".png").createOutputStream();
+    expect(stream != nullptr, "snapshot output opens");
+    stream->setPosition(0);
+    stream->truncate();
+    juce::PNGImageFormat png;
+    expect(png.writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds()), *stream),
+           "settings preview renders");
+  }
+
   static void run() {
     int routingChanges = 0;
     SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
@@ -107,6 +121,127 @@ struct SettingsPanelTestAccess {
       expect(viewport.getViewPositionY() == 0,
              "switching tabs starts routing at the top of its own content");
     }
+
+    using Destination = SettingsPanel::Destination;
+    using Mode = playworship::remote::RemoteSession::Mode;
+    panel.setSize(390, 780);
+    panel.showSettingsPage(Destination::Home);
+    auto *home = panel.settingsViewport.getViewedComponent();
+    expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
+               !panel.backButton.isVisible(), "compact settings opens with the grouped index");
+    expect(home->getNumChildComponents() == 8, "all existing settings have a grouped destination");
+    snapshot(panel, "settings-home");
+
+    for (auto *child : home->getChildren()) {
+      auto *button = dynamic_cast<juce::Button *>(child);
+      expect(button != nullptr && button->getHeight() >= 48,
+             "each destination is an accessible touch target");
+      panel.settingsViewport.setViewPosition(0, 10000);
+      const int homeY = panel.settingsViewport.getViewPositionY();
+      button->onClick();
+      expect(panel.settingsViewport.getViewedComponent() == &panel.tabs &&
+                 panel.backButton.isVisible(), "a grouped row opens its existing settings page");
+      expect(panel.closeButton.isVisible() && panel.getLocalBounds().contains(panel.closeButton.getBounds()) &&
+                 panel.closeButton.getWidth() >= 44,
+             "every detail keeps its close action visible inside the header");
+      expect(panel.getComponentAt(panel.closeButton.getBounds().getCentre()) == &panel.closeButton,
+             "scrolling content cannot cover the close action");
+      expect(panel.settingsViewport.getViewPositionY() == 0,
+             "detail starts at its own top");
+      expect(panel.pageDescription.isVisible() &&
+                 panel.pageDescription.getText().isNotEmpty() &&
+                 panel.pageDescription.getBottom() <= panel.settingsViewport.getY(),
+             "each detail has a readable description above its scrolling controls");
+      snapshot(panel, "settings-detail-" + juce::String(static_cast<int>(panel.destination)));
+      panel.backButton.onClick();
+      expect(panel.settingsViewport.getViewedComponent() == home &&
+                 panel.settingsViewport.getViewPositionY() == homeY,
+             "back returns to the same position in the grouped index");
+    }
+
+    // Dragging over a row must scroll without accidentally opening a page.
+    auto *row = home->getChildComponent(0);
+    row->mouseDown(mouseEvent(*row));
+    row->mouseUp(mouseEvent(*row, true));
+    expect(panel.destination == Destination::Home, "drag does not navigate");
+
+    panel.showSettingsPage(Destination::Remote);
+    int modeChanges = 0;
+    panel.onRemoteModeChanged = [&](Mode mode) {
+      ++modeChanges;
+      panel.updateRemoteState(mode, {}, "Buscando servidores");
+    };
+    panel.remoteClientButton.onClick();
+    expect(modeChanges == 1 && panel.remoteServersBox.isVisible() &&
+               !panel.remoteServerNameEditor.isVisible(),
+           "client selector uses the original remote callback and shows discovery");
+    panel.showSettingsPage(Destination::Appearance);
+    panel.updateRemoteState(Mode::Server, {}, "Servidor activo");
+    expect(!panel.remoteServerNameEditor.isVisible() && panel.themeBox.isVisible(),
+           "background remote updates cannot reveal remote controls on another page");
+    panel.showSettingsPage(Destination::Remote);
+    expect(panel.remoteServerNameEditor.isVisible() && !panel.remoteServersBox.isVisible(),
+           "remote state survives navigation");
+    expect(panel.remoteTargetHelp.isVisible() &&
+               panel.remoteTargetHelp.getText().containsIgnoreCase("nombre"),
+           "server mode explains its visible name");
+    expect(panel.generalPage.getLocalBounds().contains(panel.remoteServerNameEditor.getBounds()) &&
+               panel.remoteModeControl.getHeight() >= 44,
+           "remote discovery, alias and segmented controls fit in portrait");
+    snapshot(panel, "settings-remote");
+
+    for (const auto width : {320, 390, 560}) {
+      panel.setSize(width, 640);
+      for (const auto page : {Destination::Appearance, Destination::Playback, Destination::Library}) {
+        panel.showSettingsPage(page);
+        for (auto *control : panel.generalPage.getChildren())
+          if (control->isVisible())
+            expect(!control->getBounds().isEmpty() && panel.generalPage.getLocalBounds().contains(control->getBounds()),
+                   "every visible preference fits in narrow pages");
+        const juce::Label *const helps[] = {
+            &panel.themeHelp, &panel.languageHelp, &panel.expandLaunchHelp,
+            &panel.primeImportHelp, &panel.stemOptimizationHelp,
+            &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
+        int visibleHelps = 0;
+        for (const auto *help : helps)
+          if (help->isVisible()) {
+            ++visibleHelps;
+            expect(help->getText().isNotEmpty() &&
+                       panel.generalPage.getLocalBounds().contains(help->getBounds()),
+                   "each visible preference has help within its card");
+          }
+        expect(visibleHelps >= 2, "both preferences on a detail have help");
+      }
+      panel.showSettingsPage(Destination::Account);
+      panel.settingsViewport.setViewPosition(0, 10000);
+      const auto support = panel.settingsViewport.getLocalArea(&panel.infoLinkButton, panel.infoLinkButton.getLocalBounds());
+      expect(support.getBottom() <= panel.settingsViewport.getHeight(),
+             "account actions remain reachable at the end of the page");
+      expect(panel.actionPurgeHelp.getText().containsIgnoreCase("biblioteca") &&
+                 panel.accountPage.getLocalBounds().contains(
+                     panel.actionPurgeHelp.getBounds()),
+             "the purge action explains that it empties the local Library");
+    }
+
+    panel.setSize(390, 780);
+    panel.showSettingsPage(Destination::Account);
+    panel.settingsViewport.setViewPosition(0, 10000);
+    snapshot(panel, "settings-account-actions");
+    panel.showSettingsPage(Destination::Audio);
+    expect(panel.audioHelp.getText().isNotEmpty() &&
+               panel.audioPage.getLocalBounds().contains(panel.audioHelp.getBounds()),
+           "audio device page explains how its outputs feed routing");
+    panel.showSettingsPage(Destination::Routing);
+    expect(panel.routingControlsHelp.getText().containsIgnoreCase("Mono") &&
+               panel.routingControlsHelp.getBottom() <= panel.routingContent.getY(),
+           "routing explains mono, stereo and channel selectors before the list");
+
+    panel.setSize(1080, 780);
+    panel.generalTabButton.onClick();
+    expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
+               panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
+           "wide desktop retains its full settings navigation and controls");
+    snapshot(panel, "settings-desktop");
   }
 };
 
@@ -121,5 +256,5 @@ int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   applyTheme(ThemePreset::Spotify);
   SettingsPanelTestAccess::run();
-  std::cout << "Settings routing: layout, scrolling and gesture checks passed\n";
+  std::cout << "Settings: grouped navigation, remote state, layout, scrolling and gestures passed\n";
 }

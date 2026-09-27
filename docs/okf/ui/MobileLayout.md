@@ -9,7 +9,7 @@ timestamp: 2026-09-26T00:00:00-03:00
 # Mobile Layout
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
-el runtime habilita `upright` para Biblioteca y setlists mientras su panel
+el runtime habilita `upright` para Biblioteca, setlists y Configuración mientras su panel
 esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
 orientacion inicial se restringe a landscape. En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
@@ -194,6 +194,35 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   Android, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
+- En iOS y Android, Configuración abre en el mismo overlay del editor. En
+  teléfono ocupa toda la pantalla y gira a vertical; al cerrar recupera la
+  orientación de la vista que permanece abierta. El fondo cubre la ventana,
+  mientras el encabezado y contenido respetan los insets seguros y del teclado.
+  En tablet permanece como panel centrado.
+- La portada móvil agrupa filas de 72 pt con icono, título, descripción y flecha:
+  Personalización (Apariencia e idioma, Reproducción, Biblioteca), Audio y
+  conexiones (Dispositivo de audio, Ruteo de salidas, Control remoto), Cuenta y
+  soporte (Mi cuenta, Diagnóstico). Cada fila navega a los controles existentes;
+  volver recupera el desplazamiento de la portada. Un drag sobre una fila no
+  navega. Encabezado, volver y cerrar permanecen fijos. Escape vuelve a la
+  portada desde el detalle y cierra desde la portada. El botón Atrás de Android
+  usa el mismo recorrido. Los atajos de reproducción del editor no se ejecutan
+  mientras Configuración ocupa el frente.
+- Las preferencias se apilan con selectores de 48 pt. Control remoto conserva
+  el selector Local/Cliente/Servidor, descubrimiento y alias en su propia página;
+  las actualizaciones de conexión no muestran esos controles en otras páginas.
+  Mi cuenta apila cuotas y acciones en anchos estrechos. La preferencia de
+  expansión de ventana se mantiene en escritorio, donde tiene efecto.
+- Cada detalle de Configuración muestra una introducción breve bajo el título.
+  Apariencia, Reproducción, Biblioteca y Control remoto explican cada selector o
+  interruptor junto a él; Audio y Ruteo explican el dispositivo y la asignación
+  de canales; Mi cuenta explica las acciones, incluida la purga que vacía la
+  Biblioteca local sin borrar proyectos `.pwproj` ni contenido en la nube.
+  Diagnóstico conserva sus notas sobre el informe y su privacidad. La opción de
+  importar la biblioteca de Prime indica que solo funciona en macOS y queda
+  deshabilitada en otras plataformas.
+- El escritorio ancho conserva sus pestañas. Las ventanas de menos de 760 px
+  también usan la portada agrupada para evitar pestañas comprimidas.
 - Configuración usa desplazamiento vertical con rueda/trackpad y también admite
   arrastrar el contenido con clic o toque sostenido. No expone desplazamiento
   horizontal en el contenedor principal. Ruteo participa del mismo viewport,
@@ -211,7 +240,7 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   y nunca cambia Mono/Stereo ni el canal de salida al pasar sobre un selector.
   `settings_panel` verifica el acceso al ultimo control, limites de filas,
   rueda sobre selectores, gesto arrastrado y cambio de pestaña en nueve tamaños.
-- Configuración mantiene Diagnóstico en una pestaña propia, después de Ruteo.
+- Configuración mantiene Diagnóstico en una página propia (pestaña en escritorio).
   Audio contiene sólo los controles del dispositivo; el informe técnico se
   comparte desde una tarjeta compacta en Diagnóstico y no expone un marcador
   manual de crujidos.

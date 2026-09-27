@@ -1093,6 +1093,16 @@ void SongListPanel::setOnSongActivated(
   onSongActivated = std::move(cb);
 }
 
+void SongListPanel::setOnSongEditStarted(
+    std::function<void(const juce::String &)> cb) {
+  onSongEditStarted = std::move(cb);
+}
+
+void SongListPanel::setOnSongEdited(
+    std::function<void(const ImportedSongData &, int)> cb) {
+  onSongEdited = std::move(cb);
+}
+
 void SongListPanel::setOnProjectUploadRequested(
     std::function<void(const ImportedSongData &)> cb) {
   onProjectUploadRequested = std::move(cb);
@@ -3908,18 +3918,38 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
   if (!found)
     return;
 
+  if (onSongEditStarted)
+    onSongEditStarted(trimmedSongId);
+
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  auto refreshEditedSong = [safeThis, editedSongId = trimmedSongId] {
+    if (safeThis == nullptr)
+      return;
+    safeThis->refreshFromStorage();
+    const auto allSongs = SongLibraryStore::loadSongs();
+    const auto it = std::find_if(
+        allSongs.begin(), allSongs.end(),
+        [&editedSongId](const ImportedSongData &candidate) {
+          return candidate.id == editedSongId;
+        });
+    if (it == allSongs.end())
+      return;
+    const int indexForSetlist = safeThis->getSongIndexById(editedSongId);
+    if (safeThis->onSongEdited != nullptr) {
+      // The editor knows which song is actually loaded. Selection can differ
+      // from the playing song while editing a library item.
+      safeThis->onSongEdited(*it, indexForSetlist >= 0 ? indexForSetlist : -1);
+    } else if ((editedSongId == safeThis->selectedSongId ||
+                editedSongId == safeThis->nowPlayingSongId) &&
+               safeThis->onSongActivated != nullptr) {
+      safeThis->onSongActivated(*it, indexForSetlist >= 0 ? indexForSetlist : -1);
+    }
+  };
 
   auto panel = std::make_unique<SongImportWizardComponent>(
-      [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
+      [editedSongId = trimmedSongId, refreshEditedSong](ImportedSongData song,
                                                juce::String &errorMessage,
                                                const SongImportProgressFn &progress) {
-        if (safeThis == nullptr) {
-          errorMessage = L10n::tr(u8"La vista de edición ya no esta disponible.",
-                                  "Edit UI is no longer available.");
-          return false;
-        }
-
         song.id = editedSongId;
         juce::String updateError;
         const bool success =
@@ -3932,39 +3962,14 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
           return false;
         }
 
-        safeThis->refreshFromStorage();
-
-        const auto shouldReloadLiveSong =
-            editedSongId == safeThis->selectedSongId ||
-            editedSongId == safeThis->nowPlayingSongId;
-
-        if (!shouldReloadLiveSong || safeThis->onSongActivated == nullptr)
-          return true;
-
-        const auto allSongs = SongLibraryStore::loadSongs();
-        const auto it =
-            std::find_if(allSongs.begin(), allSongs.end(),
-                         [&editedSongId](const ImportedSongData &candidate) {
-                           return candidate.id == editedSongId;
-                         });
-        if (it == allSongs.end())
-          return true;
-
-        const int indexForSetlist = safeThis->getSongIndexById(editedSongId);
-        safeThis->onSongActivated(*it, indexForSetlist >= 0 ? indexForSetlist : -1);
+        juce::MessageManager::callAsync(refreshEditedSong);
         return true;
       },
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
       baseSong,
       std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>{},
-      [safeThis, editedSongId = trimmedSongId](ImportedSongData song,
+      [editedSongId = trimmedSongId, refreshEditedSong](ImportedSongData song,
                                                juce::String &errorMessage) {
-        if (safeThis == nullptr) {
-          errorMessage = L10n::tr(u8"La vista de edición ya no esta disponible.",
-                                  "Edit UI is no longer available.");
-          return false;
-        }
-
         song.id = editedSongId;
         juce::String updateError;
         const bool success =
@@ -3977,7 +3982,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
           return false;
         }
 
-        safeThis->refreshFromStorage();
+        refreshEditedSong();
         return true;
       });
   panel->refreshThemeColours();

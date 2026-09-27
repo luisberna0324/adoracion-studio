@@ -119,6 +119,13 @@ public:
   }
   bool moreThanOneInstanceAllowed() override { return false; }
 
+  bool backButtonPressed() override {
+    auto *processor = mainWindow != nullptr ? mainWindow->getAudioProcessor() : nullptr;
+    auto *editor = processor != nullptr
+        ? dynamic_cast<MTControlsAudioProcessorEditor *>(processor->getActiveEditor()) : nullptr;
+    return editor != nullptr && editor->navigateBackInSettings();
+  }
+
   void initialise(const juce::String &commandLine) override {
 #if JUCE_IOS || JUCE_ANDROID
     // Set the launch mask before JUCE creates its window/controller. Waiting

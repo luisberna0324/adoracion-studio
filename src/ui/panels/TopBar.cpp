@@ -2310,6 +2310,10 @@ void TopBar::refreshFromProviders() {
       hasKey = false;
       lastSongIdentity.clear();
       lastArtworkPath.clear();
+      lastArtworkSource.clear();
+      lastArtworkModifiedTime = {};
+      lastArtworkSize = -1;
+      lastArtworkStatAtMs = 0;
       if (songArtwork.isValid()) {
         songArtwork = {};
         songCardNeedsRepaint = true;
@@ -2396,19 +2400,37 @@ void TopBar::refreshFromProviders() {
 
     if (loadedSong != nullptr) {
       const auto artworkPath = loadedSong->artworkPath.trim();
-      if (artworkPath != lastArtworkPath) {
+      const auto artworkSource = loadedSong->artworkSource.trim();
+      const juce::File artworkFile(artworkPath);
+      const bool referenceChanged = artworkPath != lastArtworkPath ||
+                                    artworkSource != lastArtworkSource;
+      auto modified = lastArtworkModifiedTime;
+      auto size = lastArtworkSize;
+      const auto now = juce::Time::getMillisecondCounter();
+      if (referenceChanged || now - lastArtworkStatAtMs >= 500) {
+        lastArtworkStatAtMs = now;
+        const bool exists = artworkPath.isNotEmpty() && artworkFile.existsAsFile();
+        modified = exists ? artworkFile.getLastModificationTime() : juce::Time{};
+        size = exists ? artworkFile.getSize() : -1;
+      }
+      if (referenceChanged ||
+          modified != lastArtworkModifiedTime || size != lastArtworkSize) {
         lastArtworkPath = artworkPath;
+        lastArtworkSource = artworkSource;
+        lastArtworkModifiedTime = modified;
+        lastArtworkSize = size;
         songArtwork = {};
         songCardNeedsRepaint = true;
-        if (artworkPath.isNotEmpty()) {
-          const juce::File artworkFile(artworkPath);
-          if (artworkFile.existsAsFile())
-            songArtwork = juce::ImageFileFormat::loadFrom(artworkFile);
-        }
+        if (artworkFile.existsAsFile())
+          songArtwork = juce::ImageFileFormat::loadFrom(artworkFile);
       }
     } else {
       if (lastArtworkPath.isNotEmpty() || songArtwork.isValid()) {
         lastArtworkPath.clear();
+        lastArtworkSource.clear();
+        lastArtworkModifiedTime = {};
+        lastArtworkSize = -1;
+        lastArtworkStatAtMs = 0;
         songArtwork = {};
         songCardNeedsRepaint = true;
       }

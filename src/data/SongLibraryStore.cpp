@@ -327,16 +327,22 @@ void clearArtworkFilesInDirectory(const juce::File &directory) {
 bool copyArtworkIntoDirectory(const juce::File &sourceFile,
                               const juce::File &directory,
                               juce::String &outArtworkPath) {
-  if (!sourceFile.existsAsFile())
+  juce::MemoryBlock artworkBytes;
+  if (!sourceFile.existsAsFile() ||
+      !sourceFile.loadFileAsData(artworkBytes) || artworkBytes.getSize() == 0)
     return false;
-  clearArtworkFilesInDirectory(directory);
+  // The saved cover may itself be the source. Read it before replacing the
+  // target; only remove covers with other extensions after the write works.
   const auto ext =
       normalizeArtworkExtension(sourceFile.getFileExtension());
   const auto target = directory.getChildFile("artwork" + ext);
-  if (target.existsAsFile())
-    target.deleteFile();
-  if (!sourceFile.copyFileTo(target))
+  if (directory.createDirectory().failed() ||
+      !target.replaceWithData(artworkBytes.getData(), artworkBytes.getSize()))
     return false;
+  for (const auto &old : directory.findChildFiles(juce::File::findFiles,
+                                                   false, "artwork.*"))
+    if (old != target)
+      old.deleteFile();
   outArtworkPath = target.getFullPathName();
   return true;
 }
@@ -362,13 +368,15 @@ bool downloadArtworkIntoDirectory(const juce::String &url,
   if (bytes.getSize() == 0)
     return false;
 
-  clearArtworkFilesInDirectory(directory);
   const auto ext = inferArtworkExtensionFromSource(url);
   const auto target = directory.getChildFile("artwork" + ext);
-  if (target.existsAsFile())
-    target.deleteFile();
-  if (!target.replaceWithData(bytes.getData(), bytes.getSize()))
+  if (directory.createDirectory().failed() ||
+      !target.replaceWithData(bytes.getData(), bytes.getSize()))
     return false;
+  for (const auto &old : directory.findChildFiles(juce::File::findFiles,
+                                                   false, "artwork.*"))
+    if (old != target)
+      old.deleteFile();
 
   outArtworkPath = target.getFullPathName();
   return true;
@@ -420,6 +428,31 @@ bool persistSongArtwork(ImportedSongData &song, const juce::File &targetDirector
   song.artworkPath.clear();
   errorMessage.clear();
   return true;
+}
+
+void followEditedBaseTempoInDefaultMap(ImportedSongData &edited,
+                                       const ImportedSongData &previous) {
+  if (edited.tempoMap.regions.size() != 1 ||
+      previous.tempoMap.regions.size() != 1)
+    return;
+  const auto &oldRegion = previous.tempoMap.regions.front();
+  auto &region = edited.tempoMap.regions.front();
+  const double oldBpm = previous.bpm > 0 ? previous.bpm : 120.0;
+  const auto oldMeter = previous.timeSignature.trim().isNotEmpty()
+                            ? previous.timeSignature.trim()
+                            : juce::String("4/4");
+  if (std::abs(oldRegion.startSec) > 0.01 ||
+      std::abs(oldRegion.endSec - estimateSongLengthSeconds(previous)) > 0.05 ||
+      std::abs(oldRegion.bpm - oldBpm) > 0.01 ||
+      oldRegion.timeSignature != oldMeter ||
+      oldRegion.clickDivision != ClickDivision::Quarter ||
+      !oldRegion.accentEnabled)
+    return;
+  region.bpm = edited.bpm > 0 ? edited.bpm : 120.0;
+  region.timeSignature = edited.timeSignature.trim().isNotEmpty()
+                             ? edited.timeSignature.trim()
+                             : juce::String("4/4");
+  region.endSec = estimateSongLengthSeconds(edited);
 }
 
 bool repairArtworkPathForSong(ImportedSongData &song) {
@@ -1112,6 +1145,189 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   const auto previousSong = *songIt;
   ensureSongHasStemIds(song);
 
+  if (isProjectBackedSong(previousSong)) {
+    const juce::File projectFile(previousSong.projectPath);
+    ProjectDocument original;
+    juce::String projectError;
+    if (!ProjectStore::open(projectFile, original, &projectError, false)) {
+      if (errorMessage != nullptr)
+        *errorMessage = projectError;
+      return false;
+    }
+
+    song.title = song.title.trim();
+    song.artist = song.artist.trim();
+    song.key = song.key.trim();
+    song.timeSignature = song.timeSignature.trim();
+    song.projectId = projectIdentityForSong(previousSong);
+    song.projectPath = previousSong.projectPath;
+    song.createdMs = previousSong.createdMs;
+    song.fileType = "FLAC";
+    if (song.artworkSource.trim() != previousSong.artworkSource.trim())
+      song.artworkPath.clear();
+    song.stems.erase(std::remove_if(song.stems.begin(), song.stems.end(),
+                                    [](const ImportedStemData &stem) {
+                                      return !stem.include;
+                                    }),
+                     song.stems.end());
+    if (song.stems.empty()) {
+      if (errorMessage != nullptr)
+        *errorMessage = L10n::tr("Debes dejar al menos un stem cargado.",
+                                 "At least one stem must remain loaded.");
+      return false;
+    }
+    sortStemsForStripOrder(song.stems);
+    bool arrangementChanged = false;
+    song.arrangement = reconcileArrangementForSong(
+        song.arrangement.parts.empty() ? previousSong.arrangement
+                                       : song.arrangement,
+        song, arrangementChanged);
+    followEditedBaseTempoInDefaultMap(song, previousSong);
+
+    auto settings = original.settings;
+    ProjectStore::getCachedSettings(projectFile, settings);
+    bool mixChanged = false;
+    settings.mix = reconcileMixForSong(settings.mix, song, mixChanged);
+    if (!settings.windowCustomized)
+      settings.window = createDefaultWindowForSong(song);
+    settings.arrangement = reconcileArrangementForSong(settings.arrangement,
+                                                       song, arrangementChanged);
+    const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
+    if (std::abs(settings.tempoBpm - previousBaseBpm) < 0.01)
+      settings.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
+
+    bool stemsChanged = song.stems.size() != previousSong.stems.size();
+    for (size_t i = 0; !stemsChanged && i < song.stems.size(); ++i) {
+      const auto &oldStem = previousSong.stems[i];
+      const auto &newStem = song.stems[i];
+      stemsChanged = oldStem.stemId != newStem.stemId ||
+                     oldStem.storedPath != newStem.storedPath ||
+                     oldStem.sourcePath != newStem.sourcePath ||
+                     oldStem.category != newStem.category;
+    }
+
+    ProjectDocument updated;
+    updated.song = song;
+    updated.settings = settings;
+    updated.waveformBins = stemsChanged
+                               ? buildMixedWaveformBins(song, kWaveformPreviewBinCount)
+                               : original.waveformBins;
+    const auto suffix = juce::Uuid().toString().substring(0, 8);
+    const auto baseName = projectFile.getFileNameWithoutExtension();
+    const auto stagedProject = projectFile.getSiblingFile(
+        baseName + "_edit_stage_" + suffix + ProjectStore::kFileExtension);
+    const auto backupProject = projectFile.getSiblingFile(
+        baseName + "_edit_backup_" + suffix + ProjectStore::kFileExtension);
+    if (!ProjectStore::save(
+            updated, stagedProject, &projectError, nullptr,
+            [&onProgress](double value, const juce::String &phase) {
+              if (onProgress)
+                onProgress(0.05 + 0.75 * value, phase);
+            })) {
+      stagedProject.deleteFile();
+      if (errorMessage != nullptr)
+        *errorMessage = projectError;
+      return false;
+    }
+    ProjectStore::forgetRecentProject(stagedProject);
+    if (!projectFile.moveFileTo(backupProject)) {
+      stagedProject.deleteFile();
+      if (errorMessage != nullptr)
+        *errorMessage = L10n::tr("No se pudo apartar el proyecto original.",
+                                 "Couldn't back up the original project.");
+      return false;
+    }
+    if (!stagedProject.moveFileTo(projectFile)) {
+      const bool restored = backupProject.moveFileTo(projectFile);
+      stagedProject.deleteFile();
+      if (errorMessage != nullptr)
+        *errorMessage = restored
+                            ? L10n::tr("No se pudo instalar el proyecto actualizado.",
+                                       "Couldn't install the updated project.")
+                            : L10n::tr("No se pudo instalar el proyecto. El original quedó en: ",
+                                       "Couldn't install the project. The original is at: ") +
+                                  backupProject.getFullPathName();
+      return false;
+    }
+    auto restoreOriginalProject = [&] {
+      const auto failedProject = projectFile.getSiblingFile(
+          baseName + "_edit_failed_" + suffix + ProjectStore::kFileExtension);
+      if (!projectFile.moveFileTo(failedProject))
+        return false;
+      if (!backupProject.moveFileTo(projectFile)) {
+        failedProject.moveFileTo(projectFile);
+        return false;
+      }
+      failedProject.deleteFile();
+      clearArtworkFilesInDirectory(
+          ProjectStore::getCacheDirectory(song.projectId));
+      ProjectDocument restored;
+      juce::String restoreError;
+      ProjectStore::open(projectFile, restored, &restoreError, false);
+      return true;
+    };
+
+    // The currently playing processor may still hold stems in this cache.
+    // Refresh only the cover now; the next song load re-extracts audio after
+    // the processor has released its file handles.
+    clearArtworkFilesInDirectory(
+        ProjectStore::getCacheDirectory(song.projectId));
+    ProjectDocument reopened;
+    if (!ProjectStore::open(projectFile, reopened, &projectError, false)) {
+      const bool restored = restoreOriginalProject();
+      if (errorMessage != nullptr)
+        *errorMessage = restored ? projectError
+                                 : projectError + " (original project: " +
+                                       backupProject.getFullPathName() + ")";
+      return false;
+    }
+    reopened.song.id = previousSong.id;
+    *songIt = reopened.song;
+    const auto now = juce::Time::getCurrentTime().toMilliseconds();
+    for (auto &setlist : library.setlists) {
+      bool changed = false;
+      for (auto &item : setlist.items) {
+        if (item.songId != song.id)
+          continue;
+        bool itemChanged = false;
+        item.mix = reconcileMixForSong(item.mix, reopened.song, itemChanged);
+        if (!item.windowCustomized)
+          item.window = createDefaultWindowForSong(reopened.song);
+        item.arrangement = reconcileArrangementForSong(item.arrangement,
+                                                       reopened.song, itemChanged);
+        if (std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+          item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
+          itemChanged = true;
+        }
+        if (itemChanged) {
+          item.updatedMs = now;
+          changed = true;
+        }
+      }
+      if (changed)
+        setlist.updatedMs = now;
+    }
+    if (!saveLibrary(library)) {
+      const bool restored = restoreOriginalProject();
+      if (errorMessage != nullptr)
+        *errorMessage = restored
+                            ? L10n::tr("No se pudo guardar la biblioteca; se restauró el proyecto anterior.",
+                                       "Couldn't save the library; the previous project was restored.")
+                            : L10n::tr("No se pudo guardar la biblioteca. El proyecto anterior quedó en: ",
+                                       "Couldn't save the library. The previous project is at: ") +
+                                  backupProject.getFullPathName();
+      return false;
+    }
+    if (ProjectStore::writeCachedSettingsFromFile(projectFile, settings))
+      ProjectStore::scheduleSettingsSave(projectFile, song.projectId, settings);
+    backupProject.deleteFile();
+    if (!reopened.waveformBins.empty())
+      saveWaveformCache(song.id, reopened.waveformBins);
+    if (onProgress)
+      onProgress(1.0, L10n::tr("Canción actualizada", "Song updated"));
+    return true;
+  }
+
   song.title = song.title.trim();
   song.artist = song.artist.trim();
   song.key = song.key.trim();
@@ -1167,6 +1383,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   song.arrangement =
       reconcileArrangementForSong(song.arrangement, song, arrangementChanged);
   juce::ignoreUnused(arrangementChanged);
+  followEditedBaseTempoInDefaultMap(song, previousSong);
 
   bool stemsChanged = song.stems.size() != previousSong.stems.size();
 
@@ -1364,6 +1581,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   *songIt = song;
 
   const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
   for (auto &setlist : library.setlists) {
     bool setlistChanged = false;
     for (auto &item : setlist.items) {
@@ -1371,8 +1589,14 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
         continue;
       bool itemChanged = false;
       item.mix = reconcileMixForSong(item.mix, song, itemChanged);
+      if (!item.windowCustomized)
+        item.window = createDefaultWindowForSong(song);
       item.arrangement = reconcileArrangementForSong(item.arrangement, song,
                                                      itemChanged);
+      if (std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+        item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
+        itemChanged = true;
+      }
       const auto defaultArrangement = createDefaultArrangementForSong(song);
       if (!item.arrangementCustomized &&
           !arrangementsEqual(item.arrangement, defaultArrangement)) {
@@ -1461,6 +1685,17 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
   }
 
   const auto previousSong = *songIt;
+  if (isProjectBackedSong(previousSong)) {
+    auto updated = previousSong;
+    updated.title = song.title;
+    updated.artist = song.artist;
+    updated.bpm = song.bpm;
+    updated.key = song.key;
+    updated.timeSignature = song.timeSignature;
+    updated.artworkSource = song.artworkSource;
+    updated.artworkPath = song.artworkPath;
+    return updateSong(std::move(updated), errorMessage);
+  }
   auto updated = previousSong;
   updated.title = song.title.trim();
   updated.artist = song.artist.trim();
@@ -1473,6 +1708,7 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
   updated.artworkSource = song.artworkSource.trim();
   if (updated.artworkSource.isEmpty())
     updated.artworkPath.clear();
+  followEditedBaseTempoInDefaultMap(updated, previousSong);
 
   const auto artworkDir = getAudioRoot().getChildFile(updated.id);
   artworkDir.createDirectory();
@@ -1485,6 +1721,21 @@ bool SongLibraryStore::updateSongMetadata(ImportedSongData song,
   juce::ignoreUnused(repairArtworkPathForSong(updated));
 
   *songIt = std::move(updated);
+  const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
+  const auto now = juce::Time::getCurrentTime().toMilliseconds();
+  for (auto &setlist : library.setlists) {
+    bool changed = false;
+    for (auto &item : setlist.items) {
+      if (item.songId == song.id &&
+          std::abs(item.tempoBpm - previousBaseBpm) < 0.01) {
+        item.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
+        item.updatedMs = now;
+        changed = true;
+      }
+    }
+    if (changed)
+      setlist.updatedMs = now;
+  }
   if (!saveLibrary(library)) {
     if (errorMessage != nullptr)
       *errorMessage = L10n::tr(u8"No se pudo guardar la canción editada.",

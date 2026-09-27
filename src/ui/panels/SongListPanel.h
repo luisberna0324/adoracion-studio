@@ -51,6 +51,9 @@ public:
 
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
+  void setOnSongEditStarted(std::function<void(const juce::String &)> cb);
+  void setOnSongEdited(
+      std::function<void(const ImportedSongData &, int)> cb);
   void setOnSetlistNameChanged(std::function<void(const juce::String &)> cb);
   void setOnSaveProjectRequested(std::function<void()> cb);
   void setOnPadsRequested(std::function<void()> cb);
@@ -315,6 +318,8 @@ private:
   };
   std::unordered_map<std::string, CloudUploadIndicator> cloudUploadIndicators;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
+  std::function<void(const juce::String &)> onSongEditStarted;
+  std::function<void(const ImportedSongData &, int)> onSongEdited;
   std::function<void(const juce::String &)> onSetlistNameChanged;
   std::function<void()> onSaveProjectRequested;
   std::function<void()> onPadsRequested;
