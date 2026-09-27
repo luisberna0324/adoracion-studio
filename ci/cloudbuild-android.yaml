@@ -1,0 +1,21 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --file=ci/android-cloudbuild.Dockerfile
+      - --tag=playworship-android-builder:$BUILD_ID
+      - .
+  - name: playworship-android-builder:$BUILD_ID
+    entrypoint: bash
+    args:
+      - ci/build_android_cloudbuild.sh
+artifacts:
+  objects:
+    location: gs://play-worship-github-cloudbuild/artifacts/$BUILD_ID
+    paths:
+      - android/app/build/outputs/apk/debug/app-debug.apk
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 200
+timeout: 3600s

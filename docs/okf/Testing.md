@@ -20,6 +20,15 @@ en Linux sin display conservan el código de skip para ejecución local. Cada PR
 también compila el target `MTControls` con los presets Windows x64 y x86, sin
 empaquetar ni publicar artefactos.
 
+El workflow `.github/workflows/android-cloudbuild.yml` compila manualmente el
+APK Android arm64 en Google Cloud Build desde GitHub Actions. Usa Workload
+Identity Federation para evitar guardar una llave JSON permanente en GitHub.
+El APK de depuración queda disponible como artefacto del run durante 14 días.
+Esta compilación no firma versiones de distribución ni reemplaza el build
+firmado del workflow de releases.
+Cloud Build ejecuta los pasos Linux; macOS/iOS y Windows conservan sus runners
+específicos en GitHub Actions.
+
 En macOS, con JUCE y Bungee disponibles:
 
 ```sh
