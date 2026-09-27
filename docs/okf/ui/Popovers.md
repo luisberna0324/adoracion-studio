@@ -65,6 +65,15 @@ con el setlist vacio. Cierra el selector y abre el panel de Biblioteca y setlist
 en iPhone y telefonos Android este panel usa orientacion vertical y restaura
 landscape al cerrarse.
 
+En telefono, el boton Pads del `TopBar` abre el mismo presentador, anclado al
+propio boton. El contenido usa un encabezado de 44 pt con titulo y cierre, y
+adapta la cuadricula de 12 notas, el control de encendido, el preset y el strip
+de volumen al espacio disponible. El marco exterior de `PadsComponent` se
+omite dentro del callout para compartir su superficie y sombra. Se reutiliza
+la misma instancia de Pads y su `PlaybackSession`: cerrar con `X`, Escape o
+toque exterior solo retira la vista; no reinicia el motor ni corta una nota
+sostenida. En tablet y escritorio permanece el cajon inferior de Pads.
+
 ## Integracion
 
 La [hoja de versiones de ajustes](SettingsVersionsSheet.md) no usa este

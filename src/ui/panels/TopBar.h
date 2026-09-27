@@ -33,7 +33,8 @@ public:
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
-  void setOnPhonePads(std::function<void()> cb);
+  void setOnPhonePads(std::function<void(juce::Component &)> cb);
+  void triggerPhonePadsPopover();
   void setPhoneOverlayStates(bool libraryOpen, bool padsOpen);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
   void setOnMidiLearnModeChanged(std::function<void(bool)> cb);
@@ -138,7 +139,7 @@ private:
   std::function<void(juce::Rectangle<int>, juce::Component *)>
       onSettingsWithAnchor;
   std::function<void(juce::Component &)> onPhoneLibrary;
-  std::function<void()> onPhonePads;
+  std::function<void(juce::Component &)> onPhonePads;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;

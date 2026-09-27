@@ -152,6 +152,8 @@ public:
     stem.include = includeToggle.getToggleState();
   }
 
+  juce::TextEditor &nameEditor() { return displayNameEditor; }
+
   void setPhoneLayout(const bool usePhoneLayout) {
     if (phoneLayout == usePhoneLayout)
       return;
@@ -201,8 +203,10 @@ public:
     displayNameEditor.setJustification(juce::Justification::centredLeft);
     if (phoneLayout)
       displayNameEditor.setClicksOutsideDismissVirtualKeyboard(false);
+    displayNameEditor.getProperties().set("playworshipContinuousTextInput", true);
     applyComboBoxTheme(categoryBox, UITheme::cardBg,
                        UITheme::cardBorder.withAlpha(0.7f));
+    categoryBox.setMobileFormMode(useTouchOptimisedControls());
     applyToggleSwitchTheme(includeToggle);
   }
 
@@ -579,6 +583,11 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   addAndMakeVisible(keyBox);
   addAndMakeVisible(timeSignatureBox);
+  songTitleEditor.setExplicitFocusOrder(1);
+  artistEditor.setExplicitFocusOrder(2);
+  bpmEditor.setExplicitFocusOrder(3);
+  keyBox.setExplicitFocusOrder(4);
+  timeSignatureBox.setExplicitFocusOrder(5);
 
   songTitleEditor.onTextChange = [this] {
     if (suppressTitleAutocomplete || currentStep != Step::Metadata)
@@ -615,7 +624,10 @@ SongImportWizardComponent::SongImportWizardComponent(
   };
   songTitleEditor.onReturnKey = [this] {
     hideSecuenciasSuggestions(true);
-    songTitleEditor.giveAwayKeyboardFocus();
+    if (useTouchOptimisedControls())
+      advanceTextEditor();
+    else
+      songTitleEditor.giveAwayKeyboardFocus();
   };
   songTitleEditor.onEscapeKey = [this] { hideSecuenciasSuggestions(true); };
   songTitleEditor.onFocusLost = [this] {
@@ -628,8 +640,15 @@ SongImportWizardComponent::SongImportWizardComponent(
       safeThis->hideSecuenciasSuggestions(true);
     });
   };
-  artistEditor.onReturnKey = [this] { artistEditor.giveAwayKeyboardFocus(); };
-  bpmEditor.onReturnKey = [this] { bpmEditor.giveAwayKeyboardFocus(); };
+  artistEditor.onReturnKey = [this] {
+    if (useTouchOptimisedControls())
+      advanceTextEditor();
+    else
+      artistEditor.giveAwayKeyboardFocus();
+  };
+  bpmEditor.onReturnKey = [this] { finishTextEditing(); };
+  songTitleEditor.getProperties().set("playworshipReturnKeyNext", true);
+  artistEditor.getProperties().set("playworshipReturnKeyNext", true);
 
   secuenciasListModel = std::make_unique<SecuenciasResultListModel>(*this);
   secuenciasList.setModel(secuenciasListModel.get());
@@ -764,9 +783,17 @@ SongImportWizardComponent::SongImportWizardComponent(
   metadataContent.addMouseListener(this, true);
   addChildComponent(metadataViewport);
   keyboardDoneButton.setButtonText(L10n::tr("Listo", "Done"));
-  keyboardDoneButton.setWantsKeyboardFocus(false);
-  keyboardDoneButton.onClick = [] { juce::Component::unfocusAllComponents(); };
-  addChildComponent(keyboardDoneButton);
+  keyboardPreviousButton.setButtonText(L10n::tr("Anterior", "Previous"));
+  keyboardNextButton.setButtonText(L10n::tr("Siguiente", "Next"));
+  for (auto *button : {&keyboardPreviousButton, &keyboardNextButton,
+                       &keyboardDoneButton}) {
+    button->setWantsKeyboardFocus(false);
+    button->setMouseClickGrabsKeyboardFocus(false);
+    addChildComponent(*button);
+  }
+  keyboardDoneButton.onClick = [this] { finishTextEditing(); };
+  keyboardPreviousButton.onClick = [this] { focusAdjacentEditor(-1); };
+  keyboardNextButton.onClick = [this] { focusAdjacentEditor(1); };
 
   summaryEditor.setReadOnly(true);
   summaryEditor.setMultiLine(true);
@@ -832,11 +859,20 @@ void SongImportWizardComponent::setOnDismissRequested(std::function<void()> call
   onDismissRequested = std::move(callback);
 }
 
+void SongImportWizardComponent::setEmbeddedLibraryPage(const bool enabled) {
+  if (embeddedLibraryPage == enabled)
+    return;
+  embeddedLibraryPage = enabled;
+  if (!getLocalBounds().isEmpty())
+    resized();
+}
+
 void SongImportWizardComponent::timerCallback() {
   if (!isShowing() || !useTouchOptimisedControls())
     return;
 
   const auto nextInsets = keyboardInsetsForLayout();
+  updateKeyboardNavigation();
 
   if (nextInsets != phoneKeyboardInsets) {
     phoneKeyboardInsets = nextInsets;
@@ -883,10 +919,63 @@ juce::BorderSize<int> SongImportWizardComponent::keyboardInsetsForLayout() {
   const auto now = juce::Time::getMillisecondCounter();
   if (hasKeyboardInsets(nextInsets))
     keyboardLastVisibleTime = now;
-  else if (hasKeyboardInsets(phoneKeyboardInsets) &&
+  else if (auto *editor = dynamic_cast<juce::TextEditor *>(
+               juce::Component::getCurrentlyFocusedComponent());
+           editor != nullptr && isParentOf(editor) && !editor->isReadOnly() &&
+           hasKeyboardInsets(phoneKeyboardInsets) &&
            now - keyboardLastVisibleTime < 200)
     return phoneKeyboardInsets; // Ignore the brief hide when changing keyboards.
   return nextInsets;
+}
+
+std::vector<juce::TextEditor *> SongImportWizardComponent::currentFormEditors() {
+  std::vector<juce::TextEditor *> editors;
+  if (currentStep == Step::Metadata)
+    editors = {&songTitleEditor, &artistEditor, &bpmEditor};
+  else if (currentStep == Step::Mapping)
+    for (auto &row : mappingRows)
+      editors.push_back(&row->nameEditor());
+  editors.erase(std::remove_if(editors.begin(), editors.end(), [](auto *editor) {
+    return !editor->isVisible() || !editor->isEnabled() || editor->isReadOnly();
+  }), editors.end());
+  return editors;
+}
+
+bool SongImportWizardComponent::focusAdjacentEditor(const int direction) {
+  const auto editors = currentFormEditors();
+  auto *focused = juce::Component::getCurrentlyFocusedComponent();
+  const auto current = std::find(editors.begin(), editors.end(), focused);
+  if (current == editors.end())
+    return false;
+  const int next = static_cast<int>(std::distance(editors.begin(), current)) + direction;
+  if (!juce::isPositiveAndBelow(next, static_cast<int>(editors.size())))
+    return false;
+  // Transfer directly: an intermediate unfocus would hide the native keyboard.
+  editors[static_cast<size_t>(next)]->grabKeyboardFocus();
+  updateKeyboardNavigation();
+  revealFocusedMetadataEditor();
+  revealFocusedMappingEditor();
+  return true;
+}
+
+void SongImportWizardComponent::advanceTextEditor() {
+  if (!focusAdjacentEditor(1))
+    finishTextEditing();
+}
+
+void SongImportWizardComponent::finishTextEditing() {
+  if (hasKeyboardFocus(true))
+    juce::Component::unfocusAllComponents();
+  updateKeyboardNavigation();
+}
+
+void SongImportWizardComponent::updateKeyboardNavigation() {
+  const auto editors = currentFormEditors();
+  auto *focused = juce::Component::getCurrentlyFocusedComponent();
+  const auto current = std::find(editors.begin(), editors.end(), focused);
+  const bool editing = current != editors.end() && !isSubmitting;
+  keyboardPreviousButton.setEnabled(editing && current != editors.begin());
+  keyboardNextButton.setEnabled(editing && std::next(current) != editors.end());
 }
 
 void SongImportWizardComponent::revealFocusedMetadataEditor() {
@@ -1163,12 +1252,20 @@ void SongImportWizardComponent::resized() {
     }
     phoneKeyboardVisible = hasKeyboardInsets(phoneKeyboardInsets);
     auto content = safeBounds.reduced(17, 0);
-
-    auto header = content.removeFromTop(56);
+    content.removeFromTop(mobileTopBarHeight());
+    auto header = safeBounds.reduced(mobileTopBarHorizontalMargin(), 0)
+                      .removeFromTop(mobileTopBarHeight());
     mobileCloseButton.setVisible(true);
-    mobileCloseButton.setBounds(header.getX(), header.getY() + 3, 44, 44);
-    titleLabel.setFont(makeAppFont(20.0f, AppFontWeight::Bold));
-    titleLabel.setBounds(header.reduced(52, 0));
+    const int actionSize = mobileTopBarActionSize();
+    mobileCloseButton.setBounds(header.removeFromRight(actionSize)
+                                    .withSizeKeepingCentre(actionSize,
+                                                           actionSize));
+    header.removeFromRight(mobileTopBarActionGap());
+    titleLabel.setFont(makeAppFont(18.0f, AppFontWeight::SemiBold));
+    titleLabel.setJustificationType(
+        phoneCreationLayout ? juce::Justification::centredLeft
+                            : juce::Justification::centred);
+    titleLabel.setBounds(header.reduced(8, 0));
     subtitleLabel.setVisible(false);
     cancelButton.setVisible(false);
 
@@ -1194,6 +1291,9 @@ void SongImportWizardComponent::resized() {
     if (phoneKeyboardVisible) {
       auto accessory = content.removeFromBottom(44);
       keyboardDoneButton.setBounds(accessory.removeFromRight(80));
+      keyboardPreviousButton.setBounds(accessory.removeFromLeft(88));
+      accessory.removeFromLeft(4);
+      keyboardNextButton.setBounds(accessory.removeFromLeft(90));
       for (auto *button : {&nextButton, &submitButton, &saveMetadataButton,
                            &backButton})
         button->setBounds({});
@@ -1210,6 +1310,9 @@ void SongImportWizardComponent::resized() {
       primary->setBounds(footer);
     }
     keyboardDoneButton.setVisible(phoneKeyboardVisible);
+    keyboardPreviousButton.setVisible(phoneKeyboardVisible);
+    keyboardNextButton.setVisible(phoneKeyboardVisible);
+    updateKeyboardNavigation();
 
     for (auto *label : {&songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
                         &timeSignatureLabel})
@@ -1228,6 +1331,8 @@ void SongImportWizardComponent::resized() {
 
   phoneKeyboardVisible = false;
   keyboardDoneButton.setVisible(false);
+  keyboardPreviousButton.setVisible(false);
+  keyboardNextButton.setVisible(false);
   phoneKeyboardInsets = {};
   mobileCloseButton.setVisible(false);
   subtitleLabel.setVisible(true);
@@ -1236,6 +1341,7 @@ void SongImportWizardComponent::resized() {
   metadataCardBounds = {};
   changeArtworkLabel.setVisible(false);
   titleLabel.setFont(makeAppFont(30.0f, AppFontWeight::Bold));
+  titleLabel.setJustificationType(juce::Justification::centred);
   for (auto *label : {&songTitleLabel, &artistLabel, &bpmLabel, &keyLabel,
                       &timeSignatureLabel})
     label->setFont(makeAppFont(11.0f, AppFontWeight::Regular));
@@ -1421,6 +1527,16 @@ void SongImportWizardComponent::refreshThemeColours() {
     styleToolbarButton(saveMetadataButton, true);
     styleToolbarButton(nextButton, true);
     styleToolbarButton(submitButton, true);
+    styleToolbarButton(keyboardPreviousButton, false);
+    styleToolbarButton(keyboardNextButton, false);
+    styleToolbarButton(keyboardDoneButton, true);
+    for (auto *button : {&keyboardPreviousButton, &keyboardNextButton,
+                         &keyboardDoneButton}) {
+      button->setColour(juce::TextButton::buttonColourId,
+                        juce::Colours::transparentBlack);
+      button->setColour(juce::ComboBox::outlineColourId,
+                        juce::Colours::transparentBlack);
+    }
   }
 
   for (auto &row : mappingRows)
@@ -1437,6 +1553,7 @@ void SongImportWizardComponent::configureTextEditor(
 void SongImportWizardComponent::configureCombo(AdaptiveComboBox &combo) {
   applyComboBoxTheme(combo, UITheme::cardBgHover,
                      UITheme::cardBorder.withAlpha(0.7f));
+  combo.setMobileFormMode(useTouchOptimisedControls());
 }
 
 void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
@@ -2147,6 +2264,10 @@ void SongImportWizardComponent::rebuildMappingRows() {
 
   for (const auto &stem : stems) {
     auto row = std::make_unique<MappingRow>(stem, usesCreationLayout());
+    if (useTouchOptimisedControls())
+      row->nameEditor().onReturnKey = [this] { advanceTextEditor(); };
+    row->nameEditor().getProperties().set(
+        "playworshipReturnKeyNext", &stem != &stems.back());
     mapContent.addAndMakeVisible(*row);
     mappingRows.push_back(std::move(row));
   }
@@ -2994,6 +3115,8 @@ void SongImportWizardComponent::setSubmitting(const bool submitting) {
 void SongImportWizardComponent::changeStep(const Step step) {
   if (isSubmitting)
     return;
+  if (currentStep != step)
+    finishTextEditing();
   if (currentStep == Step::Mapping && step != Step::Mapping)
     syncMappingsToDrafts();
   currentStep = static_cast<Step>(
@@ -3038,6 +3161,7 @@ juce::String SongImportWizardComponent::stepSubtitle(const Step step) const {
 void SongImportWizardComponent::closeDialog() {
   if (isSubmitting)
     return;
+  finishTextEditing();
   if (onDismissRequested) {
     onDismissRequested();
     return;
@@ -3053,8 +3177,9 @@ void SongImportWizardComponent::applyEditorTheme(
   applyTextEditorTheme(editor, UITheme::cardBgHover,
                        UITheme::cardBorder.withAlpha(0.7f));
   // Scrolling the form must not dismiss the keyboard midway through a drag.
-  // Explicit Done/Return and opening a selector finish the edit instead.
+  // Direct field-to-field focus preserves the native keyboard session.
   editor.setClicksOutsideDismissVirtualKeyboard(false);
+  editor.getProperties().set("playworshipContinuousTextInput", true);
   editor.setJustification(juce::Justification::centredLeft);
   editor.setTextToShowWhenEmpty(placeholder,
                                 UITheme::textSecondary.withAlpha(0.6f));

@@ -44,6 +44,7 @@ public:
   void mouseUp(const juce::MouseEvent &event) override;
   void refreshThemeColours();
   void setOnDismissRequested(std::function<void()> callback);
+  void setEmbeddedLibraryPage(bool enabled);
   bool isSubmissionInProgress() const { return isSubmitting; }
 
 private:
@@ -112,12 +113,19 @@ private:
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
   bool usesCreationLayout() const {
-    return phoneCreationLayout || (mode == Mode::Import && !useTouchOptimisedControls());
+    return phoneCreationLayout ||
+           (mode == Mode::Import &&
+            (embeddedLibraryPage || !useTouchOptimisedControls()));
   }
   juce::String mobileMetadataSummary() const;
   void timerCallback() override;
   void revealFocusedMappingEditor();
   void revealFocusedMetadataEditor();
+  std::vector<juce::TextEditor *> currentFormEditors();
+  bool focusAdjacentEditor(int direction);
+  void advanceTextEditor();
+  void finishTextEditing();
+  void updateKeyboardNavigation();
   juce::BorderSize<int> keyboardInsetsForLayout();
   void paintPhoneMetadata(juce::Graphics &g);
   juce::Point<int> metadataMousePosition(const juce::MouseEvent &event) const;
@@ -197,6 +205,8 @@ private:
   MetadataViewport metadataViewport;
   juce::Component metadataContent;
   juce::TextButton keyboardDoneButton;
+  juce::TextButton keyboardPreviousButton;
+  juce::TextButton keyboardNextButton;
   juce::Component::SafePointer<juce::Component> lastMetadataFocus;
   int metadataScrollTarget = 0;
   bool metadataScrollAnimating = false;
@@ -241,6 +251,7 @@ private:
   HeaderIconButton mobileCloseButton{"songWizardClose", IconGlyph::Close};
   std::unique_ptr<juce::LookAndFeel_V4> mobilePrimaryButtonLookAndFeel;
   bool phoneCreationLayout = false;
+  bool embeddedLibraryPage = false;
   bool phoneKeyboardVisible = false;
   juce::BorderSize<int> phoneKeyboardInsets;
   juce::uint32 keyboardLastVisibleTime = 0;

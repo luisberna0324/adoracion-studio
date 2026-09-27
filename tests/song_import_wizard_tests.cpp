@@ -95,6 +95,12 @@ struct SongListPanelTestAccess {
     return panel.libraryCreationWizard == nullptr &&
            panel.libraryCatalogPanel.getParentComponent()->isVisible();
   }
+
+  static bool animatingBackToLibrary(SongListPanel &panel) {
+    return panel.libraryCreationWizard != nullptr &&
+           panel.libraryCreationWizard->getParentComponent()->isVisible() &&
+           panel.libraryCatalogPanel.getParentComponent()->isVisible();
+  }
 };
 
 // Friend-only access keeps test knobs out of the production public API.
@@ -198,7 +204,8 @@ struct SongImportWizardTestAccess {
              "short viewport does not compress mapping controls");
     }
 
-    for (const auto size : {juce::Point<int>(860, 640), juce::Point<int>(600, 500)}) {
+    for (const auto size : {juce::Point<int>(860, 640), juce::Point<int>(600, 500),
+                            juce::Point<int>(340, 680)}) {
       wizard.setSize(size.x, size.y);
       wizard.changeStep(Step::Metadata);
       expect(wizard.metadataViewport.isVisible() &&
@@ -480,6 +487,8 @@ struct SongImportWizardTestAccess {
     expect(cancelled.getLocalBounds() == panel.getLocalBounds() && host.getNumChildComponents() == 1,
            "wizard uses the library panel dimensions, without a second surface");
     cancelled.closeDialog();
+    pumpUntil([&] { return SongListPanelTestAccess::animatingBackToLibrary(panel); },
+              "closing keeps both pages visible during the return slide");
     pumpUntil([&] { return SongListPanelTestAccess::returnedToLibrary(panel); },
               "cancelling immediately during the transition returns to Biblioteca");
     juce::MessageManager::getInstance()->runDispatchLoopUntil(350);

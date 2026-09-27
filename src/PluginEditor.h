@@ -21,7 +21,7 @@ class SetlistDrawerScrim;
 class SongListPanel;
 class PadsComponent;
 class PadsHandlePanel;
-class PadsOverlayFrame;
+class PadsPopoverContent;
 class LocalAuthCallbackServer;
 class SettingsPanel;
 class SettingsVersionsSheet;
@@ -55,6 +55,7 @@ public:
 private:
   void updatePhoneOrientation();
   void fitMobileEditorToHost();
+  void showPhonePadsPopover(juce::Component &anchor);
   bool phoneOrientationUpdatePending = false;
   void applyRemoteSnapshot(const juce::var &snapshot);
   void applyRemoteWaveform(const std::vector<uint8_t> &bytes);
@@ -186,10 +187,7 @@ private:
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
-  std::unique_ptr<SetlistHandlePanel> phonePadsButton;
-  std::unique_ptr<PadsOverlayFrame> padsOverlayFrame;
-  juce::Label padsOverlayTitle;
-  HeaderIconButton padsOverlayCloseButton{"padsOverlayClose", IconGlyph::Close};
+  juce::Component::SafePointer<PadsPopoverContent> phonePadsPopoverContent;
   bool isPadsCollapsed = false;
   bool phonePadsOpen = false;
   bool midiLearnActive = false;

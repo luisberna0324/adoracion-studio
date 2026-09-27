@@ -9,7 +9,6 @@
 #include <cmath>
 
 namespace {
-
 constexpr int kCatalogItemSideInset = 0;
 constexpr int kCatalogItemRowStart = 0;
 constexpr int kCatalogItemRowHeight = 64;
@@ -594,7 +593,7 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
                 UITheme::textSecondary.withAlpha(0.58f));
     g.setColour(UITheme::textSecondary.withAlpha(0.90f));
     g.setFont(makeAppFont(13.0f, AppFontWeight::Medium));
-    g.drawFittedText(L10n::tr(u8"No encontramos canciónes con esa busqueda.",
+    g.drawFittedText(L10n::tr(u8"No encontramos canciones con esa búsqueda.",
                               "No songs matched that search."),
                      bounds.withTrimmedTop(22), juce::Justification::centred, 2);
     return;
@@ -942,7 +941,7 @@ void LibraryCatalogPanel::CatalogContent::mouseDoubleClick(
 
 LibraryCatalogPanel::LibraryCatalogPanel() {
   backButton.setSvgLabel(SvgIconName::ArrowLeft, {});
-  backButton.setTooltip(L10n::tr(u8"Volver a canciónes del setlist",
+  backButton.setTooltip(L10n::tr(u8"Volver a canciones del setlist",
                                  "Back to setlist songs"));
   backButton.onClick = [this] {
     if (onBackRequested)
@@ -1042,7 +1041,7 @@ LibraryCatalogPanel::LibraryCatalogPanel() {
   addAndMakeVisible(contentViewport);
 
   confirmButton.setTooltip(
-      L10n::tr(u8"Agregar canciónes seleccionadas", "Add selected songs"));
+      L10n::tr(u8"Agregar canciones seleccionadas", "Add selected songs"));
   confirmButton.onClick = [this] { commitPendingSelection(); };
   addAndMakeVisible(confirmButton);
 
@@ -1222,14 +1221,31 @@ void LibraryCatalogPanel::refreshThemeColours() {
   repaint();
 }
 
+void LibraryCatalogPanel::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled)
+    return;
+
+  minimalPhoneMode = enabled;
+  backButton.setBare(enabled);
+  loadSongButton.setBare(enabled);
+  createSongButton.setBare(enabled);
+  resized();
+}
+
 void LibraryCatalogPanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::textPrimary);
-  g.setFont(makeAppFont(20.0f, AppFontWeight::Bold));
+  g.setFont(makeAppFont(minimalPhoneMode ? 18.0f : 20.0f,
+                        minimalPhoneMode ? AppFontWeight::SemiBold
+                                         : AppFontWeight::Bold));
   g.drawFittedText(titleTextForActiveSetlist(), headerTitleBounds,
-                   juce::Justification::centred, 1);
+                   minimalPhoneMode ? juce::Justification::centredLeft
+                                    : juce::Justification::centred,
+                   1);
 
   g.setColour(UITheme::textSecondary.withAlpha(0.95f));
-  g.setFont(makeAppFont(14.0f, AppFontWeight::Medium));
+  g.setFont(makeAppFont(minimalPhoneMode ? 11.2f : 14.0f,
+                        minimalPhoneMode ? AppFontWeight::Regular
+                                         : AppFontWeight::Medium));
   g.drawFittedText(subtitleTextForActiveSetlist(), headerSubtitleBounds,
                    juce::Justification::centredLeft, 1);
 }
@@ -1237,23 +1253,28 @@ void LibraryCatalogPanel::paint(juce::Graphics &g) {
 void LibraryCatalogPanel::resized() {
   auto bounds = getLocalBounds();
 
-  // Keep circular actions in the portrait header and give search its full row.
+  // Phone navigation follows native top app bars with platform touch targets.
   if (headerTrailingInset > 0 && getWidth() < 500 && getHeight() > getWidth()) {
     menuButton.setVisible(false);
     loadProjectButton.setVisible(false);
     confirmButton.setVisible(false);
     createSongButton.setVisible(true);
     loadSongButton.setVisible(true);
-    auto navigation = bounds.removeFromTop(56);
+    auto navigation = bounds.removeFromTop(mobileTopBarHeight());
     navigation.removeFromRight(headerTrailingInset);
-    backButton.setBounds(navigation.removeFromLeft(44).withSizeKeepingCentre(40, 40));
-    createSongButton.setBounds(navigation.removeFromRight(40)
-                                   .withSizeKeepingCentre(40, 40));
-    navigation.removeFromRight(12);
-    loadSongButton.setBounds(navigation.removeFromRight(40)
-                                 .withSizeKeepingCentre(40, 40));
-    headerTitleBounds = navigation.reduced(6, 0);
-    headerSubtitleBounds = {};
+    const int actionSize = mobileTopBarActionSize();
+    backButton.setBounds(navigation.removeFromLeft(actionSize)
+                             .withSizeKeepingCentre(actionSize, actionSize));
+    createSongButton.setBounds(navigation.removeFromRight(actionSize)
+                                   .withSizeKeepingCentre(actionSize,
+                                                          actionSize));
+    navigation.removeFromRight(mobileTopBarActionGap());
+    loadSongButton.setBounds(navigation.removeFromRight(actionSize)
+                                 .withSizeKeepingCentre(actionSize,
+                                                        actionSize));
+    auto titleArea = navigation.reduced(8, 5);
+    headerTitleBounds = titleArea.removeFromTop(25);
+    headerSubtitleBounds = titleArea.removeFromTop(17);
     bounds.removeFromTop(12);
     searchField.setBounds(bounds.removeFromTop(44));
     bounds.removeFromTop(12);
@@ -1495,7 +1516,7 @@ void LibraryCatalogPanel::refreshFooterState() {
   confirmButton.setEnabled(pendingCount > 0 && activeSetlistId.isNotEmpty());
   confirmButton.setVisible(true);
   confirmButton.setTooltip(
-      pendingCount > 0 ? L10n::tr(u8"Agregar canciónes seleccionadas",
+      pendingCount > 0 ? L10n::tr(u8"Agregar canciones seleccionadas",
                                   "Add selected songs")
                        : L10n::tr(u8"Selecciona al menos una canción",
                                   "Select at least one song"));
@@ -1856,7 +1877,7 @@ juce::String LibraryCatalogPanel::titleTextForActiveSetlist() const {
 
 juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
   if (headerMode == HeaderMode::Library)
-    return L10n::tr(u8"Explora y agrega canciónes", "Browse and add songs");
+    return L10n::tr(u8"Explora y agrega canciones", "Browse and add songs");
 
   double totalSeconds = 0.0;
   for (const auto &song : librarySongs) {
@@ -1866,7 +1887,7 @@ juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
   }
 
   return juce::String(activeSetlistSongIds.size()) + " " +
-         L10n::tr(u8"canciónes actuales", "current songs") + u8" • " +
+         L10n::tr(u8"canciones actuales", "current songs") + u8" • " +
          formatDurationHMSLocal(totalSeconds);
 }
 

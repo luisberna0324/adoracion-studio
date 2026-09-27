@@ -102,11 +102,13 @@ PadsComponent::~PadsComponent() {
 void PadsComponent::paint(juce::Graphics& g) {
     const bool compact = (responsiveProfile == ResponsiveLayoutProfile::Compact);
     const bool large = (responsiveProfile == ResponsiveLayoutProfile::Large);
-    auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.24f));
-    g.fillRoundedRectangle(bounds, 8.0f);
-    g.setColour(UITheme::cardBorder.withAlpha(0.88f));
-    g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
+    if (!popoverPresentation) {
+        auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+        g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.24f));
+        g.fillRoundedRectangle(bounds, 8.0f);
+        g.setColour(UITheme::cardBorder.withAlpha(0.88f));
+        g.drawRoundedRectangle(bounds, 8.0f, 1.0f);
+    }
 
     if (!presetCardBounds.isEmpty()) {
         const auto card = presetCardBounds.toFloat();
@@ -196,7 +198,10 @@ void PadsComponent::resized() {
     const int maxGapX = compact ? 12 : (large ? 16 : 14);
     const int maxPadSizeForWidth =
         juce::jmax(36, (padsArea.getWidth() - (minGapX * (kCols - 1))) / kCols);
-    const int padSize = juce::jmin(basePadSize, maxPadSizeForWidth);
+    const int maxPadSizeForHeight =
+        juce::jmax(28, (padsArea.getHeight() - preferredPadGap) / kRows);
+    const int padSize = juce::jmin(basePadSize, maxPadSizeForWidth,
+                                   maxPadSizeForHeight);
     const int contentW = (kCols * padSize);
     const int contentH = (kRows * padSize);
     const int availableGapX = juce::jmax(0, padsArea.getWidth() - contentW);
@@ -272,6 +277,13 @@ void PadsComponent::setResponsiveProfile(const ResponsiveLayoutProfile profile) 
         return;
     responsiveProfile = profile;
     resized();
+    repaint();
+}
+
+void PadsComponent::setPopoverPresentation(const bool enabled) {
+    if (popoverPresentation == enabled)
+        return;
+    popoverPresentation = enabled;
     repaint();
 }
 

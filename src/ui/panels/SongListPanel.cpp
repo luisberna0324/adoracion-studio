@@ -355,7 +355,8 @@ public:
     return *pages[static_cast<size_t>(index)];
   }
 
-  void showPage(const int targetIndex, const bool animate) {
+  void showPage(const int targetIndex, const bool animate,
+                std::function<void()> onFinished = {}) {
     if (!juce::isPositiveAndBelow(targetIndex, static_cast<int>(pages.size())) ||
         targetIndex == currentIndex)
       return;
@@ -373,6 +374,8 @@ public:
       incoming->setBounds(bounds);
       incoming->setVisible(true);
       currentIndex = targetIndex;
+      if (onFinished)
+        onFinished();
       return;
     }
 
@@ -389,6 +392,7 @@ public:
     animator.animateComponent(incoming, bounds, 1.0f, transitionDurationMs,
                               false, 0.0, 0.0);
     currentIndex = targetIndex;
+    onTransitionFinished = std::move(onFinished);
     startTimer(transitionDurationMs + 24);
   }
 
@@ -413,6 +417,11 @@ private:
       page->setVisible(index == currentIndex);
     }
     pages[static_cast<size_t>(currentIndex)]->setBounds(getLocalBounds());
+    if (onTransitionFinished) {
+      auto completed = std::move(onTransitionFinished);
+      onTransitionFinished = {};
+      completed();
+    }
   }
 
   void timerCallback() override { finishTransition(); }
@@ -420,6 +429,7 @@ private:
   static constexpr int transitionDurationMs = 300;
   std::array<std::unique_ptr<juce::Component>, 4> pages;
   int currentIndex = 0;
+  std::function<void()> onTransitionFinished;
 };
 
 class SongListPanel::SetlistsContent final : public juce::Component {
@@ -537,7 +547,9 @@ public:
       g.setFont(makeAppFont(10.5f, AppFontWeight::Regular));
       g.drawFittedText(
           juce::String(rows[i].songCount) + " " +
-              L10n::tr(u8"canciónes", "songs") + " · " +
+              (rows[i].songCount == 1 ? L10n::tr(u8"canción", "song")
+                                      : L10n::tr("canciones", "songs")) +
+              " · " +
               formatDurationHMS(rows[i].totalDurationSeconds), artistRect,
           juce::Justification::centredLeft, 1);
 
@@ -678,7 +690,8 @@ private:
     const int hh = seconds / 3600;
     const int mm = (seconds % 3600) / 60;
     const int ss = seconds % 60;
-    return juce::String::formatted("%02d:%02d:%02d", hh, mm, ss);
+    return hh > 0 ? juce::String::formatted("%02d:%02d:%02d", hh, mm, ss)
+                  : juce::String::formatted("%02d:%02d", mm, ss);
   }
 
   int rowIndexAtY(const int y) const {
@@ -715,6 +728,13 @@ SongListPanel::SongListPanel() {
   titleLabel.setColour(juce::Label::textColourId,
                        AppColours::textPrimary.withAlpha(0.96f));
   songsPage.addAndMakeVisible(titleLabel);
+
+  songsSubtitleLabel.setJustificationType(juce::Justification::centredLeft);
+  songsSubtitleLabel.setFont(makeAppFont(11.2f, AppFontWeight::Regular));
+  songsSubtitleLabel.setColour(
+      juce::Label::textColourId, UITheme::textSecondary.withAlpha(0.88f));
+  songsSubtitleLabel.setVisible(false);
+  songsPage.addAndMakeVisible(songsSubtitleLabel);
 
   setlistsHeaderLabel.setJustificationType(juce::Justification::centredLeft);
   setlistsHeaderLabel.setFont(makeAppFont(19.0f, AppFontWeight::Bold));
@@ -1031,7 +1051,37 @@ void SongListPanel::setMinimalPhoneMode(const bool enabled) {
   closeSetlistsButton.setVisible(minimalPhoneMode);
   closeSongsButton.setVisible(minimalPhoneMode);
   closeLibraryButton.setVisible(minimalPhoneMode);
+  songsSubtitleLabel.setVisible(minimalPhoneMode);
+
+  // iOS navigation bars and Material top app bars both use flat icon actions.
+  // Preserve each platform's touch target while removing desktop chrome.
+  for (auto *button : std::array<HeaderIconButton *, 7>{
+           &backButton, &headerMenuButton, &addSongsButton,
+           &createSetlistButton, &closeSetlistsButton, &closeSongsButton,
+           &closeLibraryButton})
+    button->setBare(minimalPhoneMode);
+  libraryCatalogPanel.setMinimalPhoneMode(minimalPhoneMode);
+
+  titleLabel.setFont(makeAppFont(minimalPhoneMode ? 18.0f : 17.0f,
+                                 AppFontWeight::SemiBold));
+  setlistsHeaderLabel.setFont(
+      makeAppFont(minimalPhoneMode ? 18.0f : 19.0f,
+                  minimalPhoneMode ? AppFontWeight::SemiBold
+                                   : AppFontWeight::Bold));
+  setlistsSubtitleLabel.setFont(
+      makeAppFont(minimalPhoneMode ? 11.2f : 12.4f,
+                  minimalPhoneMode ? AppFontWeight::Regular
+                                   : AppFontWeight::Medium));
   resized();
+}
+
+void SongListPanel::setPhoneSafeAreaInsets(
+    const juce::BorderSize<int> insets) {
+  if (phoneSafeAreaInsets == insets)
+    return;
+  phoneSafeAreaInsets = insets;
+  if (minimalPhoneMode)
+    resized();
 }
 
 void SongListPanel::setOnOverlayCloseRequested(std::function<void()> cb) {
@@ -1409,6 +1459,8 @@ void SongListPanel::refreshLanguageTexts() {
 void SongListPanel::refreshThemeColours() {
   titleLabel.setColour(juce::Label::textColourId,
                        AppColours::textPrimary.withAlpha(0.96f));
+  songsSubtitleLabel.setColour(
+      juce::Label::textColourId, UITheme::textSecondary.withAlpha(0.88f));
   setlistsHeaderLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
   setlistsSubtitleLabel.setColour(juce::Label::textColourId,
                                   UITheme::textSecondary.withAlpha(0.95f));
@@ -1456,13 +1508,20 @@ void SongListPanel::resized() {
   applySongsLayout(songsLayout);
   const auto setlistsLayout = computeSetlistsLayout();
   applySetlistsLayout(setlistsLayout);
-  auto libraryBounds = pageContainer->getPage(2).getLocalBounds().reduced(16);
-  libraryCatalogPanel.setHeaderTrailingInset(minimalPhoneMode ? 52 : 0);
+  auto libraryBounds =
+      getPageContentBounds(minimalPhoneMode ? mobileTopBarHorizontalMargin()
+                                            : 16);
+  const int mobileActionSize = mobileTopBarActionSize();
+  libraryCatalogPanel.setHeaderTrailingInset(
+      minimalPhoneMode ? mobileActionSize + mobileTopBarActionGap() : 0);
   libraryCatalogPanel.setBounds(libraryBounds);
   closeLibraryButton.setBounds(
       minimalPhoneMode
-          ? juce::Rectangle<int>(libraryBounds.getRight() - 40,
-                                 libraryBounds.getY() + 8, 40, 40)
+          ? juce::Rectangle<int>(
+                libraryBounds.getRight() - mobileActionSize,
+                libraryBounds.getY() +
+                    (mobileTopBarHeight() - mobileActionSize) / 2,
+                mobileActionSize, mobileActionSize)
           : juce::Rectangle<int>());
   closeLibraryButton.toFront(false);
 
@@ -1476,12 +1535,21 @@ void SongListPanel::resized() {
   }
 }
 
+juce::Rectangle<int> SongListPanel::getPageContentBounds(
+    const int margin) const {
+  auto bounds = getLocalBounds();
+  if (minimalPhoneMode)
+    bounds = phoneSafeAreaInsets.subtractedFrom(bounds);
+  return bounds.reduced(margin);
+}
+
 SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   SongsLayout layout;
-  auto area = getLocalBounds().reduced(minimalPhoneMode ? 10 : 16);
+  auto area = getPageContentBounds(
+      minimalPhoneMode ? mobileTopBarHorizontalMargin() : 16);
   layout.workspace = area;
 
-  int headerRowHeight = minimalPhoneMode ? 48 : 56;
+  int headerRowHeight = minimalPhoneMode ? mobileTopBarHeight() : 56;
   int headerPanelHeight = minimalPhoneMode ? 0 : (area.getHeight() < 560 ? 44 : 50);
   int gapAfterHeader = minimalPhoneMode ? 4 : (area.getHeight() < 560 ? 6 : 8);
   int gapAfterPanel = minimalPhoneMode ? 0 : (area.getHeight() < 560 ? 8 : 12);
@@ -1511,17 +1579,19 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   layout.listArea = area;
 
   auto headerGrid = layout.headerRow;
-  const auto leftColumn = headerGrid.removeFromLeft(40);
-  constexpr int libraryButtonWidth = 40;
-  constexpr int addButtonWidth = 40;
-  constexpr int actionGap = 12;
+  const int actionSize = minimalPhoneMode ? mobileTopBarActionSize() : 40;
+  const auto leftColumn = headerGrid.removeFromLeft(actionSize);
+  const int libraryButtonWidth = actionSize;
+  const int addButtonWidth = actionSize;
+  const int actionGap = minimalPhoneMode ? mobileTopBarActionGap() : 12;
   if (minimalPhoneMode) {
-    layout.close = headerGrid.removeFromRight(40).withSizeKeepingCentre(40, 40);
-    headerGrid.removeFromRight(12);
+    layout.close = headerGrid.removeFromRight(actionSize)
+                       .withSizeKeepingCentre(actionSize, actionSize);
+    headerGrid.removeFromRight(mobileTopBarActionGap());
   }
   const auto rightColumn =
       headerGrid.removeFromRight(libraryButtonWidth + actionGap + addButtonWidth);
-  layout.back = leftColumn.withSizeKeepingCentre(40, 40);
+  layout.back = leftColumn.withSizeKeepingCentre(actionSize, actionSize);
   auto actionRow = rightColumn;
   layout.menu = actionRow.removeFromLeft(libraryButtonWidth)
                     .withSizeKeepingCentre(libraryButtonWidth,
@@ -1529,16 +1599,25 @@ SongListPanel::SongsLayout SongListPanel::computeSongsLayout() const {
   actionRow.removeFromLeft(actionGap);
   layout.add = actionRow.withSizeKeepingCentre(addButtonWidth, addButtonWidth);
   layout.edit = {};
-  layout.title = headerGrid.withSizeKeepingCentre(headerGrid.getWidth(), 40);
+  if (minimalPhoneMode) {
+    auto titleArea = headerGrid.reduced(8, 5);
+    layout.title = titleArea.removeFromTop(25);
+    layout.subtitle = titleArea.removeFromTop(17);
+  } else {
+    layout.title = headerGrid.withSizeKeepingCentre(headerGrid.getWidth(), 40);
+  }
   return layout;
 }
 
 SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
   SetlistsLayout layout;
-  auto area = getLocalBounds().reduced(16);
+  auto area = getPageContentBounds(
+      minimalPhoneMode ? mobileTopBarHorizontalMargin() : 16);
 
-  int headerHeight = area.getHeight() < 560 ? 48 : 54;
-  int searchHeight = area.getHeight() < 560 ? 34 : 36;
+  int headerHeight =
+      minimalPhoneMode ? mobileTopBarHeight()
+                       : (area.getHeight() < 560 ? 48 : 54);
+  int searchHeight = minimalPhoneMode ? 44 : (area.getHeight() < 560 ? 34 : 36);
   int gap1 = area.getHeight() < 560 ? 8 : 10;
   int gap3 = area.getHeight() < 560 ? 8 : 10;
   constexpr int minViewportHeight = 140;
@@ -1561,10 +1640,13 @@ SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
   }
 
   auto headerRow = area.removeFromTop(headerHeight);
-  constexpr int createButtonSize = 40;
+  const int createButtonSize =
+      minimalPhoneMode ? mobileTopBarActionSize() : 40;
   if (minimalPhoneMode) {
-    layout.close = headerRow.removeFromRight(40).withSizeKeepingCentre(40, 40);
-    headerRow.removeFromRight(12);
+    layout.close = headerRow.removeFromRight(createButtonSize)
+                       .withSizeKeepingCentre(createButtonSize,
+                                              createButtonSize);
+    headerRow.removeFromRight(mobileTopBarActionGap());
   }
   auto headerAction = headerRow.removeFromRight(createButtonSize);
   layout.createRow =
@@ -1575,17 +1657,27 @@ SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
 
   auto headerCenterColumn = headerRow;
 
-  constexpr int titleHeight = 22;
-  constexpr int subtitleHeight = 15;
-  constexpr int titleSubtitleGap = 2;
-  constexpr int totalTextHeight = titleHeight + subtitleHeight + titleSubtitleGap;
-  const int textY = headerCenterColumn.getY() +
-                    juce::jmax(0, (headerCenterColumn.getHeight() - totalTextHeight) / 2);
-  layout.headerTitle = juce::Rectangle<int>(
-      headerCenterColumn.getX(), textY, headerCenterColumn.getWidth(), titleHeight);
-  layout.headerSubtitle = juce::Rectangle<int>(
-      headerCenterColumn.getX(), textY + titleHeight + titleSubtitleGap,
-      headerCenterColumn.getWidth(), subtitleHeight);
+  if (minimalPhoneMode) {
+    auto titleArea = headerCenterColumn.reduced(8, 5);
+    layout.headerTitle = titleArea.removeFromTop(25);
+    layout.headerSubtitle = titleArea.removeFromTop(17);
+  } else {
+    constexpr int titleHeight = 22;
+    constexpr int subtitleHeight = 15;
+    constexpr int titleSubtitleGap = 2;
+    constexpr int totalTextHeight =
+        titleHeight + subtitleHeight + titleSubtitleGap;
+    const int textY = headerCenterColumn.getY() +
+                      juce::jmax(0, (headerCenterColumn.getHeight() -
+                                    totalTextHeight) /
+                                       2);
+    layout.headerTitle = juce::Rectangle<int>(
+        headerCenterColumn.getX(), textY, headerCenterColumn.getWidth(),
+        titleHeight);
+    layout.headerSubtitle = juce::Rectangle<int>(
+        headerCenterColumn.getX(), textY + titleHeight + titleSubtitleGap,
+        headerCenterColumn.getWidth(), subtitleHeight);
+  }
   layout.viewport = area;
   return layout;
 }
@@ -1594,6 +1686,7 @@ void SongListPanel::applySongsLayout(const SongsLayout &layout) {
   updateSongsSubviewLayout(layout);
   backButton.setBounds(layout.back);
   titleLabel.setBounds(layout.title);
+  songsSubtitleLabel.setBounds(layout.subtitle);
   headerMenuButton.setBounds(layout.menu);
   addSongsButton.setBounds(layout.add);
   closeSongsButton.setBounds(layout.close);
@@ -1636,6 +1729,8 @@ void SongListPanel::applySongsSubviewOffset(float offsetPx) {
   headerMenuButton.setBounds(cachedSongsLayout.menu.translated(shiftX, 0));
   addSongsButton.setBounds(cachedSongsLayout.add.translated(shiftX, 0));
   titleLabel.setBounds(cachedSongsLayout.title.translated(shiftX, 0));
+  songsSubtitleLabel.setBounds(
+      cachedSongsLayout.subtitle.translated(shiftX, 0));
   songsHeaderPanel.setBounds(cachedSongsLayout.headerPanel.translated(shiftX, 0));
   listViewport.setBounds(cachedSongsLayout.listArea.translated(shiftX, 0));
 
@@ -1926,7 +2021,7 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
   const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
       juce::MessageBoxIconType::WarningIcon,
       L10n::tr("Eliminar setlist", "Delete setlist"),
-      L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
+      L10n::tr(u8"Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
                "Delete this setlist? This won't remove songs from the library."),
       L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
   juce::NativeMessageBox::showAsync(
@@ -1972,7 +2067,8 @@ juce::String SongListPanel::formatDurationHMS(const double totalSeconds) {
   const int hh = seconds / 3600;
   const int mm = (seconds % 3600) / 60;
   const int ss = seconds % 60;
-  return juce::String::formatted("%02d:%02d:%02d", hh, mm, ss);
+  return hh > 0 ? juce::String::formatted("%02d:%02d:%02d", hh, mm, ss)
+                : juce::String::formatted("%02d:%02d", mm, ss);
 }
 
 void SongListPanel::refreshSongsHeaderSummary() {
@@ -1998,6 +2094,12 @@ void SongListPanel::refreshSongsHeaderSummary() {
                                       static_cast<double>(bpmCount))
                    : 0;
   songsHeaderPanel.setSummary(summary);
+  songsSubtitleLabel.setText(
+      juce::String(summary.songsCount) + " " +
+          (summary.songsCount == 1 ? L10n::tr(u8"canción", "song")
+                                   : L10n::tr("canciones", "songs")) +
+          u8"  •  " + summary.duration,
+      juce::dontSendNotification);
 }
 
 void SongListPanel::ListContent::setSongs(std::vector<SongRow> rows) {
@@ -2303,12 +2405,22 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
       auto nextBounds = tray.removeFromLeft(actionWidth);
       g.setColour(juce::Colour::fromRGB(55, 65, 81));
       g.fillRect(nextBounds);
-      drawSvgIcon(g, nextBounds.toFloat().withSizeKeepingCentre(17.0f, 17.0f),
+      drawSvgIcon(g, nextBounds.toFloat().withSizeKeepingCentre(17.0f, 17.0f)
+                         .translated(0.0f, -8.0f),
                   SvgIconName::SkipForward, UITheme::textPrimary);
       g.setColour(juce::Colour::fromRGB(153, 27, 27));
       g.fillRect(tray);
-      drawSvgIcon(g, tray.toFloat().withSizeKeepingCentre(17.0f, 17.0f),
+      drawSvgIcon(g, tray.toFloat().withSizeKeepingCentre(17.0f, 17.0f)
+                         .translated(0.0f, -8.0f),
                   SvgIconName::Trash, UITheme::textPrimary);
+      g.setFont(makeAppFont(9.3f, AppFontWeight::Medium));
+      g.setColour(UITheme::textPrimary.withAlpha(0.92f));
+      g.drawFittedText(L10n::tr("Siguiente", "Next"),
+                       nextBounds.withTrimmedTop(36),
+                       juce::Justification::centred, 1);
+      g.drawFittedText(L10n::tr("Quitar", "Remove"),
+                       tray.withTrimmedTop(36),
+                       juce::Justification::centred, 1);
       row = juce::Rectangle<int>(rowSideInset, rowTopAtIndex(static_cast<int>(i)),
                                  getWidth() - (rowSideInset * 2), rowHeight)
                 .translated(-juce::roundToInt(swipeOffset), 0);
@@ -2331,7 +2443,7 @@ void SongListPanel::ListContent::paint(juce::Graphics &g) {
                 UITheme::textSecondary.withAlpha(0.56f));
     g.setColour(UITheme::textSecondary.withAlpha(0.88f));
     g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
-    g.drawFittedText(L10n::tr(u8"Aun no hay canciónes en este setlist.",
+    g.drawFittedText(L10n::tr(u8"Aún no hay canciones en este setlist.",
                               "No songs in this setlist yet."),
                      emptyBounds.withTrimmedTop(22),
                      juce::Justification::centred, 2);
@@ -2937,7 +3049,7 @@ private:
         g.setColour(UITheme::textSecondary);
         g.setFont(juce::FontOptions(9.0f));
         g.drawFittedText(juce::String(rows[i].songCount) + " " +
-                             L10n::tr(u8"canciónes", "songs"),
+                             L10n::tr("canciones", "songs"),
                          textArea,
                          juce::Justification::centredLeft, 1);
 
@@ -3059,7 +3171,7 @@ private:
       if (rows.empty()) {
         g.setColour(UITheme::textSecondary.withAlpha(0.8f));
         g.setFont(juce::FontOptions(12.0f));
-        g.drawFittedText(L10n::tr(u8"Aun no hay canciónes.", "No songs yet."),
+        g.drawFittedText(L10n::tr(u8"Aún no hay canciones.", "No songs yet."),
                          getLocalBounds().reduced(10),
                          juce::Justification::centred, 1);
         return;
@@ -3334,7 +3446,7 @@ private:
                    });
     }
     if (menu.getNumItems() == 0) {
-      menu.addItem(L10n::tr(u8"No hay canciónes disponibles",
+      menu.addItem(L10n::tr("No hay canciones disponibles",
                             "No songs available"),
                    false, false, nullptr);
     }
@@ -3394,7 +3506,7 @@ private:
     const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
         juce::MessageBoxIconType::WarningIcon,
         L10n::tr("Eliminar setlist", "Delete setlist"),
-        L10n::tr(u8"Eliminar este setlist? Esto no quitara canciónes de la biblioteca.",
+        L10n::tr(u8"Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
         L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
     juce::NativeMessageBox::showAsync(
@@ -3493,14 +3605,17 @@ void SongListPanel::showLibraryCreationPage(
     std::unique_ptr<SongImportWizardComponent> panel) {
   if (panel == nullptr || libraryCreationWizard != nullptr)
     return;
+  panel->setEmbeddedLibraryPage(true);
   auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
   panel->setOnDismissRequested([safeThis] {
     // Defer destruction until the wizard's button/completion callback returns.
     juce::MessageManager::callAsync([safeThis] {
       if (safeThis == nullptr)
         return;
-      safeThis->showPage(2, false);
-      safeThis->libraryCreationWizard.reset();
+      safeThis->pageContainer->showPage(2, true, [safeThis] {
+        if (safeThis != nullptr)
+          safeThis->libraryCreationWizard.reset();
+      });
     });
   });
   libraryCreationWizard = std::move(panel);
@@ -3759,7 +3874,7 @@ void SongListPanel::openSongImportWizard(const bool withinLibrary) {
       AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
       ImportedSongData{}, SongProjectCreation::resolveDestination);
 
-  if (withinLibrary && !useTouchOptimisedControls())
+  if (withinLibrary)
     showLibraryCreationPage(std::move(panel));
   else
     showSongImportOverlay(std::move(panel));
@@ -3927,6 +4042,7 @@ void SongListPanel::applyInitialViewFromStorage() {
 void SongListPanel::applyModeVisibility() {
   const bool hasActiveSetlist = activeSetlistId.isNotEmpty();
   titleLabel.setVisible(true);
+  songsSubtitleLabel.setVisible(minimalPhoneMode);
   backButton.setVisible(true);
   headerMenuButton.setVisible(true);
   addSongsButton.setVisible(true);
@@ -3947,11 +4063,12 @@ void SongListPanel::applyModeVisibility() {
   setlistSearchField.setEnabled(true);
   backButton.setEnabled(true);
 
-  for (juce::Component *c : std::array<juce::Component *, 12>{
-           &titleLabel,          &backButton,           &headerMenuButton,
-           &addSongsButton,      &songsHeaderPanel,     &listViewport,
-           &libraryCatalogPanel, &setlistsHeaderLabel,  &setlistsSubtitleLabel,
-           &createSetlistButton, &setlistSearchField,   &setlistsViewport}) {
+  for (juce::Component *c : std::array<juce::Component *, 13>{
+           &titleLabel,          &songsSubtitleLabel,   &backButton,
+           &headerMenuButton,    &addSongsButton,       &songsHeaderPanel,
+           &listViewport,        &libraryCatalogPanel,  &setlistsHeaderLabel,
+           &setlistsSubtitleLabel, &createSetlistButton, &setlistSearchField,
+           &setlistsViewport}) {
     c->setAlpha(1.0f);
   }
 }
@@ -3969,10 +4086,10 @@ void SongListPanel::animateTransitionIfNeeded(const ViewMode previousMode) {
   applySongsLayout(computeSongsLayout());
   applySetlistsLayout(computeSetlistsLayout());
 
-  std::array<juce::Component *, 7> songsGroup = {
-      &titleLabel,       &backButton,       &headerMenuButton,
-      &addSongsButton,   &songsHeaderPanel, &listViewport,
-      &libraryCatalogPanel};
+  std::array<juce::Component *, 8> songsGroup = {
+      &titleLabel,         &songsSubtitleLabel, &backButton,
+      &headerMenuButton,   &addSongsButton,     &songsHeaderPanel,
+      &listViewport,       &libraryCatalogPanel};
   std::array<juce::Component *, 5> setlistsGroup = {
       &setlistsHeaderLabel, &setlistsSubtitleLabel, &createSetlistButton,
       &setlistSearchField, &setlistsViewport};

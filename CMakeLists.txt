@@ -194,6 +194,7 @@ if(NOT EXISTS "${JUCE_DIR}/CMakeLists.txt")
 endif()
 
 add_subdirectory("${JUCE_DIR}" JUCE)
+include(cmake/IOSFormKeyboard.cmake)
 
 FetchContent_Declare(
     soundtouch
@@ -389,6 +390,21 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME input_controls_popup COMMAND MTControlsInputControlsTests --popup)
     set_tests_properties(input_controls_popup PROPERTIES
         LABELS interactive SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsSettingsPanelTests PRODUCT_NAME "Settings Panel Tests")
+    target_sources(MTControlsSettingsPanelTests PRIVATE tests/settings_panel_tests.cpp
+        src/data/AppSettings.cpp)
+    juce_generate_juce_header(MTControlsSettingsPanelTests)
+    target_include_directories(MTControlsSettingsPanelTests PRIVATE src)
+    target_compile_definitions(MTControlsSettingsPanelTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsSettingsPanelTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME settings_panel COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSettingsPanelTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(settings_panel PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsProjectArtworkTests PRODUCT_NAME "Project Artwork Tests")
     target_sources(MTControlsProjectArtworkTests PRIVATE tests/project_artwork_tests.cpp)
     target_include_directories(MTControlsProjectArtworkTests PRIVATE src)

@@ -109,7 +109,14 @@ private:
                 peer->setFullScreen (true);
             // The native MATCH_PARENT view reports its new size to the peer;
             // DocumentWindow then resizes root, editor, and the GL surface.
+            auto* content = getContentComponent();
+            const auto previousBounds = content != nullptr ? content->getBounds()
+                                                           : juce::Rectangle<int>();
             juce::DocumentWindow::resized();
+            // Hiding system bars changes the safe area without necessarily
+            // changing the fullscreen window size. Propagate that update too.
+            if (content != nullptr && content->getBounds() == previousBounds)
+                content->resized();
         }
 #endif
 
@@ -154,7 +161,11 @@ private:
 
             void resized() override
             {
-                child->setBounds (getLocalBounds());
+                const auto bounds = getLocalBounds();
+                if (child->getBounds() != bounds)
+                    child->setBounds (bounds);
+                else
+                    child->resized();
             }
 
         private:

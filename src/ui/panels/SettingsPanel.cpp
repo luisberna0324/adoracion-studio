@@ -187,25 +187,36 @@ public:
     };
     addAndMakeVisible(channelBox);
 
+    // These selectors live inside a scrolling form on every platform. Open
+    // only on a completed click/tap, and let the wheel scroll instead of
+    // silently changing an audio output under the pointer.
+    modeBox.setMobileFormMode(true);
+    channelBox.setMobileFormMode(true);
+
     refreshChannelOptions();
     refreshThemeColours();
   }
 
+  static int preferredHeightForWidth(const int width) {
+    return width < 520 ? 86 : (useTouchOptimisedControls() ? 56 : 44);
+  }
+
   void resized() override {
     auto r = getLocalBounds().reduced(0, 4);
-    
-    // El componente de AudioDeviceSelectorComponent de JUCE usa una proporción
-    // para sus etiquetas (usualmente un tercio del ancho o un máximo).
-    // Usamos un ancho fijo mayor para que los ComboBoxes queden alineados.
-    auto nameCol = r.removeFromLeft(220); 
-    auto modeCol = r.removeFromLeft(110);
-    r.removeFromLeft(16);
-    
-    categoryLabel.setBounds(nameCol);
-    modeBox.setBounds(modeCol);
-    
-    auto channelCol = r.removeFromLeft(juce::jmin(280, r.getWidth()));
-    channelBox.setBounds(channelCol);
+    if (getWidth() < 520) {
+      categoryLabel.setBounds(r.removeFromTop(22));
+      r.removeFromTop(8);
+      modeBox.setBounds(r.removeFromLeft((r.getWidth() - 12) / 2));
+      r.removeFromLeft(12);
+      channelBox.setBounds(r);
+      return;
+    }
+
+    categoryLabel.setBounds(r.removeFromLeft(juce::jlimit(140, 220, getWidth() / 3)));
+    r.removeFromLeft(12);
+    modeBox.setBounds(r.removeFromLeft(110));
+    r.removeFromLeft(12);
+    channelBox.setBounds(r.removeFromLeft(juce::jmin(280, r.getWidth())));
   }
 
   void refreshThemeColours() {
@@ -361,6 +372,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     if (newIndex == 3) {
       refreshRoutingForDevice();
     }
+    resized();
+    settingsViewport.setViewPosition(0, 0);
   };
   settingsViewport.setViewedComponent(&tabs, false);
   settingsViewport.setScrollBarsShown(true, false, true, false);
@@ -805,18 +818,28 @@ void SettingsPanel::resized() {
     rail.removeFromTop(tabGap);
     diagnosticsTabButton.setBounds(rail.removeFromTop(tabHeight));
   }
+  const auto previousViewPosition = settingsViewport.getViewPosition();
   const bool needsVerticalScroll = useTouchOptimisedControls() || getHeight() < 820;
   settingsViewport.setBounds(area);
-  const int contentHeight = needsVerticalScroll
-                                ? juce::jmax(area.getHeight(), 900)
-                                : area.getHeight();
-  tabs.setBounds(0, 0, juce::jmax(1, area.getWidth()), contentHeight);
+  const auto requiredHeight = [this, needsVerticalScroll](const int width) {
+    return tabs.getCurrentTabIndex() == 3
+               ? routingPageContentHeight(width)
+               : (needsVerticalScroll ? 900 : 0);
+  };
+  int contentWidth = juce::jmax(1, area.getWidth());
+  if (requiredHeight(contentWidth) > area.getHeight())
+    contentWidth = juce::jmax(1, contentWidth - settingsViewport.getScrollBarThickness());
+  const int contentHeight = juce::jmax(area.getHeight(), requiredHeight(contentWidth));
+  // The viewport scrolls the tab component, so its size must contain every
+  // routing row and the footer. Growing only routingContent clips its tail.
+  tabs.setSize(contentWidth, contentHeight);
 
   layoutGeneralPage();
   layoutAccountPage();
   layoutAudioPage();
   layoutRoutingPage();
   layoutDiagnosticsPage();
+  settingsViewport.setViewPosition(0, previousViewPosition.y);
 }
 
 void SettingsPanel::refreshThemeColours() {
@@ -1436,6 +1459,14 @@ void SettingsPanel::layoutDiagnosticsPage() {
           .withWidth(buttonWidth));
 }
 
+int SettingsPanel::routingPageContentHeight(const int width) const {
+  const int listWidth = juce::jmax(1, width - 36);
+  const int hintHeight = listWidth < 520 ? 44 : 24;
+  return 32 + 22 + 8 +
+         static_cast<int>(routingRows.size()) * RoutingRow::preferredHeightForWidth(listWidth) +
+         12 + hintHeight;
+}
+
 void SettingsPanel::layoutRoutingPage() {
   auto area = routingPage.getLocalBounds().reduced(18, 16);
 
@@ -1443,22 +1474,22 @@ void SettingsPanel::layoutRoutingPage() {
   routingSectionLabel.setBounds(labelArea);
   
   area.removeFromTop(8);
-  auto hintArea = area.removeFromBottom(24);
-  routingHintLabel.setBounds(hintArea);
-  area.removeFromBottom(6);
-  
-  const auto listArea = area;
-  const int rowH = useTouchOptimisedControls() ? 50 : 42;
+  const int rowH = RoutingRow::preferredHeightForWidth(area.getWidth());
+  const int listHeight = rowH * static_cast<int>(routingRows.size());
+  const auto listArea = area.removeFromTop(listHeight);
   int y = 0;
   const int contentW = juce::jmax(1, listArea.getWidth());
   for (auto &rowComp : routingRows) {
     rowComp->setBounds(0, y, contentW, rowH);
     y += rowH;
   }
-  routingContent.setBounds(listArea.withHeight(juce::jmax(y + 2, listArea.getHeight())));
+  routingContent.setBounds(listArea);
+  area.removeFromTop(12);
+  routingHintLabel.setBounds(area.removeFromTop(area.getWidth() < 520 ? 44 : 24));
 }
 
 SettingsPanel::~SettingsPanel() {
+  tabs.onTabChanged = nullptr;
   if (deviceManager != nullptr)
     deviceManager->removeChangeListener(this);
 }

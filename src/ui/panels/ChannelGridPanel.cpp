@@ -1392,7 +1392,7 @@ void ChannelGridPanel::refreshThemeColours() {
 }
 
 void ChannelGridPanel::paint(juce::Graphics &g) {
-#if JUCE_IOS
+#if JUCE_IOS || JUCE_ANDROID
   if (minimalPhoneMode)
     g.fillAll(UITheme::cardBg);
 #endif

@@ -64,11 +64,24 @@ juce::Font makeAppFont(float size, AppFontWeight weight = AppFontWeight::Regular
  * Una sola lista JUCE en todas las plataformas, con metricas tactiles en movil.
  * El teclado de texto sigue siendo el del sistema operativo.
  */
-class AdaptiveComboBox final : public juce::ComboBox {
+class AdaptiveComboBox final : public juce::ComboBox, private juce::Timer {
 public:
   using juce::ComboBox::ComboBox;
 
+  void setMobileFormMode(bool enabled);
   void showPopup() override;
+  void mouseDown(const juce::MouseEvent &event) override;
+  void mouseDrag(const juce::MouseEvent &event) override;
+  void mouseUp(const juce::MouseEvent &event) override;
+  bool keyPressed(const juce::KeyPress &key) override;
+
+private:
+  void timerCallback() override;
+  bool mobileFormMode = false;
+  bool popupPending = false;
+  juce::uint32 popupRequestedAt = 0;
+  juce::Rectangle<int> pendingAnchor;
+  int stableAnchorTicks = 0;
 };
 
 enum class IconGlyph {
@@ -162,6 +175,19 @@ void applyTextEditorTheme(juce::TextEditor &editor,
                               UITheme::cardBorder.withAlpha(0.7f));
 void applyToggleSwitchTheme(juce::ToggleButton &toggle);
 juce::PopupMenu::Options makeTouchPopupMenuOptions(juce::Component *target);
+
+/** Geometria compartida por las barras superiores de telefono. */
+constexpr int mobileTopBarHeight() noexcept { return 56; }
+constexpr int mobileTopBarHorizontalMargin() noexcept { return 8; }
+constexpr int mobileTopBarActionGap() noexcept { return 2; }
+constexpr float mobileTopBarIconSize() noexcept { return 21.0f; }
+constexpr int mobileTopBarActionSize() noexcept {
+#if JUCE_ANDROID
+  return 48;
+#else
+  return 44;
+#endif
+}
 
 /**
  * Botón circular reutilizable para el header de paneles (header icons).

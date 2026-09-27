@@ -83,6 +83,7 @@ public:
   void setDiagnosticsBusy(bool busy);
 
 private:
+  friend struct SettingsPanelTestAccess;
   class SettingsTabButton final : public juce::TextButton {
   public:
     enum class Position { First, Middle, Last };
@@ -248,6 +249,7 @@ private:
   void layoutAccountPage();
   void layoutAudioPage();
   void layoutRoutingPage();
+  int routingPageContentHeight(int width) const;
   void layoutDiagnosticsPage();
   void applyLanguageTexts();
   void updateTabButtonStates(int activeIndex);

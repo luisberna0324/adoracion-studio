@@ -369,9 +369,59 @@ int touchOptimisedPopupItemHeight() {
   return useTouchOptimisedControls() ? 44 : 32;
 }
 
+void AdaptiveComboBox::setMobileFormMode(const bool enabled) {
+  mobileFormMode = enabled;
+  setMouseClickGrabsKeyboardFocus(!enabled);
+  setScrollWheelEnabled(!enabled);
+}
+
+void AdaptiveComboBox::mouseDown(const juce::MouseEvent &event) {
+  if (!mobileFormMode)
+    juce::ComboBox::mouseDown(event);
+}
+
+void AdaptiveComboBox::mouseDrag(const juce::MouseEvent &event) {
+  if (!mobileFormMode)
+    juce::ComboBox::mouseDrag(event);
+}
+
+void AdaptiveComboBox::mouseUp(const juce::MouseEvent &event) {
+  if (!mobileFormMode) {
+    juce::ComboBox::mouseUp(event);
+    return;
+  }
+  // A swipe over a selector scrolls the form; only a completed tap opens it.
+  if (!event.mouseWasDraggedSinceMouseDown() &&
+      reallyContains(event.getEventRelativeTo(this).getPosition(), true))
+    showPopup();
+}
+
+bool AdaptiveComboBox::keyPressed(const juce::KeyPress &key) {
+  if (popupPending && key == juce::KeyPress::escapeKey) {
+    popupPending = false;
+    stopTimer();
+    hidePopup();
+    return true;
+  }
+  return juce::ComboBox::keyPressed(key);
+}
+
 void AdaptiveComboBox::showPopup() {
   if (!isEnabled())
     return;
+  if (mobileFormMode) {
+    if (popupPending)
+      return;
+    // Give focus to the selector before opening its menu. A modal menu must
+    // not restore the previous text field and reopen its keyboard on dismissal.
+    grabKeyboardFocus();
+    popupPending = true;
+    popupRequestedAt = juce::Time::getMillisecondCounter();
+    pendingAnchor = getScreenBounds();
+    stableAnchorTicks = 0;
+    startTimerHz(30);
+    return;
+  }
   if (useTouchOptimisedControls()) {
     // Dismiss only text input; preserve the combo's focus/accessibility state.
     if (auto *editor = dynamic_cast<juce::TextEditor *>(
@@ -382,6 +432,35 @@ void AdaptiveComboBox::showPopup() {
   // asynchronous call. Clearing it lets mouseUp queue a second selector.
   // JUCE owns opening, checked items, keyboard navigation and dismissal.
   juce::ComboBox::showPopup();
+}
+
+void AdaptiveComboBox::timerCallback() {
+  if (!popupPending || !isShowing() || !isEnabled() || !hasKeyboardFocus(true)) {
+    const bool wasPending = popupPending;
+    popupPending = false;
+    stopTimer();
+    if (wasPending)
+      hidePopup();
+    return;
+  }
+  const auto bounds = getScreenBounds();
+  stableAnchorTicks = bounds == pendingAnchor ? stableAnchorTicks + 1 : 0;
+  pendingAnchor = bounds;
+  bool keyboardVisible = false;
+  if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(bounds)) {
+    const auto insets = display->keyboardInsets;
+    keyboardVisible = insets.getTop() + insets.getBottom() +
+                      insets.getLeft() + insets.getRight() > 0;
+  }
+  // Wait for the native keyboard and scroll viewport to settle so the menu
+  // opens at the final position. Bound the wait for floating/older IMEs.
+  if ((!keyboardVisible && stableAnchorTicks >= 2) ||
+      juce::Time::getMillisecondCounter() - popupRequestedAt >= 600) {
+    popupPending = false;
+    stopTimer();
+    juce::ComboBox::showPopup();
+  }
 }
 
 void applyComboBoxTheme(AdaptiveComboBox &combo, const juce::Colour background,
@@ -1205,13 +1284,17 @@ void HeaderIconButton::paintButton(juce::Graphics &g,
 
   const auto glyphColour = accent ? UITheme::accent : UITheme::textPrimary;
   if (!useSvgLabel) {
-    drawIconGlyph(g, b.withSizeKeepingCentre(21.0f, 21.0f), glyph, glyphColour,
-                  1.8f);
+    drawIconGlyph(g,
+                  b.withSizeKeepingCentre(mobileTopBarIconSize(),
+                                          mobileTopBarIconSize()),
+                  glyph, glyphColour, 1.8f);
     return;
   }
 
   const auto font = makeAppFont(12.2f, AppFontWeight::SemiBold);
-  const float iconSize = labelText.isEmpty() ? 19.0f : 15.0f;
+  const float iconSize = labelText.isEmpty()
+                             ? (bare ? mobileTopBarIconSize() : 19.0f)
+                             : 15.0f;
   const float gap = 7.0f;
   const float textWidth = measureTextWidth(font, labelText);
   const float groupWidth =

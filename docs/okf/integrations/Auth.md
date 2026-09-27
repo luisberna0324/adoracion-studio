@@ -195,9 +195,14 @@ desde el primer frame toda la resolucion disponible.
 
 ## Configuracion en pantallas reducidas
 
-El contenedor de configuracion usa desplazamiento vertical para sus cuatro
-secciones (General, Sesion, Audio y Ruteo) cuando el dispositivo es tactil o la
-ventana tiene menos de `820 px` de alto. El desplazamiento se hace sobre el
+El contenedor de configuracion usa desplazamiento vertical para sus cinco
+secciones (General, Sesion, Audio, Ruteo y Diagnostico). En General, Sesion,
+Audio y Diagnostico reserva altura adicional cuando el dispositivo es tactil
+o la ventana tiene menos de `820 px` de alto. Ruteo siempre calcula su altura
+segun todas las filas y el pie, incluso en ventanas grandes. El desplazamiento se hace sobre el
 contenido de la pestaña y conserva fijas la cabecera, el cierre y la navegacion.
 Ruteo comparte ese viewport principal para que rueda/trackpad y arrastre con
 clic o toque sostenido no compitan con un contenedor anidado.
+Sus selectores propagan rueda/trackpad al viewport y abren solo al completar
+un clic/tap, para que desplazar la lista no altere una salida. Ver
+[Mobile Layout](../ui/MobileLayout.md).

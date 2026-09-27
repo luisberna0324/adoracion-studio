@@ -90,6 +90,7 @@ public:
   void refreshLanguageTexts();
   void refreshThemeColours();
   void setMinimalPhoneMode(bool enabled);
+  void setPhoneSafeAreaInsets(juce::BorderSize<int> insets);
   void setOnOverlayCloseRequested(std::function<void()> cb);
   /** Abre un .pwproj recibido desde el sistema operativo. */
   void openProjectFile(const juce::File &file);
@@ -109,6 +110,7 @@ private:
     juce::Rectangle<int> listArea;
     juce::Rectangle<int> back;
     juce::Rectangle<int> title;
+    juce::Rectangle<int> subtitle;
     juce::Rectangle<int> edit;
     juce::Rectangle<int> menu;
     juce::Rectangle<int> add;
@@ -260,8 +262,10 @@ private:
                        std::function<void(juce::String)> onComplete);
   void refreshFromStorage();
   void timerCallback() override;
+  juce::Rectangle<int> getPageContentBounds(int margin) const;
 
   juce::Label titleLabel;
+  juce::Label songsSubtitleLabel;
   std::unique_ptr<PageContainer> pageContainer;
   juce::Label setlistsHeaderLabel;
   juce::Label setlistsSubtitleLabel;
@@ -301,6 +305,7 @@ private:
   bool initialViewApplied = false;
   bool transitionInFlight = false;
   bool minimalPhoneMode = false;
+  juce::BorderSize<int> phoneSafeAreaInsets;
   int songsSwipeDurationMs = 250;
   int transitionDurationMs = 150;
   juce::StringArray autoPlayNextMarks;

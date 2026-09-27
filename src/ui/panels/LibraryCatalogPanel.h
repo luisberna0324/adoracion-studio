@@ -69,6 +69,7 @@ public:
   void clearCloudUploadProgress(const juce::String &songId);
   void refreshFromStorage();
   void refreshLanguageTexts();
+  void setMinimalPhoneMode(bool enabled);
   void setHeaderTrailingInset(int inset);
   void refreshThemeColours();
 
@@ -280,6 +281,7 @@ private:
   HeaderIconButton loadSongButton{"loadSong", IconGlyph::ArrowLeft};
   HeaderIconButton createSongButton{"createSong", IconGlyph::Add};
   int headerTrailingInset = 0;
+  bool minimalPhoneMode = false;
   FooterActionButton confirmButton;
   juce::Rectangle<int> headerTitleBounds;
   juce::Rectangle<int> headerSubtitleBounds;

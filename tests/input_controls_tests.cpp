@@ -106,16 +106,16 @@ void testSearchPadding() {
          "clearing search restores trailing space without a vertical jump");
 }
 
-juce::MouseEvent clickEvent(juce::Component &component) {
+juce::MouseEvent clickEvent(juce::Component &component, bool dragged = false) {
   const auto position = component.getLocalBounds().toFloat().getCentre();
   const auto now = juce::Time::getCurrentTime();
   return {juce::Desktop::getInstance().getMainMouseSource(), position,
           juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
           1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &component, &component,
-          now, position, now, 1, false};
+          now, position, now, 1, dragged};
 }
 
-void testSingleComboPopup() {
+void testSingleComboPopup(bool mobileForm = false) {
   juce::Component host;
   const auto *display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
   if (display == nullptr) {
@@ -137,6 +137,7 @@ void testSingleComboPopup() {
   combo.setBounds(24, 24, 200, 44);
   host.addAndMakeVisible(combo);
   applyComboBoxTheme(combo, UITheme::cardBg, UITheme::cardBorder);
+  combo.setMobileFormMode(mobileForm);
   int changes = 0;
   combo.onChange = [&] { ++changes; };
 
@@ -168,11 +169,22 @@ void testSingleComboPopup() {
   const auto event = clickEvent(combo);
   combo.mouseDown(event);
   pump();
+  if (mobileForm) {
+    expect(!combo.isPopupActive(), "a form selector waits for a completed tap");
+    combo.mouseUp(clickEvent(combo, true));
+    pump();
+    expect(!combo.isPopupActive(), "scrolling across a form selector does not open it");
+    combo.mouseDown(event);
+    combo.mouseUp(event);
+    pump();
+    pump();
+  }
   expect(combo.isPopupActive() &&
              juce::Component::getNumCurrentlyModalComponents() == 1,
          "mouseDown opens one JUCE popup and keeps its active guard set");
   auto *popup = juce::Component::getCurrentlyModalComponent();
-  combo.mouseUp(event);
+  if (!mobileForm)
+    combo.mouseUp(event);
   pump();
   expect(combo.isPopupActive() &&
              juce::Component::getNumCurrentlyModalComponents() == 1 &&
@@ -185,7 +197,9 @@ void testSingleComboPopup() {
   expect(!combo.isPopupActive() && combo.getSelectedId() == 2 && changes == 1,
          "choosing updates once and closes the list");
 
-  combo.showPopup();
+  combo.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+  pump();
+  pump();
   pump();
   popup = juce::Component::getCurrentlyModalComponent();
   expect(popup != nullptr, "a dismissed combo can be reopened");
@@ -193,6 +207,16 @@ void testSingleComboPopup() {
   pump();
   expect(!combo.isPopupActive() && combo.getSelectedId() == 2 && changes == 1,
          "Escape closes without changing the current value or notifying");
+
+  if (mobileForm) {
+    combo.showPopup();
+    combo.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    pump();
+    pump();
+    expect(!combo.isPopupActive() &&
+               juce::Component::getNumCurrentlyModalComponents() == 0,
+           "Escape cancels a pending menu before it appears");
+  }
 
   combo.setEnabled(false);
   combo.showPopup();
@@ -223,6 +247,7 @@ int main(int argc, char **argv) {
   applyTheme(ThemePreset::Spotify);
   if (interactivePopup) {
     testSingleComboPopup();
+    testSingleComboPopup(true);
   } else {
     testEditorThemePreservesBehaviour();
     testSearchPadding();

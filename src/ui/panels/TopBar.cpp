@@ -584,10 +584,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
     if (onPhoneLibrary)
       onPhoneLibrary(songPickerButton);
   };
-  phonePadsButton.onClick = [this] {
-    if (onPhonePads)
-      onPhonePads();
-  };
+  phonePadsButton.onClick = [this] { triggerPhonePadsPopover(); };
   bpmSegmentButton.onClick = [this, armLearnTarget] {
     if (midiLearnActive) {
       armLearnTarget(processor.midiTargetUiMetronomePopover);
@@ -657,8 +654,13 @@ void TopBar::setOnPhoneLibrary(std::function<void(juce::Component &)> cb) {
   onPhoneLibrary = std::move(cb);
 }
 
-void TopBar::setOnPhonePads(std::function<void()> cb) {
+void TopBar::setOnPhonePads(std::function<void(juce::Component &)> cb) {
   onPhonePads = std::move(cb);
+}
+
+void TopBar::triggerPhonePadsPopover() {
+  if (onPhonePads)
+    onPhonePads(phonePadsButton);
 }
 
 void TopBar::setPhoneOverlayStates(const bool /*libraryOpen*/,

@@ -3,7 +3,7 @@ type: Import Contract
 title: Song Creation
 description: Creacion portable compartida entre escritorio y movil
 resource: src/ui/panels/SongImportWizardComponent.cpp
-timestamp: 2026-09-23T00:00:00-03:00
+timestamp: 2026-09-26T00:00:00-03:00
 ---
 
 # Creacion de canciones
@@ -18,15 +18,41 @@ el mapeo filas apiladas; Revisar un resumen desplazable. Agregar cancion en
 escritorio usa esa misma jerarquia, indicador Detalles/Archivos/Secciones/Revisar
 y navegacion inferior. Solo reduce controles (campos de 36 px, filas de archivos
 de 48 px y mapeo de 80 px). La edicion de escritorio conserva su disposicion.
-El `+` del encabezado de Biblioteca en escritorio abre Detalles como pagina
-interna de `SongListPanel`, a continuacion de Biblioteca en su `PageContainer`.
-El asistente ocupa los mismos limites del panel y sigue sus redimensiones;
-no crea un modal sobre el editor. Cancelar o completar el guardado vuelve a la
-misma Biblioteca, conservando su contexto de busqueda/seleccion. La lista se
-recarga antes del retorno al guardar. Los accesos externos y la edicion mantienen
-su presentacion previa.
+El `+` del encabezado de Biblioteca abre Detalles como pagina interna de
+`SongListPanel` en escritorio, telefono y tablet, a continuacion de Biblioteca en su
+`PageContainer`. La pagina entra desde la derecha con la misma transicion
+horizontal de Biblioteca; al pulsar `X` o terminar el guardado, sale hacia la
+derecha mientras reaparece Biblioteca. El asistente ocupa los mismos limites
+del panel y sigue sus redimensiones. La pagina de creacion se libera al terminar
+la animacion de retorno. Se conserva el contexto de busqueda/seleccion y la
+lista se recarga antes del retorno al guardar. La creacion incrustada usa el
+formulario desplazable tambien en tablets y escritorios tactiles, de modo que
+sus controles se ajustan al ancho del panel. Los accesos externos y la edicion
+mantienen su presentacion previa.
 
-Los controles compartidos son JUCE; teclado y area segura solo aplican al telefono.
+Los controles compartidos son JUCE y la entrada de texto movil usa el teclado
+del sistema. El telefono adapta el viewport y muestra la barra sobre el teclado.
+
+## Foco y teclado movil
+
+Titulo, artista y BPM se recorren sin un desenfoque intermedio. Los nombres de
+pistas siguen el mismo recorrido en Secciones. La barra sobre el teclado del
+telefono ofrece Anterior/Siguiente/Listo; Return avanza o termina en el ultimo
+editor. Los selectores de tono, compas y categoria cierran la entrada de texto
+y esperan un anclaje estable para abrir una sola lista. Desplazarse sobre un
+selector no lo abre ni cambia el valor. Ver [Mobile Layout](../ui/MobileLayout.md).
+
+`cmake/IOSFormKeyboard.cmake` genera una copia de `juce_gui_basics` solo para iOS,
+conservando el checkout externo de JUCE. Para campos marcados con
+`playworshipContinuousTextInput`, mantiene el first responder, notifica los
+cambios de texto/seleccion y llama a `reloadInputViews` al transferir el foco.
+`playworshipReturnKeyNext` decide la etiqueta nativa Siguiente/Listo. El resto
+de los editores conserva el comportamiento original de JUCE. BPM usa NumberPad
+en iOS, con la accion Listo de la barra para terminar la entrada. La configuracion
+falla si cambia el codigo fuente esperado de JUCE, para revisar esta adaptacion
+al actualizar la dependencia. Android reutiliza la actualizacion del IME de JUCE.
+Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/uikit/uiresponder/reloadinputviews()),
+[Android keyboard visibility](https://developer.android.com/develop/ui/views/touch-and-input/keyboard-input/visibility).
 
 ## Guardar
 
@@ -102,7 +128,9 @@ audio y queda la referencia para reintentar. Una portada ya local se conserva.
 ## Verificacion
 
 - `input_controls`: teclado, callbacks y espaciado; `input_controls_popup`
-  valida interaccion del menu cuando el sistema concede foco de ventana.
+  valida interaccion del menu cuando el sistema concede foco de ventana,
+  incluyendo tap frente a arrastre, apertura con Return y cancelacion pendiente
+  de los selectores del formulario.
 - `portable_flac_conversion`: formatos, precision, multicanal, progreso y errores.
 - `mobile_import_staging`: copias privadas, nombres, bytes, errores y limpieza;
   los permisos de proveedores nativos requieren ademas prueba en dispositivo.

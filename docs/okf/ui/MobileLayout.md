@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-09-25T00:00:00-03:00
+timestamp: 2026-09-26T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -21,6 +21,9 @@ iniciales: cambiar sus limites despues desactiva el fullscreen del peer nativo.
 El contenido no redimensiona la ventana. Al cambiar el display se reafirma
 fullscreen y el layout nativo `MATCH_PARENT` propaga la nueva medida a la
 ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
+Los cambios de area segura se propagan tambien cuando el tamano de la ventana
+y del contenido permanece igual. Asi se retira el margen superior al ocultar
+la barra del sistema, sin esperar a otra rotacion o redimension.
 
 En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
 y agrupa solicitudes usando el estado mas reciente de Biblioteca. La ventana
@@ -68,19 +71,21 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   framebuffer del simulador.
 - El fondo del mixer se prolonga visualmente por el inset inferior hasta el
   borde fisico de la ventana, evitando una franja vacia bajo los canales.
-- En iPhone cada lateral usa su inset real, actualizado al girar. El `TopBar`
+- En iPhone y Android cada lateral usa su inset real, actualizado al girar. El `TopBar`
   dibuja su fondo a ancho completo y coloca los botones en su area segura con
   4 pt de aire adicional. No se igualan ambos insets usando el mayor.
-- La waveform de iPhone llega a ambos bordes. Sus botones flotantes, mensajes,
+- La waveform de telefono llega a ambos bordes. Sus botones flotantes, mensajes,
   etiquetas y acciones de seccion e indicador remoto permanecen dentro del
   area segura; el tintado de las secciones conserva el ancho completo.
-- El viewport del mixer de iPhone llega a ambos bordes. El contenido lleva
+- El viewport del mixer de telefono llega a ambos bordes. El contenido lleva
   padding desplazable inicial y final equivalente a los insets reales, de
   modo que el primer y ultimo canal pueden quedar completamente accesibles.
   La escala de los strips se calcula con el ancho seguro y los canales se
   desplazan por debajo de las zonas laterales durante el scroll.
-- En Android se respetan los cuatro insets reportados por el sistema, incluyendo
-  cutouts y barras de navegacion.
+- En Android se respetan los insets reportados por el sistema para los controles,
+  incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
+  inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la
+  barra superior cubre tambien su inset superior si hay una barra visible.
 - Los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
   fijas mantienen su proteccion respecto de la camara y esquinas.
 - No se mantienen tablas de margenes por modelo ni gutters fijos para notch.
@@ -91,14 +96,15 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - El asistente de creacion/edicion de canciones ocupa toda la superficie fisica
   del telefono. Su fondo se dibuja edge-to-edge detras del notch, barras de
   sistema e indicador inferior; encabezado, campos y acciones descuentan
-  `safeAreaInsets`. Usa un encabezado de 56 pt con cierre de 44 pt, un indicador
+  `safeAreaInsets`. Usa el encabezado movil compartido de 56 pt, con cierre de
+  44 pt en iOS o 48 dp en Android alineado a la derecha, un indicador
   de cuatro pasos de 86 pt y margenes laterales de 17 pt. En `Detalles`, la
   portada se centra con un lado de 112–136 pt, los editores y combos miden 48 pt
   de alto, y `BPM`, `Tono` y `Compas` comparten una fila de tres columnas. El
   resumen de metadata y el boton primario usan 70 pt y 48 pt respectivamente.
-  En escritorio, el + de Biblioteca abre la creacion dentro del mismo panel,
-  con esta jerarquia y controles de menor altura. La edicion de escritorio y
-  tablet conservan su presentacion anterior.
+  El + de Biblioteca abre la creacion dentro del mismo panel en todas las
+  plataformas, con esta jerarquia y controles de menor altura en tablet y
+  escritorio. La edicion conserva su presentacion anterior.
 - Con un teclado virtual acoplado, el asistente combina `safeAreaInsets` y
   `keyboardInsets`. En Detalles conserva encabezado, pasos y la geometria del
   formulario: un viewport reduce su ventana visible sobre el teclado y desplaza
@@ -107,12 +113,25 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - La portada de Detalles mide 128 pt y el contenido desplazable 550 pt,
   independientemente de la altura del teclado. El usuario puede desplazarlo
   manualmente sin que el seguimiento del foco lo devuelva a otra posicion.
-  Se toleran 200 ms de inset vacio al cambiar el tipo de teclado para evitar
-  que el formulario se expanda y contraiga entre dos campos.
-- Sobre el teclado aparece `Listo` con objetivo tactil de 44 pt. `Listo` y
-  Return finalizan la edicion; abrir un selector tambien descarta el teclado.
-  Deslizar el formulario no lo cierra. BPM usa teclado numerico. Al cerrar el
-  teclado se recupera el pie con `Siguiente` sin reconstruir los campos.
+  Se toleran 200 ms de inset vacio solamente mientras otro editor del asistente
+  conserva el foco, para evitar que el formulario se expanda entre dos campos.
+  Una finalizacion explicita de la edicion no conserva ese inset.
+- Sobre el teclado aparecen `Anterior`, `Siguiente` y `Listo` con altura tactil
+  de 44 pt. Los dos primeros transfieren directamente el foco entre titulo,
+  artista y BPM, o entre nombres de pistas en Secciones; se deshabilitan en los
+  extremos. No toman foco al pulsarlos. Return avanza al siguiente editor y
+  termina en el ultimo; en iOS la tecla indica `Siguiente` o `Listo`.
+  `Listo`, cambiar de paso y cerrar el asistente finalizan la edicion.
+- BPM usa teclado numerico. En iOS los campos del asistente conservan la sesion
+  nativa de entrada al cambiar de editor, actualizando texto, seleccion y rasgos
+  del teclado mediante `reloadInputViews`. Deslizar el formulario no lo cierra.
+  Al cerrar el teclado se recupera el pie con `Siguiente` sin reconstruir campos.
+- Los combos del asistente movil abren al completar un tap; arrastrar sobre ellos
+  permite desplazar el formulario. El selector toma el foco y espera a que el
+  teclado desaparezca y su anclaje se estabilice antes de mostrar la lista JUCE
+  (espera acotada a 600 ms para teclados flotantes o insets no disponibles).
+  Cerrar la lista no devuelve el foco al editor ni reabre el teclado. Escape,
+  perdida de foco, deshabilitacion u ocultacion cancelan una apertura pendiente.
 - En el paso `Secciones`, el viewport termina sobre el teclado y desplaza la
   fila enfocada solo cuando queda fuera de su area visible. Esto se aplica a
   iOS y a Android 11 o superior, donde JUCE reporta `keyboardInsets`.
@@ -145,22 +164,53 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   El recorrido reinicia al cambiar la cancion o el tamano de la tarjeta y se
   repinta con el timer de UI existente, sin intervenir en el audio. Este
   comportamiento tambien aplica a la tarjeta de escritorio y tablet.
-- Pads permanece inmediatamente a la izquierda del cronometro y conserva
-  su overlay de interpretacion.
+- Pads permanece inmediatamente a la izquierda del cronometro. Abre un popover
+  anclado al boton, con encabezado y cierre del mismo estilo que la lista de
+  canciones del setlist. Los controles de interpretacion siguen en la misma
+  instancia de Pads y se ajustan al espacio seguro disponible.
 - El `+` del encabezado del selector abre Biblioteca y setlists. En telefono gira
   a vertical y ocupa toda el area segura. El titulo, volver, Biblioteca, Agregar
-  y cerrar comparten una sola fila; las acciones conservan botones circulares
-  de 40 x 40 con iconos, sin etiquetas. En Biblioteca, abrir proyecto
-  y crear cancion tambien se ubican en el encabezado como botones circulares;
+  y cerrar comparten una sola fila; las acciones usan objetivos tactiles planos
+  de 44 x 44 pt en iOS y 48 x 48 dp en Android, con iconos y sin etiquetas. En Biblioteca, abrir proyecto
+  y crear cancion tambien se ubican en el encabezado como acciones compactas;
   el buscador ocupa todo el ancho de su propia fila. La `X` cierra el panel desde
   cualquiera de sus paginas y recupera la vista horizontal de performance.
-- El overlay incluye un boton `X` de `40 x 40 pt/dp`, igual que las acciones de
+- La superficie de Biblioteca/setlists cubre la ventana completa, incluidos los
+  fondos bajo la barra de estado y el indicador inferior. Los controles aplican
+  los insets seguros dentro de la pagina. En telefono, el encabezado adopta una
+  barra plana compartida por Repertorio, canciones, Biblioteca y creacion de
+  canciones: 56 pt de alto, 8 pt de margen lateral, 2 pt entre acciones,
+  objetivos tactiles de 44 pt en iOS y 48 dp en Android, e iconos visibles de
+  21 pt sin circulos decorativos. Titulos, subtitulos y acciones conservan la
+  misma alineacion; el `+` usa el color de acento. La vista de canciones muestra
+  bajo el nombre del setlist un resumen compacto con cantidad y duracion.
+- El `+` de Biblioteca abre la creacion como la pagina siguiente del mismo
+  contenedor, con entrada horizontal desde la derecha. La `X` de creacion y el
+  guardado exitoso regresan con la transicion inversa, mostrando de nuevo
+  Biblioteca durante el desplazamiento. El asistente se libera al acabar el
+  movimiento para que su contenido no desaparezca a mitad de la salida. Este
+  recorrido se usa tambien en Android, tablets y escritorio.
+- El overlay incluye un boton `X` de `44 x 44 pt` en iOS o `48 x 48 dp` en
+  Android, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
 - Configuración usa desplazamiento vertical con rueda/trackpad y también admite
   arrastrar el contenido con clic o toque sostenido. No expone desplazamiento
   horizontal en el contenedor principal. Ruteo participa del mismo viewport,
   evitando que un contenedor anidado capture gestos sin poder desplazarse.
+- La altura desplazable de Ruteo se calcula con todas las categorias, el
+  encabezado, la nota inferior y los margenes; no se limita a 900 px ni depende
+  de que la ventana mida menos de 820 px. El ancho descuenta la barra vertical.
+  Con menos de 520 px utiles por fila, la categoria queda encima de los dos
+  selectores, que conservan 48 px de alto. En filas anchas los controles tienen
+  48 px en tactil y 36 px en escritorio. La nota aparece despues de la ultima
+  fila, sin superponerse. Un relayout conserva/clampa el scroll; cambiar de
+  pestaña vuelve al inicio.
+- Los selectores de Ruteo abren al completar un clic o tap, en movil y escritorio.
+  Arrastrar sobre ellos no abre un menu. La rueda/trackpad se propaga al viewport
+  y nunca cambia Mono/Stereo ni el canal de salida al pasar sobre un selector.
+  `settings_panel` verifica el acceso al ultimo control, limites de filas,
+  rueda sobre selectores, gesto arrastrado y cambio de pestaña en nueve tamaños.
 - Configuración mantiene Diagnóstico en una pestaña propia, después de Ruteo.
   Audio contiene sólo los controles del dispositivo; el informe técnico se
   comparte desde una tarjeta compacta en Diagnóstico y no expone un marcador
@@ -169,21 +219,19 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   con separacion uniforme y margen respecto al borde inferior de la waveform.
   El editor de secciones se reserva para tablet y escritorio, por lo que el
   boton de editar no se muestra en telefono.
-- En el overlay de telefono se oculta el resumen de duracion total, cantidad de
-  canciones y BPM promedio, de modo que la lista comienza inmediatamente bajo
-  el encabezado.
+- En el overlay de telefono, la cantidad de canciones y la duracion total se
+  muestran como subtitulo compacto bajo el nombre del setlist. El BPM promedio
+  permanece oculto para mantener la cabecera despejada.
 - En telefono, tanto el wizard de creacion de canciones como el drawer de
-  Biblioteca/setlists comparten el mismo scrim translucido (`black@44%`) y el
-  mismo fondo `drawStudioBackground(...)` extendido sobre toda su area, lo que
-  da la sensacion de "app vertical" donde el mixer queda como componente
-  complementario visible a traves del scrim. El wizard oculta la topBar para
-  ocupar toda la superficie fisica del telefono; el drawer conserva su topBar
-  encima salvo cuando sus vistas internas piden fullscreen.
+  Biblioteca/setlists usan `drawStudioBackground(...)` sobre toda la superficie
+  fisica. El contenido de performance queda cubierto mientras estas vistas estan
+  abiertas; la barra de estado y el indicador inferior conservan sus areas
+  seguras.
 - Pads, expansion vertical de waveform y minimap/navegador inferior de la
   waveform se ocultan en telefono. Tambien se oculta la regla de compases
   superior; la onda principal usa todo ese alto liberado.
-- La waveform de telefono tampoco usa tarjeta, borde ni padding externo: en
-  iPhone usa todo el ancho; en Android conserva su region segura.
+- La waveform de telefono tampoco usa tarjeta, borde ni padding externo:
+  usa todo el ancho en iPhone y Android; sus acciones conservan el area segura.
 - En telefono, un arrastre horizontal sobre la onda desplaza su contenido en la
   misma direccion del dedo;
   un toque conserva el seek y un gesto de pinza amplia o reduce la escala con

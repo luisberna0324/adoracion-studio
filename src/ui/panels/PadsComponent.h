@@ -27,6 +27,7 @@ public:
 
     void refreshThemeColours();
     void setResponsiveProfile(ResponsiveLayoutProfile profile);
+    void setPopoverPresentation(bool enabled);
     void setMidiLearnActive(bool active);
     void setMidiLearnPendingTarget(int targetId);
     void setMidiLearnBindingLabelProvider(std::function<juce::String(int)> cb);
@@ -64,6 +65,7 @@ private:
   juce::String presetTitle{"Light Ambient"};
   juce::String presetSubtitle{"Loading..."};
   ResponsiveLayoutProfile responsiveProfile = ResponsiveLayoutProfile::Standard;
+  bool popoverPresentation = false;
 
     void timerCallback() override;
     void startPadsLoadingAsync();

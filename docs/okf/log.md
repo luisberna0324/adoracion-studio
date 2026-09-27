@@ -7,6 +7,70 @@ timestamp: 2026-09-21T00:00:00-03:00
 
 # Changelog
 
+## 2026-09-26
+
+### Bordes de performance en Android
+
+- Waveform y mixer ocupan el ancho completo del telefono Android, reutilizando
+  la proteccion de controles y padding desplazable de iPhone. La camara ya no
+  produce una franja vacia a lo largo de toda la vista.
+- Los cambios de insets del sistema fuerzan el relayout del editor aunque el
+  tamano de ventana no cambie, para retirar el margen de una barra ya oculta.
+  El fondo del TopBar tambien cubre el inset superior si la barra esta visible.
+- Contrato: [Mobile Layout](ui/MobileLayout.md).
+
+### Scroll completo de Ruteo
+
+- El viewport de Configuracion abarca todas las categorias y el pie de Ruteo,
+  tanto en movil como en escritorio. Se elimina el recorte de las ultimas filas
+  causado por la altura fija del contenedor.
+- Filas adaptables al ancho, controles tactiles de 48 px y espacio reservado
+  para la barra vertical. La nota inferior sigue a la ultima fila.
+- Los selectores distinguen tap de arrastre y la rueda desplaza la lista sin
+  modificar salidas. Una redimension conserva el scroll y cambiar de pestaña
+  vuelve al inicio. Contrato: [Mobile Layout](ui/MobileLayout.md).
+
+### Teclado del asistente de canciones
+
+- Navegacion directa entre campos mediante Anterior/Siguiente/Listo y Return.
+  iOS conserva la sesion de teclado al transferir el foco entre campos del
+  asistente y actualiza la tecla Siguiente/Listo; BPM mantiene teclado numerico.
+- Los combos moviles esperan al fin del tap y al cierre del teclado antes de
+  abrirse en una posicion estable. Deslizar sobre ellos no abre una lista;
+  cerrar el menu no reactiva el editor anterior.
+- La adaptacion de iOS se genera durante CMake, sin editar el checkout de JUCE,
+  y exige revision si cambia el codigo de entrada de texto de la dependencia.
+- Verificacion en iPhone 17 Pro Simulator (iOS 26.2): teclado nativo
+  Siguiente, barra Anterior/Siguiente/Listo, BPM con NumberPad, conservacion de
+  valores y selector de tono que no reactiva el teclado al cerrarse. Los eventos
+  de UIKit confirman cambios de campo sin notificaciones de ocultacion.
+  La experiencia tactil en iPhone/Android fisicos sigue pendiente.
+- Contratos: [Song Creation](importing/SongCreation.md) y
+  [Mobile Layout](ui/MobileLayout.md).
+
+### Biblioteca y setlists con organizacion movil nativa
+
+- El `+` de Biblioteca abre la creacion de canciones con la misma transicion
+  horizontal entre paginas en iOS, Android y escritorio; la `X` y el guardado
+  vuelven con el movimiento inverso a Biblioteca. El formulario incrustado
+  tambien se ajusta al ancho del panel en tablets y escritorios tactiles.
+- En telefono, Biblioteca y setlists pintan una superficie completa bajo las
+  areas del sistema y protegen sus controles con los insets seguros reales.
+- La barra superior usa acciones planas de 44 pt en iOS y 48 dp en Android,
+  titulo jerarquico y un resumen de cantidad/duracion del setlist. Repertorio,
+  canciones, Biblioteca y creacion de canciones comparten ahora una geometria
+  de 56 pt, iconos de 21 pt, margenes, separacion y alineacion vertical. La
+  navegacion y los datos siguen en el `SongListPanel` compartido, incluida la
+  biblioteca recibida por control remoto.
+- Contrato: [Mobile Layout](ui/MobileLayout.md).
+
+### Pads en popover de telefono
+
+- Pads abre el popover comun anclado al boton del `TopBar`, con encabezado
+  compacto como el selector de canciones. Conserva el componente y el estado
+  de las notas al cerrar. Tablet y escritorio mantienen el cajon inferior.
+- Contratos: [Popovers](ui/Popovers.md) y [Mobile Layout](ui/MobileLayout.md).
+
 ## 2026-09-25
 
 ### Superficie de iPhone y rotacion
