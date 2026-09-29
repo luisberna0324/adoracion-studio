@@ -40,3 +40,6 @@ web/out/
 third_party/bungee/
 third_party/sentry-native/
 CMakeUserPresets.json
+
+# Local video generation artifacts
+videos/
