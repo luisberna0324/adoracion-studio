@@ -211,6 +211,14 @@ int getArrangementPartLoopIndex() const noexcept;
 
 Activa loop en una parte específica.
 
+El loop y `muteInstruments` de una sección son independientes: se puede
+silenciar la instrumentación y repetir esa misma sección al mismo tiempo. La
+guía y el click conservan su tratamiento normal de mute. Activar o desactivar
+Loop no modifica Mute; pulsar Mute conserva el loop activo y cancela únicamente
+un salto pendiente. Un cambio de Mute, Skip o metadatos que mantenga los mismos
+límites y rangos de fuente publica el nuevo snapshot sin reiniciar el loop,
+el salto pendiente ni la posición, incluso fuera del editor de arrange.
+
 ### Transiciones dentro del bloque
 
 `SectionScheduler` devuelve el offset exacto del límite. El callback prearma el

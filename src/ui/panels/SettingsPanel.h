@@ -101,10 +101,6 @@ private:
     bool active = false;
     Position position = Position::Middle;
   };
-  class SettingsCloseButton final : public juce::TextButton {
-  public:
-    void paintButton(juce::Graphics &, bool, bool) override;
-  };
   class SettingsLogoutButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool, bool) override;
@@ -145,15 +141,13 @@ private:
   int mobileGeneralCardHeight() const;
   int mobilePageContentHeight(int width) const;
   juce::String pageTitle() const;
-  juce::String pageHelpText() const;
   Destination destination = Destination::Home;
   int homeScrollY = 0;
   std::unique_ptr<SettingsHomePage> homePage;
   HeaderIconButton backButton{"settingsBack", IconGlyph::ArrowLeft};
 
   juce::Label title;
-  juce::Label pageDescription;
-  SettingsCloseButton closeButton;
+  HeaderIconButton closeButton{"settingsClose", IconGlyph::Close};
   SettingsTabButton generalTabButton;
   SettingsTabButton accountTabButton;
   SettingsTabButton audioTabButton;
@@ -252,6 +246,9 @@ private:
   std::unique_ptr<SettingsRowSeparator> actionsRowSeparator;
   std::vector<std::unique_ptr<SettingsRowSeparator>> generalRowSeparators;
   juce::Label routingSectionLabel;
+  juce::Label routingDeviceLabel;
+  juce::Label routingDeviceHelp;
+  AdaptiveComboBox routingDeviceBox;
   juce::Label routingControlsHelp;
   juce::Label routingHintLabel;
   juce::Component routingContent;
@@ -273,8 +270,15 @@ private:
   std::vector<size_t> routingRowCategoryIndices;
   juce::AudioDeviceManager *deviceManager = nullptr;
   juce::String currentDeviceKey;
+  struct OutputDeviceChoice {
+    juce::String typeName;
+    juce::String deviceName;
+  };
+  std::vector<OutputDeviceChoice> outputDeviceChoices;
 
   void refreshRoutingForDevice();
+  void refreshRoutingDeviceOptions();
+  void selectRoutingDevice();
   void setRoutingDefaultsLocal(const std::vector<CategoryRoutingDefaults> &next);
   void layoutGeneralPage();
   void layoutAccountPage();

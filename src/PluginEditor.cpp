@@ -19,6 +19,7 @@
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
+#include "ui/components/AppModal.h"
 #include "ui/components/ReauthPromptModal.h"
 #include "ui/components/SettingsVersionsSheet.h"
 #include "platform/NativeAuthSession.h"
@@ -800,30 +801,36 @@ void MTControlsAudioProcessorEditor::showCloudSettingsVersionConfirmation(
     if (safe == nullptr)
       return;
     if (!safe->applyCloudSettings(song, version.settings)) {
-      juce::NativeMessageBox::showMessageBoxAsync(
-          juce::MessageBoxIconType::WarningIcon,
+      safe->appModal = std::make_unique<AppModal>(
+          *safe, AppModal::Kind::Information,
           L10n::tr("No se pudo aplicar", "Couldn't apply"),
           L10n::tr("La versión no pudo guardarse en este dispositivo.",
-                   "The version couldn't be saved on this device."));
+                   "The version couldn't be saved on this device."),
+          L10n::tr("Entendido", "OK"), juce::String(), nullptr);
+      safe->appModal->onClosed = [safe] {
+        if (safe != nullptr) safe->appModal.reset();
+      };
+      safe->appModal->show();
       return;
     }
     if (safe->songListPanelRaw != nullptr)
       safe->songListPanelRaw->refreshFromStorageView();
   };
 
-  const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
-      juce::MessageBoxIconType::QuestionIcon,
+  appModal = std::make_unique<AppModal>(
+      *this, AppModal::Kind::Confirm,
       L10n::tr("Confirmar versión", "Confirm version"),
       L10n::tr("¿Quieres aplicar la versión v", "Apply version v") +
           juce::String(version.revision) +
           L10n::tr(" en este dispositivo? Reemplazará los ajustes actuales.",
                    " on this device? It will replace the current settings."),
-      L10n::tr("Confirmar", "Confirm"), L10n::tr("Cancelar", "Cancel"),
-      this);
-  juce::AlertWindow::showAsync(options, [applyVersion](const int result) {
-    if (result == 1)
-      applyVersion();
-  });
+      L10n::tr("Aplicar versión", "Apply version"),
+      L10n::tr("Cancelar", "Cancel"),
+      [applyVersion](bool accepted, const juce::String &) {
+        if (accepted) applyVersion();
+      });
+  appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+  appModal->show();
 }
 
 void MTControlsAudioProcessorEditor::saveCurrentProject() {
@@ -1395,8 +1402,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     playbackSession.clearPendingArrangementPartJump();
     playbackSession.toggleArrangementPartLoop(partIndex);
   });
-  waveformBarRaw->setOnArrangementPlaybackSelectionClearRequest([this] {
-    playbackSession.clearArrangementPartLoop();
+  waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
     playbackSession.clearPendingArrangementPartJump();
   });
   waveformBarRaw->setPendingArrangementPartProvider(

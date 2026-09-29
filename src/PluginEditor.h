@@ -25,6 +25,7 @@ class PadsPopoverContent;
 class LocalAuthCallbackServer;
 class SettingsPanel;
 class SettingsVersionsSheet;
+class AppModal;
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -88,6 +89,7 @@ private:
                                 juce::Component::SafePointer<SettingsVersionsSheet> sheet);
   juce::Component::SafePointer<SettingsVersionsSheet> cloudSettingsSheet;
   std::unique_ptr<juce::Component> cloudSettingsSheetOverlay;
+  std::unique_ptr<AppModal> appModal;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 

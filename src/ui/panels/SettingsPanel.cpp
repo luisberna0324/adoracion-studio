@@ -9,18 +9,32 @@
 #include <map>
 
 namespace {
-constexpr int mobileChoiceHeight = 142;
-constexpr int mobileToggleHeight = 108;
+// Label, 48 pt control, local explanation, then space before the next option.
+constexpr int mobileChoiceHeight = 128;
+constexpr int mobileToggleHeight = 100;
+constexpr int mobileRemoteChoiceHeight = 128;
 constexpr int mobileCardPadding = 32;
+
+juce::Font settingsOptionLabelFont() {
+  return makeAppFont(useTouchOptimisedControls() ? 15.0f : 14.0f,
+                     AppFontWeight::Medium);
+}
+
+juce::Font settingsHelpFont() {
+  return makeAppFont(useTouchOptimisedControls() ? 13.5f : 12.5f);
+}
 }
 
 class SettingsPanel::SettingsHomePage final : public juce::Component {
 public:
   explicit SettingsHomePage(SettingsPanel &ownerToUse) : owner(ownerToUse) {
-    for (auto page : {Destination::Appearance, Destination::Playback,
-                      Destination::Library, Destination::Audio,
-                      Destination::Routing, Destination::Remote,
-                      Destination::Account, Destination::Diagnostics}) {
+    std::vector<Destination> pages{Destination::Appearance, Destination::Playback,
+                                   Destination::Library};
+    if (!useTouchOptimisedControls())
+      pages.push_back(Destination::Audio);
+    pages.insert(pages.end(), {Destination::Routing, Destination::Remote,
+                               Destination::Account, Destination::Diagnostics});
+    for (auto page : pages) {
       auto row = std::make_unique<Row>(page);
       row->onClick = [&ownerToUse, page] { ownerToUse.showSettingsPage(page); };
       addAndMakeVisible(*row);
@@ -29,35 +43,41 @@ public:
     refreshTexts();
   }
 
-  static int contentHeight() { return 16 + 3 * (34 + 22) + 8 * 72 + 8; }
+  static int contentHeight() {
+    return 16 + 3 * (34 + 22) + (useTouchOptimisedControls() ? 7 : 8) * 72 + 8;
+  }
 
   void refreshTexts() {
     const juce::StringArray titles{
         L10n::tr("Apariencia e idioma", "Appearance & language"),
         L10n::tr(u8"Reproducción", "Playback"),
-        L10n::tr("Biblioteca", "Library"),
-        L10n::tr("Dispositivo de audio", "Audio device"),
-        L10n::tr("Ruteo de salidas", "Output routing"),
+        L10n::tr("Biblioteca", "Library")};
+    juce::StringArray pageTitles = titles;
+    if (!useTouchOptimisedControls())
+      pageTitles.add(L10n::tr("Dispositivo de audio", "Audio device"));
+    pageTitles.addArray({L10n::tr("Ruteo de salidas", "Output routing"),
         L10n::tr("Control remoto", "Remote control"),
         L10n::tr("Mi cuenta", "My account"),
-        L10n::tr(u8"Diagnóstico", "Diagnostics")};
+        L10n::tr(u8"Diagnóstico", "Diagnostics")});
     using Mode = playworship::remote::RemoteSession::Mode;
     const auto mode = owner.remoteMode == Mode::Client ? L10n::tr("Cliente", "Client")
         : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
     const juce::StringArray subtitles{
         L10n::tr("Tema e idioma de la app", "App theme and language"),
         L10n::tr("Click y transiciones de pads", "Click and pad transitions"),
-        L10n::tr(u8"Importación y almacenamiento", "Import and storage"),
-        L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"),
-        L10n::tr(u8"Salidas por categoría", "Outputs by category"),
+        L10n::tr(u8"Importación y almacenamiento", "Import and storage")};
+    juce::StringArray pageSubtitles = subtitles;
+    if (!useTouchOptimisedControls())
+      pageSubtitles.add(L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"));
+    pageSubtitles.addArray({L10n::tr(u8"Dispositivo y salidas por categoría", "Device and outputs by category"),
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections"),
         owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
-        L10n::tr("Informe para soporte", "Report for support")};
+        L10n::tr("Informe para soporte", "Report for support")});
     for (size_t i = 0; i < rows.size(); ++i) {
-      rows[i]->setButtonText(titles[static_cast<int>(i)]);
-      rows[i]->subtitle = subtitles[static_cast<int>(i)];
-      rows[i]->setTitle(titles[static_cast<int>(i)]);
-      rows[i]->setDescription(subtitles[static_cast<int>(i)]);
+      rows[i]->setButtonText(pageTitles[static_cast<int>(i)]);
+      rows[i]->subtitle = pageSubtitles[static_cast<int>(i)];
+      rows[i]->setTitle(pageTitles[static_cast<int>(i)]);
+      rows[i]->setDescription(pageSubtitles[static_cast<int>(i)]);
     }
     repaint();
   }
@@ -69,7 +89,8 @@ public:
     size_t index = 0;
     for (size_t group = 0; group < cards.size(); ++group) {
       headings[group] = area.removeFromTop(34).reduced(12, 0);
-      const int count = group == 2 ? 2 : 3;
+      const int count = group == 2 ? 2 :
+          group == 1 && useTouchOptimisedControls() ? 2 : 3;
       cards[group] = area.removeFromTop(count * 72);
       auto card = cards[group];
       for (int row = 0; row < count; ++row)
@@ -211,27 +232,6 @@ void SettingsPanel::SettingsTabButton::paintButton(
   g.drawText(getButtonText(), getLocalBounds().reduced(16, 0),
              juce::Justification::centredLeft, true);
 
-}
-
-void SettingsPanel::SettingsCloseButton::paintButton(
-    juce::Graphics &g, const bool shouldDrawButtonAsHighlighted,
-    const bool shouldDrawButtonAsDown) {
-  auto circle = getLocalBounds().toFloat().reduced(2.0f);
-  auto fill = UITheme::cardBgHover.withAlpha(0.7f);
-  if (shouldDrawButtonAsDown)
-    fill = UITheme::cardBgPressed;
-  else if (shouldDrawButtonAsHighlighted)
-    fill = fill.brighter(0.08f);
-  g.setColour(fill);
-  g.fillEllipse(circle);
-
-  const auto centre = circle.getCentre();
-  const float arm = circle.getWidth() * 0.19f;
-  g.setColour(UITheme::textPrimary.withAlpha(0.9f));
-  g.drawLine(centre.x - arm, centre.y - arm, centre.x + arm, centre.y + arm,
-             1.8f);
-  g.drawLine(centre.x + arm, centre.y - arm, centre.x - arm, centre.y + arm,
-             1.8f);
 }
 
 void SettingsPanel::SettingsLogoutButton::paintButton(
@@ -488,10 +488,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   title.setJustificationType(juce::Justification::centredLeft);
   title.setFont(makeAppFont(18.0f, AppFontWeight::SemiBold));
   addAndMakeVisible(title);
-  pageDescription.setJustificationType(juce::Justification::topLeft);
-  pageDescription.setMinimumHorizontalScale(1.0f);
-  pageDescription.setInterceptsMouseClicks(false, false);
-  addAndMakeVisible(pageDescription);
+  closeButton.setSubtleHighlight(true);
   closeButton.onClick = [this] {
     if (onCloseRequested)
       onCloseRequested();
@@ -505,12 +502,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                   AppFontWeight::SemiBold));
   diagnosticsSectionLabel.setJustificationType(juce::Justification::centredLeft);
   diagnosticsPage.addAndMakeVisible(diagnosticsSectionLabel);
-  diagnosticsHint.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f));
+  diagnosticsHint.setFont(settingsHelpFont());
   diagnosticsHint.setJustificationType(juce::Justification::topLeft);
   diagnosticsHint.setMinimumHorizontalScale(1.0f);
   diagnosticsPage.addAndMakeVisible(diagnosticsHint);
-  diagnosticsPrivacyHint.setFont(
-      makeAppFont(useTouchOptimisedControls() ? 13.0f : 12.0f));
+  diagnosticsPrivacyHint.setFont(settingsHelpFont());
   diagnosticsPrivacyHint.setJustificationType(juce::Justification::topLeft);
   diagnosticsPrivacyHint.setMinimumHorizontalScale(1.0f);
   diagnosticsPage.addAndMakeVisible(diagnosticsPrivacyHint);
@@ -518,16 +514,18 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     if (onShareAudioDiagnostics) onShareAudioDiagnostics();
   };
   diagnosticsPage.addAndMakeVisible(diagnosticsButton);
-  audioHelp.setFont(makeAppFont(12.5f));
+  audioHelp.setFont(settingsHelpFont());
   audioHelp.setJustificationType(juce::Justification::topLeft);
   audioHelp.setMinimumHorizontalScale(1.0f);
   audioHelp.setInterceptsMouseClicks(false, false);
   audioPage.addAndMakeVisible(audioHelp);
   if (deviceManager != nullptr) {
-    audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
-        *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, true, false, true, false);
-    audioSetupComp->setItemHeight(useTouchOptimisedControls() ? 34 : 24);
-    audioPage.addAndMakeVisible(audioSetupComp.get());
+    if (!useTouchOptimisedControls()) {
+      audioSetupComp = std::make_unique<juce::AudioDeviceSelectorComponent>(
+          *deviceManager, 0, maxInputChannels, 0, maxOutputChannels, true, false, true, false);
+      audioSetupComp->setItemHeight(24);
+      audioPage.addAndMakeVisible(audioSetupComp.get());
+    }
     deviceManager->addChangeListener(this);
   }
 
@@ -563,7 +561,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       juce::Viewport::ScrollOnDragMode::all);
   addAndMakeVisible(settingsViewport);
   homePage = std::make_unique<SettingsHomePage>(*this);
-  backButton.setBare(true);
+  backButton.setSvgLabel(SvgIconName::ArrowLeft, {});
   backButton.onClick = [this] { showSettingsPage(Destination::Home); };
   addChildComponent(backButton);
   setWantsKeyboardFocus(true);
@@ -618,13 +616,12 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   }
 
   themeLabel.setJustificationType(juce::Justification::centredLeft);
-  themeLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                 AppFontWeight::Medium));
+  themeLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(themeLabel);
 
   themeBox.addItem(L10n::tr("Verde Noche", "Night Green"),
                    static_cast<int>(ThemePreset::Spotify));
-  themeBox.addItem(L10n::tr("Ambar Estudio", "Studio Amber"),
+  themeBox.addItem(L10n::tr(u8"Ámbar Estudio", "Studio Amber"),
                    static_cast<int>(ThemePreset::Ableton));
   const int selectedThemeId =
       current == ThemePreset::Ableton
@@ -634,11 +631,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(themeBox);
 
   languageLabel.setJustificationType(juce::Justification::centredLeft);
-  languageLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                    AppFontWeight::Medium));
+  languageLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(languageLabel);
 
-  languageBox.addItem("Espanol", static_cast<int>(AppLanguage::Spanish) + 1);
+  languageBox.addItem(juce::String::fromUTF8(u8"Español"),
+                      static_cast<int>(AppLanguage::Spanish) + 1);
   languageBox.addItem("English", static_cast<int>(AppLanguage::English) + 1);
   languageBox.setSelectedId(static_cast<int>(language) + 1,
                             juce::dontSendNotification);
@@ -657,8 +654,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(languageBox);
 
   expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
-  expandLaunchLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                        AppFontWeight::Medium));
+  expandLaunchLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(expandLaunchLabel);
 
   expandLaunchToggle.setClickingTogglesState(true);
@@ -672,8 +668,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(expandLaunchToggle);
 
   primeImportLabel.setJustificationType(juce::Justification::centredLeft);
-  primeImportLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                       AppFontWeight::Medium));
+  primeImportLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(primeImportLabel);
 
   primeImportToggle.setClickingTogglesState(true);
@@ -688,8 +683,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(primeImportToggle);
 
   stemOptimizationLabel.setJustificationType(juce::Justification::centredLeft);
-  stemOptimizationLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                            AppFontWeight::Medium));
+  stemOptimizationLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(stemOptimizationLabel);
 
   stemOptimizationToggle.setClickingTogglesState(true);
@@ -703,8 +697,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(stemOptimizationToggle);
 
   padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
-  padsCrossfadeLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                         AppFontWeight::Medium));
+  padsCrossfadeLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(padsCrossfadeLabel);
 
   padsCrossfadeBox.addItem("Rapido (1s)", 1);
@@ -731,8 +724,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   generalPage.addAndMakeVisible(padsCrossfadeBox);
 
   metronomeClickStyleLabel.setJustificationType(juce::Justification::centredLeft);
-  metronomeClickStyleLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                               AppFontWeight::Medium));
+  metronomeClickStyleLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(metronomeClickStyleLabel);
 
   metronomeClickStyleBox.addItem("Classic", 1);
@@ -755,8 +747,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   generalPage.addAndMakeVisible(metronomeClickStyleBox);
   remoteControlLabel.setJustificationType(juce::Justification::centredLeft);
-  remoteControlLabel.setFont(makeAppFont(useTouchOptimisedControls() ? 14.0f : 13.0f,
-                                         AppFontWeight::Medium));
+  remoteControlLabel.setFont(settingsOptionLabelFont());
   generalPage.addAndMakeVisible(remoteControlLabel);
   using Mode = playworship::remote::RemoteSession::Mode;
   remoteLocalButton.setConnectedEdges(juce::Button::ConnectedOnRight);
@@ -794,7 +785,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                      &primeImportHelp, &stemOptimizationHelp,
                      &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp}) {
-    help->setFont(makeAppFont(12.5f));
+    help->setFont(settingsHelpFont());
     help->setJustificationType(juce::Justification::topLeft);
     help->setMinimumHorizontalScale(1.0f);
     help->setInterceptsMouseClicks(false, false);
@@ -890,11 +881,11 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(actionsSectionLabel);
 
   actionLogoutLabel.setJustificationType(juce::Justification::centredLeft);
-  actionLogoutLabel.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+  actionLogoutLabel.setFont(settingsOptionLabelFont());
   accountPage.addAndMakeVisible(actionLogoutLabel);
 
   actionInfoLabel.setJustificationType(juce::Justification::centredLeft);
-  actionInfoLabel.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+  actionInfoLabel.setFont(settingsOptionLabelFont());
   accountPage.addAndMakeVisible(actionInfoLabel);
 
   accountPage.addAndMakeVisible(infoLinkButton);
@@ -907,10 +898,10 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(logoutButton);
 
   actionPurgeLabel.setJustificationType(juce::Justification::centredLeft);
-  actionPurgeLabel.setFont(makeAppFont(14.0f, AppFontWeight::Regular));
+  actionPurgeLabel.setFont(settingsOptionLabelFont());
   accountPage.addAndMakeVisible(actionPurgeLabel);
   for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp}) {
-    help->setFont(makeAppFont(12.5f));
+    help->setFont(settingsHelpFont());
     help->setJustificationType(juce::Justification::topLeft);
     help->setMinimumHorizontalScale(1.0f);
     help->setInterceptsMouseClicks(false, false);
@@ -925,13 +916,24 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
   routingPage.addAndMakeVisible(routingSectionLabel);
-  routingControlsHelp.setFont(makeAppFont(12.5f));
+  routingDeviceLabel.setFont(settingsOptionLabelFont());
+  routingDeviceLabel.setJustificationType(juce::Justification::centredLeft);
+  routingPage.addAndMakeVisible(routingDeviceLabel);
+  routingDeviceHelp.setFont(settingsHelpFont());
+  routingDeviceHelp.setJustificationType(juce::Justification::topLeft);
+  routingDeviceHelp.setMinimumHorizontalScale(1.0f);
+  routingDeviceHelp.setInterceptsMouseClicks(false, false);
+  routingPage.addAndMakeVisible(routingDeviceHelp);
+  routingDeviceBox.setMobileFormMode(true);
+  routingDeviceBox.onChange = [this] { selectRoutingDevice(); };
+  routingPage.addAndMakeVisible(routingDeviceBox);
+  routingControlsHelp.setFont(settingsHelpFont());
   routingControlsHelp.setJustificationType(juce::Justification::topLeft);
   routingControlsHelp.setMinimumHorizontalScale(1.0f);
   routingControlsHelp.setInterceptsMouseClicks(false, false);
   routingPage.addAndMakeVisible(routingControlsHelp);
   routingHintLabel.setJustificationType(juce::Justification::centredLeft);
-  routingHintLabel.setFont(juce::FontOptions(12.0f));
+  routingHintLabel.setFont(settingsHelpFont());
   routingPage.addAndMakeVisible(routingHintLabel);
 
   routingPage.addAndMakeVisible(routingContent);
@@ -1002,7 +1004,6 @@ void SettingsPanel::resized() {
                        &routingTabButton, &diagnosticsTabButton})
     button->setVisible(!grouped);
   backButton.setVisible(grouped && destination != Destination::Home);
-  pageDescription.setVisible(grouped && destination != Destination::Home);
   title.setText(grouped ? pageTitle() : L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
   if (grouped) {
@@ -1013,14 +1014,6 @@ void SettingsPanel::resized() {
     backButton.setBounds(header.removeFromLeft(target).withSizeKeepingCentre(target, target));
     closeButton.setBounds(header.removeFromRight(target).withSizeKeepingCentre(target, target));
     title.setBounds(header.reduced(4, 0));
-    if (!home) {
-      pageDescription.setText(pageHelpText(), juce::dontSendNotification);
-      auto description = area.removeFromTop(48).reduced(24, 2);
-      pageDescription.setBounds(description.withSizeKeepingCentre(
-          juce::jmin(640, description.getWidth()), description.getHeight()));
-    } else {
-      pageDescription.setBounds({});
-    }
     auto *content = home ? static_cast<juce::Component *>(homePage.get()) : &tabs;
     settingsViewport.setViewedComponent(content, false);
     const int previousY = settingsViewport.getViewPositionY();
@@ -1040,13 +1033,11 @@ void SettingsPanel::resized() {
     // The viewport changes its content component during navigation. Keep the
     // fixed navigation chrome above it on the mobile OpenGL surface.
     title.toFront(false);
-    pageDescription.toFront(false);
     backButton.toFront(false);
     closeButton.toFront(false);
     return;
   }
   settingsViewport.setViewedComponent(&tabs, false);
-  pageDescription.setBounds({});
   for (auto *child : generalPage.getChildren()) child->setVisible(true);
   remoteServersBox.setVisible(remoteMode == playworship::remote::RemoteSession::Mode::Client);
   remoteServerNameEditor.setVisible(remoteMode == playworship::remote::RemoteSession::Mode::Server);
@@ -1116,20 +1107,9 @@ void SettingsPanel::refreshThemeColours() {
   settingsViewport.getVerticalScrollBar().setColour(
       juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  pageDescription.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  pageDescription.setFont(makeAppFont(12.5f));
   title.setJustificationType(juce::Justification::centred);
   title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
-                            AppFontWeight::Bold));
-  closeButton.setColour(juce::TextButton::buttonColourId,
-                        UITheme::cardBgHover.withAlpha(0.9f));
-  closeButton.setColour(juce::TextButton::buttonOnColourId,
-                        UITheme::cardBgPressed);
-  closeButton.setColour(juce::TextButton::textColourOffId,
-                        UITheme::textPrimary);
-  closeButton.setColour(juce::TextButton::textColourOnId,
-                        UITheme::textPrimary);
-  closeButton.setButtonText({});
+                            AppFontWeight::SemiBold));
   for (auto *button : {&generalTabButton, &accountTabButton, &audioTabButton,
                        &routingTabButton, &diagnosticsTabButton}) {
     button->setColour(juce::TextButton::textColourOffId,
@@ -1231,6 +1211,10 @@ void SettingsPanel::refreshThemeColours() {
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  routingDeviceLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  routingDeviceHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  applyComboBoxTheme(routingDeviceBox, UITheme::cardBgHover,
+                     UITheme::cardBorder.withAlpha(0.65f));
   routingControlsHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
   routingHintLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   audioHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
@@ -1268,38 +1252,9 @@ juce::String SettingsPanel::pageTitle() const {
   return {};
 }
 
-juce::String SettingsPanel::pageHelpText() const {
-  switch (destination) {
-    case Destination::Home: return {};
-    case Destination::Appearance:
-      return L10n::tr("Personaliza los colores y el idioma de la aplicación.",
-                      "Choose the app's colours and language.");
-    case Destination::Playback:
-      return L10n::tr("Ajusta las transiciones de pads y el sonido del click.",
-                      "Adjust pad transitions and the click sound.");
-    case Destination::Library:
-      return L10n::tr("Decide cómo importar y guardar archivos locales.",
-                      "Choose how local files are imported and saved.");
-    case Destination::Audio:
-      return L10n::tr("Selecciona la interfaz de audio y sus entradas y salidas.",
-                      "Choose the audio device and its inputs and outputs.");
-    case Destination::Routing:
-      return L10n::tr("Asigna una salida a cada tipo de stem.",
-                      "Assign an output to each stem category.");
-    case Destination::Remote:
-      return L10n::tr("Conecta equipos de la misma red para controlar la reproducción.",
-                      "Connect devices on the same network to control playback.");
-    case Destination::Account:
-      return L10n::tr("Consulta tu sesión, plan y cuotas de sincronización.",
-                      "Review your session, plan, and sync quotas.");
-    case Destination::Diagnostics:
-      return L10n::tr("Prepara un informe técnico para soporte.",
-                      "Prepare a technical report for support.");
-  }
-  return {};
-}
-
 void SettingsPanel::showSettingsPage(Destination next) {
+  if (useTouchOptimisedControls() && next == Destination::Audio)
+    next = Destination::Routing;
   if (destination == Destination::Home)
     homeScrollY = settingsViewport.getViewPositionY();
   // Commit an edited server alias and dismiss its keyboard before navigating.
@@ -1339,7 +1294,9 @@ int SettingsPanel::mobileGeneralCardHeight() const {
       return mobileCardPadding + 2 * mobileChoiceHeight;
     case Destination::Library:
       return mobileCardPadding + 2 * mobileToggleHeight;
-    case Destination::Remote: return 348;
+    case Destination::Remote:
+      return mobileCardPadding + mobileRemoteChoiceHeight +
+             (remoteMode == playworship::remote::RemoteSession::Mode::Local ? 44 : 158);
   }
   return 0;
 }
@@ -1370,14 +1327,15 @@ void SettingsPanel::layoutMobileGeneralPage() {
   appearanceCard->setVisible(true);
   auto content = cardBounds.reduced(16);
   auto choice = [&](juce::Label &label, juce::Component &control,
-                    juce::Label &help) {
+                    juce::Label &help, int helpHeight = 36,
+                    int afterHelp = 12) {
     label.setVisible(true); control.setVisible(true); help.setVisible(true);
-    label.setBounds(content.removeFromTop(24));
-    content.removeFromTop(6);
+    label.setBounds(content.removeFromTop(22));
+    content.removeFromTop(4);
     control.setBounds(content.removeFromTop(48));
-    content.removeFromTop(8);
-    help.setBounds(content.removeFromTop(42));
-    content.removeFromTop(14);
+    content.removeFromTop(6);
+    help.setBounds(content.removeFromTop(helpHeight));
+    content.removeFromTop(afterHelp);
   };
   auto toggle = [&](juce::Label &label, juce::ToggleButton &control,
                     juce::Label &help) {
@@ -1387,9 +1345,9 @@ void SettingsPanel::layoutMobileGeneralPage() {
     row.removeFromRight(8);
     label.setBounds(row);
     label.setMinimumHorizontalScale(1.0f);
-    content.removeFromTop(8);
-    help.setBounds(content.removeFromTop(42));
-    content.removeFromTop(10);
+    content.removeFromTop(4);
+    help.setBounds(content.removeFromTop(36));
+    content.removeFromTop(12);
   };
   for (auto *box : {&themeBox, &languageBox, &padsCrossfadeBox,
                     &metronomeClickStyleBox, &remoteServersBox})
@@ -1409,15 +1367,21 @@ void SettingsPanel::layoutMobileGeneralPage() {
     toggle(primeImportLabel, primeImportToggle, primeImportHelp);
     toggle(stemOptimizationLabel, stemOptimizationToggle, stemOptimizationHelp);
   } else if (destination == Destination::Remote) {
-    choice(remoteControlLabel, remoteModeControl, remoteControlHelp);
+    choice(remoteControlLabel, remoteModeControl, remoteControlHelp, 48, 0);
     auto buttons = remoteModeControl.getLocalBounds();
     const int width = buttons.getWidth() / 3;
     remoteLocalButton.setBounds(buttons.removeFromLeft(width));
     remoteClientButton.setBounds(buttons.removeFromLeft(width));
     remoteServerButton.setBounds(buttons);
     remoteStatus.setVisible(true);
-    remoteStatus.setBounds(content.removeFromTop(60));
+    remoteStatus.setBounds(content.removeFromTop(44));
     remoteStatus.setMinimumHorizontalScale(1.0f);
+    if (remoteMode == playworship::remote::RemoteSession::Mode::Local) {
+      remoteServersBox.setBounds({});
+      remoteServerNameEditor.setBounds({});
+      remoteTargetHelp.setBounds({});
+      return;
+    }
     content.removeFromTop(10);
     using Mode = playworship::remote::RemoteSession::Mode;
     remoteServersBox.setBounds(content.removeFromTop(48));
@@ -1455,7 +1419,6 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 void SettingsPanel::applyLanguageTexts() {
   title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
-  closeButton.setButtonText({});
   generalTabButton.setButtonText(L10n::tr("General", "General"));
   accountTabButton.setButtonText(L10n::tr(u8"Sesión", "Account"));
   audioTabButton.setButtonText(L10n::tr(u8"Audio", "Audio"));
@@ -1463,13 +1426,13 @@ void SettingsPanel::applyLanguageTexts() {
   diagnosticsTabButton.setButtonText(
       L10n::tr(u8"Diagnóstico", "Diagnostics"));
   themeLabel.setText(L10n::tr("Tema", "Theme"), juce::dontSendNotification);
-  themeHelp.setText(L10n::tr("Cambia los colores de la interfaz.",
-                              "Changes the interface colours."),
+  themeHelp.setText(L10n::tr("Elige los colores de la aplicación.",
+                              "Choose the app's colours."),
                     juce::dontSendNotification);
   languageLabel.setText(L10n::tr("Idioma", "Language"),
                         juce::dontSendNotification);
-  languageHelp.setText(L10n::tr("Cambia el idioma de menús y mensajes.",
-                                 "Changes the language of menus and messages."),
+  languageHelp.setText(L10n::tr("Se aplica a menús, controles y mensajes.",
+                                 "Applies to menus, controls, and messages."),
                        juce::dontSendNotification);
   expandLaunchLabel.setText(L10n::tr("Ventana al iniciar", "Window on launch"),
                             juce::dontSendNotification);
@@ -1488,7 +1451,7 @@ void SettingsPanel::applyLanguageTexts() {
       L10n::tr(u8"Habilitar importación de Prime",
                "Enable Prime import"));
   stemOptimizationLabel.setText(
-      L10n::tr("Optimizacion de stems",
+      L10n::tr(u8"Optimización de stems",
                "Stem optimization"),
       juce::dontSendNotification);
   stemOptimizationHelp.setText(L10n::tr("En importaciones compatibles, reduce el espacio de los stems.",
@@ -1500,14 +1463,14 @@ void SettingsPanel::applyLanguageTexts() {
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
-  padsCrossfadeHelp.setText(L10n::tr("Define cuánto dura la transición entre pads.",
-                                   "Sets how long transitions between pads take."),
+  padsCrossfadeHelp.setText(L10n::tr("Duración del cambio suave entre pads.",
+                                   "Duration of the smooth transition between pads."),
                             juce::dontSendNotification);
   metronomeClickStyleLabel.setText(
       L10n::tr("Estilo del click", "Click style"),
       juce::dontSendNotification);
-  metronomeClickStyleHelp.setText(L10n::tr("Elige el timbre del metrónomo; no cambia el tempo.",
-                                         "Changes the metronome sound, not its tempo."),
+  metronomeClickStyleHelp.setText(L10n::tr("Cambia el sonido del click, sin alterar el tempo.",
+                                         "Changes the click sound without changing tempo."),
                                   juce::dontSendNotification);
   padsCrossfadeBox.changeItemText(1, L10n::tr(u8"Rápido (1s)", "Fast (1s)"));
   padsCrossfadeBox.changeItemText(2, L10n::tr("Medio (3s)", "Medium (3s)"));
@@ -1588,21 +1551,21 @@ void SettingsPanel::applyLanguageTexts() {
   }
   actionsSectionLabel.setText(L10n::tr("Acciones", "Actions"),
                               juce::dontSendNotification);
-  actionLogoutLabel.setText(L10n::tr(u8"Cerrar sesión en esta aplicacion",
-                                     "Sign out on this app"),
+  actionLogoutLabel.setText(L10n::tr(u8"Sesión en este dispositivo",
+                                     "Session on this device"),
                             juce::dontSendNotification);
   actionLogoutHelp.setText(L10n::tr("Desconecta esta cuenta de la aplicación.",
                                     "Disconnects this account from the app."),
                            juce::dontSendNotification);
   actionPurgeLabel.setText(
-      L10n::tr(u8"Purgar descargas, caché y vínculos de Cloud",
-               "Purge Cloud downloads, cache, and links"),
+      L10n::tr(u8"Purgar datos locales",
+               "Purge local data"),
       juce::dontSendNotification);
   actionPurgeHelp.setText(L10n::tr("Vacía la Biblioteca local; conserva los .pwproj y la nube.",
                                    "Empties the local Library; keeps .pwproj files and cloud data."),
                           juce::dontSendNotification);
-  actionInfoLabel.setText(L10n::tr(u8"¿Necesitas ayuda con tu cuenta?",
-                                  "Need help with your account?"),
+  actionInfoLabel.setText(L10n::tr(u8"Ayuda con tu cuenta",
+                                  "Help with your account"),
                           juce::dontSendNotification);
   actionInfoHelp.setText(L10n::tr("Abre un correo para contactar a soporte.",
                                   "Opens an email to contact support."),
@@ -1612,6 +1575,12 @@ void SettingsPanel::applyLanguageTexts() {
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
+  routingDeviceLabel.setText(L10n::tr("Salida de audio", "Audio output"),
+                             juce::dontSendNotification);
+  routingDeviceHelp.setText(
+      L10n::tr("Elige el dispositivo que recibirá el audio. Las asignaciones se guardan por dispositivo.",
+               "Choose the device that receives audio. Routing is saved per device."),
+      juce::dontSendNotification);
   routingControlsHelp.setText(
       L10n::tr("Mono usa una salida; estéreo, dos consecutivas. Canal elige la primera.",
                "Mono uses one output; stereo uses two adjacent outputs. Channel selects the first."),
@@ -1643,8 +1612,8 @@ void SettingsPanel::applyLanguageTexts() {
           : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
   remoteControlLabel.setText(L10n::tr("Control remoto", "Remote control"),
                              juce::dontSendNotification);
-  remoteControlHelp.setText(L10n::tr("Local reproduce aquí; Cliente controla otro equipo; Servidor comparte el control.",
-                                      "Local plays here; Client controls another device; Server shares control."),
+  remoteControlHelp.setText(L10n::tr("Local reproduce aquí. Cliente controla un servidor; Servidor comparte el control.",
+                                      "Local plays here. Client controls a server; Server shares control."),
                             juce::dontSendNotification);
   using Mode = playworship::remote::RemoteSession::Mode;
   remoteTargetHelp.setText(
@@ -1665,7 +1634,9 @@ void SettingsPanel::applyLanguageTexts() {
       "Nombre que verán los clientes. Vacío usa el nombre del dispositivo.",
       "Name shown to clients. Leave empty to use the device name."));
   closeButton.setTitle(L10n::tr(u8"Cerrar configuración", "Close settings"));
+  closeButton.setTooltip(L10n::tr(u8"Cerrar configuración", "Close settings"));
   backButton.setTitle(L10n::tr(u8"Volver a configuración", "Back to settings"));
+  backButton.setTooltip(L10n::tr(u8"Volver a configuración", "Back to settings"));
   if (homePage != nullptr) homePage->refreshTexts();
 }
 
@@ -1923,7 +1894,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    const int actionsH = compact ? 410 : 250;
+    const int actionsH = compact ? 430 : 250;
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -1934,14 +1905,15 @@ void SettingsPanel::layoutAccountPage() {
 
     if (compact) {
       const auto action = [&](juce::Label &label, juce::Label &help,
-                              juce::Component &button) {
+                              juce::Component &button, int helpHeight = 36) {
         label.setBounds(actions.removeFromTop(24));
-        help.setBounds(actions.removeFromTop(40));
         button.setBounds(actions.removeFromTop(44));
+        actions.removeFromTop(4);
+        help.setBounds(actions.removeFromTop(helpHeight));
         actions.removeFromTop(8);
       };
       action(actionLogoutLabel, actionLogoutHelp, logoutButton);
-      action(actionPurgeLabel, actionPurgeHelp, purgeButton);
+      action(actionPurgeLabel, actionPurgeHelp, purgeButton, 52);
       action(actionInfoLabel, actionInfoHelp, infoLinkButton);
       return;
     }
@@ -2021,13 +1993,29 @@ int SettingsPanel::routingPageContentHeight(const int width) const {
   const int listWidth = juce::jmax(1, width - 36);
   const int hintHeight = listWidth < 520 ? 44 : 24;
   const int controlsHelpHeight = listWidth < 520 ? 52 : 34;
-  return 32 + 22 + 6 + controlsHelpHeight + 8 +
+  const int deviceHeight = useTouchOptimisedControls()
+      ? 22 + 4 + 48 + 6 + (listWidth < 520 ? 44 : 28) + 18 : 0;
+  return 32 + deviceHeight + 22 + 6 + controlsHelpHeight + 8 +
          static_cast<int>(routingRows.size()) * RoutingRow::preferredHeightForWidth(listWidth) +
          12 + hintHeight;
 }
 
 void SettingsPanel::layoutRoutingPage() {
   auto area = routingPage.getLocalBounds().reduced(18, 16);
+
+  const bool showDevice = useTouchOptimisedControls();
+  routingDeviceLabel.setVisible(showDevice);
+  routingDeviceBox.setVisible(showDevice);
+  routingDeviceHelp.setVisible(showDevice);
+  if (showDevice) {
+    routingDeviceLabel.setBounds(area.removeFromTop(22));
+    area.removeFromTop(4);
+    routingDeviceBox.setBounds(area.removeFromTop(48));
+    area.removeFromTop(6);
+    routingDeviceHelp.setBounds(area.removeFromTop(
+        area.getWidth() < 520 ? 44 : 28));
+    area.removeFromTop(18);
+  }
 
   auto labelArea = area.removeFromTop(22);
   routingSectionLabel.setBounds(labelArea);
@@ -2084,7 +2072,89 @@ void SettingsPanel::changeListenerCallback(juce::ChangeBroadcaster* source) {
   }
 }
 
+void SettingsPanel::refreshRoutingDeviceOptions() {
+  outputDeviceChoices.clear();
+  routingDeviceBox.clear(juce::dontSendNotification);
+  if (deviceManager == nullptr) {
+    routingDeviceBox.setText(L10n::tr("Sin dispositivo", "No device"),
+                             juce::dontSendNotification);
+    routingDeviceBox.setEnabled(false);
+    return;
+  }
+
+  const auto currentType = deviceManager->getCurrentAudioDeviceType();
+  const auto *currentDevice = deviceManager->getCurrentAudioDevice();
+  const auto currentName = currentDevice != nullptr ? currentDevice->getName()
+                                                    : juce::String{};
+  struct Candidate { juce::String typeName, deviceName; };
+  std::vector<Candidate> candidates;
+  for (auto *type : deviceManager->getAvailableDeviceTypes()) {
+    if (type == nullptr) continue;
+    for (const auto &name : type->getDeviceNames(false))
+      if (name.isNotEmpty())
+        candidates.push_back({type->getTypeName(), name});
+  }
+  int currentId = 0;
+  for (const auto &candidate : candidates) {
+    outputDeviceChoices.push_back({candidate.typeName, candidate.deviceName});
+    const int id = static_cast<int>(outputDeviceChoices.size());
+    const bool duplicateName = std::count_if(candidates.begin(), candidates.end(),
+        [&candidate](const Candidate &other) {
+          return other.deviceName == candidate.deviceName;
+        }) > 1;
+    routingDeviceBox.addItem(duplicateName
+        ? candidate.deviceName + " (" + candidate.typeName + ")"
+        : candidate.deviceName, id);
+    if (candidate.typeName == currentType && candidate.deviceName == currentName)
+      currentId = id;
+  }
+  routingDeviceBox.setSelectedId(currentId, juce::dontSendNotification);
+  if (currentId == 0 && currentName.isNotEmpty())
+    routingDeviceBox.setText(currentName, juce::dontSendNotification);
+  else if (outputDeviceChoices.empty())
+    routingDeviceBox.setText(L10n::tr("Sin dispositivo", "No device"),
+                             juce::dontSendNotification);
+  routingDeviceBox.setEnabled(!outputDeviceChoices.empty());
+}
+
+void SettingsPanel::selectRoutingDevice() {
+  if (deviceManager == nullptr) return;
+  const int index = routingDeviceBox.getSelectedId() - 1;
+  if (index < 0 || index >= static_cast<int>(outputDeviceChoices.size())) return;
+  const auto choice = outputDeviceChoices[static_cast<size_t>(index)];
+  auto *current = deviceManager->getCurrentAudioDevice();
+  if (deviceManager->getCurrentAudioDeviceType() == choice.typeName &&
+      current != nullptr && current->getName() == choice.deviceName)
+    return;
+
+  const auto oldType = deviceManager->getCurrentAudioDeviceType();
+  const auto oldSetup = deviceManager->getAudioDeviceSetup();
+  if (oldType != choice.typeName)
+    deviceManager->setCurrentAudioDeviceType(choice.typeName, false);
+  auto setup = deviceManager->getAudioDeviceSetup();
+  setup.outputDeviceName = choice.deviceName;
+  setup.inputDeviceName = {};
+  setup.useDefaultInputChannels = false;
+  setup.inputChannels.clear();
+  setup.useDefaultOutputChannels = true;
+  auto error = deviceManager->getCurrentAudioDeviceType() == choice.typeName
+      ? deviceManager->setAudioDeviceSetup(setup, true)
+      : L10n::tr("No se pudo seleccionar el tipo de dispositivo.",
+                 "Could not select the device type.");
+  if (error.isNotEmpty()) {
+    if (deviceManager->getCurrentAudioDeviceType() != oldType)
+      deviceManager->setCurrentAudioDeviceType(oldType, false);
+    deviceManager->setAudioDeviceSetup(oldSetup, false);
+    juce::AlertWindow::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
+        L10n::tr("No se pudo cambiar la salida", "Could not change audio output"),
+        error);
+  }
+  refreshRoutingForDevice();
+}
+
 void SettingsPanel::refreshRoutingForDevice() {
+  refreshRoutingDeviceOptions();
   if (deviceManager != nullptr) {
     auto *currentDevice = deviceManager->getCurrentAudioDevice();
     const juce::String typeName = deviceManager->getCurrentAudioDeviceType();
@@ -2133,6 +2203,7 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
     const std::vector<playworship::remote::DiscoveredServer> &servers, const juce::String &status,
     const juce::String &selectedServerName) {
   using Mode = playworship::remote::RemoteSession::Mode;
+  const bool modeChanged = remoteMode != mode;
   remoteMode = mode;
   remoteLocalButton.setToggleState(mode == Mode::Local, juce::dontSendNotification);
   remoteClientButton.setToggleState(mode == Mode::Client, juce::dontSendNotification);
@@ -2174,4 +2245,6 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
     }
   }
   if (homePage != nullptr) homePage->refreshTexts();
+  if (modeChanged && usesGroupedNavigation() && destination == Destination::Remote)
+    resized();
 }

@@ -1351,9 +1351,9 @@ void WaveformBar::setOnArrangementPartLoopToggleRequest(
   onArrangementPartLoopToggleRequest = std::move(cb);
 }
 
-void WaveformBar::setOnArrangementPlaybackSelectionClearRequest(
-    ArrangementPlaybackSelectionClearCallback cb) {
-  onArrangementPlaybackSelectionClearRequest = std::move(cb);
+void WaveformBar::setOnArrangementPendingJumpClearRequest(
+    ArrangementPendingJumpClearCallback cb) {
+  onArrangementPendingJumpClearRequest = std::move(cb);
 }
 
 void WaveformBar::setOnTempoMapChanged(TempoMapChangedCallback cb) {
@@ -2203,7 +2203,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (mainWaveBodyBounds.contains(event.position)) {
     rebuildPartOverlayBounds(mainWaveBodyBounds);
     const auto actionHit = hitTestArrangementPart(event.position);
-    const auto clearMuteForPlaybackSelection = [this](const int partIndex) {
+    const auto clearMuteForJumpSelection = [this](const int partIndex) {
       if (!juce::isPositiveAndBelow(partIndex,
                                     static_cast<int>(arrangement.parts.size())))
         return;
@@ -2226,7 +2226,6 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       playbackControlFocus = PlaybackControlFocus::Loop;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
       cancelDeferredPartJumpFromDoubleClick();
-      clearMuteForPlaybackSelection(actionHit.partIndex);
       if (onArrangementPartLoopToggleRequest)
         onArrangementPartLoopToggleRequest(actionHit.partIndex);
       repaint();
@@ -2241,7 +2240,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       playbackControlFocus = PlaybackControlFocus::Jump;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
       cancelDeferredPartJumpFromDoubleClick();
-      clearMuteForPlaybackSelection(actionHit.partIndex);
+      clearMuteForJumpSelection(actionHit.partIndex);
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(actionHit.partIndex);
       repaint();
@@ -2254,8 +2253,8 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
       playbackControlFocusPartIndex = actionHit.partIndex;
       playbackControlFocus = PlaybackControlFocus::Mute;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      if (onArrangementPlaybackSelectionClearRequest != nullptr)
-        onArrangementPlaybackSelectionClearRequest();
+      if (onArrangementPendingJumpClearRequest != nullptr)
+        onArrangementPendingJumpClearRequest();
       toggleArrangementPartMute(actionHit.partIndex);
       return;
     }

@@ -1,6 +1,7 @@
 #include "SongListPanel.h"
 
 #include "SongImportWizardComponent.h"
+#include "../components/AppModal.h"
 #include "../../PluginEditor.h"
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
@@ -2019,48 +2020,54 @@ void SongListPanel::deleteSetlistById(const juce::String &setlistId) {
     return;
 
   const auto library = (remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot());
+  const auto safe = juce::Component::SafePointer<SongListPanel>(this);
   if (library.setlists.size() <= 1) {
-    juce::NativeMessageBox::showMessageBoxAsync(
-        juce::MessageBoxIconType::WarningIcon,
+    appModal = std::make_unique<AppModal>(
+        *this, AppModal::Kind::Information,
         L10n::tr("No se puede eliminar", "Can't delete"),
         L10n::tr("Se requiere al menos un setlist.",
-                 "At least one setlist is required."));
+                 "At least one setlist is required."),
+        L10n::tr("Entendido", "OK"), juce::String(), nullptr);
+    appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+    appModal->show();
     return;
   }
 
-  const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
-      juce::MessageBoxIconType::WarningIcon,
+  appModal = std::make_unique<AppModal>(
+      *this, AppModal::Kind::Destructive,
       L10n::tr("Eliminar setlist", "Delete setlist"),
       L10n::tr(u8"Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
                "Delete this setlist? This won't remove songs from the library."),
-      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
-  juce::NativeMessageBox::showAsync(
-      options, [this, setlistId](int result) {
-        if (result != 0)
+      L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"),
+      [safe, setlistId](bool accepted, const juce::String &) {
+        if (!accepted || safe == nullptr)
           return;
-        if (remoteLibrary) { if (onRemoteAction) onRemoteAction("setlist.delete", {}, setlistId); return; }
+        if (safe->remoteLibrary) { if (safe->onRemoteAction) safe->onRemoteAction("setlist.delete", {}, setlistId); return; }
         SongLibraryStore::deleteSetlist(setlistId);
-        refreshFromStorage();
+        safe->refreshFromStorage();
       });
+  appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+  appModal->show();
 }
 
 void SongListPanel::promptTextAsync(const juce::String &title,
                                     const juce::String &message,
                                     const juce::String &initial,
                                     std::function<void(juce::String)> onComplete) {
-  auto *window =
-      new juce::AlertWindow(title, message, juce::AlertWindow::NoIcon);
-  window->addTextEditor("value", initial, {});
-  window->addButton(L10n::tr("Cancelar", "Cancel"), 0);
-  window->addButton(L10n::tr("Aceptar", "OK"), 1);
-  window->enterModalState(
-      true,
-      juce::ModalCallbackFunction::create(
-          [window, callback = std::move(onComplete)](int result) {
-            if (result == 1 && callback)
-              callback(window->getTextEditorContents("value").trim());
-          }),
-      true);
+  const auto safe = juce::Component::SafePointer<SongListPanel>(this);
+  appModal = std::make_unique<AppModal>(
+      *this, AppModal::Kind::Input, title,
+      L10n::tr("Escribe un nombre para identificar este setlist.",
+               "Enter a name to identify this setlist."),
+      initial.isEmpty() ? L10n::tr("Crear", "Create")
+                        : L10n::tr("Guardar", "Save"),
+      L10n::tr("Cancelar", "Cancel"),
+      [safe, callback = std::move(onComplete)](bool accepted,
+                                                const juce::String &value) {
+        if (accepted && safe != nullptr && callback) callback(value);
+      }, message, initial);
+  appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+  appModal->show();
 }
 
 void SongListPanel::renameActiveSetlist() {
@@ -3505,29 +3512,34 @@ private:
   void deleteSetlist(const juce::String &id) {
     if (id.isEmpty())
       return;
+    const auto safe = juce::Component::SafePointer<SetlistManagerPanel>(this);
     if (library.setlists.size() <= 1) {
-      juce::NativeMessageBox::showMessageBoxAsync(
-          juce::MessageBoxIconType::WarningIcon,
+      appModal = std::make_unique<AppModal>(
+          *this, AppModal::Kind::Information,
           L10n::tr("No se puede eliminar", "Can't delete"),
           L10n::tr("Se requiere al menos un setlist.",
-                   "At least one setlist is required."));
+                   "At least one setlist is required."),
+          L10n::tr("Entendido", "OK"), juce::String(), nullptr);
+      appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+      appModal->show();
       return;
     }
-    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
-        juce::MessageBoxIconType::WarningIcon,
+    appModal = std::make_unique<AppModal>(
+        *this, AppModal::Kind::Destructive,
         L10n::tr("Eliminar setlist", "Delete setlist"),
         L10n::tr(u8"Eliminar este setlist? Esto no quitará canciones de la biblioteca.",
                  "Delete this setlist? This won't remove songs from the library."),
-        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"), this);
-    juce::NativeMessageBox::showAsync(
-        options, [this, id](int result) {
-          if (result != 0)
+        L10n::tr("Eliminar", "Delete"), L10n::tr("Cancelar", "Cancel"),
+        [safe, id](bool accepted, const juce::String &) {
+          if (!accepted || safe == nullptr)
             return;
           SongLibraryStore::deleteSetlist(id);
-          selectedSetlistId = {};
-          dirty = true;
-          reloadLibrary();
+          safe->selectedSetlistId = {};
+          safe->dirty = true;
+          safe->reloadLibrary();
         });
+    appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+    appModal->show();
   }
 
   void loadSelectedSetlist() {
@@ -3544,19 +3556,20 @@ private:
   void promptTextAsync(const juce::String &title, const juce::String &message,
                        const juce::String &initial,
                        std::function<void(juce::String)> onComplete) {
-    auto *window =
-        new juce::AlertWindow(title, message, juce::AlertWindow::NoIcon);
-    window->addTextEditor("value", initial, {});
-    window->addButton(L10n::tr("Cancelar", "Cancel"), 0);
-    window->addButton(L10n::tr("Aceptar", "OK"), 1);
-    window->enterModalState(
-        true,
-        juce::ModalCallbackFunction::create(
-            [window, callback = std::move(onComplete)](int result) {
-              if (result == 1 && callback)
-                callback(window->getTextEditorContents("value").trim());
-            }),
-        true);
+    const auto safe = juce::Component::SafePointer<SetlistManagerPanel>(this);
+    appModal = std::make_unique<AppModal>(
+        *this, AppModal::Kind::Input, title,
+        L10n::tr("Escribe un nombre para identificar este setlist.",
+                 "Enter a name to identify this setlist."),
+        initial.isEmpty() ? L10n::tr("Crear", "Create")
+                          : L10n::tr("Guardar", "Save"),
+        L10n::tr("Cancelar", "Cancel"),
+        [safe, callback = std::move(onComplete)](bool accepted,
+                                                  const juce::String &value) {
+          if (accepted && safe != nullptr && callback) callback(value);
+        }, message, initial);
+    appModal->onClosed = [safe] { if (safe != nullptr) safe->appModal.reset(); };
+    appModal->show();
   }
 
   void closeSelf() {
@@ -3572,6 +3585,7 @@ private:
   }
 
   juce::Label titleLabel;
+  std::unique_ptr<AppModal> appModal;
   juce::TextButton createButton;
   juce::TextEditor searchEditor;
   juce::TextButton addSongButton;

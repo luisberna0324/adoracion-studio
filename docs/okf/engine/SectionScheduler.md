@@ -252,6 +252,10 @@ if (decision.transition) {
 2. Cuando el bloque contiene el final, dividir en `transitionOffsetFrames`
 3. Saltar a `startFrame` y renderizar el sufijo en el mismo callback
 
+`loopSection` y `Section::muteInstruments` pueden aplicarse a la misma sección.
+El scheduler conserva la transición de loop; el processor silencia los stems
+instrumentales de esa sección en cada vuelta sin alterar click ni guía.
+
 ### Jump a sección
 
 1. Establecer `pendingSection` en evaluate

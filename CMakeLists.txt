@@ -929,6 +929,8 @@ target_sources(MTControls
         src/ui/components/PadsHandlePanel.cpp
         src/ui/components/PadsHandlePanel.h
         src/ui/components/ReauthPromptModal.cpp
+        src/ui/components/AppModal.cpp
+        src/ui/components/AppModal.h
         src/ui/components/SettingsVersionsSheet.cpp
         src/ui/components/SettingsVersionsSheet.h
         src/ui/components/ReauthPromptModal.h

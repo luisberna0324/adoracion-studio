@@ -2,6 +2,7 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/SongData.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 
@@ -129,7 +130,8 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == 8, "all existing settings have a grouped destination");
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
+           "mobile groups audio with routing while desktop keeps its audio page");
     snapshot(panel, "settings-home");
 
     for (auto *child : home->getChildren()) {
@@ -148,10 +150,10 @@ struct SettingsPanelTestAccess {
              "scrolling content cannot cover the close action");
       expect(panel.settingsViewport.getViewPositionY() == 0,
              "detail starts at its own top");
-      expect(panel.pageDescription.isVisible() &&
-                 panel.pageDescription.getText().isNotEmpty() &&
-                 panel.pageDescription.getBottom() <= panel.settingsViewport.getY(),
-             "each detail has a readable description above its scrolling controls");
+      expect(panel.settingsViewport.getY() == 64 &&
+                 panel.backButton.getWidth() == panel.closeButton.getWidth() &&
+                 panel.backButton.getHeight() == panel.closeButton.getHeight(),
+             "detail controls begin below the shared header actions");
       snapshot(panel, "settings-detail-" + juce::String(static_cast<int>(panel.destination)));
       panel.backButton.onClick();
       expect(panel.settingsViewport.getViewedComponent() == home &&
@@ -166,6 +168,7 @@ struct SettingsPanelTestAccess {
     expect(panel.destination == Destination::Home, "drag does not navigate");
 
     panel.showSettingsPage(Destination::Remote);
+    const int localRemoteHeight = panel.mobileGeneralCardHeight();
     int modeChanges = 0;
     panel.onRemoteModeChanged = [&](Mode mode) {
       ++modeChanges;
@@ -173,8 +176,9 @@ struct SettingsPanelTestAccess {
     };
     panel.remoteClientButton.onClick();
     expect(modeChanges == 1 && panel.remoteServersBox.isVisible() &&
-               !panel.remoteServerNameEditor.isVisible(),
-           "client selector uses the original remote callback and shows discovery");
+               !panel.remoteServerNameEditor.isVisible() &&
+               panel.mobileGeneralCardHeight() > localRemoteHeight,
+           "client selector reveals discovery and expands the compact local card");
     panel.showSettingsPage(Destination::Appearance);
     panel.updateRemoteState(Mode::Server, {}, "Servidor activo");
     expect(!panel.remoteServerNameEditor.isVisible() && panel.themeBox.isVisible(),
@@ -211,6 +215,17 @@ struct SettingsPanelTestAccess {
                    "each visible preference has help within its card");
           }
         expect(visibleHelps >= 2, "both preferences on a detail have help");
+        if (page == Destination::Appearance) {
+          expect(panel.themeHelp.getY() - panel.themeBox.getBottom() == 6 &&
+                     panel.languageHelp.getY() - panel.languageBox.getBottom() == 6 &&
+                     panel.languageLabel.getY() - panel.themeHelp.getBottom() == 12,
+                 "choice explanations stay directly below their controls");
+        }
+        if (page == Destination::Library) {
+          expect(panel.primeImportHelp.getY() - panel.primeImportToggle.getBottom() == 4 &&
+                     panel.stemOptimizationHelp.getY() - panel.stemOptimizationToggle.getBottom() == 4,
+                 "toggle explanations stay directly below their controls");
+        }
       }
       panel.showSettingsPage(Destination::Account);
       panel.settingsViewport.setViewPosition(0, 10000);
@@ -221,6 +236,15 @@ struct SettingsPanelTestAccess {
                  panel.accountPage.getLocalBounds().contains(
                      panel.actionPurgeHelp.getBounds()),
              "the purge action explains that it empties the local Library");
+      const auto helpSize = panel.themeHelp.getFont().getHeight();
+      const auto sameHelpSize = [helpSize](const juce::Label &help) {
+        return std::abs(help.getFont().getHeight() - helpSize) < 0.01f;
+      };
+      expect(sameHelpSize(panel.actionPurgeHelp) &&
+                 sameHelpSize(panel.audioHelp) &&
+                 sameHelpSize(panel.routingControlsHelp) &&
+                 sameHelpSize(panel.diagnosticsPrivacyHint),
+             "all settings explanations share the same type scale");
     }
 
     panel.setSize(390, 780);
@@ -228,10 +252,20 @@ struct SettingsPanelTestAccess {
     panel.settingsViewport.setViewPosition(0, 10000);
     snapshot(panel, "settings-account-actions");
     panel.showSettingsPage(Destination::Audio);
-    expect(panel.audioHelp.getText().isNotEmpty() &&
-               panel.audioPage.getLocalBounds().contains(panel.audioHelp.getBounds()),
-           "audio device page explains how its outputs feed routing");
+    if (useTouchOptimisedControls())
+      expect(panel.destination == Destination::Routing,
+             "mobile audio navigation resolves to the consolidated routing page");
+    else
+      expect(panel.audioHelp.getText().isNotEmpty() &&
+                 panel.audioPage.getLocalBounds().contains(panel.audioHelp.getBounds()),
+             "desktop audio page explains how its outputs feed routing");
     panel.showSettingsPage(Destination::Routing);
+    expect(panel.routingDeviceBox.isVisible() == useTouchOptimisedControls(),
+           "the audio output selector belongs to routing only on mobile");
+    if (useTouchOptimisedControls())
+      expect(panel.routingDeviceBox.getHeight() >= 48 &&
+                 panel.routingDeviceBox.getBottom() < panel.routingSectionLabel.getY(),
+             "the mobile device selector is a full-size control before category routing");
     expect(panel.routingControlsHelp.getText().containsIgnoreCase("Mono") &&
                panel.routingControlsHelp.getBottom() <= panel.routingContent.getY(),
            "routing explains mono, stereo and channel selectors before the list");

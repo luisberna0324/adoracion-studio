@@ -17,6 +17,7 @@
 
 class SongImportWizardComponent;
 class SongWizardOverlay;
+class AppModal;
 
 class SongListPanel final : public juce::Component, private juce::Timer {
 public:
@@ -338,6 +339,7 @@ private:
   std::function<bool()> saveProjectPendingProvider;
   int lastActivatedIndex = -1;
   std::unique_ptr<SongWizardOverlay> songImportOverlay;
+  std::unique_ptr<AppModal> appModal;
   std::unique_ptr<SongImportWizardComponent> libraryCreationWizard;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;

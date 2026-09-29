@@ -1,0 +1,28 @@
+{
+  "production_task_id": "444659340575010",
+  "production_model": "MiniMax-Hailuo-2.3",
+  "production_duration": 10,
+  "production_resolution": "768P",
+  "production_reference_type": "first_frame",
+  "production_input_image": "/Users/luisberna/.minimax/v2/assets/2026/09/22/18-11-10-754-asset_20260922-181110-754_0beb6ee4ef08_facb9fbf-product-concept-reference.jpg",
+  "output_file_path": "videos/444659340575010.mp4",
+  "submitted_at_ms": 1790112504930,
+  "last_query_at_ms": null,
+  "next_query_due_at_ms": 1790113104930,
+  "terminal_status": null,
+  "polling_cron_task_id": "258c5ba5-5610-4572-9921-0035af4078d1",
+  "polling_cron_name": "video-result-444659340575010",
+  "stray_test_task_ids": [
+    "444659258376462",
+    "444658876584180",
+    "444659457716303",
+    "444659646411024",
+    "444658653024501"
+  ],
+  "notes": [
+    "Production task uses H2.3 first-frame, 10s, 768P, no audio (H2.3 silent).",
+    "Output ratio follows the input image: 1080x1920 portrait → 9:16 portrait video.",
+    "Earlier H3 attempt failed with HTTP 402 (insufficient credits, 1950 needed).",
+    "Stray test tasks were unintended exploratory submits during debugging --args-file failure; do not download, do not poll, ignore."
+  ]
+}

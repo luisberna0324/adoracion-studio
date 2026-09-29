@@ -1,7 +1,7 @@
 ---
 type: Technical Contract
 title: Hoja de acciones — selector de versiones
-description: Selector compacto y confirmación estándar de versiones cloud
+description: Selector compacto y confirmación compartida de versiones cloud
 resource: src/ui/components/SettingsVersionsSheet.cpp
 timestamp: 2026-09-21
 ---
@@ -45,7 +45,7 @@ No usa APIs privadas ni depende de UIKit en Mac/Android.
   cierre dentro de la tarjeta.
 - No se abre una ventana independiente. La reproducción no se pausa al consultar.
 - Una apertura reemplaza la anterior. Al elegir una opción, el selector y el
-  menú contextual se cierran antes de abrir la confirmación estándar.
+  menú contextual se cierran antes de abrir la confirmación compartida.
 
 ## Estados y acciones
 
@@ -58,7 +58,7 @@ No usa APIs privadas ni depende de UIKit en Mac/Android.
    resumen, canción ni **En uso**. Se ven hasta tres opciones; historiales más
    largos se recorren dentro de la lista, sin agregar Anteriores/Siguientes.
 4. **Selección**: tocar una versión cierra la hoja sin cambiar ajustes y abre el
-   diálogo estándar **Confirmar versión**, con **Confirmar** y **Cancelar**. No
+   diálogo compartido **Confirmar versión**, con **Aplicar versión** y **Cancelar**. No
    muestra resumen ni un segundo nivel de detalles.
 5. **Aplicar**: sólo **Confirmar** llama a `applyCloudSettings`. Si guarda,
    refresca Biblioteca; si falla, muestra el error. No publica otra versión.
@@ -75,8 +75,9 @@ de `applyCloudSettings`; no modifica versiones remotas.
 
 - Acciones compactas de 40 puntos y navegación Tab/Shift-Tab.
 - Botones con nombre, descripción accesible y contorno visible de foco.
-- El selector enfoca la primera versión. El modal posterior conserva la
-  semántica estándar de confirmación/cancelación de JUCE.
+- El selector enfoca la primera versión. El modal posterior usa la tarjeta
+  `AppModal`, con acciones de 48 puntos. Escape/Cancelar descarta y Enter o
+  **Aplicar versión** confirma. La tarjeta se centra dentro del área segura.
 - Escape cierra el selector. No existe un modal adicional de resumen o detalle.
 - `SafePointer` protege la respuesta asíncrona: no actualiza ni vuelve a abrir
   una hoja que se cerró, se reemplazó o cuyo editor fue destruido.
@@ -108,4 +109,4 @@ mixer ni se crea una revisión cloud; después probar la confirmación con una
 canción de prueba.
 
 La validación manual anterior del flujo combinado quedó reemplazada por este
-contrato de selector compacto + confirmación estándar y debe repetirse tras compilar.
+contrato de selector compacto + confirmación compartida y debe repetirse tras compilar.

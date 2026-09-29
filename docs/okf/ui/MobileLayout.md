@@ -201,7 +201,7 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   En tablet permanece como panel centrado.
 - La portada móvil agrupa filas de 72 pt con icono, título, descripción y flecha:
   Personalización (Apariencia e idioma, Reproducción, Biblioteca), Audio y
-  conexiones (Dispositivo de audio, Ruteo de salidas, Control remoto), Cuenta y
+  conexiones (Ruteo de salidas, Control remoto), Cuenta y
   soporte (Mi cuenta, Diagnóstico). Cada fila navega a los controles existentes;
   volver recupera el desplazamiento de la portada. Un drag sobre una fila no
   navega. Encabezado, volver y cerrar permanecen fijos. Escape vuelve a la
@@ -210,13 +210,22 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   mientras Configuración ocupa el frente.
 - Las preferencias se apilan con selectores de 48 pt. Control remoto conserva
   el selector Local/Cliente/Servidor, descubrimiento y alias en su propia página;
-  las actualizaciones de conexión no muestran esos controles en otras páginas.
+  Local compacta la tarjeta al estado; Cliente y Servidor muestran el campo
+  correspondiente. Las actualizaciones de conexión no muestran esos controles
+  en otras páginas.
   Mi cuenta apila cuotas y acciones en anchos estrechos. La preferencia de
   expansión de ventana se mantiene en escritorio, donde tiene efecto.
-- Cada detalle de Configuración muestra una introducción breve bajo el título.
-  Apariencia, Reproducción, Biblioteca y Control remoto explican cada selector o
-  interruptor junto a él; Audio y Ruteo explican el dispositivo y la asignación
-  de canales; Mi cuenta explica las acciones, incluida la purga que vacía la
+- En los detalles de Configuración, Volver y Cerrar usan los mismos botones
+  circulares del encabezado de Biblioteca y setlists, con objetivos táctiles
+  de al menos 44 pt/dp. El contenido comienza inmediatamente bajo el encabezado.
+  La jerarquía tipográfica móvil usa título de 20 pt semibold, etiquetas de
+  15 pt medium y ayudas de 13.5 pt regular en color secundario. Cada ayuda queda
+  dentro de su tarjeta, entre 4 y 6 pt bajo el control correspondiente, con
+  12 pt antes de la siguiente opción. En escritorio las etiquetas y ayudas usan
+  14 y 12.5 pt respectivamente. Apariencia, Reproducción, Biblioteca y Control
+  remoto explican cada selector o interruptor junto a él. Ruteo explica
+  el dispositivo y la asignación de canales. Mi cuenta explica las acciones,
+  incluida la purga que vacía la
   Biblioteca local sin borrar proyectos `.pwproj` ni contenido en la nube.
   Diagnóstico conserva sus notas sobre el informe y su privacidad. La opción de
   importar la biblioteca de Prime indica que solo funciona en macOS y queda
@@ -230,6 +239,11 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - La altura desplazable de Ruteo se calcula con todas las categorias, el
   encabezado, la nota inferior y los margenes; no se limita a 900 px ni depende
   de que la ventana mida menos de 820 px. El ancho descuenta la barra vertical.
+  En iOS y Android, teléfono y tablet muestran al inicio un selector de salida
+  conectado al `AudioDeviceManager`; al cambiar de dispositivo se actualizan los
+  canales disponibles y las asignaciones guardadas para ese dispositivo. La
+  página separada Dispositivo de audio se omite en estas plataformas. En
+  escritorio se conserva la página técnica actual.
   Con menos de 520 px utiles por fila, la categoria queda encima de los dos
   selectores, que conservan 48 px de alto. En filas anchas los controles tienen
   48 px en tactil y 36 px en escritorio. La nota aparece despues de la ultima
@@ -241,7 +255,7 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   `settings_panel` verifica el acceso al ultimo control, limites de filas,
   rueda sobre selectores, gesto arrastrado y cambio de pestaña en nueve tamaños.
 - Configuración mantiene Diagnóstico en una página propia (pestaña en escritorio).
-  Audio contiene sólo los controles del dispositivo; el informe técnico se
+  Audio de escritorio contiene sólo los controles del dispositivo; el informe técnico se
   comparte desde una tarjeta compacta en Diagnóstico y no expone un marcador
   manual de crujidos.
 - Los botones flotantes de exportar y seguimiento forman un grupo horizontal

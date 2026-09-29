@@ -43,7 +43,7 @@ public:
   using ArrangementResetCallback = std::function<void()>;
   using ArrangementPartJumpRequestCallback = std::function<void(int)>;
   using ArrangementPartLoopToggleRequestCallback = std::function<void(int)>;
-  using ArrangementPlaybackSelectionClearCallback = std::function<void()>;
+  using ArrangementPendingJumpClearCallback = std::function<void()>;
   using TempoMapChangedCallback = std::function<void(const SongTempoMapSnapshot &)>;
   using ActiveTempoRegionCallback =
       std::function<void(const SongTempoRegionSnapshot &)>;
@@ -75,8 +75,8 @@ public:
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
   void setOnArrangementPartLoopToggleRequest(
       ArrangementPartLoopToggleRequestCallback cb);
-  void setOnArrangementPlaybackSelectionClearRequest(
-      ArrangementPlaybackSelectionClearCallback cb);
+  void setOnArrangementPendingJumpClearRequest(
+      ArrangementPendingJumpClearCallback cb);
   void setOnTempoMapChanged(TempoMapChangedCallback cb);
   void setOnActiveTempoRegionChanged(ActiveTempoRegionCallback cb);
   void setOnExportMixRequested(std::function<void(juce::String)> cb);
@@ -238,7 +238,7 @@ private:
   ArrangementResetCallback onArrangementReset;
   ArrangementPartJumpRequestCallback onArrangementPartJumpRequest;
   ArrangementPartLoopToggleRequestCallback onArrangementPartLoopToggleRequest;
-  ArrangementPlaybackSelectionClearCallback onArrangementPlaybackSelectionClearRequest;
+  ArrangementPendingJumpClearCallback onArrangementPendingJumpClearRequest;
   TempoMapChangedCallback onTempoMapChanged;
   ActiveTempoRegionCallback onActiveTempoRegionChanged;
   std::function<void(juce::String)> onExportMixRequested;

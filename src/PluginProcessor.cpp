@@ -4490,7 +4490,7 @@ void MTControlsAudioProcessor::setSongArrangement(
   const bool songEndFollowsArrangement =
       !songEndCustomizedBeforeUpdate ||
       std::abs(configuredSongEnd - previousArrangementLength) <= 0.0001;
-  const bool preserveEditingPlayback =
+  const bool editingArrangement =
       arrangementEditingActiveState.load(std::memory_order_relaxed);
   const auto partIdAtIndex = [this](const int index) {
     return juce::isPositiveAndBelow(
@@ -4638,6 +4638,10 @@ void MTControlsAudioProcessor::setSongArrangement(
     return true;
   };
   const bool arrangementTimelineChanged = !sameTimeline();
+  // A mute/skip/metadata update keeps the same section boundaries. Preserve
+  // the active loop and pending jump even when the arrangement editor is closed.
+  const bool preservePlaybackState =
+      editingArrangement || !arrangementTimelineChanged;
 
   for (auto &part : next) {
     const auto countKey = arrangementCountSectionKey(part.name);
@@ -4702,7 +4706,7 @@ void MTControlsAudioProcessor::setSongArrangement(
       return -1;
     };
 
-    if (preserveEditingPlayback) {
+    if (preservePlaybackState) {
       const double currentSec =
           songCurrentPositionSeconds.load(std::memory_order_relaxed);
       const int currentPartIndex =
@@ -4723,12 +4727,12 @@ void MTControlsAudioProcessor::setSongArrangement(
     // Restoring sections must start at the playback window's beginning, not
     // at the first annotation (which may be minutes into the song).
     // A structural update must never stop an active transport:
-    // live edits normally set preserveEditingPlayback, but keeping this guard
+    // live edits normally set preservePlaybackState, but keeping this guard
     // also covers an edit published during a UI mode transition. The audio
     // callback adopts the coherent scheduler snapshot and preserves the
     // current playhead.
     if (isCustomArrangement && arrangementTimelineChanged &&
-        !preserveEditingPlayback &&
+        !preservePlaybackState &&
         getTransportState() != TransportState::playing) {
       const double target = songStartSeconds.load(std::memory_order_relaxed);
       seekTargetSeconds.store(target, std::memory_order_relaxed);
