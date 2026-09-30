@@ -985,8 +985,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const float mixGain = 1.0f;
 
     // Inject lock-free mix state into StemTracks and update UI meters
+    const auto rehearsalGains = rehearsalMix.gains();
     for (int i = 0; i < stemCount; ++i) {
       auto& track = stemTracks[static_cast<size_t>(i)];
+      track->setRehearsalGain(rehearsalGains.forStem(i));
       const bool isClickGuideStem =
           stemClickGuideStates[static_cast<size_t>(i)].load(
               std::memory_order_relaxed);
@@ -3963,8 +3965,10 @@ bool MTControlsAudioProcessor::loadSongStems(
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     removeAllStemSources();
     clearLoadedSongState();
+    rehearsalMix.clear();
 
     stemTracks = std::move(newTracks);
+    rehearsalMix.clear();
     resetStemControls(static_cast<int>(stemTracks.size()));
 
     globalSamplePosition.store(0, std::memory_order_relaxed);

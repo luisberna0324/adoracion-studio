@@ -13,7 +13,7 @@ public:
   explicit BasicPlaybackSession(Processor &p) : local(p) {}
   bool isRemote() const { return remote; }
   bool isConnected() const { return connected; }
-  void setRemote(bool enabled) { remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); position = frozenPosition = receivedAt = 0; }
+  void setRemote(bool enabled) { pendingRehearsalClear = juce::var(); remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); position = frozenPosition = receivedAt = 0; }
   void setConnected(bool enabled) {
     if (!enabled && connected) frozenPosition = getSongCurrentPositionSeconds();
     connected = enabled;
@@ -23,7 +23,7 @@ public:
   void send(const juce::String &action, const juce::var &value = {}, const juce::String &target = {}) {
     if (!remote || !connected || !onCommand) return;
     const auto id = juce::Uuid().toString();
-    if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain")
+    if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain" || action == "rehearsal.groupLevel" || action == "rehearsal.restLevel")
       pendingControls[{action, target}] = {id, value, juce::Time::getMillisecondCounterHiRes() + 2000.0, -1};
     onCommand(id, action, value, target);
   }
@@ -52,6 +52,14 @@ public:
     const auto list = field(field(state, "song"), "stems");
     if (const auto *values = list.getArray()) for (const auto &v : *values)
       if (static_cast<bool>(v.getProperty("include", true))) includedStemIds.add(field(v,"id").toString());
+    if (pendingRehearsalClear.isObject()) {
+      const auto request = pendingRehearsalClear;
+      pendingRehearsalClear = juce::var();
+      const auto confirmed = field(state, "rehearsal");
+      if (field(request, "songId") == field(confirmed, "songId") &&
+          field(request, "revision") == field(confirmed, "revision"))
+        send("rehearsal.clear", field(request, "revision"), field(request, "songId").toString());
+    }
     position = number(state, "position");
     frozenPosition = position;
     receivedAt = juce::Time::getMillisecondCounterHiRes();
@@ -132,6 +140,21 @@ public:
   void setStemGain(int index, float value) { if (remote) send("mix.gain", value, stemId(index)); else local.setStemGain(index, value); }
   void setStemMute(int index, bool value) { if (remote) send("mix.mute", value, stemId(index)); else local.setStemMute(index, value); }
   void setStemSolo(int index, bool value) { if (remote) send("mix.solo", value, stemId(index)); else local.setStemSolo(index, value); }
+  juce::var getRehearsalState() const { return remote ? field(state, "rehearsal") : local.getRehearsalState(); }
+  bool supportsRehearsal() const { return static_cast<int>(field(getRehearsalState(), "version")) == 1; }
+  float getRehearsalLevel(bool group) const {
+    const auto rehearsal = getRehearsalState();
+    const auto action = group ? "rehearsal.groupLevel" : "rehearsal.restLevel";
+    return static_cast<float>(controlValue(action, field(rehearsal, "songId").toString(),
+        number(rehearsal, group ? "groupLevel" : "restLevel", 1.0)));
+  }
+  void setRehearsalGroup(const juce::String &group) { rehearsalAction("rehearsal.select", group); }
+  void setRehearsalLevel(bool group, float value) { rehearsalAction(group ? "rehearsal.groupLevel" : "rehearsal.restLevel", value); }
+  void clearRehearsal() {
+    if (remote && !connected) pendingRehearsalClear = getRehearsalState();
+    else rehearsalAction("rehearsal.clear", {});
+  }
+  float getRehearsalStemLevel(const juce::String &id) const { return remote ? meter(id).first : local.getRehearsalStemLevel(id); }
   void setStemOutputChannel(int index, int value) { if (remote) send("mix.output", value, stemId(index)); else local.setStemOutputChannel(index, value); }
   void setPlaybackTempoBpm(double value) { if (remote) send("tempo.set", value); else local.setPlaybackTempoBpm(value); }
   void setPitchSemiTones(int value) { if (remote) send("pitch.set", value); else local.setPitchSemiTones(value); }
@@ -186,6 +209,13 @@ public:
   void refreshPadsRoutingFromSettings() { if (!remote) local.refreshPadsRoutingFromSettings(); }
 
 private:
+  juce::var pendingRehearsalClear;
+  void rehearsalAction(const juce::String &action, const juce::var &value) {
+    if (!supportsRehearsal()) return;
+    const auto song = field(getRehearsalState(), "songId").toString();
+    if (remote) send(action, value, song);
+    else local.applyRehearsalAction(action, song, value);
+  }
   struct PendingControl {
     juce::String id;
     juce::var value;

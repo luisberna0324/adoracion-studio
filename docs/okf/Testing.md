@@ -62,6 +62,7 @@ onda, VU y reconexión con la compilación portátil.
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
+| [Ensayo por grupos](ui/Rehearsal.md) | `rehearsal`: grupos, IDs obsoletos, restauración, reconexión y rampas; `stem_mix_engine`: factor temporal en rutas procesadas y salidas dedicadas |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
 | [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |

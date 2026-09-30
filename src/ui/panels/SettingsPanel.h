@@ -84,6 +84,36 @@ public:
                          const juce::String &selectedServerName = {});
   void setDiagnosticsBusy(bool busy);
 
+#if JUCE_IOS
+  // UIKit reads and mutates the same settings model as the JUCE desktop view.
+  struct IOSSettingsState {
+    int theme = 0, language = 0, padsCrossfade = 0, clickStyle = 0;
+    bool stemOptimization = false, diagnosticsBusy = false, quotaUnavailable = false;
+    SessionSummary session;
+    juce::String version, remoteAlias, remoteStatus, deviceName;
+    playworship::remote::RemoteSession::Mode remoteMode =
+        playworship::remote::RemoteSession::Mode::Local;
+    std::vector<playworship::remote::DiscoveredServer> servers;
+    int selectedServer = -1, selectedDevice = -1, outputChannels = 2;
+    juce::StringArray devices, categories;
+    std::vector<CategoryRoutingDefaults> routing;
+  };
+  IOSSettingsState iosState() const;
+  void iosSelectTheme(int id);
+  void iosSelectLanguage(int id);
+  void iosSetStemOptimization(bool enabled);
+  void iosSelectPadsCrossfade(int id);
+  void iosSelectClickStyle(int id);
+  void iosSelectRoutingDevice(int index);
+  void iosSetRouting(size_t categoryIndex, int width, int baseChannel);
+  void iosSetRemoteMode(playworship::remote::RemoteSession::Mode mode);
+  void iosSelectRemoteServer(int index);
+  void iosSetRemoteAlias(const juce::String &alias);
+  void iosRequestLogout();
+  void iosRequestPurge();
+  void iosShareDiagnostics();
+#endif
+
 private:
   friend struct SettingsPanelTestAccess;
   class SettingsTabButton final : public juce::TextButton {

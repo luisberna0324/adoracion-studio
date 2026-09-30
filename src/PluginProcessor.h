@@ -4,6 +4,7 @@
 #include "MetronomeEngine.h"
 #include "StemMixEngine.h"
 #include "StemTrack.h"
+#include "audio/RehearsalMix.h"
 #include "audio/PadsEngine.h"
 #include "audio/DynamicGuideEngine.h"
 #include "data/SongData.h"
@@ -171,6 +172,12 @@ public:
   juce::String getLoadedSongTitle() const;
   int getLoadedStemCount() const noexcept;
   float getStemLevel(int stemIndex) const noexcept;
+  void configureRehearsalSong(const ImportedSongData &song) { rehearsalMix.configure(song); }
+  juce::var getRehearsalState() const { return rehearsalMix.snapshot(); }
+  bool applyRehearsalAction(const juce::String &action, const juce::String &songId,
+                            const juce::var &value) { return rehearsalMix.apply(action, songId, value); }
+  void resetRehearsalMix() { rehearsalMix.reset(); }
+  float getRehearsalStemLevel(const juce::String &id) const { return getStemLevel(rehearsalMix.indexForStemId(id)); }
   void setStemVolume(int stemIndex, float volume) noexcept;
   float getStemVolume(int stemIndex) const noexcept;
   void setStemGain(int stemIndex, float gain) noexcept;
@@ -362,6 +369,7 @@ private:
   std::atomic<bool> timeProcessorMaintenanceEnabled{false};
   juce::CriticalSection timeProcessorMaintenanceLock;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
+  RehearsalMix rehearsalMix;
   std::array<std::atomic<float>, maxStemCount> stemLevels;
   std::array<std::atomic<float>, maxStemCount> stemVolumes;
   std::array<std::atomic<float>, maxStemCount> stemGains;

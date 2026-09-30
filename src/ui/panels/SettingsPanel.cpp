@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <map>
+#if JUCE_IOS
+#include "../../platform/NativeIOSSettings.h"
+#endif
 
 namespace {
 // Label, 48 pt control, local explanation, then space before the next option.
@@ -2051,6 +2054,9 @@ void SettingsPanel::setDiagnosticsBusy(const bool busy) {
       diagnosticsBusy
           ? L10n::tr(u8"Preparando…", "Preparing…")
           : L10n::tr(u8"Compartir diagnóstico", "Share diagnostics"));
+#if JUCE_IOS
+  NativeIOSSettings::refresh();
+#endif
 }
 
 void SettingsPanel::updateSessionSummary(SessionSummary sessionSummary) {
@@ -2058,17 +2064,26 @@ void SettingsPanel::updateSessionSummary(SessionSummary sessionSummary) {
   session = std::move(sessionSummary);
   applyLanguageTexts();
   resized();
+#if JUCE_IOS
+  NativeIOSSettings::refresh();
+#endif
 }
 
 void SettingsPanel::setQuotaUnavailable() {
   quotaFetchFailed = true;
   applyLanguageTexts();
   resized();
+#if JUCE_IOS
+  NativeIOSSettings::refresh();
+#endif
 }
 
 void SettingsPanel::changeListenerCallback(juce::ChangeBroadcaster* source) {
   if (source == deviceManager) {
     refreshRoutingForDevice();
+#if JUCE_IOS
+    NativeIOSSettings::refresh();
+#endif
   }
 }
 
@@ -2199,10 +2214,96 @@ void SettingsPanel::setRoutingDefaultsLocal(
     onRoutingDefaultsChanged(currentDeviceKey, routingDefaults);
 }
 
+#if JUCE_IOS
+SettingsPanel::IOSSettingsState SettingsPanel::iosState() const {
+  IOSSettingsState state;
+  state.theme = themeBox.getSelectedId();
+  state.language = languageBox.getSelectedId();
+  state.stemOptimization = stemOptimizationToggle.getToggleState();
+  state.padsCrossfade = padsCrossfadeBox.getSelectedId();
+  state.clickStyle = metronomeClickStyleBox.getSelectedId();
+  state.diagnosticsBusy = diagnosticsBusy;
+  state.quotaUnavailable = quotaFetchFailed;
+  state.session = session;
+  state.version = sessionVersionValue.getText();
+  state.remoteAlias = remoteServerAlias;
+  state.remoteStatus = remoteStatus.getText();
+  state.remoteMode = remoteMode;
+  state.servers = remoteServers;
+  state.selectedServer = remoteServersBox.getSelectedId() - 1;
+  state.selectedDevice = routingDeviceBox.getSelectedId() - 1;
+  state.deviceName = routingDeviceBox.getText();
+  state.outputChannels = availableOutputChannels;
+  state.routing = routingDefaults;
+  for (int i = 0; i < routingDeviceBox.getNumItems(); ++i)
+    state.devices.add(routingDeviceBox.getItemText(i));
+  for (const auto *name : kTrackCategories)
+    state.categories.add(juce::String(name));
+  return state;
+}
+
+void SettingsPanel::iosSelectTheme(int id) {
+  themeBox.setSelectedId(id, juce::sendNotificationSync);
+}
+void SettingsPanel::iosSelectLanguage(int id) {
+  languageBox.setSelectedId(id, juce::sendNotificationSync);
+  NativeIOSSettings::refresh();
+}
+void SettingsPanel::iosSetStemOptimization(bool enabled) {
+  if (stemOptimizationToggle.getToggleState() == enabled) return;
+  stemOptimizationToggle.setToggleState(enabled, juce::dontSendNotification);
+  if (onStemOptimizationChanged) onStemOptimizationChanged(enabled);
+}
+void SettingsPanel::iosSelectPadsCrossfade(int id) {
+  padsCrossfadeBox.setSelectedId(id, juce::sendNotificationSync);
+}
+void SettingsPanel::iosSelectClickStyle(int id) {
+  metronomeClickStyleBox.setSelectedId(id, juce::sendNotificationSync);
+}
+void SettingsPanel::iosSelectRoutingDevice(int index) {
+  routingDeviceBox.setSelectedId(index + 1, juce::sendNotificationSync);
+  NativeIOSSettings::refresh();
+}
+void SettingsPanel::iosSetRouting(size_t categoryIndex, int width, int baseChannel) {
+  if (categoryIndex >= routingDefaults.size()) return;
+  const int channels = juce::jmax(1, availableOutputChannels);
+  CategoryRoutingDefaults value;
+  value.width = width >= 2 && channels >= 2 ? 2 : 1;
+  value.baseChannel = juce::jlimit(1, juce::jmax(1, channels - value.width + 1), baseChannel);
+  if (routingDefaults[categoryIndex].width == value.width &&
+      routingDefaults[categoryIndex].baseChannel == value.baseChannel) return;
+  routingDefaults[categoryIndex] = value;
+  setRoutingDefaultsLocal(routingDefaults);
+  refreshRoutingForDevice();
+  NativeIOSSettings::refresh();
+}
+void SettingsPanel::iosSetRemoteMode(playworship::remote::RemoteSession::Mode mode) {
+  if (onRemoteModeChanged) onRemoteModeChanged(mode);
+}
+void SettingsPanel::iosSelectRemoteServer(int index) {
+  if (juce::isPositiveAndBelow(index, static_cast<int>(remoteServers.size())) && onRemoteConnect)
+    onRemoteConnect(remoteServers[static_cast<size_t>(index)]);
+}
+void SettingsPanel::iosSetRemoteAlias(const juce::String &alias) {
+  const auto clean = alias.trim().removeCharacters("\r\n\t").replaceCharacter('.', '-').substring(0, 28);
+  if (clean == remoteServerAlias) return;
+  remoteServerAlias = clean;
+  remoteServerNameEditor.setText(clean, juce::dontSendNotification);
+  if (onRemoteServerAliasChanged) onRemoteServerAliasChanged(clean);
+}
+void SettingsPanel::iosRequestLogout() { if (onLogoutRequested) onLogoutRequested(); }
+void SettingsPanel::iosRequestPurge() { if (onPurgeLocalDataRequested) onPurgeLocalDataRequested(); }
+void SettingsPanel::iosShareDiagnostics() { if (onShareAudioDiagnostics) onShareAudioDiagnostics(); }
+#endif
+
 void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode mode,
     const std::vector<playworship::remote::DiscoveredServer> &servers, const juce::String &status,
     const juce::String &selectedServerName) {
   using Mode = playworship::remote::RemoteSession::Mode;
+#if JUCE_IOS
+  const auto previousStatus = remoteStatus.getText();
+  const int previousSelection = remoteServersBox.getSelectedId();
+#endif
   const bool modeChanged = remoteMode != mode;
   remoteMode = mode;
   remoteLocalButton.setToggleState(mode == Mode::Local, juce::dontSendNotification);
@@ -2247,4 +2348,9 @@ void SettingsPanel::updateRemoteState(playworship::remote::RemoteSession::Mode m
   if (homePage != nullptr) homePage->refreshTexts();
   if (modeChanged && usesGroupedNavigation() && destination == Destination::Remote)
     resized();
+#if JUCE_IOS
+  if (modeChanged || names != oldNames || previousStatus != remoteStatus.getText() ||
+      previousSelection != remoteServersBox.getSelectedId())
+    NativeIOSSettings::refresh();
+#endif
 }

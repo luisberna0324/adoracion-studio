@@ -621,6 +621,16 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME stem_output_router
         COMMAND MTControlsStemOutputRouterTests)
 
+    juce_add_console_app(MTControlsRehearsalTests PRODUCT_NAME "Rehearsal Tests")
+    target_sources(MTControlsRehearsalTests PRIVATE tests/rehearsal_tests.cpp src/data/AppSettings.cpp)
+    juce_generate_juce_header(MTControlsRehearsalTests)
+    target_include_directories(MTControlsRehearsalTests PRIVATE src)
+    target_compile_definitions(MTControlsRehearsalTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsRehearsalTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME rehearsal COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsRehearsalTests>")
+
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.
     get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
@@ -917,6 +927,8 @@ target_sources(MTControls
         src/ui/panels/SongListPanel.cpp
         src/ui/panels/SongListPanel.h
         src/ui/panels/TopBar.cpp
+        src/ui/panels/RehearsalPanel.cpp
+        src/ui/panels/RehearsalPanel.h
         src/ui/panels/TopBar.h
         src/ui/panels/WaveformBar.cpp
         src/ui/panels/WaveformBar.h
@@ -958,8 +970,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_sources(MTControls PRIVATE
         src/platform/IOSWindowLayout.mm
         src/platform/IOSWindowLayout.h
+        src/platform/NativeIOSSettings.mm
+        src/platform/NativeIOSSettings.h
         src/platform/NativeAuthSession.mm
         src/platform/NativeAuthSession.h)
+    set_source_files_properties(src/platform/NativeIOSSettings.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
 else()
     target_sources(MTControls PRIVATE

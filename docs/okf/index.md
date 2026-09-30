@@ -43,6 +43,8 @@ docs/okf/
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI configurables |
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
+| [ui/NativeIOSSettings](ui/NativeIOSSettings.md) | Configuración UIKit en iPhone y iPad |
+| [ui/Rehearsal](ui/Rehearsal.md) | Ensayo con balance temporal por grupo instrumental |
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |

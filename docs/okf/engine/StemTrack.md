@@ -108,6 +108,14 @@ void getNextAudioBlock(const juce::AudioSourceChannelInfo &bufferToFill) overrid
 
 ## Lock-Free Mix Controls
 
+El [balance temporal de Ensayo](../ui/Rehearsal.md) añade `setRehearsalGain(0..1)`.
+Es independiente de volumen/trim y de la persistencia. `prepareToPlay` prepara
+una rampa lineal de 50 ms a la tasa del source; cada lectura aplica la rampa con
+el mismo valor por frame en todos los canales, respetando el offset del buffer.
+Se aplica antes del gain habitual y de la medición, por lo que Mute/Solo siguen
+mandando y los VU incluyen el ajuste. El valor por defecto es 1, también para
+fuentes creadas por el exportador. No añade locks ni asignaciones al audio thread.
+
 Todos los controles de mezcla son **lock-free** usando `std::atomic`. Son seguros para escribir desde UI thread y leer desde audio thread sin locks.
 
 ### Volumen

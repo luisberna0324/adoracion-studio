@@ -23,11 +23,15 @@
 #include "ui/components/ReauthPromptModal.h"
 #include "ui/components/SettingsVersionsSheet.h"
 #include "platform/NativeAuthSession.h"
+#if JUCE_IOS
+#include "platform/NativeIOSSettings.h"
+#endif
 #include "ui/components/SetlistHandlePanel.h"
 #include "ui/components/WelcomeModal.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/SettingsPanel.h"
+#include "ui/panels/RehearsalPanel.h"
 
 #include "ui/panels/SongListPanel.h"
 #include "network/RemoteStateCodec.h"
@@ -1048,11 +1052,23 @@ void MTControlsAudioProcessorEditor::fitMobileEditorToHost() {
 #endif
 }
 
+void MTControlsAudioProcessorEditor::setRehearsalView(bool enabled) {
+  if (rehearsalView == enabled || !rehearsalPanel) return;
+  if (!enabled) playbackSession.clearRehearsal();
+  rehearsalView = enabled;
+  rehearsalMixerOpen = enabled && !isPhoneSizedLayout(*this) && getWidth() >= 1000;
+  rehearsalPanel->header.mixer.setSubtleHighlight(rehearsalMixerOpen);
+  rehearsalPanel->refresh();
+  updatePhoneOrientation();
+  resized();
+  repaint();
+}
+
 void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #if JUCE_IOS || JUCE_ANDROID
   if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
     return;
-  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr)
+  const int desired = (rehearsalView || isSetlistDrawerOpen || settingsOverlay != nullptr)
                           ? juce::Desktop::upright
                           : juce::Desktop::rotatedClockwise |
                                 juce::Desktop::rotatedAntiClockwise;
@@ -1070,7 +1086,7 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
           return;
         safe->phoneOrientationUpdatePending = false;
         juce::Desktop::getInstance().setOrientationsEnabled(
-            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr)
+            (safe->rehearsalView || safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr)
                 ? juce::Desktop::upright
                 : juce::Desktop::rotatedClockwise |
                       juce::Desktop::rotatedAntiClockwise);
@@ -1343,6 +1359,16 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 #endif
   auto *topBarRaw = topBarImpl.get();
   topBar = std::move(topBarImpl);
+  rehearsalPanel = std::make_unique<RehearsalPanel>(playbackSession, stripLookAndFeel);
+  addChildComponent(*rehearsalPanel);
+  addChildComponent(rehearsalPanel->header);
+  topBarRaw->setOnRehearsal([this] { setRehearsalView(!rehearsalView); });
+  rehearsalPanel->header.close.onClick = [this] { setRehearsalView(false); };
+  rehearsalPanel->header.mixer.onClick = [this] {
+    rehearsalMixerOpen = !rehearsalMixerOpen;
+    rehearsalPanel->header.mixer.setSubtleHighlight(rehearsalMixerOpen);
+    resized();
+  };
   topBarRaw->setResponsiveProfile(resolveResponsiveLayoutProfile());
   topBarRaw->setTransportProviders(
       [this] { return playbackSession.isSongPlaying(); },
@@ -1603,6 +1629,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       });
 
   refreshTopBarTheme = [this, topBarRaw, waveformBarRaw, channelGridRaw] {
+    if (rehearsalPanel) rehearsalPanel->refreshThemeColours();
     if (topBarRaw)
       topBarRaw->refreshThemeColours();
     if (waveformBarRaw)
@@ -2310,6 +2337,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     }
 
     currentLoadedSong = loadedSong;
+    p.configureRehearsalSong(currentLoadedSong);
     hasCurrentLoadedSong = true;
     AppSettings::setLastSelectedSongId(currentLoadedSong.id);
 
@@ -3254,6 +3282,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                                     activeSession.reason,
                                     activeSession.licenseKey},
       [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+#if JUCE_IOS
+        // The UIKit settings page has already shown its native confirmation.
+        if (safeThis != nullptr) safeThis->handleLogout();
+#else
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::QuestionIcon,
             L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
@@ -3272,8 +3304,31 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                   safeThis->handleLogout();
               });
             });
+#endif
       },
       [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+#if JUCE_IOS
+        // UIKit owns the destructive confirmation; keep the existing purge operation.
+        if (safeThis == nullptr) return;
+        if (!safeThis->unloadActiveSongForLocalPurge()) {
+          juce::NativeMessageBox::showMessageBoxAsync(
+              juce::MessageBoxIconType::WarningIcon,
+              L10n::tr("No se pudo completar la purga", "Couldn't complete purge"),
+              L10n::tr("No fue posible liberar la canción activa del motor de audio. Inténtalo nuevamente.",
+                       "The active song couldn't be unloaded from the audio engine. Please try again."));
+          return;
+        }
+        const auto purge = CloudSyncIndexStore::purgeLocalState();
+        if (safeThis->songListPanelRaw != nullptr)
+          safeThis->songListPanelRaw->refreshFromStorageView();
+        safeThis->refreshCloudLibrary({});
+        juce::NativeMessageBox::showMessageBoxAsync(
+            juce::MessageBoxIconType::InfoIcon,
+            L10n::tr("Datos locales purgados", "Local data purged"),
+            L10n::tr("La Biblioteca quedó vacía. No se eliminó ningún archivo .pwproj ni contenido de la nube. Canciones eliminadas de Biblioteca: ",
+                     "The Library is empty. No .pwproj file or cloud content was deleted. Songs removed from Library: ") +
+                juce::String(purge.removedLibrarySongs));
+#else
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::WarningIcon,
             L10n::tr("Purgar datos locales de Cloud", "Purge local Cloud data"),
@@ -3310,6 +3365,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
                            "The Library is empty. No .pwproj file or cloud content was deleted. Songs removed from Library: ") +
                       juce::String(purge.removedLibrarySongs));
             });
+#endif
       },
       routingDefaults,
       proc.getAvailableOutputChannelCount(),
@@ -3393,6 +3449,18 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   settingsOverlay->setBounds(getLocalBounds());
   panel->grabKeyboardFocus();
   updatePhoneOrientation();
+#if JUCE_IOS
+  juce::Timer::callAfterDelay(450, [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this),
+                                    safePanel = juce::Component::SafePointer<SettingsPanel>(panel)] {
+    if (safe == nullptr || safePanel == nullptr ||
+        safe->settingsPanelRaw.getComponent() != safePanel.getComponent())
+      return;
+    const bool shown = NativeIOSSettings::show(*safePanel, [safe] {
+      if (safe != nullptr) safe->closeSettings();
+    });
+    if (!shown) juce::Logger::writeToLog("Native iOS settings could not find a presenter");
+  });
+#endif
   return;
 #else
   options.content.setOwned(panel);
@@ -3407,6 +3475,9 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 }
 
 void MTControlsAudioProcessorEditor::closeSettings() {
+#if JUCE_IOS
+  NativeIOSSettings::dismiss();
+#endif
   if (settingsWindow != nullptr) {
     settingsWindow->setVisible(false);
     settingsWindow->exitModalState(0);
@@ -3423,8 +3494,14 @@ void MTControlsAudioProcessorEditor::closeSettings() {
 }
 
 bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
-  if (settingsOverlay == nullptr || settingsPanelRaw == nullptr)
+  if (settingsOverlay == nullptr || settingsPanelRaw == nullptr) {
+    if (rehearsalView && !isSetlistDrawerOpen) {
+      if (rehearsalMixerOpen) { rehearsalMixerOpen = false; resized(); }
+      else setRehearsalView(false);
+      return true;
+    }
     return false;
+  }
   return settingsPanelRaw->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
 }
 
@@ -4370,6 +4447,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  if (rehearsalView) playbackSession.clearRehearsal();
   if (phonePadsPopoverContent != nullptr)
     phonePadsPopoverContent->prepareForEditorDestruction();
   remoteSession.stop();
@@ -4484,7 +4562,7 @@ void MTControlsAudioProcessorEditor::resized() {
     grid->setPhoneHorizontalContentInsets(phoneHorizontalInsets.getLeft(),
                                           phoneHorizontalInsets.getRight());
   }
-  const bool setlistDrawerSupported = supportsSetlistDrawer(*this);
+  const bool setlistDrawerSupported = supportsSetlistDrawer(*this) || rehearsalView;
   const bool setlistOverlaySupported =
       setlistDrawerSupported || minimalPhoneProfile;
   if (!setlistOverlaySupported)
@@ -4556,10 +4634,19 @@ void MTControlsAudioProcessorEditor::resized() {
 #endif
   }
 
+  const bool narrowRehearsal = rehearsalView && area.getWidth() < 700;
+  if (rehearsalPanel) {
+    rehearsalPanel->header.setVisible(rehearsalView);
+    rehearsalPanel->setVisible(rehearsalView && (!narrowRehearsal || !rehearsalMixerOpen));
+    if (rehearsalView)
+      rehearsalPanel->header.setBounds(phoneHorizontalInsets.subtractedFrom(area.removeFromTop(56)));
+  }
+  topBar->setRehearsalMode(rehearsalView);
+  if (narrowRehearsal) { topBarH = 160; waveformH = waveformExpandedH = 108; }
   auto topBarArea = area.removeFromTop(topBarH);
 #if JUCE_ANDROID
   if (minimalPhoneProfile)
-    topBarArea.setTop(0);
+    if (!rehearsalView) topBarArea.setTop(0);
 #endif
   topBar->setBounds(topBarArea);
   int waveH = isWaveformHeightExpanded ? waveformExpandedH : waveformH;
@@ -4577,12 +4664,12 @@ void MTControlsAudioProcessorEditor::resized() {
   int setlistWidth =
       juce::jlimit(setlistMinW, setlistMaxW,
                    static_cast<int>(mainArea.getWidth() * setlistRatio));
-  if (minimalPhoneProfile || isSetlistCollapsed ||
+  if (rehearsalView || minimalPhoneProfile || isSetlistCollapsed ||
       (setlistOverlaySupported && isSetlistDrawerOpen))
     setlistWidth = 0;
 
   auto leftSetlistArea = mainArea.removeFromLeft(setlistWidth);
-  auto handleArea = mainArea.removeFromLeft(handleW);
+  auto handleArea = mainArea.removeFromLeft(rehearsalView ? 0 : handleW);
   auto rightChannelsArea = mainArea;
 #if JUCE_IOS
   // Let the channel backgrounds and their title bands cover the lower safe
@@ -4602,7 +4689,7 @@ void MTControlsAudioProcessorEditor::resized() {
     rightChannelsArea.removeFromBottom(contentInset);
   padsDrawerBackgroundBounds = {};
 
-  if (padsHandlePanel && !minimalPhoneProfile) {
+  if (padsHandlePanel && !minimalPhoneProfile && !rehearsalView) {
     int handleH = 16;
     int padsW = 584; // base width for standard profile
     if (responsiveLayoutProfile == ResponsiveLayoutProfile::Compact) {
@@ -4652,6 +4739,15 @@ void MTControlsAudioProcessorEditor::resized() {
     }
   }
 
+  if (rehearsalView && rehearsalPanel) {
+    if (narrowRehearsal) {
+      rehearsalPanel->setBounds(phoneHorizontalInsets.subtractedFrom(mainArea));
+    } else {
+      const int panelW = rehearsalMixerOpen ? juce::jmin(380, rightChannelsArea.getWidth() / 2) : rightChannelsArea.getWidth();
+      rehearsalPanel->setBounds(rightChannelsArea.removeFromLeft(panelW));
+    }
+  }
+  channelGridPanel->setVisible(!rehearsalView || rehearsalMixerOpen);
   channelGridPanel->setBounds(rightChannelsArea);
 
   if (songListPanelRaw != nullptr) {
@@ -4738,6 +4834,13 @@ void MTControlsAudioProcessorEditor::resized() {
   if (!(setlistOverlaySupported && isSetlistDrawerOpen) && !minimalPhoneProfile)
     setlistHandlePanel->setBounds(handleArea.reduced(0, 8));
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
+
+  if (rehearsalView) {
+    if (!isSetlistDrawerOpen) { songListPanel->setVisible(false); setlistHandlePanel->setVisible(false); }
+    if (padsHandlePanel) padsHandlePanel->setVisible(false);
+    if (padsComponent && padsComponent->getParentComponent() == this) padsComponent->setVisible(false);
+  }
+  if (settingsOverlay) settingsOverlay->toFront(false);
 
   if (reauthPromptModal != nullptr) {
     reauthPromptModal->setBounds(
@@ -5064,6 +5167,11 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (settingsOverlay != nullptr) {
     if (key == juce::KeyPress::escapeKey)
       navigateBackInSettings();
+    return true;
+  }
+  if (rehearsalView && !isSetlistDrawerOpen && key == juce::KeyPress::escapeKey) {
+    if (rehearsalMixerOpen) { rehearsalMixerOpen = false; resized(); }
+    else setRehearsalView(false);
     return true;
   }
   auto &processorRef = playbackSession;

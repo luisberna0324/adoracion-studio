@@ -395,6 +395,7 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   fields->setProperty("fade", p.isFadeActive());
   fields->setProperty("tempo", p.getPlaybackTempoBpm());
   fields->setProperty("pitch", p.getPitchSemiTones());
+  fields->setProperty("rehearsal", p.getRehearsalState());
   fields->setProperty("waveformHash", remoteWaveformHash);
   fields->setProperty("settings", remoteSettingsCache);
   fields->setProperty("libraryRevision", remoteLibraryRevision);
@@ -471,6 +472,14 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
   const auto action = stringProperty(command, "action");
   const auto target = stringProperty(command, "target");
   const auto value = property(command, "value");
+  if (action.startsWith("rehearsal.")) {
+    if (songLoadBusy || !hasCurrentLoadedSong || target != currentLoadedSong.id ||
+        !p.applyRehearsalAction(action, target, value)) {
+      error = "Invalid rehearsal action or song";
+      return false;
+    }
+    return true;
+  }
   if (action.startsWith("song.") || action.startsWith("setlist."))
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
       grid->flushPendingPersistenceNow();

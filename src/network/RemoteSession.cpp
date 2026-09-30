@@ -70,7 +70,7 @@ bool RemoteSession::becomeServer(const juce::String &displayName) {
                 return;
               }
               const auto action = command.getProperty("action", {}).toString();
-              if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain")
+              if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain" || action == "rehearsal.groupLevel" || action == "rehearsal.restLevel")
                 event.coalescingKey = peerId + ":" + action.toStdString() + ":" + command.getProperty("target", {}).toString().toStdString();
               if (!enqueue(std::move(event))) if (auto peer = weakPeer.lock()) peer->close(1013, "Remote command queue full; reconnect");
             }

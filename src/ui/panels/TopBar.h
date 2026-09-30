@@ -30,6 +30,13 @@ public:
                                  songProviderFn);
 
   void setOnSettings(std::function<void()> cb);
+  void setOnRehearsal(std::function<void()> cb) { onRehearsal = std::move(cb); }
+  void setRehearsalMode(bool enabled) {
+    if (rehearsalMode == enabled) return;
+    rehearsalMode = enabled;
+    rehearsalButton.setToggleState(enabled, juce::dontSendNotification);
+    resized(); repaint();
+  }
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
@@ -115,6 +122,9 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
+  IconButton rehearsalButton{"rehearsal", SvgIconName::Music};
+  bool rehearsalMode = false;
+  std::function<void()> onRehearsal;
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:

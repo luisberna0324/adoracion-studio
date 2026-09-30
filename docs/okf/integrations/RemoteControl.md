@@ -10,7 +10,9 @@ timestamp: 2026-09-25T00:00:00-03:00
 # Control remoto LAN
 
 Configuración → Control remoto en móvil (General en escritorio ancho) contiene
-el selector segmentado **Local | Cliente | Servidor**. Local es el valor al iniciar. El descubrimiento, selección de servidor,
+el selector segmentado **Local | Cliente | Servidor**. En iOS este selector,
+la lista de servidores y el campo de alias son UIKit; la página llama al mismo
+modelo y callbacks que Android/escritorio. Local es el valor al iniciar. El descubrimiento, selección de servidor,
 conexión y errores detallados se muestran dentro de Configuración. Cliente
 añade solo una etiqueta pequeña pintada en la esquina superior derecha de la
 onda; no altera su distribución ni intercepta gestos. Muestra `REMOTO` en verde
@@ -75,6 +77,12 @@ La sesión de UI vive más que los componentes que mantienen referencias a ella.
   160 px y la caché del cliente usa nombres derivados de SHA-256.
 
 ## Protocolo v1
+
+La capacidad opcional `rehearsal.version = 1` publica el estado temporal de
+[Ensayo por grupos](../ui/Rehearsal.md). Sus comandos validan canción y grupo,
+agrupan niveles continuos y conservan el balance base de proyecto. No forma parte
+de settings ni requiere transportar audio. Un servidor anterior mantiene el
+transporte/mixer normales; el cliente deshabilita sólo el balance por grupos.
 
 - `snapshot`: estado autoritativo de transporte, canción, mezcla, ventana,
   arrange, mapa de tempo, click, guía, pads y metadatos de biblioteca/setlists.

@@ -51,6 +51,11 @@ public:
   void setVolume(float newVolume) noexcept { volume.store(newVolume, std::memory_order_relaxed); }
   float getVolume() const noexcept { return volume.load(std::memory_order_relaxed); }
 
+  // Transient practice balance; independent of persisted fader/trim settings.
+  void setRehearsalGain(float value) noexcept {
+    rehearsalGain.store(juce::jlimit(0.0f, 1.0f, value), std::memory_order_relaxed);
+  }
+
   void setTrim(float newTrim) noexcept { trim.store(newTrim, std::memory_order_relaxed); }
   float getTrim() const noexcept { return trim.load(std::memory_order_relaxed); }
 
@@ -124,6 +129,8 @@ private:
   juce::PositionableAudioSource *activeSource = nullptr;
 
   std::atomic<float> volume{1.0f};
+  std::atomic<float> rehearsalGain{1.0f};
+  juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> rehearsalRamp{1.0f};
   std::atomic<float> trim{1.0f};
   std::atomic<bool> muted{false};
   std::atomic<bool> soloed{false};

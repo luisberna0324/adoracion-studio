@@ -107,12 +107,14 @@ RenderResult renderImpulse(const RenderGroup group,
                            const float fadeStart = 1.0f,
                            const float fadeEnd = 1.0f,
                            const int outputChannel = 0,
-                           const double tempo = 1.0) {
+                           const double tempo = 1.0,
+                           const float rehearsalGain = 1.0f) {
   juce::TimeSliceThread unusedReadThread("stem-mix-test-read");
   std::vector<std::unique_ptr<StemTrack>> stems;
   stems.push_back(std::make_unique<StemTrack>(
       std::make_unique<ImpulseAudioFormatReader>(impulseFrame),
       unusedReadThread, kSampleRate, 32768, false));
+  stems.front()->setRehearsalGain(rehearsalGain);
   stems.front()->prepareToPlay((kBlockSize * 2) + 8, kSampleRate);
 
   StemMixEngine engine;
@@ -433,6 +435,19 @@ int main() {
   expect(peakIndex(preservedGuide.samples) >= 0,
          "transport fade preserves click and guide stems");
 
+  for (const auto group : {RenderGroup::Melodic, RenderGroup::Percussion, RenderGroup::Guide}) {
+    for (const int output : {0, 1}) {
+      const auto normal = renderImpulse(group, kImpulseFrame, false, 1, 1, output, 0.8);
+      const auto attenuated = renderImpulse(group, kImpulseFrame, false, 1, 1, output, 0.8, .25f);
+      float normalPeak = 0, attenuatedPeak = 0;
+      for (size_t i = 0; i < normal.samples.size(); ++i) {
+        normalPeak = std::max(normalPeak, std::abs(normal.samples[i]));
+        attenuatedPeak = std::max(attenuatedPeak, std::abs(attenuated.samples[i]));
+      }
+      expect(normalPeak > 0 && std::abs(attenuatedPeak / normalPeak - .25f) < .025f,
+             "rehearsal gain reaches stretched, percussion and routed output paths");
+    }
+  }
   std::cout << "stem mix engine tests passed\n";
   return 0;
 }

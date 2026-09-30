@@ -393,12 +393,16 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
         &settingsButton, &midiLearnButton, &tabletMoreButton,
-        &phonePadsButton}) {
+        &phonePadsButton, &rehearsalButton}) {
     addAndMakeVisible(*btn);
   }
   addChildComponent(songPickerButton);
   phonePadsButton.setVisible(false);
   windowModeButton.setVisible(shouldShowWindowModeButton());
+  rehearsalButton.setBadgeText(L10n::tr("ENS", "REH"));
+  rehearsalButton.setTooltip(L10n::tr("Vista de ensayo", "Rehearsal view"));
+  rehearsalButton.setTitle(L10n::tr("Ensayo", "Rehearsal"));
+  rehearsalButton.onClick = [this] { if (onRehearsal) onRehearsal(); };
 
   configureDisplay(timeDisplay, "00:00 / 00:00");
   configureDisplay(keyDisplay, L10n::tr("Tono", "Key"));
@@ -922,6 +926,36 @@ void TopBar::resized() {
   const auto contentBounds = minimalPhoneMode
                                  ? phoneSafeAreaInsets.subtractedFrom(getLocalBounds())
                                  : getLocalBounds();
+  if (rehearsalMode && contentBounds.getWidth() < 700) {
+    // Reflow the actual controls; their callbacks, popovers and session survive
+    // orientation changes without creating a second transport.
+    for (juce::Component *c : std::initializer_list<juce::Component *>{
+           &seekBackButton, &seekForwardButton, &windowModeButton, &settingsButton,
+           &midiLearnButton, &systemUsageDisplay, &rehearsalButton}) c->setVisible(false);
+    for (juce::Component *c : std::initializer_list<juce::Component *>{
+           &prevButton, &playButton, &stopButton, &nextButton, &fadeButton,
+           &tabletMoreButton, &timeDisplay, &keyDisplay, &bpmSegmentButton,
+           &metroToggleButton, &phonePadsButton, &songPickerButton}) c->setVisible(true);
+    auto rows = contentBounds.reduced(8, 4);
+    songInfoBounds = rows.removeFromTop(44);
+    songPickerButton.setBounds(songInfoBounds);
+    songCardHeight = 44; songArtworkSize = 32;
+    rows.removeFromTop(6);
+    auto transport = rows.removeFromTop(48);
+    const int buttonW = juce::jmax(44, (transport.getWidth() - 20) / 6);
+    for (auto *button : {&prevButton, &playButton, &stopButton, &nextButton, &fadeButton, &tabletMoreButton}) {
+      button->setBounds(transport.removeFromLeft(buttonW)); transport.removeFromLeft(4);
+    }
+    rows.removeFromTop(6);
+    auto metadata = rows.removeFromTop(48);
+    phonePadsButton.setBounds(metadata.removeFromRight(44)); metadata.removeFromRight(6);
+    keyDisplay.setBounds(metadata.removeFromLeft(54)); metadata.removeFromLeft(6);
+    bpmSegmentButton.setBounds(metadata.removeFromLeft(46));
+    metroToggleButton.setBounds(metadata.removeFromLeft(44)); metadata.removeFromLeft(6);
+    timeDisplay.setBounds(metadata);
+    if (songInfoBounds != previousSongBounds) songTextScrollStartMs = juce::Time::getMillisecondCounterHiRes();
+    return;
+  }
   const bool compactTouchTablet =
       useTouchOptimisedControls() && !minimalPhoneMode &&
       responsiveProfile == ResponsiveLayoutProfile::Compact;
@@ -1059,7 +1093,7 @@ void TopBar::resized() {
   }
 
   const bool minimalPhoneProfile = minimalPhoneMode;
-  setVisibleIfChanged(songPickerButton, minimalPhoneProfile);
+  setVisibleIfChanged(songPickerButton, minimalPhoneProfile || rehearsalMode);
   setVisibleIfChanged(phonePadsButton, minimalPhoneProfile);
   // Phones keep seek in secondary controls, but expose the contextual
   // Fade Down/Fade Up toggle immediately after Next.
@@ -1108,7 +1142,7 @@ void TopBar::resized() {
   const bool tabletProfile = useTouchOptimisedControls();
   const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
   const bool showTabletMoreButton = tabletProfile;
-  const int fixedButtonCount = tabletProfile ? 1 : (showWindowButton ? 3 : 2);
+  const int fixedButtonCount = tabletProfile ? 1 : (showWindowButton ? 4 : 3);
   const int minFixedButtonsW =
       (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
   const int availableAfterTransport = contentBounds.getRight() - rightPadding - transportW - 8;
@@ -1130,6 +1164,7 @@ void TopBar::resized() {
     if (tabletProfile) {
       controlsW += gap + square;
     } else {
+      controlsW += gap + square; // Rehearsal
       controlsW += gap + square;
       if (showWindowButton)
         controlsW += gap + square;
@@ -1146,6 +1181,9 @@ void TopBar::resized() {
     setVisibleIfChanged(systemUsageDisplay, usageVisible);
     setVisibleIfChanged(windowModeButton, showWindowButton);
     setVisibleIfChanged(tabletMoreButton, showTabletMoreButton);
+    setVisibleIfChanged(rehearsalButton, !tabletProfile);
+    setVisibleIfChanged(settingsButton, !tabletProfile);
+    setVisibleIfChanged(midiLearnButton, !tabletProfile);
 
     if (!bpmVisible)
       setBoundsIfChanged(bpmSegmentButton, {});
@@ -1192,6 +1230,7 @@ void TopBar::resized() {
     if (tabletProfile) {
       addItem(tabletMoreButton, square, true);
     } else {
+      addItem(rehearsalButton, square);
       addItem(midiLearnButton, square);
     }
     if (showWindowButton)
@@ -1268,7 +1307,7 @@ void TopBar::resized() {
   } else {
     songInfoBounds = {};
   }
-  songPickerButton.setBounds(minimalPhoneMode ? songInfoBounds
+  songPickerButton.setBounds((minimalPhoneMode || rehearsalMode) ? songInfoBounds
                                              : juce::Rectangle<int>{});
   songPickerButton.setTitle(songTitleText + " — " + songArtistText);
   if (songInfoBounds != previousSongBounds)
@@ -1438,8 +1477,6 @@ void TopBar::openSettingsPanel() {
 }
 
 void TopBar::showTabletMorePopover() {
-  if (!useTouchOptimisedControls())
-    return;
 
   class ActionButton final : public juce::Button {
   public:
@@ -1493,14 +1530,18 @@ void TopBar::showTabletMorePopover() {
   class MorePopover final : public juce::Component {
   public:
     MorePopover(const bool midiActive, std::function<void()> onMidi,
-                std::function<void()> onSettings)
+                std::function<void()> onSettings, std::function<void()> onRehearsal,
+                bool rehearsalActive)
         : midiButton(L10n::tr("MIDI Learn", "MIDI Learn"),
                      SvgIconName::Midi, std::move(onMidi)),
           settingsButton(L10n::tr("Configuración", "Settings"),
-                         SvgIconName::Settings, std::move(onSettings)) {
+                         SvgIconName::Settings, std::move(onSettings)),
+          rehearsalAction(L10n::tr("Ensayo", "Rehearsal"), SvgIconName::Music, std::move(onRehearsal)) {
       midiButton.setToggleState(midiActive, juce::dontSendNotification);
       addAndMakeVisible(midiButton);
       addAndMakeVisible(settingsButton);
+      addAndMakeVisible(rehearsalAction);
+      rehearsalAction.setToggleState(rehearsalActive, juce::dontSendNotification);
     }
 
     void paint(juce::Graphics &g) override {
@@ -1514,6 +1555,8 @@ void TopBar::showTabletMorePopover() {
 
     void resized() override {
       auto area = getLocalBounds().reduced(10, 6);
+      rehearsalAction.setBounds(area.removeFromTop(48));
+      area.removeFromTop(8);
       constexpr int gap = 10;
       const int buttonWidth = (area.getWidth() - gap) / 2;
       midiButton.setBounds(area.removeFromLeft(buttonWidth));
@@ -1524,12 +1567,16 @@ void TopBar::showTabletMorePopover() {
   private:
     ActionButton midiButton;
     ActionButton settingsButton;
+    ActionButton rehearsalAction;
   };
 
   auto panel = std::make_unique<MorePopover>(
       midiLearnActive, [this] { midiLearnButton.triggerClick(); },
-      [this] { openSettingsPanel(); });
-  panel->setSize(360, 52);
+      [this] { openSettingsPanel(); },
+      [safe = juce::Component::SafePointer<TopBar>(this)] {
+        if (safe != nullptr && safe->onRehearsal) safe->onRehearsal();
+      }, rehearsalMode);
+  panel->setSize(340, 112);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)

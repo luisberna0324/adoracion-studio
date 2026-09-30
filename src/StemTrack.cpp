@@ -143,6 +143,19 @@ void StemTrack::getNextAudioBlock(
     }
   }
 
+  // Every render route reads through StemTrack, including stretched and routed
+  // stems. Smooth only this temporary factor, preserving the saved mix controls.
+  rehearsalRamp.setTargetValue(rehearsalGain.load(std::memory_order_relaxed));
+  if (rehearsalRamp.isSmoothing()) {
+    for (int sample = startSample; sample < startSample + numSamples; ++sample) {
+      const auto gain = rehearsalRamp.getNextValue();
+      for (int channel = 0; channel < numChannels; ++channel)
+        bufferToFill.buffer->getWritePointer(channel)[sample] *= gain;
+    }
+  } else if (rehearsalRamp.getCurrentValue() != 1.0f) {
+    bufferToFill.buffer->applyGain(startSample, numSamples, rehearsalRamp.getCurrentValue());
+  }
+
   const bool isAudible =
       !isMuted() && (!isAnySoloActive.load(std::memory_order_relaxed) || isSoloed());
       
@@ -184,6 +197,8 @@ void StemTrack::getNextAudioBlock(
 }
 
 void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
+  rehearsalRamp.reset(sampleRate, 0.05);
+  rehearsalRamp.setCurrentAndTargetValue(rehearsalGain.load(std::memory_order_relaxed));
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
   signalIntegrityState.reset();

@@ -26,6 +26,7 @@ class LocalAuthCallbackServer;
 class SettingsPanel;
 class SettingsVersionsSheet;
 class AppModal;
+class RehearsalPanel;
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -56,6 +57,9 @@ public:
 
 private:
   void updatePhoneOrientation();
+  void setRehearsalView(bool enabled);
+  bool rehearsalView = false;
+  bool rehearsalMixerOpen = false;
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
   bool phoneOrientationUpdatePending = false;
@@ -94,6 +98,7 @@ private:
   ChannelStripLookAndFeel stripLookAndFeel;
 
   std::unique_ptr<TopBar> topBar;
+  std::unique_ptr<RehearsalPanel> rehearsalPanel;
   std::unique_ptr<juce::Component> waveformBar;
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;

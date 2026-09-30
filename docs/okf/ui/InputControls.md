@@ -17,7 +17,9 @@ La adaptacion sigue las Human Interface Guidelines de Apple para
 [Text fields](https://developer.apple.com/design/human-interface-guidelines/text-fields),
 [Pop-up buttons](https://developer.apple.com/design/human-interface-guidelines/pop-up-buttons)
 y [Pickers](https://developer.apple.com/design/human-interface-guidelines/pickers),
-con renderizado JUCE en todas las plataformas, sin presentar selectores UIKit.
+con renderizado JUCE en las superficies que usan `AdaptiveComboBox`. La
+[Configuración de iOS](NativeIOSSettings.md) usa tablas y controles UIKit;
+conserva los mismos valores y callbacks de preferencias.
 
 ## Contrato visual
 
@@ -71,8 +73,10 @@ desplaza verticalmente el texto.
 `AdaptiveComboBox` representa listas planas de opciones mutuamente
 excluyentes. Siempre muestra el valor actual y un chevron final.
 
-- En iPhone, iPad, Android y escritorio abre exclusivamente `juce::PopupMenu`
-  anclado al campo, de una sola columna y con desplazamiento si no cabe.
+- En los formularios JUCE de iPhone, iPad, Android y escritorio abre
+  `juce::PopupMenu` anclado al campo, de una sola columna y con desplazamiento
+  si no cabe. Configuración iOS presenta listas UIKit con una marca de
+  selección.
 - La opcion activa aparece marcada con un check.
 - Elegir confirma una vez; tocar fuera o Escape descarta sin cambiar el valor.
   JUCE conserva navegacion por teclado y foco accesible al regresar al campo.
@@ -92,9 +96,10 @@ nuevos. Las excepciones son superficies de solo lectura que no representan una
 entrada, por ejemplo el mensaje de estado transparente de
 `SettingsVersionsSheet`.
 
-Los usos actuales incluyen busqueda, metadatos de cancion, BPM, compas, tono,
+Los usos JUCE incluyen busqueda, metadatos de cancion, BPM, compas, tono,
 snap de waveform, apariencia, idioma, crossfade de pads, estilo del click y
-ruteo de salidas.
+ruteo de salidas en Android y escritorio. En iOS, Configuración enlaza estas
+preferencias desde UIKit.
 
 ## Validacion
 

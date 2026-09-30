@@ -9,7 +9,7 @@ timestamp: 2026-09-26T00:00:00-03:00
 # Mobile Layout
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
-el runtime habilita `upright` para Biblioteca, setlists y Configuración mientras su panel
+el runtime habilita `upright` para Ensayo, Biblioteca, setlists y Configuración mientras su panel
 esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
 orientacion inicial se restringe a landscape. En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
@@ -91,6 +91,12 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - No se mantienen tablas de margenes por modelo ni gutters fijos para notch.
 
 ## Controles
+
+- [Ensayo por grupos](Rehearsal.md) usa vertical en teléfono y reorganiza los
+  controles reales del `TopBar` en tres filas, con encabezado de 56 pt y waveform
+  compacta. Biblioteca y Configuración regresan a Ensayo en vertical; cerrar
+  Ensayo vuelve a performance horizontal sin reiniciar el transporte. El balance
+  por grupo conserva faders de altura usable mediante un viewport en pantallas pequeñas.
 
 - Objetivo tactil frecuente minimo: `44 x 44 pt/dp`.
 - El asistente de creacion/edicion de canciones ocupa toda la superficie fisica
@@ -194,11 +200,14 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   Android, igual que las acciones de
   biblioteca y agregar, para cerrarlo desde las vistas de setlists, canciones y
   biblioteca.
-- En iOS y Android, Configuración abre en el mismo overlay del editor. En
-  teléfono ocupa toda la pantalla y gira a vertical; al cerrar recupera la
-  orientación de la vista que permanece abierta. El fondo cubre la ventana,
-  mientras el encabezado y contenido respetan los insets seguros y del teclado.
-  En tablet permanece como panel centrado.
+- En Android, Configuración abre en el overlay del editor. En iOS se presenta
+  una [pantalla UIKit nativa](NativeIOSSettings.md) sobre ese overlay: iPhone
+  ocupa toda la pantalla e iPad usa una hoja centrada. En teléfono gira a
+  vertical; al cerrar recupera la orientación de la vista que permanece
+  abierta. UIKit respeta los insets seguros y del teclado.
+  Las alturas, tarjetas y selectores JUCE descritos a continuación rigen para
+  Android y ventanas compactas de escritorio; iOS adopta las dimensiones y
+  estilos del sistema.
 - La portada móvil agrupa filas de 72 pt con icono, título, descripción y flecha:
   Personalización (Apariencia e idioma, Reproducción, Biblioteca), Audio y
   conexiones (Ruteo de salidas, Control remoto), Cuenta y
