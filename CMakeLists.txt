@@ -643,12 +643,30 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME stem_output_router
         COMMAND MTControlsStemOutputRouterTests)
 
+    juce_add_console_app(MTControlsStandaloneAudioRuntimeTests
+        PRODUCT_NAME "Standalone Audio Runtime Tests")
+    target_sources(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        tests/standalone_audio_runtime_tests.cpp
+        src/audio/StandaloneAudioDeviceBridge.cpp
+        src/audio/AudioDeviceMonitor.cpp
+        src/audio/OutputChannelCatalog.cpp)
+    target_include_directories(MTControlsStandaloneAudioRuntimeTests PRIVATE src)
+    target_compile_definitions(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(MTControlsStandaloneAudioRuntimeTests PRIVATE juce::juce_audio_utils)
+    juce_generate_juce_header(MTControlsStandaloneAudioRuntimeTests)
+    add_test(NAME standalone_audio_runtime COMMAND MTControlsStandaloneAudioRuntimeTests)
+
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.
     get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     set(_mtcontrols_test_targets)
     foreach(_mtcontrols_target IN LISTS _mtcontrols_directory_targets)
         if(_mtcontrols_target MATCHES "^MTControls.*Tests$")
+            # Match the application's no-embedded-browser build. In particular,
+            # Linux tests must not acquire an unused GTK/WebKit dependency.
+            target_compile_definitions(${_mtcontrols_target} PRIVATE
+                JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
             list(APPEND _mtcontrols_test_targets "${_mtcontrols_target}")
         endif()
     endforeach()
@@ -673,18 +691,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
 endif()
 
-juce_add_plugin(MTControls
+add_library(MTControls STATIC)
+
+# Native application; MTControls is the reusable engine/UI core for tests.
+juce_add_gui_app(MTControls_Standalone
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
-    IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT TRUE
-    NEEDS_MIDI_OUTPUT FALSE
-    IS_MIDI_EFFECT FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD FALSE
-    PLUGIN_MANUFACTURER_CODE MLTK
-    PLUGIN_CODE Mtc1
-    FORMATS Standalone
     PRODUCT_NAME "PlayWorship"
     ICON_BIG "${MTCONTROLS_APP_ICON_PATH}"
     ICON_SMALL "${MTCONTROLS_APP_ICON_PATH}"
@@ -709,9 +721,9 @@ juce_add_plugin(MTControls
     LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to compatible music and presentation services on your local network."
 )
 
-# iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
+# iOS / iPadOS: device family belongs to the native application.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set_target_properties(MTControls PROPERTIES
+    set_target_properties(MTControls_Standalone PROPERTIES
         JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}"
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
     if(TARGET MTControls_Standalone)
@@ -735,13 +747,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     endif()
 endif()
 
-juce_generate_juce_header(MTControls)
-
-if(TARGET MTControls_Standalone)
-    target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
-    target_compile_definitions(MTControls_Standalone
-        PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
-endif()
+# Keep installer/CI paths stable while removing the audio-plugin wrapper.
+set_target_properties(MTControls_Standalone PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/MTControls_artefacts/$<CONFIG>/Standalone"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/MTControls_artefacts/$<CONFIG>/Standalone")
+target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
+target_include_directories(MTControls_Standalone PRIVATE
+    src $<TARGET_PROPERTY:MTControls,INCLUDE_DIRECTORIES>)
+target_link_libraries(MTControls_Standalone PRIVATE
+    MTControls juce::juce_audio_utils juce::juce_cryptography juce::juce_dsp)
+# The app also compiles JUCE modules. Keep their feature switches identical to
+# the static core (notably Windows ASIO, iOS sharing and MP3 decoding).
+target_compile_definitions(MTControls_Standalone PRIVATE
+    $<TARGET_PROPERTY:MTControls,COMPILE_DEFINITIONS>)
+juce_generate_juce_header(MTControls_Standalone)
+get_target_property(_mtcontrols_generated_sources MTControls_Standalone
+    JUCE_GENERATED_SOURCES_DIRECTORY)
+target_include_directories(MTControls PUBLIC "${_mtcontrols_generated_sources}")
+target_sources(MTControls PRIVATE "${_mtcontrols_generated_sources}/JuceHeader.h")
+target_compile_definitions(MTControls PUBLIC
+    JUCE_STANDALONE_APPLICATION=1
+    MTCONTROLS_NATIVE_APP=1
+    MTCONTROLS_APP_VERSION="${MTCONTROLS_APP_VERSION}")
 
 juce_add_binary_data(MTControlsAssets
     SOURCES
@@ -1007,7 +1034,6 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_USE_MP3AUDIOFORMAT=1
-        JUCE_VST3_CAN_REPLACE_VST2=0
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
         MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"

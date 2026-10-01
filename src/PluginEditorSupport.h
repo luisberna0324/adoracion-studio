@@ -5,6 +5,8 @@
 #include "data/SongData.h"
 #include <JuceHeader.h>
 
+class MTControlsAudioProcessor;
+
 namespace PluginEditorSupport {
 
 extern const int kDefaultTopBarH;
@@ -39,11 +41,10 @@ struct StandaloneAudioContext {
   int maxOutputs = 0;
 };
 
-StandaloneAudioContext getStandaloneAudioContext();
+StandaloneAudioContext getStandaloneAudioContext(MTControlsAudioProcessor &processor);
 juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx);
 bool enforceStandaloneOutputOnlyAudio(juce::AudioDeviceManager &manager);
 bool fallbackToBuiltInOrDefaultOutput(juce::AudioDeviceManager &manager);
-void hideStandaloneOptionsButton(juce::Component *fromComponent);
 
 int categoryIndexForName(const juce::String &category);
 CategoryRoutingDefaults routingForCategory(

@@ -311,7 +311,11 @@ void StemTrack::scheduleReadDiscontinuity(
     const int prefixFrames, const juce::int64 targetFrame,
     const int fadeFrames) noexcept {
   readDiscontinuityPrefixFrames = juce::jmax(0, prefixFrames);
+#if JUCE_LINUX
+  readDiscontinuityTargetFrame = juce::jmax(juce::int64(0), targetFrame);
+#else
   readDiscontinuityTargetFrame = juce::jmax<juce::int64>(0, targetFrame);
+#endif
   readDiscontinuityFadeFrames = juce::jmax(0, fadeFrames);
   readDiscontinuityPending = true;
 }

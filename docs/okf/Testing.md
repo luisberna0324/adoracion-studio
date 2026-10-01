@@ -53,6 +53,13 @@ build/functional-tests --output-on-failure -L lan`. El gate de PR ejecuta
 conexión WebSocket directa a loopback; este último ejercita comandos, snapshots,
 onda, VU y reconexión con la compilación portátil.
 
+## Cobertura de la aplicación nativa
+
+`standalone_audio_runtime` valida dispositivos simulados de 2, 8 y 64 salidas,
+restauración de preferencias, entradas deshabilitadas antes de abrir audio y
+parada/reinicio. Se ejecuta con `ctest --test-dir <build> -R standalone_audio_runtime`.
+No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
+
 ## Cobertura por contrato
 
 | Contrato | Tests de regresión |
@@ -130,3 +137,15 @@ un test automatizado del contrato afectado cuando sea posible.
   macOS local, y las dos pruebas `lan` pasaron por separado (26/26 en total).
 - El segundo run del PR #41 pasó 24/24 pruebas del gate en el runner macOS y
   también pasó la política SemVer. Las comprobaciones físicas siguen pendientes.
+
+## Resultado de la migración nativa del 01/10/2026
+
+- Linux x86_64, Debug, fuente base `b0e83fddddae28cd313c4e4b27d0b72b80c4e0e0`:
+  `MTControls_Standalone` y `PlayWorshipTests` compilaron correctamente
+- Gate con display real del escritorio cloud: 26/26 pruebas pasaron, sin
+  fallos ni skips, con `-LE 'interactive|lan' --parallel 2` (7.95 s)
+- La app abrió su pantalla de bienvenida. Una segunda invocación terminó
+  con código 0 sin crear otra ventana
+- `input_controls_popup` quedó excluido por ser interactivo. Audio/MIDI
+  físicos, login, flujo completo de proyecto/salida y plataformas Apple,
+  Windows y Android siguen pendientes de validación específica

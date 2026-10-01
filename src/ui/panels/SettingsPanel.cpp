@@ -1,3 +1,4 @@
+#include "AppIdentity.h"
 #include "SettingsPanel.h"
 
 #include "../../audio/OutputChannelCatalog.h"
@@ -1514,7 +1515,7 @@ void SettingsPanel::applyLanguageTexts() {
       juce::dontSendNotification);
   sessionUidCopyButton.setValueToCopy(session.uid);
   sessionLicenseCopyButton.setValueToCopy(session.licenseKey);
-  sessionVersionValue.setText(juce::String(JucePlugin_VersionString),
+  sessionVersionValue.setText(juce::String(playworship::appVersion),
                               juce::dontSendNotification);
   sessionQuotaLabel.setText(L10n::tr("Cuotas de nube", "Cloud quotas"), juce::dontSendNotification);
   const auto formatBytes = [](juce::int64 bytes) {

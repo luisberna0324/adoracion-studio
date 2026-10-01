@@ -386,7 +386,11 @@ SongMixExporter::Result SongMixExporter::exportToWav(
     }
 
     auto blockOutputFrames =
+#if JUCE_LINUX
+        std::min<juce::int64>(kExportBlockSize, outputFramesRemaining);
+#else
         juce::jmin<juce::int64>(kExportBlockSize, outputFramesRemaining);
+#endif
     const auto latencyBoundary =
         static_cast<juce::int64>(outputLatencySamples);
     if (generated < latencyBoundary &&
@@ -500,7 +504,11 @@ SongMixExporter::Result SongMixExporter::exportToWav(
     const int skipFrames = static_cast<int>(juce::jlimit<juce::int64>(
         0, outputFrames,
         static_cast<juce::int64>(outputLatencySamples) - generated));
+#if JUCE_LINUX
+    const int framesToWrite = static_cast<int>(std::min<juce::int64>(
+#else
     const int framesToWrite = static_cast<int>(juce::jmin<juce::int64>(
+#endif
         outputFrames - skipFrames, totalFrames - written));
     if (framesToWrite > 0) {
       if (!writer->writeFromAudioSampleBuffer(buffer, skipFrames,

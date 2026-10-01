@@ -106,7 +106,11 @@ public:
   ProgressOutputStream(juce::OutputStream &targetIn,
                        const juce::int64 estimatedBytesIn,
                        std::function<void(double)> onProgressIn)
+#if JUCE_LINUX
+      : target(targetIn), estimatedBytes(std::max<juce::int64>(
+#else
       : target(targetIn), estimatedBytes(juce::jmax<juce::int64>(
+#endif
                               1, estimatedBytesIn)),
         onProgress(std::move(onProgressIn)) {}
 
@@ -919,7 +923,11 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   if (song.artworkPath.isNotEmpty())
     totalResourceBytes += entrySize(song.artworkPath);
   totalResourceBytes += entrySize(kWaveformName);
+#if JUCE_LINUX
+  totalResourceBytes = std::max<juce::int64>(1, totalResourceBytes);
+#else
   totalResourceBytes = juce::jmax<juce::int64>(1, totalResourceBytes);
+#endif
   // processedResourceBytes is read/written from the parallel extract workers
   // (Phase 2 below). It must be atomic to avoid a data race on the counter.
   // We do NOT call progress.publish from the workers because
@@ -928,7 +936,11 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   auto reportResourceBytes = [&](const juce::int64 bytes,
                                  const juce::String &resourceName) {
     processedResourceBytes.fetch_add(
+#if JUCE_LINUX
+        std::max<juce::int64>(0, bytes), std::memory_order_acq_rel);
+#else
         juce::jmax<juce::int64>(0, bytes), std::memory_order_acq_rel);
+#endif
     const auto resourceProgress =
         static_cast<double>(processedResourceBytes.load(
             std::memory_order_acquire)) /
@@ -1045,7 +1057,11 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
             // progress bar (we don't call progress.publish from the
             // workers to avoid the throttle data race).
             processedResourceBytes.fetch_add(
+#if JUCE_LINUX
+                std::max<juce::int64>(0, sw.expectedSize),
+#else
                 juce::jmax<juce::int64>(0, sw.expectedSize),
+#endif
                 std::memory_order_acq_rel);
             continue;
           }
@@ -1054,7 +1070,11 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                             perWorkerError,
                             [&](const juce::int64 bytes) {
                               processedResourceBytes.fetch_add(
+#if JUCE_LINUX
+                                  std::max<juce::int64>(0, bytes),
+#else
                                   juce::jmax<juce::int64>(0, bytes),
+#endif
                                   std::memory_order_acq_rel);
                             })) {
             sw.ok = false;
