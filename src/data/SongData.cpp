@@ -528,3 +528,58 @@ std::vector<float> buildMixedWaveformBins(
   report(1.0);
   return mixedBins;
 }
+
+std::vector<float> buildStemWaveformBins(const ImportedStemData &stem,
+                                         const double songLengthSeconds,
+                                         const int binCount,
+                                         const std::function<bool()> &shouldCancel) {
+  if (!stem.include || binCount <= 0 || songLengthSeconds <= 0.0 ||
+      (shouldCancel && shouldCancel()))
+    return {};
+
+  juce::File file(stem.storedPath);
+  if (!file.existsAsFile())
+    file = juce::File(stem.sourcePath);
+  if (!file.existsAsFile())
+    return {};
+
+  juce::AudioFormatManager formatManager;
+  formatManager.registerBasicFormats();
+  auto reader = std::unique_ptr<juce::AudioFormatReader>(
+      formatManager.createReaderFor(file));
+  if (reader == nullptr || reader->sampleRate <= 0.0)
+    return {};
+
+  const auto timelineSamples = juce::jmax(
+      static_cast<juce::int64>(1),
+      static_cast<juce::int64>(std::ceil(songLengthSeconds * reader->sampleRate)));
+  const int channels = juce::jmax(1, static_cast<int>(reader->numChannels));
+  constexpr int blockSize = 4096;
+  juce::AudioBuffer<float> buffer(channels, blockSize);
+  std::vector<float> bins(static_cast<size_t>(binCount), 0.0f);
+  for (juce::int64 position = 0; position < reader->lengthInSamples;) {
+    if (shouldCancel && shouldCancel())
+      return {};
+    const int count = static_cast<int>(juce::jmin(
+        static_cast<juce::int64>(blockSize), reader->lengthInSamples - position));
+    if (!reader->read(&buffer, 0, count, position, true, true))
+      break;
+    for (int sample = 0; sample < count; ++sample) {
+      float mono = 0.0f;
+      for (int channel = 0; channel < channels; ++channel)
+        mono += buffer.getSample(channel, sample);
+      const auto bin = juce::jlimit(
+          0, binCount - 1,
+          static_cast<int>(((position + sample) * binCount) / timelineSamples));
+      auto &peak = bins[static_cast<size_t>(bin)];
+      peak = juce::jmax(peak, std::abs(mono / static_cast<float>(channels)));
+    }
+    position += count;
+  }
+
+  const auto maximum = *std::max_element(bins.begin(), bins.end());
+  if (maximum > 0.0f)
+    for (auto &peak : bins)
+      peak = std::sqrt(juce::jlimit(0.0f, 1.0f, peak / maximum));
+  return bins;
+}

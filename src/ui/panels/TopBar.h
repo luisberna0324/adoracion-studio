@@ -34,6 +34,7 @@ public:
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
   void setOnPhonePads(std::function<void(juce::Component &)> cb);
+  void setOnPhonePractice(std::function<void()> cb);
   void triggerPhonePadsPopover();
   void setPhoneOverlayStates(bool libraryOpen, bool padsOpen);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
@@ -60,29 +61,7 @@ public:
   void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
-  class IconButton final : public juce::Button {
-  public:
-    IconButton(juce::String name, SvgIconName iconToUse,
-               bool primary = false);
-    std::function<void()> onPointerDown;
-
-    void setIcon(SvgIconName iconToUse);
-    void setBadgeText(juce::String text);
-    void setPulseAmount(float amount, bool downbeat);
-
-    void paintButton(juce::Graphics &gr, bool isMouseOverButton,
-                     bool isButtonDown) override;
-
-  protected:
-    void mouseDown(const juce::MouseEvent &event) override;
-
-  private:
-    SvgIconName icon;
-    juce::String badgeText;
-    bool isPrimary = false;
-    float pulseAmount = 0.0f;
-    bool pulseDownbeat = false;
-  };
+  using IconButton = TransportIconButton;
 
   class RoundedLabel : public juce::Label {
   public:
@@ -140,6 +119,7 @@ private:
       onSettingsWithAnchor;
   std::function<void(juce::Component &)> onPhoneLibrary;
   std::function<void(juce::Component &)> onPhonePads;
+  std::function<void()> onPhonePractice;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;

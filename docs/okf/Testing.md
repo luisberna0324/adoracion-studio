@@ -62,6 +62,7 @@ onda, VU y reconexión con la compilación portátil.
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
+| [Ensayo por instrumento](ui/MobileLayout.md) | `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda y reloj visual; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
 | [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |
@@ -93,6 +94,22 @@ de build y resultado. La compilación o un simulador no las acreditan.
 
 Registrar fallos de estas comprobaciones como regresiones reproducibles y añadir
 un test automatizado del contrato afectado cuando sea posible.
+
+## Validación local de Ensayo del 01/10/2026
+
+- macOS arm64: pasaron `practice_panel_gestures`, `remote_session`,
+  `remote_session_portable_transport`, `audio_engine_core` y `stem_mix_engine`.
+  La sesión nativa se comprobó con `PW_REMOTE_DIRECT_CONNECT=1`; estos resultados
+  acreditan transporte WebSocket local, no descubrimiento físico mDNS.
+- Compilación iOS Simulator correcta. La cabecera y los selectores se revisaron
+  visualmente en iPhone 17 Pro Simulator. La comprobación manual del último
+  ajuste de enfoque de tres estados quedó pendiente al bloquearse la Mac;
+  sus transiciones sí pasaron la prueba automatizada de gestos.
+- iPhone 16 físico: compilación Debug firmada, firma validada, instalación y
+  apertura por Wi-Fi confirmadas, con el dispositivo ausente del registro USB.
+  Instalación y apertura no sustituyen una prueba manual de audio o gestos.
+- Esta validación es específica de Ensayo. No se ejecutó aquí el gate completo,
+  ni se verificó este conjunto de cambios en Android o Windows.
 
 ## Resultado local del 26/09/2026
 

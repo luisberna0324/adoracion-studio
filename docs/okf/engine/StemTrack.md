@@ -128,6 +128,21 @@ float getTrim() const noexcept;
 
 Ajuste fino de ganancia.
 
+### Escucha temporal de ensayo
+
+```cpp
+void setPracticeListeningGain(float gain) noexcept;
+```
+
+Multiplicador temporal independiente de volumen y trim, con transición lineal
+de 200 ms en el audio thread y destino fijo (no acumulativo). Se aplica antes
+de las ganancias de mezcla y del cálculo de magnitud; Solo, Mute, ruteo y
+silencios de sección conservan su efecto. No se guarda con los ajustes de la
+canción. `MTControlsAudioProcessor::setPracticeListeningMode` publica de forma
+atómica instrumento y modo: normal (1x), enfoque (+2 dB seleccionado,
+−12 dB otros) o acompañamiento (−12 dB seleccionado, 1x otros). Los stems de
+clic/guía quedan en 1x. El cambio de canción limpia este estado.
+
 ### Mute
 
 ```cpp

@@ -9,7 +9,7 @@ timestamp: 2026-09-26T00:00:00-03:00
 # Mobile Layout
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
-el runtime habilita `upright` para Biblioteca, setlists y Configuración mientras su panel
+el runtime habilita `upright` para Biblioteca, setlists, Configuración y Ensayo mientras su panel
 esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
 orientacion inicial se restringe a landscape. En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
@@ -24,6 +24,211 @@ ventana, la raiz OpenGL y el editor, incluida el area segura actualizada.
 Los cambios de area segura se propagan tambien cuando el tamano de la ventana
 y del contenido permanece igual. Asi se retira el margen superior al ocultar
 la barra del sistema, sin esperar a otra rotacion o redimension.
+
+En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
+`Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;
+al cerrar restaura las orientaciones landscape de performance. La vista usa
+los insets seguros reales, muestra inicialmente una ventana de 12 segundos y usa
+`PlaybackSession` para posición, Play/Pausa y Stop. Un toque en el encabezado
+de la tarjeta abre la lista de instrumentos. Elegir uno cambia el nombre y la
+onda individual; con una escucha de ensayo activa, también retargetea esa
+escucha al nuevo instrumento. La onda individual se decodifica en background y se alinea al tiempo
+global de la canción. En Cliente se muestran los instrumentos del servidor,
+pero el protocolo remoto actual solo transporta la onda mezclada, así que la
+onda individual indica su falta de disponibilidad. Play/Pausa y Stop no se
+envían cuando la conexión está caída.
+
+La onda y la regla ocupan todo el ancho de la tarjeta. `getWaveformLayout()`
+comparte esos límites entre el dibujo, las marcas A–B, el cursor y la conversión
+de píxeles a segundos del arrastre; el zoom conserva la misma correspondencia.
+Nombre del instrumento, ayudas y tiempos mantienen 18 puntos de margen lateral.
+Un marco interior redondeado aplica degradados de 9 puntos sobre la onda, con
+un borde fino y luz inferior discreta. No usa desenfoque ni crea imágenes por
+frame. Cursor y marcas se dibujan sobre la sombra; las etiquetas A/B se mantienen
+dentro de la tarjeta sin desplazar las líneas de tiempo que representan.
+
+Ensayo reutiliza los controles de la aplicación: `TransportIconButton`,
+definido en `UiCommon` y usado también por el alias `TopBar::IconButton`,
+presenta Play/Pausa y Stop junto a A, B, Repetir y Borrar región en una única
+fila al pie de la vista. Play/Pausa y Stop miden 56 × 56 puntos, o 44 × 44 en
+teléfonos estrechos; los otros cuatro conservan 44 × 44. Cerrar usa
+`HeaderIconButton`, con una X circular de 44 × 44 puntos en
+el encabezado. `Ensayo` y el nombre de la canción comparten una línea base
+en la cabecera de 64 puntos, separados por 12 puntos. El nombre usa color
+secundario y elipsis cuando no cabe, sin comprimir su fuente ni invadir
+los 12 puntos de separación con Cerrar.
+La fila anterior al transporte queda fuera de la tarjeta de
+onda: muestra el estado de la mezcla a la izquierda y la cápsula textual
+`Restaurar mezcla` de 160 × 44 puntos a la derecha solo cuando hay una escucha
+de ensayo activa.
+
+Sobre la tarjeta de onda, tono y tempo comparten una fila en dos columnas con
+12 puntos de separación. Los títulos `Tono` (`Key` en inglés) y `Tempo` se
+dibujan encima de cada selector, en tipografía Medium de 12 puntos y color
+secundario, alineados a la izquierda con 12 puntos de margen. Cada título
+ocupa 18 puntos de alto y deja 4 puntos hasta el control de 44 puntos.
+`PracticePitchSelector` presenta el tono como una
+rueda horizontal de notas cromáticas: el centro queda resaltado y los extremos
+se desvanecen hacia el fondo. Mide 44 puntos de alto y al menos 136 de ancho
+en teléfonos de al menos 320 puntos. Cada nota ocupa un paso de 44 puntos.
+Arrastrar hacia la izquierda sube el tono y hacia la derecha lo baja; durante
+el gesto solo cambia la previsualización. Al soltar se confirma una única
+transposición entera y la rueda se centra suavemente en 160 ms, sin inercia que
+seleccione notas adicionales. Tocar una nota lateral la selecciona; un doble
+toque restaura el tono original. En escritorio admite flechas, Home para
+restaurar y rueda del ratón; conserva la semántica accesible de un Slider.
+
+El nombre parte de `PlaybackSession::getLoadedSongKey()` y reutiliza el índice
+y las notas de `PadsEngine`, con sostenidos y sufijo menor cuando corresponde.
+Si falta la tonalidad, presenta el desplazamiento en semitonos. Las ruedas no
+muestran leyendas inferiores: un relleno azul grisáceo acompaña a la nota o al
+BPM original; la selección central usa el relleno de acento del tema y énfasis
+tipográfico. Si coinciden, prevalece el relleno de selección.
+En tono, el relleno identifica el original exacto (0 semitonos), no sus octavas
+dentro del rango de −12..+12. Los nombres y ayudas siguen disponibles para accesibilidad.
+El valor optimista se conserva hasta la confirmación del servidor o timeout;
+un cambio de canción, modo o conexión cancela un arrastre pendiente. Usa la misma
+transposición y persistencia por canción y setlist que el `TopBar`.
+
+`PracticeTempoSelector`, a la derecha, reutiliza `PracticeWheelSelector` con los
+mismos gestos, centrado y degradados del tono. Cada paso cambia 1 BPM y solo
+confirma el cambio al soltar. Conserva valores fraccionarios recibidos del motor
+y restaura el tempo original con doble toque o Home. Respeta los límites del
+motor (75 %–200 % del BPM original, dentro del rango admitido de 20–300 BPM)
+y usa `PlaybackSession::setPlaybackTempoBpm`, incluida su ruta remota y la
+persistencia local por setlist. Cambiar tempo altera la velocidad de reproducción;
+la onda y la grilla mantienen las posiciones de tiempo fuente.
+
+En la fila inferior, A marca el inicio y B cierra la región e inicia la repetición.
+Ambos se ajustan al pulso musical más cercano dentro de Inicio/Fin; un empate
+elige el pulso posterior. El ajuste respeta el mapa de tempo y el denominador de
+la métrica, independientemente del zoom o de cuántas marcas sean visibles.
+A debe dejar al menos un pulso válido posterior para B que respete la duración
+mínima del motor; B permanece deshabilitado si su pulso coincide con A o queda
+demasiado cerca. Repetir desactiva el loop conservando las marcas. Borrar región
+(papelera) elimina ambas marcas y libera el loop o la preparación, incluso si
+solo se marcó A. No modifica la posición ni Play/Pausa, no borra un loop ajeno,
+y evita reconstruir una región eliminada desde un snapshot remoto atrasado.
+La selección A–B es temporal: cerrar Ensayo libera el loop si la vista conserva
+su propiedad.
+
+Pellizcar la tarjeta modifica solo la escala visual, manteniendo el cursor
+central como referencia; no busca otra posición ni cambia Play/Pausa. Abrir los
+dedos amplía y cerrarlos muestra más tiempo. `PracticeViewport` limita la
+ventana a 2–48 segundos, sin superar la duración de la canción; una canción
+de menos de 2 segundos conserva su duración completa. El zoom se mantiene al
+cambiar de instrumento y vuelve a 12 segundos al cambiar de canción o contexto
+local/remoto. En escritorio, la magnificación del trackpad usa el mismo factor
+de escala. Dos dedos cancelan el gesto simple en curso y sus ayudas pendientes;
+el pinch sigue consumiendo los eventos hasta que se levantan todos los dedos,
+para que el último dedo no dispare un swipe, un salto o el selector.
+
+Una regla discreta de 24 puntos dentro de la tarjeta muestra números de compás
+y marcas secundarias de pulsos cuando caben. `PracticeTimelineRuler` usa el
+mapa de tempo vigente de `WaveformBar`, incluidas las ediciones sin guardar,
+y conserva la fase musical al cambiar el BPM dentro de un compás. Un cambio
+de métrica inicia un compás nuevo. La duración usa el denominador real de la
+métrica; por ejemplo, 7/8 equivale a 3.5 negras por compás. Las etiquetas se
+separan al menos 72 puntos y los pulsos requieren al menos 10 puntos de espacio,
+sin subdivisiones finas ni snap al recorrer la onda. Las marcas se calculan en
+tiempo fuente y no cambian al alterar la velocidad de reproducción.
+
+Los gestos verticales empiezan en cualquier punto de la tarjeta de onda,
+incluido encabezado, cuerpo y footer. Un recorrido de al menos 44 puntos con
+predominio vertical (1.2 veces el horizontal) activa una sola acción por gesto:
+
+- Los tres niveles, de abajo hacia arriba, son instrumento reducido,
+  mezcla normal y enfoque. Cada swipe sube o baja exactamente un nivel.
+- Desde mezcla normal, arriba enfoca: seleccionado +2 dB y otros −12 dB.
+  Abajo reduce el seleccionado a −12 dB y mantiene los otros en su nivel normal.
+- Desde enfoque, abajo restaura la mezcla normal; desde reducido, arriba
+  restaura la mezcla normal. Otro gesto permite seguir al nivel opuesto.
+- Arriba estando enfocado y abajo estando reducido no envían comandos.
+  Un gesto largo o que cambia de dirección no salta más de un nivel.
+- Clic y guía conservan siempre su nivel configurado.
+
+Es una ganancia temporal suavizada durante 200 ms, independiente de faders,
+trim, Solo y Mute; los niveles no acumulan ganancia. El footer indica
+el siguiente gesto disponible según el estado; la fila de mezcla fuera de la onda indica el modo vigente
+y ofrece `Restaurar mezcla`. Cerrar Ensayo restaura la mezcla si esa
+vista sigue siendo propietaria de la escucha. Cargar otra canción, cambiar de
+modo local/cliente/servidor o desconectar al cliente propietario también la
+restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,
+la intención viaja por `practice.listen` y se aplica al audio del servidor;
+los gestos no envían comandos mientras la conexión está caída.
+
+La tarjeta se divide virtualmente en dos mitades iguales: un doble toque en
+la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques
+deben pertenecer a la misma mitad, canción y modo local/remoto. El salto usa
+el BPM original y la métrica de la canción, conserva Play/Pausa y muestra una
+confirmación en la mitad tocada. Los saltos consecutivos en el mismo sentido
+acumulan el contador (`−1 compás`, `−2 compases`, etc.) durante 1.5 segundos
+desde el último salto. Invertir el sentido, iniciar un arrastre, detener o
+cambiar canción reinicia esa cuenta; tocar un límite sin desplazamiento no
+incrementa el contador. Cada mitad lleva una ayuda pequeña y secundaria para
+el doble toque, fuera del cuerpo de la onda. Un toque en el encabezado espera el
+intervalo del doble toque antes de abrir el selector de instrumento.
+
+El arrastre horizontal desplaza la onda bajo un cursor central: hacia la
+derecha busca audio anterior y hacia la izquierda audio posterior. Durante
+el arrastre solo cambia la previsualización y pausa temporalmente el transporte
+si estaba reproduciendo. La cámara sigue el dedo con un suavizado de 35 ms y
+continúa con inercia proporcional a la velocidad reciente del dedo al soltar.
+La posición del evento relativo al panel se conserva como `Point<float>`;
+el arrastre admite desplazamientos menores que un punto sin redondear a entero.
+El frenado suave dura entre 180 y 1600 ms y respeta Inicio/Fin y el loop de
+sección activo, sin rebote en los límites. Alcanzar un límite acorta su duración
+según la distancia restante, con un mínimo de 180 ms. Mantener el dedo quieto
+al menos 100 ms antes de soltar elimina el impulso. El audio permanece pausado durante
+el arrastre y la inercia; cuando la onda termina de moverse se aplica un único
+seek con `PlaybackSession` y se reanuda solo si esa pausa sigue perteneciendo
+al gesto. Tocar de nuevo interrumpe la inercia y conserva la propiedad de la
+misma pausa para continuar recorriendo la onda.
+
+`PracticeWaveformGeometry` agrupa los bins en intervalos fijos desde el tiempo
+cero de la canción y conserva sus amplitudes al mover la cámara. Los puntos
+se conectan con curvas cúbicas sin exceder las amplitudes adyacentes, formando
+una envolvente continua y rellena. La geometría se cachea en tiles de 64
+intervalos con vecinos solapados; solo los tiles visibles componen un `Path`
+de unión con espacio preasignado. Ese `Path` se reutiliza hasta que entra o sale
+un tile y se rellena una sola vez, evitando huecos y opacidad doble en las
+uniones. Cambiar bins, duración o tamaño reconstruye la geometría con una
+resolución base correspondiente a la ventana mínima de 2 segundos; desplazar
+la cámara o hacer zoom solo transforma los puntos ya cacheados. El espacio
+de unión admite la ventana máxima de 48 segundos sin crecer durante el gesto.
+La transformación conserva posiciones subpíxel. La resolución
+no supera los bins fuente ni 65536 puntos de envolvente.
+
+`PracticePlaybackClock` presenta el movimiento durante reproducción a partir
+del tiempo de cada frame y corrige gradualmente la cuantización de bloques o
+paquetes, con una constante de 90 ms y una zona sin corrección de 10 ms como
+base, ajustada a la velocidad. La posición visual es monótona durante playback
+normal; un seek intencional, una discontinuidad nueva de al menos 0.25 segundos
+(como un loop), una pausa o cambio de canción reinician esa estimación. Al
+terminar la previsualización de seek se parte de su posición presentada. Si la
+fuente deja de avanzar, la predicción se limita a 250 ms. Esto no cambia el
+reloj ni la reproducción de audio.
+
+En plataformas distintas de Android, `VBlankAttachment` actualiza la animación
+con los frames de pantalla, siguiendo el mecanismo de la onda principal. Si
+no llega un callback durante más de 100 ms, el timer de 30 Hz sirve de respaldo.
+Android usa el timer de 60 Hz. Los repaints de movimiento se limitan a la
+tarjeta de onda.
+
+Se fija el eje dominante tras 12 puntos de movimiento (relación 1.2)
+para que un gesto horizontal no cambie el volumen. Cambiar canción o modo,
+o perder la conexión antes de terminar, cancela el salto. Tanto en Local como
+en Cliente se conserva provisionalmente el destino mostrado mientras el
+transporte confirma la nueva posición: un mínimo de 120 ms y dos lecturas
+consecutivas consistentes antes de liberar esa previsualización, con un timeout
+de respaldo de 1.5 segundos. El desfase residual converge suavemente a la
+posición autoritativa para evitar mostrar
+destino, posición anterior y destino entre bloques. `finishScrub` devuelve
+`bool`: en Cliente confirma únicamente el envío a la cola, y un `ack` de rechazo
+se recibe después mediante `scrubFinishRejected`. Un fallo de envío o un rechazo
+descartan la previsualización; la vista no recupera una pausa que ya no posee.
+Cerrar la vista devuelve el estado de reproducción anterior si todavía posee
+la pausa; Detener o una nueva orden de transporte tienen prioridad.
 
 En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
 y agrupa solicitudes usando el estado mas reciente de Biblioteca. La ventana

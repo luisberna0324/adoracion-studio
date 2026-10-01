@@ -1,5 +1,6 @@
 #include "network/RemoteSession.h"
 #include "network/PlaybackSession.h"
+#include "audio/PracticeLoop.h"
 #include <JuceHeader.h>
 #include <chrono>
 #include <cstring>
@@ -26,6 +27,54 @@ bool waitUntil(Predicate predicate, int timeoutMs = 5000) {
 struct TestProcessor {
   float volume = 0.75f;
   int writes = 0;
+  int practiceStem = -1;
+  int practiceMode = 0;
+  int practiceWrites = 0;
+  bool loaded = true;
+  bool playing = false;
+  double position = 4.0;
+  uint64_t transportRevision = 0;
+  playworship::audio::PracticeLoop practiceLoop;
+  juce::String practiceLoopError;
+  int practiceLoopWrites = 0;
+  double getSongStartSeconds() const { return 0.0; }
+  double getSongEndSeconds() const { return 100.0; }
+  double getMinimumPracticeLoopDuration() const { return 0.25; }
+  bool isPracticeLoopActive() const { return practiceLoop.snapshot().active; }
+  bool hasPracticeLoopPreparation() const { return practiceLoop.snapshot().prepared; }
+  juce::Range<double> getPracticeLoopRange() const {
+    const auto range = practiceLoop.snapshot();
+    return range.active ? juce::Range<double>(range.startSeconds, range.endSeconds) : juce::Range<double>{};
+  }
+  uint64_t getPracticeLoopRevision() const { return practiceLoop.revision(); }
+  juce::String getPracticeLoopError() const { return practiceLoopError; }
+  bool preparePracticeLoop(double start) {
+    if (!loaded || !std::isfinite(start) || start < 0.0 || start >= 100.0 || isPracticeLoopActive())
+      return false;
+    practiceLoop.setRange(start, start); ++practiceLoopWrites; return true;
+  }
+  bool setPracticeLoopRange(double start, double end) {
+    practiceLoopError.clear();
+    if (!loaded || !playworship::audio::PracticeLoop::isValidRange(start, end, 0.0, 100.0)) {
+      practiceLoopError = "invalid-range"; return false;
+    }
+    practiceLoop.setRange(start, end); ++practiceLoopWrites; return true;
+  }
+  void clearPracticeLoop() { practiceLoop.clear(); practiceLoopError.clear(); ++practiceLoopWrites; }
+  std::vector<juce::String> transportCalls;
+  uint64_t getTransportControlRevision() const { return transportRevision; }
+  void markTransportControlIntent() { ++transportRevision; }
+  void pauseSong() { playing = false; ++transportRevision; transportCalls.push_back("pause"); }
+  void playSong() { playing = true; ++transportRevision; transportCalls.push_back("play"); }
+  void stopSong() { playing = false; position = 0.0; ++transportRevision; transportCalls.push_back("stop"); }
+  void seekSongTo(double seconds) { position = juce::jlimit(0.0, 100.0, seconds); ++transportRevision; transportCalls.push_back("seek"); }
+  void setPracticeListeningMode(int index, int mode) {
+    practiceStem = mode == 0 ? -1 : index;
+    practiceMode = mode;
+    ++practiceWrites;
+  }
+  int getPracticeListeningStem() const { return practiceStem; }
+  int getPracticeListeningMode() const { return practiceMode; }
   float getStemVolume(int) const { return volume; }
   float getStemGain(int) const { return 1.0f; }
   float getMasterVolume() const { return volume; }
@@ -39,12 +88,178 @@ struct TestProcessor {
   void setStemVolume(int, float v) { volume = v; ++writes; }
   int getLoadedStemCount() const { return 1; }
   float getStemLevel(int) const { return 0.1f; }
-  bool hasLoadedSong() const { return true; }
-  double getSongCurrentPositionSeconds() const { return 4.0; }
+  bool hasLoadedSong() const { return loaded; }
+  double getSongCurrentPositionSeconds() const { return position; }
   double getPlaybackTempoBpm() const { return 120.0; }
   double getSongLengthSeconds() const { return 100.0; }
-  bool isSongPlaying() const { return false; }
+  bool isSongPlaying() const { return playing; }
 };
+bool testPracticeScrubLease() {
+  const auto expect = [](bool ok, const char *message) {
+    if (!ok) std::cerr << message << '\n';
+    return ok;
+  };
+  for (const bool initiallyPlaying : {false, true}) {
+    TestProcessor processor;
+    processor.playing = initiallyPlaying;
+    PracticeScrubLease lease;
+    if (!expect(lease.begin(processor, "song", "gesture"), "Scrub begin must acquire a lease")) return false;
+    const auto afterBegin = processor.transportCalls.size();
+    if (!expect(!processor.playing && afterBegin == (initiallyPlaying ? 1u : 0u),
+                "Scrub only pauses a playing song")) return false;
+    if (!expect(lease.begin(processor, "song", "gesture") &&
+                processor.transportCalls.size() == afterBegin,
+                "Repeated begin preserves the original playback intent")) return false;
+    if (!expect(!lease.finish(processor, "song", "other-token", 50.0) && lease.token == "gesture",
+                "Another token cannot seek or consume this lease")) return false;
+    if (!expect(lease.finish(processor, "song", "gesture", 28.0) && processor.position == 28.0 &&
+                processor.playing == initiallyPlaying,
+                "Scrub finish seeks and restores only an originally playing song")) return false;
+    const std::vector<juce::String> expected = initiallyPlaying
+        ? std::vector<juce::String>{"pause", "seek", "play"}
+        : std::vector<juce::String>{"seek"};
+    if (!expect(processor.transportCalls == expected,
+                "Scrub transport order must be pause, one seek, then optional play")) return false;
+    const auto afterFinish = processor.transportCalls.size();
+    if (!expect(!lease.finish(processor, "song", "gesture", 70.0) &&
+                processor.transportCalls.size() == afterFinish,
+                "Repeated finish must not seek or play again")) return false;
+  }
+  for (const int supersedingAction : {0, 1, 2, 3}) {
+    TestProcessor processor;
+    processor.playing = true;
+    PracticeScrubLease lease;
+    if (!lease.begin(processor, "song", "gesture")) return false;
+    if (supersedingAction == 0) processor.stopSong();
+    if (supersedingAction == 1) processor.seekSongTo(65.0);
+    if (supersedingAction == 2) processor.pauseSong();
+    if (supersedingAction == 3) ++processor.transportRevision; // Same-song reload.
+    const auto before = processor.transportCalls.size();
+    const double position = processor.position;
+    if (!expect(!lease.finish(processor, "song", "gesture", 28.0) &&
+                processor.transportCalls.size() == before && processor.position == position && !processor.playing,
+                "A superseding control or reload prevents stale seek and resume")) return false;
+  }
+  {
+    TestProcessor processor;
+    processor.playing = true;
+    PracticeScrubLease lease;
+    lease.begin(processor, "song", "gesture");
+    if (!expect(!lease.finish(processor, "other-song", "gesture", 28.0) &&
+                processor.transportCalls == std::vector<juce::String>{"pause"},
+                "A song identity change prevents stale finish")) return false;
+  }
+  for (const bool restore : {false, true}) {
+    TestProcessor processor;
+    processor.playing = true;
+    PracticeScrubLease lease;
+    lease.begin(processor, "song", "gesture");
+    if (!expect(lease.cancel(processor, "song", "gesture", restore) && processor.playing == restore &&
+                processor.position == 4.0,
+                "Cancel can restore a valid pause without seeking")) return false;
+    const auto calls = processor.transportCalls.size();
+    lease.cancel(processor, "song", "gesture", true);
+    if (!expect(processor.transportCalls.size() == calls, "Repeated cancel is harmless")) return false;
+  }
+  {
+    TestProcessor processor;
+    processor.playing = true;
+    PracticeScrubLease first, second;
+    first.begin(processor, "song", "first");
+    second.begin(processor, "song", "second");
+    const auto afterBegin = processor.transportCalls.size();
+    first.cancel(processor, "song", "first", true);
+    if (!expect(!processor.playing && processor.transportCalls.size() == afterBegin,
+                "Older client cleanup cannot resume over a newer paused scrub")) return false;
+    if (!expect(second.finish(processor, "song", "second", 65.0) && !processor.playing,
+                "A second client sees the paused server and does not resume it")) return false;
+    const auto calls = processor.transportCalls.size();
+    if (!expect(!first.finish(processor, "song", "first", 28.0) &&
+                processor.position == 65.0 && processor.transportCalls.size() == calls,
+                "The other client's seek invalidates the older lease")) return false;
+  }
+  {
+    TestProcessor processor;
+    processor.playing = true;
+    PracticeScrubLease lease;
+    lease.begin(processor, "song", "gesture");
+    processor.stopSong();
+    const auto calls = processor.transportCalls.size();
+    lease.cancel(processor, "song", "gesture", true);
+    if (!expect(!processor.playing && processor.transportCalls.size() == calls,
+                "Disconnect cleanup cannot undo another client's Stop")) return false;
+  }
+  return true;
+}
+
+bool testPracticeScrubAdapter() {
+  TestProcessor local;
+  local.playing = true;
+  BasicPlaybackSession<TestProcessor> session(local);
+  session.beginPracticeScrub();
+  session.beginPracticeScrub();
+  if (local.transportCalls != std::vector<juce::String>{"pause"}) return false;
+  if (!session.finishPracticeScrub(23.0) ||
+      local.transportCalls != std::vector<juce::String>{"pause", "seek", "play"}) return false;
+  if (session.finishPracticeScrub(70.0)) return false;
+  session.beginPracticeScrub();
+  local.stopSong();
+  const auto writes = local.transportCalls.size();
+  if (session.finishPracticeScrub(70.0) || local.transportCalls.size() != writes) return false;
+
+  session.setRemote(true);
+  struct Sent { juce::String id, action; juce::var value; };
+  std::vector<Sent> sent;
+  session.onCommand = [&](const juce::String &id, const juce::String &action,
+                          const juce::var &value, const juce::String &) {
+    sent.push_back({id, action, value});
+  };
+  session.beginPracticeScrub();
+  if (!sent.empty()) return false;
+  const auto state = juce::JSON::parse(R"({"song":{"id":"song"},"position":20,"length":100,"playing":true,"tempo":120})");
+  session.applyState(state);
+  session.beginPracticeScrub();
+  session.beginPracticeScrub();
+  if (sent.size() != 1 || sent[0].action != "transport.scrubBegin" ||
+      sent[0].value.getProperty("songId", {}).toString() != "song" ||
+      sent[0].value.getProperty("token", {}).toString().isEmpty()) return false;
+  const auto token = sent[0].value.getProperty("token", {}).toString();
+  if (!session.finishPracticeScrub(45.0) || sent.size() != 2 ||
+      sent[1].action != "transport.scrubEnd" ||
+      sent[1].value.getProperty("token", {}).toString() != token ||
+      static_cast<double>(sent[1].value.getProperty("seconds", -1)) != 45.0 ||
+      local.transportCalls.size() != writes) return false;
+  const auto rejectedEndId = sent[1].id;
+  if (session.wasPracticeScrubFinishRejected()) return false;
+  session.applyAcknowledgement("other-peer-end", false);
+  if (session.wasPracticeScrubFinishRejected()) return false;
+  session.applyAcknowledgement(rejectedEndId, false);
+  if (!session.wasPracticeScrubFinishRejected()) return false;
+  session.applyAcknowledgement("other-peer-end", true);
+  if (!session.wasPracticeScrubFinishRejected()) return false;
+  session.beginPracticeScrub();
+  if (session.wasPracticeScrubFinishRejected()) return false;
+  session.applyAcknowledgement(rejectedEndId, false);
+  if (session.wasPracticeScrubFinishRejected()) return false;
+  session.cancelPracticeScrub(true);
+  if (sent.size() != 4 || sent.back().action != "transport.scrubCancel" ||
+      !static_cast<bool>(sent.back().value.getProperty("restorePlayback", false))) return false;
+  session.beginPracticeScrub();
+  session.applyAcknowledgement(sent.back().id, false);
+  if (session.finishPracticeScrub(70.0) || sent.size() != 5) return false;
+  session.beginPracticeScrub();
+  session.setConnected(false);
+  session.cancelPracticeScrub(true);
+  if (session.finishPracticeScrub(70.0) || sent.size() != 6) return false;
+  session.applyState(state);
+  session.beginPracticeScrub();
+  auto changedSong = state.clone();
+  changedSong.getProperty("song", {}).getDynamicObject()->setProperty("id", "other-song");
+  session.applyState(changedSong);
+  if (session.finishPracticeScrub(70.0) || sent.size() != 7) return false;
+  return local.transportCalls.size() == writes;
+}
+
 bool testPlaybackAdapter() {
   TestProcessor local;
   BasicPlaybackSession<TestProcessor> session(local);
@@ -68,6 +283,215 @@ bool testPlaybackAdapter() {
   if (session.getStemLevel(0)!=0 || session.getSongCurrentPositionSeconds()!=19 || sent!=1) return false;
   session.setRemote(false);
   return session.getStemVolume(0)==0.5f && local.writes==1;
+}
+
+bool testPracticeListeningAdapter() {
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  session.setPracticeListeningMode(0, 1);
+  if (local.practiceWrites != 1 || session.getPracticeListeningStem() != 0 ||
+      session.getPracticeListeningMode() != 1 || local.volume != 0.75f || local.writes != 0) return false;
+  session.setPracticeListeningMode(-1, 0);
+  if (session.getPracticeListeningMode() != 0 || session.getPracticeListeningStem() != -1) return false;
+
+  session.setRemote(true);
+  int sent = 0;
+  juce::String lastTarget, lastAction;
+  juce::var lastValue;
+  session.onCommand = [&](const juce::String &, const juce::String &action,
+                          const juce::var &value, const juce::String &target) {
+    ++sent; lastTarget = target; lastAction = action; lastValue = value;
+  };
+  session.setPracticeListeningMode(0, 1);
+  if (sent != 0 || local.practiceWrites != 2) return false;
+  auto state = juce::JSON::parse(R"({"song":{"id":"practice-song","stems":[{"id":"excluded","include":false},{"id":"first"},{"id":"second"}]},"practiceMode":1,"practiceStemId":"second"})");
+  session.applyState(state);
+  if (session.getPracticeListeningMode() != 1 || session.getPracticeListeningStem() != 1) return false;
+  session.setPracticeListeningMode(0, 2);
+  session.setPracticeListeningMode(0, 2);
+  if (sent != 2 || lastAction != "practice.listen" || lastTarget != "first" ||
+      static_cast<int>(lastValue.getProperty("mode", -1)) != 2 ||
+      lastValue.getProperty("songId", {}).toString() != "practice-song" ||
+      local.practiceWrites != 2 || session.getPracticeListeningMode() != 2 ||
+      session.getPracticeListeningStem() != 0) return false;
+  session.setPracticeListeningMode(2, 1);
+  session.setPracticeListeningMode(0, 3);
+  if (sent != 2) return false;
+  state.getDynamicObject()->setProperty("practiceMode", 2);
+  state.getDynamicObject()->setProperty("practiceStemId", "first");
+  session.applyState(state);
+  if (session.getPracticeListeningMode() != 2 || session.getPracticeListeningStem() != 0) return false;
+  session.setPracticeListeningMode(-1, 0);
+  if (sent != 3 || lastTarget.isNotEmpty() || static_cast<int>(lastValue.getProperty("mode", -1)) != 0 ||
+      session.getPracticeListeningMode() != 0 || session.getPracticeListeningStem() != -1 ||
+      session.ownsPracticeListening()) return false;
+  session.setConnected(false);
+  session.setPracticeListeningMode(0, 1);
+  if (sent != 3 || session.getPracticeListeningMode() != 0 || session.getPracticeListeningStem() != -1) return false;
+  session.setRemote(false);
+  return local.practiceWrites == 2 && session.getPracticeListeningMode() == 0 && local.writes == 0;
+}
+
+bool testPracticeListeningOwnership() {
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  session.setRemote(true);
+  juce::String lastId, lastAction, lastTarget;
+  juce::var lastValue;
+  session.onCommand = [&](const juce::String &id, const juce::String &action,
+                          const juce::var &value, const juce::String &target) {
+    lastId = id; lastAction = action; lastValue = value; lastTarget = target;
+  };
+  auto state = [](int sequence, const juce::String &commandId,
+                  int mode = 1, const juce::String &songId = "practice-song") {
+    auto result = juce::JSON::parse(R"({"song":{"id":"practice-song","stems":[{"id":"first"}]},"practiceMode":1,"practiceStemId":"first"})");
+    result.getDynamicObject()->setProperty("seq", sequence);
+    result.getDynamicObject()->setProperty("practiceCommandId", commandId);
+    result.getDynamicObject()->setProperty("practiceMode", mode);
+    result.getProperty("song", {}).getDynamicObject()->setProperty("id", songId);
+    return result;
+  };
+  session.applyState(state(10, "other-client"));
+  if (session.ownsPracticeListening()) return false;
+  session.setPracticeListeningMode(0, 2);
+  const auto firstId = lastId;
+  if (!session.ownsPracticeListening()) return false;
+  session.applyAcknowledgement("earlier-listen", false);
+  session.applyState(state(10, "other-client"));
+  if (!session.ownsPracticeListening()) return false;
+  session.applyAcknowledgement(firstId, true);
+  session.applyState(state(11, firstId, 2));
+  if (!session.ownsPracticeListening()) return false;
+
+  // A local server gesture retains its mode but removes our command lease.
+  session.applyState(state(12, {}));
+  if (session.ownsPracticeListening()) return false;
+  session.setPracticeListeningMode(0, 2);
+  const auto rejectedId = lastId;
+  session.applyAcknowledgement(rejectedId, false);
+  if (session.ownsPracticeListening()) return false;
+  session.applyState(state(13, rejectedId, 2));
+  if (session.ownsPracticeListening()) return false;
+
+  session.setPracticeListeningMode(0, 1);
+  const auto releasedId = lastId;
+  session.releasePracticeListening();
+  if (session.ownsPracticeListening() || lastAction != "practice.release" ||
+      lastTarget.isNotEmpty() || static_cast<int>(lastValue.getProperty("mode", -1)) != 0 ||
+      lastValue.getProperty("songId", {}).toString() != "practice-song") return false;
+  session.applyState(state(14, releasedId));
+  if (session.ownsPracticeListening()) return false;
+
+  session.setPracticeListeningMode(0, 2);
+  const auto earlierId = lastId;
+  session.setPracticeListeningMode(0, 1);
+  const auto latestId = lastId;
+  session.applyAcknowledgement(earlierId, false);
+  session.applyState(state(15, earlierId, 2));
+  if (!session.ownsPracticeListening()) return false;
+  session.applyAcknowledgement(latestId, true);
+  session.applyState(state(16, "another-client", 2));
+  if (session.ownsPracticeListening()) return false;
+
+  session.setPracticeListeningMode(0, 1);
+  const auto songChangedId = lastId;
+  session.applyAcknowledgement(songChangedId, true);
+  session.applyState(state(17, songChangedId, 1, "new-song"));
+  if (session.ownsPracticeListening()) return false;
+  session.setPracticeListeningMode(0, 1);
+  session.setConnected(false);
+  return !session.ownsPracticeListening() && local.practiceWrites == 0;
+}
+
+bool testPracticeListeningPreview() {
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  session.setRemote(true);
+  juce::String lastId, lastAction;
+  session.onCommand = [&](const juce::String &id, const juce::String &action,
+                          const juce::var &, const juce::String &) {
+    lastId = id; lastAction = action;
+  };
+  auto snapshot = [](int sequence, int mode, const juce::String &stem,
+                     const juce::String &commandId, const juce::String &song = "practice-song") {
+    auto result = juce::JSON::parse(R"({"song":{"id":"practice-song","stems":[{"id":"excluded","include":false},{"id":"first"},{"id":"second"}]}})");
+    result.getDynamicObject()->setProperty("seq", sequence);
+    result.getDynamicObject()->setProperty("practiceMode", mode);
+    result.getDynamicObject()->setProperty("practiceStemId", stem);
+    result.getDynamicObject()->setProperty("practiceCommandId", commandId);
+    result.getProperty("song", {}).getDynamicObject()->setProperty("id", song);
+    return result;
+  };
+  auto expect = [&](int mode, int stem, bool owner, const char *message) {
+    if (session.getPracticeListeningMode() == mode &&
+        session.getPracticeListeningStem() == stem && session.ownsPracticeListening() == owner)
+      return true;
+    std::cerr << message << '\n'; return false;
+  };
+  session.applyState(snapshot(10, 1, "second", "other-client"));
+  session.setPracticeListeningMode(0, 2);
+  const auto reducedId = lastId;
+  if (!expect(2, 0, true, "Listen must preview mode and stem before a snapshot")) return false;
+  session.applyState(snapshot(10, 1, "second", "other-client"));
+  if (!expect(2, 0, true, "A delayed snapshot cannot undo the latest listen")) return false;
+
+  session.setPracticeListeningMode(-1, 0);
+  const auto normalId = lastId;
+  if (!expect(0, -1, false, "Normal must preview immediately and revoke retarget ownership")) return false;
+  session.applyAcknowledgement(reducedId, true);
+  session.applyState(snapshot(11, 2, "first", reducedId));
+  if (!expect(0, -1, false, "An older ACK and snapshot cannot revive reduced mode")) return false;
+  session.applyAcknowledgement(normalId, true);
+  session.applyState(snapshot(11, 2, "first", reducedId));
+  if (!expect(0, -1, false, "ACK alone cannot end the normal preview")) return false;
+  session.applyState(snapshot(12, 0, {}, {}));
+  if (!expect(0, -1, false, "The following sequence confirms normal")) return false;
+
+  session.setPracticeListeningMode(1, 1);
+  const auto earlierId = lastId;
+  session.setPracticeListeningMode(0, 2);
+  const auto latestId = lastId;
+  session.applyAcknowledgement(earlierId, false);
+  session.applyState(snapshot(13, 1, "second", earlierId));
+  if (!expect(2, 0, true, "Fast steps and older rejections must preserve the latest stem and mode")) return false;
+  session.applyAcknowledgement(latestId, true);
+  session.applyState(snapshot(13, 1, "second", earlierId));
+  if (!expect(2, 0, true, "Reapplying the ACK sequence must preserve the preview")) return false;
+  session.applyState(snapshot(14, 1, "second", "other-client"));
+  if (!expect(1, 1, false, "A newer authoritative sequence reconciles a superseded intent")) return false;
+
+  session.setPracticeListeningMode(0, 2);
+  session.applyAcknowledgement(lastId, false);
+  if (!expect(1, 1, false, "A rejected listen reverts to the confirmed mode and stem")) return false;
+  session.setPracticeListeningMode(1, 1);
+  const auto ownedId = lastId;
+  session.applyAcknowledgement(ownedId, true);
+  session.applyState(snapshot(15, 1, "second", ownedId));
+  if (!expect(1, 1, true, "Confirmed active listening retains its lease")) return false;
+  session.setPracticeListeningMode(-1, 0);
+  session.applyAcknowledgement(lastId, false);
+  if (!expect(1, 1, false, "Rejected normal reverts visually without reacquiring the old lease")) return false;
+
+  session.setPracticeListeningMode(0, 2);
+  const auto releasedId = lastId;
+  session.releasePracticeListening();
+  if (lastAction != "practice.release" ||
+      !expect(1, 1, false, "Release clears a pending listen without changing confirmed state")) return false;
+  session.applyAcknowledgement(releasedId, true);
+  if (!expect(1, 1, false, "An ACK after release cannot restore the preview")) return false;
+  session.setPracticeListeningMode(0, 2);
+  session.applyState(snapshot(16, 0, {}, {}, "new-song"));
+  if (!expect(0, -1, false, "Changing song clears a pending listen")) return false;
+  session.setPracticeListeningMode(1, 1);
+  session.setConnected(false);
+  if (!expect(0, -1, false, "Disconnect clears a pending listen")) return false;
+
+  session.applyState(snapshot(17, 0, {}, {}, "new-song"));
+  session.setPracticeListeningMode(1, 1);
+  if (!expect(1, 1, true, "A fresh connected listen is optimistic")) return false;
+  if (!waitUntil([&] { return session.getPracticeListeningMode() == 0; }, 2500) ||
+      !expect(0, -1, false, "An unacknowledged preview expires even without another snapshot")) return false;
+  return local.practiceWrites == 0 && local.writes == 0 && local.volume == 0.75f;
 }
 
 bool testRemoteFaderReconciliation() {
@@ -139,7 +563,104 @@ bool testRemoteFaderReconciliation() {
   return expect(local.writes == 0, "Client preview must never write to local audio");
 }
 
+bool testPracticeLoopAdapter() {
+  const auto expect = [](bool ok, const char *message) {
+    if (!ok) std::cerr << message << '\n';
+    return ok;
+  };
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  if (!expect(session.preparePracticeLoop(8.0) && session.ownsPracticeLoop() &&
+              !session.isPracticeLoopActive(), "A prepares without activating a local loop")) return false;
+  if (!expect(session.setPracticeLoopRange(8.0, 15.0) && session.ownsPracticeLoop(),
+              "B activates and owns local A/B")) return false;
+  local.setPracticeLoopRange(25.0, 30.0);
+  session.releasePracticeLoop();
+  if (!expect(local.isPracticeLoopActive() && local.getPracticeLoopRange().getStart() == 25.0,
+              "Closing an older local panel cannot clear a newer loop")) return false;
+  local.clearPracticeLoop();
+  if (!session.preparePracticeLoop(7.0)) return false;
+  session.releasePracticeLoop();
+  if (!expect(!local.hasPracticeLoopPreparation(), "Closing A's draft releases its preparation")) return false;
+
+  session.setRemote(true);
+  struct Sent { juce::String id, action; juce::var value; };
+  std::vector<Sent> sent;
+  session.onCommand = [&](const juce::String &id, const juce::String &action,
+                          const juce::var &value, const juce::String &) {
+    sent.push_back({id, action, value});
+  };
+  const auto snapshot = [](int seq, const juce::String &id, bool active,
+                            bool prepared = false, const juce::String &song = "song") {
+    auto result = juce::JSON::parse(R"({"song":{"id":"song","stems":[{"id":"stem"}]},"length":100,"windowStart":0,"windowEnd":100,"practiceLoopStart":8,"practiceLoopEnd":15,"practiceLoopMinimumDuration":0.25})");
+    result.getDynamicObject()->setProperty("seq", seq);
+    result.getDynamicObject()->setProperty("practiceLoopCommandId", id);
+    result.getDynamicObject()->setProperty("practiceLoopActive", active);
+    result.getDynamicObject()->setProperty("practiceLoopPrepared", prepared);
+    result.getProperty("song", {}).getDynamicObject()->setProperty("id", song);
+    return result;
+  };
+  const int before = local.practiceLoopWrites;
+  if (!expect(!session.setPracticeLoopRange(8.0, 15.0) && sent.empty(),
+              "Disconnected clients cannot start a loop")) return false;
+  session.applyState(snapshot(1, {}, false));
+  if (!session.preparePracticeLoop(8.0)) return false;
+  const auto prepareId = sent.back().id;
+  if (!expect(sent.back().action == "practice.loopPrepare" &&
+              sent.back().value.getProperty("start", {}).isDouble() &&
+              session.ownsPracticeLoop() && !session.isPracticeLoopActive() &&
+              session.getPracticeLoopRange().isEmpty(),
+              "Pending remote A owns preparation without a phantom loop")) return false;
+  session.applyAcknowledgement(prepareId, true);
+  if (!expect(session.ownsPracticeLoop() && !session.isPracticeLoopActive(),
+              "Preparation ack cannot revoke its own cleanup lease")) return false;
+  session.applyAcknowledgement("unrelated-fader", true);
+  if (!expect(session.ownsPracticeLoop(), "An unrelated ack cannot clear A/B ownership")) return false;
+  session.applyState(snapshot(2, prepareId, false, true));
+  if (!expect(session.ownsPracticeLoop() && !session.isPracticeLoopActive(),
+              "Confirmed preparation retains release ownership")) return false;
+  if (!session.setPracticeLoopRange(8.0, 15.0)) return false;
+  const auto loopId = sent.back().id;
+  if (!expect(sent.back().action == "practice.loop" && session.isPracticeLoopActive() &&
+              session.getPracticeLoopRange().getStart() == 8.0,
+              "Remote loop previews its requested range until ack")) return false;
+  session.applyAcknowledgement("older-loop", false, "rejected");
+  if (session.wasPracticeLoopRequestRejected()) return false;
+  session.applyAcknowledgement(loopId, false, "discontinuous-arrangement");
+  if (!expect(session.wasPracticeLoopRequestRejected() &&
+              session.getPracticeLoopError() == "discontinuous-arrangement" &&
+              !session.isPracticeLoopActive() && session.ownsPracticeLoop(),
+              "Rejected B restores A's lease and exposes the server reason")) return false;
+  session.releasePracticeLoop();
+  if (!expect(sent.back().action == "practice.loopRelease" &&
+              sent.back().value.getProperty("commandId", {}).toString() == prepareId &&
+              !session.ownsPracticeLoop(), "Release identifies the still-owned A command")) return false;
+  session.applyState(snapshot(3, {}, false));
+  if (!session.setPracticeLoopRange(8.0, 15.0)) return false;
+  const auto acceptedId = sent.back().id;
+  session.applyAcknowledgement(acceptedId, true);
+  session.applyState(snapshot(4, acceptedId, true));
+  if (!session.ownsPracticeLoop()) return false;
+  session.applyState(snapshot(5, "new-client", true));
+  if (!expect(!session.ownsPracticeLoop(), "Newer remote owner revokes an old panel's lease")) return false;
+  if (!session.setPracticeLoopRange(8.0, 15.0)) return false;
+  session.setConnected(false);
+  if (!expect(!session.ownsPracticeLoop() && !session.isPracticeLoopActive(),
+              "Disconnect drops loop previews and ownership")) return false;
+  session.applyState(snapshot(6, {}, false));
+  if (!session.preparePracticeLoop(8.0)) return false;
+  session.applyState(snapshot(7, {}, false, false, "other-song"));
+  return expect(!session.ownsPracticeLoop() && local.practiceLoopWrites == before,
+                "Song changes revoke preparation; clients never mutate local audio");
+}
+
 int main() {
+  if (!testPracticeLoopAdapter()) { std::cerr << "Practice loop adapter failed\n"; return 1; }
+  if (!testPracticeScrubLease()) { std::cerr << "Practice scrub ownership failed\n"; return 1; }
+  if (!testPracticeScrubAdapter()) { std::cerr << "Practice scrub adapter failed\n"; return 1; }
+  if (!testPracticeListeningOwnership()) { std::cerr << "Practice listening ownership failed\n"; return 1; }
+  if (!testPracticeListeningAdapter()) { std::cerr << "Practice listening adapter isolation failed\n"; return 1; }
+  if (!testPracticeListeningPreview()) { std::cerr << "Practice listening preview failed\n"; return 1; }
   if (!testRemoteFaderReconciliation()) return 1;
   if (!testPlaybackAdapter()) { std::cerr << "Playback adapter isolation failed\n"; return 1; }
   if (const char *name = std::getenv("PW_REMOTE_ADVERTISE_ONLY")) {
@@ -256,7 +777,32 @@ int main() {
     }
     return deltaWithoutLibrary;
   })) { std::cerr << "Unchanged catalogue was retransmitted\n"; return 1; }
-  second.stop(); second.becomeClient(); second.connectTo(address);
+  server.drainEvents();
+  second.sendCommand("identify-disconnecting-peer", "transport.seek", 1.0);
+  std::string departingPeer;
+  if (!waitUntil([&] {
+    for (const auto &event : server.drainEvents())
+      if (event.kind == RemoteSession::Event::Kind::Command &&
+          event.value.getProperty("id", {}).toString() == "identify-disconnecting-peer")
+        departingPeer = event.sourceId;
+    return !departingPeer.empty();
+  })) { std::cerr << "Command has no peer identity\n"; return 1; }
+  first.sendCommand("other-peer-kept", "transport.seek", 2.0);
+  // Give the loopback sender time to queue the other client's command before
+  // closing this peer; its cleanup must preserve that reliable command.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  second.stop();
+  bool peerDisconnected = false, otherCommandKept = false;
+  if (!waitUntil([&] {
+    for (const auto &event : server.drainEvents()) {
+      if (event.kind == RemoteSession::Event::Kind::PeerDisconnected && event.sourceId == departingPeer)
+        peerDisconnected = true;
+      if (event.kind == RemoteSession::Event::Kind::Command &&
+          event.value.getProperty("id", {}).toString() == "other-peer-kept") otherCommandKept = true;
+    }
+    return peerDisconnected && otherCommandKept;
+  })) { std::cerr << "Peer close lost its identity or another client's command\n"; return 1; }
+  second.becomeClient(); second.connectTo(address);
   bool rejoinedWithLibrary=false, rejoinedWithWave=false;
   if (!waitUntil([&] {
     for (const auto &event : second.drainEvents()) {
@@ -291,6 +837,59 @@ int main() {
   });
   if (!receivedCommand) {
     std::cerr << "Server did not receive command\n";
+    return 1;
+  }
+  const auto scrubPayload = juce::JSON::parse(
+      R"({"songId":"song","token":"ordered-scrub","seconds":24,"restorePlayback":true})");
+  first.sendCommand("scrub-order-begin", "transport.scrubBegin", scrubPayload);
+  first.sendCommand("scrub-order-end", "transport.scrubEnd", scrubPayload);
+  first.sendCommand("scrub-order-cancel", "transport.scrubCancel", scrubPayload);
+  std::vector<juce::String> scrubActions;
+  std::string scrubPeer;
+  bool wrongScrubPeer = false;
+  if (!waitUntil([&] {
+    for (const auto &event : server.drainEvents()) {
+      if (event.kind != RemoteSession::Event::Kind::Command) continue;
+      const auto json = event.value;
+      if (!json.getProperty("id", {}).toString().startsWith("scrub-order-")) continue;
+      if (scrubPeer.empty()) scrubPeer = event.sourceId;
+      wrongScrubPeer = wrongScrubPeer || scrubPeer != event.sourceId ||
+          json.getProperty("value", {}).getProperty("token", {}).toString() != "ordered-scrub";
+      scrubActions.push_back(json.getProperty("action", {}).toString());
+    }
+    return scrubActions.size() >= 3;
+  }) || wrongScrubPeer || scrubActions != std::vector<juce::String>{
+      "transport.scrubBegin", "transport.scrubEnd", "transport.scrubCancel"}) {
+    std::cerr << "Practice scrub commands must preserve peer ownership and FIFO order\n";
+    return 1;
+  }
+  const auto loopPreparation = juce::JSON::parse(R"({"songId":"song","start":12})");
+  const auto loopRange = juce::JSON::parse(R"({"songId":"song","start":12,"end":16})");
+  const auto loopRelease = juce::JSON::parse(R"({"songId":"song","commandId":"loop-order-range"})");
+  first.sendCommand("loop-order-prepare", "practice.loopPrepare", loopPreparation);
+  first.sendCommand("loop-order-range", "practice.loop", loopRange);
+  first.sendCommand("loop-order-release", "practice.loopRelease", loopRelease);
+  std::vector<juce::String> loopActions;
+  std::string loopPeer;
+  bool wrongLoopPayload = false;
+  if (!waitUntil([&] {
+    for (const auto &event : server.drainEvents()) {
+      if (event.kind != RemoteSession::Event::Kind::Command) continue;
+      const auto json = event.value;
+      const auto id = json.getProperty("id", {}).toString();
+      if (!id.startsWith("loop-order-")) continue;
+      if (loopPeer.empty()) loopPeer = event.sourceId;
+      const auto payload = json.getProperty("value", {});
+      wrongLoopPayload = wrongLoopPayload || loopPeer != event.sourceId ||
+          payload.getProperty("songId", {}).toString() != "song" ||
+          (id == "loop-order-release" && payload.getProperty("commandId", {}).toString() != "loop-order-range") ||
+          (id == "loop-order-range" && static_cast<double>(payload.getProperty("end", 0.0)) != 16.0);
+      loopActions.push_back(json.getProperty("action", {}).toString());
+    }
+    return loopActions.size() >= 3;
+  }) || wrongLoopPayload || loopActions != std::vector<juce::String>{
+      "practice.loopPrepare", "practice.loop", "practice.loopRelease"}) {
+    std::cerr << "Practice loop commands must preserve range, lease ID and FIFO order\n";
     return 1;
   }
   server.sendAck("command-1", true);

@@ -5,6 +5,7 @@
 #include "StemMixEngine.h"
 #include "StemTrack.h"
 #include "audio/PadsEngine.h"
+#include "audio/PracticeLoop.h"
 #include "audio/DynamicGuideEngine.h"
 #include "data/SongData.h"
 #include "data/AppSettings.h"
@@ -89,6 +90,23 @@ public:
   void toggleSongPlayPause();
   void seekSongRelative(double deltaSeconds);
   void seekSongTo(double positionSeconds);
+  // Control-side ownership of a temporary practice pause. Audio progression
+  // does not invalidate it; explicit transport/window/song changes do.
+  uint64_t getTransportControlRevision() const noexcept {
+    return transportControlRevision.load(std::memory_order_acquire);
+  }
+  void markTransportControlIntent() noexcept {
+    transportControlRevision.fetch_add(1, std::memory_order_release);
+  }
+  bool setPracticeLoopRange(double startSeconds, double endSeconds) noexcept;
+  bool preparePracticeLoop(double startSeconds) noexcept;
+  void clearPracticeLoop() noexcept;
+  bool hasPracticeLoopPreparation() const noexcept;
+  bool isPracticeLoopActive() const noexcept;
+  juce::Range<double> getPracticeLoopRange() const noexcept;
+  uint64_t getPracticeLoopRevision() const noexcept;
+  double getMinimumPracticeLoopDuration() const noexcept;
+  juce::String getPracticeLoopError() const;
   void setSongStartSeconds(double seconds) noexcept;
   void setSongEndSeconds(double seconds) noexcept;
   void setSongFadeOutSeconds(double seconds) noexcept;
@@ -170,6 +188,12 @@ public:
   juce::String getLoadedSongKey() const;
   juce::String getLoadedSongTitle() const;
   int getLoadedStemCount() const noexcept;
+  // 0 restores the mix, 1 emphasizes the stem, 2 reduces it for accompaniment.
+  // These listening modes never overwrite saved faders, gain, mute or solo.
+  void setPracticeListeningMode(int stemIndex, int mode) noexcept;
+  int getPracticeListeningStem() const noexcept;
+  int getPracticeListeningMode() const noexcept;
+  uint64_t getPracticeListeningRevision() const noexcept;
   float getStemLevel(int stemIndex) const noexcept;
   void setStemVolume(int stemIndex, float volume) noexcept;
   float getStemVolume(int stemIndex) const noexcept;
@@ -376,6 +400,8 @@ private:
   std::array<SimpleDelayLine, maxStemCount> stemPitchDelayLines;
   std::atomic<int> preparedRoutingProcessorCount{0};
   std::atomic<int> loadedStemCount{0};
+  std::atomic<int> practiceListeningState{0}; // ((stem + 1) << 2) | mode
+  std::atomic<uint64_t> practiceListeningRevision{0};
   std::atomic<float> masterVolume{1.0f};
   std::atomic<float> masterGain{1.0f};
   std::atomic<bool> masterMuted{false};
@@ -423,6 +449,7 @@ private:
   int tempoTransitionElapsedFrames = 0;
   int tempoTransitionTotalFrames = 0;
   std::atomic<int> transportState{static_cast<int>(TransportState::stopped)};
+  std::atomic<uint64_t> transportControlRevision{0};
   std::atomic<double> songCurrentPositionSeconds{0.0};
   std::atomic<bool> audioCallbackActive{false};
   std::atomic<bool> remoteClientMode{false};
@@ -526,6 +553,12 @@ private:
   std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<uint64_t> arrangementTransitionIntentGeneration{1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
+  playworship::audio::PracticeLoop practiceLoop;
+  playworship::audio::PracticeLoop::Snapshot audioPracticeLoopSnapshot;
+  playworship::audio::SectionScheduler::Snapshot audioPracticeSectionSnapshot;
+  enum class PracticeLoopError { none, invalidRange, tooShort,
+                                 discontinuousArrangement, bufferNotReady };
+  std::atomic<PracticeLoopError> practiceLoopError{PracticeLoopError::none};
 
   struct AudioArrangementRuntimeSnapshot {
     bool customActive = false;

@@ -4,6 +4,82 @@
 class MTControlsAudioProcessor;
 #include <functional>
 #include <map>
+#include <memory>
+#include <cmath>
+
+// A temporary pause belongs to one gesture and one control revision. A Stop,
+// seek, song load, or another explicit transport action supersedes that owner.
+// Only control/message threads use this value; audio never touches the lease.
+struct PracticeScrubLease {
+  juce::String token;
+  juce::String songId;
+  uint64_t revision = 0;
+  bool resumePlayback = false;
+
+  void clear() { token.clear(); songId.clear(); revision = 0; resumePlayback = false; }
+
+  template <typename Processor>
+  bool validFor(const Processor &processor, const juce::String &song,
+                const juce::String &gestureToken) const {
+    return token.isNotEmpty() && token == gestureToken && songId == song &&
+           processor.hasLoadedSong() &&
+           revision == processor.getTransportControlRevision();
+  }
+
+  template <typename Processor>
+  bool begin(Processor &processor, const juce::String &song,
+             const juce::String &gestureToken) {
+    if (token.isNotEmpty()) {
+      if (token == gestureToken)
+        return validFor(processor, song, gestureToken);
+      if (validFor(processor, songId, token))
+        return false;
+      clear();
+    }
+    if (!processor.hasLoadedSong() || song.isEmpty() || gestureToken.isEmpty())
+      return false;
+    const bool wasPlaying = processor.isSongPlaying();
+    if (wasPlaying)
+      processor.pauseSong();
+    else
+      processor.markTransportControlIntent();
+    token = gestureToken;
+    songId = song;
+    resumePlayback = wasPlaying;
+    revision = processor.getTransportControlRevision();
+    return true;
+  }
+
+  template <typename Processor>
+  bool finish(Processor &processor, const juce::String &song,
+              const juce::String &gestureToken, const double seconds) {
+    if (token != gestureToken)
+      return false;
+    const bool valid = std::isfinite(seconds) &&
+                       validFor(processor, song, gestureToken);
+    const bool shouldResume = resumePlayback;
+    clear();
+    if (!valid)
+      return false;
+    processor.seekSongTo(seconds);
+    if (shouldResume && !processor.isSongPlaying())
+      processor.playSong();
+    return true;
+  }
+
+  template <typename Processor>
+  bool cancel(Processor &processor, const juce::String &song,
+              const juce::String &gestureToken, const bool restorePlayback) {
+    if (token != gestureToken)
+      return false;
+    const bool shouldResume = restorePlayback && resumePlayback &&
+                              validFor(processor, song, gestureToken);
+    clear();
+    if (shouldResume && !processor.isSongPlaying())
+      processor.playSong();
+    return true;
+  }
+};
 
 // Message-thread adapter used by the existing UI. Audio always uses the real
 // processor; a client only reads the mirrored state and sends control intents.
@@ -13,21 +89,52 @@ public:
   explicit BasicPlaybackSession(Processor &p) : local(p) {}
   bool isRemote() const { return remote; }
   bool isConnected() const { return connected; }
-  void setRemote(bool enabled) { remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); position = frozenPosition = receivedAt = 0; }
+  void setRemote(bool enabled) { cancelPracticeScrub(false); releasePracticeLoop(); remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); clearPracticeListeningOwnership(); clearPracticeLoopOwnership(); position = frozenPosition = receivedAt = 0; }
   void setConnected(bool enabled) {
     if (!enabled && connected) frozenPosition = getSongCurrentPositionSeconds();
     connected = enabled;
-    if (!enabled) { meters = juce::var(); pendingControls.clear(); }
+    if (!enabled) { clearPracticeScrub(); clearPracticeLoopOwnership(); meters = juce::var(); pendingControls.clear(); clearPracticeListeningOwnership(); }
   }
   std::function<void(const juce::String &, const juce::String &, const juce::var &, const juce::String &)> onCommand;
-  void send(const juce::String &action, const juce::var &value = {}, const juce::String &target = {}) {
-    if (!remote || !connected || !onCommand) return;
+  juce::String send(const juce::String &action, const juce::var &value = {}, const juce::String &target = {}) {
+    if (!remote || !connected || !onCommand) return {};
     const auto id = juce::Uuid().toString();
     if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain")
       pendingControls[{action, target}] = {id, value, juce::Time::getMillisecondCounterHiRes() + 2000.0, -1};
+    if (action == "practice.listen") {
+      clearPracticeListeningOwnership();
+      practiceListeningPendingCommandId = id;
+      practiceListeningPendingMode = static_cast<int>(value.getProperty("mode", 0));
+      practiceListeningPendingStemId = target;
+      practiceListeningPending = true;
+      practiceListeningExpiresAt = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+      // A normal-mix intent still needs an optimistic echo, but immediately
+      // relinquishes the lease so changing instrument cannot retarget it.
+      if (practiceListeningPendingMode != 0)
+        practiceListeningCommandId = id;
+    } else if (action == "practice.release") clearPracticeListeningOwnership();
     onCommand(id, action, value, target);
+    return id;
   }
-  void applyAcknowledgement(const juce::String &id, bool accepted) {
+  void applyAcknowledgement(const juce::String &id, bool accepted,
+                            const juce::String &reason = {}) {
+    if (id.isNotEmpty() && id == practiceLoopCommandId) {
+      practiceLoopRequestRejected = !accepted;
+      if (!accepted) {
+        practiceLoopError = reason.isEmpty() ? juce::String("rejected") : reason;
+        practiceLoopPending = false;
+        practiceLoopCommandId = practiceLoopPreviousCommandId;
+        practiceLoopPreviousCommandId.clear();
+      } else practiceLoopAcknowledgedAtSequence = static_cast<juce::int64>(field(state, "seq"));
+    }
+    if (id.isNotEmpty() && id == practiceScrubFinishCommandId)
+      practiceScrubFinishRejected = !accepted;
+    if (id == practiceScrubBeginCommandId && !accepted)
+      clearPracticeScrub();
+    if (id.isNotEmpty() && id == practiceListeningPendingCommandId) {
+      if (!accepted) clearPracticeListeningOwnership();
+      else practiceListeningAcknowledgedAtSequence = static_cast<juce::int64>(field(state, "seq"));
+    }
     for (auto it = pendingControls.begin(); it != pendingControls.end(); ++it) {
       if (it->second.id != id) continue;
       if (!accepted) pendingControls.erase(it);
@@ -36,9 +143,22 @@ public:
     }
   }
   void applyState(const juce::var &next) {
-    if (field(field(state, "song"), "id") != field(field(next, "song"), "id")) pendingControls.clear();
+    if (field(field(state, "song"), "id") != field(field(next, "song"), "id")) {
+      clearPracticeScrub();
+      clearPracticeLoopOwnership();
+      pendingControls.clear();
+      clearPracticeListeningOwnership();
+    }
     const auto sequence = static_cast<juce::int64>(field(next, "seq"));
     const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (practiceLoopPending &&
+        (now >= practiceLoopExpiresAt ||
+         (practiceLoopAcknowledgedAtSequence >= 0 &&
+          sequence > practiceLoopAcknowledgedAtSequence)))
+      practiceLoopPending = false;
+    if (practiceListeningPending && (now >= practiceListeningExpiresAt ||
+        (practiceListeningAcknowledgedAtSequence >= 0 && sequence > practiceListeningAcknowledgedAtSequence)))
+      practiceListeningPending = false;
     for (auto it = pendingControls.begin(); it != pendingControls.end();) {
       const auto &pending = it->second;
       // TCP orders ack before the following snapshot. Earlier echoes (including
@@ -96,6 +216,125 @@ public:
   bool isClickDivisionEnabled() const { return remote ? static_cast<bool>(field(field(state, "ui"), "isClickDivisionEnabled")) : local.isClickDivisionEnabled(); }
   int getPendingArrangementPartJumpIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getPendingArrangementPartJumpIndex")) : local.getPendingArrangementPartJumpIndex(); }
   int getArrangementPartLoopIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getArrangementPartLoopIndex")) : local.getArrangementPartLoopIndex(); }
+  bool isPracticeLoopActive() const {
+    if (!remote) return local.isPracticeLoopActive();
+    return connected && ((!practiceLoopPendingRange.isEmpty() && hasPendingPracticeLoop()) ||
+                         static_cast<bool>(field(state, "practiceLoopActive")));
+  }
+  juce::Range<double> getPracticeLoopRange() const {
+    if (!remote) return local.getPracticeLoopRange();
+    if (!connected) return {};
+    if (!practiceLoopPendingRange.isEmpty() && hasPendingPracticeLoop())
+      return practiceLoopPendingRange;
+    return isPracticeLoopActive()
+        ? juce::Range<double>(number(state, "practiceLoopStart"), number(state, "practiceLoopEnd"))
+        : juce::Range<double>{};
+  }
+  juce::String getPracticeLoopIdentity() const {
+    if (!remote) return juce::String(local.getPracticeLoopRevision());
+    return hasPendingPracticeLoop() ? practiceLoopCommandId
+                                   : field(state, "practiceLoopCommandId").toString();
+  }
+  double getMinimumPracticeLoopDuration() const {
+    return remote ? juce::jmax(0.25, number(state, "practiceLoopMinimumDuration", 0.25))
+                  : local.getMinimumPracticeLoopDuration();
+  }
+  bool ownsPracticeLoop() const {
+    if (!remote) return localPracticeLoopOwned &&
+        (local.isPracticeLoopActive() || local.hasPracticeLoopPreparation()) &&
+        localPracticeLoopRevision == local.getPracticeLoopRevision();
+    return connected && practiceLoopCommandId.isNotEmpty() &&
+        (hasPendingPracticeLoop() ||
+         ((isPracticeLoopActive() || static_cast<bool>(field(state, "practiceLoopPrepared"))) &&
+          field(state, "practiceLoopCommandId").toString() == practiceLoopCommandId));
+  }
+  bool wasPracticeLoopRequestRejected() const { return practiceLoopRequestRejected; }
+  juce::String getPracticeLoopError() const {
+    if (!remote) return local.getPracticeLoopError();
+    return practiceLoopError.isNotEmpty() ? practiceLoopError
+                                         : field(state, "practiceLoopError").toString();
+  }
+  bool setPracticeLoopRange(double start, double end) {
+    practiceLoopRequestRejected = false;
+    practiceLoopError.clear();
+    if (!remote) {
+      const bool accepted = local.setPracticeLoopRange(start, end);
+      if (accepted) {
+        localPracticeLoopOwned = true;
+        localPracticeLoopRevision = local.getPracticeLoopRevision();
+      }
+      practiceLoopRequestRejected = !accepted;
+      return accepted;
+    }
+    if (!connected || !hasLoadedSong() || !std::isfinite(start) ||
+        !std::isfinite(end) || start < getSongStartSeconds() ||
+        end > getSongEndSeconds() || end <= start) {
+      practiceLoopRequestRejected = true;
+      practiceLoopError = "invalid-range";
+      return false;
+    }
+    if (end - start < getMinimumPracticeLoopDuration()) {
+      practiceLoopRequestRejected = true;
+      practiceLoopError = "too-short";
+      return false;
+    }
+    auto value = std::make_unique<juce::DynamicObject>();
+    value->setProperty("songId", field(field(state, "song"), "id"));
+    value->setProperty("start", start);
+    value->setProperty("end", end);
+    const auto id = send("practice.loop", juce::var(value.release()));
+    if (id.isEmpty()) { practiceLoopError = "rejected"; practiceLoopRequestRejected = true; return false; }
+    practiceLoopPreviousCommandId = practiceLoopCommandId;
+    practiceLoopCommandId = id;
+    practiceLoopPendingRange = {start, end};
+    practiceLoopPending = true;
+    practiceLoopExpiresAt = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    practiceLoopAcknowledgedAtSequence = -1;
+    return true;
+  }
+  bool preparePracticeLoop(double start) {
+    if (ownsPracticeLoop()) releasePracticeLoop();
+    practiceLoopRequestRejected = false;
+    practiceLoopError.clear();
+    if (!remote) {
+      const bool accepted = local.preparePracticeLoop(start);
+      if (accepted) {
+        localPracticeLoopOwned = true;
+        localPracticeLoopRevision = local.getPracticeLoopRevision();
+      }
+      return accepted;
+    }
+    if (!connected || !hasLoadedSong() || !std::isfinite(start) ||
+        start < getSongStartSeconds() || start >= getSongEndSeconds()) {
+      practiceLoopError = "invalid-range";
+      return false;
+    }
+    auto value = std::make_unique<juce::DynamicObject>();
+    value->setProperty("songId", field(field(state, "song"), "id"));
+    value->setProperty("start", start);
+    const auto id = send("practice.loopPrepare", juce::var(value.release()));
+    if (id.isEmpty()) return false;
+    practiceLoopCommandId = id;
+    practiceLoopPendingRange = {};
+    practiceLoopPending = true;
+    practiceLoopExpiresAt = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    practiceLoopAcknowledgedAtSequence = -1;
+    return true;
+  }
+  void releasePracticeLoop() {
+    if (!remote) {
+      if (ownsPracticeLoop()) local.clearPracticeLoop();
+      clearPracticeLoopOwnership();
+      return;
+    }
+    if (connected && practiceLoopCommandId.isNotEmpty()) {
+      auto value = std::make_unique<juce::DynamicObject>();
+      value->setProperty("songId", field(field(state, "song"), "id"));
+      value->setProperty("commandId", practiceLoopCommandId);
+      send("practice.loopRelease", juce::var(value.release()));
+    }
+    clearPracticeLoopOwnership();
+  }
   int getAvailableOutputChannelCount() const { return remote ? static_cast<int>(field(field(state, "ui"), "getAvailableOutputChannelCount")) : local.getAvailableOutputChannelCount(); }
   float getMasterVolume() const { return remote ? static_cast<float>(controlValue("mix.volume", "master", number(mix("master"), "volume", 1))) : local.getMasterVolume(); }
   float getMasterGain() const { return remote ? static_cast<float>(controlValue("mix.gain", "master", number(mix("master"), "gain", 1))) : local.getMasterGain(); }
@@ -128,6 +367,40 @@ public:
   bool isStemMuted(int index) const { return remote ? static_cast<bool>(number(mix(stemId(index)), "mute")) : local.isStemMuted(index); }
   bool isStemSoloed(int index) const { return remote ? static_cast<bool>(number(mix(stemId(index)), "solo")) : local.isStemSoloed(index); }
   int getStemOutputChannel(int index) const { return remote ? static_cast<int>(number(mix(stemId(index)), "outputChannel")) : local.getStemOutputChannel(index); }
+  void setPracticeListeningMode(int index, int mode) {
+    if (mode < 0 || mode > 2) return;
+    if (!remote) { local.setPracticeListeningMode(index, mode); return; }
+    if (!connected || (mode != 0 && stemId(index).isEmpty())) return;
+    auto value = std::make_unique<juce::DynamicObject>();
+    value->setProperty("mode", mode);
+    value->setProperty("songId", field(field(state, "song"), "id"));
+    send("practice.listen", juce::var(value.release()), mode == 0 ? juce::String{} : stemId(index));
+  }
+  void releasePracticeListening() {
+    if (!remote) { local.setPracticeListeningMode(-1, 0); return; }
+    auto value = std::make_unique<juce::DynamicObject>();
+    value->setProperty("mode", 0);
+    value->setProperty("songId", field(field(state, "song"), "id"));
+    clearPracticeListeningOwnership();
+    send("practice.release", juce::var(value.release()));
+  }
+  bool ownsPracticeListening() const {
+    if (!remote) return local.getPracticeListeningMode() != 0;
+    if (!connected || practiceListeningCommandId.isEmpty()) return false;
+    if (hasPendingPracticeListening()) return true;
+    return getPracticeListeningMode() != 0 && field(state, "practiceCommandId").toString() == practiceListeningCommandId;
+  }
+  int getPracticeListeningStem() const {
+    if (!remote) return local.getPracticeListeningStem();
+    if (!connected || getPracticeListeningMode() == 0) return -1;
+    return includedStemIds.indexOf(hasPendingPracticeListening()
+        ? practiceListeningPendingStemId : field(state, "practiceStemId").toString());
+  }
+  int getPracticeListeningMode() const {
+    return remote ? (connected ? (hasPendingPracticeListening() ? practiceListeningPendingMode
+                                : static_cast<int>(number(state, "practiceMode"))) : 0)
+                  : local.getPracticeListeningMode();
+  }
   void setStemVolume(int index, float value) { if (remote) send("mix.volume", value, stemId(index)); else local.setStemVolume(index, value); }
   void setStemGain(int index, float value) { if (remote) send("mix.gain", value, stemId(index)); else local.setStemGain(index, value); }
   void setStemMute(int index, bool value) { if (remote) send("mix.mute", value, stemId(index)); else local.setStemMute(index, value); }
@@ -150,6 +423,52 @@ public:
   void clearArrangementPartLoop() { if (remote) send("arrange.clearLoop"); else local.clearArrangementPartLoop(); }
   void seekSongTo(double seconds) { if (remote) send("transport.seek", seconds); else local.seekSongTo(seconds); }
   void seekSongRelative(double seconds) { seekSongTo(getSongCurrentPositionSeconds() + seconds); }
+  // A second drag during settling keeps the same lease and original intent.
+  void beginPracticeScrub() {
+    practiceScrubFinishCommandId.clear();
+    practiceScrubFinishRejected = false;
+    if (!hasLoadedSong() || (remote && !connected)) return;
+    if (practiceScrubToken.isNotEmpty()) {
+      if (remote || localPracticeScrub.validFor(local, "local", practiceScrubToken)) return;
+      cancelPracticeScrub(false);
+    }
+    practiceScrubToken = juce::Uuid().toString();
+    practiceScrubSongId = remote ? field(field(state, "song"), "id").toString() : "local";
+    if (!remote) {
+      if (!localPracticeScrub.begin(local, practiceScrubSongId, practiceScrubToken))
+        clearPracticeScrub();
+      return;
+    }
+    practiceScrubBeginCommandId = send("transport.scrubBegin", practiceScrubValue());
+    if (practiceScrubBeginCommandId.isEmpty()) clearPracticeScrub();
+  }
+  bool finishPracticeScrub(const double seconds) {
+    if (practiceScrubToken.isEmpty() || !std::isfinite(seconds)) return false;
+    if (!remote) {
+      const bool applied = localPracticeScrub.finish(local, practiceScrubSongId,
+                                                    practiceScrubToken, seconds);
+      clearPracticeScrub();
+      return applied;
+    }
+    auto value = practiceScrubValue();
+    value.getDynamicObject()->setProperty("seconds", seconds);
+    practiceScrubFinishCommandId = send("transport.scrubEnd", value);
+    const bool sent = practiceScrubFinishCommandId.isNotEmpty();
+    clearPracticeScrub(true);
+    return sent;
+  }
+  bool wasPracticeScrubFinishRejected() const { return practiceScrubFinishRejected; }
+  void cancelPracticeScrub(const bool restorePlayback) {
+    if (practiceScrubToken.isEmpty()) return;
+    if (!remote) localPracticeScrub.cancel(local, practiceScrubSongId,
+                                          practiceScrubToken, restorePlayback);
+    else {
+      auto value = practiceScrubValue();
+      value.getDynamicObject()->setProperty("restorePlayback", restorePlayback);
+      send("transport.scrubCancel", value);
+    }
+    clearPracticeScrub();
+  }
   void setFadeStopsPlayback(bool value) { if (!remote) local.setFadeStopsPlayback(value); }
   // Rhythm display initialization must not send commands back on every UI tick.
   void setMetronomeBeatsPerBar(int value) { if (remote) send("click.beats", value); else local.setMetronomeBeatsPerBar(value); }
@@ -186,6 +505,51 @@ public:
   void refreshPadsRoutingFromSettings() { if (!remote) local.refreshPadsRoutingFromSettings(); }
 
 private:
+  bool localPracticeLoopOwned = false;
+  uint64_t localPracticeLoopRevision = 0;
+  juce::String practiceLoopCommandId, practiceLoopError;
+  juce::String practiceLoopPreviousCommandId;
+  juce::Range<double> practiceLoopPendingRange;
+  bool practiceLoopPending = false;
+  bool practiceLoopRequestRejected = false;
+  double practiceLoopExpiresAt = 0.0;
+  juce::int64 practiceLoopAcknowledgedAtSequence = -1;
+  bool hasPendingPracticeLoop() const {
+    return practiceLoopPending && !practiceLoopRequestRejected &&
+           juce::Time::getMillisecondCounterHiRes() < practiceLoopExpiresAt;
+  }
+  void clearPracticeLoopOwnership() {
+    localPracticeLoopOwned = false;
+    localPracticeLoopRevision = 0;
+    practiceLoopCommandId.clear();
+    practiceLoopPreviousCommandId.clear();
+    practiceLoopError.clear();
+    practiceLoopPendingRange = {};
+    practiceLoopPending = false;
+    practiceLoopRequestRejected = false;
+    practiceLoopExpiresAt = 0.0;
+    practiceLoopAcknowledgedAtSequence = -1;
+  }
+  PracticeScrubLease localPracticeScrub;
+  juce::String practiceScrubToken, practiceScrubSongId, practiceScrubBeginCommandId;
+  juce::String practiceScrubFinishCommandId;
+  bool practiceScrubFinishRejected = false;
+  juce::var practiceScrubValue() const {
+    auto value = std::make_unique<juce::DynamicObject>();
+    value->setProperty("token", practiceScrubToken);
+    value->setProperty("songId", practiceScrubSongId);
+    return juce::var(value.release());
+  }
+  void clearPracticeScrub(const bool preserveFinish = false) {
+    localPracticeScrub.clear();
+    practiceScrubToken.clear();
+    practiceScrubSongId.clear();
+    practiceScrubBeginCommandId.clear();
+    if (!preserveFinish) {
+      practiceScrubFinishCommandId.clear();
+      practiceScrubFinishRejected = false;
+    }
+  }
   struct PendingControl {
     juce::String id;
     juce::var value;
@@ -193,6 +557,25 @@ private:
     juce::int64 acknowledgedAtSequence;
   };
   std::map<std::pair<juce::String, juce::String>, PendingControl> pendingControls;
+  juce::String practiceListeningCommandId;
+  juce::String practiceListeningPendingCommandId, practiceListeningPendingStemId;
+  int practiceListeningPendingMode = 0;
+  bool practiceListeningPending = false;
+  double practiceListeningExpiresAt = 0.0;
+  juce::int64 practiceListeningAcknowledgedAtSequence = -1;
+  void clearPracticeListeningOwnership() {
+    practiceListeningCommandId.clear();
+    practiceListeningPendingCommandId.clear();
+    practiceListeningPendingStemId.clear();
+    practiceListeningPendingMode = 0;
+    practiceListeningPending = false;
+    practiceListeningExpiresAt = 0.0;
+    practiceListeningAcknowledgedAtSequence = -1;
+  }
+  bool hasPendingPracticeListening() const {
+    return connected && practiceListeningPending &&
+           juce::Time::getMillisecondCounterHiRes() < practiceListeningExpiresAt;
+  }
   double controlValue(const juce::String &action, const juce::String &target, double confirmed) const {
     const auto pending = pendingControls.find({action, target});
     if (pending != pendingControls.end() && juce::Time::getMillisecondCounterHiRes() < pending->second.expiresAt)

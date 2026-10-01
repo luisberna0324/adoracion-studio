@@ -47,15 +47,20 @@ bool RemoteSession::becomeServer(const juce::String &displayName) {
                 const std::lock_guard<std::mutex> lock(eventsMutex);
                 events.erase(std::remove_if(events.begin(), events.end(), [&](const Event &event) { return event.sourceId == peerId; }), events.end());
               }
-              const std::lock_guard<std::mutex> lock(sendersMutex);
-              auto it = peerSenders.find(peerId);
-              if (it != peerSenders.end()) {
-                // IX invokes close while holding its state mutex. Joining here
-                // would deadlock a sender completing a failed send/close.
-                it->second->requestStop();
-                retiredSenders.push_back(std::move(it->second));
-                peerSenders.erase(it);
+              {
+                const std::lock_guard<std::mutex> lock(sendersMutex);
+                auto it = peerSenders.find(peerId);
+                if (it != peerSenders.end()) {
+                  // IX invokes close while holding its state mutex. Joining here
+                  // would deadlock a sender completing a failed send/close.
+                  it->second->requestStop();
+                  retiredSenders.push_back(std::move(it->second));
+                  peerSenders.erase(it);
+                }
               }
+              Event disconnected{Event::Kind::PeerDisconnected, {}, {}};
+              disconnected.sourceId = peerId;
+              enqueue(std::move(disconnected));
             } else if (message->type == ix::WebSocketMessageType::Message &&
                        !message->binary && message->str.size() <= kMaxCommandBytes) {
               Event event{Event::Kind::Command, message->str, {}};
@@ -214,6 +219,12 @@ std::vector<DiscoveredServer> RemoteSession::getDiscoveredServers() const {
 bool RemoteSession::enqueue(Event event) {
   const std::lock_guard<std::mutex> lock(eventsMutex);
   if (event.kind == Event::Kind::Connected || event.kind == Event::Kind::Disconnected) events.clear();
+  // A server-side close must reach the UI even when its reliable command queue
+  // is full, without discarding commands belonging to other clients.
+  if (event.kind == Event::Kind::PeerDisconnected &&
+      std::any_of(events.begin(), events.end(), [&](const Event &queued) {
+        return queued.kind == Event::Kind::PeerDisconnected && queued.sourceId == event.sourceId;
+      })) return true;
   if (event.kind == Event::Kind::Meters) {
     events.erase(std::remove_if(events.begin(), events.end(), [](const Event &queued) { return queued.kind == Event::Kind::Meters; }), events.end());
   }
@@ -226,7 +237,7 @@ bool RemoteSession::enqueue(Event event) {
       if (it->coalescingKey == event.coalescingKey) { events.erase(it); break; }
     }
   }
-  if (events.size() >= 128) {
+  if (events.size() >= 128 && event.kind != Event::Kind::PeerDisconnected) {
     if (event.kind == Event::Kind::Meters) return true;
     const auto meter = std::find_if(events.begin(), events.end(), [](const Event &v) { return v.kind == Event::Kind::Meters; });
     if (meter != events.end()) events.erase(meter);

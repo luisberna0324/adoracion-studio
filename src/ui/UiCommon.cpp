@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <map>
+#include <utility>
 
 juce::Colour UITheme::appBg = juce::Colour::fromRGB(50, 46, 43); // #322E2B
 juce::Colour UITheme::appBgTop = juce::Colour::fromRGB(56, 52, 49); // #383431
@@ -1207,6 +1208,158 @@ float measureTextWidth(const juce::Font &font, const juce::String &text) {
   return glyphs.getBoundingBox(0, -1, true).getWidth();
 }
 } // namespace
+
+juce::Path roundedControlPath(juce::Rectangle<float> bounds,
+                              const int connectedEdges,
+                              const float cornerRadius) {
+  const bool connectedLeft =
+      (connectedEdges & juce::Button::ConnectedOnLeft) != 0;
+  const bool connectedRight =
+      (connectedEdges & juce::Button::ConnectedOnRight) != 0;
+  const bool connectedTop =
+      (connectedEdges & juce::Button::ConnectedOnTop) != 0;
+  const bool connectedBottom =
+      (connectedEdges & juce::Button::ConnectedOnBottom) != 0;
+
+  if (connectedLeft)
+    bounds.setX(0.0f);
+  if (connectedRight)
+    bounds.setRight(bounds.getRight() + 0.5f);
+  if (connectedTop)
+    bounds.setY(0.0f);
+  if (connectedBottom)
+    bounds.setBottom(bounds.getBottom() + 0.5f);
+
+  juce::Path path;
+  path.addRoundedRectangle(
+      bounds.getX(), bounds.getY(), bounds.getWidth(), bounds.getHeight(),
+      cornerRadius, cornerRadius, !connectedLeft && !connectedTop,
+      !connectedRight && !connectedTop, !connectedLeft && !connectedBottom,
+      !connectedRight && !connectedBottom);
+  return path;
+}
+
+TransportIconButton::TransportIconButton(juce::String name, SvgIconName iconToUse,
+                               bool primary)
+    : juce::Button(std::move(name)), icon(iconToUse), isPrimary(primary) {}
+
+void TransportIconButton::setIcon(SvgIconName iconToUse) {
+  if (icon == iconToUse)
+    return;
+  icon = iconToUse;
+  repaint();
+}
+
+void TransportIconButton::setBadgeText(juce::String badge) {
+  if (badgeText == badge)
+    return;
+  badgeText = std::move(badge);
+  repaint();
+}
+
+void TransportIconButton::setPulseAmount(float amount, bool downbeat) {
+  const float nextAmount = juce::jlimit(0.0f, 1.0f, amount);
+  if (std::abs(pulseAmount - nextAmount) < 0.01f &&
+      pulseDownbeat == downbeat)
+    return;
+  pulseAmount = nextAmount;
+  pulseDownbeat = downbeat;
+  repaint();
+}
+
+void TransportIconButton::mouseDown(const juce::MouseEvent &event) {
+  juce::Button::mouseDown(event);
+  if (onPointerDown)
+    onPointerDown();
+}
+
+void TransportIconButton::paintButton(juce::Graphics &gr,
+                                     bool isMouseOverButton,
+                                     bool isButtonDown) {
+  auto b = getLocalBounds().toFloat().reduced(0.5f);
+  const auto connectedEdges = getConnectedEdgeFlags();
+  const auto controlPath = roundedControlPath(b, connectedEdges, 10.0f);
+  const bool active = isButtonDown || getToggleState();
+
+  auto fill = UITheme::cardBg;
+  if (active && !isPrimary)
+    fill = fill.brighter(0.08f);
+  else if (isMouseOverButton && !isPrimary)
+    fill = fill.brighter(0.05f);
+
+  if (pulseAmount > 0.001f) {
+    const auto pulseColour =
+        pulseDownbeat ? UITheme::accentSoft : UITheme::accent;
+    fill = fill.interpolatedWith(pulseColour, 0.14f + (pulseAmount * 0.24f));
+  }
+
+  if (isPrimary) {
+    gr.setColour(UITheme::accentSoft.withAlpha(active ? 0.26f : 0.18f));
+    gr.strokePath(controlPath, juce::PathStrokeType(3.0f));
+  }
+
+  gr.setColour(juce::Colours::black.withAlpha(isPrimary ? 0.18f : 0.20f));
+  auto shadowPath = controlPath;
+  shadowPath.applyTransform(
+      juce::AffineTransform::translation(0.0f, isPrimary ? 1.5f : 1.0f));
+  gr.fillPath(shadowPath);
+
+  if (isPrimary) {
+    auto primaryTop = UITheme::accentSoft.brighter(isMouseOverButton ? 0.04f : 0.0f);
+    if (active)
+      primaryTop = primaryTop.brighter(0.05f);
+    juce::ColourGradient primaryFill(primaryTop, b.getCentreX(), b.getY(),
+                                     UITheme::accent, b.getCentreX(),
+                                     b.getBottom(), false);
+    gr.setGradientFill(primaryFill);
+  } else {
+    juce::ColourGradient secondaryFill(fill.brighter(0.025f), b.getCentreX(),
+                                       b.getY(), fill.darker(0.035f),
+                                       b.getCentreX(), b.getBottom(), false);
+    gr.setGradientFill(secondaryFill);
+  }
+  gr.fillPath(controlPath);
+
+  const auto border =
+      isPrimary ? UITheme::accentSoft.withAlpha(active ? 0.88f : 0.70f)
+                : UITheme::cardBorder.brighter(isMouseOverButton ? 0.10f : 0.02f)
+                      .withAlpha(active ? 0.90f : 0.72f);
+  gr.setColour(border);
+  gr.strokePath(controlPath,
+                juce::PathStrokeType(isPrimary ? 1.25f : 1.0f));
+
+  const bool hasBadge = badgeText.isNotEmpty();
+  const auto iconColour = isPrimary ? UITheme::onAccent : UITheme::textPrimary;
+  const float iconSize = hasBadge ? 18.0f : 21.0f;
+  auto iconArea = b.withSizeKeepingCentre(iconSize, iconSize);
+  if (icon == SvgIconName::Midi)
+    iconArea = b.reduced(6.0f, 14.0f);
+  if (hasBadge)
+    iconArea.translate(0.0f, -4.0f);
+
+  if (getName() == "tabletMore") {
+    constexpr float dotDiameter = 3.6f;
+    constexpr float dotGap = 5.0f;
+    const auto centre = iconArea.getCentre();
+    gr.setColour(iconColour);
+    for (int index = -1; index <= 1; ++index) {
+      gr.fillEllipse(centre.x + static_cast<float>(index) *
+                                    (dotDiameter + dotGap) -
+                         dotDiameter * 0.5f,
+                     centre.y - dotDiameter * 0.5f, dotDiameter,
+                     dotDiameter);
+    }
+  } else if (!drawSvgIcon(gr, iconArea, icon, iconColour))
+    drawIconGlyph(gr, iconArea, IconGlyph::More, iconColour);
+
+  if (hasBadge) {
+    gr.setColour(isPrimary ? UITheme::onAccent.withAlpha(0.92f)
+                           : UITheme::textSecondary.withAlpha(0.88f));
+    gr.setFont(makeAppFont(9.0f, AppFontWeight::SemiBold));
+    gr.drawFittedText(badgeText, getLocalBounds().withTrimmedTop(28),
+                      juce::Justification::centredTop, 1);
+  }
+}
 
 HeaderIconButton::HeaderIconButton(const juce::String &name,
                                    const IconGlyph glyphToUse)

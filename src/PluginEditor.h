@@ -26,6 +26,7 @@ class LocalAuthCallbackServer;
 class SettingsPanel;
 class SettingsVersionsSheet;
 class AppModal;
+class PracticePanel;
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -58,6 +59,8 @@ private:
   void updatePhoneOrientation();
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
+  void showPractice();
+  void closePractice();
   bool phoneOrientationUpdatePending = false;
   void applyRemoteSnapshot(const juce::var &snapshot);
   void applyRemoteWaveform(const std::vector<uint8_t> &bytes);
@@ -152,7 +155,15 @@ private:
   int authCallbackPort = 0;
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
   std::unique_ptr<juce::Component> settingsOverlay;
+  std::unique_ptr<PracticePanel> practiceOverlay;
   playworship::remote::RemoteSession remoteSession;
+  std::string remotePracticeOwner;
+  juce::String remotePracticeCommandId;
+  uint64_t remotePracticeRevision = 0;
+  std::string remotePracticeLoopOwner;
+  juce::String remotePracticeLoopCommandId;
+  uint64_t remotePracticeLoopRevision = 0;
+  std::map<std::string, PracticeScrubLease> remotePracticeScrubLeases;
   ImportedSongData remoteSavedLocalSong;
   bool remoteSavedHasSong = false;
   bool remoteHadSnapshot = false;

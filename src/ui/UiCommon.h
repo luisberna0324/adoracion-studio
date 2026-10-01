@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <functional>
 
 enum class ThemePreset { Default = 1, Spotify, Ableton };
 enum class ResponsiveLayoutProfile { Compact = 0, Standard, Large };
@@ -152,6 +153,36 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
                    IconGlyph glyph, juce::Colour colour, float stroke = 1.7f);
 bool drawSvgIcon(juce::Graphics &g, juce::Rectangle<float> area,
                  SvgIconName icon, juce::Colour colour);
+
+/** Shared connected-edge geometry for transport controls and their segments. */
+juce::Path roundedControlPath(juce::Rectangle<float> bounds, int connectedEdges,
+                              float cornerRadius);
+
+/** Transport button shared by the top bar and practice playback controls. */
+class TransportIconButton : public juce::Button {
+public:
+  TransportIconButton(juce::String name, SvgIconName iconToUse,
+                      bool primary = false);
+  std::function<void()> onPointerDown;
+
+  void setIcon(SvgIconName iconToUse);
+  void setBadgeText(juce::String text);
+  void setPulseAmount(float amount, bool downbeat);
+
+  void paintButton(juce::Graphics &gr, bool isMouseOverButton,
+                   bool isButtonDown) override;
+
+protected:
+  void mouseDown(const juce::MouseEvent &event) override;
+
+private:
+  SvgIconName icon;
+  juce::String badgeText;
+  bool isPrimary = false;
+  float pulseAmount = 0.0f;
+  bool pulseDownbeat = false;
+};
+
 juce::LookAndFeel &getActionCalloutLookAndFeel();
 juce::CallOutBox &presentActionPopover(
     std::unique_ptr<juce::Component> content,

@@ -45,11 +45,28 @@ juce::var makeMixerRow(const juce::String &target, const juce::String &name,
 
 void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSession::Mode mode) {
   using Mode = playworship::remote::RemoteSession::Mode;
-  if (mode == remoteSession.getMode()) return;
+  const auto previousMode = remoteSession.getMode();
+  if (mode == previousMode) return;
   if (songLoadBusy || projectSaveBusy || mixExportBusy) { remoteConnectionStatus = L10n::tr("Espera a que termine la carga", "Wait for loading to finish"); refreshRemoteSettings(); return; }
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) grid->flushPendingPersistenceNow();
   flushActiveSongPersistenceNow();
+  if (previousMode != Mode::Client) p.setPracticeListeningMode(-1, 0);
+  playbackSession.releasePracticeLoop();
+  if (previousMode != Mode::Client) p.clearPracticeLoop();
+  remotePracticeLoopOwner.clear();
+  remotePracticeLoopCommandId.clear();
+  remotePracticeLoopRevision = 0;
+  remotePracticeOwner.clear();
+  remotePracticeCommandId.clear();
+  remotePracticeRevision = 0;
+  for (auto &entry : remotePracticeScrubLeases) {
+    auto &lease = entry.second;
+    lease.cancel(p, hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{},
+                 lease.token, true);
+  }
+  remotePracticeScrubLeases.clear();
+  playbackSession.cancelPracticeScrub(true);
   remoteSession.stop();
   remoteHadSnapshot = false;
   if (playbackSession.isRemote()) {
@@ -236,9 +253,64 @@ void MTControlsAudioProcessorEditor::applyRemoteWaveform(const std::vector<uint8
 }
 
 void MTControlsAudioProcessorEditor::processRemoteEvents() {
+  auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+  const auto revokeStalePracticeLoopOwner = [&] {
+    if (!remotePracticeLoopOwner.empty() &&
+        p.getPracticeLoopRevision() != remotePracticeLoopRevision) {
+      remotePracticeLoopOwner.clear();
+      remotePracticeLoopCommandId.clear();
+      remotePracticeLoopRevision = 0;
+    }
+  };
+  revokeStalePracticeLoopOwner();
+  // A local gesture or song change supersedes any earlier remote ownership.
+  if (!remotePracticeOwner.empty() &&
+      p.getPracticeListeningRevision() != remotePracticeRevision) {
+    remotePracticeOwner.clear();
+    remotePracticeCommandId.clear();
+    remotePracticeRevision = 0;
+  }
   for (auto &event : remoteSession.drainEvents()) {
+    revokeStalePracticeLoopOwner();
+    if (!remotePracticeOwner.empty() &&
+        p.getPracticeListeningRevision() != remotePracticeRevision) {
+      remotePracticeOwner.clear();
+      remotePracticeCommandId.clear();
+      remotePracticeRevision = 0;
+    }
     using Kind = playworship::remote::RemoteSession::Event::Kind;
     if (event.kind == Kind::Connected || event.kind == Kind::Disconnected) { playbackSession.setConnected(false); continue; }
+    if (event.kind == Kind::PeerDisconnected) {
+      if (remotePracticeLoopOwner == event.sourceId) {
+        if (p.getPracticeLoopRevision() == remotePracticeLoopRevision)
+          p.clearPracticeLoop();
+        remotePracticeLoopOwner.clear();
+        remotePracticeLoopCommandId.clear();
+        remotePracticeLoopRevision = 0;
+        nextRemotePublishMs = 0;
+        remoteStateSignature.clear();
+      }
+      const auto scrub = remotePracticeScrubLeases.find(event.sourceId);
+      if (scrub != remotePracticeScrubLeases.end()) {
+        auto &lease = scrub->second;
+        lease.cancel(p, hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{},
+                     lease.token, !songLoadBusy);
+        remotePracticeScrubLeases.erase(scrub);
+        nextRemotePublishMs = 0;
+        remoteStateSignature.clear();
+      }
+      if (remotePracticeOwner == event.sourceId) {
+        if (p.getPracticeListeningRevision() == remotePracticeRevision) {
+          p.setPracticeListeningMode(-1, 0);
+          nextRemotePublishMs = 0;
+          remoteStateSignature.clear();
+        }
+        remotePracticeOwner.clear();
+        remotePracticeCommandId.clear();
+        remotePracticeRevision = 0;
+      }
+      continue;
+    }
     if (event.kind == Kind::Waveform) { applyRemoteWaveform(event.bytes); continue; }
     const auto value = event.value.isObject() ? event.value : juce::JSON::parse(juce::String::fromUTF8(event.text.data(), static_cast<int>(event.text.size())));
     if (static_cast<int>(property(value, "v")) != 1) continue;
@@ -248,23 +320,104 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
       else if (type == "meters" && playbackSession.isRemote() && playbackSession.isConnected() && stringProperty(value, "songId") == currentLoadedSong.id) playbackSession.applyMeters(value);
       else if (type == "ack") {
         const bool accepted = static_cast<bool>(property(value, "accepted"));
-        playbackSession.applyAcknowledgement(stringProperty(value, "id"), accepted);
+        playbackSession.applyAcknowledgement(stringProperty(value, "id"), accepted,
+                                             stringProperty(value, "reason"));
         if (!accepted) remoteConnectionStatus = stringProperty(value, "reason");
       }
     } else if (event.kind == Kind::Command && remoteSession.getMode() == playworship::remote::RemoteSession::Mode::Server) {
       juce::String error;
-      const bool accepted = applyRemoteCommand(value, error);
+      const auto action = stringProperty(value, "action");
+      bool accepted = false;
+      if (action == "transport.scrubBegin" || action == "transport.scrubEnd" ||
+          action == "transport.scrubCancel") {
+        const auto payload = property(value, "value");
+        const auto tokenValue = property(payload, "token");
+        const auto songValue = property(payload, "songId");
+        const auto token = tokenValue.toString();
+        const auto song = songValue.toString();
+        const auto activeSong = hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{};
+        if (stringProperty(value, "type") != "command" || !payload.isObject() ||
+            !tokenValue.isString() || token.isEmpty() ||
+            token.length() > 128 || !songValue.isString() || song.isEmpty() ||
+            event.sourceId.empty() || stringProperty(value, "id").isEmpty()) {
+          error = "Invalid practice scrub";
+        } else if (action == "transport.scrubCancel") {
+          const auto restore = property(payload, "restorePlayback");
+          if (!restore.isBool()) error = "Invalid practice scrub cancellation";
+          else {
+            // Cleanup is safe after a song change, but can only restore a
+            // pause whose current song, peer, token, and revision still match.
+            const auto entry = remotePracticeScrubLeases.find(event.sourceId);
+            if (entry != remotePracticeScrubLeases.end() && entry->second.token == token) {
+              entry->second.cancel(p, activeSong, token,
+                                   static_cast<bool>(restore) && song == activeSong);
+              remotePracticeScrubLeases.erase(entry);
+            }
+            accepted = true;
+          }
+        } else if (song != activeSong || !p.hasLoadedSong() || songLoadBusy) {
+          const auto entry = remotePracticeScrubLeases.find(event.sourceId);
+          if (entry != remotePracticeScrubLeases.end() && entry->second.token == token) {
+            entry->second.cancel(p, activeSong, token, false);
+            remotePracticeScrubLeases.erase(entry);
+          }
+          error = "Practice scrub song changed";
+        } else if (action == "transport.scrubBegin") {
+          accepted = remotePracticeScrubLeases[event.sourceId].begin(p, song, token);
+          if (!accepted) error = "Practice scrub superseded";
+        } else {
+          const auto seconds = property(payload, "seconds");
+          const auto entry = remotePracticeScrubLeases.find(event.sourceId);
+          if (!isNumber(seconds) || !std::isfinite(static_cast<double>(seconds)))
+            error = "Invalid practice scrub position";
+          else if (entry == remotePracticeScrubLeases.end() || entry->second.token != token)
+            error = "Practice scrub not owned";
+          else {
+            accepted = entry->second.finish(p, song, token, static_cast<double>(seconds));
+            remotePracticeScrubLeases.erase(entry);
+            if (!accepted) error = "Practice scrub superseded";
+          }
+        }
+      } else {
+        accepted = applyRemoteCommand(value, error);
+      }
+      if (accepted && action == "practice.listen") {
+        remotePracticeOwner = p.getPracticeListeningMode() == 0 ? std::string{} : event.sourceId;
+        remotePracticeCommandId = p.getPracticeListeningMode() == 0 ? juce::String{} : stringProperty(value, "id");
+        remotePracticeRevision = p.getPracticeListeningRevision();
+      } else if (accepted && (action == "practice.loop" || action == "practice.loopPrepare")) {
+        remotePracticeLoopOwner = event.sourceId;
+        remotePracticeLoopCommandId = stringProperty(value, "id");
+        remotePracticeLoopRevision = p.getPracticeLoopRevision();
+      } else if (accepted && action == "practice.loopRelease" &&
+                 remotePracticeLoopOwner == event.sourceId &&
+                 remotePracticeLoopRevision == p.getPracticeLoopRevision() &&
+                 stringProperty(property(value, "value"), "commandId") == remotePracticeLoopCommandId &&
+                 stringProperty(property(value, "value"), "songId") ==
+                     (hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{})) {
+        p.clearPracticeLoop();
+        remotePracticeLoopOwner.clear();
+        remotePracticeLoopCommandId.clear();
+        remotePracticeLoopRevision = 0;
+      } else if (accepted && action == "practice.release" &&
+                 !remotePracticeOwner.empty() && remotePracticeOwner == event.sourceId &&
+                 stringProperty(property(value, "value"), "songId") ==
+                     (hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{})) {
+        p.setPracticeListeningMode(-1, 0);
+        remotePracticeOwner.clear();
+        remotePracticeCommandId.clear();
+        remotePracticeRevision = 0;
+      }
       remoteSession.sendAck(stringProperty(value, "id"), accepted, error);
       if (accepted) {
         nextRemotePublishMs = 0;
         // Even a no-op command needs a snapshot after its ack so a client can
         // retire its preview. Continuous controls do not invalidate arrangement.
         remoteStateSignature.clear();
-        const auto action = stringProperty(value, "action");
         if (action.startsWith("mix.")) {
           if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
             grid->noteRemoteMixChange();
-        } else if (!action.startsWith("pads.")) nextRemoteSettingsMs = 0;
+        } else if (!action.startsWith("pads.") && !action.startsWith("practice.")) nextRemoteSettingsMs = 0;
         if (stringProperty(value, "action").startsWith("setlist.") || stringProperty(value, "action").startsWith("song.")) nextRemoteLibraryMs = 0;
       }
     }
@@ -395,6 +548,33 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   fields->setProperty("fade", p.isFadeActive());
   fields->setProperty("tempo", p.getPlaybackTempoBpm());
   fields->setProperty("pitch", p.getPitchSemiTones());
+  const auto practiceRange = p.getPracticeLoopRange();
+  fields->setProperty("practiceLoopActive", p.isPracticeLoopActive());
+  fields->setProperty("practiceLoopPrepared", p.hasPracticeLoopPreparation());
+  fields->setProperty("practiceLoopStart", practiceRange.getStart());
+  fields->setProperty("practiceLoopEnd", practiceRange.getEnd());
+  fields->setProperty("practiceLoopMinimumDuration", p.getMinimumPracticeLoopDuration());
+  fields->setProperty("practiceLoopError", p.getPracticeLoopError());
+  fields->setProperty("practiceLoopCommandId",
+      !remotePracticeLoopOwner.empty() &&
+          p.getPracticeLoopRevision() == remotePracticeLoopRevision
+      ? remotePracticeLoopCommandId : juce::String{});
+  const int practiceMode = p.getPracticeListeningMode();
+  const int practiceIndex = p.getPracticeListeningStem();
+  juce::String practiceStemId;
+  if (hasCurrentLoadedSong && practiceMode != 0) {
+    int index = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include) continue;
+      if (index++ == practiceIndex) { practiceStemId = stem.stemId; break; }
+    }
+  }
+  fields->setProperty("practiceMode", practiceMode);
+  fields->setProperty("practiceStemId", practiceStemId);
+  fields->setProperty("practiceCommandId",
+      !remotePracticeOwner.empty() && practiceMode != 0 &&
+              p.getPracticeListeningRevision() == remotePracticeRevision
+          ? remotePracticeCommandId : juce::String{});
   fields->setProperty("waveformHash", remoteWaveformHash);
   fields->setProperty("settings", remoteSettingsCache);
   fields->setProperty("libraryRevision", remoteLibraryRevision);
@@ -471,6 +651,71 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
   const auto action = stringProperty(command, "action");
   const auto target = stringProperty(command, "target");
   const auto value = property(command, "value");
+  if (action == "practice.loop" || action == "practice.loopPrepare" ||
+      action == "practice.loopRelease") {
+    const auto songId = property(value, "songId");
+    if (!value.isObject() || !songId.isString() || songId.toString().isEmpty()) {
+      error = "invalid-range"; return false;
+    }
+    if (action == "practice.loopRelease") {
+      if (!property(value, "commandId").isString() || stringProperty(value, "commandId").isEmpty()) {
+        error = "rejected"; return false;
+      }
+      return true; // The event handler checks peer, command ID and revision.
+    }
+    if (!hasCurrentLoadedSong || songLoadBusy || !p.hasLoadedSong() ||
+        songId.toString() != currentLoadedSong.id) {
+      error = "rejected"; return false;
+    }
+    const auto start = property(value, "start");
+    const auto end = property(value, "end");
+    if (!isNumber(start) || !std::isfinite(static_cast<double>(start)) ||
+        (action == "practice.loop" && (!isNumber(end) || !std::isfinite(static_cast<double>(end))))) {
+      error = "invalid-range"; return false;
+    }
+    const bool accepted = action == "practice.loopPrepare"
+        ? p.preparePracticeLoop(static_cast<double>(start))
+        : p.setPracticeLoopRange(static_cast<double>(start), static_cast<double>(end));
+    if (!accepted) error = p.getPracticeLoopError().isEmpty() ? juce::String("rejected") : p.getPracticeLoopError();
+    return accepted;
+  }
+  if (action == "practice.listen" || action == "practice.release") {
+    const auto modeValue = property(value, "mode");
+    const auto songId = property(value, "songId");
+    if (!value.isObject() || !modeValue.isInt() || !songId.isString() ||
+        static_cast<int>(modeValue) < 0 || static_cast<int>(modeValue) > 2 ||
+        (action == "practice.release" && static_cast<int>(modeValue) != 0)) {
+      error = "Invalid practice listening mode";
+      return false;
+    }
+    // Release is a lifecycle cleanup, not a new listening intent. The event
+    // handler restores only the matching current owner; stale releases are no-ops.
+    if (action == "practice.release") return true;
+    if (songId.toString() != (hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{})) {
+      error = "Practice song changed";
+      return false;
+    }
+    const int mode = static_cast<int>(modeValue);
+    if (mode == 0) { p.setPracticeListeningMode(-1, 0); return true; }
+    if (!hasCurrentLoadedSong || songLoadBusy) {
+      error = "No active practice song";
+      return false;
+    }
+    int index = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include) continue;
+      const int mappedIndex = index++;
+      if (stem.stemId != target || mappedIndex >= p.getLoadedStemCount()) continue;
+      p.setPracticeListeningMode(mappedIndex, mode);
+      if (p.getPracticeListeningStem() != mappedIndex || p.getPracticeListeningMode() != mode) {
+        error = "Invalid practice instrument";
+        return false;
+      }
+      return true;
+    }
+    error = "Unknown practice instrument";
+    return false;
+  }
   if (action.startsWith("song.") || action.startsWith("setlist."))
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
       grid->flushPendingPersistenceNow();

@@ -62,7 +62,7 @@ respaldan la canción todavía.
 void seekSongTo(double positionSeconds);
 void seekSongRelative(double deltaSeconds);
 
-// Configuración de loop region
+// Ventana de reproducción; al llegar a Fin se detiene, no repite.
 void setSongStartSeconds(double seconds) noexcept;
 double getSongStartSeconds() const noexcept;
 void setSongEndSeconds(double seconds) noexcept;
@@ -211,6 +211,72 @@ int getArrangementPartLoopIndex() const noexcept;
 
 Activa loop en una parte específica.
 
+### Loop A/B temporal de Ensayo
+
+```cpp
+bool preparePracticeLoop(double startSeconds) noexcept;
+bool setPracticeLoopRange(double startSeconds, double endSeconds) noexcept;
+void clearPracticeLoop() noexcept;
+bool isPracticeLoopActive() const noexcept;
+bool hasPracticeLoopPreparation() const noexcept;
+juce::Range<double> getPracticeLoopRange() const noexcept;
+uint64_t getPracticeLoopRevision() const noexcept;
+double getMinimumPracticeLoopDuration() const noexcept;
+juce::String getPracticeLoopError() const;
+```
+
+Marcar A conserva un borrador en la vista y publica solo un destino de prefetch.
+Esa preparación no activa un loop ni mueve o pausa el transporte. El banco de
+un seek, loop de sección, jump o transición de custom arrange inminente conserva
+prioridad. Marcar B publica una región exacta del timeline fuente/arrange y
+activa su repetición; no modifica `Inicio`, `Fin`, fade ni secciones persistidas.
+Pausa conserva la posición; Stop vuelve a A mientras la región está activa.
+Los seeks se limitan a A y al último frame anterior a B.
+
+La vista Ensayo ajusta A y B al pulso más cercano de la regla antes de llamar
+a estas APIs; la API y el renderer mantienen sus posiciones exactas en segundos.
+El ajuste utiliza el mapa vigente y la métrica en tiempo fuente, sin depender
+del zoom ni del BPM de reproducción modificado. En empate elige el pulso posterior.
+A se limita usando el último pulso válido de Fin y la duración mínima para
+garantizar que B pueda cerrarse en otro pulso. Si no existe uno, la marca se rechaza.
+
+La región debe estar completamente dentro de Inicio/Fin, contener valores
+finitos y durar al menos `getMinimumPracticeLoopDuration()`: 0.25 s como base,
+o el tiempo fuente de un bloque a 2x más dos frames si ese valor es mayor.
+El renderer admite una discontinuidad por callback. En custom arrange, A/B
+puede cruzar secciones source-continuas, pero no un corte o clip que cambie la
+fuente estrictamente dentro del intervalo. Un corte exactamente en A o B es
+válido. Esta restricción evita combinar dos handoffs en el mismo bloque.
+
+Mientras A/B está activo se suspenden los loops y jumps de sección y se ignora
+Skip en un snapshot temporal de tamaño fijo. Mute y guía conservan sus
+metadatos. El callback prearma A y aplica B→A en el frame exacto mediante el
+handoff habitual de stems, click y guía; no depende de un timer de interfaz.
+Una entrada A situada en mitad de una sección no dispara su anuncio de entrada.
+El reloj de presentación de Ensayo se acota a A/B y reconoce explícitamente
+el retroceso B→A por la longitud del rango, incluso si el salto queda por
+debajo del umbral habitual de discontinuidad visual de 250 ms.
+Si el destino no está listo al llegar a B, la canción se pausa exactamente en
+B, el loop se desactiva y se publica `buffer-not-ready`, en lugar de continuar
+fuera del intervalo. Un callback inesperadamente mayor que la región usa el
+mismo corte con `too-short`.
+
+`PlaybackSession` conserva la revisión del loop/preparación que creó. Cerrar
+Ensayo o desconectar su cliente libera solo esa revisión; una intención más
+reciente de otro cliente queda vigente. Cargar otra canción, cambiar modo,
+modificar Inicio/Fin o arrangement, pedir un jump/loop de sección o cambiar el
+dispositivo a un buffer que invalide la duración cancela A/B. Apagar repetición
+libera el motor; la vista puede conservar A y B para activarlo otra vez.
+Borrar región en la vista libera esa misma propiedad y elimina el borrador,
+sin cambiar posición ni estado de reproducción. `PlaybackSession` expone la
+identidad de la revisión local o comando remoto (incluido uno pendiente) para
+que snapshots atrasados no vuelvan a dibujar una región eliminada.
+
+Los errores estables son `invalid-range`, `too-short`,
+`discontinuous-arrangement`, `buffer-not-ready` y `rejected` para fallos remotos.
+La UI los traduce a una ayuda breve. La región y su preparación nunca se
+guardan en ProjectStore, SongLibraryStore ni sincronización Cloud.
+
 El loop y `muteInstruments` de una sección son independientes: se puede
 silenciar la instrumentación y repetir esa misma sección al mismo tiempo. La
 guía y el click conservan su tratamiento normal de mute. Activar o desactivar
@@ -299,8 +365,54 @@ antes de ese borde sigue siendo un recorte explícito.
 
 `Inicio` y `Fin` son también los límites inferior y superior de cualquier seek.
 Un clic o arrastre fuera de la ventana se limita a la guía correspondiente.
-`Stop` devuelve el transporte a `Inicio`, no a `0.0 s`, y la posición publicada
+`Stop` devuelve el transporte a `Inicio` (a A si hay un loop temporal de
+Ensayo activo), no a `0.0 s`, y la posición publicada
 a la UI cambia de inmediato aunque el dispositivo no esté ejecutando callbacks.
+
+Ensayo reutiliza `PlaybackSession::seekSongTo` para los dobles toques; el
+arrastre horizontal usa `beginPracticeScrub` / `finishPracticeScrub` para una
+pausa temporal y un único seek cuando termina el movimiento visual. Al soltar,
+la onda continúa con la velocidad reciente del dedo y frena suavemente durante
+180–1600 ms. Mantener el dedo quieto al menos 100 ms antes de soltar elimina
+el impulso; Inicio/Fin y el loop activo limitan el desplazamiento sin rebote.
+Si el destino alcanza un límite, la distancia restante acorta el frenado,
+con un mínimo de 180 ms.
+Durante el arrastre y la inercia no se envían seeks intermedios ni se reanuda
+el audio. Un nuevo toque interrumpe la inercia y conserva la misma pausa.
+La pausa guarda el estado de reproducción y la revisión de control; solo
+reanuda si esa revisión y la canción siguen vigentes. Una orden posterior de
+Stop, play/pause, seek, carga o cambio de ventana/arrange invalida la propiedad
+del gesto. La revisión se actualiza en los hilos de control, fuera del callback
+de audio. `cancelPracticeScrub(true)` restaura una pausa propia al cerrar;
+`false` descarta el gesto al detener o cambiar de contexto.
+El callback `finishScrub` devuelve `bool`: en Local refleja la aceptación de
+la finalización; en Cliente confirma únicamente el envío del comando a la cola.
+El rechazo remoto posterior se observa mediante `scrubFinishRejected` al llegar
+el `ack` de End. Un fallo inmediato o ese rechazo cancelan la previsualización
+del panel y no recuperan la propiedad de la pausa. Las vistas local y remota
+mantienen el destino provisional durante al menos 120 ms y esperan dos muestras
+consecutivas consistentes de posición antes de liberarlo, con un timeout de
+respaldo de 1.5 segundos. El desfase restante converge suavemente hacia el reloj
+autoritativo; no altera `TransportClock` ni genera seeks adicionales.
+
+Después de esa previsualización, `PracticePlaybackClock` presenta la posición
+de Ensayo usando el delta de cada frame y una corrección gradual de 90 ms,
+con tolerancia base de 10 ms para la cuantización de los bloques. Conserva un
+avance visual monótono durante reproducción normal y reinicia la estimación
+ante un seek intencional, una posición nueva separada al menos 0.25 segundos
+de la predicción (incluido un loop), pausa o cambio de canción. Se inicializa
+desde la posición ya presentada al liberar el seek pendiente, evitando volver
+al reloj previo del bloque. Si la posición fuente deja de avanzar, solo
+predice durante un máximo de 250 ms. Es un reloj de presentación; no cambia
+el estado, los límites ni el avance del reloj autoritativo de audio.
+
+El compás se mide en segundos del timeline fuente/arrange usando
+`60 / BPM original * numerador * 4 / denominador`; no usa el BPM modificado
+de reproducción. Así, 7/8 a 120 BPM mueve 1.75 segundos del timeline aunque
+el audio se reproduzca más lento. Se conservan Play/Pausa y los límites de
+Inicio/Fin y del loop activo. La previsualización de Ensayo lee el rango de
+sección normalizado vigente de `WaveformBar`, incluyendo las ediciones de
+arrange que aún no se hayan guardado.
 
 Al cargar una canción, el playhead se sitúa en `Inicio` (0:00 por defecto)
 después de restaurar la ventana y las secciones. La primera sección es una
@@ -463,7 +575,7 @@ float progress = position / length;
 ### Loop de sección
 
 ```cpp
-// Configurar loop region
+// Configurar ventana: reproduce de 30 a 60 s y se detiene en Fin.
 processor.setSongStartSeconds(30.0);
 processor.setSongEndSeconds(60.0);
 

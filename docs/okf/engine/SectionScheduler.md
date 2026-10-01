@@ -283,6 +283,23 @@ y se rearma cuando:
 
 ## Precedencia de intents
 
+El loop A/B de Ensayo es un overlay temporal del processor. No publica una
+sección nueva ni modifica el snapshot persistido. Su rango se adquiere como
+snapshot coherente una vez por callback; al activarse, el processor cachea una
+copia fija de las secciones con Skip deshabilitado y conserva Mute/guía. El
+loop y jump de sección quedan suspendidos. Una nueva orden explícita de
+arrangement revoca el overlay.
+
+`PracticeLoop::evaluate` calcula el offset exacto al alcanzar B y el destino A.
+La transición usa el mapeo arrange→source, prefetch y
+`StemTrack::scheduleReadDiscontinuity` ya usados por las secciones. Ante un
+empate en B, B→A tiene prioridad. Como solo se admite una discontinuidad por
+bloque, el intervalo mínimo incluye la duración máxima de un bloque a 2x y un
+rango custom no puede contener discontinuidades de source interiores. Si A no
+está precargado, el processor conserva el prefijo, recorta el sufijo y pausa
+exactamente en B con un error explícito. No aplica el fallback de arrange que
+continúa la línea actual fuera del loop solicitado.
+
 Cuando varios intents compiten dentro del mismo bloque, `evaluate()` aplica
 una precedencia determinista (de mayor a menor prioridad):
 

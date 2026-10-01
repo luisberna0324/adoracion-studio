@@ -68,6 +68,9 @@ Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/
    solo por clic y guia produce una onda plana. La regla vive en
    `buildMixedWaveformBins`, compartida con importacion y regeneracion de cache.
    Las ondas ya guardadas se conservan hasta su regeneracion.
+   Ensayo usa `buildStemWaveformBins` para previsualizar un solo instrumento
+   local sin alterar la onda mezclada del proyecto. Se calcula fuera del hilo
+   de UI, se cancela al cambiar de pista y se alinea con la duracion global.
 4. Volver a abrir y validar el paquete, y registrar la cancion en Biblioteca.
    El registro final se serializa en el message thread antes de declarar exito;
    solo el worker espera ese resultado, sin retener locks.

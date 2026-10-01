@@ -1,4 +1,5 @@
 #include "StemTrack.h"
+#include "audio/PracticeListening.h"
 
 #include <cmath>
 
@@ -143,6 +144,24 @@ void StemTrack::getNextAudioBlock(
     }
   }
 
+  practiceListeningSmoother.setTargetValue(juce::jlimit(
+      0.0f, 1.5f, practiceListeningGain.load(std::memory_order_relaxed)));
+  int listeningFrames = 0;
+  while (listeningFrames < numSamples && practiceListeningSmoother.isSmoothing()) {
+    const float gain =
+        static_cast<float>(practiceListeningSmoother.getNextValue());
+    for (int channel = 0; channel < numChannels; ++channel) {
+      auto *samples = bufferToFill.buffer->getWritePointer(channel, startSample);
+      samples[listeningFrames] *= gain;
+    }
+    ++listeningFrames;
+  }
+  const float listeningGain =
+      static_cast<float>(practiceListeningSmoother.getCurrentValue());
+  if (listeningFrames < numSamples && listeningGain != 1.0f)
+    bufferToFill.buffer->applyGain(startSample + listeningFrames,
+                                   numSamples - listeningFrames, listeningGain);
+
   const bool isAudible =
       !isMuted() && (!isAnySoloActive.load(std::memory_order_relaxed) || isSoloed());
       
@@ -187,6 +206,10 @@ void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
   signalIntegrityState.reset();
+  practiceListeningSmoother.reset(
+      sampleRate, playworship::audio::practiceListening::rampSeconds);
+  practiceListeningSmoother.setCurrentAndTargetValue(
+      practiceListeningGain.load(std::memory_order_relaxed));
   activeSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
   // P0.2 (perf): capturar el block size real del host para que cuando
   // la cadena de prefetch se construya en lazy, use el valor vigente

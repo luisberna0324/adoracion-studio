@@ -54,6 +54,10 @@ public:
   void setTrim(float newTrim) noexcept { trim.store(newTrim, std::memory_order_relaxed); }
   float getTrim() const noexcept { return trim.load(std::memory_order_relaxed); }
 
+  void setPracticeListeningGain(float gain) noexcept {
+    practiceListeningGain.store(gain, std::memory_order_relaxed);
+  }
+
   void setMuted(bool shouldMute) noexcept { muted.store(shouldMute, std::memory_order_relaxed); }
   bool isMuted() const noexcept { return muted.load(std::memory_order_relaxed); }
 
@@ -125,6 +129,8 @@ private:
 
   std::atomic<float> volume{1.0f};
   std::atomic<float> trim{1.0f};
+  std::atomic<float> practiceListeningGain{1.0f};
+  juce::SmoothedValue<double> practiceListeningSmoother{1.0};
   std::atomic<bool> muted{false};
   std::atomic<bool> soloed{false};
   std::atomic<float> globalMixGain{1.0f};

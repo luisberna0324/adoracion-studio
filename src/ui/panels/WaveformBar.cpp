@@ -1249,6 +1249,40 @@ void WaveformBar::setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot) {
   repaint();
 }
 
+juce::Range<double> WaveformBar::getArrangementPartTimeRange(const int index) const {
+  if (!juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size())))
+    return {};
+  const auto &part = arrangement.parts[static_cast<size_t>(index)];
+  return {part.startSec, part.endSec};
+}
+
+std::vector<PracticeTimelineMark> WaveformBar::getPracticeTimelineMarks(
+    const juce::Range<double> visibleRange, const float width) const {
+  const double length = getSongLengthSeconds();
+  const auto playable = visibleRange.getIntersectionWith({0.0, length});
+  if (playable.isEmpty())
+    return {};
+  // Keep the original width/span ratio when the centered viewport extends
+  // beyond the song. The caller draws returned source times in that viewport.
+  const float playableWidth = width * static_cast<float>(
+      playable.getLength() / juce::jmax(0.000001, visibleRange.getLength()));
+  return PracticeTimelineRuler::build(playable, playableWidth, songBpm,
+                                     songTimeSignature, tempoMap);
+}
+
+double WaveformBar::getPracticeSnappedPosition(
+    const double position, const juce::Range<double> allowed) const {
+  const double length = getSongLengthSeconds();
+  if (!std::isfinite(length) || length <= 0.0 ||
+      !std::isfinite(allowed.getStart()) || !std::isfinite(allowed.getEnd()) ||
+      allowed.getEnd() < 0.0 || allowed.getStart() > length)
+    return std::numeric_limits<double>::quiet_NaN();
+  const juce::Range<double> playable{juce::jmax(0.0, allowed.getStart()),
+                                     juce::jmin(length, allowed.getEnd())};
+  return PracticeTimelineRuler::snapToPulse(position, songBpm,
+                                           songTimeSignature, tempoMap, playable);
+}
+
 void WaveformBar::setSongRhythm(const double bpm,
                                 const juce::String &timeSignature) {
   songBpm = juce::jmax(0.0, bpm);

@@ -1,4 +1,5 @@
 #include "../src/StemMixEngine.h"
+#include "../src/audio/PracticeListening.h"
 #include "../src/audio/SimpleDelayLine.h"
 
 #include <algorithm>
@@ -93,6 +94,229 @@ public:
   static constexpr float kSlope = 1.0e-5f;
 };
 
+class ConstantAudioFormatReader final : public juce::AudioFormatReader {
+public:
+  ConstantAudioFormatReader() : AudioFormatReader(nullptr, "test constant") {
+    sampleRate = kSampleRate;
+    bitsPerSample = 32;
+    lengthInSamples = static_cast<juce::int64>(10.0 * kSampleRate);
+    numChannels = 2;
+    usesFloatingPointData = true;
+  }
+
+  bool readSamples(int *const *destChannels, const int numDestChannels,
+                   const int startOffsetInDestBuffer,
+                   const juce::int64, const int numSamples) override {
+    for (int channel = 0; channel < numDestChannels; ++channel) {
+      if (destChannels[channel] != nullptr) {
+        auto *destination =
+            reinterpret_cast<float *>(destChannels[channel]) +
+            startOffsetInDestBuffer;
+        std::fill_n(destination, numSamples, kAmplitude);
+      }
+    }
+    return true;
+  }
+
+  static constexpr float kAmplitude = 0.25f;
+};
+
+std::vector<float> renderConstantStem(StemTrack &stem, const int frames) {
+  constexpr int offset = 5;
+  constexpr float sentinel = -9.0f;
+  juce::AudioBuffer<float> output(2, frames + 2 * offset);
+  for (int channel = 0; channel < output.getNumChannels(); ++channel)
+    std::fill_n(output.getWritePointer(channel), output.getNumSamples(), sentinel);
+  stem.getNextAudioBlock(juce::AudioSourceChannelInfo(&output, offset, frames));
+
+  std::vector<float> samples;
+  samples.reserve(static_cast<size_t>(frames));
+  for (int sample = 0; sample < frames; ++sample) {
+    const float left = output.getSample(0, offset + sample);
+    expect(std::abs(left - output.getSample(1, offset + sample)) < 1.0e-6f,
+           "practice gain applies equally to both channels");
+    samples.push_back(left);
+  }
+  for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < offset; ++sample) {
+      expect(output.getSample(channel, sample) == sentinel &&
+                 output.getSample(channel, offset + frames + sample) == sentinel,
+             "practice gain leaves samples outside the requested audio region untouched");
+    }
+  }
+  return samples;
+}
+
+std::vector<float> renderPracticeTransition(StemTrack &stem, const float target,
+                                          const bool repeatTarget) {
+  namespace practice = playworship::audio::practiceListening;
+  const int rampFrames =
+      static_cast<int>(std::lround(kSampleRate * practice::rampSeconds));
+  constexpr std::array<int, 5> callbackSizes{64, 257, 512, 96, 1024};
+  std::vector<float> samples;
+  samples.reserve(static_cast<size_t>(rampFrames));
+  stem.setPracticeListeningGain(target);
+  for (size_t block = 0; static_cast<int>(samples.size()) < rampFrames; ++block) {
+    if (repeatTarget)
+      stem.setPracticeListeningGain(target);
+    const int frames = std::min(callbackSizes[block % callbackSizes.size()],
+                                rampFrames - static_cast<int>(samples.size()));
+    const auto output = renderConstantStem(stem, frames);
+    samples.insert(samples.end(), output.begin(), output.end());
+  }
+  return samples;
+}
+
+void expectPracticeTransition(const std::vector<float> &samples,
+                              const float start, const float target) {
+  expect(!samples.empty(), "practice transition renders audio");
+  const float span = std::abs(target - start);
+  const float maximumStep =
+      2.0f * span / static_cast<float>(samples.size()) + 1.0e-6f;
+  float previous = start;
+  for (const auto sample : samples) {
+    expect(std::isfinite(sample), "practice transition never emits invalid samples");
+    expect(std::abs(sample - previous) <= maximumStep,
+           "practice transition has no abrupt sample or callback boundary jump");
+    expect(target < start ? sample <= previous + 1.0e-6f
+                          : sample >= previous - 1.0e-6f,
+           "practice transition moves consistently toward its target");
+    previous = sample;
+  }
+  const auto midpoint = samples[samples.size() / 2];
+  expect(std::abs(midpoint - start) > span * 0.1f &&
+             std::abs(midpoint - target) > span * 0.1f,
+         "practice listening takes the configured 200 ms to change the balance");
+  expect(std::abs(samples.back() - target) < 3.0e-5f,
+         "practice listening reaches its requested gain after 200 ms");
+}
+
+void expectConstantSamples(const std::vector<float> &samples,
+                           const float expected, const char *message) {
+  for (const auto sample : samples)
+    expect(std::abs(sample - expected) < 1.0e-6f, message);
+}
+
+void testPracticeListening() {
+  namespace practice = playworship::audio::practiceListening;
+  expect(std::abs(20.0f * std::log10(practice::focusedGain) - 2.0f) < 1.0e-5f,
+         "practice focus raises the selected instrument by 2 dB");
+  expect(std::abs(20.0f * std::log10(practice::reducedGain) + 12.0f) < 1.0e-5f,
+         "practice reduction lowers an instrument by 12 dB");
+  expect(std::abs(practice::rampSeconds - 0.2) < 1.0e-6,
+         "practice listening uses a 200 ms gain transition");
+  for (const bool selected : {false, true}) {
+    expect(practice::gainFor(0, selected, false) == 1.0f,
+           "normal practice balance preserves every instrument");
+    expect(practice::gainFor(1, selected, false) ==
+               (selected ? practice::focusedGain : practice::reducedGain),
+           "focus boosts the selected instrument and reduces the accompaniment");
+    expect(practice::gainFor(2, selected, false) ==
+               (selected ? practice::reducedGain : 1.0f),
+           "accompaniment mode lowers only the selected instrument");
+    for (const int mode : {0, 1, 2})
+      expect(practice::gainFor(mode, selected, true) == 1.0f,
+             "practice gestures preserve click and guide regardless of selection");
+  }
+
+  juce::TimeSliceThread unusedReadThread("practice-listening-test-read");
+  std::array<std::unique_ptr<StemTrack>, 2> tracks;
+  constexpr float volume = 0.6f;
+  constexpr float trim = 1.2f;
+  constexpr float baseline = ConstantAudioFormatReader::kAmplitude * volume * trim;
+  for (auto &track : tracks) {
+    track = std::make_unique<StemTrack>(
+        std::make_unique<ConstantAudioFormatReader>(), unusedReadThread,
+        kSampleRate, 32768, false);
+    track->setVolume(volume);
+    track->setTrim(trim);
+    track->prepareToPlay(2048, kSampleRate);
+    renderConstantStem(*track, kBlockSize);
+    expectConstantSamples(renderConstantStem(*track, kBlockSize), baseline,
+                           "neutral practice gain preserves the fader and trim balance");
+  }
+
+  for (const float target : {practice::reducedGain, 1.0f,
+                             practice::focusedGain, 1.0f}) {
+    const float start = renderConstantStem(*tracks[0], 1).front();
+    renderConstantStem(*tracks[1], 1);
+    const auto once = renderPracticeTransition(*tracks[0], target, false);
+    const auto repeated = renderPracticeTransition(*tracks[1], target, true);
+    expectPracticeTransition(once, start, baseline * target);
+    expect(once.size() == repeated.size(),
+           "repeated practice commands render the same number of samples");
+    for (size_t sample = 0; sample < once.size(); ++sample)
+      expect(std::abs(once[sample] - repeated[sample]) < 1.0e-6f,
+             "repeating a practice target neither restarts the ramp nor compounds its gain");
+    for (auto &track : tracks) {
+      track->setPracticeListeningGain(target);
+      expectConstantSamples(renderConstantStem(*track, kBlockSize), baseline * target,
+                             "practice attenuation, boost and restoration retain the requested gain");
+      expect(track->getVolume() == volume && track->getTrim() == trim,
+             "practice listening never overwrites the stored fader or trim");
+    }
+  }
+
+  // Do not shorten the callback that crosses the end of the ramp. A block
+  // interpolation of skip(numSamples) used to stretch its final portion to
+  // 10240 frames instead of reaching the target at 9600 frames (200 ms).
+  const int rampFrames =
+      static_cast<int>(std::lround(kSampleRate * practice::rampSeconds));
+  constexpr std::array<int, 2> uncutCallbackSizes{2048, 64};
+  for (const float target : {practice::reducedGain, 1.0f,
+                             practice::focusedGain, 1.0f}) {
+    const float start = renderConstantStem(*tracks[0], 1).front();
+    renderConstantStem(*tracks[1], 1);
+    std::array<std::vector<float>, 2> rendered;
+    for (size_t path = 0; path < tracks.size(); ++path) {
+      auto &stem = *tracks[path];
+      stem.setPracticeListeningGain(target);
+      while (static_cast<int>(rendered[path].size()) < rampFrames) {
+        const auto output = renderConstantStem(stem, uncutCallbackSizes[path]);
+        rendered[path].insert(rendered[path].end(), output.begin(), output.end());
+      }
+      expectPracticeTransition(rendered[path], start, baseline * target);
+      for (size_t sample = static_cast<size_t>(rampFrames - 1);
+           sample < rendered[path].size(); ++sample)
+        expect(std::abs(rendered[path][sample] - baseline * target) < 1.0e-6f,
+               "an uncut callback reaches practice gain at 200 ms and keeps its remaining tail stable");
+    }
+    expect(static_cast<int>(rendered.front().size()) > rampFrames,
+           "the regression callback really extends beyond the practice ramp");
+    for (int sample = 0; sample < rampFrames; ++sample)
+      expect(std::abs(rendered[0][static_cast<size_t>(sample)] -
+                      rendered[1][static_cast<size_t>(sample)]) < 1.0e-6f,
+             "practice gain timing and audio do not depend on callback size");
+  }
+
+  auto &track = *tracks.front();
+  renderPracticeTransition(track, practice::focusedGain, false);
+  track.setMuted(true);
+  expectConstantSamples(renderConstantStem(track, kBlockSize), 0.0f,
+                         "practice focus cannot make a muted instrument audible");
+  track.setMuted(false);
+  track.setGlobalMixState(0.5f, true);
+  expectConstantSamples(renderConstantStem(track, kBlockSize), 0.0f,
+                         "practice focus respects another instrument's Solo");
+  track.setSoloed(true);
+  expectConstantSamples(renderConstantStem(track, kBlockSize),
+                         baseline * 0.5f * practice::focusedGain,
+                         "the selected Solo instrument retains practice gain and global mix gain");
+  track.setSoloed(false);
+  track.setGlobalMixState(1.0f, false);
+  track.setVolume(0.3f);
+  constexpr float updatedBalance =
+      ConstantAudioFormatReader::kAmplitude * 0.3f * trim;
+  expectConstantSamples(renderConstantStem(track, kBlockSize),
+                         updatedBalance * practice::focusedGain,
+                         "a fader change applies while the temporary practice gain is active");
+  renderPracticeTransition(track, 1.0f, false);
+  expectConstantSamples(renderConstantStem(track, kBlockSize), updatedBalance,
+                         "restoring practice gain recovers the current mixer balance exactly");
+  for (auto &item : tracks)
+    item->releaseResources();
+}
+
 enum class RenderGroup { Melodic, Percussion, Guide };
 
 struct RenderResult {
@@ -167,6 +391,8 @@ int peakIndex(const std::vector<float> &samples) {
 } // namespace
 
 int main() {
+  testPracticeListening();
+
   for (auto group : {RenderGroup::Melodic, RenderGroup::Percussion, RenderGroup::Guide}) {
     for (int channel : {1, 2}) {
       const auto routed = renderImpulse(group, kImpulseFrame, false, 1.0f, 1.0f,

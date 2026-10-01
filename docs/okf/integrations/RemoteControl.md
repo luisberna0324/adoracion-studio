@@ -156,6 +156,146 @@ Importar/editar archivos, publicar/descargar contenido cloud y configurar el
 hardware siguen siendo operaciones locales. No se ejecutan escrituras de
 archivo o cloud sobre entradas de la biblioteca remota.
 
+## Escucha temporal de Ensayo
+
+El gesto vertical sobre la tarjeta de Ensayo usa `PlaybackSession` para cambiar
+una capa temporal de escucha, independiente de volumen, gain, mute y solo
+guardados. El gesto recorre tres niveles: instrumento reducido (−12 dB para el
+seleccionado y nivel habitual para los demás), mezcla normal y enfoque (+2 dB
+para el seleccionado y −12 dB para los demás instrumentos musicales). Arriba
+sube un nivel y abajo baja uno: desde enfoque, abajo restaura la mezcla antes
+de poder reducir el instrumento con otro gesto. En los extremos no reenvía
+comandos. Pads, click y guía conservan su nivel. La restauración explícita
+vuelve a la mezcla habitual; los niveles no acumulan ganancia.
+
+El comando discreto `practice.listen` lleva `target` con el ID del stem incluido
+y `value: { mode, songId }`, donde `mode` es 0 (restaurar), 1 (enfocar) o 2
+(acompañamiento). Restaurar usa target vacío. El servidor valida modo, canción
+actual e instrumento; rechaza un comando pendiente de una canción anterior,
+un stem excluido, click/guía o una carga de canción en curso. El índice usado por
+el procesador y el adaptador cuenta únicamente stems incluidos. El snapshot
+publica `practiceStemId`, `practiceMode` y `practiceCommandId` para todos los clientes, incluida la
+conexión nueva. Un cliente desconectado no envía gestos y muestra modo normal
+hasta recibir otro snapshot.
+
+Mientras `practice.listen` espera confirmación, el cliente presenta su última
+intención de modo e instrumento, incluida la vuelta a normal. Así, gestos
+consecutivos recorren los tres niveles aunque el snapshot anterior siga en
+tránsito. Esta previsualización vence a los dos segundos o al recibir ACK y
+un snapshot de secuencia posterior; un rechazo la descarta. Release,
+desconexión y cambio de canción también la limpian. La previsualización de
+modo normal no concede propiedad ni permite redirigir una escucha.
+
+La escucha modifica el audio del servidor compartido. El último cliente que
+activa un modo se convierte en su propietario. La restauración explícita desde
+cualquier cliente es una intención nueva y se aplica a la mezcla compartida.
+Cerrar Ensayo usa una acción distinta, `practice.release`, con
+`value: { mode: 0, songId }`. Es una limpieza de la vista: si el cliente ya no
+es propietario, el servidor confirma sin modificar la escucha actual. Esto
+preserva una intención posterior del servidor local o de otro cliente. Si
+conserva la propiedad y coincide la canción, restaura la mezcla habitual.
+
+El cliente puede redirigir automáticamente su escucha al cambiar instrumento
+solo mientras conserva la propiedad de su última intención. Durante el último
+`practice.listen` pendiente la conserva provisionalmente por hasta dos segundos;
+un rechazo la revoca. El ack y un snapshot con secuencia posterior terminan esa
+espera, siguiendo el orden usado para faders. Después, `practiceCommandId` debe
+coincidir con el ID de su último listen. La selección local no recupera una
+escucha que otro participante restauró o cambió. Release, restauración explícita,
+desconexión y cambio de canción revocan esta propiedad del cliente. El servidor
+publica ID vacío para escucha local o restaurada.
+
+El servidor recibe `PeerDisconnected` con la identidad de conexión y conserva
+los comandos pendientes de los otros clientes. Los avisos de cierre tienen
+espacio reservado aunque se alcance el límite de comandos de entrada; un
+aviso duplicado del mismo peer se agrupa. Esa desconexión restaura la
+mezcla solo si el propietario coincide y la revisión del procesador sigue
+siendo la que estableció su último comando. Una intención local posterior,
+incluso si repite el mismo modo, revoca esa propiedad. Cambiar canción o el modo
+Local/Cliente/Servidor restaura la escucha temporal; cerrar Ensayo libera solo
+la escucha que aún pertenece a esa vista.
+Estos comandos no solicitan persistencia de mezcla ni de ajustes de canción.
+
+## Región A/B temporal de Ensayo
+
+Los comandos discretos `practice.loopPrepare`, `practice.loop` y
+`practice.loopRelease` usan el mismo canal fiable de controles. Prepare lleva
+`{songId, start}` y prearma A sin activar repetición; Loop lleva
+`{songId, start, end}` y activa el rango exacto validado por el motor. Release
+lleva `{songId, commandId}` con el ID de la preparación o loop que esa vista
+creó. El servidor comprueba peer, canción, ID y revisión antes de limpiar el
+estado. Un cierre tardío, release duplicado o desconexión de un cliente anterior
+no puede desactivar un loop nuevo de otro participante.
+
+El snapshot publica `practiceLoopActive`, `practiceLoopPrepared`,
+`practiceLoopStart`, `practiceLoopEnd`, `practiceLoopMinimumDuration`,
+`practiceLoopError` y `practiceLoopCommandId`. Un cambio local conserva un ID
+vacío para la propiedad remota. El mínimo base es 0.25 s; buffers grandes pueden
+exigir un intervalo mayor. A/B debe estar dentro de Inicio/Fin y, en custom
+arrange, dentro de un tramo source-continuo: no admite cortes de source
+estrictamente interiores, aunque sí cortes exactamente en A o B.
+
+El cliente conserva el rango enviado provisionalmente hasta el ack y un
+snapshot posterior, con límite de dos segundos. Una preparación pendiente
+solo concede propiedad de cleanup; no muestra un loop activo ni reduce el
+rango de seek a cero. `setPracticeLoopRange` remoto devuelve si se encoló el
+comando, mientras `wasPracticeLoopRequestRejected` y `getPracticeLoopError`
+informan el rechazo posterior. Si B se rechaza, el cliente conserva la propiedad
+de la preparación A anterior para poder liberarla al cerrar.
+
+Los errores se publican con IDs estables: `invalid-range`, `too-short`,
+`discontinuous-arrangement`, `buffer-not-ready` y `rejected`. Un fallo de
+prefetch al límite B pausa allí y desactiva el loop; no reproduce audio fuera
+del intervalo. La UI traduce el motivo. Stop vuelve a A cuando A/B está activo.
+Los comandos de región/preparación no escriben ajustes de canción, setlist ni
+Cloud. Tono continúa usando `pitch.set` y la persistencia normal del transporte.
+
+El doble toque en Ensayo reutiliza `transport.seek` para saltar un compás.
+El arrastre usa `transport.scrubBegin`, `transport.scrubEnd` y
+`transport.scrubCancel`, con un token y la canción del gesto. Begin pausa una
+sola vez y guarda si reproducía. La cámara sigue el dedo y, al soltar, conserva
+una inercia proporcional a su velocidad reciente, con frenado suave de
+180–1600 ms y límites de Inicio/Fin y loop sin rebote. Mantener el dedo quieto
+100 ms antes de soltar elimina el impulso. Si el destino alcanza un límite,
+la distancia restante acorta el frenado, con un mínimo de 180 ms.
+El transporte permanece pausado
+durante el arrastre y la inercia. End, cuando la onda deja de moverse, solicita
+un único seek y reanuda solo si el token y la revisión de transporte siguen
+vigentes. Tocar de nuevo interrumpe la inercia y conserva el token de la pausa
+para continuar recorriendo la onda. Otro cliente o el servidor pueden invalidar
+esa revisión con Stop, play/pause, seek o cambios de canción/ventana/arrange;
+el gesto anterior no
+sobrescribe esa intención. Cancel puede restaurar la pausa propia al cerrar o
+solo descartarla cuando otra acción toma el control.
+
+La previsualización durante el arrastre y la inercia es local y no llena la
+cola con posiciones intermedias. El callback `finishScrub` devuelve `bool`:
+en Cliente solo confirma el envío a la cola, no la aceptación del servidor.
+Un `ack` de End rechazado se observa mediante `scrubFinishRejected`; ese rechazo
+o un fallo inmediato de envío descartan el destino provisional y no recuperan
+la propiedad de la pausa. Las vistas local y remota mantienen el destino
+mostrado al menos 120 ms y esperan dos muestras consecutivas consistentes de
+posición antes de liberarlo, con un timeout de respaldo de 1.5 segundos.
+Si el transporte está reproduciendo, el cursor avanza según la velocidad
+de reproducción; el desfase residual converge
+suavemente hacia la posición recibida. Así no vuelve durante un bloque a una
+posición anterior entre la solicitud y su aplicación. Un cambio de canción,
+de modo o una desconexión cancela el gesto pendiente. Play/Pausa descarta esa
+previsualización y Detener cancela también
+el gesto y su confirmación visual antes de enviar el comando. El servidor sigue
+aplicando los límites habituales de seek.
+
+Tras liberar esa previsualización, `PracticePlaybackClock` presenta el cursor
+con los deltas de frame y absorbe la cuantización de las posiciones recibidas
+mediante una corrección gradual de 90 ms y tolerancia base de 10 ms. El avance
+visual es monótono durante playback normal; un seek intencional, una
+discontinuidad nueva de al menos 0.25 segundos respecto a la predicción
+(incluido un loop), una pausa o cambio de canción reinician la estimación.
+La transición parte del cursor presentado por el seek pendiente. Una fuente
+congelada permite como máximo 250 ms de predicción, y una desconexión detiene
+esa estimación. Este cursor no envía comandos adicionales, no reproduce audio
+en el cliente ni modifica la posición autoritativa del servidor.
+
 ## Audio y validación
 
 La red, JSON y cambios de UI quedan fuera del callback de audio. Para el click,

@@ -27,6 +27,7 @@
 #include "ui/components/WelcomeModal.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
+#include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
 
 #include "ui/panels/SongListPanel.h"
@@ -1052,7 +1053,8 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #if JUCE_IOS || JUCE_ANDROID
   if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
     return;
-  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr)
+  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr ||
+                       practiceOverlay != nullptr)
                           ? juce::Desktop::upright
                           : juce::Desktop::rotatedClockwise |
                                 juce::Desktop::rotatedAntiClockwise;
@@ -1070,7 +1072,8 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
           return;
         safe->phoneOrientationUpdatePending = false;
         juce::Desktop::getInstance().setOrientationsEnabled(
-            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr)
+            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr ||
+             safe->practiceOverlay != nullptr)
                 ? juce::Desktop::upright
                 : juce::Desktop::rotatedClockwise |
                       juce::Desktop::rotatedAntiClockwise);
@@ -2761,6 +2764,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       });
   topBarRaw->setOnPhonePads(
       [this](juce::Component &anchor) { showPhonePadsPopover(anchor); });
+  topBarRaw->setOnPhonePractice([this] { showPractice(); });
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
     phonePadsOpen = false;
@@ -3422,6 +3426,248 @@ void MTControlsAudioProcessorEditor::closeSettings() {
   updatePhoneOrientation();
 }
 
+void MTControlsAudioProcessorEditor::showPractice() {
+  if (practiceOverlay != nullptr || !isPhoneSizedLayout(*this))
+    return;
+
+  PracticePanel::Sources sources;
+  sources.songId = [this] {
+    if (playbackSession.isRemote())
+      return PlaybackSession::field(
+                 PlaybackSession::field(playbackSession.snapshot(), "song"), "id")
+          .toString();
+    return currentLoadedSong.id;
+  };
+  sources.title = [this] { return playbackSession.getLoadedSongTitle(); };
+  sources.positionSeconds =
+      [this] { return playbackSession.getSongCurrentPositionSeconds(); };
+  sources.lengthSeconds =
+      [this] { return playbackSession.getSongLengthSeconds(); };
+  const auto originalBpm = [this] {
+    return playbackSession.isRemote()
+        ? PlaybackSession::number(PlaybackSession::field(playbackSession.snapshot(), "song"), "bpm", 120.0)
+        : static_cast<MTControlsAudioProcessor &>(processor).getOriginalSongBpm();
+  };
+  sources.songBpm = originalBpm;
+  sources.timeSignature = [this] { return currentLoadedSong.timeSignature; };
+  sources.playbackRate = [this, originalBpm] {
+    return playbackSession.getPlaybackTempoBpm() /
+           juce::jmax(1.0, originalBpm());
+  };
+  sources.tempoBpm = [this] { return playbackSession.getPlaybackTempoBpm(); };
+  sources.setTempoBpm = [this](double bpm) {
+    playbackSession.setPlaybackTempoBpm(bpm);
+    if (!playbackSession.isRemote() && currentLoadedSong.id.isNotEmpty())
+      SongLibraryStore::updateTempoBpmForActiveSetlist(
+          currentLoadedSong.id, playbackSession.getPlaybackTempoBpm());
+  };
+  sources.pitchSemitones = [this] { return playbackSession.getPitchSemiTones(); };
+  sources.songKey = [this] { return playbackSession.getLoadedSongKey(); };
+  sources.setPitchSemitones = [this](int semitones) {
+    playbackSession.setPitchSemiTones(semitones);
+    if (!playbackSession.isRemote() && currentLoadedSong.id.isNotEmpty())
+      SongLibraryStore::updatePitchSemitonesForActiveSetlist(currentLoadedSong.id, semitones);
+  };
+  sources.isLoopActive = [this] { return playbackSession.isPracticeLoopActive(); };
+  sources.loopRange = [this] { return playbackSession.getPracticeLoopRange(); };
+  sources.loopIdentity = [this] { return playbackSession.getPracticeLoopIdentity(); };
+  sources.snapLoopPosition = [this, originalBpm](double position, bool isEnd) {
+    const double start = playbackSession.getSongStartSeconds();
+    double end = playbackSession.getSongEndSeconds();
+    const auto snap = [this, originalBpm](double seconds, juce::Range<double> allowed) {
+      return waveformBarPtr != nullptr
+          ? waveformBarPtr->getPracticeSnappedPosition(seconds, allowed)
+          : PracticeTimelineRuler::snapToPulse(seconds, originalBpm(),
+                currentLoadedSong.timeSignature, {}, allowed);
+    };
+    // Leave a real pulse for B, even when Fin is between grid lines.
+    if (!isEnd)
+      end = snap(end, {start, end}) - playbackSession.getMinimumPracticeLoopDuration();
+    if (!std::isfinite(end) || end < start)
+      return std::numeric_limits<double>::quiet_NaN();
+    return snap(position, {start, end});
+  };
+  sources.prepareLoop = [this](double start) { playbackSession.preparePracticeLoop(start); };
+  sources.setLoopRange = [this](double start, double end) {
+    return playbackSession.setPracticeLoopRange(start, end);
+  };
+  sources.releaseLoop = [this] { playbackSession.releasePracticeLoop(); };
+  sources.ownsLoop = [this] { return playbackSession.ownsPracticeLoop(); };
+  sources.loopRequestRejected = [this] { return playbackSession.wasPracticeLoopRequestRejected(); };
+  sources.loopError = [this] { return playbackSession.getPracticeLoopError(); };
+  sources.minimumLoopDuration = [this] { return playbackSession.getMinimumPracticeLoopDuration(); };
+  sources.timelineMarks = [this, originalBpm](juce::Range<double> visible, float width) {
+    return waveformBarPtr != nullptr ? waveformBarPtr->getPracticeTimelineMarks(visible, width)
+        : PracticeTimelineRuler::build(visible, width, originalBpm(),
+                                       currentLoadedSong.timeSignature);
+  };
+  sources.seekRange = [this] {
+    auto range = juce::Range<double>(playbackSession.getSongStartSeconds(),
+                                      playbackSession.getSongEndSeconds());
+    if (playbackSession.isPracticeLoopActive())
+      return range.getIntersectionWith(playbackSession.getPracticeLoopRange());
+    const int loop = playbackSession.getArrangementPartLoopIndex();
+    if (loop >= 0 && waveformBarPtr != nullptr) {
+      const auto loopRange = waveformBarPtr->getArrangementPartTimeRange(loop);
+      if (!loopRange.isEmpty())
+        range = range.getIntersectionWith(loopRange);
+    }
+    return range;
+  };
+  sources.seekToSeconds =
+      [this](double seconds) { playbackSession.seekSongTo(seconds); };
+  sources.beginScrub = [this] { playbackSession.beginPracticeScrub(); };
+  sources.finishScrub =
+      [this](double seconds) { return playbackSession.finishPracticeScrub(seconds); };
+  sources.scrubFinishRejected = [this] {
+    return playbackSession.wasPracticeScrubFinishRejected();
+  };
+  sources.cancelScrub = [this](bool restorePlayback) {
+    playbackSession.cancelPracticeScrub(restorePlayback);
+  };
+  sources.isPlaying = [this] { return playbackSession.isSongPlaying(); };
+  sources.canControl = [this] {
+    return playbackSession.hasLoadedSong() &&
+           (!playbackSession.isRemote() || playbackSession.isConnected());
+  };
+  sources.instruments = [this] {
+    std::vector<PracticePanel::Instrument> result;
+    if (!hasCurrentLoadedSong)
+      return result;
+    for (size_t i = 0; i < currentLoadedSong.stems.size(); ++i) {
+      const auto &stem = currentLoadedSong.stems[i];
+      const auto label = stem.displayName + " " + stem.category + " " + stem.fileName;
+      if (!stem.include || stemPriorityForStripOrder(stem) <= 1 ||
+          label.containsIgnoreCase(juce::String::fromUTF8("guía")))
+        continue;
+      auto name = stem.displayName.trim();
+      if (name.isEmpty())
+        name = stem.category.trim();
+      if (name.isEmpty())
+        name = stem.fileName.trim();
+      result.push_back({juce::String(static_cast<int>(i)), name});
+    }
+    return result;
+  };
+  sources.isRemote = [this] { return playbackSession.isRemote(); };
+  sources.listeningMode =
+      [this] { return playbackSession.getPracticeListeningMode(); };
+  sources.listeningInstrumentId = [this] {
+    const int target = playbackSession.getPracticeListeningStem();
+    int loadedIndex = 0;
+    for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size();
+         ++rawIndex) {
+      if (!currentLoadedSong.stems[rawIndex].include)
+        continue;
+      if (loadedIndex++ == target)
+        return juce::String(static_cast<int>(rawIndex));
+    }
+    return juce::String{};
+  };
+  struct ListeningOwnership {
+    uint64_t revision = 0;
+    bool remote = false;
+  };
+  const auto listeningOwnership = std::make_shared<ListeningOwnership>();
+  sources.setListeningMode = [this, listeningOwnership](
+                                const juce::String &instrumentId, int mode) {
+    int target = -1;
+    if (mode != 0) {
+      if (instrumentId.isEmpty())
+        return;
+      const int rawTarget = instrumentId.getIntValue();
+      int loadedIndex = 0;
+      for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size();
+           ++rawIndex) {
+        if (!currentLoadedSong.stems[rawIndex].include)
+          continue;
+        if (static_cast<int>(rawIndex) == rawTarget) {
+          target = loadedIndex;
+          break;
+        }
+        ++loadedIndex;
+      }
+      if (target < 0)
+        return;
+    }
+    playbackSession.setPracticeListeningMode(target, mode);
+    listeningOwnership->remote = playbackSession.isRemote();
+    listeningOwnership->revision =
+        static_cast<MTControlsAudioProcessor &>(processor)
+            .getPracticeListeningRevision();
+  };
+  sources.canRetargetListening = [this, listeningOwnership] {
+    if (listeningOwnership->remote != playbackSession.isRemote())
+      return false;
+    if (playbackSession.isRemote())
+      return playbackSession.ownsPracticeListening();
+    return static_cast<MTControlsAudioProcessor &>(processor)
+                   .getPracticeListeningRevision() == listeningOwnership->revision;
+  };
+  sources.finishListening = [this, listeningOwnership] {
+    if (listeningOwnership->remote != playbackSession.isRemote())
+      return;
+    // The server checks remote ownership; local panels check the revision so
+    // closing an older panel cannot undo a newer client gesture.
+    if (playbackSession.isRemote())
+      playbackSession.releasePracticeListening();
+    else if (static_cast<MTControlsAudioProcessor &>(processor)
+                 .getPracticeListeningRevision() == listeningOwnership->revision)
+      playbackSession.setPracticeListeningMode(-1, 0);
+  };
+  sources.requestInstrumentWaveform = [this](
+                                          const juce::String &instrumentId,
+                                          std::shared_ptr<std::atomic<bool>> cancel,
+                                          std::function<void(std::vector<float>)> deliver) {
+    const int index = instrumentId.getIntValue();
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong ||
+        !juce::isPositiveAndBelow(index,
+                                 static_cast<int>(currentLoadedSong.stems.size()))) {
+      deliver({});
+      return;
+    }
+    const auto stem = currentLoadedSong.stems[static_cast<size_t>(index)];
+    const auto songLength = playbackSession.getSongLengthSeconds();
+    std::thread([stem, songLength, cancel,
+                 deliver = std::move(deliver)]() mutable {
+      auto bins = buildStemWaveformBins(
+          stem, songLength, kWaveformPreviewBinCount,
+          [cancel] { return cancel->load(std::memory_order_relaxed); });
+      if (cancel->load(std::memory_order_relaxed))
+        return;
+      juce::MessageManager::callAsync(
+          [cancel, deliver = std::move(deliver),
+           bins = std::move(bins)]() mutable {
+            if (!cancel->load(std::memory_order_relaxed))
+              deliver(std::move(bins));
+          });
+    }).detach();
+  };
+  sources.playPause = [this] { playbackSession.toggleSongPlayPause(); };
+  sources.stop = [this] { playbackSession.stopSong(); };
+  sources.close = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    juce::MessageManager::callAsync([safe] {
+      if (safe != nullptr)
+        safe->closePractice();
+    });
+  };
+
+  practiceOverlay = std::make_unique<PracticePanel>(std::move(sources));
+  addAndMakeVisible(*practiceOverlay);
+  practiceOverlay->setBounds(getLocalBounds());
+  practiceOverlay->toFront(true);
+  updatePhoneOrientation();
+}
+
+void MTControlsAudioProcessorEditor::closePractice() {
+  if (practiceOverlay == nullptr)
+    return;
+  practiceOverlay->setVisible(false);
+  practiceOverlay.reset();
+  updatePhoneOrientation();
+  resized();
+}
+
 bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
   if (settingsOverlay == nullptr || settingsPanelRaw == nullptr)
     return false;
@@ -3429,6 +3675,7 @@ bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
 }
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
+  closePractice();
   setResizable(true, true);
 #if JUCE_IOS || JUCE_ANDROID
   setResizeLimits(320, 280, 32000, 32000);
@@ -3470,6 +3717,7 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     setRemoteMode(playworship::remote::RemoteSession::Mode::Local);
   sessionResumeCancelled = true;
   closeSettings();
+  closePractice();
 
   if (localAuthServer != nullptr)
     localAuthServer->stop();
@@ -4370,6 +4618,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  closePractice();
+  static_cast<MTControlsAudioProcessor &>(processor)
+      .setPracticeListeningMode(-1, 0);
   if (phonePadsPopoverContent != nullptr)
     phonePadsPopoverContent->prepareForEditorDestruction();
   remoteSession.stop();
@@ -4432,6 +4683,8 @@ void MTControlsAudioProcessorEditor::resized() {
       welcomeModal->setBounds(getLocalBounds());
     if (settingsOverlay != nullptr)
       settingsOverlay->setBounds(getLocalBounds());
+    if (practiceOverlay != nullptr)
+      practiceOverlay->setBounds(getLocalBounds());
     return;
   }
 
@@ -4496,6 +4749,8 @@ void MTControlsAudioProcessorEditor::resized() {
 
   if (settingsOverlay != nullptr)
     settingsOverlay->setBounds(getLocalBounds());
+  if (practiceOverlay != nullptr)
+    practiceOverlay->setBounds(getLocalBounds());
 
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;
@@ -4744,6 +4999,9 @@ void MTControlsAudioProcessorEditor::resized() {
         juce::Rectangle<int>(560, 230).withCentre(getLocalBounds().getCentre()));
     reauthPromptModal->toFront(false);
   }
+
+  if (practiceOverlay != nullptr)
+    practiceOverlay->toFront(false);
 
 
 }
@@ -5061,6 +5319,10 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
+  if (practiceOverlay != nullptr) {
+    practiceOverlay->keyPressed(key);
+    return true;
+  }
   if (settingsOverlay != nullptr) {
     if (key == juce::KeyPress::escapeKey)
       navigateBackInSettings();

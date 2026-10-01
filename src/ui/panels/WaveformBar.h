@@ -2,6 +2,7 @@
 
 #include "../../data/SongData.h"
 #include "../UiCommon.h"
+#include "PracticeTimelineRuler.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -58,6 +59,11 @@ public:
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
                       bool isCustomArrangement);
   void setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot);
+  juce::Range<double> getArrangementPartTimeRange(int index) const;
+  std::vector<PracticeTimelineMark> getPracticeTimelineMarks(
+      juce::Range<double> visibleRange, float width) const;
+  double getPracticeSnappedPosition(double position,
+                                    juce::Range<double> allowed) const;
   void setSongRhythm(double bpm, const juce::String &timeSignature);
   void setTransportProviders(PositionProvider positionCb,
                              LengthProvider lengthCb,

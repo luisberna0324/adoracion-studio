@@ -21,7 +21,7 @@ class RemoteSession final {
 public:
   enum class Mode { Local, Server, Client };
   struct Event {
-    enum class Kind { Snapshot, Meters, Waveform, Command, Connected, Disconnected };
+    enum class Kind { Snapshot, Meters, Waveform, Command, Connected, Disconnected, PeerDisconnected };
     Kind kind = Kind::Snapshot;
     std::string text;
     std::vector<uint8_t> bytes;

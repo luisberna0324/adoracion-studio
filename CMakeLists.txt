@@ -457,6 +457,28 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME song_import_wizard COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsSongWizardTests>")
+    juce_add_console_app(MTControlsPracticePanelGestureTests
+        PRODUCT_NAME "Practice Panel Gesture Tests")
+    target_sources(MTControlsPracticePanelGestureTests PRIVATE
+        tests/practice_panel_gesture_tests.cpp
+        tests/practice_waveform_geometry_tests.cpp
+        tests/practice_playback_clock_tests.cpp
+        tests/practice_viewport_tests.cpp
+        tests/practice_loop_tests.cpp
+        src/data/AppSettings.cpp)
+    target_include_directories(MTControlsPracticePanelGestureTests PRIVATE src)
+    target_compile_definitions(MTControlsPracticePanelGestureTests PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsPracticePanelGestureTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp
+        juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsPracticePanelGestureTests)
+    add_test(NAME practice_panel_gestures COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsPracticePanelGestureTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(practice_panel_gestures PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
     target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
     juce_generate_juce_header(MTControlsDiagnosticReportTests)
@@ -936,6 +958,8 @@ target_sources(MTControls
         src/ui/components/ReauthPromptModal.h
         src/ui/panels/PadsComponent.cpp
         src/ui/panels/PadsComponent.h
+        src/ui/panels/PracticePanel.cpp
+        src/ui/panels/PracticePanel.h
         src/ui/components/WelcomeModal.cpp
         src/ui/components/WelcomeModal.h
 )
