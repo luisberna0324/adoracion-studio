@@ -471,10 +471,18 @@ La marca de inserción de la regla aplica a todos los tipos de sección,
 incluidas `Cuenta` y `Utilidad`. Estas dos conservan su duración corta de grilla
 y dividen la sección existente alrededor de la marca sin crear solapamientos.
 
-En iPad, la regla de la waveform se presenta como referencia de navegación:
-muestra marcas de compás y numera compases con una separación mínima de 82 px.
-No dibuja las subdivisiones de beat o snap, aunque estas continúan disponibles
-para seek y edición. El layout de escritorio conserva la regla detallada.
+En escritorio y tablets iOS/Android, la regla de la waveform comparte el dibujo
+de Ensayo mediante `TimelineRulerStyle`: altura de 24 puntos, números de compás
+en fuente de 10 puntos y marcas cortas de compás/pulso en color secundario, sin
+una caja independiente alrededor. `PracticeTimelineRuler` calcula las marcas
+desde el mapa de tempo vigente, incluido el denominador de la métrica y cambios
+sin guardar. Los números mantienen al menos 72 puntos entre etiquetas y los
+pulsos aparecen cuando tienen al menos 10 puntos de separación. Al alejar el
+zoom se reduce la densidad automáticamente. Las subdivisiones de snap siguen
+disponibles para seek y edición sin llenar la regla de marcas adicionales.
+Los cursores de reproducción, salto pendiente y marca de inserción conservan
+su dibujo e interacción sobre esta referencia. En performance de teléfono,
+la regla continúa oculta.
 
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la

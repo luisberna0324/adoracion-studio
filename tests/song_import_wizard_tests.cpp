@@ -3,6 +3,7 @@
 #include "data/SongProjectCreation.h"
 #include "data/ProjectStore.h"
 #include "data/ApplicationDataPaths.h"
+#include "data/AssetBootstrapManager.h"
 
 #include <atomic>
 #include <cmath>
@@ -757,6 +758,103 @@ struct SongImportWizardTestAccess {
            "editing a loaded song uses the dedicated reload callback");
   }
 
+  static void testM4aCreation(const AudioFixtures &files) {
+#if !JUCE_IOS && !JUCE_ANDROID
+    const auto fixtures = juce::File(__FILE__).getParentDirectory()
+                              .getChildFile("fixtures/m4a");
+    const auto encoder = AssetBootstrapManager::getAvailableEncoderBinary();
+    for (const auto *codec : {"aac", "alac"}) {
+      const auto name = "piano-" + juce::String(codec);
+      const auto source = files.directory.getChildFile(name + ".M4A");
+      expect(fixtures.getChildFile(name + ".m4a").copyFileTo(source),
+             "copy a real M4A fixture into isolated test storage");
+      juce::MemoryBlock original;
+      expect(source.loadFileAsData(original), "read the original M4A bytes");
+      juce::String saveError;
+      int dismissed = 0;
+      const bool roundtrip = encoder.existsAsFile();
+      Wizard wizard([&](ImportedSongData song, juce::String &error,
+                        const SongImportProgressFn &progress) {
+        if (!roundtrip)
+          return true;
+        const bool ok = SongProjectCreation::save(std::move(song), error, progress);
+        saveError = error;
+        return ok;
+      }, false, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+      wizard.setOnDismissRequested([&] { ++dismissed; });
+      fillMetadata(wizard);
+      wizard.songTitleEditor.setText(name, juce::dontSendNotification);
+      wizard.goToNextStep();
+      wizard.handleSelectedStemFiles({source}, false);
+      expect(wizard.stems.size() == 1,
+             "desktop creation accepts M4A, including uppercase extension");
+      wizard.goToNextStep();
+      expect(wizard.currentStep == Step::Mapping,
+             "M4A advances from Files without requiring a native reader");
+      wizard.goToNextStep();
+      expect(wizard.currentStep == Step::Review,
+             "M4A advances through mapping and final validation");
+      wizard.submitSong();
+      pumpUntil([&] { return !wizard.isSubmissionInProgress(); },
+                "M4A background creation completes");
+      expect(saveError.isEmpty() && dismissed == 1,
+             "M4A creation closes only after successful background work");
+      juce::MemoryBlock unchanged;
+      expect(source.loadFileAsData(unchanged) && unchanged == original,
+             "M4A import leaves the original audio untouched");
+      if (!roundtrip) {
+        std::cout << "M4A wizard accepted " << codec
+                  << "; package roundtrip skipped (no local encoder)\n";
+        continue;
+      }
+      const auto songs = SongLibraryStore::loadSongs();
+      const auto registered = std::find_if(songs.begin(), songs.end(),
+          [&](const ImportedSongData &song) { return song.title == name; });
+      expect(registered != songs.end(), "M4A song is registered in Biblioteca");
+      const juce::File project(registered->projectPath);
+      expect(source.deleteFile(), "remove only the isolated M4A input");
+      ProjectDocument reopened;
+      juce::String error;
+      expect(ProjectStore::open(project, reopened, &error, true),
+             "M4A project reopens without the original source");
+      const auto &stem = reopened.song.stems.front();
+      expect(juce::File(stem.storedPath).hasFileExtension("flac") &&
+                 stem.sampleRate == 48000 && stem.channels == 2 &&
+                 stem.durationSec >= 0.25 && stem.durationSec < 0.30 &&
+                 std::abs(reopened.settings.window.endSec - stem.durationSec) < 1.0e-6,
+             "portable FLAC, metadata and playback window match decoded M4A");
+      expect(reopened.waveformBins.size() == kWaveformPreviewBinCount &&
+                 *std::max_element(reopened.waveformBins.begin(),
+                                   reopened.waveformBins.end()) > 0.1f,
+             "M4A creates a populated waveform from the packaged audio");
+      std::cout << "Verified M4A " << codec << " -> FLAC -> pwproj -> Biblioteca\n";
+    }
+    if (encoder.existsAsFile()) {
+      const auto source = files.directory.getChildFile("broken.m4a");
+      expect(source.replaceWithText("not an M4A audio stream"),
+             "create an isolated corrupt M4A fixture");
+      ImportedSongData song;
+      song.id = juce::Uuid().toString();
+      song.title = "Broken M4A";
+      song.projectPath = files.directory.getChildFile("broken.pwproj").getFullPathName();
+      ImportedStemData stem;
+      stem.stemId = juce::Uuid().toString();
+      stem.sourcePath = source.getFullPathName();
+      stem.include = true;
+      song.stems.push_back(stem);
+      const auto before = SongLibraryStore::loadSongs().size();
+      juce::String error;
+      expect(!SongProjectCreation::save(song, error, {}) && error.isNotEmpty() &&
+                 !juce::File(song.projectPath).existsAsFile() &&
+                 SongLibraryStore::loadSongs().size() == before && source.existsAsFile(),
+             "corrupt M4A fails without a project, library entry or source deletion");
+      const auto staging = SongLibraryStore::getRootDirectory().getChildFile("project-staging");
+      expect(staging.findChildFiles(juce::File::findFilesAndDirectories, false).isEmpty(),
+             "M4A temporary audio is cleaned after success and failure");
+    }
+#endif
+  }
+
 };
 
 int main() {
@@ -779,5 +877,6 @@ int main() {
   SongImportWizardTestAccess::testLibraryPanelFlow();
   SongImportWizardTestAccess::testLegacyMetadataEditing(fixtures);
   SongImportWizardTestAccess::testLoadedSongEditNotification();
+  SongImportWizardTestAccess::testM4aCreation(fixtures);
   std::cout << "Song creation wizard: all checks passed\n";
 }

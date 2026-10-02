@@ -1,4 +1,5 @@
 #include "PracticePanel.h"
+#include "TimelineRulerStyle.h"
 
 #include "../../data/Localization.h"
 #include "../UiCommon.h"
@@ -949,20 +950,7 @@ void PracticePanel::paint(juce::Graphics &g) {
         : PracticeTimelineRuler::build(visible, static_cast<float>(ruler.getWidth()),
               sources.songBpm ? sources.songBpm() : 120.0,
               sources.timeSignature ? sources.timeSignature() : "4/4");
-    const juce::Graphics::ScopedSaveState saved(g);
-    g.reduceClipRegion(ruler);
-    g.setFont(makeAppFont(10.0f));
-    for (const auto &mark : marks) {
-      if (mark.timeSeconds < 0.0 || mark.timeSeconds > length)
-        continue;
-      const auto x = timeToX(mark.timeSeconds);
-      g.setColour(UITheme::textSecondary.withMultipliedAlpha(mark.strong ? 0.7f : 0.3f));
-      g.drawVerticalLine(static_cast<int>(std::round(x)), static_cast<float>(ruler.getBottom() - (mark.strong ? 7 : 3)),
-                        static_cast<float>(ruler.getBottom()));
-      if (mark.label.isNotEmpty())
-        g.drawText(mark.label, juce::Rectangle<float>(x - 25.0f, static_cast<float>(ruler.getY()), 50.0f, 14.0f),
-                   juce::Justification::centred);
-    }
+    drawMusicalTimelineRuler(g, ruler.toFloat(), visible, length, marks);
   }
 
   const auto drawBarFeedback = [&] {

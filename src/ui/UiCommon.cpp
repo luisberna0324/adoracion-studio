@@ -26,6 +26,10 @@ juce::Colour UITheme::cardBgClickGuide =
 juce::Colour UITheme::onAccent = juce::Colours::white;
 juce::Colour UITheme::dividerSoft = juce::Colour::fromRGB(42, 42, 42);
 
+namespace {
+void refreshSelectionTheme();
+}
+
 juce::String formatTimeSeconds(double seconds) {
   const int total = juce::jmax(0, static_cast<int>(std::floor(seconds + 0.5)));
   const int mm = total / 60;
@@ -80,8 +84,9 @@ void applyTheme(ThemePreset preset) {
   default:
     // Legacy alias: "Classic" is deprecated and now resolves to Night Green.
     applyTheme(ThemePreset::Spotify);
-    break;
+    return;
   }
+  refreshSelectionTheme();
 }
 
 namespace {
@@ -167,7 +172,9 @@ juce::Colour inputOutlineColour(const juce::Colour requested) {
       .withAlpha(juce::jmax(requested.getFloatAlpha(), minimumAlpha));
 }
 
-class InputControlLookAndFeel final : public juce::LookAndFeel_V4 {
+// Also used as the application default: JUCE's audio selectors and standalone
+// PopupMenus must share the same selection surface as our AdaptiveComboBoxes.
+class SelectionLookAndFeel : public juce::LookAndFeel_V4 {
 public:
   void drawComboBox(juce::Graphics &g, const int width, const int height,
                     const bool isButtonDown, const int, const int, const int,
@@ -187,14 +194,15 @@ public:
     const auto radius = inputCornerRadius(height);
     g.fillRoundedRectangle(bounds, radius);
 
-    auto outline = box.hasKeyboardFocus(true)
+    const bool focused = box.hasKeyboardFocus(true) || box.isPopupActive();
+    auto outline = focused
                        ? UITheme::accent.withAlpha(0.82f)
                        : box.findColour(juce::ComboBox::outlineColourId);
     if (!box.isEnabled())
       outline = outline.withMultipliedAlpha(0.45f);
     g.setColour(outline);
     g.drawRoundedRectangle(bounds.reduced(0.5f), radius,
-                           box.hasKeyboardFocus(true) ? 2.0f : 1.0f);
+                           focused ? 1.5f : 1.0f);
 
     const auto arrowColour = box.findColour(juce::ComboBox::arrowColourId);
     const bool touch = useTouchOptimisedControls();
@@ -213,8 +221,10 @@ public:
                                              juce::PathStrokeType::rounded));
   }
 
-  juce::Font getComboBoxFont(juce::ComboBox &) override {
-    return makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f,
+  juce::Font getComboBoxFont(juce::ComboBox &box) override {
+    const auto size = useTouchOptimisedControls() ? 17.0f : 15.0f;
+    return makeAppFont(box.getHeight() > 0 ? juce::jmin(size, static_cast<float>(box.getHeight()) * 0.65f)
+                                         : size,
                        AppFontWeight::Medium);
   }
 
@@ -240,6 +250,137 @@ public:
     return makeAppFont(useTouchOptimisedControls() ? 17.0f : 15.0f);
   }
 
+  int getPopupMenuBorderSize() override { return 6; }
+
+  void drawPopupMenuBackground(juce::Graphics &g, const int width,
+                               const int height) override {
+    // Opaque-only peers need a coloured fallback outside the rounded card.
+    // Transparent peers keep those corners clear (see refreshSelectionTheme).
+    const auto surface = UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.65f);
+    if (!juce::Desktop::canUseSemiTransparentWindows())
+      g.fillAll(surface);
+    auto bounds = juce::Rectangle<int>(width, height).toFloat().reduced(0.5f);
+    g.setColour(surface);
+    g.fillRoundedRectangle(bounds, 12.0f);
+    g.setColour(UITheme::textSecondary.withAlpha(0.2f));
+    g.drawRoundedRectangle(bounds, 12.0f, 1.0f);
+  }
+
+  void getIdealPopupMenuItemSize(const juce::String &text, const bool separator,
+                                 const int standardHeight, int &width,
+                                 int &height) override {
+    if (separator) {
+      width = 64;
+      height = 9;
+      return;
+    }
+    height = juce::jmax(touchOptimisedPopupItemHeight(), standardHeight);
+    width = juce::GlyphArrangement::getStringWidthInt(getPopupMenuFont(), text) + 72;
+  }
+
+  void drawPopupMenuItem(juce::Graphics &g, const juce::Rectangle<int> &area,
+                         const bool separator, const bool active,
+                         const bool highlighted, const bool ticked,
+                         const bool hasSubMenu, const juce::String &text,
+                         const juce::String &shortcut, const juce::Drawable *icon,
+                         const juce::Colour *customTextColour) override {
+    auto row = area.toFloat().reduced(2.0f, 1.0f);
+    if (separator) {
+      g.setColour(UITheme::textSecondary.withAlpha(0.15f));
+      g.drawHorizontalLine(juce::roundToInt(row.getCentreY()),
+                           row.getX() + 10.0f, row.getRight() - 10.0f);
+      return;
+    }
+    if ((highlighted && active) || ticked) {
+      g.setColour(UITheme::accent.withAlpha(active ? (highlighted ? 0.24f : 0.12f)
+                                                  : 0.06f));
+      g.fillRoundedRectangle(row, 8.0f);
+    }
+
+    const float opacity = active ? 1.0f : 0.4f;
+    const auto textColour = customTextColour != nullptr ? *customTextColour
+                                                       : UITheme::textPrimary;
+    auto content = row.reduced(10.0f, 0.0f);
+    const auto trailing = content.removeFromRight(20.0f);
+    if (hasSubMenu) {
+      const auto centre = trailing.getCentre();
+      juce::Path chevron;
+      chevron.startNewSubPath(centre.x - 2.0f, centre.y - 4.0f);
+      chevron.lineTo(centre.x + 2.0f, centre.y);
+      chevron.lineTo(centre.x - 2.0f, centre.y + 4.0f);
+      g.setColour(UITheme::textSecondary.withMultipliedAlpha(opacity));
+      g.strokePath(chevron, juce::PathStrokeType(1.7f, juce::PathStrokeType::curved,
+                                                juce::PathStrokeType::rounded));
+    }
+    if (ticked) {
+      const auto checkArea = hasSubMenu ? content.removeFromRight(22.0f) : trailing;
+      const auto centre = checkArea.getCentre();
+      juce::Path check;
+      check.startNewSubPath(centre.x - 5.0f, centre.y);
+      check.lineTo(centre.x - 1.0f, centre.y + 4.0f);
+      check.lineTo(centre.x + 6.0f, centre.y - 4.0f);
+      g.setColour(UITheme::accent.withMultipliedAlpha(opacity));
+      g.strokePath(check, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved,
+                                              juce::PathStrokeType::rounded));
+    }
+    if (icon != nullptr) {
+      auto iconArea = content.removeFromLeft(26.0f);
+      icon->drawWithin(g, iconArea.withSizeKeepingCentre(20.0f, 20.0f),
+                       juce::RectanglePlacement::centred, opacity);
+    }
+    if (shortcut.isNotEmpty()) {
+      const auto shortcutFont = makeAppFont(useTouchOptimisedControls() ? 12.0f : 11.0f);
+      const auto shortcutWidth = juce::GlyphArrangement::getStringWidthInt(shortcutFont, shortcut);
+      g.setFont(shortcutFont);
+      g.setColour(UITheme::textSecondary.withMultipliedAlpha(opacity));
+      g.drawText(shortcut, content.removeFromRight(static_cast<float>(shortcutWidth)),
+                  juce::Justification::centredRight, true);
+      content.removeFromRight(12.0f);
+    }
+    g.setFont(getPopupMenuFont());
+    g.setColour(textColour.withMultipliedAlpha(opacity));
+    g.drawText(text, content, juce::Justification::centredLeft, true);
+  }
+
+  void drawPopupMenuSectionHeader(juce::Graphics &g,
+                                  const juce::Rectangle<int> &area,
+                                  const juce::String &text) override {
+    g.setFont(makeAppFont(useTouchOptimisedControls() ? 13.0f : 12.0f,
+                         AppFontWeight::SemiBold));
+    g.setColour(UITheme::textSecondary);
+    g.drawText(text, area.reduced(12, 3), juce::Justification::bottomLeft, true);
+  }
+
+  void getIdealPopupMenuSectionHeaderSizeWithOptions(
+      const juce::String &text, const int, int &width, int &height,
+      const juce::PopupMenu::Options &) override {
+    const auto font = makeAppFont(useTouchOptimisedControls() ? 13.0f : 12.0f,
+                                  AppFontWeight::SemiBold);
+    width = juce::GlyphArrangement::getStringWidthInt(font, text) + 24;
+    height = useTouchOptimisedControls() ? 32 : 28;
+  }
+
+  void drawPopupMenuUpDownArrow(juce::Graphics &g, const int width,
+                               const int height, const bool up) override {
+    const auto area = juce::Rectangle<int>(width, height).toFloat().reduced(2.0f, 0.0f);
+    g.setColour(UITheme::panelDark.interpolatedWith(UITheme::cardBg, 0.65f));
+    g.fillRoundedRectangle(area, 6.0f);
+    const auto centre = area.getCentre();
+    const auto direction = up ? -1.0f : 1.0f;
+    juce::Path arrow;
+    arrow.startNewSubPath(centre.x - 4.0f, centre.y - direction * 2.0f);
+    arrow.lineTo(centre.x, centre.y + direction * 2.0f);
+    arrow.lineTo(centre.x + 4.0f, centre.y - direction * 2.0f);
+    g.setColour(UITheme::textSecondary);
+    g.strokePath(arrow, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved,
+                                            juce::PathStrokeType::rounded));
+  }
+};
+
+// Text editor customisation remains opt-in, as before. Installing the selection
+// theme must not change unrelated controls inherited from LookAndFeel_V4.
+class InputControlLookAndFeel final : public SelectionLookAndFeel {
+public:
   void fillTextEditorBackground(juce::Graphics &g, const int width,
                                 const int height,
                                 juce::TextEditor &editor) override {
@@ -276,6 +417,32 @@ public:
 InputControlLookAndFeel &getInputControlLookAndFeel() {
   static InputControlLookAndFeel lookAndFeel;
   return lookAndFeel;
+}
+
+SelectionLookAndFeel &getSelectionLookAndFeel() {
+  static SelectionLookAndFeel lookAndFeel;
+  return lookAndFeel;
+}
+
+void refreshSelectionTheme() {
+  for (auto *lookAndFeel : { &getSelectionLookAndFeel(),
+                            static_cast<SelectionLookAndFeel *>(&getInputControlLookAndFeel()) }) {
+    lookAndFeel->setColour(juce::ComboBox::backgroundColourId, UITheme::cardBgHover);
+    lookAndFeel->setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
+    lookAndFeel->setColour(juce::ComboBox::outlineColourId,
+                          inputOutlineColour(UITheme::cardBorder.withAlpha(0.7f)));
+    lookAndFeel->setColour(juce::ComboBox::arrowColourId, UITheme::textSecondary);
+    // JUCE uses this alpha to decide whether the popup window can have clear
+    // corners. The card itself is painted opaque, avoiding text translucency.
+    lookAndFeel->setColour(juce::PopupMenu::backgroundColourId,
+                          UITheme::panelDark.withAlpha(0.99f));
+    lookAndFeel->setColour(juce::PopupMenu::textColourId, UITheme::textPrimary);
+    lookAndFeel->setColour(juce::PopupMenu::highlightedBackgroundColourId,
+                          UITheme::accent.withAlpha(0.24f));
+    lookAndFeel->setColour(juce::PopupMenu::highlightedTextColourId, UITheme::textPrimary);
+  }
+  if (&juce::LookAndFeel::getDefaultLookAndFeel() != &getSelectionLookAndFeel())
+    juce::LookAndFeel::setDefaultLookAndFeel(&getSelectionLookAndFeel());
 }
 } // namespace
 
@@ -467,20 +634,13 @@ void AdaptiveComboBox::timerCallback() {
 void applyComboBoxTheme(AdaptiveComboBox &combo, const juce::Colour background,
                         const juce::Colour outline) {
   combo.setLookAndFeel(&getInputControlLookAndFeel());
-  auto &lookAndFeel = getInputControlLookAndFeel();
-  lookAndFeel.setColour(juce::PopupMenu::backgroundColourId, UITheme::panelDark);
-  lookAndFeel.setColour(juce::PopupMenu::textColourId, UITheme::textPrimary);
-  lookAndFeel.setColour(juce::PopupMenu::highlightedBackgroundColourId,
-                       UITheme::accent.withAlpha(0.22f));
-  lookAndFeel.setColour(juce::PopupMenu::highlightedTextColourId,
-                       UITheme::textPrimary);
   combo.setColour(juce::ComboBox::backgroundColourId,
                   background.withAlpha(useTouchOptimisedControls() ? 0.96f
                                                                     : 0.88f));
   combo.setColour(juce::ComboBox::textColourId, UITheme::textPrimary);
   combo.setColour(juce::ComboBox::outlineColourId,
                   inputOutlineColour(outline));
-  combo.setColour(juce::ComboBox::arrowColourId, UITheme::textPrimary);
+  combo.setColour(juce::ComboBox::arrowColourId, UITheme::textSecondary);
   combo.setJustificationType(juce::Justification::centredLeft);
 }
 

@@ -21,15 +21,17 @@
 #include <thread>
 
 namespace {
+#if JUCE_IOS || JUCE_ANDROID
 constexpr auto kCreationExtensions = "wav;aif;aiff;flac;mp3";
 constexpr auto kCreationFormatNames = "WAV, AIFF, FLAC, MP3";
-#if JUCE_IOS || JUCE_ANDROID
 // Mobile decodes WAV/AIFF/FLAC via JUCE in-process. MP3 is added on 2026-09-22
 // thanks to JUCE's built-in MinMP3 decoder (no external lib, no FFmpeg). The
 // PCM source is fed to the same FLAC packager the desktop uses.
 constexpr auto kStemImportExtensions = "wav;aif;aiff;flac;mp3";
 constexpr auto kStemImportFormatNames = "WAV, AIFF, FLAC, MP3";
 #else
+constexpr auto kCreationExtensions = "wav;aif;aiff;flac;mp3;m4a";
+constexpr auto kCreationFormatNames = "WAV, AIFF, FLAC, MP3, M4A";
 // Desktop project saving decodes these inputs with FFmpeg and packages FLAC.
 // The picker and validation must use the same list, including formats that
 // JUCE cannot inspect natively on every desktop OS (e.g. WMA or AAC).
@@ -728,13 +730,13 @@ SongImportWizardComponent::SongImportWizardComponent(
   setMetadataReadOnlyFromLocal(false);
 
   addFilesButton.setButtonText(L10n::tr(u8"Agregar stems...", u8"Add stems..."));
-  addFilesButton.setTooltip(kStemImportFormatNames);
+  addFilesButton.setTooltip(mode == Mode::Import ? kCreationFormatNames : kStemImportFormatNames);
   addFilesButton.onClick = [this] { openStemChooser(false); };
   addAndMakeVisible(addFilesButton);
 
   replaceFilesButton.setButtonText(
       L10n::tr(u8"Reemplazar stems...", u8"Replace stems..."));
-  replaceFilesButton.setTooltip(kStemImportFormatNames);
+  replaceFilesButton.setTooltip(mode == Mode::Import ? kCreationFormatNames : kStemImportFormatNames);
   replaceFilesButton.onClick = [this] { openStemChooser(true); };
   addAndMakeVisible(replaceFilesButton);
 
@@ -2602,6 +2604,13 @@ bool SongImportWizardComponent::validateStepImport() {
             formatManager.createReaderFor(source));
         readable = reader != nullptr && reader->sampleRate > 0.0 &&
                    reader->lengthInSamples > 0 && reader->numChannels > 0;
+#if !JUCE_IOS && !JUCE_ANDROID
+        // M4A has no portable JUCE decoder on Windows/Linux. The creation
+        // worker validates and converts it before computing metadata/waveform.
+        // Keep other formats' native-reader validation intact.
+        if (!readable && source.hasFileExtension("m4a"))
+          readable = true;
+#endif
       }
       if (!readable)
         unreadableFiles.add(stem.displayName.isNotEmpty()

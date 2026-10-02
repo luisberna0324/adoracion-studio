@@ -115,6 +115,31 @@ juce::MouseEvent clickEvent(juce::Component &component, bool dragged = false) {
           now, position, now, 1, dragged};
 }
 
+void expectComboPopupOptions(juce::ComboBox &combo) {
+  juce::Label label;
+  const auto options = combo.getLookAndFeel().getOptionsForComboBoxPopupMenu(
+      combo, label);
+  expect(options.getTargetComponent() == &combo,
+         "combo popup remains anchored to its originating selector");
+  expect(options.getInitiallySelectedItemId() == combo.getSelectedId() &&
+             options.getItemThatMustBeVisible() == combo.getSelectedId(),
+         "combo popup highlights and keeps the current selection visible");
+  expect(options.getMaximumNumColumns() == 1 &&
+             options.getMinimumWidth() >= combo.getWidth() &&
+             options.getStandardItemHeight() == touchOptimisedPopupItemHeight(),
+         "combo popup uses one column and shared width/touch metrics");
+}
+
+void prepareComboTheme(juce::ComboBox &, bool) {
+  // Standard JUCE selectors inherit the selection theme installed by applyTheme.
+}
+
+void prepareComboTheme(AdaptiveComboBox &combo, const bool mobileForm) {
+  applyComboBoxTheme(combo, UITheme::cardBg, UITheme::cardBorder);
+  combo.setMobileFormMode(mobileForm);
+}
+
+template <typename ComboType>
 void testSingleComboPopup(bool mobileForm = false) {
   juce::Component host;
   const auto *display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
@@ -129,15 +154,14 @@ void testSingleComboPopup(bool mobileForm = false) {
   host.setBounds(display->userArea.withSizeKeepingCentre(320, 180));
   host.addToDesktop(juce::ComponentPeer::windowHasTitleBar);
   host.setVisible(true);
-  AdaptiveComboBox combo;
+  ComboType combo;
   combo.addItem("C", 1);
   combo.addItem("D", 2);
   combo.addItem("E", 3);
   combo.setSelectedId(1, juce::dontSendNotification);
   combo.setBounds(24, 24, 200, 44);
   host.addAndMakeVisible(combo);
-  applyComboBoxTheme(combo, UITheme::cardBg, UITheme::cardBorder);
-  combo.setMobileFormMode(mobileForm);
+  prepareComboTheme(combo, mobileForm);
   int changes = 0;
   combo.onChange = [&] { ++changes; };
 
@@ -157,14 +181,7 @@ void testSingleComboPopup(bool mobileForm = false) {
     std::exit(77);
   }
 
-  juce::Label label;
-  const auto options = combo.getLookAndFeel().getOptionsForComboBoxPopupMenu(
-      combo, label);
-  expect(options.getMaximumNumColumns() == 1,
-         "combo options remain a single list even on a short display");
-  expect(options.getMinimumWidth() >= combo.getWidth() &&
-             options.getStandardItemHeight() == touchOptimisedPopupItemHeight(),
-         "combo popup uses the shared width and platform touch metrics");
+  expectComboPopupOptions(combo);
 
   const auto event = clickEvent(combo);
   combo.mouseDown(event);
@@ -246,20 +263,26 @@ int main(int argc, char **argv) {
 #endif
   applyTheme(ThemePreset::Spotify);
   if (interactivePopup) {
-    testSingleComboPopup();
-    testSingleComboPopup(true);
+    testSingleComboPopup<juce::ComboBox>();
+    testSingleComboPopup<AdaptiveComboBox>();
+    testSingleComboPopup<AdaptiveComboBox>(true);
   } else {
     testEditorThemePreservesBehaviour();
     testSearchPadding();
+    juce::ComboBox standard;
+    standard.setSize(200, 44);
+    standard.addItem("C", 1);
+    standard.addItem("D", 2);
+    standard.setSelectedId(2, juce::dontSendNotification);
+    expectComboPopupOptions(standard);
+
     AdaptiveComboBox combo;
     combo.setSize(200, 44);
+    combo.addItem("C", 1);
+    combo.addItem("D", 2);
+    combo.setSelectedId(2, juce::dontSendNotification);
     applyComboBoxTheme(combo, UITheme::cardBg, UITheme::cardBorder);
-    juce::Label label;
-    const auto options = combo.getLookAndFeel().getOptionsForComboBoxPopupMenu(combo, label);
-    expect(options.getMaximumNumColumns() == 1 &&
-               options.getMinimumWidth() >= combo.getWidth() &&
-               options.getStandardItemHeight() == touchOptimisedPopupItemHeight(),
-           "combo uses one column and the shared width/touch metrics");
+    expectComboPopupOptions(combo);
     combo.setLookAndFeel(nullptr);
   }
   std::cout << "Input controls: all checks passed\n";

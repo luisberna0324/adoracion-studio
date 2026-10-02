@@ -43,6 +43,11 @@ ctest --test-dir build/functional-tests --output-on-failure \
 `input_controls_popup` requiere foco de una ventana real y lleva la etiqueta
 `interactive`. Se ejecuta localmente con
 `ctest --test-dir build/functional-tests -R '^input_controls_popup$'`.
+`input_controls` verifica también el anclaje, la opción seleccionada/visible y
+las métricas del popup tanto en `ComboBox` estándar (tema global) como en
+`AdaptiveComboBox`. La prueba interactiva reutiliza el mismo contrato de
+selección única, teclado, Escape y estado deshabilitado para ambos y para
+el modo de formulario móvil.
 
 En el primer run del PR, el runner alojado de macOS no entregó los paquetes
 multicast mDNS del backend portátil a procesos de la misma máquina. Las pruebas
@@ -121,44 +126,46 @@ un test automatizado del contrato afectado cuando sea posible.
 - Esta validación es específica de Ensayo. No se ejecutó aquí el gate completo,
   ni se verificó este conjunto de cambios en Android o Windows.
 
-## Validación en dispositivos físicos antes de publicar
+## Validación de selectores compartidos del 01/10/2026
 
-Estas comprobaciones requieren hardware y se registran con dispositivo, versión
-de build y resultado. La compilación o un simulador no las acreditan.
+- Compilaciones macOS Standalone, iOS Simulator y Android Debug correctas.
+- Pasaron `input_controls` y `settings_panel`: opciones, selección visible,
+  anclaje, navegación de Configuración y scroll de Ruteo.
+- En iPhone 17 Pro Simulator se revisó Apariencia e idioma, se abrió el combo
+  de temas y se alternó entre Verde Noche y Ámbar Estudio, restaurando el tema
+  original. Se observaron bordes redondeados, check, color seleccionado y cierre
+  al elegir, sin esquinas blancas.
+- `input_controls_popup` devolvió skip: macOS no concedió foco al ejecutable
+  de pruebas. Su contrato ampliado quedó compilado, pero no se acredita aquí
+  ejecución automatizada de teclado. La herramienta de interfaz tampoco pudo
+  ejecutar el clic por coordenadas sobre Instrumentos en Ensayo; ese menú usa
+  el mismo dibujo global, pero su revisión visual específica queda pendiente.
+- No se realizó instalación física ni validación de Windows en esta tarea.
 
-1. En iPhone y Android físicos, importar audio desde el selector nativo,
-   recorrer los cuatro pasos, guardar y observar progreso. Confirmar que la
-   canción aparece en Biblioteca, cerrar y abrir la app, y reabrir el `.pwproj`
-   sin depender de los archivos originales. Repetir una cancelación y un error
-   de archivo para comprobar que el borrador permanece editable.
-2. Con un servidor en la misma LAN, abrir un cliente físico, conceder permiso
-   de red local y verificar descubrimiento, conexión y primer snapshot. Probar
-   play/stop, seek y volumen desde el cliente; comprobar posición, VU y mezcla
-   en ambos dispositivos. Desconectar la red, verificar posición congelada y VU
-   en cero, reconectar y comprobar recuperación. Volver a Local y confirmar que
-   la canción y mezcla locales siguen intactas.
-3. Con la salida de audio física, reproducir stems, click y pads, mover faders,
-   cambiar tempo y tono y escuchar que no aparecen cortes ni audio desfasado.
-   Exportar la ventana actual y escuchar el inicio y final del archivo generado.
+## Validación de regla musical compartida del 01/10/2026
 
-Registrar fallos de estas comprobaciones como regresiones reproducibles y añadir
-un test automatizado del contrato afectado cuando sea posible.
+- Compilaciones macOS Standalone, iOS Simulator y Android Debug correctas.
+- Pasó `practice_panel_gestures`, que incluye zoom, marcas musicales, cambios
+  de tempo y métrica, y loop A–B.
+- Se revisó la regla en macOS con edición desactivada y activada, conservando
+  su alineación con la onda y el cursor. En iPad Pro de 13 pulgadas (M5)
+  Simulator se instaló, abrió y revisó la vista con una canción cargada.
+- La revisión visual de tablet acredita iOS Simulator; no se realizó revisión
+  visual en tablet Android ni en dispositivos físicos para este cambio.
 
-## Validación local de Ensayo del 01/10/2026
+## Validación de importación M4A del 02/10/2026
 
-- macOS arm64: pasaron `practice_panel_gestures`, `remote_session`,
-  `remote_session_portable_transport`, `audio_engine_core` y `stem_mix_engine`.
-  La sesión nativa se comprobó con `PW_REMOTE_DIRECT_CONNECT=1`; estos resultados
-  acreditan transporte WebSocket local, no descubrimiento físico mDNS.
-- Compilación iOS Simulator correcta. La cabecera y los selectores se revisaron
-  visualmente en iPhone 17 Pro Simulator. La comprobación manual del último
-  ajuste de enfoque de tres estados quedó pendiente al bloquearse la Mac;
-  sus transiciones sí pasaron la prueba automatizada de gestos.
-- iPhone 16 físico: compilación Debug firmada, firma validada, instalación y
-  apertura por Wi-Fi confirmadas, con el dispositivo ausente del registro USB.
-  Instalación y apertura no sustituyen una prueba manual de audio o gestos.
-- Esta validación es específica de Ensayo. No se ejecutó aquí el gate completo,
-  ni se verificó este conjunto de cambios en Android o Windows.
+- macOS Standalone y `MTControlsSongWizardTests` compilaron correctamente.
+- Pasó `song_import_wizard` (2,91 s), con un encoder local disponible. Los
+  fixtures AAC y ALAC recorrieron los cuatro pasos reales, se convirtieron a
+  FLAC, generaron onda y metadata, y se registraron en Biblioteca. Los proyectos
+  se reabrieron despues de eliminar exclusivamente los M4A del test aislado.
+- Se comprobaron extension `.M4A`, originales intactos durante el guardado,
+  rechazo de audio corrupto y limpieza de temporales. Un fallo no genero un
+  proyecto ni una entrada de Biblioteca.
+- La herramienta de interfaz devolvio timeout al consultar la app de macOS;
+  el selector nativo no se reviso manualmente. La ejecucion en Windows/Linux
+  queda pendiente; la conversion utiliza el mismo worker de escritorio.
 
 ## Validación de edición de waveform del 02/10/2026
 

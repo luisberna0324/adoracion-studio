@@ -1,4 +1,5 @@
 #include "WaveformBar.h"
+#include "TimelineRulerStyle.h"
 #include "../../PluginProcessor.h"
 #include "../../audio/DynamicGuideEngine.h"
 #include "../../data/ArrangementSourceMapping.h"
@@ -17,14 +18,7 @@ constexpr double kPartSnapSeconds = 0.1;
 constexpr float kMinViewportSpan = 1.0f / 18.0f;
 constexpr float kEditToolbarHeight = 24.0f;
 constexpr float kEditToolbarBottomGap = 6.0f;
-#if JUCE_IOS
-// iPad uses a compact ruler: preserve each musical pulse but omit finer edit
-// subdivisions so a 4/4 bar reads as four deliberate divisions.
-constexpr float kSeekRulerHeight = 22.0f;
-constexpr float kTouchRulerMinimumLabelSpacing = 82.0f;
-#else
-constexpr float kSeekRulerHeight = 28.0f;
-#endif
+constexpr float kSeekRulerHeight = 24.0f;
 constexpr float kSeekRulerGap = 4.0f;
 constexpr float kMiniMapHeight = 24.0f;
 constexpr float kMiniMapGap = 10.0f;
@@ -5714,115 +5708,12 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
 
-  g.setColour(UITheme::cardBg.withAlpha(0.58f));
-  g.fillRoundedRectangle(bounds, 3.0f);
-  g.setColour(UITheme::cardBorder.withAlpha(0.78f));
-  g.drawRoundedRectangle(bounds, 3.0f, 1.0f);
-
   const double songLength = getSongLengthSeconds();
-  if (songLength > 0.0) {
-    const float topY = bounds.getY() + 2.0f;
-    const float minorBottom = bounds.getBottom() - 6.0f;
-    const float majorBottom = bounds.getBottom() - 2.5f;
-
-    if (songBpm > 0.0 && songBeatsPerBar > 0) {
-      const double barDurationSec = getBarDurationSeconds();
-      const double beatDurationSec = 60.0 / songBpm;
-      const double divisionSec = getSnapStepSeconds();
-      if (barDurationSec > 0.0 && beatDurationSec > 0.0 && divisionSec > 0.0) {
-        const double visibleStartSec = songLength * windowStart;
-        const double visibleEndSec = songLength * (windowStart + windowSpan);
-        const double visibleDurationSec = visibleEndSec - visibleStartSec;
-#if JUCE_IOS
-        const float pixelsPerBar = static_cast<float>(
-            (bounds.getWidth() * barDurationSec) /
-            juce::jmax(0.0001, visibleDurationSec));
-        const int64_t labelEveryBars = juce::jlimit<int64_t>(
-            4, 16, static_cast<int64_t>(std::ceil(
-                       kTouchRulerMinimumLabelSpacing /
-                       juce::jmax(1.0f, pixelsPerBar))));
-#else
-        constexpr int64_t labelEveryBars = 4;
-#endif
-#if !JUCE_IOS
-        const double pixelsPerDivision =
-            (bounds.getWidth() * divisionSec) / juce::jmax(0.0001, visibleDurationSec);
-        const int64_t divisionSkip = juce::jmax<int64_t>(
-            1, static_cast<int64_t>(
-                   std::ceil(8.0 / juce::jmax(0.35, pixelsPerDivision))));
-#endif
-        const int64_t divisionsPerBar = juce::jmax<int64_t>(
-            1, static_cast<int64_t>(std::llround(barDurationSec / divisionSec)));
-        const int64_t divisionsPerBeat = juce::jmax<int64_t>(
-            1, static_cast<int64_t>(std::llround(beatDurationSec / divisionSec)));
-        int64_t firstDivision = static_cast<int64_t>(
-            std::ceil((visibleStartSec - 1.0e-9) / divisionSec));
-        if (firstDivision < 0)
-          firstDivision = 0;
-        const int64_t lastDivision = static_cast<int64_t>(
-            std::floor((visibleEndSec + 1.0e-9) / divisionSec));
-
-        for (int64_t division = firstDivision; division <= lastDivision;
-             ++division) {
-          const bool isBar = (division % divisionsPerBar) == 0;
-          const bool isBeat = (division % divisionsPerBeat) == 0;
-#if JUCE_IOS
-          // Keep musical beats, but not snap-only subdivisions such as 1/8 or
-          // 1/16. This gives four visible divisions in a 4/4 bar without
-          // making the iPad ruler as dense as the desktop editing ruler.
-          if (!isBar && !isBeat)
-            continue;
-#else
-          if (!isBar && (division % divisionSkip) != 0)
-            continue;
-#endif
-
-          const int64_t barIndex = division / divisionsPerBar;
-          const bool isLabelledBar =
-              isBar && ((barIndex % labelEveryBars) == 0);
-          const float x =
-              sourceSecondsToWindowX(bounds, static_cast<double>(division) * divisionSec);
-          if (x < bounds.getX() || x > bounds.getRight())
-            continue;
-
-          float alpha = 0.34f;
-          float thickness = 0.7f;
-          float bottom = minorBottom - 2.5f;
-          if (isBar) {
-            alpha = isLabelledBar ? 0.82f : 0.56f;
-            thickness = isLabelledBar ? 1.2f : 0.95f;
-            bottom = isLabelledBar ? majorBottom : minorBottom;
-          } else if (isBeat) {
-            alpha = 0.44f;
-            thickness = 0.8f;
-            bottom = minorBottom - 1.0f;
-          }
-
-          g.setColour(juce::Colours::white.withAlpha(alpha));
-          g.drawLine(x, topY, x, bottom, thickness);
-
-          if (isLabelledBar) {
-            g.setColour(juce::Colours::white.withAlpha(0.78f));
-            g.setFont(juce::FontOptions(9.5f));
-            g.drawText(juce::String(barIndex + 1),
-                       juce::Rectangle<float>(x + 3.0f, bounds.getY() + 1.0f,
-                                              34.0f, 10.0f),
-                       juce::Justification::left, false);
-          }
-        }
-      }
-    } else {
-      const int tickCount = 12;
-      for (int i = 0; i <= tickCount; ++i) {
-        const float ratio = static_cast<float>(i) / static_cast<float>(tickCount);
-        const float x =
-            snapToPixelCenter(bounds.getX() + ratio * bounds.getWidth());
-        const bool major = (i % 2) == 0;
-        g.setColour(juce::Colours::white.withAlpha(major ? 0.56f : 0.35f));
-        g.drawLine(x, topY, x, major ? majorBottom : minorBottom,
-                   major ? 1.05f : 0.8f);
-      }
-    }
+  if (songLength > 0.0 && windowSpan > 0.0f) {
+    const juce::Range<double> visible{
+        songLength * windowStart, songLength * (windowStart + windowSpan)};
+    drawMusicalTimelineRuler(g, bounds, visible, songLength,
+                             getPracticeTimelineMarks(visible, bounds.getWidth()));
   }
 
   if (positionProvider && lengthProvider) {

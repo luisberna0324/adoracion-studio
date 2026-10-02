@@ -37,6 +37,69 @@ bool save(ImportedSongData song, juce::String &errorMessage,
                             "No project location was selected.");
     return false;
   }
+
+#if !JUCE_IOS && !JUCE_ANDROID
+  // Decode M4A once, on this worker, so waveform and timing use the same
+  // portable audio that will be packaged. Native M4A readers are unavailable
+  // on some desktop platforms. Originals and the wizard draft stay untouched.
+  juce::File m4aStage;
+  const juce::ScopeGuard cleanupM4a{
+      [&m4aStage] { if (m4aStage != juce::File{}) m4aStage.deleteRecursively(); }};
+  const auto m4aCount = std::count_if(song.stems.begin(), song.stems.end(),
+      [](const ImportedStemData &stem) {
+        return juce::File(stem.storedPath.isNotEmpty() ? stem.storedPath
+                                                      : stem.sourcePath)
+            .hasFileExtension("m4a");
+      });
+  int preparedM4a = 0;
+  juce::AudioFormatManager formats;
+  formats.registerBasicFormats();
+  for (auto &stem : song.stems) {
+    const juce::File source(stem.storedPath.isNotEmpty() ? stem.storedPath
+                                                       : stem.sourcePath);
+    if (!source.hasFileExtension("m4a"))
+      continue;
+    if (!source.existsAsFile() || source.getSize() <= 0) {
+      errorMessage = L10n::tr("Audio no disponible: ", "Audio unavailable: ") +
+                     source.getFileName();
+      return false;
+    }
+    if (m4aStage == juce::File{}) {
+      m4aStage = SongLibraryStore::getRootDirectory()
+                     .getChildFile("project-staging")
+                     .getChildFile(juce::Uuid().toString());
+      const auto created = m4aStage.createDirectory();
+      if (created.failed()) {
+        errorMessage = created.getErrorMessage();
+        return false;
+      }
+    }
+    const auto converted = m4aStage.getChildFile(
+        juce::String(preparedM4a) + ".flac");
+    const auto phase = L10n::tr("Preparando ", "Preparing ") + source.getFileName();
+    if (!SongLibraryStore::convertStemForProject(
+            source, converted, errorMessage, stem.durationSec,
+            [&](double value, const juce::String &) {
+              if (progress)
+                progress(0.05 * (preparedM4a + value) / m4aCount, phase);
+            }))
+      return false;
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(
+        formats.createReaderFor(converted));
+    if (reader == nullptr || reader->sampleRate <= 0.0 ||
+        reader->lengthInSamples <= 0 || reader->numChannels == 0) {
+      errorMessage = L10n::tr("No se puede decodificar el stem: ",
+                             "Couldn't decode stem: ") + source.getFileName();
+      return false;
+    }
+    stem.storedPath = converted.getFullPathName();
+    stem.durationSec = static_cast<double>(reader->lengthInSamples) / reader->sampleRate;
+    stem.sampleRate = static_cast<int>(reader->sampleRate);
+    stem.channels = static_cast<int>(reader->numChannels);
+    ++preparedM4a;
+  }
+#endif
+
   ProjectDocument document;
   document.song = std::move(song);
   document.settings.tempoBpm = document.song.bpm > 0 ? document.song.bpm : 120.0;

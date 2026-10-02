@@ -56,8 +56,10 @@ Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/
 
 ## Guardar
 
-1. Validar titulo y archivos incluidos existentes; en ambas plataformas deben ser legibles
-   por JUCE (WAV, AIFF, FLAC o MP3). Revalidar antes del guardado definitivo.
+1. Validar titulo y archivos incluidos existentes. WAV, AIFF, FLAC y MP3 deben
+   ser legibles por JUCE. Escritorio admite tambien M4A (AAC o ALAC); si la
+   plataforma no dispone de lector nativo, su decodificacion se valida en el
+   worker de creacion antes de guardar. Revalidar antes del guardado definitivo.
 2. Elegir un nombre disponible en `MTControls/projects/` mediante
    `SongProjectCreation::resolveDestination`, sin dialogos adicionales. El resumen
    informa que se creara un `.pwproj` en Biblioteca; no sobrescribir homonimos.
@@ -122,9 +124,16 @@ destino. MP3 reutiliza el decoder MinMP3 embebido en `juce_core`
 al FLAC destino. Conserva frecuencia y canales (hasta 8); PCM hasta 24 bits
 conserva precision, y fuentes flotantes/32 bits pasan a PCM24, limite del
 escritor FLAC de JUCE. No se descarga ni ejecuta FFmpeg en iOS/Android.
-Escritorio sigue usando FFmpeg para empaquetar FLAC. La creacion limita su
-selector y validacion a los mismos WAV/AIFF/FLAC/MP3 del movil; la edicion
-conserva sus formatos adicionales M4A, AAC, OGG y WMA.
+Escritorio sigue usando FFmpeg para empaquetar FLAC. La creacion admite
+WAV/AIFF/FLAC/MP3/M4A; la edicion conserva ademas AAC, OGG y WMA.
+El selector, las ayudas de formatos y la validacion comparten esa lista.
+`SongProjectCreation::save` convierte los M4A a FLAC en un staging privado
+antes de calcular duracion, canales, ventana de reproduccion y forma de onda.
+Esto permite crearlos tambien sin un decoder nativo M4A (Windows/Linux),
+evita una segunda conversion al empaquetar y conserva los originales.
+Los temporales se eliminan al terminar o fallar. Un M4A corrupto no genera
+un proyecto ni una entrada de Biblioteca; el asistente mantiene el borrador.
+El soporte de importacion movil continua siendo WAV/AIFF/FLAC/MP3.
 
 Una portada manual referenciada como `manual:<path>` se copia al staging y se
 incluye en el ZIP; si desaparecio se informa error. Una portada HTTP(S) usa la
@@ -177,6 +186,11 @@ paquete para aplicar los cambios.
 `song_import_wizard` tambien edita un `.pwproj` real, cambia BPM y portada dos
 veces y comprueba Biblioteca, ajustes y reapertura del paquete. La prueba no
 sustituye la validacion tactil en dispositivos reales.
+
+Incluye fixtures sinteticos M4A/AAC y M4A/ALAC: seleccion, avance por los pasos
+y conservacion del archivo original. Si hay un encoder local disponible,
+comprueba conversion a FLAC, waveform, metadata, registro y reapertura sin el
+M4A original; tambien rechazo de audio corrupto y limpieza del staging.
 
 Las pruebas de persistencia y del asistente compilan sus unidades de almacenamiento con
 `MTCONTROLS_ISOLATED_STORAGE_TESTS=1` y exigen

@@ -133,6 +133,13 @@ separan al menos 72 puntos y los pulsos requieren al menos 10 puntos de espacio,
 sin subdivisiones finas ni snap al recorrer la onda. Las marcas se calculan en
 tiempo fuente y no cambian al alterar la velocidad de reproducción.
 
+`TimelineRulerStyle` comparte el dibujo de esta regla con la onda principal
+de escritorio y tablets iOS/Android: números encima de marcas cortas,
+tipografía de 10 puntos, color secundario y altura de 24 puntos. En esas vistas
+se reutiliza también el proveedor del mapa musical de Ensayo; el cursor y la
+marca de inserción se dibujan después. Las etiquetas de los extremos quedan
+dentro del área visible para evitar números recortados.
+
 Los gestos verticales empiezan en cualquier punto de la tarjeta de onda,
 incluido encabezado, cuerpo y footer. Un recorrido de al menos 44 puntos con
 predominio vertical (1.2 veces el horizontal) activa una sola acción por gesto:
@@ -331,6 +338,33 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   nativa de entrada al cambiar de editor, actualizando texto, seleccion y rasgos
   del teclado mediante `reloadInputViews`. Deslizar el formulario no lo cierra.
   Al cerrar el teclado se recupera el pie con `Siguiente` sin reconstruir campos.
+### Estilo compartido de selección
+
+`applyTheme` instala `SelectionLookAndFeel` como estilo global de combos y menús
+JUCE. Lo usan los `AdaptiveComboBox`, los combos estándar del panel de audio de
+escritorio y los `PopupMenu` independientes, incluido Instrumentos en Ensayo.
+`InputControlLookAndFeel` extiende esa base y conserva la personalización de
+editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
+
+- Campo redondeado con relleno de tarjeta, borde fino, chevrón secundario y
+  borde de acento al enfocarlo o abrirlo. Tipografía Medium de 17 pt en móvil y
+  15 pt en escritorio, adaptada a campos compactos sin cambiar sus dimensiones.
+- Lista en tarjeta redondeada de 12 pt, borde sutil y margen interior de 6 pt.
+  Filas de al menos 44 pt en móvil y 32 pt en escritorio, selección con relleno
+  de acento suave y check a la derecha. La selección se distingue del hover.
+- Los títulos de grupo usan 13/12 pt y altura de 32/28 pt; los textos largos
+  llevan elipsis. Se conservan iconos, atajos, submenús, separadores y estados
+  deshabilitados. Los combos abren una columna, con ancho mínimo igual al campo
+  y la opción actual visible. Las listas largas conservan el scroll de JUCE.
+- El tema se actualiza tanto para combos explícitos como heredados. Las esquinas
+  del popup son transparentes cuando la plataforma lo permite; en otros peers
+  se usa el mismo fondo para evitar esquinas blancas.
+- El dibujo no cambia callbacks, selección, accesibilidad ni gestión de foco.
+  Teclado, Escape y confirmación siguen a cargo de JUCE. Los selectores de
+  archivos del sistema conservan su apariencia nativa.
+
+### Interacción de formularios móviles
+
 - Los combos del asistente movil abren al completar un tap; arrastrar sobre ellos
   permite desplazar el formulario. El selector toma el foco y espera a que el
   teclado desaparezca y su anclaje se estabilice antes de mostrar la lista JUCE
