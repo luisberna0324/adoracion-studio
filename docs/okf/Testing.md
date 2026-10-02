@@ -57,7 +57,7 @@ onda, VU y reconexión con la compilación portátil.
 
 | Contrato | Tests de regresión |
 | --- | --- |
-| [Transporte](transport/Transport.md) y [arrange](engine/SectionScheduler.md) | `audio_engine_core`, `song_mix_export_timeline` |
+| [Transporte](transport/Transport.md) y [arrange](engine/SectionScheduler.md) | `audio_engine_core`, `song_mix_export_timeline`, `waveform_editing` |
 | [Motor de audio](engine/StemMixEngine.md), click y pads | `stem_mix_engine`, `stem_buffering_source`, `metronome_engine`, `pads_engine`, `bungee_processor` |
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
@@ -71,6 +71,16 @@ Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmacione
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,
 lo registran en Biblioteca y lo reabren desde esa ruta. El test de exportación
 genera un WAV real y vuelve a decodificarlo para comprobar duración y fade.
+
+`waveform_editing` usa los handlers reales de ratón y teclado del editor:
+Copy, Cmd/Ctrl-C/V, arrastrar copias antes de su fuente, volver al origen del
+gesto, recortar y ampliar, y Deshacer/Rehacer. Comprueba las coordenadas de audio,
+la identidad de origen, el desplazamiento de las secciones siguientes y la
+conservación de anuncios de utilidad. También ejecuta el mismo handler de guardado
+que usa `Editar rango`, incluidos recorte, ampliación al final y traslado de ambos
+extremos; no requiere abrir el diálogo nativo del sistema para esa comprobación.
+`song_mix_export_timeline` verifica además
+los límites de fuente de copias movidas, recortadas y sin su sección original.
 
 ## Validación en dispositivos físicos antes de publicar
 
@@ -110,6 +120,72 @@ un test automatizado del contrato afectado cuando sea posible.
   Instalación y apertura no sustituyen una prueba manual de audio o gestos.
 - Esta validación es específica de Ensayo. No se ejecutó aquí el gate completo,
   ni se verificó este conjunto de cambios en Android o Windows.
+
+## Validación en dispositivos físicos antes de publicar
+
+Estas comprobaciones requieren hardware y se registran con dispositivo, versión
+de build y resultado. La compilación o un simulador no las acreditan.
+
+1. En iPhone y Android físicos, importar audio desde el selector nativo,
+   recorrer los cuatro pasos, guardar y observar progreso. Confirmar que la
+   canción aparece en Biblioteca, cerrar y abrir la app, y reabrir el `.pwproj`
+   sin depender de los archivos originales. Repetir una cancelación y un error
+   de archivo para comprobar que el borrador permanece editable.
+2. Con un servidor en la misma LAN, abrir un cliente físico, conceder permiso
+   de red local y verificar descubrimiento, conexión y primer snapshot. Probar
+   play/stop, seek y volumen desde el cliente; comprobar posición, VU y mezcla
+   en ambos dispositivos. Desconectar la red, verificar posición congelada y VU
+   en cero, reconectar y comprobar recuperación. Volver a Local y confirmar que
+   la canción y mezcla locales siguen intactas.
+3. Con la salida de audio física, reproducir stems, click y pads, mover faders,
+   cambiar tempo y tono y escuchar que no aparecen cortes ni audio desfasado.
+   Exportar la ventana actual y escuchar el inicio y final del archivo generado.
+
+Registrar fallos de estas comprobaciones como regresiones reproducibles y añadir
+un test automatizado del contrato afectado cuando sea posible.
+
+## Validación local de Ensayo del 01/10/2026
+
+- macOS arm64: pasaron `practice_panel_gestures`, `remote_session`,
+  `remote_session_portable_transport`, `audio_engine_core` y `stem_mix_engine`.
+  La sesión nativa se comprobó con `PW_REMOTE_DIRECT_CONNECT=1`; estos resultados
+  acreditan transporte WebSocket local, no descubrimiento físico mDNS.
+- Compilación iOS Simulator correcta. La cabecera y los selectores se revisaron
+  visualmente en iPhone 17 Pro Simulator. La comprobación manual del último
+  ajuste de enfoque de tres estados quedó pendiente al bloquearse la Mac;
+  sus transiciones sí pasaron la prueba automatizada de gestos.
+- iPhone 16 físico: compilación Debug firmada, firma validada, instalación y
+  apertura por Wi-Fi confirmadas, con el dispositivo ausente del registro USB.
+  Instalación y apertura no sustituyen una prueba manual de audio o gestos.
+- Esta validación es específica de Ensayo. No se ejecutó aquí el gate completo,
+  ni se verificó este conjunto de cambios en Android o Windows.
+
+## Validación de edición de waveform del 02/10/2026
+
+- macOS Standalone y `MTControlsWaveformEditingTests` compilaron correctamente.
+- Pasaron `waveform_editing` y `song_mix_export_timeline` (2/2). Los ocho casos
+  del editor cubren fuente estable al mover a la izquierda, ida/vuelta del drag,
+  copiar copias movidas/recortadas por botón y teclado, ripple de recorte y
+  ampliación, recuperación de una copia al final, anuncios de utilidad y el
+  guardado de Editar rango, con Deshacer/Rehacer.
+- Los eventos de arrastre usan handlers reales; la prueba de rango invoca el
+  handler compartido con Guardar. No se acredita revisión visual del diálogo
+  ni instalación en dispositivos físicos en esta validación.
+
+## Validación de Fin al editar secciones del 02/10/2026
+
+- Reproducción antes de corregir: un WAV de 30 segundos, con `Fin` restaurado
+  a 30, pasó a `Fin = 10` al publicar una anotación de 5 a 10 segundos.
+- macOS Standalone compiló y pasaron `waveform_editing` y
+  `song_mix_export_timeline` (2/2). Los 13 casos del editor incluyen cinco
+  regresiones nuevas con `MTControlsAudioProcessor` real y audio temporal.
+- Se comprueban marcador de inserción y seek por los handlers de la regla,
+  anotaciones parciales, mover/recortar/Deshacer, `Fin` predeterminado y
+  restaurado, conservación de un recorte manual, y extensión/reducción de la
+  duración al insertar/eliminar una copia.
+- Biblioteca, ajustes, cache y paquetes de assets del fixture usan la raíz
+  temporal del test. Los pads se preparan localmente antes de construir el
+  procesador para evitar descargas durante estas pruebas.
 
 ## Resultado local del 26/09/2026
 

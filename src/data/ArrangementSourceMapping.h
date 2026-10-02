@@ -48,6 +48,11 @@ inline std::pair<double, double> clampRange(double start, double end,
   return {start, end};
 }
 
+inline bool mapArrangementSecondsToSourceSeconds(
+    const std::vector<SongArrangementPartSnapshot> &parts,
+    double arrangementSeconds, double sourceLength, double &sourceSecondsOut,
+    BoundaryBias boundaryBias);
+
 inline std::pair<double, double> sourceRangeForOriginalPart(
     const std::vector<SongArrangementPartSnapshot> &parts,
     const SongArrangementPartSnapshot &part, const double sourceLength) {
@@ -57,6 +62,14 @@ inline std::pair<double, double> sourceRangeForOriginalPart(
   if (source->sourcePartId.isNotEmpty() &&
       source->sourceEndSec > source->sourceStartSec)
     return clampRange(source->sourceStartSec, source->sourceEndSec, sourceLength);
+  // An original section's position may have moved because copies were
+  // inserted before it. Its arrange coordinates are not source coordinates.
+  double start = 0.0, end = 0.0;
+  if (mapArrangementSecondsToSourceSeconds(parts, source->startSec, sourceLength,
+                                           start, BoundaryBias::right) &&
+      mapArrangementSecondsToSourceSeconds(parts, source->endSec, sourceLength,
+                                           end, BoundaryBias::left))
+    return clampRange(start, end, sourceLength);
   return clampRange(source->startSec, source->endSec, sourceLength);
 }
 
@@ -146,8 +159,15 @@ inline std::pair<double, double> resolveCopySourceRange(
     if (hasSourceRangeContainedInOriginal(parts, part, sourceLength))
       return clampRange(part.sourceStartSec, part.sourceEndSec, sourceLength);
     // Do not propagate an explicit range that escapes the referenced source.
-    if (findPartById(parts, part.sourcePartId) == nullptr)
+    if (findPartById(parts, part.sourcePartId) == nullptr) {
+      // Deleting the source annotation does not delete the underlying audio.
+      // A surviving copy retains its explicit source range and can be copied.
+      if (std::isfinite(part.sourceStartSec) &&
+          std::isfinite(part.sourceEndSec) &&
+          part.sourceEndSec > part.sourceStartSec)
+        return clampRange(part.sourceStartSec, part.sourceEndSec, sourceLength);
       return {0.0, 0.0};
+    }
     return sourceRangeForOriginalPart(parts, part, sourceLength);
   }
 

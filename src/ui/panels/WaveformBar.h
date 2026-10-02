@@ -128,6 +128,7 @@ public:
   int getExtraHeightForHostLayout() const;
 
 private:
+  friend struct WaveformEditingTestAccess;
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
   enum class TimelineViewMode { GuideMap = 1, TempoMap };
   enum class PlaybackControlFocus { None, Mute, Loop, Jump };
@@ -478,7 +479,8 @@ private:
   double getPartSourceDurationSeconds(
       const SongArrangementPartSnapshot &part) const;
   void clampDuplicatedPartToSourceDuration(SongArrangementPartSnapshot &part,
-                                           bool anchorEnd);
+                                           bool anchorEnd,
+                                           const SongArrangementSnapshot &sourceTimeline);
   void rippleCloseGapAfterDuplicatedPart(double gapStartSec, double gapEndSec,
                                          const juce::String &excludedPartId = {});
   bool mapArrangementSecondsToSourceSeconds(double arrangementSeconds,
@@ -518,6 +520,8 @@ private:
   void toggleArrangementPartSkip(int partIndex);
   void renameArrangementPart(int partIndex);
   void editArrangementPartRange(int partIndex);
+  void applyArrangementPartRange(const juce::String &partId, double start,
+                                 double end);
   void deleteArrangementPart(int partIndex);
   void deleteSelectedArrangementParts();
   void notifyArrangementChanged(bool isCustom);

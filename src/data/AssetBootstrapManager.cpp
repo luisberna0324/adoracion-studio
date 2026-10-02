@@ -1,6 +1,7 @@
 #include "AssetBootstrapManager.h"
 
 #include "AppSettings.h"
+#include "ApplicationDataPaths.h"
 
 namespace {
 #if defined(MTCONTROLS_ASSETS_BASE_URL)
@@ -151,7 +152,7 @@ bool hasCurrentGuidesVersion(const juce::File &guidesRoot) {
 
 juce::File AssetBootstrapManager::getAssetsRootDirectory() {
   auto root =
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+      ApplicationDataPaths::applicationDataDirectory()
           .getChildFile("MTControls")
           .getChildFile("Assets");
   root.createDirectory();

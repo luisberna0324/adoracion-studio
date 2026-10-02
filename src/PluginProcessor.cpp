@@ -4847,7 +4847,10 @@ void MTControlsAudioProcessor::setSongArrangement(
     next.push_back(std::move(runtimePart));
     totalLength = juce::jmax(totalLength, end);
   }
-  if (isCustomArrangement && songLength > 0.0 && insertedLength > 0.0)
+  // Guide annotations may cover only part of the source song. Their last
+  // edge is not a playback trim: keep the full source plus any insertions
+  // available when updating a Fin that follows the arrangement's end.
+  if (isCustomArrangement && songLength > 0.0)
     totalLength = juce::jmax(totalLength, songLength + insertedLength);
 
   if (next.size() > 1) {

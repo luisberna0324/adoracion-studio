@@ -156,6 +156,28 @@ Un duplicado sólo propaga su rango explícito si está contenido dentro del
 rango de su `sourcePartId`; de lo contrario Copy vuelve al rango de la fuente
 referida, sin reescribir datos persistidos durante la carga.
 
+Ese rango de referencia se resuelve en coordenadas del audio original,
+descontando las inserciones anteriores. La posición de una sección original
+desplazada por una copia no se utiliza directamente como límite del audio.
+Mover un duplicado conserva su `sourcePartId`, `sourceStartSec` y
+`sourceEndSec`, incluso al cruzar hacia la izquierda de su sección fuente.
+Una copia que sobrevive a la eliminación de la sección fuente conserva su
+rango explícito válido y se puede volver a copiar. Tanto Copy como Cmd/Ctrl-C/V
+conservan también la marca `utilityCue` de los anuncios de utilidad.
+
+Al ajustar el borde derecho de una copia, el editor limita la duración al
+audio disponible y desplaza las secciones posteriores en ambos sentidos:
+recortar cierra el espacio y ampliar lo vuelve a abrir. Cada preview se calcula
+desde el snapshot inicial del gesto, sin acumular desplazamientos. Los límites
+de fuente se resuelven desde ese mismo snapshot. Una copia al final del arrange
+puede recuperar su duración de fuente al arrastrar más allá del borde visible.
+El gesto publica un único cambio al soltar y se revierte completo con Deshacer.
+`Editar rango` aplica las mismas reglas contra el snapshot previo: conserva la
+fuente al trasladar ambos extremos, permite recuperar la longitud de una copia
+al final y abre/cierra espacio al cambiar el extremo derecho. Al guardar resuelve
+la sección por ID, para no editar otra sección si el orden cambió con el diálogo
+abierto.
+
 ### Anuncios de guía dinámica
 
 Las secciones musicales (`Intro`, `Verse`, `Pre-Chorus`, `Chorus`,
@@ -356,6 +378,14 @@ Con arreglo personalizado activo, `Inicio` y `Fin` delimitan únicamente la
 ventana de reproducción; no desplazan ni reescriben las secciones. Ambos pueden
 recorrer la duración completa del arrange. Si no hay un `Fin` personalizado, el
 custom arrange usa su duración completa.
+
+Las anotaciones de guía pueden cubrir sólo una parte de la canción. Crear,
+mover, recortar o borrar esas anotaciones no reduce la duración disponible del
+audio fuente ni el `Fin` que sigue al borde de la canción. La duración efectiva
+del arrange es al menos la duración fuente más el tiempo de las copias
+insertadas, y puede extenderse hasta una sección situada más allá de ese borde.
+El marcador de inserción de la regla sólo actualiza su posición y el seek; no
+modifica `Inicio` ni `Fin`.
 
 Un `Fin` que coincide con el borde efectivo del arrange anterior se considera
 un límite que sigue al arrange, no un recorte: si una edición inserta una copia

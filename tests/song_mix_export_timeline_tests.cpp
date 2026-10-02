@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 
 namespace {
 
@@ -224,6 +225,67 @@ void testCopySourceRangesRespectInsertedClipBoundaries() {
          "an invalid duplicate range is not propagated by Copy");
 }
 
+void testCopySourceRangesSurviveMovingBeforeTheirOriginal() {
+  using arrangement_source_mapping::resolveCopySourceRange;
+
+  constexpr double sourceLength = 100.0;
+  // Moving a ten-second copy before its original ripples the original from
+  // 20..30 to 30..40. Its arrangement coordinates are no longer source times.
+  const auto shiftedOriginal =
+      makeArrangementPart("verse", "Verse", 30.0, 40.0);
+  auto movedCopy = makeArrangementPart("copy", "Verse", 10.0, 20.0);
+  movedCopy.sourcePartId = shiftedOriginal.id;
+  movedCopy.sourceStartSec = 20.0;
+  movedCopy.sourceEndSec = 30.0;
+  const std::vector<SongArrangementPartSnapshot> movedParts{
+      movedCopy, shiftedOriginal};
+
+  const auto [copyStart, copyEnd] =
+      resolveCopySourceRange(movedParts, movedCopy, sourceLength);
+  expect(std::abs(copyStart - 20.0) < 1.0e-9 &&
+             std::abs(copyEnd - 30.0) < 1.0e-9,
+         "copying a duplicate moved before its original keeps its source audio");
+
+  const auto [originalStart, originalEnd] =
+      resolveCopySourceRange(movedParts, shiftedOriginal, sourceLength);
+  expect(std::abs(originalStart - 20.0) < 1.0e-9 &&
+             std::abs(originalEnd - 30.0) < 1.0e-9,
+         "copying the rippled original resolves its original source coordinates");
+
+  // A trimmed four-second copy shifts the original by four seconds. Copying
+  // it again must retain that exact trim instead of expanding to the original.
+  const auto originalAfterTrim =
+      makeArrangementPart("verse", "Verse", 24.0, 34.0);
+  auto trimmedCopy = makeArrangementPart("trimmed-copy", "Verse", 10.0, 14.0);
+  trimmedCopy.sourcePartId = originalAfterTrim.id;
+  trimmedCopy.sourceStartSec = 22.0;
+  trimmedCopy.sourceEndSec = 26.0;
+  const auto [trimmedStart, trimmedEnd] = resolveCopySourceRange(
+      {trimmedCopy, originalAfterTrim}, trimmedCopy, sourceLength);
+  expect(std::abs(trimmedStart - 22.0) < 1.0e-9 &&
+             std::abs(trimmedEnd - 26.0) < 1.0e-9,
+         "copying a trimmed duplicate before its original keeps the exact trim");
+
+  const auto [orphanStart, orphanEnd] =
+      resolveCopySourceRange({trimmedCopy}, trimmedCopy, sourceLength);
+  expect(std::abs(orphanStart - 22.0) < 1.0e-9 &&
+             std::abs(orphanEnd - 26.0) < 1.0e-9,
+         "deleting the original does not prevent copying a valid explicit range");
+
+  auto invalidOrphan = trimmedCopy;
+  invalidOrphan.sourceStartSec = std::numeric_limits<double>::quiet_NaN();
+  const auto [nanStart, nanEnd] =
+      resolveCopySourceRange({invalidOrphan}, invalidOrphan, sourceLength);
+  expect(nanStart == 0.0 && nanEnd == 0.0,
+         "an orphan with a non-finite source start cannot be copied");
+  invalidOrphan.sourceStartSec = 22.0;
+  invalidOrphan.sourceEndSec = std::numeric_limits<double>::infinity();
+  const auto [infiniteStart, infiniteEnd] =
+      resolveCopySourceRange({invalidOrphan}, invalidOrphan, sourceLength);
+  expect(infiniteStart == 0.0 && infiniteEnd == 0.0,
+         "an orphan with a non-finite source end cannot be copied");
+}
+
 } // namespace
 
 int main() {
@@ -234,6 +296,7 @@ int main() {
   testSlowlyBuildGuideFallback();
   testGuideTriggersSortByActualAnnouncementTime();
   testCopySourceRangesRespectInsertedClipBoundaries();
+  testCopySourceRangesSurviveMovingBeforeTheirOriginal();
   std::cout << "song mix export timeline tests passed\n";
   return 0;
 }
