@@ -197,6 +197,28 @@ void expectConstantSamples(const std::vector<float> &samples,
     expect(std::abs(sample - expected) < 1.0e-6f, message);
 }
 
+void renderAndCheckMixRamp(StemTrack &stem, float start, float target) {
+  constexpr int rampFrames = static_cast<int>(kSampleRate * 0.030);
+  constexpr std::array<int, 3> sizes{128, 512, 257};
+  int rendered = 0;
+  float previous = start;
+  const float maximumStep = std::abs(target - start) / rampFrames + 1.0e-6f;
+  for (size_t block = 0; rendered < rampFrames; ++block) {
+    const int frames = std::min(sizes[block % sizes.size()], rampFrames - rendered);
+    const auto samples = renderConstantStem(stem, frames);
+    for (const auto sample : samples) {
+      expect(std::isfinite(sample) && std::abs(sample - previous) <= maximumStep,
+             "mix mute/Solo transitions stay smooth under practice focus");
+      expect(target < start ? sample <= previous + 1.0e-6f : sample >= previous - 1.0e-6f,
+             "mix transition moves consistently to its target");
+      previous = sample;
+    }
+    rendered += frames;
+  }
+  expect(std::abs(previous - target) < 1.0e-6f,
+         "mix mute/Solo reaches its exact target after 30 ms");
+}
+
 void testPracticeListening() {
   namespace practice = playworship::audio::practiceListening;
   expect(std::abs(20.0f * std::log10(practice::focusedGain) - 2.0f) < 1.0e-5f,
@@ -292,6 +314,7 @@ void testPracticeListening() {
   auto &track = *tracks.front();
   renderPracticeTransition(track, practice::focusedGain, false);
   track.setMuted(true);
+  renderAndCheckMixRamp(track, baseline * practice::focusedGain, 0.0f);
   expectConstantSamples(renderConstantStem(track, kBlockSize), 0.0f,
                          "practice focus cannot make a muted instrument audible");
   track.setMuted(false);
@@ -299,6 +322,7 @@ void testPracticeListening() {
   expectConstantSamples(renderConstantStem(track, kBlockSize), 0.0f,
                          "practice focus respects another instrument's Solo");
   track.setSoloed(true);
+  renderAndCheckMixRamp(track, 0.0f, baseline * 0.5f * practice::focusedGain);
   expectConstantSamples(renderConstantStem(track, kBlockSize),
                          baseline * 0.5f * practice::focusedGain,
                          "the selected Solo instrument retains practice gain and global mix gain");

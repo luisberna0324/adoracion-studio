@@ -191,12 +191,26 @@ void StemTrack::getNextAudioBlock(
     }
   }
 
-  if (stemGain > 0.0f) {
-    bufferToFill.buffer->applyGain(startSample, numSamples, stemGain);
-  } else {
-    bufferToFill.clearActiveBufferRegion();
+  mixGainSmoother.setTargetValue(stemGain);
+  int nextTransition = 0;
+  if (mixTransitionCount == 0 && !mixGainSmoother.isSmoothing()) {
+    bufferToFill.buffer->applyGain(startSample, numSamples, mixGainSmoother.getCurrentValue());
+  } else for (int sample = 0; sample < numSamples; ++sample) {
+    while (nextTransition < mixTransitionCount &&
+           mixTransitions[static_cast<size_t>(nextTransition)].offset <= sample) {
+      const auto &event = mixTransitions[static_cast<size_t>(nextTransition++)];
+      const bool nextAudible = !event.muted &&
+          (!isAnySoloActive.load(std::memory_order_relaxed) || isSoloed());
+      mixGainSmoother.setTargetValue(nextAudible
+          ? juce::jlimit(0.0f, 1.0f, event.volume) *
+            juce::jlimit(0.0f, 2.0f, event.trim) * mixGain : 0.0f);
+    }
+    const float smoothedGain = mixGainSmoother.getNextValue();
+    for (int channel = 0; channel < numChannels; ++channel)
+      bufferToFill.buffer->getWritePointer(channel, startSample)[sample] *= smoothedGain;
   }
 
+  mixTransitionCount = 0;
   // Update meter reading
   const float meterGain = isAudible ? (userVolume * trimGain) : 0.0f;
   currentMagnitude.store(magnitude * meterGain, std::memory_order_relaxed);
@@ -206,6 +220,9 @@ void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
   readDiscontinuityPending = false;
   pendingLeadingDiscontinuityFadeFrames = 0;
   signalIntegrityState.reset();
+  mixTransitionCount = 0;
+  mixGainSmoother.reset(sampleRate, 0.030);
+  mixGainSmoother.setCurrentAndTargetValue(!isMuted() ? getVolume() * getTrim() : 0.0f);
   practiceListeningSmoother.reset(
       sampleRate, playworship::audio::practiceListening::rampSeconds);
   practiceListeningSmoother.setCurrentAndTargetValue(

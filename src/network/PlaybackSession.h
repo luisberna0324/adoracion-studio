@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "../data/SongData.h"
+#include "../data/SongLibraryStore.h"
 class MTControlsAudioProcessor;
 #include <functional>
 #include <map>
@@ -89,15 +91,19 @@ public:
   explicit BasicPlaybackSession(Processor &p) : local(p) {}
   bool isRemote() const { return remote; }
   bool isConnected() const { return connected; }
-  void setRemote(bool enabled) { cancelPracticeScrub(false); releasePracticeLoop(); remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); clearPracticeListeningOwnership(); clearPracticeLoopOwnership(); position = frozenPosition = receivedAt = 0; }
+  void setRemote(bool enabled) { cancelPracticeScrub(false); releasePracticeLoop(); clearSectionAutomationOwnership(); remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); clearPracticeListeningOwnership(); clearPracticeLoopOwnership(); position = frozenPosition = receivedAt = 0; }
   void setConnected(bool enabled) {
     if (!enabled && connected) frozenPosition = getSongCurrentPositionSeconds();
     connected = enabled;
-    if (!enabled) { clearPracticeScrub(); clearPracticeLoopOwnership(); meters = juce::var(); pendingControls.clear(); clearPracticeListeningOwnership(); }
+    if (!enabled) { clearPracticeScrub(); clearPracticeLoopOwnership(); clearSectionAutomationOwnership(); meters = juce::var(); pendingControls.clear(); clearPracticeListeningOwnership(); }
   }
+  std::function<bool()> sectionAutomationCanEdit;
+  std::function<bool(int)> sectionAutomationStemCanEdit;
   std::function<void(const juce::String &, const juce::String &, const juce::var &, const juce::String &)> onCommand;
   juce::String send(const juce::String &action, const juce::var &value = {}, const juce::String &target = {}) {
     if (!remote || !connected || !onCommand) return {};
+    const bool automationControl = isAutomationControlAction(action, target);
+    if (automationControl && !canEditSectionAutomation()) return {};
     const auto id = juce::Uuid().toString();
     if (action == "mix.volume" || action == "mix.gain" || action == "pads.volume" || action == "pads.gain")
       pendingControls[{action, target}] = {id, value, juce::Time::getMillisecondCounterHiRes() + 2000.0, -1};
@@ -113,11 +119,21 @@ public:
       if (practiceListeningPendingMode != 0)
         practiceListeningCommandId = id;
     } else if (action == "practice.release") clearPracticeListeningOwnership();
-    onCommand(id, action, value, target);
+    if (automationControl && isSectionAutomationEditing()) {
+      auto *envelope = new juce::DynamicObject();
+      envelope->setProperty("songId", field(field(state, "song"), "id"));
+      envelope->setProperty("editCommandId", sectionAutomationCommandId);
+      envelope->setProperty("controlValue", value);
+      onCommand(id, action, juce::var(envelope), target);
+    } else onCommand(id, action, value, target);
     return id;
   }
   void applyAcknowledgement(const juce::String &id, bool accepted,
                             const juce::String &reason = {}) {
+    if (id.isNotEmpty() && id == sectionAutomationCommandId) {
+      if (!accepted) clearSectionAutomationOwnership();
+      else sectionAutomationAcknowledgedAtSequence = static_cast<juce::int64>(field(state, "seq"));
+    }
     if (id.isNotEmpty() && id == practiceLoopCommandId) {
       practiceLoopRequestRejected = !accepted;
       if (!accepted) {
@@ -148,9 +164,14 @@ public:
       clearPracticeLoopOwnership();
       pendingControls.clear();
       clearPracticeListeningOwnership();
+      clearSectionAutomationOwnership();
     }
     const auto sequence = static_cast<juce::int64>(field(next, "seq"));
     const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (sectionAutomationPending &&
+        (now >= sectionAutomationExpiresAt ||
+         (sectionAutomationAcknowledgedAtSequence >= 0 && sequence > sectionAutomationAcknowledgedAtSequence)))
+      sectionAutomationPending = false;
     if (practiceLoopPending &&
         (now >= practiceLoopExpiresAt ||
          (practiceLoopAcknowledgedAtSequence >= 0 &&
@@ -196,6 +217,101 @@ public:
     return juce::jlimit(0.0, getSongLengthSeconds(), position + (isSongPlaying() ? elapsed * rate : 0.0));
   }
   bool hasLoadedSong() const { return remote ? field(field(state, "song"), "id").toString().isNotEmpty() : local.hasLoadedSong(); }
+  bool isSectionAutomationEditing() const {
+    return remote ? (connected && (hasPendingSectionAutomation() ||
+        static_cast<bool>(field(field(state, "sectionAutomation"), "editing"))))
+                  : local.isSectionAutomationEditing();
+  }
+  bool canEditSectionAutomation() const {
+    if (!remote) return !sectionAutomationCanEdit || sectionAutomationCanEdit();
+    return connected && (!isSectionAutomationEditing() ||
+        (sectionAutomationCommandId.isNotEmpty() && (hasPendingSectionAutomation() ||
+         field(field(state, "sectionAutomation"), "commandId").toString() == sectionAutomationCommandId)));
+  }
+  bool canEditSectionAutomationStem(int index) const {
+    if (!remote && sectionAutomationStemCanEdit)
+      return sectionAutomationStemCanEdit(index);
+    return canEditSectionAutomation();
+  }
+  juce::String getSectionAutomationEditingPartId() const {
+    if (!remote) return local.getSectionAutomationEditingPartId();
+    if (!connected) return {};
+    return hasPendingSectionAutomation() ? sectionAutomationPendingPartId
+        : field(field(state, "sectionAutomation"), "partId").toString();
+  }
+  juce::String getSectionAutomationEditingPartName() const {
+    if (!remote) return local.getSectionAutomationEditingPartName();
+    if (!connected) return {};
+    if (hasPendingSectionAutomation()) {
+      const auto settings = field(state, "settings");
+      const auto parts = field(field(settings, "arrangement"), "parts");
+      if (const auto *items = parts.getArray()) for (const auto &part : *items)
+        if (field(part, "id").toString() == sectionAutomationPendingPartId)
+          return field(part, "name").toString();
+    }
+    return field(field(state, "sectionAutomation"), "partName").toString();
+  }
+  SongArrangementSnapshot getSongArrangementSnapshot() const {
+    if (!remote) return local.getSongArrangementSnapshot();
+    auto *carrier = new juce::DynamicObject();
+    carrier->setProperty("arrangement", field(field(state, "settings"), "arrangement"));
+    bool changed = false;
+    return SongLibraryStore::songDataFromVar(juce::var(carrier), changed).arrangement;
+  }
+  bool beginSectionAutomationEditing(const juce::String &partId) {
+    if (!canEditSectionAutomation() || isSectionAutomationEditing() || partId.isEmpty()) return false;
+    if (!remote) return local.beginSectionAutomationEditing(partId);
+    const auto parts = field(field(field(state, "settings"), "arrangement"), "parts");
+    bool found = false;
+    if (const auto *items = parts.getArray()) for (const auto &part : *items)
+      found = found || field(part, "id").toString() == partId;
+    if (!hasLoadedSong() || !found) return false;
+    auto *payload = new juce::DynamicObject();
+    payload->setProperty("songId", field(field(state, "song"), "id"));
+    sectionAutomationCommandId = send("automation.begin", juce::var(payload), partId);
+    if (sectionAutomationCommandId.isEmpty()) return false;
+    sectionAutomationPendingPartId = partId;
+    sectionAutomationPending = true;
+    sectionAutomationExpiresAt = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    sectionAutomationAcknowledgedAtSequence = -1;
+    return true;
+  }
+  bool finishSectionAutomationEditing(bool save) {
+    if (!isSectionAutomationEditing() || !canEditSectionAutomation()) return false;
+    if (!remote) return local.finishSectionAutomationEditing(save);
+    auto *payload = new juce::DynamicObject();
+    payload->setProperty("songId", field(field(state, "song"), "id"));
+    payload->setProperty("editCommandId", sectionAutomationCommandId);
+    payload->setProperty("save", save);
+    return send("automation.finish", juce::var(payload), getSectionAutomationEditingPartId()).isNotEmpty();
+  }
+  bool clearSectionAutomation(const juce::String &partId) {
+    if (!canEditSectionAutomation() || partId.isEmpty() ||
+        (isSectionAutomationEditing() && partId != getSectionAutomationEditingPartId())) return false;
+    if (!remote) return local.clearSectionAutomation(partId);
+    auto *payload = new juce::DynamicObject();
+    payload->setProperty("songId", field(field(state, "song"), "id"));
+    if (isSectionAutomationEditing())
+      payload->setProperty("editCommandId", sectionAutomationCommandId);
+    return send("automation.clear", juce::var(payload), partId).isNotEmpty();
+  }
+  bool isStemSectionAutomated(int index) const {
+    return remote ? static_cast<bool>(field(mix(stemId(index)), "sectionAutomated"))
+                  : local.isStemSectionAutomated(index);
+  }
+  bool isPadsSectionAutomated() const {
+    return remote ? static_cast<bool>(field(field(state, "ui"), "isPadsSectionAutomated"))
+                  : local.isPadsSectionAutomated();
+  }
+  float getStemBaseVolume(int index) const { return remote ? static_cast<float>(number(mix(stemId(index)), "baseVolume", getStemVolume(index))) : local.getStemBaseVolume(index); }
+  float getStemBaseGain(int index) const { return remote ? static_cast<float>(number(mix(stemId(index)), "baseGain", getStemGain(index))) : local.getStemBaseGain(index); }
+  bool isStemBaseMuted(int index) const { return remote ? static_cast<bool>(mix(stemId(index)).getProperty("baseMute", isStemMuted(index))) : local.isStemBaseMuted(index); }
+  float getPadsBaseVolume() const { return remote ? static_cast<float>(number(field(state, "ui"), "getPadsBaseVolume", getPadsVolume())) : local.getPadsBaseVolume(); }
+  float getPadsBaseGain() const { return remote ? static_cast<float>(number(field(state, "ui"), "getPadsBaseGain", getPadsGain())) : local.getPadsBaseGain(); }
+  bool isPadsBaseEnabled() const { return remote ? static_cast<bool>(field(state, "ui").getProperty("isPadsBaseEnabled", isPadsEnabled())) : local.isPadsBaseEnabled(); }
+  int getBasePadNoteIndex() const { return remote ? static_cast<int>(field(state, "ui").getProperty("getBasePadNoteIndex", -1)) : local.getBasePadNoteIndex(); }
+  int getBasePadOctave() const { return remote ? static_cast<int>(field(state, "ui").getProperty("getBasePadOctave", 0)) : local.getBasePadOctave(); }
+  int getActivePadOctave() const { return remote ? static_cast<int>(field(state, "ui").getProperty("getActivePadOctave", 0)) : local.getActivePadOctave(); }
   int getLoadedStemCount() const { return remote ? includedStemIds.size() : local.getLoadedStemCount(); }
   juce::String getLoadedSongTitle() const { return remote ? field(field(state, "song"), "title").toString() : local.getLoadedSongTitle(); }
   juce::String getLoadedSongKey() const { return remote ? field(field(state, "song"), "key").toString() : local.getLoadedSongKey(); }
@@ -401,9 +517,9 @@ public:
                                 : static_cast<int>(number(state, "practiceMode"))) : 0)
                   : local.getPracticeListeningMode();
   }
-  void setStemVolume(int index, float value) { if (remote) send("mix.volume", value, stemId(index)); else local.setStemVolume(index, value); }
-  void setStemGain(int index, float value) { if (remote) send("mix.gain", value, stemId(index)); else local.setStemGain(index, value); }
-  void setStemMute(int index, bool value) { if (remote) send("mix.mute", value, stemId(index)); else local.setStemMute(index, value); }
+  void setStemVolume(int index, float value) { if (remote) send("mix.volume", value, stemId(index)); else if (canEditSectionAutomationStem(index)) local.setStemVolume(index, value); }
+  void setStemGain(int index, float value) { if (remote) send("mix.gain", value, stemId(index)); else if (canEditSectionAutomationStem(index)) local.setStemGain(index, value); }
+  void setStemMute(int index, bool value) { if (remote) send("mix.mute", value, stemId(index)); else if (canEditSectionAutomationStem(index)) local.setStemMute(index, value); }
   void setStemSolo(int index, bool value) { if (remote) send("mix.solo", value, stemId(index)); else local.setStemSolo(index, value); }
   void setStemOutputChannel(int index, int value) { if (remote) send("mix.output", value, stemId(index)); else local.setStemOutputChannel(index, value); }
   void setPlaybackTempoBpm(double value) { if (remote) send("tempo.set", value); else local.setPlaybackTempoBpm(value); }
@@ -494,17 +610,51 @@ public:
   bool isPadsPreloadRunning() const { return remote ? static_cast<bool>(field(state, "ui").getProperty("isPadsPreloadRunning", false)) : local.isPadsPreloadRunning(); }
   juce::String getPadsPackStatusText() const { return remote ? field(field(state,"ui"),"getPadsPackStatusText").toString() : local.getPadsPackStatusText(); }
   float getPadsOutputLevel() const { return remote ? meter("pads").first : local.getPadsOutputLevel(); }
-  void setPadsEnabled(bool value) { if (remote) { if (value != isPadsEnabled()) send("pads.enabled", value); } else local.setPadsEnabled(value); }
-  void setPadsVolume(float value) { if (remote) send("pads.volume", value); else local.setPadsVolume(value); }
-  void setPadsGain(float value) { if (remote) send("pads.gain", value); else local.setPadsGain(value); }
-  void triggerPadNote(int note, int octave) { if (remote) send("pads.note", juce::var(juce::Array<juce::var>{note,octave})); else local.triggerPadNote(note,octave); }
+  void setPadsEnabled(bool value) { if (remote) { if (value != isPadsEnabled()) send("pads.enabled", value); } else if (canEditSectionAutomation()) local.setPadsEnabled(value); }
+  void setPadsVolume(float value) { if (remote) send("pads.volume", value); else if (canEditSectionAutomation()) local.setPadsVolume(value); }
+  void setPadsGain(float value) { if (remote) send("pads.gain", value); else if (canEditSectionAutomation()) local.setPadsGain(value); }
+  void triggerPadNote(int note, int octave) { if (remote) send("pads.note", juce::var(juce::Array<juce::var>{note,octave})); else if (canEditSectionAutomation()) local.triggerPadNote(note,octave); }
   void triggerPadNoteForSongTransition(int note, int octave) { if (remote) triggerPadNote(note,octave); else local.triggerPadNoteForSongTransition(note,octave); }
-  void stopPadNote(int note) { if (remote) send("pads.stop", note); else local.stopPadNote(note); }
+  void stopPadNote(int note) { if (remote) send("pads.stop", note); else if (canEditSectionAutomation()) local.stopPadNote(note); }
   bool ensurePadsPackReady() { return remote ? isPadsPackLoaded() : local.ensurePadsPackReady(); }
   void startPadsPreloadAsync() { if (remote) send("pads.preload"); else local.startPadsPreloadAsync(); }
   void refreshPadsRoutingFromSettings() { if (!remote) local.refreshPadsRoutingFromSettings(); }
 
 private:
+  bool isAutomationControlAction(const juce::String &action,
+                                 const juce::String &target) const {
+    if (action == "pads.enabled" || action == "pads.volume" ||
+        action == "pads.gain" || action == "pads.note" || action == "pads.stop")
+      return true;
+    if ((action != "mix.volume" && action != "mix.gain" && action != "mix.mute") ||
+        target.isEmpty() || target == "master" || target == "click" || target == "guide")
+      return false;
+    const auto stems = field(field(state, "song"), "stems");
+    if (const auto *items = stems.getArray()) for (const auto &stem : *items) {
+      if (field(stem, "id").toString() != target) continue;
+      const auto name = (field(stem, "name").toString() + " " +
+                         field(stem, "category").toString() + " " +
+                         field(stem, "fileName").toString()).toLowerCase();
+      return !(name.contains("click") || name.contains("clic") ||
+               name.contains("guia") || name.contains("guide") || name.contains("cue"));
+    }
+    return false;
+  }
+  juce::String sectionAutomationCommandId, sectionAutomationPendingPartId;
+  bool sectionAutomationPending = false;
+  double sectionAutomationExpiresAt = 0.0;
+  juce::int64 sectionAutomationAcknowledgedAtSequence = -1;
+  bool hasPendingSectionAutomation() const {
+    return sectionAutomationPending &&
+           juce::Time::getMillisecondCounterHiRes() < sectionAutomationExpiresAt;
+  }
+  void clearSectionAutomationOwnership() {
+    sectionAutomationCommandId.clear();
+    sectionAutomationPendingPartId.clear();
+    sectionAutomationPending = false;
+    sectionAutomationExpiresAt = 0.0;
+    sectionAutomationAcknowledgedAtSequence = -1;
+  }
   bool localPracticeLoopOwned = false;
   uint64_t localPracticeLoopRevision = 0;
   juce::String practiceLoopCommandId, practiceLoopError;

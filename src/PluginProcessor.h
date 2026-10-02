@@ -14,6 +14,7 @@
 #include "audio/SongTransitionEnvelope.h"
 #include "audio/StandaloneAudioDeviceBridge.h"
 #include "audio/SectionScheduler.h"
+#include "audio/SectionAutomation.h"
 #include "audio/StemOutputRouter.h"
 #include "audio/StemOutputRoutingState.h"
 #include "audio/TimeStretchProcessor.h"
@@ -115,6 +116,28 @@ public:
   double getSongFadeOutSeconds() const noexcept;
   void setSongArrangement(const SongArrangementSnapshot &arrangement,
                           bool isCustomArrangement);
+  void setSectionAutomationStemIds(const juce::StringArray &stemIds);
+  bool beginSectionAutomationEditing(const juce::String &partId, bool remoteOwned = false);
+  bool finishSectionAutomationEditing(bool save);
+  bool clearSectionAutomation(const juce::String &partId);
+  bool isSectionAutomationEditing() const noexcept;
+  void setSectionAutomationRemoteOwned(bool remoteOwned) noexcept {
+    sectionAutomationRemoteOwned.store(remoteOwned, std::memory_order_release);
+  }
+  juce::String getSectionAutomationEditingPartId() const;
+  juce::String getSectionAutomationEditingPartName() const;
+  SongArrangementSnapshot getSongArrangementSnapshot() const;
+  bool isStemSectionAutomated(int stemIndex) const noexcept;
+  bool isPadsSectionAutomated() const noexcept;
+  float getStemBaseVolume(int stemIndex) const noexcept;
+  float getStemBaseGain(int stemIndex) const noexcept;
+  bool isStemBaseMuted(int stemIndex) const noexcept;
+  float getPadsBaseVolume() const noexcept;
+  float getPadsBaseGain() const noexcept;
+  bool isPadsBaseEnabled() const noexcept;
+  int getBasePadNoteIndex() const noexcept;
+  int getBasePadOctave() const noexcept;
+  int getActivePadOctave() const noexcept;
   void requestArrangementPartJump(int partIndex);
   void toggleArrangementPartLoop(int partIndex);
   void clearArrangementPartLoop() noexcept;
@@ -336,6 +359,7 @@ public:
   static constexpr int midiUiCommandEnsurePadsPack = 21;
 
 private:
+  friend struct SectionAutomationTestAccess;
   static constexpr int maxStemCount = 64;
   static constexpr int maxRealtimeBlockSize = 8192;
   static constexpr int midiSourceKinds = 2; // CC + Note
@@ -386,6 +410,58 @@ private:
   std::atomic<bool> timeProcessorMaintenanceEnabled{false};
   juce::CriticalSection timeProcessorMaintenanceLock;
   std::vector<std::unique_ptr<StemTrack>> stemTracks;
+  struct AutomationStemState {
+    std::atomic<unsigned> mask{0};
+    std::atomic<float> volume{1.0f}, gain{1.0f};
+    std::atomic<bool> mute{false};
+  };
+  struct AutomationPadsState {
+    std::atomic<unsigned> mask{0};
+    std::atomic<float> volume{1.0f}, gain{0.75f};
+    std::atomic<bool> enabled{true};
+    std::atomic<int> note{-1}, octave{0};
+  };
+  struct AutomationControlState {
+    std::array<AutomationStemState, maxStemCount> stems;
+    AutomationPadsState pads;
+  };
+  AutomationControlState sectionAutomationDraft, sectionAutomationActive,
+                         sectionAutomationManual;
+  playworship::audio::SectionAutomation sectionAutomationTimeline;
+  playworship::audio::SectionAutomation::Selection audioAutomationSelection;
+  mutable juce::CriticalSection sectionAutomationControlLock;
+  SongArrangementSnapshot sectionAutomationArrangement;
+  juce::StringArray sectionAutomationStemIds;
+  juce::String sectionAutomationEditingPartId;
+  std::atomic<bool> sectionAutomationEditing{false};
+  std::atomic<bool> sectionAutomationRemoteOwned{false};
+  struct AudioAutomationPadsEvent {
+    int outputOffset = 0;
+    playworship::audio::SectionAutomation::Pads pads;
+  };
+  std::array<AudioAutomationPadsEvent, StemTrack::maxMixTransitions> audioAutomationPadsEvents{};
+  int audioAutomationPadsEventCount = 0;
+  playworship::audio::SectionAutomation::Pads audioAutomationInitialPads;
+  std::atomic<uint64_t> sectionAutomationCurrentToken{0};
+  std::atomic<uint64_t> sectionAutomationManualToken{0};
+  uint64_t sectionAutomationPublicationRevision = 0;
+  std::atomic<int> padsBaseNote{-1}, padsBaseOctave{0};
+  std::atomic<int> padsRenderedOctave{0};
+  juce::SmoothedValue<float> padsMixSmoother{0.75f};
+  bool isStemAutomationEligible(int stemIndex) const noexcept;
+  void publishSectionAutomationLocked();
+  void refreshSectionAutomation(double seconds) noexcept;
+  void publishSectionAutomationSelection(const playworship::audio::SectionAutomation::Selection &selected) noexcept;
+  void resetSectionAutomationState();
+  void prepareSectionAutomationManual() noexcept;
+  void setPadNoteAutomationTarget(int noteIndex, int octave) noexcept;
+  void triggerPadNoteInternal(int noteIndex, int octave);
+  unsigned getStemAutomationMask(int stemIndex) const noexcept;
+  unsigned getPadsAutomationMask() const noexcept;
+  playworship::audio::SectionAutomation::Stem resolveSectionAutomationStem(
+      int stemIndex, const playworship::audio::SectionAutomation::Selection &selection) const noexcept;
+  playworship::audio::SectionAutomation::Pads resolveSectionAutomationPads(
+      const playworship::audio::SectionAutomation::Selection &selection) const noexcept;
   std::array<std::atomic<float>, maxStemCount> stemLevels;
   std::array<std::atomic<float>, maxStemCount> stemVolumes;
   std::array<std::atomic<float>, maxStemCount> stemGains;

@@ -7,6 +7,24 @@ timestamp: 2026-09-21T00:00:00-03:00
 
 # Changelog
 
+## 2026-10-02
+
+### Automatización de secciones
+
+- Borradores dispersos por ID de sección y stem para volumen, ganancia, mute
+  instrumental y controles de Pads. Mix base independiente y Cancelar/Borrar.
+- Barra Automatizar/Listo/Cancelar, indicadores en los controles existentes y
+  acceso en Más de teléfono. Historial del arrange conserva los valores.
+- Resaltado pulsante del borrador en la sección, canales y Pads, sincronizado
+  con tiempo de interfaz para continuar en pausa; la automatización guardada
+  conserva su indicador fijo y el repintado se limita a las zonas animadas.
+- Selección desde el callback de audio para reproducción, seek y transiciones,
+  cambios de ganancia suaves y propiedad del borrador en sesiones remotas.
+- Persistencia local, proyecto, sidecar y Cloud; contratos de
+  [interfaz](ui/SectionAutomation.md), [motor](engine/SectionAutomation.md),
+  [datos](importing/LibraryPersistence.md) y
+  [remoto](integrations/RemoteControl.md).
+
 ## 2026-09-26
 
 ### Bordes de performance en Android

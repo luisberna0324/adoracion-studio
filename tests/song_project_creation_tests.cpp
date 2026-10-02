@@ -1,10 +1,12 @@
 #include "data/ProjectStore.h"
 #include "data/ApplicationDataPaths.h"
+#include "network/RemoteStateCodec.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -98,6 +100,119 @@ void writePng(const juce::File &file) {
          "write actual PNG cover");
 }
 
+SectionAutomationSnapshot automationFixture(const juce::String &stemId) {
+  SectionAutomationSnapshot automation;
+  SectionStemAutomation stem;
+  stem.stemId = stemId;
+  stem.volume = 0.0f;
+  stem.gain = 1.25f;
+  stem.mute = false;
+  automation.stems.push_back(stem);
+  automation.pads.volume = 0.35f;
+  automation.pads.gain = 1.1f;
+  automation.pads.enabled = false;
+  automation.pads.noteIndex = -1;
+  automation.pads.octave = -1;
+  return automation;
+}
+
+void testSectionAutomationCodec(const Fixtures &fixtures) {
+  const auto automation = automationFixture(fixtures.stemId);
+  SectionAutomationSnapshot decoded;
+  const auto encoded = sectionAutomationToVar(automation);
+  expect(automation.hasOverrides() &&
+             sectionAutomationFromVar(juce::JSON::parse(juce::JSON::toString(encoded)), decoded) &&
+             decoded == automation,
+         "section automation JSON preserves sparse zero, false and stop-note values");
+  expect(!decoded.stems.front().mute.value() &&
+             !decoded.pads.enabled.value() && decoded.pads.noteIndex == -1,
+         "false overrides remain present rather than reverting to the base mix");
+  expect(!encoded.getDynamicObject()->hasProperty("solo") &&
+             !encoded.getDynamicObject()->hasProperty("master"),
+         "section automation does not capture solo or master controls");
+  ImportedSongData remoteSong;
+  ImportedStemData renamedClick;
+  renamedClick.stemId = "renamed-click";
+  renamedClick.displayName = "Track";
+  renamedClick.category = "Other";
+  renamedClick.fileName = "Click.flac";
+  remoteSong.stems.push_back(renamedClick);
+  remoteSong.arrangement.parts.push_back({});
+  remoteSong.arrangement.parts.front().id = "verse";
+  remoteSong.arrangement.parts.front().automation = automation;
+  const auto remoteRoundtrip = playworship::remote::decodeSong(
+      playworship::remote::encodeSong(remoteSong, false));
+  expect(remoteRoundtrip.stems.size() == 1 &&
+             remoteRoundtrip.stems.front().fileName == renamedClick.fileName &&
+             stemPriorityForStripOrder(remoteRoundtrip.stems.front()) == 0 &&
+             remoteRoundtrip.arrangement.parts.front().automation == automation,
+         "remote song codec preserves automation and the identity of renamed Click stems");
+  remoteSong.stems.front().fileName = "/private/server/stems/Click.flac";
+  expect(!juce::JSON::toString(playworship::remote::encodeSong(remoteSong, false))
+              .contains("/private/server"),
+         "remote filenames never disclose the server's local directories");
+
+  auto copied = automation;
+  copied.stems.front().volume = 0.8f;
+  copied.pads.noteIndex = 7;
+  expect(automation.stems.front().volume == 0.0f &&
+             automation.pads.noteIndex == -1 && copied != automation,
+         "copied section automation is independent from its source");
+
+  for (const auto &invalid : {
+         "[]", "{\"stems\":{}}", "{\"pads\":[]}",
+         "{\"stems\":[{\"stemId\":\"\",\"volume\":0.5}]}",
+         "{\"stems\":[{\"stemId\":\"a\",\"volume\":1.01}]}",
+         "{\"stems\":[{\"stemId\":\"a\",\"gain\":2.1}]}",
+         "{\"stems\":[{\"stemId\":\"a\",\"mute\":1}]}",
+         "{\"stems\":[{\"stemId\":\"a\",\"volume\":0.5},{\"stemId\":\"a\",\"gain\":1}]}",
+         "{\"stems\":[{\"stemId\":\"a\",\"volume\":0.5}],\"pads\":{\"gain\":1.3}}",
+         "{\"pads\":{\"volume\":-0.1}}", "{\"pads\":{\"enabled\":\"true\"}}",
+         "{\"pads\":{\"noteIndex\":12}}", "{\"pads\":{\"noteIndex\":-2}}",
+         "{\"pads\":{\"octave\":9}}", "{\"pads\":{\"octave\":3.5}}" }) {
+    decoded = automation;
+    expect(!sectionAutomationFromVar(juce::JSON::parse(invalid), decoded) &&
+               decoded == automation,
+           "invalid section automation is rejected without a partial update");
+  }
+  auto *nonfinitePads = new juce::DynamicObject();
+  nonfinitePads->setProperty("volume", std::numeric_limits<double>::quiet_NaN());
+  auto *nonfiniteRoot = new juce::DynamicObject();
+  nonfiniteRoot->setProperty("pads", nonfinitePads);
+  expect(!sectionAutomationFromVar(juce::var(nonfiniteRoot), decoded) &&
+             decoded == automation,
+         "nonfinite automation values cannot enter playback or persistence");
+  juce::Array<juce::var> oversized;
+  for (int i = 0; i < 513; ++i) {
+    auto *stem = new juce::DynamicObject();
+    stem->setProperty("stemId", "stem-" + juce::String(i));
+    stem->setProperty("volume", 0.5);
+    oversized.add(juce::var(stem));
+  }
+  auto *oversizedRoot = new juce::DynamicObject();
+  oversizedRoot->setProperty("stems", oversized);
+  expect(!sectionAutomationFromVar(juce::var(oversizedRoot), decoded) &&
+             decoded == automation,
+         "automation array bounds reject oversized remote or disk input");
+  expect(sectionAutomationFromVar({}, decoded) && !decoded.hasOverrides(),
+         "legacy missing automation loads as an empty snapshot");
+
+  auto legacy = juce::JSON::parse(
+      "{\"arrangement\":{\"parts\":[{\"id\":\"verse\",\"name\":\"Verse\",\"endSec\":1}]}}");
+  bool changed = false;
+  const auto legacySong = SongLibraryStore::songDataFromVar(legacy, changed);
+  expect(legacySong.arrangement.parts.size() == 1 &&
+             !legacySong.arrangement.parts.front().automation.hasOverrides(),
+         "legacy songs retain their sections without invented automation");
+  legacy.getDynamicObject()->getProperty("arrangement").getDynamicObject()
+      ->getProperty("parts").getArray()->getReference(0).getDynamicObject()
+      ->setProperty("automation", juce::JSON::parse("{\"pads\":{\"noteIndex\":12}}"));
+  const auto malformedSong = SongLibraryStore::songDataFromVar(legacy, changed);
+  expect(malformedSong.arrangement.parts.size() == 1 &&
+             !malformedSong.arrangement.parts.front().automation.hasOverrides(),
+         "malformed saved automation is ignored as a block while its section survives");
+}
+
 ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
                               const juce::File &artwork) {
   ProjectDocument document;
@@ -135,6 +250,16 @@ ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
   document.settings.window.endSec = track.durationSec;
   document.settings.window.fadeOutSec = 0.025;
   document.settings.windowCustomized = true;
+  SongArrangementPartSnapshot section;
+  section.id = "verse";
+  section.name = "Verse";
+  section.color = standardArrangementPartColorForName(section.name);
+  section.endSec = track.durationSec;
+  section.sourceEndSec = track.durationSec;
+  section.automation = automationFixture(fixtures.stemId);
+  document.song.arrangement.parts.push_back(section);
+  document.settings.arrangement = document.song.arrangement;
+  document.settings.arrangementCustomized = true;
   return document;
 }
 
@@ -337,6 +462,25 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
          "opening preserves song metadata and identity");
   expect(ProjectStore::settingsJsonEqual(opened.settings, document.settings),
          "opening preserves all nondefault mixer/performance settings");
+  expect(opened.song.arrangement.parts.size() == 1 &&
+             opened.song.arrangement.parts.front().automation ==
+                 document.song.arrangement.parts.front().automation,
+         "portable manifest preserves the song's section automation");
+  ProjectSongSettings canonical;
+  expect(ProjectStore::deserializeSettings(
+             juce::JSON::parse(juce::JSON::toString(ProjectStore::serializeSettings(document.settings))),
+             canonical) && ProjectStore::settingsJsonEqual(canonical, document.settings),
+         "Cloud canonical settings preserve section automation");
+  auto automationOnlyEdit = document.settings;
+  automationOnlyEdit.arrangement.parts.front().automation.pads.noteIndex = 8;
+  expect(!ProjectStore::settingsJsonEqual(automationOnlyEdit, document.settings),
+         "automation-only edits are recognized as persistence changes");
+  expect(ProjectStore::writeCachedSettingsFromFile(fixtures.archive, automationOnlyEdit) &&
+             ProjectStore::getCachedSettings(fixtures.projectId, canonical) &&
+             ProjectStore::settingsJsonEqual(canonical, automationOnlyEdit),
+         "project sidecar roundtrip preserves an automation-only edit");
+  expect(ProjectStore::writeCachedSettingsFromFile(fixtures.archive, document.settings),
+         "restore original test sidecar before package failure checks");
   const auto image = juce::ImageFileFormat::loadFrom(juce::File(opened.song.artworkPath));
   expect(image.isValid() && image.getWidth() == 8 && image.getHeight() == 8 &&
              image.getPixelAt(3, 4) == juce::Colour(0xff27cd68),
@@ -399,6 +543,7 @@ int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   try {
     Fixtures fixtures(isolatedRoot);
+    testSectionAutomationCodec(fixtures);
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
   } catch (const std::exception &error) {

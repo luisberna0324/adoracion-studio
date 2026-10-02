@@ -172,6 +172,8 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
       return false;
     if (lhs.sourcePartId != rhs.sourcePartId)
       return false;
+    if (lhs.automation != rhs.automation)
+      return false;
     if (!nearlyEqual(lhs.startSec, rhs.startSec) ||
         !nearlyEqual(lhs.endSec, rhs.endSec) ||
         !nearlyEqual(lhs.sourceStartSec, rhs.sourceStartSec) ||
@@ -3344,6 +3346,8 @@ juce::var SongLibraryStore::arrangementPartToVar(
   obj->setProperty("utilityCue", part.utilityCue);
   obj->setProperty("muteInstruments", part.muteInstruments);
   obj->setProperty("skipPlayback", part.skipPlayback);
+  if (part.automation.hasOverrides())
+    obj->setProperty("automation", sectionAutomationToVar(part.automation));
   if (part.sourcePartId.isNotEmpty())
     obj->setProperty("sourcePartId", part.sourcePartId);
   return juce::var(obj);
@@ -3373,6 +3377,9 @@ SongLibraryStore::arrangementPartFromVar(const juce::var &v) {
     part.muteInstruments = static_cast<bool>(obj->getProperty("muteInstruments"));
   if (obj->hasProperty("skipPlayback"))
     part.skipPlayback = static_cast<bool>(obj->getProperty("skipPlayback"));
+  // Invalid automation is ignored as one block. Legacy sections keep an empty
+  // snapshot; a malformed override cannot remove or partially alter a section.
+  sectionAutomationFromVar(obj->getProperty("automation"), part.automation);
   return part;
 }
 

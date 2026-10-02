@@ -126,7 +126,13 @@ void setTrim(float newTrim) noexcept;       // usualmente 0.0 - 2.0
 float getTrim() const noexcept;
 ```
 
-Ajuste fino de ganancia.
+Ajuste fino de ganancia. La ganancia resultante de volumen, trim y mute se
+suaviza durante 30 ms en frames fuente; una ganancia estable se aplica por bloque.
+`clearMixStateTransitions()` y `scheduleMixStateTransition(offset, volume,
+trim, muted)` permiten que [la automatización de secciones](SectionAutomation.md)
+programe varios cambios dentro de la siguiente lectura sin reservar memoria.
+La cola tiene capacidad fija para 1025 eventos y se consume exclusivamente en
+el audio thread.
 
 ### Escucha temporal de ensayo
 

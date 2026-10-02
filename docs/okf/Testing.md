@@ -63,6 +63,7 @@ onda, VU y reconexión con la compilación portátil.
 | Contrato | Tests de regresión |
 | --- | --- |
 | [Transporte](transport/Transport.md) y [arrange](engine/SectionScheduler.md) | `audio_engine_core`, `song_mix_export_timeline`, `waveform_editing` |
+| [Automatización por sección](engine/SectionAutomation.md) e [interfaz](ui/SectionAutomation.md) | `section_automation`: publicación coherente, valores dispersos, base y overrides temporales, límites dentro del callback y rampas; `waveform_editing`: barra, borrador fijado y historial; `song_project_creation`: codec, paquete, sidecar y Cloud; `remote_session`: propiedad y reconciliación |
 | [Motor de audio](engine/StemMixEngine.md), click y pads | `stem_mix_engine`, `stem_buffering_source`, `metronome_engine`, `pads_engine`, `bungee_processor` |
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
@@ -193,6 +194,37 @@ un test automatizado del contrato afectado cuando sea posible.
 - Biblioteca, ajustes, cache y paquetes de assets del fixture usan la raíz
   temporal del test. Los pads se preparan localmente antes de construir el
   procesador para evitar descargas durante estas pruebas.
+
+## Validación de automatización de secciones del 02/10/2026
+
+- macOS Standalone Release y los targets afectados compilaron correctamente.
+- El gate conjunto pasó 9/9 en 15,56 s: `remote_session`,
+  `song_project_creation`, `waveform_editing`, `section_automation`,
+  `audio_engine_core`, `pads_engine`, `song_mix_export_timeline`,
+  `song_mix_exporter` y `stem_mix_engine`. Remoto usó sockets locales.
+- Los ocho casos de `section_automation` verifican publicación concurrente,
+  borradores dispersos, Save/Cancel/Clear, mezcla base, MIDI y propiedad remota,
+  seguimiento tonal de Pads, huecos y varias fronteras en un callback largo.
+  El loop y el salto usan transporte real y muestras del audio renderizado:
+  repetir el mismo ID conserva el ajuste manual y el mute del origen no se
+  propaga al destino. El fixture espera la generación de seek aceptada y la
+  disponibilidad real de los buffers antes de evaluar el callback dividido.
+- Guardado cubierto con proyectos, sidecar y paquetes Cloud aislados; la
+  exportación reabre WAVs y compara automatización a distintas velocidades
+  contra referencias que usan el mismo DSP y arrange.
+- Se revisaron capturas de los componentes reales de la barra a anchos de
+  360, 768 y 1200 puntos y del strip con su indicador A. Las pruebas también
+  verifican que las acciones no se solapen. Capturas locales en
+  `build/section-automation-qa/` mediante `PW_AUTOMATION_CAPTURE_DIR`.
+- Esta revisión visual acredita componentes renderizados en macOS; no una
+  sesión interactiva completa de la app. No se realizó compilación iOS/Android,
+  instalación física ni validación de Windows/Linux para este cambio.
+- Actualización del resaltado pulsante: Standalone recompilado y
+  `waveform_editing` aprobado (3,71 s). Capturas actuales en
+  `build/section-automation-pulse-qa/` muestran el borde, relleno e indicador A
+  con el color del tema. El helper reemplaza los PNG anteriores al recapturar.
+  La instancia interactiva conserva un borrador de Verso activo; su reinicio
+  para comprobar la animación completa queda pendiente de cerrar ese borrador.
 
 ## Resultado local del 26/09/2026
 

@@ -71,7 +71,7 @@ private:
     void startPadsLoadingAsync();
     void onPadPressed(int noteIndex);
     void onPadReleased(int noteIndex);
-    void applyPowerState(bool on);
+    void applyPowerState(bool on, bool notify = true);
     void refreshMidiLearnTooltips();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PadsComponent)

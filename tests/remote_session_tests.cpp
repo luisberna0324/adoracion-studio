@@ -37,6 +37,22 @@ struct TestProcessor {
   playworship::audio::PracticeLoop practiceLoop;
   juce::String practiceLoopError;
   int practiceLoopWrites = 0;
+  juce::String automationPartId;
+  int automationWrites = 0;
+  bool isSectionAutomationEditing() const { return automationPartId.isNotEmpty(); }
+  juce::String getSectionAutomationEditingPartId() const { return automationPartId; }
+  juce::String getSectionAutomationEditingPartName() const { return "Verse"; }
+  bool beginSectionAutomationEditing(const juce::String &partId) {
+    if (isSectionAutomationEditing() || partId.isEmpty()) return false;
+    automationPartId = partId; ++automationWrites; return true;
+  }
+  bool finishSectionAutomationEditing(bool) {
+    if (!isSectionAutomationEditing()) return false;
+    automationPartId.clear(); ++automationWrites; return true;
+  }
+  bool clearSectionAutomation(const juce::String &) { ++automationWrites; return true; }
+  bool isStemSectionAutomated(int) const { return false; }
+  bool isPadsSectionAutomated() const { return false; }
   double getSongStartSeconds() const { return 0.0; }
   double getSongEndSeconds() const { return 100.0; }
   double getMinimumPracticeLoopDuration() const { return 0.25; }
@@ -283,6 +299,109 @@ bool testPlaybackAdapter() {
   if (session.getStemLevel(0)!=0 || session.getSongCurrentPositionSeconds()!=19 || sent!=1) return false;
   session.setRemote(false);
   return session.getStemVolume(0)==0.5f && local.writes==1;
+}
+
+bool testSectionAutomationAdapter() {
+  const auto expect = [](bool ok, const char *message) {
+    if (!ok) std::cerr << message << '\n';
+    return ok;
+  };
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> owner(local), observer(local);
+  owner.sectionAutomationCanEdit = [] { return false; };
+  owner.setStemVolume(0, 0.1f);
+  if (!expect(!owner.canEditSectionAutomation() &&
+              !owner.beginSectionAutomationEditing("verse") && local.writes == 0,
+              "Server controls respect a remote editor's exclusive ownership")) return false;
+  owner.sectionAutomationCanEdit = {};
+  if (!owner.beginSectionAutomationEditing("verse") ||
+      !owner.finishSectionAutomationEditing(false) || local.automationWrites != 2) return false;
+  owner.setRemote(true);
+  observer.setRemote(true);
+  struct Sent { juce::String id, action, target; juce::var value; };
+  std::vector<Sent> sent;
+  owner.onCommand = [&](const auto &id, const auto &action, const auto &value, const auto &target) {
+    sent.push_back({id, action, target, value});
+  };
+  int observerCommands = 0;
+  observer.onCommand = [&](const auto &, const auto &, const auto &, const auto &) { ++observerCommands; };
+  auto state = juce::JSON::parse(R"({"seq":1,"song":{"id":"song","stems":[{"id":"stem","include":true},{"id":"renamed-click","name":"Track","category":"Other","fileName":"Click.flac","include":true}]},"settings":{"arrangement":{"parts":[{"id":"verse","name":"Verse"}]}},"sectionAutomation":{"editing":false},"mixer":[{"target":"stem","volume":0.5,"gain":1,"sectionAutomated":true}],"ui":{"isPadsSectionAutomated":true}})");
+  owner.applyState(state);
+  observer.applyState(state);
+  if (!expect(!owner.beginSectionAutomationEditing("unknown") &&
+              owner.beginSectionAutomationEditing("verse") &&
+              owner.isSectionAutomationEditing() && owner.canEditSectionAutomation() &&
+              owner.getSectionAutomationEditingPartId() == "verse" &&
+              owner.getSectionAutomationEditingPartName() == "Verse",
+              "Begin shows the selected section immediately without waiting for a network echo")) return false;
+  const auto leaseId = sent.back().id;
+  if (!expect(sent.back().action == "automation.begin" &&
+              sent.back().target == "verse" &&
+              sent.back().value.getProperty("songId", {}).toString() == "song",
+              "Automation begin binds its intent to a stable section and song")) return false;
+  owner.setStemVolume(0, 0.25f);
+  if (!expect(sent.back().action == "mix.volume" &&
+              sent.back().value.getProperty("songId", {}).toString() == "song" &&
+              sent.back().value.getProperty("editCommandId", {}).toString() == leaseId &&
+              static_cast<double>(sent.back().value.getProperty("controlValue", {})) == 0.25 &&
+              owner.getStemVolume(0) == 0.25f,
+              "Draft faders retain their preview while identifying the exact editing lease")) return false;
+  owner.applyAcknowledgement(leaseId, true);
+  state.getDynamicObject()->setProperty("seq", 2);
+  auto *editing = state.getProperty("sectionAutomation", {}).getDynamicObject();
+  editing->setProperty("editing", true);
+  editing->setProperty("partId", "verse");
+  editing->setProperty("partName", "Verse");
+  editing->setProperty("commandId", leaseId);
+  owner.applyState(state);
+  observer.applyState(state);
+  observer.send("mix.volume", 0.7, "stem");
+  observer.send("pads.volume", 0.7);
+  if (!expect(owner.canEditSectionAutomation() && !observer.canEditSectionAutomation() &&
+              observer.isSectionAutomationEditing() && observerCommands == 0 &&
+              !observer.beginSectionAutomationEditing("verse") &&
+              !observer.finishSectionAutomationEditing(true) &&
+              !observer.clearSectionAutomation("verse"),
+              "Other clients can observe a draft but cannot write or finish it")) return false;
+  if (!expect(owner.isStemSectionAutomated(0) && owner.isPadsSectionAutomated(),
+              "Remote automation markers mirror authoritative controls")) return false;
+  observer.send("mix.volume", 0.7, "master");
+  observer.send("mix.volume", 0.7, "click");
+  observer.send("mix.gain", 0.7, "guide");
+  observer.send("mix.solo", true, "stem");
+  observer.send("mix.output", 2, "stem");
+  if (!expect(observerCommands == 5,
+              "Master, click, guide, solo and routing remain manual during another client's automation draft")) return false;
+  observer.send("mix.volume", 0.7, "renamed-click");
+  owner.send("mix.volume", 0.7, "renamed-click");
+  if (!expect(observerCommands == 6 && sent.back().value.isDouble(),
+              "A renamed Click with Other category stays manual by its portable filename")) return false;
+  if (!owner.clearSectionAutomation("verse") || sent.back().action != "automation.clear" ||
+      sent.back().value.getProperty("editCommandId", {}).toString() != leaseId) return false;
+  if (!owner.finishSectionAutomationEditing(true) || sent.back().action != "automation.finish" ||
+      !static_cast<bool>(sent.back().value.getProperty("save", false)) ||
+      sent.back().value.getProperty("editCommandId", {}).toString() != leaseId) return false;
+  owner.setConnected(false);
+  const auto count = sent.size();
+  owner.send("mix.volume", 0.9, "stem");
+  if (!expect(!owner.canEditSectionAutomation() && !owner.isSectionAutomationEditing() &&
+              owner.getSectionAutomationEditingPartId().isEmpty() && sent.size() == count,
+              "Disconnect discards local ownership and disables draft controls")) return false;
+  editing->setProperty("editing", false);
+  editing->setProperty("partId", juce::String{});
+  editing->setProperty("commandId", juce::String{});
+  state.getDynamicObject()->setProperty("seq", 3);
+  owner.applyState(state);
+  if (!owner.beginSectionAutomationEditing("verse")) return false;
+  owner.applyAcknowledgement(sent.back().id, false, "busy");
+  if (!expect(!owner.isSectionAutomationEditing() && owner.canEditSectionAutomation(),
+              "Rejected begin restores ordinary controls")) return false;
+  if (!owner.beginSectionAutomationEditing("verse")) return false;
+  auto differentSong = state.clone();
+  differentSong.getProperty("song", {}).getDynamicObject()->setProperty("id", "different-song");
+  owner.applyState(differentSong);
+  return expect(!owner.isSectionAutomationEditing() && local.automationWrites == 2 && local.writes == 0,
+                "Remote automation never mutates the client's audio processor and loses ownership on song change");
 }
 
 bool testPracticeListeningAdapter() {
@@ -655,6 +774,7 @@ bool testPracticeLoopAdapter() {
 }
 
 int main() {
+  if (!testSectionAutomationAdapter()) { std::cerr << "Section automation adapter failed\n"; return 1; }
   if (!testPracticeLoopAdapter()) { std::cerr << "Practice loop adapter failed\n"; return 1; }
   if (!testPracticeScrubLease()) { std::cerr << "Practice scrub ownership failed\n"; return 1; }
   if (!testPracticeScrubAdapter()) { std::cerr << "Practice scrub adapter failed\n"; return 1; }

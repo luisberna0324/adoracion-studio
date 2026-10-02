@@ -1389,6 +1389,63 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setSeekCallback([this](double targetSeconds) {
     playbackSession.seekSongTo(targetSeconds);
   });
+  playbackSession.sectionAutomationCanEdit = [this] {
+    return remoteSectionAutomationOwner.empty();
+  };
+  playbackSession.sectionAutomationStemCanEdit = [this](int stemIndex) {
+    if (remoteSectionAutomationOwner.empty()) return true;
+    int includedIndex = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include) continue;
+      if (includedIndex++ == stemIndex)
+        return stemPriorityForStripOrder(stem) < 2;
+    }
+    return false;
+  };
+  const auto persistSectionAutomation = [this, &p] {
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong) return;
+    const auto snapshot = p.getSongArrangementSnapshot();
+    if (!SongLibraryStore::updateSongArrangement(
+            currentLoadedSong.id, snapshot, p.isCustomArrangementActive())) {
+      SessionAuthLogger::write("[Automation] Couldn't save section controls for " +
+                               currentLoadedSong.id);
+      appModal = std::make_unique<AppModal>(
+          *this, AppModal::Kind::Information,
+          L10n::tr("Automatización", "Automation"),
+          L10n::tr("No se pudieron guardar los ajustes de la sección.",
+                   "The section settings could not be saved."),
+          L10n::tr("Entendido", "OK"), juce::String(), nullptr);
+      const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+      appModal->onClosed = [safe] { if (safe) safe->appModal.reset(); };
+      appModal->show();
+    }
+    currentLoadedSong.arrangement = snapshot;
+    if (waveformBarPtr) {
+      waveformBarPtr->setCommittedSectionAutomation(snapshot);
+      waveformBarPtr->setSectionAutomationState({});
+    }
+  };
+  waveformBarRaw->setSectionAutomationCallbacks(
+      [this](const juce::String &partId) {
+        if (!playbackSession.canEditSectionAutomation()) return false;
+        if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+          grid->flushPendingPersistenceNow();
+        return playbackSession.beginSectionAutomationEditing(partId);
+      },
+      [this, persistSectionAutomation](bool save) {
+        if (!playbackSession.canEditSectionAutomation()) return;
+        if (playbackSession.finishSectionAutomationEditing(save) && !playbackSession.isRemote()) {
+          if (save) persistSectionAutomation();
+          else if (waveformBarPtr) waveformBarPtr->setSectionAutomationState({});
+        }
+      },
+      [this, persistSectionAutomation](const juce::String &partId) {
+        if (playbackSession.canEditSectionAutomation() &&
+            playbackSession.clearSectionAutomation(partId) && !playbackSession.isRemote())
+          persistSectionAutomation();
+      },
+      [this] { return playbackSession.getSectionAutomationEditingPartId(); },
+      [this] { return playbackSession.canEditSectionAutomation(); });
   // The jump button now respects the active loop: the request is queued as a
   // pending jump and the audio thread resolves whether it should escape the
   // current loop (SectionScheduler::evaluate handles that precedence). Clearing
@@ -2335,6 +2392,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                                 clickDynMix.outputWidth);
     p.setMetronomeEnabled(clickDynMix.metronomeEnabled);
     trackClickDynMetronomeEnabled(clickDynMix.metronomeEnabled);
+    juce::StringArray automationStemIds;
+    for (const auto &stem : loadedSong.stems)
+      if (stem.include) automationStemIds.add(stem.stemId);
+    p.setSectionAutomationStemIds(automationStemIds);
     p.setSongArrangement(arrangement, isCustomArrangement);
     p.setArrangementEditingActive(false);
     // Loading a song always starts at its beginning, independent of section
@@ -4618,6 +4679,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
+  if (!playbackSession.isRemote())
+    static_cast<MTControlsAudioProcessor &>(processor).finishSectionAutomationEditing(false);
   closePractice();
   static_cast<MTControlsAudioProcessor &>(processor)
       .setPracticeListeningMode(-1, 0);
@@ -5103,6 +5166,7 @@ void MTControlsAudioProcessorEditor::runSongMixExport(
   request.masterVolume = p.getMasterVolume();
   request.masterGain = p.getMasterGain();
   request.masterMuted = p.isMasterMuted();
+  request.arrangement = p.getSongArrangementSnapshot();
   request.dynamicClick.enabled =
       p.isMetronomeEnabled() && p.isClickDivisionEnabled();
   request.dynamicClick.volume = p.getMetronomeVolume();
@@ -5131,36 +5195,24 @@ void MTControlsAudioProcessorEditor::runSongMixExport(
   request.dynamicGuide.soloed = p.isDynamicGuideSolo();
   request.guideLanguage =
       AppSettings::getLanguage() == AppLanguage::English ? "en" : "es";
-  SongArrangementSnapshot exportArrangement;
-  bool exportArrangementCustomized = false;
-  if (SongLibraryStore::getSongArrangement(
-          currentLoadedSong.id, exportArrangement,
-          exportArrangementCustomized)) {
-    for (const auto &part : exportArrangement.parts) {
-      if (!part.skipPlayback)
-        request.guideSections.push_back(
-            {part.name, part.startSec, part.utilityCue});
-    }
-  }
-  if (request.guideSections.empty()) {
-    for (const auto &part : currentLoadedSong.arrangement.parts) {
-      if (!part.skipPlayback)
-        request.guideSections.push_back(
-            {part.name, part.startSec, part.utilityCue});
-    }
+  for (const auto &part : request.arrangement.parts) {
+    if (!part.skipPlayback)
+      request.guideSections.push_back(
+          {part.name, part.startSec, part.utilityCue});
   }
   for (size_t i = 0; i < currentLoadedSong.stems.size(); ++i) {
     const auto &stem = currentLoadedSong.stems[i];
+    if (!stem.include) continue;
     juce::File file(stem.storedPath);
     if (!file.existsAsFile())
       file = juce::File(stem.sourcePath);
     if (!file.existsAsFile())
       continue;
-    request.stems.push_back({file.getFullPathName(), p.getStemVolume((int) i),
-                             p.getStemGain((int) i), p.isStemMuted((int) i),
+    request.stems.push_back({file.getFullPathName(), p.getStemBaseVolume((int) i),
+                             p.getStemBaseGain((int) i), p.isStemBaseMuted((int) i),
                              p.isStemSoloed((int) i),
                              stemPriorityForStripOrder(stem) <= 1,
-                             isStemPitchShiftable(stem)});
+                             isStemPitchShiftable(stem), stem.stemId});
   }
   if (request.stems.empty()) {
     juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,

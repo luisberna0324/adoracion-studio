@@ -158,6 +158,9 @@ private:
   std::unique_ptr<PracticePanel> practiceOverlay;
   playworship::remote::RemoteSession remoteSession;
   std::string remotePracticeOwner;
+  std::string remoteSectionAutomationOwner;
+  juce::String remoteSectionAutomationCommandId;
+  juce::String remoteSectionAutomationSongId;
   juce::String remotePracticeCommandId;
   uint64_t remotePracticeRevision = 0;
   std::string remotePracticeLoopOwner;

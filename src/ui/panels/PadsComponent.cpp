@@ -49,7 +49,11 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
         addAndMakeVisible(*notePads[index]);
     }
 
-    octaveCtrl.setOnOctaveChanged([this](int oct) { currentOctave = oct; });
+    octaveCtrl.setOnOctaveChanged([this](int oct) {
+        currentOctave = oct;
+        if (activeNoteIndex >= 0)
+            session.triggerPadNote(activeNoteIndex, currentOctave);
+    });
 
     powerBtn.setOnToggled([this](bool on) { applyPowerState(on); });
     powerBtn.setTooltip("Pads power");
@@ -89,7 +93,7 @@ PadsComponent::PadsComponent(MTControlsAudioProcessor& proc, ChannelStripLookAnd
     if (!lastPackReady && presetSubtitle.trim().isEmpty())
         presetSubtitle = idlePadsStatusText();
 
-    applyPowerState(true);
+    applyPowerState(session.isPadsEnabled(), false);
     refreshMidiLearnTooltips();
     setWantsKeyboardFocus(true);
     startTimerHz(20);
@@ -261,7 +265,7 @@ void PadsComponent::mouseDown(const juce::MouseEvent&) {
 
 void PadsComponent::refreshThemeColours() {
     presetSubtitle = session.getPadsPackStatusText();
-    applyPowerState(padsPoweredOn);
+    applyPowerState(padsPoweredOn, false);
     if (channelStrip) {
         channelStrip->setCardBgColour(UITheme::cardBg);
         channelStrip->setChannelBandColours(UITheme::accent, UITheme::onAccent);
@@ -288,13 +292,22 @@ void PadsComponent::setPopoverPresentation(const bool enabled) {
 }
 
 void PadsComponent::timerCallback() {
+    const bool editing = session.isSectionAutomationEditing();
+    const bool canEdit = !editing || session.canEditSectionAutomation();
+    if (channelStrip) {
+        channelStrip->setSectionAutomationState(session.isPadsSectionAutomated(), editing);
+        channelStrip->setEnabled(canEdit);
+    }
+    powerBtn.setEnabled(canEdit);
+    octaveCtrl.setEnabled(canEdit);
+    for (auto &pad : notePads) pad->setEnabled(canEdit);
     if (padsLoading.load(std::memory_order_relaxed)) {
         if (!session.isPadsPreloadRunning()) {
             padsLoading.store(false, std::memory_order_release);
             lastPackReady = session.isPadsPackLoaded();
             presetSubtitle = session.getPadsPackStatusText();
             subtitleAlpha = 1.0f;
-            applyPowerState(padsPoweredOn);
+            applyPowerState(padsPoweredOn, false);
             repaint();
         } else {
             loadingBeatPhase += 0.24f;
@@ -311,7 +324,7 @@ void PadsComponent::timerCallback() {
     const bool packReady = session.isPadsPackLoaded();
     if (packReady != lastPackReady) {
         lastPackReady = packReady;
-        applyPowerState(padsPoweredOn);
+        applyPowerState(padsPoweredOn, false);
     }
 
     const auto status = session.getPadsPackStatusText();
@@ -330,9 +343,13 @@ void PadsComponent::timerCallback() {
     if (!midiLearnActive) {
         const bool runtimePadsEnabled = session.isPadsEnabled();
         if (runtimePadsEnabled != padsPoweredOn)
-            applyPowerState(runtimePadsEnabled);
+            applyPowerState(runtimePadsEnabled, false);
 
         const int runtimeActiveNote = session.getActivePadNoteIndex();
+        if (runtimeActiveNote >= 0 && session.getActivePadOctave() != currentOctave) {
+            currentOctave = session.getActivePadOctave();
+            octaveCtrl.setOctave(currentOctave);
+        }
         if (runtimeActiveNote != activeNoteIndex) {
             if (juce::isPositiveAndBelow(activeNoteIndex, kNoteCount))
                 notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
@@ -366,6 +383,8 @@ void PadsComponent::onPadPressed(int noteIndex) {
             onMidiLearnTargetSelected(targetId);
         return;
     }
+    if (!session.canEditSectionAutomation())
+        return;
     if (padsLoading.load(std::memory_order_relaxed)) {
         session.triggerPadNote(noteIndex, currentOctave);
         presetSubtitle = "Loading pads...";
@@ -411,40 +430,36 @@ void PadsComponent::onPadReleased(int noteIndex) {
 
 bool PadsComponent::followSongKey(const juce::String& songKey,
                                   const int semitoneOffset) {
-    const int runtimeActiveNote = session.getActivePadNoteIndex();
-    if (!padsPoweredOn ||
-        !juce::isPositiveAndBelow(runtimeActiveNote, kNoteCount))
+    // Only the server/local engine follows song keys. A client must never echo
+    // automatic key following as an intentional pad gesture into a section.
+    if (session.isRemote()) return false;
+    const int baseNote = session.getBasePadNoteIndex();
+    if (!session.isPadsBaseEnabled() ||
+        !juce::isPositiveAndBelow(baseNote, kNoteCount))
         return false;
-
-    if (juce::isPositiveAndBelow(activeNoteIndex, kNoteCount) &&
-        activeNoteIndex != runtimeActiveNote)
-        notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
-    activeNoteIndex = runtimeActiveNote;
 
     const int songNoteIndex = PadsEngine::noteIndexForSongKey(songKey);
     if (songNoteIndex < 0)
         return false;
     const int targetNoteIndex =
         (songNoteIndex + (semitoneOffset % kNoteCount) + kNoteCount) % kNoteCount;
-    if (targetNoteIndex == activeNoteIndex)
-        return true;
-
-    notePads[static_cast<size_t>(activeNoteIndex)]->setActive(false);
-    notePads[static_cast<size_t>(targetNoteIndex)]->setActive(true);
-    activeNoteIndex = targetNoteIndex;
-    session.triggerPadNoteForSongTransition(targetNoteIndex, currentOctave);
+    if (targetNoteIndex != baseNote)
+        session.triggerPadNoteForSongTransition(targetNoteIndex, session.getBasePadOctave());
+    activeNoteIndex = session.getActivePadNoteIndex();
+    for (int index = 0; index < kNoteCount; ++index)
+        notePads[static_cast<size_t>(index)]->setActive(index == activeNoteIndex);
     return true;
 }
 
-void PadsComponent::applyPowerState(bool on) {
-    if (midiLearnActive) {
+void PadsComponent::applyPowerState(bool on, bool notify) {
+    if (midiLearnActive && notify) {
         if (onMidiLearnTargetSelected)
             onMidiLearnTargetSelected(processor.midiTargetPadsPower);
         powerBtn.setPoweredOn(padsPoweredOn);
         return;
     }
     padsPoweredOn = on;
-    session.setPadsEnabled(on);
+    if (notify) session.setPadsEnabled(on);
     const bool interactionEnabled = on;
     const bool packReady = session.isPadsPackLoaded();
     for (auto& pad : notePads) {

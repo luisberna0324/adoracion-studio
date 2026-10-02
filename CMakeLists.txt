@@ -498,6 +498,25 @@ if(MTCONTROLS_BUILD_TESTS)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_tests_properties(waveform_editing PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+    juce_add_console_app(MTControlsSectionAutomationTests
+        PRODUCT_NAME "Section Automation Tests")
+    target_sources(MTControlsSectionAutomationTests PRIVATE
+        tests/section_automation_tests.cpp src/data/AppSettings.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionAuthLogger.cpp
+        src/data/AssetBootstrapManager.cpp)
+    target_include_directories(MTControlsSectionAutomationTests PRIVATE src)
+    target_compile_definitions(MTControlsSectionAutomationTests PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsSectionAutomationTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp
+        juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsSectionAutomationTests)
+    add_test(NAME section_automation COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSectionAutomationTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(section_automation PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
     target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
     juce_generate_juce_header(MTControlsDiagnosticReportTests)

@@ -1,4 +1,5 @@
 #include "ChannelStripCard.h"
+#include "../SectionAutomationVisuals.h"
 
 #include <cmath>
 #include <utility>
@@ -204,6 +205,30 @@ void ChannelStripCard::paint(juce::Graphics &g) {
 
 void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
   drawGainValueTooltip(g);
+  if (sectionAutomated || sectionAutomationEditing) {
+    const auto colour = sectionAutomationEditing ? UITheme::accent
+                                                 : UITheme::textSecondary;
+    const float pulse = sectionAutomationEditing
+                            ? sectionAutomationHighlightPulse() : 0.0f;
+    if (sectionAutomationEditing) {
+      // Keep the indication visible at the low point. The halo stays along
+      // the card's inner edge and does not obscure the existing controls.
+      const auto outline = getLocalBounds().toFloat().reduced(2.0f);
+      g.setColour(colour.withAlpha(0.045f + 0.075f * pulse));
+      g.drawRoundedRectangle(outline, 4.0f, 5.0f);
+      g.setColour(colour.withAlpha(0.42f + 0.50f * pulse));
+      g.drawRoundedRectangle(outline, 4.0f, 1.2f + 0.6f * pulse);
+    }
+    const juce::Rectangle<float> badge(juce::jmax(0.0f, getWidth() - 16.0f),
+                                        4.0f, 12.0f, 12.0f);
+    g.setColour(colour.withAlpha(sectionAutomationEditing
+                                     ? 0.16f + 0.20f * pulse : 0.18f));
+    g.fillRoundedRectangle(badge, 3.0f);
+    g.setColour(colour.withAlpha(sectionAutomationEditing
+                                     ? 0.72f + 0.28f * pulse : 1.0f));
+    g.setFont(makeAppFont(9.0f, AppFontWeight::Bold));
+    g.drawText("A", badge.toNearestInt(), juce::Justification::centred);
+  }
 
   if (!midiLearnSelectable)
     return;
@@ -432,6 +457,14 @@ void ChannelStripCard::setVolume(float volume) {
   suppressVolumeCallback = false;
 }
 
+void ChannelStripCard::setSectionAutomationState(const bool automated, const bool editing) {
+  if (sectionAutomated == automated && sectionAutomationEditing == editing) return;
+  sectionAutomated = automated;
+  sectionAutomationEditing = editing;
+  updateHighlightTimer();
+  repaint();
+}
+
 void ChannelStripCard::setGain(float gain) {
   if (gainKnob.isMouseButtonDown()) return;
   gainKnob.setValue(gain, juce::dontSendNotification);
@@ -560,13 +593,13 @@ void ChannelStripCard::setMidiLearnSelectable(const bool selectable) {
   midiLearnSelectable = selectable;
   if (!midiLearnSelectable)
     midiLearnPendingTargetId = -1;
-  updateMidiLearnBlinkTimer();
+  updateHighlightTimer();
   repaint();
 }
 
 void ChannelStripCard::setMidiLearnPendingTarget(const int targetId) {
   midiLearnPendingTargetId = hasMidiLearnTarget(targetId) ? targetId : -1;
-  updateMidiLearnBlinkTimer();
+  updateHighlightTimer();
   refreshMidiLearnTooltips();
   repaint();
 }
@@ -575,7 +608,7 @@ void ChannelStripCard::setMidiLearnBindingLabelProvider(
     std::function<juce::String(int)> cb) {
   midiLearnBindingLabelProvider = std::move(cb);
   refreshMidiLearnTooltips();
-  updateMidiLearnBlinkTimer();
+  updateHighlightTimer();
   repaint();
 }
 
@@ -597,11 +630,24 @@ bool ChannelStripCard::hasAnyMidiLearnTarget() const {
 }
 
 void ChannelStripCard::timerCallback() {
-  repaint();
+  if (!isShowing())
+    return;
+  if (midiLearnSelectable) {
+    repaint();
+  } else if (sectionAutomationEditing) {
+    // The pulse touches the frame and badge, not the fader or VU interior.
+    constexpr int edge = 6;
+    const auto bounds = getLocalBounds();
+    repaint(bounds.withHeight(edge));
+    repaint(bounds.withTop(juce::jmax(0, getHeight() - edge)));
+    repaint(bounds.withWidth(edge));
+    repaint(bounds.withLeft(juce::jmax(0, getWidth() - edge)));
+    repaint(juce::Rectangle<int>(juce::jmax(0, getWidth() - 18), 2, 16, 16));
+  }
 }
 
-void ChannelStripCard::updateMidiLearnBlinkTimer() {
-  const bool shouldBlink = midiLearnSelectable;
+void ChannelStripCard::updateHighlightTimer() {
+  const bool shouldBlink = midiLearnSelectable || sectionAutomationEditing;
   if (shouldBlink) {
     if (!isTimerRunning()) {
 #if JUCE_ANDROID

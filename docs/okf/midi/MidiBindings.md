@@ -4,12 +4,24 @@ title: MidiBindings
 description: Sistema de binding MIDI con MIDI learn
 resource: src/PluginProcessor.h
 tags: [juce, midi, binding, learn]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-10-02
 ---
 
 # MIDI Bindings
 
 Sistema de mapeo de mensajes MIDI a targets del plugin.
+
+## Automatización de secciones
+
+Un borrador iniciado localmente captura los cambios MIDI de volumen, ganancia y
+mute instrumentales, además de los controles de Pads, usando los mismos setters
+que la interfaz. La mezcla base permanece separada.
+
+Si el borrador pertenece a un cliente remoto, el servidor bloquea esos targets
+MIDI físicos y descarta sus notas/órdenes de Pads pendientes. El propietario se
+publica al iniciar el borrador y se libera al terminar, cancelar, desconectar o
+cargar otra canción. Master, Solo, Click/Guía y controles excluidos mantienen sus
+bindings manuales. Véase [SectionAutomation](../engine/SectionAutomation.md).
 
 ## Conceptos
 

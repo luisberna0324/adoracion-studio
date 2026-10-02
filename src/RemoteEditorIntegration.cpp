@@ -49,6 +49,11 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
   if (mode == previousMode) return;
   if (songLoadBusy || projectSaveBusy || mixExportBusy) { remoteConnectionStatus = L10n::tr("Espera a que termine la carga", "Wait for loading to finish"); refreshRemoteSettings(); return; }
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+  if (p.isSectionAutomationEditing()) p.finishSectionAutomationEditing(false);
+  p.setSectionAutomationRemoteOwned(false);
+  remoteSectionAutomationOwner.clear();
+  remoteSectionAutomationCommandId.clear();
+  remoteSectionAutomationSongId.clear();
   if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) grid->flushPendingPersistenceNow();
   flushActiveSongPersistenceNow();
   if (previousMode != Mode::Client) p.setPracticeListeningMode(-1, 0);
@@ -221,6 +226,7 @@ void MTControlsAudioProcessorEditor::applyRemoteSnapshot(const juce::var &snapsh
   }
   ProjectSongSettings decoded;
   if (ProjectStore::deserializeSettings(property(snapshot, "settings"), decoded)) {
+    currentLoadedSong.arrangement = decoded.arrangement;
     ProjectSongSettings visual;
     visual.arrangement = decoded.arrangement; visual.arrangementCustomized = decoded.arrangementCustomized;
     const auto signature = songId + juce::JSON::toString(ProjectStore::serializeSettings(visual)) + juce::JSON::toString(playworship::remote::encodeTempoMap(currentLoadedSong.tempoMap));
@@ -254,6 +260,20 @@ void MTControlsAudioProcessorEditor::applyRemoteWaveform(const std::vector<uint8
 
 void MTControlsAudioProcessorEditor::processRemoteEvents() {
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+  const auto clearAutomationOwner = [&] {
+    p.setSectionAutomationRemoteOwned(false);
+    remoteSectionAutomationOwner.clear();
+    remoteSectionAutomationCommandId.clear();
+    remoteSectionAutomationSongId.clear();
+  };
+  if (!remoteSectionAutomationOwner.empty() &&
+      (!p.isSectionAutomationEditing() || !hasCurrentLoadedSong ||
+       remoteSectionAutomationSongId != currentLoadedSong.id)) {
+    if (p.isSectionAutomationEditing()) p.finishSectionAutomationEditing(false);
+    clearAutomationOwner();
+    nextRemotePublishMs = 0;
+    remoteStateSignature.clear();
+  }
   const auto revokeStalePracticeLoopOwner = [&] {
     if (!remotePracticeLoopOwner.empty() &&
         p.getPracticeLoopRevision() != remotePracticeLoopRevision) {
@@ -281,6 +301,12 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
     using Kind = playworship::remote::RemoteSession::Event::Kind;
     if (event.kind == Kind::Connected || event.kind == Kind::Disconnected) { playbackSession.setConnected(false); continue; }
     if (event.kind == Kind::PeerDisconnected) {
+      if (remoteSectionAutomationOwner == event.sourceId) {
+        p.finishSectionAutomationEditing(false);
+        clearAutomationOwner();
+        nextRemotePublishMs = 0;
+        remoteStateSignature.clear();
+      }
       if (remotePracticeLoopOwner == event.sourceId) {
         if (p.getPracticeLoopRevision() == remotePracticeLoopRevision)
           p.clearPracticeLoop();
@@ -312,7 +338,7 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
       continue;
     }
     if (event.kind == Kind::Waveform) { applyRemoteWaveform(event.bytes); continue; }
-    const auto value = event.value.isObject() ? event.value : juce::JSON::parse(juce::String::fromUTF8(event.text.data(), static_cast<int>(event.text.size())));
+    auto value = event.value.isObject() ? event.value : juce::JSON::parse(juce::String::fromUTF8(event.text.data(), static_cast<int>(event.text.size())));
     if (static_cast<int>(property(value, "v")) != 1) continue;
     const auto type = stringProperty(value, "type");
     if (event.kind == Kind::Snapshot || event.kind == Kind::Meters) {
@@ -328,7 +354,99 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
       juce::String error;
       const auto action = stringProperty(value, "action");
       bool accepted = false;
-      if (action == "transport.scrubBegin" || action == "transport.scrubEnd" ||
+      bool automationControl = action == "pads.enabled" || action == "pads.volume" ||
+          action == "pads.gain" || action == "pads.note" || action == "pads.stop";
+      if (hasCurrentLoadedSong && (action == "mix.volume" || action == "mix.gain" || action == "mix.mute")) {
+        const auto target = stringProperty(value, "target");
+        for (const auto &stem : currentLoadedSong.stems)
+          if (stem.include && stem.stemId == target && stemPriorityForStripOrder(stem) >= 2)
+            automationControl = true;
+      }
+      const bool structureEdit = action == "arrange.set" || action == "arrange.reset" ||
+                                 action == "tempoMap.set" || action.startsWith("window.");
+      const auto automationEnvelope = property(value, "value");
+      const bool wrappedAutomationControl = automationControl &&
+          automationEnvelope.isObject() &&
+          automationEnvelope.getDynamicObject()->hasProperty("controlValue");
+      const auto activeSong = hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{};
+      if (action.startsWith("automation.")) {
+        const auto song = property(automationEnvelope, "songId");
+        const auto target = stringProperty(value, "target");
+        const auto editCommandId = stringProperty(automationEnvelope, "editCommandId");
+        if (stringProperty(value, "type") != "command" ||
+            stringProperty(value, "id").isEmpty() || event.sourceId.empty() ||
+            !automationEnvelope.isObject() || !song.isString() ||
+            song.toString() != activeSong || activeSong.isEmpty() ||
+            !p.hasLoadedSong() || songLoadBusy || target.isEmpty() || target.length() > 512) {
+          error = "Automation song changed";
+        } else if (action == "automation.begin") {
+          if (p.isSectionAutomationEditing()) error = "Automation is being edited";
+          else {
+            if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
+              grid->flushPendingPersistenceNow();
+            accepted = p.beginSectionAutomationEditing(target, true);
+            if (accepted) {
+              p.setSectionAutomationRemoteOwned(true);
+              remoteSectionAutomationOwner = event.sourceId;
+              remoteSectionAutomationCommandId = stringProperty(value, "id");
+              remoteSectionAutomationSongId = activeSong;
+            } else error = "Unknown automation section";
+          }
+        } else if (action == "automation.finish") {
+          const auto save = property(automationEnvelope, "save");
+          if (!save.isBool() || !p.isSectionAutomationEditing() ||
+              remoteSectionAutomationOwner != event.sourceId ||
+              editCommandId != remoteSectionAutomationCommandId ||
+              target != p.getSectionAutomationEditingPartId()) {
+            error = "Automation is not owned by this client";
+          } else {
+            accepted = p.finishSectionAutomationEditing(static_cast<bool>(save));
+            if (accepted) {
+              clearAutomationOwner();
+              if (static_cast<bool>(save)) {
+                const auto arrangement = p.getSongArrangementSnapshot();
+                currentLoadedSong.arrangement = arrangement;
+                accepted = SongLibraryStore::updateSongArrangement(activeSong, arrangement,
+                                                                   p.isCustomArrangementActive());
+                if (waveformBarPtr) waveformBarPtr->setCommittedSectionAutomation(arrangement);
+                if (!accepted) error = "Unable to save section automation";
+              }
+            } else error = "Unable to finish section automation";
+          }
+        } else if (action == "automation.clear") {
+          if (p.isSectionAutomationEditing() &&
+              (remoteSectionAutomationOwner != event.sourceId ||
+               editCommandId != remoteSectionAutomationCommandId ||
+               target != p.getSectionAutomationEditingPartId()))
+            error = "Automation is not owned by this client";
+          else {
+            if (p.isSectionAutomationEditing()) p.finishSectionAutomationEditing(false);
+            clearAutomationOwner();
+            accepted = p.clearSectionAutomation(target);
+            if (accepted) {
+              const auto arrangement = p.getSongArrangementSnapshot();
+              currentLoadedSong.arrangement = arrangement;
+              accepted = SongLibraryStore::updateSongArrangement(activeSong, arrangement,
+                                                                 p.isCustomArrangementActive());
+              if (waveformBarPtr) waveformBarPtr->setCommittedSectionAutomation(arrangement);
+              if (!accepted) error = "Unable to save section automation";
+            } else error = "Unknown automation section";
+          }
+        } else error = "Invalid automation action";
+        nextRemoteSettingsMs = 0;
+        nextRemotePublishMs = 0;
+        remoteStateSignature.clear();
+      } else if (p.isSectionAutomationEditing() && structureEdit) {
+        error = "Finish section automation before editing the arrangement";
+      } else if (automationControl &&
+                 ((p.isSectionAutomationEditing() &&
+                   (remoteSectionAutomationOwner != event.sourceId ||
+                    !wrappedAutomationControl ||
+                    stringProperty(automationEnvelope, "songId") != activeSong ||
+                    stringProperty(automationEnvelope, "editCommandId") != remoteSectionAutomationCommandId)) ||
+                  (!p.isSectionAutomationEditing() && wrappedAutomationControl))) {
+        error = "Automation control is not owned by this client";
+      } else if (action == "transport.scrubBegin" || action == "transport.scrubEnd" ||
           action == "transport.scrubCancel") {
         const auto payload = property(value, "value");
         const auto tokenValue = property(payload, "token");
@@ -379,6 +497,10 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
           }
         }
       } else {
+        if (wrappedAutomationControl) {
+          value = value.clone();
+          value.getDynamicObject()->setProperty("value", property(automationEnvelope, "controlValue"));
+        }
         accepted = applyRemoteCommand(value, error);
       }
       if (accepted && action == "practice.listen") {
@@ -414,7 +536,7 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
         // Even a no-op command needs a snapshot after its ack so a client can
         // retire its preview. Continuous controls do not invalidate arrangement.
         remoteStateSignature.clear();
-        if (action.startsWith("mix.")) {
+        if (action.startsWith("mix.") && (!p.isSectionAutomationEditing() || !automationControl)) {
           if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get()))
             grid->noteRemoteMixChange();
         } else if (!action.startsWith("pads.") && !action.startsWith("practice.")) nextRemoteSettingsMs = 0;
@@ -529,6 +651,10 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
         SongLibraryStore::getSongArrangement(
             songId, settings.arrangement, settings.arrangementCustomized);
       }
+      // Settings-sidecar writes are deferred. A committed automation change
+      // must be visible in the first snapshot after its acknowledgement.
+      settings.arrangement = p.getSongArrangementSnapshot();
+      settings.arrangementCustomized = p.isCustomArrangementActive();
     }
     remoteSettingsCache = ProjectStore::serializeSettings(settings);
   }
@@ -548,6 +674,14 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   fields->setProperty("fade", p.isFadeActive());
   fields->setProperty("tempo", p.getPlaybackTempoBpm());
   fields->setProperty("pitch", p.getPitchSemiTones());
+  auto automation = object();
+  automation.getDynamicObject()->setProperty("editing", p.isSectionAutomationEditing());
+  automation.getDynamicObject()->setProperty("partId", p.getSectionAutomationEditingPartId());
+  automation.getDynamicObject()->setProperty("partName", p.getSectionAutomationEditingPartName());
+  automation.getDynamicObject()->setProperty("commandId",
+      p.isSectionAutomationEditing() && !remoteSectionAutomationOwner.empty()
+          ? remoteSectionAutomationCommandId : juce::String{});
+  fields->setProperty("sectionAutomation", automation);
   const auto practiceRange = p.getPracticeLoopRange();
   fields->setProperty("practiceLoopActive", p.isPracticeLoopActive());
   fields->setProperty("practiceLoopPrepared", p.hasPracticeLoopPreparation());
@@ -596,6 +730,11 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
                              p.getStemVolume(index), p.getStemGain(index),
                              p.isStemMuted(index), p.isStemSoloed(index)));
       mixer.getReference(mixer.size()-1).getDynamicObject()->setProperty("outputChannel", p.getStemOutputChannel(index));
+      auto *stemFields = mixer.getReference(mixer.size()-1).getDynamicObject();
+      stemFields->setProperty("sectionAutomated", p.isStemSectionAutomated(index));
+      stemFields->setProperty("baseVolume", p.getStemBaseVolume(index));
+      stemFields->setProperty("baseGain", p.getStemBaseGain(index));
+      stemFields->setProperty("baseMute", p.isStemBaseMuted(index));
       ++index;
     }
   }
@@ -626,6 +765,13 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   ui.getDynamicObject()->setProperty("isPadsPreloadRunning", p.isPadsPreloadRunning());
   ui.getDynamicObject()->setProperty("getPadsPackStatusText", p.getPadsPackStatusText());
   ui.getDynamicObject()->setProperty("getActivePadNoteIndex", p.getActivePadNoteIndex());
+  ui.getDynamicObject()->setProperty("getActivePadOctave", p.getActivePadOctave());
+  ui.getDynamicObject()->setProperty("isPadsSectionAutomated", p.isPadsSectionAutomated());
+  ui.getDynamicObject()->setProperty("getPadsBaseVolume", p.getPadsBaseVolume());
+  ui.getDynamicObject()->setProperty("getPadsBaseGain", p.getPadsBaseGain());
+  ui.getDynamicObject()->setProperty("isPadsBaseEnabled", p.isPadsBaseEnabled());
+  ui.getDynamicObject()->setProperty("getBasePadNoteIndex", p.getBasePadNoteIndex());
+  ui.getDynamicObject()->setProperty("getBasePadOctave", p.getBasePadOctave());
   fields->setProperty("ui", ui);
 
   const auto signature = juce::JSON::toString(snapshot, true);
@@ -779,6 +925,9 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     else if (action == "arrange.set" || action == "arrange.reset") {
       ProjectSongSettings settings;
       if (action == "arrange.set") {
+        if (!playworship::remote::validateArrangementAutomation(property(value, "arrangement"))) {
+          error = "Invalid section automation"; return false;
+        }
         if (!ProjectStore::deserializeSettings(value, settings) || settings.arrangement.parts.size() > 1024) { error = "Invalid arrangement"; return false; }
         for (const auto &part : settings.arrangement.parts)
           if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) || part.startSec < 0 || part.endSec < part.startSec) { error = "Invalid section"; return false; }

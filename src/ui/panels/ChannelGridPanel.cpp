@@ -1028,26 +1028,26 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
       session.setStemVolume(stemIndex, value);
     });
     slot->getStrip().setOnVolumeDragEnded(
-        [this, stemId](float value) {
+        [this, stemIndex, stemId](float) {
       if (!session.isRemote() && currentSongId.isNotEmpty() && stemId.isNotEmpty())
-        queueStemVolumePersistence(stemId, value);
+        queueStemVolumePersistence(stemId, processor.getStemBaseVolume(stemIndex));
     });
     slot->getStrip().setOnGainChanged(
         [this, stemIndex, stemId](float value) {
       session.setStemGain(stemIndex, value);
     });
     slot->getStrip().setOnGainDragEnded(
-        [this, stemId](float value) {
+        [this, stemIndex, stemId](float) {
       if (!session.isRemote() && currentSongId.isNotEmpty())
         SongLibraryStore::updateStemGainForActiveSetlist(currentSongId, stemId,
-                                                         value);
+                                                         processor.getStemBaseGain(stemIndex));
     });
     slot->getStrip().setOnMuteChanged(
         [this, stemIndex, stemId](bool muted) {
       session.setStemMute(stemIndex, muted);
       if (!session.isRemote() && currentSongId.isNotEmpty())
         SongLibraryStore::updateStemMuteForActiveSetlist(currentSongId, stemId,
-                                                         muted);
+                                                         processor.isStemBaseMuted(stemIndex));
     });
     slot->getStrip().setOnSoloChanged(
         [this, stemIndex, stemId](bool soloed) {
@@ -1124,6 +1124,8 @@ void ChannelGridPanel::nudgeFaders(float delta) {
         !adjustableStems[static_cast<size_t>(i)]) {
       continue;
     }
+    if (!session.canEditSectionAutomationStem(stemIndex))
+      continue;
     const float current = session.getStemVolume(stemIndex);
     const float next = juce::jlimit(0.0f, 1.0f, current + delta);
     if (juce::approximatelyEqual(current, next))
@@ -1133,7 +1135,8 @@ void ChannelGridPanel::nudgeFaders(float delta) {
     if (!session.isRemote() && currentSongId.isNotEmpty() &&
         i < static_cast<int>(slotStemIds.size()) &&
         slotStemIds[static_cast<size_t>(i)].isNotEmpty()) {
-      queueStemVolumePersistence(slotStemIds[static_cast<size_t>(i)], next);
+      queueStemVolumePersistence(slotStemIds[static_cast<size_t>(i)],
+                                  processor.getStemBaseVolume(stemIndex));
     }
   }
 }
@@ -1203,9 +1206,12 @@ SongMixSnapshot ChannelGridPanel::makeCurrentSongMixSnapshot() const {
 
     StemMixSnapshot stem;
     stem.stemId = slotStemIds[i];
-    stem.volume = session.getStemVolume(stemIndex);
-    stem.gain = session.getStemGain(stemIndex);
-    stem.mute = session.isStemMuted(stemIndex);
+    stem.volume = session.isRemote() ? session.getStemVolume(stemIndex)
+                                      : processor.getStemBaseVolume(stemIndex);
+    stem.gain = session.isRemote() ? session.getStemGain(stemIndex)
+                                    : processor.getStemBaseGain(stemIndex);
+    stem.mute = session.isRemote() ? session.isStemMuted(stemIndex)
+                                    : processor.isStemBaseMuted(stemIndex);
     stem.solo = session.isStemSoloed(stemIndex);
     stem.outputChannel = session.getStemOutputChannel(stemIndex);
     mix.stems.push_back(std::move(stem));
@@ -1772,6 +1778,12 @@ void ChannelGridPanel::syncStemSlotsFromProcessor() {
       continue;
 
     auto &strip = slots[i]->getStrip();
+    const bool eligible = i < clickGuideStems.size() && !clickGuideStems[i];
+    strip.setSectionAutomationState(session.isStemSectionAutomated(stemIndex),
+                                     eligible && session.isSectionAutomationEditing());
+    strip.setSoloEnabled(!eligible || !session.isSectionAutomationEditing());
+    strip.setEnabled(!eligible || !session.isSectionAutomationEditing() ||
+                       session.canEditSectionAutomation());
     if (!strip.isMouseButtonDown()) {
       strip.setVolume(session.getStemVolume(stemIndex));
       strip.setGain(session.getStemGain(stemIndex));

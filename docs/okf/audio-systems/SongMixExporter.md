@@ -10,8 +10,8 @@ timestamp: 2026-07-25T00:00:00Z
 # SongMixExporter
 
 `SongMixExporter` renderiza fuera del hilo de UI un bounce estéreo de la ventana
-actual de la canción. Toma el volumen, ganancia, mute y solo de cada stem, el
-master, tempo, pitch y fade configurados en el procesador.
+actual de la canción. Toma el mix base de cada stem y la automatización guardada
+en las secciones, además del master, tempo, pitch y fade configurados.
 
 ## Contratos
 
@@ -40,7 +40,8 @@ master, tempo, pitch y fade configurados en el procesador.
 - El bounce usa lectura síncrona directa de los stems. No debe utilizar el
   read-ahead de reproducción en vivo: el render offline avanza más rápido que
   su worker y los misses se convierten en silencios o cortes en el archivo.
-- `startSeconds` y `endSeconds` pertenecen al timeline fuente. El ratio de
+- `startSeconds` y `endSeconds` pertenecen al timeline del arrange (al timeline
+  fuente cuando no hay inserciones). El ratio de
   tempo usa la convención `source/output` y se normaliza al mismo rango del
   motor (`0.75..2.0`). La cantidad de muestras escrita es
   `round(sourceFrames / tempoRatio)`.
@@ -95,3 +96,37 @@ master, tempo, pitch y fade configurados en el procesador.
 - Una fuente virtual sólo participa de la decisión global de solo cuando está
   habilitada; un `soloed` persistido en una fuente deshabilitada no silencia los
   stems.
+
+## Automatización guardada por sección
+
+- `SongMixExportRequest::arrangement` recibe una copia del arrange comprometido.
+  Los valores `volume`, `gain` y `muted` de `stems` deben ser el mix **base**;
+  `stemId` es la identidad estable de la canción. La UI no debe entregar el mix
+  efectivo de la sección actual, un borrador de edición ni overrides manuales
+  temporales. El worker no consulta el procesador durante el bounce.
+- Cada sección aplica únicamente sus propiedades guardadas de volumen, gain y
+  mute por `stemId`. Las propiedades ausentes y los espacios entre secciones
+  recuperan la base. Un ID que no corresponde a un stem exportado se ignora;
+  reordenar o excluir archivos no desplaza la automatización a otro canal.
+- Los stems de click/guía conservan su mix manual. `muteInstruments` se combina
+  con el mute automático de los demás stems. Solo y master siguen siendo
+  controles globales manuales. Pads no forma parte de este exportador.
+- Las entradas/salidas de sección se convierten al frame fuente más cercano y
+  se aplican dentro del bloque con `StemTrack::scheduleMixStateTransition`.
+  La rampa de ganancia/mute es la misma de reproducción en vivo: 30 ms de
+  muestras fuente antes del procesamiento de tempo/pitch. Al empezar un bounce
+  dentro de una sección, su estado se prepara antes de leer la primera muestra.
+- Las copias usan su propio estado guardado y su rango de audio fuente
+  explícito mediante el mapeo de `SectionScheduler`. Al salir de la copia se
+  retoma la fuente original desplazada por las inserciones. El rango completo
+  incluye la duración insertada aunque supere la duración de los archivos.
+  Los empalmes usan la transición de lectura de `StemTrack`; no reinician el
+  procesador de tempo/pitch. Los límites de salida conservan el redondeo
+  acumulativo de `Timeline` y las transiciones ocurren en el frame fuente exacto.
+- El bounce es un recorrido lineal del arrange: no captura un loop ni un salto
+  temporal solicitado al transporte en vivo. La automatización no reescribe
+  el mix base ni la copia del arrange recibida.
+- `tests/song_mix_exporter_tests.cpp` decodifica WAVs producidos para comprobar
+  volumen/gain/mute por ID, restauración en gaps, exclusión de click/guía,
+  rampa de 30 ms en un límite que cruza un bloque, inicio dentro de sección y
+  copias desplazadas antes de su original con automatización independiente.

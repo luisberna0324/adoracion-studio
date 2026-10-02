@@ -344,6 +344,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   routingGroupedRenderStorage.setSize(
       juce::jmax(2, getTotalNumOutputChannels()), realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
+  padsMixSmoother.reset(sampleRate, 0.030);
+  padsMixSmoother.setCurrentAndTargetValue(getPadsVolume() * getPadsGain());
   dynamicGuideEngine.prepare(sampleRate);
   metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
   metronomeLatencyDelay.setDelay(0);
@@ -603,6 +605,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
   const int callbackSamples = buffer.getNumSamples();
   const int callbackChannels = buffer.getNumChannels();
+  audioAutomationPadsEventCount = 0;
   juce::AudioBuffer<float> stemRoutingTempBuffer(
       stemRoutingTempStorage.getArrayOfWritePointers(), 2, callbackSamples);
   juce::AudioBuffer<float> metronomeRenderBuffer(
@@ -990,6 +993,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         dynamicGuideAnnouncementsActive &&
         dynamicGuideSoloState.load(std::memory_order_relaxed);
 
+    // Automation is selected from the effective audio position after seek
+    // acceptance, independent of the arrangement playback-mode flag.
+    const auto automationCandidate = sectionAutomationTimeline.select(transportClock.getPositionSeconds());
+    if (automationCandidate.valid) audioAutomationSelection = automationCandidate;
+    publishSectionAutomationSelection(audioAutomationSelection);
+    audioAutomationInitialPads = resolveSectionAutomationPads(audioAutomationSelection);
+
     // Every audible source participates in the same global solo domain. Click
     // Dyn remains an independent bus even when the song also contains a click
     // stem, and disabled virtual buses do not silence the song.
@@ -1013,18 +1023,18 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const int listeningStem = (listeningState >> 2) - 1;
     for (int i = 0; i < stemCount; ++i) {
       auto& track = stemTracks[static_cast<size_t>(i)];
+      track->clearMixStateTransitions();
       const bool isClickGuideStem =
           stemClickGuideStates[static_cast<size_t>(i)].load(
               std::memory_order_relaxed);
       const bool mutedBySection =
           skipArrangementPartThisBlock ||
           (muteSectionInstrumentsThisBlock && !isClickGuideStem);
-      track->setMuted(
-          mutedBySection ||
-          stemMuteStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
+      const auto automatedMix = resolveSectionAutomationStem(i, audioAutomationSelection);
+      track->setMuted(mutedBySection || automatedMix.mute);
       track->setSoloed(stemSoloStates[static_cast<size_t>(i)].load(std::memory_order_relaxed));
-      track->setVolume(juce::jlimit(0.0f, 1.0f, stemVolumes[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
-      track->setTrim(juce::jlimit(0.0f, 2.0f, stemGains[static_cast<size_t>(i)].load(std::memory_order_relaxed)));
+      track->setVolume(automatedMix.volume);
+      track->setTrim(automatedMix.gain);
       track->setPracticeListeningGain(
           playworship::audio::practiceListening::gainFor(
               listeningMode, i == listeningStem, isClickGuideStem));
@@ -1733,6 +1743,69 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             : 0;
       }
 
+      // Enumerate every source section edge in the actual rendered spans.
+      // A long callback may cross more than one section (or an annotation
+      // gap); loops/jumps contribute a prefix and a destination suffix.
+      if (!isSectionAutomationEditing()) {
+        uint64_t previousAutomationToken = audioAutomationSelection.token;
+        const auto enqueueAutomationBoundary = [&](const int sourceOffset, const double destinationSeconds) {
+          if (sourceOffset < 0 || sourceOffset >= sourceFramesThisBlock) return;
+          const auto selected = sectionAutomationTimeline.select(destinationSeconds,
+              audioAutomationSelection.bank, audioAutomationSelection.sequence);
+          if (!selected.valid) return;
+          if (previousAutomationToken != selected.token) {
+            auto previousManualToken = previousAutomationToken;
+            sectionAutomationManualToken.compare_exchange_strong(previousManualToken, 0, std::memory_order_acq_rel);
+          }
+          previousAutomationToken = selected.token;
+          bool destinationSectionMuted = false, destinationSectionSkipped = false;
+          if (realtimeCustomArrangement) {
+            const auto destinationFrame = playworship::audio::TransportClock::secondsToFrames(destinationSeconds, playbackSampleRate);
+            const int sectionIndex = playworship::audio::SectionScheduler::findSection(realtimeSections, destinationFrame);
+            playworship::audio::SectionScheduler::Section section;
+            if (playworship::audio::SectionScheduler::getSection(realtimeSections, sectionIndex, section) &&
+                destinationFrame >= section.startFrame && destinationFrame < section.endFrame) {
+              destinationSectionMuted = section.muteInstruments;
+              destinationSectionSkipped = section.skipPlayback;
+            }
+          }
+          for (int index = 0; index < stemCount; ++index) {
+            const auto next = resolveSectionAutomationStem(index, selected);
+            const bool clickGuide = stemClickGuideStates[static_cast<size_t>(index)].load(std::memory_order_relaxed);
+            stemTracks[static_cast<size_t>(index)]->scheduleMixStateTransition(
+                sourceOffset, next.volume, next.gain,
+                next.mute || destinationSectionSkipped || (destinationSectionMuted && !clickGuide));
+          }
+          const int outputOffset = juce::jlimit(0, numSamples,
+              static_cast<int>(std::lround(static_cast<double>(sourceOffset) / sourceFramesThisBlock * numSamples)));
+          if (audioAutomationPadsEventCount > 0 &&
+              audioAutomationPadsEvents[static_cast<size_t>(audioAutomationPadsEventCount - 1)].outputOffset == outputOffset)
+            --audioAutomationPadsEventCount;
+          if (audioAutomationPadsEventCount < static_cast<int>(audioAutomationPadsEvents.size()))
+            audioAutomationPadsEvents[static_cast<size_t>(audioAutomationPadsEventCount++)] =
+                {outputOffset, resolveSectionAutomationPads(selected)};
+        };
+        const auto enqueueSpan = [&](const double startSeconds, const int sourceOffset, const int frameCount) {
+          std::array<double, playworship::audio::SectionAutomation::maxSections * 2> boundaries{};
+          const double endSeconds = startSeconds + static_cast<double>(frameCount) / playbackSampleRate;
+          const int count = sectionAutomationTimeline.collectBoundaries(audioAutomationSelection,
+              startSeconds, endSeconds, boundaries.data(), static_cast<int>(boundaries.size()));
+          for (int index = 0; index < count; ++index)
+            enqueueAutomationBoundary(sourceOffset + static_cast<int>(std::llround(
+                (boundaries[static_cast<size_t>(index)] - startSeconds) * playbackSampleRate)),
+                boundaries[static_cast<size_t>(index)]);
+        };
+        if (inBlockArrangementTransitionApplied) {
+          enqueueSpan(blockStartSec, 0, inBlockTransitionPrefixFrames);
+          const double destinationSeconds = playworship::audio::TransportClock::framesToSeconds(inBlockTransitionTargetFrame, playbackSampleRate);
+          enqueueAutomationBoundary(inBlockTransitionPrefixFrames, destinationSeconds);
+          enqueueSpan(destinationSeconds, inBlockTransitionPrefixFrames,
+                      sourceFramesThisBlock - inBlockTransitionPrefixFrames);
+        } else {
+          enqueueSpan(blockStartSec, 0, sourceFramesThisBlock);
+        }
+      }
+
       // ---- Benchmark: preRead ends here ----------------------------------
       // Everything before this point (state reads, section snapshot, song
       // transition gain, tempo updates, seek coordination, fade math,
@@ -2383,6 +2456,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     remoteMetronomeMeterRight.store(0.0f, std::memory_order_relaxed);
   }
 
+  if (!songLoadedForDiagnostics) {
+    const auto automationCandidate = sectionAutomationTimeline.select(0.0);
+    if (automationCandidate.valid) audioAutomationSelection = automationCandidate;
+    audioAutomationInitialPads = resolveSectionAutomationPads(audioAutomationSelection);
+  }
   if (padsPackLoaded.load(std::memory_order_relaxed)) {
     padsRenderBuffer.clear();
     bool renderedPads = false;
@@ -2391,37 +2469,88 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       if (lock.isLocked()) {
         const auto stopMask =
             midiPendingPadStopMask.exchange(0, std::memory_order_acq_rel);
-        const auto triggerMask =
-            midiPendingPadTriggerMask.exchange(0, std::memory_order_acq_rel);
-        for (int note = 0; note < 12; ++note) {
-          const auto bit = static_cast<uint16_t>(1U << note);
-          if ((stopMask & bit) != 0)
-            padsEngine.stopNote(note);
+        auto triggerMask = midiPendingPadTriggerMask.exchange(0, std::memory_order_acq_rel);
+        auto guardedStopMask = stopMask;
+        if (isSectionAutomationEditing() && sectionAutomationRemoteOwned.load(std::memory_order_acquire)) {
+          triggerMask = 0;
+          guardedStopMask = 0;
         }
         for (int note = 0; note < 12; ++note) {
           const auto bit = static_cast<uint16_t>(1U << note);
-          if ((triggerMask & bit) != 0)
+          if ((guardedStopMask & bit) != 0) {
+            if (getActivePadNoteIndex() == note) setPadNoteAutomationTarget(-1, getActivePadOctave());
+            padsEngine.stopNote(note);
+          }
+        }
+        for (int note = 0; note < 12; ++note) {
+          const auto bit = static_cast<uint16_t>(1U << note);
+          if ((triggerMask & bit) != 0) {
+            setPadNoteAutomationTarget(note, 0);
             if (padsEngine.isNoteLoaded(note)) {
               padsEngine.triggerNote(note, 0);
+              padsRenderedOctave.store(0, std::memory_order_relaxed);
               if (!padsEngine.isNoteFullyLoaded(note))
                 padsFullLoadRequested.store(true, std::memory_order_release);
             } else {
               midiPendingPadLoadMask.fetch_or(bit, std::memory_order_release);
-              midiPendingPadTriggerMask.fetch_or(bit, std::memory_order_release);
             }
+          }
         }
-        padsEngine.process(padsRenderBuffer);
+        const auto reconcilePads = [this](const playworship::audio::SectionAutomation::Pads &desired) {
+          if (padsEngine.isEnabled() != desired.enabled) padsEngine.setEnabled(desired.enabled);
+          const int active = padsEngine.getActiveNoteIndex();
+          if (!desired.enabled || desired.note < 0) {
+            if (active >= 0) padsEngine.stopNote(active);
+          } else if (active != desired.note || padsRenderedOctave.load(std::memory_order_relaxed) != desired.octave) {
+            const bool automaticNote = (desired.mask & playworship::audio::SectionAutomation::note) != 0;
+            if (automaticNote && active < 0 && !isSongPlaying() && !isSectionAutomationEditing()) return;
+            if (padsEngine.isNoteLoaded(desired.note)) {
+              padsEngine.triggerNote(desired.note, desired.octave);
+              padsRenderedOctave.store(desired.octave, std::memory_order_relaxed);
+              if (!padsEngine.isNoteFullyLoaded(desired.note))
+                padsFullLoadRequested.store(true, std::memory_order_release);
+            } else {
+              midiPendingPadLoadMask.fetch_or(static_cast<uint16_t>(1U << desired.note), std::memory_order_release);
+            }
+          }
+        };
+        reconcilePads(audioAutomationInitialPads);
+        int renderedThrough = 0;
+        for (int index = 0; index < audioAutomationPadsEventCount; ++index) {
+          const auto &event = audioAutomationPadsEvents[static_cast<size_t>(index)];
+          if (event.outputOffset > renderedThrough) {
+            juce::AudioBuffer<float> span(padsRenderBuffer.getArrayOfWritePointers(),
+                padsRenderBuffer.getNumChannels(), renderedThrough, event.outputOffset - renderedThrough);
+            padsEngine.process(span);
+          }
+          reconcilePads(event.pads);
+          renderedThrough = event.outputOffset;
+        }
+        if (renderedThrough < numSamples) {
+          juce::AudioBuffer<float> span(padsRenderBuffer.getArrayOfWritePointers(),
+              padsRenderBuffer.getNumChannels(), renderedThrough, numSamples - renderedThrough);
+          padsEngine.process(span);
+        }
         renderedPads = true;
       }
     }
     if (renderedPads) {
-      const float padsOutputGain =
-          (padsMuted.load(std::memory_order_relaxed)
-               ? 0.0f
-               : juce::jlimit(0.0f, 1.0f, padsVolume.load(std::memory_order_relaxed))) *
-          juce::jlimit(0.0f, 2.0f, padsGain.load(std::memory_order_relaxed));
-      if (!juce::approximatelyEqual(padsOutputGain, 1.0f))
-        padsRenderBuffer.applyGain(padsOutputGain);
+      const auto initialPads = audioAutomationInitialPads;
+      const bool mutedPads = padsMuted.load(std::memory_order_relaxed);
+      padsMixSmoother.setTargetValue(mutedPads ? 0.0f : initialPads.volume * initialPads.gain);
+      int nextAutomationEvent = 0;
+      if (audioAutomationPadsEventCount == 0 && !padsMixSmoother.isSmoothing()) {
+        padsRenderBuffer.applyGain(padsMixSmoother.getCurrentValue());
+      } else for (int sample = 0; sample < numSamples; ++sample) {
+        while (nextAutomationEvent < audioAutomationPadsEventCount &&
+               audioAutomationPadsEvents[static_cast<size_t>(nextAutomationEvent)].outputOffset <= sample) {
+          const auto &nextPads = audioAutomationPadsEvents[static_cast<size_t>(nextAutomationEvent++)].pads;
+          padsMixSmoother.setTargetValue(mutedPads ? 0.0f : nextPads.volume * nextPads.gain);
+        }
+        const float gain = padsMixSmoother.getNextValue();
+        for (int channel = 0; channel < padsRenderBuffer.getNumChannels(); ++channel)
+          padsRenderBuffer.getWritePointer(channel)[sample] *= gain;
+      }
       applyBufferGainRamp(padsRenderBuffer, fadeStart, fadeEnd);
 
       // Gentle safety clipper on pads bus to tame hot transients.
@@ -2466,6 +2595,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                                  outputWidth, buffer);
     }
   }
+
+  if (songLoadedForDiagnostics)
+    refreshSectionAutomation(transportClock.getPositionSeconds());
 
   dynamicGuideRenderBuffer.clear();
   if (inBlockArrangementTransitionApplied) {
@@ -3257,6 +3389,8 @@ bool MTControlsAudioProcessor::dequeueMidiControlCommand(
 
 void MTControlsAudioProcessor::executeMidiControlCommand(
     const int command) {
+  if (isSectionAutomationEditing() && sectionAutomationRemoteOwned.load(std::memory_order_acquire) &&
+      (command == midiUiCommandPadsEnable || command == midiUiCommandPadsDisable || command == midiUiCommandPadsToggle)) return;
   switch (command) {
   case midiUiCommandTransportPlayPause:
     toggleSongPlayPause();
@@ -3298,6 +3432,14 @@ void MTControlsAudioProcessor::applyMidiBindingValue(const int targetId,
                                                      const MidiBindingMode mode) {
   if (!isMidiTargetValid(targetId))
     return;
+  if (isSectionAutomationEditing() && sectionAutomationRemoteOwned.load(std::memory_order_acquire)) {
+    const bool padsTarget = targetId == midiTargetPadsVolume || targetId == midiTargetPadsGain ||
+        targetId == midiTargetPadsPower || (targetId >= midiTargetPadsNoteBase && targetId < midiTargetPadsNoteBase + 12);
+    const auto eligibleRange = [this, targetId](int base) {
+      return targetId >= base && targetId < base + maxStemCount && isStemAutomationEligible(targetId - base);
+    };
+    if (padsTarget || eligibleRange(midiTargetStemVolumeBase) || eligibleRange(midiTargetStemGainBase) || eligibleRange(midiTargetStemMuteBase)) return;
+  }
 
   const float normalized =
       juce::jlimit(0.0f, 1.0f, static_cast<float>(ccValue) / 127.0f);
@@ -4364,6 +4506,7 @@ void MTControlsAudioProcessor::stopSong() {
       std::memory_order_relaxed);
   songCurrentPositionSeconds.store(returnPositionSeconds,
                                    std::memory_order_relaxed);
+  refreshSectionAutomation(returnPositionSeconds);
   requestedSeekPosition.store(
       static_cast<juce::int64>(returnPositionSeconds * playbackSampleRate),
       std::memory_order_relaxed);
@@ -4475,6 +4618,7 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
 
   songCurrentPositionSeconds.store(target, std::memory_order_relaxed);
+  refreshSectionAutomation(target);
   if (playbackSampleRate > 0.0) {
     const juce::int64 seekSamples =
         static_cast<juce::int64>(target * playbackSampleRate);
@@ -4716,6 +4860,15 @@ double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
 
 void MTControlsAudioProcessor::setSongArrangement(
     const SongArrangementSnapshot &arrangement, bool isCustomArrangement) {
+  {
+    const juce::ScopedLock automationLock(sectionAutomationControlLock);
+    sectionAutomationEditing.store(false, std::memory_order_release);
+    sectionAutomationRemoteOwned.store(false, std::memory_order_release);
+    sectionAutomationEditingPartId.clear();
+    sectionAutomationArrangement = arrangement;
+    publishSectionAutomationLocked();
+    refreshSectionAutomation(getSongCurrentPositionSeconds());
+  }
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   constexpr double kRuntimeMinPartDurationSec = 0.25;
@@ -5200,57 +5353,412 @@ float MTControlsAudioProcessor::getStemLevel(
       std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setStemVolume(const int stemIndex,
-                                             const float volume) noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return;
-
-  stemVolumes[static_cast<size_t>(stemIndex)].store(
-      juce::jlimit(0.0f, 1.0f, volume), std::memory_order_relaxed);
+bool MTControlsAudioProcessor::isStemAutomationEligible(const int stemIndex) const noexcept {
+  return juce::isPositiveAndBelow(stemIndex, getLoadedStemCount()) &&
+      !stemClickGuideStates[static_cast<size_t>(stemIndex)].load(std::memory_order_relaxed);
 }
 
-float MTControlsAudioProcessor::getStemVolume(
-    const int stemIndex) const noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return 1.0f;
-
-  return stemVolumes[static_cast<size_t>(stemIndex)].load(
-      std::memory_order_relaxed);
+void MTControlsAudioProcessor::setSectionAutomationStemIds(const juce::StringArray &ids) {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  sectionAutomationStemIds = ids;
+  publishSectionAutomationLocked();
+  refreshSectionAutomation(getSongCurrentPositionSeconds());
 }
 
-void MTControlsAudioProcessor::setStemGain(const int stemIndex,
-                                           const float gainValue) noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return;
-
-  stemGains[static_cast<size_t>(stemIndex)].store(
-      juce::jlimit(0.0f, 2.0f, gainValue), std::memory_order_relaxed);
+void MTControlsAudioProcessor::publishSectionAutomationLocked() {
+  using Automation = playworship::audio::SectionAutomation;
+  std::vector<Automation::Part> compiled;
+  compiled.reserve(sectionAutomationArrangement.parts.size());
+  ++sectionAutomationPublicationRevision;
+  for (const auto &part : sectionAutomationArrangement.parts) {
+    if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) || part.endSec <= part.startSec)
+      continue;
+    Automation::Part out;
+    out.start = part.startSec;
+    out.end = part.endSec;
+    out.token = static_cast<uint64_t>(part.id.hashCode64()) ^
+                (sectionAutomationPublicationRevision * 0x9e3779b97f4a7c15ULL);
+    if (out.token == 0) out.token = 1;
+    for (const auto &stem : part.automation.stems) {
+      const int index = sectionAutomationStemIds.indexOf(stem.stemId);
+      if (!juce::isPositiveAndBelow(index, maxStemCount)) continue;
+      auto &target = out.stems[static_cast<size_t>(index)];
+      if (stem.volume && std::isfinite(*stem.volume)) { target.mask |= Automation::volume; target.volume = juce::jlimit(0.0f, 1.0f, *stem.volume); }
+      if (stem.gain && std::isfinite(*stem.gain)) { target.mask |= Automation::gain; target.gain = juce::jlimit(0.0f, 2.0f, *stem.gain); }
+      if (stem.mute) { target.mask |= Automation::mute; target.mute = *stem.mute; }
+    }
+    const auto &pads = part.automation.pads;
+    if (pads.volume && std::isfinite(*pads.volume)) { out.pads.mask |= Automation::volume; out.pads.volume = juce::jlimit(0.0f, 1.0f, *pads.volume); }
+    if (pads.gain && std::isfinite(*pads.gain)) { out.pads.mask |= Automation::gain; out.pads.gain = juce::jlimit(0.0f, 1.2f, *pads.gain); }
+    if (pads.enabled) { out.pads.mask |= Automation::enabled; out.pads.enabled = *pads.enabled; }
+    if (pads.noteIndex && *pads.noteIndex >= -1 && *pads.noteIndex < 12) { out.pads.mask |= Automation::note; out.pads.note = *pads.noteIndex; }
+    if (pads.octave && *pads.octave >= -3 && *pads.octave <= 3) { out.pads.mask |= Automation::octave; out.pads.octave = *pads.octave; }
+    compiled.push_back(out);
+  }
+  std::stable_sort(compiled.begin(), compiled.end(), [](const auto &a, const auto &b) {
+    return a.start == b.start ? a.end < b.end : a.start < b.start;
+  });
+  sectionAutomationTimeline.publish(compiled);
+  sectionAutomationManualToken.store(0, std::memory_order_release);
+  if (std::any_of(compiled.begin(), compiled.end(), [](const auto &part) {
+        return (part.pads.mask & (Automation::note | Automation::enabled)) != 0;
+      }))
+    startPadsPreloadAsync();
 }
 
-float MTControlsAudioProcessor::getStemGain(
-    const int stemIndex) const noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return 1.0f;
-
-  return stemGains[static_cast<size_t>(stemIndex)].load(
-      std::memory_order_relaxed);
+void MTControlsAudioProcessor::refreshSectionAutomation(const double seconds) noexcept {
+  const auto selected = sectionAutomationTimeline.select(seconds);
+  publishSectionAutomationSelection(selected);
 }
 
-void MTControlsAudioProcessor::setStemMute(const int stemIndex,
-                                           const bool muted) noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return;
-
-  stemMuteStates[static_cast<size_t>(stemIndex)].store(
-      muted, std::memory_order_relaxed);
+void MTControlsAudioProcessor::publishSectionAutomationSelection(
+    const playworship::audio::SectionAutomation::Selection &selected) noexcept {
+  if (!selected.valid) return;
+  const auto previousToken = sectionAutomationCurrentToken.load(std::memory_order_acquire);
+  if (previousToken != selected.token) {
+    auto oldManualToken = previousToken;
+    sectionAutomationManualToken.compare_exchange_strong(oldManualToken, 0, std::memory_order_acq_rel);
+  }
+  for (int index = 0; index < maxStemCount; ++index) {
+    const auto &value = selected.stems[static_cast<size_t>(index)];
+    auto &target = sectionAutomationActive.stems[static_cast<size_t>(index)];
+    target.volume.store(value.volume, std::memory_order_relaxed);
+    target.gain.store(value.gain, std::memory_order_relaxed);
+    target.mute.store(value.mute, std::memory_order_relaxed);
+    target.mask.store(value.mask, std::memory_order_release);
+  }
+  auto &target = sectionAutomationActive.pads;
+  target.volume.store(selected.pads.volume, std::memory_order_relaxed);
+  target.gain.store(selected.pads.gain, std::memory_order_relaxed);
+  target.enabled.store(selected.pads.enabled, std::memory_order_relaxed);
+  target.note.store(selected.pads.note, std::memory_order_relaxed);
+  target.octave.store(selected.pads.octave, std::memory_order_relaxed);
+  target.mask.store(selected.pads.mask, std::memory_order_release);
+  sectionAutomationCurrentToken.store(selected.token, std::memory_order_release);
 }
 
-bool MTControlsAudioProcessor::isStemMuted(const int stemIndex) const noexcept {
-  if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))
-    return false;
+void MTControlsAudioProcessor::prepareSectionAutomationManual() noexcept {
+  const auto token = sectionAutomationCurrentToken.load(std::memory_order_acquire);
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) == token) return;
+  for (auto &stem : sectionAutomationManual.stems) stem.mask.store(0, std::memory_order_relaxed);
+  sectionAutomationManual.pads.mask.store(0, std::memory_order_relaxed);
+  sectionAutomationManualToken.store(token, std::memory_order_release);
+}
 
-  return stemMuteStates[static_cast<size_t>(stemIndex)].load(
-      std::memory_order_relaxed);
+unsigned MTControlsAudioProcessor::getStemAutomationMask(const int stemIndex) const noexcept {
+  if (!isStemAutomationEligible(stemIndex)) return 0;
+  const auto &source = sectionAutomationEditing.load(std::memory_order_acquire)
+      ? sectionAutomationDraft : sectionAutomationActive;
+  return source.stems[static_cast<size_t>(stemIndex)].mask.load(std::memory_order_acquire);
+}
+
+unsigned MTControlsAudioProcessor::getPadsAutomationMask() const noexcept {
+  return (sectionAutomationEditing.load(std::memory_order_acquire)
+      ? sectionAutomationDraft : sectionAutomationActive).pads.mask.load(std::memory_order_acquire);
+}
+
+bool MTControlsAudioProcessor::isStemSectionAutomated(const int index) const noexcept {
+  return getStemAutomationMask(index) != 0;
+}
+bool MTControlsAudioProcessor::isPadsSectionAutomated() const noexcept {
+  return getPadsAutomationMask() != 0;
+}
+bool MTControlsAudioProcessor::isSectionAutomationEditing() const noexcept {
+  return sectionAutomationEditing.load(std::memory_order_acquire);
+}
+juce::String MTControlsAudioProcessor::getSectionAutomationEditingPartId() const {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  return isSectionAutomationEditing() ? sectionAutomationEditingPartId : juce::String{};
+}
+juce::String MTControlsAudioProcessor::getSectionAutomationEditingPartName() const {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  if (!isSectionAutomationEditing()) return {};
+  for (const auto &part : sectionAutomationArrangement.parts)
+    if (part.id == sectionAutomationEditingPartId) return part.name;
+  return {};
+}
+SongArrangementSnapshot MTControlsAudioProcessor::getSongArrangementSnapshot() const {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  return sectionAutomationArrangement;
+}
+
+bool MTControlsAudioProcessor::beginSectionAutomationEditing(const juce::String &partId, const bool remoteOwned) {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  if (isSectionAutomationEditing()) return false;
+  const auto found = std::find_if(sectionAutomationArrangement.parts.begin(),
+      sectionAutomationArrangement.parts.end(), [&partId](const auto &part) { return part.id == partId; });
+  if (found == sectionAutomationArrangement.parts.end()) return false;
+  pauseSong();
+  sectionAutomationEditing.store(false, std::memory_order_release);
+  sectionAutomationRemoteOwned.store(remoteOwned, std::memory_order_release);
+  for (auto &stem : sectionAutomationDraft.stems) stem.mask.store(0, std::memory_order_relaxed);
+  sectionAutomationDraft.pads.mask.store(0, std::memory_order_relaxed);
+  using Automation = playworship::audio::SectionAutomation;
+  for (const auto &stem : found->automation.stems) {
+    const int index = sectionAutomationStemIds.indexOf(stem.stemId);
+    if (!isStemAutomationEligible(index)) continue;
+    auto &target = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+    unsigned mask = 0;
+    if (stem.volume) { mask |= Automation::volume; target.volume.store(*stem.volume); }
+    if (stem.gain) { mask |= Automation::gain; target.gain.store(*stem.gain); }
+    if (stem.mute) { mask |= Automation::mute; target.mute.store(*stem.mute); }
+    target.mask.store(mask, std::memory_order_relaxed);
+  }
+  const auto &pads = found->automation.pads;
+  auto &target = sectionAutomationDraft.pads;
+  unsigned mask = 0;
+  if (pads.volume) { mask |= Automation::volume; target.volume.store(*pads.volume); }
+  if (pads.gain) { mask |= Automation::gain; target.gain.store(*pads.gain); }
+  if (pads.enabled) { mask |= Automation::enabled; target.enabled.store(*pads.enabled); }
+  if (pads.noteIndex) { mask |= Automation::note; target.note.store(*pads.noteIndex); }
+  if (pads.octave) { mask |= Automation::octave; target.octave.store(*pads.octave); }
+  target.mask.store(mask, std::memory_order_relaxed);
+  sectionAutomationEditingPartId = partId;
+  sectionAutomationEditing.store(true, std::memory_order_release);
+  return true;
+}
+
+bool MTControlsAudioProcessor::finishSectionAutomationEditing(const bool save) {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  if (!isSectionAutomationEditing()) return false;
+  bool found = false;
+  for (auto &part : sectionAutomationArrangement.parts) {
+    if (part.id != sectionAutomationEditingPartId) continue;
+    found = true;
+    if (save) {
+      using Automation = playworship::audio::SectionAutomation;
+      std::vector<SectionStemAutomation> retained;
+      for (const auto &existing : part.automation.stems) {
+        const int index = sectionAutomationStemIds.indexOf(existing.stemId);
+        if (!isStemAutomationEligible(index)) retained.push_back(existing);
+      }
+      part.automation.stems = std::move(retained);
+      for (int index = 0; index < getLoadedStemCount(); ++index) {
+        const auto &source = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+        const auto mask = source.mask.load(std::memory_order_acquire);
+        if (mask == 0 || !isStemAutomationEligible(index) || index >= sectionAutomationStemIds.size()) continue;
+        SectionStemAutomation stem;
+        stem.stemId = sectionAutomationStemIds[index];
+        if ((mask & Automation::volume) != 0) stem.volume = source.volume.load();
+        if ((mask & Automation::gain) != 0) stem.gain = source.gain.load();
+        if ((mask & Automation::mute) != 0) stem.mute = source.mute.load();
+        part.automation.stems.push_back(std::move(stem));
+      }
+      const auto &source = sectionAutomationDraft.pads;
+      const auto mask = source.mask.load(std::memory_order_acquire);
+      if ((mask & Automation::volume) != 0) part.automation.pads.volume = source.volume.load();
+      if ((mask & Automation::gain) != 0) part.automation.pads.gain = source.gain.load();
+      if ((mask & Automation::enabled) != 0) part.automation.pads.enabled = source.enabled.load();
+      if ((mask & Automation::note) != 0) part.automation.pads.noteIndex = source.note.load();
+      if ((mask & Automation::octave) != 0) part.automation.pads.octave = source.octave.load();
+    }
+    break;
+  }
+  sectionAutomationEditing.store(false, std::memory_order_release);
+  sectionAutomationEditingPartId.clear();
+  sectionAutomationRemoteOwned.store(false, std::memory_order_release);
+  if (save && found) publishSectionAutomationLocked();
+  refreshSectionAutomation(getSongCurrentPositionSeconds());
+  return found;
+}
+
+bool MTControlsAudioProcessor::clearSectionAutomation(const juce::String &partId) {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  if (isSectionAutomationEditing() && sectionAutomationEditingPartId != partId) return false;
+  for (auto &part : sectionAutomationArrangement.parts) {
+    if (part.id != partId) continue;
+    if (isSectionAutomationEditing()) {
+      sectionAutomationEditing.store(false, std::memory_order_release);
+      sectionAutomationEditingPartId.clear();
+    }
+    part.automation = {};
+    sectionAutomationRemoteOwned.store(false, std::memory_order_release);
+    publishSectionAutomationLocked();
+    refreshSectionAutomation(getSongCurrentPositionSeconds());
+    return true;
+  }
+  return false;
+}
+
+void MTControlsAudioProcessor::resetSectionAutomationState() {
+  const juce::ScopedLock lock(sectionAutomationControlLock);
+  sectionAutomationEditing.store(false, std::memory_order_release);
+  sectionAutomationEditingPartId.clear();
+  sectionAutomationArrangement = {};
+  sectionAutomationRemoteOwned.store(false, std::memory_order_release);
+  sectionAutomationStemIds.clear();
+  sectionAutomationTimeline.publish({});
+  sectionAutomationCurrentToken.store(0, std::memory_order_release);
+  sectionAutomationManualToken.store(0, std::memory_order_release);
+  for (auto &stem : sectionAutomationActive.stems) stem.mask.store(0, std::memory_order_release);
+  sectionAutomationActive.pads.mask.store(0, std::memory_order_release);
+}
+
+playworship::audio::SectionAutomation::Stem MTControlsAudioProcessor::resolveSectionAutomationStem(
+    const int index, const playworship::audio::SectionAutomation::Selection &selection) const noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  Automation::Stem result;
+  result.volume = getStemBaseVolume(index);
+  result.gain = getStemBaseGain(index);
+  result.mute = isStemBaseMuted(index);
+  if (!isStemAutomationEligible(index)) return result;
+  auto override = selection.stems[static_cast<size_t>(index)];
+  if (sectionAutomationEditing.load(std::memory_order_acquire)) {
+    const auto &draft = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+    override.mask = draft.mask.load(std::memory_order_acquire);
+    override.volume = draft.volume.load(); override.gain = draft.gain.load(); override.mute = draft.mute.load();
+  }
+  if ((override.mask & Automation::volume) != 0) result.volume = override.volume;
+  if ((override.mask & Automation::gain) != 0) result.gain = override.gain;
+  if ((override.mask & Automation::mute) != 0) result.mute = override.mute;
+  if (!isSectionAutomationEditing() && selection.token != 0 && sectionAutomationManualToken.load(std::memory_order_acquire) == selection.token) {
+    const auto &manual = sectionAutomationManual.stems[static_cast<size_t>(index)];
+    const auto mask = manual.mask.load(std::memory_order_acquire);
+    if ((mask & Automation::volume) != 0) result.volume = manual.volume.load();
+    if ((mask & Automation::gain) != 0) result.gain = manual.gain.load();
+    if ((mask & Automation::mute) != 0) result.mute = manual.mute.load();
+  }
+  return result;
+}
+
+playworship::audio::SectionAutomation::Pads MTControlsAudioProcessor::resolveSectionAutomationPads(
+    const playworship::audio::SectionAutomation::Selection &selection) const noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  Automation::Pads result;
+  result.volume = getPadsBaseVolume(); result.gain = getPadsBaseGain();
+  result.enabled = isPadsBaseEnabled(); result.note = getBasePadNoteIndex(); result.octave = getBasePadOctave();
+  auto override = selection.pads;
+  if (isSectionAutomationEditing()) {
+    const auto &draft = sectionAutomationDraft.pads;
+    override.mask = draft.mask.load(std::memory_order_acquire);
+    override.volume = draft.volume.load(); override.gain = draft.gain.load(); override.enabled = draft.enabled.load();
+    override.note = draft.note.load(); override.octave = draft.octave.load();
+  }
+  const auto apply = [&result](unsigned mask, float volume, float gain, bool enabled, int note, int octave) {
+    if ((mask & Automation::volume) != 0) result.volume = volume;
+    if ((mask & Automation::gain) != 0) result.gain = gain;
+    if ((mask & Automation::enabled) != 0) result.enabled = enabled;
+    if ((mask & Automation::note) != 0) result.note = note;
+    if ((mask & Automation::octave) != 0) result.octave = octave;
+  };
+  result.mask = override.mask;
+  apply(override.mask, override.volume, override.gain, override.enabled, override.note, override.octave);
+  if (!isSectionAutomationEditing() && selection.token != 0 && sectionAutomationManualToken.load(std::memory_order_acquire) == selection.token) {
+    const auto &manual = sectionAutomationManual.pads;
+    apply(manual.mask.load(std::memory_order_acquire), manual.volume.load(), manual.gain.load(), manual.enabled.load(), manual.note.load(), manual.octave.load());
+  }
+  return result;
+}
+
+void MTControlsAudioProcessor::setStemVolume(const int index, const float value) noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount) || !std::isfinite(value)) return;
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = juce::jlimit(0.0f, 1.0f, value);
+  if (isSectionAutomationEditing() && isStemAutomationEligible(index)) {
+    auto &target = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+    target.volume.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::volume, std::memory_order_release);
+  } else if ((getStemAutomationMask(index) & Automation::volume) != 0) {
+    prepareSectionAutomationManual();
+    auto &target = sectionAutomationManual.stems[static_cast<size_t>(index)];
+    target.volume.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::volume, std::memory_order_release);
+  } else {
+    stemVolumes[static_cast<size_t>(index)].store(normalized, std::memory_order_relaxed);
+  }
+}
+
+float MTControlsAudioProcessor::getStemBaseVolume(const int index) const noexcept {
+  return juce::isPositiveAndBelow(index, maxStemCount)
+      ? stemVolumes[static_cast<size_t>(index)].load(std::memory_order_relaxed) : 1.0f;
+}
+
+float MTControlsAudioProcessor::getStemVolume(const int index) const noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount)) return 1.0f;
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getStemAutomationMask(index) & Automation::volume) == 0) return getStemBaseVolume(index);
+  if (isSectionAutomationEditing())
+    return sectionAutomationDraft.stems[static_cast<size_t>(index)].volume.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.stems[static_cast<size_t>(index)];
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::volume) != 0)
+    return manual.volume.load(std::memory_order_relaxed);
+  return sectionAutomationActive.stems[static_cast<size_t>(index)].volume.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setStemGain(const int index, const float value) noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount) || !std::isfinite(value)) return;
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = juce::jlimit(0.0f, 2.0f, value);
+  if (isSectionAutomationEditing() && isStemAutomationEligible(index)) {
+    auto &target = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+    target.gain.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::gain, std::memory_order_release);
+  } else if ((getStemAutomationMask(index) & Automation::gain) != 0) {
+    prepareSectionAutomationManual();
+    auto &target = sectionAutomationManual.stems[static_cast<size_t>(index)];
+    target.gain.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::gain, std::memory_order_release);
+  } else {
+    stemGains[static_cast<size_t>(index)].store(normalized, std::memory_order_relaxed);
+  }
+}
+
+float MTControlsAudioProcessor::getStemBaseGain(const int index) const noexcept {
+  return juce::isPositiveAndBelow(index, maxStemCount)
+      ? stemGains[static_cast<size_t>(index)].load(std::memory_order_relaxed) : 1.0f;
+}
+
+float MTControlsAudioProcessor::getStemGain(const int index) const noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount)) return 1.0f;
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getStemAutomationMask(index) & Automation::gain) == 0) return getStemBaseGain(index);
+  if (isSectionAutomationEditing())
+    return sectionAutomationDraft.stems[static_cast<size_t>(index)].gain.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.stems[static_cast<size_t>(index)];
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::gain) != 0)
+    return manual.gain.load(std::memory_order_relaxed);
+  return sectionAutomationActive.stems[static_cast<size_t>(index)].gain.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setStemMute(const int index, const bool value) noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount)) return;
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = value;
+  if (isSectionAutomationEditing() && isStemAutomationEligible(index)) {
+    auto &target = sectionAutomationDraft.stems[static_cast<size_t>(index)];
+    target.mute.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::mute, std::memory_order_release);
+  } else if ((getStemAutomationMask(index) & Automation::mute) != 0) {
+    prepareSectionAutomationManual();
+    auto &target = sectionAutomationManual.stems[static_cast<size_t>(index)];
+    target.mute.store(normalized, std::memory_order_relaxed);
+    target.mask.fetch_or(Automation::mute, std::memory_order_release);
+  } else {
+    stemMuteStates[static_cast<size_t>(index)].store(normalized, std::memory_order_relaxed);
+  }
+}
+
+bool MTControlsAudioProcessor::isStemBaseMuted(const int index) const noexcept {
+  return juce::isPositiveAndBelow(index, maxStemCount)
+      ? stemMuteStates[static_cast<size_t>(index)].load(std::memory_order_relaxed) : false;
+}
+
+bool MTControlsAudioProcessor::isStemMuted(const int index) const noexcept {
+  if (!juce::isPositiveAndBelow(index, maxStemCount)) return false;
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getStemAutomationMask(index) & Automation::mute) == 0) return isStemBaseMuted(index);
+  if (isSectionAutomationEditing())
+    return sectionAutomationDraft.stems[static_cast<size_t>(index)].mute.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.stems[static_cast<size_t>(index)];
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::mute) != 0)
+    return manual.mute.load(std::memory_order_relaxed);
+  return sectionAutomationActive.stems[static_cast<size_t>(index)].mute.load(std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::setStemSolo(const int stemIndex,
@@ -5576,7 +6084,10 @@ void MTControlsAudioProcessor::startPadsPreloadAsync() {
         int expected = requested;
         if (pendingPadNote.compare_exchange_strong(
                 expected, -1, std::memory_order_acq_rel) && ready &&
-            !padsPreloadShouldExit.load(std::memory_order_acquire)) {
+            !padsPreloadShouldExit.load(std::memory_order_acquire) &&
+            getActivePadNoteIndex() == requested) {
+          padsEngine.setEnabled(isPadsEnabled());
+          padsRenderedOctave.store(pendingPadOctave.load(std::memory_order_acquire), std::memory_order_relaxed);
           padsEngine.triggerNote(requested,
               pendingPadOctave.load(std::memory_order_acquire));
           padsFullLoadRequested.store(true, std::memory_order_release);
@@ -5708,34 +6219,99 @@ void MTControlsAudioProcessor::refreshPadsRoutingFromSettings() noexcept {
   padsOutputWidth.store(width, std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setPadsEnabled(const bool enabled) noexcept {
-  padsEnabledState.store(enabled, std::memory_order_relaxed);
-  const juce::SpinLock::ScopedLockType lock(padsStateLock);
-  if (!enabled)
-    pendingPadNote.store(-1, std::memory_order_release);
-  padsEngine.setEnabled(enabled);
+void MTControlsAudioProcessor::setPadsEnabled(const bool value) noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = value;
+  if (isSectionAutomationEditing()) {
+    sectionAutomationDraft.pads.enabled.store(normalized, std::memory_order_relaxed);
+    sectionAutomationDraft.pads.mask.fetch_or(Automation::enabled, std::memory_order_release);
+  } else if ((getPadsAutomationMask() & Automation::enabled) != 0) {
+    prepareSectionAutomationManual();
+    sectionAutomationManual.pads.enabled.store(normalized, std::memory_order_relaxed);
+    sectionAutomationManual.pads.mask.fetch_or(Automation::enabled, std::memory_order_release);
+  } else {
+    padsEnabledState.store(normalized, std::memory_order_relaxed);
+  }
 }
 
-bool MTControlsAudioProcessor::isPadsEnabled() const noexcept {
+bool MTControlsAudioProcessor::isPadsBaseEnabled() const noexcept {
   return padsEnabledState.load(std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setPadsVolume(const float volume) noexcept {
-  padsVolume.store(juce::jlimit(0.0f, 1.0f, volume),
-                   std::memory_order_relaxed);
+bool MTControlsAudioProcessor::isPadsEnabled() const noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getPadsAutomationMask() & Automation::enabled) == 0) return isPadsBaseEnabled();
+  if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.enabled.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.pads;
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::enabled) != 0)
+    return manual.enabled.load(std::memory_order_relaxed);
+  return sectionAutomationActive.pads.enabled.load(std::memory_order_relaxed);
 }
 
-float MTControlsAudioProcessor::getPadsVolume() const noexcept {
+void MTControlsAudioProcessor::setPadsVolume(const float value) noexcept {
+  if (!std::isfinite(value)) return;
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = juce::jlimit(0.0f, 1.0f, value);
+  if (isSectionAutomationEditing()) {
+    sectionAutomationDraft.pads.volume.store(normalized, std::memory_order_relaxed);
+    sectionAutomationDraft.pads.mask.fetch_or(Automation::volume, std::memory_order_release);
+  } else if ((getPadsAutomationMask() & Automation::volume) != 0) {
+    prepareSectionAutomationManual();
+    sectionAutomationManual.pads.volume.store(normalized, std::memory_order_relaxed);
+    sectionAutomationManual.pads.mask.fetch_or(Automation::volume, std::memory_order_release);
+  } else {
+    padsVolume.store(normalized, std::memory_order_relaxed);
+  }
+}
+
+float MTControlsAudioProcessor::getPadsBaseVolume() const noexcept {
   return padsVolume.load(std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setPadsGain(const float gainValue) noexcept {
-  padsGain.store(juce::jlimit(0.0f, 1.2f, gainValue),
-                 std::memory_order_relaxed);
+float MTControlsAudioProcessor::getPadsVolume() const noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getPadsAutomationMask() & Automation::volume) == 0) return getPadsBaseVolume();
+  if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.volume.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.pads;
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::volume) != 0)
+    return manual.volume.load(std::memory_order_relaxed);
+  return sectionAutomationActive.pads.volume.load(std::memory_order_relaxed);
+}
+
+void MTControlsAudioProcessor::setPadsGain(const float value) noexcept {
+  if (!std::isfinite(value)) return;
+  using Automation = playworship::audio::SectionAutomation;
+  const auto normalized = juce::jlimit(0.0f, 1.2f, value);
+  if (isSectionAutomationEditing()) {
+    sectionAutomationDraft.pads.gain.store(normalized, std::memory_order_relaxed);
+    sectionAutomationDraft.pads.mask.fetch_or(Automation::gain, std::memory_order_release);
+  } else if ((getPadsAutomationMask() & Automation::gain) != 0) {
+    prepareSectionAutomationManual();
+    sectionAutomationManual.pads.gain.store(normalized, std::memory_order_relaxed);
+    sectionAutomationManual.pads.mask.fetch_or(Automation::gain, std::memory_order_release);
+  } else {
+    padsGain.store(normalized, std::memory_order_relaxed);
+  }
+}
+
+float MTControlsAudioProcessor::getPadsBaseGain() const noexcept {
+  return padsGain.load(std::memory_order_relaxed);
 }
 
 float MTControlsAudioProcessor::getPadsGain() const noexcept {
-  return padsGain.load(std::memory_order_relaxed);
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getPadsAutomationMask() & Automation::gain) == 0) return getPadsBaseGain();
+  if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.gain.load(std::memory_order_relaxed);
+  const auto &manual = sectionAutomationManual.pads;
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) ==
+          sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (manual.mask.load(std::memory_order_acquire) & Automation::gain) != 0)
+    return manual.gain.load(std::memory_order_relaxed);
+  return sectionAutomationActive.pads.gain.load(std::memory_order_relaxed);
 }
 
 void MTControlsAudioProcessor::setPadsCrossfadePreset(
@@ -5765,8 +6341,42 @@ void MTControlsAudioProcessor::beginPadsSongTransitionFadeIn() noexcept {
   padsEngine.beginSongTransitionFadeIn();
 }
 
-void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
-                                              const int octave) {
+int MTControlsAudioProcessor::getBasePadNoteIndex() const noexcept { return padsBaseNote.load(std::memory_order_relaxed); }
+int MTControlsAudioProcessor::getBasePadOctave() const noexcept { return padsBaseOctave.load(std::memory_order_relaxed); }
+int MTControlsAudioProcessor::getActivePadOctave() const noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  if ((getPadsAutomationMask() & Automation::octave) == 0) return getBasePadOctave();
+  if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.octave.load();
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) == sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (sectionAutomationManual.pads.mask.load(std::memory_order_acquire) & Automation::octave) != 0)
+    return sectionAutomationManual.pads.octave.load();
+  return sectionAutomationActive.pads.octave.load();
+}
+
+void MTControlsAudioProcessor::setPadNoteAutomationTarget(const int note, const int octave) noexcept {
+  using Automation = playworship::audio::SectionAutomation;
+  if (isSectionAutomationEditing()) {
+    sectionAutomationDraft.pads.note.store(note, std::memory_order_relaxed);
+    sectionAutomationDraft.pads.octave.store(octave, std::memory_order_relaxed);
+    sectionAutomationDraft.pads.mask.fetch_or(Automation::note | Automation::octave, std::memory_order_release);
+  } else if ((getPadsAutomationMask() & (Automation::note | Automation::octave)) != 0) {
+    prepareSectionAutomationManual();
+    sectionAutomationManual.pads.note.store(note, std::memory_order_relaxed);
+    sectionAutomationManual.pads.octave.store(octave, std::memory_order_relaxed);
+    sectionAutomationManual.pads.mask.fetch_or(Automation::note | Automation::octave, std::memory_order_release);
+  } else {
+    padsBaseNote.store(note, std::memory_order_relaxed);
+    padsBaseOctave.store(octave, std::memory_order_relaxed);
+  }
+}
+
+void MTControlsAudioProcessor::triggerPadNote(const int noteIndex, const int octave) {
+  if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount)) return;
+  setPadNoteAutomationTarget(noteIndex, juce::jlimit(-3, 3, octave));
+  triggerPadNoteInternal(noteIndex, octave);
+}
+
+void MTControlsAudioProcessor::triggerPadNoteInternal(const int noteIndex, const int octave) {
   const auto triggerStart = juce::Time::getHighResolutionTicks();
   if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount))
     return;
@@ -5775,7 +6385,10 @@ void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
     const juce::SpinLock::ScopedLockType lock(padsStateLock);
     if (padsEngine.isNoteLoaded(noteIndex)) {
       pendingPadNote.store(-1, std::memory_order_release);
-      padsEngine.triggerNote(noteIndex, octave);
+      padsEngine.setEnabled(isPadsEnabled());
+      if (padsEngine.getActiveNoteIndex() != noteIndex || padsRenderedOctave.load(std::memory_order_relaxed) != octave)
+        padsEngine.triggerNote(noteIndex, octave);
+      padsRenderedOctave.store(octave, std::memory_order_relaxed);
       if (!padsEngine.isNoteFullyLoaded(noteIndex))
         padsFullLoadRequested.store(true, std::memory_order_release);
       resident = true;
@@ -5794,10 +6407,17 @@ void MTControlsAudioProcessor::triggerPadNote(const int noteIndex,
 
 void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
     const int noteIndex, const int octave) {
-  triggerPadNote(noteIndex, octave);
+  if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount)) return;
+  padsBaseNote.store(noteIndex, std::memory_order_relaxed);
+  padsBaseOctave.store(juce::jlimit(-3, 3, octave), std::memory_order_relaxed);
+  const int effectiveNote = getActivePadNoteIndex();
+  const bool heldAutomatedNote = (getPadsAutomationMask() & playworship::audio::SectionAutomation::note) != 0 &&
+      padsEngine.getActiveNoteIndex() < 0 && !isSongPlaying() && !isSectionAutomationEditing();
+  if (effectiveNote >= 0 && !heldAutomatedNote) triggerPadNoteInternal(effectiveNote, getActivePadOctave());
 }
 
 void MTControlsAudioProcessor::stopPadNote(const int noteIndex) {
+  if (getActivePadNoteIndex() == noteIndex) setPadNoteAutomationTarget(-1, getActivePadOctave());
   const juce::SpinLock::ScopedLockType lock(padsStateLock);
   int pendingNote = noteIndex;
   pendingPadNote.compare_exchange_strong(pendingNote, -1,
@@ -5806,10 +6426,14 @@ void MTControlsAudioProcessor::stopPadNote(const int noteIndex) {
 }
 
 int MTControlsAudioProcessor::getActivePadNoteIndex() const noexcept {
-  const int pendingNote = pendingPadNote.load(std::memory_order_acquire);
-  if (juce::isPositiveAndBelow(pendingNote, PadsEngine::kNoteCount))
-    return pendingNote;
-  return padsEngine.getActiveNoteIndex();
+  using Automation = playworship::audio::SectionAutomation;
+  if (!isPadsEnabled()) return -1;
+  if ((getPadsAutomationMask() & Automation::note) == 0) return getBasePadNoteIndex();
+  if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.note.load();
+  if (sectionAutomationManualToken.load(std::memory_order_acquire) == sectionAutomationCurrentToken.load(std::memory_order_acquire) &&
+      (sectionAutomationManual.pads.mask.load(std::memory_order_acquire) & Automation::note) != 0)
+    return sectionAutomationManual.pads.note.load();
+  return sectionAutomationActive.pads.note.load();
 }
 
 float MTControlsAudioProcessor::getPadsOutputLevel() const noexcept {
@@ -6101,6 +6725,7 @@ bool MTControlsAudioProcessor::isClickDivisionEnabled() const noexcept {
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
+  resetSectionAutomationState();
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   loadedSongLengthSeconds = 0.0;

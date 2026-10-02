@@ -74,6 +74,7 @@ public:
   void setMuteAlignedToFader(bool aligned);
   void setChannelBandColours(juce::Colour bandColour, juce::Colour textColour);
   void setCardBgColour(juce::Colour colour);
+  void setSectionAutomationState(bool automated, bool editing);
   void refreshThemeColours();
   void setOnVolumeChanged(std::function<void(float)> cb);
   void setOnVolumeDragEnded(std::function<void(float)> cb);
@@ -151,6 +152,8 @@ private:
   bool muteAlignedToFader = false;
   bool midiLearnSelectable = false;
   bool gainValueTooltipVisible = false;
+  bool sectionAutomated = false;
+  bool sectionAutomationEditing = false;
   int midiLearnPendingTargetId = -1;
   int midiVolumeTargetId = -1;
   int midiGainTargetId = -1;
@@ -162,7 +165,7 @@ private:
   std::function<void(int)> onMidiLearnTargetSelected;
 
   void timerCallback() override;
-  void updateMidiLearnBlinkTimer();
+  void updateHighlightTimer();
   void refreshMidiLearnTooltips();
 
   static juce::String formatGainDecibels(float gain);

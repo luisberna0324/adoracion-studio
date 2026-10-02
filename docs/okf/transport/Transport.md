@@ -213,6 +213,30 @@ void setSongArrangement(
 bool isCustomArrangementActive() const noexcept;
 ```
 
+### Automatización de secciones
+
+`SongArrangementPartSnapshot::automation` guarda una mezcla parcial por ID de
+sección y `stemId`. El motor la aplica también en el arrange normal, según la
+posición efectiva de audio: seeks, loops, jumps y huecos recuperan su mezcla sin
+depender de un timer de UI. Instrumentos admiten volumen/ganancia/mute; Pads
+admite volumen/ganancia/power/nota/octava. Click, guía, Solo, master y ruteo
+mantienen su control habitual.
+
+`beginSectionAutomationEditing(partId)` pausa y fija un borrador; otro Begin se
+rechaza hasta guardar o cancelar. Los setters existentes ajustan ese borrador.
+`finishSectionAutomationEditing(save)` guarda o cancela sin reanudar;
+`clearSectionAutomation(partId)` borra el preset de la sección editada.
+`getSongArrangementSnapshot()` entrega sólo datos confirmados. La persistencia
+de la mezcla general utiliza getters `Base` para evitar capturar un preset o
+una sustitución manual temporal como mezcla global.
+
+El callback conserva una publicación coherente, aplica todos los límites que
+cruza su bloque y programa rampas de mezcla de 30 ms. Pads no relanza una nota
+idéntica al repetir una sección. La carga y el seek detenido seleccionan sus
+valores sin iniciar sonido automatizado nuevo; Play o un preview de edición
+permiten activarlo. Ver [contrato de Section Automation](../engine/SectionAutomation.md)
+para ownership remoto, MIDI, prefetch y restitución de la mezcla base.
+
 ### Part jumps
 
 ```cpp

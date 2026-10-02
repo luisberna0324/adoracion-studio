@@ -58,6 +58,17 @@ public:
     practiceListeningGain.store(gain, std::memory_order_relaxed);
   }
 
+  // Audio-owned, fixed-capacity mix events, sorted in source-frame order.
+  static constexpr int maxMixTransitions = 1025;
+  void clearMixStateTransitions() noexcept { mixTransitionCount = 0; }
+  void scheduleMixStateTransition(int sourceOffset, float nextVolume,
+                                  float nextTrim, bool nextMuted) noexcept {
+    if (mixTransitionCount > 0 && mixTransitions[static_cast<size_t>(mixTransitionCount - 1)].offset == sourceOffset)
+      --mixTransitionCount;
+    if (mixTransitionCount >= maxMixTransitions) return;
+    mixTransitions[static_cast<size_t>(mixTransitionCount++)] =
+        {sourceOffset, nextVolume, nextTrim, nextMuted};
+  }
   void setMuted(bool shouldMute) noexcept { muted.store(shouldMute, std::memory_order_relaxed); }
   bool isMuted() const noexcept { return muted.load(std::memory_order_relaxed); }
 
@@ -127,6 +138,10 @@ private:
   std::unique_ptr<StemBufferingSource> bufferingSource;
   juce::PositionableAudioSource *activeSource = nullptr;
 
+  juce::SmoothedValue<float> mixGainSmoother{1.0f};
+  struct MixTransition { int offset = 0; float volume = 1.0f, trim = 1.0f; bool muted = false; };
+  std::array<MixTransition, maxMixTransitions> mixTransitions{};
+  int mixTransitionCount = 0;
   std::atomic<float> volume{1.0f};
   std::atomic<float> trim{1.0f};
   std::atomic<float> practiceListeningGain{1.0f};

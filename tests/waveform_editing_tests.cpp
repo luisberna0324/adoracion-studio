@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
+#include "ui/components/ChannelStripCard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -142,6 +143,36 @@ struct WaveformEditingTestAccess {
     // Exercise the same save operation as the dialog without creating a native
     // window: console CI may have no display for AlertWindow to attach to.
     waveform.applyArrangementPartRange(id, start, end);
+  }
+
+  static bool automationActionsVisible(const WaveformBar &waveform) {
+    return waveform.sectionAutomationDoneButton.isVisible() &&
+           waveform.sectionAutomationCancelButton.isVisible() &&
+           waveform.sectionAutomationClearButton.isVisible();
+  }
+  static void expectAutomationLayout(const WaveformBar &waveform) {
+    const auto bounds = waveform.getLocalBounds();
+    expect(bounds.contains(waveform.sectionAutomationLabel.getBounds()) &&
+           bounds.contains(waveform.sectionAutomationDoneButton.getBounds()) &&
+           bounds.contains(waveform.sectionAutomationCancelButton.getBounds()) &&
+           bounds.contains(waveform.sectionAutomationClearButton.getBounds()),
+           "automation actions remain inside the component at each responsive width");
+    expect(waveform.sectionAutomationLabel.getRight() <=
+           waveform.sectionAutomationClearButton.getX() &&
+           waveform.sectionAutomationClearButton.getRight() <=
+           waveform.sectionAutomationDoneButton.getX() &&
+           waveform.sectionAutomationDoneButton.getRight() <=
+           waveform.sectionAutomationCancelButton.getX(),
+           "automation labels and actions never overlap");
+  }
+  static void automationDone(WaveformBar &waveform) {
+    waveform.sectionAutomationDoneButton.onClick();
+  }
+  static void automationCancel(WaveformBar &waveform) {
+    waveform.sectionAutomationCancelButton.onClick();
+  }
+  static void automationClear(WaveformBar &waveform) {
+    waveform.sectionAutomationClearButton.onClick();
   }
 };
 
@@ -651,6 +682,86 @@ void testRangeDialogPreservesSourceAndRipple() {
 }
 } // namespace
 
+namespace {
+void testSectionAutomationResponsiveLayout() {
+  Fixture f;
+  f.waveform.setSectionAutomationState("A");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable(
+      "PW_AUTOMATION_CAPTURE_DIR", {});
+  const auto capture = [&capturePath](juce::Component &component, const juce::String &name) {
+    if (capturePath.isEmpty()) return;
+    expect(juce::File::isAbsolutePath(capturePath), "visual capture path is absolute");
+    const juce::File directory(capturePath);
+    expect(directory.createDirectory().wasOk(), "visual capture directory opens");
+    auto stream = directory.getChildFile(name + ".png").createOutputStream();
+    expect(stream != nullptr && stream->setPosition(0) && stream->truncate().wasOk(),
+        "visual capture replaces the previous PNG rather than appending to it");
+    expect(juce::PNGImageFormat().writeImageToStream(
+        component.createComponentSnapshot(component.getLocalBounds(), true, 2.0f), *stream),
+        "production component visual capture writes");
+  };
+  for (const int width : {360, 768, 1200}) {
+    f.waveform.setMinimalPhoneMode(width == 360);
+    f.waveform.setSize(width, 260);
+    WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+    capture(f.waveform, "automation-wave-" + juce::String(width));
+  }
+  ChannelStripLookAndFeel look;
+  ChannelStripCard strip("GUITAR", look, [] { return std::make_pair(0.25f, 0.22f); });
+  strip.setSize(100, 310);
+  strip.setVolume(0.45f);
+  strip.setSectionAutomationState(true, true);
+  capture(strip, "automation-strip");
+}
+
+void testSectionAutomationToolbarAndHistory() {
+  Fixture f;
+  juce::String editingId;
+  bool saved = false, cancelled = false, cleared = false;
+  f.waveform.setSectionAutomationCallbacks(
+      [&editingId](const juce::String &id) { editingId = id; return true; },
+      [&](bool save) {
+        saved = save; cancelled = !save;
+        editingId.clear(); f.waveform.setSectionAutomationState({});
+      },
+      [&](const juce::String &id) { cleared = id == "A"; },
+      [&editingId] { return editingId; });
+  const auto toolbar = WaveformEditingTestAccess::overlay(f.waveform, "A");
+  expect(toolbar.showsAutomateButton, "selected section exposes Automate in its real toolbar");
+  f.click(toolbar.automateButton.getCentre());
+  expect(editingId == "A", "Automate targets the stable ID of the clicked section");
+  expect(WaveformEditingTestAccess::automationActionsVisible(f.waveform),
+         "automation exposes Done, Cancel and Clear");
+  const int before = f.commits;
+  f.click(WaveformEditingTestAccess::bodyPoint(f.waveform, "B"));
+  expect(editingId == "A" && f.commits == before,
+         "editing remains pinned and a wave gesture cannot move another section");
+  expect(f.command('Z') && f.command('V') &&
+         f.waveform.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)),
+         "structural keyboard commands are consumed while editing automation");
+  expect(editingId == "A" && f.commits == before,
+         "keyboard commands preserve the automation draft and arrangement");
+  WaveformEditingTestAccess::automationClear(f.waveform);
+  expect(cleared, "Clear targets the edited section");
+  WaveformEditingTestAccess::automationCancel(f.waveform);
+  expect(cancelled && !WaveformEditingTestAccess::automationActionsVisible(f.waveform),
+         "Cancel restores the regular toolbar");
+  auto snapshot = WaveformEditingTestAccess::snapshot(f.waveform);
+  SectionStemAutomation guitar;
+  guitar.stemId = "guitar"; guitar.volume = 0.35f;
+  snapshot.parts[1].automation.stems.push_back(guitar);
+  f.waveform.setCommittedSectionAutomation(snapshot);
+  expect(f.part("A").automation.hasOverrides(), "committed automation updates the section");
+  expect(f.command('Z'), "automation participates in arrangement undo");
+  expect(!f.part("A").automation.hasOverrides(), "Undo restores the previous section automation");
+  // Use a fresh edit to verify Done separately from the history navigation.
+  const auto nextToolbar = WaveformEditingTestAccess::overlay(f.waveform, "A");
+  f.click(nextToolbar.automateButton.getCentre());
+  WaveformEditingTestAccess::automationDone(f.waveform);
+  expect(saved && editingId.isEmpty(), "Done completes the targeted edit");
+}
+} // namespace
+
 int main() {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr)
@@ -669,6 +780,8 @@ int main() {
     }
   };
   run("move left preserves source and undo/redo", testMoveLeftKeepsSourceAndHistory);
+  run("section automation toolbar, fixed target and undo", testSectionAutomationToolbarAndHistory);
+  run("section automation responsive layout", testSectionAutomationResponsiveLayout);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);
   run("trim and expand reopen insertion gap", testTrimAndExpandRestoresGap);

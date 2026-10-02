@@ -4,13 +4,25 @@ title: Pads
 description: Motor de pads con 12 notas, seguimiento de tonalidad y loop continuo
 resource: src/audio/PadsEngine.h
 tags: [juce, audio, pads, samples, trigger]
-timestamp: 2026-08-06T00:00:00Z
+timestamp: 2026-10-02
 ---
 
 # PadsEngine
 
 Motor de pads/samples que soporta 12 notas musicales con crossfade suave y
 reproducción continua. Un pad activo no depende del transporte de la canción.
+
+La [automatización por sección](../engine/SectionAutomation.md) puede sustituir
+volumen, ganancia, power, nota y octava. Mantiene separados los valores base y
+efectivos; repetir la misma nota/octava conserva su voz y envolvente. Cargar o
+buscar una sección detenida muestra su preset sin iniciar una voz nueva; Play o
+la edición permiten iniciarla. Una voz ya activa continúa al pausar.
+
+El seguimiento de tonalidad actualiza únicamente una nota base que ya estaba
+activa, conserva su octava y respeta el preset efectivo de la sección. Se ejecuta
+en Local/Servidor; el cliente refleja el resultado y nunca emite ese seguimiento
+automático como un gesto de nota. Abrir o refrescar el panel no escribe controles
+de power en un borrador.
 
 ## Constantes
 

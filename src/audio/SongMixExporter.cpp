@@ -6,8 +6,10 @@
 #include "DynamicGuideEngine.h"
 #include "DynamicGuideTiming.h"
 #include "SimpleDelayLine.h"
+#include "SectionScheduler.h"
 #include "../data/AssetBootstrapManager.h"
 #include "../data/SongData.h"
+#include "../data/ArrangementSourceMapping.h"
 
 #include <cmath>
 
@@ -37,6 +39,114 @@ float finiteClamped(const float value, const float minimum,
 int subdivisionForMask(const int mask) {
   return (mask & 0x04) != 0 ? 4 : ((mask & 0x02) != 0 ? 2 : 1);
 }
+
+// The bounce owns a committed snapshot. It never queries the live processor or
+// its effective/manual/draft values while rendering.
+class ExportArrangement {
+public:
+  using Scheduler = playworship::audio::SectionScheduler;
+  using Frame = Scheduler::Frame;
+  struct Mix { float volume, gain; bool muted; };
+
+  ExportArrangement(const SongArrangementSnapshot &arrangement,
+                    const double sampleRate, const double sourceLength)
+      : sourceEnd(playworship::audio::TransportClock::secondsToFrames(
+            sourceLength, sampleRate)), lengthSeconds(sourceLength) {
+    for (const auto &part : arrangement.parts) {
+      if (!std::isfinite(part.startSec) || !std::isfinite(part.endSec) ||
+          part.endSec <= part.startSec)
+        continue;
+      parts.push_back(&part);
+    }
+    std::stable_sort(parts.begin(), parts.end(), [](const auto *a, const auto *b) {
+      return a->startSec == b->startSec ? a->endSec < b->endSec
+                                       : a->startSec < b->startSec;
+    });
+    // Same section capacity as the live engine.
+    if (parts.size() > static_cast<size_t>(Scheduler::maxSections))
+      parts.resize(Scheduler::maxSections);
+    double insertedSeconds = 0.0;
+    for (const auto *part : parts) {
+      const auto start = playworship::audio::TransportClock::secondsToFrames(
+          part->startSec, sampleRate);
+      const auto end = playworship::audio::TransportClock::secondsToFrames(
+          part->endSec, sampleRate);
+      entries.push_back({start, end, part});
+      boundaries.push_back(start);
+      boundaries.push_back(end);
+      lengthSeconds = std::max(lengthSeconds, part->endSec);
+      if (part->sourcePartId.isEmpty())
+        continue;
+      const auto range = part->sourceEndSec > part->sourceStartSec
+          ? arrangement_source_mapping::clampRange(
+                part->sourceStartSec, part->sourceEndSec, sourceLength)
+          : arrangement_source_mapping::sourceRangeForOriginalPart(
+                arrangement.parts, *part, sourceLength);
+      if (!std::isfinite(range.first) || !std::isfinite(range.second) ||
+          range.second <= range.first)
+        continue;
+      auto &section = sourceMap.sections[static_cast<size_t>(sourceMap.count++)];
+      section.startFrame = start;
+      section.endFrame = end;
+      section.sourceStartFrame = playworship::audio::TransportClock::secondsToFrames(
+          range.first, sampleRate);
+      section.sourceEndFrame = playworship::audio::TransportClock::secondsToFrames(
+          range.second, sampleRate);
+      section.insertedClip = true;
+      sourceBoundaries.push_back(start);
+      sourceBoundaries.push_back(end);
+      insertedSeconds += part->endSec - part->startSec;
+    }
+    lengthSeconds = std::max(lengthSeconds, sourceLength + insertedSeconds);
+    sourceMap.valid = true;
+    for (auto *values : {&boundaries, &sourceBoundaries}) {
+      std::sort(values->begin(), values->end());
+      values->erase(std::unique(values->begin(), values->end()), values->end());
+    }
+  }
+
+  double length() const noexcept { return lengthSeconds; }
+  Frame sourceFrame(const Frame frame) const noexcept {
+    Frame source = frame;
+    Scheduler::mapFrameToSourceFrame(sourceMap, frame, sourceEnd, sourceEnd, source);
+    return std::max<Frame>(0, source);
+  }
+  Mix mixAt(const Frame frame, const StemMixExportStemState &base) const {
+    Mix mix{finiteClamped(base.volume, 0.0f, 1.0f, 1.0f),
+            finiteClamped(base.gain, 0.0f, 2.0f, 1.0f), base.muted};
+    if (base.clickGuide)
+      return mix;
+    const SongArrangementPartSnapshot *selected = nullptr;
+    for (const auto &entry : entries)
+      if (entry.start <= frame && frame < entry.end)
+        selected = entry.part;
+    if (selected == nullptr)
+      return mix;
+    if (base.stemId.isNotEmpty()) {
+      for (const auto &stem : selected->automation.stems) {
+        if (stem.stemId != base.stemId)
+          continue;
+        if (stem.volume) mix.volume = finiteClamped(*stem.volume, 0.0f, 1.0f, mix.volume);
+        if (stem.gain) mix.gain = finiteClamped(*stem.gain, 0.0f, 2.0f, mix.gain);
+        if (stem.mute) mix.muted = *stem.mute;
+      }
+    }
+    mix.muted = mix.muted || selected->muteInstruments;
+    return mix;
+  }
+
+  const std::vector<Frame> &mixBoundaries() const noexcept { return boundaries; }
+  const std::vector<Frame> &readBoundaries() const noexcept { return sourceBoundaries; }
+
+private:
+  struct Entry { Frame start, end; const SongArrangementPartSnapshot *part; };
+  std::vector<const SongArrangementPartSnapshot *> parts;
+  std::vector<Entry> entries;
+  std::vector<Frame> boundaries, sourceBoundaries;
+  Scheduler::Snapshot sourceMap;
+  Frame sourceEnd;
+  double lengthSeconds;
+};
 } // namespace
 
 namespace {
@@ -135,7 +245,6 @@ SongMixExporter::Result SongMixExporter::exportToWav(
     entry.state = stem;
     entry.track = std::make_unique<StemTrack>(std::move(reader), readThread,
                                                sourceSampleRate, 262144, false);
-    entry.track->prepareToPlay(kExportBlockSize, sampleRate);
     loaded.push_back(std::move(entry));
   }
   if (loaded.empty()) {
@@ -143,16 +252,18 @@ SongMixExporter::Result SongMixExporter::exportToWav(
     return result;
   }
 
+  const ExportArrangement arrangement(request.arrangement, sampleRate,
+                                       maxLengthSeconds);
   const double startSeconds =
       std::isfinite(request.startSeconds)
           ? juce::jmax(0.0, request.startSeconds)
           : 0.0;
   double endSeconds =
       std::isfinite(request.endSeconds) ? request.endSeconds
-                                        : maxLengthSeconds;
+                                        : arrangement.length();
   if (endSeconds <= startSeconds)
-    endSeconds = maxLengthSeconds;
-  endSeconds = juce::jmin(endSeconds, maxLengthSeconds);
+    endSeconds = arrangement.length();
+  endSeconds = juce::jmin(endSeconds, arrangement.length());
   if (endSeconds <= startSeconds) {
     result.error = "El rango de exportación no es válido.";
     return result;
@@ -204,14 +315,14 @@ SongMixExporter::Result SongMixExporter::exportToWav(
     auto &stem = loaded[i];
     clickGuide[i].store(stem.state.clickGuide, std::memory_order_relaxed);
     pitchShiftable[i].store(stem.state.pitchShiftable, std::memory_order_relaxed);
-    stem.track->setVolume(
-        finiteClamped(stem.state.volume, 0.0f, 1.0f, 1.0f));
-    stem.track->setTrim(
-        finiteClamped(stem.state.gain, 0.0f, 2.0f, 1.0f));
-    stem.track->setMuted(stem.state.muted);
+    const auto initial = arrangement.mixAt(startFrame, stem.state);
+    stem.track->setVolume(initial.volume);
+    stem.track->setTrim(initial.gain);
+    stem.track->setMuted(initial.muted);
     stem.track->setSoloed(stem.state.soloed);
     stem.track->setGlobalMixState(1.0f, anySolo);
-    stem.track->setNextReadPosition(startFrame);
+    stem.track->prepareToPlay(kExportBlockSize, sampleRate);
+    stem.track->setNextReadPosition(arrangement.sourceFrame(startFrame));
     tracks.push_back(std::move(stem.track));
   }
 
@@ -336,7 +447,7 @@ SongMixExporter::Result SongMixExporter::exportToWav(
       static_cast<juce::int64>(outputLatencySamples) + totalFrames;
 
   for (auto &track : tracks)
-    track->setNextReadPosition(startFrame);
+    track->setNextReadPosition(arrangement.sourceFrame(startFrame));
 
   clickDelay.setDelay(outputLatencySamples);
   guideDelay.setDelay(outputLatencySamples);
@@ -393,6 +504,36 @@ SongMixExporter::Result SongMixExporter::exportToWav(
         generated + blockOutputFrames > latencyBoundary) {
       blockOutputFrames = latencyBoundary - generated;
     }
+    if (feedingSource) {
+      const auto begin = startFrame +
+          timeline.sourceFrameAtOutputBoundary(sourceOutputGenerated);
+      const auto next = std::upper_bound(arrangement.readBoundaries().begin(),
+                                         arrangement.readBoundaries().end(), begin);
+      if (next != arrangement.readBoundaries().end() &&
+          *next <= startFrame + timeline.sourceFrameAtOutputBoundary(
+              sourceOutputGenerated + blockOutputFrames)) {
+        // Stop at the first source splice. At tempo != 1 its exact source
+        // sample may fall inside the last output frame; the track assembles
+        // that frame's prefix/suffix at the exact source offset below.
+        juce::int64 low = sourceOutputGenerated + 1;
+        juce::int64 high = sourceOutputGenerated + blockOutputFrames;
+        while (low < high) {
+          const auto middle = low + (high - low) / 2;
+          if (startFrame + timeline.sourceFrameAtOutputBoundary(middle) < *next)
+            low = middle + 1;
+          else
+            high = middle;
+        }
+        blockOutputFrames = low - sourceOutputGenerated;
+      }
+      // A one-output-frame slice at the latency cut can round to zero input
+      // at slow tempo. Bungee requires real input; combine that slice with
+      // the next output frame instead of inserting a silent sample.
+      if (blockOutputFrames < outputFramesRemaining &&
+          timeline.sourceFrameAtOutputBoundary(sourceOutputGenerated + blockOutputFrames) ==
+              timeline.sourceFrameAtOutputBoundary(sourceOutputGenerated))
+        ++blockOutputFrames;
+    }
     const int outputFrames = static_cast<int>(blockOutputFrames);
     // Keep the processor's fractional scheduler moving for the tail. While
     // source is active, Timeline overrides this nominal value so the finite
@@ -405,11 +546,34 @@ SongMixExporter::Result SongMixExporter::exportToWav(
       const auto sourceFrameEnd = timeline.sourceFrameAtOutputBoundary(
           sourceOutputGenerated + outputFrames);
       inputFrames = static_cast<int>(sourceFrameEnd - sourceFrameStart);
-      if (inputFrames <= 0) {
-        result.error = "El mapeo temporal produjo un bloque fuente vacío.";
-        writer.reset();
-        renderFile.deleteFile();
-        return result;
+      const auto arrangeStart = startFrame + sourceFrameStart;
+      const auto arrangeEnd = startFrame + sourceFrameEnd;
+      for (size_t index = 0; index < tracks.size(); ++index) {
+        auto &track = *tracks[index];
+        const auto initial = arrangement.mixAt(arrangeStart, loaded[index].state);
+        track.setVolume(initial.volume);
+        track.setTrim(initial.gain);
+        track.setMuted(initial.muted);
+        track.clearMixStateTransitions();
+        for (auto boundary = std::upper_bound(arrangement.mixBoundaries().begin(),
+                                               arrangement.mixBoundaries().end(), arrangeStart);
+             boundary != arrangement.mixBoundaries().end() && *boundary < arrangeEnd;
+             ++boundary) {
+          const auto target = arrangement.mixAt(*boundary, loaded[index].state);
+          track.scheduleMixStateTransition(static_cast<int>(*boundary - arrangeStart),
+                                            target.volume, target.gain, target.muted);
+        }
+        const auto sourcePosition = arrangement.sourceFrame(arrangeStart);
+        if (track.getNextReadPosition() != sourcePosition)
+          track.setNextReadPosition(sourcePosition);
+        const auto splice = std::upper_bound(arrangement.readBoundaries().begin(),
+                                             arrangement.readBoundaries().end(), arrangeStart);
+        if (splice != arrangement.readBoundaries().end() && *splice <= arrangeEnd) {
+          const auto target = arrangement.sourceFrame(*splice);
+          const auto offset = static_cast<int>(*splice - arrangeStart);
+          if (sourcePosition + offset != target)
+            track.scheduleReadDiscontinuity(offset, target);
+        }
       }
     } else if (!tailPrepared) {
       // Never read material located after the selected source range while

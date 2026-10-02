@@ -4,6 +4,7 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 #include <vector>
 
 struct ImportedStemData {
@@ -18,6 +19,52 @@ struct ImportedStemData {
   int sampleRate = 0;
   int channels = 0;
 };
+
+// Sparse section values: an unset property keeps the song's base mix.
+struct SectionStemAutomation {
+  juce::String stemId;
+  std::optional<float> volume;
+  std::optional<float> gain;
+  std::optional<bool> mute;
+
+  bool operator==(const SectionStemAutomation &other) const {
+    return stemId == other.stemId && volume == other.volume &&
+           gain == other.gain && mute == other.mute;
+  }
+};
+
+struct SectionPadsAutomation {
+  std::optional<float> volume;
+  std::optional<float> gain;
+  std::optional<bool> enabled;
+  std::optional<int> noteIndex;
+  std::optional<int> octave;
+
+  bool operator==(const SectionPadsAutomation &other) const {
+    return volume == other.volume && gain == other.gain &&
+           enabled == other.enabled && noteIndex == other.noteIndex &&
+           octave == other.octave;
+  }
+};
+
+struct SectionAutomationSnapshot {
+  std::vector<SectionStemAutomation> stems;
+  SectionPadsAutomation pads;
+
+  bool hasOverrides() const;
+  bool operator==(const SectionAutomationSnapshot &other) const {
+    return stems == other.stems && pads == other.pads;
+  }
+  bool operator!=(const SectionAutomationSnapshot &other) const {
+    return !(*this == other);
+  }
+};
+
+// The decoder accepts an absent legacy value as empty. Invalid input is rejected
+// atomically, leaving the supplied output unchanged.
+juce::var sectionAutomationToVar(const SectionAutomationSnapshot &automation);
+bool sectionAutomationFromVar(const juce::var &value,
+                              SectionAutomationSnapshot &outAutomation);
 
 struct SongArrangementPartSnapshot {
   juce::String id;
@@ -37,6 +84,7 @@ struct SongArrangementPartSnapshot {
   bool utilityCue = false;
   bool muteInstruments = false;
   bool skipPlayback = false;
+  SectionAutomationSnapshot automation;
 };
 
 struct SongArrangementSnapshot {

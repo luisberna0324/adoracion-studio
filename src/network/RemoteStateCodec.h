@@ -4,6 +4,18 @@
 #include <map>
 
 namespace playworship::remote {
+inline bool validateArrangementAutomation(const juce::var &arrangement) {
+  const auto *parts = arrangement.getProperty("parts", {}).getArray();
+  if (parts == nullptr) return false;
+  if (parts->size() > 1024) return false;
+  for (const auto &part : *parts) {
+    if (!part.isObject()) return false;
+    SectionAutomationSnapshot automation;
+    if (!sectionAutomationFromVar(part.getProperty("automation", {}), automation))
+      return false;
+  }
+  return true;
+}
 inline juce::var encodeTempoMap(const SongTempoMapSnapshot &map) {
   juce::Array<juce::var> values;
   for (const auto &r : map.regions) {
@@ -61,12 +73,16 @@ inline juce::var encodeSong(const ImportedSongData &song, bool includeArtwork = 
   for (const auto &stem : song.stems) {
     auto *s = new juce::DynamicObject();
     s->setProperty("id", stem.stemId); s->setProperty("name", stem.displayName);
+    s->setProperty("fileName", stem.fileName.replaceCharacter('\\', '/')
+        .fromLastOccurrenceOf("/", false, false));
     s->setProperty("category", stem.category); s->setProperty("include", stem.include);
     s->setProperty("duration", stem.durationSec); s->setProperty("channels", stem.channels);
     stems.add(juce::var(s));
   }
   o->setProperty("stems", stems);
   o->setProperty("tempoMap", encodeTempoMap(song.tempoMap));
+  o->setProperty("arrangement", SongLibraryStore::songDataToVar(song)
+      .getDynamicObject()->getProperty("arrangement"));
   // Include a cheap revision in metadata comparisons; never send local paths.
   if (song.artworkPath.isNotEmpty()) {
     const juce::File file(song.artworkPath);
@@ -87,11 +103,19 @@ inline ImportedSongData decodeSong(const juce::var &v) {
     if (song.stems.size() >= 64) break;
     ImportedStemData stem;
     stem.stemId = s.getProperty("id", {}).toString(); stem.displayName = s.getProperty("name", {}).toString();
+    stem.fileName = s.getProperty("fileName", {}).toString().substring(0, 512)
+        .replaceCharacter('\\', '/').fromLastOccurrenceOf("/", false, false);
     stem.category = s.getProperty("category", {}).toString(); stem.include = static_cast<bool>(s.getProperty("include", true));
     stem.durationSec = static_cast<double>(s.getProperty("duration", 0.0)); stem.channels = static_cast<int>(s.getProperty("channels", 2));
     song.stems.push_back(std::move(stem));
   }
   song.tempoMap = decodeTempoMap(v.getProperty("tempoMap", {}));
+  if (v.getProperty("arrangement", {}).isObject()) {
+    auto *carrier = new juce::DynamicObject();
+    carrier->setProperty("arrangement", v.getProperty("arrangement", {}));
+    bool changed = false;
+    song.arrangement = SongLibraryStore::songDataFromVar(juce::var(carrier), changed).arrangement;
+  }
   const auto encoded = v.getProperty("artwork", {}).toString();
   if (encoded.isNotEmpty() && encoded.length() < 200000) {
     juce::MemoryBlock data;

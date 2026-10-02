@@ -34,6 +34,7 @@ docs/okf/
 | [integrations/SentryTelemetry](integrations/SentryTelemetry.md) | Eventos categóricos privados y bridge realtime seguro hacia Sentry |
 | [processor/SongLoadProbe](processor/SongLoadProbe.md) | Telemetría del UI thread para la carga de canciones |
 | [engine/StemMixEngine](engine/StemMixEngine.md) | Motor de mezcla de stems |
+| [engine/SectionAutomation](engine/SectionAutomation.md) | Valores de mezcla por sección, selección de audio y Pads |
 | [engine/StemTrack](engine/StemTrack.md) | Track individual de audio |
 | [audio-systems/Metronome](audio-systems/Metronome.md) | Sistema de metrónomo |
 | [audio-systems/Pads](audio-systems/Pads.md) | Motor de pads/sampleos |
@@ -44,6 +45,7 @@ docs/okf/
 | [transport/Transport](transport/Transport.md) | Control de reproducción |
 | [ui/MobileLayout](ui/MobileLayout.md) | Layout responsive para teléfonos iOS y Android |
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
+| [ui/SectionAutomation](ui/SectionAutomation.md) | Edición de mezcla por sección con los controles existentes |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |

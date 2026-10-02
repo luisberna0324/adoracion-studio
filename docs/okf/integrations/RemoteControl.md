@@ -74,6 +74,44 @@ La sesión de UI vive más que los componentes que mantienen referencias a ella.
   no contienen credenciales ni rutas del servidor. Las portadas se reducen a
   160 px y la caché del cliente usa nombres derivados de SHA-256.
 
+## Automatización de secciones
+
+Local y Cliente comparten las acciones `Automatizar`, `Listo`, `Cancelar` y
+`Borrar` del panel de secciones. En Cliente, `automation.begin` identifica la
+canción y la sección por sus IDs estables. El servidor mantiene un único editor
+del borrador, ligado a la conexión y al ID del comando que lo abrió; un segundo
+cliente ve sus cambios y la etiqueta de edición, pero tiene deshabilitados los
+controles automatizables de instrumentos/Pads y no puede guardar, cancelar o
+borrar ese borrador. Master, Click/Guía, Solo y ruteo siguen siendo manuales.
+Los controles locales del servidor también respetan esa propiedad.
+El motor bloquea los controles MIDI físicos automatizables durante ese borrador
+remoto, incluso los mensajes ya encolados. Master, Click/Guía y Solo mantienen
+su funcionamiento manual.
+
+Durante la edición, volumen/ganancia/mute de instrumentos y los controles
+automatizables de Pads llevan un
+envoltorio con `songId`, `editCommandId` y `controlValue`. El servidor verifica
+los tres antes de aplicar el movimiento. Un mensaje atrasado de una edición
+terminada no se interpreta como un cambio de la mezcla base. `automation.finish`
+identifica la misma sección y lease e incluye `save`; `automation.clear` puede
+borrar una sección sin borrador, o cancelar y borrar el borrador propio de esa
+sección. Las ediciones de estructura, ventana y mapa de tempo se rechazan
+mientras hay un borrador abierto.
+
+Guardar o borrar actualiza el arrangement comprometido del procesador, la
+Biblioteca/sidecar del servidor y la onda, y publica un snapshot inmediato. La
+edición de faders de un borrador no dispara persistencia de la mezcla base. Si
+el editor se desconecta, el servidor cancela su borrador y recupera la mezcla;
+una reconexión recibe estado completo y no recupera la propiedad anterior.
+
+Los snapshots incluyen `sectionAutomation` (`editing`, `partId`, `partName`,
+`commandId`), indicadores de automatización por stem/Pads y los valores base
+además de los efectivos. `settings.arrangement.parts[].automation` conserva el
+contenido comprometido con el mismo formato canónico de ProjectStore; los
+movimientos aún sin guardar se reflejan sólo en los controles efectivos. El
+cliente mantiene su destino de edición provisional hasta confirmar/rechazar el
+inicio, evitando que la barra aparezca y desaparezca al esperar el snapshot.
+
 ## Protocolo v1
 
 - `snapshot`: estado autoritativo de transporte, canción, mezcla, ventana,

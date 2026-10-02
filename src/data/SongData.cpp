@@ -4,7 +4,140 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <unordered_set>
 #include <utility>
+
+bool SectionAutomationSnapshot::hasOverrides() const {
+  if (pads.volume || pads.gain || pads.enabled || pads.noteIndex || pads.octave)
+    return true;
+  return std::any_of(stems.begin(), stems.end(), [](const auto &stem) {
+    return stem.volume || stem.gain || stem.mute;
+  });
+}
+
+namespace {
+template <typename T>
+void writeAutomationValue(juce::DynamicObject &object, const char *property,
+                          const std::optional<T> &value) {
+  if (value.has_value())
+    object.setProperty(property, *value);
+}
+
+bool readAutomationFloat(const juce::DynamicObject &object, const char *property,
+                         std::optional<float> &out, float maxValue) {
+  if (!object.hasProperty(property))
+    return true;
+  const auto &value = object.getProperty(property);
+  if (!value.isInt() && !value.isInt64() && !value.isDouble())
+    return false;
+  const auto number = static_cast<double>(value);
+  if (!std::isfinite(number) || number < 0.0 || number > maxValue)
+    return false;
+  out = static_cast<float>(number);
+  return true;
+}
+
+bool readAutomationBool(const juce::DynamicObject &object, const char *property,
+                        std::optional<bool> &out) {
+  if (!object.hasProperty(property))
+    return true;
+  const auto &value = object.getProperty(property);
+  if (!value.isBool())
+    return false;
+  out = static_cast<bool>(value);
+  return true;
+}
+
+bool readAutomationInt(const juce::DynamicObject &object, const char *property,
+                       std::optional<int> &out, int minValue, int maxValue) {
+  if (!object.hasProperty(property))
+    return true;
+  const auto &value = object.getProperty(property);
+  if (!value.isInt() && !value.isInt64() && !value.isDouble())
+    return false;
+  const auto number = static_cast<double>(value);
+  if (!std::isfinite(number) || std::trunc(number) != number ||
+      number < minValue || number > maxValue)
+    return false;
+  out = static_cast<int>(number);
+  return true;
+}
+} // namespace
+
+juce::var sectionAutomationToVar(const SectionAutomationSnapshot &automation) {
+  auto *root = new juce::DynamicObject();
+  juce::Array<juce::var> stems;
+  for (const auto &stem : automation.stems) {
+    if (!stem.volume && !stem.gain && !stem.mute)
+      continue;
+    auto *object = new juce::DynamicObject();
+    object->setProperty("stemId", stem.stemId);
+    writeAutomationValue(*object, "volume", stem.volume);
+    writeAutomationValue(*object, "gain", stem.gain);
+    writeAutomationValue(*object, "mute", stem.mute);
+    stems.add(juce::var(object));
+  }
+  if (!stems.isEmpty())
+    root->setProperty("stems", stems);
+  const auto &pads = automation.pads;
+  if (pads.volume || pads.gain || pads.enabled || pads.noteIndex || pads.octave) {
+    auto *object = new juce::DynamicObject();
+    writeAutomationValue(*object, "volume", pads.volume);
+    writeAutomationValue(*object, "gain", pads.gain);
+    writeAutomationValue(*object, "enabled", pads.enabled);
+    writeAutomationValue(*object, "noteIndex", pads.noteIndex);
+    writeAutomationValue(*object, "octave", pads.octave);
+    root->setProperty("pads", object);
+  }
+  return juce::var(root);
+}
+
+bool sectionAutomationFromVar(const juce::var &value,
+                              SectionAutomationSnapshot &outAutomation) {
+  SectionAutomationSnapshot parsed;
+  if (value.isVoid() || value.isUndefined()) {
+    outAutomation = std::move(parsed);
+    return true;
+  }
+  const auto *root = value.getDynamicObject();
+  if (root == nullptr)
+    return false;
+  if (root->hasProperty("stems")) {
+    const auto *stems = root->getProperty("stems").getArray();
+    constexpr int maxAutomatedStems = 512;
+    if (stems == nullptr || stems->size() > maxAutomatedStems)
+      return false;
+    std::unordered_set<std::string> seenIds;
+    parsed.stems.reserve(static_cast<size_t>(stems->size()));
+    for (const auto &item : *stems) {
+      const auto *object = item.getDynamicObject();
+      if (object == nullptr || !object->getProperty("stemId").isString())
+        return false;
+      SectionStemAutomation stem;
+      stem.stemId = object->getProperty("stemId").toString();
+      if (stem.stemId.trim().isEmpty() || stem.stemId.length() > 512 ||
+          !seenIds.insert(stem.stemId.toStdString()).second ||
+          !readAutomationFloat(*object, "volume", stem.volume, 1.0f) ||
+          !readAutomationFloat(*object, "gain", stem.gain, 2.0f) ||
+          !readAutomationBool(*object, "mute", stem.mute))
+        return false;
+      if (stem.volume || stem.gain || stem.mute)
+        parsed.stems.push_back(std::move(stem));
+    }
+  }
+  if (root->hasProperty("pads")) {
+    const auto *object = root->getProperty("pads").getDynamicObject();
+    if (object == nullptr ||
+        !readAutomationFloat(*object, "volume", parsed.pads.volume, 1.0f) ||
+        !readAutomationFloat(*object, "gain", parsed.pads.gain, 1.2f) ||
+        !readAutomationBool(*object, "enabled", parsed.pads.enabled) ||
+        !readAutomationInt(*object, "noteIndex", parsed.pads.noteIndex, -1, 11) ||
+        !readAutomationInt(*object, "octave", parsed.pads.octave, -3, 3))
+      return false;
+  }
+  outAutomation = std::move(parsed);
+  return true;
+}
 
 const std::array<const char *, 19> kTrackCategories = {{
     "Bass",

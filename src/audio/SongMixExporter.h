@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "DynamicGuideTiming.h"
+#include "../data/SongData.h"
 
 #include <algorithm>
 #include <cmath>
@@ -111,6 +112,8 @@ struct StemMixExportStemState {
   bool soloed = false;
   bool clickGuide = false;
   bool pitchShiftable = false;
+  // Stable song stem identity; automation never relies on file/array order.
+  juce::String stemId;
 };
 
 struct SongMixExportVirtualSourceState {
@@ -188,6 +191,8 @@ struct SongMixExportRequest {
   juce::String guideLanguage = "es";
   std::vector<SongMixExportGuideSection> guideSections;
   std::vector<StemMixExportStemState> stems;
+  // Committed arrangement only. Stem values above are the unmodified base mix.
+  SongArrangementSnapshot arrangement;
 };
 
 class SongMixExporter {

@@ -78,6 +78,14 @@ public:
   void setMinimalPhoneMode(bool enabled);
   void setOnArrangementChanged(ArrangementChangedCallback cb);
   void setOnArrangementReset(ArrangementResetCallback cb);
+  void setSectionAutomationCallbacks(
+      std::function<bool(const juce::String &)> begin,
+      std::function<void(bool)> finish,
+      std::function<void(const juce::String &)> clear,
+      std::function<juce::String()> editingPartProvider,
+      std::function<bool()> canEditProvider = {});
+  void setSectionAutomationState(const juce::String &partId);
+  void setCommittedSectionAutomation(const SongArrangementSnapshot &snapshot);
   void setOnArrangementPartJumpRequest(ArrangementPartJumpRequestCallback cb);
   void setOnArrangementPartLoopToggleRequest(
       ArrangementPartLoopToggleRequestCallback cb);
@@ -168,6 +176,7 @@ private:
     juce::Rectangle<float> muteIcon;
     juce::Rectangle<float> skipButton;
     juce::Rectangle<float> skipIcon;
+    juce::Rectangle<float> automateButton;
     bool showsDeleteButton = false;
     bool showsLoopButton = false;
     bool showsJumpButton = false;
@@ -175,6 +184,7 @@ private:
     bool showsAddButton = false;
     bool showsMuteButton = false;
     bool showsSkipButton = false;
+    bool showsAutomateButton = false;
   };
 
   struct PartHitResult {
@@ -188,6 +198,7 @@ private:
     bool addButton = false;
     bool muteButton = false;
     bool skipButton = false;
+    bool automateButton = false;
   };
 
   struct TempoRegionHitResult {
@@ -255,6 +266,17 @@ private:
       onCloudSettingsVersionsRequested;
   PendingArrangementPartProvider pendingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  std::function<bool(const juce::String &)> onSectionAutomationBegin;
+  std::function<void(bool)> onSectionAutomationFinish;
+  std::function<void(const juce::String &)> onSectionAutomationClear;
+  std::function<juce::String()> sectionAutomationEditingPartProvider;
+  std::function<bool()> sectionAutomationCanEditProvider;
+  juce::String sectionAutomationEditingPartId;
+  double lastSectionAutomationAnimationMs = 0.0;
+  juce::Label sectionAutomationLabel;
+  juce::TextButton sectionAutomationDoneButton;
+  juce::TextButton sectionAutomationCancelButton;
+  juce::TextButton sectionAutomationClearButton;
   SvgToolbarButton followButton{"follow", SvgIconName::AudioWaveform};
   SvgToolbarButton moreButton{"more", SvgIconName::MoreHorizontal};
   SvgToolbarButton editButton{"edit", SvgIconName::Pencil};
