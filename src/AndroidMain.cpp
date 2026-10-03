@@ -1,3 +1,5 @@
+#include "AppIdentity.h"
+#include "audio/StandaloneAudioRuntime.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 
@@ -30,8 +32,8 @@ extern "C" JNIEXPORT void JNICALL Java_com_rmsl_juce_JuceActivity_startJUCEAppli
 class PlayWorshipAndroidApplication final : public juce::JUCEApplication
 {
 public:
-    const juce::String getApplicationName() override { return "PlayWorship"; }
-    const juce::String getApplicationVersion() override { return "1.1.4"; }
+    const juce::String getApplicationName() override { return playworship::appName; }
+    const juce::String getApplicationVersion() override { return playworship::appVersion; }
 
     void initialise (const juce::String&) override
     {
@@ -63,11 +65,12 @@ private:
     public:
         MainWindow (const juce::String& name, MTControlsAudioProcessor& processor)
             : DocumentWindow (name, juce::Colours::black, DocumentWindow::allButtons),
-              audioProcessor (&processor)
+              audioProcessor (&processor),
+              audioRuntime (processor, processor.getAudioDeviceBridge())
         {
-            auto& audioManager = processor.getAudioDeviceBridge().getAudioDeviceManager();
-            audioPlayer.setProcessor (&processor);
-            audioManager.addAudioCallback (&audioPlayer);
+            const auto audioError = audioRuntime.start(MTControlsAudioProcessor::maxStemCount);
+            if (audioError.isNotEmpty())
+                PW_ANDROID_LOG(audioError.toRawUTF8());
             setUsingNativeTitleBar (true);
 #if JUCE_ANDROID
             // The window owns the size; content must not resize the native peer.
@@ -92,13 +95,8 @@ private:
 
         ~MainWindow() override
         {
-            if (audioProcessor != nullptr)
-            {
-                auto& audioManager = audioProcessor->getAudioDeviceBridge().getAudioDeviceManager();
-                audioManager.removeAudioCallback (&audioPlayer);
-            }
+            audioRuntime.stop();
 
-            audioPlayer.setProcessor (nullptr);
         }
 
 #if JUCE_ANDROID
@@ -129,7 +127,7 @@ private:
 #if JUCE_ANDROID
     private:
         MTControlsAudioProcessor* audioProcessor = nullptr;
-        juce::AudioProcessorPlayer audioPlayer;
+        StandaloneAudioRuntime audioRuntime;
 
         class AndroidRootComponent final : public juce::Component
         {

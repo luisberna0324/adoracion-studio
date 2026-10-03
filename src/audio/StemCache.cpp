@@ -327,7 +327,11 @@ juce::File StemCache::precompute(const juce::File &sourceFile,
   juce::int64 samplesWritten = 0;
   while (samplesWritten < totalSamples) {
     const int toRead =
+#if JUCE_LINUX
+        static_cast<int>(std::min<juce::int64>(kChunkSize,
+#else
         static_cast<int>(juce::jmin<juce::int64>(kChunkSize,
+#endif
                                                   totalSamples - samplesWritten));
     if (!reader->read(&buffer, 0, toRead, samplesWritten, true, true))
       throw std::runtime_error("StemCache: read failed mid-stream");

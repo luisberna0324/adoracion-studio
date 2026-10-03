@@ -17,3 +17,5 @@ Contiene la clase principal `MTControlsAudioProcessor` y sus periféricos.
 | [MTControlsAudioProcessor](MTControlsAudioProcessor.md) | Procesador principal del plugin |
 | [AudioDiagnostics](AudioDiagnostics.md) | Benchmark lock-free del audio thread (stages, gaps, decode, render) |
 | [SongLoadProbe](SongLoadProbe.md) | Telemetría del UI thread para la carga de canciones (per-stem, cache hit/miss, memory) |
+
+- [Aplicación nativa](NativeApplication.md): ciclo de vida, dispositivo único, MIDI y compatibilidad de preferencias

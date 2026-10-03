@@ -1272,3 +1272,10 @@ docs/okf/
 - Cliente indica `BUSCANDO`, `CONECTANDO`, `REMOTO` o `RECONECTANDO` en una etiqueta pequeña
   sobre la onda, incluso antes de recibirla. El estado conectado exige un
   snapshot aplicado; la etiqueta no cambia layout ni captura gestos.
+
+## 2026-10-01: aplicación nativa
+
+- El target de distribución usa `juce_add_gui_app` y `DocumentWindow`
+- Audio y MIDI pasan por un único manager y `AudioProcessorPlayer`; se mantienen
+  las preferencias y los flujos externos de proyecto/salida
+- Contrato: [Aplicación nativa](processor/NativeApplication.md)

@@ -1,9 +1,8 @@
 #include "PluginEditorSupport.h"
+#include "PluginProcessor.h"
 #include <algorithm>
 
-#if JucePlugin_Build_Standalone
-#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
-#endif
+
 
 namespace PluginEditorSupport {
 
@@ -58,17 +57,9 @@ const juce::int64 kSessionReauthIntervalMs =
 const juce::int64 kReauthGraceWindowMs =
     static_cast<juce::int64>(MTCONTROLS_REAUTH_GRACE_MINUTES) * 60LL * 1000LL;
 
-StandaloneAudioContext getStandaloneAudioContext() {
-#if JucePlugin_Build_Standalone
-  if (auto *holder = juce::StandalonePluginHolder::getInstance()) {
-    StandaloneAudioContext ctx;
-    ctx.manager = &holder->deviceManager;
-    ctx.maxInputs = holder->getNumInputChannels();
-    ctx.maxOutputs = holder->getNumOutputChannels();
-    return ctx;
-  }
-#endif
-  return {};
+StandaloneAudioContext getStandaloneAudioContext(MTControlsAudioProcessor &processor) {
+  return { &processor.getAudioDeviceBridge().getAudioDeviceManager(),
+           0, MTControlsAudioProcessor::maxStemCount };
 }
 
 juce::String getCurrentDeviceKey(const StandaloneAudioContext &ctx) {
@@ -181,37 +172,6 @@ bool fallbackToBuiltInOrDefaultOutput(juce::AudioDeviceManager &manager) {
   return false;
 }
 
-void hideStandaloneOptionsButton(juce::Component *fromComponent) {
-#if JucePlugin_Build_Standalone
-  if (fromComponent == nullptr)
-    return;
-
-  auto *topLevel = fromComponent->getTopLevelComponent();
-  if (topLevel == nullptr)
-    return;
-
-  auto hideRecursively = [](auto &&self, juce::Component *component) -> void {
-    if (component == nullptr)
-      return;
-
-    if (auto *button = dynamic_cast<juce::Button *>(component)) {
-      const auto text = button->getButtonText().trim();
-      if (text.equalsIgnoreCase("Options") ||
-          text.equalsIgnoreCase("Opciones")) {
-        button->setVisible(false);
-        button->setEnabled(false);
-      }
-    }
-
-    for (int i = 0; i < component->getNumChildComponents(); ++i)
-      self(self, component->getChildComponent(i));
-  };
-
-  hideRecursively(hideRecursively, topLevel);
-#else
-  juce::ignoreUnused(fromComponent);
-#endif
-}
 
 int categoryIndexForName(const juce::String &category) {
   const auto needle = category.trim();

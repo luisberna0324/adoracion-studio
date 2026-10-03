@@ -28,6 +28,7 @@ class MTControlsAudioProcessor : public juce::AudioProcessor,
                                  private juce::TimeSliceClient,
                                  private juce::Timer {
 public:
+  static constexpr int maxStemCount = 64;
   MTControlsAudioProcessor();
   ~MTControlsAudioProcessor() override;
 
@@ -360,7 +361,6 @@ public:
 
 private:
   friend struct SectionAutomationTestAccess;
-  static constexpr int maxStemCount = 64;
   static constexpr int maxRealtimeBlockSize = 8192;
   static constexpr int midiSourceKinds = 2; // CC + Note
   static constexpr int midiSourceStateSlots = midiSourceKinds * 16 * 128;
