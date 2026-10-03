@@ -1078,13 +1078,16 @@ target_compile_definitions(MTControls
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
-        SOUNDTOUCH_FLOAT_SAMPLES=1
-        MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
         MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS=$<BOOL:${MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS}>
         MTCONTROLS_SENTRY_ENABLED=$<BOOL:${MTCONTROLS_SENTRY_ENABLED}>
         MTCONTROLS_SENTRY_DSN="${MTCONTROLS_SENTRY_DSN}"
         MTCONTROLS_SENTRY_ENVIRONMENT="${MTCONTROLS_SENTRY_ENVIRONMENT}"
         MTCONTROLS_SENTRY_RELEASE="playworship-app@${MTCONTROLS_APP_VERSION}+${MTCONTROLS_IOS_BUILD_NUMBER}.${MTCONTROLS_GIT_COMMIT}"
+    PUBLIC
+        # Public processor headers must use the same audio backend and sample
+        # type as the library, including when compiled by regression tests.
+        SOUNDTOUCH_FLOAT_SAMPLES=1
+        MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -1200,7 +1203,7 @@ if (TARGET SoundTouch)
         target_compile_options(SoundTouch PRIVATE -w)
     endif()
     target_link_libraries(MTControls PRIVATE SoundTouch)
-    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PUBLIC ${soundtouch_SOURCE_DIR}/include)
 elseif (TARGET soundtouch)
     target_compile_definitions(soundtouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
     if (MSVC)
@@ -1209,7 +1212,7 @@ elseif (TARGET soundtouch)
         target_compile_options(soundtouch PRIVATE -w)
     endif()
     target_link_libraries(MTControls PRIVATE soundtouch)
-    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PUBLIC ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
 endif()

@@ -60,6 +60,11 @@ onda, VU y reconexión con la compilación portátil.
 
 ## Cobertura de la aplicación nativa
 
+Los consumidores de `MTControls` heredan `MTCONTROLS_USE_BUNGEE` y
+`SOUNDTOUCH_FLOAT_SAMPLES`, además de los headers de SoundTouch para el backend
+alternativo. Los headers públicos del procesador deben compilarse con el mismo
+backend y tipo de muestra que la biblioteca para conservar su layout en memoria.
+
 `standalone_audio_runtime` valida dispositivos simulados de 2, 8 y 64 salidas,
 restauración de preferencias, entradas deshabilitadas antes de abrir audio y
 parada/reinicio. Se ejecuta con `ctest --test-dir <build> -R standalone_audio_runtime`.
