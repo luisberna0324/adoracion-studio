@@ -75,6 +75,7 @@ public:
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
   std::function<void()> onShareAudioDiagnostics;
+  std::function<void()> onLearningRequested;
   std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
   std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
   std::function<void(const juce::String &)> onRemoteServerAliasChanged;
@@ -132,7 +133,7 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
-  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics };
+  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning };
   class SettingsHomePage;
 
   bool usesGroupedNavigation() const;
@@ -156,6 +157,9 @@ private:
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Viewport settingsViewport;
   juce::Component generalPage;
+  juce::Label learningLabel;
+  juce::Label learningHelp;
+  juce::TextButton learningButton;
   juce::Component accountPage;
   juce::Component audioPage;
   juce::Component routingPage;

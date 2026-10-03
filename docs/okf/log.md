@@ -2,19 +2,70 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-09-21T00:00:00-03:00
+timestamp: 2026-10-02T00:00:00-03:00
 ---
 
 # Changelog
 
 ## 2026-10-02
 
+### Guías interactivas de aprendizaje
+
+- `Aprender PlayWorship` abre un catálogo desde Más en teléfono/tablet y desde
+  Configuración en todas las plataformas. Cuatro cursos localizados ES/EN:
+  primeros pasos, mezcla/clic/tono, Ensayo en teléfono o secciones/automatización
+  en escritorio/tablet, y configuración/remoto.
+- Cada paso resalta un control real y permite usarlo a través de la capa de
+  ayuda. Tarjetas dentro del área segura, lectura desplazable y acciones
+  táctiles de 44 px. Se adaptan hasta 300 px de alto en pantallas altas y 210 px
+  en teléfonos horizontales, reduciéndose cuando así dejan libre el destino.
+- Anterior, Siguiente/Terminar, Cursos, Reiniciar y Pausar (X/Escape).
+  Progreso local por IDs estables de curso/paso, JSON v1 y reemplazo atómico;
+  errores de escritura visibles. No pertenece a canciones ni a Cloud/remoto.
+- Los ejercicios usan los controles existentes. La guía no emite comandos
+  automáticos de transporte, mezcla, edición o remoto. Se oculta mientras están
+  abiertos Configuración o un modal y retoma el paso al cerrarlos. Si se elige
+  otro curso desde Ensayo, indica y resalta su cierre sin cerrarlo por cuenta
+  propia. Cambiar el idioma conserva el curso y el paso.
+- Contrato: [LearningGuide](ui/LearningGuide.md).
+- Verificación: compilación macOS de `MTControls_Standalone`,
+  `MTControlsLearningGuideTests`, `MTControlsLearningOverlayTests` y
+  `MTControlsSettingsPanelTests` en `build/codex-modal-macos`;
+  CTest `learning_guide`, `learning_overlay` y `settings_panel`: 3/3 aprobadas
+  (2,98 s). Capturas de componentes reales en teléfono vertical/horizontal,
+  tablet y escritorio, incluidos los destinos de la vista Ensayo y acceso a
+  reproducción a través del resaltado. El scroll sobre texto y el descarte
+  del toque tras arrastrar la lista siguen los handlers reales.
+- Queda pendiente la revisión manual de la app completa y la validación física;
+  estas pruebas no acreditan una instalación iOS/Android.
+
 ### Automatización de secciones
 
 - Borradores dispersos por ID de sección y stem para volumen, ganancia, mute
   instrumental y controles de Pads. Mix base independiente y Cancelar/Borrar.
-- Barra Automatizar/Listo/Cancelar, indicadores en los controles existentes y
-  acceso en Más de teléfono. Historial del arrange conserva los valores.
+- Acciones del borrador en una barra flotante persistente anclada por ID al
+  borde superior de la sección automatizada. El desplazamiento y el zoom
+  actualizan su posición; se limita al viewport y al área segura, sin seguir
+  el cursor ni el hover. Si la sección queda fuera de vista, conserva su nombre
+  inequívoco y una flecha de dirección junto al borde visible. El menú `Más`
+  ofrece `Volver a la sección`, que ajusta el viewport sin cambiar la posición
+  de reproducción ni el transporte. La toolbar global recupera el espacio
+  antes reservado para las acciones de automatización.
+- Barra `A · nombre`, `Cancelar`, `Listo` y `Más` en escritorio/tablet;
+  `A · nombre`, `Listo` y `Más` en teléfono. El menú incluye
+  `Borrar automatización` y, en teléfono, `Cancelar cambios`. Los faders y Pads
+  existentes conservan su comportamiento y el contrato del motor. Los botones
+  táctiles mantienen 44 px de altura mediante padding vertical adaptable a
+  ondas de 108 y 140 px.
+- Indicadores en los controles existentes y acceso a Automatizar en Más de
+  teléfono. Historial del arrange conserva los valores y las sesiones remotas
+  mantienen la propiedad autoritativa del borrador.
+- Navegación del minimap y pan/pinch móvil disponibles durante el borrador;
+  los cambios estructurales de secciones, el tap-seek y el doble tap/salto
+  móvil permanecen bloqueados. Se ocultan los controles habituales de sección.
+- Durante el borrador, la onda presenta el mapa de guía/secciones aunque
+  estuviera seleccionado el mapa de tempo; conserva el `timelineViewMode`
+  guardado y recupera su presentación al terminar la edición.
 - Resaltado pulsante del borrador en la sección, canales y Pads, sincronizado
   con tiempo de interfaz para continuar en pausa; la automatización guardada
   conserva su indicador fijo y el repintado se limita a las zonas animadas.
@@ -24,6 +75,15 @@ timestamp: 2026-09-21T00:00:00-03:00
   [interfaz](ui/SectionAutomation.md), [motor](engine/SectionAutomation.md),
   [datos](importing/LibraryPersistence.md) y
   [remoto](integrations/RemoteControl.md).
+- Verificación local: compilación de `MTControls_Standalone` y
+  `MTControlsWaveformEditingTests` en `build/codex-modal-macos` con `-j4`;
+  CTest `waveform_editing` y `section_automation` aprobadas (2/2, 2,17 s y
+  6,36 s). Revisión de capturas reales del componente con anchos de 320, 360,
+  768 y 1200 px y geometrías móviles de 360 × 108 y 360 × 140 px: layout
+  correcto, botones de 44 px y carril seguro de 44 px.
+- Las capturas verifican el componente; quedan pendientes la revisión manual
+  de la app completa y la comprobación en dispositivo físico. La Mac bloqueada
+  impidió la revisión completa. Esta evidencia no incluye instalación iOS.
 
 ## 2026-09-26
 

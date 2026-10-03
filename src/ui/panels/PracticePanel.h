@@ -8,6 +8,7 @@
 #include "PracticeTimelineRuler.h"
 #include "PracticePitchSelector.h"
 #include "PracticeTempoSelector.h"
+#include "../learning/LearningGuideModel.h"
 #include <atomic>
 #include <functional>
 #include <map>
@@ -18,6 +19,7 @@
 // playback remains in the shared local/remote session.
 class PracticePanel final : public juce::Component, private juce::Timer {
 public:
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   struct Instrument {
     juce::String id;
     juce::String name;

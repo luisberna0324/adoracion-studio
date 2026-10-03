@@ -20,6 +20,7 @@
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
 #include "ui/components/AppModal.h"
+#include "ui/learning/LearningGuideOverlay.h"
 #include "ui/components/ReauthPromptModal.h"
 #include "ui/components/SettingsVersionsSheet.h"
 #include "platform/NativeAuthSession.h"
@@ -2826,6 +2827,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setOnPhonePads(
       [this](juce::Component &anchor) { showPhonePadsPopover(anchor); });
   topBarRaw->setOnPhonePractice([this] { showPractice(); });
+  topBarRaw->setOnLearningRequested([this] { showLearningGuide(); });
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
     phonePadsOpen = false;
@@ -2976,6 +2978,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 }
 
 void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
+  if (learningGuide) pauseLearningGuide();
   auto modal = std::make_unique<WelcomeModal>();
   modal->onLoginRequested = [this] { launchExternalLogin(); };
   welcomeModal = std::move(modal);
@@ -3400,6 +3403,13 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
+  panel->onLearningRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    juce::MessageManager::callAsync([safe] {
+      if (!safe) return;
+      safe->closeSettings();
+      safe->showLearningGuide();
+    });
+  };
   panel->onRemoteModeChanged = [this](playworship::remote::RemoteSession::Mode mode) { setRemoteMode(mode); };
   panel->onRemoteServerAliasChanged = [this](const juce::String &alias) {
     AppSettings::setRemoteServerAlias(alias);
@@ -3717,6 +3727,10 @@ void MTControlsAudioProcessorEditor::showPractice() {
   addAndMakeVisible(*practiceOverlay);
   practiceOverlay->setBounds(getLocalBounds());
   practiceOverlay->toFront(true);
+  if (learningGuide) {
+    learningGuide->toFront(false);
+    updateLearningGuideTarget();
+  }
   updatePhoneOrientation();
 }
 
@@ -4449,6 +4463,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  updateLearningGuideTarget();
   if (pendingExternalProjectFile != juce::File{} && !songLoadBusy &&
       songListPanelRaw != nullptr) {
     const auto projectFile = pendingExternalProjectFile;
@@ -5066,6 +5081,12 @@ void MTControlsAudioProcessorEditor::resized() {
   if (practiceOverlay != nullptr)
     practiceOverlay->toFront(false);
 
+  if (learningGuide != nullptr) {
+    learningGuide->setBounds(getLocalBounds());
+    updateLearningGuideTarget();
+    learningGuide->toFront(false);
+  }
+
 
 }
 
@@ -5371,6 +5392,10 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
+  if (learningGuide && learningGuide->isVisible() && key == juce::KeyPress::escapeKey) {
+    pauseLearningGuide();
+    return true;
+  }
   if (practiceOverlay != nullptr) {
     practiceOverlay->keyPressed(key);
     return true;

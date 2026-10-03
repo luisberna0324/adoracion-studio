@@ -485,6 +485,19 @@ ChannelGridPanel::~ChannelGridPanel() {
   flushPendingPersistenceNow();
 }
 
+juce::Rectangle<int> ChannelGridPanel::getLearningStripBounds() const {
+  juce::Rectangle<int> fallback;
+  for (size_t i = 0; i < slots.size(); ++i) {
+    const auto &strip = slots[i]->getStrip();
+    const auto visible = getLocalArea(&strip, strip.getLocalBounds())
+        .getIntersection(viewport.getBounds()).getIntersection(getLocalBounds());
+    if (visible.getWidth() < 44 || visible.getHeight() < 44) continue;
+    if (fallback.isEmpty()) fallback = visible;
+    if (i < adjustableStems.size() && adjustableStems[i]) return visible;
+  }
+  return fallback;
+}
+
 void ChannelGridPanel::setResponsiveProfile(
     const ResponsiveLayoutProfile profile) {
   if (responsiveProfile == profile)

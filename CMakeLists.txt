@@ -390,6 +390,31 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME input_controls_popup COMMAND MTControlsInputControlsTests --popup)
     set_tests_properties(input_controls_popup PROPERTIES
         LABELS interactive SKIP_RETURN_CODE 77)
+    juce_add_console_app(MTControlsLearningGuideTests PRODUCT_NAME "Learning Guide Tests")
+    target_sources(MTControlsLearningGuideTests PRIVATE
+        tests/learning_guide_tests.cpp src/ui/learning/LearningGuideModel.cpp)
+    target_include_directories(MTControlsLearningGuideTests PRIVATE src)
+    target_link_libraries(MTControlsLearningGuideTests PRIVATE juce::juce_core)
+    add_test(NAME learning_guide COMMAND MTControlsLearningGuideTests)
+    juce_add_console_app(MTControlsLearningOverlayTests PRODUCT_NAME "Learning Overlay Tests")
+    target_sources(MTControlsLearningOverlayTests PRIVATE tests/learning_overlay_tests.cpp
+        src/data/AppSettings.cpp)
+    juce_generate_juce_header(MTControlsLearningOverlayTests)
+    target_include_directories(MTControlsLearningOverlayTests PRIVATE src)
+    target_compile_definitions(MTControlsLearningOverlayTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsLearningOverlayTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    if(MSVC)
+        target_compile_options(MTControlsLearningGuideTests PRIVATE /utf-8)
+        target_compile_options(MTControlsLearningOverlayTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME learning_overlay COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsLearningOverlayTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(learning_overlay PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsSettingsPanelTests PRODUCT_NAME "Settings Panel Tests")
     target_sources(MTControlsSettingsPanelTests PRIVATE tests/settings_panel_tests.cpp
         src/data/AppSettings.cpp)
@@ -936,6 +961,11 @@ target_sources(MTControls
         src/data/MobileImportStaging.cpp
         src/data/MobileImportStaging.h
         src/data/SongLibraryStore.h
+        src/LearningGuideIntegration.cpp
+        src/ui/learning/LearningGuideModel.cpp
+        src/ui/learning/LearningGuideModel.h
+        src/ui/learning/LearningGuideOverlay.cpp
+        src/ui/learning/LearningGuideOverlay.h
         src/ui/DeviceNotificationBanner.cpp
         src/ui/DeviceNotificationBanner.h
         src/ui/UiCommon.cpp

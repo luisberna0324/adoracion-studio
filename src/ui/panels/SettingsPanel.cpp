@@ -33,7 +33,7 @@ public:
     if (!useTouchOptimisedControls())
       pages.push_back(Destination::Audio);
     pages.insert(pages.end(), {Destination::Routing, Destination::Remote,
-                               Destination::Account, Destination::Diagnostics});
+                               Destination::Account, Destination::Diagnostics, Destination::Learning});
     for (auto page : pages) {
       auto row = std::make_unique<Row>(page);
       row->onClick = [&ownerToUse, page] { ownerToUse.showSettingsPage(page); };
@@ -44,7 +44,7 @@ public:
   }
 
   static int contentHeight() {
-    return 16 + 3 * (34 + 22) + (useTouchOptimisedControls() ? 7 : 8) * 72 + 8;
+    return 16 + 3 * (34 + 22) + (useTouchOptimisedControls() ? 8 : 9) * 72 + 8;
   }
 
   void refreshTexts() {
@@ -58,7 +58,8 @@ public:
     pageTitles.addArray({L10n::tr("Ruteo de salidas", "Output routing"),
         L10n::tr("Control remoto", "Remote control"),
         L10n::tr("Mi cuenta", "My account"),
-        L10n::tr(u8"Diagnóstico", "Diagnostics")});
+        L10n::tr(u8"Diagnóstico", "Diagnostics"),
+        L10n::tr("Aprender PlayWorship", "Learn PlayWorship")});
     using Mode = playworship::remote::RemoteSession::Mode;
     const auto mode = owner.remoteMode == Mode::Client ? L10n::tr("Cliente", "Client")
         : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
@@ -72,7 +73,8 @@ public:
     pageSubtitles.addArray({L10n::tr(u8"Dispositivo y salidas por categoría", "Device and outputs by category"),
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections"),
         owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
-        L10n::tr("Informe para soporte", "Report for support")});
+        L10n::tr("Informe para soporte", "Report for support"),
+        L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
       rows[i]->setButtonText(pageTitles[static_cast<int>(i)]);
       rows[i]->subtitle = pageSubtitles[static_cast<int>(i)];
@@ -89,7 +91,7 @@ public:
     size_t index = 0;
     for (size_t group = 0; group < cards.size(); ++group) {
       headings[group] = area.removeFromTop(34).reduced(12, 0);
-      const int count = group == 2 ? 2 :
+      const int count = group == 2 ? 3 :
           group == 1 && useTouchOptimisedControls() ? 2 : 3;
       cards[group] = area.removeFromTop(count * 72);
       auto card = cards[group];
@@ -159,6 +161,10 @@ private:
     Destination page;
     void paintIcon(juce::Graphics &g, juce::Rectangle<float> icon) {
       const auto colour = UITheme::accentSoft;
+      if (page == Destination::Learning) {
+        drawSvgIcon(g, icon, SvgIconName::Music, colour);
+        return;
+      }
       if (page == Destination::Appearance || page == Destination::Playback ||
           page == Destination::Audio || page == Destination::Diagnostics) {
         const auto glyph = page == Destination::Appearance ? IconGlyph::Settings
@@ -494,6 +500,15 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onCloseRequested();
   };
   addAndMakeVisible(closeButton);
+
+  learningLabel.setFont(settingsOptionLabelFont());
+  learningHelp.setFont(settingsHelpFont());
+  learningHelp.setJustificationType(juce::Justification::topLeft);
+  learningHelp.setInterceptsMouseClicks(false, false);
+  generalPage.addAndMakeVisible(learningLabel);
+  generalPage.addAndMakeVisible(learningHelp);
+  generalPage.addAndMakeVisible(learningButton);
+  learningButton.onClick = [this] { if (onLearningRequested) onLearningRequested(); };
 
   diagnosticsCard = std::make_unique<SettingsCard>();
   diagnosticsPage.addAndMakeVisible(*diagnosticsCard);
@@ -1085,7 +1100,7 @@ void SettingsPanel::resized() {
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (needsVerticalScroll ? 900 : 0);
+               : (tabs.getCurrentTabIndex() == 0 ? 980 : (needsVerticalScroll ? 900 : 0));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1107,6 +1122,10 @@ void SettingsPanel::refreshThemeColours() {
   settingsViewport.getVerticalScrollBar().setColour(
       juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  learningLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  learningHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  learningButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  learningButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   title.setJustificationType(juce::Justification::centred);
   title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
                             AppFontWeight::SemiBold));
@@ -1240,6 +1259,7 @@ bool SettingsPanel::usesGroupedNavigation() const {
 juce::String SettingsPanel::pageTitle() const {
   switch (destination) {
     case Destination::Home: return L10n::tr(u8"Configuración", "Settings");
+    case Destination::Learning: return L10n::tr("Aprender PlayWorship", "Learn PlayWorship");
     case Destination::Appearance: return L10n::tr("Apariencia e idioma", "Appearance & language");
     case Destination::Playback: return L10n::tr(u8"Reproducción", "Playback");
     case Destination::Library: return L10n::tr("Biblioteca", "Library");
@@ -1253,6 +1273,10 @@ juce::String SettingsPanel::pageTitle() const {
 }
 
 void SettingsPanel::showSettingsPage(Destination next) {
+  if (next == Destination::Learning) {
+    if (onLearningRequested) onLearningRequested();
+    return;
+  }
   if (useTouchOptimisedControls() && next == Destination::Audio)
     next = Destination::Routing;
   if (destination == Destination::Home)
@@ -1282,6 +1306,7 @@ bool SettingsPanel::keyPressed(const juce::KeyPress &key) {
 int SettingsPanel::mobileGeneralCardHeight() const {
   switch (destination) {
     case Destination::Home:
+    case Destination::Learning:
     case Destination::Audio:
     case Destination::Routing:
     case Destination::Account:
@@ -1417,6 +1442,9 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 }
 
 void SettingsPanel::applyLanguageTexts() {
+  learningLabel.setText(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"), juce::dontSendNotification);
+  learningHelp.setText(L10n::tr("Guías interactivas que puedes pausar y retomar.", "Interactive guides you can pause and resume."), juce::dontSendNotification);
+  learningButton.setButtonText(L10n::tr("Abrir guías", "Open guides"));
   title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
   generalTabButton.setButtonText(L10n::tr("General", "General"));
@@ -1700,6 +1728,9 @@ void SettingsPanel::layoutGeneralPage() {
     remoteTargetHelp.setVisible(remoteMode !=
         playworship::remote::RemoteSession::Mode::Local);
   };
+
+  layoutChoiceRow(area.removeFromTop(rowH), learningLabel, learningButton, learningHelp);
+  addSeparator();
 
   // On iPhone the settings viewport initially shows only a few rows. Keep
   // the mode selector and discovery status visible without requiring a scroll.

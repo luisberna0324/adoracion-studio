@@ -27,7 +27,8 @@ void expectNear(const double actual, const double expected,
 juce::MouseEvent pointerEvent(WaveformBar &waveform,
                               const juce::Point<float> position,
                               const juce::Point<float> start,
-                              const bool dragged = false) {
+                              const bool dragged = false,
+                              const int clicks = 1) {
   const juce::Time now(1000000);
   // Alt selects the existing free-drag mode so exact source-range assertions
   // do not also depend on the current song's musical snap setting.
@@ -35,7 +36,7 @@ juce::MouseEvent pointerEvent(WaveformBar &waveform,
           juce::ModifierKeys::leftButtonModifier |
               juce::ModifierKeys::altModifier,
           1.0f, 0.0f, 0.0f, 0.0f, 0.0f, &waveform, &waveform,
-          now, start, now, 1, dragged};
+          now, start, now, clicks, dragged};
 }
 
 SongArrangementPartSnapshot original(const char *id, const double start,
@@ -146,24 +147,112 @@ struct WaveformEditingTestAccess {
   }
 
   static bool automationActionsVisible(const WaveformBar &waveform) {
-    return waveform.sectionAutomationDoneButton.isVisible() &&
-           waveform.sectionAutomationCancelButton.isVisible() &&
-           waveform.sectionAutomationClearButton.isVisible();
+    return waveform.sectionAutomationLabel.isVisible() &&
+           waveform.sectionAutomationDoneButton.isVisible() &&
+           waveform.sectionAutomationMoreButton.isVisible();
   }
   static void expectAutomationLayout(const WaveformBar &waveform) {
-    const auto bounds = waveform.getLocalBounds();
-    expect(bounds.contains(waveform.sectionAutomationLabel.getBounds()) &&
-           bounds.contains(waveform.sectionAutomationDoneButton.getBounds()) &&
-           bounds.contains(waveform.sectionAutomationCancelButton.getBounds()) &&
-           bounds.contains(waveform.sectionAutomationClearButton.getBounds()),
-           "automation actions remain inside the component at each responsive width");
-    expect(waveform.sectionAutomationLabel.getRight() <=
-           waveform.sectionAutomationClearButton.getX() &&
-           waveform.sectionAutomationClearButton.getRight() <=
-           waveform.sectionAutomationDoneButton.getX() &&
-           waveform.sectionAutomationDoneButton.getRight() <=
-           waveform.sectionAutomationCancelButton.getX(),
-           "automation labels and actions never overlap");
+    const auto lane = waveBody(waveform).toNearestInt();
+    const auto safeBounds = waveform.minimalPhoneMode
+        ? waveform.phoneSafeAreaInsets.subtractedFrom(waveform.getLocalBounds())
+        : waveform.getLocalBounds();
+    const auto toolbar = waveform.sectionAutomationToolbarBounds;
+    expect(!toolbar.isEmpty() && lane.contains(toolbar) && safeBounds.contains(toolbar),
+           "the floating automation toolbar remains in the waveform and safe area");
+    expect(toolbar.getY() <= lane.getY() + waveform.phoneSafeAreaInsets.getTop() + 32,
+           "the automation toolbar stays at the top edge of the waveform lane");
+    expect(waveform.sectionAutomationCancelButton.isVisible() ==
+               !waveform.sectionAutomationCompactLayout,
+           "Cancel is a direct action only in the desktop toolbar");
+    std::vector<juce::Rectangle<int>> actions;
+    for (const auto *component : std::initializer_list<const juce::Component *>{
+        &waveform.sectionAutomationLabel, &waveform.sectionAutomationDoneButton,
+        &waveform.sectionAutomationMoreButton, &waveform.sectionAutomationCancelButton}) {
+      if (!component->isVisible()) continue;
+      const auto bounds = component->getBounds();
+      expect(!bounds.isEmpty() && toolbar.contains(bounds),
+             "each visible automation action stays inside its floating toolbar");
+      for (const auto &previous : actions)
+        expect(!previous.intersects(bounds), "automation labels and actions never overlap");
+      actions.push_back(bounds);
+    }
+  }
+  static void expectAutomationTouchTargets(const WaveformBar &waveform) {
+    auto lane = waveform.getArrangementLaneBounds(waveBody(waveform)).toNearestInt();
+    lane = lane.getIntersection(waveform.phoneSafeAreaInsets
+                                   .subtractedFrom(waveform.getLocalBounds())).reduced(4);
+    expect(lane.getHeight() >= 44,
+           "the compressed phone fixture leaves at least one full touch target in its safe lane");
+    expect(automationActionsVisible(waveform),
+           "automation actions remain visible when the phone lane can fit 44-pixel targets");
+    for (const auto *button : std::initializer_list<const juce::Button *>{
+             &waveform.sectionAutomationDoneButton, &waveform.sectionAutomationMoreButton})
+      expect(button->getHeight() >= 44 && button->getWidth() >= 44,
+             "phone Done and More keep full 44-pixel touch targets as the waveform height shrinks");
+  }
+  static juce::Rectangle<int> automationToolbar(const WaveformBar &waveform) {
+    return waveform.sectionAutomationToolbarBounds;
+  }
+  static juce::String automationLabel(const WaveformBar &waveform) {
+    return waveform.sectionAutomationLabel.getText();
+  }
+  static bool automationTargetOffscreen(const WaveformBar &waveform) {
+    return waveform.sectionAutomationTargetOffscreen;
+  }
+  static float automationAnchorX(const WaveformBar &waveform) {
+    return waveform.sectionAutomationToolbarAnchorX;
+  }
+  static void expectAutomationAnchor(const WaveformBar &waveform,
+                                     const double sectionStart,
+                                     const double sectionEnd) {
+    const auto projectionLane = waveform.getArrangementLaneBounds(waveBody(waveform));
+    auto safeLane = projectionLane.toNearestInt();
+    if (waveform.minimalPhoneMode)
+      safeLane = safeLane.getIntersection(waveform.phoneSafeAreaInsets
+                                             .subtractedFrom(waveform.getLocalBounds()));
+    safeLane = safeLane.reduced(4);
+    const auto window = waveform.getVisibleWindow();
+    const double length = waveform.getSongLengthSeconds();
+    const auto project = [&](const double seconds) {
+      const auto ratio = juce::jlimit(0.0, 1.0,
+          (seconds / length - window.first) / window.second);
+      return juce::jlimit(static_cast<float>(safeLane.getX()),
+          static_cast<float>(safeLane.getRight()),
+          projectionLane.getX() + static_cast<float>(ratio) * projectionLane.getWidth());
+    };
+    expect(std::abs(waveform.sectionAutomationToolbarAnchorX -
+                    (project(sectionStart) + project(sectionEnd)) * 0.5f) < 1.0f,
+           "the floating toolbar points to the visible range of its stable section ID");
+  }
+  static bool automationCompact(const WaveformBar &waveform) {
+    return waveform.sectionAutomationCompactLayout;
+  }
+  static void setVisibleWindow(WaveformBar &waveform, float start, float span) {
+    waveform.setVisibleWindow(start, span);
+  }
+  static std::pair<float, float> visibleWindow(const WaveformBar &waveform) {
+    return waveform.getVisibleWindow();
+  }
+  static void selectWithoutGesture(WaveformBar &waveform, const juce::String &id) {
+    waveform.setSingleSelectedPart(waveform.findPartIndexById(id));
+  }
+  static void tick(WaveformBar &waveform) {
+    waveform.timerCallback();
+  }
+  static void focusAutomationTarget(WaveformBar &waveform) {
+    waveform.focusSectionAutomationTarget();
+  }
+  static bool automationActionsEnabled(const WaveformBar &waveform) {
+    return waveform.sectionAutomationDoneButton.isEnabled() &&
+           waveform.sectionAutomationMoreButton.isEnabled() &&
+           (!waveform.sectionAutomationCancelButton.isVisible() ||
+            waveform.sectionAutomationCancelButton.isEnabled());
+  }
+  static bool automationMoreEnabled(const WaveformBar &waveform) {
+    return waveform.sectionAutomationMoreButton.isEnabled();
+  }
+  static bool hasDeferredSectionJump(const WaveformBar &waveform) {
+    return waveform.pendingJumpDoubleClickPartIndex >= 0;
   }
   static void automationDone(WaveformBar &waveform) {
     waveform.sectionAutomationDoneButton.onClick();
@@ -172,7 +261,8 @@ struct WaveformEditingTestAccess {
     waveform.sectionAutomationCancelButton.onClick();
   }
   static void automationClear(WaveformBar &waveform) {
-    waveform.sectionAutomationClearButton.onClick();
+    // Use the same action as the More menu without opening a native popup in CI.
+    waveform.clearSectionAutomationFromToolbar();
   }
 };
 
@@ -700,12 +790,49 @@ void testSectionAutomationResponsiveLayout() {
         component.createComponentSnapshot(component.getLocalBounds(), true, 2.0f), *stream),
         "production component visual capture writes");
   };
-  for (const int width : {360, 768, 1200}) {
-    f.waveform.setMinimalPhoneMode(width == 360);
+  for (const int width : {320, 360, 768, 1200}) {
+    const bool phone = width <= 360;
+    f.waveform.setMinimalPhoneMode(phone);
+    f.waveform.setPhoneSafeAreaInsets(phone ? juce::BorderSize<int>(24, 18, 20, 28)
+                                          : juce::BorderSize<int>{});
     f.waveform.setSize(width, 260);
     WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+    expect(WaveformEditingTestAccess::automationCompact(f.waveform) == phone,
+           "phones keep the compact actions and wider views expose Cancel");
+    if (phone)
+      expect(WaveformEditingTestAccess::automationLabel(f.waveform).startsWith("A"),
+             "the compact automation label starts with its short A indicator");
+    if (phone)
+      WaveformEditingTestAccess::expectAutomationTouchTargets(f.waveform);
     capture(f.waveform, "automation-wave-" + juce::String(width));
   }
+  f.waveform.setMinimalPhoneMode(true);
+  for (const int height : {108, 140}) {
+    f.waveform.setSize(360, height);
+    for (const bool verticalInsets : {true, false}) {
+      f.waveform.setPhoneSafeAreaInsets(verticalInsets
+          ? juce::BorderSize<int>(24, 18, 20, 28)
+          : juce::BorderSize<int>(0, 18, 0, 28));
+      WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+      WaveformEditingTestAccess::expectAutomationTouchTargets(f.waveform);
+      WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+      capture(f.waveform, "automation-phone-" + juce::String(height) +
+                             (verticalInsets ? "-with-insets" : ""));
+    }
+  }
+  // Forty-four safe pixels are the boundary where vertical padding must give
+  // way before any action's touch target shrinks.
+  f.waveform.setPhoneSafeAreaInsets(juce::BorderSize<int>(24, 18, 20, 28));
+  f.waveform.setSize(360, 96);
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  WaveformEditingTestAccess::expectAutomationTouchTargets(f.waveform);
+  capture(f.waveform, "automation-phone-minimum-44");
+  // A narrow floating section uses the same compact actions in a desktop lane.
+  f.waveform.setMinimalPhoneMode(false);
+  f.waveform.setSize(400, 260);
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  expect(WaveformEditingTestAccess::automationCompact(f.waveform),
+         "a narrow desktop lane keeps the actions within its available width");
   ChannelStripLookAndFeel look;
   ChannelStripCard strip("GUITAR", look, [] { return std::make_pair(0.25f, 0.22f); });
   strip.setSize(100, 310);
@@ -731,7 +858,7 @@ void testSectionAutomationToolbarAndHistory() {
   f.click(toolbar.automateButton.getCentre());
   expect(editingId == "A", "Automate targets the stable ID of the clicked section");
   expect(WaveformEditingTestAccess::automationActionsVisible(f.waveform),
-         "automation exposes Done, Cancel and Clear");
+         "automation exposes its label, Done and More actions");
   const int before = f.commits;
   f.click(WaveformEditingTestAccess::bodyPoint(f.waveform, "B"));
   expect(editingId == "A" && f.commits == before,
@@ -760,6 +887,169 @@ void testSectionAutomationToolbarAndHistory() {
   WaveformEditingTestAccess::automationDone(f.waveform);
   expect(saved && editingId.isEmpty(), "Done completes the targeted edit");
 }
+
+void testSectionAutomationToolbarTracksStableId() {
+  double position = 15.0;
+  Fixture f;
+  f.waveform.setTransportProviders([&position] { return position; },
+                                  [&f] { return f.timelineLength; },
+                                  [] { return false; });
+  juce::String editingId;
+  juce::String clearedId;
+  f.waveform.setSectionAutomationCallbacks(
+      [&editingId](const juce::String &id) { editingId = id; return true; },
+      [](bool) {},
+      [&clearedId](const juce::String &id) { clearedId = id; },
+      [&editingId] { return editingId; });
+  f.click(WaveformEditingTestAccess::overlay(f.waveform, "A").automateButton.getCentre());
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+  const auto pinnedBounds = WaveformEditingTestAccess::automationToolbar(f.waveform);
+
+  position = 25.0;
+  WaveformEditingTestAccess::selectWithoutGesture(f.waveform, "B");
+  WaveformEditingTestAccess::tick(f.waveform);
+  expect(WaveformEditingTestAccess::selectedId(f.waveform) == "B" && editingId == "A",
+         "playback cursor and arrange selection can differ from the pinned draft ID");
+  expect(WaveformEditingTestAccess::automationToolbar(f.waveform) == pinnedBounds,
+         "changing cursor and selection leaves the floating toolbar on the edited section");
+
+  auto refreshed = WaveformEditingTestAccess::snapshot(f.waveform);
+  refreshed.parts[0].endSec = 5.0;
+  refreshed.parts[1].name = "Pinned verse";
+  refreshed.parts.push_back(original("Lead", 5.0, 10.0));
+  f.waveform.setArrangement(refreshed, true);
+  WaveformEditingTestAccess::selectWithoutGesture(f.waveform, "B");
+  WaveformEditingTestAccess::tick(f.waveform);
+  expect(editingId == "A" &&
+             WaveformEditingTestAccess::automationLabel(f.waveform).contains("Pinned verse"),
+         "a refreshed snapshot resolves the edited name by ID after section indices shift");
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+  WaveformEditingTestAccess::automationClear(f.waveform);
+  expect(clearedId == "A", "the More menu Clear action follows the draft ID after selection changes");
+}
+
+void testSectionAutomationToolbarTracksViewport() {
+  Fixture f;
+  f.waveform.setSectionAutomationState("A");
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.0f, 0.9f);
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+  const auto initialWindow = WaveformEditingTestAccess::visibleWindow(f.waveform);
+  const auto zoomPoint = WaveformEditingTestAccess::pointAt(
+      f.waveform, 8.0, WaveformEditingTestAccess::waveBody(f.waveform).getCentreY());
+  f.waveform.mouseMagnify(pointerEvent(f.waveform, zoomPoint, zoomPoint), 0.5f);
+  expect(WaveformEditingTestAccess::visibleWindow(f.waveform).second < initialWindow.second,
+         "the production magnify handler changes the viewport during automation");
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+  const auto magnifiedAnchor = WaveformEditingTestAccess::automationAnchorX(f.waveform);
+  juce::MouseWheelDetails wheel;
+  wheel.deltaX = -0.06f;
+  const auto panPoint = WaveformEditingTestAccess::waveBody(f.waveform).getCentre();
+  f.waveform.mouseWheelMove(pointerEvent(f.waveform, panPoint, panPoint), wheel);
+  expect(std::abs(WaveformEditingTestAccess::automationAnchorX(f.waveform) - magnifiedAnchor) > 1.0f,
+         "the floating anchor moves immediately with the production horizontal scroll handler");
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+
+  for (const float start : {0.75f, 0.0f}) {
+    WaveformEditingTestAccess::setVisibleWindow(f.waveform, start, 0.2f);
+    expect(WaveformEditingTestAccess::automationTargetOffscreen(f.waveform) &&
+               WaveformEditingTestAccess::automationActionsVisible(f.waveform),
+           "the floating actions remain visible when the edited section leaves either viewport edge");
+    WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+    const auto label = WaveformEditingTestAccess::automationLabel(f.waveform);
+    expect(label.contains(start > 0.5f ? juce::String::fromUTF8("←")
+                                      : juce::String::fromUTF8("→")),
+           "the offscreen label indicates the direction of the pinned section");
+    WaveformEditingTestAccess::focusAutomationTarget(f.waveform);
+    expect(!WaveformEditingTestAccess::automationTargetOffscreen(f.waveform),
+           "the More menu return action brings the pinned section back into view");
+    WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+  }
+}
+
+void testSectionAutomationReadonlyToolbar() {
+  Fixture f;
+  juce::String editingId = "A";
+  bool canEdit = false;
+  int finishes = 0, clears = 0;
+  f.waveform.setSectionAutomationCallbacks(
+      [](const juce::String &) { return false; },
+      [&finishes](bool) { ++finishes; },
+      [&clears](const juce::String &) { ++clears; },
+      [&editingId] { return editingId; },
+      [&canEdit] { return canEdit; });
+  f.waveform.setSectionAutomationState(editingId);
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  expect(WaveformEditingTestAccess::automationActionsVisible(f.waveform) &&
+             !WaveformEditingTestAccess::automationActionsEnabled(f.waveform),
+         "a remote draft remains visible with editing actions disabled for its observer");
+  WaveformEditingTestAccess::automationDone(f.waveform);
+  WaveformEditingTestAccess::automationCancel(f.waveform);
+  WaveformEditingTestAccess::automationClear(f.waveform);
+  expect(f.waveform.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)),
+         "Escape is consumed while observing the remote draft");
+  expect(finishes == 0 && clears == 0 && editingId == "A",
+         "readonly toolbar callbacks and Escape cannot finish or clear another client's draft");
+
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.75f, 0.2f);
+  expect(WaveformEditingTestAccess::automationTargetOffscreen(f.waveform) &&
+             WaveformEditingTestAccess::automationMoreEnabled(f.waveform) &&
+             !WaveformEditingTestAccess::automationActionsEnabled(f.waveform),
+         "an observer can open More to return to an offscreen section while editing actions stay disabled");
+  WaveformEditingTestAccess::focusAutomationTarget(f.waveform);
+  expect(!WaveformEditingTestAccess::automationTargetOffscreen(f.waveform) &&
+             finishes == 0 && clears == 0,
+         "returning to a remote section changes only the local viewport");
+
+  canEdit = true;
+  WaveformEditingTestAccess::tick(f.waveform);
+  expect(WaveformEditingTestAccess::automationActionsEnabled(f.waveform),
+         "a same-ID ownership update enables the owner's toolbar without reopening the draft");
+  WaveformEditingTestAccess::automationDone(f.waveform);
+  expect(finishes == 1, "the owner can finish through the guarded production action");
+}
+
+void testSectionAutomationMobileNavigation() {
+  Fixture f;
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(360, 260);
+  WaveformEditingTestAccess::selectWithoutGesture(f.waveform, "A");
+  juce::String editingId = "A";
+  int seeks = 0, jumps = 0;
+  f.waveform.setSeekCallback([&seeks](double) { ++seeks; });
+  f.waveform.setOnArrangementPartJumpRequest([&jumps](int) { ++jumps; });
+  f.waveform.setSectionAutomationCallbacks(
+      [](const juce::String &) { return false; }, [](bool) {},
+      [](const juce::String &) {}, [&editingId] { return editingId; });
+  f.waveform.setSectionAutomationState(editingId);
+  const int before = f.commits;
+  const auto otherSection = WaveformEditingTestAccess::bodyPoint(f.waveform, "B");
+  f.click(otherSection);
+  f.waveform.mouseDoubleClick(pointerEvent(f.waveform, otherSection, otherSection, false, 2));
+  WaveformEditingTestAccess::tick(f.waveform);
+  expect(!WaveformEditingTestAccess::hasDeferredSectionJump(f.waveform) && jumps == 0,
+         "double tapping the phone waveform cannot schedule a section jump during automation");
+  expect(WaveformEditingTestAccess::selectedId(f.waveform) == "A" &&
+             editingId == "A" && seeks == 0 && f.commits == before,
+         "phone taps preserve the pinned draft, selection, playback cursor and arrangement");
+
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.2f, 0.5f);
+  const auto beforePan = WaveformEditingTestAccess::visibleWindow(f.waveform);
+  const auto body = WaveformEditingTestAccess::waveBody(f.waveform);
+  const juce::Point<float> start(body.getCentreX(), body.getBottom() - 20.0f);
+  const auto end = start.translated(-60.0f, 0.0f);
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  f.waveform.mouseDrag(pointerEvent(f.waveform, end, start, true));
+  f.waveform.mouseUp(pointerEvent(f.waveform, end, start, true));
+  expect(WaveformEditingTestAccess::visibleWindow(f.waveform).first > beforePan.first,
+         "dragging the phone waveform still pans its visible window during automation");
+  expect(editingId == "A" && seeks == 0 && jumps == 0 && f.commits == before,
+         "phone navigation changes the viewport without seeking or modifying the draft");
+  WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
+  WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
+}
 } // namespace
 
 int main() {
@@ -782,6 +1072,10 @@ int main() {
   run("move left preserves source and undo/redo", testMoveLeftKeepsSourceAndHistory);
   run("section automation toolbar, fixed target and undo", testSectionAutomationToolbarAndHistory);
   run("section automation responsive layout", testSectionAutomationResponsiveLayout);
+  run("section automation toolbar tracks stable ID", testSectionAutomationToolbarTracksStableId);
+  run("section automation toolbar follows zoom and scroll", testSectionAutomationToolbarTracksViewport);
+  run("section automation readonly remote toolbar", testSectionAutomationReadonlyToolbar);
+  run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);
   run("trim and expand reopen insertion gap", testTrimAndExpandRestoresGap);

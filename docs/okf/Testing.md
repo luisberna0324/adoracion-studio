@@ -68,6 +68,7 @@ onda, VU y reconexión con la compilación portátil.
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
+| [Guías interactivas](ui/LearningGuide.md) | `learning_guide`: contenido, IDs, persistencia, reanudación, reinicio y entradas inválidas; `learning_overlay`: spotlight, interacción y scroll, navegación segura, targets reales de Ensayo y tamaños; `settings_panel`: acceso a las guías desde Configuración |
 | [Ensayo por instrumento](ui/MobileLayout.md) | `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda y reloj visual; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |

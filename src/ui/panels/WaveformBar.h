@@ -240,6 +240,12 @@ private:
   void handleSeek(float x);
   void handleSeek(float x, const juce::Rectangle<float> &seekBounds);
   void showExportFormatPopover();
+  void layoutSectionAutomationToolbar();
+  void paintSectionAutomationToolbar(juce::Graphics &g);
+  void showSectionAutomationActionsPopover();
+  void finishSectionAutomationFromToolbar(bool save);
+  void clearSectionAutomationFromToolbar();
+  void focusSectionAutomationTarget();
 
   std::vector<float> waveformBins;
   PlayingProvider playingProvider;
@@ -276,7 +282,12 @@ private:
   juce::Label sectionAutomationLabel;
   juce::TextButton sectionAutomationDoneButton;
   juce::TextButton sectionAutomationCancelButton;
-  juce::TextButton sectionAutomationClearButton;
+  SvgToolbarButton sectionAutomationMoreButton{"sectionAutomationMore", SvgIconName::MoreHorizontal};
+  juce::Rectangle<int> sectionAutomationToolbarBounds;
+  float sectionAutomationToolbarAnchorX = 0.0f;
+  bool sectionAutomationCompactLayout = false;
+  bool sectionAutomationTargetOffscreen = false;
+  uint64_t sectionAutomationUiRevision = 0;
   SvgToolbarButton followButton{"follow", SvgIconName::AudioWaveform};
   SvgToolbarButton moreButton{"more", SvgIconName::MoreHorizontal};
   SvgToolbarButton editButton{"edit", SvgIconName::Pencil};

@@ -10,6 +10,7 @@
 #include "network/PlaybackSession.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include "ui/UiCommon.h"
+#include "ui/learning/LearningGuideModel.h"
 #include <JuceHeader.h>
 
 #include <unordered_set>
@@ -27,6 +28,7 @@ class SettingsPanel;
 class SettingsVersionsSheet;
 class AppModal;
 class PracticePanel;
+class LearningGuideOverlay;
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -56,6 +58,16 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  void showLearningGuide();
+  void showLearningCatalog();
+  void startLearningLesson(const juce::String &id);
+  void advanceLearningStep(bool forward);
+  void restartLearningLesson();
+  void pauseLearningGuide();
+  void refreshLearningStep();
+  void updateLearningGuideTarget();
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
+  const playworship::learning::Lesson *currentLearningLesson() const;
   void updatePhoneOrientation();
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
@@ -93,6 +105,14 @@ private:
   juce::Component::SafePointer<SettingsVersionsSheet> cloudSettingsSheet;
   std::unique_ptr<juce::Component> cloudSettingsSheetOverlay;
   std::unique_ptr<AppModal> appModal;
+  std::unique_ptr<LearningGuideOverlay> learningGuide;
+  std::unique_ptr<playworship::learning::ProgressStore> learningProgress;
+  std::vector<playworship::learning::Lesson> learningLessons;
+  juce::String learningLessonId;
+  juce::String learningSaveError;
+  int learningStepIndex = 0;
+  bool learningPhoneContent = false;
+  bool learningEnglishContent = false;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 

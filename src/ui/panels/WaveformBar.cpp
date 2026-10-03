@@ -1028,12 +1028,13 @@ WaveformBar::WaveformBar() {
   sectionAutomationLabel.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
   sectionAutomationLabel.setColour(juce::Label::textColourId, UITheme::accent);
   sectionAutomationLabel.setJustificationType(juce::Justification::centredLeft);
+  sectionAutomationLabel.setInterceptsMouseClicks(false, false);
   addChildComponent(sectionAutomationLabel);
   sectionAutomationDoneButton.setButtonText(L10n::tr("Listo", "Done"));
   sectionAutomationCancelButton.setButtonText(L10n::tr("Cancelar", "Cancel"));
-  sectionAutomationClearButton.setButtonText(L10n::tr("Borrar", "Clear"));
-  for (auto *button : {&sectionAutomationDoneButton, &sectionAutomationCancelButton,
-                       &sectionAutomationClearButton}) {
+  for (auto *button : std::initializer_list<juce::TextButton *>{
+           &sectionAutomationDoneButton, &sectionAutomationCancelButton,
+           &sectionAutomationMoreButton}) {
     button->setViewportIgnoreDragFlag(true);
     button->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
     button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
@@ -1041,17 +1042,18 @@ WaveformBar::WaveformBar() {
   }
   sectionAutomationDoneButton.setTooltip(L10n::tr(
       "Guardar los controles modificados en esta sección", "Save changed controls in this section"));
-  sectionAutomationClearButton.setTooltip(L10n::tr(
-      "Quitar la automatización de esta sección", "Remove automation from this section"));
+  sectionAutomationDoneButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  sectionAutomationDoneButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
+  sectionAutomationCancelButton.setTooltip(L10n::tr("Descartar los cambios de esta sección", "Discard changes to this section"));
+  sectionAutomationMoreButton.setTooltip(L10n::tr("Más acciones de automatización", "More automation actions"));
   sectionAutomationDoneButton.onClick = [this] {
-    if (onSectionAutomationFinish) onSectionAutomationFinish(true);
+    finishSectionAutomationFromToolbar(true);
   };
   sectionAutomationCancelButton.onClick = [this] {
-    if (onSectionAutomationFinish) onSectionAutomationFinish(false);
+    finishSectionAutomationFromToolbar(false);
   };
-  sectionAutomationClearButton.onClick = [this] {
-    if (onSectionAutomationClear)
-      onSectionAutomationClear(sectionAutomationEditingPartId);
+  sectionAutomationMoreButton.onClick = [this] {
+    showSectionAutomationActionsPopover();
   };
 
   waveHeightButton.setClickingTogglesState(true);
@@ -1392,6 +1394,7 @@ void WaveformBar::setSectionAutomationCallbacks(
 void WaveformBar::setSectionAutomationState(const juce::String &partId) {
   if (sectionAutomationEditingPartId == partId) return;
   sectionAutomationEditingPartId = partId;
+  ++sectionAutomationUiRevision;
   lastSectionAutomationAnimationMs = 0.0;
   sectionAutomationLabel.setAlpha(1.0f);
   dragMode = DragMode::none;
@@ -1400,6 +1403,174 @@ void WaveformBar::setSectionAutomationState(const juce::String &partId) {
   resized();
   if (onEditToggle) onEditToggle(isEditingArrangement());
   repaint();
+}
+
+void WaveformBar::layoutSectionAutomationToolbar() {
+  const auto previousBounds = sectionAutomationToolbarBounds;
+  sectionAutomationToolbarBounds = {};
+  const int index = findPartIndexById(sectionAutomationEditingPartId);
+  auto lane = getArrangementLaneBounds(getMainWaveBodyBounds(
+      getMainWaveBounds(getLocalBounds().toFloat()))).toNearestInt();
+  if (minimalPhoneMode)
+    lane = lane.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()));
+  lane = lane.reduced(4);
+#if JUCE_IOS || JUCE_ANDROID
+  const bool touchTargets = true;
+#else
+  const bool touchTargets = minimalPhoneMode;
+#endif
+  const int buttonHeight = touchTargets ? 44 : 32;
+  const bool visible = sectionAutomationEditingPartId.isNotEmpty() && index >= 0 &&
+                       lane.getWidth() >= 170 && lane.getHeight() >= buttonHeight;
+  sectionAutomationLabel.setVisible(visible);
+  sectionAutomationDoneButton.setVisible(visible);
+  sectionAutomationMoreButton.setVisible(visible);
+  sectionAutomationCancelButton.setVisible(false);
+  if (!visible) {
+    if (!previousBounds.isEmpty()) repaint(previousBounds.expanded(6));
+    return;
+  }
+
+  const auto &part = arrangement.parts[static_cast<size_t>(index)];
+  const double length = getSongLengthSeconds();
+  const auto window = getVisibleWindow();
+  const double visibleStart = window.first * length;
+  const double visibleEnd = (window.first + window.second) * length;
+  const bool beforeWindow = part.endSec <= visibleStart;
+  const bool afterWindow = part.startSec >= visibleEnd;
+  sectionAutomationTargetOffscreen = beforeWindow || afterWindow;
+  const auto projectionLane = getArrangementLaneBounds(getMainWaveBodyBounds(
+      getMainWaveBounds(getLocalBounds().toFloat())));
+  const float left = juce::jlimit(static_cast<float>(lane.getX()), static_cast<float>(lane.getRight()),
+                                sourceSecondsToWindowX(projectionLane, part.startSec));
+  const float right = juce::jlimit(static_cast<float>(lane.getX()), static_cast<float>(lane.getRight()),
+                                 sourceSecondsToWindowX(projectionLane, part.endSec));
+  sectionAutomationToolbarAnchorX = (left + right) * 0.5f;
+
+  sectionAutomationCompactLayout = minimalPhoneMode || lane.getWidth() < 430;
+  const int padding = 6, gap = 5;
+  const int moreWidth = touchTargets ? 44 : 32;
+  const int doneWidth = touchTargets ? 72 : 62;
+  const int cancelWidth = touchTargets ? 88 : 76;
+  const auto name = arrangementPartDisplayLabelForName(part.name);
+  const juce::String prefix = beforeWindow ? juce::String::fromUTF8("\xe2\x86\x90 ")
+                            : afterWindow ? juce::String::fromUTF8("\xe2\x86\x92 ") : juce::String{};
+  const auto text = prefix + juce::String::fromUTF8("A \xc2\xb7 ") + name;
+  sectionAutomationLabel.setText(text, juce::dontSendNotification);
+  sectionAutomationLabel.setTooltip(L10n::tr("Automatizando · ", "Automating · ") + name);
+  const auto font = makeAppFont(12.0f, AppFontWeight::Medium);
+  const int labelWidth = juce::jlimit(92, 168, static_cast<int>(std::ceil(
+      juce::GlyphArrangement::getStringWidth(font, text))) + 14);
+  const int actionWidth = moreWidth + doneWidth + gap +
+                          (sectionAutomationCompactLayout ? 0 : cancelWidth + gap);
+  const int width = juce::jmin(lane.getWidth(), labelWidth + gap + actionWidth + padding * 2);
+  const int height = juce::jmin(lane.getHeight(), buttonHeight + padding * 2);
+  const int x = juce::jlimit(lane.getX(), lane.getRight() - width,
+      juce::roundToInt(sectionAutomationToolbarAnchorX - width * 0.5f));
+  const int y = juce::jmin(lane.getY() + 22, lane.getBottom() - height);
+  sectionAutomationToolbarBounds = {x, y, width, height};
+  const int verticalPadding = juce::jmax(0, (height - buttonHeight) / 2);
+  auto content = sectionAutomationToolbarBounds.reduced(padding, verticalPadding);
+  sectionAutomationMoreButton.setBounds(content.removeFromRight(moreWidth));
+  content.removeFromRight(gap);
+  sectionAutomationDoneButton.setBounds(content.removeFromRight(doneWidth));
+  content.removeFromRight(gap);
+  if (!sectionAutomationCompactLayout) {
+    sectionAutomationCancelButton.setBounds(content.removeFromRight(cancelWidth));
+    content.removeFromRight(gap);
+    sectionAutomationCancelButton.setVisible(true);
+  }
+  sectionAutomationLabel.setBounds(content);
+  const bool canEdit = !sectionAutomationCanEditProvider || sectionAutomationCanEditProvider();
+  sectionAutomationDoneButton.setEnabled(canEdit);
+  sectionAutomationCancelButton.setEnabled(canEdit);
+  sectionAutomationMoreButton.setEnabled(canEdit || sectionAutomationTargetOffscreen);
+  sectionAutomationMoreButton.setAlpha(canEdit || sectionAutomationTargetOffscreen ? 1.0f : 0.4f);
+  if (previousBounds != sectionAutomationToolbarBounds) {
+    repaint(previousBounds.expanded(6));
+    repaint(sectionAutomationToolbarBounds.expanded(6));
+  }
+}
+
+void WaveformBar::paintSectionAutomationToolbar(juce::Graphics &g) {
+  if (sectionAutomationToolbarBounds.isEmpty()) return;
+  const auto bounds = sectionAutomationToolbarBounds.toFloat();
+  juce::DropShadow(juce::Colours::black.withAlpha(0.28f), 7, {0, 2})
+      .drawForRectangle(g, sectionAutomationToolbarBounds);
+  g.setColour(UITheme::cardBg);
+  g.fillRoundedRectangle(bounds, 10.0f);
+  const float pulse = sectionAutomationHighlightPulse();
+  g.setColour(UITheme::accent.withAlpha(0.28f + 0.32f * pulse));
+  g.drawRoundedRectangle(bounds.reduced(0.5f), 10.0f, 1.0f);
+  if (!sectionAutomationTargetOffscreen) {
+    const float x = juce::jlimit(bounds.getX() + 12.0f, bounds.getRight() - 12.0f,
+                                sectionAutomationToolbarAnchorX);
+    juce::Path pointer;
+    pointer.addTriangle(x - 5.0f, bounds.getBottom() - 1.0f,
+                        x + 5.0f, bounds.getBottom() - 1.0f,
+                        x, bounds.getBottom() + 5.0f);
+    g.setColour(UITheme::cardBg);
+    g.fillPath(pointer);
+  }
+}
+
+void WaveformBar::finishSectionAutomationFromToolbar(const bool save) {
+  if (sectionAutomationEditingPartId.isEmpty() ||
+      (sectionAutomationCanEditProvider && !sectionAutomationCanEditProvider())) return;
+  if (onSectionAutomationFinish) onSectionAutomationFinish(save);
+}
+
+void WaveformBar::clearSectionAutomationFromToolbar() {
+  if (sectionAutomationEditingPartId.isEmpty() ||
+      (sectionAutomationCanEditProvider && !sectionAutomationCanEditProvider())) return;
+  if (onSectionAutomationClear) onSectionAutomationClear(sectionAutomationEditingPartId);
+}
+
+void WaveformBar::focusSectionAutomationTarget() {
+  const int index = findPartIndexById(sectionAutomationEditingPartId);
+  const double length = getSongLengthSeconds();
+  if (index < 0 || length <= 0.0) return;
+  const auto &part = arrangement.parts[static_cast<size_t>(index)];
+  const float span = juce::jlimit(kMinViewportSpan, 1.0f, juce::jmax(
+      viewportSpan, static_cast<float>((part.endSec - part.startSec) / length) * 1.15f));
+  phonePanInertiaActive = false;
+  phonePanVelocity = 0.0f;
+  followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() + kFollowSuspendAfterManualViewportMs;
+  setVisibleWindow(static_cast<float>((part.startSec + part.endSec) * 0.5 / length) - span * 0.5f, span);
+}
+
+void WaveformBar::showSectionAutomationActionsPopover() {
+  if (sectionAutomationEditingPartId.isEmpty()) return;
+  const auto safe = juce::Component::SafePointer<WaveformBar>(this);
+  const auto target = sectionAutomationEditingPartId;
+  const auto revision = sectionAutomationUiRevision;
+  const auto stillCurrent = [safe, target, revision] {
+    return safe && safe->sectionAutomationEditingPartId == target &&
+           safe->sectionAutomationUiRevision == revision;
+  };
+  const bool canEdit = !sectionAutomationCanEditProvider || sectionAutomationCanEditProvider();
+  auto panel = std::make_unique<WaveformActionsPopover>();
+  if (sectionAutomationTargetOffscreen)
+    panel->addAction(L10n::tr("Volver a la sección", "Return to section"), SvgIconName::ArrowLeft,
+                     true, true, [safe, stillCurrent] {
+                       if (stillCurrent()) safe->focusSectionAutomationTarget();
+                     });
+  if (sectionAutomationCompactLayout)
+    panel->addAction(L10n::tr("Cancelar cambios", "Cancel changes"), SvgIconName::ArrowLeft,
+                     canEdit, true, [safe, stillCurrent] {
+                       if (stillCurrent()) safe->finishSectionAutomationFromToolbar(false);
+                     });
+  panel->addAction(L10n::tr("Borrar automatización", "Remove automation"), SvgIconName::Trash,
+                   canEdit, true, [safe, stillCurrent] {
+                     if (stillCurrent()) safe->clearSectionAutomationFromToolbar();
+                   });
+  panel->setSize(250, panel->preferredHeight());
+  auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
+  auto *parent = editor ? static_cast<juce::Component *>(editor) : this;
+  const auto anchor = parent->getLocalArea(&sectionAutomationMoreButton, sectionAutomationMoreButton.getLocalBounds());
+  ActionPopoverOptions options;
+  options.compactMaximumWidth = 300;
+  presentActionPopover(std::move(panel), anchor, parent, options);
 }
 
 void WaveformBar::setCommittedSectionAutomation(const SongArrangementSnapshot &snapshot) {
@@ -1668,11 +1839,14 @@ void WaveformBar::openSectionPicker(const juce::Rectangle<float> &anchor,
 void WaveformBar::refreshThemeColours() {
   invalidateWaveformRenderCaches();
   sectionAutomationLabel.setColour(juce::Label::textColourId, UITheme::accent);
-  for (auto *button : {&sectionAutomationDoneButton, &sectionAutomationCancelButton,
-                       &sectionAutomationClearButton}) {
+  for (auto *button : std::initializer_list<juce::TextButton *>{
+           &sectionAutomationDoneButton, &sectionAutomationCancelButton,
+           &sectionAutomationMoreButton}) {
     button->setColour(juce::TextButton::buttonColourId, UITheme::cardBg);
     button->setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   }
+  sectionAutomationDoneButton.setColour(juce::TextButton::buttonColourId, UITheme::accent);
+  sectionAutomationDoneButton.setColour(juce::TextButton::textColourOffId, UITheme::onAccent);
   followButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
   followButton.setColour(juce::TextButton::buttonOnColourId,
                          UITheme::accent.withAlpha(0.95f));
@@ -1880,7 +2054,8 @@ void WaveformBar::paint(juce::Graphics &g) {
   const auto window = getVisibleWindow();
   drawWaveform(g, mainWaveBodyBounds, window.first, window.second,
                isEditingArrangement(), true);
-  if (timelineViewMode == TimelineViewMode::TempoMap)
+  if (timelineViewMode == TimelineViewMode::TempoMap &&
+      sectionAutomationEditingPartId.isEmpty())
     drawTempoOverlay(g, mainWaveBodyBounds);
   else
     drawArrangementOverlay(g, mainWaveBodyBounds);
@@ -1921,6 +2096,7 @@ void WaveformBar::paint(juce::Graphics &g) {
                      juce::Justification::centred, 1);
   }
   paintRemoteIndicator();
+  paintSectionAutomationToolbar(g);
 }
 
 void WaveformBar::paintOverChildren(juce::Graphics &g) {
@@ -1949,28 +2125,8 @@ void WaveformBar::resized() {
   const int snapModeLabelW = 56;
   const bool hasLoadedSong = !waveformBins.empty();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
-  sectionAutomationLabel.setVisible(automationEditing);
-  sectionAutomationDoneButton.setVisible(automationEditing);
-  sectionAutomationCancelButton.setVisible(automationEditing);
-  sectionAutomationClearButton.setVisible(automationEditing);
+  layoutSectionAutomationToolbar();
   if (automationEditing) {
-    auto actionArea = toolbarBounds;
-    sectionAutomationCancelButton.setBounds(actionArea.removeFromRight(70));
-    actionArea.removeFromRight(4);
-    sectionAutomationDoneButton.setBounds(actionArea.removeFromRight(56));
-    actionArea.removeFromRight(4);
-    sectionAutomationClearButton.setBounds(actionArea.removeFromRight(56));
-    actionArea.removeFromRight(8);
-    sectionAutomationLabel.setBounds(actionArea);
-    const int index = findPartIndexById(sectionAutomationEditingPartId);
-    const auto name = index >= 0 ? arrangementPartDisplayLabelForName(
-        arrangement.parts[static_cast<size_t>(index)].name) : juce::String{};
-    sectionAutomationLabel.setText(L10n::tr("Automatizando · ", "Automating · ") + name,
-                                   juce::dontSendNotification);
-    const bool canEdit = !sectionAutomationCanEditProvider || sectionAutomationCanEditProvider();
-    sectionAutomationDoneButton.setEnabled(canEdit);
-    sectionAutomationCancelButton.setEnabled(canEdit);
-    sectionAutomationClearButton.setEnabled(canEdit);
     for (auto *component : std::initializer_list<juce::Component *>{
         &followButton, &moreButton, &editButton, &waveHeightButton, &guideMapButton,
         &tempoMapButton, &snapModeLabel, &snapModeBox, &sectionMenuButton,
@@ -2187,12 +2343,14 @@ void WaveformBar::resized() {
 }
 
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
-  // The selected section remains fixed while the mixer edits its draft.
-  if (sectionAutomationEditingPartId.isNotEmpty()) return;
+  const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
+  // Buttons and their background consume the gesture. Navigation can still
+  // move the viewport without changing the fixed section or its arrangement.
+  if (automationEditing && sectionAutomationToolbarBounds.toFloat().contains(event.position)) return;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
-  if (minimalPhoneMode && !isEditingArrangement() && event.source.isTouch()) {
+  if (minimalPhoneMode && (!isEditingArrangement() || automationEditing) && event.source.isTouch()) {
     const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
     const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
     if (mainWaveBodyBounds.contains(event.position)) {
@@ -2287,6 +2445,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   }
 
   if (seekRulerBounds.contains(event.position)) {
+    if (automationEditing) return;
     if (event.mods.isPopupMenu())
       return;
     dragMode = DragMode::seek;
@@ -2300,7 +2459,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   // Phones do not expose the desktop minimap. Pan the visible waveform
   // directly with one finger instead, while preserving the arrange editor's
   // section manipulation gestures.
-  if (minimalPhoneMode && !isEditingArrangement() &&
+  if (minimalPhoneMode && (!isEditingArrangement() || automationEditing) &&
       mainWaveBodyBounds.contains(event.position) && !event.mods.isPopupMenu()) {
     followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
                              kFollowSuspendAfterManualViewportMs;
@@ -2321,6 +2480,8 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     setMouseCursor(juce::MouseCursor::DraggingHandCursor);
     return;
   }
+
+  if (automationEditing) return;
 
   if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap &&
       mainWaveBodyBounds.contains(event.position)) {
@@ -3120,7 +3281,7 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   const bool wasSelectionDrag = dragMode == DragMode::selectParts;
   const bool wasPhoneWaveformTap =
       minimalPhoneMode && dragMode == DragMode::panViewport &&
-      !viewportDragMoved;
+      !viewportDragMoved && sectionAutomationEditingPartId.isEmpty();
   const bool wasPhonePanDrag =
       minimalPhoneMode && dragMode == DragMode::panViewport &&
       viewportDragMoved && event.source.isTouch();
@@ -3202,6 +3363,7 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
   const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
   const auto seekRulerBounds = getSeekRulerBounds(mainWaveBounds);
   const auto miniMapBounds = getMiniMapBounds(bounds);
+  const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
 
   if (miniMapBounds.contains(event.position) && miniMapBounds.getWidth() > 2.0f) {
     const auto viewportBounds = getViewportBoundsInMiniMap(miniMapBounds);
@@ -3217,9 +3379,13 @@ void WaveformBar::mouseMove(const juce::MouseEvent &event) {
     else if (viewportBounds.contains(event.position))
       nextCursor = juce::MouseCursor::DraggingHandCursor;
   } else if (seekRulerBounds.contains(event.position)) {
-    nextCursor = juce::MouseCursor::PointingHandCursor;
+    if (!automationEditing)
+      nextCursor = juce::MouseCursor::PointingHandCursor;
   } else if (mainWaveBodyBounds.contains(event.position)) {
-    if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap) {
+    if (automationEditing) {
+      if (minimalPhoneMode && !sectionAutomationToolbarBounds.toFloat().contains(event.position))
+        nextCursor = juce::MouseCursor::DraggingHandCursor;
+    } else if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap) {
       const auto hit = hitTestTempoRegion(event.position);
       if (juce::isPositiveAndBelow(hit.regionIndex,
                                    static_cast<int>(tempoMap.regions.size()))) {
@@ -3310,6 +3476,8 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (sectionAutomationEditingPartId.isNotEmpty())
+    return;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
@@ -3479,6 +3647,7 @@ void WaveformBar::timerCallback() {
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   if (sectionAutomationEditingPartId.isNotEmpty()) {
+    layoutSectionAutomationToolbar();
 #if JUCE_ANDROID
     constexpr double animationFrameMs = 1000.0 / 12.0;
 #else
@@ -3487,6 +3656,7 @@ void WaveformBar::timerCallback() {
     if (nowMs - lastSectionAutomationAnimationMs >= animationFrameMs) {
       lastSectionAutomationAnimationMs = nowMs;
       sectionAutomationLabel.setAlpha(0.72f + 0.28f * sectionAutomationHighlightPulse());
+      repaint(sectionAutomationToolbarBounds.expanded(5));
       // Invalidate only the animated target without rebuilding waveform caches.
       for (const auto &overlay : partOverlayBounds) {
         if (juce::isPositiveAndBelow(overlay.partIndex,
@@ -3837,8 +4007,10 @@ void WaveformBar::setVisibleWindow(float start, float span) {
   viewportSpan = span;
   if (spanChanged)
     invalidateWaveformRenderCaches();
-  if (changed)
+  if (changed) {
+    layoutSectionAutomationToolbar();
     repaint();
+  }
 }
 
 void WaveformBar::applyZoom(float factor, float anchorRatio) {
@@ -4598,7 +4770,7 @@ bool WaveformBar::isEditingArrangement() const {
 }
 
 int WaveformBar::getExtraHeightForHostLayout() const {
-  if (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty())
+  if (!isEditingArrangement() || sectionAutomationEditingPartId.isNotEmpty())
     return 0;
   return static_cast<int>(std::ceil(kEditToolbarHeight + kEditToolbarBottomGap));
 }
@@ -4617,7 +4789,7 @@ WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
                   ? bounds
                   : bounds.reduced(8.0f, 6.0f)
                         .withTrimmedBottom(kBottomSafetyInset);
-  if (isEditingArrangement() || sectionAutomationEditingPartId.isNotEmpty())
+  if (isEditingArrangement() && sectionAutomationEditingPartId.isEmpty())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   // Phones use the full waveform height; the minimap/navigation strip is
   // deliberately omitted to preserve room for the mixer.
@@ -4660,7 +4832,7 @@ WaveformBar::getMiniMapBounds(const juce::Rectangle<float> &bounds) const {
 
   auto area = bounds.reduced(8.0f, 6.0f);
   area = area.withTrimmedBottom(kBottomSafetyInset);
-  if (isEditingArrangement() || sectionAutomationEditingPartId.isNotEmpty())
+  if (isEditingArrangement() && sectionAutomationEditingPartId.isEmpty())
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   if (area.getHeight() <= kMiniMapHeight)
     return {};
@@ -5029,6 +5201,7 @@ void WaveformBar::rebuildPartOverlayBounds(
     return;
 
   const auto window = getVisibleWindow();
+  const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
   const int activeLoopPartIndex =
       activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
   const int pendingJumpPartIndex =
@@ -5074,7 +5247,7 @@ void WaveformBar::rebuildPartOverlayBounds(
                                                  body.getHeight());
     constexpr float deleteSize = 13.0f;
     overlay.showsDeleteButton =
-        isEditingArrangement() && body.getWidth() >= (deleteSize + 16.0f) &&
+        !automationEditing && isEditingArrangement() && body.getWidth() >= (deleteSize + 16.0f) &&
         body.getHeight() >= (deleteSize + 8.0f);
     if (overlay.showsDeleteButton) {
       overlay.deleteButton = juce::Rectangle<float>(
@@ -5094,7 +5267,7 @@ void WaveformBar::rebuildPartOverlayBounds(
     constexpr float actionIconSize = 18.0f;
     constexpr float actionGap = 8.0f;
     const bool editingNow = isEditingArrangement();
-    if (!editingNow) {
+    if (!editingNow && !automationEditing) {
       const auto actionBounds = minimalPhoneMode
           ? body.getIntersection(
                 phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
@@ -5195,7 +5368,7 @@ void WaveformBar::rebuildPartOverlayBounds(
         overlay.jumpIcon =
             overlay.jumpButton.withSizeKeepingCentre(actionIconSize, actionIconSize);
       }
-    } else {
+    } else if (!automationEditing) {
       constexpr float editButtonSize = 24.0f;
       constexpr float editButtonGap = 4.0f;
       constexpr float editToolbarPadX = 5.0f;
@@ -5944,6 +6117,7 @@ void WaveformBar::drawSectionInsertionAnchor(
     const juce::Rectangle<float> &rulerBounds, const float windowStart,
     const float windowSpan) const {
   if (!sectionInsertionAnchorValid || !isEditingArrangement() ||
+      sectionAutomationEditingPartId.isNotEmpty() ||
       timelineViewMode != TimelineViewMode::GuideMap ||
       waveBounds.getWidth() <= 2.0f)
     return;
@@ -6151,7 +6325,8 @@ void WaveformBar::drawArrangementOverlay(
 
     }
 
-    const bool showsSectionActions = hoveredActionPartIndex == overlay.partIndex;
+    const bool showsSectionActions = sectionAutomationEditingPartId.isEmpty() &&
+                                    hoveredActionPartIndex == overlay.partIndex;
     const auto drawMuteTextButton =
         [&g](const juce::Rectangle<float> &button, const bool hovered,
              const bool active, const juce::Colour activeColour) {
@@ -6226,7 +6401,8 @@ void WaveformBar::drawArrangementOverlay(
     }
 
     const bool editToolbarVisible =
-        editing && hoveredActionPartIndex == overlay.partIndex &&
+        editing && sectionAutomationEditingPartId.isEmpty() &&
+        hoveredActionPartIndex == overlay.partIndex &&
         !overlay.editToolbar.isEmpty();
     if (editToolbarVisible) {
       const bool toolbarFocused =

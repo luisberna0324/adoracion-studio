@@ -130,8 +130,10 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
            "mobile groups audio with routing while desktop keeps its audio page");
+    int learningRequests = 0;
+    panel.onLearningRequested = [&] { ++learningRequests; };
     snapshot(panel, "settings-home");
 
     for (auto *child : home->getChildren()) {
@@ -141,6 +143,12 @@ struct SettingsPanelTestAccess {
       panel.settingsViewport.setViewPosition(0, 10000);
       const int homeY = panel.settingsViewport.getViewPositionY();
       button->onClick();
+      if (button->getButtonText() == "Aprender PlayWorship") {
+        expect(learningRequests == 1 && panel.destination == Destination::Home &&
+                   panel.settingsViewport.getViewedComponent() == home,
+               "the learning row requests the guide without opening an empty settings page");
+        continue;
+      }
       expect(panel.settingsViewport.getViewedComponent() == &panel.tabs &&
                  panel.backButton.isVisible(), "a grouped row opens its existing settings page");
       expect(panel.closeButton.isVisible() && panel.getLocalBounds().contains(panel.closeButton.getBounds()) &&
@@ -275,6 +283,12 @@ struct SettingsPanelTestAccess {
     expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
                panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
            "wide desktop retains its full settings navigation and controls");
+    expect(panel.learningButton.isVisible() && panel.learningButton.getHeight() >= 36 &&
+               panel.generalPage.getLocalBounds().contains(panel.learningButton.getBounds()),
+           "desktop General retains an accessible guide entry after compact navigation");
+    panel.learningButton.onClick();
+    expect(learningRequests == 2,
+           "the desktop guide button shares the same learning request as the grouped row");
     snapshot(panel, "settings-desktop");
   }
 };
