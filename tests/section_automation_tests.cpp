@@ -87,6 +87,15 @@ void testTimelineSelectionAndPublication() {
   const int boundaryCount = timeline->collectBoundaries(inside, 0.5, 4.5, boundaries.data(), static_cast<int>(boundaries.size()));
   expect(boundaryCount == 4 && boundaries[0] == 1.0 && boundaries[1] == 2.0 && boundaries[2] == 3.0 && boundaries[3] == 4.0,
       "long audio blocks enumerate every section and gap boundary in one coherent generation");
+  timeline->publish({first, second}, true);
+  const auto silentSection = timeline->select(3.25);
+  const auto silentGap = timeline->select(2.25);
+  expect(silentSection.pads.note == -1 && !silentSection.pads.enabled &&
+         silentGap.pads.note == -1 && !silentGap.pads.enabled,
+         "unassigned section and gap are silent when pads are scoped to sections");
+  timeline->publish({first, second});
+  expect(timeline->select(3.25).pads.mask == 0,
+         "songs without scoped pads retain sparse global pad semantics");
   std::atomic<bool> done{false};
   std::thread publisher([&] {
     for (int index = 0; index < 2500; ++index) {
@@ -209,7 +218,8 @@ void testDraftSaveCancelAndBaseMix() {
   near(p.getStemVolume(0), 0.55, "cancel restores pre-edit manual fader override");
   p.seekSongTo(4.5); fixture.block();
   near(p.getStemVolume(0), 0.8, "gap after section restores base fader");
-  expect(!p.isStemMuted(0) && p.getActivePadNoteIndex() == 2, "gap restores base mute and song-key pad note");
+  expect(!p.isStemMuted(0) && p.getActivePadNoteIndex() == -1 && !p.isPadsEnabled(),
+      "gap restores base stem mute but silences unassigned pads in an automated song");
   p.seekSongTo(2.25); fixture.block();
   near(p.getStemVolume(0), 0.3, "re-entry restores saved value after manual override expires");
   p.setStemVolume(0, 0.45f);
@@ -387,9 +397,36 @@ void testPadsAreIdempotentAndRestoreBase() {
   }
   expect(p.getPadsOutputLevel() > 0.095f && p.getPadsOutputLevel() < 0.105f,
       "section re-entry with the same note preserves phase and envelope");
+  arrangement.parts[0].automation.pads.volume = 0.1f;
+  arrangement.parts[1].automation.pads = {};
+  p.setSongArrangement(arrangement, false);
+  p.seekSongTo(0.5); fixture.block(700);
+  expect(p.getPadsOutputLevel() > 0.0095f && p.getPadsOutputLevel() < 0.0105f,
+      "automated pad settles at its low section volume");
+  p.seekSongTo(2.5); fixture.block(1);
+  expect(p.getActivePadNoteIndex() == -1 && !p.isPadsEnabled() &&
+         p.getPadsOutputLevel() <= 0.0105f,
+      "moving into a section without pads cannot raise the fading tail to base level");
+  fixture.block(600);
+  expect(p.getPadsOutputLevel() < 0.00001f,
+      "unassigned section reaches complete pad silence");
   p.seekSongTo(5.5); fixture.block(600);
   expect(p.getActivePadNoteIndex() == -1 && p.getPadsOutputLevel() < 0.00001f,
       "leaving automated sections restores base pad note-off with its normal fade");
+  p.triggerPadNoteForSongTransition(2, 0);
+  expect(p.unloadSong(), "automated song unloads for the song-transition check");
+  p.setSongArrangement({}, false);
+  p.triggerPadNoteForSongTransition(4, 0);
+  fixture.block(600);
+  expect(!p.isPadsEnabled() && p.getActivePadNoteIndex() == -1 &&
+         p.getPadsOutputLevel() < 0.00001f,
+      "new song without programmed pads cannot resurrect the global note through key following");
+  p.setPadsEnabled(true);
+  p.triggerPadNote(4, 0);
+  fixture.block(700);
+  expect(p.isPadsEnabled() && p.getActivePadNoteIndex() == 4 && p.getPadsOutputLevel() > 0.0f,
+      "an explicit manual pad gesture remains available after an automated song ends");
+
 }
 
 void testRemoteDraftRejectsPhysicalMidi() {

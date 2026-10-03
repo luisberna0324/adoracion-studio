@@ -3482,6 +3482,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 }
 
 void MTControlsAudioProcessorEditor::closeSettings() {
+  if (learningGuide && learningGuide->getParentComponent() != this) {
+    addAndMakeVisible(*learningGuide);
+    learningGuide->setBounds(getLocalBounds());
+  }
   if (settingsWindow != nullptr) {
     settingsWindow->setVisible(false);
     settingsWindow->exitModalState(0);
@@ -5082,9 +5086,7 @@ void MTControlsAudioProcessorEditor::resized() {
     practiceOverlay->toFront(false);
 
   if (learningGuide != nullptr) {
-    learningGuide->setBounds(getLocalBounds());
     updateLearningGuideTarget();
-    learningGuide->toFront(false);
   }
 
 

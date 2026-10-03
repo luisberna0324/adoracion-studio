@@ -20,6 +20,58 @@ bool containsStep(const Lesson &lesson, const juce::String &id) {
 }
 } // namespace
 
+bool evaluateStepCondition(const StepCondition condition, const StepFacts &facts) {
+  switch (condition) {
+  case StepCondition::None: return true;
+  case StepCondition::SettingsOpen: return facts.settingsOpen;
+  case StepCondition::RemotePageOpen: return facts.settingsOpen && facts.remotePageOpen;
+  case StepCondition::ServerModeActive: return facts.serverModeActive;
+  case StepCondition::ServerListening: return facts.serverModeActive && facts.serverListening;
+  case StepCondition::ServerHasClient:
+    return facts.serverModeActive && facts.serverListening && facts.serverHasClient;
+  case StepCondition::ClientModeActive: return facts.clientModeActive;
+  case StepCondition::RemoteConnected: return facts.clientModeActive && facts.remoteConnected;
+  case StepCondition::SettingsClosed: return !facts.settingsOpen;
+  case StepCondition::SongLoaded: return facts.songLoaded;
+  case StepCondition::RemotePlayApplied:
+    return facts.clientModeActive && facts.remoteConnected && facts.songLoaded && facts.remotePlayApplied;
+  case StepCondition::RemoteStopApplied:
+    return facts.clientModeActive && facts.remoteConnected && facts.songLoaded && facts.remoteStopApplied;
+  }
+  return false;
+}
+
+RemotePrerequisite remoteStepPrerequisite(const juce::String &lessonId,
+                                         const Step &step, const StepFacts &facts) {
+  const bool playerStep = step.condition == StepCondition::SongLoaded ||
+      step.condition == StepCondition::RemotePlayApplied ||
+      step.condition == StepCondition::RemoteStopApplied || step.anchor == Anchor::RemoteIndicator;
+  const bool client = lessonId == "remote-client";
+  const bool server = lessonId == "remote-server";
+  const bool needsClient = client && (playerStep ||
+      step.condition == StepCondition::RemoteConnected || step.condition == StepCondition::SettingsClosed);
+  const bool needsServer = server && (playerStep || step.anchor == Anchor::RemoteAlias ||
+      step.condition == StepCondition::ServerListening ||
+      step.condition == StepCondition::ServerHasClient || step.condition == StepCondition::SettingsClosed);
+  if (!needsClient && !needsServer) return RemotePrerequisite::None;
+
+  const auto navigateToRemote = [&facts](const RemotePrerequisite atRemotePage) {
+    if (!facts.settingsOpen) return RemotePrerequisite::OpenSettings;
+    if (!facts.remotePageOpen) return RemotePrerequisite::OpenRemotePage;
+    return atRemotePage;
+  };
+  if (needsClient && !facts.clientModeActive)
+    return navigateToRemote(RemotePrerequisite::ChooseClient);
+  if (needsServer && !facts.serverModeActive)
+    return navigateToRemote(RemotePrerequisite::ChooseServer);
+  if (needsClient && !facts.remoteConnected)
+    return navigateToRemote(RemotePrerequisite::WaitClient);
+  if (needsServer && !facts.serverListening)
+    return navigateToRemote(RemotePrerequisite::WaitServer);
+  if (playerStep && facts.settingsOpen) return RemotePrerequisite::CloseSettings;
+  return RemotePrerequisite::None;
+}
+
 std::vector<Lesson> makeLessons(const bool phone, const bool english) {
   const auto text = [english](const char *spanish, const char *translated) {
     return juce::String::fromUTF8(english ? translated : spanish);
@@ -27,10 +79,11 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
   const auto step = [&text](const char *id, const char *titleEs, const char *titleEn,
                             const char *descriptionEs, const char *descriptionEn,
                             const char *taskEs, const char *taskEn, const Anchor anchor,
-                            const bool needsSong) {
+                            const bool needsSong,
+                            const StepCondition condition = StepCondition::None) {
     return Step{juce::String(id), text(titleEs, titleEn),
                 text(descriptionEs, descriptionEn), text(taskEs, taskEn),
-                anchor, needsSong};
+                anchor, needsSong, condition};
   };
 
   std::vector<Lesson> lessons;
@@ -146,30 +199,105 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
   lessons.push_back(std::move(practice));
 
   lessons.push_back({
-      "settings-remote", text("Configuración y control remoto", "Settings and remote control"),
-      text("Prepara tus salidas y conoce los modos de conexión entre equipos.",
-           "Prepare your outputs and learn how devices connect."),
+      "remote-server", text("Preparar un servidor", "Prepare a server"),
+      text("Comparte una canción y sus controles con otros equipos de tu red.",
+           "Share a song and its controls with other devices on your network."),
       {
-          step("settings", "Encuentra la configuración", "Find Settings",
-               "Configuración agrupa las opciones de la aplicación. Apariencia e idioma personaliza la interfaz; las ayudas junto a cada opción explican su función.",
-               "Settings groups the application's options. Appearance and language personalizes the interface; help beside each option explains its purpose.",
-               "Abre Configuración y revisa sus categorías.", "Open Settings and review its categories.", Anchor::Settings, false),
-          step("routing", "Prepara las salidas", "Prepare your outputs",
-               "Ruteo asigna los instrumentos, el clic y la guía a las salidas disponibles de tu dispositivo de audio. Revisa esas asignaciones al cambiar de dispositivo. El hardware se configura en el equipo que reproduce el audio.",
-               "Routing assigns instruments, click and guide to the available outputs of your audio device. Review the assignments when changing devices. Hardware is configured on the device playing the audio.",
-               "Entra en Ruteo y revisa las salidas disponibles.", "Open Routing and check the available outputs.", Anchor::Settings, false),
-          step("remote-modes", "Local, Cliente o Servidor", "Local, Client or Server",
-               "Local es el funcionamiento habitual. Servidor reproduce el audio y comparte el estado con varios clientes. Cliente recibe canciones, controles y onda, y envía acciones al servidor; no reproduce sus stems. La interfaz de reproducción conserva su distribución.",
-               "Local is the normal mode. Server plays the audio and shares state with multiple clients. Client receives songs, controls and waveform, and sends actions to the server; it does not play the server's stems. The playback interface keeps its layout.",
-               "Abre Control remoto y revisa los tres modos.", "Open Remote control and review the three modes.", Anchor::Settings, false),
-          step("remote-connect", "Conecta dentro de tu red", "Connect on your network",
-               "Los equipos deben estar en la misma red local. En Cliente, un único servidor descubierto se conecta automáticamente; si hay varios, elige uno en Configuración. En iPhone y iPad, permite el acceso a Red local cuando el sistema lo solicite.",
-               "Devices must be on the same local network. In Client mode, a single discovered server connects automatically; with several servers, choose one in Settings. On iPhone and iPad, allow Local Network access when the system asks.",
-               "Si tienes otro equipo como Servidor, elige Cliente y revisa la conexión.", "If another device is running as Server, choose Client and check the connection.", Anchor::Settings, false),
-          step("remote-reconnect", "Reconoce el estado remoto", "Recognize remote status",
-               "REMOTO indica que llegó el estado del servidor. Si se pierde la conexión, aparece RECONECTANDO: se conserva la vista, la posición se congela y los VU bajan a cero. Los controles esperan el nuevo estado antes de enviar acciones otra vez. La reproducción del servidor continúa.",
-               "REMOTE means the server's state has arrived. If the connection drops, RECONNECTING appears: the view stays, position freezes and VU meters fall to zero. Controls wait for fresh state before sending actions again. Server playback continues.",
-               "En modo Cliente, ubica el indicador remoto en la esquina de la onda.", "In Client mode, find the remote indicator in the waveform's corner.", Anchor::Waveform, false),
+          step("server-prepare", "El equipo que reproduce el audio", "The device that plays audio",
+               "El servidor reproduce la canción y comparte su estado, onda y controles con varios clientes. Para practicar necesitas otro equipo con PlayWorship en la misma red local. Los cambios de los clientes afectan al audio del servidor.",
+               "The server plays the song and shares its state, waveform and controls with multiple clients. To practice, you need another device with PlayWorship on the same local network. Client changes affect the server's audio.",
+               "Prepara el segundo equipo y confirma que comparten la red.", "Prepare the second device and confirm they share the network.", Anchor::None, false),
+          step("server-open-settings", "Abre Configuración", "Open Settings",
+               "Vamos a activar el servidor usando los controles habituales. Puedes pausar esta guía y retomarla desde este paso cuando tengas el segundo equipo listo.",
+               "We will enable the server using the usual controls. You can pause this guide and resume at this step when the second device is ready.",
+               "Abre Configuración desde la barra superior.", "Open Settings from the top bar.", Anchor::Settings, false, StepCondition::SettingsOpen),
+          step("server-open-remote", "Entra en Control remoto", "Open Remote control",
+               "En móvil y tablet, Control remoto está en Audio y conexiones. En el escritorio ancho, sus controles están en General. La guía continúa dentro de Configuración.",
+               "On phone and tablet, Remote control is under Audio and connections. On a wide desktop, its controls are in General. The guide continues inside Settings.",
+               "Abre Control remoto; en escritorio, entra en General.", "Open Remote control; on desktop, open General.", Anchor::RemoteSettings, false, StepCondition::RemotePageOpen),
+          step("server-enable", "Activa Servidor", "Enable Server",
+               "Local es el funcionamiento habitual. Servidor mantiene la reproducción en este equipo y anuncia su presencia en la red. Cliente se usa en el equipo desde el que quieres controlar la canción.",
+               "Local is the usual mode. Server keeps playback on this device and announces it on the network. Client is used on the device you want to control the song from.",
+               "Selecciona Servidor en Local · Cliente · Servidor.", "Select Server in Local · Client · Server.", Anchor::RemoteMode, false, StepCondition::ServerModeActive),
+          step("server-name", "Reconoce el nombre del equipo", "Recognize the device name",
+               "Los clientes encontrarán el servidor por el nombre de este dispositivo. Puedes escribir un alias para distinguirlo, por ejemplo, Escenario. Si dejas el alias vacío se usa el nombre del equipo; un iPhone o iPad puede mostrar un nombre genérico.",
+               "Clients will find the server by this device's name. You can enter an alias to identify it, such as Stage. Leaving the alias empty uses the device name; an iPhone or iPad may display a generic name.",
+               "Revisa el nombre o escribe un alias y confirma el campo.", "Check the name or enter an alias and confirm the field.", Anchor::RemoteAlias, false),
+          step("server-listening", "Comprueba que está disponible", "Check that it is available",
+               "El estado confirma si el servidor está escuchando. En iPhone y iPad, permite Red local cuando iOS lo solicite. Si aparece un error, resuélvelo antes de continuar; cambiar de página no apaga el servidor.",
+               "Status confirms whether the server is listening. On iPhone and iPad, allow Local Network access when iOS asks. If an error appears, resolve it before continuing; changing pages does not turn the server off.",
+               "Espera a que el estado confirme que el servidor está listo.", "Wait for status to confirm that the server is ready.", Anchor::RemoteStatus, false, StepCondition::ServerListening),
+          step("server-connect-client", "Conecta el segundo equipo", "Connect the second device",
+               "En el otro equipo abre Configuración → Control remoto y selecciona Cliente. Con un único servidor se conecta automáticamente; si aparecen varios, elige este equipo por su nombre o alias. En iPhone y iPad concede el permiso de Red local.",
+               "On the other device, open Settings → Remote control and select Client. A single server connects automatically; if several appear, choose this device by its name or alias. On iPhone and iPad, grant Local Network access.",
+               "Conecta un Cliente y espera a que aparezca en el estado.", "Connect a Client and wait for it to appear in status.", Anchor::RemoteStatus, false, StepCondition::ServerHasClient),
+          step("server-close-settings", "Vuelve al reproductor", "Return to the player",
+               "La conexión permanece activa cuando cierras Configuración. El servidor conserva la misma onda, mixer y controles de reproducción.",
+               "The connection stays active when you close Settings. The server keeps the same waveform, mixer and playback controls.",
+               "Cierra Configuración con su botón X.", "Close Settings using its X button.", Anchor::SettingsClose, false, StepCondition::SettingsClosed),
+          step("server-load-song", "Comparte una canción", "Share a song",
+               "Si ya hay una canción cargada, está disponible para el cliente. Si no, elige una desde Biblioteca o tu setlist. El cliente recibirá sus datos, canales y onda; el audio seguirá saliendo de este servidor.",
+               "If a song is already loaded, it is available to the client. Otherwise, choose one from the Library or your setlist. The client receives its details, channels and waveform; audio continues to come from this server.",
+               "Carga una canción o confirma la que ya está seleccionada.", "Load a song or confirm the one already selected.", Anchor::SongSelection, false, StepCondition::SongLoaded),
+          step("server-ready", "Servidor preparado", "Server prepared",
+               "El otro equipo ya puede usar Play, Stop y los controles de mezcla sobre esta canción. Los cambios se confirman en el servidor y se comparten con los clientes. Para enseñar el uso del segundo equipo, abre allí la guía Conectarse como cliente.",
+               "The other device can now use Play, Stop and mix controls on this song. Changes are confirmed on the server and shared with clients. To learn how to use the second device, open Connect as a client there.",
+               "Comprueba en el cliente la canción, la onda y sus canales.", "Check the song, waveform and channels on the client.", Anchor::Waveform, true),
+      }});
+
+  lessons.push_back({
+      "remote-client", text("Conectarse como cliente", "Connect as a client"),
+      text("Conecta con un servidor y prueba la reproducción desde este equipo.",
+           "Connect to a server and try playback from this device."),
+      {
+          step("client-prepare", "Prepara ambos equipos", "Prepare both devices",
+               "Necesitas un equipo con PlayWorship en modo Servidor, dentro de la misma red local. Este cliente recibirá la canción, los canales y la onda. El sonido sale del servidor: las acciones que practiques aquí afectan a su reproducción.",
+               "You need a device with PlayWorship in Server mode on the same local network. This client receives the song, channels and waveform. Audio comes from the server: the actions you practice here affect its playback.",
+               "Confirma la red y prepara el servidor con una canción.", "Confirm the network and prepare the server with a song.", Anchor::None, false),
+          step("client-open-settings", "Abre Configuración", "Open Settings",
+               "Vamos a establecer la conexión dentro de Configuración. Si todavía no tienes un servidor disponible, pausa la guía aquí y retómala cuando esté preparado.",
+               "We will establish the connection inside Settings. If you do not have a server available yet, pause the guide here and resume when it is prepared.",
+               "Abre Configuración desde la barra superior.", "Open Settings from the top bar.", Anchor::Settings, false, StepCondition::SettingsOpen),
+          step("client-open-remote", "Entra en Control remoto", "Open Remote control",
+               "En móvil y tablet, busca Control remoto en Audio y conexiones. En el escritorio ancho está en General. Esta página reúne el modo, la lista de servidores y el estado de conexión.",
+               "On phone and tablet, find Remote control under Audio and connections. On a wide desktop it is in General. This page contains the mode, server list and connection status.",
+               "Abre Control remoto; en escritorio, entra en General.", "Open Remote control; on desktop, open General.", Anchor::RemoteSettings, false, StepCondition::RemotePageOpen),
+          step("client-enable", "Activa Cliente", "Enable Client",
+               "Cliente pausa la reproducción local y recibe el estado del servidor. La app conserva la distribución de sus controles. En iPhone y iPad permite Red local cuando iOS lo solicite para poder encontrar equipos.",
+               "Client pauses local playback and receives the server's state. The app keeps the layout of its controls. On iPhone and iPad, allow Local Network access when iOS asks so devices can be found.",
+               "Selecciona Cliente y concede Red local si se solicita.", "Select Client and allow Local Network access if requested.", Anchor::RemoteMode, false, StepCondition::ClientModeActive),
+          step("client-connect", "Encuentra tu servidor", "Find your server",
+               "Con un único servidor descubierto la conexión es automática. Si hay varios, abre la lista y elige el nombre o alias del equipo preparado. Espera al estado completo: encontrar el nombre o abrir la conexión no significa que los controles estén listos.",
+               "With a single discovered server, connection is automatic. If several are found, open the list and choose the prepared device's name or alias. Wait for the full state: finding the name or opening the connection does not mean controls are ready.",
+               "Elige tu servidor si hace falta y espera la conexión.", "Choose your server if needed and wait for the connection.", Anchor::RemoteServers, false, StepCondition::RemoteConnected),
+          step("client-status", "Confirma la conexión", "Confirm the connection",
+               "El estado debe confirmar que se recibió la información del servidor. Si no se conecta, comprueba que el otro equipo siga en Servidor, que ambos usen la misma red y que el permiso de Red local esté activo.",
+               "Status must confirm that the server's information has been received. If it does not connect, check that the other device is still in Server mode, both use the same network and Local Network access is allowed.",
+               "Revisa el servidor seleccionado y su estado conectado.", "Check the selected server and its connected status.", Anchor::RemoteStatus, false, StepCondition::RemoteConnected),
+          step("client-close-settings", "Vuelve a la canción", "Return to the song",
+               "Al cerrar Configuración sigues conectado. La onda y los canales utilizan los datos del servidor; sus controles funcionan en los mismos lugares de siempre.",
+               "Closing Settings keeps you connected. The waveform and channels use the server's data; their controls work in their usual positions.",
+               "Cierra Configuración con su botón X.", "Close Settings using its X button.", Anchor::SettingsClose, false, StepCondition::SettingsClosed),
+          step("client-load-song", "Selecciona la canción remota", "Select the remote song",
+               "La lista muestra las canciones y setlists compartidos por el servidor. Si ya hay una canción cargada, puedes usarla; si no, elige una disponible. La selección se aplica al servidor y se muestra en los clientes.",
+               "The list shows the songs and setlists shared by the server. If a song is already loaded, you can use it; otherwise choose an available one. Selection is applied to the server and shown on clients.",
+               "Carga una canción compartida o confirma la ya cargada.", "Load a shared song or confirm the one already loaded.", Anchor::SongSelection, false, StepCondition::SongLoaded),
+          step("client-indicator", "Ubica el indicador REMOTO", "Find the REMOTE indicator",
+               "La etiqueta REMOTO en la esquina superior derecha de la onda confirma que la información del servidor está disponible. La canción, los canales y los VU usan ese estado. Este cliente controla la sesión y no reproduce los stems del servidor.",
+               "The REMOTE label in the waveform's upper-right corner confirms that the server's information is available. The song, channels and VU meters use that state. This client controls the session and does not play the server's stems.",
+               "Ubica REMOTO junto a la onda de la canción.", "Find REMOTE beside the song's waveform.", Anchor::RemoteIndicator, true, StepCondition::RemoteConnected),
+          step("client-play", "Inicia desde el cliente", "Start from the client",
+               "Play envía una acción al servidor. El cursor y los VU reflejan su respuesta; escucha el audio en el equipo servidor. La guía habilita Continuar cuando el servidor confirma tu acción y el estado de reproducción.",
+               "Play sends an action to the server. The cursor and VU meters reflect its response; listen for audio on the server device. The guide enables Continue when the server confirms your action and playback state.",
+               "Pulsa Play; si ya está reproduciendo, pausa y vuelve a Play.", "Press Play; if already playing, pause and press Play again.", Anchor::PlayPause, true, StepCondition::RemotePlayApplied),
+          step("client-stop", "Detén desde el cliente", "Stop from the client",
+               "Stop detiene la reproducción del servidor y devuelve el cursor al Inicio configurado, o a A si hay un loop A–B de Ensayo activo. Espera la confirmación para comprobar que la acción se aplicó.",
+               "Stop stops playback on the server and returns the cursor to the configured Start, or to A with an active Practice A–B loop. Wait for confirmation to check that the action was applied.",
+               "Pulsa Stop y espera a que se confirme la detención.", "Press Stop and wait for the stop to be confirmed.", Anchor::Stop, true, StepCondition::RemoteStopApplied),
+          step("client-ready", "Control remoto preparado", "Remote control prepared",
+               "Ya conectaste este cliente, recibiste una canción y probaste Play y Stop con confirmación del servidor. También puedes ajustar mezcla, clic, tono, tempo y Pads desde los controles habituales. Para volver a tu canción local, elige Local en Control remoto; se recupera pausada.",
+               "You connected this client, received a song and tried Play and Stop with server confirmation. You can also adjust mix, click, key, tempo and Pads from the usual controls. To return to your local song, choose Local in Remote control; it is restored paused.",
+               "Termina la guía cuando hayas comprobado ambos controles.", "Finish the guide once you have checked both controls.", Anchor::None, false),
       }});
   return lessons;
 }

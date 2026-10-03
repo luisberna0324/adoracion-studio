@@ -3,7 +3,7 @@ type: Quality Contract
 title: Pruebas funcionales de PlayWorship
 description: Suite automatizada, aislamiento de datos y validación en dispositivos
 tags: [tests, ctest, ci, audio, mobile]
-timestamp: 2026-09-26
+timestamp: 2026-10-03
 ---
 
 # Pruebas funcionales
@@ -68,7 +68,7 @@ onda, VU y reconexión con la compilación portátil.
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
-| [Guías interactivas](ui/LearningGuide.md) | `learning_guide`: contenido, IDs, persistencia, reanudación, reinicio y entradas inválidas; `learning_overlay`: spotlight, interacción y scroll, navegación segura, targets reales de Ensayo y tamaños; `settings_panel`: acceso a las guías desde Configuración |
+| [Guías interactivas](ui/LearningGuide.md) | `learning_guide`: cinco cursos, condiciones remotas, requisitos temporales de sesión al reanudar, IDs, persistencia, reinicio y entradas inválidas; `learning_overlay`: spotlight, interacción y scroll, botones compactos, bloqueo de avance por botón/teclado, reparenting sobre Settings real y targets de Ensayo; `settings_panel`: acceso, destinos y scroll de aprendizaje; `remote_learning_action`: comando propio, distinción Play/Pausa, ACK y snapshot posterior, respuestas ajenas/atrasadas, rechazo, timeout y limpieza de evidencia |
 | [Ensayo por instrumento](ui/MobileLayout.md) | `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda y reloj visual; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
@@ -78,6 +78,43 @@ Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmacione
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,
 lo registran en Biblioteca y lo reabren desde esa ruta. El test de exportación
 genera un WAV real y vuelve a decodificarlo para comprobar duración y fade.
+
+`remote_learning_action` es una prueba determinista del observador de acciones
+de enseñanza; no necesita red ni reproduce audio. Solo permite acreditar Play
+o Stop con el ID de un comando enviado desde ese cliente en el paso activo,
+su ACK aceptado y un snapshot posterior de la misma canción. Un cambio desde
+otro cliente o el simple estado playing/stopped no sustituye esa evidencia.
+La intención de un toggle desde reproducción es Pausa: una posterior
+reanudación ajena no puede acreditarlo como el ejercicio de Play.
+`learning_guide` comprueba además la secuencia de requisitos temporales al
+retomar: Configuración → Control remoto → modo → conexión/disponibilidad →
+cierre de Configuración cuando el ejercicio requiere el reproductor. Se
+conserva el paso guardado; las condiciones no ejecutan esos controles.
+Los pasos completos de Servidor/Cliente necesitan además una revisión manual
+con dos equipos reales: abrir Configuración, recorrer sus controles,
+establecer la conexión, recibir canción/onda/canales y comprobar Play/Stop.
+Registrar por separado el resultado de CTest, la revisión visual de componentes
+y el flujo integral de la app en dispositivos.
+
+El 3 de octubre de 2026 se compilaron correctamente en
+`build/codex-modal-macos` la app `MTControls_Standalone` y los targets
+`MTControlsLearningGuideTests`, `MTControlsRemoteLearningTests`,
+`MTControlsLearningOverlayTests` y `MTControlsSettingsPanelTests`. La ejecución
+final de CTest aprobó `learning_guide` (0,55 s),
+`remote_learning_action` (0,01 s), `learning_overlay` (2,22 s) y
+`settings_panel` (0,16 s): 4/4, 100 %, 2,95 s total. La app y el target del
+overlay se recompilaron correctamente después de los ajustes finales del
+menú y cambio de modo; la suite incluye la regresión del menú embebido y del
+texto pendiente sin duplicado.
+
+La revisión manual parcial de escritorio comprobó el catálogo de cinco
+cursos, Servidor pasos 1–7 y Cliente pasos 1–5 usando Configuración real.
+Comprobó también la reanudación de Cliente paso 5 desde Local: abrir
+Configuración y elegir Cliente, conservando el paso guardado; y el menú Más
+embebido, con Cursos/Reiniciar accesibles y retorno al catálogo dentro del
+panel. El recorrido de conexión y los ejercicios Play/Stop con dos equipos
+siguen pendientes. Este resultado no acredita builds iOS/Android ni
+instalaciones físicas.
 
 `waveform_editing` usa los handlers reales de ratón y teclado del editor:
 Copy, Cmd/Ctrl-C/V, arrastrar copias antes de su fuente, volver al origen del

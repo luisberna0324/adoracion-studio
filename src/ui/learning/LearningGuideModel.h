@@ -7,7 +7,34 @@
 namespace playworship::learning {
 
 enum class Anchor { None, SongSelection, PlayPause, Stop, Waveform, Mixer,
-                    Metronome, Tempo, Key, Pads, More, Settings, PracticeLoop, PracticeExit };
+                    Metronome, Tempo, Key, Pads, More, Settings, PracticeLoop, PracticeExit,
+                    RemoteSettings, RemoteMode, RemoteAlias, RemoteStatus, RemoteServers,
+                    SettingsClose, RemoteIndicator };
+
+// None is an explanatory step. Other steps require facts from the real app;
+// enabling Continue never performs the operation for the user.
+enum class StepCondition { None, SettingsOpen, RemotePageOpen, ServerModeActive,
+                           ServerListening, ServerHasClient, ClientModeActive,
+                           RemoteConnected, SettingsClosed, SongLoaded,
+                           RemotePlayApplied, RemoteStopApplied };
+
+struct StepFacts {
+  bool settingsOpen = false;
+  bool remotePageOpen = false;
+  bool serverModeActive = false;
+  bool serverListening = false;
+  bool serverHasClient = false;
+  bool clientModeActive = false;
+  bool remoteConnected = false;
+  bool songLoaded = false;
+  // True only after this guide step's own command is accepted and its
+  // subsequent snapshot confirms the result; another client's change is not
+  // evidence that this device performed the exercise.
+  bool remotePlayApplied = false;
+  bool remoteStopApplied = false;
+};
+
+bool evaluateStepCondition(StepCondition condition, const StepFacts &facts);
 
 struct Step {
   juce::String id;
@@ -16,7 +43,17 @@ struct Step {
   juce::String task;
   Anchor anchor = Anchor::None;
   bool needsSong = false;
+  StepCondition condition = StepCondition::None;
 };
+
+// Missing setup is shown through the existing controls while preserving the
+// persisted exercise. Restoring a session never substitutes for its own
+// confirmed Play or Stop command.
+enum class RemotePrerequisite { None, OpenSettings, OpenRemotePage, ChooseServer,
+                                WaitServer, ChooseClient, WaitClient, CloseSettings };
+
+RemotePrerequisite remoteStepPrerequisite(const juce::String &lessonId,
+                                         const Step &step, const StepFacts &facts);
 
 struct Lesson {
   juce::String id;

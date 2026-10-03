@@ -38,7 +38,7 @@ const Step &findStep(const Lesson &lesson, const char *id) {
 }
 
 void verifyCatalog(const std::vector<Lesson> &spanish, const std::vector<Lesson> &english) {
-  expect(spanish.size() == 4 && english.size() == spanish.size(), "four complete localized courses");
+  expect(spanish.size() == 5 && english.size() == spanish.size(), "five complete localized courses");
   std::set<juce::String> lessonIds;
   for (size_t i = 0; i < spanish.size(); ++i) {
     const auto &lesson = spanish[i];
@@ -54,7 +54,8 @@ void verifyCatalog(const std::vector<Lesson> &spanish, const std::vector<Lesson>
       const auto &step = lesson.steps[j];
       const auto &translation = translated.steps[j];
       expect(step.id.isNotEmpty() && stepIds.insert(step.id).second, "unique stable step IDs within course");
-      expect(step.id == translation.id && step.anchor == translation.anchor && step.needsSong == translation.needsSong,
+      expect(step.id == translation.id && step.anchor == translation.anchor &&
+                 step.needsSong == translation.needsSong && step.condition == translation.condition,
              "localization preserves interactive behavior");
       expect(step.title.isNotEmpty() && step.description.isNotEmpty() && step.task.isNotEmpty(), "Spanish step has useful content");
       expect(translation.title.isNotEmpty() && translation.description.isNotEmpty() && translation.task.isNotEmpty(),
@@ -100,11 +101,178 @@ int main() {
              desktopSections.title != phonePractice.title &&
              desktopSections.steps.front().id != phonePractice.steps.front().id,
          "desktop and tablet teach sections instead of phone-only Practice");
-  const auto &settings = findLesson(desktop, "settings-remote");
-  for (const auto &step : settings.steps)
-    expect(!step.needsSong, "settings and remote explanations work without a loaded song");
-  expect(findStep(settings, "remote-reconnect").anchor == Anchor::Waveform,
-         "reconnection explains the waveform indicator");
+  const auto &server = findLesson(desktop, "remote-server");
+  const auto &client = findLesson(desktop, "remote-client");
+  for (const auto &lesson : desktop)
+    expect(lesson.id != "settings-remote" && !lesson.id.contains("reconnect"),
+           "retired general remote course and connection-recovery course are absent");
+  for (const auto *course : {&server, &client}) {
+    expect(course->steps.front().condition == StepCondition::None,
+           "remote course first explains the prerequisite second device");
+    std::set<StepCondition> conditions;
+    for (const auto &step : course->steps) {
+      conditions.insert(step.condition);
+      expect(!step.id.contains("reconnect"), "remote courses do not include a reconnection exercise");
+      if (step.anchor == Anchor::Settings || step.anchor == Anchor::RemoteSettings ||
+          step.anchor == Anchor::RemoteMode || step.anchor == Anchor::RemoteAlias ||
+          step.anchor == Anchor::RemoteStatus || step.anchor == Anchor::RemoteServers)
+        expect(!step.needsSong, "settings remain usable before a song is loaded");
+    }
+    for (const auto condition : {StepCondition::SettingsOpen, StepCondition::RemotePageOpen,
+                                StepCondition::SettingsClosed, StepCondition::SongLoaded})
+      expect(conditions.count(condition) == 1, "each remote course opens Settings and returns to a loaded song");
+  }
+  expect(findStep(server, "server-enable").anchor == Anchor::RemoteMode &&
+             findStep(server, "server-enable").condition == StepCondition::ServerModeActive &&
+             findStep(server, "server-listening").condition == StepCondition::ServerListening &&
+             findStep(server, "server-connect-client").condition == StepCondition::ServerHasClient,
+         "server course requires activation, availability and a connected client");
+  expect(findStep(server, "server-name").anchor == Anchor::RemoteAlias &&
+             findStep(server, "server-name").condition == StepCondition::None,
+         "a custom alias is optional and does not force a settings mutation");
+  expect(findStep(client, "client-enable").anchor == Anchor::RemoteMode &&
+             findStep(client, "client-enable").condition == StepCondition::ClientModeActive &&
+             findStep(client, "client-connect").anchor == Anchor::RemoteServers &&
+             findStep(client, "client-connect").condition == StepCondition::RemoteConnected,
+         "client course requires the real mode and a full connected state");
+  expect(findStep(client, "client-indicator").anchor == Anchor::RemoteIndicator &&
+             findStep(client, "client-play").anchor == Anchor::PlayPause &&
+             findStep(client, "client-play").condition == StepCondition::RemotePlayApplied &&
+             findStep(client, "client-stop").anchor == Anchor::Stop &&
+             findStep(client, "client-stop").condition == StepCondition::RemoteStopApplied,
+         "client practice targets the indicator and requires confirmed Play and Stop");
+  for (const auto *course : {&first, &mix, &phonePractice, &desktopSections})
+    for (const auto &step : course->steps)
+      expect(step.condition == StepCondition::None, "existing introductory courses keep their manual progression");
+
+  StepFacts facts;
+  expect(evaluateStepCondition(StepCondition::None, facts) &&
+             evaluateStepCondition(StepCondition::SettingsClosed, facts),
+         "explanatory steps and an already closed Settings page are available");
+  for (const auto condition : {StepCondition::SettingsOpen, StepCondition::RemotePageOpen,
+                              StepCondition::ServerModeActive, StepCondition::ServerListening,
+                              StepCondition::ServerHasClient, StepCondition::ClientModeActive,
+                              StepCondition::RemoteConnected, StepCondition::SongLoaded,
+                              StepCondition::RemotePlayApplied, StepCondition::RemoteStopApplied})
+    expect(!evaluateStepCondition(condition, facts), "missing real actions cannot unlock actionable steps");
+  facts.remotePageOpen = true;
+  expect(!evaluateStepCondition(StepCondition::RemotePageOpen, facts),
+         "stale destination does not imply Settings is open");
+  facts.settingsOpen = true;
+  expect(evaluateStepCondition(StepCondition::SettingsOpen, facts) &&
+             evaluateStepCondition(StepCondition::RemotePageOpen, facts) &&
+             !evaluateStepCondition(StepCondition::SettingsClosed, facts),
+         "Settings navigation reflects the current visible page");
+  facts.serverListening = facts.serverHasClient = true;
+  expect(!evaluateStepCondition(StepCondition::ServerListening, facts) &&
+             !evaluateStepCondition(StepCondition::ServerHasClient, facts),
+         "stale listening or client facts cannot count after leaving Server mode");
+  facts.serverModeActive = true;
+  expect(evaluateStepCondition(StepCondition::ServerModeActive, facts) &&
+             evaluateStepCondition(StepCondition::ServerListening, facts) &&
+             evaluateStepCondition(StepCondition::ServerHasClient, facts),
+         "server activation and the live connected client unlock their steps");
+  facts.serverListening = false;
+  expect(!evaluateStepCondition(StepCondition::ServerHasClient, facts),
+         "a stopped listener cannot satisfy the connected-client step");
+  facts.remoteConnected = facts.remotePlayApplied = facts.remoteStopApplied = true;
+  expect(!evaluateStepCondition(StepCondition::RemoteConnected, facts) &&
+             !evaluateStepCondition(StepCondition::RemotePlayApplied, facts) &&
+             !evaluateStepCondition(StepCondition::RemoteStopApplied, facts),
+         "remote evidence cannot satisfy a client exercise outside Client mode");
+  facts.clientModeActive = true;
+  expect(evaluateStepCondition(StepCondition::ClientModeActive, facts) &&
+             evaluateStepCondition(StepCondition::RemoteConnected, facts) &&
+             !evaluateStepCondition(StepCondition::RemotePlayApplied, facts),
+         "connected empty session cannot complete a song playback exercise");
+  facts.songLoaded = true;
+  facts.remotePlayApplied = facts.remoteStopApplied = false;
+  expect(evaluateStepCondition(StepCondition::SongLoaded, facts) &&
+             !evaluateStepCondition(StepCondition::RemotePlayApplied, facts) &&
+             !evaluateStepCondition(StepCondition::RemoteStopApplied, facts),
+         "a loaded remote song does not substitute for this client's confirmed commands");
+  facts.remotePlayApplied = true;
+  expect(evaluateStepCondition(StepCondition::RemotePlayApplied, facts) &&
+             !evaluateStepCondition(StepCondition::RemoteStopApplied, facts),
+         "Play confirmation does not unlock the separate Stop exercise");
+  facts.remoteStopApplied = true;
+  expect(evaluateStepCondition(StepCondition::RemoteStopApplied, facts),
+         "Stop confirmation unlocks its own exercise");
+  facts.remoteConnected = false;
+  expect(!evaluateStepCondition(StepCondition::RemotePlayApplied, facts) &&
+             !evaluateStepCondition(StepCondition::RemoteStopApplied, facts),
+         "a disconnected client cannot progress with stale command confirmations");
+
+  StepFacts resumed;
+  const auto &playExercise = findStep(client, "client-play");
+  const auto &stopExercise = findStep(client, "client-stop");
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::OpenSettings,
+         "a playback exercise resumed in Local highlights Settings instead of an unusable Play control");
+  resumed.settingsOpen = true;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::OpenRemotePage,
+         "resume directs an open Settings panel to the remote page first");
+  resumed.remotePageOpen = true;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::ChooseClient,
+         "resume on the remote page directs the user to Client mode");
+  resumed.clientModeActive = true;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::WaitClient,
+         "a client without the full server state waits at discovery and connection controls");
+  resumed.remotePageOpen = false;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::OpenRemotePage,
+         "connection prerequisites remain reachable from another Settings page");
+  resumed.settingsOpen = false;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::OpenSettings,
+         "an unconnected Client with Settings closed can reopen the real server selector");
+  resumed.remoteConnected = true;
+  resumed.settingsOpen = true;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::CloseSettings,
+         "a connected playback exercise points to Close rather than a control underneath Settings");
+  resumed.settingsOpen = false;
+  resumed.songLoaded = true;
+  expect(remoteStepPrerequisite(client.id, playExercise, resumed) == RemotePrerequisite::None &&
+             !evaluateStepCondition(playExercise.condition, resumed) &&
+             !evaluateStepCondition(stopExercise.condition, resumed),
+         "recovered prerequisites return to the saved exercise without faking confirmed Play or Stop");
+  for (const auto *step : {&findStep(client, "client-load-song"), &stopExercise,
+                           &findStep(client, "client-indicator")}) {
+    resumed.settingsOpen = true;
+    expect(remoteStepPrerequisite(client.id, *step, resumed) == RemotePrerequisite::CloseSettings,
+           "all client player destinations remain reachable after restoring the connection in Settings");
+  }
+  for (const auto *step : {&findStep(client, "client-prepare"),
+                           &findStep(client, "client-open-settings"),
+                           &findStep(client, "client-open-remote"),
+                           &findStep(client, "client-enable"),
+                           &findStep(client, "client-ready")})
+    expect(remoteStepPrerequisite(client.id, *step, {}) == RemotePrerequisite::None,
+           "preparation, explicit navigation, initial mode choice and summary keep their designed steps");
+
+  resumed = {};
+  const auto &serverName = findStep(server, "server-name");
+  expect(remoteStepPrerequisite(server.id, serverName, resumed) == RemotePrerequisite::OpenSettings,
+         "resuming the optional server alias first restores access to Server mode");
+  resumed.settingsOpen = resumed.remotePageOpen = true;
+  expect(remoteStepPrerequisite(server.id, serverName, resumed) == RemotePrerequisite::ChooseServer,
+         "server exercises direct a Local device to the existing Server selector");
+  resumed.serverModeActive = true;
+  expect(remoteStepPrerequisite(server.id, serverName, resumed) == RemotePrerequisite::WaitServer,
+         "an unready server listener is a prerequisite even for an explanatory alias step");
+  resumed.serverListening = true;
+  expect(remoteStepPrerequisite(server.id, serverName, resumed) == RemotePrerequisite::None &&
+             remoteStepPrerequisite(server.id, findStep(server, "server-connect-client"), resumed) ==
+                 RemotePrerequisite::None,
+         "a ready listener returns to alias review or the original connected-client exercise");
+  expect(remoteStepPrerequisite(server.id, findStep(server, "server-load-song"), resumed) ==
+             RemotePrerequisite::CloseSettings,
+         "server song loading returns from Settings to the player after the listener is restored");
+  resumed.settingsOpen = false;
+  expect(remoteStepPrerequisite(server.id, findStep(server, "server-load-song"), resumed) ==
+             RemotePrerequisite::None,
+         "server player exercise resumes unchanged once its prerequisites are restored");
+  for (const auto *course : {&first, &mix, &phonePractice, &desktopSections})
+    for (const auto &step : course->steps)
+      expect(remoteStepPrerequisite(course->id, step, {}) == RemotePrerequisite::None,
+             "remote resume prerequisites do not alter unrelated introductory guides");
 
   TemporaryDirectory temporary;
   const auto file = temporary.directory.getChildFile("nested").getChildFile("progress.json");
@@ -175,13 +343,26 @@ int main() {
     ProgressStore parsed(invalid);
     expect(!parsed.hasProgress(first) && parsed.resumeIndex(first) == 0, "malformed or future schema defaults safely");
   }
-  expect(invalid.replaceWithText(R"({"version":1,"lessons":{"first-steps":{"stepId":"play-pause","completed":false},"mix-click":{"stepId":12,"completed":true},"settings-remote":{"stepId":"settings","completed":"true"},"bad id":{"stepId":"welcome","completed":false}}})"),
+  expect(invalid.replaceWithText(R"({"version":1,"lessons":{"first-steps":{"stepId":"play-pause","completed":false},"mix-click":{"stepId":12,"completed":true},"remote-server":{"stepId":"server-open-settings","completed":"true"},"bad id":{"stepId":"welcome","completed":false}}})"),
          "write mixed-validity payload");
   {
     ProgressStore mixed(invalid);
     expect(mixed.resumeIndex(first) == 2 && mixed.hasProgress(first), "valid records survive invalid neighbours");
-    expect(!mixed.hasProgress(mix) && !mixed.hasProgress(settings) && mixed.get("bad id").stepId.isEmpty(),
+    expect(!mixed.hasProgress(mix) && !mixed.hasProgress(server) && mixed.get("bad id").stepId.isEmpty(),
            "wrong value types and unsafe IDs are ignored");
+  }
+  expect(invalid.replaceWithText(R"({"version":1,"lessons":{"settings-remote":{"stepId":"remote-reconnect","completed":true}}})"),
+         "write completion from the retired general remote course");
+  {
+    ProgressStore retired(invalid);
+    expect(!retired.hasProgress(server) && !retired.hasProgress(client) &&
+               retired.resumeIndex(server) == 0 && retired.resumeIndex(client) == 0,
+           "old reading-only completion does not complete the new practical courses");
+    expect(retired.record(server, 4, false).wasOk() && retired.record(client, 9, false).wasOk(),
+           "remote courses record independent stable steps");
+    ProgressStore restored(invalid);
+    expect(restored.resumeIndex(server) == 4 && restored.resumeIndex(client) == 9,
+           "remote progress round-trips independently on both courses");
   }
   expect(invalid.replaceWithText(R"({"version":1,"lessons":{"first-steps":{"stepId":"retired-step","completed":true}}})"),
          "write unknown-step payload");

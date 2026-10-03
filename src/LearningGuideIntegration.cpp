@@ -8,10 +8,41 @@
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
+#include "ui/panels/SettingsPanel.h"
 #include "ui/components/AppModal.h"
 #include <algorithm>
 
 using LearningAnchor = playworship::learning::Anchor;
+
+playworship::learning::StepFacts MTControlsAudioProcessorEditor::learningStepFacts() const {
+  using Mode = playworship::remote::RemoteSession::Mode;
+  playworship::learning::StepFacts facts;
+  facts.settingsOpen = settingsPanelRaw && settingsPanelRaw->isShowing();
+  facts.remotePageOpen = facts.settingsOpen && settingsPanelRaw->isLearningRemotePageOpen();
+  facts.serverModeActive = remoteSession.getMode() == Mode::Server;
+  facts.serverListening = facts.serverModeActive && remoteSession.getPort() > 0 &&
+      remoteSession.getDiscoveryStatus() == playworship::remote::LanDiscovery::Status::Ready;
+  facts.serverHasClient = remoteSession.getClientCount() > 0;
+  facts.clientModeActive = remoteSession.getMode() == Mode::Client;
+  facts.remoteConnected = playbackSession.isRemote() && playbackSession.isConnected();
+  facts.songLoaded = playbackSession.hasLoadedSong() &&
+      (learningLessonId != "remote-client" || (facts.clientModeActive && facts.remoteConnected)) &&
+      (learningLessonId != "remote-server" || facts.serverListening);
+  facts.remotePlayApplied = learningRemoteAction.applied() && playbackSession.isSongPlaying();
+  facts.remoteStopApplied = learningRemoteAction.applied() && !playbackSession.isSongPlaying();
+  return facts;
+}
+
+bool MTControlsAudioProcessorEditor::canAdvanceLearningStep() const {
+  const auto *lesson = currentLearningLesson();
+  if (!lesson || learningStepIndex < 0 || learningStepIndex >= static_cast<int>(lesson->steps.size()))
+    return false;
+  const auto &step = lesson->steps[static_cast<size_t>(learningStepIndex)];
+  const auto facts = learningStepFacts();
+  return playworship::learning::remoteStepPrerequisite(lesson->id, step, facts) ==
+      playworship::learning::RemotePrerequisite::None &&
+      playworship::learning::evaluateStepCondition(step.condition, facts);
+}
 
 const playworship::learning::Lesson *MTControlsAudioProcessorEditor::currentLearningLesson() const {
   const auto found = std::find_if(learningLessons.begin(), learningLessons.end(),
@@ -43,7 +74,8 @@ void MTControlsAudioProcessorEditor::showLearningCatalog() {
   learningEnglishContent = AppSettings::getLanguage() == AppLanguage::English;
   learningLessons = playworship::learning::makeLessons(learningPhoneContent, learningEnglishContent);
   learningLessonId.clear();
-  learningGuide->setBounds(getLocalBounds());
+  learningObservedStepKey.clear();
+  learningRemoteAction.deactivate();
   learningGuide->showCatalog(learningLessons, *learningProgress);
   learningGuide->toFront(false);
   updateLearningGuideTarget();
@@ -63,6 +95,7 @@ void MTControlsAudioProcessorEditor::startLearningLesson(const juce::String &id)
 void MTControlsAudioProcessorEditor::advanceLearningStep(const bool forward) {
   const auto *lesson = currentLearningLesson();
   if (!lesson || !learningProgress || !learningGuide) return;
+  if (forward && !canAdvanceLearningStep()) { updateLearningGuideTarget(); return; }
   if (forward && learningStepIndex == static_cast<int>(lesson->steps.size()) - 1) {
     const auto result = learningProgress->record(*lesson, learningStepIndex, true);
     if (result.failed()) {
@@ -97,12 +130,25 @@ void MTControlsAudioProcessorEditor::pauseLearningGuide() {
   if (const auto *lesson = currentLearningLesson(); lesson && learningProgress)
     learningProgress->record(*lesson, learningStepIndex, false);
   learningGuide.reset();
+  learningObservedStepKey.clear();
+  learningRemoteAction.deactivate();
   grabKeyboardFocus();
 }
 
 void MTControlsAudioProcessorEditor::refreshLearningStep() {
   const auto *lesson = currentLearningLesson();
   if (!lesson || !learningGuide) return;
+  const auto &step = lesson->steps[static_cast<size_t>(learningStepIndex)];
+  const auto key = lesson->id + "/" + step.id;
+  if (key != learningObservedStepKey) {
+    learningObservedStepKey = key;
+    if (step.condition == playworship::learning::StepCondition::RemotePlayApplied)
+      learningRemoteAction.begin(true);
+    else if (step.condition == playworship::learning::StepCondition::RemoteStopApplied)
+      learningRemoteAction.begin(false);
+    else learningRemoteAction.deactivate();
+  }
+  learningRevealTargetPending = true;
   learningGuide->showStep(*lesson, learningStepIndex,
       getLearningTargetBounds(lesson->steps[static_cast<size_t>(learningStepIndex)].anchor),
       playbackSession.hasLoadedSong());
@@ -110,10 +156,34 @@ void MTControlsAudioProcessorEditor::refreshLearningStep() {
 }
 
 juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(LearningAnchor anchor) const {
-  const auto local = [this](const juce::Component *component, juce::Rectangle<int> bounds) {
+  using Prerequisite = playworship::learning::RemotePrerequisite;
+  if (const auto *lesson = currentLearningLesson()) {
+    const auto prerequisite = playworship::learning::remoteStepPrerequisite(
+        lesson->id, lesson->steps[static_cast<size_t>(learningStepIndex)], learningStepFacts());
+    switch (prerequisite) {
+    case Prerequisite::OpenSettings: anchor = LearningAnchor::Settings; break;
+    case Prerequisite::OpenRemotePage: anchor = LearningAnchor::RemoteSettings; break;
+    case Prerequisite::ChooseClient:
+    case Prerequisite::ChooseServer: anchor = LearningAnchor::RemoteMode; break;
+    case Prerequisite::WaitServer: anchor = LearningAnchor::RemoteStatus; break;
+    case Prerequisite::WaitClient: anchor = LearningAnchor::RemoteServers; break;
+    case Prerequisite::CloseSettings: anchor = LearningAnchor::SettingsClose; break;
+    case Prerequisite::None: break;
+    }
+  }
+  const auto *host = learningGuide && learningGuide->getParentComponent()
+      ? learningGuide->getParentComponent() : this;
+  const auto local = [host](const juce::Component *component, juce::Rectangle<int> bounds) {
     return component && component->isShowing()
-        ? getLocalArea(component, bounds).getIntersection(getLocalBounds()) : juce::Rectangle<int>{};
+        ? host->getLocalArea(component, bounds).getIntersection(host->getLocalBounds()) : juce::Rectangle<int>{};
   };
+  if (anchor == LearningAnchor::None) return {};
+  if (settingsPanelRaw && host == settingsPanelRaw.getComponent())
+    return settingsPanelRaw->getLearningTargetBounds(anchor);
+  if (anchor == LearningAnchor::SettingsClose || anchor == LearningAnchor::RemoteSettings ||
+      anchor == LearningAnchor::RemoteMode || anchor == LearningAnchor::RemoteAlias ||
+      anchor == LearningAnchor::RemoteStatus || anchor == LearningAnchor::RemoteServers)
+    anchor = LearningAnchor::Settings;
   if (practiceOverlay && practiceOverlay->isShowing()) {
     const auto *practice = dynamic_cast<const PracticePanel *>(practiceOverlay.get());
     return practice ? local(practice, practice->getLearningTargetBounds(
@@ -131,6 +201,8 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
     anchor = LearningAnchor::More;
   if (anchor == LearningAnchor::Waveform && waveformBar)
     return local(waveformBar.get(), waveformBar->getLocalBounds());
+  if (anchor == LearningAnchor::RemoteIndicator && waveformBar)
+    return local(waveformBar.get(), waveformBar->getLocalBounds().removeFromTop(36).removeFromRight(168));
   if (anchor == LearningAnchor::Pads && !learningPhoneContent) {
     if (padsComponent && padsComponent->isShowing()) return local(padsComponent.get(), padsComponent->getLocalBounds());
     if (padsHandlePanel) return local(padsHandlePanel.get(), padsHandlePanel->getLocalBounds());
@@ -140,10 +212,23 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
 
 void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
   if (!learningGuide) return;
-  const bool blocked = settingsOverlay != nullptr || settingsWindow != nullptr ||
+  const bool settingsOpen = settingsPanelRaw && settingsPanelRaw->isShowing();
+  const bool guideInSettings = settingsOpen && (learningGuide->isShowingCatalog() ||
+      learningLessonId == "remote-server" || learningLessonId == "remote-client");
+  auto *host = guideInSettings ? static_cast<juce::Component *>(settingsPanelRaw.getComponent()) : this;
+  if (learningGuide->getParentComponent() != host) {
+    host->addAndMakeVisible(*learningGuide);
+    learningRevealTargetPending = true;
+  }
+  learningGuide->setBounds(host->getLocalBounds());
+  learningGuide->toFront(false);
+  const auto *modal = juce::Component::getCurrentlyModalComponent();
+  const bool guideMenuOpen = modal != nullptr && learningGuide->isParentOf(modal);
+  const bool blocked = (settingsOpen && !guideInSettings) ||
       (appModal != nullptr && appModal->isVisible()) ||
       (reauthPromptModal != nullptr && reauthPromptModal->isVisible()) ||
-      juce::Component::getNumCurrentlyModalComponents() > 0;
+      (modal != nullptr && !guideMenuOpen &&
+       (!guideInSettings || modal != settingsWindow.getComponent()));
   learningGuide->setVisible(!blocked);
   if (blocked) return;
   const bool english = AppSettings::getLanguage() == AppLanguage::English;
@@ -158,14 +243,67 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
   }
   juce::BorderSize<int> insets;
 #if JUCE_IOS || JUCE_ANDROID
-  if (const auto *display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds()))
+  if (host == this)
+    if (const auto *display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(getScreenBounds()))
     insets = display->safeAreaInsets;
 #endif
   learningGuide->setSafeAreaInsets(insets);
   if (const auto *lesson = currentLearningLesson()) {
-    learningGuide->updateTarget(getLearningTargetBounds(lesson->steps[static_cast<size_t>(learningStepIndex)].anchor),
+    const auto &step = lesson->steps[static_cast<size_t>(learningStepIndex)];
+    using Prerequisite = playworship::learning::RemotePrerequisite;
+    const auto prerequisite = playworship::learning::remoteStepPrerequisite(lesson->id, step, learningStepFacts());
+    if (prerequisite != learningLastPrerequisite) {
+      learningLastPrerequisite = prerequisite;
+      learningRevealTargetPending = true;
+    }
+    auto anchorToReveal = step.anchor;
+    switch (prerequisite) {
+    case Prerequisite::OpenRemotePage: anchorToReveal = LearningAnchor::RemoteSettings; break;
+    case Prerequisite::ChooseClient:
+    case Prerequisite::ChooseServer: anchorToReveal = LearningAnchor::RemoteMode; break;
+    case Prerequisite::WaitServer: anchorToReveal = LearningAnchor::RemoteStatus; break;
+    case Prerequisite::WaitClient: anchorToReveal = LearningAnchor::RemoteServers; break;
+    case Prerequisite::CloseSettings: anchorToReveal = LearningAnchor::SettingsClose; break;
+    default: break;
+    }
+    if (guideInSettings && learningRevealTargetPending)
+      settingsPanelRaw->revealLearningTarget(anchorToReveal);
+    learningRevealTargetPending = false;
+    learningGuide->updateTarget(getLearningTargetBounds(step.anchor),
                                playbackSession.hasLoadedSong());
     auto message = learningSaveError;
+    const bool ready = canAdvanceLearningStep();
+    auto pendingMessage = ready ? juce::String{} : step.task;
+    switch (prerequisite) {
+    case Prerequisite::OpenSettings:
+      pendingMessage = L10n::tr("Para retomar este paso, abre Configuración.", "To resume this step, open Settings."); break;
+    case Prerequisite::OpenRemotePage:
+      pendingMessage = L10n::tr("Entra en Control remoto; en escritorio está dentro de General.", "Open Remote control; on desktop it is in General."); break;
+    case Prerequisite::ChooseServer:
+      pendingMessage = L10n::tr("Selecciona Servidor para retomar el ejercicio.", "Select Server to resume the exercise."); break;
+    case Prerequisite::ChooseClient:
+      pendingMessage = L10n::tr("Selecciona Cliente para retomar el ejercicio.", "Select Client to resume the exercise."); break;
+    case Prerequisite::WaitServer:
+      pendingMessage = L10n::tr("Espera a que este equipo esté disponible como Servidor.", "Wait until this device is available as Server."); break;
+    case Prerequisite::WaitClient:
+      pendingMessage = L10n::tr("Prepara el otro equipo como Servidor y espera la conexión; si aparecen varios, elige uno.", "Prepare the other device as Server and wait for connection; choose one if several appear."); break;
+    case Prerequisite::CloseSettings:
+      pendingMessage = L10n::tr("La conexión está lista. Cierra Configuración para continuar el ejercicio.", "The connection is ready. Close Settings to continue the exercise."); break;
+    case Prerequisite::None: break;
+    }
+    if (!ready && (learningLessonId == "remote-client" || learningLessonId == "remote-server")) {
+      using Discovery = playworship::remote::LanDiscovery::Status;
+      if (remoteSession.getDiscoveryStatus() == Discovery::PermissionDenied)
+        pendingMessage = L10n::tr("Permite Red local para PlayWorship en los ajustes del sistema y vuelve a esta guía.",
+            "Allow Local Network for PlayWorship in system settings, then return to this guide.");
+      else if (remoteSession.getDiscoveryStatus() == Discovery::Failed || remoteConnectionStatus.isNotEmpty())
+        pendingMessage = remoteConnectionStatus.isNotEmpty() ? remoteConnectionStatus :
+            L10n::tr("No se pudo iniciar el descubrimiento. Revisa la red local y vuelve a elegir el modo.",
+                     "Discovery could not start. Check the local network and choose the mode again.");
+      else if (learningRemoteAction.reason().isNotEmpty())
+        pendingMessage = learningRemoteAction.reason();
+    }
+    learningGuide->setStepReadiness(ready, pendingMessage);
     if (message.isEmpty() && learningPhoneContent && learningLessonId == "practice-sections" && !practiceOverlay)
       message = L10n::tr("Abre Ensayo desde Más para probar estos gestos.",
           "Open Practice from More to try these gestures.");

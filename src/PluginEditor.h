@@ -11,6 +11,7 @@
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include "ui/UiCommon.h"
 #include "ui/learning/LearningGuideModel.h"
+#include "ui/learning/RemoteLearningAction.h"
 #include <JuceHeader.h>
 
 #include <unordered_set>
@@ -68,6 +69,8 @@ private:
   void updateLearningGuideTarget();
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   const playworship::learning::Lesson *currentLearningLesson() const;
+  playworship::learning::StepFacts learningStepFacts() const;
+  bool canAdvanceLearningStep() const;
   void updatePhoneOrientation();
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
@@ -113,6 +116,11 @@ private:
   int learningStepIndex = 0;
   bool learningPhoneContent = false;
   bool learningEnglishContent = false;
+  bool learningRevealTargetPending = false;
+  playworship::learning::RemotePrerequisite learningLastPrerequisite =
+      playworship::learning::RemotePrerequisite::None;
+  juce::String learningObservedStepKey;
+  playworship::learning::RemoteLearningAction learningRemoteAction;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 

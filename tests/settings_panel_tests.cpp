@@ -290,6 +290,33 @@ struct SettingsPanelTestAccess {
     expect(learningRequests == 2,
            "the desktop guide button shares the same learning request as the grouped row");
     snapshot(panel, "settings-desktop");
+
+    // Tutorial destinations must refer to the real controls and reveal rows
+    // hidden by scrolling, both in grouped settings and desktop General.
+    using Anchor = playworship::learning::Anchor;
+    for (const auto size : {juce::Point<int>(320, 640), {390, 844}, {1080, 780}}) {
+      panel.setSize(size.x, size.y);
+      panel.showSettingsPage(Destination::Home);
+      panel.revealLearningTarget(Anchor::RemoteSettings);
+      expect(!panel.getLearningTargetBounds(Anchor::RemoteSettings).isEmpty(),
+             "remote entry is visible in a guided Settings visit");
+      panel.showSettingsPage(Destination::Remote);
+      expect(panel.isLearningRemotePageOpen(), "actual remote page satisfies navigation step");
+      panel.updateRemoteState(playworship::remote::RemoteSession::Mode::Server, {}, "Listening");
+      for (const auto anchor : {Anchor::RemoteMode, Anchor::RemoteAlias, Anchor::RemoteStatus}) {
+        panel.revealLearningTarget(anchor);
+        expect(!panel.getLearningTargetBounds(anchor).isEmpty(),
+               "guided server controls can be revealed in the viewport");
+      }
+      panel.updateRemoteState(playworship::remote::RemoteSession::Mode::Client,
+                              {{"Mac", "192.168.0.10", 49172, 0}}, "Connected");
+      panel.revealLearningTarget(Anchor::RemoteServers);
+      expect(!panel.getLearningTargetBounds(Anchor::RemoteServers).isEmpty(),
+             "guided client selector is reachable");
+      expect(panel.getLearningTargetBounds(Anchor::SettingsClose) == panel.closeButton.getBounds(),
+             "tutorial points to the existing close button");
+      snapshot(panel, "settings-learning-remote-" + juce::String(size.x));
+    }
   }
 };
 

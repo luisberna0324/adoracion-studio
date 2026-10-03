@@ -64,6 +64,8 @@ public:
   void triggerNoteForSongTransition(int noteIndex, int octave);
   void stopNote(int noteIndex);
   void stopAll();
+  /** Per-voice mix level: outgoing tails retain their level during a crossfade. */
+  void setMixGain(float gain, bool sectionTransition = false) noexcept;
   int getActiveNoteIndex() const noexcept {
     return activeNoteIndex.load(std::memory_order_relaxed);
   }
@@ -94,6 +96,8 @@ private:
     float gain = 0.0f;
     float fadeOutStartGain = 0.0f;
     float fadeOutProgress = 0.0f;
+    float mixGain = 1.0f, mixTarget = 1.0f, mixStep = 0.0f;
+    int mixRemaining = 0;
   };
 
   std::array<NoteSample, kNoteCount> noteSamples;
@@ -108,6 +112,7 @@ private:
   std::atomic<CrossfadePreset> crossfadePreset{CrossfadePreset::Medium};
   std::atomic<float> songTransitionTargetGain{1.0f};
   float songTransitionGain = 1.0f;
+  float mixTargetGain = 1.0f;
 
   static int parseNoteIndexFromFilename(const juce::String &name);
   static int cleanlinessScore(const juce::String &name);

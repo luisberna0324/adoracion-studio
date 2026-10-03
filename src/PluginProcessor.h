@@ -438,14 +438,18 @@ private:
   struct AudioAutomationPadsEvent {
     int outputOffset = 0;
     playworship::audio::SectionAutomation::Pads pads;
+    uint64_t token = 0;
   };
   std::array<AudioAutomationPadsEvent, StemTrack::maxMixTransitions> audioAutomationPadsEvents{};
   int audioAutomationPadsEventCount = 0;
   playworship::audio::SectionAutomation::Pads audioAutomationInitialPads;
+  uint64_t padsMixLastToken = 0;
+  uint64_t audioAutomationInitialPadsToken = 0;
   std::atomic<uint64_t> sectionAutomationCurrentToken{0};
   std::atomic<uint64_t> sectionAutomationManualToken{0};
   uint64_t sectionAutomationPublicationRevision = 0;
   std::atomic<int> padsBaseNote{-1}, padsBaseOctave{0};
+  std::atomic<bool> padsAwaitingManualAfterAutomation{false};
   std::atomic<int> padsRenderedOctave{0};
   juce::SmoothedValue<float> padsMixSmoother{0.75f};
   bool isStemAutomationEligible(int stemIndex) const noexcept;

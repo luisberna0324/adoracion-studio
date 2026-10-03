@@ -1,8 +1,10 @@
 #include "ui/learning/LearningGuideOverlay.h"
 #include "data/Localization.h"
 #include "ui/panels/PracticePanel.h"
+#include "ui/panels/SettingsPanel.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -65,6 +67,21 @@ struct LearningOverlayTestAccess {
   }
   static juce::Viewport &catalogViewport(LearningGuideOverlay &guide) {
     return guide.catalogViewport;
+  }
+  static void showCourses(LearningGuideOverlay &guide) {
+    guide.dispatch(LearningGuideOverlay::Action::Courses);
+  }
+  static void restart(LearningGuideOverlay &guide) {
+    guide.dispatch(LearningGuideOverlay::Action::Restart);
+  }
+};
+
+struct SettingsPanelTestAccess {
+  static void openRemote(SettingsPanel &panel) {
+    panel.showSettingsPage(SettingsPanel::Destination::Remote);
+  }
+  static juce::Button &clientButton(SettingsPanel &panel) {
+    return panel.remoteClientButton;
   }
 };
 
@@ -147,6 +164,12 @@ void testResponsiveSpotlightAndInteraction() {
            "the card keeps its own input available");
     expect(fixture.guide.hitTest(2, 2), "the shaded backdrop blocks unintended actions");
     expectActionsInside(fixture.guide);
+    expect(buttonNamed(fixture.guide, "learningPrevious").getWidth() == 44 &&
+               buttonNamed(fixture.guide, "learningNext").getWidth() <= 124,
+           "navigation uses a shared back icon and a compact text-width forward action");
+    for (const auto *name : {"learningPrevious", "learningNext", "learningMore", "learningPause"})
+      expect(buttonNamed(fixture.guide, name).getHeight() == 44,
+             "compact visuals preserve comfortable 44-point touch targets");
     auto &viewport = LearningOverlayTestAccess::stepViewport(fixture.guide);
     expect(viewport.getViewedComponent()->getHeight() > 0 && viewport.getHeight() > 0,
            "step instructions have a readable viewport");
@@ -166,6 +189,126 @@ void testResponsiveSpotlightAndInteraction() {
     capture(fixture, "learning-step-" + juce::String(size.x) + "x" + juce::String(size.y));
   }
   expect(scrolledText, "compact profiles exercise pointer scrolling through longer instructions");
+}
+
+void testValidatedStepReadiness() {
+  LearningGuideOverlay guide;
+  guide.setSize(390, 844);
+  const auto lesson = longLesson();
+  guide.showStep(lesson, 1, {300, 100, 44, 44}, true);
+  int next = 0, previous = 0, pause = 0, courses = 0, restart = 0;
+  guide.onNext = [&] { ++next; };
+  guide.onPrevious = [&] { ++previous; };
+  guide.onPause = [&] { ++pause; };
+  guide.onShowCourses = [&] { ++courses; };
+  guide.onRestart = [&] { ++restart; };
+  const auto pending = L10n::tr("Abre el panel para continuar.", "Open the panel to continue.");
+  guide.setStepReadiness(false, pending);
+  auto &forward = buttonNamed(guide, "learningNext");
+  expect(!forward.isEnabled() && forward.getDescription() == pending,
+         "a pending real action disables Finish and exposes its instruction to accessibility");
+  expect(buttonNamed(guide, "learningPrevious").isEnabled() &&
+             buttonNamed(guide, "learningMore").isEnabled() &&
+             buttonNamed(guide, "learningPause").isEnabled(),
+         "pending tasks retain all escape and course navigation actions");
+  expect(!guide.hitTest(322, 122),
+         "a pending action leaves the actual highlighted control interactive");
+  forward.onClick();
+  guide.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+  guide.setStepReadiness(true, L10n::tr("Panel abierto", "Panel opened"));
+  drainMessages();
+  expect(next == 0,
+         "a blocked tap or shortcut cannot wait in the queue and advance when the task becomes ready");
+  forward.onClick();
+  guide.setStepReadiness(false, pending);
+  guide.setStepReadiness(true, {});
+  drainMessages();
+  expect(next == 0, "changing validation cancels a forward action queued for the previous state");
+  forward.onClick();
+  drainMessages();
+  expect(next == 1, "a validated task enables the current forward action");
+  guide.setStepReadiness(false, pending);
+  guide.keyPressed(juce::KeyPress(juce::KeyPress::leftKey));
+  guide.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+  LearningOverlayTestAccess::showCourses(guide);
+  LearningOverlayTestAccess::restart(guide);
+  drainMessages();
+  expect(previous == 1 && pause == 1 && courses == 1 && restart == 1,
+         "validation never blocks previous, pause, courses or restart");
+  guide.showStep(lesson, 0, {}, true);
+  expect(forward.isEnabled() && forward.getDescription().isEmpty(),
+         "a new step clears the previous task state until its host validates it");
+  const int initialTextHeight = LearningOverlayTestAccess::stepViewport(guide)
+                                    .getViewedComponent()->getHeight();
+  guide.setStepReadiness(false, lesson.steps.front().task);
+  expect(LearningOverlayTestAccess::stepViewport(guide)
+             .getViewedComponent()->getHeight() == initialTextHeight,
+         "a pending instruction equal to the task is displayed once");
+  guide.setStepReadiness(false, pending);
+  expect(!forward.isEnabled(), "Continue also waits for action completion outside the final step");
+  capture(guide, "learning-pending-action");
+}
+
+void testGuideReparentedInsideSettings() {
+  juce::Component editor;
+  editor.setVisible(true);
+  editor.setSize(390, 844);
+  SettingsPanel settings(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
+      false, {}, false, {}, false, {}, PadsCrossfadePreset{}, {},
+      MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8, {}, nullptr, 0, 8);
+  editor.addAndMakeVisible(settings);
+  settings.setBounds(editor.getLocalBounds());
+  SettingsPanelTestAccess::openRemote(settings);
+  LearningGuideOverlay guide;
+  editor.addAndMakeVisible(guide);
+  guide.setBounds(editor.getLocalBounds());
+  guide.showStep(longLesson(), 0, {}, true);
+  settings.addAndMakeVisible(guide);
+  guide.setBounds(settings.getLocalBounds());
+  guide.toFront(false);
+  auto &clientButton = SettingsPanelTestAccess::clientButton(settings);
+  const auto target = guide.getLocalArea(&clientButton, clientButton.getLocalBounds());
+  guide.updateTarget(target, true);
+  guide.setStepReadiness(false, L10n::tr("Selecciona Cliente.", "Select Client."));
+  expect(guide.getParentComponent() == &settings &&
+             guide.getLocalBounds().contains(target) && !target.isEmpty(),
+         "reparenting resolves a real settings action into the overlay coordinate space");
+  expect(!guide.hitTest(target.getCentreX(), target.getCentreY()),
+         "the guide inside Settings leaves its actual segmented control interactive");
+  auto *actual = dynamic_cast<juce::Button *>(
+      settings.getComponentAt(settings.getLocalPoint(&guide, target.getCentre())));
+  expect(actual == &clientButton,
+         "JUCE traverses the reparented guide to the production Client control");
+  using Mode = playworship::remote::RemoteSession::Mode;
+  int modeChanges = 0;
+  settings.onRemoteModeChanged = [&](Mode mode) {
+    if (mode == Mode::Client) {
+      ++modeChanges;
+      guide.setStepReadiness(true, L10n::tr("Cliente seleccionado", "Client selected"));
+    }
+  };
+  actual->onClick();
+  expect(modeChanges == 1 && buttonNamed(guide, "learningNext").isEnabled(),
+         "the real Settings callback validates the action without a duplicate guide control");
+  capture(settings, "learning-settings-client");
+  buttonNamed(guide, "learningMore").onClick();
+  const auto *menu = juce::Component::getCurrentlyModalComponent();
+  const bool embeddedGuideMenu = menu != nullptr && guide.isParentOf(menu) &&
+                                !menu->isOnDesktop();
+  capture(settings, "learning-settings-options");
+  juce::PopupMenu::dismissAllActiveMenus();
+  drainMessages();
+  expect(embeddedGuideMenu,
+         "guide options render as an owned child modal inside Settings instead of a separate desktop window");
+  expect(guide.isVisible() && settings.isVisible() &&
+             guide.getParentComponent() == &settings && !guide.isShowingCatalog(),
+         "dismissing its own menu leaves the guide at the same visible step");
+  editor.addAndMakeVisible(guide);
+  guide.setBounds(editor.getLocalBounds());
+  guide.updateTarget({320, 60, 44, 44}, true);
+  expect(guide.getParentComponent() == &editor &&
+             LearningOverlayTestAccess::target(guide) == juce::Rectangle<int>(320, 60, 44, 44),
+         "returning the guide to the editor removes stale panel coordinates");
 }
 
 void testTargetUpdatesAndBoundarySteps() {
@@ -212,7 +355,7 @@ void testCatalogScrollAndSavedProgress() {
                         .getChildFile("playworship-guide-" + juce::Uuid().toString() + ".json");
   playworship::learning::ProgressStore store(temp);
   auto lessons = playworship::learning::makeLessons(true, L10n::isEnglish());
-  expect(lessons.size() == 4, "the guide exposes the four initial courses");
+  expect(lessons.size() >= 4, "the guide exposes its available courses");
   expect(store.record(lessons.front(), 0, false).wasOk(),
          "the catalog can read real saved course progress");
   expect(store.record(lessons[1], static_cast<int>(lessons[1].steps.size()) - 1, true).wasOk(),
@@ -228,7 +371,7 @@ void testCatalogScrollAndSavedProgress() {
            "the course catalog stays in the device safe area");
     expectActionsInside(guide);
     auto &viewport = LearningOverlayTestAccess::catalogViewport(guide);
-    expect(viewport.getViewedComponent()->getNumChildComponents() == 4,
+    expect(viewport.getViewedComponent()->getNumChildComponents() == static_cast<int>(lessons.size()),
            "every course is reachable from the catalog viewport");
     expect(viewport.getViewedComponent()->getChildComponent(0)->getDescription().contains(
                L10n::tr("Continuar", "Continue")),
@@ -285,14 +428,23 @@ void testPracticeTargetsAndLargeWaveform() {
   host.addAndMakeVisible(practice);
   host.addAndMakeVisible(guide);
   const auto lessons = playworship::learning::makeLessons(true, L10n::isEnglish());
-  const auto &lesson = lessons[2];
+  const auto course = std::find_if(lessons.begin(), lessons.end(), [](const auto &entry) {
+    return entry.id == "practice-sections";
+  });
+  expect(course != lessons.end(), "Practice remains available by its stable course ID");
+  const auto &lesson = *course;
+  const auto loopStep = std::find_if(lesson.steps.begin(), lesson.steps.end(), [](const auto &step) {
+    return step.anchor == Anchor::PracticeLoop;
+  });
+  expect(loopStep != lesson.steps.end(), "Practice exposes its real A-B step");
+  const int loopIndex = static_cast<int>(std::distance(lesson.steps.begin(), loopStep));
   for (const auto size : {juce::Point<int>(320, 667), juce::Point<int>(390, 844)}) {
     host.setSize(size.x, size.y);
     practice.setBounds(host.getLocalBounds());
     guide.setBounds(host.getLocalBounds());
     guide.setSafeAreaInsets({24, 0, 20, 0});
     const auto loopTarget = practice.getLearningTargetBounds(Anchor::PracticeLoop);
-    guide.showStep(lesson, 3, loopTarget, true);
+    guide.showStep(lesson, loopIndex, loopTarget, true);
     expect(!guide.hitTest(loopTarget.getCentreX(), loopTarget.getCentreY()),
            "A-B lesson leaves the waveform usable for moving between its marks");
     const auto playTarget = practice.getLearningTargetBounds(Anchor::PlayPause);
@@ -400,6 +552,8 @@ int main() {
   };
   run("responsive spotlight and actual control hit testing", testResponsiveSpotlightAndInteraction);
   run("target updates and course step boundaries", testTargetUpdatesAndBoundarySteps);
+  run("validated tasks retain navigation and real control access", testValidatedStepReadiness);
+  run("real settings actions through a reparented guide", testGuideReparentedInsideSettings);
   run("scrollable course catalog with saved progress", testCatalogScrollAndSavedProgress);
   run("real Practice targets and wide phone waveform", testPracticeTargetsAndLargeWaveform);
   run("safe asynchronous callbacks and focused keyboard input", testAsynchronousCallbacksAndKeyboard);

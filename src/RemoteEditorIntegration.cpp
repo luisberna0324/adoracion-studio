@@ -47,6 +47,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
   using Mode = playworship::remote::RemoteSession::Mode;
   const auto previousMode = remoteSession.getMode();
   if (mode == previousMode) return;
+  learningRemoteAction.disconnected();
   if (songLoadBusy || projectSaveBusy || mixExportBusy) { remoteConnectionStatus = L10n::tr("Espera a que termine la carga", "Wait for loading to finish"); refreshRemoteSettings(); return; }
   auto &p = static_cast<MTControlsAudioProcessor &>(processor);
   if (p.isSectionAutomationEditing()) p.finishSectionAutomationEditing(false);
@@ -118,6 +119,9 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     ++waveformGeneration;
     playbackSession.setRemote(true);
     playbackSession.onCommand = [this](const juce::String &id, const juce::String &action, const juce::var &value, const juce::String &target) {
+      learningRemoteAction.sent(id, action, currentLoadedSong.id,
+                                juce::Time::getMillisecondCounterHiRes(),
+                                playbackSession.isSongPlaying());
       remoteSession.sendCommand(id, action, value, target);
     };
     remoteLibrarySignature.clear(); remoteSettingsSignature.clear(); remoteChannelSignature.clear(); remoteExpectedWaveformHash.clear();
@@ -299,7 +303,11 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
       remotePracticeRevision = 0;
     }
     using Kind = playworship::remote::RemoteSession::Event::Kind;
-    if (event.kind == Kind::Connected || event.kind == Kind::Disconnected) { playbackSession.setConnected(false); continue; }
+    if (event.kind == Kind::Connected || event.kind == Kind::Disconnected) {
+      playbackSession.setConnected(false);
+      learningRemoteAction.disconnected();
+      continue;
+    }
     if (event.kind == Kind::PeerDisconnected) {
       if (remoteSectionAutomationOwner == event.sourceId) {
         p.finishSectionAutomationEditing(false);
@@ -342,12 +350,22 @@ void MTControlsAudioProcessorEditor::processRemoteEvents() {
     if (static_cast<int>(property(value, "v")) != 1) continue;
     const auto type = stringProperty(value, "type");
     if (event.kind == Kind::Snapshot || event.kind == Kind::Meters) {
-      if (type == "snapshot") applyRemoteSnapshot(value);
+      if (type == "snapshot") {
+        applyRemoteSnapshot(value);
+        learningRemoteAction.snapshot(
+            static_cast<juce::int64>(property(value, "seq")),
+            stringProperty(property(value, "song"), "id"),
+            static_cast<bool>(property(value, "playing")),
+            juce::Time::getMillisecondCounterHiRes());
+      }
       else if (type == "meters" && playbackSession.isRemote() && playbackSession.isConnected() && stringProperty(value, "songId") == currentLoadedSong.id) playbackSession.applyMeters(value);
       else if (type == "ack") {
         const bool accepted = static_cast<bool>(property(value, "accepted"));
         playbackSession.applyAcknowledgement(stringProperty(value, "id"), accepted,
                                              stringProperty(value, "reason"));
+        learningRemoteAction.acknowledge(stringProperty(value, "id"), accepted,
+            static_cast<juce::int64>(property(playbackSession.snapshot(), "seq")),
+            stringProperty(value, "reason"));
         if (!accepted) remoteConnectionStatus = stringProperty(value, "reason");
       }
     } else if (event.kind == Kind::Command && remoteSession.getMode() == playworship::remote::RemoteSession::Mode::Server) {

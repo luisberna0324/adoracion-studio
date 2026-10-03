@@ -4,7 +4,7 @@ title: Pads
 description: Motor de pads con 12 notas, seguimiento de tonalidad y loop continuo
 resource: src/audio/PadsEngine.h
 tags: [juce, audio, pads, samples, trigger]
-timestamp: 2026-10-02
+timestamp: 2026-10-03
 ---
 
 # PadsEngine
@@ -14,7 +14,14 @@ reproducción continua. Un pad activo no depende del transporte de la canción.
 
 La [automatización por sección](../engine/SectionAutomation.md) puede sustituir
 volumen, ganancia, power, nota y octava. Mantiene separados los valores base y
-efectivos; repetir la misma nota/octava conserva su voz y envolvente. Cargar o
+efectivos; repetir la misma nota/octava conserva su voz y envolvente.
+El nivel de mezcla pertenece a cada voz: una cola saliente conserva su nivel,
+aunque la sección o canción de destino tenga un volumen mayor. Los cambios de
+nivel de sección siguen el crossfade configurado; los manuales usan 30 ms.
+En una canción con Pads automatizados, las secciones sin preset y los huecos
+apagan el pad hasta silencio. Al abandonar esa canción, el seguimiento tonal
+no reactiva por sí solo una nota global; un encendido/disparo manual permite
+volver a utilizarla. Cargar o
 buscar una sección detenida muestra su preset sin iniciar una voz nueva; Play o
 la edición permiten iniciarla. Una voz ya activa continúa al pausar.
 
@@ -215,6 +222,8 @@ struct Voice {
     float gain = 0.0f;
     float fadeOutStartGain = 0.0f;
     float fadeOutProgress = 0.0f;
+    float mixGain = 1.0f, mixTarget = 1.0f, mixStep = 0.0f;
+    int mixRemaining = 0;
 };
 ```
 

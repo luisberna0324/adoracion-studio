@@ -2,10 +2,75 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-10-02T00:00:00-03:00
+timestamp: 2026-10-03T00:00:00-03:00
 ---
 
 # Changelog
+
+## 2026-10-03
+
+### Pads: transiciones entre secciones y canciones
+
+- El nivel se aplica por voz; la cola saliente conserva su ganancia instantánea
+  y no aumenta al restaurar el nivel base o entrar una nota más fuerte.
+- Cambios de sección usan el crossfade configurado; faders manuales mantienen
+  su rampa corta. Apagados repetidos no reinician la cola.
+- En canciones con Pads programados, secciones sin preset y huecos significan
+  silencio. Tras abandonar una canción automatizada, el seguimiento de tono
+  no reactiva un pad global; sigue disponible mediante un gesto manual.
+- Build macOS Standalone correcto; CTest `section_automation` y `pads_engine`: 2/2 correctos (10,45 s). No se acredita escucha manual ni instalación física con este ajuste.
+
+
+### Aprendizaje por recorridos completos de control remoto
+
+- Cinco cursos: los tres introductorios conservan su avance manual y el curso
+  `settings-remote` se sustituye por `remote-server` (10 pasos) y
+  `remote-client` (12 pasos), con IDs/progreso independientes. Recorren la
+  apertura de Configuración, navegación remota, modo, conexión, vuelta a la
+  canción y comprobación de los controles. No añaden una lección de reconexión.
+- La guía y el catálogo pueden vivir dentro del `SettingsPanel` real. Los
+  cursos remotos siguen su navegación en teléfono, tablet y escritorio,
+  resaltan controles existentes y revelan destinos fuera de vista mediante
+  scroll. Al cerrar Configuración vuelven al editor; modales/pickers ajenos
+  ocultan temporalmente la ayuda conservando el paso.
+- Botones compactos: Anterior con flecha compartida y Continuar/Terminar con
+  ancho según texto, target de 44 px y relleno de 35 px. Cursos/Reiniciar
+  están en Más. Su menú es hijo de la guía y permanece visible dentro de
+  Configuración; los modales ajenos siguen ocultando temporalmente la ayuda.
+  El estado pendiente no repite el texto si ya aparece como tarea del paso.
+  El avance por botón o teclado espera el requisito del paso;
+  Anterior, Más y cerrar permanecen disponibles.
+- Las condiciones remotas usan estado real de página, modo, servidor disponible,
+  cliente conectado, snapshot inicial y canción recibida. Play/Stop requieren
+  el comando propio del paso, ACK aceptado y snapshot posterior de la misma
+  canción. El toggle desde reproducción registra intención de Pausa; una
+  reanudación posterior de otro cliente no acredita el ejercicio de Play.
+  Cambios ajenos no completan el ejercicio; rechazo, timeout,
+  desconexión, cambio de canción/paso y cierre descartan evidencia.
+- Al retomar un paso remoto, `RemotePrerequisite` revela el requisito faltante:
+  abrir Configuración, entrar en Control remoto, elegir modo y esperar sesión
+  disponible. El usuario acciona los controles y cierra Configuración cuando
+  se necesita el reproductor. La guía conserva el paso persistido y vuelve a
+  su ejercicio al recuperar los requisitos, sin enviar comandos automáticos
+  ni añadir una lección de reconexión.
+- Cobertura añadida en `learning_guide`, `learning_overlay`, `settings_panel`
+  y `remote_learning_action`. Compilación macOS de `MTControls_Standalone` y
+  los cuatro targets de pruebas correcta en `build/codex-modal-macos`.
+  La app y el overlay se recompilaron después del ajuste final de menú y modo.
+  CTest final: `learning_guide` 0,55 s, `remote_learning_action` 0,01 s,
+  `learning_overlay` 2,22 s y `settings_panel` 0,16 s; 4/4, 100 %, 2,95 s total.
+  La evidencia de 3/3 del 2 de octubre corresponde al contrato anterior.
+  La ejecución final incluye las regresiones del menú embebido y el texto
+  pendiente sin duplicado.
+- Revisión manual parcial de escritorio: catálogo de cinco cursos, Servidor
+  pasos 1–7 y Cliente pasos 1–5 con Configuración real; bloqueo al faltar
+  cliente y espera de conexión. Reanudación de Cliente paso 5 desde Local
+  pidió abrir Configuración y luego elegir Cliente sin perder el paso.
+  Más mostró Cursos/Reiniciar dentro de Configuración y Cursos volvió al
+  catálogo en el panel. Capturas `desktop-guide-options.png` y
+  `desktop-server-guide.png`. El flujo integral y Play/Stop con dos equipos
+  siguen pendientes; no se acreditan builds iOS/Android ni instalaciones físicas.
+- Contratos: [LearningGuide](ui/LearningGuide.md) y [Testing](Testing.md).
 
 ## 2026-10-02
 

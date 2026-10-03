@@ -37,6 +37,7 @@ public:
     for (auto page : pages) {
       auto row = std::make_unique<Row>(page);
       row->onClick = [&ownerToUse, page] { ownerToUse.showSettingsPage(page); };
+      if (page == Destination::Remote) remoteRow = row.get();
       addAndMakeVisible(*row);
       rows.push_back(std::move(row));
     }
@@ -45,6 +46,10 @@ public:
 
   static int contentHeight() {
     return 16 + 3 * (34 + 22) + (useTouchOptimisedControls() ? 8 : 9) * 72 + 8;
+  }
+
+  juce::Component *remoteEntry() const {
+    return remoteRow;
   }
 
   void refreshTexts() {
@@ -202,6 +207,7 @@ private:
     }
   };
   SettingsPanel &owner;
+  juce::Component *remoteRow = nullptr;
   std::vector<std::unique_ptr<Row>> rows;
   std::array<juce::Rectangle<int>, 3> headings, cards;
 };
@@ -1254,6 +1260,59 @@ void SettingsPanel::refreshThemeColours() {
 
 bool SettingsPanel::usesGroupedNavigation() const {
   return useTouchOptimisedControls() || getWidth() < 760;
+}
+
+bool SettingsPanel::isLearningRemotePageOpen() const {
+  return usesGroupedNavigation() ? destination == Destination::Remote
+                                : tabs.getCurrentTabIndex() == 0;
+}
+
+juce::Component *SettingsPanel::getLearningTargetComponent(
+    const playworship::learning::Anchor anchor) const {
+  using Anchor = playworship::learning::Anchor;
+  if (anchor == Anchor::SettingsClose)
+    return const_cast<HeaderIconButton *>(&closeButton);
+  if (!isLearningRemotePageOpen()) {
+    if (!usesGroupedNavigation())
+      return const_cast<SettingsTabButton *>(&generalTabButton);
+    if (destination != Destination::Home)
+      return const_cast<HeaderIconButton *>(&backButton);
+    return homePage ? homePage->remoteEntry() : nullptr;
+  }
+  switch (anchor) {
+  case Anchor::RemoteAlias:
+    if (remoteServerNameEditor.isVisible())
+      return const_cast<juce::TextEditor *>(&remoteServerNameEditor);
+    break;
+  case Anchor::RemoteStatus: return const_cast<juce::Label *>(&remoteStatus);
+  case Anchor::RemoteServers:
+    if (remoteServersBox.isVisible())
+      return const_cast<AdaptiveComboBox *>(&remoteServersBox);
+    return const_cast<juce::Label *>(&remoteStatus);
+  default: break;
+  }
+  return const_cast<juce::Component *>(&remoteModeControl);
+}
+
+juce::Rectangle<int> SettingsPanel::getLearningTargetBounds(
+    const playworship::learning::Anchor anchor) const {
+  const auto *component = getLearningTargetComponent(anchor);
+  if (!component || !component->isVisible()) return {};
+  auto bounds = getLocalArea(component, component->getLocalBounds());
+  if (component != &closeButton && component != &backButton && component != &generalTabButton)
+    bounds = bounds.getIntersection(settingsViewport.getBounds());
+  return bounds.getIntersection(getLocalBounds());
+}
+
+void SettingsPanel::revealLearningTarget(const playworship::learning::Anchor anchor) {
+  const auto *component = getLearningTargetComponent(anchor);
+  if (!component || !component->isVisible() || component == &closeButton ||
+      component == &backButton || component == &generalTabButton) return;
+  const auto bounds = getLocalArea(component, component->getLocalBounds());
+  const auto viewport = settingsViewport.getBounds();
+  if (!viewport.contains(bounds))
+    settingsViewport.setViewPosition(0, juce::jmax(0, settingsViewport.getViewPositionY() +
+        bounds.getY() - viewport.getY() - 20));
 }
 
 juce::String SettingsPanel::pageTitle() const {

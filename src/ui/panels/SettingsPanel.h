@@ -3,6 +3,7 @@
 #include "../UiCommon.h"
 #include "../../data/AppSettings.h"
 #include "../../network/RemoteSession.h"
+#include "../learning/LearningGuideModel.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -84,6 +85,9 @@ public:
                          const juce::String &status,
                          const juce::String &selectedServerName = {});
   void setDiagnosticsBusy(bool busy);
+  bool isLearningRemotePageOpen() const;
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
+  void revealLearningTarget(playworship::learning::Anchor);
 
 private:
   friend struct SettingsPanelTestAccess;
@@ -135,6 +139,7 @@ private:
   class SettingsRowSeparator;
   enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning };
   class SettingsHomePage;
+  juce::Component *getLearningTargetComponent(playworship::learning::Anchor) const;
 
   bool usesGroupedNavigation() const;
   void showSettingsPage(Destination destination);

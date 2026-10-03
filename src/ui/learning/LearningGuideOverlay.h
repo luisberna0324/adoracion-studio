@@ -21,6 +21,8 @@ public:
   void updateTarget(juce::Rectangle<int>, bool songAvailable);
   void setSafeAreaInsets(juce::BorderSize<int>);
   void setStatusMessage(const juce::String &);
+  /** Only forward navigation waits for the real action validated by the host. */
+  void setStepReadiness(bool ready, juce::String message);
   bool isShowingCatalog() const;
 
   void paint(juce::Graphics &) override;
@@ -35,23 +37,26 @@ private:
   enum class Action { Next, Previous, Pause, Restart, Courses };
   void dispatch(Action);
   void dispatchLesson(const juce::String &);
+  void showActionsMenu();
   void refreshStepText();
   juce::Rectangle<int> safeBounds() const;
   juce::Rectangle<int> chooseStepCard() const;
 
   HeaderIconButton closeButton{"learningPause", IconGlyph::Close};
-  std::unique_ptr<ActionButton> previousButton, nextButton, coursesButton,
-      restartButton;
+  HeaderIconButton previousButton{"learningPrevious", IconGlyph::ArrowLeft};
+  HeaderIconButton moreButton{"learningMore", IconGlyph::More};
+  std::unique_ptr<ActionButton> nextButton;
   juce::Viewport textViewport, catalogViewport;
   std::unique_ptr<TextContent> textContent;
   std::unique_ptr<CatalogContent> catalogContent;
   playworship::learning::Lesson lesson;
   int stepIndex = 0;
-  bool catalog = true, hasSong = false;
-  juce::String statusMessage, catalogTitle, catalogSubtitle;
+  bool catalog = true, hasSong = false, stepReady = true;
+  juce::String statusMessage, readinessMessage, catalogTitle, catalogSubtitle;
   juce::BorderSize<int> safeAreaInsets;
   juce::Rectangle<int> requestedTarget, target, cardBounds;
   juce::uint64 presentationRevision = 0;
+  juce::uint64 readinessRevision = 0;
 
   friend struct LearningOverlayTestAccess;
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LearningGuideOverlay)

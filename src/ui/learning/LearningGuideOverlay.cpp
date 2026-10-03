@@ -49,7 +49,7 @@ public:
       : juce::Button(std::move(name)), primary(isPrimary) {}
 
   void paintButton(juce::Graphics &g, bool over, bool down) override {
-    const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+    const auto bounds = getLocalBounds().toFloat().reduced(0.5f, 4.5f);
     const auto base = primary ? UITheme::accent : UITheme::cardBgHover;
     g.setColour((down ? base.darker(0.12f) : over ? base.brighter(0.08f) : base)
                     .withMultipliedAlpha(isEnabled() ? 1.0f : 0.36f));
@@ -206,10 +206,7 @@ public:
 };
 
 LearningGuideOverlay::LearningGuideOverlay()
-    : previousButton(std::make_unique<ActionButton>("learningPrevious")),
-      nextButton(std::make_unique<ActionButton>("learningNext", true)),
-      coursesButton(std::make_unique<ActionButton>("learningCourses")),
-      restartButton(std::make_unique<ActionButton>("learningRestart")),
+    : nextButton(std::make_unique<ActionButton>("learningNext", true)),
       textContent(std::make_unique<TextContent>()),
       catalogContent(std::make_unique<CatalogContent>()) {
   setOpaque(false);
@@ -219,9 +216,15 @@ LearningGuideOverlay::LearningGuideOverlay()
   closeButton.setTitle(L10n::tr("Pausar guía", "Pause guide"));
   closeButton.setTooltip(L10n::tr("Cierra la guía y conserva tu progreso.",
                                  "Close the guide and keep your progress."));
+  previousButton.setSubtleHighlight(true);
+  previousButton.setTitle(L10n::tr("Paso anterior", "Previous step"));
+  previousButton.setTooltip(L10n::tr("Volver al paso anterior", "Return to the previous step"));
+  moreButton.setBare(true);
+  moreButton.setTitle(L10n::tr("Opciones de la guía", "Guide options"));
+  moreButton.setTooltip(L10n::tr("Cursos y reiniciar guía", "Courses and restart guide"));
   for (auto *component : std::initializer_list<juce::Component *>{
-           &closeButton, previousButton.get(), nextButton.get(), coursesButton.get(),
-           restartButton.get(), &textViewport, &catalogViewport})
+           &closeButton, &previousButton, nextButton.get(), &moreButton,
+           &textViewport, &catalogViewport})
     addAndMakeVisible(*component);
   textViewport.setViewedComponent(textContent.get(), false);
   catalogViewport.setViewedComponent(catalogContent.get(), false);
@@ -233,10 +236,9 @@ LearningGuideOverlay::LearningGuideOverlay()
                                                UITheme::textSecondary.withAlpha(0.4f));
   }
   textContent->setInterceptsMouseClicks(true, false);
-  previousButton->onClick = [this] { dispatch(Action::Previous); };
+  previousButton.onClick = [this] { dispatch(Action::Previous); };
   nextButton->onClick = [this] { dispatch(Action::Next); };
-  coursesButton->onClick = [this] { dispatch(Action::Courses); };
-  restartButton->onClick = [this] { dispatch(Action::Restart); };
+  moreButton.onClick = [this] { showActionsMenu(); };
   closeButton.onClick = [this] { dispatch(Action::Pause); };
 }
 
@@ -252,6 +254,8 @@ void LearningGuideOverlay::showCatalog(
   catalog = true;
   requestedTarget = {};
   statusMessage = {};
+  readinessMessage = {};
+  stepReady = true;
   catalogTitle = L10n::tr("Aprende PlayWorship", "Learn PlayWorship");
   catalogSubtitle = L10n::tr("Elige un curso y prueba los controles paso a paso.",
                               "Choose a course and try the controls step by step.");
@@ -274,6 +278,8 @@ void LearningGuideOverlay::showStep(const playworship::learning::Lesson &course,
   requestedTarget = targetBounds;
   hasSong = songAvailable;
   statusMessage = {};
+  readinessMessage = {};
+  stepReady = true;
   textViewport.setViewPosition(0, 0);
   refreshStepText();
   setVisible(true);
@@ -311,6 +317,20 @@ void LearningGuideOverlay::setStatusMessage(const juce::String &message) {
   repaint();
 }
 
+void LearningGuideOverlay::setStepReadiness(bool ready, juce::String message) {
+  if (stepReady == ready && readinessMessage == message)
+    return;
+  if (stepReady != ready)
+    ++readinessRevision;
+  stepReady = ready;
+  readinessMessage = std::move(message);
+  nextButton->setTooltip(readinessMessage);
+  nextButton->setDescription(readinessMessage);
+  refreshStepText();
+  resized();
+  repaint();
+}
+
 bool LearningGuideOverlay::isShowingCatalog() const { return catalog; }
 
 void LearningGuideOverlay::refreshStepText() {
@@ -328,10 +348,15 @@ void LearningGuideOverlay::refreshStepText() {
       blocks.push_back({L10n::tr("Prueba: ", "Try: ") + step.task, 14,
                         AppFontWeight::Medium, UITheme::textPrimary, 9});
     if (step.needsSong && !hasSong)
-      blocks.push_back({L10n::tr("Carga una canción para probarlo; también puedes continuar leyendo.",
-                                 "Load a song to try it; you can also keep reading."),
+      blocks.push_back({L10n::tr("Carga una canción para realizar este paso.",
+                                 "Load a song to complete this step."),
                         13, AppFontWeight::Regular, UITheme::textSecondary, 9});
   }
+  const bool taskAlreadyExplainsReadiness = !lesson.steps.empty() &&
+      readinessMessage.trim() == lesson.steps[static_cast<size_t>(stepIndex)].task.trim();
+  if (readinessMessage.isNotEmpty() && !taskAlreadyExplainsReadiness)
+    blocks.push_back({readinessMessage, 13, AppFontWeight::Medium,
+                      stepReady ? UITheme::accent : UITheme::textSecondary, 5});
   if (statusMessage.isNotEmpty())
     blocks.push_back({statusMessage, 13, AppFontWeight::Medium, UITheme::accent, 5});
   textContent->setBlocks(std::move(blocks));
@@ -406,19 +431,16 @@ void LearningGuideOverlay::resized() {
   const bool hasSteps = !lesson.steps.empty();
   catalogViewport.setVisible(catalog);
   textViewport.setVisible(!catalog);
-  previousButton->setVisible(!catalog);
+  previousButton.setVisible(!catalog);
   nextButton->setVisible(!catalog);
-  coursesButton->setVisible(!catalog);
-  restartButton->setVisible(!catalog);
-  coursesButton->setButtonText(L10n::tr("Cursos", "Courses"));
-  restartButton->setButtonText(L10n::tr("Reiniciar", "Restart"));
-  previousButton->setButtonText(L10n::tr("Anterior", "Previous"));
+  moreButton.setVisible(!catalog);
   nextButton->setButtonText(hasSteps && stepIndex + 1 == static_cast<int>(lesson.steps.size())
                                ? L10n::tr("Terminar", "Finish")
-                               : L10n::tr("Siguiente", "Next"));
-  previousButton->setEnabled(hasSteps && stepIndex > 0);
-  nextButton->setEnabled(hasSteps);
-  restartButton->setEnabled(hasSteps);
+                               : L10n::tr("Continuar", "Continue"));
+  nextButton->setTooltip(readinessMessage);
+  nextButton->setDescription(readinessMessage);
+  previousButton.setEnabled(hasSteps && stepIndex > 0);
+  nextButton->setEnabled(hasSteps && stepReady);
   if (safe.isEmpty()) {
     cardBounds = {};
     return;
@@ -440,15 +462,16 @@ void LearningGuideOverlay::resized() {
   auto header = content.removeFromTop(controlHeight);
   closeButton.setBounds(header.removeFromRight(44));
   header.removeFromRight(6);
-  coursesButton->setBounds(header.removeFromLeft(juce::jmin(82, header.getWidth() / 2)));
-  header.removeFromLeft(6);
-  restartButton->setBounds(header.withWidth(juce::jmin(88, header.getWidth())));
+  moreButton.setBounds(header.removeFromLeft(44));
   content.removeFromTop(4);
   auto footer = content.removeFromBottom(controlHeight);
-  const int buttonWidth = (footer.getWidth() - 8) / 2;
-  previousButton->setBounds(footer.removeFromLeft(buttonWidth));
+  previousButton.setBounds(footer.removeFromLeft(44));
   footer.removeFromLeft(8);
-  nextButton->setBounds(footer);
+  const int labelWidth = juce::roundToInt(makeLayout(
+      {nextButton->getButtonText(), 14.0f, AppFontWeight::Medium,
+       UITheme::textPrimary, 0}, 500).getWidth());
+  const int buttonWidth = juce::jmin(footer.getWidth(), juce::jmax(88, labelWidth + 28));
+  nextButton->setBounds(footer.removeFromRight(buttonWidth));
   content.removeFromBottom(6);
   textViewport.setBounds(content);
   textContent->setSize(juce::jmax(1, content.getWidth() - 6), textContent->getHeight());
@@ -498,15 +521,20 @@ bool LearningGuideOverlay::hitTest(int x, int y) {
 }
 
 void LearningGuideOverlay::dispatch(Action action) {
+  if (action == Action::Next && (catalog || lesson.steps.empty() || !stepReady))
+    return;
   const auto revision = presentationRevision;
+  const auto readyRevision = readinessRevision;
   juce::MessageManager::callAsync(
-      [safe = juce::Component::SafePointer<LearningGuideOverlay>(this), action, revision] {
+      [safe = juce::Component::SafePointer<LearningGuideOverlay>(this), action, revision,
+       readyRevision] {
         if (safe == nullptr || safe->presentationRevision != revision)
           return;
         std::function<void()> callback;
         switch (action) {
         case Action::Next:
-          if (safe->catalog || safe->lesson.steps.empty()) return;
+          if (safe->catalog || safe->lesson.steps.empty() || !safe->stepReady ||
+              safe->readinessRevision != readyRevision) return;
           callback = safe->onNext;
           break;
         case Action::Previous:
@@ -522,6 +550,27 @@ void LearningGuideOverlay::dispatch(Action action) {
         }
         if (callback)
           callback();
+      });
+}
+
+void LearningGuideOverlay::showActionsMenu() {
+  if (catalog)
+    return;
+  juce::PopupMenu menu;
+  menu.addItem(1, L10n::tr("Cursos", "Courses"));
+  menu.addItem(2, L10n::tr("Reiniciar guía", "Restart guide"), !lesson.steps.empty());
+  const auto revision = presentationRevision;
+  // Keep our own menu inside the guide's host (including modal Settings).
+  // The host can recognise this modal as a guide descendant and leave its
+  // anchor visible while foreign menus still temporarily hide the guide.
+  menu.showMenuAsync(makeTouchPopupMenuOptions(&moreButton).withParentComponent(this),
+      [safe = juce::Component::SafePointer<LearningGuideOverlay>(this), revision](int id) {
+        if (safe == nullptr || safe->presentationRevision != revision || safe->catalog)
+          return;
+        if (id == 1)
+          safe->dispatch(Action::Courses);
+        else if (id == 2)
+          safe->dispatch(Action::Restart);
       });
 }
 

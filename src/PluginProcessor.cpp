@@ -345,7 +345,7 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
       juce::jmax(2, getTotalNumOutputChannels()), realtimeBlockCapacity);
   padsEngine.prepare(sampleRate, realtimeBlockCapacity);
   padsMixSmoother.reset(sampleRate, 0.030);
-  padsMixSmoother.setCurrentAndTargetValue(getPadsVolume() * getPadsGain());
+  padsMixSmoother.setCurrentAndTargetValue(padsMuted.load() ? 0.0f : 1.0f);
   dynamicGuideEngine.prepare(sampleRate);
   metronomeLatencyDelay.prepare(2, kMaxRoutingPitchLatencySamples);
   metronomeLatencyDelay.setDelay(0);
@@ -999,6 +999,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (automationCandidate.valid) audioAutomationSelection = automationCandidate;
     publishSectionAutomationSelection(audioAutomationSelection);
     audioAutomationInitialPads = resolveSectionAutomationPads(audioAutomationSelection);
+    audioAutomationInitialPadsToken = audioAutomationSelection.token;
 
     // Every audible source participates in the same global solo domain. Click
     // Dyn remains an independent bus even when the song also contains a click
@@ -1783,7 +1784,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             --audioAutomationPadsEventCount;
           if (audioAutomationPadsEventCount < static_cast<int>(audioAutomationPadsEvents.size()))
             audioAutomationPadsEvents[static_cast<size_t>(audioAutomationPadsEventCount++)] =
-                {outputOffset, resolveSectionAutomationPads(selected)};
+                {outputOffset, resolveSectionAutomationPads(selected), selected.token};
         };
         const auto enqueueSpan = [&](const double startSeconds, const int sourceOffset, const int frameCount) {
           std::array<double, playworship::audio::SectionAutomation::maxSections * 2> boundaries{};
@@ -2460,6 +2461,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const auto automationCandidate = sectionAutomationTimeline.select(0.0);
     if (automationCandidate.valid) audioAutomationSelection = automationCandidate;
     audioAutomationInitialPads = resolveSectionAutomationPads(audioAutomationSelection);
+    audioAutomationInitialPadsToken = audioAutomationSelection.token;
   }
   if (padsPackLoaded.load(std::memory_order_relaxed)) {
     padsRenderBuffer.clear();
@@ -2496,7 +2498,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             }
           }
         }
-        const auto reconcilePads = [this](const playworship::audio::SectionAutomation::Pads &desired) {
+        const auto reconcilePads = [this](const playworship::audio::SectionAutomation::Pads &desired, uint64_t token) {
+          padsEngine.setMixGain(desired.volume * desired.gain, token != padsMixLastToken);
+          padsMixLastToken = token;
           if (padsEngine.isEnabled() != desired.enabled) padsEngine.setEnabled(desired.enabled);
           const int active = padsEngine.getActiveNoteIndex();
           if (!desired.enabled || desired.note < 0) {
@@ -2514,7 +2518,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             }
           }
         };
-        reconcilePads(audioAutomationInitialPads);
+        reconcilePads(audioAutomationInitialPads, audioAutomationInitialPadsToken);
         int renderedThrough = 0;
         for (int index = 0; index < audioAutomationPadsEventCount; ++index) {
           const auto &event = audioAutomationPadsEvents[static_cast<size_t>(index)];
@@ -2523,7 +2527,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                 padsRenderBuffer.getNumChannels(), renderedThrough, event.outputOffset - renderedThrough);
             padsEngine.process(span);
           }
-          reconcilePads(event.pads);
+          reconcilePads(event.pads, event.token);
           renderedThrough = event.outputOffset;
         }
         if (renderedThrough < numSamples) {
@@ -2535,18 +2539,13 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       }
     }
     if (renderedPads) {
-      const auto initialPads = audioAutomationInitialPads;
+      // Mute remains a whole-bus control; volume/gain live on each voice so
+      // restoring a section/song mix cannot boost an outgoing pad's tail.
       const bool mutedPads = padsMuted.load(std::memory_order_relaxed);
-      padsMixSmoother.setTargetValue(mutedPads ? 0.0f : initialPads.volume * initialPads.gain);
-      int nextAutomationEvent = 0;
-      if (audioAutomationPadsEventCount == 0 && !padsMixSmoother.isSmoothing()) {
+      padsMixSmoother.setTargetValue(mutedPads ? 0.0f : 1.0f);
+      if (!padsMixSmoother.isSmoothing()) {
         padsRenderBuffer.applyGain(padsMixSmoother.getCurrentValue());
       } else for (int sample = 0; sample < numSamples; ++sample) {
-        while (nextAutomationEvent < audioAutomationPadsEventCount &&
-               audioAutomationPadsEvents[static_cast<size_t>(nextAutomationEvent)].outputOffset <= sample) {
-          const auto &nextPads = audioAutomationPadsEvents[static_cast<size_t>(nextAutomationEvent++)].pads;
-          padsMixSmoother.setTargetValue(mutedPads ? 0.0f : nextPads.volume * nextPads.gain);
-        }
         const float gain = padsMixSmoother.getNextValue();
         for (int channel = 0; channel < padsRenderBuffer.getNumChannels(); ++channel)
           padsRenderBuffer.getWritePointer(channel)[sample] *= gain;
@@ -5398,7 +5397,9 @@ void MTControlsAudioProcessor::publishSectionAutomationLocked() {
   std::stable_sort(compiled.begin(), compiled.end(), [](const auto &a, const auto &b) {
     return a.start == b.start ? a.end < b.end : a.start < b.start;
   });
-  sectionAutomationTimeline.publish(compiled);
+  const bool padsScoped = std::any_of(compiled.begin(), compiled.end(),
+      [](const auto &part) { return part.pads.mask != 0; });
+  sectionAutomationTimeline.publish(compiled, padsScoped);
   sectionAutomationManualToken.store(0, std::memory_order_release);
   if (std::any_of(compiled.begin(), compiled.end(), [](const auto &part) {
         return (part.pads.mask & (Automation::note | Automation::enabled)) != 0;
@@ -5582,6 +5583,8 @@ bool MTControlsAudioProcessor::clearSectionAutomation(const juce::String &partId
 
 void MTControlsAudioProcessor::resetSectionAutomationState() {
   const juce::ScopedLock lock(sectionAutomationControlLock);
+  if (sectionAutomationActive.pads.mask.load(std::memory_order_acquire) != 0)
+    padsAwaitingManualAfterAutomation.store(true, std::memory_order_release);
   sectionAutomationEditing.store(false, std::memory_order_release);
   sectionAutomationEditingPartId.clear();
   sectionAutomationArrangement = {};
@@ -5643,6 +5646,11 @@ playworship::audio::SectionAutomation::Pads MTControlsAudioProcessor::resolveSec
   };
   result.mask = override.mask;
   apply(override.mask, override.volume, override.gain, override.enabled, override.note, override.octave);
+  if (override.mask == 0 && !isSectionAutomationEditing() &&
+      padsAwaitingManualAfterAutomation.load(std::memory_order_acquire)) {
+    result.enabled = false;
+    result.note = -1;
+  }
   if (!isSectionAutomationEditing() && selection.token != 0 && sectionAutomationManualToken.load(std::memory_order_acquire) == selection.token) {
     const auto &manual = sectionAutomationManual.pads;
     apply(manual.mask.load(std::memory_order_acquire), manual.volume.load(), manual.gain.load(), manual.enabled.load(), manual.note.load(), manual.octave.load());
@@ -6222,6 +6230,8 @@ void MTControlsAudioProcessor::refreshPadsRoutingFromSettings() noexcept {
 void MTControlsAudioProcessor::setPadsEnabled(const bool value) noexcept {
   using Automation = playworship::audio::SectionAutomation;
   const auto normalized = value;
+  if (value && !isSectionAutomationEditing())
+    padsAwaitingManualAfterAutomation.store(false, std::memory_order_release);
   if (isSectionAutomationEditing()) {
     sectionAutomationDraft.pads.enabled.store(normalized, std::memory_order_relaxed);
     sectionAutomationDraft.pads.mask.fetch_or(Automation::enabled, std::memory_order_release);
@@ -6240,6 +6250,8 @@ bool MTControlsAudioProcessor::isPadsBaseEnabled() const noexcept {
 
 bool MTControlsAudioProcessor::isPadsEnabled() const noexcept {
   using Automation = playworship::audio::SectionAutomation;
+  if (!isSectionAutomationEditing() && getPadsAutomationMask() == 0 &&
+      padsAwaitingManualAfterAutomation.load(std::memory_order_acquire)) return false;
   if ((getPadsAutomationMask() & Automation::enabled) == 0) return isPadsBaseEnabled();
   if (isSectionAutomationEditing()) return sectionAutomationDraft.pads.enabled.load(std::memory_order_relaxed);
   const auto &manual = sectionAutomationManual.pads;
@@ -6355,6 +6367,8 @@ int MTControlsAudioProcessor::getActivePadOctave() const noexcept {
 
 void MTControlsAudioProcessor::setPadNoteAutomationTarget(const int note, const int octave) noexcept {
   using Automation = playworship::audio::SectionAutomation;
+  if (note >= 0 && !isSectionAutomationEditing())
+    padsAwaitingManualAfterAutomation.store(false, std::memory_order_release);
   if (isSectionAutomationEditing()) {
     sectionAutomationDraft.pads.note.store(note, std::memory_order_relaxed);
     sectionAutomationDraft.pads.octave.store(octave, std::memory_order_relaxed);
@@ -6372,6 +6386,8 @@ void MTControlsAudioProcessor::setPadNoteAutomationTarget(const int note, const 
 
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex, const int octave) {
   if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount)) return;
+  if (!isSectionAutomationEditing())
+    padsAwaitingManualAfterAutomation.store(false, std::memory_order_release);
   setPadNoteAutomationTarget(noteIndex, juce::jlimit(-3, 3, octave));
   triggerPadNoteInternal(noteIndex, octave);
 }

@@ -4,7 +4,7 @@ title: Guías de aprendizaje
 description: Cursos interactivos sobre los controles reales con progreso local por dispositivo
 resource: src/LearningGuideIntegration.cpp
 tags: [learning, onboarding, ui, mobile, tablet, desktop, accessibility]
-timestamp: 2026-10-02
+timestamp: 2026-10-03
 ---
 
 # Guías de aprendizaje
@@ -16,7 +16,7 @@ timestamp: 2026-10-02
 - El menú `Más` de la barra superior en layouts táctiles de teléfono y tablet.
 - Configuración en todas las plataformas. La portada agrupada contiene la
   entrada de aprendizaje y el layout de escritorio ancho incluye `Abrir guías`
-  en General. La acción cierra Configuración antes de mostrar el catálogo.
+  en General. El catálogo puede permanecer dentro de Configuración.
 
 El sistema es optativo. Abrir una guía no carga una canción ni activa
 reproducción, edición, Pads o control remoto. Tampoco cambia la mezcla,
@@ -25,7 +25,7 @@ Las acciones de prueba se realizan sobre los controles habituales de la app.
 
 ## Cursos y contenido
 
-`makeLessons(phone, english)` define cuatro cursos con IDs estables. El
+`makeLessons(phone, english)` define cinco cursos con IDs estables. El
 catálogo resuelve el idioma español o inglés y el layout táctil de teléfono
 al abrirse. Los títulos, ayudas y tareas no se usan como identidad persistida.
 Si se cambia el idioma desde Configuración, la guía actualiza sus textos al
@@ -37,7 +37,20 @@ volver, conservando el curso y el paso.
 | `mix-click` | Mezcla, clic y tono | Faders, Mute/Solo, metrónomo, tempo, tono y Pads. |
 | `practice-sections` | Ensaya por instrumento, en teléfono | Acceso a Ensayo desde Más, navegación y zoom de la tarjeta, escucha por instrumento y loop A–B temporal. |
 | `practice-sections` | Secciones y automatización, en escritorio/tablet | Edición de secciones, copia con referencia, borrador de automatización y acciones de la barra flotante. |
-| `settings-remote` | Configuración y control remoto | Categorías de configuración, ruteo, Local/Cliente/Servidor, descubrimiento y reconexión. |
+| `remote-server` | Preparar un servidor | Diez pasos: preparar equipos, abrir Configuración y Control remoto, activar Servidor, revisar su alias y estado, conectar un cliente, cerrar Configuración, cargar una canción y comprobarla en el cliente. |
+| `remote-client` | Conectarse como cliente | Doce pasos: preparar equipos, abrir Configuración y Control remoto, activar Cliente, elegir/conectar servidor, confirmar estado, cerrar Configuración, recibir una canción, ubicar REMOTO, probar Play, probar Stop y terminar. |
+
+`remote-server` y `remote-client` reemplazan al curso general `settings-remote`.
+Su progreso se guarda de forma independiente; una finalización antigua no
+declara terminado ninguno de estos recorridos. No incluyen una lección de
+reconexión. Requieren dos equipos reales en la misma red para practicar el flujo
+completo: el servidor reproduce el audio y el cliente utiliza sus controles.
+
+`first-steps`, `mix-click` y `practice-sections` mantienen sus explicaciones y
+navegación manual. Son introducciones; sus ejercicios todavía no tienen
+condiciones de ejecución verificadas. Los dos recorridos remotos incorporan
+condiciones reales de avance en sus pasos de acción y pasos explicativos sin
+condición.
 
 El curso de teléfono enseña los gestos de **Ensayo**; no atribuye esos gestos
 de doble toque por compás a la onda principal. Sus marcas A y B se ajustan al
@@ -55,11 +68,54 @@ Las explicaciones remotas respetan el estado real de
 etiqueta de la onda pertenecen al modo Cliente. La guía no selecciona un
 servidor ni cambia de modo por cuenta propia.
 
-`Step::needsSong` añade una ayuda cuando falta una canción. El usuario puede
-seguir leyendo y avanzar igualmente. Biblioteca, Configuración y Pads se
+`Step::needsSong` añade una ayuda cuando falta una canción; por sí mismo no
+bloquea el avance. `Step::condition` establece qué hecho debe comprobar el
+editor antes de habilitar Continuar. Biblioteca, Configuración y Pads se
 explican también sin una canción cargada; las prácticas sobre audio necesitan
 que el usuario cargue una por el flujo habitual. No se crea una canción de
-demostración ni se promete una validación automática de las tareas.
+demostración.
+
+## Validación de los recorridos remotos
+
+`StepFacts` y `evaluateStepCondition` describen el estado requerido. La
+integración comprueba la apertura de Configuración, su página remota, el modo
+vigente, el servidor escuchando, un cliente conectado, el snapshot inicial
+aplicado, el cierre de Configuración y la canción disponible. Encontrar el
+nombre de un servidor o abrir el WebSocket no equivale a una conexión lista.
+
+Al reanudar un paso que necesita una sesión remota, `RemotePrerequisite` y
+`remoteStepPrerequisite` comprueban los requisitos que falten antes de exponer
+su ejercicio. La ayuda conduce a abrir Configuración, entrar en Control remoto,
+elegir Cliente/Servidor y esperar conexión o disponibilidad del servidor,
+según el estado real. Si Configuración sigue abierta cuando el ejercicio
+necesita el reproductor, resalta su botón cerrar. Cada apertura, selección y
+cierre lo realiza el usuario sobre el control existente.
+
+Estas ayudas temporales conservan el ID del paso persistido. Cuando se recuperan
+sus requisitos, el resaltado vuelve al ejercicio original y el avance depende
+de su condición. También se utilizan si se pierde la sesión durante ese paso;
+no añaden pasos de reconexión ni completan el ejercicio al recuperar la red.
+
+Los pasos de Play y Stop requieren una acción enviada desde este cliente
+mientras ese paso está activo. `RemoteLearningAction` observa el ID del
+comando, la canción, su ACK aceptado y un snapshot con secuencia posterior al
+ACK que confirme el estado esperado. Un estado cambiado por otro cliente,
+un ACK ajeno, un snapshot anterior o una acción rechazada no completa el
+ejercicio. La intención del toggle se toma del estado al enviarlo: pulsar
+Play/Pausa mientras ya se reproduce es Pausa, y no acredita el ejercicio de
+Play aunque otro cliente reanude antes del snapshot siguiente. Play exige
+una intención propia de iniciar y reproducción confirmada; Stop exige detención confirmada
+y admite comprobarla aunque la canción ya estuviera detenida.
+
+La prueba de acción caduca a los cinco segundos. Desconectar, cambiar de canción,
+cambiar de paso o cerrar la guía descarta la evidencia pendiente o confirmada.
+Reconectar por sí solo no recupera la prueba del comando anterior. La guía
+puede mostrar una tarea pendiente, un error remoto o una ayuda de permiso de
+Red local, y permite pausar para resolverlo en el sistema.
+
+Completar un requisito habilita Continuar, pero no salta automáticamente al
+siguiente paso. La guía no abre páginas, elige un servidor, cambia de modo ni
+envía acciones por su cuenta: observa los controles existentes.
 
 ## Interacción y navegación
 
@@ -83,25 +139,49 @@ instrumental del mixer, la onda, Pads o Ensayo según corresponda. En teléfono,
 un paso de Ensayo todavía cerrado resalta `Más` y pide abrirlo. Dentro de
 Ensayo se resaltan su tarjeta, la fila A–B, sus selectores o el encabezado.
 
-La navegación es manual:
+Los controles de navegación son compactos:
 
-- `Anterior` y `Siguiente` recorren los pasos; `Terminar` marca completado el
-  curso en su último paso.
-- `Cursos` vuelve al catálogo sin ejecutar cambios de audio.
-- `Reiniciar` vuelve al primer paso y elimina el estado completado de ese curso.
+- La flecha compartida de `Anterior` ocupa 44 × 44 px. Continuar/Terminar usa
+  ancho según texto, no media tarjeta: conserva un área táctil de 44 px de alto
+  con un relleno visible de 35 px.
+- `Continuar` y `Terminar` permanecen deshabilitados mientras la condición del
+  paso esté pendiente. Anterior, Más y cerrar conservan su disponibilidad;
+  Anterior se deshabilita solamente en el primer paso.
+- `Más` reúne `Cursos`, que vuelve al catálogo, y `Reiniciar guía`, que vuelve
+  al primer paso y elimina el estado completado de ese curso.
+  Su menú se dibuja como hijo de la guía, dentro de su ventana actual.
 - La `X` (`Pausar guía`) y Escape cierran la guía conservando el paso actual.
 - Con la guía enfocada, las flechas izquierda y derecha recorren pasos. No se
-  utilizan para buscar audio ni para realizar la tarea sugerida.
+  utilizan para buscar audio ni para realizar la tarea sugerida. La flecha
+  derecha respeta la misma validación que Continuar.
 
-La finalización significa que el usuario terminó de recorrer el curso. El
-sistema no observa ni exige que haya ejecutado cada ejercicio.
+`setStepReadiness(bool ready, juce::String message)` permite al editor publicar
+el resultado de la condición y una ayuda contextual. Un avance encolado se
+descarta si cambió el paso o su estado de validación antes de ejecutarse.
+La integración también vuelve a comprobar el requisito al recibir la acción.
+
+Terminar marca completado el recorrido. En los tres cursos introductorios esta
+marca significa que se leyeron sus pasos; en los recorridos remotos cada paso
+de acción exige su condición durante la navegación. No certifica la mezcla,
+el sonido escuchado ni un estado de conexión permanente.
 
 ## Paneles, menús y contexto
 
-Al abrir Configuración o un componente modal, la guía se oculta para que ese
-flujo conserve sus controles y comportamiento. Al cerrarlo, vuelve en el mismo
-paso. No navega automáticamente a páginas internas ni avanza el curso al
-cerrar un panel.
+Durante los cursos remotos, la guía se agrega como hija del `SettingsPanel`
+real en móvil, tablet y escritorio. Usa las coordenadas del panel y resalta
+su entrada Control remoto, General en escritorio ancho, el selector de modo,
+alias, estado, lista de servidores o botón cerrar. Al entrar en un paso nuevo,
+`revealLearningTarget` desplaza el viewport si hace falta para hacer visible
+el control. Cambiar a otra página resalta el retorno apropiado, sin navegar
+automáticamente. Al cerrar Configuración, la guía vuelve al editor.
+
+El catálogo también puede mostrarse dentro de Configuración. Los cursos
+introductorios se ocultan mientras Configuración está abierta. Los modales
+ajenos, la autenticación y los menús/pickers modales ajenos ocultan temporalmente
+la ayuda para conservar sus controles y comportamiento. Al cerrarlos, vuelve
+en el mismo paso. Abrir una página o cerrar un panel no avanza el curso.
+El menú Más propio conserva la guía visible: la integración reconoce su modal
+descendiente y no lo confunde con un menú ajeno ni abre una ventana separada.
 
 Ensayo mantiene la guía disponible porque ofrece los destinos del curso de
 teléfono. Si el usuario elige otro curso con Ensayo aún abierto, se resalta
@@ -161,6 +241,8 @@ escritura sin cambiar paso o finalización no reescribe el archivo.
   catálogo, tarjeta, resaltado, `hitTest` y acciones de navegación.
 - [LearningGuideIntegration](../../../src/LearningGuideIntegration.cpp):
   contexto del editor, resolución de destinos, paneles y progreso.
+- [RemoteLearningAction](../../../src/ui/learning/RemoteLearningAction.h):
+  evidencia del comando propio, ACK y snapshot posterior para Play/Stop.
 - [TopBar](../../../src/ui/panels/TopBar.cpp) y
   [SettingsPanel](../../../src/ui/panels/SettingsPanel.cpp): accesos al catálogo.
 - [ChannelGridPanel](../../../src/ui/panels/ChannelGridPanel.cpp) y
@@ -173,20 +255,61 @@ Pruebas registradas en CTest:
 
 - `learning_guide`: contenido ES/EN, variantes teléfono/escritorio, destinos,
   disponibilidad sin canción, roundtrip, reanudación por IDs, reinicio,
-  escrituras redundantes, parsing y fallos de guardado.
+  escrituras redundantes, parsing, fallos de guardado y condiciones reales de
+  los dos cursos remotos, incluidos los requisitos temporales al reanudarlos.
 - `learning_overlay`: layout y áreas seguras, tarjetas, acceso a los controles
-  reales mediante `hitTest`, desplazamiento de las ayudas y navegación.
+  reales mediante `hitTest`, desplazamiento de las ayudas, botones compactos,
+  navegación condicionada por botón/teclado y reparenting sobre el control
+  Cliente de `SettingsPanel`.
 - `settings_panel`: acceso desde Configuración junto con los contratos
-  responsive y de navegación del panel.
+  responsive, destinos de aprendizaje y revelado mediante scroll del panel.
+- `remote_learning_action`: comando propio, ACK aceptado y snapshot posterior;
+  rechazo de cambios ajenos, acciones erróneas, respuestas atrasadas, timeout,
+  desconexión, cambio de canción/paso y cierre de guía; un toggle con intención
+  de Pausa no acredita Play aunque otro cliente reanude.
 
-Verificación local del 2 de octubre de 2026: compilación macOS de la app
+Evidencia del contrato anterior, del 2 de octubre de 2026: compilación macOS de la app
 Standalone y las tres pruebas, con CTest 3/3 aprobado (2,98 s). Se revisaron
 capturas de los componentes de producción en teléfono vertical/horizontal,
 tablet y escritorio. Las pruebas incluyen el acceso real a Play a través de la
 guía, el scroll sobre el texto, arrastrar el catálogo sin abrir un curso y los
 destinos de onda y A–B de Ensayo.
 
-Los tests usan almacenamiento temporal aislado. La revisión manual integral
-de la app queda pendiente. Esta evidencia no acredita instalación ni
-validación en un dispositivo físico, ni resultados de compilación de todas
-las plataformas.
+Verificación actualizada del 3 de octubre de 2026, en
+`build/codex-modal-macos`: compilación macOS correcta de
+`MTControls_Standalone`, `MTControlsLearningGuideTests`,
+`MTControlsRemoteLearningTests`, `MTControlsLearningOverlayTests` y
+`MTControlsSettingsPanelTests`. La app y el target del overlay se recompilaron
+correctamente tras los últimos ajustes de menú y cambio de modo.
+CTest final aprobó 4/4 (100 %, 2,95 s): `learning_guide` 0,55 s,
+`remote_learning_action` 0,01 s, `learning_overlay` 2,22 s y
+`settings_panel` 0,16 s.
+
+Revisión manual de la app de escritorio del 3 de octubre: catálogo de cinco
+cursos; recorrido Servidor en pasos 1–7 con modo, nombre y estado real,
+incluido el bloqueo mientras falta un cliente; recorrido Cliente en pasos
+1–5 con modo y espera de conexión reales. Tras reiniciar con Cliente pausado
+en el paso 5 y el modo Local vigente, la ayuda pidió abrir Configuración y
+luego elegir Cliente, conservando el ejercicio persistido.
+
+El menú Más se comprobó dentro de Configuración: permaneció visible, expuso
+Cursos/Reiniciar y Cursos devolvió el catálogo de cinco recorridos dentro del
+panel. Las capturas `desktop-guide-options.png` y `desktop-server-guide.png`
+registran el menú y el estado del servidor. Esta revisión parcial no completa
+los ejercicios de conexión, canción remota ni Play/Stop entre dos dispositivos.
+
+Los tests usan almacenamiento temporal aislado. El recorrido integral con dos
+equipos sigue pendiente. La ejecución automatizada final incluye el menú
+embebido y el texto pendiente sin duplicado.
+Esta evidencia corresponde a esos targets de macOS; no acredita compilación
+iOS/Android, instalación ni validación en dispositivos físicos.
+
+## Próximos recorridos completos
+
+La organización prevista separa objetivos completos: crear/editar una canción,
+preparar y recorrer setlists, reproducir y mezclar, configurar clic/guía,
+ajustar tono/tempo, tocar Pads, ensayar por instrumento y repetir A–B, editar
+y operar secciones, automatizar, publicar/descargar Cloud, guardar/aplicar
+versiones de ajustes, exportar y vincular MIDI. Estas funciones existen en la
+app, pero sus guías completas con condiciones observables siguen pendientes;
+los tres cursos introductorios se ampliarán en esos recorridos.

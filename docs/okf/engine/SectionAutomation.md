@@ -4,7 +4,7 @@ title: Section Automation
 description: Mezclas parciales por sección y edición con controles existentes
 resource: src/audio/SectionAutomation.h
 tags: [audio, arrange, automation, mixer, pads, realtime]
-timestamp: 2026-10-02T00:00:00Z
+timestamp: 2026-10-03T00:00:00Z
 ---
 
 # Automatización de secciones
@@ -22,7 +22,14 @@ opcional de automatización sustituye sólo esa propiedad mientras la posición
 pertenece a la sección `[startSec, endSec)`. Los instrumentos restantes y las
 propiedades ausentes continúan usando la base. Una posición entre secciones o
 fuera de sus límites recupera la mezcla base sin exigir la reproducción de las
-secciones anteriores.
+secciones anteriores. Excepción de Pads: cuando la canción contiene algún
+preset de Pads, una sección sin campos de Pads o un hueco significa apagado
+(`enabled=false`, `note=-1`), sin resucitar la nota global. Esta regla se compila
+en el mismo banco/secuencia del timeline; no agrega datos al snapshot guardado.
+Las canciones sin automatización de Pads conservan su control global normal.
+Al descargar una canción controlada por automatización de Pads, una canción
+siguiente sin preset no reactiva el pad base a través del seguimiento tonal.
+Un gesto explícito de nota o de encendido vuelve a habilitar el control manual.
 
 Los stems admiten `volume` (0..1), `gain` (0..2) y `mute`. Los stems identificados
 como click/guía quedan fuera de esta modalidad. Solo, master, ruteo, click y guía
@@ -85,7 +92,12 @@ para los dos tramos y los límites de las 256 secciones.
 Cada `StemTrack` cambia volumen/trim/mute en el frame fuente del evento y suaviza
 su ganancia resultante durante 30 ms en ese dominio. El gate de mute/skip de una
 sección se resuelve para el destino, no se hereda del prefijo. La ganancia de
-Pads usa una rampa de 30 ms en frames de salida. Las ganancias ya estables se
+Pads se aplica por voz, antes de sumarlas. Un cambio de sección usa la duración
+de crossfade configurada (1/3/5 s); un fader manual conserva la rampa de 30 ms.
+Una voz saliente fija su nivel instantáneo al iniciar su apagado: restaurar la
+base o introducir una nota más fuerte no aumenta su cola. Si la misma nota
+continúa, su nivel cambia gradualmente sin reiniciar fase ni ataque. Mute sigue
+actuando sobre el bus completo con rampa de 30 ms. Las ganancias ya estables se
 aplican por bloque para mantener el costo habitual de mezcla.
 
 ## Pads, prefetch y continuidad
@@ -147,3 +159,12 @@ lectura para esperar el prefetch fuera del callback. Una regresión de
 no convierte una base silenciosa en nota activa, el seguimiento conserva la
 octava global aunque la sección tenga otra y el cliente no emite comandos de
 seguimiento tonal hacia el servidor.
+
+## Regresión de transiciones de Pads (3 de octubre)
+
+Las pruebas nuevas verifican que una cola de nivel bajo no aumenta al entrar
+una nota de nivel alto ni al apagarse en una sección sin Pads, que llega a
+silencio, que una misma nota ajusta su nivel sin saltos y que el fader manual
+conserva su respuesta corta. La integración cubre sección/hueco sin preset,
+descarga de canción automatizada, seguimiento de tono sin reactivación y nuevo
+disparo manual. Compilación macOS Standalone correcta y CTest `section_automation` + `pads_engine`: 2/2 correctos. La escucha manual en dispositivo físico no está acreditada.
