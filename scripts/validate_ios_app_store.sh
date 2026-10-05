@@ -2,7 +2,7 @@
 
 set -eu
 
-app_path=${1:-build/ios-ipad-flatbundle/MTControls_artefacts/Release/Standalone/PlayWorship.app}
+app_path=${1:-build/ios-appstore/archive/PlayWorship.xcarchive/Products/Applications/PlayWorship.app}
 signing_mode=${2:-distribution}
 
 fail() {
@@ -32,14 +32,32 @@ echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Invalid marketing
 echo "$build_number" | grep -Eq '^[1-9][0-9]*$' || fail "Build number must be a positive integer: $build_number"
 pass "version $version ($build_number)"
 
+if /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' "$app_path/Info.plist" >/dev/null 2>&1; then
+    documents_in_place=$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$app_path/Info.plist" 2>/dev/null || true)
+    [ "$documents_in_place" = "false" ] || fail "Document imports must explicitly declare LSSupportsOpeningDocumentsInPlace=false"
+    document_browser=$(/usr/libexec/PlistBuddy -c 'Print :UISupportsDocumentBrowser' "$app_path/Info.plist" 2>/dev/null || true)
+    [ "$document_browser" != "true" ] || fail "The app does not implement UIDocumentBrowserViewController"
+    pass "document types explicitly use copy-based import, not in-place editing"
+fi
+
 full_screen=$(/usr/libexec/PlistBuddy -c 'Print :UIRequiresFullScreen' "$app_path/Info.plist")
-[ "$full_screen" = "true" ] || fail "UIRequiresFullScreen must be true for a landscape-only universal app"
+[ "$full_screen" = "true" ] || fail "UIRequiresFullScreen must be true for the performance layout on iPad"
+
+device_families=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$app_path/Info.plist")
+echo "$device_families" | grep -Eq '^[[:space:]]*1[[:space:]]*$' || fail "iPhone device family is missing"
+echo "$device_families" | grep -Eq '^[[:space:]]*2[[:space:]]*$' || fail "iPad device family is missing"
 
 orientations=$(/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations' "$app_path/Info.plist")
 echo "$orientations" | grep -q 'UIInterfaceOrientationLandscapeLeft' || fail "Landscape Left is missing"
 echo "$orientations" | grep -q 'UIInterfaceOrientationLandscapeRight' || fail "Landscape Right is missing"
-echo "$orientations" | grep -q 'Portrait' && fail "Portrait orientation must not be present"
-pass "landscape-only full-screen configuration"
+echo "$orientations" | grep -q 'UIInterfaceOrientationPortrait' || fail "iPhone portrait is missing for Library and Practice"
+ipad_orientations=$(/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations~ipad' "$app_path/Info.plist")
+echo "$ipad_orientations" | grep -q 'UIInterfaceOrientationLandscapeLeft' || fail "iPad Landscape Left is missing"
+echo "$ipad_orientations" | grep -q 'UIInterfaceOrientationLandscapeRight' || fail "iPad Landscape Right is missing"
+if echo "$ipad_orientations" | grep -q 'Portrait'; then
+    fail "iPad orientations must remain landscape for the current performance layout"
+fi
+pass "universal device families, iPhone portrait/landscape and iPad landscape"
 
 encryption=$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$app_path/Info.plist")
 [ "$encryption" = "false" ] || fail "ITSAppUsesNonExemptEncryption must be false for exempt standard encryption"
@@ -58,6 +76,32 @@ pass "compiled app icons have no alpha channel"
 codesign --verify --deep --strict --verbose=2 "$app_path" >/dev/null 2>&1 || fail "Code signature is invalid"
 pass "code signature is valid"
 
+case "$app_path" in
+    *.xcarchive/Products/Applications/*.app)
+        executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_path/Info.plist")
+        app_bundle_name=$(basename "$app_path")
+        app_dsym="$app_path/../../../dSYMs/$app_bundle_name.dSYM"
+        [ -d "$app_dsym" ] || fail "Archive is missing the app dSYM: $app_dsym"
+        binary_uuids=$(xcrun dwarfdump --uuid "$app_path/$executable" | awk '/^UUID:/ {print $2, $3}' | sort)
+        symbol_uuids=$(xcrun dwarfdump --uuid "$app_dsym" | awk '/^UUID:/ {print $2, $3}' | sort)
+        [ -n "$binary_uuids" ] || fail "App binary UUID cannot be read"
+        [ "$binary_uuids" = "$symbol_uuids" ] || fail "Archive app dSYM UUID does not match the executable"
+        pass "archive app dSYM matches the executable UUID"
+        ;;
+esac
+
+[ -f "$app_path/embedded.mobileprovision" ] || fail "Provisioning profile is missing"
+profile_plist=$(mktemp)
+trap 'rm -f "$profile_plist"' EXIT HUP INT TERM
+security cms -D -i "$app_path/embedded.mobileprovision" -o "$profile_plist" >/dev/null 2>&1 || fail "Provisioning profile cannot be decoded"
+profile_team=$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist")
+signed_app_identifier=$(
+    codesign -d --entitlements :- "$app_path" 2>/dev/null |
+        plutil -extract application-identifier raw -o - - 2>/dev/null || true
+)
+[ "$signed_app_identifier" = "$profile_team.$bundle_id" ] || fail "Signed application identifier does not match the provisioning team and bundle ID"
+pass "provisioning profile matches the signed app"
+
 debug_entitlement=$(
     codesign -d --entitlements :- "$app_path" 2>/dev/null |
         plutil -extract get-task-allow raw -o - - 2>/dev/null || true
@@ -67,6 +111,11 @@ if [ "$debug_entitlement" = "true" ]; then
         fail "Submission build contains get-task-allow=true; export the archive for App Store Connect"
     pass "development-signed archive is valid and still requires App Store export"
 else
+    if /usr/libexec/PlistBuddy -c 'Print :ProvisionedDevices' "$profile_plist" >/dev/null 2>&1; then
+        fail "Device-limited provisioning is not an App Store distribution profile"
+    fi
+    provisions_all_devices=$(/usr/libexec/PlistBuddy -c 'Print :ProvisionsAllDevices' "$profile_plist" 2>/dev/null || true)
+    [ "$provisions_all_devices" != "true" ] || fail "Enterprise provisioning is not an App Store distribution profile"
     pass "distribution entitlements do not allow debugging"
 fi
 

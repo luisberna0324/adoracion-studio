@@ -81,7 +81,7 @@ private:
   void openStemChooser(bool replaceCurrent);
   void handleSelectedStemFiles(const juce::Array<juce::File> &files,
                                bool replaceCurrent);
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   void stageSelectedMobileFiles(juce::Array<juce::URL> urls,
                                 bool replaceCurrent, bool artwork);
 #endif

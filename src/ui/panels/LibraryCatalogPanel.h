@@ -67,6 +67,8 @@ public:
   void setCloudUploadProgress(const juce::String &songId, double fraction,
                               const juce::String &phase);
   void clearCloudUploadProgress(const juce::String &songId);
+  void openCloud();
+  bool isCloudOpen() const { return isShowing() && cloudFilterButton.isActive(); }
   void refreshFromStorage();
   void refreshLanguageTexts();
   void setMinimalPhoneMode(bool enabled);
@@ -79,6 +81,7 @@ public:
   void resized() override;
 
 private:
+  friend struct TeamsWorkspaceTestAccess;
   std::shared_ptr<const LibraryState> remoteLibrary;
   enum class FilterChip {
     All = 0,
@@ -115,6 +118,7 @@ private:
     bool isProjectBacked = false;
     bool isProjectAvailable = false;
     bool isCloudOnly = false;
+    bool isSharedCloud = false;
     bool isCloudSynced = false;
     bool isCloudDownloaded = false;
     juce::String localSongId;
@@ -257,6 +261,8 @@ private:
   void openHeaderMenu();
   void openAdvancedFilterMenu();
   void openRowMenu(int rowIndex, juce::Rectangle<int> targetBounds);
+  std::unique_ptr<juce::Component> createRowMenu(int rowIndex,
+                                               juce::Rectangle<int> targetBounds);
   void togglePendingSelection(int rowIndex);
   void commitPendingSelection();
   bool matchesFilter(const ImportedSongData &song, int usageCount) const;

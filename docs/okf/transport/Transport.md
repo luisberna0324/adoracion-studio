@@ -4,7 +4,7 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-10-03T00:00:00Z
 ---
 
 # Transport API
@@ -16,6 +16,17 @@ publica posición/estado. El cliente alimenta la interfaz habitual y no
 avanza `TransportClock` ni carga stems de esa sesión.
 
 Control de reproducción y arrange musical.
+
+### Setlist activo y navegación Teams
+
+Los selectores Personal/Equipo filtran la biblioteca y los setlists visibles;
+no cambian el setlist persistido activo ni su cola. Anterior, Siguiente y el
+avance automático resuelven canciones por ID contra un snapshot separado de
+ese setlist activo, incluso si no aparecen en el espacio que se está explorando.
+Abrir explícitamente un setlist actualiza la cola. Abrir una canción de equipo
+fuera del setlist activo prepara su lista individual con la revisión publicada.
+La vista filtrada nunca se usa como fallback para saltar a otra canción mientras
+ya hay una cargada.
 
 ## Conceptos
 
@@ -181,21 +192,25 @@ abierto.
 ### Anuncios de guía dinámica
 
 Las secciones musicales (`Intro`, `Verse`, `Pre-Chorus`, `Chorus`,
-`Refrain`, `Post-Chorus`, `Bridge`, `Instrumental`, `Solo`, `Breakdown`,
+`Refrain`, `Post-Chorus`, `Bridge`, `Instrumental`, `Solo`,
 `Interlude`, `Tag`, `Vamp`, `Outro` y `Ending`) se anuncian un compás antes
 de su entrada. El compás se calcula con el BPM y la métrica activa de la
 canción.
 
-Los conteos y las utilidades se anuncian al entrar en su sección. Las
+Los conteos y las utilidades independientes se anuncian en su punto sobre la
+onda, sin crear límites de sección. `Breakdown` (Baja intensidad) y `A Capella`
+son siempre indicaciones secundarias y se anuncian inmediatamente. Los fragmentos legacy que no puedan
+migrarse sin ambigüedad conservan su anuncio al entrar. Las
 utilidades incluyen indicaciones como cambios de intensidad, pausas,
 sostener, entradas de instrumentos, cambios de tono, última vez y final
 grande. Una sección que comienza en `0.0 s` se anuncia al entrar porque no
 hay un compás anterior disponible.
 
 Las utilidades insertadas desde el menú `Utilidades` conservan esa identidad
-en el arrange. Así, una utilidad cuyo texto coincide con una sección musical
-(por ejemplo `Baja intensidad`/`Breakdown`) sigue disparándose al entrar; una
-sección musical con el mismo nombre no cambia su anuncio adelantado.
+en el arrange y se disparan al entrar. `Baja intensidad`/`Breakdown` y
+`A Capella` conservan el anuncio inmediato incluso en fragmentos antiguos
+que no puedan migrarse. Los nombres de las secciones musicales de la lista
+anterior mantienen su anuncio adelantado cuando no tienen `utilityCue`.
 
 El scheduler vive en el timeline fuente. Por eso, cuando cambia el tempo, el
 adelanto de un compás se convierte con
@@ -491,9 +506,47 @@ scheduler en el lugar y solo realinea la lectura de source si el nuevo mapeo
 afecta al playhead; no detiene ni rebobina la canción. Los loops y saltos
 pendientes se conservan por ID mientras su sección siga existiendo.
 
-La marca de inserción de la regla aplica a todos los tipos de sección,
-incluidas `Cuenta` y `Utilidad`. Estas dos conservan su duración corta de grilla
-y dividen la sección existente alrededor de la marca sin crear solapamientos.
+La marca de inserción de la regla aplica a secciones musicales y a indicaciones.
+`Cuenta` y `Utilidad` crean marcadores independientes en `arrangement.cues`:
+no dividen una sección musical, no cambian su duración, y no ofrecen límites de
+loop, salto ni automatización. Una secuencia `1–4` o `1–7` ocupa una sola marca;
+cada anuncio sigue el pulso del mapa de tempo vigente y conserva sus offsets
+explícitos en segundos de source, incluso al cruzar un cambio de tempo.
+
+Los marcadores son puntos de color dentro de la onda. Sólo al editar muestran
+una línea fina hacia abajo y una etiqueta compacta junto al punto. Fuera de
+edición se muestran únicamente los puntos; su target no ocupa el área de la
+etiqueta oculta. Las etiquetas próximas se apilan en filas independientes; cada punto conserva su
+momento temporal y puede elegirse por separado, incluso cuando coinciden.
+En los extremos, la etiqueta se coloca al lado que cabe dentro de la onda.
+
+La interacción de edición es directa: arrastrar cambia sólo la posición y
+publica una operación de historial al soltar, sin hacer seek. El snap vigente
+sigue aplicando; Option/Alt permite ubicación libre y las secuencias de conteo
+conservan su ajuste al pulso. Doble clic/doble toque sobre el target del punto
+elimina únicamente esa indicación y Deshacer la recupera. El target táctil
+es de 44 puntos; en filas próximas, la cercanía al centro del punto resuelve
+el hit. En escritorio el target es de 24 puntos. El tooltip pequeño indica
+cómo eliminar: aparece con hover en escritorio y brevemente al tocar en móvil.
+Click simple sólo selecciona; no hay popover ni botones de ±1 pulso. Fuera de
+edición, o durante un borrador de automatización, no se eliminan ni mueven
+marcas. `Breakdown` sale del selector de secciones musicales; junto con
+`A Capella` pertenece al catálogo de utilidades.
+
+Una indicación dentro de una sección queda vinculada a su ID y offset. Mover
+la sección lleva su marca; copiar/pegar crea IDs nuevos y conserva ese offset.
+Un recorte elimina las marcas excluidas y Deshacer las restaura. Una división
+musical reasigna las marcas al fragmento que contiene el momento original.
+Las marcas absolutas, sin sección, conservan su posición durante el ripple.
+Crear, copiar y pegar respetan el máximo de 512 anuncios expandidos por canción
+y rechazan la operación completa antes de modificar el arrange si lo excede.
+
+La carga migra pequeñas secciones antiguas de conteo/utilidad únicamente cuando
+se pueden absorber en una sección musical continua sin perder mapeo de source,
+automatización ni referencias de copias. Los casos ambiguos conservan su
+representación anterior; no se descartan ni se reinterpretan a la fuerza.
+La detección incluye `Breakdown`, `Baja intensidad`, `A Capella` y `acapella`
+sin distinguir mayúsculas, aunque la sección antigua no tenga `utilityCue`.
 
 En escritorio y tablets iOS/Android, la regla de la waveform comparte el dibujo
 de Ensayo mediante `TimelineRulerStyle`: altura de 24 puntos, números de compás
@@ -505,8 +558,9 @@ pulsos aparecen cuando tienen al menos 10 puntos de separación. Al alejar el
 zoom se reduce la densidad automáticamente. Las subdivisiones de snap siguen
 disponibles para seek y edición sin llenar la regla de marcas adicionales.
 Los cursores de reproducción, salto pendiente y marca de inserción conservan
-su dibujo e interacción sobre esta referencia. En performance de teléfono,
-la regla continúa oculta.
+su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
+a la onda y no reservan altura adicional en la regla. En teléfono la regla
+está disponible en edición y permanece oculta en performance.
 
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
@@ -687,3 +741,21 @@ procesador local o al estado autoritativo del servidor. El cliente extrapola
 como máximo 250 ms entre mensajes de posición y congela al desconectar. Los
 comandos solo se aceptan tras recibir el snapshot inicial; no hay una segunda
 vista de transporte. Ver [Control remoto](../integrations/RemoteControl.md).
+
+### Transporte de indicaciones independientes
+
+Los marcadores no son destinos de jump, rangos de loop ni propietarios de
+mix/automatización. Su publicación comparte la generación de las secciones,
+pero se evalúa sólo sobre los segmentos realmente recorridos por audio. Al
+volver con un loop o seek, se reproducen de nuevo los puntos encontrados a
+partir del destino, sin recuperar voces o conteos anteriores. Pausa no genera
+nuevos cues aunque el playhead coincida con uno. Una canción con cues y sin
+secciones explícitas conserva su rango de audio predeterminado.
+
+
+### Retirada de descargas Teams
+
+Un recibo de baja confirmado se procesa solo sin reproducción, carga, edición
+o sesión remota. Si la canción retirada está cargada, se usa
+`unloadActiveSongForLocalPurge` antes de borrar su entrada/archivos. No se fuerza
+Stop durante una actuación; el trabajo permanece pendiente por dispositivo.

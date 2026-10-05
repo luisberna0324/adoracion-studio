@@ -313,3 +313,18 @@ y operar secciones, automatizar, publicar/descargar Cloud, guardar/aplicar
 versiones de ajustes, exportar y vincular MIDI. Estas funciones existen en la
 app, pero sus guías completas con condiciones observables siguen pendientes;
 los tres cursos introductorios se ampliarán en esos recorridos.
+
+
+## Cursos de nube compartida
+
+Además del catálogo base se agregan cursos de tres pasos para las membresías
+Teams validadas de la cuenta actual. Reutilizan `LearningGuideOverlay`, botones
+compactos y progreso persistente. `CloudOpen`, `SharedSongDownloaded` y
+`SharedSongAdded` requieren acceso vigente; el último requiere también audio
+local utilizable. El identificador incluye cuenta, fuente y alta de membresía,
+por lo que otro usuario o un reingreso no heredan la bienvenida anterior.
+
+Seleccionar este curso abre Biblioteca → Cloud por petición del usuario.
+La guía destaca la biblioteca real, permite sus menús de descarga/setlist y
+completa los pasos al verificar el resultado. Una respuesta de red fallida no
+elimina progreso ni declara una baja. Véase [Teams](../integrations/Teams.md).

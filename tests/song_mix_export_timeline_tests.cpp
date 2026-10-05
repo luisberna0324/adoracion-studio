@@ -1,12 +1,17 @@
 #include "../src/audio/SongMixExporter.h"
 #include "../src/audio/DynamicGuideTiming.h"
+#include "../src/audio/DynamicGuideEvents.h"
 #include "../src/data/ArrangementSourceMapping.h"
+#include "../src/data/AppSettings.h"
 #include "IsolatedTestRoot.h"
 
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+
+// This isolated timing/codec target has no application-settings backend.
+AppLanguage AppSettings::getLanguage() { return AppLanguage::Spanish; }
 
 namespace {
 
@@ -80,8 +85,13 @@ void testGuideAnnouncementTiming() {
              DynamicGuideAnnouncementTiming::oneBarBeforeSection,
          "musical sections are announced one bar early");
   expect(dynamicGuideAnnouncementTiming("Breakdown", "Breakdown") ==
-             DynamicGuideAnnouncementTiming::oneBarBeforeSection,
-         "breakdown follows the musical-section timing contract");
+             DynamicGuideAnnouncementTiming::atSectionEntry,
+         "breakdown is an immediate secondary instruction");
+  expect(dynamicGuideAnnouncementTiming("A Capella", "A Capella") ==
+             DynamicGuideAnnouncementTiming::atSectionEntry &&
+             dynamicGuideAnnouncementTiming("acapella", "acapella") ==
+             DynamicGuideAnnouncementTiming::atSectionEntry,
+         "both a capella spellings are immediate secondary instructions");
   expect(dynamicGuideAnnouncementTiming("Breakdown", "Breakdown", true) ==
              DynamicGuideAnnouncementTiming::atSectionEntry,
          "a Breakdown inserted from Utilities is announced at its entry");
@@ -150,6 +160,77 @@ void testGuideTriggersSortByActualAnnouncementTime() {
   expect(triggers[1].name == "4" &&
              std::abs(triggers[1].triggerSeconds - 9.0) < 1.0e-9,
          "entry cue retains its actual trigger time");
+}
+
+void testIndependentCuesAndSampleOffsets() {
+  SongArrangementSnapshot arrangement;
+  SongArrangementPartSnapshot verse;
+  verse.id = "verse"; verse.startSec = 1.0; verse.endSec = 3.0;
+  arrangement.parts.push_back(verse);
+  SongArrangementCueSnapshot count;
+  count.id = "counts"; count.name = "1"; count.partId = "verse";
+  count.offsetSec = 0.25; count.positionSec = 99.0;
+  count.countEnd = 4; count.countIntervalSec = 0.5;
+  arrangement.cues.push_back(count);
+  SongArrangementCueSnapshot utility;
+  utility.id = "build"; utility.name = "Build"; utility.positionSec = 1.5;
+  arrangement.cues.push_back(utility);
+  const auto triggers = song_mix_export::prepareGuideTriggers({{"Verse", 1.0}}, 0.5, arrangement);
+  expect(triggers.size() == 6 && triggers[0].triggerSeconds == 0.5 &&
+      triggers[1].name == "1" && triggers[1].triggerSeconds == 1.25 &&
+      triggers[2].name == "Build" && triggers[2].triggerSeconds == 1.5 &&
+      triggers.back().name == "4" && triggers.back().triggerSeconds == 2.75,
+      "independent anchored cues expand counts on the pulse without changing section boundaries");
+  arrangement.cues[0].countOffsetsSec = {0.0, 0.5, 0.75, 1.25};
+  arrangement.cues[0].countIntervalSec = 0.0;
+  const auto variable = song_mix_export::prepareGuideTriggers({}, 0.5, arrangement);
+  expect(variable.size() == 5 && variable[0].triggerSeconds == 1.25 &&
+      variable[2].name == "2" && variable[2].triggerSeconds == 1.75 &&
+      variable[3].name == "3" && variable[3].triggerSeconds == 2.0 &&
+      variable[4].name == "4" && variable[4].triggerSeconds == 2.5,
+      "grouped count follows explicit pulse offsets across tempo regions instead of repeating one fixed interval");
+
+  const auto directory = isolatedTestRoot().getChildFile("guide-event-offsets");
+  expect(directory.createDirectory().wasOk(), "guide event fixture exists");
+  const auto write = [&](const char *name, float level) {
+    std::unique_ptr<juce::OutputStream> output = directory.getChildFile(name).createOutputStream();
+    juce::WavAudioFormat wav;
+    auto writer = wav.createWriterFor(output, juce::AudioFormatWriterOptions{}
+        .withSampleRate(1000.0).withNumChannels(1).withBitsPerSample(24));
+    juce::AudioBuffer<float> sample(1, 12);
+    for (int i = 0; i < 12; ++i) sample.setSample(0, i, level);
+    expect(writer && writer->writeFromAudioSampleBuffer(sample, 0, 12), "guide sample writes");
+  };
+  write("1.wav", 0.1f); write("build.wav", 0.2f);
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  DynamicGuideEngine engine; engine.prepare(1000.0);
+  expect(engine.loadGuideDirectories({directory}, formats), "guide fixtures load");
+  using Scheduler = playworship::audio::SectionScheduler;
+  Scheduler::Snapshot snapshot; snapshot.valid = true; snapshot.cueCount = 3;
+  snapshot.cues[0] = {110, engine.resolveTriggerId("1")};
+  snapshot.cues[1] = {114, engine.resolveTriggerId("Build")};
+  snapshot.cues[2] = {140, engine.resolveTriggerId("1")};
+  playworship::audio::DynamicGuideEvents events;
+  events.addCues(snapshot, 100, 40, 0, 40);
+  juce::AudioBuffer<float> audio(1, 40); audio.clear();
+  events.render(engine, audio, 0, 40);
+  expect(std::abs(audio.getSample(0, 9)) < 1e-6 &&
+      std::abs(audio.getSample(0, 10) - 0.1f) < 1e-6 &&
+      std::abs(audio.getSample(0, 14) - 0.3f) < 1e-6 &&
+      std::abs(audio.getSample(0, 22) - 0.2f) < 1e-6 && audio.getSample(0, 39) == 0.0f,
+      "multiple cues in one callback start on exact frames, overlap without truncation, and exclude the right boundary");
+  engine.reset(); audio.clear();
+  playworship::audio::DynamicGuideEvents sought;
+  sought.addCues(snapshot, 130, 20, 0, 10);
+  sought.render(engine, audio, 0, 10);
+  expect(audio.getSample(0, 4) == 0.0f && std::abs(audio.getSample(0, 5) - 0.1f) < 1e-6,
+      "seek excludes past cues and tempo maps the destination cue into the output block");
+  engine.reset();
+  for (int i = 0; i < 8; ++i)
+    expect(engine.triggerForSectionKey("1"), "bounded guide voices accept eight simultaneous instructions");
+  expect(!engine.triggerForSectionKey("Build"), "a ninth voice is rejected without cutting a voice or queuing stale speech");
+  engine.reset(); audio.clear(); engine.render(audio);
+  expect(audio.getMagnitude(0, 40) == 0.0f, "reset removes every active cue voice and no pending voice resurfaces");
 }
 
 SongArrangementPartSnapshot makeArrangementPart(const char *id,
@@ -295,6 +376,7 @@ int main() {
   testGuideAnnouncementTiming();
   testSlowlyBuildGuideFallback();
   testGuideTriggersSortByActualAnnouncementTime();
+  testIndependentCuesAndSampleOffsets();
   testCopySourceRangesRespectInsertedClipBoundaries();
   testCopySourceRangesSurviveMovingBeforeTheirOriginal();
   std::cout << "song mix export timeline tests passed\n";

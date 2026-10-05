@@ -170,7 +170,7 @@ juce::File AssetBootstrapManager::getEncoderBinaryPath() {
 }
 
 juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   // A desktop FFmpeg executable cannot run in a mobile app sandbox. Mobile
   // project import uses the bundled JUCE codecs instead.
   return {};
@@ -408,11 +408,10 @@ void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
 
 bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
                                                const ProgressFn &progress) {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   juce::ignoreUnused(progress);
   if (errorMessage != nullptr)
-    *errorMessage = "External audio encoders are unavailable on mobile. "
-                    "Use the built-in WAV/AIFF/FLAC import conversion.";
+    *errorMessage = "Use built-in audio import conversion and WAV export in this edition.";
   return false;
 #else
   auto encoder = getAvailableEncoderBinary();

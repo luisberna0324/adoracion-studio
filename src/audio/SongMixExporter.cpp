@@ -385,7 +385,7 @@ SongMixExporter::Result SongMixExporter::exportToWav(
       (60.0 / playbackBpm) *
       juce::jmax(1, request.beatsPerBar) * tempoRatio;
   const auto guideTriggers = song_mix_export::prepareGuideTriggers(
-      request.guideSections, guideLeadSourceSeconds);
+      request.guideSections, guideLeadSourceSeconds, request.arrangement);
   size_t nextGuideTrigger = 0;
 
   int outputLatencySamples = 0;
@@ -635,11 +635,17 @@ SongMixExporter::Result SongMixExporter::exportToWav(
       const double virtualBlockEndSeconds =
           timeline.sourceSecondsAtOutputBoundary(sourceOutputGenerated +
                                                  outputFrames);
+      int guideCursor = 0;
       while (nextGuideTrigger < guideTriggers.size()) {
         const auto &trigger = guideTriggers[nextGuideTrigger];
         if (trigger.triggerSeconds >= virtualBlockEndSeconds)
           break;
         if (trigger.triggerSeconds >= virtualBlockStartSeconds) {
+          const int offset = juce::jlimit(0, juce::jmax(0, outputFrames - 1),
+              static_cast<int>(std::llround((trigger.triggerSeconds - virtualBlockStartSeconds) *
+                  outputFrames / (virtualBlockEndSeconds - virtualBlockStartSeconds))));
+          guide.render(guideBuffer, guideCursor, offset - guideCursor);
+          guideCursor = offset;
           if (!guide.triggerForSectionKey(trigger.name)) {
             const auto canonical =
                 canonicalArrangementSectionName(trigger.name);
@@ -649,7 +655,7 @@ SongMixExporter::Result SongMixExporter::exportToWav(
         }
         ++nextGuideTrigger;
       }
-      guide.render(guideBuffer);
+      guide.render(guideBuffer, guideCursor, outputFrames - guideCursor);
       guideBuffer.applyGain(
           finiteClamped(request.dynamicGuide.volume, 0.0f, 1.0f, 1.0f) *
           finiteClamped(request.dynamicGuide.gain, 0.0f, 2.0f, 1.0f));

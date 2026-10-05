@@ -7,7 +7,8 @@
 // A private, short-lived copy of documents selected from mobile providers.
 // Keep this object in a shared_ptr owned by both the wizard and any import/save
 // worker. Only the last owner's release removes its own temporary directory.
-// Source documents are never modified. Desktop uses this class only in tests.
+// Source documents are never modified. The Mac App Store variant also stages
+// explicit file-picker imports so persisted sources stay inside its container.
 class MobileImportStaging final {
 public:
   using ProgressFn = std::function<void(double)>;

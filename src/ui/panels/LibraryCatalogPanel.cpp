@@ -2,7 +2,10 @@
 
 #include "../../data/CloudSyncIndexStore.h"
 #include "../../data/Localization.h"
+#include "../../data/SessionPersistence.h"
 #include "../../data/SongLibraryStore.h"
+#include "../../data/TeamsLocalStore.h"
+#include "../../data/TeamsPreparationService.h"
 
 #include <algorithm>
 #include <array>
@@ -1162,7 +1165,7 @@ void LibraryCatalogPanel::setCloudSearchLoading(const bool isLoading) {
 }
 
 void LibraryCatalogPanel::refreshFromStorage() {
-  const auto library = remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot();
+  auto library = remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot();
   librarySongs = library.songs;
   setlists = library.setlists;
 
@@ -1252,26 +1255,26 @@ void LibraryCatalogPanel::paint(juce::Graphics &g) {
 
 void LibraryCatalogPanel::resized() {
   auto bounds = getLocalBounds();
+  cloudFilterButton.setVisible(true);
+  localFilterButton.setVisible(true);
+  createSongButton.setVisible(true);
+  loadSongButton.setVisible(true);
+  menuButton.setVisible(false);
+  loadProjectButton.setVisible(false);
+  confirmButton.setVisible(false);
 
   // Phone navigation follows native top app bars with platform touch targets.
   if (headerTrailingInset > 0 && getWidth() < 500 && getHeight() > getWidth()) {
-    menuButton.setVisible(false);
-    loadProjectButton.setVisible(false);
-    confirmButton.setVisible(false);
-    createSongButton.setVisible(true);
-    loadSongButton.setVisible(true);
     auto navigation = bounds.removeFromTop(mobileTopBarHeight());
     navigation.removeFromRight(headerTrailingInset);
     const int actionSize = mobileTopBarActionSize();
     backButton.setBounds(navigation.removeFromLeft(actionSize)
                              .withSizeKeepingCentre(actionSize, actionSize));
     createSongButton.setBounds(navigation.removeFromRight(actionSize)
-                                   .withSizeKeepingCentre(actionSize,
-                                                          actionSize));
+                                   .withSizeKeepingCentre(actionSize, actionSize));
     navigation.removeFromRight(mobileTopBarActionGap());
     loadSongButton.setBounds(navigation.removeFromRight(actionSize)
-                                 .withSizeKeepingCentre(actionSize,
-                                                        actionSize));
+                                 .withSizeKeepingCentre(actionSize, actionSize));
     auto titleArea = navigation.reduced(8, 5);
     headerTitleBounds = titleArea.removeFromTop(25);
     headerSubtitleBounds = titleArea.removeFromTop(17);
@@ -1288,12 +1291,6 @@ void LibraryCatalogPanel::resized() {
     return;
   }
 
-  menuButton.setVisible(false);
-  loadProjectButton.setVisible(false);
-  confirmButton.setVisible(false);
-  createSongButton.setVisible(true);
-  loadSongButton.setVisible(true);
-
   auto toolbarBounds = bounds.removeFromTop(56);
   toolbarBounds.removeFromRight(headerTrailingInset);
   constexpr int btnSize = 40;
@@ -1302,8 +1299,7 @@ void LibraryCatalogPanel::resized() {
                            .withSizeKeepingCentre(btnSize, btnSize)
                            .withY(vOffset));
   constexpr int actionGap = 12;
-  auto rightGroup =
-      toolbarBounds.removeFromRight(btnSize + actionGap + btnSize);
+  auto rightGroup = toolbarBounds.removeFromRight(btnSize + actionGap + btnSize);
   createSongButton.setBounds(rightGroup.removeFromRight(btnSize)
                                  .withSizeKeepingCentre(btnSize, btnSize)
                                  .withY(vOffset));
@@ -1342,13 +1338,15 @@ void LibraryCatalogPanel::rebuildRows() {
   const auto cloudLinks = CloudSyncIndexStore::loadAll();
 
   if (cloudFilterButton.isActive()) {
+    PersistedSessionSnapshot session;
+    SessionPersistence::load(session);
     const auto query = searchField.getText().trim().toLowerCase();
     for (const auto &song : cloudSongs) {
       if (query.isNotEmpty() &&
           !(song.title + " " + song.artist).toLowerCase().contains(query))
         continue;
       CatalogItem item;
-      item.songId = song.songId;
+      item.songId = song.catalogId();
       item.title = toSentenceCase(song.title);
       item.artist = song.artist;
       item.key = song.key;
@@ -1359,20 +1357,38 @@ void LibraryCatalogPanel::rebuildRows() {
       item.artworkPath = song.artworkPath;
       item.accentColour = UITheme::accent;
       item.isCloudOnly = true;
+      item.isSharedCloud = song.isSharedCloud();
       item.remoteSongId = song.songId;
-      const auto link = std::find_if(
-          cloudLinks.begin(), cloudLinks.end(), [&song](const auto& candidate) {
-            return candidate.remoteSongId == song.songId;
-          });
-      if (link != cloudLinks.end()) {
-        const auto localSong = std::find_if(
-            librarySongs.begin(), librarySongs.end(), [&link](const auto& candidate) {
-              return projectIdentityForSong(candidate) == link->projectId;
+      if (item.isSharedCloud) {
+        TeamSongLink origin;
+        if (TeamsLocalStore::findSongLink(session.uid, song.teamId, song.songId,
+                                         song.revision, origin)) {
+          const auto localSong = std::find_if(
+              librarySongs.begin(), librarySongs.end(), [&origin](const auto &candidate) {
+                return candidate.id == origin.localSongId;
+              });
+          if (localSong != librarySongs.end() &&
+              TeamsPreparationService::isPreparedSongUsable(*localSong)) {
+            item.isCloudDownloaded = true;
+            item.localSongId = localSong->id;
+            item.inSetlist = activeSetlistSongIds.contains(item.localSongId);
+          }
+        }
+      } else {
+        const auto link = std::find_if(
+            cloudLinks.begin(), cloudLinks.end(), [&song](const auto &candidate) {
+              return candidate.remoteSongId == song.songId;
             });
-        if (localSong != librarySongs.end()) {
-          item.isCloudDownloaded = link->downloadedAtMs > 0;
-          item.localSongId = localSong->id;
-          item.inSetlist = activeSetlistSongIds.contains(item.localSongId);
+        if (link != cloudLinks.end()) {
+          const auto localSong = std::find_if(
+              librarySongs.begin(), librarySongs.end(), [&link](const auto &candidate) {
+                return projectIdentityForSong(candidate) == link->projectId;
+              });
+          if (localSong != librarySongs.end()) {
+            item.isCloudDownloaded = link->downloadedAtMs > 0;
+            item.localSongId = localSong->id;
+            item.inSetlist = activeSetlistSongIds.contains(item.localSongId);
+          }
         }
       }
       if (const auto progress = cloudUploadIndicators.find(item.songId.toStdString());
@@ -1411,15 +1427,20 @@ void LibraryCatalogPanel::rebuildRows() {
     item.isProjectBacked = remoteLibrary != nullptr || isProjectBackedSong(song);
     item.isProjectAvailable =
         remoteLibrary != nullptr || (item.isProjectBacked && juce::File(song.projectPath).existsAsFile());
-    const auto projectId = projectIdentityForSong(song);
-    const auto link = std::find_if(
-        cloudLinks.begin(), cloudLinks.end(), [&projectId](const auto &candidate) {
-          return candidate.projectId == projectId;
-        });
-    item.isCloudSynced = link != cloudLinks.end();
-    if (link != cloudLinks.end())
-      item.remoteSongId = link->remoteSongId;
-    item.isCloudDownloaded = item.isCloudSynced && link->downloadedAtMs > 0;
+    // This reserved identity survives membership changes and old downloads.
+    // A shared origin never becomes a link to the member's personal Cloud.
+    item.isSharedCloud = song.id.startsWith("team-");
+    if (!item.isSharedCloud) {
+      const auto projectId = projectIdentityForSong(song);
+      const auto link = std::find_if(
+          cloudLinks.begin(), cloudLinks.end(), [&projectId](const auto &candidate) {
+            return candidate.projectId == projectId;
+          });
+      item.isCloudSynced = link != cloudLinks.end();
+      if (link != cloudLinks.end())
+        item.remoteSongId = link->remoteSongId;
+      item.isCloudDownloaded = item.isCloudSynced && link->downloadedAtMs > 0;
+    }
     if (const auto upload = cloudUploadIndicators.find(item.songId.toStdString());
         upload != cloudUploadIndicators.end()) {
       item.cloudUploadFraction = upload->second.fraction;
@@ -1592,208 +1613,147 @@ void LibraryCatalogPanel::openAdvancedFilterMenu() {
 
 void LibraryCatalogPanel::openRowMenu(const int rowIndex,
                                       juce::Rectangle<int> targetBounds) {
-  if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size())))
+  auto panel = createRowMenu(rowIndex, targetBounds);
+  if (panel == nullptr)
     return;
-  auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
-  const auto &selectedItem = visibleRows[static_cast<size_t>(rowIndex)];
-  if (selectedItem.isCloudOnly) {
-    std::vector<ContextActionItem> actions;
-    if (selectedItem.localSongId.isNotEmpty() && targetSetlistId.isNotEmpty()) {
-      const bool alreadyAdded = selectedItem.inSetlist;
-      actions.push_back(
-          {alreadyAdded ? L10n::tr("Ya agregada", "Already added")
-                        : L10n::tr("Agregar al setlist", "Add to setlist"),
-           !alreadyAdded, false, false,
-           [safeThis, rowIndex] {
-             if (safeThis == nullptr ||
-                 safeThis->onAddSongsToSetlist == nullptr ||
-                 !juce::isPositiveAndBelow(
-                     rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-               return;
-             const auto& targetItem =
-                 safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-             if (targetItem.localSongId.isNotEmpty()) {
-               juce::StringArray songIds;
-               songIds.add(targetItem.localSongId);
-               safeThis->onAddSongsToSetlist(songIds);
-             }
-           },
-           SvgIconName::Plus});
-    } else if (selectedItem.localSongId.isNotEmpty()) {
-      // A cloud entry remains visible for discovery, but its local materialized
-      // song already owns the cache. Do not offer a second download.
-      actions.push_back(
-          {L10n::tr("Ya descargada", "Already downloaded"), false, false,
-           false, {}, SvgIconName::FileAudio});
-    } else {
-      const auto downloadLabel = targetSetlistId.isNotEmpty()
-                                     ? L10n::tr("Descargar y agregar",
-                                                "Download and add")
-                                     : L10n::tr("Descargar canción",
-                                                "Download song");
-      actions.push_back(
-          {downloadLabel, true, false, false,
-           [safeThis, rowIndex] {
-           if (safeThis == nullptr ||
-               safeThis->onCloudDownloadRequested == nullptr ||
-               !juce::isPositiveAndBelow(
-                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-             return;
-           const auto &targetItem =
-               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-           if (targetItem.songId.isNotEmpty())
-             safeThis->onCloudDownloadRequested(targetItem.songId,
-                                                 safeThis->targetSetlistId);
-           },
-           SvgIconName::FileAudio});
-    }
-    actions.push_back(
-        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
-         false,
-         [safeThis, rowIndex] {
-           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
-               !juce::isPositiveAndBelow(
-                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-             return;
-           const auto& targetItem =
-               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-           if (targetItem.remoteSongId.isNotEmpty())
-             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
-         },
-         SvgIconName::Trash});
-    auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
-    panel->setSize(240, panel->preferredHeight());
-    auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
-    juce::Component *parentComp = editor != nullptr
-                                      ? static_cast<juce::Component *>(editor)
-                                      : static_cast<juce::Component *>(this);
-    const auto anchor = parentComp->getLocalArea(&content, targetBounds);
-    presentActionPopover(std::move(panel), anchor, parentComp);
-    return;
-  }
-  std::vector<ContextActionItem> actions;
-  actions.push_back({L10n::tr(u8"Editar canción", "Edit song"), true, false, false,
-                     [safeThis, rowIndex] {
-                       if (safeThis == nullptr ||
-                           safeThis->onSongEditRequested == nullptr ||
-                           !juce::isPositiveAndBelow(
-                               rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-                         return;
-                       const auto &targetItem =
-                           safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-                       if (targetItem.songId.isNotEmpty())
-                         safeThis->onSongEditRequested(targetItem.songId);
-                     }, SvgIconName::Pencil});
-  if (!selectedItem.isProjectBacked) {
-    actions.push_back(
-        {L10n::tr("Convertir a proyecto...", "Convert to project..."),
-         true, false, false,
-         [safeThis, rowIndex] {
-           if (safeThis == nullptr ||
-               safeThis->onSongConvertRequested == nullptr ||
-               !juce::isPositiveAndBelow(
-                   rowIndex,
-                   static_cast<int>(safeThis->visibleRows.size())))
-             return;
-           const auto &targetItem =
-               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-           if (targetItem.songId.isNotEmpty())
-             safeThis->onSongConvertRequested(targetItem.songId);
-         }, SvgIconName::CornerDownRight});
-  } else if (!selectedItem.isCloudSynced && selectedItem.isProjectAvailable) {
-    actions.push_back(
-        {L10n::tr("Subir a nube", "Upload to cloud"),
-         true, true, false,
-         [safeThis, songId = selectedItem.songId] {
-           if (safeThis == nullptr ||
-               safeThis->onProjectUploadRequested == nullptr)
-             return;
-           if (songId.isNotEmpty())
-             safeThis->onProjectUploadRequested(songId);
-         }, SvgIconName::FileAudio});
-  } else if (!selectedItem.isCloudSynced) {
-    actions.push_back(
-        {L10n::tr("Localizar .pwproj...", "Locate .pwproj..."), true, false,
-         false,
-         [safeThis] {
-           if (safeThis != nullptr &&
-               safeThis->onOpenProjectRequested != nullptr)
-             safeThis->onOpenProjectRequested();
-         },
-         SvgIconName::FileAudio});
-  }
-  if (selectedItem.isCloudSynced) {
-    const bool hasPendingSettings =
-        cloudSettingsPendingProvider != nullptr &&
-        cloudSettingsPendingProvider(selectedItem.songId);
-    if (hasPendingSettings) {
-      actions.push_back(
-          {L10n::tr("Sincronizar ajustes", "Sync settings"), true, true, false,
-           [safeThis, rowIndex] {
-             if (safeThis == nullptr ||
-                 safeThis->onCloudSettingsSyncRequested == nullptr ||
-                 !juce::isPositiveAndBelow(
-                     rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-               return;
-             const auto &targetItem =
-                 safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-             safeThis->onCloudSettingsSyncRequested(targetItem.songId);
-           },
-           SvgIconName::Check});
-    }
-    actions.push_back(
-        {L10n::tr("Versiones de ajustes", "Settings versions"), true, false,
-         false,
-         [safeThis, songId = selectedItem.songId,
-          screenAnchor = content.localAreaToGlobal(targetBounds)] {
-           if (safeThis == nullptr ||
-               safeThis->onCloudSettingsVersionsRequested == nullptr)
-             return;
-           // Defer creation until this button callback has finished. This
-           // action intentionally keeps the row menu visible behind the
-           // lateral versions chooser.
-           juce::MessageManager::callAsync([safeThis, songId, screenAnchor] {
-             if (safeThis != nullptr && safeThis->onCloudSettingsVersionsRequested)
-               safeThis->onCloudSettingsVersionsRequested(songId, screenAnchor);
-           });
-         },
-         SvgIconName::Clock, false});
-    actions.push_back(
-        {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false,
-         false,
-         [safeThis, rowIndex] {
-           if (safeThis == nullptr || safeThis->onCloudDeleteRequested == nullptr ||
-               !juce::isPositiveAndBelow(
-                   rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-             return;
-           const auto& targetItem =
-               safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-           if (targetItem.remoteSongId.isNotEmpty())
-             safeThis->onCloudDeleteRequested(targetItem.remoteSongId, targetItem.title);
-         },
-         SvgIconName::Trash});
-  }
-  actions.push_back({L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
-                     [safeThis, rowIndex] {
-                       if (safeThis == nullptr ||
-                           safeThis->onSongDeleteRequested == nullptr ||
-                           !juce::isPositiveAndBelow(
-                               rowIndex, static_cast<int>(safeThis->visibleRows.size())))
-                         return;
-                       const auto &targetItem =
-                           safeThis->visibleRows[static_cast<size_t>(rowIndex)];
-                       if (targetItem.songId.isNotEmpty())
-                         safeThis->onSongDeleteRequested(targetItem.songId);
-                     }, SvgIconName::Trash});
-  auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
-  panel->setSize(240, panel->preferredHeight());
-
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)
                                     : static_cast<juce::Component *>(this);
   const auto anchor = parentComp->getLocalArea(&content, targetBounds);
   presentActionPopover(std::move(panel), anchor, parentComp);
+}
+
+std::unique_ptr<juce::Component> LibraryCatalogPanel::createRowMenu(
+    const int rowIndex, juce::Rectangle<int> targetBounds) {
+  if (!juce::isPositiveAndBelow(rowIndex, static_cast<int>(visibleRows.size())))
+    return nullptr;
+  auto safeThis = juce::Component::SafePointer<LibraryCatalogPanel>(this);
+  // Catalog updates can resort rows while this menu is open.
+  const auto selectedItem = visibleRows[static_cast<size_t>(rowIndex)];
+  std::vector<ContextActionItem> actions;
+  if (selectedItem.isCloudOnly) {
+    if (selectedItem.localSongId.isNotEmpty() && targetSetlistId.isNotEmpty()) {
+      const bool alreadyAdded = selectedItem.inSetlist;
+      actions.push_back(
+          {alreadyAdded ? L10n::tr("Ya agregada", "Already added")
+                        : L10n::tr("Agregar al setlist", "Add to setlist"),
+           !alreadyAdded, false, false,
+           [safeThis, songId = selectedItem.localSongId,
+            selectedSetlistId = targetSetlistId] {
+             if (safeThis == nullptr || safeThis->onAddSongsToSetlist == nullptr ||
+                 safeThis->targetSetlistId != selectedSetlistId)
+               return;
+             juce::StringArray songIds;
+             songIds.add(songId);
+             safeThis->onAddSongsToSetlist(songIds);
+           }, SvgIconName::Plus});
+    } else if (selectedItem.localSongId.isNotEmpty()) {
+      actions.push_back(
+          {L10n::tr("Ya descargada", "Already downloaded"), false, false,
+           false, {}, SvgIconName::FileAudio});
+    } else {
+      const auto downloadLabel = targetSetlistId.isNotEmpty()
+                                     ? L10n::tr("Descargar y agregar", "Download and add")
+                                     : L10n::tr("Descargar canción", "Download song");
+      actions.push_back(
+          {downloadLabel, true, false, false,
+           [safeThis, catalogId = selectedItem.songId,
+            selectedSetlistId = targetSetlistId] {
+             if (safeThis != nullptr && safeThis->onCloudDownloadRequested != nullptr &&
+                 catalogId.isNotEmpty())
+               safeThis->onCloudDownloadRequested(catalogId, selectedSetlistId);
+           }, SvgIconName::FileAudio});
+    }
+    if (selectedItem.isSharedCloud && selectedItem.localSongId.isNotEmpty()) {
+      actions.push_back(
+          {L10n::tr("Eliminar descarga", "Remove download"), true, false, false,
+           [safeThis, songId = selectedItem.localSongId] {
+             if (safeThis != nullptr && safeThis->onSongDeleteRequested != nullptr)
+               safeThis->onSongDeleteRequested(songId);
+           }, SvgIconName::Trash});
+    }
+    if (!selectedItem.isSharedCloud) {
+      actions.push_back(
+          {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false, false,
+           [safeThis, remoteId = selectedItem.remoteSongId, title = selectedItem.title] {
+             if (safeThis != nullptr && safeThis->onCloudDeleteRequested != nullptr &&
+                 remoteId.isNotEmpty())
+               safeThis->onCloudDeleteRequested(remoteId, title);
+           }, SvgIconName::Trash});
+    }
+  } else {
+    actions.push_back(
+        {L10n::tr(u8"Editar canción", "Edit song"), true, false, false,
+         [safeThis, songId = selectedItem.songId] {
+           if (safeThis != nullptr && safeThis->onSongEditRequested != nullptr &&
+               songId.isNotEmpty())
+             safeThis->onSongEditRequested(songId);
+         }, SvgIconName::Pencil});
+    if (!selectedItem.isProjectBacked) {
+      actions.push_back(
+          {L10n::tr("Convertir a proyecto...", "Convert to project..."), true, false, false,
+           [safeThis, songId = selectedItem.songId] {
+             if (safeThis != nullptr && safeThis->onSongConvertRequested != nullptr &&
+                 songId.isNotEmpty())
+               safeThis->onSongConvertRequested(songId);
+           }, SvgIconName::CornerDownRight});
+    } else if (!selectedItem.isCloudSynced && selectedItem.isProjectAvailable) {
+      actions.push_back(
+          {L10n::tr("Subir a nube", "Upload to cloud"), true, true, false,
+           [safeThis, songId = selectedItem.songId] {
+             if (safeThis != nullptr && safeThis->onProjectUploadRequested != nullptr &&
+                 songId.isNotEmpty())
+               safeThis->onProjectUploadRequested(songId);
+           }, SvgIconName::FileAudio});
+    } else if (!selectedItem.isCloudSynced) {
+      actions.push_back(
+          {L10n::tr("Localizar .pwproj...", "Locate .pwproj..."), true, false, false,
+           [safeThis] {
+             if (safeThis != nullptr && safeThis->onOpenProjectRequested != nullptr)
+               safeThis->onOpenProjectRequested();
+           }, SvgIconName::FileAudio});
+    }
+    if (selectedItem.isCloudSynced && !selectedItem.isSharedCloud) {
+      const bool hasPendingSettings = cloudSettingsPendingProvider != nullptr &&
+                                     cloudSettingsPendingProvider(selectedItem.songId);
+      if (hasPendingSettings) {
+        actions.push_back(
+            {L10n::tr("Sincronizar ajustes", "Sync settings"), true, true, false,
+             [safeThis, songId = selectedItem.songId] {
+               if (safeThis != nullptr && safeThis->onCloudSettingsSyncRequested != nullptr)
+                 safeThis->onCloudSettingsSyncRequested(songId);
+             }, SvgIconName::Check});
+      }
+      actions.push_back(
+          {L10n::tr("Versiones de ajustes", "Settings versions"), true, false, false,
+           [safeThis, songId = selectedItem.songId,
+            screenAnchor = content.localAreaToGlobal(targetBounds)] {
+             // Open the versions chooser after this button callback finishes.
+             juce::MessageManager::callAsync([safeThis, songId, screenAnchor] {
+               if (safeThis != nullptr && safeThis->onCloudSettingsVersionsRequested)
+                 safeThis->onCloudSettingsVersionsRequested(songId, screenAnchor);
+             });
+           }, SvgIconName::Clock, false});
+      actions.push_back(
+          {L10n::tr("Eliminar de la nube", "Delete from cloud"), true, false, false,
+           [safeThis, remoteId = selectedItem.remoteSongId, title = selectedItem.title] {
+             if (safeThis != nullptr && safeThis->onCloudDeleteRequested != nullptr &&
+                 remoteId.isNotEmpty())
+               safeThis->onCloudDeleteRequested(remoteId, title);
+           }, SvgIconName::Trash});
+    }
+    actions.push_back(
+        {L10n::tr(u8"Eliminar canción", "Delete song"), true, false, false,
+         [safeThis, songId = selectedItem.songId] {
+           if (safeThis != nullptr && safeThis->onSongDeleteRequested != nullptr &&
+               songId.isNotEmpty())
+             safeThis->onSongDeleteRequested(songId);
+         }, SvgIconName::Trash});
+  }
+  auto panel = std::make_unique<ContextActionsPopover>(std::move(actions));
+  panel->setSize(240, panel->preferredHeight());
+  return panel;
 }
 
 void LibraryCatalogPanel::togglePendingSelection(const int rowIndex) {
@@ -1893,4 +1853,9 @@ juce::String LibraryCatalogPanel::subtitleTextForActiveSetlist() const {
 
 void LibraryCatalogPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library) {
   remoteLibrary = std::move(library);
+}
+
+void LibraryCatalogPanel::openCloud() {
+  searchField.setText({});
+  if (cloudFilterButton.onClick) cloudFilterButton.onClick();
 }

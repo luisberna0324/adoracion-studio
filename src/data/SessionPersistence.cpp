@@ -1,11 +1,11 @@
 #include "SessionPersistence.h"
 #include "SessionAuthLogger.h"
+#include "SongLibraryStore.h"
 
 namespace {
 juce::File getMtControlsDirectory() {
-  auto dir =
-      juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-          .getChildFile("MTControls");
+  // Reuse the library's root, including its explicitly isolated test root.
+  auto dir = SongLibraryStore::getRootDirectory();
   dir.createDirectory();
   return dir;
 }

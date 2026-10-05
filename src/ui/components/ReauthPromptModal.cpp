@@ -1,5 +1,6 @@
 #include "ReauthPromptModal.h"
 #include "../../data/Localization.h"
+#include "../../platform/NativeAppleSignIn.h"
 
 namespace {
 #ifndef MTCONTROLS_REAUTH_GRACE_MINUTES
@@ -89,6 +90,26 @@ void ReauthPromptModal::resized() {
   auto laterArea = controlsRow;
   loginNowButton.setBounds(loginArea);
   laterButton.setBounds(laterArea);
+  if (appleButton) {
+    area.removeFromTop(10);
+    appleButton->setBounds(area.removeFromTop(44).withSizeKeepingCentre(
+        juce::jmin(340, area.getWidth()), 44));
+  }
+}
+
+void ReauthPromptModal::setAppleSignInAvailable(bool available) {
+  if (available && !appleButton) {
+    appleButton = NativeAppleSignIn::createButton([this] {
+      if (onAppleLoginNow) onAppleLoginNow();
+    });
+    if (appleButton) addAndMakeVisible(*appleButton);
+  } else if (!available) {
+    appleButton.reset();
+  }
+  loginNowButton.setButtonText(appleButton ? L10n::tr("Continuar con Google", "Continue with Google")
+                                         : L10n::tr("Ingresar ahora", "Sign in now"));
+  if (appleButton) appleButton->setEnabled(!waiting);
+  resized();
 }
 
 void ReauthPromptModal::setStatusText(const juce::String &text, bool isError) {
@@ -99,23 +120,29 @@ void ReauthPromptModal::setStatusText(const juce::String &text, bool isError) {
 }
 
 void ReauthPromptModal::showWaitingForCallback() {
-  setStatusText(L10n::tr(u8"Esperando autenticación en el navegador...",
-                         "Waiting for browser authentication..."),
+  waiting = true;
+  setStatusText(L10n::tr(u8"Completando el inicio de sesión...",
+                         "Completing sign in..."),
                 false);
   loginNowButton.setEnabled(false);
   laterButton.setEnabled(false);
+  if (appleButton) appleButton->setEnabled(false);
 }
 
 void ReauthPromptModal::showReadyState() {
+  waiting = false;
   setStatusText(L10n::tr("Pulsa Ingresar ahora para abrir el navegador.",
                          "Press Sign in now to open the browser."),
                 false);
   loginNowButton.setEnabled(true);
   laterButton.setEnabled(true);
+  if (appleButton) appleButton->setEnabled(true);
 }
 
 void ReauthPromptModal::showError(const juce::String &text) {
+  waiting = false;
   setStatusText(text, true);
   loginNowButton.setEnabled(true);
   laterButton.setEnabled(true);
+  if (appleButton) appleButton->setEnabled(true);
 }

@@ -14,3 +14,11 @@ En macOS, `PrimeLibrarySource` expone únicamente canciones cuyos stems locales 
 3. Usar cada ruta sólo como fuente de importación. Al guardar, `ProjectStore` empaqueta copias de los stems dentro del `.pwproj`.
 
 El proyecto resultante no depende de la ubicación de la biblioteca de Prime ni de que Prime permanezca instalado.
+
+La variante opcional `MTCONTROLS_MAC_APP_STORE=ON` no ofrece esta integracion:
+el acceso directo al contenedor de Prime y el proceso `/usr/bin/sqlite3` no
+estan preparados para App Sandbox. El toggle queda deshabilitado y su ayuda
+indica importar archivos de audio desde Biblioteca. Ese selector conserva la
+importacion de contenido autorizado y guarda copias privadas. El escritorio
+habitual mantiene la integracion existente. Ver
+[Mac App Store](../release/MacAppStore.md).

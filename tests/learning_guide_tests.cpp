@@ -69,6 +69,34 @@ void verifyCatalog(const std::vector<Lesson> &spanish, const std::vector<Lesson>
 } // namespace
 
 int main() {
+  {
+    const auto shared = makeSharedCloudLesson("teams-cloud-user-source-join", "owner@example.com", false);
+    const auto translated = makeSharedCloudLesson(shared.id, "owner@example.com", true);
+    expect(shared.steps.size() == 3 && translated.steps.size() == 3, "shared course covers Cloud, download and setlist");
+    StepFacts facts;
+    facts.cloudOpen = facts.sharedSongDownloaded = facts.sharedSongAdded = true;
+    for (const auto &step : shared.steps)
+      expect(!evaluateStepCondition(step.condition, facts), "cached progress never grants shared access");
+    facts.sharedCloudAccessible = true;
+    for (const auto &step : shared.steps)
+      expect(evaluateStepCondition(step.condition, facts), "actual completed shared workflow is accepted");
+    facts.sharedSongDownloaded = false;
+    expect(!evaluateStepCondition(StepCondition::SharedSongAdded, facts), "missing local audio blocks completion even if listed in setlist");
+    facts.sharedSongDownloaded = true;
+    facts.sharedSongAdded = false;
+    expect(!evaluateStepCondition(StepCondition::SharedSongAdded, facts), "download alone does not finish course");
+    TemporaryDirectory temporary;
+    const auto file = temporary.directory.getChildFile("progress.json");
+    ProgressStore store(file);
+    expect(!store.hasProgress(shared), "new membership receives a welcome");
+    expect(store.record(shared, 0, false).wasOk(), "Later acknowledges welcome without completing course");
+    ProgressStore restored(file);
+    expect(restored.hasProgress(shared) && !restored.get(shared.id).completed, "dismissal survives restart and course remains pending");
+    expect(restored.record(shared, 1, false).wasOk(), "record download stage");
+    expect(ProgressStore(file).resumeIndex(shared) == 1, "resume exact stage after restart");
+    expect(shared.steps[1].id == translated.steps[1].id, "language changes preserve shared progress");
+  }
+
   const auto desktop = makeLessons(false, false);
   const auto desktopEnglish = makeLessons(false, true);
   const auto phone = makeLessons(true, false);

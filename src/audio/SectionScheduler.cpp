@@ -73,7 +73,8 @@ SectionScheduler::AtomicSection::load() const noexcept {
 }
 
 void SectionScheduler::publish(
-    const std::vector<Section> &sections) noexcept {
+    const std::vector<Section> &sections,
+    const std::vector<Cue> &cues) noexcept {
   const std::lock_guard<std::mutex> lock(publishMutex);
   const int published = publishedIndex.load(std::memory_order_acquire);
   const int writeIndex = (published + 1) % snapshotBankCount;
@@ -116,6 +117,14 @@ void SectionScheduler::publish(
          source.skipPlayback});
   }
 
+  const int cueCount = std::min(static_cast<int>(cues.size()), maxCues);
+  for (int i = 0; i < cueCount; ++i) {
+    const auto &cue = cues[static_cast<size_t>(i)];
+    bank.cues[static_cast<size_t>(i)].frame.store(std::max<Frame>(0, cue.frame), std::memory_order_relaxed);
+    bank.cues[static_cast<size_t>(i)].guideTriggerId.store(cue.guideTriggerId, std::memory_order_relaxed);
+    bank.cues[static_cast<size_t>(i)].skipPlayback.store(cue.skipPlayback, std::memory_order_relaxed);
+  }
+  bank.cueCount.store(cueCount, std::memory_order_relaxed);
   const auto generation = nextGeneration++;
   if (nextGeneration == 0)
     nextGeneration = 1;
@@ -147,6 +156,15 @@ bool SectionScheduler::tryReadBank(const int bankIndex,
   for (int i = 0; i < snapshot.count; ++i) {
     snapshot.sections[static_cast<std::size_t>(i)] =
         bank.sections[static_cast<std::size_t>(i)].load();
+  }
+
+  snapshot.cueCount = std::clamp(bank.cueCount.load(std::memory_order_relaxed), 0, maxCues);
+  for (int i = 0; i < snapshot.cueCount; ++i) {
+    const auto &cue = bank.cues[static_cast<size_t>(i)];
+    snapshot.cues[static_cast<size_t>(i)] = {
+        cue.frame.load(std::memory_order_relaxed),
+        cue.guideTriggerId.load(std::memory_order_relaxed),
+        cue.skipPlayback.load(std::memory_order_relaxed)};
   }
 
   // Keep every field load inside the two sequence observations. Since every

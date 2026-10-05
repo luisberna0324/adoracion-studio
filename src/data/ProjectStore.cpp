@@ -1664,6 +1664,9 @@ juce::File ProjectStore::findRecentProjectFile(
 }
 
 void ProjectStore::recordRecent(const ProjectDocument &document) {
+  // A Team publication is an ephemeral export, not a user-opened project.
+  if (document.projectFile.isAChildOf(SongLibraryStore::getRootDirectory().getChildFile("team-publication")))
+    return;
   auto entries = getRecentProjects();
   entries.erase(std::remove_if(entries.begin(), entries.end(), [&document](const auto &item) { return item.file == document.projectFile; }), entries.end());
   entries.insert(entries.begin(), {projectIdentityForSong(document.song), document.song.title, document.projectFile, juce::Time::getCurrentTime().toMilliseconds(), true});

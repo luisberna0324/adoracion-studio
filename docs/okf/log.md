@@ -2,12 +2,80 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-10-03T00:00:00-03:00
+timestamp: 2026-10-05T00:00:00-03:00
 ---
 
 # Changelog
 
+## 2026-10-05
+
+### Area segura de performance en tablets iOS
+
+- El layout principal descuenta los insets reales del display en tablets iOS,
+  evitando superponer transporte y contenido con la fecha/barra de estado y el
+  indicador inferior. Biblioteca y su scrim se alinean al area segura y al borde
+  inferior real del TopBar.
+- Se conserva la rama de telefono, incluidos sus insets internos y extension
+  visual del mixer. No se cambia el tamaño de ventana de escritorio ni el layout
+  Android; tampoco los controles o dimensiones internas de los canales.
+- Cambio local revisado en fuente; compilacion e inspeccion visual del simulador
+  quedan pendientes para la siguiente captura.
+
 ## 2026-10-03
+
+### Teams: nube compartida
+
+- Nube compartida por defecto sin crear ni nombrar equipos. Administración de
+  usuarios condicionada por el perfil Teams de suscripción. Los miembros solo ven y descargan canciones.
+- Catálogo automático desde Cloud del propietario. Descargas ordinarias en
+  Biblioteca sin publicación, invitaciones, coordinadores o setlists compartidos.
+- Las canciones compartidas aparecen en Nube junto a las propias, con búsqueda,
+  descarga y agregado al setlist habituales. Configuración → Teams solo aparece
+  con capacidad explícita y administra usuarios, sin un segundo catálogo.
+- Caché por cuenta y recuperación de audio conservan los cambios locales y la
+  selección activa. Las copias y datos existentes no se borran.
+
+
+### Visibilidad de indicaciones secundarias
+
+- Fuera de edición se muestran sólo puntos sobre la onda. Las etiquetas y
+  líneas aparecen al editar; el área interactiva se limita al punto cuando
+  la etiqueta está oculta. Las etiquetas mantienen su apilado en edición.
+
+### Indicaciones directas dentro de la onda
+
+- Puntos y etiquetas siempre visibles sobre la onda; etiquetas cercanas se
+  apilan y cada indicación conserva su target e identidad. La regla recupera
+  su altura habitual de 24 puntos.
+- Edición por arrastre y borrado con doble clic/doble toque sobre el punto,
+  con Deshacer y tooltip breve. Se retira el popover con ±1 pulso.
+- Breakdown/Baja intensidad y A capella se clasifican como secundarias;
+  el catálogo musical queda en 14 familias y se conserva la migración segura.
+- Standalone macOS Release compilado y validación local 4/4 (12,03 s).
+  Capturas revisadas en `build/cue-wave-overlay-qa/`; cubren componentes reales
+  de escritorio, teléfono y tooltip, sin instalación física móvil.
+
+
+### Indicaciones y conteos independientes sobre la regla
+
+- Secciones musicales conservan su estructura; las nuevas utilidades y cuentas
+  son puntos de color con línea fina, detalle al tocar y agrupación de marcas
+  próximas. Edición ofrece arrastre sin seek, avance/retroceso por pulso y borrar.
+- Secuencias 1–4 y 1–7 usan una sola marca y offsets de la regla, incluidos
+  cambios de tempo. Copia, movimiento, división, recorte y Deshacer conservan
+  el vínculo y el momento de las indicaciones.
+- Proyectos, sidecar, Cloud y protocolo remoto incluyen las marcas. La carga
+  migra fragmentos antiguos solo cuando no pierde audio, automatización ni
+  referencias. Casos ambiguos permanecen intactos.
+- Reproducción y exportación programan todos los anuncios en su sample, con
+  ocho voces acotadas para no cortar instrucciones cercanas. Los marcadores no
+  cambian los límites de loop/salto/automatización de la sección musical.
+- UI y remoto rechazan operaciones que exceden 512 anuncios expandidos, sin
+  truncar documentos ni modificar parcialmente un arrange al copiar/pegar.
+- macOS Standalone Release compilado y gate final 7/7 (12,91 s): creación,
+  edición de onda, automatización, núcleo de audio, Pads y exportación. Revisión
+  de componentes reales de escritorio, teléfono y popover en
+  `build/cue-marker-qa/`; la sesión anterior de la app continuó reproduciendo.
 
 ### Pads: transiciones entre secciones y canciones
 
@@ -1397,3 +1465,22 @@ docs/okf/
 - Cliente indica `BUSCANDO`, `CONECTANDO`, `REMOTO` o `RECONECTANDO` en una etiqueta pequeña
   sobre la onda, incluso antes de recibirla. El estado conectado exige un
   snapshot aplicado; la etiqueta no cambia layout ni captura gestos.
+
+- 2026-10-05: bienvenida opcional para miembros de Teams y curso de Nube →
+  descarga → setlist, con progreso por cuenta/fuente/alta y sin interrupción
+  durante reproducción. Contratos: Teams y LearningGuide.
+
+
+## 2026-10-05 — Pertenencia y baja de Teams
+
+Pertenencia única transaccional, salida voluntaria y recibos persistentes de baja.
+Confirmaciones y limpieza por procedencia al detener reproducción, preservando
+archivos personales. Ver integrations/Teams.md.
+
+
+## 2026-10-05 — Correos de Teams con Resend
+
+Backend: alta, retirada y salida generan correo transaccional con cola durable,
+reintentos e idempotencia. 60 pruebas aprobadas. Vistas previas en
+output/teams-email-preview; prueba de proveedor dirigida solo al buzón técnico
+de Resend, sin notificar a miembros existentes.

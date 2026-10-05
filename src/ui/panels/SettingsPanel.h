@@ -75,8 +75,13 @@ public:
   void refreshThemeColours();
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
+  void setTeamsManagementEnabled(bool enabled);
+  void setAppleSignInAvailable(bool available);
+  void setAppleSignInStatus(const juce::String &text, bool busy = false);
+  std::function<void()> onAppleLinkRequested;
   std::function<void()> onShareAudioDiagnostics;
   std::function<void()> onLearningRequested;
+  std::function<void()> onTeamsRequested;
   std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
   std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
   std::function<void(const juce::String &)> onRemoteServerAliasChanged;
@@ -137,7 +142,7 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
-  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning };
+  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams };
   class SettingsHomePage;
   juce::Component *getLearningTargetComponent(playworship::learning::Anchor) const;
 
@@ -165,6 +170,9 @@ private:
   juce::Label learningLabel;
   juce::Label learningHelp;
   juce::TextButton learningButton;
+  juce::Label teamsLabel, teamsHelp;
+  juce::TextButton teamsButton;
+  bool teamsManagementEnabled = false;
   juce::Component accountPage;
   juce::Component audioPage;
   juce::Component routingPage;
@@ -245,6 +253,8 @@ private:
       "Soporte", juce::URL("mailto:hola@playworship.app")};
   SettingsLogoutButton logoutButton;
   SettingsLogoutButton purgeButton;
+  juce::Label appleLinkLabel, appleLinkHelp;
+  std::unique_ptr<juce::Component> appleLinkButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;

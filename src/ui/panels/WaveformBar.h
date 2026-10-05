@@ -2,6 +2,7 @@
 
 #include "../../data/SongData.h"
 #include "../UiCommon.h"
+#include "../components/AppModal.h"
 #include "PracticeTimelineRuler.h"
 #include <JuceHeader.h>
 
@@ -144,6 +145,7 @@ private:
   enum class DragMode {
     none,
     seek,
+    moveCue,
     movePart,
     resizePartLeft,
     resizePartRight,
@@ -219,10 +221,12 @@ private:
     bool customArrangement = false;
     int selectedPartIndex = -1;
     std::vector<juce::String> selectedPartIds;
+    juce::String selectedCueId;
   };
 
   struct CopiedArrangementPart {
     SongArrangementPartSnapshot part;
+    std::vector<SongArrangementCueSnapshot> cues;
     juce::String sourcePartId;
     double sourceStartSec = 0.0;
     double sourceEndSec = 0.0;
@@ -311,6 +315,26 @@ private:
   float viewportStart = 0.0f;
   float viewportSpan = 1.0f;
   SongArrangementSnapshot arrangement;
+  SongArrangementSnapshot cueEditBaseline;
+  std::unique_ptr<AppModal> cueInformationModal;
+  struct CueMarkerBounds {
+    juce::String id;
+    juce::Rectangle<float> hit;
+    juce::Rectangle<float> pointHit;
+    juce::Rectangle<float> label;
+    float x = 0.0f;
+    float pointX = 0.0f;
+    float y = 0.0f;
+  };
+  std::vector<CueMarkerBounds> cueMarkerBounds;
+  std::vector<std::unique_ptr<juce::Button>> cueMarkerButtons;
+  std::unique_ptr<juce::TooltipWindow> cueTooltipWindow;
+  double cueTooltipHideAtMs = 0.0;
+  juce::String selectedCueId;
+  juce::String activeDragCueId;
+  double cueDragOriginSec = 0.0;
+  juce::Point<float> cueDragStart;
+  bool cueDragMoved = false;
   SongTempoMapSnapshot tempoMap;
   bool customArrangement = false;
   int selectedPartIndex = -1;
@@ -546,6 +570,19 @@ private:
   void clearSectionInsertionAnchor();
   void addCountSequenceParts(int firstCount, int lastCount);
   void addUtilityCuePart(const juce::String &cueName);
+  void addGuideCue(const juce::String &name, int countEnd = 0,
+                   double countIntervalSec = 0.0);
+  void rebuildCueMarkers();
+  void drawCueMarkers(juce::Graphics &g) const;
+  int hitTestCueMarker(juce::Point<float> position) const;
+  int findCueIndexById(const juce::String &id) const;
+  void moveGuideCue(const juce::String &id, double seconds);
+  void deleteGuideCue(const juce::String &id);
+  void reconcileCueAnchors();
+  double adjacentCuePulse(double seconds, bool forward) const;
+  bool updateCueCountOffsets(SongArrangementCueSnapshot &cue) const;
+  void showCueInformation(const juce::String &message);
+  bool ensureGuideCueCapacity(int additionalEvents);
   double getArrangementAppendStartSec(double fallbackStartSec) const;
   void duplicateArrangementPart(int partIndex);
   void createDuplicatedSection(int sourcePartIndex);
@@ -558,7 +595,7 @@ private:
   void deleteArrangementPart(int partIndex);
   void deleteSelectedArrangementParts();
   void notifyArrangementChanged(bool isCustom);
-  void resetArrangementToDefault();
+  void resetArrangementToDefault(bool preserveIndependentCues = false);
   void normalizeTempoMap();
   void selectTempoRegion(int regionIndex);
   void updateTempoControlsFromSelection();

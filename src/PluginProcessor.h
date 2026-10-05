@@ -627,6 +627,13 @@ private:
     bool skipPlayback = false;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
+  struct ArrangementRuntimeCue {
+    juce::String name;
+    double positionSec = 0.0;
+    int guideTriggerId = -1;
+    bool skipPlayback = false;
+  };
+  std::vector<ArrangementRuntimeCue> arrangementCues;
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};

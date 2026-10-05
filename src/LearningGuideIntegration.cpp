@@ -17,6 +17,15 @@ using LearningAnchor = playworship::learning::Anchor;
 playworship::learning::StepFacts MTControlsAudioProcessorEditor::learningStepFacts() const {
   using Mode = playworship::remote::RemoteSession::Mode;
   playworship::learning::StepFacts facts;
+  if (learningLessonId.startsWith("teams-cloud-")) {
+    facts.sharedCloudAccessible = activeSession.allowed && activeSession.uid.isNotEmpty() &&
+        teamsMembershipsVerified && !playbackSession.isRemote() &&
+        std::any_of(teamsLearningSources.begin(), teamsLearningSources.end(),
+          [this](const auto &source) { return source.lessonId == learningLessonId; });
+    facts.cloudOpen = songListPanelRaw && songListPanelRaw->isCloudLibraryOpen();
+    facts.sharedSongDownloaded = teamsLearningDownloaded;
+    facts.sharedSongAdded = teamsLearningAdded;
+  }
   facts.settingsOpen = settingsPanelRaw && settingsPanelRaw->isShowing();
   facts.remotePageOpen = facts.settingsOpen && settingsPanelRaw->isLearningRemotePageOpen();
   facts.serverModeActive = remoteSession.getMode() == Mode::Server;
@@ -73,6 +82,7 @@ void MTControlsAudioProcessorEditor::showLearningCatalog() {
   learningPhoneContent = isPhoneSizedTouchLayout(*this);
   learningEnglishContent = AppSettings::getLanguage() == AppLanguage::English;
   learningLessons = playworship::learning::makeLessons(learningPhoneContent, learningEnglishContent);
+  appendTeamsLearningLessons();
   learningLessonId.clear();
   learningObservedStepKey.clear();
   learningRemoteAction.deactivate();
@@ -83,6 +93,12 @@ void MTControlsAudioProcessorEditor::showLearningCatalog() {
 
 void MTControlsAudioProcessorEditor::startLearningLesson(const juce::String &id) {
   learningLessonId = id;
+  learningStepIndex = 0;
+  if (id.startsWith("teams-cloud-")) {
+    teamsLearningDownloaded = teamsLearningAdded = false;
+    teamsNextGuideCheckMs = 0;
+    openTeamsLearningCloud();
+  }
   const auto *lesson = currentLearningLesson();
   if (!lesson || lesson->steps.empty() || !learningProgress) return;
   learningStepIndex = learningProgress->get(id).completed ? 0 : learningProgress->resumeIndex(*lesson);
@@ -178,6 +194,11 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
         ? host->getLocalArea(component, bounds).getIntersection(host->getLocalBounds()) : juce::Rectangle<int>{};
   };
   if (anchor == LearningAnchor::None) return {};
+  if (anchor == LearningAnchor::SharedCloud) {
+    if (songListPanel && songListPanel->isShowing())
+      return local(songListPanel.get(), songListPanel->getLocalBounds());
+    anchor = LearningAnchor::SongSelection;
+  }
   if (settingsPanelRaw && host == settingsPanelRaw.getComponent())
     return settingsPanelRaw->getLearningTargetBounds(anchor);
   if (anchor == LearningAnchor::SettingsClose || anchor == LearningAnchor::RemoteSettings ||
@@ -235,6 +256,7 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
   if (english != learningEnglishContent) {
     learningEnglishContent = english;
     learningLessons = playworship::learning::makeLessons(learningPhoneContent, english);
+    appendTeamsLearningLessons();
     if (learningGuide->isShowingCatalog())
       learningGuide->showCatalog(learningLessons, *learningProgress);
     else
@@ -302,6 +324,23 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
                      "Discovery could not start. Check the local network and choose the mode again.");
       else if (learningRemoteAction.reason().isNotEmpty())
         pendingMessage = learningRemoteAction.reason();
+    }
+    if (learningLessonId.startsWith("teams-cloud-") && !ready) {
+      if (!teamsMembershipsVerified)
+        pendingMessage = L10n::tr("Conéctate para comprobar el acceso a la nube compartida.", "Connect to verify shared cloud access.");
+      else if (playbackSession.isRemote())
+        pendingMessage = L10n::tr("Retoma esta guía en modo Local.", "Resume this guide in Local mode.");
+      else if (step.condition == playworship::learning::StepCondition::SharedSongDownloaded) {
+        const auto source = std::find_if(teamsLearningSources.begin(), teamsLearningSources.end(),
+            [this](const auto &s) { return s.lessonId == learningLessonId; });
+        const auto song = std::find_if(cloudCatalogSongs.begin(), cloudCatalogSongs.end(),
+            [&](const auto &s) { return source != teamsLearningSources.end() && s.teamId == source->teamId; });
+        pendingMessage = song != cloudCatalogSongs.end()
+            ? L10n::tr("Puedes descargar «", "You can download “") + song->title +
+                L10n::tr("» desde su menú de tres puntos.", "” from its three-dot menu.")
+            : L10n::tr("Busca una canción compartida en Cloud. Si la nube está vacía, puedes retomar la guía cuando el propietario suba canciones.",
+                "Find a shared song in Cloud. If the cloud is empty, resume when the owner uploads songs.");
+      }
     }
     learningGuide->setStepReadiness(ready, pendingMessage);
     if (message.isEmpty() && learningPhoneContent && learningLessonId == "practice-sections" && !practiceOverlay)

@@ -5,6 +5,7 @@
 class ReauthPromptModal final : public juce::Component {
 public:
   std::function<void()> onLoginNow;
+  std::function<void()> onAppleLoginNow;
   std::function<void()> onLater;
 
   ReauthPromptModal();
@@ -12,6 +13,8 @@ public:
   void showWaitingForCallback();
   void showReadyState();
   void showError(const juce::String &text);
+  void setAppleSignInAvailable(bool available);
+  int preferredHeight() const { return appleButton ? 296 : 230; }
 
   void paint(juce::Graphics &g) override;
   void resized() override;
@@ -25,4 +28,6 @@ private:
   juce::Label status;
   juce::TextButton loginNowButton;
   juce::TextButton laterButton;
+  std::unique_ptr<juce::Component> appleButton;
+  bool waiting = false;
 };

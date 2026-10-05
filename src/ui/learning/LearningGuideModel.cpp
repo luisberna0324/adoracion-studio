@@ -22,6 +22,9 @@ bool containsStep(const Lesson &lesson, const juce::String &id) {
 
 bool evaluateStepCondition(const StepCondition condition, const StepFacts &facts) {
   switch (condition) {
+  case StepCondition::CloudOpen: return facts.sharedCloudAccessible && facts.cloudOpen;
+  case StepCondition::SharedSongDownloaded: return facts.sharedCloudAccessible && facts.sharedSongDownloaded;
+  case StepCondition::SharedSongAdded: return facts.sharedCloudAccessible && facts.sharedSongDownloaded && facts.sharedSongAdded;
   case StepCondition::None: return true;
   case StepCondition::SettingsOpen: return facts.settingsOpen;
   case StepCondition::RemotePageOpen: return facts.settingsOpen && facts.remotePageOpen;
@@ -300,6 +303,26 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
                "Termina la guía cuando hayas comprobado ambos controles.", "Finish the guide once you have checked both controls.", Anchor::None, false),
       }});
   return lessons;
+}
+
+Lesson makeSharedCloudLesson(const juce::String &id, const juce::String &owner, bool english) {
+  const auto tr = [english](const char *es, const char *en) { return juce::String::fromUTF8(english ? en : es); };
+  return {id, tr("Canciones de ", "Songs from ") + owner,
+      tr("Descarga una canción de la nube compartida y agrégala a tu setlist.",
+         "Download a shared cloud song and add it to your setlist."), {
+    {"cloud", tr("Abre Nube", "Open Cloud"),
+      tr("En Biblioteca, toca Cloud para ver las canciones compartidas junto a las tuyas. Puedes pausar esta guía y retomarla desde Aprender PlayWorship.",
+         "In Library, tap Cloud to see shared songs alongside your own. You can pause this guide and resume it from Learn PlayWorship."),
+      tr("Abre Biblioteca y selecciona Cloud.", "Open Library and select Cloud."), Anchor::SharedCloud, false, StepCondition::CloudOpen},
+    {"download", tr("Descarga una canción", "Download a song"),
+      tr("Busca una canción de esta nube. Abre su menú de tres puntos y pulsa Descargar. Espera a que termine; una canción que ya descargaste también sirve.",
+         "Find a song from this cloud. Open its three-dot menu and choose Download. Wait for it to finish; a song you already downloaded also works."),
+      tr("Descarga una canción de esta nube compartida.", "Download a song from this shared cloud."), Anchor::SharedCloud, false, StepCondition::SharedSongDownloaded},
+    {"setlist", tr("Agrégala a un setlist", "Add it to a setlist"),
+      tr("En el menú de la canción descargada, elige Agregar a setlist y selecciona una lista. Si necesitas crear una, vuelve a Setlists, créala y retoma la guía. Al terminar, la canción estará lista para usarla normalmente.",
+         "In the downloaded song's menu, choose Add to setlist and select a list. If you need a new one, return to Setlists, create it and resume the guide. Once added, the song is ready to use normally."),
+      tr("Agrega una canción descargada de esta nube a un setlist.", "Add a downloaded song from this cloud to a setlist."), Anchor::SharedCloud, false, StepCondition::SharedSongAdded}
+  }};
 }
 
 ProgressStore::ProgressStore(juce::File requestedFile) : file(std::move(requestedFile)) {

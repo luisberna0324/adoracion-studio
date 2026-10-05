@@ -3,6 +3,7 @@
 #include "PluginEditor.h"
 #include "SongLoadProbe.h"
 #include "audio/DynamicGuideTiming.h"
+#include "audio/DynamicGuideEvents.h"
 #include "audio/PracticeListening.h"
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
@@ -167,6 +168,16 @@ juce::String baseArrangementSectionKey(const juce::String &partName) {
   return canonical.isNotEmpty()
              ? DynamicGuideEngine::normalizeSectionKey(canonical)
              : DynamicGuideEngine::normalizeSectionKey(partName);
+}
+
+int arrangementCueTriggerId(const DynamicGuideEngine &engine, const juce::String &name) {
+  // Utility names have their own spoken identity. In particular Break (Pausa)
+  // is not the musical-section alias Breakdown (Baja intensidad).
+  int trigger = engine.resolveTriggerId(name);
+  if (trigger >= 0)
+    return trigger;
+  const auto countKey = arrangementCountSectionKey(name);
+  return engine.resolveTriggerId(countKey.isNotEmpty() ? countKey : arrangementSectionKey(name));
 }
 
 void applyBufferGainRamp(juce::AudioBuffer<float> &buffer,
@@ -706,6 +717,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   int songStopOutputOffset = -1;
   bool muteSectionInstrumentsThisBlock = false;
   bool skipArrangementPartThisBlock = false;
+  playworship::audio::DynamicGuideEvents guideEvents;
+  juce::int64 guideBlockStartFrame = 0;
+  bool guideTimelinePlaying = false;
+  const playworship::audio::SectionScheduler::Snapshot *guideTimelineSnapshot = &audioSectionSnapshot;
   bool dynamicGuideShouldRender = false;
   bool dynamicGuideAnnouncementsActive = false;
   int dynamicGuideOutputChannelOneBased = 1;
@@ -764,6 +779,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           virtualTimelineStateFlushedThisBlock = true;
         };
     const bool isPlaying = getTransportState() == TransportState::playing;
+    guideTimelinePlaying = isPlaying;
     const bool dynamicGuideEnabled =
         dynamicGuideEnabledState.load(std::memory_order_relaxed);
     const bool arrangementEditingActive =
@@ -823,9 +839,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       audioPracticeSectionSnapshot = audioSectionSnapshot;
       for (int index = 0; index < audioPracticeSectionSnapshot.count; ++index)
         audioPracticeSectionSnapshot.sections[static_cast<size_t>(index)].skipPlayback = false;
+      for (int index = 0; index < audioPracticeSectionSnapshot.cueCount; ++index)
+        audioPracticeSectionSnapshot.cues[static_cast<size_t>(index)].skipPlayback = false;
     }
     const auto &realtimeSections = realtimePracticeLoop.active
         ? audioPracticeSectionSnapshot : audioSectionSnapshot;
+    guideTimelineSnapshot = &realtimeSections;
     const int realtimePendingPartIndex = realtimePracticeLoop.active
         ? -1 : audioArrangementRuntimeSnapshot.pendingJumpPartIndex;
     const int realtimeLoopPartIndex = realtimePracticeLoop.active
@@ -1156,6 +1175,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               ? transportClock.getPositionSeconds()
               : 0.0;
       const auto blockStartFrame = transportClock.getPositionFrames();
+      guideBlockStartFrame = blockStartFrame;
       const auto blockSourceStartFrame =
           mapRealtimeArrangementFrameToSourceFrame(blockStartFrame);
       const double blockSourceStartSec =
@@ -1399,11 +1419,19 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
 
         const auto triggerPartAnnouncement =
-            [this](const int guideTriggerId, const int partIndex) {
-          if (!dynamicGuideEngine.triggerForId(guideTriggerId)) {
-            dynamicGuideMissingPartIndex.store(partIndex,
-                                               std::memory_order_release);
+            [this, &guideEvents, blockStartFrame, sourceFramesThisBlock, numSamples](
+                const int guideTriggerId, const int partIndex,
+                const juce::int64 triggerFrame) {
+          if (guideTriggerId < 0) {
+            dynamicGuideMissingPartIndex.store(partIndex, std::memory_order_release);
+            return;
           }
+          const int offset = sourceFramesThisBlock > 0
+              ? juce::jlimit(0, juce::jmax(0, numSamples - 1),
+                  static_cast<int>(std::llround(static_cast<double>(
+                      juce::jmax<juce::int64>(0, triggerFrame - blockStartFrame)) *
+                      numSamples / sourceFramesThisBlock))) : 0;
+          guideEvents.add(offset, guideTriggerId);
         };
 
         const bool enteredPlayback = isPlaying && !dynamicGuideWasPlaying;
@@ -1432,38 +1460,30 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
             const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
             const bool shouldTriggerNow = triggerOnEntry && !alreadyAnnounced;
             if (shouldTriggerNow)
-              triggerPartAnnouncement(part.guideTriggerId, mappedPartIndex);
+              triggerPartAnnouncement(part.guideTriggerId, mappedPartIndex, blockStartFrame);
             if (shouldTriggerNow)
               dynamicGuideAnnouncedByPart[partIdx] = true;
           }
         }
 
         juce::ignoreUnused(arrangementEditingActive);
-        const int guidePartIndex =
-            playworship::audio::SectionScheduler::findGuideTrigger(
-                realtimeSections, transportClock.getPositionFrames(),
-                sourceFramesThisBlock);
-        if (juce::isPositiveAndBelow(
-                guidePartIndex, realtimeSectionCount)) {
-          const auto guideIndex = static_cast<size_t>(guidePartIndex);
-          playworship::audio::SectionScheduler::Section part;
-          const bool hasPart =
-              playworship::audio::SectionScheduler::getSection(
-                  realtimeSections, guidePartIndex, part);
-          const double partStartSec =
-              playworship::audio::TransportClock::framesToSeconds(
-                  part.startFrame, playbackSampleRate);
-          const bool excludedByLoop =
-              loopPartEngaged && partStartSec >= windowEndSec;
-          const bool entryTriggerOwnedByTransition =
-              hasPart && part.triggerGuideOnEntry &&
-              sectionDecision.transition &&
+        // Inspect every announcement in the callback, preserving exact
+        // offsets even when several counts/sections share a block.
+        for (int guidePartIndex = 0; guidePartIndex < realtimeSectionCount; ++guidePartIndex) {
+          const auto &part = realtimeSections.sections[static_cast<size_t>(guidePartIndex)];
+          if (part.guideTriggerFrame < blockStartFrame ||
+              part.guideTriggerFrame >= blockStartFrame + sourceFramesThisBlock ||
+              part.skipPlayback)
+            continue;
+          const double partStartSec = playworship::audio::TransportClock::framesToSeconds(
+              part.startFrame, playbackSampleRate);
+          const bool excludedByLoop = loopPartEngaged && partStartSec >= windowEndSec;
+          const bool transitionOwnsEntry = part.triggerGuideOnEntry && sectionDecision.transition &&
               guidePartIndex == sectionDecision.targetSection;
-          if (!excludedByLoop && !entryTriggerOwnedByTransition &&
-              !dynamicGuideAnnouncedByPart[guideIndex]) {
-            if (hasPart)
-              triggerPartAnnouncement(part.guideTriggerId, guidePartIndex);
-            dynamicGuideAnnouncedByPart[guideIndex] = true;
+          auto &announced = dynamicGuideAnnouncedByPart[static_cast<size_t>(guidePartIndex)];
+          if (!excludedByLoop && !transitionOwnsEntry && !announced) {
+            triggerPartAnnouncement(part.guideTriggerId, guidePartIndex, part.guideTriggerFrame);
+            announced = 1;
           }
         }
 
@@ -1490,12 +1510,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                     playbackSampleRate);
             const auto leadInFireFrame = std::max<juce::int64>(
                 0, currentPart.endFrame - leadInOneBarFrames);
-            if (blockStartFrame >= leadInFireFrame) {
+            if (blockStartFrame + sourceFramesThisBlock > leadInFireFrame) {
               playworship::audio::SectionScheduler::Section targetPart;
               if (playworship::audio::SectionScheduler::getSection(
                       realtimeSections, pendingPartIndex, targetPart)) {
                 triggerPartAnnouncement(targetPart.guideTriggerId,
-                                        pendingPartIndex);
+                                        pendingPartIndex, leadInFireFrame);
                 dynamicGuideAnnouncedByPart[static_cast<size_t>(
                     pendingPartIndex)] = true;
                 lastAnnouncedPendingJumpTarget = pendingPartIndex;
@@ -1532,9 +1552,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                     playbackSampleRate);
             const auto loopLeadInFireFrame = std::max<juce::int64>(
                 0, loopLeadInPart.endFrame - loopLeadInOneBarFrames);
-            if (blockStartFrame >= loopLeadInFireFrame) {
+            if (blockStartFrame + sourceFramesThisBlock > loopLeadInFireFrame) {
               triggerPartAnnouncement(loopLeadInPart.guideTriggerId,
-                                      realtimeLoopPartIndex);
+                                      realtimeLoopPartIndex, loopLeadInFireFrame);
               dynamicGuideAnnouncedByPart[static_cast<size_t>(
                   realtimeLoopPartIndex)] = true;
               lastAnnouncedLoopPartIndex = realtimeLoopPartIndex;
@@ -2599,43 +2619,55 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     refreshSectionAutomation(transportClock.getPositionSeconds());
 
   dynamicGuideRenderBuffer.clear();
-  if (inBlockArrangementTransitionApplied) {
-    if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive &&
-        inBlockTransitionOutputOffset > 0) {
-      dynamicGuideEngine.render(dynamicGuideRenderBuffer, 0,
-                                inBlockTransitionOutputOffset);
-    }
-    dynamicGuideEngine.reset();
-    dynamicGuideAnnouncedByPart.fill(0);
-    if (dynamicGuideAnnouncementsActive &&
-        inBlockTransitionTargetGuideOnEntry) {
-      if (!dynamicGuideEngine.triggerForId(
-              inBlockTransitionTargetGuideId)) {
-        dynamicGuideMissingPartIndex.store(
-            nextArrangementPartIndex, std::memory_order_release);
+  if (dynamicGuideAnnouncementsActive && sourceFramesThisBlock > 0) {
+    const int prefixOutput = inBlockArrangementTransitionApplied
+        ? inBlockTransitionOutputOffset : numSamples;
+    const int prefixSource = inBlockArrangementTransitionApplied
+        ? inBlockTransitionPrefixFrames : sourceFramesThisBlock;
+    if (guideTimelinePlaying)
+      guideEvents.addCues(*guideTimelineSnapshot, guideBlockStartFrame,
+                          prefixSource, 0, prefixOutput);
+    guideEvents.render(dynamicGuideEngine, dynamicGuideRenderBuffer, 0, prefixOutput);
+    if (inBlockArrangementTransitionApplied) {
+      // A seek/loop/jump owns the boundary. No outgoing guide or queued cue
+      // may continue into the new timeline, and cues at the destination fire
+      // only if that exact point is traversed by the suffix.
+      dynamicGuideEngine.reset();
+      dynamicGuideAnnouncedByPart.fill(0);
+      playworship::audio::DynamicGuideEvents suffix;
+      if (inBlockTransitionTargetGuideOnEntry && prefixOutput < numSamples) {
+        suffix.add(prefixOutput, inBlockTransitionTargetGuideId);
+        if (juce::isPositiveAndBelow(nextArrangementPartIndex,
+                playworship::audio::SectionScheduler::maxSections))
+          dynamicGuideAnnouncedByPart[static_cast<size_t>(nextArrangementPartIndex)] = 1;
       }
-      if (juce::isPositiveAndBelow(
-              nextArrangementPartIndex,
-              playworship::audio::SectionScheduler::maxSections)) {
-        dynamicGuideAnnouncedByPart[
-            static_cast<size_t>(nextArrangementPartIndex)] = 1;
+      const int suffixSource = sourceFramesThisBlock - prefixSource;
+      const int suffixOutput = numSamples - prefixOutput;
+      for (int i = 0; i < guideTimelineSnapshot->count; ++i) {
+        const auto &part = guideTimelineSnapshot->sections[static_cast<size_t>(i)];
+        const auto relative = part.guideTriggerFrame - inBlockTransitionTargetFrame;
+        if (!part.skipPlayback && relative >= 0 && relative < suffixSource &&
+            !dynamicGuideAnnouncedByPart[static_cast<size_t>(i)]) {
+          suffix.add(prefixOutput + juce::jlimit(0, juce::jmax(0, suffixOutput - 1),
+              static_cast<int>(std::llround(static_cast<double>(relative) * suffixOutput / suffixSource))),
+              part.guideTriggerId);
+          dynamicGuideAnnouncedByPart[static_cast<size_t>(i)] = 1;
+        }
       }
+      suffix.addCues(*guideTimelineSnapshot, inBlockTransitionTargetFrame,
+                     suffixSource, prefixOutput, suffixOutput);
+      suffix.render(dynamicGuideEngine, dynamicGuideRenderBuffer, prefixOutput, suffixOutput);
+      dynamicGuideLastPartIndex = nextArrangementPartIndex;
+      dynamicGuideLastBlockStartSec = playworship::audio::TransportClock::framesToSeconds(
+          inBlockTransitionTargetFrame, playbackSampleRate);
+      dynamicGuideWasPlaying = true;
     }
-    dynamicGuideLastPartIndex = nextArrangementPartIndex;
-    dynamicGuideLastBlockStartSec =
-        playworship::audio::TransportClock::framesToSeconds(
-            inBlockTransitionTargetFrame, playbackSampleRate);
-    dynamicGuideWasPlaying = true;
-    if (dynamicGuideShouldRender && dynamicGuideAnnouncementsActive &&
-        inBlockTransitionOutputOffset < numSamples) {
-      dynamicGuideEngine.render(
-          dynamicGuideRenderBuffer, inBlockTransitionOutputOffset,
-          numSamples - inBlockTransitionOutputOffset);
-    }
-  } else if (dynamicGuideShouldRender &&
-             dynamicGuideAnnouncementsActive) {
-    dynamicGuideEngine.render(dynamicGuideRenderBuffer);
   }
+
+  // Muted/silent guides still consume their voices on time. Keep their
+  // scratch audio out of delay history so unmuting cannot recover an old cue.
+  if (!dynamicGuideShouldRender)
+    dynamicGuideRenderBuffer.clear();
 
   // Pitch/tempo processing delays the stems. In normal playback, feed the
   // guide delay every callback (including silence) so its first announcement
@@ -4283,6 +4315,7 @@ bool MTControlsAudioProcessor::loadSongStems(
       ArrangementStructurePublicationGuard publication(
           arrangementStructurePublicationSequence);
       arrangementParts.clear();
+      arrangementCues.clear();
       ArrangementRuntimePart initialPart;
       initialPart.id = "part-1";
       initialPart.name = "Part";
@@ -4858,7 +4891,11 @@ double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
 }
 
 void MTControlsAudioProcessor::setSongArrangement(
-    const SongArrangementSnapshot &arrangement, bool isCustomArrangement) {
+    const SongArrangementSnapshot &incomingArrangement, bool isCustomArrangement) {
+  auto arrangement = incomingArrangement;
+  // All entry points (local, restored project and remote) must compile the
+  // same safely migrated structure that the waveform shows.
+  migrateLegacyArrangementCues(arrangement);
   {
     const juce::ScopedLock automationLock(sectionAutomationControlLock);
     sectionAutomationEditing.store(false, std::memory_order_release);
@@ -5087,10 +5124,50 @@ void MTControlsAudioProcessor::setSongArrangement(
     isCustomArrangement = false;
   }
 
+  std::vector<ArrangementRuntimeCue> nextCues;
+  nextCues.reserve(arrangement.cues.size());
+  for (const auto &cue : arrangement.cues) {
+    const double position = resolveArrangementCueSeconds(arrangement, cue);
+    if (!std::isfinite(position) || position < 0.0 || position >= juce::jmax(songLength, totalLength))
+      continue;
+    const auto parent = std::find_if(arrangement.parts.begin(), arrangement.parts.end(),
+        [&cue](const auto &part) { return part.id == cue.partId; });
+    const bool skipCue = parent != arrangement.parts.end() && parent->skipPlayback;
+    const auto countKey = arrangementCountSectionKey(cue.name);
+    const int firstCount = countKey.getIntValue();
+    const int requestedLength = firstCount >= 1 && firstCount <= 7 &&
+        cue.countEnd >= firstCount && cue.countEnd <= 7 ? cue.countEnd - firstCount + 1 : 0;
+    const bool validOffsets = requestedLength > 0 &&
+        cue.countOffsetsSec.size() == static_cast<size_t>(requestedLength) &&
+        cue.countOffsetsSec.front() == 0.0 &&
+        std::adjacent_find(cue.countOffsetsSec.begin(), cue.countOffsetsSec.end(),
+            [](double left, double right) { return right <= left; }) == cue.countOffsetsSec.end() &&
+        std::all_of(cue.countOffsetsSec.begin(), cue.countOffsetsSec.end(), [](double offset) {
+          return std::isfinite(offset) && offset >= 0.0;
+        });
+    const bool sequence = firstCount >= 1 && cue.countEnd >= firstCount && cue.countEnd <= 7 &&
+        (validOffsets || (std::isfinite(cue.countIntervalSec) && cue.countIntervalSec > 0.0));
+    const int countLength = sequence ? requestedLength : 1;
+    for (int count = 0; count < countLength; ++count) {
+      const double offset = sequence ? (validOffsets ? cue.countOffsetsSec[static_cast<size_t>(count)]
+          : count * cue.countIntervalSec) : 0.0;
+      const double announcementPosition = position + offset;
+      if (announcementPosition >= juce::jmax(songLength, totalLength))
+        break;
+      const auto name = sequence ? juce::String(firstCount + count) : cue.name;
+      const int trigger = arrangementCueTriggerId(dynamicGuideEngine, name);
+      nextCues.push_back({name, announcementPosition, trigger, skipCue});
+    }
+  }
+  std::stable_sort(nextCues.begin(), nextCues.end(), [](const auto &a, const auto &b) {
+    return a.positionSec < b.positionSec;
+  });
+
   {
     ArrangementStructurePublicationGuard publication(
         arrangementStructurePublicationSequence);
     arrangementParts = std::move(next);
+    arrangementCues = std::move(nextCues);
     rebuildSectionScheduler();
     dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
     arrangementTotalLengthSeconds.store(totalLength, std::memory_order_relaxed);
@@ -6778,6 +6855,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
   songLoaded.store(false, std::memory_order_relaxed);
   arrangementParts.clear();
+  arrangementCues.clear();
   sectionScheduler.clear();
   transportClock.reset(0);
   deferredArrangementTransitionPending = false;
@@ -7128,7 +7206,14 @@ void MTControlsAudioProcessor::rebuildSectionScheduler() noexcept {
         part.muteInstruments,
         part.skipPlayback});
   }
-  sectionScheduler.publish(sections);
+  std::vector<playworship::audio::SectionScheduler::Cue> cues;
+  cues.reserve(arrangementCues.size());
+  for (auto &cue : arrangementCues) {
+    cue.guideTriggerId = arrangementCueTriggerId(dynamicGuideEngine, cue.name);
+    cues.push_back({playworship::audio::TransportClock::secondsToFrames(cue.positionSec, sampleRate),
+                    cue.guideTriggerId, cue.skipPlayback});
+  }
+  sectionScheduler.publish(sections, cues);
 }
 
 MTControlsAudioProcessor::TransportState

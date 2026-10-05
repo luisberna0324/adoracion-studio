@@ -1,15 +1,15 @@
 ---
 type: Technical Contract
 title: Mobile Layout
-description: Contrato responsive y de area segura para telefonos iOS y Android
+description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-09-26T00:00:00-03:00
+timestamp: 2026-10-05T00:00:00-03:00
 ---
 
 # Mobile Layout
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
-el runtime habilita `upright` para Biblioteca, setlists, Configuración y Ensayo mientras su panel
+el runtime habilita `upright` para Biblioteca, setlists, Configuración, Teams y Ensayo mientras su panel
 esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
 orientacion inicial se restringe a landscape. En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
@@ -281,7 +281,14 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   breakpoints: `iPad` siempre usa el perfil tablet/escritorio e `iPhone` usa el
   perfil movil. Esto evita clasificaciones incorrectas por la escala del
   framebuffer del simulador.
-- El fondo del mixer se prolonga visualmente por el inset inferior hasta el
+- En tablets iOS, el editor descuenta los cuatro `safeAreaInsets` una sola vez
+  del area de performance. TopBar, waveform, setlist, mixer y Pads se colocan
+  dentro de ese rectangulo, dejando libres la barra de estado y el indicador
+  inferior. El drawer de Biblioteca y su scrim usan el mismo ancho y borde
+  inferior seguros; empiezan debajo del limite real del TopBar. El fondo del
+  editor cubre la ventana completa. La tablet no recibe insets internos ni
+  prolongacion inferior del perfil de telefono.
+- En iPhone, el fondo del mixer se prolonga visualmente por el inset inferior hasta el
   borde fisico de la ventana, evitando una franja vacia bajo los canales.
 - En iPhone y Android cada lateral usa su inset real, actualizado al girar. El `TopBar`
   dibuja su fondo a ancho completo y coloca los botones en su area segura con
@@ -298,7 +305,7 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
   inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la
   barra superior cubre tambien su inset superior si hay una barra visible.
-- Los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
+- En telefonos, los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
   fijas mantienen su proteccion respecto de la camara y esquinas.
 - No se mantienen tablas de margenes por modelo ni gutters fijos para notch.
 

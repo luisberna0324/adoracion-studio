@@ -1,4 +1,5 @@
 #include "ui/learning/LearningGuideOverlay.h"
+#include "ui/components/AppModal.h"
 #include "data/Localization.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
@@ -130,6 +131,32 @@ void expectActionsInside(LearningGuideOverlay &guide) {
     for (const auto &other : previous)
       expect(!bounds.intersects(other), "guide controls do not overlap one another");
     previous.push_back(bounds);
+  }
+}
+
+void testSharedCloudCourse() {
+  Fixture fixture;
+  const auto lesson = playworship::learning::makeSharedCloudLesson("teams-cloud-preview", "equipo@example.com", false);
+  for (const auto size : {juce::Point<int>(390, 844), juce::Point<int>(1200, 800)}) {
+    fixture.setSize(size.x, size.y);
+    fixture.guide.setSafeAreaInsets({24, 12, 20, 12});
+    fixture.guide.setVisible(false);
+    {
+      AppModal welcome(fixture, AppModal::Kind::Confirm,
+          "Tienes acceso a una nube compartida",
+          "equipo@example.com ha compartido sus canciones contigo. Puedes descargarlas y agregarlas a tus setlists.",
+          "Ver canciones", juce::String::fromUTF8("Más tarde"), nullptr);
+      fixture.addAndMakeVisible(welcome);
+      welcome.setBounds(fixture.getLocalBounds());
+      capture(fixture, "teams-welcome-" + juce::String(size.x));
+    }
+    fixture.guide.setVisible(true);
+    for (int i = 0; i < 3; ++i) {
+      fixture.guide.showStep(lesson, i, {20, 120, size.x - 40, size.y - 150}, false);
+      fixture.guide.setStepReadiness(false, lesson.steps[static_cast<size_t>(i)].task);
+      expectActionsInside(fixture.guide);
+      capture(fixture, "teams-" + juce::String(size.x) + "-" + juce::String(i));
+    }
   }
 }
 
@@ -550,6 +577,7 @@ int main() {
       std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
     }
   };
+  run("shared cloud guide phone and desktop", testSharedCloudCourse);
   run("responsive spotlight and actual control hit testing", testResponsiveSpotlightAndInteraction);
   run("target updates and course step boundaries", testTargetUpdatesAndBoundarySteps);
   run("validated tasks retain navigation and real control access", testValidatedStepReadiness);

@@ -1,6 +1,7 @@
 #include "WelcomeModal.h"
 #include "BinaryData.h"
 #include "../../data/Localization.h"
+#include "../../platform/NativeAppleSignIn.h"
 
 namespace {
 class WelcomePillLookAndFeel final : public juce::LookAndFeel_V4 {
@@ -115,15 +116,39 @@ void WelcomeModal::setStatusText(const juce::String &text, bool isError) {
 }
 
 void WelcomeModal::resetStatusToDefault() {
-  setStatusText(L10n::tr("Pulsa Ingresar para abrir el navegador.",
-                         "Press Sign in to open the browser."),
+  setStatusText(appleButton ? L10n::tr("Elige cómo iniciar sesión.", "Choose how to sign in.")
+                           : L10n::tr("Pulsa Ingresar para abrir el navegador.",
+                                      "Press Sign in to open the browser."),
                 false);
   setChecking(false);
+  setAuthenticationBusy(false);
 }
 
 void WelcomeModal::setChecking(bool isChecking) {
+  checking = isChecking;
   loginButton.setVisible(!isChecking);
+  if (appleButton) appleButton->setVisible(!isChecking);
   subtitle.setVisible(!isChecking);
+}
+
+void WelcomeModal::setAppleSignInAvailable(bool available) {
+  if (available && !appleButton) {
+    appleButton = NativeAppleSignIn::createButton([this] {
+      if (onAppleLoginRequested) onAppleLoginRequested();
+    });
+    if (appleButton) addAndMakeVisible(*appleButton);
+  } else if (!available) {
+    appleButton.reset();
+  }
+  loginButton.setButtonText(appleButton ? L10n::tr("Continuar con Google", "Continue with Google")
+                                       : L10n::tr("Ingresar", "Sign in"));
+  if (appleButton) appleButton->setVisible(!checking);
+  resized();
+}
+
+void WelcomeModal::setAuthenticationBusy(bool busy) {
+  loginButton.setEnabled(!busy);
+  if (appleButton) appleButton->setEnabled(!busy);
 }
 
 void WelcomeModal::paint(juce::Graphics &g) {
@@ -179,7 +204,7 @@ void WelcomeModal::resized() {
     constexpr int textGap = 8;
     constexpr int sectionGap = 12;
     const int formHeight = titleH + textGap + subtitleH + sectionGap +
-                           statusH + sectionGap + buttonH;
+                           statusH + sectionGap + buttonH + (appleButton ? buttonH + 10 : 0);
     auto column = juce::Rectangle<int>(formWidth, juce::jmin(formHeight,
                                                              inner.getHeight()))
                       .withCentre(inner.getCentre());
@@ -200,6 +225,10 @@ void WelcomeModal::resized() {
     status.setBounds(column.removeFromTop(statusH));
     column.removeFromTop(sectionGap);
     loginButton.setBounds(column.removeFromTop(buttonH));
+    if (appleButton) {
+      column.removeFromTop(10);
+      appleButton->setBounds(column.removeFromTop(buttonH));
+    }
     return;
   }
 
@@ -239,4 +268,8 @@ void WelcomeModal::resized() {
   column.removeFromTop(statusGap);
 
   loginButton.setBounds(column.removeFromTop(btnH));
+  if (appleButton) {
+    column.removeFromTop(10);
+    appleButton->setBounds(column.removeFromTop(btnH));
+  }
 }

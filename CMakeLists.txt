@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.22)
 
 set(MTCONTROLS_APP_VERSION "1.1.4" CACHE STRING
     "Semantic version used for build metadata (MAJOR.MINOR.PATCH)")
-set(MTCONTROLS_IOS_BUILD_NUMBER "1" CACHE STRING
+set(MTCONTROLS_IOS_BUILD_NUMBER "2" CACHE STRING
     "Monotonically increasing App Store build number")
 
 if(DEFINED ENV{MTCONTROLS_APP_VERSION} AND NOT "$ENV{MTCONTROLS_APP_VERSION}" STREQUAL "")
@@ -27,6 +27,29 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 option(MTCONTROLS_BUILD_TESTS "Build the PlayWorship regression tests" OFF)
+option(MTCONTROLS_APPLE_SIGN_IN_ENABLED
+    "Enable native Apple sign-in when portal entitlements and backend are configured" OFF)
+if(MTCONTROLS_APPLE_SIGN_IN_ENABLED AND NOT APPLE)
+    message(FATAL_ERROR "Native Apple sign-in is available only on Apple platforms")
+endif()
+option(MTCONTROLS_MAC_APP_STORE
+    "Build the sandboxed, helper-free Mac App Store variant (Xcode only)" OFF)
+set(MTCONTROLS_MAC_DEVELOPMENT_TEAM "" CACHE STRING
+    "Apple development team for the optional Mac App Store variant")
+set(MTCONTROLS_MAC_BUILD_NUMBER "1" CACHE STRING
+    "Monotonically increasing Mac App Store build number")
+if(MTCONTROLS_MAC_APP_STORE)
+    if(NOT APPLE OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+       NOT CMAKE_GENERATOR STREQUAL "Xcode")
+        message(FATAL_ERROR "MTCONTROLS_MAC_APP_STORE requires macOS and the Xcode generator")
+    endif()
+    if(NOT MTCONTROLS_MAC_DEVELOPMENT_TEAM MATCHES "^[A-Z0-9]+$")
+        message(FATAL_ERROR "Set MTCONTROLS_MAC_DEVELOPMENT_TEAM for the Mac App Store variant")
+    endif()
+    if(NOT MTCONTROLS_MAC_BUILD_NUMBER MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "MTCONTROLS_MAC_BUILD_NUMBER must be a positive integer")
+    endif()
+endif()
 option(MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS
     "Log aggregate VU meter repaint counters every two seconds" OFF)
 option(MTCONTROLS_ENABLE_SENTRY
@@ -124,6 +147,10 @@ if((NOT MTCONTROLS_CLICKS_PACK OR MTCONTROLS_CLICKS_PACK STREQUAL "") AND
         FORCE)
 endif()
 option(MTCONTROLS_BUNDLE_FFMPEG "Bundle ffmpeg inside build/install artifacts" OFF)
+if(MTCONTROLS_MAC_APP_STORE AND MTCONTROLS_BUNDLE_FFMPEG)
+    message(FATAL_ERROR
+        "The initial Mac App Store variant uses built-in codecs and WAV export; do not bundle FFmpeg")
+endif()
 set(MTCONTROLS_BACKEND_MODE "cloud" CACHE STRING
     "PlayWorship backend target: cloud, local, or custom")
 set_property(CACHE MTCONTROLS_BACKEND_MODE PROPERTY STRINGS cloud local custom)
@@ -291,6 +318,15 @@ endif()
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsAppleSignInTests PRODUCT_NAME "Apple Sign In Contract Tests")
+    target_sources(MTControlsAppleSignInTests PRIVATE
+        tests/apple_signin_contract_tests.cpp src/data/AppleSignInApi.cpp
+        src/platform/NativeAppleSignIn.cpp)
+    target_include_directories(MTControlsAppleSignInTests PRIVATE src)
+    target_link_libraries(MTControlsAppleSignInTests PRIVATE
+        juce::juce_core juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsAppleSignInTests)
+    add_test(NAME apple_signin_contract COMMAND "$<TARGET_FILE:MTControlsAppleSignInTests>")
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
     target_sources(MTControlsRemoteSessionTests PRIVATE
         tests/remote_session_tests.cpp
@@ -329,6 +365,61 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsCloudSettingsSyncTests
         PRIVATE juce::juce_core juce::juce_cryptography)
     add_test(NAME cloud_settings_sync_state COMMAND MTControlsCloudSettingsSyncTests)
+    juce_add_console_app(MTControlsTeamsLocalStoreTests PRODUCT_NAME "Teams Local Store Tests")
+    target_sources(MTControlsTeamsLocalStoreTests PRIVATE tests/teams_local_store_tests.cpp src/data/TeamsLocalStore.cpp)
+    juce_generate_juce_header(MTControlsTeamsLocalStoreTests)
+    target_include_directories(MTControlsTeamsLocalStoreTests PRIVATE src)
+    target_compile_definitions(MTControlsTeamsLocalStoreTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsTeamsLocalStoreTests PRIVATE juce::juce_core juce::juce_cryptography)
+    add_test(NAME teams_local_store COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsTeamsLocalStoreTests>")
+    juce_add_console_app(MTControlsTeamsPreparationTests PRODUCT_NAME "Teams Preparation Tests")
+    target_sources(MTControlsTeamsPreparationTests PRIVATE tests/teams_preparation_tests.cpp
+        src/data/TeamsPreparationService.cpp src/data/TeamsLocalStore.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionPersistence.cpp
+        src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+    juce_generate_juce_header(MTControlsTeamsPreparationTests)
+    target_include_directories(MTControlsTeamsPreparationTests PRIVATE src)
+    target_compile_definitions(MTControlsTeamsPreparationTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsTeamsPreparationTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME teams_preparation COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsTeamsPreparationTests>")
+    juce_add_console_app(MTControlsTeamsPanelTests PRODUCT_NAME "Teams Panel Tests")
+    target_sources(MTControlsTeamsPanelTests PRIVATE tests/teams_panel_tests.cpp src/data/AppSettings.cpp)
+    juce_generate_juce_header(MTControlsTeamsPanelTests)
+    target_include_directories(MTControlsTeamsPanelTests PRIVATE src)
+    target_compile_definitions(MTControlsTeamsPanelTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsTeamsPanelTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME teams_panel COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsTeamsPanelTests>")
+    juce_add_console_app(MTControlsTeamsWorkspaceTests PRODUCT_NAME "Teams Workspace Tests")
+    target_sources(MTControlsTeamsWorkspaceTests PRIVATE tests/teams_workspace_tests.cpp
+        src/data/AppSettings.cpp src/data/TeamsLocalStore.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionPersistence.cpp
+        src/data/SessionAuthLogger.cpp)
+    juce_generate_juce_header(MTControlsTeamsWorkspaceTests)
+    target_include_directories(MTControlsTeamsWorkspaceTests PRIVATE src)
+    target_compile_definitions(MTControlsTeamsWorkspaceTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(MTControlsTeamsWorkspaceTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME teams_workspace COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsTeamsWorkspaceTests>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(teams_panel teams_workspace PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
+    juce_add_gui_app(MTControlsTeamsUIPreview PRODUCT_NAME "PlayWorship Teams Preview")
+    target_sources(MTControlsTeamsUIPreview PRIVATE tests/teams_ui_preview.cpp src/data/AppSettings.cpp)
+    juce_generate_juce_header(MTControlsTeamsUIPreview)
+    target_include_directories(MTControlsTeamsUIPreview PRIVATE src)
+    target_compile_definitions(MTControlsTeamsUIPreview PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
+    target_link_libraries(MTControlsTeamsUIPreview PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_add_console_app(MTControlsCloudSyncIndexTests
         PRODUCT_NAME "Cloud Sync Index Tests")
     target_sources(MTControlsCloudSyncIndexTests PRIVATE
@@ -464,6 +555,25 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME mobile_import_staging COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsImportStagingTests>")
+    if(MTCONTROLS_MAC_APP_STORE)
+        juce_add_console_app(MTControlsMacAppStoreTests PRODUCT_NAME "Mac Store Tests")
+        target_sources(MTControlsMacAppStoreTests PRIVATE
+            tests/mac_app_store_tests.cpp
+            src/data/AssetBootstrapManager.cpp src/data/AppSettings.cpp
+            src/data/SongData.cpp src/data/PrimeLibrarySource.cpp
+            src/data/MobileImportStaging.cpp src/data/PortableFlacConversion.cpp
+            src/telemetry/Telemetry.cpp)
+        target_include_directories(MTControlsMacAppStoreTests PRIVATE src)
+        target_compile_definitions(MTControlsMacAppStoreTests PRIVATE
+            MTCONTROLS_MAC_APP_STORE=1 MTCONTROLS_SENTRY_ENABLED=0
+            MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_USE_MP3AUDIOFORMAT=1)
+        target_link_libraries(MTControlsMacAppStoreTests PRIVATE
+            juce::juce_audio_formats juce::juce_graphics)
+        juce_generate_juce_header(MTControlsMacAppStoreTests)
+        add_test(NAME mac_app_store_safety COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+            "$<TARGET_FILE:MTControlsMacAppStoreTests>")
+    endif()
     juce_add_console_app(MTControlsSongCreationTests PRODUCT_NAME "Song Creation Tests")
     target_sources(MTControlsSongCreationTests PRIVATE tests/song_project_creation_tests.cpp
         src/data/SongLibraryStore.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
@@ -637,6 +747,8 @@ if(MTCONTROLS_BUILD_TESTS)
         src/audio/DynamicGuideEngine.cpp
         src/audio/DynamicGuideEngine.h
         src/audio/DynamicGuideTiming.h
+        src/audio/DynamicGuideEvents.h
+        src/data/SongData.cpp
     )
     juce_generate_juce_header(MTControlsSongMixExportTimelineTests)
     target_include_directories(MTControlsSongMixExportTimelineTests PRIVATE src)
@@ -736,9 +848,25 @@ set(MTCONTROLS_APP_ICON_PATH
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/app-icon-1024.png")
 
 set(MTCONTROLS_PLIST_TO_MERGE "")
+set(_mtcontrols_mac_sandbox_options "")
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Selected .pwproj files are copied into the app's library before opening
+    # (SongListPanel::importProjectUrlToSandbox); external files are not edited
+    # in place and the app does not implement UIDocumentBrowserViewController.
     set(MTCONTROLS_PLIST_TO_MERGE
-        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
+        "<plist><dict><key>CFBundleDevelopmentRegion</key><string>en</string><key>CFBundleInfoDictionaryVersion</key><string>6.0</string><key>CFBundleVersion</key><string>${MTCONTROLS_IOS_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSSupportsOpeningDocumentsInPlace</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string><key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict><key>UIRequiresFullScreen</key><true/></dict></plist>")
+elseif(MTCONTROLS_MAC_APP_STORE)
+    set(MTCONTROLS_PLIST_TO_MERGE
+        "<plist><dict><key>CFBundleVersion</key><string>${MTCONTROLS_MAC_BUILD_NUMBER}</string><key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>com.multitracks.playworship.auth</string><key>CFBundleURLSchemes</key><array><string>playworship</string></array></dict></array><key>ITSAppUsesNonExemptEncryption</key><false/><key>LSApplicationCategoryType</key><string>public.app-category.music</string><key>NSBonjourServices</key><array><string>_playworship._tcp</string></array><key>NSLocalNetworkUsageDescription</key><string>PlayWorship descubre y controla sesiones en tu red local.</string></dict></plist>")
+    # Core MIDI/Bluetooth, local remote sessions, HTTPS, the desktop OAuth
+    # loopback server and explicit Open/Save panels. No broad filesystem or
+    # microphone entitlement is needed; persisted imports are private copies.
+    set(_mtcontrols_mac_sandbox_options
+        com.apple.security.network.client
+        com.apple.security.network.server
+        com.apple.security.device.usb
+        com.apple.security.device.bluetooth
+        com.apple.security.files.user-selected.read-write)
 endif()
 
 juce_add_plugin(MTControls
@@ -775,13 +903,65 @@ juce_add_plugin(MTControls
     BLUETOOTH_PERMISSION_TEXT "PlayWorship uses Bluetooth to discover and pair Bluetooth MIDI devices."
     LOCAL_NETWORK_PERMISSION_ENABLED TRUE
     LOCAL_NETWORK_PERMISSION_TEXT "PlayWorship connects to compatible music and presentation services on your local network."
+    APP_SANDBOX_ENABLED "${MTCONTROLS_MAC_APP_STORE}"
+    APP_SANDBOX_OPTIONS ${_mtcontrols_mac_sandbox_options}
 )
 
+if(MTCONTROLS_MAC_APP_STORE)
+    set_target_properties(MTControls_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${MTCONTROLS_MAC_DEVELOPMENT_TEAM}"
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+        XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
+        XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES"
+        XCODE_ATTRIBUTE_ENABLE_APP_SANDBOX "YES"
+        XCODE_ATTRIBUTE_MARKETING_VERSION "${MTCONTROLS_APP_VERSION}"
+        XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "${MTCONTROLS_MAC_BUILD_NUMBER}")
+    set(_mtcontrols_mac_privacy_manifest
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/ios/PrivacyInfo.xcprivacy")
+    set_source_files_properties("${_mtcontrols_mac_privacy_manifest}"
+        PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    target_sources(MTControls_Standalone PRIVATE "${_mtcontrols_mac_privacy_manifest}")
+    foreach(symbol_target IN ITEMS MTControls MTControls_Standalone)
+        target_compile_options(${symbol_target} PRIVATE "$<$<CONFIG:Release>:-g>")
+        set_target_properties(${symbol_target} PROPERTIES
+            XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT
+            "$<IF:$<CONFIG:Release>,dwarf-with-dsym,dwarf>")
+    endforeach()
+endif()
+
 # iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
+if(MTCONTROLS_APPLE_SIGN_IN_ENABLED)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    get_target_property(_apple_base_entitlements MTControls_Standalone
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS)
+    if(NOT EXISTS "${_apple_base_entitlements}")
+        message(FATAL_ERROR "Apple sign-in requires generated JUCE signing entitlements")
+    endif()
+    set(_apple_merged_entitlements
+        "${CMAKE_CURRENT_BINARY_DIR}/MTControls_Standalone-Apple.entitlements")
+    execute_process(COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/app-store/merge_apple_entitlements.py"
+        "${_apple_base_entitlements}" "${_apple_merged_entitlements}"
+        COMMAND_ERROR_IS_FATAL ANY)
+    set_target_properties(MTControls_Standalone PROPERTIES
+        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${_apple_merged_entitlements}")
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set_target_properties(MTControls PROPERTIES
         JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}"
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
+    # Release archives need debug information from both the shared JUCE code
+    # and the standalone wrapper to produce a useful, matching app dSYM.
+    foreach(symbol_target IN ITEMS MTControls MTControls_Standalone)
+        if(TARGET ${symbol_target})
+            target_compile_options(${symbol_target} PRIVATE
+                "$<$<CONFIG:Release>:-g>")
+            set_target_properties(${symbol_target} PROPERTIES
+                XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT
+                "$<IF:$<CONFIG:Release>,dwarf-with-dsym,dwarf>")
+        endif()
+    endforeach()
     if(TARGET MTControls_Standalone)
         set_target_properties(MTControls_Standalone PROPERTIES
             XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5"
@@ -868,6 +1048,7 @@ target_sources(MTControls
         src/PluginEditor.cpp
         src/PluginEditor.h
         src/RemoteEditorIntegration.cpp
+        src/TeamsIntegration.cpp
         src/PluginEditorSupport.cpp
         src/PluginEditorSupport.h
         src/PluginProcessor.cpp
@@ -943,6 +1124,12 @@ target_sources(MTControls
         src/data/CloudSignedUpload.h
         src/data/SongSyncService.cpp
         src/data/SongSyncService.h
+        src/data/TeamsClient.cpp
+        src/data/TeamsClient.h
+        src/data/TeamsLocalStore.cpp
+        src/data/TeamsLocalStore.h
+        src/data/TeamsPreparationService.cpp
+        src/data/TeamsPreparationService.h
         src/data/LocalAuthCallbackServer.cpp
         src/data/LocalAuthCallbackServer.h
         src/data/SessionAuthLogger.cpp
@@ -1007,6 +1194,8 @@ target_sources(MTControls
         src/ui/panels/MixerFaderPanel.h
         src/ui/panels/SettingsPanel.cpp
         src/ui/panels/SettingsPanel.h
+        src/ui/panels/TeamsPanel.cpp
+        src/ui/panels/TeamsPanel.h
         src/ui/panels/SongImportWizardComponent.cpp
         src/ui/panels/SongImportWizardComponent.h
         src/ui/panels/SongListPanel.cpp
@@ -1040,12 +1229,19 @@ target_sources(MTControls
 if(APPLE)
     target_sources(MTControls PRIVATE
         src/data/CloudSignedUpload.mm
-        src/network/RemoteDeviceName.mm)
+        src/network/RemoteDeviceName.mm
+        src/platform/NativeAppleSignIn.mm)
+    target_link_libraries(MTControls PRIVATE "-framework AuthenticationServices")
 else()
     target_sources(MTControls PRIVATE
         src/data/CloudSignedUpload.cpp
         src/network/RemoteDeviceName.cpp)
 endif()
+
+target_sources(MTControls PRIVATE
+    src/AppleSignInIntegration.cpp
+    src/data/AppleSignInApi.cpp src/data/AppleSignInApi.h
+    src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.h)
 
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(MTControls PRIVATE "-framework SystemConfiguration")
@@ -1073,6 +1269,9 @@ endif()
 # Allow subdirectories under src/ (e.g. src/data/ProjectStore.cpp) to
 # include headers from the top-level src/ directory (e.g. SongLoadProbe.h).
 target_include_directories(MTControls PRIVATE src)
+target_compile_definitions(MTControls PUBLIC
+    MTCONTROLS_MAC_APP_STORE=$<BOOL:${MTCONTROLS_MAC_APP_STORE}>
+    MTCONTROLS_APPLE_SIGN_IN_ENABLED=$<BOOL:${MTCONTROLS_APPLE_SIGN_IN_ENABLED}>)
 
 target_compile_definitions(MTControls
     PRIVATE
@@ -1148,6 +1347,43 @@ if(MTCONTROLS_BUNGEE_AVAILABLE)
                 "Resources/ThirdPartyLicenses")
         target_sources(MTControls_Standalone PRIVATE
             "${MTCONTROLS_BUNGEE_DIR}/LICENSE")
+    elseif(MTCONTROLS_MAC_APP_STORE)
+        # Xcode embeds and signs the framework before signing the app. Keep
+        # its original install name; the normal desktop dylib/ad-hoc path is
+        # unsuitable for distribution and is intentionally a separate branch.
+        # The vendor plist lacks CFBundleIdentifier. Prepare a private copy
+        # before Xcode's Embed Frameworks/CodeSign steps; never mutate the SDK.
+        set(_mtcontrols_mac_framework_stage
+            "${CMAKE_CURRENT_BINARY_DIR}/mac-app-store-frameworks")
+        file(MAKE_DIRECTORY "${_mtcontrols_mac_framework_stage}")
+        file(COPY "${_mtcontrols_bungee_framework}"
+            DESTINATION "${_mtcontrols_mac_framework_stage}")
+        set(_mtcontrols_mac_bungee_framework
+            "${_mtcontrols_mac_framework_stage}/bungee.framework")
+        execute_process(COMMAND /usr/libexec/PlistBuddy
+            -c "Set :CFBundleIdentifier com.zynaptiq.bungee"
+            "${_mtcontrols_mac_bungee_framework}/Resources/Info.plist"
+            RESULT_VARIABLE _mtcontrols_mac_bungee_plist_status
+            ERROR_QUIET)
+        if(NOT _mtcontrols_mac_bungee_plist_status EQUAL 0)
+            execute_process(COMMAND /usr/libexec/PlistBuddy
+                -c "Add :CFBundleIdentifier string com.zynaptiq.bungee"
+                "${_mtcontrols_mac_bungee_framework}/Resources/Info.plist"
+                RESULT_VARIABLE _mtcontrols_mac_bungee_plist_status)
+        endif()
+        if(NOT _mtcontrols_mac_bungee_plist_status EQUAL 0)
+            message(FATAL_ERROR "Could not prepare the Mac App Store Bungee framework plist")
+        endif()
+        set_target_properties(MTControls_Standalone PROPERTIES
+            BUILD_RPATH "@executable_path/../Frameworks"
+            INSTALL_RPATH "@executable_path/../Frameworks"
+            XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/../Frameworks"
+            XCODE_EMBED_FRAMEWORKS "${_mtcontrols_mac_bungee_framework}"
+            XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES
+            XCODE_EMBED_FRAMEWORKS_REMOVE_HEADERS_ON_COPY YES)
+        set_source_files_properties("${MTCONTROLS_BUNGEE_DIR}/LICENSE"
+            PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/ThirdPartyLicenses")
+        target_sources(MTControls_Standalone PRIVATE "${MTCONTROLS_BUNGEE_DIR}/LICENSE")
     elseif(APPLE)
         set_target_properties(MTControls_Standalone PROPERTIES
             BUILD_RPATH "@executable_path/../Frameworks")
@@ -1345,7 +1581,7 @@ endif()
 # (Bungee, ffmpeg, guides and click packs) must be present before sealing the
 # app, otherwise codesign reports a missing or invalid sealed resource.
 if(TARGET MTControls_Standalone AND APPLE AND
-   NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+   NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT MTCONTROLS_MAC_APP_STORE)
     add_custom_command(TARGET MTControls_Standalone POST_BUILD
         COMMAND /usr/bin/codesign --force --deep --sign -
             "$<TARGET_BUNDLE_DIR:MTControls_Standalone>"

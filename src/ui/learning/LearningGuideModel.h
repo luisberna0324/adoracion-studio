@@ -9,16 +9,18 @@ namespace playworship::learning {
 enum class Anchor { None, SongSelection, PlayPause, Stop, Waveform, Mixer,
                     Metronome, Tempo, Key, Pads, More, Settings, PracticeLoop, PracticeExit,
                     RemoteSettings, RemoteMode, RemoteAlias, RemoteStatus, RemoteServers,
-                    SettingsClose, RemoteIndicator };
+                    SettingsClose, RemoteIndicator, SharedCloud };
 
 // None is an explanatory step. Other steps require facts from the real app;
 // enabling Continue never performs the operation for the user.
 enum class StepCondition { None, SettingsOpen, RemotePageOpen, ServerModeActive,
                            ServerListening, ServerHasClient, ClientModeActive,
                            RemoteConnected, SettingsClosed, SongLoaded,
-                           RemotePlayApplied, RemoteStopApplied };
+                           RemotePlayApplied, RemoteStopApplied, CloudOpen, SharedSongDownloaded, SharedSongAdded };
 
 struct StepFacts {
+  bool cloudOpen = false, sharedSongDownloaded = false, sharedSongAdded = false;
+  bool sharedCloudAccessible = false;
   bool settingsOpen = false;
   bool remotePageOpen = false;
   bool serverModeActive = false;
@@ -64,6 +66,8 @@ struct Lesson {
 
 // Content is resolved in the current language and for the real phone features.
 std::vector<Lesson> makeLessons(bool phone, bool english);
+
+Lesson makeSharedCloudLesson(const juce::String &id, const juce::String &owner, bool english);
 
 struct LessonProgress {
   juce::String stepId;

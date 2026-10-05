@@ -1,4 +1,5 @@
 #include "audio/SongMixExporter.h"
+#include "data/AssetBootstrapManager.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -169,6 +170,35 @@ void checkCopiedSectionAutomation(const juce::File &root) {
            "tempo processing preserves copied audio, its automation and restored base mix");
   }
 }
+void checkIndependentGuideCueExport(const juce::File &root) {
+  const auto source = root.getChildFile("silent-guide-source.wav");
+  writeSource(source, 4800, [](int) { return 0.0f; });
+  const auto cuesDirectory = AssetBootstrapManager::getGuidesLanguageCuesDirectory("en");
+  writeSource(cuesDirectory.getChildFile("fixture exact a.wav"), 12, [](int) { return 0.1f; });
+  writeSource(cuesDirectory.getChildFile("fixture exact b.wav"), 12, [](int) { return 0.2f; });
+  SongMixExportRequest request;
+  request.outputFile = root.getChildFile("independent-cue-mix.wav");
+  request.sampleRate = 48000.0; request.endSeconds = 0.1;
+  request.stems = {{source.getFullPathName()}};
+  request.dynamicGuide.enabled = true; request.guideLanguage = "en";
+  SongArrangementCueSnapshot a, b;
+  a.id = "a"; a.name = "fixture exact a"; a.positionSec = 128.0 / 48000.0;
+  b.id = "b"; b.name = "fixture exact b"; b.positionSec = 132.0 / 48000.0;
+  request.arrangement.cues = {a, b};
+  const auto rendered = renderAndRead(request, 4800);
+  expect(rendered.getSample(0, 127) == 0.0f &&
+      std::abs(rendered.getSample(0, 128) - 0.1f) < 1e-6 &&
+      std::abs(rendered.getSample(0, 132) - 0.3f) < 1e-6 &&
+      std::abs(rendered.getSample(0, 140) - 0.2f) < 1e-6 &&
+      rendered.getSample(0, 144) == 0.0f,
+      "real WAV bounce preserves independent cue sample offsets and overlapping voice tails");
+  request.startSeconds = 256.0 / 48000.0;
+  request.outputFile = root.getChildFile("independent-cue-seek.wav");
+  const auto partial = renderAndRead(request, 4544);
+  expect(partial.getMagnitude(0, 4544) == 0.0f,
+      "export beginning after cues does not resurrect earlier instructions");
+}
+
 } // namespace
 
 int main() {
@@ -218,5 +248,6 @@ int main() {
          "window fade preserves early audio and attenuates the end");
   checkSavedSectionAutomation(root);
   checkCopiedSectionAutomation(root);
+  checkIndependentGuideCueExport(root);
   std::cout << "Song mix export regression checks passed\n";
 }

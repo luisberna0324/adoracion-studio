@@ -1,15 +1,12 @@
 ---
 type: Integration Contract
-title: Auth — Google OAuth en iOS vía ASWebAuthenticationSession
-description: Contrato del login nativo en iOS. La app abre la URL del backend,
-  que redirige a Google y vuelve con un idToken de Firebase. Define endpoints,
-  allowlist de redirect_uri, scopes, errores y contrato del payload de
-  callback.
-tags: [auth, ios, google, oauth, aswebauthenticationsession, firebase]
-timestamp: 2026-09-05T14:55:00Z
+title: Auth — Google OAuth y autorizacion Apple nativa
+description: Contrato Google y puente Apple para iOS y macOS, con sesion Firebase, desafios HTTPS, vinculacion explicita y errores sin credenciales.
+tags: [auth, ios, macos, apple, google, oauth, aswebauthenticationsession, firebase]
+timestamp: 2026-10-05T00:00:00-03:00
 ---
 
-# Auth — Google OAuth en iOS, Android y escritorio
+# Auth — Google OAuth y autorizacion Apple nativa
 
 ## Retorno en Android
 
@@ -58,7 +55,8 @@ Google en el primer frame.
    abre `ASWebAuthenticationSession` apuntando a esa URL. En macOS,
    `juce::URL(loginUrl).launchInDefaultBrowser()` abre Safari (o el
    browser default) en esa misma URL.
-4. El backend valida `redirect_uri` contra el allowlist y, si las
+4. El backend valida `redirect_uri` contra el allowlist y normaliza los
+   retornos HTTP de escritorio de `localhost` a `127.0.0.1`. Si las
    credenciales Google están configuradas, redirige 302 a
    `https://accounts.google.com/o/oauth2/v2/auth` con
    `prompt=select_account` y `scope=openid email profile`.
@@ -91,13 +89,26 @@ Google en el primer frame.
 
 ## Allowlist de `redirect_uri`
 
-Definida en `isAllowedRedirectUri` (idéntica a la de `app/login/page.tsx`):
+Definida en `lib/auth-callback.ts`, compartida por `/login` y el flujo OAuth:
 
 - `playworship://auth/callback` (iOS y Android)
 - `http://127.0.0.1:<port>/auth/callback` (desktop, port efímero)
-- `http://localhost:<port>/auth/callback` (desktop)
+- `http://localhost:<port>/auth/callback` (compatibilidad desktop; se convierte
+  a `http://127.0.0.1:<port>/auth/callback` antes de volver a la app)
 
 Cualquier otro protocolo u host → 400 con `{"ok":false,"error":"redirect_uri invalida"}`.
+
+### Retorno de escritorio por IP de loopback
+
+La app escucha y genera callbacks en `127.0.0.1`. El backend conserva el
+puerto, la ruta, los parámetros y el fragmento al normalizar un retorno legado
+con `localhost`. La normalización se aplica antes de firmar el state y al
+construir los retornos de éxito y error, incluidos los state ya emitidos.
+`/login` usa la misma función para su retorno al escritorio.
+
+`playworship://auth/callback` conserva su scheme en iOS y Android. La URL
+configurada de Google al backend (`GOOGLE_OAUTH_CALLBACK_URL`) no pasa por
+esta normalización.
 
 ## Variables de entorno (backend)
 
@@ -148,7 +159,8 @@ Si falta alguna, `/api/auth/google/start` redirige con
 ## Errores
 
 El backend nunca responde JSON de error: cualquier fallo se traduce a
-un 302 al `redirect_uri` original con:
+un 302 al `redirect_uri` de la app (normalizado a `127.0.0.1` en escritorio)
+con:
 
 - `error=<codigo>` — uno de:
   - `GoogleOAuthNotConfigured` (falta env)
@@ -175,10 +187,92 @@ Reintenta.". El usuario puede volver a tocar **Iniciar sesión**.
   de Google se invoca vía OAuth 2.0 estándar.
 - No emite tokens de Drive. La integración con Drive (`enable_drive`)
   sigue siendo opt-in y se cablea en una iteración aparte.
-- No persiste el `state` entre reinicios del backend. El store vive en
-  memoria con TTL de 10 min (`lib/googleOAuth.ts::STATE_TTL_MS`).
-  Producción debe mover esto a Redis o a una cookie firmada con
-  `AUTH_STATE_SECRET`.
+- El state Google actual es un token HMAC autocontenido con TTL, no un store
+  en memoria. El flujo Apple usa un desafio persistido y consumido en servidor;
+  no reutiliza los fallbacks de secreto del state Google.
+
+## Apple nativo — cliente preparado, activacion condicionada
+
+`src/platform/NativeAppleSignIn.{h,cpp,mm}` separa autorizacion Apple de la
+sesion PlayWorship. `src/data/AppleSignInApi.{h,cpp}` transporta y valida el
+contrato JSON. Estos componentes no asignan UID, licencias, planes, Teams ni
+Cloud; tampoco aplican o guardan una sesion. Su inclusion en la UI requiere
+que el build tenga los entitlements Apple correspondientes y que el backend
+informe configuracion habilitada. Fuente local y pruebas de contrato no
+demuestran configuracion del portal ni autorizacion Apple real.
+
+- `GET /api/auth/apple/config` devuelve `enabled` booleano y `nativeClientId`.
+  Un error, valor no booleano, audiencia ausente o proveedor deshabilitado no
+  habilita la opcion. `NativeAppleSignIn::isSupported()` indica solo soporte
+  del OS; no acredita capacidad del portal, firma o claves de servidor.
+- `createButton(callback, darkBackground)` devuelve un `UIViewComponent` o
+  `NSViewComponent` con `ASAuthorizationAppleIDButton` de tipo Continue real.
+  Usa estilo White sobre fondo oscuro y Black sobre fondo claro; la UI elige
+  el estilo del tema. Crear el componente no inicia autenticacion.
+- `POST /api/auth/apple/challenge` envia `{purpose, platform, deviceId}`, donde
+  purpose es `signin` o `link` y platform es `ios` o `macos`. Devuelve
+  `{ok:true, challengeId, state, nonce, expiresAtMs}`. `nonce` es el valor raw
+  generado criptograficamente en servidor; state y nonce usan base64url sin
+  padding. `expiresAtMs` es un entero JSON en milisegundos Unix, nunca una
+  fecha ISO ni un string. El cliente rechaza valores vencidos y un plazo
+  restante superior a diez minutos.
+- `Challenge::nativeRequest()` calcula SHA256 UTF-8 del nonce raw como 64
+  caracteres hexadecimales minusculos. `ASAuthorizationAppleIDRequest` recibe
+  ese hash y el state. Solicita email; FullName es opt-in. Los datos de perfil
+  pueden faltar en autorizaciones posteriores y no reemplazan el correo
+  canonico de la cuenta existente. FullName se formatea con el formatter del
+  sistema y se limita a 200 caracteres.
+- `start(Request, Component&, Completion)` exige message/main thread y una
+  ventana del componente: UIKit en escena foreground activa o AppKit visible.
+  Rechaza inicios concurrentes e inputs invalidos. El delegate comprueba state,
+  vencimiento y presencia de identityToken/authorizationCode antes de entregar
+  un exito. Una cancelacion tiene Outcome::cancelled y no devuelve credenciales.
+  attemptId descarta callbacks de intentos anteriores y el completion se
+  despacha una sola vez al message thread. `cancel()` desvincula el delegate y
+  entrega cancelacion; tambien cierra la hoja nativa desde iOS 16/macOS 13.
+  En macOS anteriores no hay ese metodo de cierre, pero el resultado pendiente
+  se descarta igualmente.
+- `POST /api/auth/apple/native` envia
+  `{challengeId,state,identityToken,authorizationCode,platform,deviceId}` y
+  opcionalmente `profile:{email,fullName}` por JSON HTTPS. No envia nonce raw,
+  UID de Firebase, purpose nuevo ni permisos. AppleUser del credential tampoco
+  es una identidad Firebase; el servidor verifica el subject del JWT firmado.
+  Antes de enviar se repiten las comprobaciones de state y vencimiento.
+- En link ambas llamadas incluyen `Authorization: Bearer <Firebase ID token>`.
+  El servidor debe comprobar token vigente y autenticacion reciente, ligar el
+  desafio al UID autenticado y consumirlo atomicamente. `expectedUid` es una
+  defensa adicional local para rechazar una respuesta de otra cuenta, no una
+  identidad enviada o confiable para el servidor. No se asocian cuentas por
+  coincidencia de correo ni por datos de profile.
+- La respuesta es `{ok:true,session:{...}}` con el contrato Firebase existente:
+  uid, email canonico, plan, subscriptionStatus, allowed booleano, refreshToken,
+  firebaseApiKey, idTokenExpiresAtMs entero y campos de acceso opcionales.
+  El helper devuelve `PersistedSessionSnapshot` completo o un error tipado;
+  conserva `allowed=false` y no deduce nuevos grants. No construye una URL de
+  callback con tokens para reutilizar el parser Google. El editor aplica la
+  sesion mediante el contrato comun y mantiene las validaciones de acceso.
+- El transporte exige un origen HTTPS sin userinfo, path, query ni fragment.
+  No sigue redirects y lee como maximo 64 KiB. Ningun payload, URL de respuesta,
+  token, state, nonce o descripcion de NSError se registra o muestra. Los
+  errores del backend se traducen a enums de una whitelist; codigos desconocidos
+  quedan como backendRejected. La UI usa mensajes propios y puede pedir nuevo
+  desafio para vencimiento/replay o reautenticacion para vincular.
+
+El editor debe cancelar el puente al destruirse e invalidar su generacion de
+intento antes de aplicar respuestas de red demoradas: cancelar la hoja no
+cancela un intercambio HTTP ya iniciado. Las claves Apple y tokens de
+revocacion permanecen en servidor. El opt-in de entitlements agrega
+`com.apple.developer.applesignin = [Default]` al plist de entitlements generado
+por JUCE, preservando Sandbox y permisos existentes; no lo agrega a Info.plist.
+El portal y perfil de firma deben habilitar esa capacidad por separado.
+
+`tests/apple_signin_contract_tests.cpp` verifica hash, vencimiento, state,
+representacion de POST/bearer, binding local de dispositivo/proposito, origen
+HTTPS, rechazo de inyeccion de headers, conservacion de UID/denegacion y
+configuracion deshabilitada. El 2026-10-05 compilo y paso aislado en macOS;
+el puente Objective-C++ paso syntax-only para macOS e iOS 18.5. Estas pruebas
+no ejercen autorizacion Apple, cancelacion del OS, vinculacion en Firebase ni
+un backend desplegado. Ver [plan Apple](../distribution/SignInWithApplePlan.md).
 
 ## Layout de bienvenida
 

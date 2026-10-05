@@ -377,7 +377,9 @@ juce::Rectangle<int> LearningGuideOverlay::chooseStepCard() const {
   const int height = juce::jmin(safe.getHeight() >= 500 ? 300 : 210, safe.getHeight());
   const auto defaultCard = juce::Rectangle<int>(safe.getCentreX() - width / 2,
                                                 safe.getBottom() - height, width, height);
-  if (target.isEmpty())
+  // Cloud courses highlight the full library; keep its header and first rows
+  // reachable, with the compact guide below them.
+  if (target.isEmpty() || lesson.id.startsWith("teams-cloud-"))
     return defaultCard;
 
   constexpr int gap = 12;

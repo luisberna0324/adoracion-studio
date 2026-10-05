@@ -264,6 +264,53 @@ un test automatizado del contrato afectado cuando sea posible.
   La instancia interactiva conserva un borrador de Verso activo; su reinicio
   para comprobar la animación completa queda pendiente de cerrar ese borrador.
 
+## Ajuste de indicaciones sobre la onda del 03/10/2026
+
+- macOS Standalone Release compilado. Las cuatro suites afectadas pasaron
+  (4/4, 12,03 s): `waveform_editing`, `song_project_creation`,
+  `section_automation` y `song_mix_export_timeline`.
+- Se verifica borrado de un punto coincidente mediante el botón real y doble
+  clic, Deshacer con el ID/orden/anchor original, arrastre sin seek y sin
+  publicaciones parciales, y conservación de copia, recorte y automatización.
+- Las etiquetas permanecen sobre la onda, se apilan sin intersección y dejan
+  libres los controles de sección. Los compases/pulsos/cursor de la regla se
+  comparan por píxel antes y después de agregar una indicación.
+- Breakdown y A capella se prueban como indicaciones inmediatas, también en
+  migración legacy sin flag cuando el mapeo se puede conservar con seguridad.
+- Capturas de componentes reales revisadas en `build/cue-wave-overlay-qa/`:
+  escritorio, formato de teléfono y tooltip pequeño. Son renderizados de
+  los componentes en macOS; no acreditan instalación ni QA física móvil.
+- Logs: `build/cue-wave-overlay-build.log` y `build/cue-wave-overlay-tests.log`.
+
+## Validación de indicaciones independientes del 03/10/2026
+
+- macOS arm64 Standalone Release y los targets afectados compilaron en
+  `build/codex-modal-macos`. Gate final 7/7 (100 %, 12,91 s):
+  `song_project_creation`, `waveform_editing`, `section_automation`,
+  `audio_engine_core`, `pads_engine`, `song_mix_export_timeline` y
+  `song_mix_exporter`.
+- El editor comprueba arrastre sin seek ni publicaciones parciales, historial,
+  borrar sin eliminar el verso, copiar/pegar, mover la copia hacia la izquierda,
+  recortar/Deshacer, reasignación al dividir, agrupación táctil también en los
+  bordes, marcas fuera del viewport y secuencias a través de cambios de BPM.
+  Copias/pegados que exceden 512 anuncios se rechazan sin ripple ni commit.
+- Los tests con procesador y WAV reales esperan el seek aceptado al iniciar
+  Play antes de verificar el cruce de loop/jump, incluyendo posición del
+  destino y offsets de los anuncios. Cubren pausa, seek, frontera exacta del
+  callback, Ensayo A–B, cue-only, `Break` al recargar idioma y mute/unmute sin
+  reactivar una cola anterior. Exportación reabre el WAV y mide los offsets.
+- Codec, proyecto, sidecar y fingerprints Cloud conservan vínculos y offsets
+  variables. Migración legacy conserva casos ambiguos; remoto acepta 512 y
+  rechaza 513 anuncios después de expandir/migrar, mientras disco conserva el
+  documento completo.
+- Capturas de los componentes reales en `build/cue-marker-qa/`, generadas con
+  `PW_CUE_CAPTURE_DIR`: regla de 1200 puntos, teléfono de 390 puntos y popover
+  de detalle con controles de 44 puntos. Se revisaron visualmente; acreditan
+  renderizado en macOS, no una instalación ni QA física de iOS/Android.
+- La app anterior estaba reproduciendo durante la validación; no se reinició
+  esa sesión. La compilación nueva quedó disponible para la siguiente apertura.
+  Logs locales: `build/cues-final-build.log` y `build/cues-final-tests.log`.
+
 ## Resultado local del 26/09/2026
 
 - macOS arm64, build Debug: `PlayWorshipTests` compiló y CTest pasó 25/25 con
@@ -283,3 +330,49 @@ un test automatizado del contrato afectado cuando sea posible.
   macOS local, y las dos pruebas `lan` pasaron por separado (26/26 en total).
 - El segundo run del PR #41 pasó 24/24 pruebas del gate en el runner macOS y
   también pasó la política SemVer. Las comprobaciones físicas siguen pendientes.
+
+
+## Teams
+
+Los targets `MTControlsTeamsLocalStoreTests`, `MTControlsTeamsPreparationTests`,
+`MTControlsTeamsPanelTests` y `MTControlsTeamsWorkspaceTests` usan almacenamiento
+isolado y cuentas ficticias. No crean equipos ni contenido en producción.
+
+- Caché: aislamiento de cuentas, exclusión de credenciales/URLs, identidad
+  estable por revisión, concurrencia y fallo conservador ante corrupción.
+- Descarga: fixtures FLAC reales, recuperación de archivos, cambios locales,
+  idempotencia, versiones separadas y conservación de la lista activa. No se
+  crean setlists ni se publica contenido.
+- Interfaz: Configuración → Teams oculta por defecto, habilitada por capacidad
+  explícita y dedicada solo a usuarios. Miembros y capacidades revocadas no
+  acceden a la administración. Confirmaciones y carga se prueban en distintos
+  anchos; no existe catálogo ni acción de descarga dentro de Teams.
+- Biblioteca: las canciones descargadas quedan en la biblioteca habitual sin
+  selectores de espacios ni alterar la cola de reproducción.
+  Las filas Nube distinguen procedencia incluso con IDs remotos repetidos y
+  resuelven descargas compartidas por cuenta/fuente/revisión. No ofrecen acciones
+  de escritura hacia la nube del propietario; descargan y se agregan al setlist
+  mediante el selector habitual.
+
+`MTControlsTeamsUIPreview` guarda escenarios de administración, confirmación,
+carga y perfil denegado. `PW_TEAMS_PREVIEW_DIR` fija la carpeta al
+usar `run_isolated_test.py`. Estas capturas acreditan los componentes y datos
+simulados; no una transferencia real ni una instalación física.
+
+El backend tiene pruebas de perfil de suscripción, permisos, usuarios,
+catálogo Cloud automático, descarga y retirada de acceso. La API no acepta
+publicaciones, coordinadores, invitaciones ni setlists compartidos. Validar
+Cloud Run, R2 con dos cuentas reales e iOS/Android son etapas separadas.
+El catálogo unificado también prueba fuentes compartidas sin plan propio,
+búsqueda, paginación, colisiones y retirada de permisos entre páginas.
+
+
+### Onboarding de nube compartida
+
+`learning_guide` cubre los tres pasos, bloqueo sin acceso y sin audio descargado,
+postergación y reanudación persistente. `teams_local_store` verifica identidad
+por cuenta, fuente y alta; `learning_overlay` verifica acciones y capturas de
+la bienvenida y de cada paso en teléfono y escritorio. Las pruebas gráficas
+que abren menús nativos requieren acceso a WindowServer de macOS.
+El backend prueba alta estable con nube vacía, baja/reingreso con nueva identidad
+y compatibilidad de membresías anteriores sin escrituras.

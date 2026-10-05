@@ -53,6 +53,86 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static void addCue(WaveformBar &waveform, const char *name, double seconds,
+                     int countEnd = 0) {
+    waveform.sectionInsertionAnchorValid = true;
+    waveform.sectionInsertionAnchorSec = seconds;
+    waveform.snapMode = WaveformBar::SnapMode::Free;
+    waveform.addGuideCue(name, countEnd, countEnd > 0 ? 0.5 : 0.0);
+  }
+  static SongArrangementCueSnapshot cue(const WaveformBar &waveform, const juce::String &id) {
+    const int index = waveform.findCueIndexById(id);
+    expect(index >= 0,"cue exists");
+    return waveform.arrangement.cues[static_cast<size_t>(index)];
+  }
+  static juce::Point<float> cuePoint(WaveformBar &waveform, const juce::String &id) {
+    waveform.rebuildCueMarkers();
+    for (const auto &marker : waveform.cueMarkerBounds)
+      if (marker.id == id)
+        return {marker.pointX, marker.y};
+    throw std::runtime_error("missing visible cue point");
+  }
+  static double nextPulse(const WaveformBar &waveform, double seconds) {
+    return waveform.adjacentCuePulse(seconds,true);
+  }
+  static size_t markerCount(WaveformBar &waveform) {
+    waveform.rebuildCueMarkers(); return waveform.cueMarkerBounds.size();
+  }
+  static void expectCueLabels(WaveformBar &waveform) {
+    waveform.rebuildCueMarkers();
+    const auto body = waveBody(waveform);
+    for (size_t i = 0; i < waveform.cueMarkerBounds.size(); ++i) {
+      const auto &marker = waveform.cueMarkerBounds[i];
+      if (waveform.isEditingArrangement())
+        expect(body.contains(marker.label), "cue label stays inside the waveform");
+      else {
+        expect(marker.label.isEmpty(), "viewing mode hides secondary labels");
+        expect(marker.hit == marker.pointHit, "viewing mode only captures the point");
+      }
+      expect(body.contains(juce::Point<float>{marker.pointX, marker.y}), "cue point is on the waveform");
+      expect(!ruler(waveform).intersects(marker.label), "cue label leaves ruler clear");
+      expect(!waveform.isEditingArrangement() ||
+                 waveform.cueMarkerButtons[i]->getTooltip().contains("eliminar") ||
+                 waveform.cueMarkerButtons[i]->getTooltip().contains("delete"),
+             "point tooltip explains double-click deletion");
+      for (size_t j = 0; j < i; ++j)
+        expect(!marker.label.intersects(waveform.cueMarkerBounds[j].label),
+               "colliding labels stack without overlap");
+    }
+  }
+  static void doubleClickCue(WaveformBar &waveform, const juce::String &id) {
+    const auto point = cuePoint(waveform, id);
+    for (size_t i = 0; i < waveform.cueMarkerBounds.size(); ++i) {
+      if (waveform.cueMarkerBounds[i].id != id) continue;
+      auto &button = *waveform.cueMarkerButtons[i];
+      button.mouseDoubleClick(pointerEvent(waveform, point, point, false, 2)
+                                  .getEventRelativeTo(&button));
+      return;
+    }
+  }
+  static void showCueTooltip(WaveformBar &waveform, const juce::String &id) {
+    waveform.cueTooltipWindow->displayTip(
+        waveform.localPointToGlobal(cuePoint(waveform, id).toInt()),
+        "Doble clic en el punto para eliminar");
+  }
+  static juce::Image renderRuler(WaveformBar &waveform) {
+    const auto bounds = ruler(waveform);
+    juce::Image image(juce::Image::ARGB, juce::roundToInt(bounds.getWidth()),
+                      juce::roundToInt(bounds.getHeight()), true);
+    juce::Graphics g(image);
+    g.addTransform(juce::AffineTransform::translation(-bounds.getX(), -bounds.getY()));
+    const auto window = waveform.getVisibleWindow();
+    waveform.drawSeekRuler(g, bounds, window.first, window.second);
+    return image;
+  }
+  static void duplicate(WaveformBar &waveform, const juce::String &id) {
+    waveform.createDuplicatedSection(waveform.findPartIndexById(id));
+  }
+  static void split(WaveformBar &waveform, double seconds) {
+    waveform.sectionInsertionAnchorValid = true; waveform.sectionInsertionAnchorSec = seconds;
+    waveform.snapMode = WaveformBar::SnapMode::Free;
+    waveform.addArrangementPart("Verse 2");
+  }
   static const SongArrangementSnapshot &snapshot(const WaveformBar &waveform) {
     return waveform.arrangement;
   }
@@ -109,7 +189,13 @@ struct WaveformEditingTestAccess {
                                      const juce::String &id) {
     const auto bounds = overlay(waveform, id).body;
     // The edit toolbar is near the top; the lower body starts a part move.
-    return {bounds.getCentreX(), bounds.getBottom() - 20.0f};
+    waveform.rebuildCueMarkers();
+    for (const float ratio : {0.5f, 0.75f, 0.25f}) {
+      const juce::Point<float> point(bounds.getX() + bounds.getWidth() * ratio,
+                                     bounds.getBottom() - 20.0f);
+      if (waveform.hitTestCueMarker(point) < 0) return point;
+    }
+    throw std::runtime_error("no free section body point");
   }
 
   static juce::Point<float> rightHandle(WaveformBar &waveform,
@@ -1050,6 +1136,236 @@ void testSectionAutomationMobileNavigation() {
   WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
   WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
 }
+void testIndependentCueEditing() {
+  Fixture f;
+  WaveformEditingTestAccess::addCue(f.waveform,"Build",15.0);
+  const auto cueId = WaveformEditingTestAccess::snapshot(f.waveform).cues.front().id;
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).parts.size() == 3,
+         "adding a cue does not split the primary verse");
+  expectNear(f.part("A").startSec,10.0,"verse start unchanged");
+  expectNear(f.part("A").endSec,20.0,"verse end unchanged");
+  expect(WaveformEditingTestAccess::cue(f.waveform,cueId).partId == "A",
+         "cue attaches to containing verse");
+  int seeks = 0; f.waveform.setSeekCallback([&](double) { ++seeks; });
+  const auto start = WaveformEditingTestAccess::cuePoint(f.waveform,cueId);
+  const auto end = WaveformEditingTestAccess::pointAt(f.waveform,17.0,start.y);
+  const int before = f.commits;
+  f.waveform.mouseDown(pointerEvent(f.waveform,start,start));
+  f.waveform.mouseDrag(pointerEvent(f.waveform,end,start,true));
+  expect(f.commits == before,"cue drag previews do not publish partial positions");
+  f.waveform.mouseUp(pointerEvent(f.waveform,end,start,true));
+  expect(seeks == 0 && f.commits == before+1,"drag commits only the cue without seeking");
+  expectNear(resolveArrangementCueSeconds(WaveformEditingTestAccess::snapshot(f.waveform),
+              WaveformEditingTestAccess::cue(f.waveform,cueId)),17.0,"cue moved to requested point");
+  expect(f.command('Z'),"cue drag is undoable");
+  expectNear(WaveformEditingTestAccess::cue(f.waveform,cueId).offsetSec,5.0,"undo restores cue offset");
+  expect(f.command('Y'),"cue drag is redoable");
+  expectNear(WaveformEditingTestAccess::cue(f.waveform,cueId).offsetSec,7.0,"redo restores cue offset");
+  f.waveform.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).cues.empty(),"delete removes selected cue");
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).parts.size()==3,"cue delete preserves underlying verse");
+  expect(f.command('Z'),"cue deletion undo restores mark");
+}
+
+void testCueCopyMoveAndTrim() {
+  Fixture f;
+  WaveformEditingTestAccess::addCue(f.waveform,"All In",15.0);
+  const auto originalCue = WaveformEditingTestAccess::snapshot(f.waveform).cues.front().id;
+  const auto copyId = f.duplicate("A");
+  const auto &afterCopy = WaveformEditingTestAccess::snapshot(f.waveform);
+  expect(afterCopy.cues.size()==2,"section copy carries cue once");
+  const auto copied = std::find_if(afterCopy.cues.begin(),afterCopy.cues.end(),
+                                  [&](const auto &cue) { return cue.partId == copyId; });
+  expect(copied != afterCopy.cues.end() && copied->id != originalCue,"copy receives fresh mark ID");
+  const auto copiedCue = copied->id;
+  expectNear(resolveArrangementCueSeconds(afterCopy,*copied),25.0,"copied cue uses relative musical offset");
+  f.move(copyId,5.0);
+  expectNear(resolveArrangementCueSeconds(WaveformEditingTestAccess::snapshot(f.waveform),
+              WaveformEditingTestAccess::cue(f.waveform,copiedCue)),10.0,"cue travels with copy moved left");
+  expectNear(WaveformEditingTestAccess::cue(f.waveform,originalCue).offsetSec,5.0,"source cue stays anchored independently");
+  WaveformEditingTestAccess::saveRange(f.waveform,copyId,5.0,9.0);
+  const auto &trimmed = WaveformEditingTestAccess::snapshot(f.waveform);
+  expect(std::none_of(trimmed.cues.begin(),trimmed.cues.end(),
+                     [&](const auto &cue) { return cue.id==copiedCue; }),"trim removes excluded cue");
+  expect(f.command('Z'),"trim undo restores mark and audio range");
+  expect(WaveformEditingTestAccess::cue(f.waveform,copiedCue).partId==copyId,"undo restores copied cue owner");
+  Fixture clipboard;
+  WaveformEditingTestAccess::addCue(clipboard.waveform,"Build",13.0);
+  const auto pasted = clipboard.pasteCopyOf("A");
+  expect(WaveformEditingTestAccess::snapshot(clipboard.waveform).cues.size()==2,"clipboard paste includes cue");
+  const auto &pastedSnapshot = WaveformEditingTestAccess::snapshot(clipboard.waveform);
+  expect(std::any_of(pastedSnapshot.cues.begin(),pastedSnapshot.cues.end(),
+                     [&](const auto &cue) { return cue.partId==pasted; }),"pasted mark binds to fresh section ID");
+}
+
+void testCueDoubleClickDeletesOnlyItsPoint() {
+  Fixture f;
+  WaveformEditingTestAccess::addCue(f.waveform,"Build",15.0);
+  WaveformEditingTestAccess::addCue(f.waveform,"All In",15.0);
+  WaveformEditingTestAccess::addCue(f.waveform,"Softly",15.0);
+  const auto before = WaveformEditingTestAccess::snapshot(f.waveform);
+  expect(WaveformEditingTestAccess::markerCount(f.waveform)==3,
+         "coincident cues keep three independent points");
+  WaveformEditingTestAccess::expectCueLabels(f.waveform);
+  int seeks=0, jumps=0;
+  f.waveform.setSeekCallback([&](double) { ++seeks; });
+  f.waveform.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+  const auto id = before.cues[1].id;
+  f.click(WaveformEditingTestAccess::cuePoint(f.waveform,id));
+  for (int i=0;i<f.waveform.getNumChildComponents();++i)
+    expect(dynamic_cast<juce::CallOutBox *>(f.waveform.getChildComponent(i)) == nullptr,
+           "single cue click selects without a popover");
+  WaveformEditingTestAccess::doubleClickCue(f.waveform,id);
+  const auto after = WaveformEditingTestAccess::snapshot(f.waveform);
+  expect(after.cues.size()==2 && after.cues[0].id==before.cues[0].id &&
+             after.cues[1].id==before.cues[2].id,
+         "double click through the real cue button removes only that stacked cue");
+  expect(seeks==0 && jumps==0 && after.parts.size()==before.parts.size(),
+         "cue deletion neither seeks nor deletes or jumps the primary section");
+  expect(f.command('Z'), "point deletion can be undone");
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).cues==before.cues,
+         "undo restores the exact point, order and anchor");
+  f.waveform.triggerEditToggleFromMidi();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  WaveformEditingTestAccess::doubleClickCue(f.waveform,id);
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).cues==before.cues,
+         "view mode protects cues from deletion");
+}
+
+void testCueOverlayPreservesMusicalRuler() {
+  Fixture f;
+  const auto before = WaveformEditingTestAccess::renderRuler(f.waveform);
+  WaveformEditingTestAccess::addCue(f.waveform,"Build",15.0);
+  const auto after = WaveformEditingTestAccess::renderRuler(f.waveform);
+  expect(before.getWidth()==after.getWidth() && before.getHeight()==after.getHeight(),
+         "adding a cue does not resize the musical ruler");
+  for (int y=0;y<before.getHeight();++y)
+    for (int x=0;x<before.getWidth();++x)
+      expect(before.getPixelAt(x,y)==after.getPixelAt(x,y),
+             "adding a cue preserves visible bar numbers, ticks and cursor");
+}
+
+void testCueSplitAndResponsiveMarkers() {
+  Fixture f;
+  WaveformEditingTestAccess::addCue(f.waveform,"1",16.0,4);
+  const auto cueId = WaveformEditingTestAccess::snapshot(f.waveform).cues.front().id;
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).cues.size()==1,"count sequence uses one mark");
+  WaveformEditingTestAccess::split(f.waveform,15.0);
+  const auto cue = WaveformEditingTestAccess::cue(f.waveform,cueId);
+  expect(cue.partId != "A","splitting a verse reattaches mark to new containing section");
+  expectNear(resolveArrangementCueSeconds(WaveformEditingTestAccess::snapshot(f.waveform),cue),16.0,
+             "split retains absolute musical moment");
+  WaveformEditingTestAccess::addCue(f.waveform,"Softly",16.1);
+  expect(WaveformEditingTestAccess::markerCount(f.waveform)==2,"nearby cues retain individual points");
+  WaveformEditingTestAccess::expectCueLabels(f.waveform);
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform,0.0f,0.3f);
+  expect(WaveformEditingTestAccess::markerCount(f.waveform)==0,"offscreen marks do not pin to viewport edge");
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(390,250);
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform,0.4f,0.5f);
+  expectNear(WaveformEditingTestAccess::ruler(f.waveform).getHeight(),0.0,
+             "phone viewing mode keeps the ruler hidden even with cues");
+  expect(WaveformEditingTestAccess::markerCount(f.waveform)==2,"phone keeps overlapping cues individually accessible");
+  WaveformEditingTestAccess::expectCueLabels(f.waveform);
+  Fixture edge;
+  WaveformEditingTestAccess::addCue(edge.waveform,"Build",0.0);
+  WaveformEditingTestAccess::addCue(edge.waveform,"All In",3.8);
+  edge.waveform.setMinimalPhoneMode(true); edge.waveform.setSize(390,250);
+  expect(WaveformEditingTestAccess::markerCount(edge.waveform)==2,
+         "edge cues remain independent after clamping their visible points");
+  WaveformEditingTestAccess::expectCueLabels(edge.waveform);
+}
+
+void testCueSequenceUsesRegionalPulseGrid() {
+  Fixture f;
+  SongTempoMapSnapshot map;
+  SongTempoRegionSnapshot slow; slow.id="slow"; slow.startSec=0; slow.endSec=16;
+  slow.bpm=90; slow.timeSignature="4/4";
+  auto fast = slow; fast.id="fast"; fast.startSec=16; fast.endSec=30; fast.bpm=120;
+  map.regions={slow,fast}; f.waveform.setTempoMap(map);
+  WaveformEditingTestAccess::addCue(f.waveform,"1",15.333333333,4);
+  const auto &snapshot = WaveformEditingTestAccess::snapshot(f.waveform);
+  expect(snapshot.cues.size()==1,"regional count sequence remains one mark");
+  const auto &cue=snapshot.cues.front();
+  const double first = resolveArrangementCueSeconds(snapshot,cue);
+  expectNear(first,15.333333333,"sequence begins on regional pulse");
+  expect(cue.countOffsetsSec.size()==4,"one explicit offset per spoken pulse");
+  expectNear(cue.countOffsetsSec[1],2.0/3.0,"first interval follows regional90BPM");
+  expectNear(cue.countOffsetsSec[2],2.0/3.0+0.5,"next interval follows new120BPM region");
+  expectNear(WaveformEditingTestAccess::nextPulse(f.waveform,first),16.0,"move one pulse follows ruler across region");
+}
+
+void testCueCapacityRejectsCopyWithoutChangingTimeline() {
+  Fixture f;
+  auto snapshot = WaveformEditingTestAccess::snapshot(f.waveform);
+  for (int i = 0; i < kMaxArrangementCueEvents; ++i) {
+    SongArrangementCueSnapshot cue;
+    cue.id = "cue-" + juce::String(i); cue.name = "Build";
+    cue.partId = "A"; cue.offsetSec = 3.0; cue.positionSec = 13.0;
+    snapshot.cues.push_back(cue);
+  }
+  f.waveform.setArrangement(snapshot,true);
+  snapshot = WaveformEditingTestAccess::snapshot(f.waveform);
+  const auto unchanged = [&] {
+    const auto &now=WaveformEditingTestAccess::snapshot(f.waveform);
+    return now.cues == snapshot.cues && now.parts.size() == snapshot.parts.size() &&
+      std::equal(now.parts.begin(),now.parts.end(),snapshot.parts.begin(),
+        [](const auto &a,const auto &b) {
+          return a.id==b.id && a.startSec==b.startSec && a.endSec==b.endSec &&
+                 a.sourcePartId==b.sourcePartId && a.sourceStartSec==b.sourceStartSec &&
+                 a.sourceEndSec==b.sourceEndSec;
+        });
+  };
+  WaveformEditingTestAccess::duplicate(f.waveform,"A");
+  expect(f.commits == 0 && unchanged(),
+         "copy exceeding cue capacity leaves all section times and cue IDs unchanged");
+  f.select("A"); expect(f.command('C'),"capacity test captures clipboard");
+  expect(!f.command('V'),"paste exceeding announcement capacity is rejected");
+  expect(f.commits == 0 && unchanged(),
+         "rejected paste publishes nothing and does not ripple following sections");
+}
+
+void testCueVisualPreview() {
+  const auto path = juce::SystemStats::getEnvironmentVariable("PW_CUE_CAPTURE_DIR",{});
+  if (path.isEmpty()) return;
+  expect(juce::File::isAbsolutePath(path),"cue preview directory is absolute");
+  const juce::File directory(path);
+  expect(directory.createDirectory().wasOk(),"cue preview directory opens");
+  const auto capture = [&directory](juce::Component &component, const char *name) {
+    auto stream=directory.getChildFile(juce::String(name)+".png").createOutputStream();
+    expect(stream != nullptr && stream->setPosition(0) && stream->truncate().wasOk(),
+           "cue preview file opens");
+    expect(juce::PNGImageFormat().writeImageToStream(
+        component.createComponentSnapshot(component.getLocalBounds(),true,2.0f),*stream),
+           "cue preview renders production component");
+  };
+  Fixture f;
+  auto arrangement=WaveformEditingTestAccess::snapshot(f.waveform);
+  arrangement.parts[1].name="Verse"; arrangement.parts[2].name="Chorus";
+  f.waveform.setArrangement(arrangement,false);
+  std::vector<float> bins(512);
+  for (size_t i=0;i<bins.size();++i)
+    bins[i]=0.15f+0.5f*std::abs(std::sin(i*0.13f))*std::abs(std::cos(i*0.033f));
+  f.waveform.setWaveformBins(std::move(bins));
+  WaveformEditingTestAccess::addCue(f.waveform,"1",5.0,4);
+  WaveformEditingTestAccess::addCue(f.waveform,"Build",14.0);
+  const auto selected=WaveformEditingTestAccess::snapshot(f.waveform).cues.back().id;
+  WaveformEditingTestAccess::addCue(f.waveform,"All In",25.0);
+  WaveformEditingTestAccess::addCue(f.waveform,"Softly",25.15);
+  f.waveform.setSize(1200,320);
+  capture(f.waveform,"cue-desktop");
+  f.click(WaveformEditingTestAccess::cuePoint(f.waveform,selected));
+  for (int i=0;i<f.waveform.getNumChildComponents();++i)
+    expect(dynamic_cast<juce::CallOutBox *>(f.waveform.getChildComponent(i)) == nullptr,
+           "single click never opens a cue popover");
+  WaveformEditingTestAccess::showCueTooltip(f.waveform, selected);
+  capture(f.waveform,"cue-tooltip");
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(390,250);
+  WaveformEditingTestAccess::expectCueLabels(f.waveform);
+  capture(f.waveform,"cue-phone");
+}
+
 } // namespace
 
 int main() {
@@ -1069,6 +1385,14 @@ int main() {
       std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
     }
   };
+  run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
+  run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
+  run("cue component previews", testCueVisualPreview);
+  run("independent cue drag, history and deletion", testIndependentCueEditing);
+  run("stacked cue double-click deletion and undo", testCueDoubleClickDeletesOnlyItsPoint);
+  run("wave cues preserve rendered musical ruler", testCueOverlayPreservesMusicalRuler);
+  run("cue copy, move left and trim", testCueCopyMoveAndTrim);
+  run("cue split, count sequence and responsive stacking", testCueSplitAndResponsiveMarkers);
   run("move left preserves source and undo/redo", testMoveLeftKeepsSourceAndHistory);
   run("section automation toolbar, fixed target and undo", testSectionAutomationToolbarAndHistory);
   run("section automation responsive layout", testSectionAutomationResponsiveLayout);

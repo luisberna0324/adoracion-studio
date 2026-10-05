@@ -4,7 +4,7 @@ title: DynamicGuide
 description: Motor de guías dinámicas localizadas por idioma
 resource: src/audio/DynamicGuideEngine.h
 tags: [juce, audio, guide, localization, section]
-timestamp: 2026-09-19T15:39:00Z
+timestamp: 2026-10-03T00:00:00Z
 ---
 
 # DynamicGuideEngine
@@ -147,10 +147,13 @@ std::vector<std::shared_ptr<SectionSample>> samplesByTriggerId;
 ### Estado de reproducción
 
 ```cpp
-const SectionSample *activeSample = nullptr;
-double activePosition = 0.0;
-double activeIncrement = 1.0;
-double outputSampleRate = 0.0;
+struct Voice {
+  const SectionSample *sample = nullptr;
+  double position = 0.0;
+  double increment = 1.0;
+};
+std::array<Voice, 8> voices{};
+double outputSampleRate = 44100.0;
 ```
 
 ## Ejemplo de uso
@@ -323,3 +326,36 @@ cargado.
 
 - [SectionScheduler](../../engine/SectionScheduler.md)
 - [MTControlsAudioProcessor](../../processor/MTControlsAudioProcessor.md)
+
+## Indicaciones sobre la onda
+
+`SongArrangementSnapshot::cues` programa instrucciones/conteos independientes
+sin dividir secciones musicales. `partId+offsetSec` sigue el movimiento de su
+sección; `positionSec` sirve de ubicación absoluta si no existe un padre válido.
+`Breakdown` (Baja intensidad) y `A Capella` son indicaciones secundarias,
+incluyendo el alias `acapella`. La migración legacy aplica las mismas
+condiciones de continuidad y preservación de acciones que las demás utilidades.
+Los cues son inmediatos en su punto; los anuncios de secciones musicales
+conservan el adelanto de un compás. Un conteo agrupado tiene `name` numérico,
+`countEnd` (hasta 7) y offsets fuente `countOffsetsSec` relativos al primer
+pulso. Esos offsets permiten atravesar cambios de BPM/métrica; el intervalo
+fuente `countIntervalSec` se conserva como fallback legacy. Se expande en
+puntos individuales al publicar y al exportar. Tempo convierte sus puntos fuente a los
+offsets de salida de cada callback, sin cambiar el pitch de la voz.
+
+`DynamicGuideEvents` mantiene hasta 772 eventos callback-locales, ordenados de
+forma estable por offset. En empates, primero se registran anuncios musicales
+y luego cues en orden persistido. Cada trigger usa una de ocho voces fijas;
+un trigger cercano no reinicia ni corta la voz anterior. Si las ocho voces
+siguen activas, el nuevo trigger se rechaza: no se corta una voz ni se deja una
+cola que anuncie instrucciones atrasadas. Las instrucciones demasiado próximas
+pueden superponerse audiblemente; el usuario debe espaciarlas musicalmente.
+
+Seek, loop/jump y publicación reinician el pool completo mediante el ownership
+existente del callback. No existen eventos diferidos fuera de su bloque. El
+bounce offline usa los mismos samples, resolución de cues y pool de voces,
+renderizando entre los offsets exactos de todos los anuncios de su bloque.
+
+Mute/volumen cero no congelan el tiempo interno de las voces: se siguen
+consumiendo y el scratch se limpia antes del delay. Desmutear no puede recuperar
+una instrucción antigua que debía haber terminado durante el silencio.

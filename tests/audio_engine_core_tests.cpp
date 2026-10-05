@@ -317,7 +317,7 @@ void testSectionSchedulerConcurrentReadersSeeCoherentSnapshots() {
   Scheduler scheduler;
   const auto patternA = makeSchedulerStressPattern(markerA, countA);
   const auto patternB = makeSchedulerStressPattern(markerB, countB);
-  scheduler.publish(patternA);
+  scheduler.publish(patternA, {{markerA, markerA + 1}, {markerA + 2, markerA + 3}});
 
   std::atomic<bool> start{false};
   std::atomic<bool> stop{false};
@@ -333,10 +333,16 @@ void testSectionSchedulerConcurrentReadersSeeCoherentSnapshots() {
       if (!snapshot.valid)
         continue;
       validReads.fetch_add(1, std::memory_order_relaxed);
+      const auto cuesMatch = [&snapshot](int marker) {
+        return snapshot.cueCount == 2 && snapshot.cues[0].frame == marker &&
+            snapshot.cues[0].guideTriggerId == marker + 1 &&
+            snapshot.cues[1].frame == marker + 2 &&
+            snapshot.cues[1].guideTriggerId == marker + 3;
+      };
       const bool matchesA =
-          schedulerStressSnapshotMatches(snapshot, markerA, countA);
+          schedulerStressSnapshotMatches(snapshot, markerA, countA) && cuesMatch(markerA);
       const bool matchesB =
-          schedulerStressSnapshotMatches(snapshot, markerB, countB);
+          schedulerStressSnapshotMatches(snapshot, markerB, countB) && cuesMatch(markerB);
       if (!matchesA && !matchesB) {
         failed.store(true, std::memory_order_release);
         return;
@@ -349,14 +355,17 @@ void testSectionSchedulerConcurrentReadersSeeCoherentSnapshots() {
   start.store(true, std::memory_order_release);
   while (readersReady.load(std::memory_order_acquire) != 2)
     std::this_thread::yield();
-  for (int publication = 0; publication < 2000; ++publication)
-    scheduler.publish((publication & 1) == 0 ? patternB : patternA);
+  for (int publication = 0; publication < 2000; ++publication) {
+    const int marker = (publication & 1) == 0 ? markerB : markerA;
+    scheduler.publish((publication & 1) == 0 ? patternB : patternA,
+                      {{marker, marker + 1}, {marker + 2, marker + 3}});
+  }
   stop.store(true, std::memory_order_release);
   firstReader.join();
   secondReader.join();
 
   expect(!failed.load(std::memory_order_acquire),
-         "concurrent readers never observe a mixed scheduler generation");
+         "concurrent readers never observe mixed musical sections or cue generations");
   expect(validReads.load(std::memory_order_relaxed) > 0,
          "concurrent readers acquire valid scheduler snapshots");
 }

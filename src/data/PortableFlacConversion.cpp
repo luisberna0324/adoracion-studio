@@ -37,8 +37,13 @@ bool convertToFlac(const juce::File &source, const juce::File &destination,
     return fail("FLAC conversion requires a separate destination file.");
   if (!source.existsAsFile())
     return fail("Stem source missing: " + source.getFileName());
+#if JUCE_MAC && MTCONTROLS_MAC_APP_STORE
+  if (!source.hasFileExtension("wav;aif;aiff;flac;mp3;m4a"))
+    return fail("Imports support WAV, AIFF, FLAC, MP3 and native M4A files.");
+#else
   if (!source.hasFileExtension("wav;aif;aiff;flac;mp3"))
     return fail("Mobile imports support WAV, AIFF, FLAC and MP3 files.");
+#endif
 
   juce::AudioFormatManager formats;
   formats.registerFormat(new juce::WavAudioFormat(), true);
@@ -48,6 +53,11 @@ bool convertToFlac(const juce::File &source, const juce::File &destination,
   // in android/app/src/main/cpp/CMakeLists.txt and CMakeLists.txt so the
   // decoder is compiled into the binary even on mobile.
   formats.registerFormat(new juce::MP3AudioFormat(), false);
+#if JUCE_MAC && MTCONTROLS_MAC_APP_STORE
+  // M4A import stays available in the sandboxed desktop edition. CoreAudio
+  // decodes it in process; never fall back to downloading an executable.
+  formats.registerFormat(new juce::CoreAudioFormat(), false);
+#endif
   auto reader = std::unique_ptr<juce::AudioFormatReader>(
       formats.createReaderFor(source));
   if (reader == nullptr)
