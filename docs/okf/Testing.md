@@ -376,3 +376,29 @@ la bienvenida y de cada paso en teléfono y escritorio. Las pruebas gráficas
 que abren menús nativos requieren acceso a WindowServer de macOS.
 El backend prueba alta estable con nube vacía, baja/reingreso con nueva identidad
 y compatibilidad de membresías anteriores sin escrituras.
+
+## Recursos binarios de Android
+
+`cmake/PlayWorshipAssets.cmake` es la lista compartida de recursos: escritorio e
+iOS siguen usando `juce_add_binary_data`; Android genera `BinaryData.h`, la tabla
+de nombres y un `.cpp` por archivo dentro del directorio de build. Las copias
+históricas `android/app/src/main/cpp/BinaryData*` ya no se compilan ni se incluyen.
+La generación solo requiere CMake; detecta cambios de contenido/tamaño y conserva
+los bytes originales, incluidos `google-g.png` y `LuzDeEsperanza.pwproj`.
+Los nombres deben producir identificadores únicos con la conversión de JUCE y
+comenzar con una letra o guion bajo; los conflictos fallan en configuración.
+
+Prueba rápida sin JUCE ni Android SDK:
+
+```bash
+cmake -S tests/binary_resources -B build/binary-resources -G Ninja
+cmake --build build/binary-resources --parallel 3
+ctest --test-dir build/binary-resources --output-on-failure --no-tests=error
+```
+
+Compara cada recurso con su archivo original, tamaños, nombres, terminadores y
+búsquedas directas/dinámicas; incluye el icono de Google y el paquete demo, además
+de consultas inexistentes/nulas. Otra prueba comprueba regeneración al modificar
+bytes/tamaños o añadir/quitar recursos, y que no se reescriban en un build sin cambios.
+El workflow `Functional tests` ejecuta estas pruebas antes de integrar cambios. No sustituye compilar la APK ni probar el
+acceso habitual y la instalación de la demo en un dispositivo Android.
