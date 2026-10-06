@@ -109,6 +109,11 @@ struct PracticePanelGestureTestAccess {
     return panel.scrubActive && panel.scrubSettling;
   }
 
+  static void refreshFromSources(PracticePanel &panel) {
+    // Apply fixture source changes without depending on OS timer delivery.
+    panel.timerCallback();
+  }
+
   static void advanceAnimation(PracticePanel &panel, const int milliseconds) {
     panel.scrubVisualAtMs -= static_cast<juce::uint32>(milliseconds);
     if (panel.scrubSettling)
@@ -1089,10 +1094,11 @@ void testRestoreButtonTapAndDrag() {
   Fixture tap;
   tap.mode = 1;
   tap.listeningInstrument = "piano";
-  pumpFor(80);
+  PracticePanelGestureTestAccess::refreshFromSources(*tap.panel);
   auto &tapButton =
       PracticePanelGestureTestAccess::restoreButton(*tap.panel);
-  expect(tapButton.isVisible() && tapButton.isEnabled(),
+  expect(tapButton.isVisible() && tapButton.isEnabled() &&
+             !tapButton.getLocalBounds().isEmpty(),
          "an active listening mix exposes the real Restore button");
   const auto tapPosition = tapButton.getLocalBounds().getCentre();
   const auto tapEvent = pointerEvent(tapButton, tapPosition, tapPosition);
@@ -1110,9 +1116,12 @@ void testRestoreButtonTapAndDrag() {
     drag.mode = 1;
     drag.listeningInstrument = "piano";
     drag.playing = true;
-    pumpFor(80);
+    PracticePanelGestureTestAccess::refreshFromSources(*drag.panel);
     auto &dragButton =
         PracticePanelGestureTestAccess::restoreButton(*drag.panel);
+    expect(dragButton.isVisible() && dragButton.isEnabled() &&
+               !dragButton.getLocalBounds().isEmpty(),
+           "the active listening mix lays out Restore before a drag");
     expect(!PracticePanelGestureTestAccess::card(*drag.panel).intersects(
                dragButton.getBounds()),
            "Restore is outside the waveform gesture surface");
@@ -1142,7 +1151,7 @@ void testSharedTransportLayout() {
   Fixture fixture;
   fixture.mode = 1;
   fixture.listeningInstrument = "piano";
-  pumpFor(80);
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
   const auto close =
       PracticePanelGestureTestAccess::closeButton(*fixture.panel).getBounds();
   const auto play =
@@ -1151,6 +1160,9 @@ void testSharedTransportLayout() {
       PracticePanelGestureTestAccess::stopButton(*fixture.panel).getBounds();
   const auto restore =
       PracticePanelGestureTestAccess::restoreButton(*fixture.panel).getBounds();
+  expect(PracticePanelGestureTestAccess::restoreButton(*fixture.panel).isVisible() &&
+             !restore.isEmpty(),
+         "Restore is laid out before checking shared transport geometry");
   expect(close.getWidth() == 44 && close.getHeight() == 44,
          "practice uses the shared 44-point header close control");
   expect(play.getWidth() == 56 && play.getHeight() == 56 &&
@@ -2264,7 +2276,7 @@ void testListeningStateSelectionAndRestore() {
   expect(fixture.listeningChanges.back() == 2 &&
              fixture.listeningTargets.back() == "piano",
          "the next downward swipe reduces the newly selected instrument");
-  pumpFor(80);
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
   fixture.clickButton(PracticePanelGestureTestAccess::restoreButton(*fixture.panel));
   expect(fixture.mode == 0 && fixture.listeningInstrument.isEmpty(),
          "Restore returns the reduced listening state to the normal centre");
