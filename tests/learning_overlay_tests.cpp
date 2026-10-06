@@ -59,6 +59,9 @@ struct LearningOverlayTestAccess {
   static juce::Rectangle<int> target(const LearningGuideOverlay &guide) {
     return guide.target;
   }
+  static juce::Rectangle<int> supplementaryTarget(const LearningGuideOverlay &guide) {
+    return guide.supplementaryTarget;
+  }
   static juce::Rectangle<int> safe(const LearningGuideOverlay &guide) {
     return guide.safeBounds();
   }
@@ -218,6 +221,124 @@ void testResponsiveSpotlightAndInteraction() {
   expect(scrolledText, "compact profiles exercise pointer scrolling through longer instructions");
 }
 
+void testSupplementaryTransportTarget() {
+  const auto lesson = longLesson();
+  for (const auto size : {juce::Point<int>(390, 844), juce::Point<int>(1200, 800)}) {
+    Fixture fixture;
+    fixture.setSize(size.x, size.y);
+    fixture.guide.setSafeAreaInsets({24, 12, 20, 12});
+    juce::TextButton instrument("Instrument");
+    fixture.addAndMakeVisible(instrument);
+    instrument.setBounds(24, 258, 96, 64);
+    fixture.play.setBounds(size.x - 80, 116, 44, 44);
+    fixture.guide.toFront(false);
+    fixture.guide.showStep(lesson, 0, instrument.getBounds(), true);
+    fixture.guide.setStepReadiness(false, "Move the instrument fader.");
+    fixture.guide.setSupplementaryTarget(fixture.play.getBounds());
+    const auto card = LearningOverlayTestAccess::card(fixture.guide);
+    expect(!card.intersects(instrument.getBounds()) && !card.intersects(fixture.play.getBounds()),
+           "the reading card avoids both controls when independent free space exists");
+    expectActionsInside(fixture.guide);
+
+    const auto playCentre = fixture.play.getBounds().getCentre();
+    const auto instrumentCentre = instrument.getBounds().getCentre();
+    auto *actualPlay = dynamic_cast<juce::Button *>(fixture.getComponentAt(playCentre));
+    auto *actualInstrument = dynamic_cast<juce::Button *>(fixture.getComponentAt(instrumentCentre));
+    expect(actualPlay == &fixture.play && actualInstrument == &instrument,
+           "centre hits reach the real supplementary Play and primary instrument controls");
+    const juce::Point<int> between((playCentre.x + instrumentCentre.x) / 2,
+                                   (playCentre.y + instrumentCentre.y) / 2);
+    expect(!card.contains(between) && fixture.guide.hitTest(between.x, between.y) &&
+               fixture.getComponentAt(between) == &fixture.guide,
+           "the gap between spotlight holes remains blocked instead of exposing their bounding union");
+
+    fixture.guide.setVisible(false);
+    const auto clear = fixture.createComponentSnapshot(fixture.getLocalBounds());
+    fixture.guide.setVisible(true);
+    const auto highlighted = fixture.createComponentSnapshot(fixture.getLocalBounds());
+    expect(clear.getPixelAt(playCentre.x, playCentre.y) ==
+               highlighted.getPixelAt(playCentre.x, playCentre.y),
+           "the supplementary Play is visibly unshaded inside its independent spotlight");
+    expect(highlighted.getPixelAt(between.x, between.y).getBrightness() <
+               clear.getPixelAt(between.x, between.y).getBrightness(),
+           "the space between both real controls stays visually shaded");
+
+    int playActions = 0, instrumentActions = 0, advances = 0;
+    fixture.play.onClick = [&] { ++playActions; };
+    instrument.onClick = [&] { ++instrumentActions; };
+    fixture.guide.onNext = [&] { ++advances; };
+    actualPlay->triggerClick();
+    actualInstrument->triggerClick();
+    drainMessages();
+    expect(playActions == 1 && instrumentActions == 1 && advances == 0 &&
+               !buttonNamed(fixture.guide, "learningNext").isEnabled(),
+           "supplementary playback uses the existing callback without completing the exercise or advancing");
+    capture(fixture, "learning-demo-supplementary-play-" + juce::String(size.x));
+
+    // Partly overlapping targets must remain transparent at their overlap;
+    // adding two even-odd holes to one path would shade this intersection.
+    const auto overlapping = instrument.getBounds().translated(20, 0);
+    fixture.guide.setSupplementaryTarget(overlapping);
+    const auto intersection = instrument.getBounds().getIntersection(overlapping).getCentre();
+    fixture.guide.setVisible(false);
+    const auto overlapClear = fixture.createComponentSnapshot(fixture.getLocalBounds());
+    fixture.guide.setVisible(true);
+    const auto overlapHighlighted = fixture.createComponentSnapshot(fixture.getLocalBounds());
+    expect(overlapClear.getPixelAt(intersection.x, intersection.y) ==
+               overlapHighlighted.getPixelAt(intersection.x, intersection.y) &&
+               !fixture.guide.hitTest(intersection.x, intersection.y),
+           "overlapping primary and supplementary holes remain clear and interactive");
+
+    fixture.guide.showStep(lesson, 1, instrument.getBounds(), true);
+    expect(LearningOverlayTestAccess::supplementaryTarget(fixture.guide).isEmpty() &&
+               fixture.guide.hitTest(playCentre.x, playCentre.y),
+           "a new step drops the previous supplementary transport permission");
+    fixture.guide.setSupplementaryTarget({-20, -20, 80, 80});
+    const auto clipped = LearningOverlayTestAccess::supplementaryTarget(fixture.guide);
+    expect(!clipped.isEmpty() &&
+               juce::BorderSize<int>(24, 12, 20, 12).subtractedFrom(fixture.getLocalBounds()).contains(clipped),
+           "supplementary controls are clipped to the current safe area");
+    fixture.guide.setSupplementaryTarget({2000, 2000, 44, 44});
+    expect(LearningOverlayTestAccess::supplementaryTarget(fixture.guide).isEmpty(),
+           "an offscreen supplementary control cannot expose an unrelated region");
+  }
+
+  Fixture fixture;
+  fixture.setSize(1200, 800);
+  fixture.guide.showStep(lesson, 0, {500, 330, 44, 44}, true);
+  const auto originalCard = LearningOverlayTestAccess::card(fixture.guide);
+  fixture.play.setBounds(juce::Rectangle<int>(44, 44).withCentre(originalCard.getCentre()));
+  fixture.guide.setSupplementaryTarget(fixture.play.getBounds());
+  expect(!LearningOverlayTestAccess::card(fixture.guide).intersects(fixture.play.getBounds()) &&
+             LearningOverlayTestAccess::card(fixture.guide) != originalCard,
+         "the card chooses another free position when Play occupies its preferred position");
+
+  fixture.guide.setSupplementaryTarget(fixture.guide.getLocalBounds());
+  const auto cardCentre = LearningOverlayTestAccess::card(fixture.guide).getCentre();
+  auto *cardContent = fixture.getComponentAt(cardCentre);
+  expect(fixture.guide.hitTest(cardCentre.x, cardCentre.y) &&
+             (cardContent == &fixture.guide || fixture.guide.isParentOf(cardContent)),
+         "the reading card always intercepts input even when a supplementary target must overlap it");
+
+  const auto temp = juce::File(juce::String(std::filesystem::temp_directory_path().string()))
+                        .getChildFile("playworship-supplementary-" + juce::Uuid().toString() + ".json");
+  playworship::learning::ProgressStore progress(temp);
+  fixture.guide.showCatalog({lesson}, progress);
+  expect(LearningOverlayTestAccess::supplementaryTarget(fixture.guide).isEmpty(),
+         "returning to the catalog resets the supplementary spotlight");
+  const auto catalogBefore = fixture.createComponentSnapshot(fixture.getLocalBounds());
+  fixture.guide.setSupplementaryTarget({24, 120, 44, 44});
+  const auto catalogAfter = fixture.createComponentSnapshot(fixture.getLocalBounds());
+  for (const auto point : {juce::Point<int>(46, 142), juce::Point<int>(20, 142),
+                          juce::Point<int>(72, 142), juce::Point<int>(46, 116)})
+    expect(catalogBefore.getPixelAt(point.x, point.y) == catalogAfter.getPixelAt(point.x, point.y),
+           "a delayed supplementary update paints neither a hole nor an outline over the catalog");
+  expect(LearningOverlayTestAccess::supplementaryTarget(fixture.guide).isEmpty() &&
+             fixture.guide.hitTest(46, 142),
+         "catalog mode rejects stale supplementary input targets");
+  temp.deleteFile();
+}
+
 void testValidatedStepReadiness() {
   LearningGuideOverlay guide;
   guide.setSize(390, 844);
@@ -318,6 +439,11 @@ void testGuideReparentedInsideSettings() {
   expect(modeChanges == 1 && buttonNamed(guide, "learningNext").isEnabled(),
          "the real Settings callback validates the action without a duplicate guide control");
   capture(settings, "learning-settings-client");
+  // JUCE PopupMenu dereferences the desktop display when positioning even an
+  // embedded menu. Fail explicitly in a sandbox without WindowServer access;
+  // this case must still run, rather than silently report a complete UI pass.
+  expect(juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr,
+         "the embedded menu test requires desktop display access; rerun outside the filesystem sandbox");
   buttonNamed(guide, "learningMore").onClick();
   const auto *menu = juce::Component::getCurrentlyModalComponent();
   const bool embeddedGuideMenu = menu != nullptr && guide.isParentOf(menu) &&
@@ -424,6 +550,188 @@ void testCatalogScrollAndSavedProgress() {
   expect(!revisedRow->getDescription().contains(L10n::tr("Completado", "Completed")),
          "a completed record with an unknown step cannot mark a revised course complete");
   temp.deleteFile();
+}
+
+void testCatalogErrorFeedbackAndScroll() {
+  const auto temp = juce::File(juce::String(std::filesystem::temp_directory_path().string()))
+                        .getChildFile("playworship-demo-errors-" + juce::Uuid().toString() + ".json");
+  playworship::learning::ProgressStore progress(temp);
+  const auto lessons = playworship::learning::makeLessons(true, L10n::isEnglish());
+  const auto error = L10n::tr(
+      "No se pudo agregar la demo a la Biblioteca. Inténtalo nuevamente.",
+      "The demo could not be added to the Library. Try again.");
+  const auto longError = error + "\n\n" + L10n::tr(
+      "Comprueba el espacio disponible en este dispositivo y vuelve a elegir la demo. "
+      "Tus canciones y setlists siguen en la Biblioteca. Puedes cerrar esta ayuda, "
+      "revisar el almacenamiento y regresar para continuar. La descarga de otra canción "
+      "o un guardado que siga en curso deben terminar antes de volver a intentar. "
+      "Cuando hayas resuelto el problema, elige el curso de la demo nuevamente.",
+      "Check the available storage on this device and choose the demo again. "
+      "Your songs and setlists remain in the Library. You can close this help, "
+      "review storage and return to continue. Another song download or a save still "
+      "in progress must finish before trying again. Once the problem is resolved, "
+      "choose the demo course again.");
+  bool scrolledLandscapeError = false;
+  for (const auto size : {juce::Point<int>(390, 844), juce::Point<int>(667, 375),
+                          juce::Point<int>(1200, 800)}) {
+    Fixture fixture;
+    fixture.setSize(size.x, size.y);
+    fixture.guide.setSafeAreaInsets({24, 12, 20, 12});
+    fixture.guide.showCatalog(lessons, progress);
+    auto &courses = LearningOverlayTestAccess::catalogViewport(fixture.guide);
+    auto &message = LearningOverlayTestAccess::stepViewport(fixture.guide);
+    const auto fullCourseArea = courses.getBounds();
+    expect(!message.isVisible(), "the normal catalog reserves its body for courses");
+    fixture.guide.setStatusMessage(error);
+    expect(message.isVisible() && message.getHeight() > 0 &&
+               message.getViewedComponent()->getHeight() > 0 &&
+               LearningOverlayTestAccess::card(fixture.guide).contains(message.getBounds()),
+           "a failed demo operation is visible and readable inside the catalog card");
+    expect(courses.isVisible() && courses.getHeight() >= 44 &&
+               courses.getY() >= message.getBottom() &&
+               !message.getBounds().intersects(courses.getBounds()),
+           "catalog feedback leaves separate reachable course rows for retrying");
+    expectActionsInside(fixture.guide);
+    capture(fixture, "learning-demo-catalog-error-" + juce::String(size.x) + "x" + juce::String(size.y));
+
+    fixture.guide.setStatusMessage(longError);
+    expectActionsInside(fixture.guide);
+    const auto textPosition = fixture.getLocalPoint(&message,
+        juce::Point<int>(message.getWidth() / 2, 8));
+    auto *text = fixture.getComponentAt(textPosition);
+    expect(text == message.getViewedComponent(),
+           "catalog error text receives real pointer events for viewport scrolling");
+    const auto coursesPosition = courses.getViewPosition();
+    juce::MouseWheelDetails wheel;
+    wheel.deltaY = -1.0f;
+    text->mouseWheelMove(pointerEvent(*text), wheel);
+    if (size.x > size.y && size.y < 500) {
+      expect(message.getViewedComponent()->getHeight() > message.getHeight() &&
+                 message.getViewPositionY() > 0,
+             "landscape feedback scrolls to long error details instead of clipping them");
+      scrolledLandscapeError = true;
+    }
+    expect(courses.getViewPosition() == coursesPosition,
+           "scrolling an error does not move or select the course list");
+    message.setViewPosition(0, message.getViewedComponent()->getHeight());
+    expect(message.getViewPositionY() + message.getViewHeight() >=
+               message.getViewedComponent()->getHeight(),
+           "the final error instruction remains reachable at the end of its own viewport");
+    capture(fixture, "learning-demo-catalog-error-end-" + juce::String(size.x) + "x" + juce::String(size.y));
+
+    juce::String selected;
+    fixture.guide.onLessonSelected = [&](const auto &id) { selected = id; };
+    auto *firstCourse = dynamic_cast<juce::Button *>(courses.getViewedComponent()->getChildComponent(0));
+    expect(firstCourse != nullptr, "the demo retry remains a real course button");
+    const auto coursePosition = fixture.getLocalPoint(firstCourse, juce::Point<int>(20, 20));
+    expect(fixture.getComponentAt(coursePosition) == firstCourse,
+           "the visible course remains hittable while an error is displayed");
+    firstCourse->onClick();
+    drainMessages();
+    expect(selected == lessons.front().id,
+           "a catalog error does not prevent choosing the demo again");
+
+    fixture.guide.setStatusMessage({});
+    expect(!message.isVisible() && courses.getBounds() == fullCourseArea,
+           "clearing feedback gives its space back to the courses without an invisible input blocker");
+    fixture.guide.setStatusMessage(error);
+    fixture.guide.showCatalog(lessons, progress);
+    expect(!message.isVisible() && courses.getBounds() == fullCourseArea,
+           "reopening the catalog clears the previous operation's error");
+  }
+  expect(scrolledLandscapeError, "catalog feedback was exercised in a compact landscape viewport");
+  temp.deleteFile();
+}
+
+void testDemoWelcomeAndCoursePreviews() {
+  using Anchor = playworship::learning::Anchor;
+  for (const auto size : {juce::Point<int>(390, 844), juce::Point<int>(1200, 800)}) {
+    Fixture fixture;
+    fixture.setSize(size.x, size.y);
+    fixture.guide.setSafeAreaInsets({24, 12, 20, 12});
+    fixture.guide.setVisible(false);
+    // Keep these strings in sync with offerDemoWelcome: this captures the
+    // production modal and its actual first-run copy, not a shortened mock.
+    const auto welcomeMessage = L10n::tr(
+        "Aprende con una demo incluida: 90 segundos, ocho instrumentos y secciones listas. Prueba los controles paso a paso, sin conexión. Puedes borrarla y recuperarla desde Aprender PlayWorship.",
+        "Learn with an included demo: 90 seconds, eight instruments and prepared sections. Try the controls step by step, offline. Delete it or recover it from Learn PlayWorship.");
+    {
+      AppModal welcome(fixture, AppModal::Kind::Confirm,
+          L10n::tr("Bienvenido a PlayWorship", "Welcome to PlayWorship"), welcomeMessage,
+          L10n::tr("Probar demo", "Try demo"), L10n::tr("Más tarde", "Later"), nullptr);
+      fixture.addAndMakeVisible(welcome);
+      welcome.setBounds(fixture.getLocalBounds());
+      std::vector<juce::Rectangle<int>> occupied;
+      bool checkedMessage = false;
+      for (auto *child : welcome.getChildren()) {
+        if (!child->isVisible()) continue;
+        expect(!child->getBounds().isEmpty() && welcome.getLocalBounds().contains(child->getBounds()),
+               "demo welcome controls remain inside the phone and desktop surface");
+        for (const auto &bounds : occupied)
+          expect(!child->getBounds().intersects(bounds),
+                 "demo welcome text and actions do not overlap");
+        occupied.push_back(child->getBounds());
+        if (const auto *label = dynamic_cast<juce::Label *>(child);
+            label && label->getText() == welcomeMessage) {
+          const auto textArea = label->getBorderSize().subtractedFrom(label->getLocalBounds());
+          juce::AttributedString attributed;
+          attributed.setFont(label->getFont());
+          attributed.append(label->getText());
+          juce::TextLayout layout;
+          layout.createLayout(attributed, static_cast<float>(textArea.getWidth()));
+          expect(layout.getHeight() <= static_cast<float>(textArea.getHeight()),
+                 "the complete demo welcome explanation fits without truncated lines");
+          checkedMessage = true;
+        }
+      }
+      expect(checkedMessage, "the production welcome explanation is present for measurement");
+      capture(fixture, "learning-demo-welcome-" + juce::String(size.x) + "x" + juce::String(size.y));
+    }
+
+    const auto lessons = playworship::learning::makeLessons(size.x < 500, L10n::isEnglish());
+    const auto course = std::find_if(lessons.begin(), lessons.end(), [](const auto &lesson) {
+      return lesson.id == "demo-song";
+    });
+    expect(course != lessons.end(), "demo previews use the actual production course");
+    fixture.play.setBounds(size.x - 80, 120, 44, 44);
+    fixture.guide.setVisible(true);
+    bool checkedPlayableControl = false;
+    for (int i = 0; i < static_cast<int>(course->steps.size()); ++i) {
+      const auto &step = course->steps[static_cast<size_t>(i)];
+      juce::Rectangle<int> target;
+      if (step.anchor == Anchor::PlayPause || step.anchor == Anchor::Stop) {
+        fixture.play.setIcon(step.anchor == Anchor::Stop ? SvgIconName::Square : SvgIconName::Play);
+        target = fixture.play.getBounds();
+      } else if (step.anchor != Anchor::None) {
+        // Component preview only: full application targets are exercised in
+        // the integration/manual run. A large target here checks card placement.
+        target = {20, 190, size.x - 40, size.y / 3};
+      }
+      fixture.guide.showStep(*course, i, target, true);
+      fixture.guide.setStepReadiness(step.condition == playworship::learning::StepCondition::None,
+                                    step.condition == playworship::learning::StepCondition::None
+                                        ? juce::String{} : step.task);
+      expectActionsInside(fixture.guide);
+      expect(LearningOverlayTestAccess::safe(fixture.guide).contains(
+                 LearningOverlayTestAccess::card(fixture.guide)),
+             "every actual demo instruction and its actions fit in the safe reading area");
+      auto &instructions = LearningOverlayTestAccess::stepViewport(fixture.guide);
+      expect(instructions.isVisible() && instructions.getViewHeight() > 0,
+             "every demo step retains a usable reading viewport");
+      instructions.setViewPosition(0, instructions.getViewedComponent()->getHeight());
+      expect(instructions.getViewPositionY() + instructions.getViewHeight() >=
+                 instructions.getViewedComponent()->getHeight(),
+             "long demo instructions and task text can be read to their final line");
+      instructions.setViewPosition(0, 0);
+      if (step.anchor == Anchor::PlayPause || step.anchor == Anchor::Stop) {
+        expect(fixture.getComponentAt(target.getCentre()) == &fixture.play,
+               "demo transport exercises retain input access to the actual shared transport button");
+        checkedPlayableControl = true;
+      }
+      capture(fixture, "learning-demo-" + juce::String(size.x) + "-" + step.id);
+    }
+    expect(checkedPlayableControl, "the demo preview exercises at least one actual transport destination");
+  }
 }
 
 void testPracticeTargetsAndLargeWaveform() {
@@ -562,6 +870,8 @@ void testAsynchronousCallbacksAndKeyboard() {
 } // namespace
 
 int main() {
+  // Keep completed cases visible in CTest logs if a later native UI call fails.
+  std::cout << std::unitbuf;
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
 #endif
@@ -579,10 +889,13 @@ int main() {
   };
   run("shared cloud guide phone and desktop", testSharedCloudCourse);
   run("responsive spotlight and actual control hit testing", testResponsiveSpotlightAndInteraction);
+  run("independent supplementary transport spotlight and real controls", testSupplementaryTransportTarget);
   run("target updates and course step boundaries", testTargetUpdatesAndBoundarySteps);
   run("validated tasks retain navigation and real control access", testValidatedStepReadiness);
   run("real settings actions through a reparented guide", testGuideReparentedInsideSettings);
   run("scrollable course catalog with saved progress", testCatalogScrollAndSavedProgress);
+  run("catalog errors remain visible and independently scrollable", testCatalogErrorFeedbackAndScroll);
+  run("demo welcome and actual course component previews", testDemoWelcomeAndCoursePreviews);
   run("real Practice targets and wide phone waveform", testPracticeTargetsAndLargeWaveform);
   run("safe asynchronous callbacks and focused keyboard input", testAsynchronousCallbacksAndKeyboard);
   return failures == 0 ? 0 : 1;

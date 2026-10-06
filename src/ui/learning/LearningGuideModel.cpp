@@ -25,6 +25,7 @@ bool evaluateStepCondition(const StepCondition condition, const StepFacts &facts
   case StepCondition::CloudOpen: return facts.sharedCloudAccessible && facts.cloudOpen;
   case StepCondition::SharedSongDownloaded: return facts.sharedCloudAccessible && facts.sharedSongDownloaded;
   case StepCondition::SharedSongAdded: return facts.sharedCloudAccessible && facts.sharedSongDownloaded && facts.sharedSongAdded;
+  case StepCondition::DemoExercise: return facts.songLoaded && facts.demoExerciseComplete;
   case StepCondition::None: return true;
   case StepCondition::SettingsOpen: return facts.settingsOpen;
   case StepCondition::RemotePageOpen: return facts.settingsOpen && facts.remotePageOpen;
@@ -90,6 +91,71 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
   };
 
   std::vector<Lesson> lessons;
+  Lesson demo{
+      "demo-song", text("Probar con una canción demo", "Try a demo song"),
+      text("Carga o restaura Luz de esperanza en este equipo: 8 instrumentos, 90 segundos y sin internet.",
+           "Load or restore Luz de esperanza on this device: 8 instruments, 90 seconds and no internet needed."),
+      {
+          step("demo-welcome", "Conoce Luz de esperanza", "Meet Luz de esperanza",
+               "Esta canción demo queda en tu Biblioteca local. Sus 8 instrumentos y 90 segundos te permiten practicar sin internet. La guía espera tus acciones sobre los controles reales; no reproduce por ti. Escucha con un volumen cómodo y usa Continuar después de cada ejercicio.",
+               "This demo song stays in your local Library. Its 8 instruments and 90 seconds let you practice without internet. The guide waits for your actions on the real controls; it does not start playback for you. Listen at a comfortable volume and use Continue after each exercise.",
+               "Ubica Play, la onda y el mixer antes de escuchar.", "Find Play, the waveform and the mixer before listening.", Anchor::None, true),
+          step("demo-play", "Escucha la canción", "Listen to the song",
+               "Play inicia Luz de esperanza. Escucha unos segundos para reconocer cómo suenan juntos los instrumentos y observa cómo avanza el cursor de la onda.",
+               "Play starts Luz de esperanza. Listen for a few seconds to hear the instruments together and watch the waveform cursor move.",
+               "Pulsa Play y escucha unos segundos.", "Press Play and listen for a few seconds.", Anchor::PlayPause, true, StepCondition::DemoExercise),
+          step("demo-pause", "Pausa donde estás", "Pause where you are",
+               "El mismo botón ahora permite pausar. Pausa conserva la posición para continuar desde ese lugar. Si la canción ya está pausada, reanúdala y vuelve a pausarla para practicar.",
+               "The same button now pauses playback. Pause keeps your position so you can continue from there. If the song is already paused, resume and pause it again to practice.",
+               "Pulsa Pausa y observa que el cursor conserva su posición.", "Press Pause and notice that the cursor keeps its position.", Anchor::PlayPause, true, StepCondition::DemoExercise),
+          step("demo-resume", "Continúa escuchando", "Keep listening",
+               "Vuelve a pulsar Play para continuar desde la posición de Pausa. Deja sonar la demo mientras pruebas el volumen, Mute, Solo y la repetición de secciones en los próximos pasos; así podrás escuchar cada cambio.",
+               "Press Play again to continue from the paused position. Let the demo play while you try volume, Mute, Solo and section looping in the next steps so you can hear each change.",
+               "Pulsa Play para escuchar los próximos cambios de mezcla.", "Press Play to hear the upcoming mix changes.", Anchor::PlayPause, true, StepCondition::DemoExercise),
+          step("demo-fader", "Ajusta un instrumento", "Adjust an instrument",
+               "Cada fader controla el volumen de un instrumento. Deslízalo un poco y escucha cómo cambia su presencia en la mezcla. La guía comprueba que lo hayas movido durante este paso.",
+               "Each fader controls an instrument's volume. Move one slightly and listen to how its presence in the mix changes. The guide checks that you moved it during this step.",
+               "Mueve suavemente el fader de un instrumento.", "Gently move one instrument's fader.", Anchor::Mixer, true, StepCondition::DemoExercise),
+          step("demo-mute", "Silencia y recupera un instrumento", "Mute and restore an instrument",
+               "Mute silencia un canal sin mover su fader. Actívalo y luego desactívalo en el mismo instrumento para recuperar su participación en la mezcla. Si ya estaba activado, apágalo antes de probar el ciclo completo.",
+               "Mute silences a channel without moving its fader. Turn it on and then off on the same instrument to bring it back into the mix. If it was already on, turn it off before trying the full cycle.",
+               "Activa Mute en un instrumento y vuelve a desactivarlo.", "Turn Mute on for one instrument, then turn it off again.", Anchor::Mixer, true, StepCondition::DemoExercise),
+          step("demo-solo", "Aísla y recupera la mezcla", "Isolate and restore the mix",
+               "Solo permite escuchar un instrumento de forma aislada dentro de la mezcla. Actívalo y vuelve a desactivarlo en el mismo canal. Un Solo que ya estaba activado no cuenta como una acción de este paso.",
+               "Solo lets you hear an instrument in isolation within the mix. Turn it on and then off on the same channel. A Solo that was already on does not count as an action in this step.",
+               "Activa Solo en un instrumento y vuelve a desactivarlo.", "Turn Solo on for one instrument, then turn it off again.", Anchor::Mixer, true, StepCondition::DemoExercise),
+          step("demo-section-loop", "Repite una sección", "Repeat a section",
+               "Fuera del modo Editar, toca una sección (o pasa el puntero sobre ella) para ver sus acciones. Pulsa el icono de repetición para activar su loop y vuelve a pulsarlo para desactivarlo. Si ya había un loop activo, desactívalo antes de comenzar.",
+               "Outside Edit mode, tap a section (or hover over it) to reveal its actions. Press the repeat icon to enable its loop, then press it again to turn it off. If a loop was already active, turn it off before starting.",
+               "Activa el loop de una sección y vuelve a desactivarlo.", "Turn on a section loop, then turn it off again.", Anchor::Waveform, true, StepCondition::DemoExercise),
+      }};
+  if (phone) {
+    demo.steps.push_back(step("demo-open-practice", "Abre Ensayo", "Open Practice",
+        "En teléfono, Ensayo ofrece una onda por instrumento y controles para repetir una región. Abre Más y elige Ensayo; la guía continúa dentro de esa vista. Si ya está abierta al retomar este paso, ciérrala y vuelve a abrirla.",
+        "On a phone, Practice offers a waveform for each instrument and controls for repeating a region. Open More and choose Practice; the guide continues inside that view. If it is already open when you resume this step, close and reopen it.",
+        "Abre Más y entra en Ensayo.", "Open More and enter Practice.", Anchor::More, true, StepCondition::DemoExercise));
+    demo.steps.push_back(step("demo-practice-focus", "Enfoca y restaura la escucha", "Focus and restore listening",
+        "Elige un instrumento desde el nombre sobre la onda. Desliza hacia arriba sobre su tarjeta para enfocarlo; luego desliza hacia abajo para volver a la mezcla normal. La escucha temporal no reemplaza tus faders.",
+        "Choose an instrument from the name above its waveform. Swipe up on its card to focus it, then swipe down to return to the normal mix. Temporary listening does not replace your faders.",
+        "Enfoca un instrumento y restaura la mezcla normal.", "Focus an instrument, then restore the normal mix.", Anchor::Waveform, true, StepCondition::DemoExercise));
+    demo.steps.push_back(step("demo-practice-ab", "Crea y borra una región A–B", "Create and clear an A–B region",
+        "Si ya hay marcas, bórralas primero. A marca el inicio; avanza por la onda y pulsa B para cerrar la región y activar la repetición. Ambas se ajustan al pulso. Después usa la papelera para borrar la región: apagar Repetir conserva las marcas y no completa este ejercicio.",
+        "Clear any existing marks first. A marks the start; move forward in the waveform and press B to finish the region and enable repetition. Both snap to the beat. Then use the trash button to clear the region: turning Repeat off keeps the marks and does not complete this exercise.",
+        "Marca A, avanza, marca B y borra la región con la papelera.", "Mark A, move forward, mark B and clear the region with the trash button.", Anchor::PracticeLoop, true, StepCondition::DemoExercise));
+    demo.steps.push_back(step("demo-close-practice", "Vuelve al reproductor", "Return to the player",
+        "Cierra Ensayo con su botón X para volver a la onda y al mixer principales. La escucha y la región A–B de Ensayo son temporales. Si ya estaba cerrado al retomar el paso, ábrelo y vuelve a cerrarlo.",
+        "Close Practice with its X button to return to the main waveform and mixer. Practice listening and its A–B region are temporary. If it was already closed when you resumed this step, open and close it again.",
+        "Cierra Ensayo con su botón X.", "Close Practice with its X button.", Anchor::PracticeExit, true, StepCondition::DemoExercise));
+  }
+  demo.steps.push_back(step("demo-stop", "Detén y vuelve al inicio", "Stop and return to the start",
+      "Stop detiene la canción y devuelve el cursor al Inicio configurado. Comprueba la diferencia con Pausa. Pulsa el botón aunque la demo ya haya terminado: la guía espera tu acción de Stop durante este paso.",
+      "Stop stops the song and returns the cursor to its configured Start. Notice how this differs from Pause. Press the button even if the demo has already ended: the guide waits for your Stop action during this step.",
+      "Pulsa Stop y comprueba que el cursor vuelve al inicio.", "Press Stop and check that the cursor returns to the start.", Anchor::Stop, true, StepCondition::DemoExercise));
+  demo.steps.push_back(step("demo-ready", "La demo queda en tu Biblioteca", "The demo stays in your Library",
+      "Ya practicaste los controles principales con Luz de esperanza. Puedes volver a reproducirla y mezclar sus instrumentos. Si no la necesitas, bórrala desde Biblioteca. Para recuperarla, abre este mismo curso: vuelve a cargar o restaurar la canción demo local, sin internet.",
+      "You have practiced the main controls with Luz de esperanza. You can play it again and mix its instruments. If you no longer need it, delete it from Library. To recover it, open this same course: it loads or restores the local demo song again, without internet.",
+      "Termina la guía y vuelve a la demo cuando quieras.", "Finish the guide and return to the demo whenever you want.", Anchor::None, true));
+  lessons.push_back(std::move(demo));
   lessons.push_back({
       "first-steps", text("Primeros pasos", "First steps"),
       text("Conoce la canción, la onda y los controles de reproducción.",

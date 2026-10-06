@@ -253,6 +253,7 @@ void LearningGuideOverlay::showCatalog(
   ++presentationRevision;
   catalog = true;
   requestedTarget = {};
+  requestedSupplementaryTarget = {};
   statusMessage = {};
   readinessMessage = {};
   stepReady = true;
@@ -276,6 +277,7 @@ void LearningGuideOverlay::showStep(const playworship::learning::Lesson &course,
   setTitle(lesson.title);
   stepIndex = juce::jlimit(0, juce::jmax(0, static_cast<int>(lesson.steps.size()) - 1), index);
   requestedTarget = targetBounds;
+  requestedSupplementaryTarget = {};
   hasSong = songAvailable;
   statusMessage = {};
   readinessMessage = {};
@@ -308,6 +310,17 @@ void LearningGuideOverlay::setSafeAreaInsets(juce::BorderSize<int> insets) {
   repaint();
 }
 
+void LearningGuideOverlay::setSupplementaryTarget(juce::Rectangle<int> bounds) {
+  // Catalogs never expose application controls, including a delayed target
+  // update from a course that has just closed.
+  const auto requested = catalog ? juce::Rectangle<int>{} : bounds;
+  if (requestedSupplementaryTarget == requested)
+    return;
+  requestedSupplementaryTarget = requested;
+  resized();
+  repaint();
+}
+
 void LearningGuideOverlay::setStatusMessage(const juce::String &message) {
   if (statusMessage == message)
     return;
@@ -335,6 +348,12 @@ bool LearningGuideOverlay::isShowingCatalog() const { return catalog; }
 
 void LearningGuideOverlay::refreshStepText() {
   std::vector<TextBlock> blocks;
+  if (catalog) {
+    if (statusMessage.isNotEmpty())
+      blocks.push_back({statusMessage, 14, AppFontWeight::Medium, UITheme::accent, 0});
+    textContent->setBlocks(std::move(blocks));
+    return;
+  }
   if (!lesson.steps.empty()) {
     const auto &step = lesson.steps[static_cast<size_t>(stepIndex)];
     blocks.push_back({L10n::tr("Paso ", "Step ") + juce::String(stepIndex + 1) +
@@ -379,60 +398,86 @@ juce::Rectangle<int> LearningGuideOverlay::chooseStepCard() const {
                                                 safe.getBottom() - height, width, height);
   // Cloud courses highlight the full library; keep its header and first rows
   // reachable, with the compact guide below them.
-  if (target.isEmpty() || lesson.id.startsWith("teams-cloud-"))
+  if ((target.isEmpty() && supplementaryTarget.isEmpty()) ||
+      (lesson.id.startsWith("teams-cloud-") && supplementaryTarget.isEmpty()))
     return defaultCard;
 
   constexpr int gap = 12;
   std::vector<juce::Rectangle<int>> candidates;
-  const auto appendSide = [&](bool left) {
-    const int available = left ? target.getX() - gap - safe.getX()
-                               : safe.getRight() - target.getRight() - gap;
-    if (available < 250)
-      return;
-    const int sideWidth = juce::jmin(width, available);
-    const int x = left ? target.getX() - gap - sideWidth : target.getRight() + gap;
-    candidates.push_back(clampInto({x, target.getCentreY() - height / 2, sideWidth, height}, safe));
-  };
   const bool landscape = static_cast<float>(safe.getWidth()) > static_cast<float>(safe.getHeight()) * 1.35f;
-  if (landscape) {
-    appendSide(target.getCentreX() >= safe.getCentreX());
-    appendSide(target.getCentreX() < safe.getCentreX());
-  }
-  const int x = juce::jlimit(safe.getX(), safe.getRight() - width,
-                            target.getCentreX() - width / 2);
-  const int minimumHeight = juce::jmin(210, safe.getHeight());
-  const int belowSpace = safe.getBottom() - target.getBottom() - gap;
-  const int aboveSpace = target.getY() - gap - safe.getY();
-  if (belowSpace >= minimumHeight)
-    candidates.emplace_back(x, target.getBottom() + gap, width, juce::jmin(height, belowSpace));
-  if (aboveSpace >= minimumHeight) {
-    const int aboveHeight = juce::jmin(height, aboveSpace);
-    candidates.emplace_back(x, target.getY() - gap - aboveHeight, width, aboveHeight);
-  }
-  if (!landscape) {
-    appendSide(target.getCentreX() >= safe.getCentreX());
-    appendSide(target.getCentreX() < safe.getCentreX());
-  }
-  if (!candidates.empty())
+  const auto appendAround = [&](const juce::Rectangle<int> &anchor) {
+    if (anchor.isEmpty()) return;
+    const auto appendSide = [&](bool left) {
+      const int available = left ? anchor.getX() - gap - safe.getX()
+                                 : safe.getRight() - anchor.getRight() - gap;
+      if (available < 250) return;
+      const int sideWidth = juce::jmin(width, available);
+      const int x = left ? anchor.getX() - gap - sideWidth : anchor.getRight() + gap;
+      candidates.push_back(clampInto(
+          {x, anchor.getCentreY() - height / 2, sideWidth, height}, safe));
+    };
+    if (landscape) {
+      appendSide(anchor.getCentreX() >= safe.getCentreX());
+      appendSide(anchor.getCentreX() < safe.getCentreX());
+    }
+    const int x = juce::jlimit(safe.getX(), safe.getRight() - width,
+                              anchor.getCentreX() - width / 2);
+    const int minimumHeight = juce::jmin(210, safe.getHeight());
+    const int belowSpace = safe.getBottom() - anchor.getBottom() - gap;
+    const int aboveSpace = anchor.getY() - gap - safe.getY();
+    if (belowSpace >= minimumHeight)
+      candidates.emplace_back(x, anchor.getBottom() + gap, width, juce::jmin(height, belowSpace));
+    if (aboveSpace >= minimumHeight) {
+      const int aboveHeight = juce::jmin(height, aboveSpace);
+      candidates.emplace_back(x, anchor.getY() - gap - aboveHeight, width, aboveHeight);
+    }
+    if (!landscape) {
+      appendSide(anchor.getCentreX() >= safe.getCentreX());
+      appendSide(anchor.getCentreX() < safe.getCentreX());
+    }
+  };
+  appendAround(target);
+  if (supplementaryTarget.isEmpty() && !candidates.empty())
     return candidates.front();
 
   // Very large targets leave no room for a separate card. Keep all actions
   // on screen and cover only the smaller of its top/bottom portions.
   const auto topCard = defaultCard.withY(safe.getY());
-  const auto overlapArea = [&](const juce::Rectangle<int> &card) {
-    const auto overlap = card.getIntersection(target);
+  const auto overlapArea = [](const juce::Rectangle<int> &card,
+                              const juce::Rectangle<int> &anchor) {
+    const auto overlap = card.getIntersection(anchor);
     return overlap.getWidth() * overlap.getHeight();
   };
-  return overlapArea(topCard) < overlapArea(defaultCard) ? topCard : defaultCard;
+  if (supplementaryTarget.isEmpty())
+    return overlapArea(topCard, target) < overlapArea(defaultCard, target) ? topCard : defaultCard;
+
+  appendAround(supplementaryTarget);
+  candidates.push_back(defaultCard);
+  candidates.push_back(topCard);
+  const auto clear = std::find_if(candidates.begin(), candidates.end(), [&](const auto &card) {
+    return !card.intersects(target) && !card.intersects(supplementaryTarget);
+  });
+  if (clear != candidates.end()) return *clear;
+  // A waveform may fill almost the entire screen. Prefer keeping the small
+  // supplementary transport available, then minimize coverage of the main target.
+  return *std::min_element(candidates.begin(), candidates.end(), [&](const auto &a, const auto &b) {
+    const int extraA = overlapArea(a, supplementaryTarget);
+    const int extraB = overlapArea(b, supplementaryTarget);
+    if ((extraA == 0) != (extraB == 0)) return extraA == 0;
+    return overlapArea(a, target) + extraA < overlapArea(b, target) + extraB;
+  });
 }
 
 void LearningGuideOverlay::resized() {
   const auto safe = safeBounds();
   target = requestedTarget.getIntersection(safeAreaInsets.subtractedFrom(getLocalBounds()))
                            .getIntersection(getLocalBounds());
+  supplementaryTarget = requestedSupplementaryTarget
+      .getIntersection(safeAreaInsets.subtractedFrom(getLocalBounds()))
+      .getIntersection(getLocalBounds());
   const bool hasSteps = !lesson.steps.empty();
   catalogViewport.setVisible(catalog);
-  textViewport.setVisible(!catalog);
+  textViewport.setVisible(!catalog || statusMessage.isNotEmpty());
   previousButton.setVisible(!catalog);
   nextButton->setVisible(!catalog);
   moreButton.setVisible(!catalog);
@@ -454,6 +499,13 @@ void LearningGuideOverlay::resized() {
     closeButton.setBounds(cardBounds.getRight() - 56, cardBounds.getY() + 10, 44, 44);
     auto body = cardBounds.reduced(14);
     body.removeFromTop(96);
+    if (statusMessage.isNotEmpty()) {
+      const auto height = juce::jmin(juce::jmax(36, body.getHeight() / 3),
+          12 + textHeight(statusMessage, juce::jmax(40, body.getWidth() - 6), 14, AppFontWeight::Medium));
+      textViewport.setBounds(body.removeFromTop(height));
+      textContent->setSize(juce::jmax(1, body.getWidth() - 6), textContent->getHeight());
+      body.removeFromTop(8);
+    }
     catalogViewport.setBounds(body);
     catalogContent->setSize(juce::jmax(1, body.getWidth() - 6), catalogContent->getHeight());
     return;
@@ -486,11 +538,28 @@ void LearningGuideOverlay::paint(juce::Graphics &g) {
     shade.addRoundedRectangle(target.expanded(5).getIntersection(getLocalBounds()).toFloat(), 12);
     shade.setUsingNonZeroWinding(false);
   }
-  g.setColour(juce::Colours::black.withAlpha(catalog ? 0.52f : 0.58f));
-  g.fillPath(shade);
+  {
+    const juce::Graphics::ScopedSaveState saved(g);
+    if (!catalog && !supplementaryTarget.isEmpty()) {
+      // Intersect the two inverse masks rather than XOR-ing two holes: even
+      // overlapping targets remain clear, without exposing their bounding union.
+      juce::Path supplementaryShade;
+      supplementaryShade.addRectangle(getLocalBounds().toFloat());
+      supplementaryShade.addRoundedRectangle(
+          supplementaryTarget.expanded(5).getIntersection(getLocalBounds()).toFloat(), 12);
+      supplementaryShade.setUsingNonZeroWinding(false);
+      g.reduceClipRegion(supplementaryShade);
+    }
+    g.setColour(juce::Colours::black.withAlpha(catalog ? 0.52f : 0.58f));
+    g.fillPath(shade);
+  }
   if (!catalog && !target.isEmpty()) {
     g.setColour(UITheme::accent.withAlpha(0.85f));
     g.drawRoundedRectangle(target.expanded(4).toFloat(), 11, 1.5f);
+  }
+  if (!catalog && !supplementaryTarget.isEmpty()) {
+    g.setColour(UITheme::accent.withAlpha(0.5f));
+    g.drawRoundedRectangle(supplementaryTarget.expanded(4).toFloat(), 11, 1.2f);
   }
   if (cardBounds.isEmpty())
     return;
@@ -517,7 +586,8 @@ void LearningGuideOverlay::paint(juce::Graphics &g) {
 }
 
 bool LearningGuideOverlay::hitTest(int x, int y) {
-  if (!catalog && target.contains(x, y) && !cardBounds.contains(x, y))
+  if (!catalog && (target.contains(x, y) || supplementaryTarget.contains(x, y)) &&
+      !cardBounds.contains(x, y))
     return false;
   return getLocalBounds().contains(x, y);
 }

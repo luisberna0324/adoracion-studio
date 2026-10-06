@@ -505,6 +505,26 @@ if(MTCONTROLS_BUILD_TESTS)
     target_include_directories(MTControlsLearningGuideTests PRIVATE src)
     target_link_libraries(MTControlsLearningGuideTests PRIVATE juce::juce_core)
     add_test(NAME learning_guide COMMAND MTControlsLearningGuideTests)
+    juce_add_console_app(MTControlsDemoLearningTests PRODUCT_NAME "Demo Learning Tests")
+    target_sources(MTControlsDemoLearningTests PRIVATE tests/demo_learning_tests.cpp)
+    target_include_directories(MTControlsDemoLearningTests PRIVATE src)
+    target_link_libraries(MTControlsDemoLearningTests PRIVATE juce::juce_core)
+    add_test(NAME demo_learning COMMAND MTControlsDemoLearningTests)
+    juce_add_console_app(MTControlsDemoSongTests PRODUCT_NAME "Demo Song Tests")
+    target_sources(MTControlsDemoSongTests PRIVATE tests/demo_song_tests.cpp
+        src/data/DemoSongService.cpp src/data/SongLibraryStore.cpp
+        src/data/SessionPersistence.cpp src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+    juce_generate_juce_header(MTControlsDemoSongTests)
+    target_include_directories(MTControlsDemoSongTests PRIVATE src)
+    target_compile_definitions(MTControlsDemoSongTests PRIVATE MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsDemoSongTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    add_test(NAME demo_song COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsDemoSongTests>")
+    if(MSVC)
+        target_compile_options(MTControlsDemoLearningTests PRIVATE /utf-8)
+        target_compile_options(MTControlsDemoSongTests PRIVATE /utf-8)
+    endif()
     juce_add_console_app(MTControlsRemoteLearningTests PRODUCT_NAME "Remote Learning Tests")
     target_sources(MTControlsRemoteLearningTests PRIVATE tests/remote_learning_action_tests.cpp)
     target_include_directories(MTControlsRemoteLearningTests PRIVATE src)
@@ -1014,6 +1034,7 @@ juce_add_binary_data(MTControlsAssets
         assets/logoPlayWorship.jpeg
         assets/pwLogoSinFondo.png
         assets/auth/google-g.png
+        assets/demo/LuzDeEsperanza.pwproj
         assets/fonts/InterRegular.ttf
         assets/fonts/InterMedium.ttf
         assets/fonts/InterSemiBold.ttf
@@ -1176,6 +1197,9 @@ target_sources(MTControls
         src/data/MobileImportStaging.h
         src/data/SongLibraryStore.h
         src/LearningGuideIntegration.cpp
+        src/DemoSongIntegration.cpp
+        src/data/DemoSongService.cpp
+        src/data/DemoSongService.h
         src/ui/learning/LearningGuideModel.cpp
         src/ui/learning/LearningGuideModel.h
         src/ui/learning/LearningGuideOverlay.cpp

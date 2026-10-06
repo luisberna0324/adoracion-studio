@@ -20,6 +20,7 @@
 class PracticePanel final : public juce::Component, private juce::Timer {
 public:
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
+  bool hasLoopMarks() const noexcept { return loopStartSeconds >= 0.0 || loopEndSeconds >= 0.0; }
   struct Instrument {
     juce::String id;
     juce::String name;

@@ -14,6 +14,7 @@
 #include "ui/UiCommon.h"
 #include "ui/learning/LearningGuideModel.h"
 #include "ui/learning/RemoteLearningAction.h"
+#include "ui/learning/DemoLearningProgress.h"
 #include <JuceHeader.h>
 
 #include <unordered_set>
@@ -32,6 +33,7 @@ class SettingsVersionsSheet;
 class AppModal;
 class PracticePanel;
 class LearningGuideOverlay;
+class SongLoadProgressOverlay;
 class TeamsPanel;
 
 
@@ -90,6 +92,10 @@ private:
   juce::var teamsDetails;
   uint64_t teamsDetailsGeneration = 0;
   void showLearningGuide();
+  void offerDemoWelcome();
+  void prepareDemoLesson();
+  playworship::learning::DemoLearningProgress::Snapshot demoLearningSnapshot() const;
+  bool isLearningPracticeStep() const;
   void showLearningCatalog();
   void startLearningLesson(const juce::String &id);
   void advanceLearningStep(bool forward);
@@ -152,6 +158,9 @@ private:
       playworship::learning::RemotePrerequisite::None;
   juce::String learningObservedStepKey;
   playworship::learning::RemoteLearningAction learningRemoteAction;
+  playworship::learning::DemoLearningProgress demoLearningProgress;
+  std::unique_ptr<SongLoadProgressOverlay> demoLoadingOverlay;
+  bool demoWelcomeChecked = false;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 

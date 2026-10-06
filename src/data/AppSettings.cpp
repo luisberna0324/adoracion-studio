@@ -178,6 +178,17 @@ juce::File AppSettings::getSettingsFile() {
   return getMtControlsDirectory().getChildFile("app_settings.json");
 }
 
+bool AppSettings::getDemoWelcomeSeen() {
+  return static_cast<bool>(juce::JSON::parse(getSettingsFile())["demoWelcomeSeen"]);
+}
+
+void AppSettings::setDemoWelcomeSeen(const bool value) {
+  auto root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  root.getDynamicObject()->setProperty("demoWelcomeSeen", value);
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
 bool AppSettings::getExpandWindowOnLaunch() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())

@@ -27,6 +27,7 @@
 #include "platform/NativeAppleSignIn.h"
 #include "ui/components/SetlistHandlePanel.h"
 #include "ui/components/WelcomeModal.h"
+#include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/PracticePanel.h"
@@ -2043,6 +2044,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
+    if (demoLoadingOverlay) return false;
     if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return true; }
     if (songLoadBusy)
       return false;
@@ -4614,6 +4616,12 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  if (demoLoadingOverlay) {
+    auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+    if (p.isSongPlaying()) p.stopSong();
+    return;
+  }
+  offerDemoWelcome();
   updateTeamsOnboarding();
   updateLearningGuideTarget();
   if (pendingExternalProjectFile != juce::File{} && !songLoadBusy &&
@@ -4831,7 +4839,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     // Natural completion leaves the processor parked exactly at Fin. A manual
     // stop seeks back to Inicio, so checking the current cursor distinguishes
     // both cases without requiring an impossible wrap-to-start transition.
-    if (reachedSongEnd) {
+    if (reachedSongEnd && !(learningGuide && learningLessonId == "demo-song")) {
       // The browsing workspace is a filtered view. Continue the explicitly
       // active setlist even while the musician browses another team's library.
       const auto next = songListPanelRaw->getAutoPlayNextSong(currentLoadedSong.id);
@@ -4916,6 +4924,7 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 }
 
 void MTControlsAudioProcessorEditor::resized() {
+  if (demoLoadingOverlay) demoLoadingOverlay->setBounds(getLocalBounds());
   // Authentication also owns the phone orientation before the main UI exists.
   updatePhoneOrientation();
   if (!mainUiInitialized) {

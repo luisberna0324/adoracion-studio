@@ -19,6 +19,8 @@ public:
   void showStep(const playworship::learning::Lesson &, int index,
                 juce::Rectangle<int> targetBounds, bool songAvailable);
   void updateTarget(juce::Rectangle<int>, bool songAvailable);
+  /** Keeps a second real control available without exposing the space between targets. */
+  void setSupplementaryTarget(juce::Rectangle<int>);
   void setSafeAreaInsets(juce::BorderSize<int>);
   void setStatusMessage(const juce::String &);
   /** Only forward navigation waits for the real action validated by the host. */
@@ -55,6 +57,7 @@ private:
   juce::String statusMessage, readinessMessage, catalogTitle, catalogSubtitle;
   juce::BorderSize<int> safeAreaInsets;
   juce::Rectangle<int> requestedTarget, target, cardBounds;
+  juce::Rectangle<int> requestedSupplementaryTarget, supplementaryTarget;
   juce::uint64 presentationRevision = 0;
   juce::uint64 readinessRevision = 0;
 

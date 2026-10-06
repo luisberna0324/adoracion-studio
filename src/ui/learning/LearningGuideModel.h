@@ -16,7 +16,8 @@ enum class Anchor { None, SongSelection, PlayPause, Stop, Waveform, Mixer,
 enum class StepCondition { None, SettingsOpen, RemotePageOpen, ServerModeActive,
                            ServerListening, ServerHasClient, ClientModeActive,
                            RemoteConnected, SettingsClosed, SongLoaded,
-                           RemotePlayApplied, RemoteStopApplied, CloudOpen, SharedSongDownloaded, SharedSongAdded };
+                           RemotePlayApplied, RemoteStopApplied, CloudOpen, SharedSongDownloaded, SharedSongAdded,
+                           DemoExercise };
 
 struct StepFacts {
   bool cloudOpen = false, sharedSongDownloaded = false, sharedSongAdded = false;
@@ -34,6 +35,8 @@ struct StepFacts {
   // evidence that this device performed the exercise.
   bool remotePlayApplied = false;
   bool remoteStopApplied = false;
+  // Evidence gathered after entering the current demo step on that same song.
+  bool demoExerciseComplete = false;
 };
 
 bool evaluateStepCondition(StepCondition condition, const StepFacts &facts);

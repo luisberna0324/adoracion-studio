@@ -18,14 +18,18 @@ timestamp: 2026-10-03
   entrada de aprendizaje y el layout de escritorio ancho incluye `Abrir guías`
   en General. El catálogo puede permanecer dentro de Configuración.
 
-El sistema es optativo. Abrir una guía no carga una canción ni activa
+El sistema es optativo. Abrir el catálogo o una guía existente no carga una canción ni activa
 reproducción, edición, Pads o control remoto. Tampoco cambia la mezcla,
 tempo, tono, canción seleccionada ni el modo Local/Cliente/Servidor.
 Las acciones de prueba se realizan sobre los controles habituales de la app.
 
+La entrada explícita **Probar con una canción demo** prepara y carga una canción
+local incluida antes de comenzar su curso. Detiene la reproducción anterior;
+no inicia Play. Ver [Canción demo](DemoSong.md).
+
 ## Cursos y contenido
 
-`makeLessons(phone, english)` define cinco cursos con IDs estables. El
+`makeLessons(phone, english)` define seis cursos con IDs estables. El
 catálogo resuelve el idioma español o inglés y el layout táctil de teléfono
 al abrirse. Los títulos, ayudas y tareas no se usan como identidad persistida.
 Si se cambia el idioma desde Configuración, la guía actualiza sus textos al
@@ -33,6 +37,7 @@ volver, conservando el curso y el paso.
 
 | ID | Curso | Contenido |
 | --- | --- | --- |
+| `demo-song` | Probar con una canción demo | Play, Pausa, reanudar, fader, Mute/Solo, loop de sección y Stop. Teléfono añade abrir Ensayo, enfoque/restauración, crear/borrar A–B y cerrar. |
 | `first-steps` | Primeros pasos | Espacio de reproducción, Biblioteca/setlist, Play/Pausa, onda y Stop. |
 | `mix-click` | Mezcla, clic y tono | Faders, Mute/Solo, metrónomo, tempo, tono y Pads. |
 | `practice-sections` | Ensaya por instrumento, en teléfono | Acceso a Ensayo desde Más, navegación y zoom de la tarjeta, escucha por instrumento y loop A–B temporal. |
@@ -72,8 +77,7 @@ servidor ni cambia de modo por cuenta propia.
 bloquea el avance. `Step::condition` establece qué hecho debe comprobar el
 editor antes de habilitar Continuar. Biblioteca, Configuración y Pads se
 explican también sin una canción cargada; las prácticas sobre audio necesitan
-que el usuario cargue una por el flujo habitual. No se crea una canción de
-demostración.
+que el usuario cargue una por el flujo habitual o elija explícitamente la demo.
 
 ## Validación de los recorridos remotos
 
@@ -132,6 +136,13 @@ si éste queda fuera de la tarjeta. JUCE entrega ese clic, toque o gesto al
 **componente real** situado debajo. La zona oscurecida sí intercepta acciones
 para mantener el foco del paso. La guía no duplica controles ni simula sus
 callbacks.
+
+Durante los ejercicios de mezcla, loop y enfoque de instrumento de la demo,
+`setSupplementaryTarget` mantiene accesible Play/Pausa para volver a escuchar.
+Su hueco es independiente del destino del ejercicio: el espacio entre ambos
+sigue interceptando acciones. Los dos destinos se recortan al área segura y
+la tarjeta siempre conserva prioridad sobre cualquier hueco. Cambiar de paso
+o volver al catálogo elimina este permiso adicional.
 
 Los destinos se recalculan al actualizar el editor, cambiar tamaño, orientación
 o área segura. Se resuelve el destino visible de la barra superior, una franja

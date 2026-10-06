@@ -38,7 +38,7 @@ const Step &findStep(const Lesson &lesson, const char *id) {
 }
 
 void verifyCatalog(const std::vector<Lesson> &spanish, const std::vector<Lesson> &english) {
-  expect(spanish.size() == 5 && english.size() == spanish.size(), "five complete localized courses");
+  expect(spanish.size() == 6 && english.size() == spanish.size(), "six complete localized courses");
   std::set<juce::String> lessonIds;
   for (size_t i = 0; i < spanish.size(); ++i) {
     const auto &lesson = spanish[i];
@@ -103,6 +103,51 @@ int main() {
   const auto phoneEnglish = makeLessons(true, true);
   verifyCatalog(desktop, desktopEnglish);
   verifyCatalog(phone, phoneEnglish);
+  const auto &demo = findLesson(desktop, "demo-song");
+  const auto &phoneDemo = findLesson(phone, "demo-song");
+  expect(desktop.front().id == demo.id && phone.front().id == demo.id,
+         "the local demo is the first course on every layout");
+  expect(demo.title == juce::String::fromUTF8("Probar con una canción demo") &&
+             demo.description.contains("Luz de esperanza") && demo.description.contains("8") &&
+             demo.description.contains("90") && demo.description.contains("sin internet"),
+         "the catalog explains the local song, restoration, instruments and duration");
+  expect(demo.steps.size() == 10 && phoneDemo.steps.size() == 14,
+         "demo teaches the complete main workflow plus four phone Practice steps");
+  const std::vector<juce::String> demoOrder{"demo-welcome", "demo-play", "demo-pause", "demo-resume", "demo-fader",
+      "demo-mute", "demo-solo", "demo-section-loop", "demo-stop", "demo-ready"};
+  for (size_t i = 0; i < demoOrder.size(); ++i)
+    expect(demo.steps[i].id == demoOrder[i], "desktop demo keeps a sequential stable exercise order");
+  for (const auto *course : {&demo, &phoneDemo}) {
+    expect(course->steps.front().condition == StepCondition::None &&
+               course->steps.back().condition == StepCondition::None,
+           "demo introduction and recovery summary are explanatory");
+    for (size_t i = 1; i + 1 < course->steps.size(); ++i)
+      expect(course->steps[i].needsSong && course->steps[i].condition == StepCondition::DemoExercise,
+             "every demo action requires observed evidence on the loaded song");
+    expect(course->steps.back().description.contains("Biblioteca") &&
+               course->steps.back().description.contains("mismo curso"),
+           "completion explains Library deletion and recovery through this course");
+  }
+  expect(findStep(phoneDemo, "demo-open-practice").anchor == Anchor::More &&
+             findStep(phoneDemo, "demo-practice-focus").anchor == Anchor::Waveform &&
+             findStep(phoneDemo, "demo-practice-ab").anchor == Anchor::PracticeLoop &&
+             findStep(phoneDemo, "demo-close-practice").anchor == Anchor::PracticeExit,
+         "phone demo uses the existing Practice controls and exit");
+  expect(phoneDemo.steps[8].id == "demo-open-practice" &&
+             phoneDemo.steps[11].id == "demo-close-practice" && phoneDemo.steps[12].id == "demo-stop",
+         "phone Practice returns to the main Stop exercise before completion");
+  for (const auto &step : demo.steps)
+    expect(!step.id.contains("practice") && step.anchor != Anchor::PracticeLoop &&
+               step.anchor != Anchor::PracticeExit && step.anchor != Anchor::More,
+           "desktop and tablet demo never teach phone-only Practice");
+  StepFacts demoFacts;
+  expect(!evaluateStepCondition(StepCondition::DemoExercise, demoFacts), "demo exercises start pending");
+  demoFacts.songLoaded = true;
+  expect(!evaluateStepCondition(StepCondition::DemoExercise, demoFacts), "a loaded demo alone is not an exercise");
+  demoFacts.demoExerciseComplete = true;
+  expect(evaluateStepCondition(StepCondition::DemoExercise, demoFacts), "observed demo exercise enables Continue");
+  demoFacts.songLoaded = false;
+  expect(!evaluateStepCondition(StepCondition::DemoExercise, demoFacts), "unloading discards usable demo readiness");
   const auto &first = findLesson(desktop, "first-steps");
   expect(findStep(first, "welcome").anchor == Anchor::None && !findStep(first, "welcome").needsSong,
          "welcome works with an empty library");

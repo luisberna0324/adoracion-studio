@@ -66,6 +66,8 @@ public:
       MetronomeClickStyle::Classic;
 
   static bool getExpandWindowOnLaunch();
+  static bool getDemoWelcomeSeen();
+  static void setDemoWelcomeSeen(bool value);
   static void setExpandWindowOnLaunch(bool value);
   static bool getPrimeImportEnabled();
   static void setPrimeImportEnabled(bool value);

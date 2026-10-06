@@ -39,6 +39,8 @@ playworship::learning::StepFacts MTControlsAudioProcessorEditor::learningStepFac
       (learningLessonId != "remote-server" || facts.serverListening);
   facts.remotePlayApplied = learningRemoteAction.applied() && playbackSession.isSongPlaying();
   facts.remoteStopApplied = learningRemoteAction.applied() && !playbackSession.isSongPlaying();
+  if (learningLessonId == "demo-song")
+    facts.demoExerciseComplete = demoLearningSnapshot().isDemo && demoLearningProgress.satisfied();
   return facts;
 }
 
@@ -47,6 +49,7 @@ bool MTControlsAudioProcessorEditor::canAdvanceLearningStep() const {
   if (!lesson || learningStepIndex < 0 || learningStepIndex >= static_cast<int>(lesson->steps.size()))
     return false;
   const auto &step = lesson->steps[static_cast<size_t>(learningStepIndex)];
+  if (lesson->id == "demo-song" && !demoLearningSnapshot().isDemo) return false;
   const auto facts = learningStepFacts();
   return playworship::learning::remoteStepPrerequisite(lesson->id, step, facts) ==
       playworship::learning::RemotePrerequisite::None &&
@@ -65,7 +68,11 @@ void MTControlsAudioProcessorEditor::showLearningGuide() {
   if (!learningGuide) {
     learningGuide = std::make_unique<LearningGuideOverlay>();
     const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
-    learningGuide->onLessonSelected = [safe](juce::String id) { if (safe) safe->startLearningLesson(id); };
+    learningGuide->onLessonSelected = [safe](juce::String id) {
+      if (!safe) return;
+      if (id == "demo-song") safe->prepareDemoLesson();
+      else safe->startLearningLesson(id);
+    };
     learningGuide->onNext = [safe] { if (safe) safe->advanceLearningStep(true); };
     learningGuide->onPrevious = [safe] { if (safe) safe->advanceLearningStep(false); };
     learningGuide->onPause = [safe] { if (safe) safe->pauseLearningGuide(); };
@@ -86,6 +93,7 @@ void MTControlsAudioProcessorEditor::showLearningCatalog() {
   learningLessonId.clear();
   learningObservedStepKey.clear();
   learningRemoteAction.deactivate();
+  demoLearningProgress.reset();
   learningGuide->showCatalog(learningLessons, *learningProgress);
   learningGuide->toFront(false);
   updateLearningGuideTarget();
@@ -148,6 +156,7 @@ void MTControlsAudioProcessorEditor::pauseLearningGuide() {
   learningGuide.reset();
   learningObservedStepKey.clear();
   learningRemoteAction.deactivate();
+  demoLearningProgress.reset();
   grabKeyboardFocus();
 }
 
@@ -158,6 +167,8 @@ void MTControlsAudioProcessorEditor::refreshLearningStep() {
   const auto key = lesson->id + "/" + step.id;
   if (key != learningObservedStepKey) {
     learningObservedStepKey = key;
+    if (lesson->id == "demo-song") demoLearningProgress.begin(step.id, demoLearningSnapshot());
+    else demoLearningProgress.reset();
     if (step.condition == playworship::learning::StepCondition::RemotePlayApplied)
       learningRemoteAction.begin(true);
     else if (step.condition == playworship::learning::StepCondition::RemoteStopApplied)
@@ -205,10 +216,18 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
       anchor == LearningAnchor::RemoteMode || anchor == LearningAnchor::RemoteAlias ||
       anchor == LearningAnchor::RemoteStatus || anchor == LearningAnchor::RemoteServers)
     anchor = LearningAnchor::Settings;
+  if (learningLessonId == "demo-song" && !demoLearningProgress.satisfied()) {
+    const auto *lesson = currentLearningLesson();
+    if (lesson) {
+      const auto &id = lesson->steps[static_cast<size_t>(learningStepIndex)].id;
+      if (id == "demo-open-practice" && practiceOverlay) anchor = LearningAnchor::PracticeExit;
+      if (id == "demo-close-practice" && !practiceOverlay) anchor = LearningAnchor::More;
+    }
+  }
   if (practiceOverlay && practiceOverlay->isShowing()) {
     const auto *practice = dynamic_cast<const PracticePanel *>(practiceOverlay.get());
     return practice ? local(practice, practice->getLearningTargetBounds(
-        learningLessonId == "practice-sections" ? anchor : LearningAnchor::PracticeExit))
+        isLearningPracticeStep() ? anchor : LearningAnchor::PracticeExit))
         : juce::Rectangle<int>{};
   }
   if (anchor == LearningAnchor::SongSelection && songListPanel && songListPanel->isShowing())
@@ -218,7 +237,7 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
     return grid ? local(grid, grid->getLearningStripBounds()) : juce::Rectangle<int>{};
   }
   if ((anchor == LearningAnchor::Waveform || anchor == LearningAnchor::PracticeLoop) &&
-      learningLessonId == "practice-sections" && learningPhoneContent)
+      isLearningPracticeStep())
     anchor = LearningAnchor::More;
   if (anchor == LearningAnchor::Waveform && waveformBar)
     return local(waveformBar.get(), waveformBar->getLocalBounds());
@@ -233,6 +252,8 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
 
 void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
   if (!learningGuide) return;
+  if (demoLoadingOverlay) { learningGuide->setVisible(false); return; }
+  if (learningLessonId == "demo-song") demoLearningProgress.observe(demoLearningSnapshot());
   const bool settingsOpen = settingsPanelRaw && settingsPanelRaw->isShowing();
   const bool guideInSettings = settingsOpen && (learningGuide->isShowingCatalog() ||
       learningLessonId == "remote-server" || learningLessonId == "remote-client");
@@ -293,7 +314,14 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
     learningRevealTargetPending = false;
     learningGuide->updateTarget(getLearningTargetBounds(step.anchor),
                                playbackSession.hasLoadedSong());
+    const bool replayDemo = lesson->id == "demo-song" && (!practiceOverlay || isLearningPracticeStep()) &&
+        (step.anchor == LearningAnchor::Mixer || step.anchor == LearningAnchor::Waveform);
+    learningGuide->setSupplementaryTarget(replayDemo
+        ? getLearningTargetBounds(LearningAnchor::PlayPause) : juce::Rectangle<int>{});
     auto message = learningSaveError;
+    if (message.isEmpty() && replayDemo && !playbackSession.isSongPlaying())
+      message = L10n::tr("Puedes pulsar Play para escuchar mientras practicas este paso.",
+          "You can press Play to listen while practicing this step.");
     const bool ready = canAdvanceLearningStep();
     auto pendingMessage = ready ? juce::String{} : step.task;
     switch (prerequisite) {
@@ -343,19 +371,25 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
       }
     }
     learningGuide->setStepReadiness(ready, pendingMessage);
-    if (message.isEmpty() && learningPhoneContent && learningLessonId == "practice-sections" && !practiceOverlay)
+    if (learningLessonId == "demo-song" && !demoLearningSnapshot().isDemo)
+      message = L10n::tr("Vuelve a Cursos y elige la demo para retomar esta práctica.",
+          "Return to Courses and choose the demo to resume this practice.");
+    if (message.isEmpty() && !ready && isLearningPracticeStep() && !practiceOverlay)
       message = L10n::tr("Abre Ensayo desde Más para probar estos gestos.",
           "Open Practice from More to try these gestures.");
-    if (message.isEmpty() && practiceOverlay && learningLessonId != "practice-sections")
+    if (message.isEmpty() && practiceOverlay && !isLearningPracticeStep())
       message = L10n::tr("Cierra Ensayo con su botón X para volver a los controles de este curso.",
           "Close Practice using its X button to return to this course's controls.");
+    if (message.isEmpty() && !ready && practiceOverlay && step.id == "demo-open-practice")
+      message = L10n::tr("Cierra Ensayo con X y ábrelo de nuevo desde Más para probar este paso.",
+          "Close Practice with X and open it again from More to try this step.");
     learningGuide->setStatusMessage(message);
   }
 }
 
 juce::Rectangle<int> PracticePanel::getLearningTargetBounds(LearningAnchor anchor) const {
   switch (anchor) {
-  case LearningAnchor::Waveform: return getWaveformLayout().plot;
+  case LearningAnchor::Waveform: return getWaveformLayout().plot.getUnion(instrumentHeaderBounds);
   case LearningAnchor::PracticeLoop:
     return getWaveformLayout().plot.getUnion(playPauseButton.getBounds().getUnion(loopClearButton.getBounds()));
   case LearningAnchor::More: return instrumentHeaderBounds;
