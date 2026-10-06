@@ -22,6 +22,12 @@ verificado. El valor ausente o falso no habilita Teams. La aplicación no puede
 activar ese perfil ni concederlo por tener Cloud; el backend lo comprueba en
 cada acción. La configuración del perfil se realiza del lado del servidor.
 
+Los índices conservados de Teams explícitos anteriores no cuentan como otra
+nube compartida cuando el backend comprueba su identidad y membresía antigua.
+Se preservan esos registros. Los slots y las membresías de nubes compartidas
+actuales siguen imponiendo el límite de un solo Team por cuenta; las referencias
+desconocidas o inconsistentes no se descartan para conceder acceso.
+
 La nube propia aparece automáticamente al tener el perfil habilitado. El
 propietario agrega una cuenta existente por correo y puede retirarla. Los
 miembros solo ven canciones y solicitan su descarga. No necesitan Cloud personal
