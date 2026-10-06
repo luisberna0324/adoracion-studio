@@ -1,0 +1,44 @@
+# Single ordered asset list for JUCE desktop/iOS and the native Android build.
+# Keep filenames unique after JUCE binary-resource identifier conversion.
+set(MTCONTROLS_ASSET_FILES
+        assets/logoPlayWorship.jpeg
+        assets/pwLogoSinFondo.png
+        assets/auth/google-g.png
+        assets/demo/LuzDeEsperanza.pwproj
+        assets/fonts/InterRegular.ttf
+        assets/fonts/InterMedium.ttf
+        assets/fonts/InterSemiBold.ttf
+        assets/fonts/InterBold.ttf
+        assets/ui-icons/arrow_left.svg
+        assets/ui-icons/skip_back.svg
+        assets/ui-icons/rewind.svg
+        assets/ui-icons/play.svg
+        assets/ui-icons/pause.svg
+        assets/ui-icons/square.svg
+        assets/ui-icons/fast_forward.svg
+        assets/ui-icons/skip_forward.svg
+        assets/ui-icons/fade_in.svg
+        assets/ui-icons/fade_out.svg
+        assets/ui-icons/settings.svg
+        assets/ui-icons/search.svg
+        assets/ui-icons/plus.svg
+        assets/ui-icons/check.svg
+        assets/ui-icons/minus.svg
+        assets/ui-icons/more_horizontal.svg
+        assets/ui-icons/more_vertical.svg
+        assets/ui-icons/clock.svg
+        assets/ui-icons/music.svg
+        assets/ui-icons/midi.svg
+        assets/ui-icons/audio_waveform.svg
+        assets/ui-icons/metronome.svg
+        assets/ui-icons/maximize.svg
+        assets/ui-icons/copy.svg
+        assets/ui-icons/repeat.svg
+        assets/ui-icons/corner_down_right.svg
+        assets/ui-icons/image_edit.svg
+        assets/ui-icons/pencil.svg
+        assets/ui-icons/trash.svg
+        assets/ui-icons/volume_x.svg
+        assets/ui-icons/file_audio.svg
+)
+list(TRANSFORM MTCONTROLS_ASSET_FILES PREPEND "${CMAKE_CURRENT_LIST_DIR}/../")
