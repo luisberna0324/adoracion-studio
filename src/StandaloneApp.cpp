@@ -128,10 +128,19 @@ public:
 
   void initialise(const juce::String &commandLine) override {
 #if JUCE_IOS || JUCE_ANDROID
-    // Set the launch mask before JUCE creates its window/controller. Waiting
-    // until the editor constructor lets iOS start the scene in portrait.
+    // Set the launch mask before JUCE creates its window/controller. iPhone
+    // starts with portrait authentication; the editor restores landscape when
+    // a saved or new session opens performance. Tablets remain landscape.
+    const bool startsWithPhoneLogin =
+#if JUCE_IOS
+        juce::SystemStats::getDeviceDescription().containsIgnoreCase("iPhone");
+#else
+        false;
+#endif
     juce::Desktop::getInstance().setOrientationsEnabled(
-        juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
+        startsWithPhoneLogin ? juce::Desktop::upright
+                             : juce::Desktop::rotatedClockwise |
+                                   juce::Desktop::rotatedAntiClockwise);
 #endif
     mainWindow.reset(createWindow());
     if (mainWindow == nullptr) {

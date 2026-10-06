@@ -1,12 +1,12 @@
 ---
 type: Integration Contract
-title: Auth — Google OAuth y autorizacion Apple nativa
-description: Contrato Google y puente Apple para iOS y macOS, con sesion Firebase, desafios HTTPS, vinculacion explicita y errores sin credenciales.
+title: Auth — Google, Apple y acceso con correo
+description: Acceso Google, Apple y correo con contrasena, sesion Firebase y recuperacion segura sin cambiar la cuenta ni los permisos.
 tags: [auth, ios, macos, apple, google, oauth, aswebauthenticationsession, firebase]
 timestamp: 2026-10-05T00:00:00-03:00
 ---
 
-# Auth — Google OAuth y autorizacion Apple nativa
+# Auth — Google, Apple y correo con contrasena
 
 ## Retorno en Android
 
@@ -156,9 +156,9 @@ Si falta alguna, `/api/auth/google/start` redirige con
   Safari si Google lo permite.
 - `cancel()` aborta la sesión activa y libera los punteros.
 
-## Errores
+## Errores del retorno Google
 
-El backend nunca responde JSON de error: cualquier fallo se traduce a
+El flujo Google no responde JSON de error: cualquier fallo se traduce a
 un 302 al `redirect_uri` de la app (normalizado a `127.0.0.1` en escritorio)
 con:
 
@@ -274,14 +274,109 @@ el puente Objective-C++ paso syntax-only para macOS e iOS 18.5. Estas pruebas
 no ejercen autorizacion Apple, cancelacion del OS, vinculacion en Firebase ni
 un backend desplegado. Ver [plan Apple](../distribution/SignInWithApplePlan.md).
 
+## Correo y contraseña dentro de PlayWorship
+
+`WelcomeModal` y `ReauthPromptModal` ofrecen **Ingresar con correo**, junto a
+Google y al acceso Apple condicionado. El formulario compartido permite
+mostrar/ocultar la contraseña, volver y solicitar **Crear o recuperar
+contraseña**. Usa el correo de la cuenta existente; este flujo no registra una
+cuenta nueva ni cambia licencias, Cloud o Teams.
+
+- `EmailPasswordAuthApi::signIn` envía JSON `{email,password,deviceId}` mediante
+  `POST /api/auth/login`. Exige origen HTTPS, no sigue redirects y limita la
+  respuesta a 64 KiB. La contraseña conserva espacios y caracteres especiales,
+  no se guarda en preferencias/snapshot ni se incluye en URL/logs. El formulario
+  la limpia al enviarla, cambiar de pantalla u ocultarse.
+- El servidor verifica Firebase y pasa por `/api/validate-access` con el
+  dispositivo. Responde `{ok:true,session:{...}}` con UID canónico,
+  `allowed` booleano, plan, estado, credenciales de sesión y vencimiento entero
+  `idTokenExpiresAtMs`. La app usa `completeAuthenticatedSession` para mantener
+  los mismos controles de licencia y persistencia. Una denegación sigue siendo
+  denegación; un fallo de validación no concede acceso offline por este login.
+- `POST /api/auth/request-set-password` recibe solo `{email}`. El servidor
+  envía con Resend un enlace Firebase de establecer/recuperar contraseña al
+  usuario existente y devuelve un mensaje genérico para direcciones existentes,
+  desconocidas o cuentas deshabilitadas. No devuelve UID, enlace ni estado de
+  existencia. Hay límites por correo/IP y errores tipados sin detalles privados.
+- El enlace abre `/auth/set-password` por HTTPS. Verifica el código de Firebase,
+  solicita nueva contraseña y confirmación y rechaza códigos usados/vencidos.
+  Puede abrirse en otro dispositivo: luego se vuelve manualmente a PlayWorship
+  para ingresar. No usa el servidor de loopback ni autentica automáticamente.
+- La creación/recuperación abre una página web; las siguientes entradas por
+  contraseña suceden dentro de la app. Google conserva el navegador/sesión web
+  segura del SO y no se incrusta en un WebView controlado por la app.
+
+`authAttemptGeneration` es compartida entre Google, Apple, correo y la
+reanudación automática. Cambiar método, cancelar, cerrar sesión, completar un
+login o destruir el editor invalida respuestas anteriores. Cada callback de
+red aplica resultados solo si su generación sigue vigente. Volver y Más tarde
+cancelan el intento sin aplicar credenciales tardías.
+
+El formulario tiene viewport, teclado de correo, contraseña enmascarada y
+Return de correo a contraseña. El ojo vive dentro del campo de contraseña y
+conserva el foco al mostrarla; se permite pegar desde el menú del sistema.
+Volver permanece en la cabecera, fuera del área desplazable, también durante
+una petición en curso. El envío correcto abre el paso **Revisa tu correo** con
+una respuesta genérica y **Volver al acceso**. **Solicitar otro enlace** vuelve
+al formulario con el correo conservado; no reenvía automáticamente. El editor descuenta `safeAreaInsets` y el mayor
+inset inferior entre área segura y teclado; bienvenida y reauth conservan
+acciones accesibles al reducir la altura. En iOS el timer existente detecta
+cambios en `keyboardInsets` mientras el acceso está visible y solo entonces
+recalcula el layout: mostrar el teclado no siempre redimensiona la ventana
+fullscreen. El prompt de reauth preserva sus
+mensajes entre ticks de reproducción.
+
+`tests/email_password_auth_tests.cpp` comprueba POST seguro, preservación de
+contraseñas, UID, denegaciones, sesiones parciales/vencidas y errores genéricos.
+Las pruebas locales no acreditan envío real de correo, login con una cuenta
+Google existente ni instalación de la app en Linux o dispositivos físicos.
+
 ## Layout de bienvenida
 
-`WelcomeModal` limita el ancho del formulario y centra verticalmente sus
-controles. Usa dos columnas solo cuando dispone de al menos `760 px` de ancho,
-`360 px` de alto y una relacion horizontal suficiente; en el resto de tamaños
-organiza logo, textos y acciones en una sola columna centrada. El formulario no
-supera `420 px` en dos columnas ni `440 px` en una columna, evitando botones
-excesivamente anchos en ventanas grandes.
+En iPhone el flujo completo de acceso usa orientación vertical: proveedores,
+correo, crear/recuperar contraseña y confirmación del envío. También la usa
+`ReauthPromptModal`. La orientación se resuelve antes del retorno de layout de
+la bienvenida, aunque la interfaz principal aún no exista. Al ingresar o
+cerrar la renovación se recalcula desde el estado actual: performance vuelve a
+horizontal; si otro panel vertical continúa abierto, conserva su orientación.
+En iPhone se solicita portrait desde el arranque de la ventana. Android,
+tablets y escritorio conservan su política de orientación actual.
+
+`WelcomeModal` presenta una sola columna de hasta `480 px`, centrada en
+escritorio y adaptada al ancho disponible en móvil. La tarjeta ajusta su altura
+al paso actual: proveedores, acceso por correo, crear/recuperar contraseña y
+correo solicitado. Al reducirse la altura, el contenido del formulario permite
+scroll sin perder el botón Volver.
+
+Los pasos de correo reservan `24 px` arriba y abajo dentro de la tarjeta y
+`20 px` entre la cabecera y el formulario. La confirmación usa un icono de
+`56 px`, seguido de `16 px` hasta la explicación y `24 px` antes de la acción
+principal. La acción secundaria queda a `8 px` de la principal. Las ayudas
+usan `15 px` de fuente y `3 px` adicionales entre líneas; `AuthUi::Paragraph`
+mide y dibuja con el mismo `TextLayout`, según el ancho disponible, sin cajas
+de texto de altura fija. La altura del formulario también determina la tarjeta
+de renovación, evitando espacio vacío diferente entre ambos flujos.
+
+Cambiar de paso invalida explícitamente el fondo de la tarjeta aunque no cambie
+el tamaño del modal. Así se borran los bordes anteriores cuando cambia su
+altura; mover solo los controles hijos dejaba fragmentos y parches visibles.
+
+`AuthenticationStyle.h` define la jerarquía compartida con `ReauthPromptModal`:
+campos de `50 px` con etiqueta persistente, acción principal de `48 px`, enlaces
+secundarios de `44 px` y texto de entrada de `16 px`. Recuperar no compite como
+botón relleno con Ingresar. Google y Apple (si está habilitado) aparecen en
+columna con la misma altura; «o» separa el acceso por correo. La G se toma sin
+modificar del recurso oficial de Google, documentado en `assets/auth/README.md`.
+Volver reutiliza `HeaderIconButton` del resto de paneles.
+
+Los estados de envío aparecen en el botón principal y los errores usan texto
+junto al formulario. El éxito de la solicitud nunca confirma si una cuenta
+existe ni muestra direcciones o códigos devueltos por el servidor. El acceso
+por correo sigue disponible para cancelar un retorno del navegador bloqueado.
+
+Referencias de diseño: [botones de Apple](https://developer.apple.com/design/human-interface-guidelines/buttons),
+[campos de texto](https://developer.apple.com/design/human-interface-guidelines/text-fields)
+y [botón de Google](https://developers.google.com/identity/branding-guidelines).
 
 La aplicacion standalone de escritorio abre su ventana principal en pantalla
 completa antes de hacerla visible. De esta forma, la pantalla de bienvenida usa

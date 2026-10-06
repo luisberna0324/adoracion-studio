@@ -10,8 +10,11 @@ timestamp: 2026-10-05T00:00:00-03:00
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
 el runtime habilita `upright` para Biblioteca, setlists, Configuración, Teams y Ensayo mientras su panel
-esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
-orientacion inicial se restringe a landscape. En iPhone, el plist admite
+esta abierto y restaura ambas orientaciones landscape al volver a performance.
+En iPhone, el acceso (bienvenida, correo, recuperación y renovación de sesión)
+también usa `upright`. La máscara inicial es portrait para presentar el login;
+una sesión guardada válida restaura landscape al abrir la interfaz principal.
+En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
 y JUCE usa `Activity.setRequestedOrientation` para cambiarla durante la sesion.
 El manifest maneja `orientation|screenSize` mediante `configChanges`, sin
@@ -238,7 +241,7 @@ Cerrar la vista devuelve el estado de reproducción anterior si todavía posee
 la pausa; Detener o una nueva orden de transporte tienen prioridad.
 
 En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
-y agrupa solicitudes usando el estado mas reciente de Biblioteca. La ventana
+y agrupa solicitudes usando el estado más reciente del acceso y los paneles. La ventana
 standalone sincroniza su geometria con `UIWindowScene.coordinateSpace` al
 terminar la transicion nativa y al volver del background. Propaga el tamano al
 contenedor y al editor aun si los limites de la ventana no cambiaron. Una vez

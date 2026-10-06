@@ -102,6 +102,7 @@ private:
   playworship::learning::StepFacts learningStepFacts() const;
   bool canAdvanceLearningStep() const;
   void updatePhoneOrientation();
+  bool shouldUsePhonePortraitOrientation() const;
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
   void showPractice();
@@ -207,6 +208,7 @@ private:
       ResponsiveLayoutProfile::Standard;
   bool autoSetlistCollapseInitialized = false;
   std::unique_ptr<juce::Component> welcomeModal;
+  juce::BorderSize<int> lastAuthKeyboardInsets;
   std::unique_ptr<LocalAuthCallbackServer> localAuthServer;
   juce::String authExpectedState;
   juce::String pendingAuthCallbackUrl;
@@ -263,7 +265,8 @@ private:
   bool appleSignInAvailable = false;
   bool appleLoginInProgress = false;
   bool appleLinkInProgress = false;
-  uint64_t appleAuthGeneration = 0;
+  uint64_t authAttemptGeneration = 0;
+  bool emailAuthenticationBusy = false;
   uint64_t appleConfigurationGeneration = 0;
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
@@ -330,6 +333,10 @@ private:
   bool unloadActiveSongForLocalPurge();
   void updateSystemUsageMetrics();
   void launchExternalLogin();
+  void launchPasswordLogin(const juce::String& email, const juce::String& password);
+  void requestPasswordLink(const juce::String& email);
+  void cancelAuthenticationAttempt();
+  void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);
   void refreshAppleSignInConfiguration();
   void launchAppleLogin(bool linkExisting = false);
   void setAppleAuthenticationStatus(const juce::String &text, bool error, bool busy);

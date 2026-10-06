@@ -318,6 +318,24 @@ endif()
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsEmailPasswordAuthTests PRODUCT_NAME "Email Password Auth Contract Tests")
+    target_sources(MTControlsEmailPasswordAuthTests PRIVATE
+        tests/email_password_auth_tests.cpp src/data/EmailPasswordAuthApi.cpp)
+    target_include_directories(MTControlsEmailPasswordAuthTests PRIVATE src)
+    target_link_libraries(MTControlsEmailPasswordAuthTests PRIVATE juce::juce_core)
+    juce_generate_juce_header(MTControlsEmailPasswordAuthTests)
+    add_test(NAME email_password_auth_contract COMMAND "$<TARGET_FILE:MTControlsEmailPasswordAuthTests>")
+    juce_add_console_app(MTControlsEmailAuthUiTests PRODUCT_NAME "Email Authentication UI Tests")
+    target_sources(MTControlsEmailAuthUiTests PRIVATE tests/email_auth_ui_tests.cpp src/data/AppSettings.cpp)
+    target_include_directories(MTControlsEmailAuthUiTests PRIVATE src)
+    target_compile_definitions(MTControlsEmailAuthUiTests PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsEmailAuthUiTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsEmailAuthUiTests)
+    add_test(NAME email_authentication_ui COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsEmailAuthUiTests>")
     juce_add_console_app(MTControlsAppleSignInTests PRODUCT_NAME "Apple Sign In Contract Tests")
     target_sources(MTControlsAppleSignInTests PRIVATE
         tests/apple_signin_contract_tests.cpp src/data/AppleSignInApi.cpp
@@ -995,6 +1013,7 @@ juce_add_binary_data(MTControlsAssets
     SOURCES
         assets/logoPlayWorship.jpeg
         assets/pwLogoSinFondo.png
+        assets/auth/google-g.png
         assets/fonts/InterRegular.ttf
         assets/fonts/InterMedium.ttf
         assets/fonts/InterSemiBold.ttf
@@ -1110,6 +1129,9 @@ target_sources(MTControls
         src/data/AssetBootstrapManager.h
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
+        src/data/EmailPasswordAuthApi.cpp
+        src/data/EmailPasswordAuthApi.h
+        src/EmailPasswordAuthIntegration.cpp
         src/data/CloudSyncTypes.h
         src/data/CloudProjectArchive.cpp
         src/data/CloudProjectArchive.h
@@ -1224,6 +1246,7 @@ target_sources(MTControls
         src/ui/panels/PracticePanel.h
         src/ui/components/WelcomeModal.cpp
         src/ui/components/WelcomeModal.h
+        src/ui/components/AuthenticationStyle.h
 )
 
 if(APPLE)

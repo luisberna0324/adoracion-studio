@@ -94,7 +94,8 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
   if (!appleSignInAvailable || appleLoginInProgress) return;
   if (linkExisting && (!mainUiInitialized || activeSession.uid.isEmpty() ||
       activeSession.refreshToken.isEmpty() || activeSession.firebaseApiKey.isEmpty())) return;
-  const auto generation = ++appleAuthGeneration;
+  const auto generation = ++authAttemptGeneration;
+  emailAuthenticationBusy = false;
   NativeAuthSession::cancel();
   NativeAppleSignIn::cancel();
   authExpectedState.clear();
@@ -121,7 +122,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
                                                                  snapshot.refreshToken);
       if (!refresh.ok) {
         juce::MessageManager::callAsync([safe, generation] {
-          if (safe && generation == safe->appleAuthGeneration)
+          if (safe && generation == safe->authAttemptGeneration)
             safe->setAppleAuthenticationStatus(
                 appleErrorMessage(AppleSignInApi::Error::reauthenticationRequired), true, false);
         });
@@ -131,7 +132,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
     }
     const auto challenge = AppleSignInApi::requestChallenge(context);
     juce::MessageManager::callAsync([safe, generation, context, challenge, linkExisting] {
-      if (!safe || generation != safe->appleAuthGeneration ||
+      if (!safe || generation != safe->authAttemptGeneration ||
           (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
       if (!challenge.ok()) {
         safe->setAppleAuthenticationStatus(appleErrorMessage(challenge.error), true, false);
@@ -147,7 +148,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
           ? static_cast<juce::Component&>(*safe->settingsPanelRaw) : static_cast<juce::Component&>(*safe);
       const auto started = NativeAppleSignIn::start(challenge.challenge.nativeRequest(!linkExisting), anchor,
           [safe, generation, context, challenge, linkExisting](NativeAppleSignIn::Result result) {
-            if (!safe || generation != safe->appleAuthGeneration ||
+            if (!safe || generation != safe->authAttemptGeneration ||
                 (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
             if (result.outcome == NativeAppleSignIn::Outcome::cancelled) {
               safe->setAppleAuthenticationStatus(L10n::tr("Inicio de sesión cancelado.",
@@ -162,7 +163,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
             std::thread([safe, generation, context, challenge, linkExisting, credential = std::move(result.credential)] {
               const auto exchanged = AppleSignInApi::exchangeCredential(context, challenge.challenge, credential);
               juce::MessageManager::callAsync([safe, generation, context, exchanged, linkExisting] {
-                if (!safe || generation != safe->appleAuthGeneration ||
+                if (!safe || generation != safe->authAttemptGeneration ||
                     (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
                 if (!exchanged.ok()) {
                   safe->setAppleAuthenticationStatus(appleErrorMessage(exchanged.error), true, false);

@@ -287,10 +287,6 @@ double getCurrentProcessMemoryUsageMb() noexcept {
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MTControlsAudioProcessor &p)
     : AudioProcessorEditor(p), playbackSession(p) {
-#if JUCE_IOS || JUCE_ANDROID
-  juce::Desktop::getInstance().setOrientationsEnabled(
-      juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
-#endif
   SessionAuthLogger::write("PluginEditor ctor");
   SessionAuthLogger::write("PluginEditor ctor: log file " +
                            SessionAuthLogger::getLogFile().getFullPathName());
@@ -1054,12 +1050,24 @@ void MTControlsAudioProcessorEditor::fitMobileEditorToHost() {
 #endif
 }
 
+bool MTControlsAudioProcessorEditor::shouldUsePhonePortraitOrientation() const {
+  // iPhone authentication uses portrait from launch through every auth step.
+  // Android keeps its existing startup policy, including the deferred fast boot.
+#if JUCE_IOS
+  if (!mainUiInitialized ||
+      (welcomeModal != nullptr && welcomeModal->isVisible()) ||
+      (reauthPromptModal != nullptr && reauthPromptModal->isVisible()))
+    return true;
+#endif
+  return isSetlistDrawerOpen || settingsOverlay != nullptr ||
+         practiceOverlay != nullptr || teamsOverlay != nullptr;
+}
+
 void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #if JUCE_IOS || JUCE_ANDROID
   if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
     return;
-  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr ||
-                       practiceOverlay != nullptr || teamsOverlay != nullptr)
+  const int desired = shouldUsePhonePortraitOrientation()
                           ? juce::Desktop::upright
                           : juce::Desktop::rotatedClockwise |
                                 juce::Desktop::rotatedAntiClockwise;
@@ -1070,15 +1078,14 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #else
   phoneOrientationUpdatePending = true;
   // Changing the scene's orientation from inside resized() can nest native
-  // layout callbacks. Coalesce requests and use the latest drawer state.
+  // layout callbacks. Coalesce requests and use the latest auth/overlay state.
   juce::MessageManager::callAsync(
       [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         if (safe == nullptr)
           return;
         safe->phoneOrientationUpdatePending = false;
         juce::Desktop::getInstance().setOrientationsEnabled(
-            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr ||
-             safe->practiceOverlay != nullptr || safe->teamsOverlay != nullptr)
+            safe->shouldUsePhonePortraitOrientation()
                 ? juce::Desktop::upright
                 : juce::Desktop::rotatedClockwise |
                       juce::Desktop::rotatedAntiClockwise);
@@ -2933,11 +2940,18 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       launchExternalLogin();
     };
     prompt->onLater = [this] {
+      cancelAuthenticationAttempt();
       reauthPromptDismissed = true;
       reauthLoginInProgress = false;
       hideReauthPromptModal();
     };
     prompt->onAppleLoginNow = [this] { launchAppleLogin(); };
+    prompt->onPasswordLoginRequested = [this](const juce::String& email, const juce::String& password) {
+      launchPasswordLogin(email, password);
+    };
+    prompt->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
+    prompt->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+    prompt->onPreferredHeightChanged = [this] { resized(); };
     prompt->setAppleSignInAvailable(appleSignInAvailable);
     reauthPromptModal = std::move(prompt);
     addAndMakeVisible(*reauthPromptModal);
@@ -3013,6 +3027,11 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
   auto modal = std::make_unique<WelcomeModal>();
   modal->onLoginRequested = [this] { launchExternalLogin(); };
   modal->onAppleLoginRequested = [this] { launchAppleLogin(); };
+  modal->onPasswordLoginRequested = [this](const juce::String& email, const juce::String& password) {
+    launchPasswordLogin(email, password);
+  };
+  modal->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
+  modal->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
   modal->setAppleSignInAvailable(appleSignInAvailable);
   welcomeModal = std::move(modal);
   addAndMakeVisible(*welcomeModal);
@@ -3021,10 +3040,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
-  ++appleAuthGeneration;
-  NativeAppleSignIn::cancel();
-  appleLoginInProgress = false;
-  appleLinkInProgress = false;
+  cancelAuthenticationAttempt();
   sessionResumeCancelled = false;
 #if JUCE_IOS || JUCE_ANDROID
   NativeAuthSession::cancel();
@@ -3040,11 +3056,12 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
     reauth->showWaitingForCallback();
 
+  const auto generation = authAttemptGeneration;
   const auto started = NativeAuthSession::start(
       loginUrl, "playworship",
-      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this), generation](
           const juce::String &callbackUrl, const juce::String &error) {
-        if (safe == nullptr)
+        if (safe == nullptr || generation != safe->authAttemptGeneration)
           return;
         if (callbackUrl.isNotEmpty()) {
           safe->enqueueAuthCallbackUrl(callbackUrl);
@@ -3101,7 +3118,15 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
     reauth->showWaitingForCallback();
 
-  juce::URL(loginUrl).launchInDefaultBrowser();
+  if (!juce::URL(loginUrl).launchInDefaultBrowser()) {
+    cancelAuthenticationAttempt();
+    const auto message = L10n::tr(u8"No se pudo abrir el navegador. Puedes ingresar con correo.",
+                                  "Couldn't open the browser. You can sign in with email.");
+    if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
+      modal->setStatusText(message, true);
+    if (auto* modal = dynamic_cast<ReauthPromptModal*>(reauthPromptModal.get()))
+      modal->showError(message);
+  }
 #endif
 }
 
@@ -3220,6 +3245,16 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
+  ++authAttemptGeneration;
+  emailAuthenticationBusy = false;
+  if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
+    modal->setAuthenticationBusy(false);
+    modal->clearCredentials();
+  }
+  if (auto* modal = dynamic_cast<ReauthPromptModal*>(reauthPromptModal.get())) {
+    modal->setAuthenticationBusy(false);
+    modal->clearCredentials();
+  }
   if (snapshot.allowed && (snapshot.uid.isEmpty() || !snapshot.hasCredentials())) {
     reauthLoginInProgress = false;
     if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
@@ -3879,8 +3914,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 }
 
 void MTControlsAudioProcessorEditor::handleLogout() {
-  ++appleAuthGeneration;
-  NativeAppleSignIn::cancel();
+  cancelAuthenticationAttempt();
   appleLoginInProgress = false;
   appleLinkInProgress = false;
   SessionAuthLogger::write("handleLogout");
@@ -3919,13 +3953,14 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   }
   showWelcomeOnlyMode();
   if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
-    modal->resetStatusToDefault();
+    { modal->clearCredentials(); modal->resetStatusToDefault(); }
 }
 
 void MTControlsAudioProcessorEditor::showReauthPromptModal() {
   if (!mainUiInitialized || reauthPromptModal == nullptr)
     return;
-  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get())) {
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get());
+      reauth != nullptr && !reauthPromptModal->isVisible()) {
     if (reauthLoginInProgress)
       reauth->showWaitingForCallback();
     else
@@ -3940,6 +3975,7 @@ void MTControlsAudioProcessorEditor::hideReauthPromptModal() {
   if (reauthPromptModal == nullptr)
     return;
   reauthPromptModal->setVisible(false);
+  updatePhoneOrientation();
 }
 
 PersistedSessionSnapshot
@@ -4014,10 +4050,11 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
   juce::Component::SafePointer<MTControlsAudioProcessorEditor> safe(this);
   const juce::String apiBase = getApiBaseUrl();
   const juce::String deviceId = buildStableDeviceId();
+  const auto generation = authAttemptGeneration;
   SessionAuthLogger::write("tryResumeSessionAsync: apiBase=" + apiBase +
                            " deviceIdPrefix=" + deviceId.substring(0, 12) + "...");
 
-  std::thread([safe, snap, apiBase, deviceId] {
+  std::thread([safe, snap, apiBase, deviceId, generation] {
     bool success = false;
     bool validatedOnline = false;
     bool clearSnapshot = false;
@@ -4118,9 +4155,9 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
         juce::String(static_cast<int>(validatedOnline)) + " clearSnapshot=" +
         juce::String(static_cast<int>(clearSnapshot)));
 
-    juce::MessageManager::callAsync([safe, success, validatedOnline, out, welcomeError,
+    juce::MessageManager::callAsync([safe, generation, success, validatedOnline, out, welcomeError,
                                      clearSnapshot] {
-      if (safe != nullptr)
+      if (safe != nullptr && generation == safe->authAttemptGeneration)
         safe->applySessionResumeOnMessageThread(success, validatedOnline, out,
                                                 welcomeError, clearSnapshot);
     });
@@ -4551,6 +4588,20 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+#if JUCE_IOS
+  // Keyboard notifications update JUCE's display insets without necessarily
+  // resizing the fullscreen window. Relayout visible auth only when they change.
+  if ((welcomeModal != nullptr && welcomeModal->isVisible()) ||
+      (reauthPromptModal != nullptr && reauthPromptModal->isVisible())) {
+    if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                  .getDisplayForRect(getScreenBounds())) {
+      if (lastAuthKeyboardInsets != display->keyboardInsets) {
+        lastAuthKeyboardInsets = display->keyboardInsets;
+        resized();
+      }
+    }
+  }
+#endif
   const auto callbackUrl = consumePendingAuthCallbackUrl();
   if (callbackUrl.isNotEmpty()) {
     completeBootstrapLogin(callbackUrl);
@@ -4798,9 +4849,10 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
-  ++appleAuthGeneration;
+  ++authAttemptGeneration;
   ++appleConfigurationGeneration;
   NativeAppleSignIn::cancel();
+  NativeAuthSession::cancel();
   stopTimer();
   if (!playbackSession.isRemote())
     static_cast<MTControlsAudioProcessor &>(processor).finishSectionAutomationEditing(false);
@@ -4864,9 +4916,21 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 }
 
 void MTControlsAudioProcessorEditor::resized() {
+  // Authentication also owns the phone orientation before the main UI exists.
+  updatePhoneOrientation();
   if (!mainUiInitialized) {
-    if (welcomeModal != nullptr)
-      welcomeModal->setBounds(getLocalBounds());
+    if (welcomeModal != nullptr) {
+      auto welcomeBounds = getLocalBounds();
+      if (useTouchOptimisedControls()) {
+        if (const auto* display = juce::Desktop::getInstance().getDisplays()
+                                      .getDisplayForRect(getScreenBounds())) {
+          auto insets = display->safeAreaInsets;
+          insets.setBottom(juce::jmax(insets.getBottom(), display->keyboardInsets.getBottom()));
+          welcomeBounds = insets.subtractedFrom(welcomeBounds);
+        }
+      }
+      welcomeModal->setBounds(welcomeBounds);
+    }
     if (settingsOverlay != nullptr)
       settingsOverlay->setBounds(getLocalBounds());
     if (practiceOverlay != nullptr)
@@ -4880,7 +4944,6 @@ void MTControlsAudioProcessorEditor::resized() {
   // user-selectable desktop density profile. A wide landscape phone can use
   // the Standard profile while still needing the phone-safe surface.
   const bool minimalPhoneProfile = isPhoneSizedLayout(*this);
-  updatePhoneOrientation();
   if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
@@ -5209,10 +5272,21 @@ void MTControlsAudioProcessorEditor::resized() {
 
   if (reauthPromptModal != nullptr) {
     const auto *prompt = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get());
+    auto authBounds = getLocalBounds();
+    if (useTouchOptimisedControls()) {
+      if (const auto* display = juce::Desktop::getInstance().getDisplays()
+                                    .getDisplayForRect(getScreenBounds())) {
+        auto insets = display->safeAreaInsets;
+        insets.setBottom(juce::jmax(insets.getBottom(), display->keyboardInsets.getBottom()));
+        authBounds = insets.subtractedFrom(authBounds);
+      }
+    }
+    authBounds.reduce(16, 12);
     reauthPromptModal->setBounds(
-        juce::Rectangle<int>(juce::jmin(560, juce::jmax(1, getWidth() - 32)),
-                             prompt ? prompt->preferredHeight() : 230)
-            .withCentre(getLocalBounds().getCentre()));
+        juce::Rectangle<int>(juce::jmin(560, juce::jmax(1, authBounds.getWidth())),
+                             juce::jmin(juce::jmax(1, authBounds.getHeight()),
+                                        prompt ? prompt->preferredHeight() : 230))
+            .withCentre(authBounds.getCentre()));
     reauthPromptModal->toFront(false);
   }
 
