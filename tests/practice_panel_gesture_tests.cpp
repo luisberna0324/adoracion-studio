@@ -885,7 +885,15 @@ void testRemoteSeekPreviewLifecycle() {
   expectNear(PracticePanelGestureTestAccess::displayedPosition(*remote.panel),
              preview, "stale server state cannot snap the waveform back");
   remote.position = preview + 0.05;
-  pumpFor(80);
+  // An elapsed message-pump interval does not guarantee two timer samples.
+  // Confirm the handoff explicitly before aging its newly-created residual.
+  PracticePanelGestureTestAccess::agePendingSeek(*remote.panel, 130);
+  PracticePanelGestureTestAccess::advanceAnimation(*remote.panel, 1);
+  expect(PracticePanelGestureTestAccess::hasPendingSeek(*remote.panel),
+         "one matching server sample cannot release the retained preview");
+  PracticePanelGestureTestAccess::advanceAnimation(*remote.panel, 1);
+  expect(!PracticePanelGestureTestAccess::hasPendingSeek(*remote.panel),
+         "two matching server samples confirm the handoff after the hold interval");
   const auto initialHandoff =
       PracticePanelGestureTestAccess::displayedPosition(*remote.panel);
   expect(initialHandoff >= preview && initialHandoff < remote.position,
