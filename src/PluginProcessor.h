@@ -243,9 +243,9 @@ public:
   bool isMasterMuted() const noexcept;
   bool loadPadsPackFromFolder(const juce::File &sourceFolder);
   bool reloadLastPadsPack();
-  bool ensurePadsPackReady();
+  bool ensurePadsPackReady(bool allowNetworkDownloads = true);
   bool ensurePadsNoteReady(int noteIndex, bool full = false);
-  void startPadsPreloadAsync();
+  void startPadsPreloadAsync(bool allowNetworkDownloads = true);
   bool isPadsPreloadRunning() const noexcept;
   void refreshPadsRoutingFromSettings() noexcept;
   void setPadsEnabled(bool enabled) noexcept;
@@ -510,6 +510,9 @@ private:
   std::atomic<bool> padsPackLoaded{false};
   std::atomic<bool> padsPackLoading{false};
   std::atomic<bool> padsPreloadRunning{false};
+  // A signed-in UI may request online preparation while startup is still
+  // completing a cache-only pass. The message-thread timer retries once.
+  std::atomic<bool> padsNetworkPreloadPending{false};
   std::atomic<bool> padsAttacksPrepared{false};
   std::atomic<bool> padsFullLoadRequested{false};
   std::atomic<bool> padsPreloadShouldExit{false};

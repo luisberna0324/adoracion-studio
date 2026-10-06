@@ -88,7 +88,7 @@ public:
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
     if (owner.teamsManagementEnabled)
       pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
-    pageSubtitles.addArray({owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+    pageSubtitles.addArray({owner.session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
         L10n::tr("Informe para soporte", "Report for support"),
         L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -1640,7 +1640,7 @@ void SettingsPanel::applyLanguageTexts() {
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
-  sessionEmailLabel.setText("Email", juce::dontSendNotification);
+  sessionEmailLabel.setText(session.localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
@@ -1652,11 +1652,11 @@ void SettingsPanel::applyLanguageTexts() {
                               juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
-  sessionEmailValue.setText(session.email.isNotEmpty() ? session.email : "-",
+  sessionEmailValue.setText(session.localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
                             juce::dontSendNotification);
   sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
                            juce::dontSendNotification);
-  sessionStatusValue.setText(session.subscriptionStatus.isNotEmpty()
+  sessionStatusValue.setText(session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
@@ -1691,7 +1691,7 @@ void SettingsPanel::applyLanguageTexts() {
         formatBytes(session.maxStorageBytes), juce::dontSendNotification);
   } else {
     sessionQuotaValue.setText(
-        quotaFetchFailed
+        session.localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
             ? L10n::tr("No se pudieron actualizar las cuotas.",
                        "Couldn't refresh quotas.")
             : L10n::tr("Consultando cuotas…", "Loading quotas…"),

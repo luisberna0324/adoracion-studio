@@ -299,11 +299,16 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - La waveform de telefono llega a ambos bordes. Sus botones flotantes, mensajes,
   etiquetas y acciones de seccion e indicador remoto permanecen dentro del
   area segura; el tintado de las secciones conserva el ancho completo.
+  En performance, Mas ocupa el extremo derecho seguro y Seguimiento queda a
+  su izquierda, para acercar la accion principal al borde sin invadir el notch.
 - El viewport del mixer de telefono llega a ambos bordes. El contenido lleva
   padding desplazable inicial y final equivalente a los insets reales, de
   modo que el primer y ultimo canal pueden quedar completamente accesibles.
   La escala de los strips se calcula con el ancho seguro y los canales se
   desplazan por debajo de las zonas laterales durante el scroll.
+  El fondo y la banda inferior del primer y ultimo canal se prolongan por ese
+  padding lateral para evitar una franja vacia. Esta prolongacion es decorativa:
+  no replica controles ni cambia sus posiciones o el recorrido del scroll.
 - En Android se respetan los insets reportados por el sistema para los controles,
   incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
   inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la

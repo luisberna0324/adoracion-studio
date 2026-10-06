@@ -9,6 +9,8 @@ class EmailAuthenticationForm final : public juce::Component {
 public:
   std::function<void(const juce::String &, const juce::String &)>
       onPasswordLoginRequested;
+  std::function<void(const juce::String &, const juce::String &)>
+      onLocalDemoLoginRequested;
   std::function<void(const juce::String &)> onPasswordResetRequested;
   std::function<void(const juce::String &, bool)> onStatusChanged;
   std::function<void()> onBack;
@@ -17,20 +19,23 @@ public:
   EmailAuthenticationForm();
   ~EmailAuthenticationForm() override;
   void showLogin();
+  void showLocalDemoLogin();
   void showPasswordLinkSent();
   void goBack();
   void setBusy(bool busy);
   void clearCredentials();
-  bool isResetMode() const { return mode != Mode::login; }
+  bool isResetMode() const { return mode == Mode::reset || mode == Mode::linkSent; }
   bool isLinkSent() const { return mode == Mode::linkSent; }
+  bool isLocalDemoMode() const { return mode == Mode::localDemoLogin; }
   int preferredHeight(int width = 0) const;
   void focusEmail();
   void resized() override;
+  void visibilityChanged() override;
 
 private:
   void updateMode();
   void submit();
-  enum class Mode { login, reset, linkSent };
+  enum class Mode { login, reset, linkSent, localDemoLogin };
   AuthUi::FieldLookAndFeel fieldStyle;
   juce::Viewport viewport;
   juce::Component content;
@@ -52,6 +57,8 @@ public:
   std::function<void()> onAuthenticationCancelled;
   std::function<void(const juce::String &, const juce::String &)>
       onPasswordLoginRequested;
+  std::function<void(const juce::String &, const juce::String &)>
+      onLocalDemoLoginRequested;
   std::function<void(const juce::String &)> onPasswordResetRequested;
 
   WelcomeModal();
@@ -64,6 +71,7 @@ public:
   void setAuthenticationBusy(bool busy);
   void clearCredentials();
   void showPasswordLinkSent();
+  void showLocalDemoLogin();
 
   void paint(juce::Graphics &) override;
   void resized() override;
@@ -81,6 +89,7 @@ private:
   juce::Label separator;
   AuthUi::Button loginButton{AuthUi::Role::google};
   AuthUi::Button emailButton{AuthUi::Role::secondary};
+  AuthUi::Button localDemoButton{AuthUi::Role::secondary};
   HeaderIconButton backButton{"authBack", IconGlyph::ArrowLeft};
   EmailAuthenticationForm emailForm;
   std::unique_ptr<juce::Component> appleButton;

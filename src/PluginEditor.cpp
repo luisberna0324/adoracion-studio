@@ -322,6 +322,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
+  localDemoSession = AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
   const bool canFastBootFromSnapshot =
@@ -331,7 +332,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   initializeWelcomeModal();
 
-  if (canFastBootFromSnapshot) {
+  if (localDemoSession) {
+    enterLocalDemoSession();
+  } else if (canFastBootFromSnapshot) {
     SessionAuthLogger::write(
         "PluginEditor ctor: local session snapshot accepted, entering UI before "
         "online validation");
@@ -1190,7 +1193,7 @@ void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
 
 void MTControlsAudioProcessorEditor::refreshCloudLibrary(
     const juce::String &query) {
-  if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
+  if (localDemoSession || !activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
       activeSession.refreshToken.isEmpty()) {
     ++cloudLibrarySearchGeneration;
     cloudCatalogSongs.clear();
@@ -1241,7 +1244,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                      1));
   };
 #endif
-  if (lastSuccessfulLoginMs > 0) {
+  if (!localDemoSession && lastSuccessfulLoginMs > 0) {
     const auto nowMs = juce::Time::currentTimeMillis();
     const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
     if (nowMs >= sessionDueAtMs) {
@@ -1261,6 +1264,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   if (mainUiInitialized)
     return;
+
+  static_cast<MTControlsAudioProcessor &>(processor).startPadsPreloadAsync(!localDemoSession);
 
   {
     const auto audioCtx = getStandaloneAudioContext();
@@ -2678,7 +2683,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     deferredStartupSongIndex = -1;
     deferredStartupSongLoadAtMs = 0;
     const auto lastSelectedSongId = AppSettings::getLastSelectedSongId();
-    if (lastSelectedSongId.isNotEmpty()) {
+    if (!localDemoSession && lastSelectedSongId.isNotEmpty()) {
       const int index = songListRaw != nullptr
                             ? songListRaw->getSongIndexById(lastSelectedSongId)
                             : -1;
@@ -3032,6 +3037,9 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
   modal->onPasswordLoginRequested = [this](const juce::String& email, const juce::String& password) {
     launchPasswordLogin(email, password);
   };
+  modal->onLocalDemoLoginRequested = [this](const juce::String& username, const juce::String& password) {
+    launchLocalDemoLogin(username, password);
+  };
   modal->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
   modal->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
   modal->setAppleSignInAvailable(appleSignInAvailable);
@@ -3247,6 +3255,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
+  if (localDemoSession) return;
   ++authAttemptGeneration;
   emailAuthenticationBusy = false;
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
@@ -3404,19 +3413,25 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [this] {
         closeSettings();
       },
-      SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
+      [this] {
+        auto summary = SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,
                                     activeSession.subscriptionStatus,
                                     activeSession.expiresAt,
                                     activeSession.allowed,
                                     activeSession.reasonCode,
                                     activeSession.reason,
-                                    activeSession.licenseKey},
+                                    activeSession.licenseKey};
+        summary.localDemo = localDemoSession;
+        return summary;
+      }(),
       [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::QuestionIcon,
             L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
-            L10n::tr(
+            safeThis && safeThis->localDemoSession ? L10n::tr(
+                "Saldrás de la prueba local y volverás a la bienvenida. La demo y tus ajustes permanecerán en el dispositivo.",
+                "You'll leave the local trial and return to the welcome screen. The demo and your settings will remain on this device.") : L10n::tr(
                 u8"Tendrás que iniciar sesión nuevamente para acceder a tu biblioteca y a las canciones de Cloud.",
                 "You'll need to sign in again to access your library and Cloud songs."),
             L10n::tr(u8"Cerrar sesión", "Sign out"),
@@ -3916,6 +3931,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 }
 
 void MTControlsAudioProcessorEditor::handleLogout() {
+  const bool wasLocalDemo = localDemoSession;
   cancelAuthenticationAttempt();
   appleLoginInProgress = false;
   appleLinkInProgress = false;
@@ -3926,18 +3942,23 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   sessionResumeCancelled = true;
   closeSettings();
   closePractice();
+  if (demoLoadingOverlay) demoLoadingOverlay->exitModalState(0);
+  demoLoadingOverlay.reset();
 
   if (localAuthServer != nullptr)
     localAuthServer->stop();
   authCallbackPort = 0;
 
   activeSession = {};
+  activeSession.allowed = false;
+  localDemoSession = false;
+  AppSettings::setLocalDemoSessionActive(false);
   lastOnlineValidationMs = 0;
-  SessionPersistence::clear();
+  if (!wasLocalDemo) SessionPersistence::clear();
   lastSuccessfulLoginMs = 0;
-  AppSettings::setLastSuccessfulLoginMs(0);
+  if (!wasLocalDemo) AppSettings::setLastSuccessfulLoginMs(0);
   reauthGraceDeadlineMs = 0;
-  AppSettings::setReauthGraceDeadlineMs(0);
+  if (!wasLocalDemo) AppSettings::setReauthGraceDeadlineMs(0);
   reauthPromptDismissed = false;
   reauthLoginInProgress = false;
   hideReauthPromptModal();
@@ -3955,7 +3976,7 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   }
   showWelcomeOnlyMode();
   if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
-    { modal->clearCredentials(); modal->resetStatusToDefault(); }
+    { modal->setChecking(false); modal->clearCredentials(); modal->resetStatusToDefault(); }
 }
 
 void MTControlsAudioProcessorEditor::showReauthPromptModal() {
@@ -4002,6 +4023,7 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
 
 void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     const PersistedSessionSnapshot &snap) {
+  if (localDemoSession) return;
   if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid)
     invalidateCloudAccountView();
   activeSession.uid = snap.uid;
@@ -4020,12 +4042,14 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
 }
 
 void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
+  if (localDemoSession) return;
   const auto nowMs = juce::Time::currentTimeMillis();
   lastOnlineValidationMs = nowMs;
   SessionPersistence::save(persistedSnapshotFromActiveSession(nowMs));
 }
 
 void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
+  if (localDemoSession) return;
   SessionAuthLogger::write("tryResumeSessionAsync: begin");
   PersistedSessionSnapshot snap;
   if (!SessionPersistence::load(snap)) {
@@ -4169,7 +4193,7 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
 void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
     const bool success, const bool validatedOnline, PersistedSessionSnapshot snapshot,
     const juce::String &welcomeError, const bool clearSnapshotFile) {
-  if (sessionResumeCancelled) {
+  if (localDemoSession || sessionResumeCancelled) {
     SessionAuthLogger::write(
         "applySessionResumeOnMessageThread: skipped (session was signed out)");
     return;
@@ -4270,7 +4294,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
   // lastSuccessfulLoginMs: ultima confirmacion util (login web o validate-access al
   // arrancar). Se actualiza en disco via AppSettings; lastOnlineValidationMs duplica
   // el valor persistido en session_snapshot para ventana offline.
-  if (!mainUiInitialized || lastSuccessfulLoginMs <= 0)
+  if (localDemoSession || !mainUiInitialized || lastSuccessfulLoginMs <= 0)
     return;
 
   if (!hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,

@@ -2309,10 +2309,13 @@ void WaveformBar::resized() {
         guideMapButton.setBounds(bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       if (includeFollow) {
-        followButton.setBounds(
+        // Keep the phone's main waveform menu closest to the safe screen edge.
+        auto &edgeButton = minimalPhoneMode ? moreButton : followButton;
+        auto &innerButton = minimalPhoneMode ? followButton : moreButton;
+        edgeButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
         bottomControls.removeFromRight(buttonGap);
-        moreButton.setBounds(
+        innerButton.setBounds(
             bottomControls.removeFromRight(iconButtonW).reduced(1));
       }
       return true;

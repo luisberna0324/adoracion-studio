@@ -225,6 +225,114 @@ void testBusyCancellation() {
          "back cancels a slow reset without waiting for HTTP");
 }
 
+void testLocalDemoFlowIsSeparateAndCancellable() {
+  WelcomeModal welcome;
+  show(welcome, 390, 700);
+  int cancelled = 0, remoteLogins = 0, resetRequests = 0, localLogins = 0;
+  juce::String receivedUsername, receivedPassword;
+  welcome.onAuthenticationCancelled = [&] { ++cancelled; };
+  welcome.onPasswordLoginRequested = [&](const auto &, const auto &) { ++remoteLogins; };
+  welcome.onPasswordResetRequested = [&](const auto &) { ++resetRequests; };
+  welcome.onLocalDemoLoginRequested = [&](const auto &username, const auto &secret) {
+    ++localLogins;
+    receivedUsername = username;
+    receivedPassword = secret;
+  };
+  welcome.setStatusText("Checking an existing session", false);
+  welcome.setChecking(true);
+  welcome.setAuthenticationBusy(true);
+  auto &localAction = button(welcome, u8"Prueba sin conexión", "Offline trial");
+  expect(effectivelyVisible(localAction) && localAction.isEnabled() && localAction.getHeight() >= 48,
+         "offline trial remains reachable while automatic session validation is pending");
+  click(localAction);
+  auto &form = typed<EmailAuthenticationForm>(welcome);
+  expect(cancelled == 1 && form.isLocalDemoMode() && !form.isResetMode(),
+         "opening offline trial cancels an old request and opens a distinct form mode");
+  expect(hasLabel(welcome, L10n::tr(u8"Prueba sin conexión", "Offline trial")),
+         "offline trial is explicitly identified in the heading");
+  auto &username = editor(welcome, "Usuario", "Username");
+  auto &secret = editor(welcome, u8"Contraseña", "Password");
+  expect(username.getKeyboardType() == juce::TextInputTarget::textKeyboard &&
+             secret.getPasswordCharacter() != 0,
+         "offline trial has an ordinary username keyboard and a masked password");
+  expect(!effectivelyVisible(button(welcome, u8"Crear o recuperar contraseña", "Set or reset password")),
+         "offline trial does not offer a backend password recovery request");
+  button(welcome, u8"Crear o recuperar contraseña", "Set or reset password").onClick();
+  expect(form.isLocalDemoMode() && resetRequests == 0,
+         "a stale recovery action cannot leave or send requests from the local form");
+  secret.setText("usuarioplay0324", false);
+  click(button(welcome, "Abrir demo", "Open demo"));
+  expect(localLogins == 0 && hasLabel(welcome, L10n::tr("Escribe el usuario de prueba.", "Enter the trial username.")),
+         "offline trial requires a username without applying email validation");
+  username.setText("usuarioplay0324", false);
+  secret.clear();
+  click(button(welcome, "Abrir demo", "Open demo"));
+  expect(localLogins == 0 && hasLabel(welcome, L10n::tr(u8"Escribe la contraseña de prueba.", "Enter the trial password.")),
+         "offline trial requires a password before local dispatch");
+  username.setText("  usuarioplay0324  ", false);
+  secret.setText(" space stays significant ", false);
+  click(button(welcome, "Abrir demo", "Open demo"));
+  expect(localLogins == 1 && receivedUsername == "usuarioplay0324" &&
+             receivedPassword == " space stays significant " &&
+             remoteLogins == 0 && resetRequests == 0 && secret.getText().isEmpty(),
+         "offline credentials use only the distinct local callback and clear the submitted password");
+  welcome.showPasswordLinkSent();
+  expect(form.isLocalDemoMode() && !form.isLinkSent(),
+         "a late backend confirmation cannot replace the offline form");
+  secret.setText("temporary-local-secret", false);
+  welcome.setAuthenticationBusy(true);
+  auto &submit = button(welcome, "Abriendo…", "Opening…");
+  submit.onClick();
+  expect(localLogins == 1, "busy offline trial rejects a duplicate queued submit");
+  click(button(welcome, "Volver", "Back"));
+  expect(cancelled == 2 && !effectivelyVisible(form) && secret.getText().isEmpty(),
+         "back from offline trial clears credentials and returns to providers");
+  openEmail(welcome);
+  expect(!form.isLocalDemoMode() && email(welcome).getText().isEmpty() &&
+             email(welcome).getKeyboardType() == juce::TextInputTarget::emailAddressKeyboard &&
+             effectivelyVisible(button(welcome, u8"Crear o recuperar contraseña", "Set or reset password")),
+         "normal email sign in restores its keyboard and recovery without retaining a local username");
+  click(button(welcome, "Volver", "Back"));
+  click(button(welcome, u8"Prueba sin conexión", "Offline trial"));
+  auto &hiddenSecret = editor(welcome, u8"Contraseña", "Password");
+  hiddenSecret.setText("secret-only-in-ui", false);
+  click(button(welcome, "Mostrar", "Show"));
+  welcome.setVisible(false);
+  expect(hiddenSecret.getText().isEmpty() && hiddenSecret.getPasswordCharacter() != 0,
+         "hiding offline trial clears and remasks its password");
+}
+
+void testLocalDemoAndProviderLayouts() {
+  for (const auto size : {juce::Point<int>{390, 700}, {390, 360}, {820, 1000}, {1200, 760}}) {
+    WelcomeModal welcome;
+    show(welcome, size.x, size.y);
+    auto &google = button(welcome, "Continuar con Google", "Continue with Google");
+    auto &emailAction = button(welcome, "Ingresar con correo", "Sign in with email");
+    auto &localAction = button(welcome, u8"Prueba sin conexión", "Offline trial");
+    for (auto *action : {&google, &emailAction, &localAction})
+      expect(action->getHeight() >= 48 && welcome.getLocalBounds().contains(action->getBounds()),
+             "all provider actions fit the phone, compact keyboard, tablet and desktop at full height");
+    expect(google.getBottom() <= emailAction.getY() && emailAction.getBottom() < localAction.getY(),
+           "offline trial follows the provider actions with distinct spacing");
+    click(localAction);
+    auto &form = typed<EmailAuthenticationForm>(welcome);
+    expect(!form.getBounds().isEmpty() && welcome.getLocalBounds().contains(form.getBounds()),
+           "offline form fits each supported surface");
+    auto &viewport = typed<juce::Viewport>(form);
+    auto *content = viewport.getViewedComponent();
+    expect(content != nullptr && content->getLocalBounds().contains(
+               editor(welcome, "Usuario", "Username").getBounds()) &&
+               content->getLocalBounds().contains(editor(welcome, u8"Contraseña", "Password").getBounds()),
+           "offline credentials fit their scrollable content");
+    if (size.y == 360) {
+      viewport.setViewPosition(0, content->getHeight());
+      expect(viewport.getViewArea().contains(button(welcome, "Abrir demo", "Open demo").getBounds()) &&
+                 effectivelyVisible(button(welcome, "Volver", "Back")),
+             "offline submit is reachable by scrolling and back remains fixed above the keyboard");
+    }
+  }
+}
+
 void testCompactLayoutsAndReachability() {
   for (const auto size : {juce::Point<int>{390, 700}, {390, 360}, {820, 1000}, {1200, 760}}) {
     WelcomeModal welcome;
@@ -418,6 +526,9 @@ void optionalScreenshots() {
     capture(welcome, directory, juce::String(layout.name) + "-reset");
     welcome.showPasswordLinkSent();
     capture(welcome, directory, juce::String(layout.name) + "-link-sent");
+    welcome.showLocalDemoLogin();
+    editor(welcome, "Usuario", "Username").setText("usuarioplay0324", false);
+    capture(welcome, directory, juce::String(layout.name) + "-offline-trial");
   }
   ReauthPromptModal reauth;
   show(reauth, 530, 530);
@@ -508,6 +619,8 @@ int main() {
     testWelcomeNavigationAndCredentials();
     testInputValidationAndDispatch();
     testBusyCancellation();
+    testLocalDemoFlowIsSeparateAndCancellable();
+    testLocalDemoAndProviderLayouts();
     testCompactLayoutsAndReachability();
     testReauthenticationStatusAndHeight();
     testPasswordLinkSuccess();

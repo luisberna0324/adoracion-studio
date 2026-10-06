@@ -66,8 +66,10 @@ public:
 
 private:
   class StripSlot;
+  class PhoneEdgeDecoration;
   void timerCallback() override;
   void layoutHeaderAndViewport();
+  void updatePhoneEdgeDecorations();
   void applyRoutingDraft();
   void onStemOutputComboChanged(size_t slotIndex, int selectedChannel);
   void addDivisionSlot();
@@ -100,6 +102,8 @@ private:
   juce::ToggleButton dynamicGuideToggle;
   juce::Viewport viewport;
   juce::Component content;
+  std::unique_ptr<PhoneEdgeDecoration> phoneLeadingDecoration;
+  std::unique_ptr<PhoneEdgeDecoration> phoneTrailingDecoration;
   std::vector<std::unique_ptr<StripSlot>> slots;
   std::vector<bool> adjustableStems;
   std::vector<bool> clickGuideStems;

@@ -4,7 +4,7 @@ title: Pads
 description: Motor de pads con 12 notas, seguimiento de tonalidad y loop continuo
 resource: src/audio/PadsEngine.h
 tags: [juce, audio, pads, samples, trigger]
-timestamp: 2026-10-03
+timestamp: 2026-10-06
 ---
 
 # PadsEngine
@@ -114,7 +114,17 @@ Carga samples desde carpeta. Busca archivos con nombres de notas:
 
 La carga del pack debe tratarse como trabajo pesado de I/O y decodificación.
 `loadFromFolder()` indexa y valida los 12 archivos. Al iniciar el procesador,
-`startPadsPreloadAsync()` prepara el pack mediante un worker dedicado. En todas
+`startPadsPreloadAsync(false)` prepara el pack local mediante un worker dedicado,
+sin descargar recursos antes de que se elija una sesión. Al abrir la UI con una
+sesión autenticada se solicita de nuevo la preparación con descargas permitidas.
+Si la preparación local sigue activa, un flag atómico retiene esa solicitud;
+el timer del procesador la atiende al acabar el worker, sin callbacks diferidos
+que puedan sobrevivir al procesador ni esperas en el hilo de audio.
+La sesión de demo local conserva esa prohibición también en peticiones explícitas;
+sus ocho stems, el click y la guía provienen del contenido incluido. Un pack de
+Pads ya instalado o un ZIP completo de una transferencia anterior permanece
+disponible sin conexión. Si no existe, Pads informa que falta el pack y la demo
+continúa reproduciendo su instrumento Pad ambiental sin descargarlo. En todas
 las plataformas precarga los primeros 64 segundos de las doce notas (o el
 archivo completo si es más corto). Una nota preparada se dispara directamente
 desde RAM; el worker completa su archivo mientras suena ese inicio. Los 64

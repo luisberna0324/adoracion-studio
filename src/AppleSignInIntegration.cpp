@@ -48,6 +48,7 @@ juce::String appleErrorMessage(AppleSignInApi::Error error) {
 }
 
 void MTControlsAudioProcessorEditor::refreshAppleSignInConfiguration() {
+  if (localDemoSession) return;
 #if MTCONTROLS_APPLE_SIGN_IN_ENABLED && (JUCE_IOS || JUCE_MAC)
   if (!NativeAppleSignIn::isSupported()) return;
   const auto generation = ++appleConfigurationGeneration;

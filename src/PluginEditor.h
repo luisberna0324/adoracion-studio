@@ -161,6 +161,8 @@ private:
   playworship::learning::DemoLearningProgress demoLearningProgress;
   std::unique_ptr<SongLoadProgressOverlay> demoLoadingOverlay;
   bool demoWelcomeChecked = false;
+  bool localDemoSession = false;
+  friend struct LocalDemoAccessTestAccess;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 
@@ -343,6 +345,9 @@ private:
   void updateSystemUsageMetrics();
   void launchExternalLogin();
   void launchPasswordLogin(const juce::String& email, const juce::String& password);
+  void launchLocalDemoLogin(const juce::String& username, const juce::String& password);
+  void enterLocalDemoSession();
+  void prepareDemoSong(bool startLesson);
   void requestPasswordLink(const juce::String& email);
   void cancelAuthenticationAttempt();
   void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);

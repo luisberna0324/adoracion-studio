@@ -336,6 +336,27 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME email_authentication_ui COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsEmailAuthUiTests>")
+    juce_add_console_app(MTControlsLocalDemoAccessTests PRODUCT_NAME "Local Demo Access Tests")
+    target_sources(MTControlsLocalDemoAccessTests PRIVATE
+        tests/local_demo_access_tests.cpp src/data/AppSettings.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionPersistence.cpp
+        src/data/SessionAuthLogger.cpp src/data/AssetBootstrapManager.cpp
+        src/data/TeamsLocalStore.cpp src/ui/learning/LearningGuideModel.cpp)
+    target_include_directories(MTControlsLocalDemoAccessTests PRIVATE src)
+    target_compile_definitions(MTControlsLocalDemoAccessTests PRIVATE
+        JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsLocalDemoAccessTests PRIVATE MTControls MTControlsAssets
+        juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsLocalDemoAccessTests)
+    add_test(NAME local_demo_access COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsLocalDemoAccessTests>")
+    if(MSVC)
+        target_compile_options(MTControlsLocalDemoAccessTests PRIVATE /utf-8)
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(local_demo_access PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
     juce_add_console_app(MTControlsAppleSignInTests PRODUCT_NAME "Apple Sign In Contract Tests")
     target_sources(MTControlsAppleSignInTests PRIVATE
         tests/apple_signin_contract_tests.cpp src/data/AppleSignInApi.cpp
@@ -1113,6 +1134,7 @@ target_sources(MTControls
         src/data/EmailPasswordAuthApi.cpp
         src/data/EmailPasswordAuthApi.h
         src/EmailPasswordAuthIntegration.cpp
+        src/LocalDemoAccessIntegration.cpp
         src/data/CloudSyncTypes.h
         src/data/CloudProjectArchive.cpp
         src/data/CloudProjectArchive.h

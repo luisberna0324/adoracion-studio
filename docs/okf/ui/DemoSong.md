@@ -9,13 +9,19 @@ timestamp: 2026-10-06
 
 ## Acceso
 
+La bienvenida también ofrece **Prueba sin conexión**, con usuario y contraseña
+`usuarioplay0324`. Carga la demo directamente en pausa y abre los controles
+normales sin consultar el backend ni iniciar el recorrido. No crea una cuenta,
+licencia ni permisos de Nube/Teams. El modo local se recuerda en este dispositivo
+y se abandona mediante Cerrar sesión. Ver [contrato de acceso](../integrations/Auth.md#acceso-local-con-la-demo-incluida).
+
 Tras entrar con el acceso habitual, la primera Biblioteca vacía ofrece
 **Probar demo** o **Más tarde**. La decisión se recuerda en este dispositivo.
 El catálogo **Aprender PlayWorship** ofrece siempre **Probar con una canción
 demo**, también para usuarios con canciones y para recuperarla tras borrarla.
 No se instala por iniciar sesión, abrir el catálogo o saltar la bienvenida.
-La demo no concede una cuenta, licencia ni acceso a Cloud; se conserva el
-contrato de autenticación y acceso offline existente.
+La demo no concede una cuenta, licencia ni acceso a Cloud; fuera de la prueba
+local, se conserva el contrato de autenticación y acceso offline existente.
 
 Elegir la demo requiere modo Local y terminar cualquier carga, guardado,
 exportación, transferencia o borrador de automatización en curso. No cambia
@@ -51,7 +57,9 @@ en pausa sin añadirla al setlist activo.
 
 La preparación de disco usa un worker, con un overlay modal y bloqueo temporal
 de cargas/avance automático. El callback vuelve al message thread y valida
-SafePointer, cuenta y acceso antes de cargar. Durante el curso se suspende el
+SafePointer, generación de acceso, modo local, cuenta y acceso antes de cargar.
+Una respuesta antigua no cambia la sesión ni el overlay de un intento nuevo.
+Durante el curso se suspende el
 avance automático del setlist, incluso si la demo ya pertenecía a él.
 
 ## Recorrido práctico

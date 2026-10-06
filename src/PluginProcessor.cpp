@@ -297,7 +297,9 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
   resumeTimeProcessorMaintenance();
 #endif
   startTimerHz(100);
-  startPadsPreloadAsync();
+  // Welcome has not selected an authenticated or local-demo session yet.
+  // Prepare existing local Pads without starting a download before login.
+  startPadsPreloadAsync(false);
 }
 
 MTControlsAudioProcessor::~MTControlsAudioProcessor() {
@@ -3351,6 +3353,10 @@ void MTControlsAudioProcessor::timerCallback() {
       padsFullLoadRequested.load(std::memory_order_acquire) ||
       pendingPadNote.load(std::memory_order_acquire) >= 0)
     startPadsPreloadAsync();
+
+  if (!isPadsPreloadRunning() &&
+      padsNetworkPreloadPending.exchange(false, std::memory_order_acq_rel))
+    startPadsPreloadAsync();
 }
 
 uint64_t MTControlsAudioProcessor::markAudioArtifact() {
@@ -6048,7 +6054,7 @@ bool MTControlsAudioProcessor::reloadLastPadsPack() {
   return loadPadsPackInternal(folder, settings.sourcePath, false);
 }
 
-bool MTControlsAudioProcessor::ensurePadsPackReady() {
+bool MTControlsAudioProcessor::ensurePadsPackReady(const bool allowNetworkDownloads) {
   const auto ensureStartTicks = juce::Time::getHighResolutionTicks();
   refreshPadsRoutingFromSettings();
   if (padsPackLoaded.load(std::memory_order_relaxed))
@@ -6073,9 +6079,10 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
     const auto assetsStartTicks = juce::Time::getHighResolutionTicks();
     {
       const juce::SpinLock::ScopedLockType lock(padsStateLock);
-      padsPackStatusText = "Descargando recursos... / Downloading resources...";
+      padsPackStatusText = "Preparando recursos... / Preparing resources...";
     }
-    const bool assetsReady = AssetBootstrapManager::ensurePadsPackReady(&assetsError);
+    const bool assetsReady = AssetBootstrapManager::ensurePadsPackReady(
+        &assetsError, allowNetworkDownloads);
     juce::Logger::writeToLog(
         "Pads ensure assetsReady=" + juce::String(assetsReady ? "true" : "false") +
         " dir=" + managedPadsFolder.getFullPathName() +
@@ -6137,20 +6144,26 @@ bool MTControlsAudioProcessor::ensurePadsPackReady() {
   return false;
 }
 
-void MTControlsAudioProcessor::startPadsPreloadAsync() {
-  if ((padsAttacksPrepared.load(std::memory_order_acquire) &&
+void MTControlsAudioProcessor::startPadsPreloadAsync(const bool allowNetworkDownloads) {
+  if (padsAttacksPrepared.load(std::memory_order_acquire) &&
        pendingPadNote.load(std::memory_order_acquire) < 0 &&
        !padsFullLoadRequested.load(std::memory_order_acquire) &&
-       midiPendingPadLoadMask.load(std::memory_order_acquire) == 0) ||
-      padsPreloadRunning.exchange(true, std::memory_order_acq_rel))
+       midiPendingPadLoadMask.load(std::memory_order_acquire) == 0)
     return;
+  if (padsPreloadRunning.exchange(true, std::memory_order_acq_rel)) {
+    if (allowNetworkDownloads)
+      padsNetworkPreloadPending.store(true, std::memory_order_release);
+    return;
+  }
+  if (allowNetworkDownloads)
+    padsNetworkPreloadPending.store(false, std::memory_order_release);
 
   if (padsPreloadThread.joinable())
     padsPreloadThread.join();
 
   padsPreloadShouldExit.store(false, std::memory_order_release);
-  padsPreloadThread = std::thread([this] {
-    if (!ensurePadsPackReady()) {
+  padsPreloadThread = std::thread([this, allowNetworkDownloads] {
+    if (!ensurePadsPackReady(allowNetworkDownloads)) {
       pendingPadNote.store(-1, std::memory_order_release);
       midiPendingPadTriggerMask.store(0, std::memory_order_release);
       midiPendingPadLoadMask.store(0, std::memory_order_release);

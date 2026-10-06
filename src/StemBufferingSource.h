@@ -114,6 +114,16 @@ public:
   }
 
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
+  void enterCallbackLockForTest() { callbackLock.enter(); }
+  void exitCallbackLockForTest() { callbackLock.exit(); }
+  void setMainPublicationBusyForTest(bool busy) noexcept {
+    const auto previous = bufferRangeSequence.fetch_add(1, std::memory_order_acq_rel);
+    jassert(((previous & 1U) == 0U) == busy);
+    juce::ignoreUnused(previous, busy);
+  }
+  int getRealtimeCacheCapacityFramesForTest() const noexcept {
+    return realtimeReadCache.getNumSamples();
+  }
   using BeforeCursorAdvanceTestHook = void (*)(StemBufferingSource &) noexcept;
   void setBeforeCursorAdvanceTestHook(
       BeforeCursorAdvanceTestHook hook) noexcept {
@@ -131,6 +141,9 @@ private:
 
   juce::Range<int> getValidBufferRange(int numSamples,
                                        juce::int64 position) const;
+  juce::Range<int> getValidRealtimeCacheRange(
+      int numSamples, juce::int64 position, uint64_t bufferEpoch,
+      uint64_t readCursorEpoch) const noexcept;
   juce::Range<int> getValidPrefetchRange(int numSamples,
                                          juce::int64 position) const;
   PrefetchRangeSnapshot readPrefetchRangeSnapshot() const noexcept;
@@ -153,6 +166,14 @@ private:
   // Background-thread staging buffer to avoid holding the shared lock during disk reads.
   juce::AudioBuffer<float> readBuffer;
   juce::CriticalSection callbackLock;
+  // Owned exclusively by the audio callback. A small exact-position read-ahead
+  // copy keeps already prepared audio available while the worker copies or
+  // publishes the shared ring. Lifecycle allocation requires quiescent audio.
+  juce::AudioBuffer<float> realtimeReadCache;
+  juce::int64 realtimeCacheStart = 0;
+  int realtimeCacheFrames = 0;
+  uint64_t realtimeCacheBufferEpoch = 0;
+  uint64_t realtimeCacheCursorEpoch = 0;
   // A compact second bank keeps the next seek/loop target available while the
   // main ring continues serving the current timeline.
   juce::AudioBuffer<float> prefetchBuffer;

@@ -4,6 +4,7 @@
 #include "data/Localization.h"
 #include "ui/components/AppModal.h"
 #include "ui/components/SongLoadProgressOverlay.h"
+#include "ui/components/WelcomeModal.h"
 #include "ui/learning/LearningGuideOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PracticePanel.h"
@@ -42,9 +43,25 @@ void MTControlsAudioProcessorEditor::offerDemoWelcome() {
 }
 
 void MTControlsAudioProcessorEditor::prepareDemoLesson() {
-  if (!mainUiInitialized || !activeSession.allowed || demoLoadingOverlay || !learningGuide) return;
+  prepareDemoSong(true);
+}
+
+void MTControlsAudioProcessorEditor::prepareDemoSong(const bool startLesson) {
+  if (!mainUiInitialized || !activeSession.allowed || demoLoadingOverlay ||
+      (startLesson && !learningGuide)) return;
+  const auto showError = [this](const juce::String& message) {
+    if (learningGuide) learningGuide->setStatusMessage(message);
+    else {
+      const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+      appModal = std::make_unique<AppModal>(*this, AppModal::Kind::Information,
+          L10n::tr("Demo incluida", "Included demo"), message,
+          L10n::tr("Aceptar", "OK"), juce::String{}, nullptr);
+      appModal->onClosed = [safe] { if (safe) safe->appModal.reset(); };
+      appModal->show();
+    }
+  };
   if (remoteSession.getMode() != playworship::remote::RemoteSession::Mode::Local) {
-    learningGuide->setStatusMessage(L10n::tr(
+    showError(L10n::tr(
         "Selecciona Local en Configuración → Control remoto y vuelve a elegir la demo.",
         "Select Local in Settings → Remote control, then choose the demo again."));
     return;
@@ -53,13 +70,13 @@ void MTControlsAudioProcessorEditor::prepareDemoLesson() {
       static_cast<MTControlsAudioProcessor &>(processor).isSectionAutomationEditing() ||
       !cloudDownloadsInProgress.empty() ||
       !cloudUploadsInProgress.empty() || !cloudDeletesInProgress.empty()) {
-    learningGuide->setStatusMessage(L10n::tr(
+    showError(L10n::tr(
         "Espera a que termine la operación actual y vuelve a elegir la demo.",
         "Wait for the current operation to finish, then choose the demo again."));
     return;
   }
   if (practiceOverlay) {
-    learningGuide->setStatusMessage(L10n::tr(
+    showError(L10n::tr(
         "Cierra Ensayo y vuelve a elegir la demo.", "Close Practice, then choose the demo again."));
     return;
   }
@@ -78,21 +95,32 @@ void MTControlsAudioProcessorEditor::prepareDemoLesson() {
   demoLoadingOverlay->enterModalState(true, nullptr, false);
   const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   const auto uid = activeSession.uid;
-  std::thread([safe, uid] {
+  const auto generation = authAttemptGeneration;
+  const auto localDemo = localDemoSession;
+  std::thread([safe, uid, generation, localDemo, startLesson] {
     ImportedSongData song;
-    const auto result = DemoSongService::ensureInstalled(song, [safe](double progress, const juce::String &) {
-      juce::MessageManager::callAsync([safe, progress] {
-        if (safe && safe->demoLoadingOverlay) safe->demoLoadingOverlay->setProgress(progress);
+    const auto result = DemoSongService::ensureInstalled(song, [safe, generation](double progress, const juce::String &) {
+      juce::MessageManager::callAsync([safe, generation, progress] {
+        if (safe && generation == safe->authAttemptGeneration && safe->demoLoadingOverlay)
+          safe->demoLoadingOverlay->setProgress(progress);
       });
     });
-    juce::MessageManager::callAsync([safe, uid, song = std::move(song), result] {
+    juce::MessageManager::callAsync([safe, uid, generation, localDemo, startLesson,
+                                   song = std::move(song), result] {
       if (!safe) return;
+      if (generation != safe->authAttemptGeneration || localDemo != safe->localDemoSession)
+        return;
       if (safe->demoLoadingOverlay) safe->demoLoadingOverlay->exitModalState(0);
       safe->demoLoadingOverlay.reset();
       if (!safe->mainUiInitialized || !safe->activeSession.allowed || safe->activeSession.uid != uid)
         return;
       if (result.failed()) {
         if (safe->learningGuide) safe->learningGuide->setStatusMessage(result.getErrorMessage());
+        else {
+          safe->handleLogout();
+          if (auto* welcome = dynamic_cast<WelcomeModal*>(safe->welcomeModal.get()))
+            welcome->setStatusText(result.getErrorMessage(), true);
+        }
         return;
       }
       if (safe->songListPanelRaw) safe->songListPanelRaw->refreshFromStorageView();
@@ -106,10 +134,16 @@ void MTControlsAudioProcessorEditor::prepareDemoLesson() {
         if (safe->learningGuide) safe->learningGuide->setStatusMessage(L10n::tr(
             "La demo está en Biblioteca, pero no se pudo cargar. Inténtalo nuevamente.",
             "The demo is in your Library but could not be loaded. Try again."));
+        else {
+          safe->handleLogout();
+          if (auto* welcome = dynamic_cast<WelcomeModal*>(safe->welcomeModal.get()))
+            welcome->setStatusText(L10n::tr("No se pudo cargar la demo. Inténtalo nuevamente.",
+                                          "Could not load the demo. Try again."), true);
+        }
         return;
       }
       AppSettings::setDemoWelcomeSeen(true);
-      safe->startLearningLesson("demo-song");
+      if (startLesson) safe->startLearningLesson("demo-song");
     });
   }).detach();
 }

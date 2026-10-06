@@ -160,6 +160,42 @@ public:
 };
 } // namespace
 
+// Only the non-interactive surface extends into the scrollable safe-area
+// padding. Being children of content keeps these decorations attached to the
+// first/last card during scrolling without any meter or animation updates.
+class ChannelGridPanel::PhoneEdgeDecoration final : public juce::Component {
+public:
+  PhoneEdgeDecoration() { setInterceptsMouseClicks(false, false); }
+
+  void setStyle(juce::Colour background, juce::Colour band,
+                int bandTop, int bandHeight) {
+    if (backgroundColour == background && bandColour == band &&
+        footerTop == bandTop && footerHeight == bandHeight)
+      return;
+    backgroundColour = background;
+    bandColour = band;
+    footerTop = bandTop;
+    footerHeight = bandHeight;
+    repaint();
+  }
+
+  void paint(juce::Graphics &g) override {
+    g.fillAll(backgroundColour);
+    g.setColour(UITheme::cardBorder);
+    g.fillRect(0, 0, getWidth(), 1);
+    g.fillRect(0, juce::jmax(0, getHeight() - 1), getWidth(), 1);
+    g.setColour(bandColour);
+    g.fillRect(juce::Rectangle<int>(0, footerTop, getWidth(), footerHeight)
+                   .getIntersection(getLocalBounds()));
+  }
+
+private:
+  juce::Colour backgroundColour;
+  juce::Colour bandColour;
+  int footerTop = 0;
+  int footerHeight = 0;
+};
+
 class ChannelGridPanel::StripSlot : public juce::Component {
 public:
   StripSlot(juce::String groupName, ChannelStripLookAndFeel &lnf,
@@ -470,6 +506,10 @@ ChannelGridPanel::ChannelGridPanel(ChannelStripLookAndFeel &lookAndFeelRef,
     : lookAndFeel(lookAndFeelRef), processor(processorRef), localSession(processorRef), session(sessionToUse ? *sessionToUse : localSession) {
   dynamicGuideToggle.setVisible(false);
 
+  phoneLeadingDecoration = std::make_unique<PhoneEdgeDecoration>();
+  phoneTrailingDecoration = std::make_unique<PhoneEdgeDecoration>();
+  content.addChildComponent(*phoneLeadingDecoration);
+  content.addChildComponent(*phoneTrailingDecoration);
   viewport.setViewedComponent(&content, false);
   viewport.setScrollBarsShown(true, false, false, false);
   viewport.setScrollBarThickness(1);
@@ -960,6 +1000,8 @@ void ChannelGridPanel::setSong(const ImportedSongData &song) {
   slotStemIds.clear();
   pendingOutputBySlotIndex.clear();
   content.removeAllChildren();
+  content.addChildComponent(*phoneLeadingDecoration);
+  content.addChildComponent(*phoneTrailingDecoration);
   const int stemCount = session.getLoadedStemCount();
   int mappedStemIndex = 0;
   currentSongId = song.id;
@@ -1407,7 +1449,44 @@ void ChannelGridPanel::refreshThemeColours() {
     strip.setChannelBandColours(UITheme::accent, UITheme::onAccent);
     slot.refreshThemeColours();
   }
+  updatePhoneEdgeDecorations();
   repaint();
+}
+
+void ChannelGridPanel::updatePhoneEdgeDecorations() {
+  if (phoneLeadingDecoration == nullptr || phoneTrailingDecoration == nullptr)
+    return;
+  const bool hasPhoneSlots = minimalPhoneMode && !slots.empty();
+  phoneLeadingDecoration->setVisible(hasPhoneSlots && phoneLeftContentInset > 0);
+  phoneTrailingDecoration->setVisible(hasPhoneSlots && phoneRightContentInset > 0);
+  if (!hasPhoneSlots)
+    return;
+
+  const auto updateEdge = [this](PhoneEdgeDecoration &decoration,
+                                  const size_t index, const bool leading) {
+    const auto &slot = *slots[index];
+    const auto &strip = slot.getStrip();
+    const auto card = content.getLocalArea(&strip, strip.getLocalBounds());
+    const int edgeX = leading ? 0 : card.getRight();
+    const int edgeRight = leading ? card.getX()
+                                  : slot.getRight() + phoneRightContentInset;
+    decoration.setBounds(edgeX, card.getY(), juce::jmax(0, edgeRight - edgeX),
+                         card.getHeight());
+
+    const int stemIndex = index < slotStemIndices.size() ? slotStemIndices[index] : -1;
+    const bool isMaster = stemIndex == -1;
+    const bool isClickGuide = stemIndex < -1 ||
+        (index < clickGuideStems.size() && clickGuideStems[index]);
+    const auto background = isMaster ? UITheme::cardBgMaster
+        : isClickGuide ? UITheme::cardBgClickGuide : UITheme::cardBg;
+    decoration.setStyle(background, isMaster ? UITheme::accentMaster : UITheme::accent,
+        card.getHeight() - phoneBottomContentInset - strip.getLayout().channelBandHeight,
+        strip.getLayout().channelBandHeight);
+    // The border colour can change independently of the card/accent colours.
+    decoration.repaint();
+  };
+  updateEdge(*phoneLeadingDecoration, 0, true);
+  updateEdge(*phoneTrailingDecoration, slots.size() - 1, false);
 }
 
 void ChannelGridPanel::paint(juce::Graphics &g) {
@@ -1528,12 +1607,14 @@ void ChannelGridPanel::resized() {
     // vertical viewport offset after a resize or orientation change, which
     // moves the fixed S/M row and channel title below the visible edge.
     viewport.setViewPosition(viewport.getViewPositionX(), 0);
+    updatePhoneEdgeDecorations();
     return;
   }
 
   const int neededH = pad + (rows * cellH) +
                       (juce::jmax(0, rows - 1) * gapY) + pad;
   content.setSize(contentWidth, juce::jmax(viewport.getHeight(), neededH));
+  updatePhoneEdgeDecorations();
 }
 
 void ChannelGridPanel::addMasterSlot() {

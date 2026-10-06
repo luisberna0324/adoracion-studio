@@ -47,6 +47,7 @@ public:
     bool isOverride = false;
     int usedDevices = 0, maxDevices = 0, syncedSongCount = 0, maxSyncedSongs = 0;
     juce::int64 usedStorageBytes = 0, maxStorageBytes = 0;
+    bool localDemo = false;
   };
 
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,

@@ -85,6 +85,7 @@ void MTControlsAudioProcessorEditor::invalidateCloudAccountView() {
 }
 
 void MTControlsAudioProcessorEditor::showTeams() {
+  if (localDemoSession) return;
   if ((!canManageSharedCloud && !hasTeamsMembership) || !activeSession.allowed) return;
   if (teamsOverlay) { teamsOverlay->toFront(true); return; }
   closeSettings();

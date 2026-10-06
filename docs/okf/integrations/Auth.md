@@ -274,7 +274,41 @@ el puente Objective-C++ paso syntax-only para macOS e iOS 18.5. Estas pruebas
 no ejercen autorizacion Apple, cancelacion del OS, vinculacion en Firebase ni
 un backend desplegado. Ver [plan Apple](../distribution/SignInWithApplePlan.md).
 
-## Correo y contraseña dentro de PlayWorship
+## Acceso local con la demo incluida
+
+La bienvenida ofrece **Prueba sin conexión** en escritorio, iOS y Android.
+Abre un formulario separado del acceso con correo: usuario y contraseña son
+`usuarioplay0324`. Su callback `launchLocalDemoLogin` compara esos valores
+localmente; nunca llama a Firebase ni al backend. No representa una cuenta o
+licencia y no concede acceso a Nube ni Teams. Las credenciales de prueba son
+públicas y sólo seleccionan este espacio local.
+
+`localDemoSession` habilita la interfaz normal con UID, tokens, plan y licencia
+vacíos. Invalida callbacks de autenticación pendientes y la vista de Nube,
+restablece Control remoto a Local y carga la demo incluida en pausa, sin abrir
+automáticamente la guía. Los recursos de audio y la onda provienen del bundle.
+La guía sigue disponible desde Aprender PlayWorship.
+
+`AppSettings.localDemoSessionActive` recuerda el modo en este dispositivo,
+independientemente de `session_snapshot.json`. En el siguiente arranque evita
+la reanudación Firebase, la consulta de configuración Apple y la política de
+renovación. La contraseña no se guarda. Entrar, reiniciar o salir del modo local
+preserva el snapshot y las fechas de validación de la cuenta real. **Cerrar
+sesión** vuelve a la bienvenida y desactiva esa preferencia; el siguiente login
+normal conserva sus validaciones habituales.
+
+La preparación automática de Pads previa al acceso usa sólo archivos locales.
+En el modo demo se bloquea el bootstrap de recursos remotos, incluso si faltan
+Pads o encoder. Click y guías usan sus paquetes incluidos. No se altera el
+motor, la mezcla o la persistencia de las canciones.
+
+`local_demo_access` verifica entrada, restauración, rechazo de credenciales,
+demo en pausa, invariancia del snapshot, callbacks tardíos y transporte
+Firebase sin solicitudes. `email_authentication_ui` cubre el formulario local
+separado del correo, navegación y geometría. Estas pruebas no acreditan
+instalación ni comportamiento físico en iPhone/Android.
+
+## Acceso autenticado con correo
 
 `WelcomeModal` y `ReauthPromptModal` ofrecen **Ingresar con correo**, junto a
 Google y al acceso Apple condicionado. El formulario compartido permite

@@ -67,7 +67,7 @@ EmailAuthenticationForm::EmailAuthenticationForm() {
   };
   submitButton.onClick = [this] { submit(); };
   resetButton.onClick = [this] {
-    if (busy) return;
+    if (busy || isLocalDemoMode()) return;
     clearCredentials();
     mode = Mode::reset;
     updateMode();
@@ -84,12 +84,22 @@ EmailAuthenticationForm::~EmailAuthenticationForm() {
 
 void EmailAuthenticationForm::showLogin() {
   clearCredentials();
+  if (isLocalDemoMode()) emailEditor.clear();
   mode = Mode::login;
   updateMode();
   focusEmail();
 }
 
+void EmailAuthenticationForm::showLocalDemoLogin() {
+  clearCredentials();
+  emailEditor.clear();
+  mode = Mode::localDemoLogin;
+  updateMode();
+  focusEmail();
+}
+
 void EmailAuthenticationForm::showPasswordLinkSent() {
+  if (isLocalDemoMode()) return;
   clearCredentials();
   mode = Mode::linkSent;
   setBusy(false);
@@ -102,7 +112,10 @@ void EmailAuthenticationForm::goBack() {
   if (isResetMode() && !busy) {
     showLogin();
     if (onModeChanged) onModeChanged();
-  } else if (onBack) onBack();
+  } else {
+    clearCredentials();
+    if (onBack) onBack();
+  }
 }
 
 void EmailAuthenticationForm::setBusy(bool isBusy) {
@@ -111,10 +124,16 @@ void EmailAuthenticationForm::setBusy(bool isBusy) {
   for (auto* control : controls)
     control->setEnabled(!busy);
   submitButton.setButtonText(busy ? (isResetMode() ? L10n::tr("Enviando…", "Sending…")
+                                                   : isLocalDemoMode() ? L10n::tr("Abriendo…", "Opening…")
                                                    : L10n::tr("Ingresando…", "Signing in…"))
                                : isLinkSent() ? L10n::tr("Volver al acceso", "Back to sign in")
                                : isResetMode() ? L10n::tr("Enviar enlace", "Send link")
+                               : isLocalDemoMode() ? L10n::tr("Abrir demo", "Open demo")
                                                : L10n::tr("Ingresar", "Sign in"));
+}
+
+void EmailAuthenticationForm::visibilityChanged() {
+  if (!isVisible()) clearCredentials();
 }
 
 void EmailAuthenticationForm::clearCredentials() {
@@ -131,6 +150,21 @@ void EmailAuthenticationForm::focusEmail() {
 }
 
 void EmailAuthenticationForm::updateMode() {
+  const auto identityLabel = isLocalDemoMode() ? L10n::tr("Usuario", "Username") : L10n::tr("Correo", "Email");
+  emailLabel.setText(identityLabel, juce::dontSendNotification);
+  emailEditor.setTitle(identityLabel);
+  emailEditor.setDescription(isLocalDemoMode()
+      ? L10n::tr("Usuario para probar la demo sin conexión.", "Username for the offline demo trial.")
+      : L10n::tr("El correo de tu cuenta de PlayWorship.", "Your PlayWorship account email."));
+  emailEditor.setKeyboardType(isLocalDemoMode() ? juce::TextInputTarget::textKeyboard
+                                                : juce::TextInputTarget::emailAddressKeyboard);
+  emailEditor.setInputRestrictions(isLocalDemoMode() ? 64 : 254);
+  emailEditor.setTextToShowWhenEmpty(isLocalDemoMode() ? juce::String("usuarioplay0324")
+      : L10n::tr("nombre@correo.com", "name@example.com"), AuthUi::muted.withAlpha(0.7f));
+  const auto secretLabel = isLocalDemoMode() ? L10n::tr(u8"Contraseña", "Password")
+      : L10n::tr(u8"Contraseña de PlayWorship", "PlayWorship password");
+  passwordLabel.setText(secretLabel, juce::dontSendNotification);
+  passwordEditor.setTitle(secretLabel);
   emailEditor.getProperties().set("playworshipReturnKeyNext", !isResetMode());
   explanation.setText(isLinkSent()
       ? L10n::tr(u8"Si el correo está asociado a una cuenta, recibirás un enlace para crear o recuperar tu contraseña. Revisa también la carpeta de spam.",
@@ -138,6 +172,9 @@ void EmailAuthenticationForm::updateMode() {
       : isResetMode()
       ? L10n::tr(u8"Te enviaremos un enlace para crear o recuperar la contraseña de tu cuenta de PlayWorship.",
                   "We'll email you a link to set or reset your PlayWorship password.")
+      : isLocalDemoMode()
+      ? L10n::tr(u8"Usuario y contraseña: usuarioplay0324. Abre la demo incluida sin conexión.",
+                  "Username and password: usuarioplay0324. Opens the included demo offline.")
       : L10n::tr(u8"Si usabas Google, puedes crear una contraseña para esta misma cuenta.",
                   "If you used Google, you can set a password for the same account."), juce::dontSendNotification);
   explanation.setJustificationType(isLinkSent() ? juce::Justification::centredTop : juce::Justification::topLeft);
@@ -148,7 +185,7 @@ void EmailAuthenticationForm::updateMode() {
   passwordLabel.setVisible(!isResetMode());
   passwordEditor.setVisible(!isResetMode());
   showPasswordButton.setVisible(!isResetMode());
-  resetButton.setVisible(!isResetMode() || isLinkSent());
+  resetButton.setVisible(!isLocalDemoMode() && (!isResetMode() || isLinkSent()));
   mailIcon.setVisible(isLinkSent());
   setBusy(busy);
   viewport.setViewPosition(0, 0);
@@ -164,8 +201,13 @@ void EmailAuthenticationForm::submit() {
   }
   const auto email = emailEditor.getText().trim();
   const int at = email.indexOfChar('@');
-  if (at <= 0 || at != email.lastIndexOfChar('@') ||
-      email.substring(at + 1).indexOfChar('.') <= 0 || email.endsWithChar('.') || email.containsAnyOf(" \r\n\t")) {
+  if (isLocalDemoMode() && email.isEmpty()) {
+    if (onStatusChanged) onStatusChanged(L10n::tr("Escribe el usuario de prueba.", "Enter the trial username."), true);
+    focusEmail();
+    return;
+  }
+  if (!isLocalDemoMode() && (at <= 0 || at != email.lastIndexOfChar('@') ||
+      email.substring(at + 1).indexOfChar('.') <= 0 || email.endsWithChar('.') || email.containsAnyOf(" \r\n\t"))) {
     if (onStatusChanged) onStatusChanged(L10n::tr(u8"Escribe un correo válido.", "Enter a valid email."), true);
     focusEmail();
     return;
@@ -177,12 +219,18 @@ void EmailAuthenticationForm::submit() {
   }
   const auto password = passwordEditor.getText();
   if (password.isEmpty()) {
-    if (onStatusChanged) onStatusChanged(L10n::tr(u8"Escribe tu contraseña de PlayWorship.", "Enter your PlayWorship password."), true);
+    if (onStatusChanged) onStatusChanged(isLocalDemoMode()
+        ? L10n::tr(u8"Escribe la contraseña de prueba.", "Enter the trial password.")
+        : L10n::tr(u8"Escribe tu contraseña de PlayWorship.", "Enter your PlayWorship password."), true);
     viewport.setViewPosition(0, juce::jmax(0, passwordEditor.getBottom() - viewport.getHeight()));
     passwordEditor.grabKeyboardFocus();
     return;
   }
   clearCredentials();
+  if (isLocalDemoMode()) {
+    if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(email, password);
+    return;
+  }
   if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
 }
 
@@ -193,7 +241,8 @@ int EmailAuthenticationForm::preferredHeight(int width) const {
     return 56 + 16 + copyHeight + 24 + 48 + 8 + 44;
   if (isResetMode())
     return copyHeight + 20 + 20 + 8 + 50 + 24 + 48;
-  return 20 + 8 + 50 + 20 + 20 + 8 + 50 + 24 + 48 + 12 + copyHeight + 8 + 44;
+  return 20 + 8 + 50 + 20 + 20 + 8 + 50 + 24 + 48 + 12 + copyHeight +
+      (isLocalDemoMode() ? 0 : 8 + 44);
 }
 
 void EmailAuthenticationForm::resized() {
@@ -231,8 +280,10 @@ void EmailAuthenticationForm::resized() {
   if (!isResetMode()) {
     area.removeFromTop(12);
     explanation.setBounds(area.removeFromTop(copyHeight));
-    area.removeFromTop(8);
-    resetButton.setBounds(area.removeFromTop(44));
+    if (!isLocalDemoMode()) {
+      area.removeFromTop(8);
+      resetButton.setBounds(area.removeFromTop(44));
+    }
   }
 }
 
@@ -253,6 +304,9 @@ WelcomeModal::WelcomeModal() {
   emailButton.setButtonText(L10n::tr("Ingresar con correo", "Sign in with email"));
   emailButton.onClick = [this] { showEmailForm(true); };
   addAndMakeVisible(emailButton);
+  localDemoButton.setButtonText(L10n::tr(u8"Prueba sin conexión", "Offline trial"));
+  localDemoButton.onClick = [this] { showLocalDemoLogin(); };
+  addAndMakeVisible(localDemoButton);
   backButton.setButtonText(L10n::tr("Volver", "Back"));
   backButton.setTitle(L10n::tr("Volver", "Back"));
   backButton.setTooltip(L10n::tr("Volver", "Back"));
@@ -261,6 +315,9 @@ WelcomeModal::WelcomeModal() {
   addChildComponent(backButton);
   emailForm.onPasswordLoginRequested = [this](const auto& email, const auto& password) {
     if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
+  };
+  emailForm.onLocalDemoLoginRequested = [this](const auto& username, const auto& password) {
+    if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(username, password);
   };
   emailForm.onPasswordResetRequested = [this](const auto& email) {
     if (onPasswordResetRequested) onPasswordResetRequested(email);
@@ -276,6 +333,7 @@ WelcomeModal::~WelcomeModal() = default;
 
 void WelcomeModal::updateHeading() {
   title.setText(!emailMode ? L10n::tr("Bienvenido", "Welcome")
+      : emailForm.isLocalDemoMode() ? L10n::tr(u8"Prueba sin conexión", "Offline trial")
       : emailForm.isLinkSent() ? L10n::tr("Revisa tu correo", "Check your email")
       : emailForm.isResetMode() ? L10n::tr(u8"Tu contraseña", "Your password")
                                : L10n::tr(u8"Iniciar sesión", "Sign in"), juce::dontSendNotification);
@@ -321,9 +379,21 @@ void WelcomeModal::clearCredentials() { emailForm.clearCredentials(); }
 void WelcomeModal::visibilityChanged() { if (!isVisible()) clearCredentials(); }
 
 void WelcomeModal::showPasswordLinkSent() {
+  if (emailForm.isLocalDemoMode()) return;
   setStatusText({}, false);
   setAuthenticationBusy(false);
   emailForm.showPasswordLinkSent();
+}
+
+void WelcomeModal::showLocalDemoLogin() {
+  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  resetStatusToDefault();
+  emailMode = true;
+  emailForm.showLocalDemoLogin();
+  updateHeading();
+  updateActionVisibility();
+  resized();
+  emailForm.focusEmail();
 }
 
 void WelcomeModal::showEmailForm(bool show) {
@@ -342,6 +412,7 @@ void WelcomeModal::showEmailForm(bool show) {
 void WelcomeModal::updateActionVisibility() {
   loginButton.setVisible(!checking && !emailMode);
   emailButton.setVisible(!checking && !emailMode);
+  localDemoButton.setVisible(!emailMode);
   separator.setVisible(!checking && !emailMode);
   emailForm.setVisible(!checking && emailMode);
   backButton.setVisible(!checking && emailMode);
@@ -373,7 +444,7 @@ void WelcomeModal::resized() {
   const int sidePadding = getWidth() < 600 ? 22 : 32;
   const bool hasStatus = status.getText().isNotEmpty();
   const int preferred = emailMode ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) + (hasStatus ? 68 : 0)
-                                  : 414 + (appleButton ? 58 : 0) + (hasStatus ? 64 : 0);
+                                  : 436 + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
   contentBounds = juce::Rectangle<int>(cardWidth,
       juce::jmin(preferred, available.getHeight())).withCentre(available.getCentre());
   // Changing steps moves the card without resizing this component. Invalidate
@@ -408,6 +479,10 @@ void WelcomeModal::resized() {
     status.setBounds(area.removeFromTop(56));
     area.removeFromTop(12);
   }
+  if (checking) {
+    localDemoButton.setBounds(area.removeFromTop(48));
+    return;
+  }
   if (emailMode) {
     emailForm.setBounds(area);
     return;
@@ -419,4 +494,6 @@ void WelcomeModal::resized() {
   }
   separator.setBounds(area.removeFromTop(34));
   emailButton.setBounds(area.removeFromTop(48));
+  area.removeFromTop(10);
+  localDemoButton.setBounds(area.removeFromTop(48));
 }
