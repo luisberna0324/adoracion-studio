@@ -2,10 +2,34 @@
 
 StandaloneAudioDeviceBridge::StandaloneAudioDeviceBridge()
     : audioDeviceMonitor(audioDeviceManager) {
-  // The standalone app must request an output bus. Initialising with zero
-  // outputs leaves Android with a valid UI transport but no audio callback.
-  juce::String err = audioDeviceManager.initialise(0, 2, nullptr, true);
-  juce::ignoreUnused(err);
+  syncMonitorCallbacks();
+}
+
+juce::String StandaloneAudioDeviceBridge::initialise(
+    int maxOutputChannels, const juce::XmlElement *savedSetup) {
+  // Sanitize before opening the device, so an old settings file cannot briefly
+  // reopen a microphone while the app is starting.
+  auto outputOnlySetup = savedSetup != nullptr
+                             ? std::make_unique<juce::XmlElement>(*savedSetup)
+                             : nullptr;
+  if (outputOnlySetup != nullptr) {
+    const auto legacyDeviceName = outputOnlySetup->getStringAttribute("audioDeviceName");
+    if (legacyDeviceName.isNotEmpty()) {
+      outputOnlySetup->setAttribute("audioOutputDeviceName", legacyDeviceName);
+      outputOnlySetup->removeAttribute("audioDeviceName");
+    }
+    outputOnlySetup->setAttribute("audioInputDeviceName", "");
+    outputOnlySetup->setAttribute("audioDeviceInChans", "0");
+  }
+  auto error = audioDeviceManager.initialise(
+      0, juce::jmax(1, maxOutputChannels), outputOnlySetup.get(), true);
+  juce::AudioDeviceManager::AudioDeviceSetup setup;
+  audioDeviceManager.getAudioDeviceSetup(setup);
+  setup.inputDeviceName = {};
+  setup.inputChannels.clear();
+  setup.useDefaultInputChannels = false;
+  if (error.isEmpty())
+    error = audioDeviceManager.setAudioDeviceSetup(setup, false);
 
   // Fallback UX: if there are MIDI input devices detected but none enabled yet,
   // enable them so MIDI Learn works out of the box on first launch.
@@ -22,7 +46,7 @@ StandaloneAudioDeviceBridge::StandaloneAudioDeviceBridge()
       audioDeviceManager.setMidiInputDeviceEnabled(dev.identifier, true);
   }
 
-  syncMonitorCallbacks();
+  return error;
 }
 
 void StandaloneAudioDeviceBridge::syncMonitorCallbacks() {

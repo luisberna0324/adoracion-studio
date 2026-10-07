@@ -1,8 +1,10 @@
+#include "AppIdentity.h"
 #include "PluginEditor.h"
 #include "data/ProjectStore.h"
 
 #include <JuceHeader.h>
-#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
+#include "audio/StandaloneAudioRuntime.h"
+#include "ui/NativeEditorBoundsConstrainer.h"
 #if JUCE_IOS
 #include "platform/IOSWindowLayout.h"
 #endif
@@ -34,26 +36,72 @@ juce::File findInitialProjectArgument(const juce::String &commandLine) {
 }
 
 juce::String makeWindowTitle() {
-  return juce::String::fromUTF8(JucePlugin_Name) + " v" + JucePlugin_VersionString;
+  return juce::String::fromUTF8(playworship::appName) + " v" + playworship::appVersion;
 }
 
 class PlayWorshipStandaloneWindow final
-    : public juce::StandaloneFilterWindow
+    : public juce::DocumentWindow
 #if JUCE_IOS
     , private juce::AsyncUpdater
 #endif
 {
 public:
-  using juce::StandaloneFilterWindow::StandaloneFilterWindow;
+  PlayWorshipStandaloneWindow(MTControlsAudioProcessor &processorToUse,
+                              juce::PropertySet *settingsToUse)
+      : juce::DocumentWindow(
+            makeWindowTitle(),
+            juce::LookAndFeel::getDefaultLookAndFeel().findColour(
+                juce::ResizableWindow::backgroundColourId),
+            juce::DocumentWindow::allButtons),
+        processor(processorToUse), settings(settingsToUse),
+        editorConstrainer(*this, processorToUse) {
+    setConstrainer(&editorConstrainer);
+#if JUCE_IOS
+    setTitleBarHeight(0);
+    setFullScreen(true);
+#else
+    setUsingNativeTitleBar(true);
+#endif
+    auto *editor = processor.createEditorIfNeeded();
+#if JUCE_IOS
+    // UIKit owns window geometry. The editor must not resize the native peer.
+    setContentOwned(editor, false);
+#else
+    setContentOwned(editor, true);
+#endif
+    if (editor != nullptr)
+      setResizable(editor->isResizable(), false);
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (settings != nullptr && settings->containsKey("windowX") && settings->containsKey("windowY"))
+      setTopLeftPosition(settings->getIntValue("windowX"), settings->getIntValue("windowY"));
+    else
+      centreWithSize(getWidth(), getHeight());
+#endif
+  }
+
+  ~PlayWorshipStandaloneWindow() override {
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (settings != nullptr && !isFullScreen()) {
+      settings->setValue("windowX", getX());
+      settings->setValue("windowY", getY());
+    }
+#endif
+    if (auto *editor = processor.getActiveEditor())
+      processor.editorBeingDeleted(editor);
+    clearContentComponent();
+    setConstrainer(nullptr);
+  }
+
+  MTControlsAudioProcessor *getAudioProcessor() { return &processor; }
 
 #if JUCE_IOS
   void parentSizeChanged() override {
-    juce::StandaloneFilterWindow::parentSizeChanged();
+    juce::DocumentWindow::parentSizeChanged();
     triggerAsyncUpdate();
   }
 
   void resized() override {
-    juce::StandaloneFilterWindow::resized();
+    juce::DocumentWindow::resized();
     if (!synchronisingLayout)
       triggerAsyncUpdate();
   }
@@ -73,16 +121,20 @@ private:
 
   bool synchronisingLayout = false;
 #endif
+private:
+  MTControlsAudioProcessor &processor;
+  juce::PropertySet *settings;
+  NativeEditorBoundsConstrainer editorConstrainer;
 };
 
-void queueProjectOpen(juce::StandaloneFilterWindow *window,
+void queueProjectOpen(PlayWorshipStandaloneWindow *window,
                       const juce::File &projectFile) {
   if (window == nullptr || projectFile == juce::File{})
     return;
 
   juce::MessageManager::callAsync(
       [safeWindow =
-           juce::Component::SafePointer<juce::StandaloneFilterWindow>(window),
+           juce::Component::SafePointer<PlayWorshipStandaloneWindow>(window),
        projectFile] {
         if (safeWindow == nullptr)
           return;
@@ -100,7 +152,7 @@ class PlayWorshipStandaloneApp final : public juce::JUCEApplication {
 public:
   PlayWorshipStandaloneApp() {
     juce::PropertiesFile::Options options;
-    options.applicationName = juce::CharPointer_UTF8(JucePlugin_Name);
+    options.applicationName = juce::CharPointer_UTF8(playworship::appName);
     options.filenameSuffix = ".settings";
     options.osxLibrarySubFolder = "Application Support";
 #if JUCE_LINUX || JUCE_BSD
@@ -112,10 +164,10 @@ public:
   }
 
   const juce::String getApplicationName() override {
-    return juce::CharPointer_UTF8(JucePlugin_Name);
+    return juce::CharPointer_UTF8(playworship::appName);
   }
   const juce::String getApplicationVersion() override {
-    return JucePlugin_VersionString;
+    return playworship::appVersion;
   }
   bool moreThanOneInstanceAllowed() override { return false; }
 
@@ -142,11 +194,16 @@ public:
                              : juce::Desktop::rotatedClockwise |
                                    juce::Desktop::rotatedAntiClockwise);
 #endif
-    mainWindow.reset(createWindow());
-    if (mainWindow == nullptr) {
-      pluginHolder = createPluginHolder();
+    processor = std::make_unique<MTControlsAudioProcessor>();
+    audioRuntime = std::make_unique<StandaloneAudioRuntime>(
+        *processor, processor->getAudioDeviceBridge(), appProperties.getUserSettings());
+    const auto audioError = audioRuntime->start(MTControlsAudioProcessor::maxStemCount);
+    if (audioError.isNotEmpty())
+      juce::Logger::writeToLog("Audio device: " + audioError);
+    if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
       return;
-    }
+    mainWindow = std::make_unique<PlayWorshipStandaloneWindow>(
+        *processor, appProperties.getUserSettings());
 
 #if JUCE_IOS || JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
     mainWindow->setFullScreen(true);
@@ -154,7 +211,7 @@ public:
     mainWindow->setVisible(true);
 #if JUCE_IOS
     juce::MessageManager::callAsync(
-        [window = juce::Component::SafePointer<juce::StandaloneFilterWindow>(mainWindow.get())] {
+        [window = juce::Component::SafePointer<PlayWorshipStandaloneWindow>(mainWindow.get())] {
           if (window != nullptr)
             synchroniseIOSFullscreenWindow(*window);
         });
@@ -180,8 +237,13 @@ public:
   }
 
   void shutdown() override {
-    pluginHolder = nullptr;
+    if (audioRuntime != nullptr) {
+      audioRuntime->saveState();
+      audioRuntime->stop();
+    }
     mainWindow = nullptr;
+    audioRuntime = nullptr;
+    processor = nullptr;
     appProperties.saveIfNeeded();
   }
 
@@ -218,41 +280,15 @@ public:
 
 private:
   void completeQuit() {
-    if (pluginHolder != nullptr)
-      pluginHolder->savePluginState();
-    if (mainWindow != nullptr && mainWindow->pluginHolder != nullptr)
-      mainWindow->pluginHolder->savePluginState();
+    if (audioRuntime != nullptr)
+      audioRuntime->saveState();
     quit();
   }
 
-  juce::StandaloneFilterWindow *createWindow() {
-    if (juce::Desktop::getInstance().getDisplays().displays.isEmpty())
-      return nullptr;
-    return new PlayWorshipStandaloneWindow(
-        makeWindowTitle(),
-        juce::LookAndFeel::getDefaultLookAndFeel().findColour(
-            juce::ResizableWindow::backgroundColourId),
-        createPluginHolder());
-  }
-
-  std::unique_ptr<juce::StandalonePluginHolder> createPluginHolder() {
-#ifdef JucePlugin_PreferredChannelConfigurations
-    constexpr juce::StandalonePluginHolder::PluginInOuts channels[]{
-        JucePlugin_PreferredChannelConfigurations};
-    const juce::Array<juce::StandalonePluginHolder::PluginInOuts>
-        channelConfiguration(channels, juce::numElementsInArray(channels));
-#else
-    const juce::Array<juce::StandalonePluginHolder::PluginInOuts>
-        channelConfiguration;
-#endif
-    return std::make_unique<juce::StandalonePluginHolder>(
-        appProperties.getUserSettings(), false, juce::String{}, nullptr,
-        channelConfiguration, false);
-  }
-
   juce::ApplicationProperties appProperties;
-  std::unique_ptr<juce::StandaloneFilterWindow> mainWindow;
-  std::unique_ptr<juce::StandalonePluginHolder> pluginHolder;
+  std::unique_ptr<MTControlsAudioProcessor> processor;
+  std::unique_ptr<StandaloneAudioRuntime> audioRuntime;
+  std::unique_ptr<PlayWorshipStandaloneWindow> mainWindow;
   bool quitFlowActive = false;
 };
 

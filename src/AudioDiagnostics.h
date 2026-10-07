@@ -512,7 +512,11 @@ private:
 
     juce::int64 totalBytes = 0;
     for (const auto &file : files)
+#if JUCE_LINUX
+      totalBytes += juce::jmax(juce::int64(0), file.getSize());
+#else
       totalBytes += juce::jmax<juce::int64>(0, file.getSize());
+#endif
 
     while (totalBytes > kMaxLogBytes && !files.isEmpty()) {
       int oldestIndex = 0;
@@ -523,7 +527,11 @@ private:
       }
 
       const auto oldest = files.getReference(oldestIndex);
+#if JUCE_LINUX
+      const auto size = juce::jmax(juce::int64(0), oldest.getSize());
+#else
       const auto size = juce::jmax<juce::int64>(0, oldest.getSize());
+#endif
       oldest.deleteFile();
       totalBytes -= size;
       files.remove(oldestIndex);

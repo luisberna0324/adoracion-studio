@@ -117,7 +117,7 @@ juce::String withMidiAssignmentTooltip(const juce::String &baseText,
 }
 
 constexpr bool shouldShowWindowModeButton() {
-#if JucePlugin_Build_Standalone && JUCE_MAC
+#if MTCONTROLS_NATIVE_APP && JUCE_MAC
   return false;
 #else
   return true;

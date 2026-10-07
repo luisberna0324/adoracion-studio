@@ -1,3 +1,4 @@
+#include "AppIdentity.h"
 #include "PluginEditor.h"
 #include "telemetry/Telemetry.h"
 #include "PluginEditorSupport.h"
@@ -300,7 +301,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 #if JUCE_IOS || JUCE_ANDROID
   const int authW = userArea.getWidth();
   const int authH = userArea.getHeight();
-#elif JucePlugin_Build_Standalone
+#elif MTCONTROLS_NATIVE_APP
   const int authW = userArea.getWidth();
   const int authH = userArea.getHeight();
 #else
@@ -315,7 +316,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   setResizeLimits(480, 500, 32000, 32000);
 #endif
 
-  if (const auto audioCtx = getStandaloneAudioContext();
+  if (const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
       audioCtx.manager != nullptr) {
     ensureStandaloneMidiInputsEnabled(*audioCtx.manager);
   }
@@ -371,14 +372,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   if (!mainUiInitialized)
     startTimerHz(12);
 
-#if JucePlugin_Build_Standalone
-  juce::MessageManager::callAsync(
-      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-           this)] {
-        if (safe != nullptr)
-          hideStandaloneOptionsButton(safe.getComponent());
-      });
-#endif
+
 }
 
 void MTControlsAudioProcessorEditor::openProjectFromExternalApplication(
@@ -1005,7 +999,7 @@ void MTControlsAudioProcessorEditor::requestApplicationQuit(
 }
 
 void MTControlsAudioProcessorEditor::parentHierarchyChanged() {
-#if JucePlugin_Build_Standalone
+#if MTCONTROLS_NATIVE_APP && !JUCE_ANDROID
   auto *top = getTopLevelComponent();
   if (top == nullptr || top == this)
     return;
@@ -1268,7 +1262,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   static_cast<MTControlsAudioProcessor &>(processor).startPadsPreloadAsync(!localDemoSession);
 
   {
-    const auto audioCtx = getStandaloneAudioContext();
+    const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
     const auto nowMs = juce::Time::currentTimeMillis();
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
     missingAudioDeviceSinceMs = 0;
@@ -1316,7 +1310,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 #if JUCE_IOS || JUCE_ANDROID
     fitMobileEditorToHost();
 #else
-#if JucePlugin_Build_Standalone
+#if MTCONTROLS_NATIVE_APP && !JUCE_ANDROID
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
           if (safe != nullptr)
@@ -1670,7 +1664,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
         auto &processorRef =
             static_cast<MTControlsAudioProcessor &>(editor->processor);
-        const auto audioCtx = PluginEditorSupport::getStandaloneAudioContext();
+        const auto audioCtx = PluginEditorSupport::getStandaloneAudioContext(processorRef);
         if (audioCtx.manager == nullptr)
           return;
 
@@ -2999,7 +2993,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     autoSetlistCollapseInitialized = true;
   }
 
-#if JucePlugin_Build_Standalone
+#if MTCONTROLS_NATIVE_APP && !JUCE_ANDROID
   juce::MessageManager::callAsync(
       [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         if (safe != nullptr)
@@ -3351,7 +3345,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 #endif
   auto &proc = static_cast<MTControlsAudioProcessor &>(processor);
   const auto routingDefaults = AppSettings::getRoutingDefaults();
-  const auto audioCtx = getStandaloneAudioContext();
+  const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
   if (audioCtx.manager != nullptr)
     enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
   auto *panel = new SettingsPanel(
@@ -4372,7 +4366,7 @@ void MTControlsAudioProcessorEditor::applyRoutingDefaultsToSong(
   if (playbackSession.isRemote()) return;
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
   const int stemCount = processorRef.getLoadedStemCount();
-  const auto audioCtx = getStandaloneAudioContext();
+  const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
   const auto deviceKey = getCurrentDeviceKey(audioCtx);
   const auto defaults = AppSettings::getRoutingDefaultsForDevice(deviceKey);
   const auto clickRouting = routingForCategory(defaults, "Click");
@@ -4589,7 +4583,7 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
   if (topBarRaw == nullptr)
     return;
 
-  const auto audioCtx = getStandaloneAudioContext();
+  const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
   double rawAudioCpu01 = 0.0;
   if (audioCtx.manager != nullptr)
     rawAudioCpu01 = juce::jlimit(0.0, 1.0, audioCtx.manager->getCpuUsage());
@@ -4690,7 +4684,7 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 
   if (nowMs >= nextAudioDeviceFallbackPollMs) {
     nextAudioDeviceFallbackPollMs = nowMs + kAudioDevicePollIntervalMs;
-    const auto audioCtx = getStandaloneAudioContext();
+    const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
     if (audioCtx.manager != nullptr) {
       enforceStandaloneOutputOnlyAudio(*audioCtx.manager);
       auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
@@ -5547,14 +5541,14 @@ void MTControlsAudioProcessorEditor::shareAudioDiagnostics() {
   const auto files = proc.getAudioDiagnosticReportFiles();
   auto* details = new juce::DynamicObject();
   details->setProperty("accountUid", activeSession.uid);
-  details->setProperty("appVersion", JucePlugin_VersionString);
+  details->setProperty("appVersion", playworship::appVersion);
   details->setProperty("compiledAt", juce::String(__DATE__) + " " + __TIME__);
   details->setProperty("os", juce::SystemStats::getOperatingSystemName());
   details->setProperty("deviceModel", juce::SystemStats::getDeviceDescription());
   details->setProperty("cpuCores", juce::SystemStats::getNumCpus());
   details->setProperty("memoryMB", juce::SystemStats::getMemorySizeInMegabytes());
   details->setProperty("is64Bit", juce::SystemStats::isOperatingSystem64Bit());
-  const auto context = getStandaloneAudioContext();
+  const auto context = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
   if (context.manager != nullptr)
     details->setProperty("audioBackend", context.manager->getCurrentAudioDeviceType());
   const juce::var metadata(details);

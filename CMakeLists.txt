@@ -364,6 +364,11 @@ if(MTCONTROLS_BUILD_TESTS)
     target_include_directories(MTControlsAppleSignInTests PRIVATE src)
     target_link_libraries(MTControlsAppleSignInTests PRIVATE
         juce::juce_core juce::juce_cryptography)
+    if(NOT APPLE)
+        # The unavailable-platform implementation returns a Component pointer
+        # and includes juce_gui_basics, so its test needs that module too.
+        target_link_libraries(MTControlsAppleSignInTests PRIVATE juce::juce_gui_basics)
+    endif()
     juce_generate_juce_header(MTControlsAppleSignInTests)
     add_test(NAME apple_signin_contract COMMAND "$<TARGET_FILE:MTControlsAppleSignInTests>")
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
@@ -882,12 +887,34 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME stem_output_router
         COMMAND MTControlsStemOutputRouterTests)
 
+    juce_add_console_app(MTControlsStandaloneAudioRuntimeTests
+        PRODUCT_NAME "Standalone Audio Runtime Tests")
+    target_sources(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        tests/standalone_audio_runtime_tests.cpp
+        src/data/AppSettings.cpp src/data/SongLibraryStore.cpp
+        src/data/SessionAuthLogger.cpp src/data/AssetBootstrapManager.cpp)
+    target_include_directories(MTControlsStandaloneAudioRuntimeTests PRIVATE src)
+    target_compile_definitions(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp
+        juce::juce_cryptography)
+    juce_generate_juce_header(MTControlsStandaloneAudioRuntimeTests)
+    add_test(NAME standalone_audio_runtime COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsStandaloneAudioRuntimeTests>")
+
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.
     get_property(_mtcontrols_directory_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     set(_mtcontrols_test_targets)
     foreach(_mtcontrols_target IN LISTS _mtcontrols_directory_targets)
         if(_mtcontrols_target MATCHES "^MTControls.*Tests$")
+            # Match the application's no-embedded-browser build. In particular,
+            # Linux tests must not acquire an unused GTK/WebKit dependency.
+            target_compile_definitions(${_mtcontrols_target} PRIVATE
+                JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
             list(APPEND _mtcontrols_test_targets "${_mtcontrols_target}")
         endif()
     endforeach()
@@ -928,18 +955,12 @@ elseif(MTCONTROLS_MAC_APP_STORE)
         com.apple.security.files.user-selected.read-write)
 endif()
 
-juce_add_plugin(MTControls
+add_library(MTControls STATIC)
+
+# Native application; MTControls is the reusable engine/UI core for tests.
+juce_add_gui_app(MTControls_Standalone
     COMPANY_NAME "Multitracks"
     VERSION "${MTCONTROLS_APP_VERSION}"
-    IS_SYNTH FALSE
-    NEEDS_MIDI_INPUT TRUE
-    NEEDS_MIDI_OUTPUT FALSE
-    IS_MIDI_EFFECT FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-    COPY_PLUGIN_AFTER_BUILD FALSE
-    PLUGIN_MANUFACTURER_CODE MLTK
-    PLUGIN_CODE Mtc1
-    FORMATS Standalone
     PRODUCT_NAME "PlayWorship"
     ICON_BIG "${MTCONTROLS_APP_ICON_PATH}"
     ICON_SMALL "${MTCONTROLS_APP_ICON_PATH}"
@@ -988,7 +1009,6 @@ if(MTCONTROLS_MAC_APP_STORE)
     endforeach()
 endif()
 
-# iOS / iPadOS: device family (JUCE reads this on MTControls for the standalone .app).
 if(MTCONTROLS_APPLE_SIGN_IN_ENABLED)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     get_target_property(_apple_base_entitlements MTControls_Standalone
@@ -1006,8 +1026,9 @@ if(MTCONTROLS_APPLE_SIGN_IN_ENABLED)
         XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${_apple_merged_entitlements}")
 endif()
 
+# iOS / iPadOS: device family belongs to the native application.
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set_target_properties(MTControls PROPERTIES
+    set_target_properties(MTControls_Standalone PROPERTIES
         JUCE_TARGETED_DEVICE_FAMILY "${MTCONTROLS_IOS_TARGETED_DEVICE_FAMILY}"
         XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "18.5")
     # Release archives need debug information from both the shared JUCE code
@@ -1042,13 +1063,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     endif()
 endif()
 
-juce_generate_juce_header(MTControls)
-
-if(TARGET MTControls_Standalone)
-    target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
-    target_compile_definitions(MTControls_Standalone
-        PRIVATE JUCE_USE_CUSTOM_PLUGIN_STANDALONE_APP=1)
-endif()
+# Keep installer/CI paths stable while removing the audio-plugin wrapper.
+set_target_properties(MTControls_Standalone PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/MTControls_artefacts/$<CONFIG>/Standalone"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/MTControls_artefacts/$<CONFIG>/Standalone")
+target_sources(MTControls_Standalone PRIVATE src/StandaloneApp.cpp)
+target_include_directories(MTControls_Standalone PRIVATE
+    src $<TARGET_PROPERTY:MTControls,INCLUDE_DIRECTORIES>)
+target_link_libraries(MTControls_Standalone PRIVATE
+    MTControls juce::juce_audio_utils juce::juce_cryptography juce::juce_dsp)
+# The app also compiles JUCE modules. Keep their feature switches identical to
+# the static core (notably Windows ASIO, iOS sharing and MP3 decoding).
+target_compile_definitions(MTControls_Standalone PRIVATE
+    $<TARGET_PROPERTY:MTControls,COMPILE_DEFINITIONS>)
+juce_generate_juce_header(MTControls_Standalone)
+get_target_property(_mtcontrols_generated_sources MTControls_Standalone
+    JUCE_GENERATED_SOURCES_DIRECTORY)
+target_include_directories(MTControls PUBLIC "${_mtcontrols_generated_sources}")
+target_sources(MTControls PRIVATE "${_mtcontrols_generated_sources}/JuceHeader.h")
+target_compile_definitions(MTControls PUBLIC
+    JUCE_STANDALONE_APPLICATION=1
+    MTCONTROLS_NATIVE_APP=1
+    MTCONTROLS_APP_VERSION="${MTCONTROLS_APP_VERSION}")
 
 include(cmake/PlayWorshipAssets.cmake)
 juce_add_binary_data(MTControlsAssets SOURCES ${MTCONTROLS_ASSET_FILES})
@@ -1308,20 +1344,22 @@ target_compile_definitions(MTControls
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_USE_MP3AUDIOFORMAT=1
-        JUCE_VST3_CAN_REPLACE_VST2=0
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
         MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
         MTCONTROLS_SESSION_REAUTH_MINUTES=${MTCONTROLS_SESSION_REAUTH_MINUTES}
         MTCONTROLS_REAUTH_GRACE_MINUTES=${MTCONTROLS_REAUTH_GRACE_MINUTES}
         MTCONTROLS_MAX_OFFLINE_HOURS=${MTCONTROLS_MAX_OFFLINE_HOURS}
-        SOUNDTOUCH_FLOAT_SAMPLES=1
-        MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
         MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS=$<BOOL:${MTCONTROLS_ENABLE_VU_REPAINT_DIAGNOSTICS}>
         MTCONTROLS_SENTRY_ENABLED=$<BOOL:${MTCONTROLS_SENTRY_ENABLED}>
         MTCONTROLS_SENTRY_DSN="${MTCONTROLS_SENTRY_DSN}"
         MTCONTROLS_SENTRY_ENVIRONMENT="${MTCONTROLS_SENTRY_ENVIRONMENT}"
         MTCONTROLS_SENTRY_RELEASE="playworship-app@${MTCONTROLS_APP_VERSION}+${MTCONTROLS_IOS_BUILD_NUMBER}.${MTCONTROLS_GIT_COMMIT}"
+    PUBLIC
+        # Public processor headers must use the same audio backend and sample
+        # type as the library, including when compiled by regression tests.
+        SOUNDTOUCH_FLOAT_SAMPLES=1
+        MTCONTROLS_USE_BUNGEE=$<BOOL:${MTCONTROLS_BUNGEE_AVAILABLE}>
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -1474,7 +1512,7 @@ if (TARGET SoundTouch)
         target_compile_options(SoundTouch PRIVATE -w)
     endif()
     target_link_libraries(MTControls PRIVATE SoundTouch)
-    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PUBLIC ${soundtouch_SOURCE_DIR}/include)
 elseif (TARGET soundtouch)
     target_compile_definitions(soundtouch PUBLIC SOUNDTOUCH_FLOAT_SAMPLES=1)
     if (MSVC)
@@ -1483,7 +1521,7 @@ elseif (TARGET soundtouch)
         target_compile_options(soundtouch PRIVATE -w)
     endif()
     target_link_libraries(MTControls PRIVATE soundtouch)
-    target_include_directories(MTControls SYSTEM PRIVATE ${soundtouch_SOURCE_DIR}/include)
+    target_include_directories(MTControls SYSTEM PUBLIC ${soundtouch_SOURCE_DIR}/include)
 else()
     message(FATAL_ERROR "SoundTouch target not found after FetchContent.")
 endif()

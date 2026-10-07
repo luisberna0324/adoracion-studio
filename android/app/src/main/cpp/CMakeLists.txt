@@ -72,7 +72,7 @@ target_include_directories(playworship PRIVATE
 target_include_directories(playworship PRIVATE "${CMAKE_ANDROID_NDK}/sources/android/cpufeatures")
 
 target_compile_definitions(playworship PRIVATE
-    JUCE_ANDROID=1 JUCE_STANDALONE_APPLICATION=1
+    JUCE_ANDROID=1 JUCE_STANDALONE_APPLICATION=1 MTCONTROLS_NATIVE_APP=1
     JUCE_CONTENT_SHARING=1
     MTCONTROLS_USE_BUNGEE=1
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1

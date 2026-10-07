@@ -1466,6 +1466,13 @@ docs/okf/
   sobre la onda, incluso antes de recibirla. El estado conectado exige un
   snapshot aplicado; la etiqueta no cambia layout ni captura gestos.
 
+## 2026-10-01: aplicación nativa
+
+- El target de distribución usa `juce_add_gui_app` y `DocumentWindow`
+- Audio y MIDI pasan por un único manager y `AudioProcessorPlayer`; se mantienen
+  las preferencias y los flujos externos de proyecto/salida
+- Contrato: [Aplicación nativa](processor/NativeApplication.md)
+
 - 2026-10-05: bienvenida opcional para miembros de Teams y curso de Nube →
   descarga → setlist, con progreso por cuenta/fuente/alta y sin interrupción
   durante reproducción. Contratos: Teams y LearningGuide.

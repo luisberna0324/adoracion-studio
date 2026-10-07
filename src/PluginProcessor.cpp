@@ -1,3 +1,4 @@
+#include "AppIdentity.h"
 #include "PluginProcessor.h"
 #include "audio/MidiBindingTrigger.h"
 #include "PluginEditor.h"
@@ -203,9 +204,6 @@ void applySongTransitionRamp(
 
 } // namespace
 
-#if JucePlugin_Build_Standalone
-#include <juce_audio_plugin_client/Standalone/juce_StandaloneFilterWindow.h>
-#endif
 
 MTControlsAudioProcessor::MTControlsAudioProcessor()
     : AudioProcessor(
@@ -515,7 +513,7 @@ bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
   const auto input = layouts.getMainInputChannelSet();
   const auto output = layouts.getMainOutputChannelSet();
-  if (input != juce::AudioChannelSet::mono() &&
+  if (!input.isDisabled() && input != juce::AudioChannelSet::mono() &&
       input != juce::AudioChannelSet::stereo())
     return false;
   const int outputChannels = output.size();
@@ -1431,7 +1429,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const int offset = sourceFramesThisBlock > 0
               ? juce::jlimit(0, juce::jmax(0, numSamples - 1),
                   static_cast<int>(std::llround(static_cast<double>(
-                      juce::jmax<juce::int64>(0, triggerFrame - blockStartFrame)) *
+                      std::max<juce::int64>(0, triggerFrame - blockStartFrame)) *
                       numSamples / sourceFramesThisBlock))) : 0;
           guideEvents.add(offset, guideTriggerId);
         };
@@ -2957,7 +2955,7 @@ juce::AudioProcessorEditor *MTControlsAudioProcessor::createEditor() {
 bool MTControlsAudioProcessor::hasEditor() const { return true; }
 
 const juce::String MTControlsAudioProcessor::getName() const {
-  return JucePlugin_Name;
+  return playworship::appName;
 }
 
 bool MTControlsAudioProcessor::acceptsMidi() const { return true; }
@@ -3317,10 +3315,6 @@ void MTControlsAudioProcessor::timerCallback() {
   if (diagnosticNow - lastDiagnosticDeviceSampleMs >= 1000.0) {
     lastDiagnosticDeviceSampleMs = diagnosticNow;
     auto* manager = &standaloneAudioDeviceBridge.getAudioDeviceManager();
-#if JucePlugin_Build_Standalone
-    if (auto* holder = juce::StandalonePluginHolder::getInstance())
-      manager = &holder->deviceManager;
-#endif
     AudioDiagnostics::DeviceEvent event;
     event.wallMs = static_cast<double>(juce::Time::currentTimeMillis());
     event.monotonicMs = diagnosticNow;
@@ -3373,10 +3367,6 @@ uint64_t MTControlsAudioProcessor::markAudioArtifact() {
   event.markerId = markerId;
 
   auto* manager = &standaloneAudioDeviceBridge.getAudioDeviceManager();
-#if JucePlugin_Build_Standalone
-  if (auto* holder = juce::StandalonePluginHolder::getInstance())
-    manager = &holder->deviceManager;
-#endif
   if (auto* device = manager->getCurrentAudioDevice();
       device != nullptr && device->isOpen()) {
     event.nativeXruns = device->getXRunCount();
@@ -4467,13 +4457,9 @@ void MTControlsAudioProcessor::playSong() {
   // llamar a processBlock: el UI puede mostrar "playing" pero el tiempo no
   // avanza hasta que se reanude el procesamiento y el dispositivo exista.
   suspendProcessing(false);
-#if JucePlugin_Build_Standalone
-  if (auto *holder = juce::StandalonePluginHolder::getInstance()) {
-    auto &dm = holder->deviceManager;
-    if (dm.getCurrentAudioDevice() == nullptr)
-      dm.restartLastAudioDevice();
-  }
-#endif
+  auto &dm = standaloneAudioDeviceBridge.getAudioDeviceManager();
+  if (dm.getCurrentAudioDevice() == nullptr)
+    dm.restartLastAudioDevice();
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -6283,18 +6269,8 @@ bool MTControlsAudioProcessor::ensurePadsNoteReady(const int noteIndex, const bo
 }
 
 void MTControlsAudioProcessor::refreshPadsRoutingFromSettings() noexcept {
-  juce::String deviceKey;
-#if JucePlugin_Build_Standalone
-  if (auto *holder = juce::StandalonePluginHolder::getInstance())
-    deviceKey = buildDeviceKeyFromManager(holder->deviceManager);
-#endif
-
-  {
-    if (deviceKey.isEmpty()) {
-      auto &bridgeManager = standaloneAudioDeviceBridge.getAudioDeviceManager();
-      deviceKey = buildDeviceKeyFromManager(bridgeManager);
-    }
-  }
+  const auto deviceKey = buildDeviceKeyFromManager(
+      standaloneAudioDeviceBridge.getAudioDeviceManager());
 
   auto defaultsByDevice = AppSettings::getRoutingDefaultsForDevice(deviceKey);
   CategoryRoutingDefaults padsDefaults = AppSettings::getRoutingDefaultsForCategory("Pads/Ambience");
@@ -7251,9 +7227,7 @@ void MTControlsAudioProcessor::setTransportState(
   }
 }
 
-juce::AudioProcessor *JUCE_CALLTYPE createPluginFilter() {
-  return new MTControlsAudioProcessor();
-}
+
 
 void MTControlsAudioProcessor::getRemoteMetronomeMeterLevels(float &left, float &right) noexcept {
   left = remoteMetronomeMeterLeft.exchange(0.0f, std::memory_order_relaxed);

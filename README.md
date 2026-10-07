@@ -1,6 +1,10 @@
-# MT Controls (JUCE)
+# PlayWorship (JUCE)
 
-Proyecto base JUCE para iterar diseno de controles (Standalone).
+Aplicación de audio independiente, con ventana y ciclo de vida nativos de JUCE.
+No requiere un DAW ni un host de plugins. El motor `AudioProcessor` y su editor
+se reutilizan internamente en una biblioteca estática.
+
+Arquitectura y compatibilidad: [Aplicación nativa](docs/okf/processor/NativeApplication.md).
 
 ## Incluye
 

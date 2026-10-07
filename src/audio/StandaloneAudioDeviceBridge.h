@@ -11,6 +11,8 @@ enum class AppAudioMode { Rehearsal, Stage };
 class StandaloneAudioDeviceBridge {
 public:
   StandaloneAudioDeviceBridge();
+  juce::String initialise(int maxOutputChannels,
+                          const juce::XmlElement *savedSetup = nullptr);
 
   void setAvailableOutputChannelCount(int outputCount);
   int getAvailableOutputChannelCount() const noexcept;
