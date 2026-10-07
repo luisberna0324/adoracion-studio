@@ -364,6 +364,11 @@ if(MTCONTROLS_BUILD_TESTS)
     target_include_directories(MTControlsAppleSignInTests PRIVATE src)
     target_link_libraries(MTControlsAppleSignInTests PRIVATE
         juce::juce_core juce::juce_cryptography)
+    if(NOT APPLE)
+        # The unavailable-platform implementation returns a Component pointer
+        # and includes juce_gui_basics, so its test needs that module too.
+        target_link_libraries(MTControlsAppleSignInTests PRIVATE juce::juce_gui_basics)
+    endif()
     juce_generate_juce_header(MTControlsAppleSignInTests)
     add_test(NAME apple_signin_contract COMMAND "$<TARGET_FILE:MTControlsAppleSignInTests>")
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
