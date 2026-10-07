@@ -1,4 +1,4 @@
-# AGENT.md - Reglas de desarrollo para Prime MultiTrack (JUCE)
+# AGENT.md - Reglas de desarrollo para PlayWorship (JUCE)
 
 Este documento define reglas de producto, UI y audio para mantener consistencia en la app.
 No es una transcripcion de cambios; es una guia de trabajo y decisiones.

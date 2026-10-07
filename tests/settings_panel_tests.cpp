@@ -46,6 +46,27 @@ struct SettingsPanelTestAccess {
         [&](const auto &, const auto &) { ++routingChanges; }, nullptr, 0, 8);
     panel.setVisible(true);
 
+    // Copy changes must not rebrand an external source as PlayWorship or change
+    // the stored import preference. The compatibility adapter stays unchanged.
+    for (const auto language : {AppLanguage::Spanish, AppLanguage::English}) {
+      AppSettings::setLanguage(language);
+      panel.applyLanguageTexts();
+      expect(panel.primeImportLabel.getText() ==
+                 (language == AppLanguage::Spanish ? "Biblioteca compatible"
+                                                   : "Compatible library"),
+             "local import uses an unbranded compatibility label in both languages");
+      for (const auto &text : {panel.primeImportLabel.getText(),
+                               panel.primeImportToggle.getButtonText(),
+                               panel.primeImportHelp.getText()})
+        expect(!text.containsIgnoreCase("prime") &&
+                   !text.containsIgnoreCase("PlayWorship"),
+               "external library controls do not carry another product's branding");
+      expect(!panel.primeImportToggle.getToggleState(),
+             "translating import copy preserves its disabled-by-default preference");
+    }
+    AppSettings::setLanguage(AppLanguage::Spanish);
+    panel.applyLanguageTexts();
+
     // Portrait phones, landscape phones/tablets, narrow desktop windows, and
     // tall desktops exercise both row layouts and the scrollbar threshold.
     for (const auto size : {juce::Point<int>(320, 640), {390, 844}, {740, 360},

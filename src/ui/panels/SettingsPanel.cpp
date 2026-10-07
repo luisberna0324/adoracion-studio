@@ -1590,20 +1590,20 @@ void SettingsPanel::applyLanguageTexts() {
   expandLaunchToggle.setButtonText(
       L10n::tr("Expandir al area de trabajo", "Expand to work area"));
   primeImportLabel.setText(
-      L10n::tr("Importar desde Prime", "Import from Prime"),
+      L10n::tr("Biblioteca compatible", "Compatible library"),
                            juce::dontSendNotification);
 #if MTCONTROLS_MAC_APP_STORE
   primeImportHelp.setText(L10n::tr("En esta versión, importa los archivos de audio desde Biblioteca.",
                                    "In this edition, import audio files from Library."),
                          juce::dontSendNotification);
 #else
-  primeImportHelp.setText(L10n::tr("Solo en macOS: importa la biblioteca local de Prime.",
-                                   "macOS only: imports the local Prime library."),
+  primeImportHelp.setText(L10n::tr("Solo en macOS: importa stems de una biblioteca compatible instalada.",
+                                   "macOS only: imports local stems from an installed compatible library."),
                          juce::dontSendNotification);
 #endif
   primeImportToggle.setButtonText(
-      L10n::tr(u8"Habilitar importación de Prime",
-               "Enable Prime import"));
+      L10n::tr(u8"Habilitar importación local",
+               "Enable local library import"));
   stemOptimizationLabel.setText(
       L10n::tr(u8"Optimización de stems",
                "Stem optimization"),

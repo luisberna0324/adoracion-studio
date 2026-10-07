@@ -2384,7 +2384,7 @@ void SongImportWizardComponent::applyPrimeSong(const size_t index) {
 
   // PrimeLibrarySource only returns tracks whose local source files exist.
   // Bring those sources into the draft so ProjectStore can package copies in
-  // the new .pwproj; the finished project never depends on Prime's library.
+  // the new .pwproj; the finished project never depends on the source library.
   stems.clear();
   juce::AudioFormatManager formatManager;
   formatManager.registerBasicFormats();
