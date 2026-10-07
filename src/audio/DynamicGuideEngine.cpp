@@ -75,9 +75,7 @@ void DynamicGuideEngine::prepare(const double sampleRate) {
 }
 
 void DynamicGuideEngine::reset() noexcept {
-  activeSample = nullptr;
-  activePosition = 0.0;
-  activeIncrement = 1.0;
+  voices.fill({});
 }
 
 bool DynamicGuideEngine::loadSectionDirectory(const juce::File &directory,
@@ -203,15 +201,16 @@ bool DynamicGuideEngine::triggerForId(const int triggerId) noexcept {
           triggerId, static_cast<int>(samplesByTriggerId.size()))) {
     return false;
   }
-  activeSample =
-      samplesByTriggerId[static_cast<size_t>(triggerId)].get();
-  activePosition = 0.0;
-  activeIncrement = activeSample->sampleRate > 0.0 && outputSampleRate > 0.0
-                        ? (activeSample->sampleRate / outputSampleRate)
-                        : 1.0;
-  if (!(activeIncrement > 0.0))
-    activeIncrement = 1.0;
-  return true;
+  for (auto &voice : voices) {
+    if (voice.sample != nullptr)
+      continue;
+    voice.sample = samplesByTriggerId[static_cast<size_t>(triggerId)].get();
+    voice.position = 0.0;
+    voice.increment = voice.sample->sampleRate > 0.0 && outputSampleRate > 0.0
+                          ? voice.sample->sampleRate / outputSampleRate : 1.0;
+    return true;
+  }
+  return false;
 }
 
 void DynamicGuideEngine::render(juce::AudioBuffer<float> &output) noexcept {
@@ -221,40 +220,36 @@ void DynamicGuideEngine::render(juce::AudioBuffer<float> &output) noexcept {
 void DynamicGuideEngine::render(juce::AudioBuffer<float> &output,
                                 const int startSample,
                                 const int samplesToRender) noexcept {
-  if (activeSample == nullptr)
-    return;
-  const int boundedStart =
-      juce::jlimit(0, output.getNumSamples(), startSample);
+  const int boundedStart = juce::jlimit(0, output.getNumSamples(), startSample);
   const int outSamples = juce::jlimit(
       0, output.getNumSamples() - boundedStart, samplesToRender);
   const int outChannels = output.getNumChannels();
-  const int srcSamples = activeSample->data.getNumSamples();
-  const int srcChannels = activeSample->data.getNumChannels();
-  if (outSamples <= 0 || outChannels <= 0 || srcSamples <= 0 || srcChannels <= 0) {
-    activeSample = nullptr;
-    return;
-  }
-
-  for (int i = 0; i < outSamples; ++i) {
-    const int pos0 = static_cast<int>(activePosition);
-    if (pos0 >= srcSamples) {
-      activeSample = nullptr;
-      break;
+  for (auto &voice : voices) {
+    if (voice.sample == nullptr)
+      continue;
+    const int srcSamples = voice.sample->data.getNumSamples();
+    const int srcChannels = voice.sample->data.getNumChannels();
+    if (srcSamples <= 0 || srcChannels <= 0) {
+      voice.sample = nullptr;
+      continue;
     }
-    int pos1 = pos0 + 1;
-    if (pos1 >= srcSamples)
-      pos1 = srcSamples - 1;
-    const float frac =
-        static_cast<float>(activePosition - static_cast<double>(pos0));
-
-    for (int ch = 0; ch < outChannels; ++ch) {
-      const int srcCh = juce::jmin(ch, srcChannels - 1);
-      const auto *src = activeSample->data.getReadPointer(srcCh);
-      const float v = src[pos0] + (src[pos1] - src[pos0]) * frac;
-      output.addSample(ch, boundedStart + i, v);
+    for (int i = 0; i < outSamples; ++i) {
+      const int pos0 = static_cast<int>(voice.position);
+      if (pos0 >= srcSamples) {
+        voice.sample = nullptr;
+        break;
+      }
+      const int pos1 = juce::jmin(pos0 + 1, srcSamples - 1);
+      const float frac = static_cast<float>(voice.position - pos0);
+      for (int ch = 0; ch < outChannels; ++ch) {
+        const auto *src = voice.sample->data.getReadPointer(juce::jmin(ch, srcChannels - 1));
+        output.addSample(ch, boundedStart + i,
+                         src[pos0] + (src[pos1] - src[pos0]) * frac);
+      }
+      voice.position += voice.increment;
     }
-
-    activePosition += activeIncrement;
+    if (voice.sample != nullptr && voice.position >= srcSamples)
+      voice.sample = nullptr;
   }
 }
 

@@ -1,5 +1,6 @@
 #include "AppIdentity.h"
 #include "SettingsPanel.h"
+#include "../../platform/NativeAppleSignIn.h"
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
@@ -29,23 +30,35 @@ juce::Font settingsHelpFont() {
 class SettingsPanel::SettingsHomePage final : public juce::Component {
 public:
   explicit SettingsHomePage(SettingsPanel &ownerToUse) : owner(ownerToUse) {
+    refreshEntries();
+  }
+
+  void refreshEntries() {
+    rows.clear();
+    remoteRow = nullptr;
     std::vector<Destination> pages{Destination::Appearance, Destination::Playback,
                                    Destination::Library};
     if (!useTouchOptimisedControls())
       pages.push_back(Destination::Audio);
-    pages.insert(pages.end(), {Destination::Routing, Destination::Remote,
-                               Destination::Account, Destination::Diagnostics});
+    pages.insert(pages.end(), {Destination::Routing, Destination::Remote});
+    if (owner.teamsManagementEnabled) pages.push_back(Destination::Teams);
+    pages.insert(pages.end(), {Destination::Account, Destination::Diagnostics, Destination::Learning});
     for (auto page : pages) {
       auto row = std::make_unique<Row>(page);
-      row->onClick = [&ownerToUse, page] { ownerToUse.showSettingsPage(page); };
+      row->onClick = [this, page] { owner.showSettingsPage(page); };
+      if (page == Destination::Remote) remoteRow = row.get();
       addAndMakeVisible(*row);
       rows.push_back(std::move(row));
     }
     refreshTexts();
   }
 
-  static int contentHeight() {
-    return 16 + 3 * (34 + 22) + (useTouchOptimisedControls() ? 7 : 8) * 72 + 8;
+  int contentHeight() const {
+    return 16 + 3 * (34 + 22) + static_cast<int>(rows.size()) * 72 + 8;
+  }
+
+  juce::Component *remoteEntry() const {
+    return remoteRow;
   }
 
   void refreshTexts() {
@@ -57,9 +70,11 @@ public:
     if (!useTouchOptimisedControls())
       pageTitles.add(L10n::tr("Dispositivo de audio", "Audio device"));
     pageTitles.addArray({L10n::tr("Ruteo de salidas", "Output routing"),
-        L10n::tr("Control remoto", "Remote control"),
-        L10n::tr("Mi cuenta", "My account"),
-        L10n::tr(u8"Diagnóstico", "Diagnostics")});
+        L10n::tr("Control remoto", "Remote control")});
+    if (owner.teamsManagementEnabled) pageTitles.add("Teams");
+    pageTitles.addArray({L10n::tr("Mi cuenta", "My account"),
+        L10n::tr(u8"Diagnóstico", "Diagnostics"),
+        L10n::tr("Aprender PlayWorship", "Learn PlayWorship")});
     using Mode = playworship::remote::RemoteSession::Mode;
     const auto mode = owner.remoteMode == Mode::Client ? L10n::tr("Cliente", "Client")
         : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
@@ -71,9 +86,12 @@ public:
     if (!useTouchOptimisedControls())
       pageSubtitles.add(L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"));
     pageSubtitles.addArray({L10n::tr(u8"Dispositivo y salidas por categoría", "Device and outputs by category"),
-        mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections"),
-        owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
-        L10n::tr("Informe para soporte", "Report for support")});
+        mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
+    if (owner.teamsManagementEnabled)
+      pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
+    pageSubtitles.addArray({owner.session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+        L10n::tr("Informe para soporte", "Report for support"),
+        L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
       rows[i]->setButtonText(pageTitles[static_cast<int>(i)]);
       rows[i]->subtitle = pageSubtitles[static_cast<int>(i)];
@@ -90,7 +108,7 @@ public:
     size_t index = 0;
     for (size_t group = 0; group < cards.size(); ++group) {
       headings[group] = area.removeFromTop(34).reduced(12, 0);
-      const int count = group == 2 ? 2 :
+      const int count = group == 2 ? (owner.teamsManagementEnabled ? 4 : 3) :
           group == 1 && useTouchOptimisedControls() ? 2 : 3;
       cards[group] = area.removeFromTop(count * 72);
       auto card = cards[group];
@@ -160,6 +178,10 @@ private:
     Destination page;
     void paintIcon(juce::Graphics &g, juce::Rectangle<float> icon) {
       const auto colour = UITheme::accentSoft;
+      if (page == Destination::Learning) {
+        drawSvgIcon(g, icon, SvgIconName::Music, colour);
+        return;
+      }
       if (page == Destination::Appearance || page == Destination::Playback ||
           page == Destination::Audio || page == Destination::Diagnostics) {
         const auto glyph = page == Destination::Appearance ? IconGlyph::Settings
@@ -197,6 +219,7 @@ private:
     }
   };
   SettingsPanel &owner;
+  juce::Component *remoteRow = nullptr;
   std::vector<std::unique_ptr<Row>> rows;
   std::array<juce::Rectangle<int>, 3> headings, cards;
 };
@@ -495,6 +518,27 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
       onCloseRequested();
   };
   addAndMakeVisible(closeButton);
+
+  learningLabel.setFont(settingsOptionLabelFont());
+  learningHelp.setFont(settingsHelpFont());
+  learningHelp.setJustificationType(juce::Justification::topLeft);
+  learningHelp.setInterceptsMouseClicks(false, false);
+  generalPage.addAndMakeVisible(learningLabel);
+  generalPage.addAndMakeVisible(learningHelp);
+  generalPage.addAndMakeVisible(learningButton);
+  learningButton.onClick = [this] { if (onLearningRequested) onLearningRequested(); };
+  teamsLabel.setFont(settingsOptionLabelFont());
+  teamsHelp.setFont(settingsHelpFont());
+  teamsHelp.setJustificationType(juce::Justification::topLeft);
+  teamsHelp.setInterceptsMouseClicks(false, false);
+  generalPage.addAndMakeVisible(teamsLabel);
+  generalPage.addAndMakeVisible(teamsHelp);
+  generalPage.addAndMakeVisible(teamsButton);
+  teamsButton.onClick = [this] { showSettingsPage(Destination::Teams); };
+  teamsButton.setEnabled(false);
+  teamsLabel.setVisible(false);
+  teamsHelp.setVisible(false);
+  teamsButton.setVisible(false);
 
   diagnosticsCard = std::make_unique<SettingsCard>();
   diagnosticsPage.addAndMakeVisible(*diagnosticsCard);
@@ -914,6 +958,14 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(purgeButton);
 
+  appleLinkLabel.setFont(settingsOptionLabelFont());
+  appleLinkLabel.setJustificationType(juce::Justification::centredLeft);
+  appleLinkHelp.setFont(settingsHelpFont());
+  appleLinkHelp.setJustificationType(juce::Justification::topLeft);
+  appleLinkHelp.setMinimumHorizontalScale(1.0f);
+  accountPage.addChildComponent(appleLinkLabel);
+  accountPage.addChildComponent(appleLinkHelp);
+
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
   routingPage.addAndMakeVisible(routingSectionLabel);
@@ -1086,7 +1138,7 @@ void SettingsPanel::resized() {
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (needsVerticalScroll ? 900 : 0);
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (needsVerticalScroll ? 900 : 0));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1108,6 +1160,14 @@ void SettingsPanel::refreshThemeColours() {
   settingsViewport.getVerticalScrollBar().setColour(
       juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
   title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  learningLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  learningHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  learningButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  learningButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
+  teamsLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
+  teamsHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  teamsButton.setColour(juce::TextButton::buttonColourId, UITheme::cardBgHover);
+  teamsButton.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   title.setJustificationType(juce::Justification::centred);
   title.setFont(makeAppFont(useTouchOptimisedControls() ? 20.0f : 18.0f,
                             AppFontWeight::SemiBold));
@@ -1209,6 +1269,8 @@ void SettingsPanel::refreshThemeColours() {
   actionLogoutLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionPurgeLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, actionSecondary);
+  appleLinkLabel.setColour(juce::Label::textColourId, actionSecondary);
+  appleLinkHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
@@ -1234,13 +1296,82 @@ void SettingsPanel::refreshThemeColours() {
   repaint();
 }
 
+void SettingsPanel::setTeamsManagementEnabled(bool enabled) {
+  if (teamsManagementEnabled == enabled) return;
+  teamsManagementEnabled = enabled;
+  if (homePage) homePage->refreshEntries();
+  teamsButton.setEnabled(enabled);
+  teamsLabel.setVisible(enabled && !usesGroupedNavigation());
+  teamsHelp.setVisible(enabled && !usesGroupedNavigation());
+  teamsButton.setVisible(enabled && !usesGroupedNavigation());
+  if (!enabled && destination == Destination::Teams)
+    destination = Destination::Home;
+  resized();
+  if (homePage) homePage->resized();
+}
+
 bool SettingsPanel::usesGroupedNavigation() const {
   return useTouchOptimisedControls() || getWidth() < 760;
+}
+
+bool SettingsPanel::isLearningRemotePageOpen() const {
+  return usesGroupedNavigation() ? destination == Destination::Remote
+                                : tabs.getCurrentTabIndex() == 0;
+}
+
+juce::Component *SettingsPanel::getLearningTargetComponent(
+    const playworship::learning::Anchor anchor) const {
+  using Anchor = playworship::learning::Anchor;
+  if (anchor == Anchor::SettingsClose)
+    return const_cast<HeaderIconButton *>(&closeButton);
+  if (!isLearningRemotePageOpen()) {
+    if (!usesGroupedNavigation())
+      return const_cast<SettingsTabButton *>(&generalTabButton);
+    if (destination != Destination::Home)
+      return const_cast<HeaderIconButton *>(&backButton);
+    return homePage ? homePage->remoteEntry() : nullptr;
+  }
+  switch (anchor) {
+  case Anchor::RemoteAlias:
+    if (remoteServerNameEditor.isVisible())
+      return const_cast<juce::TextEditor *>(&remoteServerNameEditor);
+    break;
+  case Anchor::RemoteStatus: return const_cast<juce::Label *>(&remoteStatus);
+  case Anchor::RemoteServers:
+    if (remoteServersBox.isVisible())
+      return const_cast<AdaptiveComboBox *>(&remoteServersBox);
+    return const_cast<juce::Label *>(&remoteStatus);
+  default: break;
+  }
+  return const_cast<juce::Component *>(&remoteModeControl);
+}
+
+juce::Rectangle<int> SettingsPanel::getLearningTargetBounds(
+    const playworship::learning::Anchor anchor) const {
+  const auto *component = getLearningTargetComponent(anchor);
+  if (!component || !component->isVisible()) return {};
+  auto bounds = getLocalArea(component, component->getLocalBounds());
+  if (component != &closeButton && component != &backButton && component != &generalTabButton)
+    bounds = bounds.getIntersection(settingsViewport.getBounds());
+  return bounds.getIntersection(getLocalBounds());
+}
+
+void SettingsPanel::revealLearningTarget(const playworship::learning::Anchor anchor) {
+  const auto *component = getLearningTargetComponent(anchor);
+  if (!component || !component->isVisible() || component == &closeButton ||
+      component == &backButton || component == &generalTabButton) return;
+  const auto bounds = getLocalArea(component, component->getLocalBounds());
+  const auto viewport = settingsViewport.getBounds();
+  if (!viewport.contains(bounds))
+    settingsViewport.setViewPosition(0, juce::jmax(0, settingsViewport.getViewPositionY() +
+        bounds.getY() - viewport.getY() - 20));
 }
 
 juce::String SettingsPanel::pageTitle() const {
   switch (destination) {
     case Destination::Home: return L10n::tr(u8"Configuración", "Settings");
+    case Destination::Learning: return L10n::tr("Aprender PlayWorship", "Learn PlayWorship");
+    case Destination::Teams: return "Teams";
     case Destination::Appearance: return L10n::tr("Apariencia e idioma", "Appearance & language");
     case Destination::Playback: return L10n::tr(u8"Reproducción", "Playback");
     case Destination::Library: return L10n::tr("Biblioteca", "Library");
@@ -1254,6 +1385,14 @@ juce::String SettingsPanel::pageTitle() const {
 }
 
 void SettingsPanel::showSettingsPage(Destination next) {
+  if (next == Destination::Teams) {
+    if (teamsManagementEnabled && onTeamsRequested) onTeamsRequested();
+    return;
+  }
+  if (next == Destination::Learning) {
+    if (onLearningRequested) onLearningRequested();
+    return;
+  }
   if (useTouchOptimisedControls() && next == Destination::Audio)
     next = Destination::Routing;
   if (destination == Destination::Home)
@@ -1283,6 +1422,8 @@ bool SettingsPanel::keyPressed(const juce::KeyPress &key) {
 int SettingsPanel::mobileGeneralCardHeight() const {
   switch (destination) {
     case Destination::Home:
+    case Destination::Learning:
+    case Destination::Teams:
     case Destination::Audio:
     case Destination::Routing:
     case Destination::Account:
@@ -1304,9 +1445,10 @@ int SettingsPanel::mobileGeneralCardHeight() const {
 
 int SettingsPanel::mobilePageContentHeight(int width) const {
   switch (destination) {
-    case Destination::Home: return SettingsHomePage::contentHeight();
+    case Destination::Home: return homePage ? homePage->contentHeight() : 0;
     case Destination::Routing: return routingPageContentHeight(width);
-    case Destination::Account: return width < 520 ? 1120 : 920;
+    case Destination::Account: return (width < 520 ? 1120 : 920) +
+                                     (appleLinkButton ? (width < 520 ? 136 : 100) : 0);
     case Destination::Audio: return 900;
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
     case Destination::Appearance:
@@ -1418,6 +1560,12 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 }
 
 void SettingsPanel::applyLanguageTexts() {
+  teamsLabel.setText("Teams", juce::dontSendNotification);
+  teamsHelp.setText(L10n::tr("Consulta tu acceso al Team o administra los usuarios de tu nube.", "View your Team access or manage the users of your Cloud."), juce::dontSendNotification);
+  teamsButton.setButtonText(L10n::tr("Abrir Teams", "Open Teams"));
+  learningLabel.setText(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"), juce::dontSendNotification);
+  learningHelp.setText(L10n::tr("Guías interactivas que puedes pausar y retomar.", "Interactive guides you can pause and resume."), juce::dontSendNotification);
+  learningButton.setButtonText(L10n::tr("Abrir guías", "Open guides"));
   title.setText(L10n::tr(u8"Configuración", "Settings"),
                 juce::dontSendNotification);
   generalTabButton.setButtonText(L10n::tr("General", "General"));
@@ -1445,9 +1593,15 @@ void SettingsPanel::applyLanguageTexts() {
   primeImportLabel.setText(
       L10n::tr("Importar desde Prime", "Import from Prime"),
                            juce::dontSendNotification);
+#if MTCONTROLS_MAC_APP_STORE
+  primeImportHelp.setText(L10n::tr("En esta versión, importa los archivos de audio desde Biblioteca.",
+                                   "In this edition, import audio files from Library."),
+                         juce::dontSendNotification);
+#else
   primeImportHelp.setText(L10n::tr("Solo en macOS: importa la biblioteca local de Prime.",
                                    "macOS only: imports the local Prime library."),
                          juce::dontSendNotification);
+#endif
   primeImportToggle.setButtonText(
       L10n::tr(u8"Habilitar importación de Prime",
                "Enable Prime import"));
@@ -1487,7 +1641,7 @@ void SettingsPanel::applyLanguageTexts() {
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
-  sessionEmailLabel.setText("Email", juce::dontSendNotification);
+  sessionEmailLabel.setText(session.localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
@@ -1499,11 +1653,11 @@ void SettingsPanel::applyLanguageTexts() {
                               juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
-  sessionEmailValue.setText(session.email.isNotEmpty() ? session.email : "-",
+  sessionEmailValue.setText(session.localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
                             juce::dontSendNotification);
   sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
                            juce::dontSendNotification);
-  sessionStatusValue.setText(session.subscriptionStatus.isNotEmpty()
+  sessionStatusValue.setText(session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
@@ -1538,7 +1692,7 @@ void SettingsPanel::applyLanguageTexts() {
         formatBytes(session.maxStorageBytes), juce::dontSendNotification);
   } else {
     sessionQuotaValue.setText(
-        quotaFetchFailed
+        session.localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
             ? L10n::tr("No se pudieron actualizar las cuotas.",
                        "Couldn't refresh quotas.")
             : L10n::tr("Consultando cuotas…", "Loading quotas…"),
@@ -1574,6 +1728,11 @@ void SettingsPanel::applyLanguageTexts() {
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
+  appleLinkLabel.setText(L10n::tr("Vincular Apple", "Link Apple"), juce::dontSendNotification);
+  if (appleLinkHelp.getText().isEmpty())
+    appleLinkHelp.setText(L10n::tr("Añade Apple como acceso a esta misma cuenta, conservando tu biblioteca y permisos.",
+                                  "Add Apple sign-in to this account and keep your library and access."),
+                          juce::dontSendNotification);
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
   routingDeviceLabel.setText(L10n::tr("Salida de audio", "Audio output"),
@@ -1702,6 +1861,21 @@ void SettingsPanel::layoutGeneralPage() {
         playworship::remote::RemoteSession::Mode::Local);
   };
 
+  layoutChoiceRow(area.removeFromTop(rowH), learningLabel, learningButton, learningHelp);
+  addSeparator();
+  teamsLabel.setVisible(teamsManagementEnabled);
+  teamsHelp.setVisible(teamsManagementEnabled);
+  teamsButton.setVisible(teamsManagementEnabled);
+  teamsButton.setEnabled(teamsManagementEnabled);
+  if (teamsManagementEnabled) {
+    layoutChoiceRow(area.removeFromTop(rowH), teamsLabel, teamsButton, teamsHelp);
+    addSeparator();
+  } else {
+    teamsLabel.setBounds({});
+    teamsHelp.setBounds({});
+    teamsButton.setBounds({});
+  }
+
   // On iPhone the settings viewport initially shows only a few rows. Keep
   // the mode selector and discovery status visible without requiring a scroll.
   const bool compactHeight = useTouchOptimisedControls() && getHeight() < 700;
@@ -1733,6 +1907,8 @@ void SettingsPanel::layoutGeneralPage() {
     addSeparator();
     layoutRemoteControls();
   }
+  for (; separatorIndex < static_cast<int>(generalRowSeparators.size()); ++separatorIndex)
+    generalRowSeparators[static_cast<size_t>(separatorIndex)]->setBounds({});
 }
 
 void SettingsPanel::layoutAccountPage() {
@@ -1785,6 +1961,9 @@ void SettingsPanel::layoutAccountPage() {
   infoLinkButton.setBounds({});
   logoutButton.setBounds({});
   purgeButton.setBounds({});
+  appleLinkLabel.setBounds({});
+  appleLinkHelp.setBounds({});
+  if (appleLinkButton) appleLinkButton->setBounds({});
   if (sessionIdentitySeparator != nullptr)
     sessionIdentitySeparator->setBounds({});
   if (actionsTitleSeparator != nullptr)
@@ -1895,7 +2074,8 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    const int actionsH = compact ? 430 : 250;
+    const int actionsH = (compact ? 430 : 250) +
+                         (appleLinkButton ? (compact ? 136 : 100) : 0);
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -1914,6 +2094,8 @@ void SettingsPanel::layoutAccountPage() {
         actions.removeFromTop(8);
       };
       action(actionLogoutLabel, actionLogoutHelp, logoutButton);
+      if (appleLinkButton)
+        action(appleLinkLabel, appleLinkHelp, *appleLinkButton, 52);
       action(actionPurgeLabel, actionPurgeHelp, purgeButton, 52);
       action(actionInfoLabel, actionInfoHelp, infoLinkButton);
       return;
@@ -1927,6 +2109,13 @@ void SettingsPanel::layoutAccountPage() {
     if (actionsRowSeparator != nullptr)
       actionsRowSeparator->setBounds(actions.removeFromTop(1));
 
+    if (appleLinkButton) {
+      auto appleRow = actions.removeFromTop(100);
+      appleLinkLabel.setBounds(appleRow.removeFromTop(24));
+      appleLinkHelp.setBounds(appleRow.removeFromTop(30));
+      appleLinkButton->setBounds(appleRow.removeFromTop(44));
+    }
+
     auto purgeRow = actions.removeFromTop(60);
     auto purgeControl = purgeRow.removeFromRight(112).reduced(0, 8);
     actionPurgeLabel.setBounds(purgeRow.removeFromTop(24));
@@ -1939,6 +2128,25 @@ void SettingsPanel::layoutAccountPage() {
     actionInfoHelp.setBounds(helpRow);
     infoLinkButton.setBounds(helpControl);
   }
+}
+
+void SettingsPanel::setAppleSignInAvailable(bool available) {
+  if (available && !appleLinkButton) {
+    appleLinkButton = NativeAppleSignIn::createButton([this] {
+      if (onAppleLinkRequested) onAppleLinkRequested();
+    });
+    if (appleLinkButton) accountPage.addAndMakeVisible(*appleLinkButton);
+  } else if (!available) {
+    appleLinkButton.reset();
+  }
+  appleLinkLabel.setVisible(appleLinkButton != nullptr);
+  appleLinkHelp.setVisible(appleLinkButton != nullptr);
+  resized();
+}
+
+void SettingsPanel::setAppleSignInStatus(const juce::String &text, bool busy) {
+  appleLinkHelp.setText(text, juce::dontSendNotification);
+  if (appleLinkButton) appleLinkButton->setEnabled(!busy);
 }
 
 juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {

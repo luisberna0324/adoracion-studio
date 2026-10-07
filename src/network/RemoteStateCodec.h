@@ -14,7 +14,26 @@ inline bool validateArrangementAutomation(const juce::var &arrangement) {
     if (!sectionAutomationFromVar(part.getProperty("automation", {}), automation))
       return false;
   }
-  return true;
+  if (const auto *object = arrangement.getDynamicObject();
+      object != nullptr && object->hasProperty("cues")) {
+    const auto *cues = object->getProperty("cues").getArray();
+    if (cues == nullptr || cues->size() > kMaxArrangementCueEvents) return false;
+    SongArrangementSnapshot expanded;
+    for (const auto &value : *cues) {
+      SongArrangementCueSnapshot cue;
+      if (!arrangementCueFromVar(value, cue)) return false;
+      expanded.cues.push_back(std::move(cue));
+    }
+    if (arrangementCueEventCount(expanded) > kMaxArrangementCueEvents) return false;
+  }
+  // Legacy utility clips can become independent cues during the same
+  // deserialization used by arrange.set. Validate that resulting structure as
+  // well: checking only explicit cues would admit more than 512 live events.
+  auto *carrier = new juce::DynamicObject();
+  carrier->setProperty("arrangement", arrangement);
+  bool changed = false;
+  const auto migrated = SongLibraryStore::songDataFromVar(juce::var(carrier), changed);
+  return arrangementCueEventCount(migrated.arrangement) <= kMaxArrangementCueEvents;
 }
 inline juce::var encodeTempoMap(const SongTempoMapSnapshot &map) {
   juce::Array<juce::var> values;

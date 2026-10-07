@@ -8,6 +8,18 @@ permissions:
   contents: read
 
 jobs:
+  binary-resources:
+    name: Android bundled resources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure resource regression tests
+        run: cmake -S tests/binary_resources -B build/binary-resources -G Ninja
+      - name: Build resource regression tests
+        run: cmake --build build/binary-resources --parallel 3
+      - name: Verify bundled resource bytes and lookups
+        run: ctest --test-dir build/binary-resources --output-on-failure --no-tests=error
+
   macos-ctest:
     name: CTest on macOS
     runs-on: macos-latest

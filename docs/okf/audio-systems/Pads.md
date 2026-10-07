@@ -4,7 +4,7 @@ title: Pads
 description: Motor de pads con 12 notas, seguimiento de tonalidad y loop continuo
 resource: src/audio/PadsEngine.h
 tags: [juce, audio, pads, samples, trigger]
-timestamp: 2026-10-02
+timestamp: 2026-10-06
 ---
 
 # PadsEngine
@@ -14,7 +14,14 @@ reproducción continua. Un pad activo no depende del transporte de la canción.
 
 La [automatización por sección](../engine/SectionAutomation.md) puede sustituir
 volumen, ganancia, power, nota y octava. Mantiene separados los valores base y
-efectivos; repetir la misma nota/octava conserva su voz y envolvente. Cargar o
+efectivos; repetir la misma nota/octava conserva su voz y envolvente.
+El nivel de mezcla pertenece a cada voz: una cola saliente conserva su nivel,
+aunque la sección o canción de destino tenga un volumen mayor. Los cambios de
+nivel de sección siguen el crossfade configurado; los manuales usan 30 ms.
+En una canción con Pads automatizados, las secciones sin preset y los huecos
+apagan el pad hasta silencio. Al abandonar esa canción, el seguimiento tonal
+no reactiva por sí solo una nota global; un encendido/disparo manual permite
+volver a utilizarla. Cargar o
 buscar una sección detenida muestra su preset sin iniciar una voz nueva; Play o
 la edición permiten iniciarla. Una voz ya activa continúa al pausar.
 
@@ -107,7 +114,17 @@ Carga samples desde carpeta. Busca archivos con nombres de notas:
 
 La carga del pack debe tratarse como trabajo pesado de I/O y decodificación.
 `loadFromFolder()` indexa y valida los 12 archivos. Al iniciar el procesador,
-`startPadsPreloadAsync()` prepara el pack mediante un worker dedicado. En todas
+`startPadsPreloadAsync(false)` prepara el pack local mediante un worker dedicado,
+sin descargar recursos antes de que se elija una sesión. Al abrir la UI con una
+sesión autenticada se solicita de nuevo la preparación con descargas permitidas.
+Si la preparación local sigue activa, un flag atómico retiene esa solicitud;
+el timer del procesador la atiende al acabar el worker, sin callbacks diferidos
+que puedan sobrevivir al procesador ni esperas en el hilo de audio.
+La sesión de demo local conserva esa prohibición también en peticiones explícitas;
+sus ocho stems, el click y la guía provienen del contenido incluido. Un pack de
+Pads ya instalado o un ZIP completo de una transferencia anterior permanece
+disponible sin conexión. Si no existe, Pads informa que falta el pack y la demo
+continúa reproduciendo su instrumento Pad ambiental sin descargarlo. En todas
 las plataformas precarga los primeros 64 segundos de las doce notas (o el
 archivo completo si es más corto). Una nota preparada se dispara directamente
 desde RAM; el worker completa su archivo mientras suena ese inicio. Los 64
@@ -215,6 +232,8 @@ struct Voice {
     float gain = 0.0f;
     float fadeOutStartGain = 0.0f;
     float fadeOutProgress = 0.0f;
+    float mixGain = 1.0f, mixTarget = 1.0f, mixStep = 0.0f;
+    int mixRemaining = 0;
 };
 ```
 

@@ -510,6 +510,28 @@ void TopBar::setOnPhonePractice(std::function<void()> cb) {
   onPhonePractice = std::move(cb);
 }
 
+void TopBar::setOnLearningRequested(std::function<void()> cb) {
+  onLearningRequested = std::move(cb);
+}
+
+juce::Rectangle<int> TopBar::getLearningTargetBounds(playworship::learning::Anchor anchor) const {
+  using Anchor = playworship::learning::Anchor;
+  const juce::Component *target = nullptr;
+  switch (anchor) {
+  case Anchor::SongSelection: return songInfoBounds;
+  case Anchor::PlayPause: target = &playButton; break;
+  case Anchor::Stop: target = &stopButton; break;
+  case Anchor::Metronome: target = &metroToggleButton; break;
+  case Anchor::Tempo: target = &bpmSegmentButton; break;
+  case Anchor::Key: target = &keyDisplay; break;
+  case Anchor::Pads: target = &phonePadsButton; break;
+  case Anchor::More: target = tabletMoreButton.isVisible() ? &tabletMoreButton : &settingsButton; break;
+  case Anchor::Settings: target = settingsButton.isVisible() ? &settingsButton : &tabletMoreButton; break;
+  default: break;
+  }
+  return target != nullptr && target->isVisible() ? target->getBounds() : juce::Rectangle<int>{};
+}
+
 void TopBar::triggerPhonePadsPopover() {
   if (onPhonePads)
     onPhonePads(phonePadsButton);
@@ -1346,17 +1368,21 @@ void TopBar::showTabletMorePopover() {
   public:
     MorePopover(const bool midiActive, std::function<void()> onMidi,
                 std::function<void()> onSettings,
-                std::function<void()> onPractice, const bool showPractice)
+                std::function<void()> onPractice, const bool showPractice,
+                std::function<void()> onLearning)
         : midiButton(L10n::tr("MIDI Learn", "MIDI Learn"),
                      SvgIconName::Midi, std::move(onMidi)),
           settingsButton(L10n::tr("Configuración", "Settings"),
                          SvgIconName::Settings, std::move(onSettings)),
           practiceButton(L10n::tr("Ensayo", "Practice"),
                          SvgIconName::AudioWaveform, std::move(onPractice)),
+          learningButton(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"),
+                         SvgIconName::Music, std::move(onLearning)),
           hasPractice(showPractice) {
       midiButton.setToggleState(midiActive, juce::dontSendNotification);
       addAndMakeVisible(midiButton);
       addAndMakeVisible(settingsButton);
+      addAndMakeVisible(learningButton);
       if (hasPractice)
         addAndMakeVisible(practiceButton);
     }
@@ -1372,41 +1398,35 @@ void TopBar::showTabletMorePopover() {
 
     void resized() override {
       auto area = getLocalBounds().reduced(10, 6);
-      constexpr int gap = 10;
+      constexpr int rowHeight = 44;
+      midiButton.setBounds(area.removeFromTop(rowHeight));
+      area.removeFromTop(4);
+      settingsButton.setBounds(area.removeFromTop(rowHeight));
+      area.removeFromTop(4);
       if (hasPractice) {
-        constexpr int rowHeight = 44;
-        midiButton.setBounds(area.removeFromTop(rowHeight));
-        area.removeFromTop(4);
-        settingsButton.setBounds(area.removeFromTop(rowHeight));
-        area.removeFromTop(4);
         practiceButton.setBounds(area.removeFromTop(rowHeight));
-        return;
+        area.removeFromTop(4);
       }
-      const int buttonWidth = (area.getWidth() - gap * (hasPractice ? 2 : 1)) /
-                              (hasPractice ? 3 : 2);
-      midiButton.setBounds(area.removeFromLeft(buttonWidth));
-      area.removeFromLeft(gap);
-      settingsButton.setBounds(area.removeFromLeft(buttonWidth));
-      if (hasPractice) {
-        area.removeFromLeft(gap);
-        practiceButton.setBounds(area);
-      }
+      learningButton.setBounds(area.removeFromTop(rowHeight));
     }
 
   private:
     ActionButton midiButton;
     ActionButton settingsButton;
     ActionButton practiceButton;
+    ActionButton learningButton;
     bool hasPractice = false;
   };
 
+  const auto safe = juce::Component::SafePointer<TopBar>(this);
   auto panel = std::make_unique<MorePopover>(
-      midiLearnActive, [this] { midiLearnButton.triggerClick(); },
-      [this] { openSettingsPanel(); }, [this] {
-        if (onPhonePractice)
-          onPhonePractice();
-      }, minimalPhoneMode && onPhonePractice != nullptr);
-  panel->setSize(360, minimalPhoneMode ? 152 : 52);
+      midiLearnActive, [safe] { if (safe) safe->midiLearnButton.triggerClick(); },
+      [safe] { if (safe) safe->openSettingsPanel(); }, [safe] {
+        if (safe && safe->onPhonePractice) safe->onPhonePractice();
+      }, minimalPhoneMode && onPhonePractice != nullptr, [safe] {
+        if (safe && safe->onLearningRequested) safe->onLearningRequested();
+      });
+  panel->setSize(300, minimalPhoneMode && onPhonePractice != nullptr ? 200 : 152);
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)

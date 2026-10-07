@@ -6,6 +6,7 @@
 #include <deque>
 #include <functional>
 #include "../../data/SongLibraryStore.h"
+#include "../learning/LearningGuideModel.h"
 
 class MTControlsAudioProcessor;
 
@@ -35,6 +36,8 @@ public:
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
   void setOnPhonePads(std::function<void(juce::Component &)> cb);
   void setOnPhonePractice(std::function<void()> cb);
+  void setOnLearningRequested(std::function<void()> cb);
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   void triggerPhonePadsPopover();
   void setPhoneOverlayStates(bool libraryOpen, bool padsOpen);
   void setOnMetronomeEnabledChanged(std::function<void(bool)> cb);
@@ -120,6 +123,7 @@ private:
   std::function<void(juce::Component &)> onPhoneLibrary;
   std::function<void(juce::Component &)> onPhonePads;
   std::function<void()> onPhonePractice;
+  std::function<void()> onLearningRequested;
   std::function<void(bool)> onMetronomeEnabledChanged;
   std::function<void(bool)> onMidiLearnModeChanged;
   std::function<void(int)> onMidiLearnTargetSelected;

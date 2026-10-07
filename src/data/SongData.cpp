@@ -4,8 +4,422 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <unordered_set>
 #include <utility>
+
+namespace {
+constexpr double cueTimeTolerance = 0.0001;
+
+bool validCountOffsets(const std::vector<double> &offsets,
+                        const int countLength) {
+  if (countLength < 1 || countLength > 7 ||
+      offsets.size() != static_cast<size_t>(countLength) || offsets.front() != 0.0)
+    return false;
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    if (!std::isfinite(offsets[i]) || offsets[i] < 0.0 ||
+        (i > 0 && offsets[i] <= offsets[i - 1]))
+      return false;
+  }
+  return true;
+}
+
+const SongArrangementPartSnapshot *validCueParent(
+    const SongArrangementSnapshot &arrangement,
+    const SongArrangementCueSnapshot &cue) {
+  if (cue.partId.isEmpty() || !std::isfinite(cue.offsetSec))
+    return nullptr;
+  for (const auto &part : arrangement.parts) {
+    if (part.id == cue.partId && std::isfinite(part.startSec) &&
+        std::isfinite(part.endSec) && part.endSec >= part.startSec &&
+        cue.offsetSec >= -cueTimeTolerance &&
+        cue.offsetSec <= part.endSec - part.startSec + cueTimeTolerance)
+      return &part;
+  }
+  return nullptr;
+}
+
+bool legacyCuePart(const SongArrangementPartSnapshot &part) {
+  if (part.utilityCue)
+    return true;
+  const auto name = part.name.trim().toLowerCase();
+  static constexpr std::array<const char *, 48> names = {{
+      "1", "2", "3", "4", "5", "6", "7", "one", "two", "three", "four",
+      "five", "six", "seven", "uno", "dos", "tres", "cuatro", "cinco",
+      "seis", "siete", "a capella", "ad lib", "all", "all in", "bass",
+      "big", "big ending", "build", "drums", "drums in", "guitar", "hits",
+      "hold", "key", "key change down", "key change up", "keys", "last",
+      "last time", "slowly", "slowly build", "softly", "swell",
+      "worship freely", "baja intensidad", "breakdown", "acapella"}};
+  return std::any_of(names.begin(), names.end(), [&name](const auto *candidate) {
+    return name == candidate;
+  });
+}
+
+bool sameLegacyClipContract(const SongArrangementPartSnapshot &a,
+                            const SongArrangementPartSnapshot &b) {
+  return a.sourcePartId == b.sourcePartId &&
+         a.muteInstruments == b.muteInstruments &&
+         a.skipPlayback == b.skipPlayback && a.automation == b.automation;
+}
+
+bool contiguousLegacySource(const SongArrangementPartSnapshot &a,
+                            const SongArrangementPartSnapshot &b) {
+  if (!std::isfinite(a.endSec) || !std::isfinite(b.startSec) ||
+      std::abs(a.endSec - b.startSec) > cueTimeTolerance ||
+      a.endSec <= a.startSec || b.endSec <= b.startSec)
+    return false;
+  // Original annotations do not introduce source mapping segments. Removing
+  // their internal boundary preserves the source timeline, including prior copies.
+  if (a.sourcePartId.isEmpty() && b.sourcePartId.isEmpty())
+    return true;
+  if (a.sourcePartId != b.sourcePartId ||
+      !std::isfinite(a.sourceStartSec) || !std::isfinite(a.sourceEndSec) ||
+      !std::isfinite(b.sourceStartSec) || !std::isfinite(b.sourceEndSec) ||
+      a.sourceEndSec <= a.sourceStartSec ||
+      b.sourceEndSec <= b.sourceStartSec ||
+      std::abs(a.sourceEndSec - b.sourceStartSec) > cueTimeTolerance)
+    return false;
+  const auto aRate = (a.sourceEndSec - a.sourceStartSec) /
+                     (a.endSec - a.startSec);
+  const auto bRate = (b.sourceEndSec - b.sourceStartSec) /
+                     (b.endSec - b.startSec);
+  return std::abs(aRate - bRate) <= cueTimeTolerance;
+}
+} // namespace
+
+double resolveArrangementCueSeconds(const SongArrangementSnapshot &arrangement,
+                                    const SongArrangementCueSnapshot &cue) {
+  if (const auto *parent = validCueParent(arrangement, cue))
+    return parent->startSec + juce::jlimit(
+        0.0, parent->endSec - parent->startSec, cue.offsetSec);
+  return std::isfinite(cue.positionSec) ? juce::jmax(0.0, cue.positionSec) : 0.0;
+}
+
+int arrangementCueEventCount(const SongArrangementSnapshot &arrangement) noexcept {
+  int total = 0;
+  for (const auto &cue : arrangement.cues) {
+    const int first = cue.name.trim().getIntValue();
+    const int length = first >= 1 && first <= 7 &&
+        cue.countEnd >= first && cue.countEnd <= 7 ? cue.countEnd - first + 1 : 0;
+    const bool sequence = length > 0 && cue.name.trim() == juce::String(first) &&
+        (validCountOffsets(cue.countOffsetsSec, length) ||
+         (cue.countOffsetsSec.empty() && std::isfinite(cue.countIntervalSec) &&
+          cue.countIntervalSec > 0.0));
+    const int added = sequence ? length : 1;
+    if (total > std::numeric_limits<int>::max() - added)
+      return std::numeric_limits<int>::max();
+    total += added;
+  }
+  return total;
+}
+
+bool normalizeArrangementCues(SongArrangementSnapshot &arrangement) {
+  const auto previous = arrangement.cues;
+  std::unordered_set<std::string> ids;
+  for (auto &cue : arrangement.cues) {
+    if (cue.id.trim().isEmpty() || !ids.insert(cue.id.toStdString()).second) {
+      cue.id = juce::Uuid().toString();
+      ids.insert(cue.id.toStdString());
+    }
+    cue.name = cue.name.trim();
+    if (cue.name.isEmpty())
+      cue.name = "Cue";
+    if (!isArrangementPartColorValid(cue.color))
+      cue.color = fallbackArrangementPartColorForName(cue.name);
+    const auto firstCount = cue.name.getIntValue();
+    const int countLength = firstCount >= 1 && firstCount <= 7 &&
+        cue.countEnd >= firstCount && cue.countEnd <= 7
+            ? cue.countEnd - firstCount + 1 : 0;
+    if (!cue.countOffsetsSec.empty() &&
+        !validCountOffsets(cue.countOffsetsSec, countLength))
+      cue.countOffsetsSec.clear();
+    if (cue.countEnd < 1 || cue.countEnd > 7 ||
+        cue.name != juce::String(firstCount) || firstCount < 1 ||
+        firstCount > cue.countEnd ||
+        (!validCountOffsets(cue.countOffsetsSec, countLength) &&
+         (!std::isfinite(cue.countIntervalSec) || cue.countIntervalSec <= 0.0))) {
+      cue.countEnd = 0;
+      cue.countIntervalSec = 0.0;
+      cue.countOffsetsSec.clear();
+    } else if (!std::isfinite(cue.countIntervalSec) || cue.countIntervalSec < 0.0) {
+      cue.countIntervalSec = 0.0;
+    }
+    const double position = resolveArrangementCueSeconds(arrangement, cue);
+    if (const auto *parent = validCueParent(arrangement, cue)) {
+      cue.offsetSec = juce::jlimit(
+          0.0, parent->endSec - parent->startSec, cue.offsetSec);
+    } else {
+      cue.partId.clear();
+      cue.offsetSec = 0.0;
+    }
+    cue.positionSec = position;
+  }
+  std::stable_sort(arrangement.cues.begin(), arrangement.cues.end(),
+                   [](const auto &a, const auto &b) {
+                     return a.positionSec < b.positionSec;
+                   });
+  return arrangement.cues != previous;
+}
+
+bool migrateLegacyArrangementCues(SongArrangementSnapshot &arrangement) {
+  bool changed = false;
+  // Preserve fallback positions before remapping anchors of absorbed fragments.
+  for (auto &cue : arrangement.cues) {
+    const auto position = resolveArrangementCueSeconds(arrangement, cue);
+    changed = changed || position != cue.positionSec;
+    cue.positionSec = position;
+  }
+  for (size_t leftIndex = 0; leftIndex + 2 < arrangement.parts.size();) {
+    const auto &left = arrangement.parts[leftIndex];
+    if (legacyCuePart(left)) {
+      ++leftIndex;
+      continue;
+    }
+    size_t rightIndex = leftIndex + 1;
+    while (rightIndex < arrangement.parts.size() &&
+           legacyCuePart(arrangement.parts[rightIndex]))
+      ++rightIndex;
+    if (rightIndex == leftIndex + 1 || rightIndex >= arrangement.parts.size() ||
+        !left.name.trim().equalsIgnoreCase(arrangement.parts[rightIndex].name.trim())) {
+      ++leftIndex;
+      continue;
+    }
+    bool canMerge = true;
+    for (const auto &candidate : arrangement.parts)
+      if (candidate.sourcePartId == left.id)
+        canMerge = false;
+    for (size_t i = leftIndex + 1; i <= rightIndex; ++i) {
+      const auto &part = arrangement.parts[i];
+      canMerge = canMerge && sameLegacyClipContract(left, part) &&
+                 contiguousLegacySource(arrangement.parts[i - 1], part);
+      // A retained copy may use a removed ID to resolve its source. Do not
+      // widen that source or rewrite the clip's reference implicitly.
+      for (const auto &candidate : arrangement.parts)
+        if (candidate.sourcePartId == part.id)
+          canMerge = false;
+    }
+    if (!canMerge) {
+      ++leftIndex;
+      continue;
+    }
+    const auto parentId = left.id;
+    const auto parentStart = left.startSec;
+    for (size_t i = leftIndex + 1; i < rightIndex; ++i) {
+      const auto &part = arrangement.parts[i];
+      const bool alreadyPresent = std::any_of(
+          arrangement.cues.begin(), arrangement.cues.end(),
+          [&part](const auto &cue) { return cue.id == part.id; });
+      if (!alreadyPresent) {
+        SongArrangementCueSnapshot cue;
+        cue.id = part.id;
+        cue.name = part.name;
+        cue.color = part.color;
+        cue.partId = parentId;
+        cue.positionSec = part.startSec;
+        cue.offsetSec = part.startSec - parentStart;
+        arrangement.cues.push_back(std::move(cue));
+      }
+    }
+    for (auto &cue : arrangement.cues) {
+      for (size_t i = leftIndex + 1; i <= rightIndex; ++i) {
+        if (cue.partId == arrangement.parts[i].id) {
+          cue.partId = parentId;
+          cue.offsetSec = cue.positionSec - parentStart;
+          break;
+        }
+      }
+    }
+    auto &merged = arrangement.parts[leftIndex];
+    merged.endSec = arrangement.parts[rightIndex].endSec;
+    merged.sourceEndSec = arrangement.parts[rightIndex].sourceEndSec;
+    arrangement.parts.erase(arrangement.parts.begin() + leftIndex + 1,
+                            arrangement.parts.begin() + rightIndex + 1);
+    changed = true;
+    // Stay on the restored musical section to absorb another fragmented run.
+  }
+  // Leading/trailing instructions, or a run compatible with exactly one of
+  // its musical neighbours, can be absorbed without guessing which section
+  // owns its controls. If both different neighbours fit, keep the legacy data.
+  for (size_t first = 0; first < arrangement.parts.size();) {
+    if (!legacyCuePart(arrangement.parts[first])) {
+      ++first;
+      continue;
+    }
+    size_t after = first + 1;
+    while (after < arrangement.parts.size() && legacyCuePart(arrangement.parts[after]))
+      ++after;
+    const auto referenced = [&arrangement](const juce::String &id) {
+      return std::any_of(arrangement.parts.begin(), arrangement.parts.end(),
+                         [&id](const auto &part) { return part.sourcePartId == id; });
+    };
+    bool continuousRun = true;
+    for (size_t i = first; i < after; ++i) {
+      continuousRun = continuousRun && !referenced(arrangement.parts[i].id);
+      if (i > first)
+        continuousRun = continuousRun &&
+            sameLegacyClipContract(arrangement.parts[first], arrangement.parts[i]) &&
+            contiguousLegacySource(arrangement.parts[i - 1], arrangement.parts[i]);
+    }
+    if ((first > 0 && referenced(arrangement.parts[first - 1].id)) ||
+        (after < arrangement.parts.size() && referenced(arrangement.parts[after].id)))
+      continuousRun = false;
+    bool fitLeft = continuousRun && first > 0;
+    if (fitLeft)
+      fitLeft = !referenced(arrangement.parts[first - 1].id) &&
+          sameLegacyClipContract(arrangement.parts[first - 1], arrangement.parts[first]) &&
+          contiguousLegacySource(arrangement.parts[first - 1], arrangement.parts[first]);
+    bool fitRight = continuousRun && after < arrangement.parts.size();
+    if (fitRight)
+      fitRight = !referenced(arrangement.parts[after].id) &&
+          sameLegacyClipContract(arrangement.parts[after - 1], arrangement.parts[after]) &&
+          contiguousLegacySource(arrangement.parts[after - 1], arrangement.parts[after]);
+    if (fitLeft == fitRight) {
+      first = after;
+      continue;
+    }
+    const size_t parentIndex = fitLeft ? first - 1 : after;
+    auto &parent = arrangement.parts[parentIndex];
+    const auto parentId = parent.id;
+    const double nextStart = fitLeft ? parent.startSec : arrangement.parts[first].startSec;
+    const double oldStart = parent.startSec;
+    // Existing marks on the right-hand parent keep their absolute instant when
+    // the musical range expands backwards to include the old instruction.
+    if (fitRight) {
+      for (auto &cue : arrangement.cues)
+        if (cue.partId == parentId)
+          cue.offsetSec += oldStart - nextStart;
+    }
+    for (size_t i = first; i < after; ++i) {
+      const auto &part = arrangement.parts[i];
+      const bool alreadyPresent = std::any_of(
+          arrangement.cues.begin(), arrangement.cues.end(),
+          [&part](const auto &cue) { return cue.id == part.id; });
+      if (!alreadyPresent) {
+        SongArrangementCueSnapshot cue;
+        cue.id = part.id;
+        cue.name = part.name;
+        cue.color = part.color;
+        cue.partId = parentId;
+        cue.positionSec = part.startSec;
+        cue.offsetSec = part.startSec - nextStart;
+        arrangement.cues.push_back(std::move(cue));
+      }
+      for (auto &cue : arrangement.cues)
+        if (cue.partId == part.id) {
+          cue.partId = parentId;
+          cue.offsetSec = cue.positionSec - nextStart;
+        }
+    }
+    if (fitLeft) {
+      parent.endSec = arrangement.parts[after - 1].endSec;
+      parent.sourceEndSec = arrangement.parts[after - 1].sourceEndSec;
+    } else {
+      parent.startSec = nextStart;
+      parent.sourceStartSec = arrangement.parts[first].sourceStartSec;
+    }
+    arrangement.parts.erase(arrangement.parts.begin() + first,
+                            arrangement.parts.begin() + after);
+    changed = true;
+    if (fitLeft)
+      --first;
+  }
+  return normalizeArrangementCues(arrangement) || changed;
+}
+
+juce::var arrangementCueToVar(const SongArrangementCueSnapshot &cue) {
+  auto *object = new juce::DynamicObject();
+  object->setProperty("id", cue.id);
+  object->setProperty("name", cue.name);
+  object->setProperty("color", cue.color);
+  object->setProperty("positionSec", cue.positionSec);
+  if (cue.countEnd > 0) {
+    object->setProperty("countEnd", cue.countEnd);
+    object->setProperty("countIntervalSec", cue.countIntervalSec);
+    if (!cue.countOffsetsSec.empty()) {
+      juce::Array<juce::var> offsets;
+      for (const auto offset : cue.countOffsetsSec)
+        offsets.add(offset);
+      object->setProperty("countOffsetsSec", std::move(offsets));
+    }
+  }
+  if (cue.partId.isNotEmpty()) {
+    object->setProperty("partId", cue.partId);
+    object->setProperty("offsetSec", cue.offsetSec);
+  }
+  return juce::var(object);
+}
+
+bool arrangementCueFromVar(const juce::var &value,
+                           SongArrangementCueSnapshot &outCue) {
+  const auto *object = value.getDynamicObject();
+  if (object == nullptr || !object->getProperty("name").isString())
+    return false;
+  SongArrangementCueSnapshot parsed;
+  for (const auto *property : {"id", "name", "color", "partId"}) {
+    if (object->hasProperty(property) &&
+        (!object->getProperty(property).isString() ||
+         object->getProperty(property).toString().length() > 512))
+      return false;
+  }
+  parsed.id = object->getProperty("id").toString();
+  parsed.name = object->getProperty("name").toString();
+  parsed.color = object->getProperty("color").toString();
+  parsed.partId = object->getProperty("partId").toString();
+  for (const auto *property : {"positionSec", "offsetSec"}) {
+    if (!object->hasProperty(property))
+      continue;
+    const auto &number = object->getProperty(property);
+    if ((!number.isInt() && !number.isInt64() && !number.isDouble()) ||
+        !std::isfinite(static_cast<double>(number)) ||
+        static_cast<double>(number) < 0.0)
+      return false;
+  }
+  parsed.positionSec = static_cast<double>(object->getProperty("positionSec"));
+  parsed.offsetSec = static_cast<double>(object->getProperty("offsetSec"));
+  if (object->hasProperty("countEnd")) {
+    const auto &count = object->getProperty("countEnd");
+    const double countNumber = static_cast<double>(count);
+    if ((!count.isInt() && !count.isInt64() && !count.isDouble()) ||
+        !std::isfinite(countNumber) || countNumber != std::trunc(countNumber) ||
+        countNumber < 0.0 || countNumber > 7.0)
+      return false;
+    parsed.countEnd = static_cast<int>(countNumber);
+  }
+  if (object->hasProperty("countOffsetsSec")) {
+    const auto *offsets = object->getProperty("countOffsetsSec").getArray();
+    if (offsets == nullptr || offsets->isEmpty() || offsets->size() > 7)
+      return false;
+    for (const auto &number : *offsets) {
+      if (!number.isInt() && !number.isInt64() && !number.isDouble())
+        return false;
+      parsed.countOffsetsSec.push_back(static_cast<double>(number));
+    }
+  }
+  if (parsed.countEnd > 0) {
+    const auto startCount = parsed.name.trim().getIntValue();
+    if (parsed.name.trim() != juce::String(startCount) ||
+        startCount < 1 || startCount > parsed.countEnd)
+      return false;
+    if (!parsed.countOffsetsSec.empty() &&
+        !validCountOffsets(parsed.countOffsetsSec, parsed.countEnd - startCount + 1))
+      return false;
+    if (object->hasProperty("countIntervalSec")) {
+      const auto &interval = object->getProperty("countIntervalSec");
+      if ((!interval.isInt() && !interval.isInt64() && !interval.isDouble()) ||
+          !std::isfinite(static_cast<double>(interval)) ||
+          static_cast<double>(interval) < 0.0)
+        return false;
+      parsed.countIntervalSec = static_cast<double>(interval);
+    }
+    if (parsed.countOffsetsSec.empty() && parsed.countIntervalSec <= 0.0)
+      return false;
+  } else if (!parsed.countOffsetsSec.empty()) {
+    return false;
+  }
+  outCue = std::move(parsed);
+  return true;
+}
 
 bool SectionAutomationSnapshot::hasOverrides() const {
   if (pads.volume || pads.gain || pads.enabled || pads.noteIndex || pads.octave)
@@ -161,7 +575,7 @@ const std::array<const char *, 19> kTrackCategories = {{
     "Pads/Ambience",
 }};
 
-const std::array<const char *, 15> kSongSectionSuggestions = {{
+const std::array<const char *, 14> kSongSectionSuggestions = {{
     "Intro",
     "Verse",
     "Pre-Chorus",
@@ -171,7 +585,6 @@ const std::array<const char *, 15> kSongSectionSuggestions = {{
     "Bridge",
     "Instrumental",
     "Solo",
-    "Breakdown",
     "Interlude",
     "Tag",
     "Vamp",

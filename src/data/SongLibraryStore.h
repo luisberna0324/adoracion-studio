@@ -121,6 +121,8 @@ public:
   static LibraryState loadLibrarySnapshot();
   static bool setActiveSetlistId(const juce::String &setlistId);
   static juce::String createSetlist(const juce::String &name);
+  /** Adds a prepared immutable Team revision without replacing personal edits. */
+  static bool importPreparedSetlist(SetlistData setlist);
   static bool renameSetlist(const juce::String &setlistId,
                             const juce::String &name);
   static bool deleteSetlist(const juce::String &setlistId);

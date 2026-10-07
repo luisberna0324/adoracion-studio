@@ -90,7 +90,7 @@ juce::String mapPrimeCategory(const juce::String &categoryJson,
 
 bool runSqliteQuery(const juce::File &dbFile, const juce::String &sql,
                     juce::StringArray &rows, juce::String &errorMessage) {
-#if JUCE_MAC
+#if JUCE_MAC && !MTCONTROLS_MAC_APP_STORE
   const juce::File sqliteBinary("/usr/bin/sqlite3");
   if (!sqliteBinary.existsAsFile()) {
     errorMessage = "sqlite3 is not available on this system.";
@@ -136,7 +136,7 @@ bool runSqliteQuery(const juce::File &dbFile, const juce::String &sql,
 } // namespace
 
 bool PrimeLibrarySource::isSupportedOnCurrentPlatform() noexcept {
-#if JUCE_MAC
+#if JUCE_MAC && !MTCONTROLS_MAC_APP_STORE
   return true;
 #else
   return false;
@@ -218,7 +218,11 @@ std::vector<PrimeSongData> PrimeLibrarySource::loadSongs(
   errorMessage.clear();
 
   if (!isSupportedOnCurrentPlatform()) {
+#if MTCONTROLS_MAC_APP_STORE
+    errorMessage = "Select audio files to import. Direct access to another app's library is unavailable in this edition.";
+#else
     errorMessage = "Local library import is only supported on macOS.";
+#endif
     playworship::telemetry::capture(playworship::telemetry::Incident::songImportFailed);
     return songs;
   }

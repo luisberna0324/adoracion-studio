@@ -130,8 +130,20 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
-           "mobile groups audio with routing while desktop keeps its audio page");
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
+           "ordinary accounts do not have a Teams settings entry");
+    int learningRequests = 0;
+    panel.onLearningRequested = [&] { ++learningRequests; };
+    int teamsRequests = 0;
+    panel.onTeamsRequested = [&] { ++teamsRequests; };
+    panel.showSettingsPage(Destination::Teams);
+    panel.teamsButton.onClick();
+    expect(teamsRequests == 0 && !panel.teamsButton.isVisible() &&
+               !panel.teamsLabel.isVisible() && !panel.teamsHelp.isVisible(),
+           "default denied Teams cannot be opened through navigation or a direct callback");
+    panel.setTeamsManagementEnabled(true);
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 9 : 10),
+           "enabled management profile gains exactly one Teams settings entry");
     snapshot(panel, "settings-home");
 
     for (auto *child : home->getChildren()) {
@@ -141,6 +153,18 @@ struct SettingsPanelTestAccess {
       panel.settingsViewport.setViewPosition(0, 10000);
       const int homeY = panel.settingsViewport.getViewPositionY();
       button->onClick();
+      if (button->getButtonText() == "Aprender PlayWorship") {
+        expect(learningRequests == 1 && panel.destination == Destination::Home &&
+                   panel.settingsViewport.getViewedComponent() == home,
+               "the learning row requests the guide without opening an empty settings page");
+        continue;
+      }
+      if (button->getButtonText() == "Teams") {
+        expect(teamsRequests == 1 && panel.destination == Destination::Home &&
+                   panel.settingsViewport.getViewedComponent() == home,
+               "Teams opens user administration without an empty settings page");
+        continue;
+      }
       expect(panel.settingsViewport.getViewedComponent() == &panel.tabs &&
                  panel.backButton.isVisible(), "a grouped row opens its existing settings page");
       expect(panel.closeButton.isVisible() && panel.getLocalBounds().contains(panel.closeButton.getBounds()) &&
@@ -275,7 +299,80 @@ struct SettingsPanelTestAccess {
     expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
                panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
            "wide desktop retains its full settings navigation and controls");
+    expect(panel.learningButton.isVisible() && panel.learningButton.getHeight() >= 36 &&
+               panel.generalPage.getLocalBounds().contains(panel.learningButton.getBounds()),
+           "desktop General retains an accessible guide entry after compact navigation");
+    panel.learningButton.onClick();
+    expect(learningRequests == 2,
+           "the desktop guide button shares the same learning request as the grouped row");
+    expect(panel.teamsButton.isVisible() && panel.teamsHelp.getText().containsIgnoreCase("usuarios") &&
+               panel.generalPage.getLocalBounds().contains(panel.teamsButton.getBounds()),
+           "enabled desktop profile exposes Teams with user administration help");
+    panel.teamsButton.onClick();
+    expect(teamsRequests == 2, "desktop Teams action uses the same enabled navigation guard");
     snapshot(panel, "settings-desktop");
+
+    // A capability refresh must update both navigation styles without leaving
+    // blank rows or allowing previously stored callbacks to bypass revocation.
+    for (const auto size : {juce::Point<int>(320, 640), {390, 2000}, {1080, 780}}) {
+      panel.setSize(size.x, size.y);
+      for (const bool enabled : {false, true, false}) {
+        panel.setTeamsManagementEnabled(enabled);
+        panel.showSettingsPage(Destination::Home);
+        if (panel.usesGroupedNavigation()) {
+          auto *index = panel.settingsViewport.getViewedComponent();
+          int teamsRows = 0;
+          juce::Rectangle<int> previousRow;
+          for (auto *entry : index->getChildren()) {
+            expect(index->getLocalBounds().contains(entry->getBounds()) &&
+                       entry->getHeight() >= 48 && !entry->getBounds().intersects(previousRow),
+                   "dynamic settings entries retain their layout, including tall pages with unchanged size");
+            previousRow = entry->getBounds();
+            if (auto *button = dynamic_cast<juce::Button *>(entry);
+                button != nullptr && button->getButtonText() == "Teams") ++teamsRows;
+          }
+          expect(teamsRows == (enabled ? 1 : 0), "grouped index follows the live Teams capability");
+        } else {
+          expect(panel.teamsButton.isVisible() == enabled && panel.teamsLabel.isVisible() == enabled &&
+                     panel.teamsHelp.isVisible() == enabled,
+                 "desktop Teams row disappears completely when permission is revoked");
+          if (!enabled)
+            expect(panel.teamsButton.getBounds().isEmpty(), "disabled desktop Teams reserves no row space");
+        }
+        const int previousRequests = teamsRequests;
+        panel.showSettingsPage(Destination::Teams);
+        panel.teamsButton.onClick();
+        expect(teamsRequests == previousRequests + (enabled ? 2 : 0),
+               "navigation and direct callbacks both respect enabled, denied and revoked capability");
+      }
+    }
+
+    // Tutorial destinations must refer to the real controls and reveal rows
+    // hidden by scrolling, both in grouped settings and desktop General.
+    using Anchor = playworship::learning::Anchor;
+    for (const auto size : {juce::Point<int>(320, 640), {390, 844}, {1080, 780}}) {
+      panel.setSize(size.x, size.y);
+      panel.showSettingsPage(Destination::Home);
+      panel.revealLearningTarget(Anchor::RemoteSettings);
+      expect(!panel.getLearningTargetBounds(Anchor::RemoteSettings).isEmpty(),
+             "remote entry is visible in a guided Settings visit");
+      panel.showSettingsPage(Destination::Remote);
+      expect(panel.isLearningRemotePageOpen(), "actual remote page satisfies navigation step");
+      panel.updateRemoteState(playworship::remote::RemoteSession::Mode::Server, {}, "Listening");
+      for (const auto anchor : {Anchor::RemoteMode, Anchor::RemoteAlias, Anchor::RemoteStatus}) {
+        panel.revealLearningTarget(anchor);
+        expect(!panel.getLearningTargetBounds(anchor).isEmpty(),
+               "guided server controls can be revealed in the viewport");
+      }
+      panel.updateRemoteState(playworship::remote::RemoteSession::Mode::Client,
+                              {{"Mac", "192.168.0.10", 49172, 0}}, "Connected");
+      panel.revealLearningTarget(Anchor::RemoteServers);
+      expect(!panel.getLearningTargetBounds(Anchor::RemoteServers).isEmpty(),
+             "guided client selector is reachable");
+      expect(panel.getLearningTargetBounds(Anchor::SettingsClose) == panel.closeButton.getBounds(),
+             "tutorial points to the existing close button");
+      snapshot(panel, "settings-learning-remote-" + juce::String(size.x));
+    }
   }
 };
 

@@ -43,3 +43,9 @@ CMakeUserPresets.json
 
 # Local video generation artifacts
 videos/
+
+# Local captures, deployment packages and diagnostics
+output/
+tmp/
+firebase-debug.log
+firestore-debug.log

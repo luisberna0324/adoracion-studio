@@ -4,7 +4,7 @@ title: AudioDiagnostics
 description: Benchmark lock-free del audio thread y workers - stages, gaps, decode, render
 resource: src/AudioDiagnostics.h
 tags: [juce, audio, benchmark, diagnostics, performance, telemetry]
-timestamp: 2026-07-26T23:00:00Z
+timestamp: 2026-10-06T00:00:00Z
 ---
 
 # AudioDiagnostics
@@ -128,8 +128,13 @@ falta de datos aunque el callback termine dentro del presupuesto.
 
 `streaming_lock_misses` cuenta los intentos fallidos de adquirir el lock corto
 del ring principal por pista. Es acumulativo y puede coexistir con cobertura
-del banco de prefetch; no equivale necesariamente a frames perdidos. Separa la
+de la reserva privada del callback o del banco de prefetch; no equivale
+necesariamente a frames perdidos. Separa la
 contención de copia de las invalidaciones por seek y del agotamiento del buffer.
+Desde la reserva incorporada en `StemBufferingSource`, un lock miss cubierto
+puede aparecer sin incrementar `streaming_misses` ni
+`streaming_missing_frames`. Para evaluar la continuidad, usar estos dos últimos
+contadores; para comprobar que la protección se ejercitó, usar lock misses.
 
 ### 4. AAC decode + resample (background thread)
 
@@ -235,6 +240,38 @@ Estas son las optimizaciones cuyo impacto fue medido y validado usando `AudioDia
 | `6f9b46f` | FLAC cache para stems | `decode_us` (con pitch -2) | 1245us | 67us | **-18x** |
 
 Total: 6 commits, 1 docs/okf/processor/MTControlsAudioProcessor.md actualizado, 1 docs/okf/log.md actualizado.
+
+### Reserva de lectura del callback — 2026-10-06
+
+Una captura de iPhone, con ocho stems a 48 kHz/256 frames y sin time-stretch,
+registró 48 callbacks de stems incompletos, 47 asociados a contención del ring.
+El callback máximo fue 0,363 ms frente a 5,333 ms de presupuesto, sin overruns
+ni incremento de XRuns. La reserva privada de `StemBufferingSource` protege
+muestras futuras ya preparadas ante esa contención o una publicación en curso.
+
+La regresión aislada mantiene la misma preparación y sustituye únicamente el
+cuerpo de `getNextAudioBlock`: la versión anterior falla al ocupar el lock desde
+otro hilo; la corregida entrega cada muestra exacta y pasa los 21 escenarios de
+`stem_buffering_source`. También pasan `stem_mix_engine`, `audio_engine_core` y
+`section_automation`.
+
+Medición real de la compilación corregida, sesión `20261006_150736_e99e0cc4`:
+
+| Condición / métrica | Resultado |
+|---|---|
+| Canción / duración | Luz de esperanza, ocho stems, 90 s completos |
+| Dispositivo | macOS, Release arm64, 44,1 kHz, 512 frames |
+| Callbacks reproduciendo | 7752 |
+| Streaming misses / frames faltantes | 0 / 0 |
+| Callback medio / máximo / presupuesto | 0,130 / 1,849 / 11,610 ms |
+| Overruns / gaps registrados | 0 / 0 |
+| XRuns nativos | 1 antes de Play y 1 al terminar: incremento 0 |
+| Salida no finita / muestras superiores a 0 dBFS | 0 / 0 |
+
+Esta reproducción no coincidió con intentos fallidos de lock; la protección
+bajo contención se comprueba con las regresiones deterministas. La medición de
+macOS no sustituye una nueva captura en el iPhone con la compilación corregida.
+No se interpreta como una comparación de rendimiento entre plataformas.
 
 ---
 

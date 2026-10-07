@@ -1,5 +1,6 @@
 #include "data/ProjectStore.h"
 #include "data/ApplicationDataPaths.h"
+#include "data/ArrangementSourceMapping.h"
 #include "network/RemoteStateCodec.h"
 
 #include <algorithm>
@@ -213,6 +214,342 @@ void testSectionAutomationCodec(const Fixtures &fixtures) {
          "malformed saved automation is ignored as a block while its section survives");
 }
 
+void testArrangementCues(const Fixtures &fixtures) {
+  SongArrangementPartSnapshot verse;
+  verse.id = "verse";
+  verse.name = "Verse 2";
+  verse.startSec = 5.0;
+  verse.endSec = 20.0;
+  SongArrangementSnapshot arrangement;
+  arrangement.parts.push_back(verse);
+  SongArrangementCueSnapshot cue;
+  cue.id = "instruction";
+  cue.name = "Build";
+  cue.color = "ff72a465";
+  cue.partId = verse.id;
+  cue.positionSec = 7.5;
+  cue.offsetSec = 2.5;
+  arrangement.cues.push_back(cue);
+  expect(resolveArrangementCueSeconds(arrangement, cue) == 7.5,
+         "anchored cue resolves within its full musical section");
+  arrangement.parts.front().startSec += 10.0;
+  arrangement.parts.front().endSec += 10.0;
+  expect(resolveArrangementCueSeconds(arrangement, cue) == 17.5,
+         "moving a section moves its cue by the same amount");
+  expect(normalizeArrangementCues(arrangement) &&
+             arrangement.cues.front().positionSec == 17.5 &&
+             arrangement.cues.front().color == cue.color,
+         "normalization refreshes the fallback and preserves the chosen color");
+  arrangement.parts.front().endSec = 16.0;
+  expect(resolveArrangementCueSeconds(arrangement, arrangement.cues.front()) == 17.5 &&
+             normalizeArrangementCues(arrangement) &&
+             arrangement.cues.front().partId.isEmpty() &&
+             arrangement.cues.front().positionSec == 17.5,
+         "a trimmed invalid anchor keeps its absolute location instead of clipping to the edge");
+  expect(!normalizeArrangementCues(arrangement), "cue normalization is idempotent");
+
+  SongArrangementCueSnapshot count = cue;
+  count.id = "count";
+  count.name = "1";
+  count.countEnd = 4;
+  count.countIntervalSec = 0.5;
+  SongArrangementCueSnapshot decoded;
+  expect(arrangementCueFromVar(juce::JSON::parse(
+             juce::JSON::toString(arrangementCueToVar(count))), decoded) && decoded == count,
+         "count sequence codec retains the source-time pulse and first/last count");
+  auto variableCount = count;
+  variableCount.countIntervalSec = 0.0;
+  variableCount.countOffsetsSec = {0.0, 0.5, 1.1, 1.8};
+  expect(arrangementCueFromVar(juce::JSON::parse(
+             juce::JSON::toString(arrangementCueToVar(variableCount))), decoded) &&
+             decoded == variableCount,
+         "variable tempo count offsets survive JSON without imposing a fixed interval");
+  auto offsetsWithoutInterval = arrangementCueToVar(variableCount);
+  offsetsWithoutInterval.getDynamicObject()->removeProperty("countIntervalSec");
+  expect(arrangementCueFromVar(offsetsWithoutInterval, decoded) && decoded == variableCount,
+         "an explicit source pulse map does not require the legacy interval field");
+  SongArrangementSnapshot offsetArrangement;
+  offsetArrangement.parts = {verse};
+  offsetArrangement.cues = {variableCount};
+  expect(!normalizeArrangementCues(offsetArrangement) &&
+             arrangementCueEventCount(offsetArrangement) == 4,
+         "normalization retains a valid variable tempo sequence and counts its expanded events");
+  decoded = count;
+  expect(!arrangementCueFromVar(juce::JSON::parse(
+             R"({"name":"1","positionSec":7.5,"countEnd":4,"countIntervalSec":0})"), decoded) &&
+             decoded == count,
+         "invalid count interval is rejected without a partial update");
+  for (const auto *invalid : {
+           R"({"name":"Build","positionSec":"7.5"})",
+           R"({"name":"Build","positionSec":-1})",
+           R"({"name":"Build","offsetSec":-1})",
+           R"({"name":"4","countEnd":2,"countIntervalSec":0.5})",
+           R"({"name":"1","countEnd":8,"countIntervalSec":0.5})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[0,0.5,1]})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[0.1,0.5,1,1.5]})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[0,0.5,0.5,1.5]})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[0,1,0.5,1.5]})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[0,0.5,"1",1.5]})",
+           R"({"name":"1","countEnd":4,"countOffsetsSec":[]})",
+           R"({"name":"1","countOffsetsSec":[0]})"})
+    expect(!arrangementCueFromVar(juce::JSON::parse(invalid), decoded) && decoded == count,
+           "malformed cues cannot partially replace an existing instruction");
+  for (const double nonFinite : {std::numeric_limits<double>::infinity(),
+                                std::numeric_limits<double>::quiet_NaN()}) {
+    auto invalidOffsets = arrangementCueToVar(variableCount);
+    auto *offsets = invalidOffsets.getDynamicObject()->getProperty("countOffsetsSec").getArray();
+    offsets->getReference(2) = nonFinite;
+    expect(!arrangementCueFromVar(invalidOffsets, decoded) && decoded == count,
+           "nonfinite count offsets are rejected atomically before JSON or remote publication");
+  }
+
+  ImportedSongData song;
+  song.arrangement.parts = {verse};
+  song.arrangement.cues = {cue, count, variableCount};
+  song.arrangement.cues.back().id = "variable-count";
+  auto encoded = playworship::remote::encodeSong(song, false);
+  expect(playworship::remote::validateArrangementAutomation(
+             encoded.getProperty("arrangement", {})),
+         "remote arrangement validation accepts individual cues and count sequences");
+  const auto remote = playworship::remote::decodeSong(encoded);
+  expect(remote.arrangement.parts.size() == 1 && remote.arrangement.cues == song.arrangement.cues,
+         "remote codec preserves primary sections and independent secondary marks");
+  auto *invalidArray = new juce::DynamicObject();
+  invalidArray->setProperty("parts", juce::Array<juce::var>{});
+  invalidArray->setProperty("cues", juce::JSON::parse(R"([{"name":"1","countEnd":4}])"));
+  expect(!playworship::remote::validateArrangementAutomation(juce::var(invalidArray)),
+         "remote validation rejects a malformed cue array before applying arrangement state");
+  SongArrangementSnapshot limitArrangement;
+  auto seven = count;
+  seven.countEnd = 7;
+  for (int i = 0; i < 73; ++i) {
+    seven.id = "limit-count-" + juce::String(i);
+    limitArrangement.cues.push_back(seven);
+  }
+  limitArrangement.cues.push_back(cue);
+  ImportedSongData limitSong;
+  limitSong.arrangement = limitArrangement;
+  expect(arrangementCueEventCount(limitArrangement) == kMaxArrangementCueEvents &&
+             playworship::remote::validateArrangementAutomation(
+                 playworship::remote::encodeSong(limitSong, false).getProperty("arrangement", {})),
+         "remote validation accepts exactly 512 expanded guide events including sequences");
+  auto excess = cue;
+  excess.id = "excess";
+  limitSong.arrangement.cues.push_back(excess);
+  expect(arrangementCueEventCount(limitSong.arrangement) == kMaxArrangementCueEvents + 1 &&
+             !playworship::remote::validateArrangementAutomation(
+                 playworship::remote::encodeSong(limitSong, false).getProperty("arrangement", {})),
+         "remote validation rejects sequences that expand beyond scheduler capacity");
+  bool excessChanged = false;
+  const auto legacyExcess = SongLibraryStore::songDataFromVar(
+      SongLibraryStore::songDataToVar(limitSong), excessChanged);
+  expect(legacyExcess.arrangement.cues.size() == limitSong.arrangement.cues.size() &&
+             arrangementCueEventCount(legacyExcess.arrangement) == kMaxArrangementCueEvents + 1,
+         "legacy disk payloads retain all markers even when playback capacity is exceeded");
+
+  ImportedSongData legacyLimitSong;
+  auto legacyPrimary = verse;
+  legacyPrimary.startSec = 0.0;
+  legacyPrimary.endSec = 1.0;
+  legacyLimitSong.arrangement.parts.push_back(legacyPrimary);
+  for (int i = 0; i < kMaxArrangementCueEvents; ++i) {
+    auto legacyInstruction = legacyPrimary;
+    legacyInstruction.id = "legacy-limit-" + juce::String(i);
+    legacyInstruction.name = "Build";
+    legacyInstruction.utilityCue = true;
+    legacyInstruction.startSec = i + 1.0;
+    legacyInstruction.endSec = i + 2.0;
+    legacyLimitSong.arrangement.parts.push_back(std::move(legacyInstruction));
+  }
+  auto legacyLimitPayload = playworship::remote::encodeSong(legacyLimitSong, false)
+                                .getProperty("arrangement", {});
+  expect(!legacyLimitPayload.getDynamicObject()->hasProperty("cues") &&
+             playworship::remote::validateArrangementAutomation(legacyLimitPayload),
+         "remote validation accepts 512 legacy clips that migrate to independent cues");
+  auto legacyExtra = legacyLimitSong.arrangement.parts.back();
+  legacyExtra.id = "legacy-extra";
+  legacyExtra.startSec += 1.0;
+  legacyExtra.endSec += 1.0;
+  legacyLimitSong.arrangement.parts.push_back(legacyExtra);
+  const auto legacyExcessPayload = SongLibraryStore::songDataToVar(legacyLimitSong);
+  expect(!playworship::remote::validateArrangementAutomation(
+             legacyExcessPayload.getProperty("arrangement", {})),
+         "remote validation rejects legacy clips that migrate beyond 512 guide events");
+  bool legacyLimitChanged = false;
+  const auto oversizedLegacy = SongLibraryStore::songDataFromVar(
+      legacyExcessPayload, legacyLimitChanged);
+  expect(legacyLimitChanged && oversizedLegacy.arrangement.parts.size() == 1 &&
+             oversizedLegacy.arrangement.cues.size() == kMaxArrangementCueEvents + 1,
+         "remote rejection does not trim migrated markers in legacy disk storage");
+
+  // Mixed old/new payloads must count both newly migrated points and each
+  // expanded pulse of a sequence, rather than either representation alone.
+  ImportedSongData mixedLimitSong;
+  mixedLimitSong.arrangement.parts.assign(legacyLimitSong.arrangement.parts.begin(),
+                                        legacyLimitSong.arrangement.parts.begin() + 2);
+  mixedLimitSong.arrangement.cues.assign(limitArrangement.cues.begin(),
+                                       limitArrangement.cues.begin() + 73);
+  expect(playworship::remote::validateArrangementAutomation(
+             SongLibraryStore::songDataToVar(mixedLimitSong).getProperty("arrangement", {})),
+         "remote validation accepts 511 count events plus one migrated legacy instruction");
+  mixedLimitSong.arrangement.parts.push_back(legacyLimitSong.arrangement.parts[2]);
+  expect(!playworship::remote::validateArrangementAutomation(
+             SongLibraryStore::songDataToVar(mixedLimitSong).getProperty("arrangement", {})),
+         "remote validation rejects count sequences plus migrated legacy instructions over capacity");
+
+  // This is the actual legacy insertion shape: a short instruction split the
+  // original Verse 2, retaining its clip flags and automation on both fragments.
+  auto left = verse;
+  left.startSec = 0.0;
+  left.endSec = 4.0;
+  left.automation = automationFixture(fixtures.stemId);
+  auto instruction = left;
+  instruction.id = "legacy-build";
+  instruction.name = "Build";
+  instruction.utilityCue = true;
+  instruction.startSec = 4.0;
+  instruction.endSec = 4.5;
+  auto right = left;
+  right.id = "verse-tail";
+  right.startSec = 4.5;
+  right.endSec = 10.0;
+  SongArrangementSnapshot legacy;
+  legacy.parts = {left, instruction, right};
+  SongArrangementCueSnapshot tailCue = cue;
+  tailCue.id = "tail-mark";
+  tailCue.partId = right.id;
+  tailCue.positionSec = 6.0;
+  tailCue.offsetSec = 1.5;
+  legacy.cues.push_back(tailCue);
+  const auto before = legacy;
+  expect(migrateLegacyArrangementCues(legacy) && legacy.parts.size() == 1 &&
+             legacy.parts.front().id == left.id &&
+             legacy.parts.front().name == left.name &&
+             legacy.parts.front().startSec == 0.0 &&
+             legacy.parts.front().endSec == 10.0 &&
+             legacy.parts.front().automation == left.automation &&
+             legacy.cues.size() == 2,
+         "legacy utility migration restores the complete Verse without changing its automation");
+  expect(legacy.cues[0].id == instruction.id && legacy.cues[0].name == "Build" &&
+             legacy.cues[0].partId == left.id && legacy.cues[0].offsetSec == 4.0 &&
+             legacy.cues[1].partId == left.id && legacy.cues[1].offsetSec == 6.0 &&
+             resolveArrangementCueSeconds(legacy, legacy.cues[1]) == 6.0,
+         "migration retains instruction timing and reanchors marks on an absorbed fragment");
+  for (double position : {0.0, 3.99, 4.0, 4.49, 4.5, 7.0, 10.0}) {
+    double oldSource = -1.0, newSource = -1.0;
+    expect(arrangement_source_mapping::mapArrangementSecondsToSourceSeconds(
+               before.parts, position, 20.0, oldSource) &&
+               arrangement_source_mapping::mapArrangementSecondsToSourceSeconds(
+                   legacy.parts, position, 20.0, newSource) && oldSource == newSource,
+           "restoring musical annotation boundaries does not alter source audio mapping");
+  }
+  expect(!migrateLegacyArrangementCues(legacy), "legacy migration is idempotent");
+  auto unsafe = before;
+  unsafe.parts[1].automation.pads.volume = 0.91f;
+  expect(!migrateLegacyArrangementCues(unsafe) && unsafe.parts.size() == 3 &&
+             unsafe.parts[1].automation.pads.volume == 0.91f,
+         "a legacy utility with distinct automation is retained without losing its preset");
+  unsafe = before;
+  unsafe.parts[2].name = "Chorus";
+  expect(!migrateLegacyArrangementCues(unsafe) && unsafe.parts.size() == 3,
+         "ambiguous instructions between different musical sections retain their ranges");
+  unsafe = before;
+  auto referenced = left;
+  referenced.id = "copy";
+  referenced.startSec = 10.0;
+  referenced.endSec = 14.0;
+  referenced.sourcePartId = left.id;
+  referenced.sourceStartSec = 0.0;
+  referenced.sourceEndSec = 4.0;
+  unsafe.parts.push_back(referenced);
+  expect(!migrateLegacyArrangementCues(unsafe) && unsafe.parts.size() == 4,
+         "migration does not widen a source section referenced by an existing copy");
+  auto numeric = before;
+  numeric.parts[1].name = "3";
+  numeric.parts[1].utilityCue = false;
+  expect(migrateLegacyArrangementCues(numeric) && numeric.cues.front().name == "3",
+         "legacy numeric counts also become independent points");
+  auto translated = before;
+  translated.parts[1].name = "Tres";
+  translated.parts[1].utilityCue = false;
+  expect(migrateLegacyArrangementCues(translated), "localized legacy counts retain their cue identity");
+  for (const auto *name : {"Breakdown", "bReAkDoWn", "Baja intensidad",
+                           "A Capella", "acapella", "ACAPELLA"}) {
+    auto secondary = before;
+    secondary.parts[1].name = name;
+    secondary.parts[1].utilityCue = false;
+    expect(migrateLegacyArrangementCues(secondary) && secondary.parts.size() == 1 &&
+               secondary.cues.front().name == name,
+           "secondary instructions migrate without requiring a legacy utility flag");
+  }
+  SongArrangementSnapshot trailing;
+  trailing.parts = {left, instruction};
+  expect(migrateLegacyArrangementCues(trailing) && trailing.parts.size() == 1 &&
+             trailing.parts.front().endSec == instruction.endSec &&
+             trailing.cues.front().positionSec == instruction.startSec,
+         "an unambiguous trailing instruction becomes a cue and extends its musical parent");
+  SongArrangementSnapshot leading;
+  leading.parts = {instruction, right};
+  leading.cues = {tailCue};
+  expect(migrateLegacyArrangementCues(leading) && leading.parts.size() == 1 &&
+             leading.parts.front().startSec == instruction.startSec &&
+             leading.cues.size() == 2 &&
+             leading.cues[1].offsetSec == 2.0 &&
+             leading.cues[1].positionSec == 6.0,
+         "a leading instruction is absorbed without shifting existing cues on its parent");
+  SongArrangementSnapshot onlyInstructions;
+  onlyInstructions.parts = {instruction};
+  expect(!migrateLegacyArrangementCues(onlyInstructions) && onlyInstructions.parts.size() == 1,
+         "legacy instruction-only arrangements remain intact without inventing musical sections");
+  auto unequalMap = before;
+  for (auto &part : unequalMap.parts) {
+    part.sourcePartId = "source";
+    part.sourceStartSec = part.startSec;
+    part.sourceEndSec = part.endSec;
+  }
+  unequalMap.parts[1].sourceEndSec = 4.4;
+  expect(!migrateLegacyArrangementCues(unequalMap) && unequalMap.parts.size() == 3,
+         "noncontinuous virtual source mappings prevent legacy conversion");
+  auto virtualFragments = before;
+  for (auto &part : virtualFragments.parts) {
+    part.sourcePartId = "source";
+    part.sourceStartSec = part.startSec;
+    part.sourceEndSec = part.endSec;
+    part.startSec += 10.0;
+    part.endSec += 10.0;
+  }
+  virtualFragments.cues.clear();
+  const auto beforeVirtual = virtualFragments;
+  expect(migrateLegacyArrangementCues(virtualFragments) &&
+             virtualFragments.parts.size() == 1 &&
+             virtualFragments.parts.front().sourceStartSec == 0.0 &&
+             virtualFragments.parts.front().sourceEndSec == 10.0,
+         "continuous virtual fragments merge without losing their explicit source region");
+  for (double position : {10.0, 13.99, 14.0, 14.49, 14.5, 17.0, 20.0, 23.0}) {
+    double oldSource = -1.0, newSource = -1.0;
+    expect(arrangement_source_mapping::mapArrangementSecondsToSourceSeconds(
+               beforeVirtual.parts, position, 30.0, oldSource) &&
+               arrangement_source_mapping::mapArrangementSecondsToSourceSeconds(
+                   virtualFragments.parts, position, 30.0, newSource) &&
+               std::abs(oldSource - newSource) < 0.00001,
+           "virtual migration preserves source audio and the inserted-duration offset");
+  }
+
+  bool changed = false;
+  const auto oldDocument = SongLibraryStore::songDataFromVar(
+      juce::JSON::parse(R"({"arrangement":{"parts":[{"id":"intro","name":"Intro","endSec":8}]}})"),
+      changed);
+  expect(oldDocument.arrangement.parts.size() == 1 && oldDocument.arrangement.cues.empty(),
+         "documents without the new cues field preserve all original musical sections");
+  ImportedSongData legacySong;
+  legacySong.arrangement = before;
+  const auto migratedDocument = SongLibraryStore::songDataFromVar(
+      SongLibraryStore::songDataToVar(legacySong), changed);
+  expect(migratedDocument.arrangement.parts.size() == 1 &&
+             migratedDocument.arrangement.cues.size() == 2,
+         "library/project deserialization applies the conservative migration once");
+}
+
 ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
                               const juce::File &artwork) {
   ProjectDocument document;
@@ -258,6 +595,17 @@ ProjectDocument makeDocument(const Fixtures &fixtures, const juce::File &stem,
   section.sourceEndSec = track.durationSec;
   section.automation = automationFixture(fixtures.stemId);
   document.song.arrangement.parts.push_back(section);
+  SongArrangementCueSnapshot count;
+  count.id = "count-in";
+  count.name = "1";
+  count.color = "ff73a984";
+  count.partId = section.id;
+  count.positionSec = 0.032;
+  count.offsetSec = 0.032;
+  count.countEnd = 4;
+  count.countIntervalSec = 0.02;
+  count.countOffsetsSec = {0.0, 0.02, 0.043, 0.071};
+  document.song.arrangement.cues.push_back(count);
   document.settings.arrangement = document.song.arrangement;
   document.settings.arrangementCustomized = true;
   return document;
@@ -289,6 +637,10 @@ void inspectPackage(const Fixtures &fixtures, const ProjectDocument &document) {
              song->getProperty("artworkPath").toString() == "artwork.png" &&
              song->getProperty("artworkSource").toString().isEmpty(),
          "manifest preserves metadata and uses a portable cover entry");
+  const auto *cues = song->getProperty("arrangement").getProperty("cues", {}).getArray();
+  expect(cues != nullptr && cues->size() == 1 &&
+             cues->getReference(0).getProperty("countEnd", 0) == juce::var(4),
+         "portable manifest includes independent cues and sequence parameters");
 }
 
 void expectRegisteredSong(const Fixtures &fixtures, const ImportedSongData &expected) {
@@ -464,13 +816,22 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
          "opening preserves all nondefault mixer/performance settings");
   expect(opened.song.arrangement.parts.size() == 1 &&
              opened.song.arrangement.parts.front().automation ==
-                 document.song.arrangement.parts.front().automation,
-         "portable manifest preserves the song's section automation");
+                 document.song.arrangement.parts.front().automation &&
+             opened.song.arrangement.cues == document.song.arrangement.cues,
+         "portable manifest preserves the song's section automation and independent cues");
   ProjectSongSettings canonical;
   expect(ProjectStore::deserializeSettings(
              juce::JSON::parse(juce::JSON::toString(ProjectStore::serializeSettings(document.settings))),
              canonical) && ProjectStore::settingsJsonEqual(canonical, document.settings),
-         "Cloud canonical settings preserve section automation");
+         "Cloud canonical settings preserve section automation and independent cues");
+  auto cueOnlyEdit = document.settings;
+  cueOnlyEdit.arrangement.cues.front().offsetSec = 0.042;
+  cueOnlyEdit.arrangement.cues.front().positionSec = 0.042;
+  expect(!ProjectStore::settingsJsonEqual(cueOnlyEdit, document.settings) &&
+             ProjectStore::writeCachedSettingsFromFile(fixtures.archive, cueOnlyEdit) &&
+             ProjectStore::getCachedSettings(fixtures.projectId, canonical) &&
+             ProjectStore::settingsJsonEqual(canonical, cueOnlyEdit),
+         "cue-only edits change settings fingerprints and survive project sidecar persistence");
   auto automationOnlyEdit = document.settings;
   automationOnlyEdit.arrangement.parts.front().automation.pads.noteIndex = 8;
   expect(!ProjectStore::settingsJsonEqual(automationOnlyEdit, document.settings),
@@ -544,6 +905,7 @@ int main() {
   try {
     Fixtures fixtures(isolatedRoot);
     testSectionAutomationCodec(fixtures);
+    testArrangementCues(fixtures);
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
   } catch (const std::exception &error) {

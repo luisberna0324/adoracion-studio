@@ -17,6 +17,7 @@ public:
   static_assert(std::atomic<Frame>::is_always_lock_free,
                 "SectionScheduler requires lock-free frame atomics");
   static constexpr int maxSections = 256;
+  static constexpr int maxCues = 512;
 
   struct Section {
     Frame startFrame = 0;
@@ -44,14 +45,23 @@ public:
     int transitionOffsetFrames = -1;
   };
 
+  struct Cue {
+    Frame frame = 0;
+    int guideTriggerId = -1;
+    bool skipPlayback = false;
+  };
+
   struct Snapshot {
     std::uint64_t generation = 0;
     int count = 0;
     std::array<Section, maxSections> sections{};
+    int cueCount = 0;
+    std::array<Cue, maxCues> cues{};
     bool valid = false;
   };
 
-  void publish(const std::vector<Section> &sections) noexcept;
+  void publish(const std::vector<Section> &sections,
+               const std::vector<Cue> &cues = {}) noexcept;
   void clear() noexcept;
 
   // Bounded, allocation-free acquisition. Under exceptional publication
@@ -107,11 +117,19 @@ private:
     Section load() const noexcept;
   };
 
+  struct AtomicCue {
+    std::atomic<Frame> frame{0};
+    std::atomic<int> guideTriggerId{-1};
+    std::atomic<bool> skipPlayback{false};
+  };
+
   struct AtomicSnapshotBank {
     std::atomic<std::uint64_t> sequence{0};
     std::atomic<std::uint64_t> generation{0};
     std::atomic<int> count{0};
     std::array<AtomicSection, maxSections> sections{};
+    std::atomic<int> cueCount{0};
+    std::array<AtomicCue, maxCues> cues{};
   };
 
   bool tryReadBank(int bankIndex, Snapshot &snapshot) const noexcept;

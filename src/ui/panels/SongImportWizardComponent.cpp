@@ -8,7 +8,7 @@
 #include "../UiCommon.h"
 #include "../components/SongLoadProgressOverlay.h"
 
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
 #include "../../data/MobileImportStaging.h"
 #endif
 
@@ -1898,7 +1898,7 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
                            [safeThis, replaceCurrent](const juce::FileChooser &chooser) {
                              if (safeThis == nullptr)
                                return;
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
                              safeThis->stageSelectedMobileFiles(
                                  chooser.getURLResults(), replaceCurrent, false);
 #else
@@ -1909,7 +1909,7 @@ void SongImportWizardComponent::openStemChooser(const bool replaceCurrent) {
                            });
 }
 
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
 void SongImportWizardComponent::stageSelectedMobileFiles(
     juce::Array<juce::URL> urls, const bool replaceCurrent, const bool artwork) {
   if (isSubmitting || urls.isEmpty())
@@ -2604,7 +2604,7 @@ bool SongImportWizardComponent::validateStepImport() {
             formatManager.createReaderFor(source));
         readable = reader != nullptr && reader->sampleRate > 0.0 &&
                    reader->lengthInSamples > 0 && reader->numChannels > 0;
-#if !JUCE_IOS && !JUCE_ANDROID
+#if !JUCE_IOS && !JUCE_ANDROID && !MTCONTROLS_MAC_APP_STORE
         // M4A has no portable JUCE decoder on Windows/Linux. The creation
         // worker validates and converts it before computing metadata/waveform.
         // Keep other formats' native-reader validation intact.
@@ -2833,7 +2833,7 @@ void SongImportWizardComponent::submitSong() {
   bool temporarilyDisableOptimization = false;
 
   const bool optimizationEnabled = AppSettings::getStemOptimizationEnabled();
-#if !JUCE_IOS && !JUCE_ANDROID
+#if !JUCE_IOS && !JUCE_ANDROID && !MTCONTROLS_MAC_APP_STORE
   // Mobile packages both portable and legacy stems with JUCE's FLAC writer.
   // Only desktop platforms need to locate or download an external encoder.
   const bool hasLocalStemsToStore = std::any_of(
@@ -3271,7 +3271,7 @@ void SongImportWizardComponent::openArtworkChooser() {
   artworkChooser->launchAsync(flags, [safeThis](const juce::FileChooser &chooser) {
     if (safeThis == nullptr)
       return;
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
     safeThis->stageSelectedMobileFiles(chooser.getURLResults(), false, true);
 #else
     const auto file = chooser.getResult();

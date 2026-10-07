@@ -24,10 +24,12 @@ list(FILTER PLAYWORSHIP_SOURCES EXCLUDE REGEX "/StandaloneApp\\.cpp$")
 # Keep the legacy SoundTouch processor out of this target so Android does not
 # depend on the local desktop-only SoundTouch checkout.
 list(FILTER PLAYWORSHIP_SOURCES EXCLUDE REGEX "/PitchShiftProcessor\\.cpp$")
-file(GLOB BINARY_DATA_SOURCES "${CMAKE_CURRENT_LIST_DIR}/BinaryData*.cpp")
+include("${PROJECT_ROOT}/cmake/PlayWorshipAssets.cmake")
+include("${PROJECT_ROOT}/cmake/PlayWorshipBinaryData.cmake")
+playworship_add_binary_data(PlayWorshipAndroidAssets ${MTCONTROLS_ASSET_FILES})
 file(GLOB SHEENBIDI_SOURCES "${JUCE_ROOT}/modules/juce_graphics/unicode/sheenbidi/Source/*.c")
 file(GLOB_RECURSE OBOE_SOURCES "${JUCE_ROOT}/modules/juce_audio_devices/native/oboe/src/*.cpp")
-add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${BINARY_DATA_SOURCES} ${SHEENBIDI_SOURCES} ${OBOE_SOURCES}
+add_library(playworship SHARED ${PLAYWORSHIP_SOURCES} ${SHEENBIDI_SOURCES} ${OBOE_SOURCES}
     "${JUCE_ROOT}/modules/juce_core/juce_core.cpp"
     "${JUCE_ROOT}/modules/juce_core/juce_core_CompilationTime.cpp"
     "${JUCE_ROOT}/modules/juce_data_structures/juce_data_structures.cpp"
@@ -57,6 +59,9 @@ if(PLAYWORSHIP_ANDROID_OPTIMIZE_DEBUG)
     target_compile_options(playworship PRIVATE "$<$<CONFIG:Debug>:-O2>")
 endif()
 
+# Prefer build-generated resources over the legacy checked-in Android copies.
+get_target_property(PLAYWORSHIP_BINARY_DATA_DIR PlayWorshipAndroidAssets INTERFACE_INCLUDE_DIRECTORIES)
+target_include_directories(playworship BEFORE PRIVATE "${PLAYWORSHIP_BINARY_DATA_DIR}")
 target_include_directories(playworship PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
     "${PROJECT_ROOT}/src"
@@ -89,4 +94,4 @@ find_library(log-lib log)
 find_library(android-lib android)
 find_library(opensles-lib OpenSLES)
 find_library(aaudio-lib aaudio)
-target_link_libraries(playworship PRIVATE bungee ixwebsocket::ixwebsocket ${log-lib} ${android-lib} ${opensles-lib} ${aaudio-lib} EGL GLESv2 z)
+target_link_libraries(playworship PRIVATE PlayWorshipAndroidAssets bungee ixwebsocket::ixwebsocket ${log-lib} ${android-lib} ${opensles-lib} ${aaudio-lib} EGL GLESv2 z)

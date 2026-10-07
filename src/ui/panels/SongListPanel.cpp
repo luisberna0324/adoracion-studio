@@ -818,11 +818,13 @@ SongListPanel::SongListPanel() {
   libraryCatalogPanel.setOnSongLoadRequested(
       [this](const ImportedSongData &song, int songIndex) {
         juce::ignoreUnused(songIndex);
-        selectedSongId = song.id;
+        const auto requestedSong = song;
+        if (!activateVisibleSetlistForSong(requestedSong)) return;
+        selectedSongId = requestedSong.id;
         if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
         if (onSongActivated != nullptr) {
-          const int indexForSetlist = getSongIndexById(song.id);
-          onSongActivated(song, indexForSetlist >= 0 ? indexForSetlist : -1);
+          const int indexForSetlist = getSongIndexById(requestedSong.id);
+          onSongActivated(requestedSong, indexForSetlist >= 0 ? indexForSetlist : -1);
         }
       });
   libraryCatalogPanel.setOnAddSongsToSetlist([this](const juce::StringArray &songIds) {
@@ -1240,6 +1242,40 @@ int SongListPanel::resolveAutoPlayNextIndex(
              : -1;
 }
 
+std::optional<ImportedSongData> SongListPanel::getPlaybackAdjacentSong(
+    const juce::String &currentSongId, int direction, bool wrap) const {
+  if (currentSongId.isEmpty() || direction == 0) return std::nullopt;
+  const auto setlist = std::find_if(playbackLibrary.setlists.begin(), playbackLibrary.setlists.end(),
+      [this](const SetlistData &candidate) { return candidate.id == playbackLibrary.activeSetlistId; });
+  if (setlist == playbackLibrary.setlists.end() || setlist->items.empty()) return std::nullopt;
+  std::vector<const ImportedSongData *> playable;
+  for (const auto &item : setlist->items) {
+    const auto song = std::find_if(playbackLibrary.songs.begin(), playbackLibrary.songs.end(),
+        [&item](const ImportedSongData &candidate) { return candidate.id == item.songId; });
+    if (song != playbackLibrary.songs.end()) playable.push_back(&*song);
+  }
+  const auto current = std::find_if(playable.begin(), playable.end(),
+      [&currentSongId](const ImportedSongData *candidate) { return candidate->id == currentSongId; });
+  if (current == playable.end()) return std::nullopt;
+  int target = static_cast<int>(std::distance(playable.begin(), current)) + (direction < 0 ? -1 : 1);
+  const auto count = static_cast<int>(playable.size());
+  if (wrap) target = (target + count) % count;
+  if (!juce::isPositiveAndBelow(target, count) || playable[static_cast<size_t>(target)]->id == currentSongId)
+    return std::nullopt;
+  return *playable[static_cast<size_t>(target)];
+}
+
+std::optional<ImportedSongData> SongListPanel::getAutoPlayNextSong(
+    const juce::String &currentSongId) const {
+  const auto setlist = std::find_if(playbackLibrary.setlists.begin(), playbackLibrary.setlists.end(),
+      [this](const SetlistData &candidate) { return candidate.id == playbackLibrary.activeSetlistId; });
+  if (setlist == playbackLibrary.setlists.end()) return std::nullopt;
+  const auto current = std::find_if(setlist->items.begin(), setlist->items.end(),
+      [&currentSongId](const SetlistItem &candidate) { return candidate.songId == currentSongId; });
+  if (current == setlist->items.end() || !current->transitionToNext.autoPlay) return std::nullopt;
+  return getPlaybackAdjacentSong(currentSongId, 1, false);
+}
+
 void SongListPanel::setNowPlayingSong(const juce::String &songId,
                                       bool isPlaying) {
   if (nowPlayingSongId == songId && isPlaybackActive == isPlaying)
@@ -1258,17 +1294,41 @@ juce::String SongListPanel::getActiveSetlistName() const {
 
 void SongListPanel::refreshFromStorageView() { refreshFromStorage(); }
 
+void SongListPanel::openLocalLibrary() {
+  refreshFromStorage();
+  openLibraryBrowser();
+}
+
 void SongListPanel::activateSongAtIndex(const int songIndex) {
   const auto *song = getSongPtr(songIndex);
   if (song == nullptr)
     return;
-  setSelectedSongIndex(songIndex);
+  const auto requestedSong = *song;
+  if (!activateVisibleSetlistForSong(requestedSong)) return;
+  const int resolvedIndex = getSongIndexById(requestedSong.id);
+  setSelectedSongIndex(resolvedIndex);
   if (onSongActivated)
-    onSongActivated(*song, songIndex);
+    onSongActivated(requestedSong, resolvedIndex);
+}
+
+bool SongListPanel::activateVisibleSetlistForSong(const ImportedSongData &song) {
+  if (remoteLibrary || activeSetlistId.isEmpty() || getSongIndexById(song.id) < 0 ||
+      activeSetlistId == playbackLibrary.activeSetlistId) return true;
+  // An explicit row activation commits the visible list before the loader
+  // reads its mix, pitch, tempo and transport queue.
+  const auto requestedSetlistId = activeSetlistId;
+  if (!SongLibraryStore::setActiveSetlistId(requestedSetlistId)) return false;
+  refreshFromStorage();
+  return true;
 }
 
 void SongListPanel::showActiveSetlist() {
-  showSongsView(activeSetlistId);
+  // Opening the drawer preserves the active transport setlist.
+  viewMode = ViewMode::Songs;
+  songsSubview = SongsSubview::SetlistSongs;
+  initialViewApplied = true;
+  refreshFromStorage();
+  showPage(1, true);
 }
 
 void SongListPanel::showSongPicker(juce::Component &anchor,
@@ -1444,7 +1504,9 @@ void SongListPanel::showSongPicker(juce::Component &anchor,
                         parent, options);
 }
 
-void SongListPanel::openSongImportWizardFromExternal() { openSongImportWizard(); }
+void SongListPanel::openSongImportWizardFromExternal() {
+  openSongImportWizard();
+}
 
 void SongListPanel::refreshLanguageTexts() {
   setlistsHeaderLabel.setText(L10n::tr("Repertorio", "Repertoire"),
@@ -1659,9 +1721,8 @@ SongListPanel::SetlistsLayout SongListPanel::computeSetlistsLayout() const {
                                               createButtonSize);
     headerRow.removeFromRight(mobileTopBarActionGap());
   }
-  auto headerAction = headerRow.removeFromRight(createButtonSize);
-  layout.createRow =
-      headerAction.withSizeKeepingCentre(createButtonSize, createButtonSize);
+  const auto headerAction = headerRow.removeFromRight(createButtonSize);
+  layout.createRow = headerAction.withSizeKeepingCentre(createButtonSize, createButtonSize);
   area.removeFromTop(gap1);
   layout.searchRow = area.removeFromTop(searchHeight);
   area.removeFromTop(gap3);
@@ -3679,7 +3740,7 @@ void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
   SessionAuthLogger::write("[ProjectOpenUI] picker url=" + url.toString(false) +
                            " localPath=" + file.getFullPathName());
 
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   juce::String importError;
   const auto importedFile = importProjectUrlToSandbox(url, importError);
   if (importedFile == juce::File{}) {
@@ -3840,7 +3901,18 @@ void SongListPanel::beginLegacySongConversion(const juce::String &songId) {
 void SongListPanel::convertLegacySongAtDestination(
     const juce::String &songId, const juce::File &destination) {
   auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
-  LegacyProjectMigrationTask task(songId, destination,
+  auto libraryDestination = destination;
+#if MTCONTROLS_MAC_APP_STORE
+  // Keep the registered project inside the container. A Save panel grants
+  // this process access to an exported copy, not persistent access next run.
+  if (!destination.isAChildOf(SongLibraryStore::getRootDirectory())) {
+    auto projects = SongLibraryStore::getRootDirectory().getChildFile("projects");
+    projects.createDirectory();
+    libraryDestination = projects.getNonexistentChildFile(
+        destination.getFileNameWithoutExtension(), ProjectStore::kFileExtension, false);
+  }
+#endif
+  LegacyProjectMigrationTask task(songId, libraryDestination,
                                   editor != nullptr
                                       ? static_cast<juce::Component *>(editor)
                                       : static_cast<juce::Component *>(this));
@@ -3862,6 +3934,18 @@ void SongListPanel::convertLegacySongAtDestination(
     return;
   }
 
+#if MTCONTROLS_MAC_APP_STORE
+  if (libraryDestination != destination && !libraryDestination.copyFileTo(destination)) {
+    juce::NativeMessageBox::showMessageBoxAsync(
+        juce::MessageBoxIconType::WarningIcon,
+        L10n::tr("No se pudo exportar la copia", "Couldn't export the copy"),
+        L10n::tr("El proyecto convertido se conserva en Biblioteca. Intenta exportarlo nuevamente.",
+                 "The converted project is kept in Library. Try exporting it again."));
+    refreshFromStorage();
+    return;
+  }
+#endif
+
   selectedSongId = songId;
   if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
   refreshFromStorage();
@@ -3874,7 +3958,7 @@ void SongListPanel::convertLegacySongAtDestination(
       L10n::tr("Conversión completada", "Conversion completed"),
       L10n::tr("La canción ahora vive en el proyecto:\n",
                "The song now lives in the project:\n") +
-          destination.getFullPathName() + "\n\n" +
+          libraryDestination.getFullPathName() + "\n\n" +
           L10n::tr("Configuración tomada de: ", "Settings taken from: ") +
           sourceLabel);
 }
@@ -4168,6 +4252,8 @@ void SongListPanel::timerCallback() {
 
 void SongListPanel::refreshFromStorage() {
   auto library = (remoteLibrary ? *remoteLibrary : SongLibraryStore::loadLibrarySnapshot());
+  // Read the active queue without activating or constructing any setlist.
+  playbackLibrary = library;
   librarySongs = library.songs;
   activeSetlistId = library.activeSetlistId;
   activeSetlistName = L10n::tr("Setlist", "Setlist");
@@ -4310,4 +4396,9 @@ void SongListPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library
   remoteLibrary = std::move(library);
   libraryCatalogPanel.onRemoteAction = onRemoteAction;
   refreshFromStorage();
+}
+
+void SongListPanel::openCloudLibrary() {
+  openLocalLibrary();
+  libraryCatalogPanel.openCloud();
 }

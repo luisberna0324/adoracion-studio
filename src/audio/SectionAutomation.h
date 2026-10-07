@@ -48,11 +48,12 @@ public:
     Pads pads;
   };
 
-  void publish(const std::vector<Part>& parts) {
+  void publish(const std::vector<Part>& parts, bool padsScoped = false) {
     std::lock_guard<std::mutex> lock(publicationMutex);
     const int bankIndex = (published.load(std::memory_order_relaxed) + 1) % 3;
     auto& bank = banks[static_cast<size_t>(bankIndex)];
     bank.sequence.fetch_add(1, std::memory_order_acq_rel);
+    bank.padsScoped.store(padsScoped, std::memory_order_relaxed);
     const int count = static_cast<int>(parts.size()) < maxSections
         ? static_cast<int>(parts.size()) : maxSections;
     for (int index = 0; index < count; ++index) {
@@ -121,6 +122,13 @@ public:
         result.pads.note = part.pads.note.load(std::memory_order_relaxed);
         result.pads.octave = part.pads.octave.load(std::memory_order_relaxed);
       }
+      // Once Pads are programmed for this song, an unassigned section/gap
+      // means silence, rather than unexpectedly resurrecting the global pad.
+      if (result.pads.mask == 0 && bank.padsScoped.load(std::memory_order_relaxed)) {
+        result.pads.mask = enabled | note;
+        result.pads.enabled = false;
+        result.pads.note = -1;
+      }
       if (before == bank.sequence.load(std::memory_order_acquire)) {
         result.valid = true;
         result.bank = bankIndex;
@@ -174,6 +182,7 @@ private:
   };
   struct Bank {
     std::atomic<uint64_t> sequence{0};
+    std::atomic<bool> padsScoped{false};
     std::atomic<int> count{0};
     std::array<AtomicPart, maxSections> parts;
   };

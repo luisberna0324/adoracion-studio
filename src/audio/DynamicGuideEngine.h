@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include <array>
 #include <memory>
 #include <unordered_map>
 
@@ -36,9 +37,16 @@ private:
     double sampleRate = 0.0;
   };
 
-  const SectionSample *activeSample = nullptr;
-  double activePosition = 0.0;
-  double activeIncrement = 1.0;
+  // A bounded polyphonic pool preserves closely placed spoken cues. When
+  // full, the new trigger is rejected instead of cutting a voice or queuing
+  // a stale instruction to play after its timeline position.
+  static constexpr int maxVoices = 8;
+  struct Voice {
+    const SectionSample *sample = nullptr;
+    double position = 0.0;
+    double increment = 1.0;
+  };
+  std::array<Voice, maxVoices> voices{};
   double outputSampleRate = 44100.0;
   juce::String lastMissingKey;
   std::unordered_map<std::string, std::shared_ptr<SectionSample>> samplesByKey;

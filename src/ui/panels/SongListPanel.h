@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <array>
 #include <unordered_map>
 #include <vector>
@@ -79,6 +80,10 @@ public:
   void setSelectedSongIndex(int songIndex);
   bool isAutoPlayNextEnabledForSong(const juce::String &songId) const;
   int resolveAutoPlayNextIndex(const juce::String &currentSongId) const;
+  /** Transport navigation uses the active setlist, independently of the visible page. */
+  std::optional<ImportedSongData> getAutoPlayNextSong(const juce::String &currentSongId) const;
+  std::optional<ImportedSongData> getPlaybackAdjacentSong(const juce::String &currentSongId,
+                                                       int direction, bool wrap) const;
   void setNowPlayingSong(const juce::String &songId, bool isPlaying);
   void setCloudUploadProgress(const juce::String &songId, double fraction,
                               const juce::String &phase);
@@ -88,6 +93,10 @@ public:
   int getLastActivatedIndex() const;
   juce::String getActiveSetlistName() const;
   void refreshFromStorageView();
+  void openLocalLibrary();
+  void openCloudLibrary();
+  bool isSongEditorOpen() const { return songImportOverlay != nullptr; }
+  bool isCloudLibraryOpen() const { return libraryCatalogPanel.isCloudOpen(); }
   void showSongPicker(juce::Component &anchor, std::function<void()> onAdd);
   void showActiveSetlist();
   void openSongImportWizardFromExternal();
@@ -103,6 +112,7 @@ public:
   void resized() override;
 
 private:
+  friend struct TeamsWorkspaceTestAccess;
   std::shared_ptr<const LibraryState> remoteLibrary;
   friend struct SongListPanelTestAccess;
   enum class ViewMode { Setlists, Songs };
@@ -235,6 +245,7 @@ private:
                               juce::Rectangle<int> targetArea);
   void showSetlistsView();
   void showSongsView(const juce::String &setlistId);
+  bool activateVisibleSetlistForSong(const ImportedSongData &song);
   void showLibraryView(bool animate);
   void showSongsSubview(bool animate);
   void animateTransitionIfNeeded(ViewMode previousMode);
@@ -299,6 +310,7 @@ private:
   float songsSwipeStartOffsetPx = 0.0f;
   juce::Point<float> songsSwipeStartPosition;
   std::vector<ImportedSongData> librarySongs;
+  LibraryState playbackLibrary;
   std::vector<int> activeSongIndices;
   juce::String activeSetlistId;
   juce::String activeSetlistName;

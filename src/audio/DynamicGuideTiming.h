@@ -46,11 +46,12 @@ arrangementCountSectionKey(const juce::String &partName) {
 
 inline bool isDynamicGuideUtilityCueKey(const juce::String &rawKey) {
   const auto key = DynamicGuideEngine::normalizeSectionKey(rawKey);
-  static constexpr std::array<const char *, 25> utilityCueKeys = {{
+  static constexpr std::array<const char *, 27> utilityCueKeys = {{
       "a capella", "ad lib", "all", "all in", "bass", "big", "big ending",
       "break", "build", "drums", "drums in", "guitar", "hits", "hold", "key",
       "key change down", "key change up", "keys", "last", "last time",
-      "slowly", "slowly build", "softly", "swell", "worship freely"}};
+      "slowly", "slowly build", "softly", "swell", "worship freely",
+      "breakdown", "acapella"}};
   for (const auto *candidate : utilityCueKeys) {
     if (key == candidate)
       return true;

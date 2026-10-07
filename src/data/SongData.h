@@ -87,9 +87,53 @@ struct SongArrangementPartSnapshot {
   SectionAutomationSnapshot automation;
 };
 
+// A guide instruction is a point on the musical timeline, not an audio clip.
+// An anchor follows its parent section when the section moves or is copied.
+// positionSec remains an absolute fallback if that parent is removed or trimmed.
+struct SongArrangementCueSnapshot {
+  juce::String id;
+  juce::String name;
+  juce::String color;
+  juce::String partId;
+  double positionSec = 0.0;
+  double offsetSec = 0.0;
+  // Zero keeps an individual instruction. A count sequence starts with the
+  // numeric name and expands through countEnd on the source-time interval.
+  int countEnd = 0;
+  double countIntervalSec = 0.0;
+  // Explicit source-time offsets retain pulse alignment across tempo regions.
+  // Empty keeps the fixed-interval representation used by earlier documents.
+  std::vector<double> countOffsetsSec;
+
+  bool operator==(const SongArrangementCueSnapshot &other) const {
+    return id == other.id && name == other.name && color == other.color &&
+           partId == other.partId && positionSec == other.positionSec &&
+           offsetSec == other.offsetSec && countEnd == other.countEnd &&
+           countIntervalSec == other.countIntervalSec &&
+           countOffsetsSec == other.countOffsetsSec;
+  }
+};
+
 struct SongArrangementSnapshot {
   std::vector<SongArrangementPartSnapshot> parts;
+  std::vector<SongArrangementCueSnapshot> cues;
 };
+
+constexpr int kMaxArrangementCueEvents = 512;
+int arrangementCueEventCount(const SongArrangementSnapshot &arrangement) noexcept;
+
+double resolveArrangementCueSeconds(const SongArrangementSnapshot &arrangement,
+                                    const SongArrangementCueSnapshot &cue);
+// Invalid/missing anchors become absolute marks; out-of-range offsets are never
+// silently clipped onto a section boundary. Neither helper removes a valid cue.
+bool normalizeArrangementCues(SongArrangementSnapshot &arrangement);
+// Restores continuous identical musical fragments around legacy count/utility
+// clips, or absorbs them into a uniquely compatible musical neighbour. Ambiguous
+// mappings, copied source IDs and section-specific actions stay intact.
+bool migrateLegacyArrangementCues(SongArrangementSnapshot &arrangement);
+juce::var arrangementCueToVar(const SongArrangementCueSnapshot &cue);
+bool arrangementCueFromVar(const juce::var &value,
+                           SongArrangementCueSnapshot &outCue);
 
 enum class ClickDivision { Quarter = 1, Eighth = 2, Sixteenth = 4 };
 
@@ -132,7 +176,7 @@ struct ImportedSongData {
 };
 
 extern const std::array<const char *, 19> kTrackCategories;
-extern const std::array<const char *, 15> kSongSectionSuggestions;
+extern const std::array<const char *, 14> kSongSectionSuggestions;
 
 int timeSignatureBeatsPerBar(const juce::String &timeSignature);
 

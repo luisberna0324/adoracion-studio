@@ -139,9 +139,10 @@ struct PreparedGuideTrigger {
 
 inline std::vector<PreparedGuideTrigger> prepareGuideTriggers(
     const std::vector<SongMixExportGuideSection> &sections,
-    const double oneBarLeadSourceSeconds) {
+    const double oneBarLeadSourceSeconds,
+    const SongArrangementSnapshot &arrangement = {}) {
   std::vector<PreparedGuideTrigger> prepared;
-  prepared.reserve(sections.size());
+  prepared.reserve(sections.size() + arrangement.cues.size());
   const double finiteLead =
       std::isfinite(oneBarLeadSourceSeconds)
           ? std::max(0.0, oneBarLeadSourceSeconds)
@@ -157,6 +158,34 @@ inline std::vector<PreparedGuideTrigger> prepareGuideTriggers(
         {section.name,
          std::max(0.0, section.startSeconds -
                            (triggerAtEntry ? 0.0 : finiteLead))});
+  }
+  for (const auto &cue : arrangement.cues) {
+    const double position = resolveArrangementCueSeconds(arrangement, cue);
+    const auto parent = std::find_if(arrangement.parts.begin(), arrangement.parts.end(),
+        [&cue](const auto &part) { return part.id == cue.partId; });
+    if (!std::isfinite(position) || position < 0.0 ||
+        (parent != arrangement.parts.end() && parent->skipPlayback))
+      continue;
+    const auto countKey = playworship::audio::arrangementCountSectionKey(cue.name);
+    const int firstCount = countKey.getIntValue();
+    const int requestedLength = firstCount >= 1 && firstCount <= 7 &&
+        cue.countEnd >= firstCount && cue.countEnd <= 7 ? cue.countEnd - firstCount + 1 : 0;
+    const bool validOffsets = requestedLength > 0 &&
+        cue.countOffsetsSec.size() == static_cast<size_t>(requestedLength) &&
+        cue.countOffsetsSec.front() == 0.0 &&
+        std::adjacent_find(cue.countOffsetsSec.begin(), cue.countOffsetsSec.end(),
+            [](double left, double right) { return right <= left; }) == cue.countOffsetsSec.end() &&
+        std::all_of(cue.countOffsetsSec.begin(), cue.countOffsetsSec.end(), [](double offset) {
+          return std::isfinite(offset) && offset >= 0.0;
+        });
+    const bool sequence = firstCount >= 1 && cue.countEnd >= firstCount && cue.countEnd <= 7 &&
+        (validOffsets || (std::isfinite(cue.countIntervalSec) && cue.countIntervalSec > 0.0));
+    const int countLength = sequence ? requestedLength : 1;
+    for (int i = 0; i < countLength; ++i) {
+      const double offset = sequence ? (validOffsets ? cue.countOffsetsSec[static_cast<size_t>(i)]
+          : i * cue.countIntervalSec) : 0.0;
+      prepared.push_back({sequence ? juce::String(firstCount + i) : cue.name, position + offset});
+    }
   }
   std::stable_sort(
       prepared.begin(), prepared.end(),

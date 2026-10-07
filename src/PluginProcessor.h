@@ -244,9 +244,9 @@ public:
   bool isMasterMuted() const noexcept;
   bool loadPadsPackFromFolder(const juce::File &sourceFolder);
   bool reloadLastPadsPack();
-  bool ensurePadsPackReady();
+  bool ensurePadsPackReady(bool allowNetworkDownloads = true);
   bool ensurePadsNoteReady(int noteIndex, bool full = false);
-  void startPadsPreloadAsync();
+  void startPadsPreloadAsync(bool allowNetworkDownloads = true);
   bool isPadsPreloadRunning() const noexcept;
   void refreshPadsRoutingFromSettings() noexcept;
   void setPadsEnabled(bool enabled) noexcept;
@@ -438,14 +438,18 @@ private:
   struct AudioAutomationPadsEvent {
     int outputOffset = 0;
     playworship::audio::SectionAutomation::Pads pads;
+    uint64_t token = 0;
   };
   std::array<AudioAutomationPadsEvent, StemTrack::maxMixTransitions> audioAutomationPadsEvents{};
   int audioAutomationPadsEventCount = 0;
   playworship::audio::SectionAutomation::Pads audioAutomationInitialPads;
+  uint64_t padsMixLastToken = 0;
+  uint64_t audioAutomationInitialPadsToken = 0;
   std::atomic<uint64_t> sectionAutomationCurrentToken{0};
   std::atomic<uint64_t> sectionAutomationManualToken{0};
   uint64_t sectionAutomationPublicationRevision = 0;
   std::atomic<int> padsBaseNote{-1}, padsBaseOctave{0};
+  std::atomic<bool> padsAwaitingManualAfterAutomation{false};
   std::atomic<int> padsRenderedOctave{0};
   juce::SmoothedValue<float> padsMixSmoother{0.75f};
   bool isStemAutomationEligible(int stemIndex) const noexcept;
@@ -506,6 +510,9 @@ private:
   std::atomic<bool> padsPackLoaded{false};
   std::atomic<bool> padsPackLoading{false};
   std::atomic<bool> padsPreloadRunning{false};
+  // A signed-in UI may request online preparation while startup is still
+  // completing a cache-only pass. The message-thread timer retries once.
+  std::atomic<bool> padsNetworkPreloadPending{false};
   std::atomic<bool> padsAttacksPrepared{false};
   std::atomic<bool> padsFullLoadRequested{false};
   std::atomic<bool> padsPreloadShouldExit{false};
@@ -623,6 +630,13 @@ private:
     bool skipPlayback = false;
   };
   std::vector<ArrangementRuntimePart> arrangementParts;
+  struct ArrangementRuntimeCue {
+    juce::String name;
+    double positionSec = 0.0;
+    int guideTriggerId = -1;
+    bool skipPlayback = false;
+  };
+  std::vector<ArrangementRuntimeCue> arrangementCues;
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};

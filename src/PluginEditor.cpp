@@ -21,15 +21,19 @@
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
 #include "ui/components/AppModal.h"
+#include "ui/learning/LearningGuideOverlay.h"
 #include "ui/components/ReauthPromptModal.h"
 #include "ui/components/SettingsVersionsSheet.h"
 #include "platform/NativeAuthSession.h"
+#include "platform/NativeAppleSignIn.h"
 #include "ui/components/SetlistHandlePanel.h"
 #include "ui/components/WelcomeModal.h"
+#include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
+#include "ui/panels/TeamsPanel.h"
 
 #include "ui/panels/SongListPanel.h"
 #include "network/RemoteStateCodec.h"
@@ -285,10 +289,6 @@ double getCurrentProcessMemoryUsageMb() noexcept {
 MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
     MTControlsAudioProcessor &p)
     : AudioProcessorEditor(p), playbackSession(p) {
-#if JUCE_IOS || JUCE_ANDROID
-  juce::Desktop::getInstance().setOrientationsEnabled(
-      juce::Desktop::rotatedClockwise | juce::Desktop::rotatedAntiClockwise);
-#endif
   SessionAuthLogger::write("PluginEditor ctor");
   SessionAuthLogger::write("PluginEditor ctor: log file " +
                            SessionAuthLogger::getLogFile().getFullPathName());
@@ -323,6 +323,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
+  localDemoSession = AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
   const bool canFastBootFromSnapshot =
@@ -332,7 +333,9 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   initializeWelcomeModal();
 
-  if (canFastBootFromSnapshot) {
+  if (localDemoSession) {
+    enterLocalDemoSession();
+  } else if (canFastBootFromSnapshot) {
     SessionAuthLogger::write(
         "PluginEditor ctor: local session snapshot accepted, entering UI before "
         "online validation");
@@ -511,6 +514,8 @@ void MTControlsAudioProcessorEditor::refreshCloudSettingsBaselines(
   const auto safe =
       juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   for (const auto &cloudSong : cloudSongs) {
+    if (cloudSong.isSharedCloud())
+      continue;
     CloudProjectLink link;
     if (!CloudSyncIndexStore::findByRemoteSongId(cloudSong.songId, link))
       continue;
@@ -1043,12 +1048,24 @@ void MTControlsAudioProcessorEditor::fitMobileEditorToHost() {
 #endif
 }
 
+bool MTControlsAudioProcessorEditor::shouldUsePhonePortraitOrientation() const {
+  // iPhone authentication uses portrait from launch through every auth step.
+  // Android keeps its existing startup policy, including the deferred fast boot.
+#if JUCE_IOS
+  if (!mainUiInitialized ||
+      (welcomeModal != nullptr && welcomeModal->isVisible()) ||
+      (reauthPromptModal != nullptr && reauthPromptModal->isVisible()))
+    return true;
+#endif
+  return isSetlistDrawerOpen || settingsOverlay != nullptr ||
+         practiceOverlay != nullptr || teamsOverlay != nullptr;
+}
+
 void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #if JUCE_IOS || JUCE_ANDROID
   if (!isPhoneSizedLayout(*this) || phoneOrientationUpdatePending)
     return;
-  const int desired = (isSetlistDrawerOpen || settingsOverlay != nullptr ||
-                       practiceOverlay != nullptr)
+  const int desired = shouldUsePhonePortraitOrientation()
                           ? juce::Desktop::upright
                           : juce::Desktop::rotatedClockwise |
                                 juce::Desktop::rotatedAntiClockwise;
@@ -1059,15 +1076,14 @@ void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
 #else
   phoneOrientationUpdatePending = true;
   // Changing the scene's orientation from inside resized() can nest native
-  // layout callbacks. Coalesce requests and use the latest drawer state.
+  // layout callbacks. Coalesce requests and use the latest auth/overlay state.
   juce::MessageManager::callAsync(
       [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         if (safe == nullptr)
           return;
         safe->phoneOrientationUpdatePending = false;
         juce::Desktop::getInstance().setOrientationsEnabled(
-            (safe->isSetlistDrawerOpen || safe->settingsOverlay != nullptr ||
-             safe->practiceOverlay != nullptr)
+            safe->shouldUsePhonePortraitOrientation()
                 ? juce::Desktop::upright
                 : juce::Desktop::rotatedClockwise |
                       juce::Desktop::rotatedAntiClockwise);
@@ -1171,8 +1187,10 @@ void MTControlsAudioProcessorEditor::updateResponsiveLayoutProfile() {
 
 void MTControlsAudioProcessorEditor::refreshCloudLibrary(
     const juce::String &query) {
-  if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
+  if (localDemoSession || !activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
       activeSession.refreshToken.isEmpty()) {
+    ++cloudLibrarySearchGeneration;
+    cloudCatalogSongs.clear();
     if (songListPanelRaw != nullptr) {
       songListPanelRaw->setCloudSongs({});
       songListPanelRaw->setCloudSearchLoading(false);
@@ -1183,19 +1201,27 @@ void MTControlsAudioProcessorEditor::refreshCloudLibrary(
     cloudLibraryClient = std::make_unique<CloudLibraryClient>();
 
   const auto generation = ++cloudLibrarySearchGeneration;
+  const auto uid = activeSession.uid;
   const auto safeThis =
       juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   cloudLibraryClient->search(
       getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken,
       query, {}, 50,
-      [safeThis, generation](CloudSongPage page, CloudRequestError error) {
-        if (safeThis == nullptr || generation != safeThis->cloudLibrarySearchGeneration)
+      [safeThis, generation, uid](CloudSongPage page, CloudRequestError error) {
+        if (safeThis == nullptr || generation != safeThis->cloudLibrarySearchGeneration ||
+            uid != safeThis->activeSession.uid)
           return;
         if (safeThis->songListPanelRaw != nullptr) {
           safeThis->songListPanelRaw->setCloudSearchLoading(false);
-          if (error.code.isNotEmpty())
+          if (error.code.isNotEmpty()) {
+            if (error.httpCode == 401 || error.httpCode == 403 || error.httpCode == 404) {
+              safeThis->cloudCatalogSongs.clear();
+              safeThis->songListPanelRaw->setCloudSongs({});
+            }
             return;
+          }
           safeThis->refreshCloudSettingsBaselines(page.songs);
+          safeThis->cloudCatalogSongs = page.songs;
           safeThis->songListPanelRaw->setCloudSongs(std::move(page.songs));
         }
       });
@@ -1212,7 +1238,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                      1));
   };
 #endif
-  if (lastSuccessfulLoginMs > 0) {
+  if (!localDemoSession && lastSuccessfulLoginMs > 0) {
     const auto nowMs = juce::Time::currentTimeMillis();
     const auto sessionDueAtMs = lastSuccessfulLoginMs + kSessionReauthIntervalMs;
     if (nowMs >= sessionDueAtMs) {
@@ -1232,6 +1258,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   if (mainUiInitialized)
     return;
+
+  static_cast<MTControlsAudioProcessor &>(processor).startPadsPreloadAsync(!localDemoSession);
 
   {
     const auto audioCtx = getStandaloneAudioContext(static_cast<MTControlsAudioProcessor &>(processor));
@@ -1883,7 +1911,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   songListRaw->setOnCloudSearchRequested(
       [this](const juce::String &query) { refreshCloudLibrary(query); });
   songListRaw->setOnCloudDownloadRequested(
-      [this](const juce::String &remoteSongId,
+      [this](const juce::String &catalogSongId,
              const juce::String &targetSetlistId) {
         if (!activeSession.allowed || activeSession.firebaseApiKey.isEmpty() ||
             activeSession.refreshToken.isEmpty()) {
@@ -1894,6 +1922,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                        "Sign in again before downloading songs."));
           return;
         }
+        const auto sharedSong = std::find_if(cloudCatalogSongs.begin(), cloudCatalogSongs.end(),
+            [&](const CloudSongSummary &song) {
+              return song.isSharedCloud() && song.catalogId() == catalogSongId;
+            });
+        if (sharedSong != cloudCatalogSongs.end()) {
+          downloadSharedCloudSong(*sharedSong, targetSetlistId);
+          return;
+        }
+        if (catalogSongId.startsWith("shared-cloud:")) {
+          refreshCloudLibrary({});
+          return;
+        }
+        const auto remoteSongId = catalogSongId;
         // The menu is normally derived from this same link, but guard the
         // transfer boundary as well: a stale Cloud result must not download a
         // second copy of a song already materialized locally.
@@ -2002,6 +2043,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 
   auto loadSong = [channelGridRaw, waveformBarRaw, &p,
                    this](const ImportedSongData &song, int songIndex) -> bool {
+    if (demoLoadingOverlay) return false;
     if (playbackSession.isRemote()) { playbackSession.send("song.load", {}, song.id); return true; }
     if (songLoadBusy)
       return false;
@@ -2635,7 +2677,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     deferredStartupSongIndex = -1;
     deferredStartupSongLoadAtMs = 0;
     const auto lastSelectedSongId = AppSettings::getLastSelectedSongId();
-    if (lastSelectedSongId.isNotEmpty()) {
+    if (!localDemoSession && lastSelectedSongId.isNotEmpty()) {
       const int index = songListRaw != nullptr
                             ? songListRaw->getSongIndexById(lastSelectedSongId)
                             : -1;
@@ -2664,9 +2706,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   };
 
   auto prevSong = [songListRaw, requestSongLoadByIndex,
-                   resolveCurrentSongIndex]() {
+                   resolveCurrentSongIndex, this]() {
     if (!songListRaw)
       return;
+    if (hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
+      if (const auto previous = songListRaw->getPlaybackAdjacentSong(
+              currentLoadedSong.id, -1, false); previous && requestSongLoadAction)
+        requestSongLoadAction(*previous, songListRaw->getSongIndexById(previous->id));
+      return;
+    }
     const int count = songListRaw->getSongCount();
     if (count <= 0)
       return;
@@ -2686,6 +2734,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                    this]() {
     if (!songListRaw)
       return;
+    if (hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
+      auto next = songListRaw->getAutoPlayNextSong(currentLoadedSong.id);
+      if (!next)
+        next = songListRaw->getPlaybackAdjacentSong(currentLoadedSong.id, 1, true);
+      if (next && requestSongLoadAction)
+        requestSongLoadAction(*next, songListRaw->getSongIndexById(next->id));
+      return;
+    }
     const int count = songListRaw->getSongCount();
     if (count <= 0)
       return;
@@ -2695,18 +2751,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     if (index < 0)
       index = 0;
     index = juce::jlimit(0, count - 1, index);
-
-    // Prefer a song explicitly marked for auto-play-next. This keeps worship
-    // flow predictable: clicking "next" while the last song plays should jump
-    // to the next marked song instead of silently no-op'ing at the boundary.
-    if (hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty()) {
-      const int markedNext =
-          songListRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
-      if (juce::isPositiveAndBelow(markedNext, count) && markedNext != index) {
-        requestSongLoadByIndex(markedNext);
-        return;
-      }
-    }
 
     // Fallback: walk forward by one slot, wrapping to the first song when the
     // user is already at the tail. This makes the transport button always
@@ -2820,6 +2864,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setOnPhonePads(
       [this](juce::Component &anchor) { showPhonePadsPopover(anchor); });
   topBarRaw->setOnPhonePractice([this] { showPractice(); });
+  topBarRaw->setOnLearningRequested([this] { showLearningGuide(); });
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
     phonePadsOpen = false;
@@ -2896,10 +2941,19 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       launchExternalLogin();
     };
     prompt->onLater = [this] {
+      cancelAuthenticationAttempt();
       reauthPromptDismissed = true;
       reauthLoginInProgress = false;
       hideReauthPromptModal();
     };
+    prompt->onAppleLoginNow = [this] { launchAppleLogin(); };
+    prompt->onPasswordLoginRequested = [this](const juce::String& email, const juce::String& password) {
+      launchPasswordLogin(email, password);
+    };
+    prompt->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
+    prompt->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+    prompt->onPreferredHeightChanged = [this] { resized(); };
+    prompt->setAppleSignInAvailable(appleSignInAvailable);
     reauthPromptModal = std::move(prompt);
     addAndMakeVisible(*reauthPromptModal);
     reauthPromptModal->setVisible(false);
@@ -2970,14 +3024,27 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
 }
 
 void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
+  if (learningGuide) pauseLearningGuide();
   auto modal = std::make_unique<WelcomeModal>();
   modal->onLoginRequested = [this] { launchExternalLogin(); };
+  modal->onAppleLoginRequested = [this] { launchAppleLogin(); };
+  modal->onPasswordLoginRequested = [this](const juce::String& email, const juce::String& password) {
+    launchPasswordLogin(email, password);
+  };
+  modal->onLocalDemoLoginRequested = [this](const juce::String& username, const juce::String& password) {
+    launchLocalDemoLogin(username, password);
+  };
+  modal->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
+  modal->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+  modal->setAppleSignInAvailable(appleSignInAvailable);
   welcomeModal = std::move(modal);
   addAndMakeVisible(*welcomeModal);
   resized();
+  refreshAppleSignInConfiguration();
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
+  cancelAuthenticationAttempt();
   sessionResumeCancelled = false;
 #if JUCE_IOS || JUCE_ANDROID
   NativeAuthSession::cancel();
@@ -2993,11 +3060,12 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
     reauth->showWaitingForCallback();
 
+  const auto generation = authAttemptGeneration;
   const auto started = NativeAuthSession::start(
       loginUrl, "playworship",
-      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)](
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this), generation](
           const juce::String &callbackUrl, const juce::String &error) {
-        if (safe == nullptr)
+        if (safe == nullptr || generation != safe->authAttemptGeneration)
           return;
         if (callbackUrl.isNotEmpty()) {
           safe->enqueueAuthCallbackUrl(callbackUrl);
@@ -3054,7 +3122,15 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
     reauth->showWaitingForCallback();
 
-  juce::URL(loginUrl).launchInDefaultBrowser();
+  if (!juce::URL(loginUrl).launchInDefaultBrowser()) {
+    cancelAuthenticationAttempt();
+    const auto message = L10n::tr(u8"No se pudo abrir el navegador. Puedes ingresar con correo.",
+                                  "Couldn't open the browser. You can sign in with email.");
+    if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
+      modal->setStatusText(message, true);
+    if (auto* modal = dynamic_cast<ReauthPromptModal*>(reauthPromptModal.get()))
+      modal->showError(message);
+  }
 #endif
 }
 
@@ -3089,66 +3165,67 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     return;
   }
 
-  activeSession.uid = params["uid"].trim();
-  activeSession.email = params["email"].trim();
-  activeSession.plan = params["plan"].trim();
-  activeSession.subscriptionStatus = params["subscriptionStatus"].trim();
-  activeSession.expiresAt = params["expiresAt"].trim();
-  activeSession.allowed = parseBooleanLike(params["allowed"], false);
-  activeSession.reasonCode = params["reasonCode"].trim();
-  activeSession.reason = params["reason"].trim();
-  activeSession.refreshToken = params["refreshToken"].trim();
-  activeSession.firebaseApiKey = params["firebaseApiKey"].trim();
-  activeSession.licenseKey = params["licenseKey"].trim();
+  PersistedSessionSnapshot candidate;
+  candidate.uid = params["uid"].trim();
+  candidate.email = params["email"].trim();
+  candidate.plan = params["plan"].trim();
+  candidate.subscriptionStatus = params["subscriptionStatus"].trim();
+  candidate.expiresAt = params["expiresAt"].trim();
+  candidate.allowed = parseBooleanLike(params["allowed"], false);
+  candidate.reasonCode = params["reasonCode"].trim();
+  candidate.reason = params["reason"].trim();
+  candidate.refreshToken = params["refreshToken"].trim();
+  candidate.firebaseApiKey = params["firebaseApiKey"].trim();
+  candidate.licenseKey = params["licenseKey"].trim();
   const auto expMsFromParams = params["idTokenExpiresAtMs"].trim().getLargeIntValue();
   if (expMsFromParams > 0)
-    activeSession.idTokenExpiresAtMs = expMsFromParams;
+    candidate.idTokenExpiresAtMs = expMsFromParams;
   const auto sessionJsonRaw = params["session"].trim();
   if (sessionJsonRaw.isNotEmpty()) {
     const auto parsed = juce::JSON::parse(sessionJsonRaw);
-    activeSession.uid =
+    candidate.uid =
         readStringFromObject(parsed, "uid").isNotEmpty()
             ? readStringFromObject(parsed, "uid")
-            : activeSession.uid;
-    activeSession.email =
+            : candidate.uid;
+    candidate.email =
         readStringFromObject(parsed, "email").isNotEmpty()
             ? readStringFromObject(parsed, "email")
-            : activeSession.email;
-    activeSession.plan =
+            : candidate.email;
+    candidate.plan =
         readStringFromObject(parsed, "plan").isNotEmpty()
             ? readStringFromObject(parsed, "plan")
-            : activeSession.plan;
-    activeSession.subscriptionStatus =
+            : candidate.plan;
+    candidate.subscriptionStatus =
         readStringFromObject(parsed, "subscriptionStatus").isNotEmpty()
             ? readStringFromObject(parsed, "subscriptionStatus")
-            : activeSession.subscriptionStatus;
-    activeSession.expiresAt =
+            : candidate.subscriptionStatus;
+    candidate.expiresAt =
         readStringFromObject(parsed, "expiresAt").isNotEmpty()
             ? readStringFromObject(parsed, "expiresAt")
-            : activeSession.expiresAt;
-    activeSession.allowed = parseBooleanLike(
-        readStringFromObject(parsed, "allowed"), activeSession.allowed);
-    activeSession.reasonCode = readStringFromObject(parsed, "reasonCode")
+            : candidate.expiresAt;
+    candidate.allowed = parseBooleanLike(
+        readStringFromObject(parsed, "allowed"), candidate.allowed);
+    candidate.reasonCode = readStringFromObject(parsed, "reasonCode")
                                    .isNotEmpty()
                                ? readStringFromObject(parsed, "reasonCode")
-                               : activeSession.reasonCode;
-    activeSession.reason = readStringFromObject(parsed, "reason").isNotEmpty()
+                               : candidate.reasonCode;
+    candidate.reason = readStringFromObject(parsed, "reason").isNotEmpty()
                                ? readStringFromObject(parsed, "reason")
-                               : activeSession.reason;
-    activeSession.refreshToken =
+                               : candidate.reason;
+    candidate.refreshToken =
         readStringFromObject(parsed, "refreshToken").isNotEmpty()
             ? readStringFromObject(parsed, "refreshToken")
-            : activeSession.refreshToken;
-    activeSession.firebaseApiKey =
+            : candidate.refreshToken;
+    candidate.firebaseApiKey =
         readStringFromObject(parsed, "firebaseApiKey").isNotEmpty()
             ? readStringFromObject(parsed, "firebaseApiKey")
-            : activeSession.firebaseApiKey;
+            : candidate.firebaseApiKey;
     if (readStringFromObject(parsed, "licenseKey").isNotEmpty())
-      activeSession.licenseKey = readStringFromObject(parsed, "licenseKey");
+      candidate.licenseKey = readStringFromObject(parsed, "licenseKey");
     const auto expMsRaw = readStringFromObject(parsed, "idTokenExpiresAtMs");
     const auto expMs = expMsRaw.getLargeIntValue();
     if (expMs > 0)
-      activeSession.idTokenExpiresAtMs = expMs;
+      candidate.idTokenExpiresAtMs = expMs;
 
     const auto userVar = parsed.getProperty("user", juce::var{});
     if (userVar.isObject()) {
@@ -3157,37 +3234,60 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       const auto userPlan = readStringFromObject(userVar, "plan");
       const auto userStatus = readStringFromObject(userVar, "subscriptionStatus");
       if (userUid.isNotEmpty())
-        activeSession.uid = userUid;
+        candidate.uid = userUid;
       if (userEmail.isNotEmpty())
-        activeSession.email = userEmail;
+        candidate.email = userEmail;
       if (userPlan.isNotEmpty())
-        activeSession.plan = userPlan;
+        candidate.plan = userPlan;
       if (userStatus.isNotEmpty())
-        activeSession.subscriptionStatus = userStatus;
+        candidate.subscriptionStatus = userStatus;
     }
   }
 
-  if (activeSession.allowed &&
-      !hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
-                                         activeSession.plan)) {
-    activeSession.allowed = false;
-    if (activeSession.reasonCode.isEmpty())
-      activeSession.reasonCode = "INVALID_SUBSCRIPTION_STATE";
-    if (activeSession.reason.isEmpty()) {
-      activeSession.reason =
+  completeAuthenticatedSession(std::move(candidate));
+}
+
+void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
+    PersistedSessionSnapshot snapshot) {
+  if (localDemoSession) return;
+  ++authAttemptGeneration;
+  emailAuthenticationBusy = false;
+  if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
+    modal->setAuthenticationBusy(false);
+    modal->clearCredentials();
+  }
+  if (auto* modal = dynamic_cast<ReauthPromptModal*>(reauthPromptModal.get())) {
+    modal->setAuthenticationBusy(false);
+    modal->clearCredentials();
+  }
+  if (snapshot.allowed && (snapshot.uid.isEmpty() || !snapshot.hasCredentials())) {
+    reauthLoginInProgress = false;
+    if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
+      modal->setStatusText(L10n::tr("La sesión recibida no es válida. Reintenta.",
+                                   "The returned session is invalid. Try again."), true);
+    return;
+  }
+  if (snapshot.allowed &&
+      !hasValidAccessBySubscriptionState(snapshot.subscriptionStatus,
+                                         snapshot.plan)) {
+    snapshot.allowed = false;
+    if (snapshot.reasonCode.isEmpty())
+      snapshot.reasonCode = "INVALID_SUBSCRIPTION_STATE";
+    if (snapshot.reason.isEmpty()) {
+      snapshot.reason =
           "Subscription status is not free/trial/active with a valid plan";
     }
   }
 
-  if (!activeSession.allowed) {
+  if (!snapshot.allowed) {
     juce::String message =
-        userMessageForAccessDenial(activeSession.reasonCode, activeSession.reason);
+        userMessageForAccessDenial(snapshot.reasonCode, snapshot.reason);
     SessionAuthLogger::write(
         "completeBootstrapLogin: access denied allowed=" +
-        juce::String(static_cast<int>(activeSession.allowed)) + " plan=" +
-        activeSession.plan + " status=" + activeSession.subscriptionStatus +
-        " reasonCode=" + activeSession.reasonCode + " reason=" +
-        activeSession.reason);
+        juce::String(static_cast<int>(snapshot.allowed)) + " plan=" +
+        snapshot.plan + " status=" + snapshot.subscriptionStatus +
+        " reasonCode=" + snapshot.reasonCode + " reason=" +
+        snapshot.reason);
     reauthLoginInProgress = false;
     if (mainUiInitialized) {
       handleLogout();
@@ -3197,6 +3297,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     return;
   }
 
+  applyPersistedSnapshotToActive(snapshot);
   lastSuccessfulLoginMs = juce::Time::currentTimeMillis();
   AppSettings::setLastSuccessfulLoginMs(lastSuccessfulLoginMs);
   reauthGraceDeadlineMs = 0;
@@ -3208,9 +3309,11 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     reauth->showReadyState();
   saveSessionSnapshotToDisk();
   SessionAuthLogger::write(
-      "completeBootstrapLogin: web login OK, snapshot saved, calling "
+      "completeAuthenticatedSession: login OK, snapshot saved, calling "
       "initializeMainUi");
   initializeMainUi();
+  if (songListPanelRaw) songListPanelRaw->refreshFromStorageView();
+  refreshCloudLibrary({});
 }
 
 juce::String MTControlsAudioProcessorEditor::consumePendingAuthCallbackUrl() {
@@ -3304,19 +3407,25 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       [this] {
         closeSettings();
       },
-      SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
+      [this] {
+        auto summary = SettingsPanel::SessionSummary{activeSession.uid, activeSession.email,
                                     activeSession.plan,
                                     activeSession.subscriptionStatus,
                                     activeSession.expiresAt,
                                     activeSession.allowed,
                                     activeSession.reasonCode,
                                     activeSession.reason,
-                                    activeSession.licenseKey},
+                                    activeSession.licenseKey};
+        summary.localDemo = localDemoSession;
+        return summary;
+      }(),
       [safeThis = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
         const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
             juce::MessageBoxIconType::QuestionIcon,
             L10n::tr(u8"¿Cerrar sesión?", "Sign out?"),
-            L10n::tr(
+            safeThis && safeThis->localDemoSession ? L10n::tr(
+                "Saldrás de la prueba local y volverás a la bienvenida. La demo y tus ajustes permanecerán en el dispositivo.",
+                "You'll leave the local trial and return to the welcome screen. The demo and your settings will remain on this device.") : L10n::tr(
                 u8"Tendrás que iniciar sesión nuevamente para acceder a tu biblioteca y a las canciones de Cloud.",
                 "You'll need to sign in again to access your library and Cloud songs."),
             L10n::tr(u8"Cerrar sesión", "Sign out"),
@@ -3391,9 +3500,37 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       // Standalone mode is output-only. Keep inputs out of the routing UI too.
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setDiagnosticsBusy(diagnosticExportBusy);
+  panel->setAppleSignInAvailable(appleSignInAvailable);
+  panel->onAppleLinkRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (!safe) return;
+    const auto uid = safe->activeSession.uid;
+    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
+        juce::MessageBoxIconType::QuestionIcon,
+        L10n::tr("Vincular Apple", "Link Apple"),
+        L10n::tr("Apple se añadirá como acceso a esta cuenta. Se conservarán tu correo, biblioteca y permisos actuales, incluso si eliges ocultar el correo en Apple.",
+                 "Apple will be added as a sign-in method for this account. Your email, library and access will be preserved, even if you choose to hide your email with Apple."),
+        L10n::tr("Vincular", "Link"), L10n::tr("Cancelar", "Cancel"), safe.getComponent());
+    juce::AlertWindow::showAsync(options, [safe, uid](int result) {
+      if (result == 1 && safe && safe->activeSession.uid == uid)
+        safe->launchAppleLogin(true);
+    });
+  };
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
+  panel->onLearningRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    juce::MessageManager::callAsync([safe] {
+      if (!safe) return;
+      safe->closeSettings();
+      safe->showLearningGuide();
+    });
+  };
+  panel->onTeamsRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    juce::MessageManager::callAsync([safe] { if (safe) safe->showTeams(); });
+  };
+  // A current server capability controls visibility; the plan name never grants Teams.
+  canManageSharedCloud = false;
+  panel->setTeamsManagementEnabled(hasTeamsMembership);
   panel->onRemoteModeChanged = [this](playworship::remote::RemoteSession::Mode mode) { setRemoteMode(mode); };
   panel->onRemoteServerAliasChanged = [this](const juce::String &alias) {
     AppSettings::setRemoteServerAlias(alias);
@@ -3423,12 +3560,19 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     const auto sessionSnapshot = activeSession;
     cloudLibraryClient->fetchCapabilities(
         getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken,
-        [safePanel, sessionSnapshot](CloudCapabilities caps, CloudRequestError error) mutable {
-          if (safePanel == nullptr) return;
+        [safePanel, sessionSnapshot,
+         safeEditor = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)]
+        (CloudCapabilities caps, CloudRequestError error) mutable {
+          if (safePanel == nullptr || safeEditor == nullptr ||
+              sessionSnapshot.uid != safeEditor->activeSession.uid) return;
           if (error.code.isNotEmpty()) {
+            safeEditor->canManageSharedCloud = false;
+            safePanel->setTeamsManagementEnabled(safeEditor->hasTeamsMembership);
             safePanel->setQuotaUnavailable();
             return;
           }
+          safeEditor->canManageSharedCloud = caps.canManageSharedCloud;
+          safePanel->setTeamsManagementEnabled(caps.canManageSharedCloud || safeEditor->hasTeamsMembership);
           safePanel->updateSessionSummary(SettingsPanel::SessionSummary{
               sessionSnapshot.uid, sessionSnapshot.email, sessionSnapshot.plan,
               sessionSnapshot.subscriptionStatus,
@@ -3466,6 +3610,10 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
 }
 
 void MTControlsAudioProcessorEditor::closeSettings() {
+  if (learningGuide && learningGuide->getParentComponent() != this) {
+    addAndMakeVisible(*learningGuide);
+    learningGuide->setBounds(getLocalBounds());
+  }
   if (settingsWindow != nullptr) {
     settingsWindow->setVisible(false);
     settingsWindow->exitModalState(0);
@@ -3711,6 +3859,10 @@ void MTControlsAudioProcessorEditor::showPractice() {
   addAndMakeVisible(*practiceOverlay);
   practiceOverlay->setBounds(getLocalBounds());
   practiceOverlay->toFront(true);
+  if (learningGuide) {
+    learningGuide->toFront(false);
+    updateLearningGuideTarget();
+  }
   updatePhoneOrientation();
 }
 
@@ -3730,6 +3882,13 @@ bool MTControlsAudioProcessorEditor::navigateBackInSettings() {
 }
 
 void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
+  canManageSharedCloud = false;
+  cloudCatalogSongs.clear();
+  ++cloudLibrarySearchGeneration;
+  cloudDownloadsInProgress.clear();
+  closeTeams();
+  if (teamsClient) teamsClient->cancelAll();
+  teamsPreparation.reset();
   closePractice();
   setResizable(true, true);
 #if JUCE_IOS || JUCE_ANDROID
@@ -3766,6 +3925,10 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 }
 
 void MTControlsAudioProcessorEditor::handleLogout() {
+  const bool wasLocalDemo = localDemoSession;
+  cancelAuthenticationAttempt();
+  appleLoginInProgress = false;
+  appleLinkInProgress = false;
   SessionAuthLogger::write("handleLogout");
   if (remoteSession.getMode() !=
       playworship::remote::RemoteSession::Mode::Local)
@@ -3773,18 +3936,23 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   sessionResumeCancelled = true;
   closeSettings();
   closePractice();
+  if (demoLoadingOverlay) demoLoadingOverlay->exitModalState(0);
+  demoLoadingOverlay.reset();
 
   if (localAuthServer != nullptr)
     localAuthServer->stop();
   authCallbackPort = 0;
 
   activeSession = {};
+  activeSession.allowed = false;
+  localDemoSession = false;
+  AppSettings::setLocalDemoSessionActive(false);
   lastOnlineValidationMs = 0;
-  SessionPersistence::clear();
+  if (!wasLocalDemo) SessionPersistence::clear();
   lastSuccessfulLoginMs = 0;
-  AppSettings::setLastSuccessfulLoginMs(0);
+  if (!wasLocalDemo) AppSettings::setLastSuccessfulLoginMs(0);
   reauthGraceDeadlineMs = 0;
-  AppSettings::setReauthGraceDeadlineMs(0);
+  if (!wasLocalDemo) AppSettings::setReauthGraceDeadlineMs(0);
   reauthPromptDismissed = false;
   reauthLoginInProgress = false;
   hideReauthPromptModal();
@@ -3802,13 +3970,14 @@ void MTControlsAudioProcessorEditor::handleLogout() {
   }
   showWelcomeOnlyMode();
   if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
-    modal->resetStatusToDefault();
+    { modal->setChecking(false); modal->clearCredentials(); modal->resetStatusToDefault(); }
 }
 
 void MTControlsAudioProcessorEditor::showReauthPromptModal() {
   if (!mainUiInitialized || reauthPromptModal == nullptr)
     return;
-  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get())) {
+  if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get());
+      reauth != nullptr && !reauthPromptModal->isVisible()) {
     if (reauthLoginInProgress)
       reauth->showWaitingForCallback();
     else
@@ -3823,6 +3992,7 @@ void MTControlsAudioProcessorEditor::hideReauthPromptModal() {
   if (reauthPromptModal == nullptr)
     return;
   reauthPromptModal->setVisible(false);
+  updatePhoneOrientation();
 }
 
 PersistedSessionSnapshot
@@ -3847,6 +4017,9 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
 
 void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     const PersistedSessionSnapshot &snap) {
+  if (localDemoSession) return;
+  if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid)
+    invalidateCloudAccountView();
   activeSession.uid = snap.uid;
   activeSession.email = snap.email;
   activeSession.plan = snap.plan;
@@ -3863,12 +4036,14 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
 }
 
 void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
+  if (localDemoSession) return;
   const auto nowMs = juce::Time::currentTimeMillis();
   lastOnlineValidationMs = nowMs;
   SessionPersistence::save(persistedSnapshotFromActiveSession(nowMs));
 }
 
 void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
+  if (localDemoSession) return;
   SessionAuthLogger::write("tryResumeSessionAsync: begin");
   PersistedSessionSnapshot snap;
   if (!SessionPersistence::load(snap)) {
@@ -3895,10 +4070,11 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
   juce::Component::SafePointer<MTControlsAudioProcessorEditor> safe(this);
   const juce::String apiBase = getApiBaseUrl();
   const juce::String deviceId = buildStableDeviceId();
+  const auto generation = authAttemptGeneration;
   SessionAuthLogger::write("tryResumeSessionAsync: apiBase=" + apiBase +
                            " deviceIdPrefix=" + deviceId.substring(0, 12) + "...");
 
-  std::thread([safe, snap, apiBase, deviceId] {
+  std::thread([safe, snap, apiBase, deviceId, generation] {
     bool success = false;
     bool validatedOnline = false;
     bool clearSnapshot = false;
@@ -3999,9 +4175,9 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
         juce::String(static_cast<int>(validatedOnline)) + " clearSnapshot=" +
         juce::String(static_cast<int>(clearSnapshot)));
 
-    juce::MessageManager::callAsync([safe, success, validatedOnline, out, welcomeError,
+    juce::MessageManager::callAsync([safe, generation, success, validatedOnline, out, welcomeError,
                                      clearSnapshot] {
-      if (safe != nullptr)
+      if (safe != nullptr && generation == safe->authAttemptGeneration)
         safe->applySessionResumeOnMessageThread(success, validatedOnline, out,
                                                 welcomeError, clearSnapshot);
     });
@@ -4011,7 +4187,7 @@ void MTControlsAudioProcessorEditor::tryResumeSessionAsync() {
 void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
     const bool success, const bool validatedOnline, PersistedSessionSnapshot snapshot,
     const juce::String &welcomeError, const bool clearSnapshotFile) {
-  if (sessionResumeCancelled) {
+  if (localDemoSession || sessionResumeCancelled) {
     SessionAuthLogger::write(
         "applySessionResumeOnMessageThread: skipped (session was signed out)");
     return;
@@ -4063,6 +4239,7 @@ void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
     reauthPromptDismissed = false;
     reauthLoginInProgress = false;
     hideReauthPromptModal();
+    if (songListPanelRaw) songListPanelRaw->refreshFromStorageView();
     refreshCloudLibrary({});
     return;
   }
@@ -4111,7 +4288,7 @@ void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
   // lastSuccessfulLoginMs: ultima confirmacion util (login web o validate-access al
   // arrancar). Se actualiza en disco via AppSettings; lastOnlineValidationMs duplica
   // el valor persistido en session_snapshot para ventana offline.
-  if (!mainUiInitialized || lastSuccessfulLoginMs <= 0)
+  if (localDemoSession || !mainUiInitialized || lastSuccessfulLoginMs <= 0)
     return;
 
   if (!hasValidAccessBySubscriptionState(activeSession.subscriptionStatus,
@@ -4431,6 +4608,20 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+#if JUCE_IOS
+  // Keyboard notifications update JUCE's display insets without necessarily
+  // resizing the fullscreen window. Relayout visible auth only when they change.
+  if ((welcomeModal != nullptr && welcomeModal->isVisible()) ||
+      (reauthPromptModal != nullptr && reauthPromptModal->isVisible())) {
+    if (const auto *display = juce::Desktop::getInstance().getDisplays()
+                                  .getDisplayForRect(getScreenBounds())) {
+      if (lastAuthKeyboardInsets != display->keyboardInsets) {
+        lastAuthKeyboardInsets = display->keyboardInsets;
+        resized();
+      }
+    }
+  }
+#endif
   const auto callbackUrl = consumePendingAuthCallbackUrl();
   if (callbackUrl.isNotEmpty()) {
     completeBootstrapLogin(callbackUrl);
@@ -4443,6 +4634,14 @@ void MTControlsAudioProcessorEditor::timerCallback() {
   }
 
   const auto nowMs = juce::Time::currentTimeMillis();
+  if (demoLoadingOverlay) {
+    auto &p = static_cast<MTControlsAudioProcessor &>(processor);
+    if (p.isSongPlaying()) p.stopSong();
+    return;
+  }
+  offerDemoWelcome();
+  updateTeamsOnboarding();
+  updateLearningGuideTarget();
   if (pendingExternalProjectFile != juce::File{} && !songLoadBusy &&
       songListPanelRaw != nullptr) {
     const auto projectFile = pendingExternalProjectFile;
@@ -4658,12 +4857,16 @@ void MTControlsAudioProcessorEditor::timerCallback() {
     // Natural completion leaves the processor parked exactly at Fin. A manual
     // stop seeks back to Inicio, so checking the current cursor distinguishes
     // both cases without requiring an impossible wrap-to-start transition.
-    if (reachedSongEnd) {
-      const int nextIndex =
-          songListPanelRaw->resolveAutoPlayNextIndex(currentLoadedSong.id);
-      if (juce::isPositiveAndBelow(nextIndex, songListPanelRaw->getSongCount()) &&
-          loadSongByIndexAction) {
-        loadSongByIndexAction(nextIndex, true);
+    if (reachedSongEnd && !(learningGuide && learningLessonId == "demo-song")) {
+      // The browsing workspace is a filtered view. Continue the explicitly
+      // active setlist even while the musician browses another team's library.
+      const auto next = songListPanelRaw->getAutoPlayNextSong(currentLoadedSong.id);
+      if (next && loadSongAction) {
+        const int visibleIndex = songListPanelRaw->getSongIndexById(next->id);
+        if (loadSongAction(*next, visibleIndex)) {
+          if (visibleIndex >= 0) songListPanelRaw->setSelectedSongIndex(visibleIndex);
+          processorRef.playSong();
+        }
       }
     }
   }
@@ -4672,6 +4875,10 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  ++authAttemptGeneration;
+  ++appleConfigurationGeneration;
+  NativeAppleSignIn::cancel();
+  NativeAuthSession::cancel();
   stopTimer();
   if (!playbackSession.isRemote())
     static_cast<MTControlsAudioProcessor &>(processor).finishSectionAutomationEditing(false);
@@ -4735,9 +4942,22 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
 }
 
 void MTControlsAudioProcessorEditor::resized() {
+  if (demoLoadingOverlay) demoLoadingOverlay->setBounds(getLocalBounds());
+  // Authentication also owns the phone orientation before the main UI exists.
+  updatePhoneOrientation();
   if (!mainUiInitialized) {
-    if (welcomeModal != nullptr)
-      welcomeModal->setBounds(getLocalBounds());
+    if (welcomeModal != nullptr) {
+      auto welcomeBounds = getLocalBounds();
+      if (useTouchOptimisedControls()) {
+        if (const auto* display = juce::Desktop::getInstance().getDisplays()
+                                      .getDisplayForRect(getScreenBounds())) {
+          auto insets = display->safeAreaInsets;
+          insets.setBottom(juce::jmax(insets.getBottom(), display->keyboardInsets.getBottom()));
+          welcomeBounds = insets.subtractedFrom(welcomeBounds);
+        }
+      }
+      welcomeModal->setBounds(welcomeBounds);
+    }
     if (settingsOverlay != nullptr)
       settingsOverlay->setBounds(getLocalBounds());
     if (practiceOverlay != nullptr)
@@ -4751,7 +4971,6 @@ void MTControlsAudioProcessorEditor::resized() {
   // user-selectable desktop density profile. A wide landscape phone can use
   // the Standard profile while still needing the phone-safe surface.
   const bool minimalPhoneProfile = isPhoneSizedLayout(*this);
-  updatePhoneOrientation();
   if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
@@ -4776,6 +4995,17 @@ void MTControlsAudioProcessorEditor::resized() {
                                    safeInsets.getBottom(), 0).subtractedFrom(area);
     }
   }
+#if JUCE_IOS
+  else if (const auto *display =
+               juce::Desktop::getInstance().getDisplays().getDisplayForRect(
+                   getScreenBounds())) {
+    // Tablet controls stay inside the status bar and home-indicator safe area.
+    area = display->safeAreaInsets.subtractedFrom(area);
+  }
+#endif
+#endif
+#if JUCE_IOS
+  const auto tabletSafeContentBounds = area;
 #endif
   // Phone mixer bounds already end at the platform safe area. Applying that
   // inset again inside every strip lifts the title and S/M row away from the
@@ -4804,6 +5034,8 @@ void MTControlsAudioProcessorEditor::resized() {
       songListPanel == nullptr || setlistHandlePanel == nullptr)
     return;
 
+  if (teamsOverlay != nullptr)
+    teamsOverlay->setBounds(getLocalBounds());
   if (settingsOverlay != nullptr)
     settingsOverlay->setBounds(getLocalBounds());
   if (practiceOverlay != nullptr)
@@ -5001,23 +5233,37 @@ void MTControlsAudioProcessorEditor::resized() {
       // surface. SongListPanel applies the safe insets to its controls.
       drawerBounds = getLocalBounds();
     } else {
+#if JUCE_IOS
+      const auto drawerHostBounds = tabletSafeContentBounds;
+      const int drawerTop = topBarArea.getBottom() + contentInset;
+#else
+      const auto drawerHostBounds = getLocalBounds();
       const int drawerTop = topBarH + contentInset;
+#endif
       const int drawerWidth = juce::jlimit(
           useTouchOptimisedControls() ? 360 : 340,
           useTouchOptimisedControls() ? 560 : 460,
-          static_cast<int>(getWidth() * (useTouchOptimisedControls() ? 0.46f : 0.38f)));
+          static_cast<int>(drawerHostBounds.getWidth() *
+                           (useTouchOptimisedControls() ? 0.46f : 0.38f)));
       drawerBounds = juce::Rectangle<int>(
-          contentInset, drawerTop,
-          juce::jmin(drawerWidth, getWidth() - (2 * contentInset)),
-          juce::jmax(1, getHeight() - drawerTop - contentInset));
+          drawerHostBounds.getX() + contentInset, drawerTop,
+          juce::jmin(drawerWidth, drawerHostBounds.getWidth() - (2 * contentInset)),
+          juce::jmax(1, drawerHostBounds.getBottom() - drawerTop - contentInset));
     }
 
     songListPanel->setVisible(true);
     songListPanel->setBounds(drawerBounds);
-    const auto scrimBounds = minimalPhoneProfile
+    auto scrimBounds = minimalPhoneProfile
         ? getLocalBounds()
         : juce::Rectangle<int>(0, topBarH, getWidth(),
                                juce::jmax(1, getHeight() - topBarH));
+#if JUCE_IOS
+    if (!minimalPhoneProfile)
+      scrimBounds = juce::Rectangle<int>(
+          tabletSafeContentBounds.getX(), topBarArea.getBottom(),
+          tabletSafeContentBounds.getWidth(),
+          juce::jmax(1, tabletSafeContentBounds.getBottom() - topBarArea.getBottom()));
+#endif
     setlistDrawerScrim->setBounds(scrimBounds);
     setlistDrawerScrim->setFullScreen(minimalPhoneProfile);
     setlistDrawerScrim->setDrawerBounds(
@@ -5052,19 +5298,45 @@ void MTControlsAudioProcessorEditor::resized() {
   setlistHandlePanel->setCollapsed(isSetlistCollapsed);
 
   if (reauthPromptModal != nullptr) {
+    const auto *prompt = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get());
+    auto authBounds = getLocalBounds();
+    if (useTouchOptimisedControls()) {
+      if (const auto* display = juce::Desktop::getInstance().getDisplays()
+                                    .getDisplayForRect(getScreenBounds())) {
+        auto insets = display->safeAreaInsets;
+        insets.setBottom(juce::jmax(insets.getBottom(), display->keyboardInsets.getBottom()));
+        authBounds = insets.subtractedFrom(authBounds);
+      }
+    }
+    authBounds.reduce(16, 12);
     reauthPromptModal->setBounds(
-        juce::Rectangle<int>(560, 230).withCentre(getLocalBounds().getCentre()));
+        juce::Rectangle<int>(juce::jmin(560, juce::jmax(1, authBounds.getWidth())),
+                             juce::jmin(juce::jmax(1, authBounds.getHeight()),
+                                        prompt ? prompt->preferredHeight() : 230))
+            .withCentre(authBounds.getCentre()));
     reauthPromptModal->toFront(false);
   }
 
   if (practiceOverlay != nullptr)
     practiceOverlay->toFront(false);
 
+  if (learningGuide != nullptr) {
+    updateLearningGuideTarget();
+  }
+
 
 }
 
 void MTControlsAudioProcessorEditor::beginExportCurrentSongMix(
     const juce::String &formatExtension) {
+#if MTCONTROLS_MAC_APP_STORE
+  if (formatExtension == "mp3" || formatExtension == "m4a") {
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::InfoIcon,
+        L10n::tr("Exportar mezcla", "Export mix"),
+        L10n::tr("Esta versión exporta la mezcla en WAV.", "This edition exports mixes in WAV."));
+    return;
+  }
+#endif
   if (playbackSession.isRemote()) return;
   if (mixExportBusy || songLoadBusy)
     return;
@@ -5365,6 +5637,10 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
+  if (learningGuide && learningGuide->isVisible() && key == juce::KeyPress::escapeKey) {
+    pauseLearningGuide();
+    return true;
+  }
   if (practiceOverlay != nullptr) {
     practiceOverlay->keyPressed(key);
     return true;

@@ -236,9 +236,49 @@ void testPartialDecodePreservesLengthAndCancellation() {
   file.deleteFile();
 }
 
+void testOutgoingPadKeepsItsMixLevel() {
+  PadsEngine engine;
+  engine.prepare(1000.0, 64);
+  engine.setCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
+  PadsEngineTestPeer::installConstantSample(engine, 0, 4000, 1000.0);
+  PadsEngineTestPeer::installConstantSample(engine, 2, 4000, 1000.0, 0.0f);
+  engine.setMixGain(0.1f);
+  engine.triggerNote(0, 0);
+  juce::AudioBuffer<float> warmup(1, 1200); warmup.clear(); engine.process(warmup);
+  // A destination with a louder level must not raise the fading old note.
+  engine.setMixGain(1.0f, true);
+  engine.triggerNoteForSongTransition(2, 0);
+  juce::AudioBuffer<float> tail(1, 1100); tail.clear(); engine.process(tail);
+  expect(tail.getMagnitude(0, 0, 1100) <= 0.10001f,
+         "new song/section level cannot boost the outgoing pad");
+  expect(std::abs(tail.getSample(0, 1099)) < 0.00001f,
+         "outgoing pad reaches silence at the end of its crossfade");
+
+  engine.stopAll(); engine.setMixGain(0.1f); engine.triggerNote(0, 0);
+  warmup.clear(); engine.process(warmup);
+  engine.setMixGain(1.0f, true); engine.stopNote(0);
+  tail.clear(); engine.process(tail);
+  expect(tail.getMagnitude(0, 0, 1100) <= 0.10001f &&
+         std::abs(tail.getSample(0, 1099)) < 0.00001f,
+         "a section without a pad fades out without restoring louder base gain");
+
+  engine.stopAll(); engine.setMixGain(0.1f); engine.triggerNote(0, 0);
+  warmup.clear(); engine.process(warmup);
+  engine.setMixGain(1.0f, true);
+  tail.clear(); engine.process(tail);
+  expect(std::abs(tail.getSample(0, 0) - 0.1f) < 0.00001f &&
+         tail.getSample(0, 100) < 0.21f && tail.getSample(0, 1000) > 0.99f,
+         "same-note section level changes follow the crossfade duration without retriggering");
+  engine.setMixGain(0.5f);
+  juce::AudioBuffer<float> manual(1, 40); manual.clear(); engine.process(manual);
+  expect(std::abs(manual.getSample(0, 39) - 0.5f) < 0.00001f,
+         "manual fader changes keep their short responsive ramp");
+}
+
 } // namespace
 
 int main() {
+  testOutgoingPadKeepsItsMixLevel();
   testSongKeyParsing();
   testPadLoopsWithEndCrossfade();
   testSongKeyTransitionCrossfadesVoicesWithoutSilence();

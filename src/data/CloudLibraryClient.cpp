@@ -135,6 +135,9 @@ void CloudLibraryClient::search(
           if (!object) continue;
           CloudSongSummary song;
           song.songId = object->getProperty("songId").toString();
+          song.teamId = object->getProperty("teamId").toString().trim();
+          song.ownerUid = object->getProperty("ownerUid").toString().trim();
+          song.ownerEmail = object->getProperty("ownerEmail").toString().trim();
           song.title = object->getProperty("title").toString();
           song.artist = object->getProperty("artist").toString();
           song.key = object->getProperty("key").toString();
@@ -151,7 +154,9 @@ void CloudLibraryClient::search(
               object->getProperty("artworkUrl").toString(),
               object->getProperty("artworkSha256").toString(),
               object->getProperty("artworkContentType").toString());
-          if (song.songId.isNotEmpty()) page.songs.push_back(std::move(song));
+          if (song.songId.isNotEmpty() &&
+              (!song.isSharedCloud() || (song.ownerUid.isNotEmpty() && song.revision > 0)))
+            page.songs.push_back(std::move(song));
         }
       }
       SessionAuthLogger::write("Cloud library results=" +
@@ -187,6 +192,8 @@ void CloudLibraryClient::fetchCapabilities(
       const auto* root = parsed.getDynamicObject();
       if (!root) { deliverCapabilities({}, {status, "INVALID_RESPONSE", "Invalid cloud response"}); return jobHasFinished; }
       CloudCapabilities caps;
+      const auto teamsCapability = root->getProperty("canManageSharedCloud");
+      caps.canManageSharedCloud = teamsCapability.isBool() && static_cast<bool>(teamsCapability);
       caps.enabled = static_cast<bool>(root->getProperty("enabled")); caps.isOverride = static_cast<bool>(root->getProperty("isOverride"));
       caps.accountType = root->getProperty("accountType").toString(); caps.trialEndsAt = root->getProperty("trialEndsAt").toString(); caps.updatedAt = root->getProperty("updatedAt").toString();
       caps.usedDevices = static_cast<int>(root->getProperty("usedDevices")); caps.maxDevices = static_cast<int>(root->getProperty("maxDevices"));

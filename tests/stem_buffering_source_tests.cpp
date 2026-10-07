@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <thread>
 
 namespace {
 
@@ -22,7 +23,10 @@ public:
       : length(sourceLength), bias(sampleBias) {}
 
   static float sampleAt(const juce::int64 position) {
-    return static_cast<float>((position % 1000) + 1) / 1000.0f;
+    // An absolute frame stamp catches repeated blocks as well as silence. A
+    // power-of-two divisor keeps the test's relevant positions exactly
+    // representable, without the old ramp repeating every 1000 samples.
+    return static_cast<float>(position + 1) / 1048576.0f;
   }
 
   void prepareToPlay(int, double) override {}
@@ -522,6 +526,400 @@ void testFarCursorCannotWrapRangeOffsets() {
 }
 
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
+class CallbackLockHolder final {
+public:
+  explicit CallbackLockHolder(StemBufferingSource &source)
+      : holder([this, &source] {
+          source.enterCallbackLockForTest();
+          entered.signal();
+          release.wait(-1);
+          source.exitCallbackLockForTest();
+        }) {
+    expect(entered.wait(2000), "another thread acquires the callback lock");
+  }
+
+  ~CallbackLockHolder() {
+    release.signal();
+    holder.join();
+  }
+
+private:
+  juce::WaitableEvent entered;
+  juce::WaitableEvent release;
+  std::thread holder;
+};
+
+void fillOutput(juce::AudioBuffer<float> &output, const float value) {
+  for (int channel = 0; channel < output.getNumChannels(); ++channel)
+    for (int sample = 0; sample < output.getNumSamples(); ++sample)
+      output.setSample(channel, sample, value);
+}
+
+void expectStampedOutput(const juce::AudioBuffer<float> &output,
+                         const int startSample, const int frames,
+                         const juce::int64 firstPosition,
+                         const char *message,
+                         const juce::int64 sourceLength =
+                             std::numeric_limits<juce::int64>::max(),
+                         const int availableFrames =
+                             std::numeric_limits<int>::max(),
+                         const float bias = 0.0f) {
+  for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+    for (int sample = 0; sample < frames; ++sample) {
+      const auto position = firstPosition + sample;
+      const auto expected = channel < 2 && sample < availableFrames &&
+                                    position < sourceLength
+                                ? RampSource::sampleAt(position) + bias
+                                : 0.0f;
+      // The path under test only copies floats; exact equality also detects a
+      // one-frame duplication that a general audio epsilon could hide.
+      expect(output.getSample(channel, startSample + sample) == expected,
+             message);
+    }
+  }
+}
+
+void readyAndStopWorker(StemBufferingSource &bufferingSource,
+                        juce::TimeSliceThread &readThread,
+                        const int frames = 32764) {
+  juce::AudioBuffer<float> readiness(2, frames);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, frames);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "deterministic test publishes its full main ring");
+  expect(readThread.stopThread(2000),
+         "deterministic test stops the worker before contention");
+}
+
+void readStampedBlock(StemBufferingSource &bufferingSource, const int frames,
+                      const char *message) {
+  const auto start = bufferingSource.getNextReadPosition();
+  juce::AudioBuffer<float> output(2, frames);
+  const juce::AudioSourceChannelInfo info(&output, 0, frames);
+  bufferingSource.getNextAudioBlock(info);
+  expectStampedOutput(output, 0, frames, start, message);
+  expect(bufferingSource.getNextReadPosition() == start + frames,
+         "stamped callback advances exactly its own frame count");
+}
+
+void testPrivateCacheServesExactFutureFramesDuringRealLockContention() {
+  constexpr int warmFrames = 256;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache contention thread");
+  expect(readThread.startThread(), "private cache read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "first callback warms a frame-stamped private cache");
+
+  const auto capacity = bufferingSource.getRealtimeCacheCapacityFramesForTest();
+  expect(capacity > warmFrames + 960,
+         "private cache can cover several variable callback sizes");
+  const auto locksBefore = bufferingSource.getRealtimeLockMissCount();
+  CallbackLockHolder holder(bufferingSource);
+  int remainingFrames = capacity;
+  for (const auto frames : {64, 256, 127, 513}) {
+    const auto start = bufferingSource.getNextReadPosition();
+    constexpr int outputOffset = 7;
+    juce::AudioBuffer<float> output(3, frames + outputOffset + 11);
+    fillOutput(output, -2.0f);
+    const juce::AudioSourceChannelInfo info(&output, outputOffset, frames);
+    bufferingSource.getNextAudioBlock(info);
+    expectStampedOutput(output, outputOffset, frames, start,
+                         "cache serves new future frames during actual lock contention");
+    for (int channel = 0; channel < output.getNumChannels(); ++channel) {
+      for (int sample = 0; sample < outputOffset; ++sample)
+        expectNear(output.getSample(channel, sample), -2.0f,
+                   "cache preserves output before the active region");
+      for (int sample = outputOffset + frames;
+           sample < output.getNumSamples(); ++sample)
+        expectNear(output.getSample(channel, sample), -2.0f,
+                   "cache preserves output after the active region");
+    }
+    expect(bufferingSource.getNextReadPosition() == start + frames,
+           "variable callbacks advance without repeating any prior block");
+    remainingFrames -= frames;
+  }
+  readStampedBlock(bufferingSource, remainingFrames,
+                   "last cached frames survive the occupied worker lock");
+  expect(bufferingSource.getNextReadPosition() == warmFrames + capacity,
+         "contended callbacks consume each cached frame exactly once");
+  expect(bufferingSource.getRealtimeLockMissCount() > locksBefore,
+         "cache coverage does not hide the actual failed lock attempts");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "brief actual lock contention no longer substitutes silence");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == 0,
+         "cached contention adds no missing-frame count");
+}
+
+void testPrivateCacheSurvivesAnInProgressRangePublication() {
+  constexpr int warmFrames = 128;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache publication thread");
+  expect(readThread.startThread(), "publication test read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "publication test warms the private cache");
+
+  // The worker is stopped, so this deterministically models its sole-writer
+  // odd sequence without racing with another test publisher.
+  bufferingSource.setMainPublicationBusyForTest(true);
+  for (const auto frames : {64, 129, 256, 513})
+    readStampedBlock(bufferingSource, frames,
+                     "an odd ring publication cannot discard cached future audio");
+  bufferingSource.setMainPublicationBusyForTest(false);
+  readStampedBlock(bufferingSource, 128,
+                   "normal publication resumes without a timeline discontinuity");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "an in-progress snapshot publication adds no cached underrun");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == 0,
+         "an in-progress publication substitutes no cached frames");
+}
+
+void testPrivateCacheRefillsBeforeItsOldWindowRunsOut() {
+  constexpr int warmFrames = 128;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache refill thread");
+  expect(readThread.startThread(), "refill test read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "refill test warms its initial private cache");
+  const auto capacity = bufferingSource.getRealtimeCacheCapacityFramesForTest();
+  readStampedBlock(bufferingSource, capacity - warmFrames - 64,
+                   "an available ring refreshes the nearly exhausted cache");
+
+  CallbackLockHolder holder(bufferingSource);
+  readStampedBlock(bufferingSource, 256,
+                   "refreshed cache crosses the original window while the lock is held");
+  readStampedBlock(bufferingSource, 127,
+                   "refreshed cache continues with exact subsequent frames");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "proactive refill prevents an underrun at the old cache boundary");
+}
+
+void testExhaustedPrivateCacheCountsOnlyTheUnavailableSuffix() {
+  constexpr int warmFrames = 128;
+  constexpr int uncachedFrames = 137;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache exhaustion thread");
+  expect(readThread.startThread(), "exhaustion test read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "exhaustion test warms the private cache");
+  const auto capacity = bufferingSource.getRealtimeCacheCapacityFramesForTest();
+  const auto cachedFrames = capacity;
+  const auto requestedFrames = cachedFrames + uncachedFrames;
+
+  CallbackLockHolder holder(bufferingSource);
+  juce::AudioBuffer<float> output(2, requestedFrames);
+  fillOutput(output, -1.0f);
+  const juce::AudioSourceChannelInfo info(&output, 0, requestedFrames);
+  bufferingSource.getNextAudioBlock(info);
+  expectStampedOutput(output, 0, requestedFrames, warmFrames,
+                       "an exhausted cache keeps its valid prefix and silences only the suffix",
+                       source.getTotalLength(), cachedFrames);
+  expect(bufferingSource.getNextReadPosition() ==
+             warmFrames + capacity + uncachedFrames,
+         "cache exhaustion still advances the complete callback");
+  expect(bufferingSource.getRealtimeMissCount() == 1,
+         "cache exhaustion counts exactly one affected callback");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == uncachedFrames,
+         "cache exhaustion counts precisely the uncached suffix");
+
+  juce::AudioBuffer<float> next(2, 64);
+  const juce::AudioSourceChannelInfo nextInfo(&next, 0, 64);
+  bufferingSource.getNextAudioBlock(nextInfo);
+  expectStampedOutput(next, 0, 64, warmFrames + capacity + uncachedFrames,
+                       "an exhausted cache never replays its old contents",
+                       source.getTotalLength(), 0);
+  expect(bufferingSource.getRealtimeMissCount() == 2,
+         "continued contention after exhaustion counts the next callback");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == uncachedFrames + 64,
+         "continued exhaustion accumulates only genuinely unavailable frames");
+}
+
+void testSeekInsidePrivateCacheInvalidatesThePreviousEpoch() {
+  constexpr int warmFrames = 128;
+  constexpr juce::int64 target = 512;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache seek thread");
+  expect(readThread.startThread(), "cache seek test read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "seek test warms a cache containing its future target");
+  expect(target + warmFrames <
+             bufferingSource.getRealtimeCacheCapacityFramesForTest(),
+         "seek destination lies physically inside the old cached window");
+
+  CallbackLockHolder holder(bufferingSource);
+  bufferingSource.setNextReadPosition(target);
+  juce::AudioBuffer<float> output(2, warmFrames);
+  const juce::AudioSourceChannelInfo info(&output, 0, warmFrames);
+  bufferingSource.getNextAudioBlock(info);
+  expectStampedOutput(output, 0, warmFrames, target,
+                       "a seek invalidates old cache even when its samples contain the destination",
+                       source.getTotalLength(), 0);
+  expect(bufferingSource.getNextReadPosition() == target + warmFrames,
+         "post-seek callback advances from the newly requested destination");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == warmFrames,
+         "an unprepared new epoch records missing frames instead of stale cache audio");
+}
+
+void testPrefetchedSeekInsideOldCacheUsesTheTargetBank() {
+  constexpr int blockFrames = 128;
+  constexpr juce::int64 target = 512;
+  constexpr float targetBias = 2.0f;
+  RampSource source(100000);
+  RampSource prefetchSource(100000, targetBias);
+  juce::TimeSliceThread readThread("private cache prefetched seek thread");
+  expect(readThread.startThread(), "cached prefetch read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false, &prefetchSource);
+  bufferingSource.prepareToPlay(blockFrames, 48000.0);
+  juce::AudioBuffer<float> readiness(2, 32764);
+  const juce::AudioSourceChannelInfo readinessInfo(&readiness, 0, 32764);
+  expect(bufferingSource.waitForNextAudioBlockReady(readinessInfo, 2000),
+         "cached prefetch main ring becomes ready");
+  bufferingSource.requestPrefetchPosition(target, blockFrames);
+  const auto deadline = juce::Time::getMillisecondCounter() + 2000U;
+  while (!bufferingSource.isPrefetchReady(target, blockFrames) &&
+         juce::Time::getMillisecondCounter() < deadline)
+    juce::Thread::sleep(1);
+  expect(bufferingSource.isPrefetchReady(target, blockFrames),
+         "cached prefetch target bank becomes ready");
+  expect(readThread.stopThread(2000),
+         "cached prefetch worker stops before deterministic handoff");
+  readStampedBlock(bufferingSource, blockFrames,
+                   "continuous main audio wins while the target overlaps its cache");
+
+  CallbackLockHolder holder(bufferingSource);
+  bufferingSource.setNextReadPosition(target);
+  juce::AudioBuffer<float> output(2, blockFrames);
+  const juce::AudioSourceChannelInfo info(&output, 0, blockFrames);
+  bufferingSource.getNextAudioBlock(info);
+  expectStampedOutput(output, 0, blockFrames, target,
+                       "after seek the independently stamped target bank wins over stale private cache",
+                       source.getTotalLength(), blockFrames, targetBias);
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "a ready target bank survives main cache invalidation without silence");
+  expect(bufferingSource.getNextReadPosition() == target + blockFrames,
+         "prefetched cache handoff advances from the exact seek position");
+}
+
+void testPrivateCachePreservesPublishedEofSilenceDuringContention() {
+  constexpr int warmFrames = 128;
+  constexpr int sourceLength = 192;
+  constexpr int crossingFrames = 256;
+  RampSource source(sourceLength);
+  juce::TimeSliceThread readThread("private cache EOF thread");
+  expect(readThread.startThread(), "cache EOF read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "EOF test warms audio plus worker-published EOF silence");
+
+  CallbackLockHolder holder(bufferingSource);
+  juce::AudioBuffer<float> output(2, crossingFrames);
+  fillOutput(output, -1.0f);
+  const juce::AudioSourceChannelInfo info(&output, 0, crossingFrames);
+  bufferingSource.getNextAudioBlock(info);
+  expectStampedOutput(output, 0, crossingFrames, warmFrames,
+                       "cached EOF crossing preserves its final audio then published silence",
+                       sourceLength);
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "cached published EOF silence is available data during contention");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == 0,
+         "cached published EOF silence adds no missing frames");
+}
+
+void testLargeCallbacksPreserveDirectRingAudioBeyondCacheCapacity() {
+  constexpr int warmFrames = 128;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache large callback thread");
+  expect(readThread.startThread(), "large callback read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, warmFrames,
+                   "large callback test warms the private cache");
+  const auto capacity = bufferingSource.getRealtimeCacheCapacityFramesForTest();
+  readStampedBlock(bufferingSource, capacity + 173,
+                   "a callback larger than cache combines cache with the original main ring");
+  readStampedBlock(bufferingSource, 257,
+                   "the callback following a large direct read has no duplicated frames");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "large callbacks remain fully covered by a ready ring");
+}
+
+void testPrivateCacheCopiesAcrossThePhysicalRingWrap() {
+  constexpr juce::int64 startPosition = 32640;
+  constexpr int crossingFrames = 256;
+  constexpr int contendedFrames = 512;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache physical wrap thread");
+  expect(readThread.startThread(), "physical wrap read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(crossingFrames, 48000.0);
+  bufferingSource.setNextReadPosition(startPosition);
+  readyAndStopWorker(bufferingSource, readThread);
+  readStampedBlock(bufferingSource, crossingFrames,
+                   "first callback reads exact frames across the physical ring boundary");
+  expect(bufferingSource.getNextReadPosition() ==
+             startPosition + crossingFrames,
+         "physical wrap never wraps the absolute audio cursor");
+
+  CallbackLockHolder holder(bufferingSource);
+  readStampedBlock(bufferingSource, contendedFrames,
+                   "cache after physical ring wrap survives actual lock contention");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "physical ring wrapping and contended cached reads add no underrun");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == 0,
+         "physical ring wrapping substitutes no available frames");
+}
+
+void testPrivateCacheRefillItselfWrapsAcrossBothRingSegments() {
+  constexpr juce::int64 warmPosition = 32384;
+  constexpr int warmFrames = 256;
+  constexpr int crossingFrames = 512;
+  RampSource source(100000);
+  juce::TimeSliceThread readThread("private cache wrapped refill thread");
+  expect(readThread.startThread(), "wrapped refill read thread starts");
+  StemBufferingSource bufferingSource(&source, readThread, false, 32768, 2,
+                                      false);
+  bufferingSource.prepareToPlay(warmFrames, 48000.0);
+  bufferingSource.setNextReadPosition(warmPosition);
+  readyAndStopWorker(bufferingSource, readThread);
+  // This callback ends at 32640. Its private refill therefore must copy 128
+  // frames from the ring tail, followed by its remaining head segment.
+  readStampedBlock(bufferingSource, warmFrames,
+                   "warming near the ring end fills a private cache over both ring segments");
+
+  CallbackLockHolder holder(bufferingSource);
+  readStampedBlock(bufferingSource, crossingFrames,
+                   "both segments of a physically wrapped private refill remain frame exact");
+  expect(bufferingSource.getRealtimeMissCount() == 0,
+         "physically wrapped private refill covers its contended callback");
+  expect(bufferingSource.getRealtimeMissingFrameCount() == 0,
+         "physically wrapped private refill introduces no silence");
+}
+
 constexpr juce::int64 concurrentSeekDestination = 64000;
 
 void seekImmediatelyBeforeCursorAdvance(
@@ -567,6 +965,16 @@ int main() {
   testPrefetchedTargetCanSplitOneCallbackAtExactBoundary();
   testFarCursorCannotWrapRangeOffsets();
 #if defined(MTCONTROLS_ENABLE_TEST_HOOKS) && MTCONTROLS_ENABLE_TEST_HOOKS
+  testPrivateCacheServesExactFutureFramesDuringRealLockContention();
+  testPrivateCacheSurvivesAnInProgressRangePublication();
+  testPrivateCacheRefillsBeforeItsOldWindowRunsOut();
+  testExhaustedPrivateCacheCountsOnlyTheUnavailableSuffix();
+  testSeekInsidePrivateCacheInvalidatesThePreviousEpoch();
+  testPrefetchedSeekInsideOldCacheUsesTheTargetBank();
+  testPrivateCachePreservesPublishedEofSilenceDuringContention();
+  testLargeCallbacksPreserveDirectRingAudioBeyondCacheCapacity();
+  testPrivateCacheCopiesAcrossThePhysicalRingWrap();
+  testPrivateCacheRefillItselfWrapsAcrossBothRingSegments();
   testConcurrentSeekWinsOverInFlightBlockAdvance();
 #endif
   std::cout << "stem buffering source tests passed\n";

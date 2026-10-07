@@ -3,6 +3,7 @@
 #include "../UiCommon.h"
 #include "../../data/AppSettings.h"
 #include "../../network/RemoteSession.h"
+#include "../learning/LearningGuideModel.h"
 #include <JuceHeader.h>
 
 #include <functional>
@@ -46,6 +47,7 @@ public:
     bool isOverride = false;
     int usedDevices = 0, maxDevices = 0, syncedSongCount = 0, maxSyncedSongs = 0;
     juce::int64 usedStorageBytes = 0, maxStorageBytes = 0;
+    bool localDemo = false;
   };
 
   SettingsPanel(ThemePreset current, ThemeChanged cb, AppLanguage language,
@@ -74,7 +76,13 @@ public:
   void refreshThemeColours();
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
+  void setTeamsManagementEnabled(bool enabled);
+  void setAppleSignInAvailable(bool available);
+  void setAppleSignInStatus(const juce::String &text, bool busy = false);
+  std::function<void()> onAppleLinkRequested;
   std::function<void()> onShareAudioDiagnostics;
+  std::function<void()> onLearningRequested;
+  std::function<void()> onTeamsRequested;
   std::function<void(playworship::remote::RemoteSession::Mode)> onRemoteModeChanged;
   std::function<void(const playworship::remote::DiscoveredServer &)> onRemoteConnect;
   std::function<void(const juce::String &)> onRemoteServerAliasChanged;
@@ -83,6 +91,9 @@ public:
                          const juce::String &status,
                          const juce::String &selectedServerName = {});
   void setDiagnosticsBusy(bool busy);
+  bool isLearningRemotePageOpen() const;
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
+  void revealLearningTarget(playworship::learning::Anchor);
 
 private:
   friend struct SettingsPanelTestAccess;
@@ -132,8 +143,9 @@ private:
   class RoutingRow;
   class SettingsCard;
   class SettingsRowSeparator;
-  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics };
+  enum class Destination { Home, Appearance, Playback, Library, Audio, Routing, Remote, Account, Diagnostics, Learning, Teams };
   class SettingsHomePage;
+  juce::Component *getLearningTargetComponent(playworship::learning::Anchor) const;
 
   bool usesGroupedNavigation() const;
   void showSettingsPage(Destination destination);
@@ -156,6 +168,12 @@ private:
   SettingsTabs tabs{juce::TabbedButtonBar::TabsAtLeft};
   juce::Viewport settingsViewport;
   juce::Component generalPage;
+  juce::Label learningLabel;
+  juce::Label learningHelp;
+  juce::TextButton learningButton;
+  juce::Label teamsLabel, teamsHelp;
+  juce::TextButton teamsButton;
+  bool teamsManagementEnabled = false;
   juce::Component accountPage;
   juce::Component audioPage;
   juce::Component routingPage;
@@ -236,6 +254,8 @@ private:
       "Soporte", juce::URL("mailto:hola@playworship.app")};
   SettingsLogoutButton logoutButton;
   SettingsLogoutButton purgeButton;
+  juce::Label appleLinkLabel, appleLinkHelp;
+  std::unique_ptr<juce::Component> appleLinkButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;

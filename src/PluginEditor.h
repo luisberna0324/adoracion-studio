@@ -6,10 +6,15 @@
 #include "data/CloudSettingsClient.h"
 #include "data/SongData.h"
 #include "data/SongSyncService.h"
+#include "data/TeamsClient.h"
+#include "data/TeamsPreparationService.h"
 #include "network/RemoteSession.h"
 #include "network/PlaybackSession.h"
 #include "ui/components/ChannelStripLookAndFeel.h"
 #include "ui/UiCommon.h"
+#include "ui/learning/LearningGuideModel.h"
+#include "ui/learning/RemoteLearningAction.h"
+#include "ui/learning/DemoLearningProgress.h"
 #include <JuceHeader.h>
 
 #include <unordered_set>
@@ -27,6 +32,9 @@ class SettingsPanel;
 class SettingsVersionsSheet;
 class AppModal;
 class PracticePanel;
+class LearningGuideOverlay;
+class SongLoadProgressOverlay;
+class TeamsPanel;
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -56,7 +64,51 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  void updateTeamsOnboarding();
+  void processTeamsRevocations();
+  juce::var teamsPendingRevocations;
+  bool hasTeamsMembership = false;
+  void appendTeamsLearningLessons();
+  void openTeamsLearningCloud();
+  struct TeamsLearningSource { juce::String teamId, owner, lessonId; };
+  std::vector<TeamsLearningSource> teamsLearningSources;
+  std::unique_ptr<TeamsClient> teamsOnboardingClient;
+  juce::StringArray teamsWelcomesShown;
+  juce::int64 teamsNextPollMs = 0, teamsNextGuideCheckMs = 0;
+  uint64_t teamsOnboardingGeneration = 0;
+  bool teamsOnboardingPending = false, teamsMembershipsVerified = false;
+  bool teamsWelcomeVisible = false;
+  bool teamsLearningDownloaded = false, teamsLearningAdded = false;
+  void showTeams();
+  void closeTeams();
+  void handleTeamsAction(const juce::String &, juce::var);
+  void displayTeamDetails(juce::var);
+  void downloadSharedCloudSong(const CloudSongSummary &, const juce::String &targetSetlistId);
+  void invalidateCloudAccountView();
+  bool canManageSharedCloud = false;
+  std::unique_ptr<TeamsPanel> teamsOverlay;
+  std::unique_ptr<TeamsClient> teamsClient;
+  std::unique_ptr<TeamsPreparationService> teamsPreparation;
+  juce::var teamsDetails;
+  uint64_t teamsDetailsGeneration = 0;
+  void showLearningGuide();
+  void offerDemoWelcome();
+  void prepareDemoLesson();
+  playworship::learning::DemoLearningProgress::Snapshot demoLearningSnapshot() const;
+  bool isLearningPracticeStep() const;
+  void showLearningCatalog();
+  void startLearningLesson(const juce::String &id);
+  void advanceLearningStep(bool forward);
+  void restartLearningLesson();
+  void pauseLearningGuide();
+  void refreshLearningStep();
+  void updateLearningGuideTarget();
+  juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
+  const playworship::learning::Lesson *currentLearningLesson() const;
+  playworship::learning::StepFacts learningStepFacts() const;
+  bool canAdvanceLearningStep() const;
   void updatePhoneOrientation();
+  bool shouldUsePhonePortraitOrientation() const;
   void fitMobileEditorToHost();
   void showPhonePadsPopover(juce::Component &anchor);
   void showPractice();
@@ -93,6 +145,24 @@ private:
   juce::Component::SafePointer<SettingsVersionsSheet> cloudSettingsSheet;
   std::unique_ptr<juce::Component> cloudSettingsSheetOverlay;
   std::unique_ptr<AppModal> appModal;
+  std::unique_ptr<LearningGuideOverlay> learningGuide;
+  std::unique_ptr<playworship::learning::ProgressStore> learningProgress;
+  std::vector<playworship::learning::Lesson> learningLessons;
+  juce::String learningLessonId;
+  juce::String learningSaveError;
+  int learningStepIndex = 0;
+  bool learningPhoneContent = false;
+  bool learningEnglishContent = false;
+  bool learningRevealTargetPending = false;
+  playworship::learning::RemotePrerequisite learningLastPrerequisite =
+      playworship::learning::RemotePrerequisite::None;
+  juce::String learningObservedStepKey;
+  playworship::learning::RemoteLearningAction learningRemoteAction;
+  playworship::learning::DemoLearningProgress demoLearningProgress;
+  std::unique_ptr<SongLoadProgressOverlay> demoLoadingOverlay;
+  bool demoWelcomeChecked = false;
+  bool localDemoSession = false;
+  friend struct LocalDemoAccessTestAccess;
   PlaybackSession playbackSession;
   ChannelStripLookAndFeel stripLookAndFeel;
 
@@ -143,11 +213,13 @@ private:
   std::unordered_set<std::string> cloudSettingsInProgress;
   std::unordered_set<std::string> cloudSettingsStatusInProgress;
   uint64_t cloudLibrarySearchGeneration = 0;
+  std::vector<CloudSongSummary> cloudCatalogSongs;
   bool mainUiInitialized = false;
   ResponsiveLayoutProfile responsiveLayoutProfile =
       ResponsiveLayoutProfile::Standard;
   bool autoSetlistCollapseInitialized = false;
   std::unique_ptr<juce::Component> welcomeModal;
+  juce::BorderSize<int> lastAuthKeyboardInsets;
   std::unique_ptr<LocalAuthCallbackServer> localAuthServer;
   juce::String authExpectedState;
   juce::String pendingAuthCallbackUrl;
@@ -201,6 +273,12 @@ private:
   juce::int64 reauthGraceDeadlineMs = 0;
   bool reauthPromptDismissed = false;
   bool reauthLoginInProgress = false;
+  bool appleSignInAvailable = false;
+  bool appleLoginInProgress = false;
+  bool appleLinkInProgress = false;
+  uint64_t authAttemptGeneration = 0;
+  bool emailAuthenticationBusy = false;
+  uint64_t appleConfigurationGeneration = 0;
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
@@ -266,6 +344,17 @@ private:
   bool unloadActiveSongForLocalPurge();
   void updateSystemUsageMetrics();
   void launchExternalLogin();
+  void launchPasswordLogin(const juce::String& email, const juce::String& password);
+  void launchLocalDemoLogin(const juce::String& username, const juce::String& password);
+  void enterLocalDemoSession();
+  void prepareDemoSong(bool startLesson);
+  void requestPasswordLink(const juce::String& email);
+  void cancelAuthenticationAttempt();
+  void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);
+  void refreshAppleSignInConfiguration();
+  void launchAppleLogin(bool linkExisting = false);
+  void setAppleAuthenticationStatus(const juce::String &text, bool error, bool busy);
+  void completeAuthenticatedSession(PersistedSessionSnapshot snapshot);
   void completeBootstrapLogin(const juce::String &callbackUrl);
   void handleLogout();
   void showWelcomeOnlyMode();

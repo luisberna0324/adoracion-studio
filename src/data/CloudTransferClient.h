@@ -71,7 +71,8 @@ public:
               ProgressCallback progress, UploadCallback callback);
   void download(CloudTransferCredentials credentials, juce::String songId,
                 juce::File destinationDirectory, ProgressCallback progress,
-                DownloadCallback callback);
+                DownloadCallback callback, juce::String teamId = {},
+                int teamRevision = 0);
   /** Deletes one remote song owned by the authenticated account. */
   void deleteSong(CloudTransferCredentials credentials, juce::String songId,
                   DeleteCallback callback);

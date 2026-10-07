@@ -13,6 +13,24 @@
 // Readiness is observed only on the test/control thread; realtime processing
 // keeps its existing nonblocking seek and file-read contracts.
 struct SectionAutomationTestAccess {
+  static bool loadGuides(MTControlsAudioProcessor &processor, const juce::File &directory) {
+    juce::AudioFormatManager formats; formats.registerBasicFormats();
+    const bool loaded = processor.dynamicGuideEngine.loadGuideDirectories({directory}, formats);
+    if (loaded) {
+      processor.rebuildSectionScheduler();
+      processor.dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
+    }
+    return loaded;
+  }
+  static float guideSample(const MTControlsAudioProcessor &processor, int frame) {
+    return processor.dynamicGuideRenderStorage.getSample(0, frame);
+  }
+  static int currentPart(const MTControlsAudioProcessor &processor) {
+    return processor.arrangementCurrentPartIndex.load();
+  }
+  static auto scheduler(const MTControlsAudioProcessor &processor) {
+    return processor.sectionScheduler.acquireSnapshot();
+  }
   static double tempoRatio(const MTControlsAudioProcessor &processor) {
     return processor.getPlaybackTempoRatio();
   }
@@ -52,15 +70,18 @@ void near(double actual, double expected, const char *message) {
   if (!std::isfinite(actual) || std::abs(actual - expected) > 0.0001)
     throw std::runtime_error(std::string(message) + " actual=" + std::to_string(actual));
 }
-void writeWav(const juce::File &file, const int frames) {
+void writeWav(const juce::File &file, const int frames, const float level = 0.1f) {
   file.getParentDirectory().createDirectory();
+  // FileOutputStream appends to an existing file; replacing a guide fixture
+  // must remove the previous RIFF rather than append another WAV after it.
+  expect(file.deleteFile(), "fixture replaces any previous WAV");
   auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
   juce::WavAudioFormat format;
   auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
       .withSampleRate(44100.0).withNumChannels(1).withBitsPerSample(16));
   expect(writer != nullptr, "fixture WAV opens");
   juce::AudioBuffer<float> audio(1, 4096);
-  for (int frame = 0; frame < audio.getNumSamples(); ++frame) audio.setSample(0, frame, 0.1f);
+  for (int frame = 0; frame < audio.getNumSamples(); ++frame) audio.setSample(0, frame, level);
   for (int remaining = frames; remaining > 0; remaining -= audio.getNumSamples())
     expect(writer->writeFromAudioSampleBuffer(audio, 0, std::min(remaining, audio.getNumSamples())), "fixture WAV writes");
 }
@@ -87,6 +108,15 @@ void testTimelineSelectionAndPublication() {
   const int boundaryCount = timeline->collectBoundaries(inside, 0.5, 4.5, boundaries.data(), static_cast<int>(boundaries.size()));
   expect(boundaryCount == 4 && boundaries[0] == 1.0 && boundaries[1] == 2.0 && boundaries[2] == 3.0 && boundaries[3] == 4.0,
       "long audio blocks enumerate every section and gap boundary in one coherent generation");
+  timeline->publish({first, second}, true);
+  const auto silentSection = timeline->select(3.25);
+  const auto silentGap = timeline->select(2.25);
+  expect(silentSection.pads.note == -1 && !silentSection.pads.enabled &&
+         silentGap.pads.note == -1 && !silentGap.pads.enabled,
+         "unassigned section and gap are silent when pads are scoped to sections");
+  timeline->publish({first, second});
+  expect(timeline->select(3.25).pads.mask == 0,
+         "songs without scoped pads retain sparse global pad semantics");
   std::atomic<bool> done{false};
   std::thread publisher([&] {
     for (int index = 0; index < 2500; ++index) {
@@ -209,7 +239,8 @@ void testDraftSaveCancelAndBaseMix() {
   near(p.getStemVolume(0), 0.55, "cancel restores pre-edit manual fader override");
   p.seekSongTo(4.5); fixture.block();
   near(p.getStemVolume(0), 0.8, "gap after section restores base fader");
-  expect(!p.isStemMuted(0) && p.getActivePadNoteIndex() == 2, "gap restores base mute and song-key pad note");
+  expect(!p.isStemMuted(0) && p.getActivePadNoteIndex() == -1 && !p.isPadsEnabled(),
+      "gap restores base stem mute but silences unassigned pads in an automated song");
   p.seekSongTo(2.25); fixture.block();
   near(p.getStemVolume(0), 0.3, "re-entry restores saved value after manual override expires");
   p.setStemVolume(0, 0.45f);
@@ -387,9 +418,36 @@ void testPadsAreIdempotentAndRestoreBase() {
   }
   expect(p.getPadsOutputLevel() > 0.095f && p.getPadsOutputLevel() < 0.105f,
       "section re-entry with the same note preserves phase and envelope");
+  arrangement.parts[0].automation.pads.volume = 0.1f;
+  arrangement.parts[1].automation.pads = {};
+  p.setSongArrangement(arrangement, false);
+  p.seekSongTo(0.5); fixture.block(700);
+  expect(p.getPadsOutputLevel() > 0.0095f && p.getPadsOutputLevel() < 0.0105f,
+      "automated pad settles at its low section volume");
+  p.seekSongTo(2.5); fixture.block(1);
+  expect(p.getActivePadNoteIndex() == -1 && !p.isPadsEnabled() &&
+         p.getPadsOutputLevel() <= 0.0105f,
+      "moving into a section without pads cannot raise the fading tail to base level");
+  fixture.block(600);
+  expect(p.getPadsOutputLevel() < 0.00001f,
+      "unassigned section reaches complete pad silence");
   p.seekSongTo(5.5); fixture.block(600);
   expect(p.getActivePadNoteIndex() == -1 && p.getPadsOutputLevel() < 0.00001f,
       "leaving automated sections restores base pad note-off with its normal fade");
+  p.triggerPadNoteForSongTransition(2, 0);
+  expect(p.unloadSong(), "automated song unloads for the song-transition check");
+  p.setSongArrangement({}, false);
+  p.triggerPadNoteForSongTransition(4, 0);
+  fixture.block(600);
+  expect(!p.isPadsEnabled() && p.getActivePadNoteIndex() == -1 &&
+         p.getPadsOutputLevel() < 0.00001f,
+      "new song without programmed pads cannot resurrect the global note through key following");
+  p.setPadsEnabled(true);
+  p.triggerPadNote(4, 0);
+  fixture.block(700);
+  expect(p.isPadsEnabled() && p.getActivePadNoteIndex() == 4 && p.getPadsOutputLevel() > 0.0f,
+      "an explicit manual pad gesture remains available after an automated song ends");
+
 }
 
 void testRemoteDraftRejectsPhysicalMidi() {
@@ -420,6 +478,183 @@ void testRemoteDraftRejectsPhysicalMidi() {
   near(p.getStemVolume(0), 48.0 / 127.0, "local automation intentionally captures physical MIDI controls");
   near(p.getStemBaseVolume(0), 0.8, "local MIDI draft still preserves base mix");
   expect(p.finishSectionAutomationEditing(true) && p.getSongArrangementSnapshot().parts[1].automation.hasOverrides(), "local MIDI draft commits");
+}
+
+void testIndependentGuideCuesFollowTransport() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("guide-transport");
+  directory.createDirectory();
+  writeWav(directory.getChildFile("1.wav"), 16);
+  writeWav(directory.getChildFile("2.wav"), 16);
+  writeWav(directory.getChildFile("3.wav"), 16);
+  expect(SectionAutomationTestAccess::loadGuides(p, directory), "transport guide fixture loads");
+  auto settings = p.getDynamicGuideSettings(); settings.enabled = true;
+  p.setDynamicGuideSettings(settings);
+  auto arrangement = p.getSongArrangementSnapshot();
+  SongArrangementCueSnapshot count;
+  count.id = "count"; count.name = "1"; count.partId = "verse";
+  count.offsetSec = 128.0 / 44100.0; count.positionSec = count.offsetSec;
+  count.countEnd = 3; count.countIntervalSec = 0.0;
+  count.countOffsetsSec = {0.0, 64.0 / 44100.0, 128.0 / 44100.0};
+  arrangement.cues.push_back(count);
+  p.setSongArrangement(arrangement, false);
+  const auto snapshot = SectionAutomationTestAccess::scheduler(p);
+  expect(snapshot.count == 2 && snapshot.cueCount == 3 && snapshot.cues[0].frame == 128 &&
+      snapshot.cues[1].frame == 192 && snapshot.cues[2].frame == 256,
+      "counts publish a coherent independent timeline without new sections");
+  fixture.seekAndWait(0.0); fixture.block(3);
+  expect(SectionAutomationTestAccess::guideSample(p, 128) == 0.0f,
+      "paused callbacks do not repeatedly trigger cues at the playhead");
+  p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 127) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 128) > 0.099f &&
+      SectionAutomationTestAccess::guideSample(p, 144) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 192) > 0.099f &&
+      SectionAutomationTestAccess::currentPart(p) == 0 && !p.isSectionAutomationEditing(),
+      "real playback starts each count on the sample while primary section and automation remain unchanged");
+  fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 0) > 0.099f &&
+      SectionAutomationTestAccess::guideSample(p, 16) == 0.0f,
+      "a cue on the callback boundary fires once in the following callback");
+  p.pauseSong(); fixture.seekAndWait(0.1); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 0) == 0.0f,
+      "seeking beyond a count sequence never replays old instructions");
+  p.pauseSong(); fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 128) > 0.099f,
+      "seeking back repeats only cues actually crossed in the new traversal");
+
+  // Force a split callback: 44 source frames remain before Verse ends.
+  // The outgoing count is 28 frames into that prefix and the destination
+  // count is 32 frames into the suffix. Neither changes musical boundaries.
+  p.pauseSong();
+  arrangement.cues.clear();
+  SongArrangementCueSnapshot outgoing, incoming, chorusCue;
+  outgoing.id = "outgoing"; outgoing.name = "1"; outgoing.positionSec = (88200.0 - 16.0) / 44100.0;
+  incoming.id = "incoming"; incoming.name = "2"; incoming.positionSec = 32.0 / 44100.0;
+  chorusCue.id = "chorus-cue"; chorusCue.name = "3"; chorusCue.positionSec = (88200.0 + 32.0) / 44100.0;
+  arrangement.cues = {outgoing, incoming, chorusCue};
+  p.setSongArrangement(arrangement, true);
+  fixture.seekAndWait(87900.0 / 44100.0);
+  p.toggleArrangementPartLoop(0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 87900.0 / 44100.0),
+      "custom Play seek is resident before acceptance");
+  p.playSong(); fixture.waitForPendingSeek();
+  near(p.getSongCurrentPositionSeconds(), 88156.0 / 44100.0,
+      "Play seek is accepted one short callback before the loop boundary");
+  expect(SectionAutomationTestAccess::waitForSource(p, 256) &&
+      SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "loop cue source and destination are resident");
+  fixture.block();
+  expect(p.getSongCurrentPositionSeconds() > 0.0 && p.getSongCurrentPositionSeconds() < 0.005 &&
+      SectionAutomationTestAccess::currentPart(p) == 0 &&
+      SectionAutomationTestAccess::guideSample(p, 27) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 28) > 0.099f &&
+      SectionAutomationTestAccess::guideSample(p, 44) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 75) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 76) > 0.099f,
+      "loop split renders outgoing cue and destination cue at exact offsets without ghost instructions");
+  p.pauseSong(); p.toggleArrangementPartLoop(0);
+  fixture.seekAndWait(87900.0 / 44100.0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 87900.0 / 44100.0),
+      "custom jump Play seek is resident before acceptance");
+  p.playSong(); fixture.waitForPendingSeek();
+  near(p.getSongCurrentPositionSeconds(), 88156.0 / 44100.0,
+      "Play seek is accepted one short callback before the jump boundary");
+  expect(SectionAutomationTestAccess::waitForSource(p, 256), "jump source is resident");
+  p.requestArrangementPartJump(1); // Playing queues; paused would seek immediately.
+  expect(p.getPendingArrangementPartJumpIndex() == 1 &&
+      SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "jump cue destination prefetch is resident");
+  fixture.block();
+  expect(p.getSongCurrentPositionSeconds() > 2.0 && p.getSongCurrentPositionSeconds() < 2.005 &&
+      p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::currentPart(p) == 1 &&
+      SectionAutomationTestAccess::guideSample(p, 28) > 0.099f &&
+      SectionAutomationTestAccess::guideSample(p, 75) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 76) > 0.099f,
+      "jump split follows destination instructions without changing the selected musical section");
+  arrangement.cues = {count};
+  p.pauseSong();
+  arrangement.parts[0].skipPlayback = true;
+  p.setSongArrangement(arrangement, true);
+  expect(SectionAutomationTestAccess::scheduler(p).cues[0].skipPlayback,
+      "normal playback retains the skipped parent of an instruction in its coherent snapshot");
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 128) == 0.0f,
+      "normal playback suppresses instructions from an omitted section");
+  p.pauseSong();
+  expect(p.setPracticeLoopRange(0.0, 0.25), "practice loop accepts the omitted section for rehearsal");
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 128) > 0.099f,
+      "practice playback restores instructions along with the omitted section's audio");
+  p.clearPracticeLoop();
+
+  p.pauseSong();
+  arrangement.parts.clear(); p.setSongArrangement(arrangement, false);
+  expect(SectionAutomationTestAccess::scheduler(p).count == 1 &&
+      SectionAutomationTestAccess::scheduler(p).cueCount == 3,
+      "cue-only songs retain their default primary audio range and independent instructions");
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 128) > 0.099f,
+      "cue-only songs play their instructions without user-created musical sections");
+
+  p.pauseSong();
+  writeWav(directory.getChildFile("build.wav"), 16);
+  expect(SectionAutomationTestAccess::loadGuides(p, directory), "legacy cue fixture reloads");
+  SongArrangementSnapshot legacy;
+  SongArrangementPartSnapshot left, utility, right;
+  left.id = "legacy-verse"; left.name = "Verse"; left.startSec = 0.0; left.endSec = 1.0;
+  left.sourceStartSec = 0.0; left.sourceEndSec = 1.0;
+  utility.id = "legacy-build"; utility.name = "Build"; utility.utilityCue = true;
+  utility.startSec = 1.0; utility.endSec = 1.25;
+  utility.sourceStartSec = 1.0; utility.sourceEndSec = 1.25;
+  right.id = "legacy-verse-rest"; right.name = "Verse";
+  right.startSec = 1.25; right.endSec = 2.0;
+  right.sourceStartSec = 1.25; right.sourceEndSec = 2.0;
+  legacy.parts = {left, utility, right};
+  p.setSongArrangement(legacy, true);
+  const auto migrated = p.getSongArrangementSnapshot();
+  expect(migrated.parts.size() == 1 && migrated.cues.size() == 1 &&
+      migrated.parts[0].id == left.id && migrated.parts[0].endSec == 2.0 &&
+      SectionAutomationTestAccess::scheduler(p).count == 1 &&
+      SectionAutomationTestAccess::scheduler(p).cueCount == 1,
+      "direct processor callers migrate provably continuous legacy fragments into one musical section and one instruction");
+  fixture.seekAndWait((44100.0 - 128.0) / 44100.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 127) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 128) > 0.099f &&
+      SectionAutomationTestAccess::currentPart(p) == 0,
+      "migrated utility plays at its old exact point without a musical-section transition");
+
+
+  p.pauseSong();
+  writeWav(directory.getChildFile("break.wav"), 16, 0.1f);
+  writeWav(directory.getChildFile("breakdown.wav"), 16, 0.2f);
+  expect(SectionAutomationTestAccess::loadGuides(p, directory), "distinct Break and Breakdown voices load");
+  auto utilityArrangement = p.getSongArrangementSnapshot();
+  utilityArrangement.cues.clear();
+  SongArrangementCueSnapshot pause;
+  pause.id = "pause"; pause.name = "Break"; pause.positionSec = 128.0 / 44100.0;
+  utilityArrangement.cues.push_back(pause);
+  p.setSongArrangement(utilityArrangement, false);
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(std::abs(SectionAutomationTestAccess::guideSample(p, 128) - 0.1f) < 0.0001f,
+      "Break utility uses its exact Pausa voice before musical alias fallback");
+  p.pauseSong();
+  expect(SectionAutomationTestAccess::loadGuides(p, directory), "guide pack reload recompiles cue trigger IDs");
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(std::abs(SectionAutomationTestAccess::guideSample(p, 128) - 0.1f) < 0.0001f,
+      "guide reload preserves the utility identity rather than mapping Break to Breakdown");
+
+
+  p.pauseSong();
+  writeWav(directory.getChildFile("break.wav"), 1024, 0.1f);
+  expect(SectionAutomationTestAccess::loadGuides(p, directory), "long cue fixture loads");
+  fixture.seekAndWait(0.0); p.playSong(); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 200) > 0.099f,
+      "long cue begins its audible tail");
+  p.setDynamicGuideMuted(true); fixture.block(10);
+  p.setDynamicGuideMuted(false); fixture.block();
+  expect(SectionAutomationTestAccess::guideSample(p, 0) == 0.0f &&
+      SectionAutomationTestAccess::guideSample(p, 200) == 0.0f,
+      "muting consumes the cue and its delay history instead of resurrecting old speech after unmute");
+
 }
 
 void testSongKeyFollowUsesBaseAndNeverEchoesRemote() {
@@ -473,6 +708,7 @@ int main() {
   run("real loop and queued jump apply destination mix inside split callbacks", testRealLoopAndJumpSplitPreserveDestinationMix);
   run("pads remain idempotent across section re-entry", testPadsAreIdempotentAndRestoreBase);
   run("remote ownership excludes physical MIDI draft writes", testRemoteDraftRejectsPhysicalMidi);
+  run("independent guide cues follow real playback and seeking", testIndependentGuideCuesFollowTransport);
   run("startup song-key follow preserves automation and remote ownership", testSongKeyFollowUsesBaseAndNeverEchoesRemote);
   return failures == 0 ? 0 : 1;
 }

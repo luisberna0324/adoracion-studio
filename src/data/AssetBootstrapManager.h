@@ -19,7 +19,8 @@ public:
 
   static bool ensureEncoderReady(juce::String *errorMessage = nullptr,
                                  const ProgressFn &progress = {});
-  static bool ensurePadsPackReady(juce::String *errorMessage = nullptr);
+  static bool ensurePadsPackReady(juce::String *errorMessage = nullptr,
+                                 bool allowNetworkDownloads = true);
   static bool ensureClicksPackReady(juce::String *errorMessage = nullptr);
   static bool ensureGuidesPackReady(juce::String *errorMessage = nullptr);
 

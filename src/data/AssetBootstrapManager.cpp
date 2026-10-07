@@ -170,7 +170,7 @@ juce::File AssetBootstrapManager::getEncoderBinaryPath() {
 }
 
 juce::File AssetBootstrapManager::getAvailableEncoderBinary() {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   // A desktop FFmpeg executable cannot run in a mobile app sandbox. Mobile
   // project import uses the bundled JUCE codecs instead.
   return {};
@@ -250,6 +250,13 @@ bool AssetBootstrapManager::downloadFile(const juce::String &url,
                                          juce::String &errorMessage,
                                          const ProgressFn &progress,
                                          const juce::String &phaseText) {
+  // The local demo uses bundled or already installed content. Keep this gate
+  // at the HTTP boundary so an explicit import/export cannot bootstrap an
+  // encoder or other remote helper while that session is active.
+  if (AppSettings::getLocalDemoSessionActive()) {
+    errorMessage = "Las descargas no están disponibles en la demo local. / Downloads are unavailable in the local demo.";
+    return false;
+  }
   const juce::URL remote(url);
   const auto options =
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
@@ -408,11 +415,10 @@ void AssetBootstrapManager::persistState(const juce::String &encoderStatus,
 
 bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
                                                const ProgressFn &progress) {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   juce::ignoreUnused(progress);
   if (errorMessage != nullptr)
-    *errorMessage = "External audio encoders are unavailable on mobile. "
-                    "Use the built-in WAV/AIFF/FLAC import conversion.";
+    *errorMessage = "Use built-in audio import conversion and WAV export in this edition.";
   return false;
 #else
   auto encoder = getAvailableEncoderBinary();
@@ -469,7 +475,8 @@ bool AssetBootstrapManager::ensureEncoderReady(juce::String *errorMessage,
 #endif
 }
 
-bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
+bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage,
+                                               const bool allowNetworkDownloads) {
   const auto padsDir = getPadsPackDirectory();
   juce::String localError;
 
@@ -511,6 +518,14 @@ bool AssetBootstrapManager::ensurePadsPackReady(juce::String *errorMessage) {
       padsDir.deleteRecursively();
     padsDir.createDirectory();
     localError.clear();
+  }
+
+  // Cached audio and a complete local ZIP above remain usable before login
+  // and in the demo. Only downloading missing content requires online access.
+  if (!allowNetworkDownloads || AppSettings::getLocalDemoSessionActive()) {
+    if (errorMessage != nullptr)
+      *errorMessage = "El pack de Pads no está instalado. Disponible tras iniciar sesión. / Pads pack is not installed. Available after sign-in.";
+    return false;
   }
 
   persistState(AppSettings::getAssetsBootstrapState().encoderStatus,

@@ -1,17 +1,20 @@
 ---
 type: Technical Contract
 title: Mobile Layout
-description: Contrato responsive y de area segura para telefonos iOS y Android
+description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-09-26T00:00:00-03:00
+timestamp: 2026-10-05T00:00:00-03:00
 ---
 
 # Mobile Layout
 
 La vista de performance en telefonos es horizontal. En iPhone y Android,
-el runtime habilita `upright` para Biblioteca, setlists, Configuración y Ensayo mientras su panel
-esta abierto y restaura ambas orientaciones landscape al cerrarlo. La
-orientacion inicial se restringe a landscape. En iPhone, el plist admite
+el runtime habilita `upright` para Biblioteca, setlists, Configuración, Teams y Ensayo mientras su panel
+esta abierto y restaura ambas orientaciones landscape al volver a performance.
+En iPhone, el acceso (bienvenida, correo, recuperación y renovación de sesión)
+también usa `upright`. La máscara inicial es portrait para presentar el login;
+una sesión guardada válida restaura landscape al abrir la interfaz principal.
+En iPhone, el plist admite
 tambien `Portrait`; en Android, `screenOrientation=landscape` define el inicio
 y JUCE usa `Activity.setRequestedOrientation` para cambiarla durante la sesion.
 El manifest maneja `orientation|screenSize` mediante `configChanges`, sin
@@ -238,7 +241,7 @@ Cerrar la vista devuelve el estado de reproducción anterior si todavía posee
 la pausa; Detener o una nueva orden de transporte tienen prioridad.
 
 En iOS, el cambio de orientaciones permitidas se difiere fuera de `resized()`
-y agrupa solicitudes usando el estado mas reciente de Biblioteca. La ventana
+y agrupa solicitudes usando el estado más reciente del acceso y los paneles. La ventana
 standalone sincroniza su geometria con `UIWindowScene.coordinateSpace` al
 terminar la transicion nativa y al volver del background. Propaga el tamano al
 contenedor y al editor aun si los limites de la ventana no cambiaron. Una vez
@@ -281,7 +284,14 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   breakpoints: `iPad` siempre usa el perfil tablet/escritorio e `iPhone` usa el
   perfil movil. Esto evita clasificaciones incorrectas por la escala del
   framebuffer del simulador.
-- El fondo del mixer se prolonga visualmente por el inset inferior hasta el
+- En tablets iOS, el editor descuenta los cuatro `safeAreaInsets` una sola vez
+  del area de performance. TopBar, waveform, setlist, mixer y Pads se colocan
+  dentro de ese rectangulo, dejando libres la barra de estado y el indicador
+  inferior. El drawer de Biblioteca y su scrim usan el mismo ancho y borde
+  inferior seguros; empiezan debajo del limite real del TopBar. El fondo del
+  editor cubre la ventana completa. La tablet no recibe insets internos ni
+  prolongacion inferior del perfil de telefono.
+- En iPhone, el fondo del mixer se prolonga visualmente por el inset inferior hasta el
   borde fisico de la ventana, evitando una franja vacia bajo los canales.
 - En iPhone y Android cada lateral usa su inset real, actualizado al girar. El `TopBar`
   dibuja su fondo a ancho completo y coloca los botones en su area segura con
@@ -289,16 +299,21 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
 - La waveform de telefono llega a ambos bordes. Sus botones flotantes, mensajes,
   etiquetas y acciones de seccion e indicador remoto permanecen dentro del
   area segura; el tintado de las secciones conserva el ancho completo.
+  En performance, Mas ocupa el extremo derecho seguro y Seguimiento queda a
+  su izquierda, para acercar la accion principal al borde sin invadir el notch.
 - El viewport del mixer de telefono llega a ambos bordes. El contenido lleva
   padding desplazable inicial y final equivalente a los insets reales, de
   modo que el primer y ultimo canal pueden quedar completamente accesibles.
   La escala de los strips se calcula con el ancho seguro y los canales se
   desplazan por debajo de las zonas laterales durante el scroll.
+  El fondo y la banda inferior del primer y ultimo canal se prolongan por ese
+  padding lateral para evitar una franja vacia. Esta prolongacion es decorativa:
+  no replica controles ni cambia sus posiciones o el recorrido del scroll.
 - En Android se respetan los insets reportados por el sistema para los controles,
   incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
   inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la
   barra superior cubre tambien su inset superior si hay una barra visible.
-- Los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
+- En telefonos, los fondos y superficies desplazables se dibujan edge-to-edge; las acciones
   fijas mantienen su proteccion respecto de la camara y esquinas.
 - No se mantienen tablas de margenes por modelo ni gutters fijos para notch.
 

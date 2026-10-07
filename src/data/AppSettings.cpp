@@ -29,6 +29,8 @@ constexpr int kStudioAmberThemeId = 3;
 // the scrolling waveform). Keep the persisted language in memory after the
 // first lookup so repainting never reopens and reparses app_settings.json.
 std::atomic<int> cachedLanguage{-1};
+std::atomic<int> cachedLocalDemoSession{-1};
+juce::CriticalSection backgroundSettingsWriteLock;
 
 int encodeLanguage(const AppLanguage language) noexcept {
   return language == AppLanguage::English ? 1 : 0;
@@ -176,6 +178,37 @@ void applyRoutingVarToDefaults(const juce::var &routingVar,
 
 juce::File AppSettings::getSettingsFile() {
   return getMtControlsDirectory().getChildFile("app_settings.json");
+}
+
+bool AppSettings::getDemoWelcomeSeen() {
+  return static_cast<bool>(juce::JSON::parse(getSettingsFile())["demoWelcomeSeen"]);
+}
+
+bool AppSettings::getLocalDemoSessionActive() {
+  auto cached = cachedLocalDemoSession.load(std::memory_order_acquire);
+  if (cached >= 0) return cached != 0;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto value = juce::JSON::parse(getSettingsFile())["localDemoSessionActive"];
+  int unknown = -1;
+  cachedLocalDemoSession.compare_exchange_strong(unknown,
+      value.isBool() && static_cast<bool>(value) ? 1 : 0, std::memory_order_acq_rel);
+  return cachedLocalDemoSession.load(std::memory_order_acquire) != 0;
+}
+
+void AppSettings::setLocalDemoSessionActive(const bool value) {
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  cachedLocalDemoSession.store(value ? 1 : 0, std::memory_order_release);
+  auto root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  root.getDynamicObject()->setProperty("localDemoSessionActive", value);
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
+}
+
+void AppSettings::setDemoWelcomeSeen(const bool value) {
+  auto root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  root.getDynamicObject()->setProperty("demoWelcomeSeen", value);
+  getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
 bool AppSettings::getExpandWindowOnLaunch() {
@@ -683,6 +716,7 @@ PadsPackSettings AppSettings::getPadsPackSettings() {
 }
 
 void AppSettings::setPadsPackSettings(const PadsPackSettings &settings) {
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
   juce::var root;
   if (getSettingsFile().existsAsFile())
     root = juce::JSON::parse(getSettingsFile());
@@ -731,6 +765,7 @@ AssetsBootstrapState AppSettings::getAssetsBootstrapState() {
 }
 
 void AppSettings::setAssetsBootstrapState(const AssetsBootstrapState &state) {
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
   juce::var root;
   if (getSettingsFile().existsAsFile())
     root = juce::JSON::parse(getSettingsFile());

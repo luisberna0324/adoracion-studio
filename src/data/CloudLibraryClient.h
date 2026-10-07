@@ -12,6 +12,12 @@ struct CloudSongSummary {
   int settingsRevision = 0;
   double durationSeconds = 0.0;
   juce::int64 storageBytes = 0, updatedAtMs = 0;
+  // Shared songs retain their remote identity; catalog identity includes origin.
+  juce::String teamId, ownerUid, ownerEmail;
+  bool isSharedCloud() const { return teamId.isNotEmpty(); }
+  juce::String catalogId() const {
+    return isSharedCloud() ? "shared-cloud:" + teamId + ":" + songId : songId;
+  }
 };
 
 struct CloudSongPage {
@@ -27,6 +33,7 @@ struct CloudRequestError {
 struct CloudCapabilities {
   juce::String accountType, trialEndsAt, updatedAt;
   bool enabled = false, isOverride = false;
+  bool canManageSharedCloud = false;
   int usedDevices = 0, maxDevices = 0, syncedSongCount = 0, maxSyncedSongs = 0;
   juce::int64 usedStorageBytes = 0, maxStorageBytes = 0;
 };

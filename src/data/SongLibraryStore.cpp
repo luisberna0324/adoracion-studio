@@ -1,6 +1,8 @@
 #include "SongLibraryStore.h"
 #include "ApplicationDataPaths.h"
 #include "CloudSyncIndexStore.h"
+#include "TeamsPreparationService.h"
+#include "SessionPersistence.h"
 #include "ProjectStore.h"
 #include "AppSettings.h"
 #include "AssetBootstrapManager.h"
@@ -156,7 +158,7 @@ bool nearlyEqual(double a, double b) {
 
 bool arrangementsEqual(const SongArrangementSnapshot &a,
                        const SongArrangementSnapshot &b) {
-  if (a.parts.size() != b.parts.size())
+  if (a.parts.size() != b.parts.size() || a.cues != b.cues)
     return false;
   for (size_t i = 0; i < a.parts.size(); ++i) {
     const auto &lhs = a.parts[i];
@@ -167,7 +169,8 @@ bool arrangementsEqual(const SongArrangementSnapshot &a,
       return false;
     if (lhs.color != rhs.color)
       return false;
-    if (lhs.muteInstruments != rhs.muteInstruments ||
+    if (lhs.utilityCue != rhs.utilityCue ||
+        lhs.muteInstruments != rhs.muteInstruments ||
         lhs.skipPlayback != rhs.skipPlayback)
       return false;
     if (lhs.sourcePartId != rhs.sourcePartId)
@@ -518,10 +521,14 @@ bool repairArtworkPathForSong(ImportedSongData &song) {
 } // namespace
 
 std::vector<ImportedSongData> SongLibraryStore::loadSongs() {
-  return loadLibrary().songs;
+  return loadLibrarySnapshot().songs;
 }
 
-LibraryState SongLibraryStore::loadLibrarySnapshot() { return loadLibrary(); }
+LibraryState SongLibraryStore::loadLibrarySnapshot() {
+  PersistedSessionSnapshot session;
+  SessionPersistence::load(session);
+  return TeamsPreparationService::filterLibraryForAccount(loadLibrary(), session.uid);
+}
 
 bool SongLibraryStore::setActiveSetlistId(const juce::String &setlistId) {
   auto library = loadLibrary();
@@ -546,6 +553,27 @@ juce::String SongLibraryStore::createSetlist(const juce::String &name) {
   if (!saveLibrary(library))
     return {};
   return library.setlists.back().id;
+}
+
+bool SongLibraryStore::importPreparedSetlist(SetlistData setlist) {
+  if (setlist.id.trim().isEmpty() || setlist.name.trim().isEmpty())
+    return false;
+  auto library = loadLibrary();
+  // A repeat download must preserve the musician's local rehearsal changes.
+  if (findSetlistById(library, setlist.id) != nullptr)
+    return true;
+  for (const auto &item : setlist.items)
+    if (findSongById(library.songs, item.songId) == nullptr)
+      return false;
+  const auto now = juce::Time::currentTimeMillis();
+  setlist.createdMs = setlist.updatedMs = now;
+  for (auto &item : setlist.items) {
+    if (item.itemId.isEmpty()) item.itemId = juce::Uuid().toString();
+    item.updatedMs = now;
+  }
+  if (!setlist.items.empty()) setlist.items.back().transitionToNext.autoPlay = false;
+  library.setlists.push_back(std::move(setlist));
+  return saveLibrary(library);
 }
 
 bool SongLibraryStore::renameSetlist(const juce::String &setlistId,
@@ -1181,7 +1209,8 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     sortStemsForStripOrder(song.stems);
     bool arrangementChanged = false;
     song.arrangement = reconcileArrangementForSong(
-        song.arrangement.parts.empty() ? previousSong.arrangement
+        song.arrangement.parts.empty() && song.arrangement.cues.empty()
+            ? previousSong.arrangement
                                        : song.arrangement,
         song, arrangementChanged);
     followEditedBaseTempoInDefaultMap(song, previousSong);
@@ -1379,7 +1408,8 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     return false;
   }
 
-  if (song.arrangement.parts.empty() && !previousSong.arrangement.parts.empty())
+  if (song.arrangement.parts.empty() && song.arrangement.cues.empty() &&
+      (!previousSong.arrangement.parts.empty() || !previousSong.arrangement.cues.empty()))
     song.arrangement = previousSong.arrangement;
   bool arrangementChanged = false;
   song.arrangement =
@@ -2035,7 +2065,8 @@ bool SongLibraryStore::getSongArrangement(
       hasSettings = ProjectStore::getCachedSettings(projectId, settings);
     if (!hasSettings) {
       settings.arrangement = it->arrangement;
-      settings.arrangementCustomized = !it->arrangement.parts.empty();
+      settings.arrangementCustomized = !it->arrangement.parts.empty() ||
+                                       !it->arrangement.cues.empty();
     }
 
     bool changed = false;
@@ -2062,7 +2093,8 @@ bool SongLibraryStore::getSongArrangement(
   }
 
   outArrangement = arrangementChanged ? it->arrangement : normalized;
-  outIsCustomArrangement = !outArrangement.parts.empty();
+  outIsCustomArrangement = !outArrangement.parts.empty() ||
+                           !outArrangement.cues.empty();
   return true;
 }
 
@@ -2095,7 +2127,8 @@ bool SongLibraryStore::updateSongArrangement(
       hasSettings = ProjectStore::getCachedSettings(projectId, settings);
     if (!hasSettings) {
       settings.arrangement = it->arrangement;
-      settings.arrangementCustomized = !it->arrangement.parts.empty();
+      settings.arrangementCustomized = !it->arrangement.parts.empty() ||
+                                       !it->arrangement.cues.empty();
     }
 
     const bool arrangementChanged =
@@ -2403,7 +2436,7 @@ LibraryState SongLibraryStore::loadLibrary() {
                 song.projectId + " error=" + artworkError);
           }
         }
-      } else if (!hasPlayableLocalStem(song)) {
+      } else if (!song.id.startsWith("team-") && !hasPlayableLocalStem(song)) {
         // A reinstall can preserve songs.json while local legacy/Cloud blobs
         // were removed with the previous sandbox. Do not leave an entry that
         // cannot be played; its setlist references are pruned on deserialization.
@@ -2413,6 +2446,8 @@ LibraryState SongLibraryStore::loadLibrary() {
         needsSave = true;
         continue;
       }
+      // Team audio can be prepared again from its immutable revision. Retain
+      // metadata and personal setlist adjustments while its cache is missing.
       bool hasSongArrangement = false;
       if (auto *songObj = songVar.getDynamicObject()) {
         hasSongArrangement = songObj->hasProperty("arrangement");
@@ -2471,7 +2506,8 @@ LibraryState SongLibraryStore::loadLibrary() {
       bool foundLegacy = false;
       auto tryPickFromSetlist = [&](const SetlistData &setlist) {
         for (const auto &item : setlist.items) {
-          if (item.songId != songId || item.arrangement.parts.empty())
+          if (item.songId != songId ||
+              (item.arrangement.parts.empty() && item.arrangement.cues.empty()))
             continue;
           selectedLegacy = item.arrangement;
           foundLegacy = true;
@@ -2708,7 +2744,7 @@ bool SongLibraryStore::convertStemToStorageFormat(
     const juce::File &source, const juce::File &destination,
     juce::String &errorMessage, const double durationSec,
     const SongImportProgressFn &onProgress) {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   juce::ignoreUnused(durationSec);
   return portable_audio::convertToFlac(
       source, destination, errorMessage,
@@ -2728,7 +2764,7 @@ bool SongLibraryStore::convertStemForProject(const juce::File &source,
                                              juce::String &errorMessage,
                                              const double durationSec,
                                              const SongImportProgressFn &onProgress) {
-#if JUCE_IOS || JUCE_ANDROID
+#if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
   return convertStemToStorageFormat(source, destination, errorMessage,
                                     durationSec, onProgress);
 #else
@@ -3144,9 +3180,6 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     const SongArrangementSnapshot &arrangement, const ImportedSongData &song,
     bool &changed) {
   const double songLength = estimateSongLengthSeconds(song);
-  if (arrangement.parts.empty())
-    return arrangement;
-
   SongArrangementSnapshot out = arrangement;
   double arrangementLength = songLength;
   for (const auto &part : out.parts) {
@@ -3285,6 +3318,8 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     out.parts = std::move(sorted);
   }
 
+  if (migrateLegacyArrangementCues(out))
+    changed = true;
   return out;
 }
 
@@ -3391,6 +3426,14 @@ juce::var SongLibraryStore::arrangementToVar(
   for (const auto &part : arrangement.parts)
     partsArray.add(arrangementPartToVar(part));
   obj->setProperty("parts", juce::var(partsArray));
+  juce::Array<juce::var> cuesArray;
+  cuesArray.ensureStorageAllocated(static_cast<int>(arrangement.cues.size()));
+  for (const auto &cue : arrangement.cues)
+    cuesArray.add(arrangementCueToVar(cue));
+  // Preserve the canonical representation of songs without secondary marks:
+  // upgrading the app alone must not create a new Cloud settings version.
+  if (!cuesArray.isEmpty())
+    obj->setProperty("cues", juce::var(cuesArray));
   return juce::var(obj);
 }
 
@@ -3409,9 +3452,21 @@ SongArrangementSnapshot SongLibraryStore::arrangementFromVar(
         arrangement.parts.push_back(std::move(part));
       }
     }
+    if (auto *cuesArray = obj->getProperty("cues").getArray()) {
+      arrangement.cues.reserve(static_cast<size_t>(cuesArray->size()));
+      for (const auto &cueVar : *cuesArray) {
+        SongArrangementCueSnapshot cue;
+        if (arrangementCueFromVar(cueVar, cue))
+          arrangement.cues.push_back(std::move(cue));
+        else
+          changed = true;
+      }
+    }
   }
   if (song != nullptr)
     arrangement = reconcileArrangementForSong(arrangement, *song, changed);
+  else if (migrateLegacyArrangementCues(arrangement))
+    changed = true;
   return arrangement;
 }
 
@@ -3998,7 +4053,7 @@ bool SongLibraryStore::updateActiveSetlistItem(
       cachedSettings.window = createDefaultWindowForSong(*song);
       cachedSettings.arrangement = song->arrangement;
       cachedSettings.arrangementCustomized =
-          !song->arrangement.parts.empty();
+          !song->arrangement.parts.empty() || !song->arrangement.cues.empty();
       cachedSettings.dynamicGuide = makeDefaultDynamicGuideSettings();
       cachedSettings.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
       cachedSettings.clickDynMix = makeDefaultClickDynMixSnapshot();

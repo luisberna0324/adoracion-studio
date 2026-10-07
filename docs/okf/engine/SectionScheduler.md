@@ -4,7 +4,7 @@ title: SectionScheduler
 description: Programador de secciones de arrange con soporte para loops y jumps
 resource: src/audio/SectionScheduler.h
 tags: [juce, audio, arrange, section, scheduler]
-timestamp: 2026-07-25T00:00:00Z
+timestamp: 2026-10-03T00:00:00Z
 ---
 
 # SectionScheduler
@@ -77,7 +77,8 @@ Máximo número de secciones soportadas.
 ### Publicación de secciones
 
 ```cpp
-void publish(const std::vector<Section> &sections) noexcept;
+void publish(const std::vector<Section> &sections,
+             const std::vector<Cue> &cues = {}) noexcept;
 ```
 
 Publica un nuevo arrange. Thread-safe.
@@ -333,3 +334,26 @@ próxima entrada a Q.
 
 - [TransportClock](TransportClock.md) - Proveedor de frames
 - [MTControlsAudioProcessor](../processor/MTControlsAudioProcessor.md) - Usa SectionScheduler
+
+## Indicaciones independientes
+
+`Cue { Frame frame; int guideTriggerId; bool skipPlayback; }` es un punto del arrange, separado de
+`Section`. El snapshot contiene `cueCount` y `cues[maxCues]` (`maxCues=512`)
+además de las secciones, dentro del mismo banco/generación/secuencia atómica.
+Una indicación no altera `findSection`, `evaluate`, fuente, loop, jump ni
+selección de automatización. El límite es de 512 anuncios expandidos por
+publicación (un conteo 1–4 ocupa cuatro eventos del motor); el modelo conserva
+los datos que excedan ese límite.
+
+El callback recorre el rango semiabierto `[startFrame, startFrame+frames)` de
+cada segmento efectivamente reproducido, traduce cada evento a su offset de
+salida según los frames fuente/output de ese segmento y renderiza la voz antes
+y después de cada punto. Un loop o jump renderiza el prefijo saliente, limpia
+las voces al límite y evalúa los cues del sufijo del destino. Seek nunca
+recupera indicaciones anteriores al punto aceptado. Una nueva pasada del mismo
+rango vuelve a disparar sus cues sin estado de “ya anunciado” global.
+
+Los cues de una sección omitida permanecen publicados con `skipPlayback`, para
+que el snapshot normal los filtre y Ensayo A–B pueda habilitarlos junto con el
+audio de esa sección. No se borran al compilar: el snapshot temporal de Ensayo
+limpia ambos flags, de sección y de cue.

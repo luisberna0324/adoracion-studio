@@ -1,242 +1,499 @@
 #include "WelcomeModal.h"
-#include "BinaryData.h"
 #include "../../data/Localization.h"
+#include "../../platform/NativeAppleSignIn.h"
 
-namespace {
-class WelcomePillLookAndFeel final : public juce::LookAndFeel_V4 {
-public:
-  void drawButtonBackground(juce::Graphics &g, juce::Button &button,
-                            const juce::Colour &backgroundColour,
-                            bool isMouseOverButton,
-                            bool isButtonDown) override {
-    juce::ignoreUnused(backgroundColour);
-    auto r = button.getLocalBounds().toFloat().reduced(0.5f, 1.0f);
-    const float rad = r.getHeight() * 0.5f;
-    auto fill = juce::Colour(0xfff5f5f7);
-    if (isButtonDown)
-      fill = fill.darker(0.14f);
-    else if (isMouseOverButton)
-      fill = juce::Colour(0xffffffff);
-    g.setColour(fill);
-    g.fillRoundedRectangle(r, rad);
-    g.setColour(juce::Colour(0xff000000).withAlpha(0.06f));
-    g.drawRoundedRectangle(r.reduced(0.5f), rad - 0.25f, 1.0f);
+EmailAuthenticationForm::EmailAuthenticationForm() {
+  setFocusContainerType(FocusContainerType::keyboardFocusContainer);
+  viewport.setViewedComponent(&content, false);
+  viewport.setScrollBarsShown(true, false);
+  viewport.setScrollBarThickness(5);
+  addAndMakeVisible(viewport);
+  juce::Label* labels[] = {&explanation, &emailLabel, &passwordLabel};
+  for (auto* control : labels) {
+    AuthUi::label(*control, 14);
+    control->setJustificationType(juce::Justification::centredLeft);
+    content.addAndMakeVisible(*control);
   }
+  AuthUi::label(explanation, 15);
+  emailLabel.setText(L10n::tr("Correo", "Email"), juce::dontSendNotification);
+  passwordLabel.setText(L10n::tr(u8"Contraseña de PlayWorship", "PlayWorship password"), juce::dontSendNotification);
+  for (auto* editor : {&emailEditor, &passwordEditor}) {
+    editor->setLookAndFeel(&fieldStyle);
+    editor->setFont(juce::FontOptions(16));
+    editor->setMultiLine(false);
+    editor->setReturnKeyStartsNewLine(false);
+    editor->setIndents(14, 15);
+    editor->setColour(juce::TextEditor::textColourId, AuthUi::text);
+    editor->setColour(juce::TextEditor::highlightColourId, AuthUi::accent.withAlpha(0.3f));
+    editor->setColour(juce::CaretComponent::caretColourId, AuthUi::accent);
+    editor->onEscapeKey = [this] { goBack(); };
+    content.addAndMakeVisible(*editor);
+  }
+  emailEditor.setTitle(L10n::tr("Correo", "Email"));
+  emailEditor.setDescription(L10n::tr("El correo de tu cuenta de PlayWorship.", "Your PlayWorship account email."));
+  emailEditor.setKeyboardType(juce::TextInputTarget::emailAddressKeyboard);
+  emailEditor.setExplicitFocusOrder(1);
+  emailEditor.setInputRestrictions(254);
+  emailEditor.setTextToShowWhenEmpty(L10n::tr("nombre@correo.com", "name@example.com"), AuthUi::muted.withAlpha(0.7f));
+  emailEditor.onReturnKey = [this] {
+    if (isResetMode()) submit();
+    else {
+      viewport.setViewPosition(0, juce::jmax(0, passwordEditor.getBottom() - viewport.getHeight()));
+      passwordEditor.grabKeyboardFocus();
+    }
+  };
+  passwordEditor.setTitle(L10n::tr(u8"Contraseña de PlayWorship", "PlayWorship password"));
+  passwordEditor.setKeyboardType(juce::TextInputTarget::passwordKeyboard);
+  passwordEditor.setPasswordCharacter(0x2022);
+  passwordEditor.setInputRestrictions(1024);
+  passwordEditor.setExplicitFocusOrder(2);
+  passwordEditor.setBorder(juce::BorderSize<int>(0, 0, 0, 48));
+  passwordEditor.onReturnKey = [this] { submit(); };
+  content.addAndMakeVisible(showPasswordButton);
+  content.addAndMakeVisible(submitButton);
+  content.addAndMakeVisible(resetButton);
+  content.addChildComponent(mailIcon);
+  showPasswordButton.setExplicitFocusOrder(3);
+  showPasswordButton.setMouseClickGrabsKeyboardFocus(false);
+  submitButton.setExplicitFocusOrder(4);
+  resetButton.setExplicitFocusOrder(5);
+  showPasswordButton.onClick = [this] {
+    const bool reveal = passwordEditor.getPasswordCharacter() != 0;
+    passwordEditor.setPasswordCharacter(reveal ? 0 : 0x2022);
+    showPasswordButton.setToggleState(reveal, juce::dontSendNotification);
+    showPasswordButton.setButtonText(reveal ? L10n::tr("Ocultar", "Hide") : L10n::tr("Mostrar", "Show"));
+    showPasswordButton.setTitle(reveal ? L10n::tr(u8"Ocultar contraseña", "Hide password") : L10n::tr(u8"Mostrar contraseña", "Show password"));
+    showPasswordButton.setTooltip(showPasswordButton.getTitle());
+  };
+  submitButton.onClick = [this] { submit(); };
+  resetButton.onClick = [this] {
+    if (busy || isLocalDemoMode()) return;
+    clearCredentials();
+    mode = Mode::reset;
+    updateMode();
+    if (onModeChanged) onModeChanged();
+    focusEmail();
+  };
+  updateMode();
+}
 
-  juce::Font getTextButtonFont(juce::TextButton &, int buttonHeight) override {
-    const float px =
-        juce::jlimit(15.0f, 17.0f, static_cast<float>(buttonHeight) * 0.34f);
-    return juce::Font(juce::FontOptions(px).withStyle("Bold"));
+EmailAuthenticationForm::~EmailAuthenticationForm() {
+  emailEditor.setLookAndFeel(nullptr);
+  passwordEditor.setLookAndFeel(nullptr);
+}
+
+void EmailAuthenticationForm::showLogin() {
+  clearCredentials();
+  if (isLocalDemoMode()) emailEditor.clear();
+  mode = Mode::login;
+  updateMode();
+  focusEmail();
+}
+
+void EmailAuthenticationForm::showLocalDemoLogin() {
+  clearCredentials();
+  emailEditor.clear();
+  mode = Mode::localDemoLogin;
+  updateMode();
+  focusEmail();
+}
+
+void EmailAuthenticationForm::showPasswordLinkSent() {
+  if (isLocalDemoMode()) return;
+  clearCredentials();
+  mode = Mode::linkSent;
+  setBusy(false);
+  updateMode();
+  if (onModeChanged) onModeChanged();
+  if (isShowing()) submitButton.grabKeyboardFocus();
+}
+
+void EmailAuthenticationForm::goBack() {
+  if (isResetMode() && !busy) {
+    showLogin();
+    if (onModeChanged) onModeChanged();
+  } else {
+    clearCredentials();
+    if (onBack) onBack();
   }
-};
-} // namespace
+}
+
+void EmailAuthenticationForm::setBusy(bool isBusy) {
+  busy = isBusy;
+  juce::Component* controls[] = {&emailEditor, &passwordEditor, &showPasswordButton, &submitButton, &resetButton};
+  for (auto* control : controls)
+    control->setEnabled(!busy);
+  submitButton.setButtonText(busy ? (isResetMode() ? L10n::tr("Enviando…", "Sending…")
+                                                   : isLocalDemoMode() ? L10n::tr("Abriendo…", "Opening…")
+                                                   : L10n::tr("Ingresando…", "Signing in…"))
+                               : isLinkSent() ? L10n::tr("Volver al acceso", "Back to sign in")
+                               : isResetMode() ? L10n::tr("Enviar enlace", "Send link")
+                               : isLocalDemoMode() ? L10n::tr("Abrir demo", "Open demo")
+                                               : L10n::tr("Ingresar", "Sign in"));
+}
+
+void EmailAuthenticationForm::visibilityChanged() {
+  if (!isVisible()) clearCredentials();
+}
+
+void EmailAuthenticationForm::clearCredentials() {
+  passwordEditor.clear();
+  passwordEditor.setPasswordCharacter(0x2022);
+  showPasswordButton.setToggleState(false, juce::dontSendNotification);
+  showPasswordButton.setButtonText(L10n::tr("Mostrar", "Show"));
+  showPasswordButton.setTitle(L10n::tr(u8"Mostrar contraseña", "Show password"));
+  showPasswordButton.setTooltip(showPasswordButton.getTitle());
+}
+
+void EmailAuthenticationForm::focusEmail() {
+  if (isShowing() && !isLinkSent() && emailEditor.isEnabled()) emailEditor.grabKeyboardFocus();
+}
+
+void EmailAuthenticationForm::updateMode() {
+  const auto identityLabel = isLocalDemoMode() ? L10n::tr("Usuario", "Username") : L10n::tr("Correo", "Email");
+  emailLabel.setText(identityLabel, juce::dontSendNotification);
+  emailEditor.setTitle(identityLabel);
+  emailEditor.setDescription(isLocalDemoMode()
+      ? L10n::tr("Usuario para probar la demo sin conexión.", "Username for the offline demo trial.")
+      : L10n::tr("El correo de tu cuenta de PlayWorship.", "Your PlayWorship account email."));
+  emailEditor.setKeyboardType(isLocalDemoMode() ? juce::TextInputTarget::textKeyboard
+                                                : juce::TextInputTarget::emailAddressKeyboard);
+  emailEditor.setInputRestrictions(isLocalDemoMode() ? 64 : 254);
+  emailEditor.setTextToShowWhenEmpty(isLocalDemoMode() ? juce::String("usuarioplay0324")
+      : L10n::tr("nombre@correo.com", "name@example.com"), AuthUi::muted.withAlpha(0.7f));
+  const auto secretLabel = isLocalDemoMode() ? L10n::tr(u8"Contraseña", "Password")
+      : L10n::tr(u8"Contraseña de PlayWorship", "PlayWorship password");
+  passwordLabel.setText(secretLabel, juce::dontSendNotification);
+  passwordEditor.setTitle(secretLabel);
+  emailEditor.getProperties().set("playworshipReturnKeyNext", !isResetMode());
+  explanation.setText(isLinkSent()
+      ? L10n::tr(u8"Si el correo está asociado a una cuenta, recibirás un enlace para crear o recuperar tu contraseña. Revisa también la carpeta de spam.",
+                  "If the email belongs to an account, you'll receive a link to set or reset your password. Check your spam folder too.")
+      : isResetMode()
+      ? L10n::tr(u8"Te enviaremos un enlace para crear o recuperar la contraseña de tu cuenta de PlayWorship.",
+                  "We'll email you a link to set or reset your PlayWorship password.")
+      : isLocalDemoMode()
+      ? L10n::tr(u8"Usuario y contraseña: usuarioplay0324. Abre la demo incluida sin conexión.",
+                  "Username and password: usuarioplay0324. Opens the included demo offline.")
+      : L10n::tr(u8"Si usabas Google, puedes crear una contraseña para esta misma cuenta.",
+                  "If you used Google, you can set a password for the same account."), juce::dontSendNotification);
+  explanation.setJustificationType(isLinkSent() ? juce::Justification::centredTop : juce::Justification::topLeft);
+  resetButton.setButtonText(isLinkSent() ? L10n::tr("Solicitar otro enlace", "Request another link")
+      : L10n::tr(u8"Crear o recuperar contraseña", "Set or reset password"));
+  emailLabel.setVisible(!isLinkSent());
+  emailEditor.setVisible(!isLinkSent());
+  passwordLabel.setVisible(!isResetMode());
+  passwordEditor.setVisible(!isResetMode());
+  showPasswordButton.setVisible(!isResetMode());
+  resetButton.setVisible(!isLocalDemoMode() && (!isResetMode() || isLinkSent()));
+  mailIcon.setVisible(isLinkSent());
+  setBusy(busy);
+  viewport.setViewPosition(0, 0);
+  resized();
+}
+
+void EmailAuthenticationForm::submit() {
+  if (busy) return;
+  if (isLinkSent()) {
+    showLogin();
+    if (onModeChanged) onModeChanged();
+    return;
+  }
+  const auto email = emailEditor.getText().trim();
+  const int at = email.indexOfChar('@');
+  if (isLocalDemoMode() && email.isEmpty()) {
+    if (onStatusChanged) onStatusChanged(L10n::tr("Escribe el usuario de prueba.", "Enter the trial username."), true);
+    focusEmail();
+    return;
+  }
+  if (!isLocalDemoMode() && (at <= 0 || at != email.lastIndexOfChar('@') ||
+      email.substring(at + 1).indexOfChar('.') <= 0 || email.endsWithChar('.') || email.containsAnyOf(" \r\n\t"))) {
+    if (onStatusChanged) onStatusChanged(L10n::tr(u8"Escribe un correo válido.", "Enter a valid email."), true);
+    focusEmail();
+    return;
+  }
+  emailEditor.setText(email, false);
+  if (isResetMode()) {
+    if (onPasswordResetRequested) onPasswordResetRequested(email);
+    return;
+  }
+  const auto password = passwordEditor.getText();
+  if (password.isEmpty()) {
+    if (onStatusChanged) onStatusChanged(isLocalDemoMode()
+        ? L10n::tr(u8"Escribe la contraseña de prueba.", "Enter the trial password.")
+        : L10n::tr(u8"Escribe tu contraseña de PlayWorship.", "Enter your PlayWorship password."), true);
+    viewport.setViewPosition(0, juce::jmax(0, passwordEditor.getBottom() - viewport.getHeight()));
+    passwordEditor.grabKeyboardFocus();
+    return;
+  }
+  clearCredentials();
+  if (isLocalDemoMode()) {
+    if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(email, password);
+    return;
+  }
+  if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
+}
+
+int EmailAuthenticationForm::preferredHeight(int width) const {
+  const int contentWidth = juce::jmax(1, width > 0 ? width : (getWidth() > 0 ? getWidth() : 320));
+  const int copyHeight = explanation.heightForWidth(contentWidth);
+  if (isLinkSent())
+    return 56 + 16 + copyHeight + 24 + 48 + 8 + 44;
+  if (isResetMode())
+    return copyHeight + 20 + 20 + 8 + 50 + 24 + 48;
+  return 20 + 8 + 50 + 20 + 20 + 8 + 50 + 24 + 48 + 12 + copyHeight +
+      (isLocalDemoMode() ? 0 : 8 + 44);
+}
+
+void EmailAuthenticationForm::resized() {
+  viewport.setBounds(getLocalBounds());
+  const int contentWidth = juce::jmax(1, getWidth() - (getHeight() < preferredHeight(getWidth()) ? 8 : 0));
+  content.setSize(contentWidth, preferredHeight(contentWidth));
+  auto area = content.getLocalBounds();
+  const int copyHeight = explanation.heightForWidth(contentWidth);
+  if (isLinkSent()) {
+    mailIcon.setBounds(area.removeFromTop(56));
+    area.removeFromTop(16);
+    explanation.setBounds(area.removeFromTop(copyHeight));
+    area.removeFromTop(24);
+    submitButton.setBounds(area.removeFromTop(48));
+    area.removeFromTop(8);
+    resetButton.setBounds(area.removeFromTop(44));
+    return;
+  }
+  if (isResetMode()) {
+    explanation.setBounds(area.removeFromTop(copyHeight));
+    area.removeFromTop(20);
+  }
+  emailLabel.setBounds(area.removeFromTop(20));
+  area.removeFromTop(8);
+  emailEditor.setBounds(area.removeFromTop(50));
+  if (!isResetMode()) {
+    area.removeFromTop(20);
+    passwordLabel.setBounds(area.removeFromTop(20));
+    area.removeFromTop(8);
+    passwordEditor.setBounds(area.removeFromTop(50));
+    showPasswordButton.setBounds(passwordEditor.getBounds().removeFromRight(48).reduced(2));
+  }
+  area.removeFromTop(24);
+  submitButton.setBounds(area.removeFromTop(48));
+  if (!isResetMode()) {
+    area.removeFromTop(12);
+    explanation.setBounds(area.removeFromTop(copyHeight));
+    if (!isLocalDemoMode()) {
+      area.removeFromTop(8);
+      resetButton.setBounds(area.removeFromTop(44));
+    }
+  }
+}
 
 WelcomeModal::WelcomeModal() {
   setOpaque(false);
-
-  primaryLaf = std::make_unique<WelcomePillLookAndFeel>();
-
-  logoImage = juce::ImageFileFormat::loadFrom(
-      BinaryData::pwLogoSinFondo_png, BinaryData::pwLogoSinFondo_pngSize);
-  if (logoImage.isValid()) {
-    logo.setOpaque(false);
-    addAndMakeVisible(logo);
+  logoImage = juce::ImageFileFormat::loadFrom(BinaryData::pwLogoSinFondo_png, BinaryData::pwLogoSinFondo_pngSize);
+  logo.setImage(logoImage, juce::RectanglePlacement::centred);
+  addAndMakeVisible(logo);
+  for (auto* control : {&title, &subtitle, &status, &separator}) {
+    AuthUi::label(*control, control == &title ? 28.0f : 14.0f, control == &title);
+    control->setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(*control);
   }
-
-  auto clearLabelBg = [](juce::Label &l) {
-    l.setOpaque(false);
-    l.setColour(juce::Label::backgroundColourId,
-                juce::Colours::transparentBlack);
-    l.setColour(juce::Label::outlineColourId,
-                juce::Colours::transparentBlack);
-  };
-
-  title.setText(
-      L10n::tr("Te damos la bienvenida\na PlayWorship",
-               "Welcome to\nPlayWorship"),
-      juce::dontSendNotification);
-  title.setJustificationType(juce::Justification::centred);
-  title.setFont(juce::FontOptions(30.0f).withStyle("Bold"));
-  title.setMinimumHorizontalScale(0.82f);
-  title.setColour(juce::Label::textColourId,
-                  juce::Colour::fromRGB(252, 252, 255));
-  addAndMakeVisible(title);
-  clearLabelBg(title);
-
-  subtitle.setText(
-      L10n::tr(u8"Inicia sesión para continuar con tu biblioteca y setlists.",
-               "Sign in to continue with your library and setlists."),
-      juce::dontSendNotification);
-  subtitle.setJustificationType(juce::Justification::centred);
-  subtitle.setFont(juce::FontOptions(15.0f));
-  subtitle.setColour(juce::Label::textColourId,
-                     juce::Colour::fromRGB(168, 170, 184));
-  addAndMakeVisible(subtitle);
-  clearLabelBg(subtitle);
-
-  status.setText(
-      L10n::tr("Pulsa Ingresar para abrir el navegador.",
-               "Press Sign in to open the browser."),
-      juce::dontSendNotification);
-  status.setJustificationType(juce::Justification::centred);
-  status.setFont(juce::FontOptions(13.0f));
-  status.setColour(juce::Label::textColourId,
-                   juce::Colour::fromRGB(146, 148, 160));
-  addAndMakeVisible(status);
-  clearLabelBg(status);
-
-  loginButton.setButtonText(L10n::tr("Ingresar", "Sign in"));
-  loginButton.setLookAndFeel(primaryLaf.get());
-  loginButton.setColour(juce::TextButton::buttonColourId,
-                        juce::Colours::transparentWhite);
-  loginButton.setColour(juce::TextButton::buttonOnColourId,
-                        juce::Colours::transparentWhite);
-  loginButton.setColour(juce::TextButton::textColourOffId,
-                        juce::Colour::fromRGB(18, 18, 22));
-  loginButton.setColour(juce::TextButton::textColourOnId,
-                        juce::Colour::fromRGB(18, 18, 22));
-  loginButton.onClick = [this] {
-    if (onLoginRequested)
-      onLoginRequested();
-  };
+  separator.setText(L10n::tr("o", "or"), juce::dontSendNotification);
+  loginButton.setButtonText(L10n::tr("Continuar con Google", "Continue with Google"));
+  loginButton.onClick = [this] { if (onLoginRequested) onLoginRequested(); };
   addAndMakeVisible(loginButton);
-
+  emailButton.setButtonText(L10n::tr("Ingresar con correo", "Sign in with email"));
+  emailButton.onClick = [this] { showEmailForm(true); };
+  addAndMakeVisible(emailButton);
+  localDemoButton.setButtonText(L10n::tr(u8"Prueba sin conexión", "Offline trial"));
+  localDemoButton.onClick = [this] { showLocalDemoLogin(); };
+  addAndMakeVisible(localDemoButton);
+  backButton.setButtonText(L10n::tr("Volver", "Back"));
+  backButton.setTitle(L10n::tr("Volver", "Back"));
+  backButton.setTooltip(L10n::tr("Volver", "Back"));
+  backButton.setExplicitFocusOrder(1);
+  backButton.onClick = [this] { emailForm.goBack(); };
+  addChildComponent(backButton);
+  emailForm.onPasswordLoginRequested = [this](const auto& email, const auto& password) {
+    if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
+  };
+  emailForm.onLocalDemoLoginRequested = [this](const auto& username, const auto& password) {
+    if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(username, password);
+  };
+  emailForm.onPasswordResetRequested = [this](const auto& email) {
+    if (onPasswordResetRequested) onPasswordResetRequested(email);
+  };
+  emailForm.onStatusChanged = [this](const auto& message, bool error) { setStatusText(message, error); };
+  emailForm.onBack = [this] { showEmailForm(false); };
+  emailForm.onModeChanged = [this] { updateHeading(); resetStatusToDefault(); resized(); };
+  addChildComponent(emailForm);
+  updateHeading();
 }
 
-WelcomeModal::~WelcomeModal() {
-  loginButton.setLookAndFeel(nullptr);
+WelcomeModal::~WelcomeModal() = default;
+
+void WelcomeModal::updateHeading() {
+  title.setText(!emailMode ? L10n::tr("Bienvenido", "Welcome")
+      : emailForm.isLocalDemoMode() ? L10n::tr(u8"Prueba sin conexión", "Offline trial")
+      : emailForm.isLinkSent() ? L10n::tr("Revisa tu correo", "Check your email")
+      : emailForm.isResetMode() ? L10n::tr(u8"Tu contraseña", "Your password")
+                               : L10n::tr(u8"Iniciar sesión", "Sign in"), juce::dontSendNotification);
+  subtitle.setText(emailMode ? juce::String()
+      : L10n::tr(u8"Accede a tu biblioteca y continúa con tu música.", "Sign in to your library and get back to your music."), juce::dontSendNotification);
 }
 
-void WelcomeModal::setStatusText(const juce::String &text, bool isError) {
-  status.setText(text, juce::dontSendNotification);
-  status.setColour(juce::Label::textColourId,
-                   isError ? juce::Colour::fromRGB(255, 164, 164)
-                           : juce::Colour::fromRGB(146, 148, 160));
+void WelcomeModal::setStatusText(const juce::String& message, bool isError) {
+  status.setText(message, juce::dontSendNotification);
+  status.setColour(juce::Label::textColourId, isError ? juce::Colour(0xffffb4ab) : AuthUi::muted);
+  resized();
 }
 
 void WelcomeModal::resetStatusToDefault() {
-  setStatusText(L10n::tr("Pulsa Ingresar para abrir el navegador.",
-                         "Press Sign in to open the browser."),
-                false);
+  setStatusText({}, false);
   setChecking(false);
+  setAuthenticationBusy(false);
 }
 
 void WelcomeModal::setChecking(bool isChecking) {
-  loginButton.setVisible(!isChecking);
-  subtitle.setVisible(!isChecking);
+  checking = isChecking;
+  updateActionVisibility();
+  resized();
 }
 
-void WelcomeModal::paint(juce::Graphics &g) {
-  const auto bounds = getLocalBounds().toFloat();
-  juce::ColourGradient glow(juce::Colour(0xff153527).withAlpha(0.48f),
-                            bounds.getX(), bounds.getY(),
-                            juce::Colour(0xff171719).withAlpha(0.0f),
-                            bounds.getRight(), bounds.getBottom(), true);
-  g.setGradientFill(glow);
-  g.fillRect(bounds);
+void WelcomeModal::setAppleSignInAvailable(bool available) {
+  if (available && !appleButton) {
+    appleButton = NativeAppleSignIn::createButton([this] { if (onAppleLoginRequested) onAppleLoginRequested(); });
+    if (appleButton) addAndMakeVisible(*appleButton);
+  } else if (!available) appleButton.reset();
+  updateActionVisibility();
+  resized();
+}
 
-  auto card = contentBounds.toFloat();
-  if (card.isEmpty())
-    return;
-  g.setColour(juce::Colour(0xff202124).withAlpha(0.94f));
-  g.fillRoundedRectangle(card, 22.0f);
-  g.setColour(juce::Colour(0xff383a3f).withAlpha(0.9f));
-  g.drawRoundedRectangle(card.reduced(0.5f), 22.0f, 1.0f);
-  g.setColour(juce::Colour(0xff19c765));
-  g.fillRoundedRectangle(
-      juce::Rectangle<float>(card.getX() + 28.0f, card.getY(), 72.0f, 4.0f),
-      2.0f);
+void WelcomeModal::setAuthenticationBusy(bool busy) {
+  authenticationBusy = busy;
+  loginButton.setEnabled(!busy);
+  if (appleButton) appleButton->setEnabled(!busy);
+  emailForm.setBusy(busy);
+}
+
+void WelcomeModal::clearCredentials() { emailForm.clearCredentials(); }
+void WelcomeModal::visibilityChanged() { if (!isVisible()) clearCredentials(); }
+
+void WelcomeModal::showPasswordLinkSent() {
+  if (emailForm.isLocalDemoMode()) return;
+  setStatusText({}, false);
+  setAuthenticationBusy(false);
+  emailForm.showPasswordLinkSent();
+}
+
+void WelcomeModal::showLocalDemoLogin() {
+  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  resetStatusToDefault();
+  emailMode = true;
+  emailForm.showLocalDemoLogin();
+  updateHeading();
+  updateActionVisibility();
+  resized();
+  emailForm.focusEmail();
+}
+
+void WelcomeModal::showEmailForm(bool show) {
+  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  setAuthenticationBusy(false);
+  emailMode = show;
+  if (show) emailForm.showLogin();
+  else emailForm.clearCredentials();
+  updateHeading();
+  resetStatusToDefault();
+  updateActionVisibility();
+  resized();
+  if (show) emailForm.focusEmail();
+}
+
+void WelcomeModal::updateActionVisibility() {
+  loginButton.setVisible(!checking && !emailMode);
+  emailButton.setVisible(!checking && !emailMode);
+  localDemoButton.setVisible(!emailMode);
+  separator.setVisible(!checking && !emailMode);
+  emailForm.setVisible(!checking && emailMode);
+  backButton.setVisible(!checking && emailMode);
+  if (appleButton) {
+    appleButton->setVisible(!checking && !emailMode);
+    appleButton->setEnabled(!authenticationBusy);
+  }
+}
+
+void WelcomeModal::paint(juce::Graphics& g) {
+  g.fillAll(juce::Colour(0xff101713));
+  juce::ColourGradient glow(AuthUi::accent.withAlpha(0.07f), (float)getWidth() * 0.3f, 0,
+      juce::Colours::transparentBlack, (float)getWidth(), (float)getHeight(), true);
+  g.setGradientFill(glow);
+  g.fillRect(getLocalBounds());
+  AuthUi::drawSurface(g, contentBounds.toFloat());
+  if (separator.isVisible()) {
+    const auto r = separator.getBounds().toFloat();
+    g.setColour(AuthUi::border.withAlpha(0.65f));
+    g.drawHorizontalLine((int)r.getCentreY(), r.getX(), r.getCentreX() - 22);
+    g.drawHorizontalLine((int)r.getCentreY(), r.getCentreX() + 22, r.getRight());
+  }
 }
 
 void WelcomeModal::resized() {
-  const bool useTwoColumns = getWidth() >= 760 && getHeight() >= 360 &&
-                             getWidth() >= (getHeight() * 13 / 10);
-  const int outerPad = juce::jlimit(
-      16, 48, juce::jmin(getWidth(), getHeight()) / 14);
-  auto available = getLocalBounds().reduced(outerPad);
-  const int cardW = juce::jmin(useTwoColumns ? 900 : 560,
-                               available.getWidth());
-  const int preferredCardH = useTwoColumns
-                                 ? juce::jlimit(360, 520,
-                                                available.getHeight() * 9 / 10)
-                                 : juce::jlimit(430, 680,
-                                                available.getHeight() * 9 / 10);
-  const int cardH = juce::jmin(preferredCardH, available.getHeight());
-  contentBounds = juce::Rectangle<int>(cardW, cardH)
-                      .withCentre(available.getCentre());
-
-  if (useTwoColumns) {
-    auto inner = contentBounds.reduced(juce::jlimit(24, 44, cardW / 18),
-                                       juce::jlimit(22, 40, cardH / 12));
-    auto brandArea = inner.removeFromLeft(inner.getWidth() * 38 / 100);
-    inner.removeFromLeft(juce::jlimit(24, 40, cardW / 22));
-
-    const int formWidth = juce::jmin(420, inner.getWidth());
-    constexpr int titleH = 72;
-    constexpr int subtitleH = 42;
-    constexpr int statusH = 28;
-    constexpr int buttonH = 46;
-    constexpr int textGap = 8;
-    constexpr int sectionGap = 12;
-    const int formHeight = titleH + textGap + subtitleH + sectionGap +
-                           statusH + sectionGap + buttonH;
-    auto column = juce::Rectangle<int>(formWidth, juce::jmin(formHeight,
-                                                             inner.getHeight()))
-                      .withCentre(inner.getCentre());
-
-    if (logoImage.isValid()) {
-      logo.setImage(logoImage, juce::RectanglePlacement::centred);
-      const int logoW = juce::jmin(300, brandArea.getWidth() - 8);
-      const int logoH = juce::jmin(150, brandArea.getHeight() - 24);
-      logo.setBounds(juce::Rectangle<int>(juce::jmax(1, logoW),
-                                          juce::jmax(1, logoH))
-                         .withCentre(brandArea.getCentre()));
-    }
-
-    title.setBounds(column.removeFromTop(titleH));
-    column.removeFromTop(textGap);
-    subtitle.setBounds(column.removeFromTop(subtitleH));
-    column.removeFromTop(sectionGap);
-    status.setBounds(column.removeFromTop(statusH));
-    column.removeFromTop(sectionGap);
-    loginButton.setBounds(column.removeFromTop(buttonH));
+  const int outer = getWidth() < 600 ? 16 : 32;
+  auto available = getLocalBounds().reduced(outer, 12);
+  const int cardWidth = juce::jmax(1, juce::jmin(480, available.getWidth()));
+  const int sidePadding = getWidth() < 600 ? 22 : 32;
+  const bool hasStatus = status.getText().isNotEmpty();
+  const int preferred = emailMode ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) + (hasStatus ? 68 : 0)
+                                  : 436 + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
+  contentBounds = juce::Rectangle<int>(cardWidth,
+      juce::jmin(preferred, available.getHeight())).withCentre(available.getCentre());
+  // Changing steps moves the card without resizing this component. Invalidate
+  // the parent background too, so old borders don't survive between children.
+  repaint();
+  auto area = contentBounds.reduced(sidePadding,
+                                    emailMode ? 24 : contentBounds.getHeight() < 380 ? 14 : 28);
+  logo.setVisible(!emailMode && contentBounds.getHeight() >= 380);
+  if (logo.isVisible()) {
+    logo.setBounds(area.removeFromTop(58));
+    area.removeFromTop(18);
+  }
+  auto heading = area.removeFromTop(44);
+  if (emailMode) {
+    backButton.setBounds(heading.removeFromLeft(44));
+    heading.removeFromRight(44);
+    AuthUi::label(title, 22, true);
+    title.setBounds(heading);
+    area.removeFromTop(20);
+  } else {
+    AuthUi::label(title, 28, true);
+    title.setBounds(heading);
+    area.removeFromTop(4);
+  }
+  subtitle.setVisible(!emailMode && contentBounds.getHeight() >= 380);
+  if (subtitle.isVisible()) {
+    subtitle.setBounds(area.removeFromTop(46));
+    area.removeFromTop(22);
+  }
+  status.setVisible(hasStatus);
+  if (hasStatus) {
+    status.setBounds(area.removeFromTop(56));
+    area.removeFromTop(12);
+  }
+  if (checking) {
+    localDemoButton.setBounds(area.removeFromTop(48));
     return;
   }
-
-  const int columnWidth = juce::jmin(440, cardW - 40);
-  auto column = juce::Rectangle<int>(juce::jmax(1, columnWidth),
-                                     juce::jmax(1, cardH - 44))
-                    .withCentre(contentBounds.getCentre());
-  const bool compact = cardH < 600;
-  const int logoMinH = compact ? 64 : 82;
-  const int logoMaxH = compact ? 94 : 126;
-  const int logoGap = compact ? 6 : 10;
-  const int titleH = compact ? 56 : 64;
-  const int titleGap = compact ? 4 : 6;
-  const int subtitleH = compact ? 32 : 40;
-  const int subtitleGap = compact ? 6 : 10;
-  const int statusH = compact ? 24 : 30;
-  const int statusGap = compact ? 8 : 14;
-  const int btnH = compact ? 42 : 46;
-
-  if (logoImage.isValid()) {
-    auto logoArea = column.removeFromTop(
-        juce::jlimit(logoMinH, logoMaxH, cardH / (compact ? 6 : 5)));
-    const int logoW = juce::jmin(300, logoArea.getWidth());
-    const int logoH = logoArea.getHeight();
-    logo.setImage(logoImage, juce::RectanglePlacement::centred);
-    logo.setBounds(logoArea.withSizeKeepingCentre(logoW, logoH));
-    column.removeFromTop(logoGap);
-  } else {
-    column.removeFromTop(8);
+  if (emailMode) {
+    emailForm.setBounds(area);
+    return;
   }
-
-  title.setBounds(column.removeFromTop(titleH));
-  column.removeFromTop(titleGap);
-  subtitle.setBounds(column.removeFromTop(subtitleH));
-  column.removeFromTop(subtitleGap);
-  status.setBounds(column.removeFromTop(statusH));
-  column.removeFromTop(statusGap);
-
-  loginButton.setBounds(column.removeFromTop(btnH));
+  loginButton.setBounds(area.removeFromTop(48));
+  if (appleButton) {
+    area.removeFromTop(10);
+    appleButton->setBounds(area.removeFromTop(48));
+  }
+  separator.setBounds(area.removeFromTop(34));
+  emailButton.setBounds(area.removeFromTop(48));
+  area.removeFromTop(10);
+  localDemoButton.setBounds(area.removeFromTop(48));
 }

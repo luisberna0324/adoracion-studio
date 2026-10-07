@@ -368,8 +368,10 @@ void PadsEngine::updateVoiceIncrement(Voice &voice) {
 }
 
 void PadsEngine::beginFadeOut(Voice &voice) {
-  if (voice.state == VoiceState::stopped)
+  if (voice.state == VoiceState::stopped || voice.state == VoiceState::fadingOut)
     return;
+  voice.mixTarget = voice.mixGain;
+  voice.mixRemaining = 0;
   voice.fadeOutStartGain = juce::jlimit(0.0f, 1.0f, voice.gain);
   voice.fadeOutProgress = 0.0f;
   voice.state = VoiceState::fadingOut;
@@ -421,6 +423,8 @@ void PadsEngine::triggerNote(const int noteIndex, const int octave) {
   voice->fadeOutStartGain = 0.0f;
   voice->fadeOutProgress = 0.0f;
   voice->state = VoiceState::fadingIn;
+  voice->mixGain = voice->mixTarget = mixTargetGain;
+  voice->mixRemaining = 0;
   updateVoiceIncrement(*voice);
   activeNoteIndex.store(noteIndex, std::memory_order_relaxed);
 }
@@ -428,6 +432,20 @@ void PadsEngine::triggerNote(const int noteIndex, const int octave) {
 void PadsEngine::triggerNoteForSongTransition(const int noteIndex,
                                               const int octave) {
   triggerNote(noteIndex, octave);
+}
+
+void PadsEngine::setMixGain(float gain, bool sectionTransition) noexcept {
+  if (!std::isfinite(gain)) return;
+  gain = juce::jlimit(0.0f, 1.2f, gain);
+  mixTargetGain = gain;
+  for (auto &voice : voices) {
+    if (voice.state == VoiceState::stopped || voice.state == VoiceState::fadingOut ||
+        voice.mixTarget == gain) continue;
+    voice.mixTarget = gain;
+    voice.mixRemaining = sectionTransition ? juce::jmax(1, fadeInSamples)
+        : juce::jmax(1, static_cast<int>(outputSampleRate * 0.030));
+    voice.mixStep = (gain - voice.mixGain) / static_cast<float>(voice.mixRemaining);
+  }
 }
 
 void PadsEngine::stopNote(const int noteIndex) {
@@ -562,7 +580,12 @@ void PadsEngine::renderVoice(Voice &voice, juce::AudioBuffer<float> &outputBuffe
       const float v = inLoopCrossfade
                           ? (tail * (1.0f - loopMix)) + (head * loopMix)
                           : tail;
-      outputBuffer.addSample(ch, i, v * voice.gain);
+      outputBuffer.addSample(ch, i, v * voice.gain * voice.mixGain);
+    }
+
+    if (voice.mixRemaining > 0) {
+      voice.mixGain += voice.mixStep;
+      if (--voice.mixRemaining == 0) voice.mixGain = voice.mixTarget;
     }
 
     voice.position += voice.increment;

@@ -341,11 +341,16 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
 
 void CloudTransferClient::download(CloudTransferCredentials credentials, juce::String songId,
                                    juce::File destinationDirectory, ProgressCallback progress,
-                                   DownloadCallback callback) {
+                                   DownloadCallback callback, juce::String teamId,
+                                   int teamRevision) {
   struct Job final : juce::ThreadPoolJob {
-    CloudTransferCredentials credentials; juce::String songId; juce::File destination; ProgressCallback progress; DownloadCallback callback;
-    Job(CloudTransferCredentials c, juce::String id, juce::File d, ProgressCallback p, DownloadCallback done)
-        : ThreadPoolJob("CloudDownload"), credentials(std::move(c)), songId(std::move(id)), destination(std::move(d)), progress(std::move(p)), callback(std::move(done)) {}
+    CloudTransferCredentials credentials; juce::String songId, teamId; int teamRevision;
+    juce::File destination; ProgressCallback progress; DownloadCallback callback;
+    Job(CloudTransferCredentials c, juce::String id, juce::File d, ProgressCallback p, DownloadCallback done,
+        juce::String team, int revision)
+        : ThreadPoolJob("CloudDownload"), credentials(std::move(c)), songId(std::move(id)),
+          teamId(std::move(team)), teamRevision(revision), destination(std::move(d)),
+          progress(std::move(p)), callback(std::move(done)) {}
     JobStatus runJob() override {
       CloudTransferError error; juce::String idToken;
       if (!refreshToken(credentials, idToken, error)) {
@@ -354,10 +359,16 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
         deliverDownload(std::move(callback), {}, error); return jobHasFinished;
       }
       auto* request = new JsonObject(); request->setProperty("songId", songId);
+      if (teamId.isNotEmpty()) {
+        request->setProperty("operation", "download");
+        request->setProperty("teamId", teamId);
+        request->setProperty("revision", teamRevision);
+      }
       juce::String response;
       SessionAuthLogger::write("[CloudDownload] request songId=" + songId +
                                " api=" + normalizedBase(credentials.apiBaseUrl));
-      if (!postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/download", idToken,
+      if (!postJson(normalizedBase(credentials.apiBaseUrl) +
+                        (teamId.isEmpty() ? "/api/song-sync/download" : "/api/teams"), idToken,
                     juce::JSON::toString(juce::var(request)), response, error)) {
         SessionAuthLogger::write("[CloudDownload] request failed status=" +
                                  juce::String(error.httpCode) + " code=" +
@@ -373,6 +384,10 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
       const auto* objects = root->getProperty("objects").getArray();
       if (!objects) { deliverDownload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Missing download objects")); return jobHasFinished; }
       CloudDownloadResult result; result.descriptor = descriptor;
+      if (teamId.isNotEmpty() && descriptor.revision != teamRevision) {
+        deliverDownload(std::move(callback), {}, makeError("REVISION_CONFLICT", "Team song revision changed"));
+        return jobHasFinished;
+      }
       const int total = objects->size(); int completed = 0;
       for (const auto& value : *objects) {
         const auto* object = value.getDynamicObject(); CloudObjectRef reference;
@@ -402,7 +417,7 @@ void CloudTransferClient::download(CloudTransferCredentials credentials, juce::S
       deliverDownload(std::move(callback), std::move(result), {}); return jobHasFinished;
     }
   };
-  pool.addJob(new Job(std::move(credentials), std::move(songId), std::move(destinationDirectory), std::move(progress), std::move(callback)), true);
+  pool.addJob(new Job(std::move(credentials), std::move(songId), std::move(destinationDirectory), std::move(progress), std::move(callback), std::move(teamId), teamRevision), true);
 }
 
 

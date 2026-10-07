@@ -29,6 +29,12 @@ en las secciones, además del master, tempo, pitch y fade configurados.
 - MP3 y M4A permanecen disponibles en escritorio. No se ofrecen en móvil porque
   dependen del proceso externo FFmpeg y los binarios móviles no pueden ejecutar
   ese helper de escritorio.
+- La variante opcional Mac App Store (`MTCONTROLS_MAC_APP_STORE=ON`) ofrece WAV
+  de 24 bits en el selector nativo Save. Su gestor de assets no habilita ni
+  descarga FFmpeg; MP3/M4A de salida quedan fuera de esta entrega inicial.
+  Esto no restringe M4A como entrada, decodificada con CoreAudio nativo para
+  empaquetarla en FLAC. El escritorio habitual conserva sus tres exportaciones.
+  Ver [Mac App Store](../release/MacAppStore.md).
 - El render se ejecuta en un hilo de fondo. El progreso se entrega mediante un
   callback y la UI debe volver al MessageManager antes de actualizar controles.
 - Durante la exportación se deshabilita el botón del mixer y la waveform muestra

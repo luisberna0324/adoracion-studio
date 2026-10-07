@@ -66,6 +66,11 @@ public:
       MetronomeClickStyle::Classic;
 
   static bool getExpandWindowOnLaunch();
+  static bool getDemoWelcomeSeen();
+  static void setDemoWelcomeSeen(bool value);
+  // Local demo preference, separate from the authenticated account snapshot.
+  static bool getLocalDemoSessionActive();
+  static void setLocalDemoSessionActive(bool value);
   static void setExpandWindowOnLaunch(bool value);
   static bool getPrimeImportEnabled();
   static void setPrimeImportEnabled(bool value);

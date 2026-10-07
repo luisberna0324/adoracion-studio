@@ -47,6 +47,7 @@ docs/okf/
 | [ui/InputControls](ui/InputControls.md) | Campos de texto y selectores adaptativos multiplataforma |
 | [ui/SectionAutomation](ui/SectionAutomation.md) | Edición de mezcla por sección con los controles existentes |
 | [ui/Popovers](ui/Popovers.md) | Presentacion adaptativa y comportamiento comun de popovers JUCE |
+| [ui/LearningGuide](ui/LearningGuide.md) | Guías interactivas sobre controles reales y progreso local por curso |
 | [ui/SettingsVersionsSheet](ui/SettingsVersionsSheet.md) | Hoja de acciones adaptativa para consultar y aplicar versiones de ajustes |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Integración con software de letras |

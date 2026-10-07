@@ -704,3 +704,26 @@ proyecto crea una nueva canción remota.
 - `playworship/lib/cloud-sync.ts:565-607` — `createDownloadPackage`
   (referencia para la forma del descriptor remoto).
 - `playworship/types/cloud-sync.ts` — tipos compartidos.
+
+
+## Teams: nube compartida
+
+`/api/teams` autoriza membresía y acceso del propietario en el servidor.
+El perfil `subscriptionFeatures.teams === true` y Cloud vigente permiten administrar usuarios en la nube
+compartida por defecto. No se crea ni nombra un equipo. Los miembros solo listan y descargan las canciones
+Cloud del propietario; no necesitan un plan Cloud personal. Subir canciones al
+Cloud habitual actualiza automáticamente este catálogo.
+
+Las canciones propias y compartidas se presentan en la misma vista Nube y se
+buscan y paginan mediante `/api/song-sync/songs`. Los resúmenes compartidos
+añaden `teamId`, `ownerUid`, `ownerEmail`; la fila usa una identidad compuesta
+para evitar colisiones del `songId` remoto. El agregado a un setlist utiliza el
+ID local del origen exacto. La capacidad booleana `canManageSharedCloud` en
+`/api/song-sync/capabilities` habilita únicamente Configuración → Teams para
+administrar usuarios; ese panel no contiene un catálogo.
+
+`CloudTransferClient::download` admite teamId/revisión y usa los mismos objetos,
+URLs firmadas y hashes del Cloud personal. El cliente crea una identidad local
+por cuenta después de verificar el paquete; no registra esa descarga en el
+índice Cloud personal del miembro ni publica ajustes hacia el propietario.
+No se generan setlists de preparación. Ver [contrato de Teams](Teams.md).

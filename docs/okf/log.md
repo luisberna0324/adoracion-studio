@@ -2,19 +2,203 @@
 type: Change Log
 title: OKF Knowledge Base Changelog
 description: Registro de cambios en la base de conocimiento OKF
-timestamp: 2026-09-21T00:00:00-03:00
+timestamp: 2026-10-05T00:00:00-03:00
 ---
 
 # Changelog
 
+## 2026-10-05
+
+### Area segura de performance en tablets iOS
+
+- El layout principal descuenta los insets reales del display en tablets iOS,
+  evitando superponer transporte y contenido con la fecha/barra de estado y el
+  indicador inferior. Biblioteca y su scrim se alinean al area segura y al borde
+  inferior real del TopBar.
+- Se conserva la rama de telefono, incluidos sus insets internos y extension
+  visual del mixer. No se cambia el tamaño de ventana de escritorio ni el layout
+  Android; tampoco los controles o dimensiones internas de los canales.
+- Cambio local revisado en fuente; compilacion e inspeccion visual del simulador
+  quedan pendientes para la siguiente captura.
+
+## 2026-10-03
+
+### Teams: nube compartida
+
+- Nube compartida por defecto sin crear ni nombrar equipos. Administración de
+  usuarios condicionada por el perfil Teams de suscripción. Los miembros solo ven y descargan canciones.
+- Catálogo automático desde Cloud del propietario. Descargas ordinarias en
+  Biblioteca sin publicación, invitaciones, coordinadores o setlists compartidos.
+- Las canciones compartidas aparecen en Nube junto a las propias, con búsqueda,
+  descarga y agregado al setlist habituales. Configuración → Teams solo aparece
+  con capacidad explícita y administra usuarios, sin un segundo catálogo.
+- Caché por cuenta y recuperación de audio conservan los cambios locales y la
+  selección activa. Las copias y datos existentes no se borran.
+
+
+### Visibilidad de indicaciones secundarias
+
+- Fuera de edición se muestran sólo puntos sobre la onda. Las etiquetas y
+  líneas aparecen al editar; el área interactiva se limita al punto cuando
+  la etiqueta está oculta. Las etiquetas mantienen su apilado en edición.
+
+### Indicaciones directas dentro de la onda
+
+- Puntos y etiquetas siempre visibles sobre la onda; etiquetas cercanas se
+  apilan y cada indicación conserva su target e identidad. La regla recupera
+  su altura habitual de 24 puntos.
+- Edición por arrastre y borrado con doble clic/doble toque sobre el punto,
+  con Deshacer y tooltip breve. Se retira el popover con ±1 pulso.
+- Breakdown/Baja intensidad y A capella se clasifican como secundarias;
+  el catálogo musical queda en 14 familias y se conserva la migración segura.
+- Standalone macOS Release compilado y validación local 4/4 (12,03 s).
+  Capturas revisadas en `build/cue-wave-overlay-qa/`; cubren componentes reales
+  de escritorio, teléfono y tooltip, sin instalación física móvil.
+
+
+### Indicaciones y conteos independientes sobre la regla
+
+- Secciones musicales conservan su estructura; las nuevas utilidades y cuentas
+  son puntos de color con línea fina, detalle al tocar y agrupación de marcas
+  próximas. Edición ofrece arrastre sin seek, avance/retroceso por pulso y borrar.
+- Secuencias 1–4 y 1–7 usan una sola marca y offsets de la regla, incluidos
+  cambios de tempo. Copia, movimiento, división, recorte y Deshacer conservan
+  el vínculo y el momento de las indicaciones.
+- Proyectos, sidecar, Cloud y protocolo remoto incluyen las marcas. La carga
+  migra fragmentos antiguos solo cuando no pierde audio, automatización ni
+  referencias. Casos ambiguos permanecen intactos.
+- Reproducción y exportación programan todos los anuncios en su sample, con
+  ocho voces acotadas para no cortar instrucciones cercanas. Los marcadores no
+  cambian los límites de loop/salto/automatización de la sección musical.
+- UI y remoto rechazan operaciones que exceden 512 anuncios expandidos, sin
+  truncar documentos ni modificar parcialmente un arrange al copiar/pegar.
+- macOS Standalone Release compilado y gate final 7/7 (12,91 s): creación,
+  edición de onda, automatización, núcleo de audio, Pads y exportación. Revisión
+  de componentes reales de escritorio, teléfono y popover en
+  `build/cue-marker-qa/`; la sesión anterior de la app continuó reproduciendo.
+
+### Pads: transiciones entre secciones y canciones
+
+- El nivel se aplica por voz; la cola saliente conserva su ganancia instantánea
+  y no aumenta al restaurar el nivel base o entrar una nota más fuerte.
+- Cambios de sección usan el crossfade configurado; faders manuales mantienen
+  su rampa corta. Apagados repetidos no reinician la cola.
+- En canciones con Pads programados, secciones sin preset y huecos significan
+  silencio. Tras abandonar una canción automatizada, el seguimiento de tono
+  no reactiva un pad global; sigue disponible mediante un gesto manual.
+- Build macOS Standalone correcto; CTest `section_automation` y `pads_engine`: 2/2 correctos (10,45 s). No se acredita escucha manual ni instalación física con este ajuste.
+
+
+### Aprendizaje por recorridos completos de control remoto
+
+- Cinco cursos: los tres introductorios conservan su avance manual y el curso
+  `settings-remote` se sustituye por `remote-server` (10 pasos) y
+  `remote-client` (12 pasos), con IDs/progreso independientes. Recorren la
+  apertura de Configuración, navegación remota, modo, conexión, vuelta a la
+  canción y comprobación de los controles. No añaden una lección de reconexión.
+- La guía y el catálogo pueden vivir dentro del `SettingsPanel` real. Los
+  cursos remotos siguen su navegación en teléfono, tablet y escritorio,
+  resaltan controles existentes y revelan destinos fuera de vista mediante
+  scroll. Al cerrar Configuración vuelven al editor; modales/pickers ajenos
+  ocultan temporalmente la ayuda conservando el paso.
+- Botones compactos: Anterior con flecha compartida y Continuar/Terminar con
+  ancho según texto, target de 44 px y relleno de 35 px. Cursos/Reiniciar
+  están en Más. Su menú es hijo de la guía y permanece visible dentro de
+  Configuración; los modales ajenos siguen ocultando temporalmente la ayuda.
+  El estado pendiente no repite el texto si ya aparece como tarea del paso.
+  El avance por botón o teclado espera el requisito del paso;
+  Anterior, Más y cerrar permanecen disponibles.
+- Las condiciones remotas usan estado real de página, modo, servidor disponible,
+  cliente conectado, snapshot inicial y canción recibida. Play/Stop requieren
+  el comando propio del paso, ACK aceptado y snapshot posterior de la misma
+  canción. El toggle desde reproducción registra intención de Pausa; una
+  reanudación posterior de otro cliente no acredita el ejercicio de Play.
+  Cambios ajenos no completan el ejercicio; rechazo, timeout,
+  desconexión, cambio de canción/paso y cierre descartan evidencia.
+- Al retomar un paso remoto, `RemotePrerequisite` revela el requisito faltante:
+  abrir Configuración, entrar en Control remoto, elegir modo y esperar sesión
+  disponible. El usuario acciona los controles y cierra Configuración cuando
+  se necesita el reproductor. La guía conserva el paso persistido y vuelve a
+  su ejercicio al recuperar los requisitos, sin enviar comandos automáticos
+  ni añadir una lección de reconexión.
+- Cobertura añadida en `learning_guide`, `learning_overlay`, `settings_panel`
+  y `remote_learning_action`. Compilación macOS de `MTControls_Standalone` y
+  los cuatro targets de pruebas correcta en `build/codex-modal-macos`.
+  La app y el overlay se recompilaron después del ajuste final de menú y modo.
+  CTest final: `learning_guide` 0,55 s, `remote_learning_action` 0,01 s,
+  `learning_overlay` 2,22 s y `settings_panel` 0,16 s; 4/4, 100 %, 2,95 s total.
+  La evidencia de 3/3 del 2 de octubre corresponde al contrato anterior.
+  La ejecución final incluye las regresiones del menú embebido y el texto
+  pendiente sin duplicado.
+- Revisión manual parcial de escritorio: catálogo de cinco cursos, Servidor
+  pasos 1–7 y Cliente pasos 1–5 con Configuración real; bloqueo al faltar
+  cliente y espera de conexión. Reanudación de Cliente paso 5 desde Local
+  pidió abrir Configuración y luego elegir Cliente sin perder el paso.
+  Más mostró Cursos/Reiniciar dentro de Configuración y Cursos volvió al
+  catálogo en el panel. Capturas `desktop-guide-options.png` y
+  `desktop-server-guide.png`. El flujo integral y Play/Stop con dos equipos
+  siguen pendientes; no se acreditan builds iOS/Android ni instalaciones físicas.
+- Contratos: [LearningGuide](ui/LearningGuide.md) y [Testing](Testing.md).
+
 ## 2026-10-02
+
+### Guías interactivas de aprendizaje
+
+- `Aprender PlayWorship` abre un catálogo desde Más en teléfono/tablet y desde
+  Configuración en todas las plataformas. Cuatro cursos localizados ES/EN:
+  primeros pasos, mezcla/clic/tono, Ensayo en teléfono o secciones/automatización
+  en escritorio/tablet, y configuración/remoto.
+- Cada paso resalta un control real y permite usarlo a través de la capa de
+  ayuda. Tarjetas dentro del área segura, lectura desplazable y acciones
+  táctiles de 44 px. Se adaptan hasta 300 px de alto en pantallas altas y 210 px
+  en teléfonos horizontales, reduciéndose cuando así dejan libre el destino.
+- Anterior, Siguiente/Terminar, Cursos, Reiniciar y Pausar (X/Escape).
+  Progreso local por IDs estables de curso/paso, JSON v1 y reemplazo atómico;
+  errores de escritura visibles. No pertenece a canciones ni a Cloud/remoto.
+- Los ejercicios usan los controles existentes. La guía no emite comandos
+  automáticos de transporte, mezcla, edición o remoto. Se oculta mientras están
+  abiertos Configuración o un modal y retoma el paso al cerrarlos. Si se elige
+  otro curso desde Ensayo, indica y resalta su cierre sin cerrarlo por cuenta
+  propia. Cambiar el idioma conserva el curso y el paso.
+- Contrato: [LearningGuide](ui/LearningGuide.md).
+- Verificación: compilación macOS de `MTControls_Standalone`,
+  `MTControlsLearningGuideTests`, `MTControlsLearningOverlayTests` y
+  `MTControlsSettingsPanelTests` en `build/codex-modal-macos`;
+  CTest `learning_guide`, `learning_overlay` y `settings_panel`: 3/3 aprobadas
+  (2,98 s). Capturas de componentes reales en teléfono vertical/horizontal,
+  tablet y escritorio, incluidos los destinos de la vista Ensayo y acceso a
+  reproducción a través del resaltado. El scroll sobre texto y el descarte
+  del toque tras arrastrar la lista siguen los handlers reales.
+- Queda pendiente la revisión manual de la app completa y la validación física;
+  estas pruebas no acreditan una instalación iOS/Android.
 
 ### Automatización de secciones
 
 - Borradores dispersos por ID de sección y stem para volumen, ganancia, mute
   instrumental y controles de Pads. Mix base independiente y Cancelar/Borrar.
-- Barra Automatizar/Listo/Cancelar, indicadores en los controles existentes y
-  acceso en Más de teléfono. Historial del arrange conserva los valores.
+- Acciones del borrador en una barra flotante persistente anclada por ID al
+  borde superior de la sección automatizada. El desplazamiento y el zoom
+  actualizan su posición; se limita al viewport y al área segura, sin seguir
+  el cursor ni el hover. Si la sección queda fuera de vista, conserva su nombre
+  inequívoco y una flecha de dirección junto al borde visible. El menú `Más`
+  ofrece `Volver a la sección`, que ajusta el viewport sin cambiar la posición
+  de reproducción ni el transporte. La toolbar global recupera el espacio
+  antes reservado para las acciones de automatización.
+- Barra `A · nombre`, `Cancelar`, `Listo` y `Más` en escritorio/tablet;
+  `A · nombre`, `Listo` y `Más` en teléfono. El menú incluye
+  `Borrar automatización` y, en teléfono, `Cancelar cambios`. Los faders y Pads
+  existentes conservan su comportamiento y el contrato del motor. Los botones
+  táctiles mantienen 44 px de altura mediante padding vertical adaptable a
+  ondas de 108 y 140 px.
+- Indicadores en los controles existentes y acceso a Automatizar en Más de
+  teléfono. Historial del arrange conserva los valores y las sesiones remotas
+  mantienen la propiedad autoritativa del borrador.
+- Navegación del minimap y pan/pinch móvil disponibles durante el borrador;
+  los cambios estructurales de secciones, el tap-seek y el doble tap/salto
+  móvil permanecen bloqueados. Se ocultan los controles habituales de sección.
+- Durante el borrador, la onda presenta el mapa de guía/secciones aunque
+  estuviera seleccionado el mapa de tempo; conserva el `timelineViewMode`
+  guardado y recupera su presentación al terminar la edición.
 - Resaltado pulsante del borrador en la sección, canales y Pads, sincronizado
   con tiempo de interfaz para continuar en pausa; la automatización guardada
   conserva su indicador fijo y el repintado se limita a las zonas animadas.
@@ -24,6 +208,15 @@ timestamp: 2026-09-21T00:00:00-03:00
   [interfaz](ui/SectionAutomation.md), [motor](engine/SectionAutomation.md),
   [datos](importing/LibraryPersistence.md) y
   [remoto](integrations/RemoteControl.md).
+- Verificación local: compilación de `MTControls_Standalone` y
+  `MTControlsWaveformEditingTests` en `build/codex-modal-macos` con `-j4`;
+  CTest `waveform_editing` y `section_automation` aprobadas (2/2, 2,17 s y
+  6,36 s). Revisión de capturas reales del componente con anchos de 320, 360,
+  768 y 1200 px y geometrías móviles de 360 × 108 y 360 × 140 px: layout
+  correcto, botones de 44 px y carril seguro de 44 px.
+- Las capturas verifican el componente; quedan pendientes la revisión manual
+  de la app completa y la comprobación en dispositivo físico. La Mac bloqueada
+  impidió la revisión completa. Esta evidencia no incluye instalación iOS.
 
 ## 2026-09-26
 
@@ -1279,3 +1472,22 @@ docs/okf/
 - Audio y MIDI pasan por un único manager y `AudioProcessorPlayer`; se mantienen
   las preferencias y los flujos externos de proyecto/salida
 - Contrato: [Aplicación nativa](processor/NativeApplication.md)
+
+- 2026-10-05: bienvenida opcional para miembros de Teams y curso de Nube →
+  descarga → setlist, con progreso por cuenta/fuente/alta y sin interrupción
+  durante reproducción. Contratos: Teams y LearningGuide.
+
+
+## 2026-10-05 — Pertenencia y baja de Teams
+
+Pertenencia única transaccional, salida voluntaria y recibos persistentes de baja.
+Confirmaciones y limpieza por procedencia al detener reproducción, preservando
+archivos personales. Ver integrations/Teams.md.
+
+
+## 2026-10-05 — Correos de Teams con Resend
+
+Backend: alta, retirada y salida generan correo transaccional con cola durable,
+reintentos e idempotencia. 60 pruebas aprobadas. Vistas previas en
+output/teams-email-preview; prueba de proveedor dirigida solo al buzón técnico
+de Resend, sin notificar a miembros existentes.
