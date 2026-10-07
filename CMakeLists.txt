@@ -891,15 +891,19 @@ if(MTCONTROLS_BUILD_TESTS)
         PRODUCT_NAME "Standalone Audio Runtime Tests")
     target_sources(MTControlsStandaloneAudioRuntimeTests PRIVATE
         tests/standalone_audio_runtime_tests.cpp
-        src/audio/StandaloneAudioDeviceBridge.cpp
-        src/audio/AudioDeviceMonitor.cpp
-        src/audio/OutputChannelCatalog.cpp)
+        src/data/AppSettings.cpp src/data/SongLibraryStore.cpp
+        src/data/SessionAuthLogger.cpp src/data/AssetBootstrapManager.cpp)
     target_include_directories(MTControlsStandaloneAudioRuntimeTests PRIVATE src)
     target_compile_definitions(MTControlsStandaloneAudioRuntimeTests PRIVATE
-        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-    target_link_libraries(MTControlsStandaloneAudioRuntimeTests PRIVATE juce::juce_audio_utils)
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsStandaloneAudioRuntimeTests PRIVATE
+        MTControls MTControlsAssets juce::juce_audio_utils juce::juce_dsp
+        juce::juce_cryptography)
     juce_generate_juce_header(MTControlsStandaloneAudioRuntimeTests)
-    add_test(NAME standalone_audio_runtime COMMAND MTControlsStandaloneAudioRuntimeTests)
+    add_test(NAME standalone_audio_runtime COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsStandaloneAudioRuntimeTests>")
 
     # Build only the regression executables in CI; this avoids packaging and
     # signing the standalone app while still building MTControls where needed.

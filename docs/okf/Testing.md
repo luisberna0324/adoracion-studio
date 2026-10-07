@@ -68,6 +68,11 @@ backend y tipo de muestra que la biblioteca para conservar su layout en memoria.
 `standalone_audio_runtime` valida dispositivos simulados de 2, 8 y 64 salidas,
 restauración de preferencias, entradas deshabilitadas antes de abrir audio y
 parada/reinicio. Se ejecuta con `ctest --test-dir <build> -R standalone_audio_runtime`.
+Usa además el procesador real, su bridge y almacenamiento temporal aislado para
+comprobar el ancho del bus sin entradas, rutas al último par, persistencia y
+cambios de salidas activas. Conserva compatibilidad mono/estéreo y rechaza
+layouts fuera de los límites del procesador. El procesador sintético verifica
+señal por canal y número de callbacks; no sustituye la negociación del real.
 No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 
 ## Cobertura por contrato

@@ -513,7 +513,7 @@ bool MTControlsAudioProcessor::isBusesLayoutSupported(
     const BusesLayout &layouts) const {
   const auto input = layouts.getMainInputChannelSet();
   const auto output = layouts.getMainOutputChannelSet();
-  if (input != juce::AudioChannelSet::mono() &&
+  if (!input.isDisabled() && input != juce::AudioChannelSet::mono() &&
       input != juce::AudioChannelSet::stereo())
     return false;
   const int outputChannels = output.size();

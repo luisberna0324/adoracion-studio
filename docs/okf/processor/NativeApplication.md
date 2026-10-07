@@ -28,6 +28,9 @@ se conservan para instaladores y CI.
 - `AudioProcessorPlayer` se registra como callback de audio y MIDI. Su layout
   sigue los canales activos del dispositivo; se solicitan hasta 64 salidas,
   limitadas por el hardware y la selección guardada
+- El procesador acepta el bus de entrada desactivado y entre 1 y 64 salidas,
+  para que el player negocie el ancho físico sin recurrir al layout inicial
+  de 64 canales. Las entradas mono/estéreo siguen siendo layouts válidos
 - Ajustes, MIDI Learn, fallback de dispositivos, pads y diagnósticos usan ese
   mismo manager. No consultan un singleton de host
 - La parada retira ambos callbacks, separa el procesador y cierra el dispositivo
@@ -51,6 +54,10 @@ no adopta los cambios de layout de escritorio.
 `standalone_audio_runtime` usa dispositivos de prueba de 2, 8 y 64 salidas para
 comprobar apertura sin entradas, negociación del layout, un callback por bloque,
 señal en cada salida, compatibilidad del estado guardado e inicio/parada/reinicio.
+La negociación también se ejecuta con `MTControlsAudioProcessor` real y su
+propio bridge: verifica cero entradas internas, restauración del último par de
+salidas, reinicio, cambios de salidas activas y normalización de rutas. El
+procesador sintético conserva la prueba de señal/callback en cada salida.
 También comprueba que la restauración vea el ancho del dispositivo antes de
 normalizar rutas y que los límites de ventana sigan los cambios del editor.
 No acredita un controlador MIDI físico ni audio audible sobre una interfaz real.

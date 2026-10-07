@@ -1,4 +1,6 @@
 #include "audio/StandaloneAudioRuntime.h"
+#include "PluginProcessor.h"
+#include "IsolatedTestRoot.h"
 #include "ui/NativeEditorBoundsConstrainer.h"
 #include <cstdlib>
 #include <iostream>
@@ -183,11 +185,127 @@ void testRuntime(int outputCount) {
   expect(processor.state == 67890, "saved processor state round trips");
   runtime.stop();
 }
+
+void testRealProcessorRuntime(int outputCount) {
+  expect(isolatedTestRoot().isDirectory(), "real processor storage is isolated");
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  auto &bridge = processor->getAudioDeviceBridge();
+  auto &manager = bridge.getAudioDeviceManager();
+  manager.addAudioDeviceType(std::make_unique<TestDeviceType>(outputCount));
+
+  // Restore a stereo route at the far end of the real device. Starting with
+  // the bridge's initial two-channel width must not clamp this saved route.
+  StemOutputRoutingState routes;
+  routes.resetToDefaults(1);
+  routes.setStemOutputChannel(0, outputCount - 1);
+  routes.setStemOutputWidth(0, 2);
+  auto state = processor->getValueTreeState().copyState();
+  state.appendChild(routes.toValueTree(), nullptr);
+  juce::MemoryBlock savedState;
+  const auto stateXml = state.createXml();
+  juce::AudioProcessor::copyXmlToBinary(*stateXml, savedState);
+  juce::PropertySet settings;
+  settings.setValue("filterState", savedState.toBase64Encoding());
+  const auto setupXml = juce::parseXML(
+      "<DEVICESETUP deviceType=\"Test audio\" audioOutputDeviceName=\"Test output\" "
+      "audioInputDeviceName=\"Test output\" audioDeviceRate=\"48000\" "
+      "audioDeviceBufferSize=\"64\" audioDeviceInChans=\"11\"/>");
+  settings.setValue("audioSetup", setupXml.get());
+
+  StandaloneAudioRuntime runtime(*processor, bridge, &settings);
+  expect(runtime.start(64).isEmpty(), "real processor starts on saved device");
+  std::cout << "Real processor: physical outputs=" << outputCount
+            << ", processor outputs=" << processor->getTotalNumOutputChannels()
+            << ", processor inputs=" << processor->getTotalNumInputChannels() << '\n';
+  const auto checkChannels = [&](int expectedOutputs) {
+    const auto *device = manager.getCurrentAudioDevice();
+    expect(device != nullptr, "real processor has an open device");
+    expect(device->getActiveInputChannels().isZero(), "real device has no microphone input");
+    expect(device->getActiveOutputChannels().countNumberOfSetBits() == expectedOutputs,
+           "device exposes the requested active outputs");
+    expect(processor->getTotalNumOutputChannels() == expectedOutputs,
+           "real processor layout follows device outputs");
+    expect(processor->getTotalNumInputChannels() == 0,
+           "real processor has no logical input channels");
+    expect(bridge.getAvailableOutputChannelCount() == expectedOutputs,
+           "real processor routing sees the active device width");
+  };
+  const auto checkSavedRoute = [&] {
+    expect(processor->getStemOutputChannel(0) == outputCount - 1 &&
+               processor->getStemOutputWidth(0) == 2,
+           "real processor preserves the saved final stereo output pair");
+  };
+  checkChannels(outputCount);
+  checkSavedRoute();
+  expect(runtime.start(64).isEmpty(), "real processor repeated start succeeds");
+  checkChannels(outputCount);
+  runtime.saveState();
+  runtime.stop();
+  runtime.stop();
+  expect(manager.getCurrentAudioDevice() == nullptr, "real processor stop closes device");
+  expect(runtime.start(64).isEmpty(), "real processor restarts with persisted state");
+  checkChannels(outputCount);
+  checkSavedRoute();
+
+  // AudioProcessorPlayer must renegotiate on a live output-selection change,
+  // and prepareToPlay must normalize routing against the new width.
+  juce::AudioDeviceManager::AudioDeviceSetup setup;
+  manager.getAudioDeviceSetup(setup);
+  setup.useDefaultOutputChannels = false;
+  setup.outputChannels.clear();
+  setup.outputChannels.setRange(0, 2, true);
+  expect(manager.setAudioDeviceSetup(setup, true).isEmpty(), "switch to stereo outputs succeeds");
+  checkChannels(2);
+  expect(processor->getStemOutputChannel(0) == 1 && processor->getStemOutputWidth(0) == 2,
+         "real processor clamps the saved stereo route to the smaller device width");
+  setup.outputChannels.setRange(0, outputCount, true);
+  expect(manager.setAudioDeviceSetup(setup, true).isEmpty(), "restore all outputs succeeds");
+  checkChannels(outputCount);
+
+  processor->setMetronomeEnabled(false);
+  processor->setPadsEnabled(false);
+  juce::AudioBuffer<float> output(outputCount, 64);
+  for (int channel = 0; channel < outputCount; ++channel)
+    for (int sample = 0; sample < output.getNumSamples(); ++sample)
+      output.setSample(channel, sample, 1.0f);
+  auto *device = dynamic_cast<TestDevice *>(manager.getCurrentAudioDevice());
+  expect(device != nullptr, "real processor retains the simulated device");
+  device->render(output);
+  expect(output.getMagnitude(0, output.getNumSamples()) == 0.0f,
+         "real runtime leaves no residual signal when no source is playing");
+  runtime.stop();
+}
+
+void testRealProcessorLayoutLimits() {
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  auto layout = processor->getBusesLayout();
+  for (const auto input : {juce::AudioChannelSet::disabled(),
+                           juce::AudioChannelSet::mono(),
+                           juce::AudioChannelSet::stereo()}) {
+    layout.inputBuses.set(0, input);
+    for (int count : {1, 2, 8, 64}) {
+      layout.outputBuses.set(0, juce::AudioChannelSet::discreteChannels(count));
+      expect(processor->checkBusesLayoutSupported(layout),
+             "real processor accepts disabled, mono or stereo inputs with 1..64 outputs");
+    }
+    for (int count : {0, 65}) {
+      layout.outputBuses.set(0, juce::AudioChannelSet::discreteChannels(count));
+      expect(!processor->checkBusesLayoutSupported(layout), "real processor rejects output counts outside 1..64");
+    }
+  }
+  layout.inputBuses.set(0, juce::AudioChannelSet::discreteChannels(3));
+  layout.outputBuses.set(0, juce::AudioChannelSet::stereo());
+  expect(!processor->checkBusesLayoutSupported(layout), "real processor still rejects multichannel inputs");
+}
 } // namespace
 
 int main() {
   juce::ScopedJuceInitialiser_GUI initialiseJuce;
   try {
+    testRealProcessorRuntime(8);
+    testRealProcessorRuntime(2);
+    testRealProcessorRuntime(64);
+    testRealProcessorLayoutLimits();
     testRuntime(2);
     testRuntime(8);
     testRuntime(64);
@@ -196,5 +314,5 @@ int main() {
     std::cerr << "FAILED: " << error.what() << '\n';
     return 1;
   }
-  std::cout << "Standalone audio runtime: stereo, stage outputs, state and lifecycle passed\n";
+  std::cout << "Standalone audio runtime: real processor layouts, routing, state and lifecycle passed\n";
 }
