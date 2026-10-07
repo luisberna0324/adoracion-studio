@@ -1429,7 +1429,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const int offset = sourceFramesThisBlock > 0
               ? juce::jlimit(0, juce::jmax(0, numSamples - 1),
                   static_cast<int>(std::llround(static_cast<double>(
-                      juce::jmax<juce::int64>(0, triggerFrame - blockStartFrame)) *
+                      std::max<juce::int64>(0, triggerFrame - blockStartFrame)) *
                       numSamples / sourceFramesThisBlock))) : 0;
           guideEvents.add(offset, guideTriggerId);
         };
