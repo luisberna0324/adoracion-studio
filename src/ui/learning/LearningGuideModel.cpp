@@ -476,6 +476,10 @@ void ProgressStore::load() {
 }
 
 juce::Result ProgressStore::save() const {
+  // JUCE's replacement fallback can remove an empty directory on Linux.
+  // A progress file must never replace a directory at the requested path.
+  if (file.isDirectory())
+    return juce::Result::fail("Learning progress target is a directory.");
   const auto directoryResult = file.getParentDirectory().createDirectory();
   if (directoryResult.failed())
     return juce::Result::fail("Could not create learning progress directory: " +
