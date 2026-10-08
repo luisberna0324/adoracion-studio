@@ -480,6 +480,79 @@ void testRemoteDraftRejectsPhysicalMidi() {
   expect(p.finishSectionAutomationEditing(true) && p.getSongArrangementSnapshot().parts[1].automation.hasOverrides(), "local MIDI draft commits");
 }
 
+void testPendingJumpOwnsSectionGuide() {
+  const auto setup = [](ProcessorFixture &fixture, double start) {
+    auto &p = *fixture.processor;
+    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide");
+    writeWav(directory.getChildFile("intro.wav"), 16, 0.1f);
+    writeWav(directory.getChildFile("verse.wav"), 16, 0.2f);
+    writeWav(directory.getChildFile("chorus.wav"), 16, 0.3f);
+    writeWav(directory.getChildFile("bridge.wav"), 16, 0.4f);
+    expect(SectionAutomationTestAccess::loadGuides(p, directory), "distinct pending-jump guide voices load");
+    auto settings = p.getDynamicGuideSettings(); settings.enabled = true; p.setDynamicGuideSettings(settings);
+    p.setMetronomeBeatsPerBar(1); // Half-second guide window at 120 BPM.
+    auto arrangement = p.getSongArrangementSnapshot(); arrangement.parts.clear();
+    const char *names[] = {"Intro", "Verse", "Chorus", "Bridge"};
+    const double edges[] = {0.0, 1.0, 3.0, 4.0, 6.0};
+    for (int i = 0; i < 4; ++i) {
+      SongArrangementPartSnapshot part; part.id = names[i]; part.name = names[i];
+      part.startSec = edges[i]; part.endSec = edges[i + 1]; arrangement.parts.push_back(part);
+    }
+    p.setSongArrangement(arrangement, false);
+    fixture.seekAndWait(start);
+    p.playSong(); fixture.waitForPendingSeek();
+  };
+  const auto peak = [](ProcessorFixture &fixture, int blocks) {
+    float value = 0.0f;
+    for (int b = 0; b < blocks; ++b) {
+      fixture.block();
+      for (int i = 0; i < 256; ++i)
+        value = std::max(value, SectionAutomationTestAccess::guideSample(*fixture.processor, i));
+    }
+    return value;
+  };
+  {
+    ProcessorFixture f; setup(f, 2.48);
+    near(peak(f, 4), 0.3, "without pending jump the normal next-section voice remains");
+  }
+  {
+    ProcessorFixture f; setup(f, 2.48); auto &p = *f.processor;
+    p.toggleArrangementPartLoop(1);
+    p.requestArrangementPartJump(0);
+    near(peak(f, 4), 0.1, "pending Intro suppresses both sequential Chorus and outgoing Loop announcements");
+    near(peak(f, 2), 0.0, "stable pending destination announces only once");
+    p.requestArrangementPartJump(3);
+    near(peak(f, 1), 0.4, "changing a late pending target announces only the new Bridge");
+    p.clearPendingArrangementPartJump();
+    p.toggleArrangementPartLoop(1); // Clear Loop; restore natural next section.
+    near(peak(f, 1), 0.3, "cancel in the remaining lead-in window restores the suppressed sequential voice");
+    p.requestArrangementPartJump(0);
+    near(peak(f, 1), 0.1, "requeuing an already announced target rearms its guide");
+  }
+  {
+    ProcessorFixture f; setup(f, 2.48); auto &p = *f.processor;
+    p.requestArrangementPartJump(0); p.clearPendingArrangementPartJump();
+    near(peak(f, 4), 0.3, "cancelling before the guide window preserves normal announcements");
+  }
+  {
+    ProcessorFixture f; setup(f, 2.99); auto &p = *f.processor;
+    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide");
+    writeWav(directory.getChildFile("intro.wav"), 1024, 0.1f);
+    expect(SectionAutomationTestAccess::loadGuides(p, directory), "long late-destination voice loads");
+    p.requestArrangementPartJump(0);
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "late jump destination is resident");
+    int voicedSamples = 0;
+    for (int b = 0; b < 5; ++b) {
+      f.block();
+      for (int i = 0; i < 256; ++i)
+        if (SectionAutomationTestAccess::guideSample(p, i) > 0.05f) ++voicedSamples;
+    }
+    expect(p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::currentPart(p) == 0,
+           "late jump still executes at the existing section boundary");
+    expect(voicedSamples == 1024, "late destination voice continues completely across the jump without duplication");
+  }
+}
+
 void testIndependentGuideCuesFollowTransport() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
   const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("guide-transport");
@@ -709,6 +782,7 @@ int main() {
   run("pads remain idempotent across section re-entry", testPadsAreIdempotentAndRestoreBase);
   run("remote ownership excludes physical MIDI draft writes", testRemoteDraftRejectsPhysicalMidi);
   run("independent guide cues follow real playback and seeking", testIndependentGuideCuesFollowTransport);
+  run("pending jump owns section announcements", testPendingJumpOwnsSectionGuide);
   run("startup song-key follow preserves automation and remote ownership", testSongKeyFollowUsesBaseAndNeverEchoesRemote);
   return failures == 0 ? 0 : 1;
 }

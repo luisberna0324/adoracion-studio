@@ -10,6 +10,7 @@ class DynamicGuideEngine {
 public:
   void prepare(double sampleRate);
   void reset() noexcept;
+  void resetExceptTrigger(int triggerId) noexcept;
 
   bool loadSectionDirectory(const juce::File &directory,
                             juce::AudioFormatManager &formatManager,

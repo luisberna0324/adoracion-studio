@@ -2571,9 +2571,12 @@ void WaveformBar::updateLiveFollow(double nowMs) {
   if (livePointerActive || !phoneTouchPositions.empty() || liveScrollSnapDueMs > 0.0 || nowMs < liveFollowResumeMs ||
       songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
       !playingProvider || !playingProvider()) return;
-  int active = -1;
-  for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
-    if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
+  int active = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+  if (!juce::isPositiveAndBelow(active, static_cast<int>(arrangement.parts.size()))) {
+    active = -1;
+    for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
+      if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
+  }
   if (active < 0) { liveFollowAnimating = false; liveFollowPartId.clear(); return; }
   const auto &id = arrangement.parts[static_cast<size_t>(active)].id;
   if (id != liveFollowPartId) {
@@ -2663,6 +2666,28 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
       g.fillRect(item.body.withWidth(item.body.getWidth() * progress));
       g.setColour(colour.brighter(0.5f));
       g.fillRect(item.body.withHeight(2.0f));
+    }
+    if (part.muteInstruments) {
+      g.setColour(UITheme::appBg.withAlpha(0.60f));
+      g.fillRect(item.body);
+    }
+    if (pending == item.partIndex) {
+      const float pulse = static_cast<float>(0.5 + 0.5 * std::sin(
+          juce::Time::getMillisecondCounterHiRes() * (juce::MathConstants<double>::twoPi / 1800.0)));
+      g.setColour(colour.brighter(0.4f).withAlpha(0.10f + 0.12f * pulse));
+      g.fillRect(item.body);
+      g.setColour(colour.brighter(0.5f).withAlpha(0.45f + 0.30f * pulse));
+      g.drawRect(item.body.reduced(1.0f), 1.2f);
+    }
+    if (loop == item.partIndex) {
+      const auto border = item.body.reduced(3.0f);
+      const float dashes[] = {4.0f, 3.0f};
+      g.setColour(colour.interpolatedWith(juce::Colours::white, 0.85f));
+      for (const auto line : {juce::Line<float>(border.getTopLeft(), border.getTopRight()),
+          juce::Line<float>(border.getTopRight(), border.getBottomRight()),
+          juce::Line<float>(border.getBottomRight(), border.getBottomLeft()),
+          juce::Line<float>(border.getBottomLeft(), border.getTopLeft())})
+        g.drawDashedLine(line, dashes, 2, 1.2f);
     }
     const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
     const auto content = getLiveSectionContentBounds(item.body);
@@ -2762,7 +2787,7 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocus = PlaybackControlFocus::Jump;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
       cancelDeferredPartJumpFromDoubleClick();
-      clearMuteForJumpSelection(hit.partIndex);
+      if (!liveMode) clearMuteForJumpSelection(hit.partIndex);
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(hit.partIndex);
       repaint();
@@ -2775,7 +2800,7 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocusPartIndex = hit.partIndex;
       playbackControlFocus = PlaybackControlFocus::Mute;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      if (onArrangementPendingJumpClearRequest != nullptr)
+      if (!liveMode && onArrangementPendingJumpClearRequest != nullptr)
         onArrangementPendingJumpClearRequest();
       toggleArrangementPartMute(hit.partIndex);
       return true;

@@ -635,6 +635,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     dynamicGuideLastBlockStartSec = -1.0;
     dynamicGuideLastPartIndex = -1;
     dynamicGuideWasPlaying = false;
+    lastAnnouncedPendingJumpTarget = -1;
+    lastObservedGuidePendingTarget = -1;
+    lastObservedGuidePendingGeneration = 0;
     dynamicGuideAppliedResetGeneration = guideResetGeneration;
   }
 
@@ -718,6 +721,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool muteSectionInstrumentsThisBlock = false;
   bool skipArrangementPartThisBlock = false;
   playworship::audio::DynamicGuideEvents guideEvents;
+  int pendingGuideLeadOffsetThisBlock = -1;
   juce::int64 guideBlockStartFrame = 0;
   bool guideTimelinePlaying = false;
   const playworship::audio::SectionScheduler::Snapshot *guideTimelineSnapshot = &audioSectionSnapshot;
@@ -1424,7 +1428,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                 const juce::int64 triggerFrame) {
           if (guideTriggerId < 0) {
             dynamicGuideMissingPartIndex.store(partIndex, std::memory_order_release);
-            return;
+            return -1;
           }
           const int offset = sourceFramesThisBlock > 0
               ? juce::jlimit(0, juce::jmax(0, numSamples - 1),
@@ -1432,8 +1436,22 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                       std::max<juce::int64>(0, triggerFrame - blockStartFrame)) *
                       numSamples / sourceFramesThisBlock))) : 0;
           guideEvents.add(offset, guideTriggerId);
+          return offset;
         };
 
+        const bool guideJumpCancelled = lastObservedGuidePendingTarget >= 0 && pendingPartIndex < 0;
+        const bool hasPendingGuideJump = juce::isPositiveAndBelow(pendingPartIndex, realtimeSectionCount);
+        if (pendingPartIndex != lastObservedGuidePendingTarget ||
+            audioArrangementTransitionIntentGeneration != lastObservedGuidePendingGeneration) {
+          // Cancel/change/requeue rearms the intent, without marking a
+          // suppressed sequential announcement as already heard.
+          if (juce::isPositiveAndBelow(lastAnnouncedPendingJumpTarget, realtimeSectionCount) &&
+              lastAnnouncedPendingJumpTarget != mappedPartIndex)
+            dynamicGuideAnnouncedByPart[static_cast<size_t>(lastAnnouncedPendingJumpTarget)] = false;
+          lastAnnouncedPendingJumpTarget = -1;
+          lastObservedGuidePendingTarget = pendingPartIndex;
+          lastObservedGuidePendingGeneration = audioArrangementTransitionIntentGeneration;
+        }
         const bool enteredPlayback = isPlaying && !dynamicGuideWasPlaying;
         if (juce::isPositiveAndBelow(mappedPartIndex,
                                      realtimeSectionCount)) {
@@ -1458,7 +1476,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               (enteredPlayback || dynamicGuideLastPartIndex != mappedPartIndex ||
                seekAppliedThisBlock)) {
             const bool alreadyAnnounced = dynamicGuideAnnouncedByPart[partIdx];
-            const bool shouldTriggerNow = triggerOnEntry && !alreadyAnnounced;
+            const bool shouldTriggerNow = triggerOnEntry && !alreadyAnnounced && !hasPendingGuideJump;
             if (shouldTriggerNow)
               triggerPartAnnouncement(part.guideTriggerId, mappedPartIndex, blockStartFrame);
             if (shouldTriggerNow)
@@ -1471,7 +1489,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         // offsets even when several counts/sections share a block.
         for (int guidePartIndex = 0; guidePartIndex < realtimeSectionCount; ++guidePartIndex) {
           const auto &part = realtimeSections.sections[static_cast<size_t>(guidePartIndex)];
-          if (part.guideTriggerFrame < blockStartFrame ||
+          const bool cancellationCatchup = guideJumpCancelled &&
+              part.guideTriggerFrame < blockStartFrame && part.startFrame > blockStartFrame;
+          if ((!cancellationCatchup && part.guideTriggerFrame < blockStartFrame) ||
               part.guideTriggerFrame >= blockStartFrame + sourceFramesThisBlock ||
               part.skipPlayback)
             continue;
@@ -1481,7 +1501,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           const bool transitionOwnsEntry = part.triggerGuideOnEntry && sectionDecision.transition &&
               guidePartIndex == sectionDecision.targetSection;
           auto &announced = dynamicGuideAnnouncedByPart[static_cast<size_t>(guidePartIndex)];
-          if (!excludedByLoop && !transitionOwnsEntry && !announced) {
+          if (!hasPendingGuideJump && !excludedByLoop && !transitionOwnsEntry && !announced) {
             triggerPartAnnouncement(part.guideTriggerId, guidePartIndex, part.guideTriggerFrame);
             announced = 1;
           }
@@ -1514,7 +1534,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               playworship::audio::SectionScheduler::Section targetPart;
               if (playworship::audio::SectionScheduler::getSection(
                       realtimeSections, pendingPartIndex, targetPart)) {
-                triggerPartAnnouncement(targetPart.guideTriggerId,
+                pendingGuideLeadOffsetThisBlock = triggerPartAnnouncement(targetPart.guideTriggerId,
                                         pendingPartIndex, leadInFireFrame);
                 dynamicGuideAnnouncedByPart[static_cast<size_t>(
                     pendingPartIndex)] = true;
@@ -1534,7 +1554,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                      realtimeSectionCount) &&
             realtimeLoopPartIndex == mappedPartIndex &&
             realtimeLoopPartIndex != lastAnnouncedLoopPartIndex &&
-            realtimeLoopPartIndex != pendingPartIndex) {
+            !hasPendingGuideJump) {
           playworship::audio::SectionScheduler::Section loopLeadInPart;
           if (playworship::audio::SectionScheduler::getSection(
                   realtimeSections, realtimeLoopPartIndex, loopLeadInPart)) {
@@ -2632,10 +2652,21 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       // A seek/loop/jump owns the boundary. No outgoing guide or queued cue
       // may continue into the new timeline, and cues at the destination fire
       // only if that exact point is traversed by the suffix.
-      dynamicGuideEngine.reset();
+      const bool destinationAlreadyAnnounced = juce::isPositiveAndBelow(nextArrangementPartIndex,
+          playworship::audio::SectionScheduler::maxSections) &&
+          lastAnnouncedPendingJumpTarget == nextArrangementPartIndex &&
+          (pendingGuideLeadOffsetThisBlock < 0 || pendingGuideLeadOffsetThisBlock < prefixOutput);
+      if (destinationAlreadyAnnounced)
+        dynamicGuideEngine.resetExceptTrigger(inBlockTransitionTargetGuideId);
+      else
+        dynamicGuideEngine.reset();
       dynamicGuideAnnouncedByPart.fill(0);
+      if (destinationAlreadyAnnounced)
+        dynamicGuideAnnouncedByPart[static_cast<size_t>(nextArrangementPartIndex)] = 1;
       playworship::audio::DynamicGuideEvents suffix;
-      if (inBlockTransitionTargetGuideOnEntry && prefixOutput < numSamples) {
+      const bool clippedPendingLead = lastAnnouncedPendingJumpTarget == nextArrangementPartIndex &&
+          pendingGuideLeadOffsetThisBlock >= prefixOutput;
+      if ((inBlockTransitionTargetGuideOnEntry || clippedPendingLead) && !destinationAlreadyAnnounced && prefixOutput < numSamples) {
         suffix.add(prefixOutput, inBlockTransitionTargetGuideId);
         if (juce::isPositiveAndBelow(nextArrangementPartIndex,
                 playworship::audio::SectionScheduler::maxSections))

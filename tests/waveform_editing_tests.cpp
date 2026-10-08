@@ -1360,6 +1360,92 @@ void testSectionActionsClearGlobalControls() {
   }
 }
 
+void testPendingLivePriorityAndCombinedStates() {
+  Fixture f; auto &wave = f.waveform;
+  wave.setMinimalPhoneMode(true); wave.setSize(390, 250);
+  int pending = 2, loop = -1;
+  double position = 1.0;
+  wave.setTransportProviders([&] { return position; }, [] { return 30.0; }, [] { return true; });
+  wave.setPendingArrangementPartProvider([&] { return pending; });
+  wave.setActiveArrangementLoopPartProvider([&] { return loop; });
+  wave.setLiveMode(true);
+  WaveformEditingTestAccess::followAt(wave, 1000.0);
+  WaveformEditingTestAccess::followAt(wave, 1280.0);
+  const auto end = WaveformEditingTestAccess::liveScroll(wave);
+  expect(end > 0.0f, "pending destination is visible ahead of current playback");
+  WaveformEditingTestAccess::followAt(wave, 10000.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), end, "timeout never recenters current section while a destination waits");
+  const auto point = WaveformEditingTestAccess::liveRow(wave).getCentre();
+  wave.mouseDown(pointerEvent(wave, point, point));
+  const auto moved = point.translated(150.0f, 0.0f);
+  wave.mouseDrag(pointerEvent(wave, moved, point, true));
+  wave.mouseUp(pointerEvent(wave, moved, point, true));
+  const double resume = WaveformEditingTestAccess::resumeAt(wave);
+  const float explored = WaveformEditingTestAccess::liveScroll(wave);
+  WaveformEditingTestAccess::followAt(wave, resume - 1.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), explored, "pending priority respects manual exploration grace");
+  WaveformEditingTestAccess::followAt(wave, resume);
+  WaveformEditingTestAccess::followAt(wave, resume + 280.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), end, "exploration timeout resumes the pending destination instead of current section");
+  pending = 0;
+  WaveformEditingTestAccess::followAt(wave, resume + 500.0);
+  WaveformEditingTestAccess::followAt(wave, resume + 780.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), 0.0, "changing destination updates follow target");
+  pending = -1; position = 25.0;
+  WaveformEditingTestAccess::followAt(wave, resume + 1000.0);
+  WaveformEditingTestAccess::followAt(wave, resume + 1280.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), end, "cancellation resumes current section follow");
+  pending = 0;
+  WaveformEditingTestAccess::followAt(wave, resume + 1500.0);
+  WaveformEditingTestAccess::followAt(wave, resume + 1780.0);
+  position = 1.0; pending = -1;
+  WaveformEditingTestAccess::followAt(wave, resume + 2000.0);
+  expectNear(WaveformEditingTestAccess::liveScroll(wave), 0.0, "executing queued destination keeps its now-active block stationary");
+
+  const auto capture = [&] { return wave.createComponentSnapshot(wave.getLocalBounds()); };
+  const auto baseline = capture();
+  loop = 0; const auto loopOnly = capture();
+  int changed = 0;
+  for (int x = 5; x < 180; ++x) if (baseline.getPixelAt(x, 3) != loopOnly.getPixelAt(x, 3)) ++changed;
+  expect(changed > 20 && changed < 170, "Loop renders a dashed border distinct from a continuous progress edge");
+  auto arrangement = WaveformEditingTestAccess::snapshot(wave);
+  arrangement.parts[0].muteInstruments = true; wave.setArrangement(arrangement, true);
+  const auto muted = capture();
+  expect(muted.getPixelAt(80, 70).getBrightness() < loopOnly.getPixelAt(80, 70).getBrightness(),
+         "Mute attenuates section background and waveform");
+  pending = 0; const auto combined = capture();
+  const auto block = WaveformEditingTestAccess::liveBounds(wave)[0];
+  for (const auto target : {block.jumpButton, block.loopButton, block.muteButton}) {
+    float brightest = 0.0f;
+    const auto area = target.toNearestInt();
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+      for (int x = area.getX(); x < area.getRight(); ++x)
+        brightest = std::max(brightest, combined.getPixelAt(x, y).getBrightness());
+    expect(brightest > 0.6f, "combined pending/loop/mute state keeps every control legible");
+  }
+  pending = -1; arrangement.parts[0].muteInstruments = false; wave.setArrangement(arrangement, true);
+  const auto restored = capture();
+  expect(restored.getPixelAt(80, 70) == loopOnly.getPixelAt(80, 70), "unmute restores the original waveform appearance while Loop remains");
+  int clearRequests = 0, jumpRequests = 0;
+  pending = 0; loop = 0;
+  wave.setOnArrangementPendingJumpClearRequest([&] { ++clearRequests; pending = -1; });
+  wave.setOnArrangementPartJumpRequest([&](int index) { ++jumpRequests; pending = index; });
+  const auto click = [&](juce::Point<float> point) {
+    wave.mouseDown(pointerEvent(wave, point, point));
+    wave.mouseUp(pointerEvent(wave, point, point));
+  };
+  click(block.muteButton.getCentre());
+  expect(pending == 0 && loop == 0 && clearRequests == 0 &&
+             WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments,
+         "Live Mute preserves pending and Loop while muting instruments");
+  click(block.jumpButton.getCentre());
+  expect(jumpRequests == 1 && WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments,
+         "Live Go does not silently unmute its destination");
+  click(block.muteButton.getCentre());
+  expect(!WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments && pending == 0 && loop == 0,
+         "Live unmute reverses only mute and preserves coexisting intents");
+}
+
 void testLiveActionsSurviveLayoutRefresh() {
   for (const bool phone : {false, true}) {
     Fixture f;
@@ -2306,6 +2392,7 @@ int main() {
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
   run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);
+  run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);
   run("live actions reach real transport", testLiveActionsReachRealTransport);
   run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);

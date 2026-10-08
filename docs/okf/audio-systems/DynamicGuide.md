@@ -359,3 +359,26 @@ renderizando entre los offsets exactos de todos los anuncios de su bloque.
 Mute/volumen cero no congelan el tiempo interno de las voces: se siguen
 consumiendo y el scratch se limpia antes del delay. Desmutear no puede recuperar
 una instrucción antigua que debía haber terminado durante el silencio.
+
+## Anuncios con salto de sección pendiente
+
+Durante un Ir en cola, el lead-in existente de un compás anuncia solamente su
+objetivo; no se programan anuncios de la siguiente sección secuencial ni del
+loop saliente. Los counts/cues independientes conservan su calendario y el
+click no cambia. Cambiar destino o cancelar y volver a programarlo rearma el
+anuncio. Al cancelar, un anuncio secuencial suprimido puede emitirse en el
+callback siguiente si todavía queda tiempo antes de entrar a su sección;
+no se marca como oído mientras está suprimido.
+
+Los saltos tardíos usan el lead-in inmediato existente; el anuncio no se repite
+al cruzar el límite ni al entrar al destino. Una voz de destino que ya empezó
+continúa completa a través del límite; se descartan las voces salientes. Si el prefijo del callback no llega
+a reproducir el evento, se emite en el sufijo del destino. El timing musical de
+Ir sigue siendo el final de la sección actual.
+
+La exclusión se aplica desde el callback que observa la intención nueva.
+No puede deshacer voz ya reproducida, ni muestras ya entregadas al dispositivo
+(o a la compensación de latencia). Programar Ir después de oír la guía normal
+puede producir esa guía ya oída seguida del destino nuevo. No se rebobina ni se
+cambia el click para ocultarlo. Las voces/cues independientes que ya comenzaron
+no se cortan al cambiar el destino.

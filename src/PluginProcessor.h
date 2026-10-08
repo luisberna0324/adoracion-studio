@@ -683,6 +683,8 @@ private:
   // announcement. Reset whenever the pending jump is consumed, so a fresh
   // jump from the same UI click re-arms the lead-in voice prompt.
   int lastAnnouncedPendingJumpTarget = -1;
+  int lastObservedGuidePendingTarget = -1;
+  uint64_t lastObservedGuidePendingGeneration = 0;
   // Last loop section that already received its one-bar lead-in
   // announcement. Reset on every loop wrap (or when the loop is cleared /
   // re-targeted) so the next iteration re-arms the voice prompt.

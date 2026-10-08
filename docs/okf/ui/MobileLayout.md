@@ -715,7 +715,11 @@ La onda normal de escritorio conserva regla, mouse y ancho proporcional, sin
 Ir/Loop/Mute integrados ni elipsis por sección o compartida. En vivo mantiene
 sus acciones en todas las plataformas.
 
-En vivo centra la sección activa una vez al cambiar de sección durante la
+En vivo prioriza el destino real de Ir pendiente para su centrado; mientras
+existe no vuelve a la sección que suena por el timeout de exploración. Cambiar
+destino actualiza el objetivo; cancelar o ejecutar retoma el bloque activo.
+La navegación manual conserva la pausa de 3 segundos antes de volver al destino.
+Sin Ir pendiente, centra la sección activa una vez al cambiar de sección durante la
 reproducción, con transición suave de 280 ms y límites en los extremos.
 La interacción interrumpe el centrado inmediatamente; durante el gesto y los
 3 segundos posteriores no se mueve bajo el dedo. Tras la inactividad vuelve
@@ -742,3 +746,15 @@ Soltar un botón válido no ajusta el scroll a otra tarjeta; drag y rueda conser
 su snap. El callback de VBlank de la onda normal no modifica su viewport durante
 En vivo. Ir en reproducción mantiene cola/cancelación existente y Loop mantiene
 su alternancia; no se convierten en seek inmediato.
+
+El bloque con Ir pendiente pulsa suavemente cada 1,8 segundos mediante su
+relleno y borde; no atenúa el nombre ni los botones. Loop usa un borde punteado
+interior distinto de progreso y pulso. Mute atenúa el fondo y la onda, dejando
+el nombre y todas las acciones con su tinta habitual, incluido desmute.
+Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
+colas, loops, mute musical ni click.
+
+En vivo no convierte Mute en cancelar Ir ni convierte Ir en desmutear el
+destino: los flags se conservan para permitir estas combinaciones. El motor
+mantiene el mute de instrumentos y su excepción de click existentes; el timing
+de Ir y el toggle de Loop no cambian. La onda normal conserva sus acciones.
