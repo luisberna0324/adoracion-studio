@@ -163,6 +163,9 @@ private:
   float liveSectionProgress(int index) const;
   bool liveMode = false;
   float liveScrollOffset = 0.0f;
+  int livePaintActive = -1, livePaintPending = -1, livePaintLoop = -1;
+  float livePaintProgress = -1.0f;
+  bool livePaintReducedMotion = false;
   double liveScrollSnapDueMs = 0.0;
   juce::Rectangle<float> liveLayoutRow;
   juce::BorderSize<int> liveLayoutInsets;

@@ -1,5 +1,6 @@
 #include "ui/panels/WaveformBar.h"
 #include "ui/panels/TopBar.h"
+#include "ui/LiveLoopBorder.h"
 #include "PluginProcessor.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
@@ -1360,6 +1361,50 @@ void testSectionActionsClearGlobalControls() {
   }
 }
 
+void testLoopBorderPhaseAndCorners() {
+  const juce::Rectangle<float> border(3.0f, 3.0f, 170.0f, 244.0f);
+  const float period = liveLoopBorder::period(border);
+  expectNear(liveLoopBorder::phase(border, 250.0, false), 1.5,
+             "Loop border advances six points per second independently of frame count");
+  expectNear(liveLoopBorder::phase(border, 333.0, false), 1.998,
+             "irregular rendering timestamps retain wall-clock phase");
+  expectNear(liveLoopBorder::phase(border, 1000.0 * period / 6.0, false), 0.0,
+             "phase wraps smoothly after one dash period");
+  expectNear(liveLoopBorder::phase(border, 123456.0, true), 0.0,
+             "reduced motion holds the border phase stationary");
+  const float length = liveLoopBorder::perimeter(border);
+  expectNear(length / period, std::round(length / period), "closed border fits whole periods without a seam gap");
+  for (const float corner : {border.getWidth(), border.getWidth() + border.getHeight(),
+                             2.0f * border.getWidth() + border.getHeight()}) {
+    const float phase = std::fmod(corner - 2.0f, period);
+    int ending = 0, starting = 0;
+    const auto point = liveLoopBorder::point(border, corner);
+    liveLoopBorder::segments(border, phase, [&](juce::Line<float> line) {
+      if (line.getEnd().getDistanceFrom(point) < 0.001f) ++ending;
+      if (line.getStart().getDistanceFrom(point) < 0.001f) ++starting;
+    });
+    expect(ending == 1 && starting == 1, "dash crosses each corner without resetting its phase");
+  }
+  expect(liveLoopBorder::point(border, 0.0f) == liveLoopBorder::point(border, length),
+         "perimeter seam closes at the same position");
+  Fixture f; auto &wave = f.waveform;
+  wave.setMinimalPhoneMode(true); wave.setSize(390, 250); wave.setLiveMode(true);
+  int loop = -1; wave.setActiveArrangementLoopPartProvider([&] { return loop; });
+  const auto baseline = wave.createComponentSnapshot(wave.getLocalBounds());
+  const auto geometry = WaveformEditingTestAccess::liveBounds(wave)[0];
+  loop = 0; const auto moving = wave.createComponentSnapshot(wave.getLocalBounds());
+  loop = -1; const auto stopped = wave.createComponentSnapshot(wave.getLocalBounds());
+  expect(WaveformEditingTestAccess::liveBounds(wave)[0].body == geometry.body &&
+             WaveformEditingTestAccess::liveBounds(wave)[0].loopButton == geometry.loopButton,
+         "animation never alters section or action geometry");
+  int differences = 0;
+  for (int x = 5; x < 180; ++x) {
+    expect(baseline.getPixelAt(x, 3) == stopped.getPixelAt(x, 3), "removing real Loop removes the border effect");
+    if (moving.getPixelAt(x, 3) != stopped.getPixelAt(x, 3)) ++differences;
+  }
+  expect(differences > 20, "real Loop activates the animated border in the production renderer");
+}
+
 void testPendingLivePriorityAndCombinedStates() {
   Fixture f; auto &wave = f.waveform;
   wave.setMinimalPhoneMode(true); wave.setSize(390, 250);
@@ -2397,6 +2442,7 @@ int main() {
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
   run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);
   run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);
+  run("Loop border phase and corner continuity", testLoopBorderPhaseAndCorners);
   run("live actions reach real transport", testLiveActionsReachRealTransport);
   run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);

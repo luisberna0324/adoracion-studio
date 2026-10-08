@@ -8,6 +8,13 @@
 #include "../../data/Localization.h"
 #include "../WaveformCacheWindow.h"
 #include "../SectionAutomationVisuals.h"
+#include "../LiveLoopBorder.h"
+#if JUCE_MAC
+#include <objc/message.h>
+#include <objc/runtime.h>
+#elif JUCE_IOS
+extern "C" bool UIAccessibilityIsReduceMotionEnabled();
+#endif
 
 #include <algorithm>
 #include <array>
@@ -16,6 +23,27 @@
 #include <map>
 
 namespace {
+// Query the OS preference on the message thread at most once per second.
+// No new animation timer or audio-thread work is introduced.
+bool liveBorderReducedMotion() {
+  static double nextQueryMs = 0.0;
+  static bool reduced = false;
+  const double now = juce::Time::getMillisecondCounterHiRes();
+  if (now < nextQueryMs) return reduced;
+  nextQueryMs = now + 1000.0;
+#if JUCE_MAC
+  const auto send = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
+  const auto workspace = send(reinterpret_cast<id>(objc_getClass("NSWorkspace")),
+                              sel_registerName("sharedWorkspace"));
+  const auto selector = sel_registerName("accessibilityDisplayShouldReduceMotion");
+  const auto responds = reinterpret_cast<BOOL (*)(id, SEL, SEL)>(objc_msgSend);
+  if (responds(workspace, sel_registerName("respondsToSelector:"), selector))
+    reduced = reinterpret_cast<BOOL (*)(id, SEL)>(objc_msgSend)(workspace, selector) != 0;
+#elif JUCE_IOS
+  reduced = UIAccessibilityIsReduceMotionEnabled();
+#endif
+  return reduced;
+}
 // The visual marker stays small, while the accessible button keeps a generous
 // touch target. Forward pointer gestures to the waveform so dragging a cue is
 // part of the same undo transaction as the rest of the editor.
@@ -2650,6 +2678,7 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
   }
   for (const auto &item : partOverlayBounds) {
     if (!item.body.intersects(row)) continue;
+    if (!g.clipRegionIntersects(item.body.toNearestInt())) continue;
     const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
     const auto colour = partColorOrFallback(part, item.partIndex);
     const float progress = liveSectionProgress(item.partIndex);
@@ -2681,13 +2710,10 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
     }
     if (loop == item.partIndex) {
       const auto border = item.body.reduced(3.0f);
-      const float dashes[] = {4.0f, 3.0f};
       g.setColour(colour.interpolatedWith(juce::Colours::white, 0.85f));
-      for (const auto line : {juce::Line<float>(border.getTopLeft(), border.getTopRight()),
-          juce::Line<float>(border.getTopRight(), border.getBottomRight()),
-          juce::Line<float>(border.getBottomRight(), border.getBottomLeft()),
-          juce::Line<float>(border.getBottomLeft(), border.getTopLeft())})
-        g.drawDashedLine(line, dashes, 2, 1.2f);
+      liveLoopBorder::segments(border, liveLoopBorder::phase(border,
+          juce::Time::getMillisecondCounterHiRes(), liveBorderReducedMotion()),
+          [&](juce::Line<float> line) { g.drawLine(line, 1.2f); });
     }
     const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
     const auto content = getLiveSectionContentBounds(item.body);
@@ -4295,13 +4321,47 @@ void WaveformBar::timerCallback() {
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   if (liveMode) {
+    const float previousOffset = liveScrollOffset;
     if (!livePointerActive && liveScrollSnapDueMs > 0.0 && nowMs >= liveScrollSnapDueMs)
       snapLiveScrollOffset();
     if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
       clearSongLoadingState();
     updateLiveFollow(nowMs);
     updateActiveTempoRegionFromTransport();
-    repaint();
+    int active = -1;
+    for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
+      if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
+    const float progress = active >= 0 ? liveSectionProgress(active) : -1.0f;
+    const bool reducedMotion = liveBorderReducedMotion();
+    const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+    const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+    const auto boundsFor = [&](int index) {
+      const auto row = getLiveRowBounds();
+      return juce::Rectangle<float>(row.getX() + index * getLiveBlockStride() - liveScrollOffset,
+                                   row.getY(), getLiveBlockWidth(), row.getHeight()).toNearestInt();
+    };
+    if (previousOffset != liveScrollOffset) {
+      repaint();
+    } else {
+      if (active != livePaintActive || progress != livePaintProgress)
+        for (const int index : {livePaintActive, active})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      for (const int index : {livePaintPending, pending})
+        if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      if (loop != livePaintLoop) {
+        for (const int index : {livePaintLoop, loop})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      } else if (juce::isPositiveAndBelow(loop, static_cast<int>(arrangement.parts.size())) &&
+                 (!reducedMotion || reducedMotion != livePaintReducedMotion)) {
+        const auto border = boundsFor(loop);
+        repaint(border.withHeight(6));
+        repaint(border.withTop(border.getBottom() - 6));
+        repaint(border.withWidth(6));
+        repaint(border.withLeft(border.getRight() - 6));
+      }
+    }
+    livePaintActive = active; livePaintPending = pending; livePaintLoop = loop;
+    livePaintProgress = progress; livePaintReducedMotion = reducedMotion;
     return;
   }
   if (cueTooltipHideAtMs > 0.0 && nowMs >= cueTooltipHideAtMs) {

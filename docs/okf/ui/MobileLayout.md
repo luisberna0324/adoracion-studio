@@ -759,3 +759,15 @@ e Ir desmutea su destino antes de solicitar el salto. La representación combina
 las señales sólo cuando los flags reales coexisten; no fuerza combinaciones.
 El mute de instrumentos y su excepción de click, el timing de Ir y el toggle
 de Loop no cambian. La onda normal conserva sus acciones.
+
+El borde de Loop en En vivo desplaza su patrón alrededor de un perímetro
+continuo a 6 puntos por segundo, según tiempo transcurrido y no frames.
+El patrón ajusta períodos completos al contorno para conservar continuidad en
+las esquinas y la unión inicial/final. Al quitar Loop desaparece. No cambia
+geometría ni hit targets y convive con progreso, pulso de Ir y Mute reales.
+Con Reducir movimiento de macOS/iOS el borde permanece punteado y estático;
+la preferencia se consulta en UI como máximo una vez por segundo. El proyecto
+no expone actualmente una preferencia equivalente en Android.
+El timer existente invalida sólo bordes de Loop cuando el bloque no cambia;
+progreso/pulso invalidan sus bloques y el pan invalida la fila. Las secciones
+fuera del clip se omiten en el render. No hay trabajo nuevo en audio.
