@@ -677,6 +677,7 @@ private:
   bool deferredArrangementTransitionPending = false;
   int deferredArrangementTransitionPartIndex = -1;
   juce::int64 deferredArrangementTransitionFrame = 0;
+  juce::int64 deferredArrangementBoundaryFrame = 0;
   juce::int64 deferredArrangementTransitionSourceFrame = 0;
   uint64_t deferredArrangementTransitionIntentGeneration = 0;
   // Last pending jump target that already received its one-bar lead-in

@@ -1472,12 +1472,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       },
       [this] { return playbackSession.getSectionAutomationEditingPartId(); },
       [this] { return playbackSession.canEditSectionAutomation(); });
-  // The jump button now respects the active loop: the request is queued as a
-  // pending jump and the audio thread resolves whether it should escape the
-  // current loop (SectionScheduler::evaluate handles that precedence). Clearing
-  // the loop eagerly here would defeat the "loop on a section while
-  // pre-arranging a jump to the next one" workflow, and it also hides the
-  // pending-jump escape branch from the scheduler.
+  // Ir cancels Loop and queues its destination at the current section end.
   waveformBarRaw->setOnArrangementPartJumpRequest(
       [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {

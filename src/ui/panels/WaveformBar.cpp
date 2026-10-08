@@ -2776,21 +2776,6 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
     }
     return true;
   }
-    const auto clearMuteForJumpSelection = [this](const int partIndex) {
-      if (!juce::isPositiveAndBelow(partIndex,
-                                    static_cast<int>(arrangement.parts.size())))
-        return;
-
-      auto &part = arrangement.parts[static_cast<size_t>(partIndex)];
-      if (!part.muteInstruments)
-        return;
-
-      pushArrangementUndoSnapshot();
-      part.muteInstruments = false;
-      customArrangement = true;
-      notifyArrangementChanged(true);
-    };
-
     if (juce::isPositiveAndBelow(hit.partIndex,
                                  static_cast<int>(arrangement.parts.size())) &&
         hit.loopButton) {
@@ -2813,7 +2798,6 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocus = PlaybackControlFocus::Jump;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
       cancelDeferredPartJumpFromDoubleClick();
-      clearMuteForJumpSelection(hit.partIndex);
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(hit.partIndex);
       repaint();
@@ -2826,8 +2810,6 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocusPartIndex = hit.partIndex;
       playbackControlFocus = PlaybackControlFocus::Mute;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      if (onArrangementPendingJumpClearRequest != nullptr)
-        onArrangementPendingJumpClearRequest();
       toggleArrangementPartMute(hit.partIndex);
       return true;
     }

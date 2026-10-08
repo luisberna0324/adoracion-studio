@@ -706,6 +706,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   bool windowFadeActive = false;
   bool stopAtEnd = false;
   bool pauseAtPracticeBoundary = false;
+  bool holdAtArrangementBoundary = false;
+  int holdPrefixFrames = 0;
   double stopAtEndSec = 0.0;
   bool transitionToNextArrangementPart = false;
   int nextArrangementPartIndex = -1;
@@ -1321,6 +1323,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               currentTransitionIntentGeneration) {
         deferredArrangementTransitionPending = false;
         deferredArrangementTransitionPartIndex = -1;
+        // Held callbacks consumed reader frames while their output was silent.
+        // Cancellation resumes from the actual held musical position.
+        for (auto &track : stemTracks)
+          track->setNextReadPosition(blockSourceStartFrame);
       }
 
       // Arm known destinations while the current section is still audible.
@@ -1335,11 +1341,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         anticipatedTargetPart = -1;
       else if (realtimePracticeLoop.active)
         anticipatedTargetPart = -1;
-      else if (loopPartActive)
-        anticipatedTargetPart = loopPartIndex;
       else if (juce::isPositiveAndBelow(pendingPartIndex,
                                        realtimeSectionCount))
         anticipatedTargetPart = pendingPartIndex;
+      else if (loopPartActive)
+        anticipatedTargetPart = loopPartIndex;
       else if (sectionDecision.skippedSection)
         anticipatedTargetPart = sectionDecision.targetSection;
       else if (customArrangement &&
@@ -1379,9 +1385,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                 anticipatedTarget.startFrame));
       }
 
-      // If disk I/O did not finish before a prior boundary, do not flush DSP
-      // or emit a partial mix. Keep the current timeline audible and perform a
-      // zero-offset handoff once every stem exposes the same target bank.
+      // A cold destination holds the musical boundary until every stem is ready.
       if (!controlSeekOwnsPrefetchBankThisBlock &&
           deferredArrangementTransitionPending) {
         requestArrangementTarget(deferredArrangementTransitionSourceFrame);
@@ -1408,6 +1412,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
               deferredArrangementTransitionSourceFrame;
           deferredArrangementTransitionPending = false;
           deferredArrangementTransitionPartIndex = -1;
+        } else {
+          holdAtArrangementBoundary = true;
+          songStopOutputOffset = 0;
         }
       }
 
@@ -1624,13 +1631,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         windowEndSec = loopEndSec;
         fadeOutSec = 0.0;
         arrangementCurrentPartIndex.store(loopPartIndex, std::memory_order_relaxed);
-        arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
-        // Note: do NOT bump arrangementTransitionIntentGeneration here. The
-        // transitionIntentStillCurrent() check at the top of this block uses
-        // the counter as captured at the start; bumping it here would cancel
-        // the very transition we are about to apply. The counter is bumped
-        // by the consumer at the end of the block instead, so the snapshot
-        // refreshes on the NEXT block.
 
         if (sectionDecision.transition && !skipTransitionBlockedBySeek) {
           transitionToNextArrangementPart = true;
@@ -1649,7 +1649,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           nextArrangementPartStartSec =
               playworship::audio::TransportClock::framesToSeconds(
                   sectionDecision.targetFrame, playbackSampleRate);
-          arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
         }
       } else if (!controlSeekOwnsPrefetchBankThisBlock &&
                  !deferredArrangementTransitionPending &&
@@ -1663,7 +1662,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           nextArrangementPartStartSec =
               playworship::audio::TransportClock::framesToSeconds(
                   sectionDecision.targetFrame, playbackSampleRate);
-          arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
         }
       }
 
@@ -1712,6 +1710,12 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
                                   std::memory_order_release);
           arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
         } else {
+          holdAtArrangementBoundary = true;
+          holdPrefixFrames = inBlockTransitionPrefixFrames;
+          deferredArrangementBoundaryFrame = blockStartFrame + holdPrefixFrames;
+          songStopOutputOffset = sourceFramesThisBlock > 0
+              ? juce::jlimit(0, numSamples, static_cast<int>(std::lround(
+                    static_cast<double>(holdPrefixFrames) / sourceFramesThisBlock * numSamples))) : 0;
           deferredArrangementTransitionPending = true;
           deferredArrangementTransitionPartIndex =
               nextArrangementPartIndex;
@@ -1843,7 +1847,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           enqueueSpan(destinationSeconds, inBlockTransitionPrefixFrames,
                       sourceFramesThisBlock - inBlockTransitionPrefixFrames);
         } else {
-          enqueueSpan(blockStartSec, 0, sourceFramesThisBlock);
+          enqueueSpan(blockStartSec, 0, holdAtArrangementBoundary ? holdPrefixFrames : sourceFramesThisBlock);
         }
       }
 
@@ -2283,6 +2287,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         transportClock.advance(
             juce::jmax(0, sourceFramesThisBlock -
                               inBlockTransitionPrefixFrames));
+      } else if (holdAtArrangementBoundary) {
+        transportClock.seek(juce::jmax<juce::int64>(0, deferredArrangementBoundaryFrame - 1));
       } else {
         transportClock.advance(sourceFramesThisBlock);
       }
@@ -2391,8 +2397,8 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
 
   const bool trimSongBusesAtExactEnd =
-      stopAtEnd && !transitionToNextArrangementPart &&
-      !deferredArrangementTransitionPending &&
+      (holdAtArrangementBoundary || (stopAtEnd && !transitionToNextArrangementPart &&
+      !deferredArrangementTransitionPending)) &&
       songStopOutputOffset >= 0 && songStopOutputOffset < numSamples;
   if (trimSongBusesAtExactEnd)
     buffer.clear(songStopOutputOffset, numSamples - songStopOutputOffset);
@@ -2641,9 +2647,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   dynamicGuideRenderBuffer.clear();
   if (dynamicGuideAnnouncementsActive && sourceFramesThisBlock > 0) {
     const int prefixOutput = inBlockArrangementTransitionApplied
-        ? inBlockTransitionOutputOffset : numSamples;
+        ? inBlockTransitionOutputOffset : (holdAtArrangementBoundary ? songStopOutputOffset : numSamples);
     const int prefixSource = inBlockArrangementTransitionApplied
-        ? inBlockTransitionPrefixFrames : sourceFramesThisBlock;
+        ? inBlockTransitionPrefixFrames : (holdAtArrangementBoundary ? holdPrefixFrames : sourceFramesThisBlock);
     if (guideTimelinePlaying)
       guideEvents.addCues(*guideTimelineSnapshot, guideBlockStartFrame,
                           prefixSource, 0, prefixOutput);
@@ -5266,6 +5272,7 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
                                   static_cast<int>(arrangementParts.size())))
       return;
 
+    arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
     const bool playing = getTransportState() == TransportState::playing;
     const double currentSec =
         songCurrentPositionSeconds.load(std::memory_order_relaxed);

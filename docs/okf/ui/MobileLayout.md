@@ -754,11 +754,11 @@ el nombre y todas las acciones con su tinta habitual, incluido desmute.
 Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
 colas, loops, mute musical ni click.
 
-En vivo conserva la interacción musical existente: Mute cancela Ir pendiente
-e Ir desmutea su destino antes de solicitar el salto. La representación combina
-las señales sólo cuando los flags reales coexisten; no fuerza combinaciones.
-El mute de instrumentos y su excepción de click, el timing de Ir y el toggle
-de Loop no cambian. La onda normal conserva sus acciones.
+Ir cancela Loop inmediatamente y espera el final de la sección actual antes de
+saltar, también hacia atrás o al revisitar una sección. El destino no hereda Loop.
+Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
+Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
+La representación usa el estado real del transporte para cola, Loop y progreso.
 
 El borde de Loop en En vivo desplaza su patrón alrededor de un perímetro
 continuo a 6 puntos por segundo, según tiempo transcurrido y no frames.

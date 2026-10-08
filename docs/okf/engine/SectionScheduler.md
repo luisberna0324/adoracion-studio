@@ -260,7 +260,13 @@ instrumentales de esa sección en cada vuelta sin alterar click ni guía.
 ### Jump a sección
 
 1. Establecer `pendingSection` en evaluate
-2. Al alcanzar el límite actual, usar el offset exacto y saltar al destino
+2. Ir cancela Loop inmediatamente; al alcanzar el límite actual, usar el offset exacto y saltar al destino.
+3. La intención permanece pendiente hasta que el audio acepta la transición.
+
+Si el destino no está prebufferizado, el processor conserva la posición justo
+antes del límite, silencia el sufijo y espera sin bloquear el callback. Cuando
+todos los stems están listos, salta con offset cero. Nunca reproduce la sección
+siguiente mientras espera ni lleva Loop o cambios de Mute al destino.
 
 #### Lead-in announcement
 

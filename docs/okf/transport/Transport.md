@@ -341,8 +341,9 @@ guardan en ProjectStore, SongLibraryStore ni sincronización Cloud.
 El loop y `muteInstruments` de una sección son independientes: se puede
 silenciar la instrumentación y repetir esa misma sección al mismo tiempo. La
 guía y el click conservan su tratamiento normal de mute. Activar o desactivar
-Loop no modifica Mute; pulsar Mute conserva el loop activo y cancela únicamente
-un salto pendiente. Un cambio de Mute, Skip o metadatos que mantenga los mismos
+Loop no modifica Mute; pulsar Mute conserva el loop activo y el salto pendiente.
+Ir cancela Loop inmediatamente, termina la sección actual y salta al destino
+sin desmutearlo. Mute sólo cambia por una acción explícita de mute/desmute. Un cambio de Mute, Skip o metadatos que mantenga los mismos
 límites y rangos de fuente publica el nuevo snapshot sin reiniciar el loop,
 el salto pendiente ni la posición, incluso fuera del editor de arrange.
 
@@ -366,10 +367,12 @@ bloque [512, 1024), límite 1000, destino 2000
 prefijo = 488, sufijo = 24, posición final = 2024
 ```
 
-Si el disco no termina el prefetch a tiempo, el audio no se vacía ni se resetea
-el DSP. El callback conserva un salto diferido audio-thread-owned, continúa la
-línea actual y ejecuta el handoff con offset cero en cuanto todos los stems
-están listos. Así se prefiere continuidad audible a emitir una mezcla parcial.
+Si el disco no termina el prefetch a tiempo, el callback conserva el prefijo
+hasta el límite, silencia el sufijo y mantiene el reloj un frame antes del final.
+La intención sigue pendiente; no reproduce la sección vecina ni bloquea el hilo
+de audio. Cuando todos los stems están listos ejecuta el handoff con offset cero.
+La guía no consume su voz durante callbacks completamente retenidos. Cancelar o
+cambiar la intención descarta el destino y restaura el lector a la posición retenida.
 
 El salto diferido conserva la generación de intención vigente al crearse.
 Seek, stop, edición/publicación del arrange y cambios o cancelaciones de

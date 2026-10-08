@@ -1480,19 +1480,19 @@ void testPendingLivePriorityAndCombinedStates() {
     wave.mouseUp(pointerEvent(wave, point, point));
   };
   click(block.muteButton.getCentre());
-  expect(pending == -1 && loop == 0 && clearRequests == 1 &&
+  expect(pending == 0 && loop == 0 && clearRequests == 0 &&
              WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments,
-         "Live Mute retains its existing pending-jump cancellation and instrument mute");
+         "Mute preserves pending Ir and Loop");
   click(block.jumpButton.getCentre());
   expect(jumpRequests == 1 && pending == 0 &&
-             !WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments,
-         "Live Go retains its existing destination-unmute before jump callback");
+             WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments,
+         "Ir preserves destination mute");
   click(block.muteButton.getCentre());
-  expect(WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments && pending == -1,
-         "subsequent Live Mute cancels the freshly pending destination");
+  expect(!WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments && pending == 0 && clearRequests == 0,
+         "explicit unmute preserves pending Ir");
   click(block.muteButton.getCentre());
-  expect(!WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments && pending == -1 && loop == 0 && clearRequests == 3,
-         "Live unmute retains existing cancellation semantics and leaves Loop unchanged");
+  expect(WaveformEditingTestAccess::snapshot(wave).parts[0].muteInstruments && pending == 0 && loop == 0 && clearRequests == 0,
+         "repeated Mute remains independent of transport intents");
 }
 
 void testLiveActionsSurviveLayoutRefresh() {

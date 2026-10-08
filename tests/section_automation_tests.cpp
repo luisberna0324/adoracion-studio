@@ -43,6 +43,12 @@ struct SectionAutomationTestAccess {
       if (!track->waitForNextAudioBlockReady(frames, 1000)) return false;
     return true;
   }
+  static void setReadThreadsRunning(MTControlsAudioProcessor &processor, bool running) {
+    for (auto &thread : processor.stemReadThreads) {
+      if (running) thread->startThread();
+      else thread->stopThread(2000);
+    }
+  }
   static bool waitForTransitionTarget(MTControlsAudioProcessor &processor,
                                       double seconds) {
     const auto frame = static_cast<juce::int64>(std::llround(seconds * 44100.0));
@@ -52,6 +58,8 @@ struct SectionAutomationTestAccess {
     for (auto &track : processor.stemTracks)
       track->requestPrefetchPosition(frame, frames);
     for (int attempt = 0; attempt < 500; ++attempt) {
+      for (auto &track : processor.stemTracks)
+        track->requestPrefetchPosition(frame, frames);
       bool ready = true;
       for (const auto &track : processor.stemTracks)
         ready = track->isPrefetchReady(frame, frames) && ready;
@@ -323,6 +331,95 @@ void testLongBlockMultipleSectionEdges() {
   near(buffer.getSample(0, 7000), 0.077, "audio applies gap restoration then second-section gain inside the same callback");
 }
 
+void testJumpIntentSurvivesLoopBlocks() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  auto arrangement = p.getSongArrangementSnapshot();
+  arrangement.parts[0].muteInstruments = true;
+  p.setSongArrangement(arrangement, true);
+  p.setStemVolume(1, 0.4f);
+  fixture.seekAndWait(2.5); p.playSong(); fixture.waitForPendingSeek();
+  p.toggleArrangementPartLoop(1);
+  p.requestArrangementPartJump(0);
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() > 2.5,
+         "backward Ir stays queued through an interior block instead of disappearing or jumping early");
+  expect(p.getArrangementPartLoopIndex() == -1, "Ir immediately cancels the Loop intent");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "backward destination is resident");
+  fixture.block(280);
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.3,
+         "real audio transport consumes backward Ir at the current section end");
+  expect(p.getSongArrangementSnapshot().parts[0].muteInstruments, "backward Ir preserves destination Mute");
+  expect(SectionAutomationTestAccess::waitForSource(p, 256), "muted destination source is resident");
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  p.processBlock(audio, midi);
+  near(audio.getSample(0, 200), 0.04, "destination instruments stay muted while its real click remains audible");
+  p.requestArrangementPartJump(1);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "revisited destination is resident");
+  fixture.block(340);
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 2.4,
+         "real transport can revisit the previous section after a backward jump");
+  expect(p.getArrangementPartLoopIndex() == -1, "neither destination inherits the cancelled Loop");
+}
+
+void testRepeatedLoopsStayInsideSection() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 8192); p.setStemMute(1, true);
+  auto arrangement = p.getSongArrangementSnapshot();
+  arrangement.parts[0].endSec = 0.25;
+  arrangement.parts[1].startSec = 0.25; arrangement.parts[1].muteInstruments = true;
+  p.setSongArrangement(arrangement, true);
+  fixture.seekAndWait(0.23); p.playSong(); fixture.waitForPendingSeek();
+  p.toggleArrangementPartLoop(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+  for (int iteration = 0; iteration < 12; ++iteration) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+           SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "repeated loop audio banks are resident");
+    p.processBlock(audio, midi);
+    expect(p.getSongCurrentPositionSeconds() < 0.25 && p.getArrangementPartLoopIndex() == 0 &&
+           SectionAutomationTestAccess::currentPart(p) == 0 && audio.getMagnitude(0, 0, 8192) > 0.05f,
+           (juce::String("loop iteration=") + juce::String(iteration) + " position=" +
+              juce::String(p.getSongCurrentPositionSeconds(), 6) + " loop=" + juce::String(p.getArrangementPartLoopIndex()) +
+              " current=" + juce::String(SectionAutomationTestAccess::currentPart(p)) + " amplitude=" + juce::String(audio.getMagnitude(0, 0, 8192), 6)).toRawUTF8());
+  }
+}
+
+void testColdJumpHoldsMusicalBoundary() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 8192);
+  fixture.seekAndWait(3.95);
+  p.playSong(); fixture.waitForPendingSeek();
+  expect(SectionAutomationTestAccess::waitForSource(p, 8192), "boundary source is resident");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "prefetch chain initialized");
+  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+  p.toggleArrangementPartLoop(1); p.requestArrangementPartJump(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() < 4.0 && p.getSongCurrentPositionSeconds() > 3.99,
+         "cold Ir holds at the outgoing boundary without losing intent");
+  expect(audio.getMagnitude(0, 2300, 5800) < 0.00001f, "cold boundary emits no following-section audio");
+  p.processBlock(audio, midi);
+  expect(audio.getMagnitude(0, 0, 8192) < 0.00001f && p.getSongCurrentPositionSeconds() < 4.0,
+         "held callback stays silent at the boundary");
+  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cold destination becomes resident");
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.2 && p.getArrangementPartLoopIndex() == -1,
+         "transport resumes the backward destination when its audio is ready");
+  fixture.seekAndWait(3.95); p.playSong(); fixture.waitForPendingSeek();
+  expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+         SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "cancellation source and alternate prefetch are resident");
+  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+  p.requestArrangementPartJump(0); p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == 0, "second cold jump is genuinely pending");
+  p.clearPendingArrangementPartJump();
+  p.processBlock(audio, midi);
+  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  expect(SectionAutomationTestAccess::waitForSource(p, 8192), "cancelled hold resumes its primary reader");
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getArrangementPartLoopIndex() == -1 && p.getSongCurrentPositionSeconds() > 4.0,
+         "cancelling a held Ir resumes naturally without a phantom backward jump");
+}
+
 void testRealLoopAndJumpSplitPreserveDestinationMix() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
   p.prepareToPlay(44100.0, 8192);
@@ -524,7 +621,7 @@ void testPendingJumpOwnsSectionGuide() {
     p.requestArrangementPartJump(3);
     near(peak(f, 1), 0.4, "changing a late pending target announces only the new Bridge");
     p.clearPendingArrangementPartJump();
-    p.toggleArrangementPartLoop(1); // Clear Loop; restore natural next section.
+    p.clearArrangementPartLoop(); // Restore natural next section.
     near(peak(f, 1), 0.3, "cancel in the remaining lead-in window restores the suppressed sequential voice");
     p.requestArrangementPartJump(0);
     near(peak(f, 1), 0.1, "requeuing an already announced target rearms its guide");
@@ -779,6 +876,9 @@ int main() {
   run("audio section boundary and smoothed mix targets", testAudioBoundaryAndRamp);
   run("long callbacks cross every section and annotation gap", testLongBlockMultipleSectionEdges);
   run("real loop and queued jump apply destination mix inside split callbacks", testRealLoopAndJumpSplitPreserveDestinationMix);
+  run("Ir intent survives interior Loop blocks", testJumpIntentSurvivesLoopBlocks);
+  run("repeated loops stay inside their section", testRepeatedLoopsStayInsideSection);
+  run("cold jump holds the musical boundary", testColdJumpHoldsMusicalBoundary);
   run("pads remain idempotent across section re-entry", testPadsAreIdempotentAndRestoreBase);
   run("remote ownership excludes physical MIDI draft writes", testRemoteDraftRejectsPhysicalMidi);
   run("independent guide cues follow real playback and seeking", testIndependentGuideCuesFollowTransport);
