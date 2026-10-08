@@ -241,10 +241,10 @@ Los siguientes puntos separan las correcciones incorporadas de la QA pendiente:
   exportacion WAV de 24 bits; no ofrece MP3/M4A de salida. La prueba
   `mac_app_store_safety` paso; falta completar QA de exportacion real con
   el panel de archivos del sistema.
-- **Importacion de Prime:** la integracion directa del contenedor de Prime
+- **Importacion de biblioteca compatible:** la integracion directa del contenedor externo
   y del proceso SQLite esta deshabilitada en la variante Store. Biblioteca
   usa el selector de audio del sistema. El escritorio habitual conserva el
-  contrato de [Prime Local Library Import](../importing/PrimeLocalLibraryImport.md).
+  contrato de [Compatible Local Library Import](../importing/CompatibleLocalLibraryImport.md).
 - **Licencias (2.4.5(vi)):** revisar la validacion propia de plan/licencia y
   separar el acceso a servicios de cuenta del desbloqueo de la app. La regla
   de Mac App Store restringe pantallas de licencia, claves y mecanismos

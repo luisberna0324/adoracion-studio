@@ -482,7 +482,7 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   incluida la purga que vacía la
   Biblioteca local sin borrar proyectos `.pwproj` ni contenido en la nube.
   Diagnóstico conserva sus notas sobre el informe y su privacidad. La opción de
-  importar la biblioteca de Prime indica que solo funciona en macOS y queda
+  importar una biblioteca compatible instalada indica que solo funciona en macOS y queda
   deshabilitada en otras plataformas.
 - El escritorio ancho conserva sus pestañas. Las ventanas de menos de 760 px
   también usan la portada agrupada para evitar pestañas comprimidas.
