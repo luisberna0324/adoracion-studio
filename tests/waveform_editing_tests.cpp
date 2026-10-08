@@ -86,6 +86,20 @@ struct WaveformEditingTestAccess {
     return waveform.liveSectionProgress(index);
   }
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
+  static void followAt(WaveformBar &waveform, double now) { waveform.updateLiveFollow(now); }
+  static double resumeAt(const WaveformBar &waveform) { return waveform.liveFollowResumeMs; }
+  static void setLiveOffset(WaveformBar &waveform, float offset) { waveform.setLiveScrollOffset(offset); }
+  static void expectNoDesktopPlaybackActions(WaveformBar &waveform) {
+    waveform.rebuildPartOverlayBounds(waveBody(waveform));
+    expect(waveform.sharedSectionOverflowBounds.isEmpty(), "desktop has no shared section ellipsis");
+    for (const auto &part : waveform.partOverlayBounds) {
+      expect(!part.showsJumpButton && !part.showsLoopButton && !part.showsMuteButton &&
+                 !part.showsOverflowButton, "normal desktop has no inline playback actions");
+      for (const auto target : {part.jumpButton, part.loopButton, part.muteButton, part.overflowButton})
+        expect(target.isEmpty(), "removed desktop actions have no invisible hit targets");
+    }
+  }
+
   static auto liveRow(const WaveformBar &waveform) { return waveform.getLiveRowBounds(); }
   static void scrollLiveToEnd(WaveformBar &waveform) {
     waveform.setLiveScrollOffset(1000000.0f);
@@ -1345,6 +1359,97 @@ void testSectionActionsClearGlobalControls() {
   }
 }
 
+void testDesktopNormalAndLiveFollow() {
+  for (const bool phone : {false, true}) {
+    Fixture f;
+    f.waveform.setMinimalPhoneMode(true); // Leave arrangement editing.
+    f.waveform.setMinimalPhoneMode(phone);
+    f.waveform.setSize(390, 250);
+#if !JUCE_IOS && !JUCE_ANDROID
+    if (!phone) {
+      for (const int width : {390, 768, 1280}) {
+        f.waveform.setSize(width, 250);
+        WaveformEditingTestAccess::expectNoDesktopPlaybackActions(f.waveform);
+      }
+      f.waveform.setSize(390, 250);
+    }
+#endif
+    double position = 25.0;
+    bool playing = true;
+    int seeks = 0, jumps = 0, loops = 0;
+    f.waveform.setTransportProviders([&] { return position; }, [] { return 30.0; }, [&] { return playing; });
+    f.waveform.setSeekCallback([&](double) { ++seeks; });
+    f.waveform.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+    f.waveform.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+    f.waveform.setLiveMode(true);
+    WaveformEditingTestAccess::followAt(f.waveform, 100.0);
+    WaveformEditingTestAccess::followAt(f.waveform, 240.0);
+    const float midway = WaveformEditingTestAccess::liveScroll(f.waveform);
+    expect(midway > 0.0f, "active final section centers with a smooth transition");
+    WaveformEditingTestAccess::followAt(f.waveform, 380.0);
+    const float end = WaveformEditingTestAccess::liveScroll(f.waveform);
+    expect(end > midway, "centering finishes at the clamped final edge");
+    auto blocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+    expectNear(blocks.back().body.getRight(), WaveformEditingTestAccess::liveRow(f.waveform).getRight(),
+               "final section centering exposes no trailing blank space");
+    position = 26.0;
+    WaveformEditingTestAccess::followAt(f.waveform, 1000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), end,
+               "progress within the same section never scrolls");
+    position = 1.0;
+    WaveformEditingTestAccess::followAt(f.waveform, 1100.0);
+    WaveformEditingTestAccess::followAt(f.waveform, 1380.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), 0.0,
+               "transition to first section clamps at the initial edge");
+    const auto start = WaveformEditingTestAccess::liveRow(f.waveform).getCentre();
+    f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+    const auto moved = start.translated(-120.0f, 0.0f);
+    f.waveform.mouseDrag(pointerEvent(f.waveform, moved, start, true));
+    const float dragged = WaveformEditingTestAccess::liveScroll(f.waveform);
+    WaveformEditingTestAccess::followAt(f.waveform, WaveformEditingTestAccess::resumeAt(f.waveform) + 10000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), dragged,
+               "held drag blocks centering even beyond inactivity deadline");
+    f.waveform.mouseUp(pointerEvent(f.waveform, moved, start, true));
+    const float explored = WaveformEditingTestAccess::liveScroll(f.waveform);
+    const double resume = WaveformEditingTestAccess::resumeAt(f.waveform);
+    position = 25.0;
+    WaveformEditingTestAccess::followAt(f.waveform, resume - 1.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), explored,
+               "section transition preserves exploration during three-second grace");
+    WaveformEditingTestAccess::followAt(f.waveform, resume);
+    WaveformEditingTestAccess::followAt(f.waveform, resume + 280.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), end,
+               "inactivity resumes centering on the current active section");
+    position = 1.0;
+    WaveformEditingTestAccess::followAt(f.waveform, resume + 300.0);
+    WaveformEditingTestAccess::followAt(f.waveform, resume + 440.0);
+    const float interrupted = WaveformEditingTestAccess::liveScroll(f.waveform);
+    blocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+    const auto button = blocks[1].loopButton.getCentre();
+    f.waveform.mouseDown(pointerEvent(f.waveform, button, button));
+    WaveformEditingTestAccess::followAt(f.waveform, resume + 10000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), interrupted,
+               "button down interrupts a centering animation without moving its hit target");
+    f.waveform.mouseUp(pointerEvent(f.waveform, button, button));
+    expect(seeks == 0 && jumps == 0 && loops == 1,
+           "follow never seeks and interrupted button retains its existing action");
+    const double afterButton = WaveformEditingTestAccess::resumeAt(f.waveform);
+    WaveformEditingTestAccess::followAt(f.waveform, afterButton);
+    WaveformEditingTestAccess::followAt(f.waveform, afterButton + 100.0);
+    juce::MouseWheelDetails wheel;
+    wheel.deltaY = -1.0f;
+    f.waveform.mouseWheelMove(pointerEvent(f.waveform, start, start), wheel);
+    const float wheelOffset = WaveformEditingTestAccess::liveScroll(f.waveform);
+    WaveformEditingTestAccess::followAt(f.waveform, WaveformEditingTestAccess::resumeAt(f.waveform) - 1.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), wheelOffset,
+               "wheel exploration cancels an in-flight centering transition");
+    playing = false;
+    WaveformEditingTestAccess::setLiveOffset(f.waveform, end);
+    WaveformEditingTestAccess::followAt(f.waveform, WaveformEditingTestAccess::resumeAt(f.waveform) + 10000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), end, "paused transport does not recenter");
+  }
+}
+
 void testLiveSectionsAndNavigation() {
   Fixture f;
   expect(!f.waveform.isLiveMode(), "live presentation is opt-in");
@@ -1419,7 +1524,7 @@ void testLiveSectionsAndNavigation() {
     position = next;
     WaveformEditingTestAccess::tick(f.waveform);
     expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), offset,
-               "timer and section transitions never recenter manual navigation");
+               "recent interaction suspends centering across section transitions");
   }
   f.waveform.setLiveMode(false);
   expect(seeks == 0 && playing && position == 25.0 &&
@@ -2081,7 +2186,8 @@ int main() {
   run("persistent responsive section controls", testPersistentResponsiveSectionControls);
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
-  run("live section progress and stationary manual navigation", testLiveSectionsAndNavigation);
+  run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
+  run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
   run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);
   run("topbar live toggle and real waveform background", testTopbarLiveToggleAndWaveformBackground);

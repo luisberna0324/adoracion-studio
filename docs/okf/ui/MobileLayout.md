@@ -639,7 +639,7 @@ Mediciones y limites de la verificacion:
 
 ## Controles integrados de secciones y navegación de la onda
 
-En reproducción, Ir, Loop y Mute permanecen visibles dentro de la parte inferior
+En la onda normal de iOS y Android, Ir, Loop y Mute permanecen visibles dentro de la parte inferior
 de cada sección. Los iconos de línea y sus textos heredan el color de la sección;
 una atenuación gradual de la onda aporta contraste sin cajas ni círculos por
 botón. Su posición es fija: activar una acción no reordena los controles.
@@ -708,7 +708,17 @@ rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
 salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
 mute en Mute; no se confunden con la sección activa.
 
-La fila nunca sigue ni se recentra por reproducción, loop, selección o salto.
+La onda normal de escritorio conserva regla, mouse y ancho proporcional, sin
+Ir/Loop/Mute integrados ni elipsis por sección o compartida. En vivo mantiene
+sus acciones en todas las plataformas.
+
+En vivo centra la sección activa una vez al cambiar de sección durante la
+reproducción, con transición suave de 280 ms y límites en los extremos.
+La interacción interrumpe el centrado inmediatamente; durante el gesto y los
+3 segundos posteriores no se mueve bajo el dedo. Tras la inactividad vuelve
+a centrar la sección activa. Dentro de cada sección la fila queda estática,
+incluido el loop; sólo cambia su progreso. Este seguimiento es independiente
+del follow de la onda normal y nunca envía seek ni comandos de transporte.
 Drag y rueda sólo cambian su desplazamiento manual, incluido el ajuste al
 terminar el gesto. No hay regla, minimapa ni
 línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía

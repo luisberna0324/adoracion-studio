@@ -153,6 +153,13 @@ private:
   void drawLiveSections(juce::Graphics &g);
   void setLiveScrollOffset(float offset);
   void snapLiveScrollOffset();
+  void suspendLiveFollow();
+  void updateLiveFollow(double nowMs);
+  double liveFollowResumeMs = 0.0;
+  double liveFollowAnimationStartMs = 0.0;
+  float liveFollowFrom = 0.0f, liveFollowTarget = 0.0f;
+  bool liveFollowAnimating = false;
+  juce::String liveFollowPartId;
   float liveSectionProgress(int index) const;
   bool liveMode = false;
   float liveScrollOffset = 0.0f;
