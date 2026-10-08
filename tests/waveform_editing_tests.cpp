@@ -53,6 +53,21 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static void expectPlaybackActionsClearGlobalControls(WaveformBar &waveform) {
+    waveform.rebuildPartOverlayBounds(waveBody(waveform));
+    for (const auto *control : {&waveform.followButton, &waveform.moreButton,
+                                &waveform.editButton, &waveform.waveHeightButton}) {
+      if (!control->isVisible()) continue;
+      const auto occupied = control->getBounds().toFloat();
+      expect(!occupied.intersects(waveform.sharedSectionOverflowBounds),
+             "shared section menu remains clear of global waveform controls");
+      for (const auto &part : waveform.partOverlayBounds)
+        for (const auto target : {part.jumpButton, part.loopButton, part.muteButton,
+                                  part.overflowButton})
+          expect(!occupied.intersects(target),
+                 "section playback actions remain clear of global waveform controls");
+    }
+  }
   static void expectBackgroundPoint(WaveformBar &waveform, juce::Point<float> point) {
     waveform.rebuildPartOverlayBounds(waveBody(waveform));
     const auto hit = waveform.hitTestArrangementPart(point);
@@ -1269,6 +1284,18 @@ void testMobileWaveformGestureArbitration() {
          "drag beginning on an inline action invokes neither action nor seek");
 }
 
+void testSectionActionsClearGlobalControls() {
+  Fixture f;
+  f.waveform.setMinimalPhoneMode(true);
+  for (const bool phone : {true, false}) {
+    f.waveform.setMinimalPhoneMode(phone);
+    for (const int width : {360, 390, 768, 1200}) {
+      f.waveform.setSize(width, 250);
+      WaveformEditingTestAccess::expectPlaybackActionsClearGlobalControls(f.waveform);
+    }
+  }
+}
+
 void testSectionAutomationMobileNavigation() {
   Fixture f;
   f.waveform.setMinimalPhoneMode(true);
@@ -1573,6 +1600,7 @@ int main() {
   run("section automation readonly remote toolbar", testSectionAutomationReadonlyToolbar);
   run("persistent responsive section controls", testPersistentResponsiveSectionControls);
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
+  run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);

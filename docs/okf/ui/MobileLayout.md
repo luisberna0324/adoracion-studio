@@ -649,6 +649,9 @@ y Más ofrece Mute. Si sólo cabe un objetivo, la elipsis abre las tres acciones
 Las regiones menores que un objetivo usan la elipsis compartida de Secciones,
 que lista las secciones por número y nombre, sin ensanchar la línea de tiempo.
 Los menús resuelven el ID persistente de la sección al ejecutar la acción.
+La distribución de acciones reserva el espacio de los controles globales de
+onda y su menú. Ese espacio puede reducir las acciones visibles de la sección
+final, pero no cambia su duración ni sus límites sobre la onda.
 
 En iOS y Android, tanto teléfonos como tablets, arrastrar la onda en reproducción
 sólo desplaza su viewport. El toque sobre el fondo mueve la posición al soltar;

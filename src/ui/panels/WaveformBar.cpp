@@ -5547,6 +5547,15 @@ void WaveformBar::rebuildPartOverlayBounds(
   // ellipsis offers their actions without overlapping adjacent touch targets.
   auto safeLane = minimalPhoneMode
       ? lane.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()) : lane;
+  // Global waveform controls also occupy the bottom of this lane. Reserve
+  // their space for actions only, leaving musical section geometry untouched.
+  for (const auto *control : {&followButton, &moreButton, &editButton, &waveHeightButton}) {
+    if (!control->isVisible()) continue;
+    const auto occupied = control->getBounds().toFloat();
+    if (occupied.intersects(safeLane.withTrimmedTop(
+            juce::jmax(0.0f, safeLane.getHeight() - 44.0f))))
+      safeLane.setRight(juce::jmax(safeLane.getX(), occupied.getX() - 4.0f));
+  }
   if (!isEditingArrangement() && !automationEditing && safeLane.getWidth() >= 52.0f && safeLane.getHeight() >= 44.0f) {
     for (const auto &part : arrangement.parts) {
       if (part.skipPlayback) continue;
@@ -5621,6 +5630,7 @@ void WaveformBar::rebuildPartOverlayBounds(
           ? body.getIntersection(
                 phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
           : body;
+      actionBounds = actionBounds.getIntersection(safeLane);
       if (!sharedSectionOverflowBounds.isEmpty() && actionBounds.getRight() > sharedSectionOverflowBounds.getX())
         actionBounds = actionBounds.withRight(juce::jmax(actionBounds.getX(), sharedSectionOverflowBounds.getX() - 4.0f));
       // Keep musical widths untouched. Controls never shrink below 44 points.
