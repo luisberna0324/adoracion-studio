@@ -87,6 +87,7 @@ struct WaveformEditingTestAccess {
   }
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
   static void followAt(WaveformBar &waveform, double now) { waveform.updateLiveFollow(now); }
+  static void vblank(WaveformBar &waveform, double now) { waveform.updatePlaybackAnimation(now); }
   static double resumeAt(const WaveformBar &waveform) { return waveform.liveFollowResumeMs; }
   static void setLiveOffset(WaveformBar &waveform, float offset) { waveform.setLiveScrollOffset(offset); }
   static void expectNoDesktopPlaybackActions(WaveformBar &waveform) {
@@ -1359,6 +1360,121 @@ void testSectionActionsClearGlobalControls() {
   }
 }
 
+void testLiveActionsSurviveLayoutRefresh() {
+  for (const bool phone : {false, true}) {
+    Fixture f;
+    f.waveform.setMinimalPhoneMode(true);
+    f.waveform.setMinimalPhoneMode(phone);
+    f.waveform.setSize(390, 250);
+    f.waveform.setLiveMode(true);
+    int jumps = 0, loops = 0, seeks = 0;
+    f.waveform.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+    f.waveform.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+    f.waveform.setSeekCallback([&](double) { ++seeks; });
+    for (const bool jump : {true, false}) {
+      const auto block = WaveformEditingTestAccess::liveBounds(f.waveform)[0];
+      const auto point = (jump ? block.jumpButton : block.loopButton).getCentre();
+      f.waveform.mouseDown(pointerEvent(f.waveform, point, point));
+      // The editor reapplies its responsive profile during a layout refresh.
+      f.waveform.setMinimalPhoneMode(phone);
+      f.waveform.resized();
+      f.waveform.mouseUp(pointerEvent(f.waveform, point, point));
+    }
+    expect(jumps == 1 && loops == 1 && seeks == 0,
+           "valid live Go/Loop survive unchanged responsive layout between down and up");
+    WaveformEditingTestAccess::setLiveOffset(f.waveform, 40.0f);
+    const auto point = WaveformEditingTestAccess::liveBounds(f.waveform)[1].loopButton.getCentre();
+    const auto window = WaveformEditingTestAccess::visibleWindow(f.waveform);
+    for (int repeat = 0; repeat < 4; ++repeat) {
+      f.waveform.mouseDown(pointerEvent(f.waveform, point, point));
+      f.waveform.setWaveformBins(std::vector<float>(512, 0.6f));
+      f.waveform.resized();
+      WaveformEditingTestAccess::vblank(f.waveform, repeat + 1.0);
+      f.waveform.mouseUp(pointerEvent(f.waveform, point, point));
+      expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), 40.0f,
+                 "tap and preview refresh retain fractional centered row position");
+    }
+    expect(loops == 5 && seeks == 0, "every repeated valid loop press invokes exactly once");
+    expect(WaveformEditingTestAccess::visibleWindow(f.waveform) == window,
+           "normal waveform VBlank leaves the saved viewport alone in Live");
+    f.waveform.mouseDown(pointerEvent(f.waveform, point, point));
+    const auto dragged = point.translated(-30.0f, 0.0f);
+    f.waveform.mouseDrag(pointerEvent(f.waveform, dragged, point, true));
+    f.waveform.mouseDrag(pointerEvent(f.waveform, point, point, true));
+    f.waveform.mouseUp(pointerEvent(f.waveform, point, point, true));
+    expect(loops == 5 && seeks == 0, "deliberate drag returning to its button never acts");
+    const auto changedPoint = WaveformEditingTestAccess::liveBounds(f.waveform)[1].loopButton.getCentre();
+    f.waveform.mouseDown(pointerEvent(f.waveform, changedPoint, changedPoint));
+    f.waveform.setSize(420, 250);
+    f.waveform.mouseUp(pointerEvent(f.waveform, changedPoint, changedPoint));
+    expect(loops == 5, "real geometry change cancels an obsolete button capture");
+  }
+}
+
+void testLiveActionsReachRealTransport() {
+  ProcessorFixture fixture;
+  auto &wave = fixture.edit.waveform;
+  auto &processor = fixture.processor;
+  processor.setArrangementEditingActive(false);
+  wave.setMinimalPhoneMode(true);
+  wave.setSize(390, 250);
+  wave.setLiveMode(true);
+  wave.setOnArrangementPartJumpRequest([&](int index) { processor.requestArrangementPartJump(index); });
+  wave.setOnArrangementPartLoopToggleRequest([&](int index) {
+    processor.clearPendingArrangementPartJump();
+    processor.toggleArrangementPartLoop(index);
+  });
+  const auto block = WaveformEditingTestAccess::liveBounds(wave)[1];
+  const auto press = [&](juce::Point<float> point) {
+    wave.mouseDown(pointerEvent(wave, point, point));
+    wave.setMinimalPhoneMode(true);
+    wave.resized();
+    wave.mouseUp(pointerEvent(wave, point, point));
+  };
+  press(block.jumpButton.getCentre());
+  expectNear(processor.getSongCurrentPositionSeconds(), 10.0,
+             "stopped Go reaches the real target using existing transport semantics");
+  processor.seekSongTo(0.0);
+  processor.playSong();
+  expect(processor.isSongPlaying(), "isolated transport enters playback");
+  press(block.jumpButton.getCentre());
+  expect(processor.getPendingArrangementPartJumpIndex() == 1,
+         "playing Go queues the real destination");
+  press(block.jumpButton.getCentre());
+  expect(processor.getPendingArrangementPartJumpIndex() == -1,
+         "repeated Go cancels its pending target as specified");
+  press(block.jumpButton.getCentre());
+  press(block.loopButton.getCentre());
+  expect(processor.getArrangementPartLoopIndex() == 1 &&
+             processor.getPendingArrangementPartJumpIndex() == -1,
+         "Loop reaches the real processor and replaces pending Go");
+  expectNear(processor.getSongCurrentPositionSeconds(), 0.0, "marking Loop never seeks immediately");
+  press(block.loopButton.getCentre());
+  expect(processor.getArrangementPartLoopIndex() == -1, "repeated Loop toggles off exactly once");
+  processor.pauseSong();
+}
+
+void testMasterLeadingBoundary() {
+  ChannelStripLookAndFeel look;
+  ChannelStripCard master("MASTER", look, [] { return std::pair<float,float>{0.0f, 0.0f}; });
+  master.setSize(90, 244);
+  master.setCardBgColour(UITheme::cardBgMaster);
+  master.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
+  master.setLeadingBoundaryVisible(true);
+  const auto image = master.createComponentSnapshot(master.getLocalBounds());
+  for (const int y : {8, 100, 240})
+    expect(image.getPixelAt(0, y) == UITheme::cardBorder,
+           "Master leading boundary remains defined across body and footer");
+  const auto path = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+  if (!path.isEmpty()) {
+    juce::File directory(path);
+    expect(directory.createDirectory().wasOk(), "Master capture directory opens");
+    juce::FileOutputStream output(directory.getChildFile("master-left-boundary.png"));
+    juce::PNGImageFormat png;
+    expect(png.writeImageToStream(image, output), "real Master component render writes");
+  }
+}
+
 void testDesktopNormalAndLiveFollow() {
   for (const bool phone : {false, true}) {
     Fixture f;
@@ -1753,7 +1869,8 @@ void testLiveResponsiveCompleteCardsAndNavigation() {
       wave.mouseWheelMove(pointerEvent(wave, point, point), smooth);
       wave.mouseDown(pointerEvent(wave, point, point));
       wave.mouseUp(pointerEvent(wave, point, point));
-      expectCompleteCards(0);
+      expectNear(WaveformEditingTestAccess::liveScroll(wave), stride * 0.25f,
+                 "tap interrupts wheel settle without moving targets to another card");
       const auto pan = [&](const float delta) {
         const auto dragged = point.translated(delta, 0.0f);
         wave.mouseDown(pointerEvent(wave, point, point));
@@ -2188,6 +2305,9 @@ int main() {
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
+  run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);
+  run("live actions reach real transport", testLiveActionsReachRealTransport);
+  run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
   run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);
   run("topbar live toggle and real waveform background", testTopbarLiveToggleAndWaveformBackground);

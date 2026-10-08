@@ -1316,7 +1316,8 @@ void WaveformBar::resetPlaybackViewForSong() {
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
-  resetTouchWaveformNavigation();
+  if (!liveMode || bins.empty() || waveformBins.empty())
+    resetTouchWaveformNavigation();
   const bool wasEditing = editButton.getToggleState();
   waveformBins = std::move(bins);
   invalidateWaveformRenderCaches();
@@ -1693,6 +1694,7 @@ void WaveformBar::setOnWaveformHeightToggle(WaveformHeightToggleCallback cb) {
 }
 
 void WaveformBar::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled) return;
   if (minimalPhoneMode != enabled) {
     resetTouchWaveformNavigation();
     phoneTouchPositions.clear();
@@ -2228,6 +2230,23 @@ void WaveformBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void WaveformBar::resized() {
+  if (liveMode) {
+    for (int i = 0; i < getNumChildComponents(); ++i)
+      getChildComponent(i)->setVisible(false);
+    const auto row = getLiveRowBounds();
+    const float width = getLiveBlockWidth();
+    const bool geometryChanged = row != liveLayoutRow || width != liveLayoutBlockWidth ||
+                                 phoneSafeAreaInsets != liveLayoutInsets;
+    if (geometryChanged) {
+      resetTouchWaveformNavigation();
+      suspendLiveFollow();
+      snapLiveScrollOffset();
+    }
+    liveLayoutRow = row;
+    liveLayoutInsets = phoneSafeAreaInsets;
+    liveLayoutBlockWidth = width;
+    return;
+  }
   livePointerActive = false;
   if (touchWaveformNavigationActive) resetTouchWaveformNavigation();
   rebuildCueMarkers();
@@ -2242,13 +2261,6 @@ void WaveformBar::resized() {
   const int snapModeLabelW = 56;
   const bool hasLoadedSong = !waveformBins.empty();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
-  if (liveMode) {
-    for (int i = 0; i < getNumChildComponents(); ++i)
-      getChildComponent(i)->setVisible(false);
-    moreButton.setVisible(false);
-    snapLiveScrollOffset();
-    return;
-  }
   layoutSectionAutomationToolbar();
   if (automationEditing) {
     for (auto *component : std::initializer_list<juce::Component *>{
@@ -2498,6 +2510,7 @@ void WaveformBar::setLiveMode(bool enabled) {
   liveFollowAnimating = false;
   // Switching presentation never sends a transport command or changes follow.
   resized();
+  liveFollowResumeMs = 0.0;
   repaint();
 }
 
@@ -3756,9 +3769,8 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
     }
     rebuildLiveSectionBounds();
     const auto hit = hitTestArrangementPart(event.position);
-    // A tap can interrupt a trackpad's pending settle. Resolve its hit at the
-    // captured position, then leave the row aligned once the pointer is up.
-    snapLiveScrollOffset();
+    // A valid tap keeps its row stationary, including fractional centering.
+    // Only an actual pan release or settled wheel input snaps whole cards.
     repaint();
     if (juce::isPositiveAndBelow(hit.partIndex, static_cast<int>(arrangement.parts.size())) &&
         arrangement.parts[static_cast<size_t>(hit.partIndex)].id == liveDownPartId &&
@@ -4382,6 +4394,7 @@ void WaveformBar::timerCallback() {
 }
 
 void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
+  if (liveMode) return;
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
 #if JUCE_ANDROID
   if (isPlayingNow != androidWasPlaying) {

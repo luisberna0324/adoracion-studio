@@ -164,6 +164,9 @@ private:
   bool liveMode = false;
   float liveScrollOffset = 0.0f;
   double liveScrollSnapDueMs = 0.0;
+  juce::Rectangle<float> liveLayoutRow;
+  juce::BorderSize<int> liveLayoutInsets;
+  float liveLayoutBlockWidth = 0.0f;
   bool livePointerActive = false;
   bool livePointerMoved = false;
   int livePointerSource = -1;

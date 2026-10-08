@@ -309,6 +309,9 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   El fondo y la banda inferior del primer y ultimo canal se prolongan por ese
   padding lateral para evitar una franja vacia. Esta prolongacion es decorativa:
   no replica controles ni cambia sus posiciones o el recorrido del scroll.
+  El borde izquierdo real de Master se dibuja dentro del strip con un trazo
+  de un punto en `cardBorder`, también sobre su banda inferior. Delimita el
+  canal frente al padding decorativo sin agregar otra franja ni mover controles.
 - En Android se respetan los insets reportados por el sistema para los controles,
   incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
   inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la
@@ -731,3 +734,11 @@ sus botones directos se conservan en ventanas amplias.
 En teléfonos especialmente estrechos, el tiempo cede espacio al toggle y su
 acción `Ventana de canción` permanece accesible desde ese menú. Los objetivos
 del topbar siguen las dimensiones del perfil de dispositivo.
+
+Los refrescos de layout sin cambios de geometría y los nuevos bins de preview
+de la misma canción conservan una pulsación En vivo pendiente. Cambiar canción,
+arrangement, tamaño o insets sí cancela el gesto para no activar otro destino.
+Soltar un botón válido no ajusta el scroll a otra tarjeta; drag y rueda conservan
+su snap. El callback de VBlank de la onda normal no modifica su viewport durante
+En vivo. Ir en reproducción mantiene cola/cancelación existente y Loop mantiene
+su alternancia; no se convierten en seek inmediato.
