@@ -146,12 +146,17 @@ public:
 private:
   friend struct WaveformEditingTestAccess;
   juce::Rectangle<float> getLiveRowBounds() const;
+  juce::Rectangle<float> getLiveSectionContentBounds(juce::Rectangle<float> body) const;
+  float getLiveBlockWidth() const;
+  float getLiveBlockStride() const;
   void rebuildLiveSectionBounds();
   void drawLiveSections(juce::Graphics &g);
   void setLiveScrollOffset(float offset);
+  void snapLiveScrollOffset();
   float liveSectionProgress(int index) const;
   bool liveMode = false;
   float liveScrollOffset = 0.0f;
+  double liveScrollSnapDueMs = 0.0;
   bool livePointerActive = false;
   bool livePointerMoved = false;
   int livePointerSource = -1;

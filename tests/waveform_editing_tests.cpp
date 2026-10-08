@@ -87,6 +87,16 @@ struct WaveformEditingTestAccess {
   }
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
   static auto liveRow(const WaveformBar &waveform) { return waveform.getLiveRowBounds(); }
+  static void scrollLiveToEnd(WaveformBar &waveform) {
+    waveform.setLiveScrollOffset(1000000.0f);
+    waveform.snapLiveScrollOffset();
+  }
+  static void settleLiveWheelScroll(WaveformBar &waveform) {
+    expect(waveform.liveScrollSnapDueMs > 0.0,
+           "smooth wheel navigation schedules its settled card alignment");
+    waveform.liveScrollSnapDueMs = juce::Time::getMillisecondCounterHiRes() - 1.0;
+    waveform.timerCallback();
+  }
   static void enableFollowForLiveTest(WaveformBar &waveform) {
     waveform.followPlaybackEnabled = true;
     waveform.followButton.setToggleState(true, juce::dontSendNotification);
@@ -1359,17 +1369,22 @@ void testLiveSectionsAndNavigation() {
   f.waveform.setLiveMode(true);
   auto blocks = WaveformEditingTestAccess::liveBounds(f.waveform);
   for (const auto &block : blocks) {
-    expectNear(block.body.getWidth(), 176.0, "different musical durations have equal live block width");
+    expect(block.body.getWidth() >= 176.0f, "live cards retain the minimum usable width");
+    expectNear(block.body.getWidth(), blocks[0].body.getWidth(),
+               "different musical durations have equal live block width");
+    if (!block.body.intersects(WaveformEditingTestAccess::liveRow(f.waveform))) continue;
     for (const auto target : {block.jumpButton, block.loopButton, block.muteButton})
       expect(target.getWidth() >= 44.0f && target.getHeight() >= 44.0f,
              "live exposes three persistent full-size actions");
   }
   for (const int height : {108, 140}) {
     f.waveform.setSize(390, height);
-    for (const auto &block : WaveformEditingTestAccess::liveBounds(f.waveform))
+    for (const auto &block : WaveformEditingTestAccess::liveBounds(f.waveform)) {
+      if (!block.body.intersects(WaveformEditingTestAccess::liveRow(f.waveform))) continue;
       for (const auto target : {block.jumpButton, block.loopButton, block.muteButton})
         expect(target.getWidth() == 44.0f && target.getHeight() == 44.0f && block.body.contains(target),
                "compact live rows preserve all three complete touch targets");
+    }
   }
   f.waveform.setSize(390, 250);
   expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 0), 0.5, "two-second section has relative progress");
@@ -1394,7 +1409,7 @@ void testLiveSectionsAndNavigation() {
   expect(WaveformEditingTestAccess::snapshot(f.waveform).parts[0].muteInstruments,
          "live Mute uses the existing instruments-only arrangement flag");
   f.waveform.mouseDown(pointerEvent(f.waveform, loopPoint, loopPoint));
-  const auto dragged = loopPoint.translated(-80.0f, 0.0f);
+  const auto dragged = loopPoint.translated(-140.0f, 0.0f);
   f.waveform.mouseDrag(pointerEvent(f.waveform, dragged, loopPoint, true));
   f.waveform.mouseUp(pointerEvent(f.waveform, dragged, loopPoint, true));
   expect(loops == 1 && jumps == 1 && seeks == 0, "drag starting on live control never triggers it or seek");
@@ -1428,6 +1443,266 @@ void testLiveSectionsAndNavigation() {
         expect(stream && stream->setPosition(0) && stream->truncate().wasOk(), "live capture file opens");
         expect(juce::PNGImageFormat().writeImageToStream(f.waveform.createComponentSnapshot(f.waveform.getLocalBounds(), true, 2.0f), *stream),
                "both modes render real production components");
+      }
+    }
+  }
+}
+
+void testLiveWaveformForOriginalsShiftedBeyondSource() {
+  Fixture f;
+  std::vector<float> bins(512);
+  for (size_t i = 0; i < bins.size(); ++i)
+    bins[i] = 0.2f + 0.6f * std::abs(std::sin(static_cast<float>(i) * 0.073f));
+  f.waveform.setWaveformBins(bins);
+  f.waveform.setTransportProviders([] { return -1.0; },
+                                   [&] { return f.timelineLength; },
+                                   [] { return false; });
+  f.waveform.setMinimalPhoneMode(true);
+  // Five integral-width cards keep sampling and antialiasing identical when
+  // the source sections move to different card positions after insertion.
+  f.waveform.setSize(1028, 250);
+  f.waveform.setLiveMode(true);
+  const auto beforeBlocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+  const auto before = f.waveform.createComponentSnapshot(f.waveform.getLocalBounds());
+  f.waveform.setWaveformBins(std::vector<float>(bins.size(), 0.0f));
+  const auto beforeSilent = f.waveform.createComponentSnapshot(f.waveform.getLocalBounds());
+  f.waveform.setWaveformBins(bins);
+
+  f.waveform.setLiveMode(false);
+  f.waveform.setMinimalPhoneMode(false);
+  f.waveform.triggerEditToggleFromMidi();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  f.duplicate("Intro");
+  f.duplicate("Intro");
+  f.expectPosition("A", 30.0, 40.0);
+  f.expectPosition("B", 40.0, 50.0);
+  expectNear(WaveformEditingTestAccess::mappedSource(f.waveform, 35.0), 15.0,
+             "displaced original A keeps its source coordinate");
+  expectNear(WaveformEditingTestAccess::mappedSource(f.waveform, 45.0), 25.0,
+             "displaced original B keeps its source coordinate");
+  expect(f.part("A").sourcePartId.isEmpty() && f.part("B").sourcePartId.isEmpty(),
+         "the displaced tail cards remain original sections rather than explicit source clips");
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setLiveMode(true);
+  const auto afterBlocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+  const auto after = f.waveform.createComponentSnapshot(f.waveform.getLocalBounds());
+  f.waveform.setWaveformBins(std::vector<float>(bins.size(), 0.0f));
+  const auto silent = f.waveform.createComponentSnapshot(f.waveform.getLocalBounds());
+
+  for (const auto indices : {std::pair<int, int>{1, 3}, {2, 4}}) {
+    const auto originalBody = beforeBlocks[static_cast<size_t>(indices.first)].body;
+    const auto shiftedBody = afterBlocks[static_cast<size_t>(indices.second)].body;
+    expect(WaveformEditingTestAccess::liveRow(f.waveform).contains(shiftedBody),
+           "the regression renders the complete displaced original card");
+    expectNear(originalBody.getWidth(), shiftedBody.getWidth(),
+               "source comparison uses the same rendering scale");
+    int actualSignalPixels = 0;
+    for (int x = 8; x < static_cast<int>(shiftedBody.getWidth()) - 8; ++x) {
+      int originalTop = -1, originalBottom = -1;
+      int shiftedTop = -1, shiftedBottom = -1;
+      for (int y = 40; y < static_cast<int>(shiftedBody.getHeight()) - 48; ++y) {
+        const int originalX = static_cast<int>(originalBody.getX()) + x;
+        const int shiftedX = static_cast<int>(shiftedBody.getX()) + x;
+        const int originalY = static_cast<int>(originalBody.getY()) + y;
+        const int shiftedY = static_cast<int>(shiftedBody.getY()) + y;
+        // The studio background varies across the viewport. Compare signal
+        // masks against each position's own silent rendering instead of RGB.
+        const bool originalSignal = before.getPixelAt(originalX, originalY) !=
+                                    beforeSilent.getPixelAt(originalX, originalY);
+        const bool shiftedSignal = after.getPixelAt(shiftedX, shiftedY) !=
+                                   silent.getPixelAt(shiftedX, shiftedY);
+        if (originalSignal) {
+          if (originalTop < 0) originalTop = y;
+          originalBottom = y;
+        }
+        if (shiftedSignal) {
+          if (shiftedTop < 0) shiftedTop = y;
+          shiftedBottom = y;
+          ++actualSignalPixels;
+        }
+      }
+      const bool bothEmpty = originalTop < 0 && shiftedTop < 0;
+      const bool sameSilhouette = originalTop >= 0 && shiftedTop >= 0 &&
+                                 std::abs(originalTop - shiftedTop) <= 1 &&
+                                 std::abs(originalBottom - shiftedBottom) <= 1;
+      // Position-dependent tint rounding can change an antialiased edge by
+      // one pixel; every column must still preserve the waveform silhouette.
+      expect(bothEmpty || sameSilhouette,
+             "displaced original preserves its source waveform silhouette (section " +
+                 std::to_string(indices.first) + ", column " + std::to_string(x) +
+                 ", original " + std::to_string(originalTop) + ".." + std::to_string(originalBottom) +
+                 ", shifted " + std::to_string(shiftedTop) + ".." + std::to_string(shiftedBottom) + ")");
+    }
+    expect(actualSignalPixels > 200,
+           "each displaced original renders its supplied waveform bins and becomes flat with silent bins");
+  }
+}
+
+void testLiveResponsiveCompleteCardsAndNavigation() {
+  for (const int width : {568, 844, 956, 1024, 1200}) {
+    for (const bool notchOnLeft : {true, false}) {
+      const bool phone = width <= 956;
+      WaveformBar wave;
+      wave.setTransportProviders([] { return -1.0; }, [] { return 30.0; }, [] { return false; });
+      wave.setSongSourceLengthProvider([] { return 30.0; });
+      wave.setWaveformBins(std::vector<float>(512, 0.5f));
+      SongArrangementSnapshot arrangement;
+      for (int index = 0; index < 12; ++index) {
+        const auto id = juce::String("live-section-") + juce::String(index);
+        arrangement.parts.push_back(original(id.toRawUTF8(), index * 2.5, (index + 1) * 2.5));
+      }
+      wave.setArrangement(arrangement, false);
+      wave.setMinimalPhoneMode(phone);
+      wave.setSize(width, 220);
+      const int cutout = width == 956 ? 62 : 44;
+      const juce::BorderSize<int> insets(12, notchOnLeft ? cutout : 12,
+                                         18, notchOnLeft ? 12 : cutout);
+      wave.setPhoneSafeAreaInsets(insets);
+      int seeks = 0, jumps = 0, loops = 0;
+      wave.setSeekCallback([&](double) { ++seeks; });
+      wave.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+      wave.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+      wave.setLiveMode(true);
+
+      int alignmentCheck = 0;
+      const auto expectCompleteCards = [&](const int expectedFirst) {
+        const auto context = " (width " + std::to_string(width) +
+                             ", notch " + (notchOnLeft ? "left" : "right") +
+                             ", check " + std::to_string(++alignmentCheck) +
+                             ", expected first " + std::to_string(expectedFirst) +
+                             ", offset " + std::to_string(WaveformEditingTestAccess::liveScroll(wave));
+        const auto row = WaveformEditingTestAccess::liveRow(wave);
+        const auto safe = insets.subtractedFrom(wave.getLocalBounds()).toFloat();
+        if (phone)
+          expect(row == wave.getLocalBounds().toFloat(),
+                 "phone live sections use the full surface, like the normal waveform");
+        else
+          expect(safe.contains(row), "desktop live viewport retains its safe-area layout");
+        const auto cards = WaveformEditingTestAccess::liveBounds(wave);
+        int first = -1, visible = 0;
+        for (const auto &card : cards) {
+          if (!card.body.intersects(row)) continue;
+          if (first < 0) first = card.partIndex;
+          ++visible;
+          expect(card.body.getX() >= row.getX() - 0.001f &&
+                     card.body.getRight() <= row.getRight() + 0.001f,
+                 "settled live navigation leaves neither edge card clipped" + context +
+                     ", actual first " + std::to_string(first) +
+                     ", card " + std::to_string(card.partIndex) + ")");
+          expect(card.body.getWidth() >= 176.0f,
+                 "responsive live cards preserve their minimum usable width");
+          expectNear(card.body.getWidth(), cards[0].body.getWidth(),
+                     "all responsive live cards have equal width");
+          for (const auto target : {card.jumpButton, card.loopButton, card.muteButton})
+            expect(card.body.contains(target) && target.getWidth() == 44.0f && target.getHeight() == 44.0f,
+                   "every visible card retains all complete touch actions inside its bounds");
+          if (phone)
+            for (const auto target : {card.jumpButton, card.loopButton, card.muteButton})
+              expect(safe.contains(target),
+                     "edge-to-edge phone sections keep every action clear of both cutout orientations");
+        }
+        expect(first == expectedFirst, "live navigation settles on the requested first section" +
+                                          context + ", actual first " + std::to_string(first) + ")");
+        expect(visible >= 2, "landscape viewport shows multiple complete cards");
+        const auto &last = cards[static_cast<size_t>(first + visible - 1)];
+        expect(std::abs(last.body.getRight() - row.getRight()) <= 0.001f,
+               "the last complete visible card fills the visual viewport edge");
+        return visible;
+      };
+      const auto expectEdgeWaveform = [&](const juce::String &name) {
+        if (!phone) return;
+        const auto withSignal = wave.createComponentSnapshot(wave.getLocalBounds());
+        wave.setWaveformBins(std::vector<float>(512, 0.0f));
+        const auto silent = wave.createComponentSnapshot(wave.getLocalBounds());
+        wave.setWaveformBins(std::vector<float>(512, 0.5f));
+        for (const int x : {0, width - 1}) {
+          bool signalAtEdge = false;
+          // Waveform columns have a two-point stride; their normal gaps can
+          // occupy the outermost pixel. Check that stride at each physical edge.
+          for (int offset = 0; offset <= 2; ++offset)
+            for (int y = 70; y < 150; ++y) {
+              const int column = x == 0 ? offset : x - offset;
+              signalAtEdge |= withSignal.getPixelAt(column, y) != silent.getPixelAt(column, y);
+            }
+          expect(signalAtEdge, "real section waveform reaches both physical phone edges");
+        }
+        const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+        if (width == 956 && capturePath.isNotEmpty()) {
+          const juce::File directory(capturePath);
+          expect(directory.createDirectory().wasOk(), "full-width live preview directory opens");
+          auto stream = directory.getChildFile("live-full-width-" + name +
+              (notchOnLeft ? "-left" : "-right") + ".png").createOutputStream();
+          expect(stream && juce::PNGImageFormat().writeImageToStream(withSignal, *stream),
+                 "full-width phone preview captures the real production component");
+        }
+      };
+      const int visible = expectCompleteCards(0);
+      expectEdgeWaveform("start");
+      const auto initialCards = WaveformEditingTestAccess::liveBounds(wave);
+      const float stride = initialCards[1].body.getX() - initialCards[0].body.getX();
+      const auto row = WaveformEditingTestAccess::liveRow(wave);
+      const auto point = row.getCentre().withY(row.getY() + 45.0f);
+      juce::MouseWheelDetails smooth{};
+      smooth.isSmooth = true;
+      smooth.deltaX = -0.25f;
+      wave.mouseWheelMove(pointerEvent(wave, point, point), smooth);
+      wave.mouseDown(pointerEvent(wave, point, point));
+      wave.mouseUp(pointerEvent(wave, point, point));
+      expectCompleteCards(0);
+      const auto pan = [&](const float delta) {
+        const auto dragged = point.translated(delta, 0.0f);
+        wave.mouseDown(pointerEvent(wave, point, point));
+        wave.mouseDrag(pointerEvent(wave, dragged, point, true));
+        wave.mouseUp(pointerEvent(wave, dragged, point, true));
+      };
+      pan(-0.75f * stride);
+      expectCompleteCards(1);
+      pan(-0.25f * stride);
+      expectCompleteCards(1);
+      pan(0.75f * stride);
+      expectCompleteCards(0);
+
+      const int finalFirst = static_cast<int>(arrangement.parts.size()) - visible;
+      WaveformEditingTestAccess::scrollLiveToEnd(wave);
+      expectCompleteCards(finalFirst);
+      expectEdgeWaveform("end");
+      pan(0.75f * stride);
+      expectCompleteCards(finalFirst - 1);
+      smooth.deltaX = -0.75f;
+      wave.mouseWheelMove(pointerEvent(wave, point, point), smooth);
+      expect(WaveformEditingTestAccess::liveScroll(wave) > (finalFirst - 1) * stride &&
+                 WaveformEditingTestAccess::liveScroll(wave) < finalFirst * stride,
+             "smooth horizontal wheel navigation tracks intermediate finger movement");
+      WaveformEditingTestAccess::settleLiveWheelScroll(wave);
+      expectCompleteCards(finalFirst);
+
+      pan(1000000.0f);
+      expectCompleteCards(0);
+      juce::MouseWheelDetails discrete{};
+      discrete.isSmooth = false;
+      discrete.deltaY = -0.1f;
+      wave.mouseWheelMove(pointerEvent(wave, point, point), discrete);
+      expectCompleteCards(1);
+      WaveformEditingTestAccess::tick(wave);
+      wave.mouseWheelMove(pointerEvent(wave, point, point), discrete);
+      expectCompleteCards(2);
+      discrete.deltaY = 0.1f;
+      wave.mouseWheelMove(pointerEvent(wave, point, point), discrete);
+      expectCompleteCards(1);
+      expect(seeks == 0 && jumps == 0 && loops == 0,
+             "live drags and both wheel types only navigate cards without transport actions");
+      if (phone) {
+        // Some rotations only exchange safe-area insets, without changing size.
+        wave.setPhoneSafeAreaInsets({insets.getTop(), insets.getRight(),
+                                    insets.getBottom(), insets.getLeft()});
+        const auto rotatedSafe = juce::BorderSize<int>(insets.getTop(), insets.getRight(),
+            insets.getBottom(), insets.getLeft()).subtractedFrom(wave.getLocalBounds()).toFloat();
+        for (const auto &card : WaveformEditingTestAccess::liveBounds(wave)) {
+          if (!card.body.intersects(WaveformEditingTestAccess::liveRow(wave))) continue;
+          for (const auto target : {card.jumpButton, card.loopButton, card.muteButton})
+            expect(rotatedSafe.contains(target),
+                   "changing only cutout orientation relayouts complete accessible actions");
+        }
       }
     }
   }
@@ -1807,6 +2082,8 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and stationary manual navigation", testLiveSectionsAndNavigation);
+  run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
+  run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);
   run("topbar live toggle and real waveform background", testTopbarLiveToggleAndWaveformBackground);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);

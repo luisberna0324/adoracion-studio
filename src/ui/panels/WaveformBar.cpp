@@ -2243,7 +2243,7 @@ void WaveformBar::resized() {
     for (int i = 0; i < getNumChildComponents(); ++i)
       getChildComponent(i)->setVisible(false);
     moreButton.setVisible(false);
-    setLiveScrollOffset(liveScrollOffset);
+    snapLiveScrollOffset();
     return;
   }
   layoutSectionAutomationToolbar();
@@ -2496,30 +2496,68 @@ void WaveformBar::setLiveMode(bool enabled) {
 }
 
 juce::Rectangle<float> WaveformBar::getLiveRowBounds() const {
+  if (minimalPhoneMode)
+    return getLocalBounds().toFloat();
   return phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()
       .reduced(4.0f, 2.0f);
 }
 
+juce::Rectangle<float> WaveformBar::getLiveSectionContentBounds(
+    juce::Rectangle<float> body) const {
+  return minimalPhoneMode
+      ? body.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
+      : body;
+}
+
+float WaveformBar::getLiveBlockWidth() const {
+  constexpr float gap = 12.0f;
+  // The visual surface reaches both phone edges. An edge card must still fit
+  // its three 44-point actions (140 points including gaps) beyond the cutout.
+  const float minimumWidth = minimalPhoneMode
+      ? juce::jmax(176.0f, 152.0f + static_cast<float>(
+            juce::jmax(phoneSafeAreaInsets.getLeft(), phoneSafeAreaInsets.getRight())))
+      : 176.0f;
+  const float width = juce::jmax(0.0f, getLiveRowBounds().getWidth());
+  const int slots = juce::jmax(1, static_cast<int>((width + gap) / (minimumWidth + gap)));
+  // Fill the visual viewport with whole cards; all cards retain the same width,
+  // independently of their musical duration.
+  return juce::jmax(minimumWidth, (width - gap * (slots - 1)) / slots);
+}
+
+float WaveformBar::getLiveBlockStride() const {
+  return getLiveBlockWidth() + 12.0f;
+}
+
 void WaveformBar::setLiveScrollOffset(float offset) {
-  constexpr float stride = 188.0f;
+  const float stride = getLiveBlockStride();
   const float content = arrangement.parts.empty() ? 0.0f
       : static_cast<float>(arrangement.parts.size()) * stride - 12.0f;
   liveScrollOffset = juce::jlimit(0.0f,
       juce::jmax(0.0f, content - getLiveRowBounds().getWidth()), offset);
 }
 
+void WaveformBar::snapLiveScrollOffset() {
+  liveScrollSnapDueMs = 0.0;
+  const float stride = getLiveBlockStride();
+  setLiveScrollOffset(std::round(liveScrollOffset / stride) * stride);
+}
+
 void WaveformBar::rebuildLiveSectionBounds() {
   partOverlayBounds.clear();
   sharedSectionOverflowBounds = {};
   const auto row = getLiveRowBounds();
+  const float width = getLiveBlockWidth();
+  const float stride = getLiveBlockStride();
   for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
     PartOverlayBounds item;
     item.partIndex = i;
-    item.body = {row.getX() + static_cast<float>(i) * 188.0f - liveScrollOffset,
-                 row.getY(), 176.0f, row.getHeight()};
-    if (row.getHeight() >= 56.0f && !arrangement.parts[static_cast<size_t>(i)].skipPlayback) {
-      const float x = item.body.getX() + 18.0f;
-      const float y = item.body.getBottom() - 44.0f;
+    item.body = {row.getX() + static_cast<float>(i) * stride - liveScrollOffset,
+                 row.getY(), width, row.getHeight()};
+    const auto content = getLiveSectionContentBounds(item.body);
+    if (content.getHeight() >= 56.0f && content.getWidth() >= 140.0f &&
+        !arrangement.parts[static_cast<size_t>(i)].skipPlayback) {
+      const float x = content.getCentreX() - 70.0f;
+      const float y = content.getBottom() - 44.0f;
       item.jumpButton = {x, y, 44.0f, 44.0f};
       item.loopButton = {x + 48.0f, y, 44.0f, 44.0f};
       item.muteButton = {x + 96.0f, y, 44.0f, 44.0f};
@@ -2550,6 +2588,7 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
   rebuildLiveSectionBounds();
   const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
   const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+  const double sourceLength = getWaveformSourceLengthSeconds();
   if (arrangement.parts.empty()) {
     g.drawText(L10n::tr("Sin secciones", "No sections"), row.toNearestInt(), juce::Justification::centred);
   }
@@ -2558,7 +2597,11 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
     const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
     const auto colour = partColorOrFallback(part, item.partIndex);
     const float progress = liveSectionProgress(item.partIndex);
-    const auto source = getPartSourceRange(part, getWaveformSourceLengthSeconds());
+    // Original parts move on the arrangement when copies are inserted. Their
+    // audio remains at its original source time, including the final parts.
+    const auto source = part.sourcePartId.isEmpty()
+        ? getPartOriginalSourceRange(part, sourceLength)
+        : getPartSourceRange(part, sourceLength);
     drawWaveformSegment(g, item.body, source.first, source.second, 0.62f);
     g.setColour(colour.darker(0.20f).withAlpha(0.64f));
     g.fillRect(item.body);
@@ -2569,17 +2612,18 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
       g.fillRect(item.body.withHeight(2.0f));
     }
     const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
+    const auto content = getLiveSectionContentBounds(item.body);
     g.setColour(ink);
     g.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
     g.drawFittedText(arrangementPartDisplayLabelForName(part.name),
-        item.body.withHeight(18.0f).reduced(6.0f, 1.0f).toNearestInt(), juce::Justification::centredLeft, 1);
-    if (item.body.getHeight() >= 90.0f) {
+        content.withHeight(18.0f).reduced(6.0f, 1.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+    if (content.getHeight() >= 90.0f) {
       juce::String state;
       if (progress >= 0.0f) state = L10n::tr("Activa", "Active");
       if (item.partIndex == loop) state += state.isEmpty() ? "Loop" : " · Loop";
       if (item.partIndex == pending) state += state.isEmpty() ? L10n::tr("En cola", "Queued") : L10n::tr(" · En cola", " · Queued");
       g.setFont(makeAppFont(10.0f));
-      g.drawFittedText(state, item.body.withTrimmedTop(20.0f).withHeight(16.0f).reduced(6.0f, 0).toNearestInt(), juce::Justification::centredLeft, 1);
+      g.drawFittedText(state, content.withTrimmedTop(20.0f).withHeight(16.0f).reduced(6.0f, 0).toNearestInt(), juce::Justification::centredLeft, 1);
     }
     const auto action = [&](juce::Rectangle<float> target, SvgIconName icon,
                             const juce::String &label, bool marked) {
@@ -2600,6 +2644,7 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
 
 void WaveformBar::resetTouchWaveformNavigation() {
   livePointerActive = false;
+  liveScrollSnapDueMs = 0.0;
   touchWaveformNavigationActive = false;
   touchWaveformTapCancelled = false;
   touchWaveformPrimarySource = -1;
@@ -2745,6 +2790,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     livePointerActive = true;
     livePointerMoved = false;
     livePointerSource = event.source.getIndex();
+    liveScrollSnapDueMs = 0.0;
     livePointerStart = event.position;
     livePointerStartOffset = liveScrollOffset;
     liveDownHit = hitTestArrangementPart(event.position);
@@ -3647,11 +3693,24 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   if (liveMode) {
     if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
     livePointerActive = false;
-    if (livePointerMoved || songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+    if (livePointerMoved) {
+      snapLiveScrollOffset();
+      repaint();
+      return;
+    }
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
         !getLiveRowBounds().contains(event.position) ||
-        touchWaveformNavigation::crossedTapSlop(livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) return;
+        touchWaveformNavigation::crossedTapSlop(livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) {
+      snapLiveScrollOffset();
+      repaint();
+      return;
+    }
     rebuildLiveSectionBounds();
     const auto hit = hitTestArrangementPart(event.position);
+    // A tap can interrupt a trackpad's pending settle. Resolve its hit at the
+    // captured position, then leave the row aligned once the pointer is up.
+    snapLiveScrollOffset();
+    repaint();
     if (juce::isPositiveAndBelow(hit.partIndex, static_cast<int>(arrangement.parts.size())) &&
         arrangement.parts[static_cast<size_t>(hit.partIndex)].id == liveDownPartId &&
         hit.jumpButton == liveDownHit.jumpButton && hit.loopButton == liveDownHit.loopButton &&
@@ -4051,7 +4110,16 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
   if (liveMode) {
     if (!songLoadingActive && !midiLearnActive && getLiveRowBounds().contains(event.position)) {
       livePointerMoved = true;
-      setLiveScrollOffset(liveScrollOffset - (wheel.deltaX != 0.0f ? wheel.deltaX : wheel.deltaY) * 188.0f);
+      const float delta = wheel.deltaX != 0.0f ? wheel.deltaX : wheel.deltaY;
+      if (wheel.isSmooth) {
+        setLiveScrollOffset(liveScrollOffset - delta * getLiveBlockStride());
+        liveScrollSnapDueMs = juce::Time::getMillisecondCounterHiRes() + 150.0;
+      } else if (delta != 0.0f) {
+        // Discrete wheel ticks must not snap back to the same card just
+        // because the OS reports a small fractional wheel delta.
+        setLiveScrollOffset(liveScrollOffset + (delta < 0.0f ? 1.0f : -1.0f) * getLiveBlockStride());
+        snapLiveScrollOffset();
+      }
       repaint();
     }
     return;
@@ -4140,6 +4208,8 @@ void WaveformBar::timerCallback() {
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   if (liveMode) {
+    if (!livePointerActive && liveScrollSnapDueMs > 0.0 && nowMs >= liveScrollSnapDueMs)
+      snapLiveScrollOffset();
     if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
       clearSongLoadingState();
     updateActiveTempoRegionFromTransport();

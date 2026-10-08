@@ -431,3 +431,29 @@ de consultas inexistentes/nulas. Otra prueba comprueba regeneración al modifica
 bytes/tamaños o añadir/quitar recursos, y que no se reescriban en un build sin cambios.
 El workflow `Functional tests` ejecuta estas pruebas antes de integrar cambios. No sustituye compilar la APK ni probar el
 acceso habitual y la instalación de la demo en un dispositivo Android.
+
+## Tarjetas Live y onda fuente — 08/10/2026
+
+- `waveform_editing` y `touch_waveform_navigation`: 2/2 pruebas pasaron en
+  `build/codex-modal-macos` (5.02 s, tras el ajuste de ancho completo).
+- La regresión de render inserta dos copias antes de secciones originales de
+  una fuente de 30 s. Comprueba que los originales desplazados más allá del
+  final de la fuente conservan la silueta de su onda y su rango de audio.
+- La navegación cubre anchos de 568, 844, 956, 1024 y 1200 puntos, márgenes del notch
+  a ambos lados, arrastre, rueda, asentamiento del trackpad y un toque que
+  interrumpe ese asentamiento. Las tarjetas quedan completas al detenerse y
+  sus acciones conservan un área de 44 × 44 puntos.
+- En teléfono, la señal real llega a ambos bordes físicos (considerando el
+  paso de dos píxeles de sus barras), sin descontar los insets del dibujo.
+  Las acciones quedan dentro del área segura con cutouts de 44 y 62 puntos,
+  al inicio, en posiciones intermedias y al final. Cambiar sólo los insets de
+  lado también actualiza sus límites. Las capturas de los componentes en
+  956 puntos verifican ambos extremos y ambas orientaciones.
+- La compilación Debug para iPhone Simulator terminó correctamente; la app se
+  instaló y abrió en el simulador iOS 26.5. La revisión visual de Forever Reign
+  confirmó Coro, Vamp, Puente y Final completos, con onda visible en los cuatro.
+  Se conservaron los bins de audio existentes. Esta revisión no acredita una
+  instalación física ni validación visual de iPad o Android.
+- La compilación posterior con secciones a ancho completo también se instaló
+  y abrió en ese iPhone Simulator; la revisión visual confirmó la fila sin
+  bandas laterales, con etiquetas y controles fuera del cutout.

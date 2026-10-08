@@ -681,10 +681,26 @@ editor arrange y de la automatización. No se activa al cargar ni cambia el
 estado musical al alternar. Conserva el viewport y el ajuste de seguimiento
 de la vista normal.
 
-En vivo presenta una fila manual de bloques de 176 puntos con Ir, Loop y Mute
-persistentes de 44 × 44 puntos. Conserva la paleta de sección con una capa de
+En vivo presenta una fila manual de bloques de al menos 176 puntos con Ir, Loop
+y Mute persistentes de 44 × 44 puntos. El ancho se reparte entre un número
+entero de tarjetas, con 12 puntos entre ellas. En teléfono, la fila, el color
+y la onda de las secciones ocupan todo el ancho físico, igual que la onda normal,
+sin bandas laterales ni padding exterior. Sólo las etiquetas y acciones se
+limitan a la intersección de la tarjeta con el área segura; el grupo Ir/Loop/Mute
+se centra en ese espacio. El ancho mínimo también reserva espacio para los tres
+objetivos junto al mayor inset lateral. Cambiar los insets al rotar actualiza
+esta distribución aunque el tamaño del componente no cambie. Escritorio y
+tablet conservan su fila dentro del área segura. Al soltar un arrastre, la fila se
+ajusta a la tarjeta más cercana. El trackpad conserva el desplazamiento continuo
+y ajusta la fila tras 150 ms sin eventos; la rueda discreta avanza una tarjeta
+por paso. Así no quedan títulos ni acciones
+cortados en los extremos cuando la fila está detenida, incluidas ambas
+orientaciones landscape con sus insets. Conserva la paleta de sección con una capa de
 color de transparencia moderada sobre la onda real de su rango de audio. Las
-copias usan su rango fuente; no se genera una señal de adorno. El progreso se
+copias usan su rango fuente explícito; las originales descuentan las inserciones
+anteriores mediante `ArrangementSourceMapping`, con sesgo izquierdo en el
+final del rango. Esto permite dibujar originales desplazadas más allá de la
+duración fuente sin colapsar su onda. No se genera una señal de adorno. El progreso se
 distingue mediante un relleno más claro y su indicador superior. El ancho
 visual no representa ni modifica la duración musical.
 El llenado interior usa la posición confirmada del transporte relativa al
@@ -693,7 +709,8 @@ salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
 mute en Mute; no se confunden con la sección activa.
 
 La fila nunca sigue ni se recentra por reproducción, loop, selección o salto.
-Drag y rueda sólo cambian su desplazamiento manual. No hay regla, minimapa ni
+Drag y rueda sólo cambian su desplazamiento manual, incluido el ajuste al
+terminar el gesto. No hay regla, minimapa ni
 línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía
 comandos. Las acciones se confirman al soltar en su objetivo original; mover,
 usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y
