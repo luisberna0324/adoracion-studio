@@ -53,6 +53,9 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static bool isEditing(const WaveformBar &waveform) {
+    return waveform.isEditingArrangement();
+  }
   static void expectBackgroundPoint(WaveformBar &waveform, juce::Point<float> point) {
     waveform.rebuildPartOverlayBounds(waveBody(waveform));
     const auto hit = waveform.hitTestArrangementPart(point);
@@ -206,7 +209,10 @@ struct WaveformEditingTestAccess {
     expect(waveform.dragMode == WaveformBar::DragMode::seek,
            "dragging the ruler uses the real insertion-pointer seek handler");
     expect(waveform.sectionInsertionAnchorValid,
-           "the ruler gesture establishes a section insertion anchor");
+           "the ruler gesture establishes a section insertion anchor (editing=" +
+               std::to_string(waveform.isEditingArrangement()) + ", map=" +
+               std::to_string(static_cast<int>(waveform.timelineViewMode)) +
+               ", length=" + std::to_string(waveform.getSongLengthSeconds()) + ")");
   }
 
   static void publishArrangement(WaveformBar &waveform,
@@ -437,6 +443,14 @@ struct Fixture {
         });
     waveform.triggerEditToggleFromMidi();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    // MIDI posts the real button click to JUCE's message queue. Processor
+    // startup can keep that queue busy beyond the initial dispatch interval.
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 1000.0;
+    while (!WaveformEditingTestAccess::isEditing(waveform) &&
+           juce::Time::getMillisecondCounterHiRes() < deadline)
+      juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    expect(WaveformEditingTestAccess::isEditing(waveform),
+           "the real Edit action completes before arrange gestures begin");
   }
 
   SongArrangementPartSnapshot part(const juce::String &id) const {

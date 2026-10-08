@@ -143,6 +143,11 @@ extremos; no requiere abrir el diálogo nativo del sistema para esa comprobació
 `song_mix_export_timeline` verifica además
 los límites de fuente de copias movidas, recortadas y sin su sección original.
 
+El fixture de edición activa el botón mediante el handler MIDI real y espera,
+con un límite de un segundo, que JUCE procese su clic asíncrono antes de iniciar
+los gestos. Si no entra en edición, falla explícitamente; no fuerza el estado
+del botón ni omite las comprobaciones del punto de inserción y Fin.
+
 ## Validación en dispositivos físicos antes de publicar
 
 Estas comprobaciones requieren hardware y se registran con dispositivo, versión
