@@ -53,6 +53,54 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static void expectBackgroundPoint(WaveformBar &waveform, juce::Point<float> point) {
+    waveform.rebuildPartOverlayBounds(waveBody(waveform));
+    const auto hit = waveform.hitTestArrangementPart(point);
+    expect(!hit.jumpButton && !hit.loopButton && !hit.muteButton && !hit.overflowButton,
+           "gesture fixture starts on waveform background, outside every action");
+  }
+  static juce::Rectangle<float> arrangementLane(const WaveformBar &waveform) {
+    return waveform.getArrangementLaneBounds(waveBody(waveform));
+  }
+  static juce::Rectangle<float> miniMap(const WaveformBar &waveform) {
+    return waveform.getMiniMapBounds(waveform.getLocalBounds().toFloat());
+  }
+  static void expectSharedOverflow(WaveformBar &waveform) {
+    waveform.rebuildPartOverlayBounds(waveBody(waveform));
+    const auto shared = waveform.sharedSectionOverflowBounds;
+    expect(shared.getWidth() >= 44.0f && shared.getHeight() >= 44.0f,
+           "sub-52-pixel regions have a shared full-size action menu");
+    const auto hit = waveform.hitTestArrangementPart(shared.getCentre());
+    expect(hit.overflowButton && hit.partIndex == -2,
+           "shared ellipsis hit routes to the section chooser");
+    for (const auto &part : waveform.partOverlayBounds)
+      for (const auto target : {part.jumpButton, part.loopButton, part.muteButton,
+                                part.overflowButton})
+        expect(target.isEmpty() || !shared.intersects(target),
+               "shared target never overlaps individual section actions");
+  }
+  static void expectPersistentControls(WaveformBar &waveform, const juce::String &id) {
+    const auto initial = overlay(waveform, id);
+    waveform.hoveredActionPartIndex = waveform.findPartIndexById(id);
+    waveform.hoveredLoopPartIndex = waveform.hoveredActionPartIndex;
+    waveform.playbackControlFocusPartIndex = waveform.hoveredActionPartIndex;
+    waveform.playbackControlFocus = WaveformBar::PlaybackControlFocus::Loop;
+    waveform.playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
+    waveform.setSingleSelectedPart(waveform.hoveredActionPartIndex);
+    const auto focused = overlay(waveform, id);
+    waveform.hoveredActionPartIndex = waveform.hoveredLoopPartIndex = -1;
+    waveform.playbackControlFocusPartIndex = -1;
+    waveform.playbackControlFocus = WaveformBar::PlaybackControlFocus::None;
+    const auto unfocused = overlay(waveform, id);
+    for (const auto &state : {focused, unfocused})
+      expect(initial.jumpButton == state.jumpButton && initial.loopButton == state.loopButton &&
+                 initial.muteButton == state.muteButton && initial.overflowButton == state.overflowButton &&
+                 initial.showsJumpButton == state.showsJumpButton &&
+                 initial.showsLoopButton == state.showsLoopButton &&
+                 initial.showsMuteButton == state.showsMuteButton,
+             "selection, hover and playback focus never move or hide playback actions");
+  }
+
   static void addCue(WaveformBar &waveform, const char *name, double seconds,
                      int countEnd = 0) {
     waveform.sectionInsertionAnchorValid = true;
@@ -1097,6 +1145,130 @@ void testSectionAutomationReadonlyToolbar() {
   expect(finishes == 1, "the owner can finish through the guarded production action");
 }
 
+void testPersistentResponsiveSectionControls() {
+  Fixture f;
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(1200, 500);
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.0f, 1.0f);
+  const auto lane = WaveformEditingTestAccess::arrangementLane(f.waveform);
+  expect(lane.getHeight() >= 94.0f, "responsive fixture can fit compact controls vertically");
+  for (const float requestedWidth : {220.0f, 120.0f, 76.0f, 32.0f}) {
+    auto snapshot = WaveformEditingTestAccess::snapshot(f.waveform);
+    const double duration = requestedWidth / lane.getWidth() * Fixture::sourceLength;
+    snapshot.parts[0].startSec = 0.0; snapshot.parts[0].endSec = 5.0;
+    snapshot.parts[1].startSec = 5.0; snapshot.parts[1].endSec = 5.0 + duration;
+    snapshot.parts[2].startSec = 5.0 + duration; snapshot.parts[2].endSec = Fixture::sourceLength;
+    f.waveform.setArrangement(snapshot, false);
+    const auto target = WaveformEditingTestAccess::overlay(f.waveform, "A");
+    expect(std::abs(target.body.getWidth() - requestedWidth) < 0.01f,
+           "controls preserve section width proportional to its musical duration");
+    const auto intro = WaveformEditingTestAccess::overlay(f.waveform, "Intro");
+    const auto outro = WaveformEditingTestAccess::overlay(f.waveform, "B");
+    expect(std::abs(intro.body.getRight() - target.body.getX()) < 0.01f &&
+               std::abs(target.body.getRight() - outro.body.getX()) < 0.01f,
+           "responsive controls neither widen sections nor shift adjacent boundaries");
+    for (const auto rect : {target.jumpButton, target.loopButton, target.muteButton,
+                            target.overflowButton})
+      if (!rect.isEmpty()) {
+        expect(rect.getWidth() >= 44.0f && rect.getHeight() >= 44.0f,
+               "all visible playback actions retain at least 44 by 44 logical pixels");
+        expect(target.body.contains(rect), "individual actions remain inside their section");
+      }
+    if (requestedWidth >= 200.0f) {
+      expect(target.showsJumpButton && target.showsLoopButton && target.showsMuteButton &&
+                 !target.showsOverflowButton,
+             "wide sections persistently expose Go, Loop and Mute");
+      expect(target.jumpButton.getCentreX() < target.loopButton.getCentreX() &&
+                 target.loopButton.getCentreX() < target.muteButton.getCentreX(),
+             "full actions retain their spatial order");
+      WaveformEditingTestAccess::expectPersistentControls(f.waveform, "A");
+    } else if (requestedWidth >= 100.0f) {
+      expect(target.showsJumpButton && target.showsLoopButton && !target.showsMuteButton &&
+                 target.showsOverflowButton,
+             "compact sections expose Go and Loop plus an explicit overflow menu");
+      expect(!target.overflowButton.intersects(target.jumpButton) &&
+                 !target.overflowButton.intersects(target.loopButton),
+             "compact overflow never overlaps the primary actions");
+    } else if (requestedWidth >= 52.0f) {
+      expect(!target.showsJumpButton && !target.showsLoopButton && !target.showsMuteButton &&
+                 target.showsOverflowButton,
+             "narrow sections replace crowded actions with one full-size ellipsis");
+    } else {
+      expect(!target.showsJumpButton && !target.showsLoopButton && !target.showsMuteButton &&
+                 !target.showsOverflowButton,
+             "very narrow sections do not shrink or overlap action targets");
+      WaveformEditingTestAccess::expectSharedOverflow(f.waveform);
+    }
+  }
+  expect(WaveformEditingTestAccess::miniMap(f.waveform).isEmpty(),
+         "phone navigation omits the desktop minimap");
+#if !JUCE_IOS && !JUCE_ANDROID
+  f.waveform.setMinimalPhoneMode(false);
+  expect(!WaveformEditingTestAccess::miniMap(f.waveform).isEmpty(),
+         "desktop navigation retains its minimap");
+#endif
+}
+
+void testMobileWaveformGestureArbitration() {
+  Fixture f;
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(390, 260);
+  int seeks = 0, loops = 0, jumps = 0;
+  f.waveform.setSeekCallback([&](double) { ++seeks; });
+  f.waveform.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+  f.waveform.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.1f, 0.6f);
+  auto body = WaveformEditingTestAccess::waveBody(f.waveform);
+  const juce::Point<float> start(body.getCentreX(), body.getCentreY());
+  WaveformEditingTestAccess::expectBackgroundPoint(f.waveform, start);
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  expect(seeks == 0, "mobile pointer down never seeks");
+  f.waveform.mouseUp(pointerEvent(f.waveform, start, start));
+  expect(seeks == 1, "stationary mobile release seeks exactly once");
+
+  const auto before = WaveformEditingTestAccess::visibleWindow(f.waveform);
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  const auto moved = start.translated(-40.0f, 0.0f);
+  f.waveform.mouseDrag(pointerEvent(f.waveform, moved, start, true));
+  expect(seeks == 1, "mobile drag never seeks while moving");
+  expect(WaveformEditingTestAccess::visibleWindow(f.waveform).first > before.first,
+         "mobile drag pans the visible waveform");
+  f.waveform.mouseDrag(pointerEvent(f.waveform, start, start, true));
+  f.waveform.mouseUp(pointerEvent(f.waveform, start, start, true));
+  expect(seeks == 1, "returning a drag to its start never resurrects a tap");
+
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  const auto vertical = start.translated(0.0f, -20.0f);
+  f.waveform.mouseDrag(pointerEvent(f.waveform, vertical, start, true));
+  f.waveform.mouseUp(pointerEvent(f.waveform, vertical, start, true));
+  expect(seeks == 1, "vertical motion suppresses a mobile tap");
+
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  f.waveform.mouseUp(pointerEvent(f.waveform, {start.x, body.getBottom() + 3.0f}, start));
+  expect(seeks == 1, "release outside the waveform never seeks");
+
+  f.waveform.mouseDown(pointerEvent(f.waveform, start, start));
+  f.waveform.mouseMagnify(pointerEvent(f.waveform, start, start), 0.1f);
+  f.waveform.mouseUp(pointerEvent(f.waveform, start, start));
+  expect(seeks == 1, "magnification cancels a pending seek");
+
+  f.waveform.setSize(1200, 260);
+  WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.0f, 1.0f);
+  const auto overlay = WaveformEditingTestAccess::overlay(f.waveform, "A");
+  expect(overlay.showsLoopButton, "mobile section offers its loop target");
+  const auto button = overlay.loopButton.getCentre();
+  f.waveform.mouseDown(pointerEvent(f.waveform, button, button));
+  expect(loops == 0 && seeks == 1, "inline actions are deferred on mobile down");
+  f.waveform.mouseUp(pointerEvent(f.waveform, button, button));
+  expect(loops == 1 && seeks == 1, "valid inline release invokes only its action");
+  f.waveform.mouseDown(pointerEvent(f.waveform, button, button));
+  const auto buttonDrag = button.translated(35.0f, 0.0f);
+  f.waveform.mouseDrag(pointerEvent(f.waveform, buttonDrag, button, true));
+  f.waveform.mouseUp(pointerEvent(f.waveform, buttonDrag, button, true));
+  expect(loops == 1 && jumps == 0 && seeks == 1,
+         "drag beginning on an inline action invokes neither action nor seek");
+}
+
 void testSectionAutomationMobileNavigation() {
   Fixture f;
   f.waveform.setMinimalPhoneMode(true);
@@ -1399,6 +1571,8 @@ int main() {
   run("section automation toolbar tracks stable ID", testSectionAutomationToolbarTracksStableId);
   run("section automation toolbar follows zoom and scroll", testSectionAutomationToolbarTracksViewport);
   run("section automation readonly remote toolbar", testSectionAutomationReadonlyToolbar);
+  run("persistent responsive section controls", testPersistentResponsiveSectionControls);
+  run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);

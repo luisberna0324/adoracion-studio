@@ -76,7 +76,7 @@ del motor de automatización.
 ## Integridad de edición
 
 - El borrador no modifica el mix base ni sale en el snapshot comprometido.
-- La navegación del minimap y los gestos móviles de desplazamiento y zoom
+- La navegación del minimap en escritorio y los gestos móviles de desplazamiento y zoom
   mediante pinch siguen disponibles durante el borrador para recorrer la onda.
 - Los gestos y atajos estructurales de la onda (mover, copiar, pegar, borrar,
   deshacer y rehacer) se bloquean mientras hay un borrador.

@@ -119,6 +119,8 @@ public:
   void paint(juce::Graphics &g) override;
   void paintOverChildren(juce::Graphics &g) override;
   void resized() override;
+  void visibilityChanged() override;
+  void enablementChanged() override;
   void mouseDown(const juce::MouseEvent &event) override;
   void mouseDrag(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
@@ -176,6 +178,7 @@ private:
     juce::Rectangle<float> addIcon;
     juce::Rectangle<float> muteButton;
     juce::Rectangle<float> muteIcon;
+    juce::Rectangle<float> overflowButton;
     juce::Rectangle<float> skipButton;
     juce::Rectangle<float> skipIcon;
     juce::Rectangle<float> automateButton;
@@ -185,6 +188,7 @@ private:
     bool showsDuplicateButton = false;
     bool showsAddButton = false;
     bool showsMuteButton = false;
+    bool showsOverflowButton = false;
     bool showsSkipButton = false;
     bool showsAutomateButton = false;
   };
@@ -199,6 +203,7 @@ private:
     bool duplicateButton = false;
     bool addButton = false;
     bool muteButton = false;
+    bool overflowButton = false;
     bool skipButton = false;
     bool automateButton = false;
   };
@@ -239,6 +244,9 @@ private:
     bool showPendingTravelSeek = false;
   };
 
+  bool dispatchInlineSectionAction(const PartHitResult &hit);
+  void showInlineSectionMenu(int partIndex, juce::Rectangle<float> anchor);
+  juce::Rectangle<float> sharedSectionOverflowBounds;
   void timerCallback() override;
   void updatePlaybackAnimation(double frameTimestampSec);
   void handleSeek(float x);
@@ -360,6 +368,14 @@ private:
   float dragAnchorNormalized = 0.0f;
   juce::Point<float> viewportDragStartPosition;
   bool viewportDragMoved = false;
+  bool usesTouchWaveformNavigation() const;
+  void resetTouchWaveformNavigation();
+  bool touchWaveformNavigationActive = false;
+  bool touchWaveformTapCancelled = false;
+  bool touchWaveformStartedOnRuler = false;
+  int touchWaveformPrimarySource = -1;
+  PartHitResult touchWaveformDownHit;
+  juce::String touchWaveformDownPartId;
   std::map<int, juce::Point<float>> phoneTouchPositions;
   bool phonePinchActive = false;
   float phonePinchStartDistance = 1.0f;

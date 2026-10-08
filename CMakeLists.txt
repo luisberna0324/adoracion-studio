@@ -732,6 +732,9 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME playback_diagnostic_report COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsDiagnosticReportTests>")
+    add_executable(MTControlsTouchWaveformNavigationTests tests/touch_waveform_navigation_tests.cpp)
+    target_include_directories(MTControlsTouchWaveformNavigationTests PRIVATE src)
+    add_test(NAME touch_waveform_navigation COMMAND MTControlsTouchWaveformNavigationTests)
     add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
     target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
     add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)

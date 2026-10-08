@@ -636,3 +636,33 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 
 Mediciones y limites de la verificacion:
 [`perf/analysis_20260915/INFORME.md`](../../../perf/analysis_20260915/INFORME.md).
+
+## Controles integrados de secciones y navegación de la onda
+
+En reproducción, Ir, Loop y Mute permanecen visibles dentro de la parte inferior
+de cada sección. Los iconos de línea y sus textos heredan el color de la sección;
+una atenuación gradual de la onda aporta contraste sin cajas ni círculos por
+botón. Su posición es fija: activar una acción no reordena los controles.
+Las secciones conservan su ancho proporcional al tiempo y los objetivos miden
+como mínimo 44 × 44 puntos. Con menos ancho se conservan Ir y Loop cuando caben,
+y Más ofrece Mute. Si sólo cabe un objetivo, la elipsis abre las tres acciones.
+Las regiones menores que un objetivo usan la elipsis compartida de Secciones,
+que lista las secciones por número y nombre, sin ensanchar la línea de tiempo.
+Los menús resuelven el ID persistente de la sección al ejecutar la acción.
+
+En iOS y Android, tanto teléfonos como tablets, arrastrar la onda en reproducción
+sólo desplaza su viewport. El toque sobre el fondo mueve la posición al soltar;
+los controles también se ejecutan al soltar y no buscan la posición subyacente.
+Superar 6 puntos de movimiento, soltar fuera del destino, cambiar de objetivo,
+utilizar otro dedo o iniciar zoom cancela la acción pendiente. Volver al punto
+inicial no convierte un arrastre en toque. Pinch conserva su ancla; el gesto no
+produce saltos al levantar los dedos. El teléfono conserva su inercia de pan.
+Cambiar canción, modo, borrador, tamaño o visibilidad cancela gestos pendientes.
+
+Las tablets móviles no muestran ni reservan espacio para el minimapa. Escritorio
+conserva el minimapa y la regla con su navegación y seek de mouse actuales.
+Los gestos estructurales del editor arrange y el bloqueo de seek durante un
+borrador de automatización permanecen vigentes. Ir reutiliza la solicitud de
+salto existente, con su temporización pendiente actual; Loop reutiliza su
+callback y Mute silencia instrumentos sin detener el click. No se modifica el
+contrato del motor de audio.
