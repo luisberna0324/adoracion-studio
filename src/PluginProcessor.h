@@ -144,6 +144,11 @@ public:
   void clearArrangementPartLoop() noexcept;
   void clearPendingArrangementPartJump() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
+  int getPreparingArrangementPartJumpIndex() const noexcept;
+  std::pair<int, int> getArrangementJumpState() const noexcept;
+  void setSectionEntryCacheBudget(juce::int64 bytes);
+  juce::int64 getSectionEntryCacheBudget() const noexcept { return sectionEntryCacheBudgetBytes; }
+  juce::int64 getSectionEntryCacheBytes() const;
   int getPendingArrangementPartJumpIndex() const noexcept;
   bool isCustomArrangementActive() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
@@ -640,6 +645,12 @@ private:
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
+  // Low 16 bits: index+1; bit16: confirmed; high32: request revision.
+  // One CAS protects replacement/cancellation against late audio confirmations.
+  std::atomic<uint64_t> arrangementJumpCommand{0};
+  void setArrangementJumpCommand(int index, bool confirmed) noexcept;
+  void configureSectionEntryCache();
+  std::atomic<juce::int64> sectionEntryCacheBudgetBytes{0};
   std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<uint64_t> arrangementTransitionIntentGeneration{1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
@@ -677,7 +688,6 @@ private:
   bool deferredArrangementTransitionPending = false;
   int deferredArrangementTransitionPartIndex = -1;
   juce::int64 deferredArrangementTransitionFrame = 0;
-  juce::int64 deferredArrangementBoundaryFrame = 0;
   juce::int64 deferredArrangementTransitionSourceFrame = 0;
   uint64_t deferredArrangementTransitionIntentGeneration = 0;
   // Last pending jump target that already received its one-bar lead-in

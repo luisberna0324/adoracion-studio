@@ -1471,6 +1471,14 @@ void testPendingLivePriorityAndCombinedStates() {
   pending = -1; arrangement.parts[0].muteInstruments = false; wave.setArrangement(arrangement, true);
   const auto restored = capture();
   expect(restored.getPixelAt(80, 70) == loopOnly.getPixelAt(80, 70), "unmute restores the original waveform appearance while Loop remains");
+  int preparing = 0;
+  wave.setPreparingArrangementPartProvider([&] { return preparing; });
+  const auto preparingImage = capture();
+  expect(preparingImage.getPixelAt(80, 70) == restored.getPixelAt(80, 70),
+         "Preparing leaves the section body free of confirmed-jump pulse");
+  expect(!WaveformEditingTestAccess::liveBounds(wave)[0].jumpButton.isEmpty(),
+         "Preparing preserves the approved action target geometry");
+  preparing = -1;
   int clearRequests = 0, jumpRequests = 0;
   pending = 0; loop = 0;
   wave.setOnArrangementPendingJumpClearRequest([&] { ++clearRequests; pending = -1; });
@@ -1573,11 +1581,11 @@ void testLiveActionsReachRealTransport() {
   processor.playSong();
   expect(processor.isSongPlaying(), "isolated transport enters playback");
   press(block.jumpButton.getCentre());
-  expect(processor.getPendingArrangementPartJumpIndex() == 1,
-         "playing Go queues the real destination");
+  expect(processor.getPreparingArrangementPartJumpIndex() == 1 && processor.getPendingArrangementPartJumpIndex() == -1,
+         "playing Go starts preparation without a phantom confirmed destination");
   press(block.jumpButton.getCentre());
-  expect(processor.getPendingArrangementPartJumpIndex() == -1,
-         "repeated Go cancels its pending target as specified");
+  expect(processor.getPendingArrangementPartJumpIndex() == -1 && processor.getPreparingArrangementPartJumpIndex() == -1,
+         "repeated Go cancels the real preparation as specified");
   press(block.jumpButton.getCentre());
   press(block.loopButton.getCentre());
   expect(processor.getArrangementPartLoopIndex() == 1 &&

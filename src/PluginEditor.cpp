@@ -1472,7 +1472,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       },
       [this] { return playbackSession.getSectionAutomationEditingPartId(); },
       [this] { return playbackSession.canEditSectionAutomation(); });
-  // Ir cancels Loop and queues its destination at the current section end.
+  // Preparation preserves playback/Loop; confirmation queues the next valid boundary.
   waveformBarRaw->setOnArrangementPartJumpRequest(
       [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {
@@ -1486,6 +1486,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
     playbackSession.clearPendingArrangementPartJump();
   });
+  waveformBarRaw->setPreparingArrangementPartProvider(
+      [this] { return playbackSession.getPreparingArrangementPartJumpIndex(); });
   waveformBarRaw->setPendingArrangementPartProvider(
       [this] { return playbackSession.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(

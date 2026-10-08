@@ -754,8 +754,11 @@ el nombre y todas las acciones con su tinta habitual, incluido desmute.
 Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
 colas, loops, mute musical ni click.
 
-Ir cancela Loop inmediatamente y espera el final de la sección actual antes de
-saltar, también hacia atrás o al revisitar una sección. El destino no hereda Loop.
+Ir muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
+estar listo en todos los stems se confirma En cola, libera Loop y espera el
+próximo final válido, también hacia atrás o al revisitar una sección. El destino
+no hereda Loop. Preparando cambia el texto del botón/estado sin pulso de cola,
+sin anunciar el destino y sin reducir sus blancos táctiles.
 Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
 Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
 La representación usa el estado real del transporte para cola, Loop y progreso.

@@ -49,6 +49,20 @@ struct SectionAutomationTestAccess {
       else thread->stopThread(2000);
     }
   }
+  static bool waitForCacheBudget(MTControlsAudioProcessor &processor) {
+    for (int attempt = 0; attempt < 500; ++attempt) {
+      if (processor.getSectionEntryCacheBytes() <= processor.getSectionEntryCacheBudget()) return true;
+      juce::Thread::sleep(2);
+    }
+    return false;
+  }
+  static int announcedPendingTarget(const MTControlsAudioProcessor &processor) { return processor.lastAnnouncedPendingJumpTarget; }
+  static bool publishedTargetReady(MTControlsAudioProcessor &processor, double seconds) {
+    const auto frame = static_cast<juce::int64>(std::llround(seconds * 44100.0));
+    for (const auto &track : processor.stemTracks)
+      if (!track->isPrefetchReady(frame, 256)) return false;
+    return true;
+  }
   static bool waitForTransitionTarget(MTControlsAudioProcessor &processor,
                                       double seconds) {
     const auto frame = static_cast<juce::int64>(std::llround(seconds * 44100.0));
@@ -340,6 +354,8 @@ void testJumpIntentSurvivesLoopBlocks() {
   fixture.seekAndWait(2.5); p.playSong(); fixture.waitForPendingSeek();
   p.toggleArrangementPartLoop(1);
   p.requestArrangementPartJump(0);
+  expect(p.getPreparingArrangementPartJumpIndex() == 0 && p.getPendingArrangementPartJumpIndex() == -1 && p.getArrangementPartLoopIndex() == 1, "preparation preserves Loop and has no confirmed queue");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "backward target prepares");
   fixture.block();
   expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() > 2.5,
          "backward Ir stays queued through an interior block instead of disappearing or jumping early");
@@ -359,6 +375,31 @@ void testJumpIntentSurvivesLoopBlocks() {
   expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 2.4,
          "real transport can revisit the previous section after a backward jump");
   expect(p.getArrangementPartLoopIndex() == -1, "neither destination inherits the cancelled Loop");
+}
+
+void testIrPublishesBackwardPrefetchBeforeBoundary() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  fixture.seekAndWait(2.5); p.playSong(); fixture.waitForPendingSeek();
+  p.requestArrangementPartJump(0);
+  for (int callback = 0; callback < 100 && !SectionAutomationTestAccess::publishedTargetReady(p, 0.0); ++callback) {
+    fixture.block();
+    juce::Thread::sleep(6); // Approximate the 256-frame callback cadence; no target priming helper.
+  }
+  expect(SectionAutomationTestAccess::publishedTargetReady(p, 0.0),
+         "Ir callbacks alone publish the backward target for the I/O worker");
+  fixture.block(); // Confirm after the worker publishes readiness.
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() < 4.0,
+         "background preparation leaves Ir queued before the outgoing boundary");
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 300 && p.getPendingArrangementPartJumpIndex() == 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 256), "accelerated harness keeps the ordinary source bank resident");
+    p.processBlock(audio, midi);
+    for (int offset : {0, 128})
+      expect(audio.getMagnitude(0, offset, 128) > 0.000001f,
+             "resident backward jump introduces no silent half-callback");
+  }
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.1,
+         "prepared target executes at the section boundary without a held callback");
 }
 
 void testRepeatedLoopsStayInsideSection() {
@@ -383,41 +424,108 @@ void testRepeatedLoopsStayInsideSection() {
   }
 }
 
-void testColdJumpHoldsMusicalBoundary() {
+void testColdJumpKeepsCurrentLoopAudible() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
-  p.prepareToPlay(44100.0, 8192);
-  fixture.seekAndWait(3.95);
-  p.playSong(); fixture.waitForPendingSeek();
-  expect(SectionAutomationTestAccess::waitForSource(p, 8192), "boundary source is resident");
-  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "prefetch chain initialized");
-  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
-  p.toggleArrangementPartLoop(1); p.requestArrangementPartJump(0);
-  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
-  p.processBlock(audio, midi);
-  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() < 4.0 && p.getSongCurrentPositionSeconds() > 3.99,
-         "cold Ir holds at the outgoing boundary without losing intent");
-  expect(audio.getMagnitude(0, 2300, 5800) < 0.00001f, "cold boundary emits no following-section audio");
-  p.processBlock(audio, midi);
-  expect(audio.getMagnitude(0, 0, 8192) < 0.00001f && p.getSongCurrentPositionSeconds() < 4.0,
-         "held callback stays silent at the boundary");
-  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
-  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cold destination becomes resident");
-  p.processBlock(audio, midi);
-  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.2 && p.getArrangementPartLoopIndex() == -1,
-         "transport resumes the backward destination when its audio is ready");
+  p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float)); // One entry per stem.
   fixture.seekAndWait(3.95); p.playSong(); fixture.waitForPendingSeek();
-  expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
-         SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "cancellation source and alternate prefetch are resident");
+  expect(SectionAutomationTestAccess::waitForSource(p, 256) &&
+         SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "outgoing loop entry is resident");
+  p.toggleArrangementPartLoop(1); fixture.block();
   SectionAutomationTestAccess::setReadThreadsRunning(p, false);
-  p.requestArrangementPartJump(0); p.processBlock(audio, midi);
-  expect(p.getPendingArrangementPartJumpIndex() == 0, "second cold jump is genuinely pending");
-  p.clearPendingArrangementPartJump();
-  p.processBlock(audio, midi);
+  p.requestArrangementPartJump(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 24; ++callback) {
+    p.processBlock(audio, midi);
+    expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == 0 &&
+           p.getArrangementPartLoopIndex() == 1 && p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 4.0,
+           "cold target remains Preparing while the current Loop continues across its boundary");
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "preparing never introduces a silent song callback");
+  }
+  p.requestArrangementPartJump(1); // Current section cancels without stale completion.
+  expect(p.getPreparingArrangementPartJumpIndex() == -1, "replaced preparation clears truthfully");
+  p.toggleArrangementPartLoop(1); // Restore Loop after cancelling it via current-section Ir.
+  p.requestArrangementPartJump(0); p.clearPendingArrangementPartJump();
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1,
+         "cancelled cold request has no confirmed command");
+  p.requestArrangementPartJump(0);
   SectionAutomationTestAccess::setReadThreadsRunning(p, true);
-  expect(SectionAutomationTestAccess::waitForSource(p, 8192), "cancelled hold resumes its primary reader");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "worker prepares cold destination");
   p.processBlock(audio, midi);
-  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getArrangementPartLoopIndex() == -1 && p.getSongCurrentPositionSeconds() > 4.0,
-         "cancelling a held Ir resumes naturally without a phantom backward jump");
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == 0 &&
+         p.getArrangementPartLoopIndex() == -1 && p.getSongCurrentPositionSeconds() >= 2.0,
+         "readiness confirms the next valid boundary and only then releases Loop");
+  p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float));
+  for (int callback = 0; callback < 400 && p.getPendingArrangementPartJumpIndex() == 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 256), "primary source stays resident in accelerated test");
+    p.processBlock(audio, midi);
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "confirmed target remains audible until its future boundary");
+  }
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.1,
+         "backward jump consumes at its future boundary");
+  // Continue beyond the cached entry, at real callback cadence. This checks
+  // the actual secondary-to-primary streaming handoff rather than UI flags.
+  for (int callback = 0; callback < 160; ++callback) {
+    p.processBlock(audio, midi); juce::Thread::sleep(6);
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "cached prefix hands off to the streaming reader without a silent callback");
+  }
+  expect(p.getSongCurrentPositionSeconds() > 32768.0 / 44100.0 && p.getSectionEntryCacheBytes() <= p.getSectionEntryCacheBudget(),
+         "streaming passed the entry window within the reduced cache budget");
+}
+
+void testLateColdReadinessWaitsForFutureBoundary() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  auto arrangement = p.getSongArrangementSnapshot();
+  SongArrangementPartSnapshot bridge; bridge.id = "bridge"; bridge.name = "Bridge"; bridge.startSec = 4.0; bridge.endSec = 6.0;
+  arrangement.parts.push_back(bridge); p.setSongArrangement(arrangement, false);
+  p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float));
+  fixture.seekAndWait(3.95); p.playSong(); fixture.waitForPendingSeek();
+  expect(SectionAutomationTestAccess::waitForSource(p, 256) && SectionAutomationTestAccess::waitForTransitionTarget(p, 4.0),
+         "natural continuation is resident before cold late Ir");
+  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+  p.requestArrangementPartJump(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 48; ++callback) {
+    p.processBlock(audio, midi);
+    expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == 0,
+           "late cold intent never appears confirmed before audio is ready");
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "late preparation preserves current audio across the old boundary");
+  }
+  expect(p.getSongCurrentPositionSeconds() > 4.0, "Preparing follows current playback rather than freezing the missed boundary");
+  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "late cold entry recovers");
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getSongCurrentPositionSeconds() > 4.0,
+         "confirmation cannot jump back at the already passed boundary");
+  for (int callback = 0; callback < 350 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 256), "future boundary source is resident");
+    p.processBlock(audio, midi);
+  }
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.1,
+         "late preparation consumes at the next actual section end");
+}
+
+void testPreparedJumpWithChangingTempo() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  fixture.seekAndWait(0.5); p.playSong(); fixture.waitForPendingSeek();
+  p.toggleArrangementPartLoop(0); p.setPlaybackTempoBpm(144.0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "tempo loop entry is resident");
+  for (int callback = 0; callback < 80; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 1024), "tempo warmup has resident source");
+    fixture.block(); juce::Thread::sleep(6);
+  }
+  p.requestArrangementPartJump(1);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "tempo destination is resident");
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 1 && p.getArrangementPartLoopIndex() == -1,
+         "tempo readiness confirms Ir and releases Loop");
+  p.setPlaybackTempoBpm(156.0);
+  for (int callback = 0; callback < 400 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 1024), "tempo-changing transition keeps the source readable");
+    fixture.block(); juce::Thread::sleep(6);
+  }
+  expect(p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::currentPart(p) == 1 &&
+         p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 2.05,
+         "tempo changes preserve the exact source boundary and target section");
 }
 
 void testRealLoopAndJumpSplitPreserveDestinationMix() {
@@ -474,7 +582,7 @@ void testRealLoopAndJumpSplitPreserveDestinationMix() {
   expect(SectionAutomationTestAccess::waitForSource(p, 8192),
       "jump source is resident before playback");
   p.requestArrangementPartJump(1);
-  expect(p.getPendingArrangementPartJumpIndex() == 1 &&
+  expect(p.getPreparingArrangementPartJumpIndex() == 1 &&
       SectionAutomationTestAccess::waitForTransitionTarget(p, 3.0),
       "playing queues a real section jump with a resident destination");
   p.processBlock(buffer, midi);
@@ -609,6 +717,20 @@ void testPendingJumpOwnsSectionGuide() {
     return value;
   };
   {
+    ProcessorFixture f; setup(f, 2.48); auto &p = *f.processor;
+    p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float));
+    expect(SectionAutomationTestAccess::waitForCacheBudget(p), "unleased guide entries trim before a deterministic cold request");
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 1.0), "loop guide source prewarms before cold request");
+    p.toggleArrangementPartLoop(1); f.block();
+    SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+    p.requestArrangementPartJump(3);
+    const auto value = peak(f, 6);
+    expect(p.getPreparingArrangementPartJumpIndex() == 3 && p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::announcedPendingTarget(p) == -1 && value < 0.35f,
+           "Preparing never announces the unconfirmed Bridge target");
+    p.clearPendingArrangementPartJump();
+    SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  }
+  {
     ProcessorFixture f; setup(f, 2.48);
     near(peak(f, 4), 0.3, "without pending jump the normal next-section voice remains");
   }
@@ -616,14 +738,17 @@ void testPendingJumpOwnsSectionGuide() {
     ProcessorFixture f; setup(f, 2.48); auto &p = *f.processor;
     p.toggleArrangementPartLoop(1);
     p.requestArrangementPartJump(0);
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "Intro ready for confirmation");
     near(peak(f, 4), 0.1, "pending Intro suppresses both sequential Chorus and outgoing Loop announcements");
     near(peak(f, 2), 0.0, "stable pending destination announces only once");
     p.requestArrangementPartJump(3);
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 4.0), "Bridge ready for confirmation");
     near(peak(f, 1), 0.4, "changing a late pending target announces only the new Bridge");
     p.clearPendingArrangementPartJump();
     p.clearArrangementPartLoop(); // Restore natural next section.
     near(peak(f, 1), 0.3, "cancel in the remaining lead-in window restores the suppressed sequential voice");
     p.requestArrangementPartJump(0);
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "Intro ready for confirmation");
     near(peak(f, 1), 0.1, "requeuing an already announced target rearms its guide");
   }
   {
@@ -731,7 +856,7 @@ void testIndependentGuideCuesFollowTransport() {
       "Play seek is accepted one short callback before the jump boundary");
   expect(SectionAutomationTestAccess::waitForSource(p, 256), "jump source is resident");
   p.requestArrangementPartJump(1); // Playing queues; paused would seek immediately.
-  expect(p.getPendingArrangementPartJumpIndex() == 1 &&
+  expect(p.getPreparingArrangementPartJumpIndex() == 1 &&
       SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "jump cue destination prefetch is resident");
   fixture.block();
   expect(p.getSongCurrentPositionSeconds() > 2.0 && p.getSongCurrentPositionSeconds() < 2.005 &&
@@ -877,8 +1002,11 @@ int main() {
   run("long callbacks cross every section and annotation gap", testLongBlockMultipleSectionEdges);
   run("real loop and queued jump apply destination mix inside split callbacks", testRealLoopAndJumpSplitPreserveDestinationMix);
   run("Ir intent survives interior Loop blocks", testJumpIntentSurvivesLoopBlocks);
+  run("Ir publishes backward prefetch before its boundary", testIrPublishesBackwardPrefetchBeforeBoundary);
   run("repeated loops stay inside their section", testRepeatedLoopsStayInsideSection);
-  run("cold jump holds the musical boundary", testColdJumpHoldsMusicalBoundary);
+  run("late cold readiness waits for a future boundary", testLateColdReadinessWaitsForFutureBoundary);
+  run("prepared jump follows changing tempo", testPreparedJumpWithChangingTempo);
+  run("cold jump keeps the current Loop audible", testColdJumpKeepsCurrentLoopAudible);
   run("pads remain idempotent across section re-entry", testPadsAreIdempotentAndRestoreBase);
   run("remote ownership excludes physical MIDI draft writes", testRemoteDraftRejectsPhysicalMidi);
   run("independent guide cues follow real playback and seeking", testIndependentGuideCuesFollowTransport);

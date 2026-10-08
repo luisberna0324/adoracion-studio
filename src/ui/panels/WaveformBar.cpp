@@ -1838,6 +1838,10 @@ void WaveformBar::showExportFormatPopover() {
   presentActionPopover(std::move(panel), anchor, parentComp, options);
 }
 
+void WaveformBar::setPreparingArrangementPartProvider(PendingArrangementPartProvider cb) {
+  preparingArrangementPartProvider = std::move(cb); repaint();
+}
+
 void WaveformBar::setPendingArrangementPartProvider(
     PendingArrangementPartProvider cb) {
   pendingArrangementPartProvider = std::move(cb);
@@ -2670,6 +2674,7 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
   g.saveState();
   g.reduceClipRegion(row.toNearestInt());
   rebuildLiveSectionBounds();
+  const int preparing = preparingArrangementPartProvider ? preparingArrangementPartProvider() : -1;
   const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
   const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
   const double sourceLength = getWaveformSourceLengthSeconds();
@@ -2725,6 +2730,7 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
       juce::String state;
       if (progress >= 0.0f) state = L10n::tr("Activa", "Active");
       if (item.partIndex == loop) state += state.isEmpty() ? "Loop" : " · Loop";
+      if (item.partIndex == preparing) state += state.isEmpty() ? L10n::tr("Preparando", "Preparing") : L10n::tr(" · Preparando", " · Preparing");
       if (item.partIndex == pending) state += state.isEmpty() ? L10n::tr("En cola", "Queued") : L10n::tr(" · En cola", " · Queued");
       g.setFont(makeAppFont(10.0f));
       g.drawFittedText(state, content.withTrimmedTop(20.0f).withHeight(16.0f).reduced(6.0f, 0).toNearestInt(), juce::Justification::centredLeft, 1);
@@ -2736,10 +2742,10 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
       drawSvgIcon(g, iconBounds, icon, ink);
       g.setColour(ink);
       g.setFont(makeAppFont(10.0f, marked ? AppFontWeight::Bold : AppFontWeight::Medium));
-      g.drawText(label, target.withTrimmedTop(23.0f).toNearestInt(), juce::Justification::centredTop);
+      g.drawFittedText(label, target.withTrimmedTop(23.0f).toNearestInt(), juce::Justification::centredTop, 1, 0.55f);
       if (marked) g.fillRect(target.getCentreX() - 9.0f, target.getBottom() - 3.0f, 18.0f, 2.0f);
     };
-    action(item.jumpButton, SvgIconName::CornerDownRight, L10n::tr("Ir", "Go"), pending == item.partIndex);
+    action(item.jumpButton, SvgIconName::CornerDownRight, preparing == item.partIndex ? L10n::tr("Preparando", "Preparing") : L10n::tr("Ir", "Go"), pending == item.partIndex);
     action(item.loopButton, SvgIconName::Repeat, "Loop", loop == item.partIndex);
     action(item.muteButton, SvgIconName::VolumeX, "Mute", part.muteInstruments);
   }
@@ -4315,6 +4321,7 @@ void WaveformBar::timerCallback() {
       if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
     const float progress = active >= 0 ? liveSectionProgress(active) : -1.0f;
     const bool reducedMotion = liveBorderReducedMotion();
+    const int preparing = preparingArrangementPartProvider ? preparingArrangementPartProvider() : -1;
     const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
     const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
     const auto boundsFor = [&](int index) {
@@ -4328,6 +4335,8 @@ void WaveformBar::timerCallback() {
       if (active != livePaintActive || progress != livePaintProgress)
         for (const int index : {livePaintActive, active})
           if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      for (const int index : {livePaintPreparing, preparing})
+        if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
       for (const int index : {livePaintPending, pending})
         if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
       if (loop != livePaintLoop) {
@@ -4342,7 +4351,7 @@ void WaveformBar::timerCallback() {
         repaint(border.withLeft(border.getRight() - 6));
       }
     }
-    livePaintActive = active; livePaintPending = pending; livePaintLoop = loop;
+    livePaintActive = active; livePaintPreparing = preparing; livePaintPending = pending; livePaintLoop = loop;
     livePaintProgress = progress; livePaintReducedMotion = reducedMotion;
     return;
   }
@@ -7043,7 +7052,7 @@ void WaveformBar::drawArrangementOverlay(
       };
       if (overlay.showsJumpButton)
         drawInline(overlay.jumpButton, overlay.jumpIcon, SvgIconName::CornerDownRight,
-                   L10n::tr("Ir", "Go"), pendingJump, hoveredJumpPartIndex == overlay.partIndex);
+                   (preparingArrangementPartProvider && preparingArrangementPartProvider() == overlay.partIndex) ? L10n::tr("Preparando", "Preparing") : L10n::tr("Ir", "Go"), pendingJump, hoveredJumpPartIndex == overlay.partIndex);
       if (overlay.showsLoopButton)
         drawInline(overlay.loopButton, overlay.loopIcon, SvgIconName::Repeat,
                    "Loop", loopActive, hoveredLoopPartIndex == overlay.partIndex);

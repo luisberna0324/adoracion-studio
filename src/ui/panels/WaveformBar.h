@@ -107,6 +107,7 @@ public:
       std::function<void(juce::Rectangle<int>)> cb);
   void setExportBusy(bool busy);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
+  void setPreparingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
   void setMidiLearnActive(bool active);
@@ -163,6 +164,7 @@ private:
   float liveSectionProgress(int index) const;
   bool liveMode = false;
   float liveScrollOffset = 0.0f;
+  int livePaintPreparing = -1;
   int livePaintActive = -1, livePaintPending = -1, livePaintLoop = -1;
   float livePaintProgress = -1.0f;
   bool livePaintReducedMotion = false;
@@ -320,6 +322,7 @@ private:
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;
   PendingArrangementPartProvider pendingArrangementPartProvider;
+  PendingArrangementPartProvider preparingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   std::function<bool(const juce::String &)> onSectionAutomationBegin;
   std::function<void(bool)> onSectionAutomationFinish;

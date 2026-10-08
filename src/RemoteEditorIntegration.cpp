@@ -770,7 +770,9 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   ui.getDynamicObject()->setProperty("getMetronomeBpm", p.getMetronomeBpm());
   ui.getDynamicObject()->setProperty("getClickDivision", p.getClickDivision());
   ui.getDynamicObject()->setProperty("isClickDivisionEnabled", p.isClickDivisionEnabled());
-  ui.getDynamicObject()->setProperty("getPendingArrangementPartJumpIndex", p.getPendingArrangementPartJumpIndex());
+  const auto jumpState = p.getArrangementJumpState();
+  ui.getDynamicObject()->setProperty("getPendingArrangementPartJumpIndex", jumpState.first);
+  ui.getDynamicObject()->setProperty("getPreparingArrangementPartJumpIndex", jumpState.second);
   ui.getDynamicObject()->setProperty("getArrangementPartLoopIndex", p.getArrangementPartLoopIndex());
   ui.getDynamicObject()->setProperty("getAvailableOutputChannelCount", p.getAvailableOutputChannelCount());
   juce::Array<juce::var> outputs;

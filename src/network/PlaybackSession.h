@@ -330,6 +330,11 @@ public:
   double getMetronomeBpm() const { return remote ? static_cast<double>(field(field(state, "ui"), "getMetronomeBpm")) : local.getMetronomeBpm(); }
   int getClickDivision() const { return remote ? static_cast<int>(field(field(state, "ui"), "getClickDivision")) : local.getClickDivision(); }
   bool isClickDivisionEnabled() const { return remote ? static_cast<bool>(field(field(state, "ui"), "isClickDivisionEnabled")) : local.isClickDivisionEnabled(); }
+  int getPreparingArrangementPartJumpIndex() const {
+    if (!remote) return local.getPreparingArrangementPartJumpIndex();
+    const auto ui = field(state, "ui");
+    return ui.hasProperty("getPreparingArrangementPartJumpIndex") ? static_cast<int>(field(ui, "getPreparingArrangementPartJumpIndex")) : -1;
+  }
   int getPendingArrangementPartJumpIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getPendingArrangementPartJumpIndex")) : local.getPendingArrangementPartJumpIndex(); }
   int getArrangementPartLoopIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getArrangementPartLoopIndex")) : local.getArrangementPartLoopIndex(); }
   bool isPracticeLoopActive() const {
