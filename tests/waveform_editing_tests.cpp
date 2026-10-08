@@ -1,4 +1,5 @@
 #include "ui/panels/WaveformBar.h"
+#include "ui/panels/TopBar.h"
 #include "PluginProcessor.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
@@ -53,6 +54,30 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static void clickLiveToggle(TopBar &bar) {
+    expect(bar.liveModeButton.isEnabled(), "topbar live toggle is enabled");
+    bar.liveModeButton.onClick();
+  }
+  static void expectTopbarLiveLayout(TopBar &bar) {
+    expect(bar.liveModeButton.isVisible() && bar.tabletMoreButton.isVisible(),
+           "live toggle and principal More are visible on every layout");
+    expect(bar.liveModeButton.getRight() <= bar.tabletMoreButton.getX() &&
+               bar.liveModeButton.getY() == bar.tabletMoreButton.getY(),
+           "live toggle sits immediately left of the principal More button");
+    expect(bar.liveModeButton.getWidth() >= 38 && bar.liveModeButton.getHeight() >= 38,
+           "desktop toggle keeps normal control dimensions");
+    for (int i = 0; i < bar.getNumChildComponents(); ++i) {
+      const auto *child = bar.getChildComponent(i);
+      if (!child->isVisible() || child == &bar.liveModeButton) continue;
+      expect(!child->getBounds().intersects(bar.liveModeButton.getBounds()),
+             "live toggle does not overlap any visible topbar control");
+    }
+    expect(bar.getLocalBounds().contains(bar.liveModeButton.getBounds()), "live toggle fits the topbar");
+    expect(bar.liveModeButton.getTitle().isNotEmpty() && bar.liveModeButton.getTooltip().isNotEmpty(),
+           "toggle has an accessible title and contextual tooltip");
+  }
+  static bool topbarLiveSelected(const TopBar &bar) { return bar.liveModeButton.getToggleState(); }
+  static bool waveMoreVisible(const WaveformBar &wave) { return wave.moreButton.isVisible(); }
   static auto liveBounds(WaveformBar &waveform) {
     waveform.rebuildLiveSectionBounds();
     return waveform.partOverlayBounds;
@@ -1408,6 +1433,74 @@ void testLiveSectionsAndNavigation() {
   }
 }
 
+void testTopbarLiveToggleAndWaveformBackground() {
+  ProcessorFixture fixture;
+  auto &wave = fixture.edit.waveform;
+  wave.setMinimalPhoneMode(true);
+  int seeks = 0;
+  wave.setSeekCallback([&](double) { ++seeks; });
+  std::vector<float> bins(512);
+  for (size_t i = 0; i < bins.size(); ++i)
+    bins[i] = 0.15f + 0.5f * std::abs(std::sin(i * 0.13f)) * std::abs(std::cos(i * 0.033f));
+  wave.setWaveformBins(bins);
+  TopBar top(fixture.processor);
+  ImportedSongData demo;
+  demo.id = "isolated-live-preview";
+  demo.title = "Demo de prueba";
+  demo.artist = "Datos aislados";
+  demo.key = "C";
+  demo.bpm = 120;
+  top.setTransportProviders([] { return false; }, [] { return 15.0; }, [] { return 30.0; },
+                            [] { return juce::String("C"); }, [&] { return demo.id; }, [&] { return &demo; });
+  wave.setTransportProviders([] { return 15.0; }, [] { return 30.0; }, [] { return false; });
+  top.setLiveModeControls([&] { wave.setLiveMode(!wave.isLiveMode()); },
+                          [&] { return wave.isLiveMode(); }, [&] { return wave.canToggleLiveMode(); });
+  juce::Component preview;
+  preview.addAndMakeVisible(top);
+  preview.addAndMakeVisible(wave);
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+  const auto capture = [&](const juce::String &name) {
+    if (capturePath.isEmpty()) return;
+    const juce::File directory(capturePath);
+    expect(directory.createDirectory().wasOk(), "topbar preview directory opens");
+    auto stream = directory.getChildFile(name + ".png").createOutputStream();
+    expect(stream && stream->setPosition(0) && stream->truncate().wasOk(), "topbar preview opens");
+    expect(juce::PNGImageFormat().writeImageToStream(preview.createComponentSnapshot(preview.getLocalBounds(), true, 2.0f), *stream),
+           "topbar and waveform render together from production components");
+  };
+  for (const int width : {568, 700, 844, 1024, 1280}) {
+    const bool phone = width <= 844;
+    top.setMinimalPhoneMode(phone);
+    wave.setMinimalPhoneMode(phone);
+    preview.setSize(width, 244);
+    top.setBounds(0, 0, width, 64);
+    wave.setBounds(0, 64, width, 180);
+    WaveformEditingTestAccess::expectTopbarLiveLayout(top);
+    WaveformEditingTestAccess::clickLiveToggle(top);
+    expect(wave.isLiveMode() && WaveformEditingTestAccess::topbarLiveSelected(top),
+           "topbar toggle enters live and reflects its state");
+    expect(!WaveformEditingTestAccess::waveMoreVisible(wave) &&
+               WaveformEditingTestAccess::liveRow(wave).getY() < 4.0f,
+           "live removes the duplicate menu and reclaims all header height");
+    const auto withWave = wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.0f);
+    wave.setWaveformBins(std::vector<float>(512, 0.0f));
+    const auto withoutWave = wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.0f);
+    bool waveformVisible = false;
+    for (int y = 30; y < 120 && !waveformVisible; ++y)
+      for (int x = 10; x < 170; ++x)
+        if (withWave.getPixelAt(x, y) != withoutWave.getPixelAt(x, y)) { waveformVisible = true; break; }
+    expect(waveformVisible, "live background visibly reflects actual waveform bins under the section tint");
+    wave.setWaveformBins(bins);
+    capture("topbar-live-" + juce::String(width));
+    WaveformEditingTestAccess::clickLiveToggle(top);
+    expect(!wave.isLiveMode() && !WaveformEditingTestAccess::topbarLiveSelected(top) &&
+               WaveformEditingTestAccess::waveMoreVisible(wave),
+           "topbar toggle returns to normal with its original waveform menu available");
+    capture("topbar-normal-" + juce::String(width));
+    expect(seeks == 0, "topbar mode changes never seek");
+  }
+}
+
 void testSectionAutomationMobileNavigation() {
   Fixture f;
   f.waveform.setMinimalPhoneMode(true);
@@ -1714,6 +1807,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and stationary manual navigation", testLiveSectionsAndNavigation);
+  run("topbar live toggle and real waveform background", testTopbarLiveToggleAndWaveformBackground);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);

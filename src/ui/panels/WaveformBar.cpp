@@ -1018,18 +1018,6 @@ WaveformBar::WaveformBar() {
     const auto screenAnchor =
         moreButton.localAreaToGlobal(moreButton.getLocalBounds());
     auto panel = std::make_unique<WaveformActionsPopover>();
-    panel->addAction(
-        L10n::tr("Modo en vivo", "Live mode"),
-        liveMode ? SvgIconName::Check : SvgIconName::Square,
-        !isEditingArrangement() && sectionAutomationEditingPartId.isEmpty(),
-        true, [safeBar] {
-          if (safeBar) safeBar->setLiveMode(!safeBar->isLiveMode());
-        });
-    if (liveMode)
-      panel->addAction(L10n::tr("Volver a la onda", "Return to waveform"),
-                       SvgIconName::AudioWaveform, true, true, [safeBar] {
-                         if (safeBar) safeBar->setLiveMode(false);
-                       });
     int automationPartIndex = -1;
     const double automationPosition = positionProvider ? positionProvider() : 0.0;
     for (size_t i = 0; i < arrangement.parts.size(); ++i)
@@ -2254,10 +2242,7 @@ void WaveformBar::resized() {
   if (liveMode) {
     for (int i = 0; i < getNumChildComponents(); ++i)
       getChildComponent(i)->setVisible(false);
-    moreButton.setVisible(true);
-    moreButton.setEnabled(true);
-    auto safe = phoneSafeAreaInsets.subtractedFrom(getLocalBounds());
-    moreButton.setBounds(safe.getRight() - 48, safe.getY(), 44, 44);
+    moreButton.setVisible(false);
     setLiveScrollOffset(liveScrollOffset);
     return;
   }
@@ -2512,7 +2497,7 @@ void WaveformBar::setLiveMode(bool enabled) {
 
 juce::Rectangle<float> WaveformBar::getLiveRowBounds() const {
   return phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()
-      .withTrimmedTop(44.0f).reduced(4.0f, 2.0f);
+      .reduced(4.0f, 2.0f);
 }
 
 void WaveformBar::setLiveScrollOffset(float offset) {
@@ -2558,11 +2543,7 @@ float WaveformBar::liveSectionProgress(int index) const {
 
 void WaveformBar::drawLiveSections(juce::Graphics &g) {
   drawStudioBackground(g, getLocalBounds().toFloat());
-  const auto safe = phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat();
   g.setColour(UITheme::textPrimary);
-  g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
-  g.drawText(L10n::tr("En vivo", "Live"), safe.withHeight(42.0f).withTrimmedRight(52.0f).reduced(8.0f, 0).toNearestInt(),
-             juce::Justification::centredLeft);
   const auto row = getLiveRowBounds();
   g.saveState();
   g.reduceClipRegion(row.toNearestInt());
@@ -2577,10 +2558,12 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
     const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
     const auto colour = partColorOrFallback(part, item.partIndex);
     const float progress = liveSectionProgress(item.partIndex);
-    g.setColour(colour.darker(0.35f).withAlpha(1.0f));
+    const auto source = getPartSourceRange(part, getWaveformSourceLengthSeconds());
+    drawWaveformSegment(g, item.body, source.first, source.second, 0.62f);
+    g.setColour(colour.darker(0.20f).withAlpha(0.64f));
     g.fillRect(item.body);
     if (progress >= 0.0f) {
-      g.setColour(colour.brighter(0.24f).withAlpha(1.0f));
+      g.setColour(colour.brighter(0.30f).withAlpha(0.38f));
       g.fillRect(item.body.withWidth(item.body.getWidth() * progress));
       g.setColour(colour.brighter(0.5f));
       g.fillRect(item.body.withHeight(2.0f));
@@ -6524,7 +6507,8 @@ void WaveformBar::drawCachedMiniMapWaveform(
 void WaveformBar::drawWaveformSegment(juce::Graphics &g,
                                       const juce::Rectangle<float> &bounds,
                                       const double sourceStartSec,
-                                      const double sourceEndSec) const {
+                                      const double sourceEndSec,
+                                      const float waveformAlpha) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
   if (waveformBins.size() < 2)
@@ -6538,7 +6522,7 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
   const float ampScale = bounds.getHeight() * 0.495f;
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
 
-  g.setColour(juce::Colours::white.withAlpha(0.16f));
+  g.setColour(juce::Colours::white.withAlpha(waveformAlpha * (2.0f / 9.0f)));
   const float centerDashes[] = {2.0f, 4.0f};
   g.drawDashedLine({bounds.getX(), midY, bounds.getRight(), midY},
                    centerDashes, 2, 1.0f);
@@ -6558,7 +6542,7 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
-    g.setColour(juce::Colours::white.withAlpha(0.72f));
+    g.setColour(juce::Colours::white.withAlpha(waveformAlpha));
     g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
   }
 }

@@ -55,6 +55,9 @@ public:
   WaveformBar();
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
+  bool canToggleLiveMode() const {
+    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty());
+  }
 
   void setWaveformBins(std::vector<float> bins);
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
@@ -557,7 +560,8 @@ private:
   void drawWaveformSegment(juce::Graphics &g,
                            const juce::Rectangle<float> &bounds,
                            double sourceStartSec,
-                           double sourceEndSec) const;
+                           double sourceEndSec,
+                           float waveformAlpha = 0.72f) const;
   double getWaveformSourceLengthSeconds() const;
   std::pair<double, double>
   getPartSourceRange(const SongArrangementPartSnapshot &part,

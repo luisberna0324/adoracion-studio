@@ -672,15 +672,21 @@ contrato del motor de audio.
 
 ### Modo en vivo
 
-El menú de tres puntos de la onda ofrece `Modo en vivo`, marcado cuando está
-activo, y `Volver a la onda`. Es una presentación optativa, independiente del
+El topbar ofrece un botón `Modo en vivo` inmediatamente a la izquierda de su
+menú principal de tres puntos. Su estado marcado y tooltip permiten volver a
+la onda. No se duplica la acción en el menú de onda; ese menú conserva sus
+funciones en normal y se oculta en En vivo, sin reservar una cabecera vacía.
+Es una presentación optativa, independiente del
 editor arrange y de la automatización. No se activa al cargar ni cambia el
 estado musical al alternar. Conserva el viewport y el ajuste de seguimiento
 de la vista normal.
 
 En vivo presenta una fila manual de bloques de 176 puntos con Ir, Loop y Mute
-persistentes de 44 × 44 puntos. Sus fondos son sólidos y conservan el color de
-cada sección. El ancho visual no representa ni modifica la duración musical.
+persistentes de 44 × 44 puntos. Conserva la paleta de sección con una capa de
+color de transparencia moderada sobre la onda real de su rango de audio. Las
+copias usan su rango fuente; no se genera una señal de adorno. El progreso se
+distingue mediante un relleno más claro y su indicador superior. El ancho
+visual no representa ni modifica la duración musical.
 El llenado interior usa la posición confirmada del transporte relativa al
 rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
 salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
@@ -692,3 +698,9 @@ línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía
 comandos. Las acciones se confirman al soltar en su objetivo original; mover,
 usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y
 la vista normal conservan sus contratos existentes.
+
+El menú principal permite MIDI Learn y Configuración también en escritorio;
+sus botones directos se conservan en ventanas amplias.
+En teléfonos especialmente estrechos, el tiempo cede espacio al toggle y su
+acción `Ventana de canción` permanece accesible desde ese menú. Los objetivos
+del topbar siguen las dimensiones del perfil de dispositivo.

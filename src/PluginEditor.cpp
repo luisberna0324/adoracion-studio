@@ -1395,6 +1395,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *waveformBarRaw = waveformBarImpl.get();
   waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
+  topBarRaw->setLiveModeControls(
+      [waveformBarRaw] { waveformBarRaw->setLiveMode(!waveformBarRaw->isLiveMode()); },
+      [waveformBarRaw] { return waveformBarRaw->isLiveMode(); },
+      [waveformBarRaw] { return waveformBarRaw->canToggleLiveMode(); });
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(

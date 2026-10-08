@@ -31,6 +31,9 @@ public:
                                  songProviderFn);
 
   void setOnSettings(std::function<void()> cb);
+  void setLiveModeControls(std::function<void()> toggle,
+                           std::function<bool()> state,
+                           std::function<bool()> enabled);
   void setOnSettingsWithAnchor(
       std::function<void(juce::Rectangle<int>, juce::Component *)> cb);
   void setOnPhoneLibrary(std::function<void(juce::Component &)> cb);
@@ -64,6 +67,11 @@ public:
   void mouseDoubleClick(const juce::MouseEvent &event) override;
 
 private:
+  friend struct WaveformEditingTestAccess;
+  void refreshLiveModeButton();
+  std::function<void()> onLiveModeToggle;
+  std::function<bool()> liveModeState;
+  std::function<bool()> liveModeEnabled;
   using IconButton = TransportIconButton;
 
   class RoundedLabel : public juce::Label {
@@ -97,6 +105,7 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
+  IconButton liveModeButton{"liveMode", SvgIconName::Music};
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:
