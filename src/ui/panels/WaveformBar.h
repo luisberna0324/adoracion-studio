@@ -53,6 +53,8 @@ public:
   using ActiveArrangementLoopPartProvider = std::function<int()>;
 
   WaveformBar();
+  void setLiveMode(bool enabled);
+  bool isLiveMode() const { return liveMode; }
 
   void setWaveformBins(std::vector<float> bins);
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
@@ -140,6 +142,19 @@ public:
 
 private:
   friend struct WaveformEditingTestAccess;
+  juce::Rectangle<float> getLiveRowBounds() const;
+  void rebuildLiveSectionBounds();
+  void drawLiveSections(juce::Graphics &g);
+  void setLiveScrollOffset(float offset);
+  float liveSectionProgress(int index) const;
+  bool liveMode = false;
+  float liveScrollOffset = 0.0f;
+  bool livePointerActive = false;
+  bool livePointerMoved = false;
+  int livePointerSource = -1;
+  juce::Point<float> livePointerStart;
+  float livePointerStartOffset = 0.0f;
+  juce::String liveDownPartId;
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
   enum class TimelineViewMode { GuideMap = 1, TempoMap };
   enum class PlaybackControlFocus { None, Mute, Loop, Jump };
@@ -207,6 +222,7 @@ private:
     bool skipButton = false;
     bool automateButton = false;
   };
+  PartHitResult liveDownHit;
 
   struct TempoRegionHitResult {
     int regionIndex = -1;

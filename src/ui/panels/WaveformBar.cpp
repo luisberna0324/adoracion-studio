@@ -975,6 +975,7 @@ WaveformBar::WaveformBar() {
       L10n::tr("Auto centra la vista en la reproducción", "Auto-follow playback"));
   followButton.setViewportIgnoreDragFlag(true);
   followButton.onClick = [this] {
+    if (liveMode) return;
     followPlaybackEnabled = followButton.getToggleState();
     followLastFrameTimestampSec = 0.0;
     if (followPlaybackEnabled) {
@@ -1017,6 +1018,18 @@ WaveformBar::WaveformBar() {
     const auto screenAnchor =
         moreButton.localAreaToGlobal(moreButton.getLocalBounds());
     auto panel = std::make_unique<WaveformActionsPopover>();
+    panel->addAction(
+        L10n::tr("Modo en vivo", "Live mode"),
+        liveMode ? SvgIconName::Check : SvgIconName::Square,
+        !isEditingArrangement() && sectionAutomationEditingPartId.isEmpty(),
+        true, [safeBar] {
+          if (safeBar) safeBar->setLiveMode(!safeBar->isLiveMode());
+        });
+    if (liveMode)
+      panel->addAction(L10n::tr("Volver a la onda", "Return to waveform"),
+                       SvgIconName::AudioWaveform, true, true, [safeBar] {
+                         if (safeBar) safeBar->setLiveMode(false);
+                       });
     int automationPartIndex = -1;
     const double automationPosition = positionProvider ? positionProvider() : 0.0;
     for (size_t i = 0; i < arrangement.parts.size(); ++i)
@@ -1035,6 +1048,7 @@ WaveformBar::WaveformBar() {
               arrangementPartDisplayLabelForName(part.name),
           SvgIconName::Pencil, sectionAutomationEditingPartId.isEmpty(),
           true, [safeBar, part] {
+            if (safeBar) safeBar->setLiveMode(false);
             if (safeBar && safeBar->onSectionAutomationBegin &&
                 safeBar->onSectionAutomationBegin(part.id))
               safeBar->setSectionAutomationState(part.id);
@@ -1290,6 +1304,8 @@ WaveformBar::WaveformBar() {
 }
 
 void WaveformBar::resetPlaybackViewForSong() {
+  liveScrollOffset = 0.0f;
+  livePointerActive = false;
   resetTouchWaveformNavigation();
   followPendingJumpWasActive = false;
   followLastSongProgressValid = false;
@@ -1337,6 +1353,7 @@ void WaveformBar::setArrangement(
     const SongArrangementSnapshot &arrangementSnapshot,
     const bool isCustomArrangement) {
   resetTouchWaveformNavigation();
+  livePointerActive = false;
   arrangement = arrangementSnapshot;
   migrateLegacyArrangementCues(arrangement);
   normalizeArrangementCues(arrangement);
@@ -1485,6 +1502,7 @@ void WaveformBar::setSectionAutomationCallbacks(
 
 void WaveformBar::setSectionAutomationState(const juce::String &partId) {
   if (sectionAutomationEditingPartId == partId) return;
+  if (partId.isNotEmpty()) setLiveMode(false);
   resetTouchWaveformNavigation();
   sectionAutomationEditingPartId = partId;
   ++sectionAutomationUiRevision;
@@ -2053,6 +2071,7 @@ void WaveformBar::setRemoteIndicator(const RemoteIndicator state) {
 }
 
 void WaveformBar::paint(juce::Graphics &g) {
+  if (liveMode) { drawLiveSections(g); return; }
   const auto bounds = getLocalBounds().toFloat();
   if (bounds.getWidth() < 2.0f)
     return;
@@ -2218,6 +2237,7 @@ void WaveformBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void WaveformBar::resized() {
+  livePointerActive = false;
   if (touchWaveformNavigationActive) resetTouchWaveformNavigation();
   rebuildCueMarkers();
   invalidateWaveformRenderCaches();
@@ -2231,6 +2251,16 @@ void WaveformBar::resized() {
   const int snapModeLabelW = 56;
   const bool hasLoadedSong = !waveformBins.empty();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
+  if (liveMode) {
+    for (int i = 0; i < getNumChildComponents(); ++i)
+      getChildComponent(i)->setVisible(false);
+    moreButton.setVisible(true);
+    moreButton.setEnabled(true);
+    auto safe = phoneSafeAreaInsets.subtractedFrom(getLocalBounds());
+    moreButton.setBounds(safe.getRight() - 48, safe.getY(), 44, 44);
+    setLiveScrollOffset(liveScrollOffset);
+    return;
+  }
   layoutSectionAutomationToolbar();
   if (automationEditing) {
     for (auto *component : std::initializer_list<juce::Component *>{
@@ -2467,7 +2497,126 @@ bool WaveformBar::usesTouchWaveformNavigation() const {
 #endif
 }
 
+void WaveformBar::setLiveMode(bool enabled) {
+  if (enabled && (isEditingArrangement() || sectionAutomationEditingPartId.isNotEmpty())) return;
+  if (liveMode == enabled) return;
+  resetTouchWaveformNavigation();
+  cancelDeferredPartJumpFromDoubleClick();
+  livePointerActive = false;
+  cueTooltipWindow->hideTip();
+  liveMode = enabled;
+  // Switching presentation never sends a transport command or changes follow.
+  resized();
+  repaint();
+}
+
+juce::Rectangle<float> WaveformBar::getLiveRowBounds() const {
+  return phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()
+      .withTrimmedTop(44.0f).reduced(4.0f, 2.0f);
+}
+
+void WaveformBar::setLiveScrollOffset(float offset) {
+  constexpr float stride = 188.0f;
+  const float content = arrangement.parts.empty() ? 0.0f
+      : static_cast<float>(arrangement.parts.size()) * stride - 12.0f;
+  liveScrollOffset = juce::jlimit(0.0f,
+      juce::jmax(0.0f, content - getLiveRowBounds().getWidth()), offset);
+}
+
+void WaveformBar::rebuildLiveSectionBounds() {
+  partOverlayBounds.clear();
+  sharedSectionOverflowBounds = {};
+  const auto row = getLiveRowBounds();
+  for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
+    PartOverlayBounds item;
+    item.partIndex = i;
+    item.body = {row.getX() + static_cast<float>(i) * 188.0f - liveScrollOffset,
+                 row.getY(), 176.0f, row.getHeight()};
+    if (row.getHeight() >= 56.0f && !arrangement.parts[static_cast<size_t>(i)].skipPlayback) {
+      const float x = item.body.getX() + 18.0f;
+      const float y = item.body.getBottom() - 44.0f;
+      item.jumpButton = {x, y, 44.0f, 44.0f};
+      item.loopButton = {x + 48.0f, y, 44.0f, 44.0f};
+      item.muteButton = {x + 96.0f, y, 44.0f, 44.0f};
+      item.showsJumpButton = item.showsLoopButton = item.showsMuteButton = true;
+    }
+    partOverlayBounds.push_back(item);
+  }
+}
+
+float WaveformBar::liveSectionProgress(int index) const {
+  if (!juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size())) || !positionProvider) return -1.0f;
+  const auto &part = arrangement.parts[static_cast<size_t>(index)];
+  const double position = positionProvider();
+  const bool finalEnd = index == static_cast<int>(arrangement.parts.size()) - 1 &&
+                        nearlyEqual(position, part.endSec);
+  if (part.skipPlayback || part.endSec <= part.startSec || position < part.startSec ||
+      (position >= part.endSec && !finalEnd)) return -1.0f;
+  return static_cast<float>(juce::jlimit(0.0, 1.0,
+      (position - part.startSec) / (part.endSec - part.startSec)));
+}
+
+void WaveformBar::drawLiveSections(juce::Graphics &g) {
+  drawStudioBackground(g, getLocalBounds().toFloat());
+  const auto safe = phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat();
+  g.setColour(UITheme::textPrimary);
+  g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
+  g.drawText(L10n::tr("En vivo", "Live"), safe.withHeight(42.0f).withTrimmedRight(52.0f).reduced(8.0f, 0).toNearestInt(),
+             juce::Justification::centredLeft);
+  const auto row = getLiveRowBounds();
+  g.saveState();
+  g.reduceClipRegion(row.toNearestInt());
+  rebuildLiveSectionBounds();
+  const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+  const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+  if (arrangement.parts.empty()) {
+    g.drawText(L10n::tr("Sin secciones", "No sections"), row.toNearestInt(), juce::Justification::centred);
+  }
+  for (const auto &item : partOverlayBounds) {
+    if (!item.body.intersects(row)) continue;
+    const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
+    const auto colour = partColorOrFallback(part, item.partIndex);
+    const float progress = liveSectionProgress(item.partIndex);
+    g.setColour(colour.darker(0.35f).withAlpha(1.0f));
+    g.fillRect(item.body);
+    if (progress >= 0.0f) {
+      g.setColour(colour.brighter(0.24f).withAlpha(1.0f));
+      g.fillRect(item.body.withWidth(item.body.getWidth() * progress));
+      g.setColour(colour.brighter(0.5f));
+      g.fillRect(item.body.withHeight(2.0f));
+    }
+    const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
+    g.setColour(ink);
+    g.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
+    g.drawFittedText(arrangementPartDisplayLabelForName(part.name),
+        item.body.withHeight(18.0f).reduced(6.0f, 1.0f).toNearestInt(), juce::Justification::centredLeft, 1);
+    if (item.body.getHeight() >= 90.0f) {
+      juce::String state;
+      if (progress >= 0.0f) state = L10n::tr("Activa", "Active");
+      if (item.partIndex == loop) state += state.isEmpty() ? "Loop" : " · Loop";
+      if (item.partIndex == pending) state += state.isEmpty() ? L10n::tr("En cola", "Queued") : L10n::tr(" · En cola", " · Queued");
+      g.setFont(makeAppFont(10.0f));
+      g.drawFittedText(state, item.body.withTrimmedTop(20.0f).withHeight(16.0f).reduced(6.0f, 0).toNearestInt(), juce::Justification::centredLeft, 1);
+    }
+    const auto action = [&](juce::Rectangle<float> target, SvgIconName icon,
+                            const juce::String &label, bool marked) {
+      if (target.isEmpty()) return;
+      const auto iconBounds = target.withHeight(23.0f).withSizeKeepingCentre(20.0f, 20.0f);
+      drawSvgIcon(g, iconBounds, icon, ink);
+      g.setColour(ink);
+      g.setFont(makeAppFont(10.0f, marked ? AppFontWeight::Bold : AppFontWeight::Medium));
+      g.drawText(label, target.withTrimmedTop(23.0f).toNearestInt(), juce::Justification::centredTop);
+      if (marked) g.fillRect(target.getCentreX() - 9.0f, target.getBottom() - 3.0f, 18.0f, 2.0f);
+    };
+    action(item.jumpButton, SvgIconName::CornerDownRight, L10n::tr("Ir", "Go"), pending == item.partIndex);
+    action(item.loopButton, SvgIconName::Repeat, "Loop", loop == item.partIndex);
+    action(item.muteButton, SvgIconName::VolumeX, "Mute", part.muteInstruments);
+  }
+  g.restoreState();
+}
+
 void WaveformBar::resetTouchWaveformNavigation() {
+  livePointerActive = false;
   touchWaveformNavigationActive = false;
   touchWaveformTapCancelled = false;
   touchWaveformPrimarySource = -1;
@@ -2605,6 +2754,21 @@ void WaveformBar::showInlineSectionMenu(int partIndex, juce::Rectangle<float> an
 }
 
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
+  if (liveMode) {
+    if (livePointerActive) { livePointerMoved = true; return; }
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+        event.mods.isPopupMenu() || !getLiveRowBounds().contains(event.position)) return;
+    rebuildLiveSectionBounds();
+    livePointerActive = true;
+    livePointerMoved = false;
+    livePointerSource = event.source.getIndex();
+    livePointerStart = event.position;
+    livePointerStartOffset = liveScrollOffset;
+    liveDownHit = hitTestArrangementPart(event.position);
+    liveDownPartId = juce::isPositiveAndBelow(liveDownHit.partIndex, static_cast<int>(arrangement.parts.size()))
+        ? arrangement.parts[static_cast<size_t>(liveDownHit.partIndex)].id : juce::String{};
+    return;
+  }
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
   // Buttons and their background consume the gesture. Navigation can still
   // move the viewport without changing the fixed section or its arrangement.
@@ -2925,6 +3089,16 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
+  if (liveMode) {
+    if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
+    livePointerMoved = livePointerMoved || touchWaveformNavigation::crossedTapSlop(
+        livePointerStart.x, livePointerStart.y, event.position.x, event.position.y);
+    if (livePointerMoved) {
+      setLiveScrollOffset(livePointerStartOffset + livePointerStart.x - event.position.x);
+      repaint();
+    }
+    return;
+  }
   if (touchWaveformNavigationActive) {
     const auto found = phoneTouchPositions.find(event.source.getIndex());
     if (found == phoneTouchPositions.end()) return;
@@ -3487,6 +3661,21 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &event) {
+  if (liveMode) {
+    if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
+    livePointerActive = false;
+    if (livePointerMoved || songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+        !getLiveRowBounds().contains(event.position) ||
+        touchWaveformNavigation::crossedTapSlop(livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) return;
+    rebuildLiveSectionBounds();
+    const auto hit = hitTestArrangementPart(event.position);
+    if (juce::isPositiveAndBelow(hit.partIndex, static_cast<int>(arrangement.parts.size())) &&
+        arrangement.parts[static_cast<size_t>(hit.partIndex)].id == liveDownPartId &&
+        hit.jumpButton == liveDownHit.jumpButton && hit.loopButton == liveDownHit.loopButton &&
+        hit.muteButton == liveDownHit.muteButton)
+      dispatchInlineSectionAction(hit);
+    return;
+  }
   if (touchWaveformNavigationActive) {
     if (phoneTouchPositions.find(event.source.getIndex()) == phoneTouchPositions.end()) return;
     const auto wave = getMainWaveBounds(getLocalBounds().toFloat());
@@ -3601,6 +3790,7 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseMove(const juce::MouseEvent &event) {
+  if (liveMode) return;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
     setMouseCursor(juce::MouseCursor::NormalCursor);
     return;
@@ -3763,6 +3953,7 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (liveMode) return;
   if (usesTouchWaveformNavigation() && (event.source.isTouch() || minimalPhoneMode) &&
       !isEditingArrangement()) return;
   if (sectionAutomationEditingPartId.isNotEmpty())
@@ -3811,6 +4002,7 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 }
 
 bool WaveformBar::keyPressed(const juce::KeyPress &key) {
+  if (liveMode) return false;
   if (sectionAutomationEditingPartId.isNotEmpty()) {
     if (key == juce::KeyPress::escapeKey) {
       if (onSectionAutomationFinish &&
@@ -3873,6 +4065,14 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
+  if (liveMode) {
+    if (!songLoadingActive && !midiLearnActive && getLiveRowBounds().contains(event.position)) {
+      livePointerMoved = true;
+      setLiveScrollOffset(liveScrollOffset - (wheel.deltaX != 0.0f ? wheel.deltaX : wheel.deltaY) * 188.0f);
+      repaint();
+    }
+    return;
+  }
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
@@ -3922,6 +4122,7 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
+  if (liveMode) { livePointerMoved = true; return; }
   if (touchWaveformNavigationActive) touchWaveformTapCancelled = true;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
@@ -3955,6 +4156,13 @@ void WaveformBar::timerCallback() {
   if (sectionAutomationEditingPartProvider)
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  if (liveMode) {
+    if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
+      clearSongLoadingState();
+    updateActiveTempoRegionFromTransport();
+    repaint();
+    return;
+  }
   if (cueTooltipHideAtMs > 0.0 && nowMs >= cueTooltipHideAtMs) {
     cueTooltipWindow->hideTip(); cueTooltipHideAtMs = 0.0;
   }

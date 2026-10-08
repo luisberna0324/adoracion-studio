@@ -669,3 +669,26 @@ borrador de automatización permanecen vigentes. Ir reutiliza la solicitud de
 salto existente, con su temporización pendiente actual; Loop reutiliza su
 callback y Mute silencia instrumentos sin detener el click. No se modifica el
 contrato del motor de audio.
+
+### Modo en vivo
+
+El menú de tres puntos de la onda ofrece `Modo en vivo`, marcado cuando está
+activo, y `Volver a la onda`. Es una presentación optativa, independiente del
+editor arrange y de la automatización. No se activa al cargar ni cambia el
+estado musical al alternar. Conserva el viewport y el ajuste de seguimiento
+de la vista normal.
+
+En vivo presenta una fila manual de bloques de 176 puntos con Ir, Loop y Mute
+persistentes de 44 × 44 puntos. Sus fondos son sólidos y conservan el color de
+cada sección. El ancho visual no representa ni modifica la duración musical.
+El llenado interior usa la posición confirmada del transporte relativa al
+rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
+salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
+mute en Mute; no se confunden con la sección activa.
+
+La fila nunca sigue ni se recentra por reproducción, loop, selección o salto.
+Drag y rueda sólo cambian su desplazamiento manual. No hay regla, minimapa ni
+línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía
+comandos. Las acciones se confirman al soltar en su objetivo original; mover,
+usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y
+la vista normal conservan sus contratos existentes.

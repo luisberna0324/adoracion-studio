@@ -53,6 +53,20 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static auto liveBounds(WaveformBar &waveform) {
+    waveform.rebuildLiveSectionBounds();
+    return waveform.partOverlayBounds;
+  }
+  static float liveProgress(const WaveformBar &waveform, int index) {
+    return waveform.liveSectionProgress(index);
+  }
+  static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
+  static auto liveRow(const WaveformBar &waveform) { return waveform.getLiveRowBounds(); }
+  static void enableFollowForLiveTest(WaveformBar &waveform) {
+    waveform.followPlaybackEnabled = true;
+    waveform.followButton.setToggleState(true, juce::dontSendNotification);
+  }
+  static bool followEnabled(const WaveformBar &waveform) { return waveform.followPlaybackEnabled; }
   static void expectPlaybackActionsClearGlobalControls(WaveformBar &waveform) {
     waveform.rebuildPartOverlayBounds(waveBody(waveform));
     for (const auto *control : {&waveform.followButton, &waveform.moreButton,
@@ -1296,6 +1310,104 @@ void testSectionActionsClearGlobalControls() {
   }
 }
 
+void testLiveSectionsAndNavigation() {
+  Fixture f;
+  expect(!f.waveform.isLiveMode(), "live presentation is opt-in");
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(390, 250);
+  auto arrangement = WaveformEditingTestAccess::snapshot(f.waveform);
+  arrangement.parts[0].endSec = 2.0;
+  arrangement.parts[1].startSec = 2.0; arrangement.parts[1].endSec = 20.0;
+  f.waveform.setArrangement(arrangement, false);
+  double position = 1.0;
+  bool playing = true;
+  int seeks = 0, jumps = 0, loops = 0;
+  f.waveform.setTransportProviders([&] { return position; }, [] { return 30.0; }, [&] { return playing; });
+  f.waveform.setSeekCallback([&](double) { ++seeks; });
+  f.waveform.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+  f.waveform.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+  int pending = 2;
+  f.waveform.setPendingArrangementPartProvider([&] { return pending; });
+  f.waveform.setActiveArrangementLoopPartProvider([] { return 1; });
+  const auto normalWindow = WaveformEditingTestAccess::visibleWindow(f.waveform);
+  WaveformEditingTestAccess::enableFollowForLiveTest(f.waveform);
+  f.waveform.setLiveMode(true);
+  auto blocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+  for (const auto &block : blocks) {
+    expectNear(block.body.getWidth(), 176.0, "different musical durations have equal live block width");
+    for (const auto target : {block.jumpButton, block.loopButton, block.muteButton})
+      expect(target.getWidth() >= 44.0f && target.getHeight() >= 44.0f,
+             "live exposes three persistent full-size actions");
+  }
+  for (const int height : {108, 140}) {
+    f.waveform.setSize(390, height);
+    for (const auto &block : WaveformEditingTestAccess::liveBounds(f.waveform))
+      for (const auto target : {block.jumpButton, block.loopButton, block.muteButton})
+        expect(target.getWidth() == 44.0f && target.getHeight() == 44.0f && block.body.contains(target),
+               "compact live rows preserve all three complete touch targets");
+  }
+  f.waveform.setSize(390, 250);
+  expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 0), 0.5, "two-second section has relative progress");
+  expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 2), -1.0, "pending destination is not the active section");
+  position = 11.0;
+  expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 1), 0.5, "eighteen-second section has relative progress");
+  position = 2.0;
+  expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 1), 0.0, "loop restart resets relative progress");
+  position = 25.0;
+  expectNear(WaveformEditingTestAccess::liveProgress(f.waveform, 2), 0.5, "confirmed jump activates destination progress");
+  expect(WaveformEditingTestAccess::liveBounds(f.waveform)[0].body == blocks[0].body,
+         "transport progress and jumps never move the live row");
+  const auto background = blocks[0].body.getCentre().withY(blocks[0].body.getY() + 45.0f);
+  f.click(background);
+  expect(seeks == 0 && jumps == 0 && loops == 0, "live background taps cannot seek or act");
+  const auto loopPoint = blocks[0].loopButton.getCentre();
+  f.click(loopPoint);
+  expect(loops == 1 && seeks == 0, "explicit live Loop uses existing callback");
+  f.click(blocks[0].jumpButton.getCentre());
+  expect(jumps == 1 && position == 25.0, "live Go requests a jump without seeking immediately");
+  f.click(blocks[0].muteButton.getCentre());
+  expect(WaveformEditingTestAccess::snapshot(f.waveform).parts[0].muteInstruments,
+         "live Mute uses the existing instruments-only arrangement flag");
+  f.waveform.mouseDown(pointerEvent(f.waveform, loopPoint, loopPoint));
+  const auto dragged = loopPoint.translated(-80.0f, 0.0f);
+  f.waveform.mouseDrag(pointerEvent(f.waveform, dragged, loopPoint, true));
+  f.waveform.mouseUp(pointerEvent(f.waveform, dragged, loopPoint, true));
+  expect(loops == 1 && jumps == 1 && seeks == 0, "drag starting on live control never triggers it or seek");
+  const float offset = WaveformEditingTestAccess::liveScroll(f.waveform);
+  expect(offset > 0.0f, "live gesture manually scrolls blocks");
+  for (const double next : {1.0, 11.0, 2.0, 25.0}) {
+    position = next;
+    WaveformEditingTestAccess::tick(f.waveform);
+    expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), offset,
+               "timer and section transitions never recenter manual navigation");
+  }
+  f.waveform.setLiveMode(false);
+  expect(seeks == 0 && playing && position == 25.0 &&
+             WaveformEditingTestAccess::visibleWindow(f.waveform) == normalWindow &&
+             WaveformEditingTestAccess::followEnabled(f.waveform),
+         "mode switch preserves musical position, playing state and normal viewport");
+  expectNear(WaveformEditingTestAccess::snapshot(f.waveform).parts[0].endSec, 2.0,
+             "live layout never changes real section duration");
+  f.waveform.setLiveMode(true);
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+  if (!capturePath.isEmpty()) {
+    const juce::File directory(capturePath);
+    expect(directory.createDirectory().wasOk(), "live capture directory opens");
+    position = 11.0;
+    for (const int width : {390, 768, 1200}) {
+      f.waveform.setMinimalPhoneMode(width <= 390);
+      f.waveform.setSize(width, 250);
+      for (const bool live : {true, false}) {
+        f.waveform.setLiveMode(live);
+        auto stream = directory.getChildFile((live ? "live-" : "normal-") + juce::String(width) + ".png").createOutputStream();
+        expect(stream && stream->setPosition(0) && stream->truncate().wasOk(), "live capture file opens");
+        expect(juce::PNGImageFormat().writeImageToStream(f.waveform.createComponentSnapshot(f.waveform.getLocalBounds(), true, 2.0f), *stream),
+               "both modes render real production components");
+      }
+    }
+  }
+}
+
 void testSectionAutomationMobileNavigation() {
   Fixture f;
   f.waveform.setMinimalPhoneMode(true);
@@ -1601,6 +1713,7 @@ int main() {
   run("persistent responsive section controls", testPersistentResponsiveSectionControls);
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
+  run("live section progress and stationary manual navigation", testLiveSectionsAndNavigation);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);
   run("copy again after moving", testCopyAgainAfterMoving);
