@@ -754,7 +754,8 @@ el nombre y todas las acciones con su tinta habitual, incluido desmute.
 Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
 colas, loops, mute musical ni click.
 
-En vivo no convierte Mute en cancelar Ir ni convierte Ir en desmutear el
-destino: los flags se conservan para permitir estas combinaciones. El motor
-mantiene el mute de instrumentos y su excepción de click existentes; el timing
-de Ir y el toggle de Loop no cambian. La onda normal conserva sus acciones.
+En vivo conserva la interacción musical existente: Mute cancela Ir pendiente
+e Ir desmutea su destino antes de solicitar el salto. La representación combina
+las señales sólo cuando los flags reales coexisten; no fuerza combinaciones.
+El mute de instrumentos y su excepción de click, el timing de Ir y el toggle
+de Loop no cambian. La onda normal conserva sus acciones.

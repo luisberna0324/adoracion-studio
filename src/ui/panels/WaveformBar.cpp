@@ -2787,7 +2787,7 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocus = PlaybackControlFocus::Jump;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
       cancelDeferredPartJumpFromDoubleClick();
-      if (!liveMode) clearMuteForJumpSelection(hit.partIndex);
+      clearMuteForJumpSelection(hit.partIndex);
       if (onArrangementPartJumpRequest != nullptr)
         onArrangementPartJumpRequest(hit.partIndex);
       repaint();
@@ -2800,7 +2800,7 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
       playbackControlFocusPartIndex = hit.partIndex;
       playbackControlFocus = PlaybackControlFocus::Mute;
       playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      if (!liveMode && onArrangementPendingJumpClearRequest != nullptr)
+      if (onArrangementPendingJumpClearRequest != nullptr)
         onArrangementPendingJumpClearRequest();
       toggleArrangementPartMute(hit.partIndex);
       return true;
