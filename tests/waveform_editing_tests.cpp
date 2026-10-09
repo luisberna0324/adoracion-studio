@@ -57,7 +57,7 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 struct WaveformEditingTestAccess {
   static void clickLiveToggle(TopBar &bar) {
     expect(bar.liveModeButton.isEnabled(), "topbar live toggle is enabled");
-    bar.liveModeButton.onClick();
+    bar.selectTimelineView(!(bar.liveModeState && bar.liveModeState()));
   }
   static void expectTopbarLiveLayout(TopBar &bar) {
     expect(bar.liveModeButton.isVisible() && bar.tabletMoreButton.isVisible(),
@@ -83,6 +83,17 @@ struct WaveformEditingTestAccess {
   static void midiEnabled(TopBar &bar, bool enabled) { bar.midiLearnButton.setEnabled(enabled); if (bar.refreshMorePopover) bar.refreshMorePopover(); }
   static void moreRefresh(TopBar &bar) { if (bar.refreshMorePopover) bar.refreshMorePopover(); }
   static bool topbarLiveSelected(const TopBar &bar) { return bar.liveModeButton.getToggleState(); }
+  static void chooseTimeline(TopBar &bar, bool sections) { bar.selectTimelineView(sections); }
+  static auto timelineCaption(const TopBar &bar) { return bar.liveModeButton.getButtonText(); }
+  static auto sectionState(const WaveformBar &wave, int index) { return wave.liveSectionState(index); }
+  static auto pendingPulse(double now, bool reduced) { return WaveformBar::livePendingPulse(now, reduced); }
+  static void refreshSectionActions(WaveformBar &wave) { wave.refreshLiveSectionActions(); }
+  static juce::Component *sectionAction(WaveformBar &wave, const juce::String &id, int action) {
+    const auto componentId = "section-action:" + id + ":" + juce::String(action);
+    for (int i = 0; i < wave.getNumChildComponents(); ++i)
+      if (wave.getChildComponent(i)->getComponentID() == componentId) return wave.getChildComponent(i);
+    return nullptr;
+  }
   static bool waveMoreVisible(const WaveformBar &wave) { return wave.moreButton.isVisible(); }
   static auto liveBounds(WaveformBar &waveform) {
     waveform.rebuildLiveSectionBounds();
@@ -1473,6 +1484,173 @@ void testDesktopMoreDeduplicatesVisibleActions() {
   expect(visibleButtons(*panel) >= 3, "phone retains its existing menu actions");
 }
 
+void testSectionViewStatesAccessibilityAndKeyboard() {
+  Fixture f; auto &wave = f.waveform;
+  wave.setMinimalPhoneMode(true); wave.setSize(568, 180);
+  auto arrangement = WaveformEditingTestAccess::snapshot(wave);
+  arrangement.parts[1].name = arrangement.parts[2].name = "Coro";
+  wave.setArrangement(arrangement, true);
+  double position = 15.0; bool playing = true;
+  int preparing = -1, pending = -1, loop = -1, jumps = 0, loops = 0, seeks = 0;
+  wave.setTransportProviders([&] { return position; }, [] { return 30.0; }, [&] { return playing; });
+  wave.setPreparingArrangementPartProvider([&] { return preparing; });
+  wave.setPendingArrangementPartProvider([&] { return pending; });
+  wave.setActiveArrangementLoopPartProvider([&] { return loop; });
+  wave.setOnArrangementPartJumpRequest([&](int index) { ++jumps; pending = pending == index ? -1 : index; });
+  wave.setOnArrangementPartLoopToggleRequest([&](int index) { ++loops; loop = loop == index ? -1 : index; });
+  wave.setSeekCallback([&](double) { ++seeks; });
+  wave.setLiveMode(true);
+  // JUCE only exposes its native accessibility bridge with a window handle.
+  // Keep this synthetic fixture peer hidden; no app/session is launched.
+  wave.addToDesktop(juce::ComponentPeer::windowIsTemporary);
+  expect(WaveformEditingTestAccess::sectionState(wave, 1) == "Sonando", "section under transport reports sounding only during playback");
+  const auto before = WaveformEditingTestAccess::liveText(wave, WaveformEditingTestAccess::liveBounds(wave)[1]);
+  playing = false;
+  expect(WaveformEditingTestAccess::sectionState(wave, 1) == "Pausada", "paused transport has an explicit paused section state");
+  const auto paused = WaveformEditingTestAccess::liveText(wave, WaveformEditingTestAccess::liveBounds(wave)[1]);
+  expect(before.fontSize == paused.fontSize && before.title == paused.title && before.state == paused.state,
+         "playing and paused state never shrink or reposition the title");
+  playing = true; preparing = 2;
+  expect(WaveformEditingTestAccess::sectionState(wave, 2) == "Preparando", "preparation remains distinct from confirmed schedule");
+  preparing = -1; pending = 2;
+  expect(WaveformEditingTestAccess::sectionState(wave, 2) == "Salto programado", "confirmed pending destination reports a scheduled jump");
+  loop = 0;
+  expect(WaveformEditingTestAccess::sectionState(wave, 0) == "Loop armado", "future loop is armed rather than sounding");
+  loop = 1;
+  expect(WaveformEditingTestAccess::sectionState(wave, 1) == juce::String::fromUTF8("Sonando · Loop"), "current loop remains distinct from future armed loop");
+  expect(before.stateFontSize >= 14.0f && before.stateLines == 2, "state text has fixed readable size and reserved space");
+  for (double now : {0.0, 450.0, 900.0, 1600.0})
+    expectNear(WaveformEditingTestAccess::pendingPulse(now, true), 0.5, "reduced-motion destination signal stays static across animation time");
+  expect(WaveformEditingTestAccess::pendingPulse(450.0, false) != WaveformEditingTestAccess::pendingPulse(900.0, false),
+         "ordinary scheduled destination retains the existing pulse");
+  WaveformEditingTestAccess::refreshSectionActions(wave);
+  auto *go = WaveformEditingTestAccess::sectionAction(wave, "B", 0);
+  auto *loopAction = WaveformEditingTestAccess::sectionAction(wave, "A", 1);
+  auto *mute = WaveformEditingTestAccess::sectionAction(wave, "A", 2);
+  expect(go && loopAction && mute && go->getWidth() == 44 && go->getHeight() == 44, "individual action surfaces retain touch dimensions");
+  auto *goHandler = go->getAccessibilityHandler();
+  expect(goHandler && goHandler->getRole() == juce::AccessibilityRole::button, "Go exposes an accessible button role");
+  expect(goHandler->getTitle().contains("3. Coro"), "Go identifies destination ordinal: " + goHandler->getTitle().toStdString());
+  expect(goHandler->getDescription().contains("Salto programado"), "Go reports its real schedule: " + goHandler->getDescription().toStdString());
+  expect(goHandler->getHelp().contains("Cancelar"), "Go explains existing cancellation: " + goHandler->getHelp().toStdString());
+  expect(goHandler->getValueInterface() && goHandler->getValueInterface()->isReadOnly() &&
+             goHandler->getValueInterface()->getCurrentValueAsString().contains("Salto programado") &&
+             !goHandler->getActions().contains(juce::AccessibilityActionType::toggle),
+         "scheduled Go exposes a read-only real state and only explicit press activation");
+  auto *loopHandler = loopAction->getAccessibilityHandler();
+  expect(loopHandler && loopHandler->getRole() == juce::AccessibilityRole::toggleButton &&
+             loopHandler->getCurrentState().isCheckable() && loopHandler->getCurrentState().isChecked(),
+         "Loop exposes its actual checked state");
+  auto *muteHandler = mute->getAccessibilityHandler();
+  expect(muteHandler && !muteHandler->getCurrentState().isChecked() && muteHandler->getHelp().contains("click"),
+         "Mute exposes instrument state and keeps click exception explicit");
+  const auto tree = wave.getAccessibilityHandler()->getChildren();
+  expect(tree.size() == 9, "accessibility group exposes all three actions for each section");
+  const int beforeFocus = jumps + loops + f.commits;
+  goHandler->grabFocus();
+  expect(goHandler->getCurrentState().isFocused() && jumps + loops + f.commits == beforeFocus,
+         "accessible focus is explicit and sends no musical command");
+  const auto treePath = juce::SystemStats::getEnvironmentVariable("PW_SECTION_UX_ACCESSIBILITY_PATH", {});
+  if (treePath.isNotEmpty()) {
+    juce::Array<juce::var> nodes;
+    for (const auto *handler : tree) {
+      auto node = std::make_unique<juce::DynamicObject>();
+      node->setProperty("id", handler->getComponent().getComponentID());
+      node->setProperty("role", handler->getRole() == juce::AccessibilityRole::button ? "button" : "toggleButton");
+      node->setProperty("name", handler->getTitle()); node->setProperty("state", handler->getDescription());
+      node->setProperty("help", handler->getHelp());
+      node->setProperty("checked", handler->getCurrentState().isChecked());
+      node->setProperty("focused", handler->getCurrentState().isFocused());
+      node->setProperty("bounds", handler->getComponent().getBounds().toString());
+      node->setProperty("press", handler->getActions().contains(juce::AccessibilityActionType::press));
+      node->setProperty("toggle", handler->getActions().contains(juce::AccessibilityActionType::toggle));
+      nodes.add(juce::var(node.release()));
+    }
+    expect(juce::File(treePath).replaceWithText(juce::JSON::toString(juce::var(nodes))), "native hidden-peer accessibility evidence saves");
+  }
+  const auto focusCapture = juce::SystemStats::getEnvironmentVariable("PW_SECTION_UX_CAPTURE_DIR", {});
+  if (focusCapture.isNotEmpty()) {
+    auto output = juce::File(focusCapture).getChildFile("accessible-focus.png").createOutputStream();
+    expect(output && output->setPosition(0) && output->truncate().wasOk() &&
+               juce::PNGImageFormat().writeImageToStream(wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f), *output),
+           "accessible focus indicator renders on the real production component");
+  }
+  expect(loopAction->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && loops == 1 && loop == -1,
+         "Return dispatches the existing Loop toggle once");
+  expect(mute->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)) && muteHandler->getCurrentState().isChecked(),
+         "Space dispatches real Mute and updates accessible state");
+  expect(muteHandler->getActions().invoke(juce::AccessibilityActionType::toggle) && !muteHandler->getCurrentState().isChecked(),
+         "accessible toggle dispatches explicit unmute through the same path");
+  expect(goHandler->getActions().invoke(juce::AccessibilityActionType::press) && jumps == 1 && pending == -1,
+         "accessible press retains cancellation of the already scheduled destination");
+  expect(go->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)) && jumps == 2 && pending == 2,
+         "Space uses the unchanged Go callback instead of seek");
+  wave.setSize(390, 180); WaveformEditingTestAccess::setLiveOffset(wave, 0.0f);
+  auto *firstGo = WaveformEditingTestAccess::sectionAction(wave, "Intro", 0);
+  const int commands = jumps + loops + f.commits;
+  expect(firstGo->keyPressed(juce::KeyPress(juce::KeyPress::endKey)) && WaveformEditingTestAccess::liveScroll(wave) > 0.0f,
+         "End reveals an offscreen action without changing transport");
+  expect(jumps + loops + f.commits == commands && seeks == 0, "keyboard navigation sends no musical commands");
+  auto skipped = WaveformEditingTestAccess::snapshot(wave); skipped.parts[1].skipPlayback = true;
+  wave.setArrangement(skipped, true); WaveformEditingTestAccess::setLiveOffset(wave, 0.0f);
+  expect(firstGo->keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && WaveformEditingTestAccess::liveScroll(wave) > 0.0f,
+         "arrow navigation passes a section without actions instead of trapping keyboard focus");
+  expect(jumps + loops + f.commits == commands && seeks == 0, "passing a skipped section changes only viewport/focus");
+  wave.setMidiLearnActive(true); WaveformEditingTestAccess::refreshSectionActions(wave);
+  goHandler->getActions().invoke(juce::AccessibilityActionType::press);
+  expect(jumps == 2, "accessibility cannot bypass MIDI Learn action gating");
+  wave.setMidiLearnActive(false);
+  wave.setLiveMode(false);
+  goHandler->getActions().invoke(juce::AccessibilityActionType::press);
+  expect(jumps == 2 && !go->isVisible(), "inactive section view exposes no active action surfaces");
+}
+
+void testSectionViewReadableStatesPreview() {
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_SECTION_UX_CAPTURE_DIR", {});
+  for (const auto size : {juce::Point<int>(568, 108), {844, 180}, {1024, 140}, {1280, 180}}) {
+    Fixture f; auto &wave = f.waveform;
+    wave.setMinimalPhoneMode(true); wave.setMinimalPhoneMode(size.x < 900); wave.setSize(size.x, size.y);
+    auto arrangement = WaveformEditingTestAccess::snapshot(wave);
+    arrangement.parts[0].name = "Vamp"; arrangement.parts[1].name = "Coro";
+    arrangement.parts[2].name = juce::String::fromUTF8("Último coro y oración congregacional");
+    wave.setArrangement(arrangement, true);
+    std::vector<float> bins(512);
+    for (size_t i = 0; i < bins.size(); ++i)
+      bins[i] = 0.15f + 0.5f * std::abs(std::sin(i * 0.13f)) * std::abs(std::cos(i * 0.033f));
+    wave.setWaveformBins(bins);
+    bool playing = true; int preparing = -1, pending = -1, loop = -1;
+    double position = 15.0;
+    wave.setTransportProviders([&] { return position; }, [] { return 30.0; }, [&] { return playing; });
+    wave.setPreparingArrangementPartProvider([&] { return preparing; });
+    wave.setPendingArrangementPartProvider([&] { return pending; });
+    wave.setActiveArrangementLoopPartProvider([&] { return loop; });
+    wave.setLiveMode(true);
+    const auto baseline = WaveformEditingTestAccess::liveText(wave, WaveformEditingTestAccess::liveBounds(wave)[1]);
+    const auto capture = [&](const char *state) {
+      WaveformEditingTestAccess::refreshSectionActions(wave);
+      const auto text = WaveformEditingTestAccess::liveText(wave, WaveformEditingTestAccess::liveBounds(wave)[1]);
+      expect(text.fontSize == baseline.fontSize && text.lines == baseline.lines && text.title.getWidth() == baseline.title.getWidth() && text.title.getHeight() == baseline.title.getHeight(),
+             "every musical state preserves title size and line layout");
+      expect(text.stateFontSize == 14.0f && text.state.getBottom() <= WaveformEditingTestAccess::liveBounds(wave)[1].jumpButton.getY(),
+             "readable state never overlaps touch actions, including 108-point height");
+      const auto image = wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f);
+      expect(image.isValid(), "readable section states render from the production component");
+      if (capturePath.isNotEmpty()) {
+        const juce::File directory(capturePath); expect(directory.createDirectory().wasOk(), "section UX evidence directory opens");
+        auto output = directory.getChildFile(juce::String(state) + "-" + juce::String(size.x) + ".png").createOutputStream();
+        expect(output && output->setPosition(0) && output->truncate().wasOk() && juce::PNGImageFormat().writeImageToStream(image, *output),
+               "section UX state evidence writes complete PNG bytes");
+      }
+    };
+    capture("sonando"); playing = false; capture("pausada"); playing = true;
+    preparing = 2; capture("preparando"); preparing = -1; pending = 2; capture("programado");
+    pending = -1; loop = 1; arrangement.parts[1].muteInstruments = true; wave.setArrangement(arrangement, true); capture("loop-mute");
+    loop = -1; position = 25.0; capture("nombre-largo-activo");
+    WaveformEditingTestAccess::setLiveOffset(wave, WaveformEditingTestAccess::liveBounds(wave)[0].body.getWidth() * 0.4f);
+    capture("recorte-parcial");
+  }
+}
+
 void testLiveTitleLayoutInvariantDuringScroll() {
   for (const int width : {390, 768, 1200}) {
     Fixture f; auto &wave = f.waveform;
@@ -2390,6 +2568,9 @@ void testTopbarLiveToggleAndWaveformBackground() {
     WaveformEditingTestAccess::clickLiveToggle(top);
     expect(wave.isLiveMode() && WaveformEditingTestAccess::topbarLiveSelected(top),
            "topbar toggle enters live and reflects its state");
+    expect(WaveformEditingTestAccess::timelineCaption(top) == "Secciones", "timeline selection names the actual visual surface without LIVE");
+    WaveformEditingTestAccess::chooseTimeline(top, true);
+    expect(wave.isLiveMode(), "choosing the already selected presentation is idempotent");
     expect(!WaveformEditingTestAccess::waveMoreVisible(wave) &&
                WaveformEditingTestAccess::liveRow(wave).getY() < 4.0f,
            "live removes the duplicate menu and reclaims all header height");
@@ -2404,6 +2585,7 @@ void testTopbarLiveToggleAndWaveformBackground() {
     wave.setWaveformBins(bins);
     capture("topbar-live-" + juce::String(width));
     WaveformEditingTestAccess::clickLiveToggle(top);
+    expect(WaveformEditingTestAccess::timelineCaption(top) == "Onda", "return selection names the normal waveform view");
     expect(!wave.isLiveMode() && !WaveformEditingTestAccess::topbarLiveSelected(top) &&
                WaveformEditingTestAccess::waveMoreVisible(wave),
            "topbar toggle returns to normal with its original waveform menu available");
@@ -2720,6 +2902,8 @@ int main() {
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
   run("desktop overflow deduplicates visible actions", testDesktopMoreDeduplicatesVisibleActions);
   run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
+  run("section view states, accessibility tree and keyboard", testSectionViewStatesAccessibilityAndKeyboard);
+  run("section view readable states and responsive previews", testSectionViewReadableStatesPreview);
   run("adaptive centered Live titles", testAdaptiveLiveTitles);
   run("live inertial navigation", testLiveInertialNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);

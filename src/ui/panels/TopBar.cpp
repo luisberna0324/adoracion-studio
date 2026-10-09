@@ -241,7 +241,7 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
        {&prevButton, &seekBackButton, &playButton, &stopButton,
         &seekForwardButton, &nextButton, &fadeButton, &windowModeButton,
         &settingsButton, &midiLearnButton, &tabletMoreButton,
-        &phonePadsButton, &liveModeButton}) {
+        &phonePadsButton}) {
     addAndMakeVisible(*btn);
   }
   addChildComponent(songPickerButton);
@@ -271,12 +271,18 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
   setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
   setBaseTooltip(tabletMoreButton,
                  L10n::tr("Más opciones", "More options"));
-  liveModeButton.setTitle(L10n::tr("Modo en vivo", "Live mode"));
-  liveModeButton.setClickingTogglesState(true);
-  liveModeButton.setBadgeText("LIVE");
+  addAndMakeVisible(liveModeButton);
+  liveModeButton.setTitle(L10n::tr("Vista de secciones", "Section view"));
   liveModeButton.onClick = [this] {
-    if (onLiveModeToggle) onLiveModeToggle();
-    refreshLiveModeButton();
+    juce::PopupMenu menu;
+    const bool sections = liveModeState && liveModeState();
+    menu.addItem(1, L10n::tr("Onda", "Waveform"), true, !sections);
+    menu.addItem(2, L10n::tr("Secciones", "Sections"), true, sections);
+    auto safe = juce::Component::SafePointer<TopBar>(this);
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&liveModeButton)
+                          .withMinimumWidth(160).withStandardItemHeight(44), [safe](int result) {
+      if (safe && result > 0) safe->selectTimelineView(result == 2);
+    });
   };
   songPickerButton.setTooltip(L10n::tr("Canciones del setlist", "Setlist songs"));
   songPickerButton.setMouseCursor(juce::MouseCursor::PointingHandCursor);
@@ -511,11 +517,35 @@ void TopBar::setLiveModeControls(std::function<void()> toggle,
 
 void TopBar::refreshLiveModeButton() {
   const bool active = liveModeState && liveModeState();
-  liveModeButton.setIcon(active ? SvgIconName::Check : SvgIconName::Music);
   liveModeButton.setToggleState(active, juce::dontSendNotification);
+  liveModeButton.setButtonText(active ? L10n::tr("Secciones", "Sections") : L10n::tr("Onda", "Waveform"));
+  liveModeButton.setDescription(L10n::tr("Vista seleccionada: ", "Selected view: ") + liveModeButton.getButtonText());
   liveModeButton.setEnabled(onLiveModeToggle && (!liveModeEnabled || liveModeEnabled()));
-  setBaseTooltip(liveModeButton, active ? L10n::tr("Volver a la onda", "Return to waveform")
-                                       : L10n::tr("Modo en vivo", "Live mode"));
+  liveModeButton.setTooltip(L10n::tr("Vista de secciones: Onda / Secciones", "Section view: Waveform / Sections"));
+}
+
+void TopBar::selectTimelineView(bool sections) {
+  if (!liveModeButton.isEnabled() || !onLiveModeToggle) return;
+  if (sections != (liveModeState && liveModeState())) onLiveModeToggle();
+  refreshLiveModeButton();
+}
+
+void TopBar::TimelineViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
+  const auto bounds = getLocalBounds().toFloat().reduced(1.0f);
+  g.setColour(down ? UITheme::cardBgPressed : over ? UITheme::cardBgHover : UITheme::cardBg);
+  g.fillRoundedRectangle(bounds, 10.0f);
+  g.setColour(isEnabled() ? UITheme::textPrimary : UITheme::textSecondary.withAlpha(0.5f));
+  g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
+  g.drawFittedText(getButtonText(), getLocalBounds().reduced(6, 0).withTrimmedRight(12),
+                  juce::Justification::centred, 1, 1.0f);
+  juce::Path arrow;
+  const float x = bounds.getRight() - 10.0f, y = bounds.getCentreY();
+  arrow.startNewSubPath(x - 3.0f, y - 2.0f); arrow.lineTo(x, y + 1.0f); arrow.lineTo(x + 3.0f, y - 2.0f);
+  g.strokePath(arrow, juce::PathStrokeType(1.5f));
+  if (hasKeyboardFocus(false)) {
+    g.setColour(UITheme::textPrimary);
+    g.drawRoundedRectangle(bounds, 10.0f, 2.0f);
+  }
 }
 
 void TopBar::setOnSettingsWithAnchor(
@@ -878,6 +908,7 @@ void TopBar::resized() {
       maxCardW = 170;
       songCardHeight = 40;
       songArtworkSize = 30;
+      if (phoneWidth < 620) { gap = 4; keyWidth = 44; }
     }
 
     bool useRegularPhoneControls = phoneWidth < 880;
@@ -967,9 +998,10 @@ void TopBar::resized() {
   setVisibleIfChanged(fadeButton, true);
   const int transportButtonCount = minimalPhoneProfile ? 5 : 7;
   int horizontalPadding = 12;
+  if (minimalPhoneProfile && contentBounds.getWidth() < 620) horizontalPadding = 0;
 #if JUCE_IOS
   if (minimalPhoneProfile)
-    horizontalPadding = 4;
+    horizontalPadding = contentBounds.getWidth() < 620 ? 0 : 4;
 #endif
   const int leftPadding = contentBounds.getX() + horizontalPadding;
   const int rightPadding = horizontalPadding;
@@ -1008,9 +1040,10 @@ void TopBar::resized() {
   const bool showDesktopExtras = !tabletProfile && contentBounds.getWidth() >= 1100;
   const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
   const bool showTabletMoreButton = true;
+  const int viewSelectorWidth = minimalPhoneProfile ? (contentBounds.getWidth() < 620 ? 88 : 96) : 108;
   const int fixedButtonCount = 2 + (showWindowButton ? 1 : 0) + (showDesktopExtras ? 2 : 0);
   const int minFixedButtonsW =
-      (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
+      (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap) + viewSelectorWidth - square;
   const int availableAfterTransport = contentBounds.getRight() - rightPadding - transportW - 8;
   bool showSystemUsage = !tabletProfile;
   const int maxUsageWidth =
@@ -1028,7 +1061,7 @@ void TopBar::resized() {
     int controlsW = (showTimeDisplay ? timeWidth + gap : 0) + metronomeW + gap + keyWidth;
     if (minimalPhoneProfile)
       controlsW += square + gap;
-    controlsW += 2 * (gap + square);
+    controlsW += gap + viewSelectorWidth + gap + square;
     if (showWindowButton) controlsW += gap + square;
     if (showDesktopExtras) controlsW += 2 * (gap + square);
     if (usageVisible)
@@ -1092,7 +1125,7 @@ void TopBar::resized() {
     if (showWindowButton)
       addItem(windowModeButton, square);
     if (showDesktopExtras) addItem(settingsButton, square);
-    addItem(liveModeButton, square);
+    addItem(liveModeButton, viewSelectorWidth);
     addItem(tabletMoreButton, square, !usageVisible);
     if (usageVisible)
       addItem(systemUsageDisplay, usageWidth, true);

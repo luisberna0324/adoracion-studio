@@ -673,18 +673,22 @@ salto existente, con su temporización pendiente actual; Loop reutiliza su
 callback y Mute silencia instrumentos sin detener el click. No se modifica el
 contrato del motor de audio.
 
-### Modo en vivo
+### Vista de secciones
 
-El topbar ofrece un botón `Modo en vivo` inmediatamente a la izquierda de su
-menú principal de tres puntos. Su estado marcado y tooltip permiten volver a
-la onda. No se duplica la acción en el menú de onda; ese menú conserva sus
-funciones en normal y se oculta en En vivo, sin reservar una cabecera vacía.
+El topbar ofrece un selector `Onda / Secciones` inmediatamente a la izquierda
+del menú principal de tres puntos. Muestra la vista elegida y abre las dos
+opciones con marca de selección; volver a elegir la misma no cambia nada.
+Su título accesible es `Vista de secciones`. No usa badge LIVE ni sugiere otro
+estado de reproducción. El selector conserva los blancos del perfil; en teléfono
+estrecho reduce espacios exteriores y separaciones, sin reducir los 44 puntos
+de los controles. No se duplica la acción en el menú de onda; ese menú conserva
+sus funciones en normal y se oculta en Secciones, sin reservar una cabecera vacía.
 Es una presentación optativa, independiente del
 editor arrange y de la automatización. No se activa al cargar ni cambia el
 estado musical al alternar. Conserva el viewport y el ajuste de seguimiento
 de la vista normal.
 
-En vivo presenta una fila manual de bloques de al menos 176 puntos con Ir, Loop
+Secciones presenta una fila manual de bloques de al menos 176 puntos con Ir, Loop
 y Mute persistentes de 44 × 44 puntos. El ancho se reparte entre un número
 entero de tarjetas, con 12 puntos entre ellas. En teléfono, la fila, el color
 y la onda de las secciones ocupan todo el ancho físico, igual que la onda normal,
@@ -711,7 +715,7 @@ rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
 salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
 mute en Mute; no se confunden con la sección activa.
 
-En vivo reserva un área de título centrada en el bloque completo,
+Secciones reserva un área de título centrada en el bloque completo,
 por encima de los controles y separada de los indicadores. La fuente semibold
 se adapta al ancho y alto (14–30 puntos en alturas habituales); nombres largos
 usan hasta dos líneas y elipsis sin compresión horizontal ilegible. El padding
@@ -723,11 +727,34 @@ El nombre blanco con sombra y degradado de contraste se dibuja después de
 Mute/progreso/pulso; Mute no atenúa sus glifos. En alturas extraordinariamente
 bajas se reduce la fuente para no invadir los objetivos táctiles existentes.
 
+El estado usa 14 puntos Medium, con una o dos líneas según la altura real,
+sin compresión horizontal. Reserva su espacio incluso cuando no hay estado;
+activarse, pausarse o pasar por el recorte del viewport nunca cambia el tamaño
+ni el layout del título. `Sonando` depende de transporte reproduciendo;
+`Pausada` identifica la sección bajo el cursor con transporte detenido/pausado.
+`Preparando` permanece distinto de `Salto programado`, que requiere destino
+pendiente confirmado. Loop futuro se presenta como `Loop armado`. Ir conserva
+su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
+Ir/Loop/Mute usan etiquetas de 13 puntos. La onda y el relleno de progreso
+ceden intensidad y una sombra gradual compartida mejora la lectura de las
+acciones, sin cajas individuales ni cambios en sus blancos de 44 × 44.
+
+Cada acción expone un nodo accesible con nombre/ordinal de sección, estado y
+ayuda contextual. Loop y Mute son toggles con estado real; Mute explica que
+el click continúa y la ayuda de Ir indica cancelación cuando corresponde.
+Tab recorre acciones; izquierda/derecha recorren secciones, arriba/abajo
+recorren acciones, Home/End van a los extremos, Return/Espacio ejecutan la
+acción. Navegar o enfocar sólo revela la sección y no manda comandos musicales.
+Foco de teclado muestra un borde temporal y suspende el centrado mientras se
+opera. Acciones fuera de vista siguen accesibles y se revelan al enfocarse.
+Los proxies de puntero delegan down/drag/up/pinch/rueda al arbitraje existente;
+no añaden un click al soltar tras arrastrar ni cambian el segundo toque.
+
 La onda normal de escritorio conserva regla, mouse y ancho proporcional, sin
-Ir/Loop/Mute integrados ni elipsis por sección o compartida. En vivo mantiene
+Ir/Loop/Mute integrados ni elipsis por sección o compartida. Secciones mantiene
 sus acciones en todas las plataformas.
 
-En vivo prioriza el destino real de Ir pendiente para su centrado; mientras
+Secciones prioriza el destino real de Ir pendiente para su centrado; mientras
 existe no vuelve a la sección que suena por el timeout de exploración. Cambiar
 destino actualiza el objetivo; cancelar o ejecutar retoma el bloque activo.
 La navegación manual conserva la pausa de 3 segundos antes de volver al destino.
@@ -764,11 +791,11 @@ acción `Ventana de canción` permanece accesible desde ese menú. Los objetivos
 del topbar siguen las dimensiones del perfil de dispositivo.
 
 Los refrescos de layout sin cambios de geometría y los nuevos bins de preview
-de la misma canción conservan una pulsación En vivo pendiente. Cambiar canción,
+de la misma canción conservan una pulsación Secciones pendiente. Cambiar canción,
 arrangement, tamaño o insets sí cancela el gesto para no activar otro destino.
 Soltar un botón válido no ajusta el scroll a otra tarjeta; drag y rueda conservan
 su snap. El callback de VBlank de la onda normal no modifica su viewport durante
-En vivo. Ir en reproducción mantiene cola/cancelación existente y Loop mantiene
+Secciones. Ir en reproducción mantiene cola/cancelación existente y Loop mantiene
 su alternancia; no se convierten en seek inmediato.
 
 El bloque con Ir pendiente pulsa suavemente cada 1,8 segundos mediante su
@@ -778,16 +805,20 @@ el nombre y todas las acciones con su tinta habitual, incluido desmute.
 Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
 colas, loops, mute musical ni click.
 
-Ir muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
-estar listo en todos los stems se confirma En cola, libera Loop y espera el
+Con Reducir movimiento de macOS/iOS, el destino mantiene relleno/borde y
+`Salto programado` estáticos; el pulso consulta la misma preferencia que Loop,
+inercia y centrado. No se invalida periódicamente ese bloque sólo para pulsar.
+
+El estado muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
+estar listo en todos los stems se confirma Salto programado, libera Loop y espera el
 próximo final válido, también hacia atrás o al revisitar una sección. El destino
-no hereda Loop. Preparando cambia el texto del botón/estado sin pulso de cola,
+no hereda Loop. Preparando aparece sólo en la línea de estado, sin pulso de cola,
 sin anunciar el destino y sin reducir sus blancos táctiles.
 Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
 Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
 La representación usa el estado real del transporte para cola, Loop y progreso.
 
-El borde de Loop en En vivo desplaza su patrón alrededor de un perímetro
+El borde de Loop en Secciones desplaza su patrón alrededor de un perímetro
 continuo a 6 puntos por segundo, según tiempo transcurrido y no frames.
 El patrón ajusta períodos completos al contorno para conservar continuidad en
 las esquinas y la unión inicial/final. Al quitar Loop desaparece. No cambia

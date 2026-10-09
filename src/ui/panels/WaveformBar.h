@@ -53,6 +53,8 @@ public:
   using ActiveArrangementLoopPartProvider = std::function<int()>;
 
   WaveformBar();
+  ~WaveformBar() override;
+  std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
   bool canToggleLiveMode() const {
@@ -152,6 +154,14 @@ private:
   float getLiveBlockStride() const;
   void rebuildLiveSectionBounds();
   void drawLiveSections(juce::Graphics &g);
+  class SectionActionButton;
+  std::vector<std::unique_ptr<SectionActionButton>> liveSectionActions;
+  void refreshLiveSectionActions(bool updateState = true);
+  void activateLiveSectionAction(const juce::String &partId, int action);
+  void revealLiveSectionAction(const juce::String &partId);
+  bool navigateLiveSectionAction(const juce::String &partId, int action, const juce::KeyPress &);
+  juce::String liveSectionState(int index) const;
+  static float livePendingPulse(double nowMs, bool reducedMotion);
   void setLiveScrollOffset(float offset);
   void snapLiveScrollOffset();
   void suspendLiveFollow();
@@ -177,6 +187,7 @@ private:
   int livePaintActive = -1, livePaintPending = -1, livePaintLoop = -1;
   float livePaintProgress = -1.0f;
   bool livePaintReducedMotion = false;
+  bool livePaintPlaying = false;
   double liveScrollSnapDueMs = 0.0;
   juce::Rectangle<float> liveLayoutRow;
   juce::BorderSize<int> liveLayoutInsets;
@@ -243,6 +254,8 @@ private:
   struct LiveTextLayout {
     juce::Rectangle<float> title, state;
     float fontSize = 14.0f;
+    float stateFontSize = 14.0f;
+    int stateLines = 1;
     int lines = 1;
   };
   LiveTextLayout getLiveTextLayout(const PartOverlayBounds &item) const;
