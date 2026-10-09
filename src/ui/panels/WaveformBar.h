@@ -240,6 +240,13 @@ private:
     bool showsAutomateButton = false;
   };
 
+  struct LiveTextLayout {
+    juce::Rectangle<float> title, state;
+    float fontSize = 14.0f;
+    int lines = 1;
+  };
+  LiveTextLayout getLiveTextLayout(const PartOverlayBounds &item) const;
+
   struct PartHitResult {
     int partIndex = -1;
     bool leftEdge = false;

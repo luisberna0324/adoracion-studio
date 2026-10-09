@@ -86,6 +86,7 @@ struct WaveformEditingTestAccess {
   static float liveProgress(const WaveformBar &waveform, int index) {
     return waveform.liveSectionProgress(index);
   }
+  static auto liveText(WaveformBar &wave, const WaveformBar::PartOverlayBounds &item) { return wave.getLiveTextLayout(item); }
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
   static void followAt(WaveformBar &waveform, double now) { waveform.updateLiveFollow(now); }
   static void vblank(WaveformBar &waveform, double now) { waveform.updatePlaybackAnimation(now); }
@@ -1416,6 +1417,71 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
+void testAdaptiveLiveTitles() {
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_LIVE_TITLE_CAPTURE_DIR", {});
+  juce::Image evidence(juce::Image::RGB, 1200, 1000, true); juce::Graphics sheet(evidence);
+  sheet.fillAll(juce::Colour(0xff262220)); int evidenceY = 0;
+  for (const auto size : {juce::Point<int>(390, 108), {768, 140}, {1200, 180}, {390, 108}}) {
+    Fixture f; auto &wave = f.waveform;
+    wave.setMinimalPhoneMode(true); wave.setMinimalPhoneMode(size.x == 390);
+    wave.setSize(size.x, size.y);
+    SongArrangementSnapshot arrangement;
+    arrangement.parts = {original("Coro", 0, 10), original("Bridge", 10, 20),
+                          original("Voice", 20, 30), original("INTERLUDIOINSTRUMENTALEXTENSOSINESPACIOS", 30, 40)};
+    arrangement.parts[1].name = juce::String::fromUTF8("Puente instrumental y oración congregacional");
+    arrangement.parts[2].name = juce::String::fromUTF8("Voz y adoración sin final");
+    expect(arrangementPartDisplayLabelForName(arrangement.parts[1].name).contains(juce::String::fromUTF8("oración")),
+           "adaptive title retains accented UTF-8 section names");
+    arrangement.parts[0].muteInstruments = true;
+    wave.setArrangement(arrangement, true); wave.setWaveformBins(std::vector<float>(512, 0.8f));
+    wave.setTransportProviders([] { return 5.0; }, [] { return 40.0; }, [] { return true; });
+    wave.setPendingArrangementPartProvider([] { return 1; });
+    wave.setPreparingArrangementPartProvider([] { return 2; });
+    wave.setActiveArrangementLoopPartProvider([] { return 0; });
+    wave.setLiveMode(true);
+    const bool partial = evidenceY >= 600;
+    const auto initial = WaveformEditingTestAccess::liveBounds(wave);
+    const float stride = initial[1].body.getX() - initial[0].body.getX();
+    if (partial) WaveformEditingTestAccess::setLiveOffset(wave, stride * 0.40f);
+    else if (size.x == 390) WaveformEditingTestAccess::setLiveOffset(wave, stride * 0.15f);
+    const auto image = wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f);
+    for (const auto &item : WaveformEditingTestAccess::liveBounds(wave)) {
+      if (!item.body.intersects(WaveformEditingTestAccess::liveRow(wave))) continue;
+      const auto text = WaveformEditingTestAccess::liveText(wave, item);
+      expect(!text.title.isEmpty(), "visible Live section always reserves a name region");
+      expect(WaveformEditingTestAccess::liveRow(wave).contains(text.title), "partially visible title stays within the viewport");
+      expect(!text.title.intersects(item.jumpButton) && !text.title.intersects(item.loopButton) && !text.title.intersects(item.muteButton) &&
+                 !text.title.intersects(text.state), "title never overlaps actions or state indicators");
+      expect(text.fontSize >= 14.0f && text.fontSize <= 30.0f, "normal Live heights preserve readable adaptive font bounds");
+      const auto pixels = text.title.transformedBy(juce::AffineTransform::scale(2.0f)).toNearestInt().getIntersection(image.getBounds());
+      int white = 0;
+      for (int y = pixels.getY(); y < pixels.getBottom(); ++y)
+        for (int x = pixels.getX(); x < pixels.getRight(); ++x) {
+          const auto colour = image.getPixelAt(x, y);
+          if (colour.getRed() > 245 && colour.getGreen() > 245 && colour.getBlue() > 245) ++white;
+        }
+      expect(white > 12, "real renderer keeps high-contrast title glyphs under Mute, Loop, pending and Preparing");
+      const auto visible = item.body.getIntersection(WaveformEditingTestAccess::liveRow(wave));
+      expectNear(text.title.getCentreX(), visible.getCentreX(), "title is centered in the visible section area");
+    }
+    // The same renderer is exercised at 1x and 2x, with unchanged action geometry.
+    const auto single = wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.0f);
+    expect(single.getWidth() == size.x && image.getWidth() == size.x * 2, "component captures honor display scale");
+    sheet.setColour(juce::Colours::white); sheet.setFont(juce::Font(juce::FontOptions(16.0f)));
+    sheet.drawText(juce::String(size.x) + " × " + juce::String(size.y) + (partial ? " · desplazamiento parcial" : " · estados combinados"),
+                   8, evidenceY, 1180, 24, juce::Justification::centredLeft);
+    const float scale = size.x == 390 ? 2.0f : 1.0f;
+    sheet.drawImage(image, juce::Rectangle<float>(0.0f, static_cast<float>(evidenceY + 26), size.x * scale, size.y * scale));
+    evidenceY += juce::roundToInt(size.y * scale) + 34;
+  }
+  if (capturePath.isNotEmpty()) {
+    const juce::File file(capturePath); expect(file.getParentDirectory().createDirectory().wasOk(), "title evidence folder opens");
+    auto stream = file.createOutputStream();
+    expect(stream && stream->setPosition(0) && stream->truncate().wasOk() && juce::PNGImageFormat().writeImageToStream(evidence, *stream),
+           "real Live title render evidence saves");
+  }
+}
+
 void testLiveInertialNavigation() {
   for (const int width : {390, 768, 1200}) {
     Fixture f; auto &wave = f.waveform;
@@ -2555,6 +2621,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
+  run("adaptive centered Live titles", testAdaptiveLiveTitles);
   run("live inertial navigation", testLiveInertialNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
   run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);

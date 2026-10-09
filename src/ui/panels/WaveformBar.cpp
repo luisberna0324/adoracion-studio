@@ -2736,6 +2736,33 @@ float WaveformBar::liveSectionProgress(int index) const {
       (position - part.startSec) / (part.endSec - part.startSec)));
 }
 
+WaveformBar::LiveTextLayout WaveformBar::getLiveTextLayout(const PartOverlayBounds &item) const {
+  LiveTextLayout layout;
+  const auto content = getLiveSectionContentBounds(item.body).getIntersection(getLiveRowBounds());
+  if (content.isEmpty()) return layout;
+  const float actionsTop = item.jumpButton.isEmpty() ? content.getBottom() : item.jumpButton.getY();
+  const float available = juce::jmax(0.0f, actionsTop - content.getY());
+  const float paddingY = juce::jmin(6.0f, available * 0.08f);
+  const float paddingX = juce::jmin(10.0f, content.getWidth() * 0.06f);
+  const bool showsState = available >= 48.0f;
+  const float stateHeight = showsState ? 14.0f : 0.0f;
+  const float titleHeight = juce::jmin(72.0f, juce::jmax(0.0f, available - paddingY * 2.0f - stateHeight));
+  layout.title = {content.getX() + paddingX, content.getY() + paddingY,
+                  juce::jmax(0.0f, content.getWidth() - paddingX * 2.0f), titleHeight};
+  if (showsState) layout.state = layout.title.withY(layout.title.getBottom()).withHeight(stateHeight);
+  const auto label = arrangementPartDisplayLabelForName(arrangement.parts[static_cast<size_t>(item.partIndex)].name);
+  const float maximum = juce::jlimit(12.0f, 30.0f, titleHeight * 0.70f);
+  layout.fontSize = juce::jmin(maximum, juce::jmax(9.0f, titleHeight));
+  const float measured = juce::GlyphArrangement::getStringWidth(makeAppFont(layout.fontSize, AppFontWeight::SemiBold), label);
+  layout.lines = titleHeight >= 34.0f && measured > layout.title.getWidth() ? 2 : 1;
+  const float minimum = juce::jmin(14.0f, juce::jmax(9.0f, titleHeight / layout.lines));
+  layout.fontSize = juce::jmin(layout.fontSize, titleHeight / layout.lines);
+  while (layout.fontSize > minimum && juce::GlyphArrangement::getStringWidth(
+      makeAppFont(layout.fontSize, AppFontWeight::SemiBold), label) > layout.title.getWidth() * layout.lines * 0.90f)
+    layout.fontSize = juce::jmax(minimum, layout.fontSize - 1.0f);
+  return layout;
+}
+
 void WaveformBar::drawLiveSections(juce::Graphics &g) {
   drawStudioBackground(g, getLocalBounds().toFloat());
   g.setColour(UITheme::textPrimary);
@@ -2790,19 +2817,29 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
           [&](juce::Line<float> line) { g.drawLine(line, 1.2f); });
     }
     const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
-    const auto content = getLiveSectionContentBounds(item.body);
-    g.setColour(ink);
-    g.setFont(makeAppFont(11.0f, AppFontWeight::SemiBold));
-    g.drawFittedText(arrangementPartDisplayLabelForName(part.name),
-        content.withHeight(18.0f).reduced(6.0f, 1.0f).toNearestInt(), juce::Justification::centredLeft, 1);
-    if (content.getHeight() >= 90.0f) {
+    const auto text = getLiveTextLayout(item);
+    // Draw after all musical-state overlays so Mute never dims the name.
+    // A feathered scrim and shadow keep text legible over waveform and pulse.
+    const auto header = text.title.getUnion(text.state);
+    g.setGradientFill(juce::ColourGradient(juce::Colours::black.withAlpha(0.42f),
+        header.getCentreX(), header.getY(), juce::Colours::transparentBlack,
+        header.getCentreX(), header.getBottom() + 6.0f, false));
+    g.fillRect(header.expanded(4.0f, 0.0f).getIntersection(item.body.reduced(5.0f)));
+    const auto label = arrangementPartDisplayLabelForName(part.name);
+    g.setFont(makeAppFont(text.fontSize, AppFontWeight::SemiBold));
+    g.setColour(juce::Colours::black.withAlpha(0.85f));
+    g.drawFittedText(label, text.title.translated(0.0f, 1.0f).toNearestInt(), juce::Justification::centred, text.lines, 1.0f);
+    g.setColour(juce::Colours::white);
+    g.drawFittedText(label, text.title.toNearestInt(), juce::Justification::centred, text.lines, 1.0f);
+    if (!text.state.isEmpty()) {
       juce::String state;
       if (progress >= 0.0f) state = L10n::tr("Activa", "Active");
       if (item.partIndex == loop) state += state.isEmpty() ? "Loop" : " · Loop";
       if (item.partIndex == preparing) state += state.isEmpty() ? L10n::tr("Preparando", "Preparing") : L10n::tr(" · Preparando", " · Preparing");
       if (item.partIndex == pending) state += state.isEmpty() ? L10n::tr("En cola", "Queued") : L10n::tr(" · En cola", " · Queued");
-      g.setFont(makeAppFont(10.0f));
-      g.drawFittedText(state, content.withTrimmedTop(20.0f).withHeight(16.0f).reduced(6.0f, 0).toNearestInt(), juce::Justification::centredLeft, 1);
+      g.setColour(juce::Colours::white.withAlpha(0.95f));
+      g.setFont(makeAppFont(11.0f));
+      g.drawFittedText(state, text.state.toNearestInt(), juce::Justification::centred, 1, 1.0f);
     }
     const auto action = [&](juce::Rectangle<float> target, SvgIconName icon,
                             const juce::String &label, bool marked) {
