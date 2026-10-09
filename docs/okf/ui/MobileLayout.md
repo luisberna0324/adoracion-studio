@@ -642,23 +642,14 @@ Mediciones y limites de la verificacion:
 
 ## Controles integrados de secciones y navegación de la onda
 
-En la onda normal de iOS y Android, Ir, Loop y Mute permanecen visibles dentro de la parte inferior
-de cada sección. Los iconos de línea y sus textos heredan el color de la sección;
-una atenuación gradual de la onda aporta contraste sin cajas ni círculos por
-botón. Su posición es fija: activar una acción no reordena los controles.
-Las secciones conservan su ancho proporcional al tiempo y los objetivos miden
-como mínimo 44 × 44 puntos. Con menos ancho se conservan Ir y Loop cuando caben,
-y Más ofrece Mute. Si sólo cabe un objetivo, la elipsis abre las tres acciones.
-Las regiones menores que un objetivo usan la elipsis compartida de Secciones,
-que lista las secciones por número y nombre, sin ensanchar la línea de tiempo.
-Los menús resuelven el ID persistente de la sección al ejecutar la acción.
-La distribución de acciones reserva el espacio de los controles globales de
-onda y su menú. Ese espacio puede reducir las acciones visibles de la sección
-final, pero no cambia su duración ni sus límites sobre la onda.
+La vista Onda normal no muestra Ir, Loop ni Mute en ninguna plataforma.
+No reserva objetivos táctiles, foco, nodos accesibles ni menús de acciones de
+reproducción por sección. Estas acciones pertenecen únicamente a Secciones.
+Los anchos y límites de Onda siguen siendo proporcionales al tiempo.
 
 En iOS y Android, tanto teléfonos como tablets, arrastrar la onda en reproducción
 sólo desplaza su viewport. El toque sobre el fondo mueve la posición al soltar;
-los controles también se ejecutan al soltar y no buscan la posición subyacente.
+en Secciones, los controles se ejecutan al soltar y no buscan la posición subyacente.
 Superar 6 puntos de movimiento, soltar fuera del destino, cambiar de objetivo,
 utilizar otro dedo o iniciar zoom cancela la acción pendiente. Volver al punto
 inicial no convierte un arrastre en toque. Pinch conserva su ancla; el gesto no

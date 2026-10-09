@@ -276,7 +276,10 @@ un backend desplegado. Ver [plan Apple](../distribution/SignInWithApplePlan.md).
 
 ## Acceso local con la demo incluida
 
-La bienvenida ofrece **Prueba sin conexión** en escritorio, iOS y Android.
+La bienvenida ofrece **Prueba sin conexión** únicamente en builds Debug
+(`JUCE_DEBUG`), en escritorio, iOS y Android. Release y distribución no agregan
+el botón ni permiten abrir el formulario, invocar el login local o restaurar
+una sesión de prueba persistida. El simulador no constituye una excepción.
 Abre un formulario separado del acceso con correo: usuario y contraseña son
 `usuarioplay0324`. Su callback `launchLocalDemoLogin` compara esos valores
 localmente; nunca llama a Firebase ni al backend. No representa una cuenta o

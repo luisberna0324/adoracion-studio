@@ -1,4 +1,5 @@
 #include "WelcomeModal.h"
+#include "DevelopmentFeatures.h"
 #include "../../data/Localization.h"
 #include "../../platform/NativeAppleSignIn.h"
 
@@ -91,6 +92,9 @@ void EmailAuthenticationForm::showLogin() {
 }
 
 void EmailAuthenticationForm::showLocalDemoLogin() {
+#if !JUCE_DEBUG
+  return;
+#endif
   clearCredentials();
   emailEditor.clear();
   mode = Mode::localDemoLogin;
@@ -228,7 +232,9 @@ void EmailAuthenticationForm::submit() {
   }
   clearCredentials();
   if (isLocalDemoMode()) {
+#if JUCE_DEBUG
     if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(email, password);
+#endif
     return;
   }
   if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
@@ -304,9 +310,11 @@ WelcomeModal::WelcomeModal() {
   emailButton.setButtonText(L10n::tr("Ingresar con correo", "Sign in with email"));
   emailButton.onClick = [this] { showEmailForm(true); };
   addAndMakeVisible(emailButton);
+#if JUCE_DEBUG
   localDemoButton.setButtonText(L10n::tr(u8"Prueba sin conexión", "Offline trial"));
   localDemoButton.onClick = [this] { showLocalDemoLogin(); };
   addAndMakeVisible(localDemoButton);
+#endif
   backButton.setButtonText(L10n::tr("Volver", "Back"));
   backButton.setTitle(L10n::tr("Volver", "Back"));
   backButton.setTooltip(L10n::tr("Volver", "Back"));
@@ -317,7 +325,9 @@ WelcomeModal::WelcomeModal() {
     if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
   };
   emailForm.onLocalDemoLoginRequested = [this](const auto& username, const auto& password) {
+#if JUCE_DEBUG
     if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(username, password);
+#endif
   };
   emailForm.onPasswordResetRequested = [this](const auto& email) {
     if (onPasswordResetRequested) onPasswordResetRequested(email);
@@ -386,6 +396,9 @@ void WelcomeModal::showPasswordLinkSent() {
 }
 
 void WelcomeModal::showLocalDemoLogin() {
+#if !JUCE_DEBUG
+  return;
+#endif
   if (onAuthenticationCancelled) onAuthenticationCancelled();
   resetStatusToDefault();
   emailMode = true;
@@ -412,7 +425,7 @@ void WelcomeModal::showEmailForm(bool show) {
 void WelcomeModal::updateActionVisibility() {
   loginButton.setVisible(!checking && !emailMode);
   emailButton.setVisible(!checking && !emailMode);
-  localDemoButton.setVisible(!emailMode);
+  localDemoButton.setVisible(DevelopmentFeatures::testLogin && !emailMode);
   separator.setVisible(!checking && !emailMode);
   emailForm.setVisible(!checking && emailMode);
   backButton.setVisible(!checking && emailMode);
@@ -444,7 +457,7 @@ void WelcomeModal::resized() {
   const int sidePadding = getWidth() < 600 ? 22 : 32;
   const bool hasStatus = status.getText().isNotEmpty();
   const int preferred = emailMode ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) + (hasStatus ? 68 : 0)
-                                  : 436 + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
+                                  : (DevelopmentFeatures::testLogin ? 436 : 378) + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
   contentBounds = juce::Rectangle<int>(cardWidth,
       juce::jmin(preferred, available.getHeight())).withCentre(available.getCentre());
   // Changing steps moves the card without resizing this component. Invalidate
@@ -480,7 +493,7 @@ void WelcomeModal::resized() {
     area.removeFromTop(12);
   }
   if (checking) {
-    localDemoButton.setBounds(area.removeFromTop(48));
+    if (DevelopmentFeatures::testLogin) localDemoButton.setBounds(area.removeFromTop(48));
     return;
   }
   if (emailMode) {
@@ -494,6 +507,8 @@ void WelcomeModal::resized() {
   }
   separator.setBounds(area.removeFromTop(34));
   emailButton.setBounds(area.removeFromTop(48));
-  area.removeFromTop(10);
-  localDemoButton.setBounds(area.removeFromTop(48));
+  if (DevelopmentFeatures::testLogin) {
+    area.removeFromTop(10);
+    localDemoButton.setBounds(area.removeFromTop(48));
+  }
 }

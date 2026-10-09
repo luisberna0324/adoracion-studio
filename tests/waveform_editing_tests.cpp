@@ -1282,31 +1282,13 @@ void testPersistentResponsiveSectionControls() {
                "all visible playback actions retain at least 44 by 44 logical pixels");
         expect(target.body.contains(rect), "individual actions remain inside their section");
       }
-    if (requestedWidth >= 200.0f) {
-      expect(target.showsJumpButton && target.showsLoopButton && target.showsMuteButton &&
-                 !target.showsOverflowButton,
-             "wide sections persistently expose Go, Loop and Mute");
-      expect(target.jumpButton.getCentreX() < target.loopButton.getCentreX() &&
-                 target.loopButton.getCentreX() < target.muteButton.getCentreX(),
-             "full actions retain their spatial order");
-      WaveformEditingTestAccess::expectPersistentControls(f.waveform, "A");
-    } else if (requestedWidth >= 100.0f) {
-      expect(target.showsJumpButton && target.showsLoopButton && !target.showsMuteButton &&
-                 target.showsOverflowButton,
-             "compact sections expose Go and Loop plus an explicit overflow menu");
-      expect(!target.overflowButton.intersects(target.jumpButton) &&
-                 !target.overflowButton.intersects(target.loopButton),
-             "compact overflow never overlaps the primary actions");
-    } else if (requestedWidth >= 52.0f) {
-      expect(!target.showsJumpButton && !target.showsLoopButton && !target.showsMuteButton &&
-                 target.showsOverflowButton,
-             "narrow sections replace crowded actions with one full-size ellipsis");
-    } else {
-      expect(!target.showsJumpButton && !target.showsLoopButton && !target.showsMuteButton &&
-                 !target.showsOverflowButton,
-             "very narrow sections do not shrink or overlap action targets");
-      WaveformEditingTestAccess::expectSharedOverflow(f.waveform);
-    }
+    WaveformEditingTestAccess::expectNoDesktopPlaybackActions(f.waveform);
+    f.waveform.setLiveMode(true);
+    const auto sections = WaveformEditingTestAccess::liveBounds(f.waveform);
+    expect(!sections[1].jumpButton.isEmpty() && !sections[1].loopButton.isEmpty() &&
+               !sections[1].muteButton.isEmpty(), "Sections retains all playback actions");
+    f.waveform.setLiveMode(false);
+    WaveformEditingTestAccess::expectNoDesktopPlaybackActions(f.waveform);
   }
   expect(WaveformEditingTestAccess::miniMap(f.waveform).isEmpty(),
          "phone navigation omits the desktop minimap");
@@ -1363,18 +1345,18 @@ void testMobileWaveformGestureArbitration() {
   f.waveform.setSize(1200, 260);
   WaveformEditingTestAccess::setVisibleWindow(f.waveform, 0.0f, 1.0f);
   const auto overlay = WaveformEditingTestAccess::overlay(f.waveform, "A");
-  expect(overlay.showsLoopButton, "mobile section offers its loop target");
-  const auto button = overlay.loopButton.getCentre();
+  WaveformEditingTestAccess::expectNoDesktopPlaybackActions(f.waveform);
+  const auto button = overlay.body.getCentre().withY(overlay.body.getBottom() - 24.0f);
   f.waveform.mouseDown(pointerEvent(f.waveform, button, button));
-  expect(loops == 0 && seeks == 1, "inline actions are deferred on mobile down");
   f.waveform.mouseUp(pointerEvent(f.waveform, button, button));
-  expect(loops == 1 && seeks == 1, "valid inline release invokes only its action");
+  expect(loops == 0 && jumps == 0 && seeks == 2,
+         "former action lane is ordinary waveform: tap seeks without musical actions");
   f.waveform.mouseDown(pointerEvent(f.waveform, button, button));
   const auto buttonDrag = button.translated(35.0f, 0.0f);
   f.waveform.mouseDrag(pointerEvent(f.waveform, buttonDrag, button, true));
   f.waveform.mouseUp(pointerEvent(f.waveform, buttonDrag, button, true));
-  expect(loops == 1 && jumps == 0 && seeks == 1,
-         "drag beginning on an inline action invokes neither action nor seek");
+  expect(loops == 0 && jumps == 0 && seeks == 2,
+         "drag in former action lane only pans and never seeks or acts");
 }
 
 void testSectionActionsClearGlobalControls() {
@@ -1385,6 +1367,7 @@ void testSectionActionsClearGlobalControls() {
     for (const int width : {360, 390, 768, 1200}) {
       f.waveform.setSize(width, 250);
       WaveformEditingTestAccess::expectPlaybackActionsClearGlobalControls(f.waveform);
+      WaveformEditingTestAccess::expectNoDesktopPlaybackActions(f.waveform);
     }
   }
 }
@@ -1603,6 +1586,28 @@ void testSectionViewStatesAccessibilityAndKeyboard() {
   wave.setLiveMode(false);
   goHandler->getActions().invoke(juce::AccessibilityActionType::press);
   expect(jumps == 2 && !go->isVisible(), "inactive section view exposes no active action surfaces");
+  go->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+  expect(jumps == 2 && !goHandler->getCurrentState().isFocusable(),
+         "hidden section actions cannot activate by keyboard or expose accessible focus");
+  wave.setLiveMode(true);
+  expect(go->isVisible(), "returning to Sections restores action surfaces");
+  wave.setLiveMode(false);
+  expect(!go->isVisible(), "repeated view switching clears every action surface");
+  for (const bool phone : {false, true}) {
+    wave.setMinimalPhoneMode(phone); wave.setSize(phone ? 568 : 1280, 180);
+    wave.setLiveMode(true); WaveformEditingTestAccess::setLiveOffset(wave, 0.0f);
+    go = WaveformEditingTestAccess::sectionAction(wave, "Intro", 0);
+    auto *handler = go->getAccessibilityHandler();
+    expect(go->isVisible() && handler != nullptr, "both desktop and phone restore accessible section actions");
+    wave.setLiveMode(false);
+    const int before = jumps;
+    handler->getActions().invoke(juce::AccessibilityActionType::press);
+    go->keyPressed(juce::KeyPress(juce::KeyPress::spaceKey));
+    expect(!go->isVisible() && handler->getCurrentState().isIgnored() &&
+               !handler->getCurrentState().isFocusable() && jumps == before,
+           "Onda hides and disables section actions for accessibility and keyboard on both layouts");
+    WaveformEditingTestAccess::expectNoDesktopPlaybackActions(wave);
+  }
 }
 
 void testSectionViewReadableStatesPreview() {

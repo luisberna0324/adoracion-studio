@@ -339,7 +339,20 @@ int main(int argc, char **argv) {
       previewLocalDemoLogin(seconds);
       return 0;
     }
+#if JUCE_DEBUG
     testLocalSessionIsolationAndRestart();
+#else
+    {
+      AppSettings::setLocalDemoSessionActive(true);
+      MTControlsAudioProcessor processor;
+      MTControlsAudioProcessorEditor editor(processor);
+      expect(!LocalDemoAccessTestAccess::local(editor), "production never restores persisted test access");
+      const bool allowedBefore = LocalDemoAccessTestAccess::allowed(editor);
+      LocalDemoAccessTestAccess::login(editor, "usuarioplay0324", "usuarioplay0324");
+      expect(!LocalDemoAccessTestAccess::local(editor) && LocalDemoAccessTestAccess::allowed(editor) == allowedBefore,
+             "production rejects direct test-login dispatch");
+    }
+#endif
     ProjectStore::flushAllPendingSettings();
     std::cout << "Local demo access: " << checks
               << " checks passed; Firebase transports: 0; eight bundled stems, no autoplay\n";

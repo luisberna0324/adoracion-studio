@@ -1,5 +1,6 @@
 #include "AppIdentity.h"
 #include "PluginEditor.h"
+#include "DevelopmentFeatures.h"
 #include "telemetry/Telemetry.h"
 #include "PluginEditorSupport.h"
 #include "SongLoadProbe.h"
@@ -323,7 +324,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
-  localDemoSession = AppSettings::getLocalDemoSessionActive();
+  localDemoSession = DevelopmentFeatures::testLogin && AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
   const bool canFastBootFromSnapshot =

@@ -1039,7 +1039,7 @@ public:
               actionsFor(b), Interfaces{std::make_unique<Value>(b)}), button(b) {}
       juce::AccessibleState getCurrentState() const override {
         if (!button.isVisible() || !button.owner.isLiveMode())
-          return juce::AccessibilityHandler::getCurrentState().withIgnored();
+          return juce::AccessibleState().withIgnored();
         auto state = juce::AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
         if (button.action != 0) {
           state = state.withCheckable();
@@ -3115,6 +3115,7 @@ void WaveformBar::resetTouchWaveformNavigation() {
 }
 
 bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
+  if (!liveMode) return false;
   if (hit.overflowButton) {
     if (hit.partIndex == -2) {
       showInlineSectionMenu(-2, sharedSectionOverflowBounds);
@@ -3170,6 +3171,7 @@ bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
 }
 
 void WaveformBar::showInlineSectionMenu(int partIndex, juce::Rectangle<float> anchor) {
+  if (!liveMode) return;
   if (partIndex != -2 && !juce::isPositiveAndBelow(partIndex, static_cast<int>(arrangement.parts.size()))) return;
   struct MenuAction { int menuId; juce::String partId; int action; };
   std::vector<MenuAction> actions;
@@ -6312,32 +6314,6 @@ void WaveformBar::rebuildPartOverlayBounds(
 
   const auto window = getVisibleWindow();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
-  const bool inlinePlaybackControls = usesTouchWaveformNavigation();
-  // Extremely narrow regions retain their timeline width. A shared, full-size
-  // ellipsis offers their actions without overlapping adjacent touch targets.
-  auto safeLane = minimalPhoneMode
-      ? lane.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()) : lane;
-  // Global waveform controls also occupy the bottom of this lane. Reserve
-  // their space for actions only, leaving musical section geometry untouched.
-  for (const auto *control : {&followButton, &moreButton, &editButton, &waveHeightButton}) {
-    if (!control->isVisible()) continue;
-    const auto occupied = control->getBounds().toFloat();
-    if (occupied.intersects(safeLane.withTrimmedTop(
-            juce::jmax(0.0f, safeLane.getHeight() - 44.0f))))
-      safeLane.setRight(juce::jmax(safeLane.getX(), occupied.getX() - 4.0f));
-  }
-  if (inlinePlaybackControls && !isEditingArrangement() && !automationEditing && safeLane.getWidth() >= 52.0f && safeLane.getHeight() >= 44.0f) {
-    for (const auto &part : arrangement.parts) {
-      if (part.skipPlayback) continue;
-      const float left = lane.getX() + (static_cast<float>(part.startSec / songLength) - window.first) / window.second * lane.getWidth();
-      const float right = lane.getX() + (static_cast<float>(part.endSec / songLength) - window.first) / window.second * lane.getWidth();
-      const float visibleWidth = juce::jmin(right, safeLane.getRight()) - juce::jmax(left, safeLane.getX());
-      if (visibleWidth > 0.0f && (visibleWidth < 52.0f || safeLane.getHeight() < 64.0f)) {
-        sharedSectionOverflowBounds = {safeLane.getRight() - 46.0f, safeLane.getBottom() - 44.0f, 44.0f, 44.0f};
-        break;
-      }
-    }
-  }
   for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
     const auto &part = arrangement.parts[static_cast<size_t>(i)];
     const float startRatio =
@@ -6395,52 +6371,7 @@ void WaveformBar::rebuildPartOverlayBounds(
     overlay.showsDuplicateButton = false;
 
     const bool editingNow = isEditingArrangement();
-    if (inlinePlaybackControls && !editingNow && !automationEditing) {
-      auto actionBounds = minimalPhoneMode
-          ? body.getIntersection(
-                phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
-          : body;
-      actionBounds = actionBounds.getIntersection(safeLane);
-      if (!sharedSectionOverflowBounds.isEmpty() && actionBounds.getRight() > sharedSectionOverflowBounds.getX())
-        actionBounds = actionBounds.withRight(juce::jmax(actionBounds.getX(), sharedSectionOverflowBounds.getX() - 4.0f));
-      // Keep musical widths untouched. Controls never shrink below 44 points.
-      // A narrow section exposes its actions through an explicit menu instead.
-      constexpr float touchSize = 44.0f;
-      constexpr float gap = 4.0f;
-      const float y = actionBounds.getBottom() - touchSize - 2.0f;
-      if (!part.skipPlayback && actionBounds.getHeight() >= touchSize + 20.0f) {
-        const float available = actionBounds.getWidth() - 8.0f;
-        const auto buttonAt = [&](float x) {
-          return juce::Rectangle<float>(x, y, touchSize, touchSize);
-        };
-        if (available >= 3.0f * touchSize + 2.0f * gap) {
-          const float spacing = available / 3.0f;
-          const float x = actionBounds.getX() + 4.0f;
-          overlay.jumpButton = buttonAt(x + (spacing - touchSize) * 0.5f);
-          overlay.loopButton = buttonAt(x + spacing + (spacing - touchSize) * 0.5f);
-          overlay.muteButton = buttonAt(x + 2.0f * spacing + (spacing - touchSize) * 0.5f);
-          overlay.showsJumpButton = overlay.showsLoopButton = overlay.showsMuteButton = true;
-        } else if (available >= 2.0f * touchSize + gap && actionBounds.getHeight() >= 94.0f) {
-          const float x = actionBounds.getCentreX() - touchSize - gap * 0.5f;
-          overlay.jumpButton = buttonAt(x);
-          overlay.loopButton = buttonAt(x + touchSize + gap);
-          overlay.showsJumpButton = overlay.showsLoopButton = true;
-          overlay.overflowButton = {actionBounds.getRight() - touchSize - 2.0f,
-                                    actionBounds.getY() + 2.0f, touchSize, touchSize};
-          overlay.showsOverflowButton = true;
-        } else if (available >= touchSize) {
-          overlay.overflowButton = buttonAt(actionBounds.getCentreX() - touchSize * 0.5f);
-          overlay.showsOverflowButton = true;
-        }
-        const auto iconFor = [](juce::Rectangle<float> button) {
-          return juce::Rectangle<float>(button.getCentreX() - 10.0f,
-                                        button.getY() + 3.0f, 20.0f, 20.0f);
-        };
-        overlay.jumpIcon = iconFor(overlay.jumpButton);
-        overlay.loopIcon = iconFor(overlay.loopButton);
-        overlay.muteIcon = iconFor(overlay.muteButton);
-      }
-    } else if (editingNow && !automationEditing) {
+    if (editingNow && !automationEditing) {
       constexpr float editButtonSize = 24.0f;
       constexpr float editButtonGap = 4.0f;
       constexpr float editToolbarPadX = 5.0f;
