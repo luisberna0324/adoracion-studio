@@ -722,12 +722,21 @@ La navegación manual conserva la pausa de 3 segundos antes de volver al destino
 Sin Ir pendiente, centra la sección activa una vez al cambiar de sección durante la
 reproducción, con transición suave de 280 ms y límites en los extremos.
 La interacción interrumpe el centrado inmediatamente; durante el gesto y los
-3 segundos posteriores no se mueve bajo el dedo. Tras la inactividad vuelve
+3 segundos posteriores al final del movimiento no compite con la exploración. Tras la inactividad vuelve
 a centrar la sección activa. Dentro de cada sección la fila queda estática,
 incluido el loop; sólo cambia su progreso. Este seguimiento es independiente
 del follow de la onda normal y nunca envía seek ni comandos de transporte.
-Drag y rueda sólo cambian su desplazamiento manual, incluido el ajuste al
-terminar el gesto. No hay regla, minimapa ni
+Drag y rueda sólo cambian su desplazamiento manual. Al soltar drag, la velocidad
+filtrada (40 ms, máximo 2400 puntos/s) continúa con fricción exponencial de
+6/s hasta 35 puntos/s y alineación suave de 180 ms. La integración usa tiempo
+transcurrido, no frames; los límites se claman sin rebote. Un nuevo gesto
+interrumpe la cola inmediatamente; un tap que detiene movimiento se consume
+sin Ir/Loop/Mute. El seguimiento espera tres segundos desde el último movimiento
+y mantiene prioridad del Ir confirmado. Rueda/trackpad smooth, incluidos eventos
+inerciales nativos, se aplican directamente sin sumar otra inercia. Un nuevo
+contacto descarta momentum nativo residual hasta otra secuencia de rueda; al cesar
+150 ms, sólo se alinea suavemente. Rueda discreta conserva pasos por sección.
+Reducir movimiento desactiva la inercia y las transiciones de alineación/centrado. No hay regla, minimapa ni
 línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía
 comandos. Las acciones se confirman al soltar en su objetivo original; mover,
 usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y

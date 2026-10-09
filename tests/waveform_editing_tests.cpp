@@ -91,6 +91,16 @@ struct WaveformEditingTestAccess {
   static void vblank(WaveformBar &waveform, double now) { waveform.updatePlaybackAnimation(now); }
   static double resumeAt(const WaveformBar &waveform) { return waveform.liveFollowResumeMs; }
   static void setLiveOffset(WaveformBar &waveform, float offset) { waveform.setLiveScrollOffset(offset); }
+  static bool moving(const WaveformBar &wave) { return wave.liveScrollCoasting || wave.liveScrollSettling; }
+  static float velocity(const WaveformBar &wave) { return wave.liveScrollVelocity; }
+  static void motionAt(WaveformBar &wave, double now, bool reduced = false) { wave.updateLiveScrollMotion(now, reduced); }
+  static void finishMotion(WaveformBar &wave) { wave.updateLiveScrollMotion(wave.liveMotionTimeMs + 10000.0, false); }
+  static void fling(WaveformBar &wave, float offset, float delta, double now, bool reduced = false) {
+    wave.stopLiveScrollMotion(); wave.suspendLiveFollow(); wave.setLiveScrollOffset(offset);
+    wave.liveDragSampleOffset = offset; wave.liveDragSampleMs = 1000.0;
+    wave.setLiveScrollOffset(offset + delta); wave.sampleLiveDrag(1020.0);
+    wave.startLiveScrollMotion(now, 1020.0, reduced);
+  }
   static void expectNoDesktopPlaybackActions(WaveformBar &waveform) {
     waveform.rebuildPartOverlayBounds(waveBody(waveform));
     expect(waveform.sharedSectionOverflowBounds.isEmpty(), "desktop has no shared section ellipsis");
@@ -112,6 +122,7 @@ struct WaveformEditingTestAccess {
            "smooth wheel navigation schedules its settled card alignment");
     waveform.liveScrollSnapDueMs = juce::Time::getMillisecondCounterHiRes() - 1.0;
     waveform.timerCallback();
+    finishMotion(waveform);
   }
   static void enableFollowForLiveTest(WaveformBar &waveform) {
     waveform.followPlaybackEnabled = true;
@@ -1405,6 +1416,99 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
+void testLiveInertialNavigation() {
+  for (const int width : {390, 768, 1200}) {
+    Fixture f; auto &wave = f.waveform;
+    wave.setMinimalPhoneMode(true); // Leave the fixture arrangement editor first.
+    wave.setMinimalPhoneMode(width == 390); wave.setSize(width, 250);
+    SongArrangementSnapshot arrangement;
+    for (int i = 0; i < 12; ++i) arrangement.parts.push_back(original(("p" + std::to_string(i)).c_str(), i * 3.0, (i + 1) * 3.0));
+    wave.setArrangement(arrangement, true); wave.setLiveMode(true);
+    expect(wave.isLiveMode(), "inertia fixture activates the production Live presentation");
+    int pending = -1, jumps = 0, loops = 0, mutes = 0, seeks = 0;
+    wave.setTransportProviders([] { return 1.0; }, [] { return 36.0; }, [] { return true; });
+    wave.setPendingArrangementPartProvider([&] { return pending; });
+    wave.setOnArrangementPartJumpRequest([&](int) { ++jumps; });
+    wave.setOnArrangementPartLoopToggleRequest([&](int) { ++loops; });
+    wave.setOnArrangementChanged([&](const SongArrangementSnapshot &, bool) { ++mutes; });
+    wave.setSeekCallback([&](double) { ++seeks; });
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0);
+    const float initialSpeed = WaveformEditingTestAccess::velocity(wave);
+    expect(initialSpeed > 35.0f && initialSpeed <= 2400.0f, "release carries a bounded sampled drag velocity");
+    WaveformEditingTestAccess::motionAt(wave, 2100.0);
+    const float coarse = WaveformEditingTestAccess::liveScroll(wave);
+    expect(coarse > 240.0f && WaveformEditingTestAccess::velocity(wave) < initialSpeed,
+           "released drag continues and decelerates");
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0);
+    for (int frame = 1; frame <= 10; ++frame) WaveformEditingTestAccess::motionAt(wave, 2000.0 + frame * 10.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), coarse, "coast distance is independent of animation frame rate");
+    WaveformEditingTestAccess::followAt(wave, 100000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), coarse, "follow cannot compete with a moving row even after an old timeout");
+    WaveformEditingTestAccess::motionAt(wave, 4000.0);
+    expect(!WaveformEditingTestAccess::moving(wave), "coast and final alignment finish naturally");
+    const double resume = WaveformEditingTestAccess::resumeAt(wave);
+    const float explored = WaveformEditingTestAccess::liveScroll(wave);
+    pending = 11;
+    WaveformEditingTestAccess::followAt(wave, resume - 1.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), explored, "grace starts after the last inertial movement");
+    WaveformEditingTestAccess::followAt(wave, resume); WaveformEditingTestAccess::followAt(wave, resume + 280.0);
+    expect(WaveformEditingTestAccess::liveScroll(wave) > explored, "confirmed destination keeps priority after inertia finishes");
+    pending = -1;
+    WaveformEditingTestAccess::followAt(wave, resume + 300.0); WaveformEditingTestAccess::followAt(wave, resume + 580.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), 0.0, "without pending jump the active section resumes follow");
+    WaveformEditingTestAccess::fling(wave, 0.0f, -40.0f, 2000.0);
+    WaveformEditingTestAccess::motionAt(wave, 4000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), 0.0, "outward motion clamps at the first edge");
+    WaveformEditingTestAccess::scrollLiveToEnd(wave);
+    const float end = WaveformEditingTestAccess::liveScroll(wave);
+    WaveformEditingTestAccess::fling(wave, end - 40.0f, 40.0f, 2000.0);
+    WaveformEditingTestAccess::motionAt(wave, 4000.0);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), end, "coasting clamps at the last edge without overscroll");
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0, true);
+    expect(!WaveformEditingTestAccess::moving(wave), "Reduce Motion disables generated coasting and alignment animation");
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0);
+    WaveformEditingTestAccess::motionAt(wave, 2050.0, true);
+    expect(!WaveformEditingTestAccess::moving(wave), "enabling Reduce Motion stops an existing inertial tail");
+    for (int action = 0; action < 3; ++action) {
+      WaveformEditingTestAccess::fling(wave, 0.0f, 20.0f, 2000.0);
+      const auto bounds = WaveformEditingTestAccess::liveBounds(wave)[0];
+      const auto point = (action == 0 ? bounds.jumpButton : action == 1 ? bounds.loopButton : bounds.muteButton).getCentre();
+      const float stopped = WaveformEditingTestAccess::liveScroll(wave);
+      wave.mouseDown(pointerEvent(wave, point, point)); wave.mouseUp(pointerEvent(wave, point, point));
+      WaveformEditingTestAccess::motionAt(wave, 9000.0);
+      expect(!WaveformEditingTestAccess::moving(wave), "control contact stops inertia immediately");
+      expectNear(WaveformEditingTestAccess::liveScroll(wave), stopped, "stopping tap leaves targets stationary");
+    }
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0);
+    const auto dragStart = WaveformEditingTestAccess::liveRow(wave).getCentre();
+    const float beforeNewDrag = WaveformEditingTestAccess::liveScroll(wave);
+    wave.mouseDown(pointerEvent(wave, dragStart, dragStart));
+    const auto dragEnd = dragStart.translated(-60.0f, 0.0f);
+    wave.mouseDrag(pointerEvent(wave, dragEnd, dragStart, true));
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), beforeNewDrag + 60.0f,
+               "new drag takes ownership without inherited velocity or a starting jump");
+    wave.mouseUp(pointerEvent(wave, dragEnd, dragStart, true));
+    WaveformEditingTestAccess::finishMotion(wave);
+    expect(jumps == 0 && loops == 0 && mutes == 0 && seeks == 0, "stopping moving controls never sends actions or seek");
+    WaveformEditingTestAccess::fling(wave, 200.0f, 40.0f, 2000.0);
+    juce::MouseWheelDetails wheel{}; wheel.isSmooth = true; wheel.deltaX = -0.05f;
+    const auto centre = WaveformEditingTestAccess::liveRow(wave).getCentre();
+    wave.mouseWheelMove(pointerEvent(wave, centre, centre), wheel);
+    wheel.isSmooth = false; wheel.isInertial = true;
+    wave.mouseWheelMove(pointerEvent(wave, centre, centre), wheel);
+    expect(!WaveformEditingTestAccess::moving(wave), "native trackpad momentum replaces generated inertia without stacking velocities");
+    const auto contact = centre.withY(WaveformEditingTestAccess::liveRow(wave).getY() + 10.0f);
+    wave.mouseDown(pointerEvent(wave, contact, contact)); wave.mouseUp(pointerEvent(wave, contact, contact));
+    const float stoppedNative = WaveformEditingTestAccess::liveScroll(wave);
+    wave.mouseWheelMove(pointerEvent(wave, centre, centre), wheel);
+    expectNear(WaveformEditingTestAccess::liveScroll(wave), stoppedNative,
+               "new contact rejects residual native momentum after pointer release");
+
+    wave.setLiveMode(false);
+    expect(!WaveformEditingTestAccess::moving(wave), "presentation change clears inertial state");
+  }
+}
+
 void testPendingLivePriorityAndCombinedStates() {
   Fixture f; auto &wave = f.waveform;
   wave.setMinimalPhoneMode(true); wave.setSize(390, 250);
@@ -1425,6 +1529,7 @@ void testPendingLivePriorityAndCombinedStates() {
   const auto moved = point.translated(150.0f, 0.0f);
   wave.mouseDrag(pointerEvent(wave, moved, point, true));
   wave.mouseUp(pointerEvent(wave, moved, point, true));
+  WaveformEditingTestAccess::finishMotion(wave);
   const double resume = WaveformEditingTestAccess::resumeAt(wave);
   const float explored = WaveformEditingTestAccess::liveScroll(wave);
   WaveformEditingTestAccess::followAt(wave, resume - 1.0);
@@ -1669,6 +1774,7 @@ void testDesktopNormalAndLiveFollow() {
     expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), dragged,
                "held drag blocks centering even beyond inactivity deadline");
     f.waveform.mouseUp(pointerEvent(f.waveform, moved, start, true));
+    WaveformEditingTestAccess::finishMotion(f.waveform);
     const float explored = WaveformEditingTestAccess::liveScroll(f.waveform);
     const double resume = WaveformEditingTestAccess::resumeAt(f.waveform);
     position = 25.0;
@@ -1777,6 +1883,7 @@ void testLiveSectionsAndNavigation() {
   f.waveform.mouseDrag(pointerEvent(f.waveform, dragged, loopPoint, true));
   f.waveform.mouseUp(pointerEvent(f.waveform, dragged, loopPoint, true));
   expect(loops == 1 && jumps == 1 && seeks == 0, "drag starting on live control never triggers it or seek");
+  WaveformEditingTestAccess::finishMotion(f.waveform);
   const float offset = WaveformEditingTestAccess::liveScroll(f.waveform);
   expect(offset > 0.0f, "live gesture manually scrolls blocks");
   for (const double next : {1.0, 11.0, 2.0, 25.0}) {
@@ -2019,6 +2126,7 @@ void testLiveResponsiveCompleteCardsAndNavigation() {
         wave.mouseDown(pointerEvent(wave, point, point));
         wave.mouseDrag(pointerEvent(wave, dragged, point, true));
         wave.mouseUp(pointerEvent(wave, dragged, point, true));
+        WaveformEditingTestAccess::finishMotion(wave);
       };
       pan(-0.75f * stride);
       expectCompleteCards(1);
@@ -2447,6 +2555,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
+  run("live inertial navigation", testLiveInertialNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
   run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);
   run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);

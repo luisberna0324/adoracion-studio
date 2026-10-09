@@ -2593,6 +2593,75 @@ void WaveformBar::snapLiveScrollOffset() {
   setLiveScrollOffset(std::round(liveScrollOffset / stride) * stride);
 }
 
+void WaveformBar::stopLiveScrollMotion() {
+  liveScrollCoasting = liveScrollSettling = false;
+  liveScrollVelocity = 0.0f;
+  liveScrollSnapDueMs = 0.0;
+}
+
+void WaveformBar::sampleLiveDrag(double eventMs) {
+  const double elapsed = eventMs - liveDragSampleMs;
+  if (elapsed > 0.0) {
+    const float velocity = juce::jlimit(-2400.0f, 2400.0f,
+        static_cast<float>((liveScrollOffset - liveDragSampleOffset) * 1000.0 / elapsed));
+    const float blend = static_cast<float>(1.0 - std::exp(-elapsed / 40.0));
+    liveScrollVelocity = elapsed > 100.0 ? velocity
+        : liveScrollVelocity + blend * (velocity - liveScrollVelocity);
+  }
+  liveDragSampleMs = eventMs;
+  liveDragSampleOffset = liveScrollOffset;
+}
+
+void WaveformBar::startLiveScrollMotion(double nowMs, double releaseEventMs, bool reducedMotion) {
+  liveScrollSnapDueMs = 0.0;
+  if (releaseEventMs - liveDragSampleMs > 80.0) liveScrollVelocity = 0.0f;
+  liveMotionTimeMs = nowMs;
+  liveScrollCoasting = !reducedMotion && std::abs(liveScrollVelocity) >= 35.0f;
+  liveScrollSettling = false;
+  if (!liveScrollCoasting) {
+    liveSettleFrom = liveScrollOffset;
+    snapLiveScrollOffset();
+    liveSettleTarget = liveScrollOffset;
+    if (!reducedMotion) setLiveScrollOffset(liveSettleFrom);
+    liveScrollSettling = !reducedMotion && std::abs(liveSettleTarget - liveSettleFrom) > 0.1f;
+  }
+  liveFollowResumeMs = nowMs + 3000.0;
+}
+
+void WaveformBar::updateLiveScrollMotion(double nowMs, bool reducedMotion) {
+  if (!liveScrollCoasting && !liveScrollSettling) return;
+  if (reducedMotion) {
+    stopLiveScrollMotion(); snapLiveScrollOffset();
+    liveFollowResumeMs = nowMs + 3000.0;
+    return;
+  }
+  if (liveScrollCoasting) {
+    // Integrate exponential friction analytically; dropped frames do not
+    // change the travel distance or turn a delayed callback into a jump.
+    const double seconds = juce::jmax(0.0, (nowMs - liveMotionTimeMs) / 1000.0);
+    const double untilStop = std::log(std::abs(liveScrollVelocity) / 35.0) / 6.0;
+    const double elapsed = juce::jmin(seconds, juce::jmax(0.0, untilStop));
+    const float decay = static_cast<float>(std::exp(-6.0 * elapsed));
+    const float wanted = liveScrollOffset + liveScrollVelocity * (1.0f - decay) / 6.0f;
+    setLiveScrollOffset(wanted);
+    liveScrollVelocity *= decay;
+    liveMotionTimeMs += elapsed * 1000.0;
+    if (seconds >= untilStop || std::abs(wanted - liveScrollOffset) > 0.01f) {
+      liveScrollCoasting = false; liveScrollVelocity = 0.0f;
+      liveSettleFrom = liveScrollOffset;
+      snapLiveScrollOffset(); liveSettleTarget = liveScrollOffset;
+      setLiveScrollOffset(liveSettleFrom);
+      liveScrollSettling = true;
+    }
+  }
+  if (liveScrollSettling) {
+    const float t = static_cast<float>(juce::jlimit(0.0, 1.0, (nowMs - liveMotionTimeMs) / 180.0));
+    setLiveScrollOffset(liveSettleFrom + (liveSettleTarget - liveSettleFrom) * t * t * (3.0f - 2.0f * t));
+    if (t >= 1.0f) liveScrollSettling = false;
+  }
+  liveFollowResumeMs = nowMs + 3000.0;
+}
+
 void WaveformBar::suspendLiveFollow() {
   liveFollowResumeMs = juce::Time::getMillisecondCounterHiRes() + 3000.0;
   liveFollowPartId.clear();
@@ -2600,7 +2669,7 @@ void WaveformBar::suspendLiveFollow() {
 }
 
 void WaveformBar::updateLiveFollow(double nowMs) {
-  if (livePointerActive || !phoneTouchPositions.empty() || liveScrollSnapDueMs > 0.0 || nowMs < liveFollowResumeMs ||
+  if (livePointerActive || !phoneTouchPositions.empty() || liveScrollCoasting || liveScrollSettling || liveScrollSnapDueMs > 0.0 || nowMs < liveFollowResumeMs ||
       songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
       !playingProvider || !playingProvider()) return;
   int active = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
@@ -2623,7 +2692,7 @@ void WaveformBar::updateLiveFollow(double nowMs) {
     liveFollowAnimating = true;
   }
   if (!liveFollowAnimating) return;
-  const float t = static_cast<float>(juce::jlimit(0.0, 1.0,
+  const float t = liveBorderReducedMotion() ? 1.0f : static_cast<float>(juce::jlimit(0.0, 1.0,
       (nowMs - liveFollowAnimationStartMs) / 280.0));
   const float eased = t * t * (3.0f - 2.0f * t);
   setLiveScrollOffset(liveFollowFrom + (liveFollowTarget - liveFollowFrom) * eased);
@@ -2753,6 +2822,8 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
 }
 
 void WaveformBar::resetTouchWaveformNavigation() {
+  stopLiveScrollMotion();
+  liveSuppressNativeMomentum = false;
   livePointerActive = false;
   liveScrollSnapDueMs = 0.0;
   touchWaveformNavigationActive = false;
@@ -2875,6 +2946,9 @@ void WaveformBar::showInlineSectionMenu(int partIndex, juce::Rectangle<float> an
 
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (liveMode) {
+    liveSuppressNativeMomentum = true;
+    const bool stoppedMotion = liveScrollCoasting || liveScrollSettling;
+    stopLiveScrollMotion();
     suspendLiveFollow();
     if (livePointerActive) {
       phoneTouchPositions[event.source.getIndex()] = event.position;
@@ -2886,7 +2960,9 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
     rebuildLiveSectionBounds();
     phoneTouchPositions[event.source.getIndex()] = event.position;
     livePointerActive = true;
-    livePointerMoved = false;
+    livePointerMoved = stoppedMotion; // A stopping tap never dispatches a moving control.
+    liveDragSampleMs = static_cast<double>(event.eventTime.toMilliseconds());
+    liveDragSampleOffset = liveScrollOffset;
     livePointerSource = event.source.getIndex();
     liveScrollSnapDueMs = 0.0;
     livePointerStart = event.position;
@@ -3223,6 +3299,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
         livePointerStart.x, livePointerStart.y, event.position.x, event.position.y);
     if (livePointerMoved) {
       setLiveScrollOffset(livePointerStartOffset + livePointerStart.x - event.position.x);
+      sampleLiveDrag(static_cast<double>(event.eventTime.toMilliseconds()));
       repaint();
     }
     return;
@@ -3795,7 +3872,12 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
     if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
     livePointerActive = false;
     if (livePointerMoved) {
-      snapLiveScrollOffset();
+      if (!phoneTouchPositions.empty() || !touchWaveformNavigation::crossedTapSlop(
+          livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) {
+        repaint(); return;
+      }
+      startLiveScrollMotion(juce::Time::getMillisecondCounterHiRes(),
+          static_cast<double>(event.eventTime.toMilliseconds()), liveBorderReducedMotion());
       repaint();
       return;
     }
@@ -4209,10 +4291,13 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
   if (liveMode) {
     if (!songLoadingActive && !midiLearnActive && getLiveRowBounds().contains(event.position)) {
+      if (wheel.isInertial && (liveSuppressNativeMomentum || livePointerActive)) return;
+      if (!wheel.isInertial) liveSuppressNativeMomentum = false;
+      stopLiveScrollMotion(); // OS smooth/inertial events already contain their own tail.
       suspendLiveFollow();
       livePointerMoved = true;
       const float delta = wheel.deltaX != 0.0f ? wheel.deltaX : wheel.deltaY;
-      if (wheel.isSmooth) {
+      if (wheel.isSmooth || wheel.isInertial) {
         setLiveScrollOffset(liveScrollOffset - delta * getLiveBlockStride());
         liveScrollSnapDueMs = juce::Time::getMillisecondCounterHiRes() + 150.0;
       } else if (delta != 0.0f) {
@@ -4274,7 +4359,7 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
-  if (liveMode) { suspendLiveFollow(); livePointerMoved = true; return; }
+  if (liveMode) { stopLiveScrollMotion(); suspendLiveFollow(); livePointerMoved = true; return; }
   if (touchWaveformNavigationActive) touchWaveformTapCancelled = true;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
@@ -4310,8 +4395,11 @@ void WaveformBar::timerCallback() {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   if (liveMode) {
     const float previousOffset = liveScrollOffset;
-    if (!livePointerActive && liveScrollSnapDueMs > 0.0 && nowMs >= liveScrollSnapDueMs)
-      snapLiveScrollOffset();
+    if (!livePointerActive && liveScrollSnapDueMs > 0.0 && nowMs >= liveScrollSnapDueMs) {
+      liveScrollVelocity = 0.0f;
+      startLiveScrollMotion(nowMs, liveDragSampleMs, liveBorderReducedMotion());
+    }
+    updateLiveScrollMotion(nowMs, liveBorderReducedMotion());
     if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
       clearSongLoadingState();
     updateLiveFollow(nowMs);

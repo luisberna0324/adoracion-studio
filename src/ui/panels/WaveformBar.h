@@ -155,6 +155,15 @@ private:
   void setLiveScrollOffset(float offset);
   void snapLiveScrollOffset();
   void suspendLiveFollow();
+  void stopLiveScrollMotion();
+  void sampleLiveDrag(double eventMs);
+  void startLiveScrollMotion(double nowMs, double releaseEventMs, bool reducedMotion);
+  void updateLiveScrollMotion(double nowMs, bool reducedMotion);
+  bool liveScrollCoasting = false, liveScrollSettling = false;
+  bool liveSuppressNativeMomentum = false;
+  double liveMotionTimeMs = 0.0, liveDragSampleMs = 0.0;
+  float liveDragSampleOffset = 0.0f, liveScrollVelocity = 0.0f;
+  float liveSettleFrom = 0.0f, liveSettleTarget = 0.0f;
   void updateLiveFollow(double nowMs);
   double liveFollowResumeMs = 0.0;
   double liveFollowAnimationStartMs = 0.0;
