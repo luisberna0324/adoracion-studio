@@ -2822,6 +2822,10 @@ void testInstrumentWheelPinchAndMagnify() {
 void testInstrumentWheelLongNamesLayoutAndLifetime() {
   for (const int width : {320, 390, 768}) {
     Fixture fixture;
+    // JUCE creates native accessibility handlers only for a component with a
+    // window handle. Keep this fixture hidden while providing that peer.
+    fixture.panel->setVisible(false);
+    fixture.panel->addToDesktop(juce::ComponentPeer::windowIsTemporary);
     const juce::String longName = "Guitarra electrica principal con efectos y ambiente de concierto";
     fixture.availableInstruments[0].name = longName;
     PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
@@ -2830,8 +2834,11 @@ void testInstrumentWheelLongNamesLayoutAndLifetime() {
     expect(selector.getHeight() == 44 && selector.getItemSpacing() > 44.0f &&
                PracticePanelGestureTestAccess::card(*fixture.panel).contains(selector.getBounds()),
            "instrument wheel stays in the card header with wide labels and a 44-point touch target");
-    expect(selector.getTextFromValue(0.0) == longName && selector.getAccessibilityHandler() != nullptr,
-           "the full instrument name remains available to the Slider accessibility interface");
+    auto *handler = selector.getAccessibilityHandler();
+    expect(selector.getTextFromValue(0.0) == longName && handler != nullptr &&
+               handler->getValueInterface() != nullptr &&
+               handler->getValueInterface()->getCurrentValueAsString() == longName,
+           "the full instrument name remains available to the native Slider accessibility value interface");
     juce::Image image(juce::Image::ARGB, selector.getWidth(), selector.getHeight(), true);
     juce::Graphics g(image);
     selector.paint(g);
