@@ -1173,6 +1173,7 @@ void TopBar::resized() {
   songPickerButton.setTitle(songTitleText + " — " + songArtistText);
   if (songInfoBounds != previousSongBounds)
     songTextScrollStartMs = juce::Time::getMillisecondCounterHiRes();
+  if (refreshMorePopover) refreshMorePopover();
 }
 
 void TopBar::mouseDoubleClick(const juce::MouseEvent &event) {
@@ -1337,7 +1338,16 @@ void TopBar::openSettingsPanel() {
     onSettings();
 }
 
-void TopBar::showTabletMorePopover() {
+std::pair<bool, bool> TopBar::morePrimaryActions() const {
+  const bool desktop = !useTouchOptimisedControls() && !minimalPhoneMode;
+  const auto accessible = [this](const juce::Button &button) {
+    return button.isVisible() && button.isEnabled() && !button.getBounds().isEmpty() &&
+           getLocalBounds().contains(button.getBounds());
+  };
+  return {!desktop || !accessible(midiLearnButton), !desktop || !accessible(settingsButton)};
+}
+
+std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
 
   class ActionButton final : public juce::Button {
   public:
@@ -1407,8 +1417,8 @@ void TopBar::showTabletMorePopover() {
                            SvgIconName::Clock, std::move(onWindow)),
           hasPractice(showPractice), hasWindow(showWindow) {
       midiButton.setToggleState(midiActive, juce::dontSendNotification);
-      addAndMakeVisible(midiButton);
-      addAndMakeVisible(settingsButton);
+      addChildComponent(midiButton);
+      addChildComponent(settingsButton);
       addAndMakeVisible(learningButton);
       if (hasPractice)
         addAndMakeVisible(practiceButton);
@@ -1424,13 +1434,27 @@ void TopBar::showTabletMorePopover() {
                              1.0f);
     }
 
+    void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showWindow) {
+      const bool layoutChanged = getWidth() == 0 || midiButton.isVisible() != showMidi || settingsButton.isVisible() != showSettings ||
+                                 hasPractice != showPractice || hasWindow != showWindow;
+      midiButton.setToggleState(active, juce::dontSendNotification);
+      if (!layoutChanged) return;
+      hasPractice = showPractice; hasWindow = showWindow;
+      practiceButton.setVisible(hasPractice); songWindowButton.setVisible(hasWindow);
+      midiButton.setVisible(showMidi); settingsButton.setVisible(showSettings);
+      const int rows = 1 + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
+      setSize(getWidth() > 0 ? getWidth() : 300, rows * 48 + 8);
+      resized();
+    }
+
     void resized() override {
       auto area = getLocalBounds().reduced(10, 6);
       constexpr int rowHeight = 44;
-      midiButton.setBounds(area.removeFromTop(rowHeight));
-      area.removeFromTop(4);
-      settingsButton.setBounds(area.removeFromTop(rowHeight));
-      area.removeFromTop(4);
+      for (auto *button : {&midiButton, &settingsButton}) {
+        if (button->isVisible()) {
+          button->setBounds(area.removeFromTop(rowHeight)); area.removeFromTop(4);
+        } else button->setBounds({});
+      }
       if (hasPractice) {
         practiceButton.setBounds(area.removeFromTop(rowHeight));
         area.removeFromTop(4);
@@ -1460,8 +1484,23 @@ void TopBar::showTabletMorePopover() {
       }, minimalPhoneMode && onPhonePractice != nullptr, [safe] {
         if (safe && safe->onLearningRequested) safe->onLearningRequested();
       }, [safe] { if (safe) safe->showSongWindowPopover(); }, !timeDisplay.isVisible());
-  panel->setSize(300, (minimalPhoneMode && onPhonePractice != nullptr ? 200 : 152) +
-                          (!timeDisplay.isVisible() ? 48 : 0));
+  const auto panelSafe = juce::Component::SafePointer<MorePopover>(panel.get());
+  const bool desktopMenu = !useTouchOptimisedControls() && !minimalPhoneMode;
+  refreshMorePopover = [safe, panelSafe, desktopMenu, initialized = false]() mutable {
+    if (!desktopMenu && initialized) return; // Preserve existing touch-menu behavior.
+    if (safe && panelSafe) {
+      initialized = true;
+      const auto actions = safe->morePrimaryActions();
+      panelSafe->updatePrimaryActions(actions.first, actions.second, safe->midiLearnActive,
+          safe->minimalPhoneMode && safe->onPhonePractice != nullptr, !safe->timeDisplay.isVisible());
+    }
+  };
+  refreshMorePopover();
+  return panel;
+}
+
+void TopBar::showTabletMorePopover() {
+  auto panel = createMorePopoverContent();
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
   juce::Component *parentComp = editor != nullptr
                                     ? static_cast<juce::Component *>(editor)
@@ -1546,6 +1585,7 @@ void TopBar::configureMetronomeControls() {
 }
 
 void TopBar::timerCallback() {
+  if (refreshMorePopover) refreshMorePopover();
   refreshLiveModeButton();
   refreshFromProviders();
   if (songTextOverflows && isShowing())

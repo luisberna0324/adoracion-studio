@@ -204,6 +204,9 @@ private:
   void toggleWindowMode();
   void openSettingsPanel();
   void showTabletMorePopover();
+  std::pair<bool, bool> morePrimaryActions() const;
+  std::unique_ptr<juce::Component> createMorePopoverContent();
+  std::function<void()> refreshMorePopover;
   void refreshFromProviders();
   void paintSongInfoCard(juce::Graphics &g);
   juce::Rectangle<int> getSongInfoAnchorBounds() const;

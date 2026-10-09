@@ -77,6 +77,11 @@ struct WaveformEditingTestAccess {
     expect(bar.liveModeButton.getTitle().isNotEmpty() && bar.liveModeButton.getTooltip().isNotEmpty(),
            "toggle has an accessible title and contextual tooltip");
   }
+  static auto morePanel(TopBar &bar) { return bar.createMorePopoverContent(); }
+  static bool directMidi(const TopBar &bar) { return bar.midiLearnButton.isVisible(); }
+  static bool directSettings(const TopBar &bar) { return bar.settingsButton.isVisible(); }
+  static void midiEnabled(TopBar &bar, bool enabled) { bar.midiLearnButton.setEnabled(enabled); if (bar.refreshMorePopover) bar.refreshMorePopover(); }
+  static void moreRefresh(TopBar &bar) { if (bar.refreshMorePopover) bar.refreshMorePopover(); }
   static bool topbarLiveSelected(const TopBar &bar) { return bar.liveModeButton.getToggleState(); }
   static bool waveMoreVisible(const WaveformBar &wave) { return wave.moreButton.isVisible(); }
   static auto liveBounds(WaveformBar &waveform) {
@@ -1417,6 +1422,57 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
+void testDesktopMoreDeduplicatesVisibleActions() {
+  ProcessorFixture f; TopBar bar(f.processor); bar.setMinimalPhoneMode(false); bar.setSize(1280, 64);
+  auto panel = WaveformEditingTestAccess::morePanel(bar);
+  const auto visibleButtons = [](juce::Component &content) {
+    int count = 0;
+    for (int i = 0; i < content.getNumChildComponents(); ++i)
+      if (auto *button = dynamic_cast<juce::Button *>(content.getChildComponent(i)); button && button->isVisible()) {
+        expect(!button->getBounds().isEmpty(), "every visible menu action has an accessible target"); ++count;
+      }
+    return count;
+  };
+  const auto verify = [&] {
+    WaveformEditingTestAccess::moreRefresh(bar);
+    int expected = 1 + (WaveformEditingTestAccess::directMidi(bar) ? 0 : 1) + (WaveformEditingTestAccess::directSettings(bar) ? 0 : 1);
+    expect(visibleButtons(*panel) >= expected && visibleButtons(*panel) <= expected + 1, "desktop overflow omits direct actions and keeps learning/window actions");
+    expect(visibleButtons(*panel) > 0, "learning keeps the menu nonempty");
+    const auto image = panel->createComponentSnapshot(panel->getLocalBounds(), true, 2.0f);
+    expect(image.isValid(), "deduplicated menu renders from the production component");
+  };
+  expect(WaveformEditingTestAccess::directMidi(bar) && WaveformEditingTestAccess::directSettings(bar), "wide desktop exposes primary toolbar actions"); verify();
+  for (int width : {768, 1200, 956, 1280, 600, 1280}) { bar.setSize(width, 64); verify(); }
+  bar.setSize(768, 64); bar.setMidiLearnActive(true); WaveformEditingTestAccess::moreRefresh(bar);
+  auto *midiRow = dynamic_cast<juce::Button *>(panel->getChildComponent(0));
+  expect(midiRow && midiRow->isVisible() && midiRow->getToggleState(), "responsive MIDI menu preserves active state");
+  bar.setMidiLearnActive(false); WaveformEditingTestAccess::moreRefresh(bar);
+  expect(!midiRow->getToggleState(), "open menu reflects MIDI changes without reopening");
+  bar.setSize(1280, 64); verify();
+
+  WaveformEditingTestAccess::midiEnabled(bar, false);
+  expect(visibleButtons(*panel) >= 2, "an inaccessible direct control returns to overflow");
+  WaveformEditingTestAccess::midiEnabled(bar, true); verify();
+  for (int iteration = 0; iteration < 4; ++iteration) { panel.reset(); WaveformEditingTestAccess::moreRefresh(bar); panel = WaveformEditingTestAccess::morePanel(bar); verify(); }
+  const auto capture = juce::SystemStats::getEnvironmentVariable("PW_DESKTOP_MENU_CAPTURE", {});
+  if (capture.isNotEmpty()) {
+    juce::Image evidence(juce::Image::RGB, 640, 420, true); juce::Graphics g(evidence); g.fillAll(UITheme::appBg);
+    int x = 0;
+    for (int width : {1280, 768}) {
+      bar.setSize(width, 64); verify();
+      g.setColour(juce::Colours::white); g.setFont(makeAppFont(16.0f));
+      g.drawText(juce::String(width) + " px", x + 10, 8, 280, 24, juce::Justification::centredLeft);
+      g.drawImageAt(panel->createComponentSnapshot(panel->getLocalBounds(), true, 1.0f), x + 10, 38); x += 320;
+    }
+    const juce::File file(capture); auto output = file.createOutputStream();
+    expect(output && output->setPosition(0) && output->truncate().wasOk() && juce::PNGImageFormat().writeImageToStream(evidence, *output),
+           "desktop overflow evidence saves from real production menu content");
+  }
+  bar.setMinimalPhoneMode(true); bar.setSize(390, 64);
+  panel.reset(); panel = WaveformEditingTestAccess::morePanel(bar); verify();
+  expect(visibleButtons(*panel) >= 3, "phone retains its existing menu actions");
+}
+
 void testLiveTitleLayoutInvariantDuringScroll() {
   for (const int width : {390, 768, 1200}) {
     Fixture f; auto &wave = f.waveform;
@@ -2662,6 +2718,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
+  run("desktop overflow deduplicates visible actions", testDesktopMoreDeduplicatesVisibleActions);
   run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
   run("adaptive centered Live titles", testAdaptiveLiveTitles);
   run("live inertial navigation", testLiveInertialNavigation);

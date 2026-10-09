@@ -754,8 +754,11 @@ comandos. Las acciones se confirman al soltar en su objetivo original; mover,
 usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y
 la vista normal conservan sus contratos existentes.
 
-El menú principal permite MIDI Learn y Configuración también en escritorio;
-sus botones directos se conservan en ventanas amplias.
+En escritorio, el menú principal omite MIDI Learn y Configuración si sus
+botones directos están visibles, habilitados y completos dentro de la barra.
+Al ocultarse por responsive reaparecen en el menú, incluso si permanece abierto;
+el estado MIDI y los callbacks se conservan. Aprender PlayWorship siempre
+permanece disponible. Teléfono/tablet conservan sus entradas actuales.
 En teléfonos especialmente estrechos, el tiempo cede espacio al toggle y su
 acción `Ventana de canción` permanece accesible desde ese menú. Los objetivos
 del topbar siguen las dimensiones del perfil de dispositivo.
