@@ -2738,9 +2738,13 @@ float WaveformBar::liveSectionProgress(int index) const {
 
 WaveformBar::LiveTextLayout WaveformBar::getLiveTextLayout(const PartOverlayBounds &item) const {
   LiveTextLayout layout;
-  const auto content = getLiveSectionContentBounds(item.body).getIntersection(getLiveRowBounds());
+  // Text belongs to the complete section, not its visible viewport fragment.
+  // Reserve the existing action row even when edge clipping hides its buttons.
+  const auto content = item.body;
   if (content.isEmpty()) return layout;
-  const float actionsTop = item.jumpButton.isEmpty() ? content.getBottom() : item.jumpButton.getY();
+  const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
+  const bool reservesActions = content.getHeight() >= 56.0f && content.getWidth() >= 140.0f && !part.skipPlayback;
+  const float actionsTop = reservesActions ? content.getBottom() - 44.0f : content.getBottom();
   const float available = juce::jmax(0.0f, actionsTop - content.getY());
   const float paddingY = juce::jmin(6.0f, available * 0.08f);
   const float paddingX = juce::jmin(10.0f, content.getWidth() * 0.06f);

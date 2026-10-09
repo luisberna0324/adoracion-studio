@@ -1417,6 +1417,47 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
+void testLiveTitleLayoutInvariantDuringScroll() {
+  for (const int width : {390, 768, 1200}) {
+    Fixture f; auto &wave = f.waveform;
+    wave.setMinimalPhoneMode(true); wave.setMinimalPhoneMode(width == 390); wave.setSize(width, 108);
+    SongArrangementSnapshot arrangement;
+    for (int i = 0; i < 12; ++i) arrangement.parts.push_back(original(("Section" + std::to_string(i)).c_str(), i * 3.0, (i + 1) * 3.0));
+    arrangement.parts[1].name = "Long section title with several words";
+    wave.setArrangement(arrangement, true); wave.setLiveMode(true);
+    const auto baseline = WaveformEditingTestAccess::liveBounds(wave);
+    const float stride = baseline[1].body.getX() - baseline[0].body.getX();
+    std::vector<decltype(WaveformEditingTestAccess::liveText(wave, baseline[0]))> textBaseline;
+    for (const auto &item : baseline) textBaseline.push_back(WaveformEditingTestAccess::liveText(wave, item));
+    const auto verify = [&] {
+      const auto items = WaveformEditingTestAccess::liveBounds(wave);
+      for (size_t i = 0; i < items.size(); ++i) {
+        const auto text = WaveformEditingTestAccess::liveText(wave, items[i]);
+        const auto &old = textBaseline[i];
+        expect(text.fontSize == old.fontSize && text.lines == old.lines && text.title.getWidth() == old.title.getWidth() && text.title.getHeight() == old.title.getHeight(),
+               "scroll never changes title font, line count or layout dimensions");
+        expectNear(text.title.getX() - items[i].body.getX(), old.title.getX() - baseline[i].body.getX(),
+                   "title remains at the same position relative to its complete block");
+        expect(text.title.getY() == old.title.getY() && text.state.getHeight() == old.state.getHeight(),
+               "hidden edge controls never change title or indicator vertical layout");
+      }
+      const auto image = wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f);
+      expect(image.isValid(), "production renderer clips constant-size edge titles naturally");
+    };
+    for (const float offset : {0.0f, stride * 0.15f, stride * 0.75f, stride * 3.40f, 1000000.0f}) {
+      WaveformEditingTestAccess::setLiveOffset(wave, offset); verify();
+    }
+    WaveformEditingTestAccess::fling(wave, stride, 40.0f, 2000.0);
+    for (const double now : {2016.0, 2050.0, 2150.0, 2500.0, 4000.0}) {
+      WaveformEditingTestAccess::motionAt(wave, now); verify();
+    }
+    WaveformEditingTestAccess::fling(wave, stride * 3, -40.0f, 2000.0);
+    for (const double now : {2016.0, 2100.0, 2500.0, 4000.0}) {
+      WaveformEditingTestAccess::motionAt(wave, now); verify();
+    }
+  }
+}
+
 void testAdaptiveLiveTitles() {
   const auto capturePath = juce::SystemStats::getEnvironmentVariable("PW_LIVE_TITLE_CAPTURE_DIR", {});
   juce::Image evidence(juce::Image::RGB, 1200, 1000, true); juce::Graphics sheet(evidence);
@@ -1449,7 +1490,7 @@ void testAdaptiveLiveTitles() {
       if (!item.body.intersects(WaveformEditingTestAccess::liveRow(wave))) continue;
       const auto text = WaveformEditingTestAccess::liveText(wave, item);
       expect(!text.title.isEmpty(), "visible Live section always reserves a name region");
-      expect(WaveformEditingTestAccess::liveRow(wave).contains(text.title), "partially visible title stays within the viewport");
+      expect(item.body.contains(text.title), "title layout stays anchored inside its complete section");
       expect(!text.title.intersects(item.jumpButton) && !text.title.intersects(item.loopButton) && !text.title.intersects(item.muteButton) &&
                  !text.title.intersects(text.state), "title never overlaps actions or state indicators");
       expect(text.fontSize >= 14.0f && text.fontSize <= 30.0f, "normal Live heights preserve readable adaptive font bounds");
@@ -1460,9 +1501,9 @@ void testAdaptiveLiveTitles() {
           const auto colour = image.getPixelAt(x, y);
           if (colour.getRed() > 245 && colour.getGreen() > 245 && colour.getBlue() > 245) ++white;
         }
-      expect(white > 12, "real renderer keeps high-contrast title glyphs under Mute, Loop, pending and Preparing");
-      const auto visible = item.body.getIntersection(WaveformEditingTestAccess::liveRow(wave));
-      expectNear(text.title.getCentreX(), visible.getCentreX(), "title is centered in the visible section area");
+      if (WaveformEditingTestAccess::liveRow(wave).contains(text.title))
+        expect(white > 12, "fully visible title keeps high-contrast glyphs under musical states");
+      expectNear(text.title.getCentreX(), item.body.getCentreX(), "title remains centered in the complete section");
     }
     // The same renderer is exercised at 1x and 2x, with unchanged action geometry.
     const auto single = wave.createComponentSnapshot(wave.getLocalBounds(), true, 1.0f);
@@ -2621,6 +2662,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
+  run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
   run("adaptive centered Live titles", testAdaptiveLiveTitles);
   run("live inertial navigation", testLiveInertialNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);

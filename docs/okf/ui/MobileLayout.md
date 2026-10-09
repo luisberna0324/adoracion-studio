@@ -711,11 +711,14 @@ rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
 salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
 mute en Mute; no se confunden con la sección activa.
 
-En vivo reserva un área de título centrada en el espacio visible de cada bloque,
+En vivo reserva un área de título centrada en el bloque completo,
 por encima de los controles y separada de los indicadores. La fuente semibold
 se adapta al ancho y alto (14–30 puntos en alturas habituales); nombres largos
 usan hasta dos líneas y elipsis sin compresión horizontal ilegible. El padding
-respeta el área segura y las tarjetas parcialmente visibles durante drag/inercia.
+se calcula con el tamaño real del bloque. Scroll e inercia no cambian fuente,
+anchura ni saltos de línea: el viewport sólo recorta el título al salir de pantalla,
+sin recentrarlo ni encogerlo. La fila de acciones se reserva aunque el recorte
+oculte sus botones; sólo cambiar el tamaño real recalcula el layout.
 El nombre blanco con sombra y degradado de contraste se dibuja después de
 Mute/progreso/pulso; Mute no atenúa sus glifos. En alturas extraordinariamente
 bajas se reduce la fuente para no invadir los objetivos táctiles existentes.
