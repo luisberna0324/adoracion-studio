@@ -84,8 +84,8 @@ struct PracticePanelGestureTestAccess {
     return panel.getDisplayedPositionSeconds();
   }
 
-  static bool hasPendingMenu(const PracticePanel &panel) {
-    return panel.pendingInstrumentMenuMs != 0;
+  static PracticeInstrumentSelector &instrumentSelector(PracticePanel &panel) {
+    return panel.instrumentSelector;
   }
 
   static juce::TextButton &restoreButton(PracticePanel &panel) {
@@ -1549,7 +1549,6 @@ void testPinchLatchAndScrubCancellation() {
   fixture.finishAnimation();
   expect(fixture.playing && fixture.beginScrubCalls == 0 && fixture.pauseCalls == 0 &&
              fixture.seeks.empty() && fixture.listeningChanges.empty() &&
-             !PracticePanelGestureTestAccess::hasPendingMenu(*fixture.panel) &&
              !PracticePanelGestureTestAccess::hasBarFeedback(*fixture.panel),
          "a pinch changes neither transport nor mix and produces no tap, menu or seek");
   fixture.doubleTap(fixture.right());
@@ -2647,21 +2646,208 @@ void testDoubleTapDisambiguation() {
          "a click count following a drag cannot trigger a double-tap jump");
 
   Fixture header;
-  const auto headerBounds =
-      PracticePanelGestureTestAccess::header(*header.panel);
-  const juce::Point<int> point(headerBounds.getX() + headerBounds.getWidth() / 4,
-                              headerBounds.getCentreY());
-  header.tap(point);
-  expect(PracticePanelGestureTestAccess::hasPendingMenu(*header.panel),
-         "single header tap defers the instrument menu for double-tap resolution");
-  header.tap(point, 2);
-  expect(header.seeks.size() == 1 &&
-             !PracticePanelGestureTestAccess::hasPendingMenu(*header.panel),
-         "header double tap jumps a bar and cancels the deferred menu");
+  auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*header.panel);
+  const auto point = selector.getLocalBounds().getCentre();
+  selector.mouseDown(pointerEvent(selector, point, point));
+  selector.mouseUp(pointerEvent(selector, point, point));
+  selector.mouseDown(pointerEvent(selector, point, point, 2));
+  selector.mouseUp(pointerEvent(selector, point, point, 2));
+  selector.mouseDoubleClick(pointerEvent(selector, point, point, 2));
+  expect(header.seeks.empty(), "instrument taps never become waveform bar jumps");
   pumpFor(juce::MouseEvent::getDoubleClickTimeout() + 100);
   expect(!juce::PopupMenu::dismissAllActiveMenus(),
-         "a header double tap never opens an instrument popup later");
+         "instrument selection no longer schedules a popup");
 }
+
+void testInstrumentWheelSelectionAndRetarget() {
+  for (const bool revisionChanged : {false, true})
+  for (const bool coalesced : {false, true}) {
+    Fixture fixture;
+    fixture.playing = true;
+    auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+    const auto start = selector.getLocalBounds().toFloat().getCentre();
+    const auto end = start.translated(-selector.getItemSpacing() * 0.75f, 0.0f);
+    const auto requests = fixture.waveformRequests.size();
+    selector.mouseDown(fractionalPointerEvent(selector, start, start));
+    if (!coalesced) {
+      selector.mouseDrag(fractionalPointerEvent(selector, end, start, 1, true));
+      expect(selector.getSelectedInstrumentId() == "piano" &&
+                 fixture.waveformRequests.size() == requests,
+             "instrument wheel previews without changing the committed stem or fetching bins");
+    }
+    if (revisionChanged)
+      fixture.waveformRevision = "edited-during-instrument-drag";
+    selector.mouseUp(fractionalPointerEvent(selector, end, start, 1, true));
+    expect(selector.getSelectedInstrumentId() == "bass" &&
+               PracticePanelGestureTestAccess::selectedInstrument(*fixture.panel) == "bass" &&
+               fixture.waveformRequests.size() == requests + 1,
+           "normal and coalesced wheel releases select the actual instrument exactly once");
+    expect(fixture.seeks.empty() && fixture.beginScrubCalls == 0 &&
+               fixture.pauseCalls == 0 && fixture.playing && fixture.listeningChanges.empty(),
+           "scrolling instruments in normal mix changes no playback, seek or listening state");
+  }
+  for (const int mode : {1, 2}) {
+    Fixture fixture;
+    fixture.swipe(fixture.centre(), fixture.centre().translated(0, mode == 1 ? -60 : 60));
+    const auto changes = fixture.listeningChanges.size();
+    auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+    selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+    expect(fixture.mode == mode && fixture.listeningInstrument == "bass" &&
+               fixture.listeningChanges.size() == changes + 1,
+           "the existing focus/reduce mode retargets exactly once to the selected stable ID");
+  }
+}
+
+void testInstrumentWheelVerticalAndAxisOwnership() {
+  for (const bool coalesced : {false, true}) {
+    Fixture fixture;
+    auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+    const auto start = selector.getLocalBounds().getCentre();
+    for (const int dy : {-60, 60, 60, -60}) {
+      const auto end = start.translated(0, dy);
+      selector.mouseDown(pointerEvent(selector, start, start));
+      if (!coalesced)
+        selector.mouseDrag(pointerEvent(selector, end, start, 1, true));
+      selector.mouseUp(pointerEvent(selector, end, start, 1, true));
+    }
+    expect(fixture.listeningChanges == std::vector<int>({1, 0, 2, 0}) &&
+               selector.getSelectedInstrumentId() == "piano" && fixture.seeks.empty() &&
+               fixture.beginScrubCalls == 0,
+           "vertical gestures from the wheel retain all three listening levels without selection or seeks");
+  }
+  Fixture horizontalFirst;
+  auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*horizontalFirst.panel);
+  const auto start = selector.getLocalBounds().getCentre();
+  selector.mouseDown(pointerEvent(selector, start, start));
+  selector.mouseDrag(pointerEvent(selector, start.translated(-8, 0), start, 1, true));
+  selector.mouseUp(pointerEvent(selector, start.translated(-8, -60), start, 1, true));
+  expect(horizontalFirst.listeningChanges.empty() && horizontalFirst.seeks.empty(),
+         "a six-point horizontal wheel gesture cannot turn into a vertical listening gesture");
+
+  Fixture verticalFirst;
+  auto &vertical = PracticePanelGestureTestAccess::instrumentSelector(*verticalFirst.panel);
+  const auto origin = vertical.getLocalBounds().getCentre();
+  vertical.mouseDown(pointerEvent(vertical, origin, origin));
+  vertical.mouseDrag(pointerEvent(vertical, origin.translated(0, -60), origin, 1, true));
+  vertical.mouseUp(pointerEvent(vertical, origin.translated(-180, -60), origin, 1, true));
+  expect(verticalFirst.listeningChanges == std::vector<int>({1}) &&
+             vertical.getSelectedInstrumentId() == "piano" && verticalFirst.seeks.empty(),
+         "a vertical listening gesture consumes the entire wheel gesture even after turning sideways");
+}
+
+void testInstrumentWheelListAndContextChanges() {
+  Fixture reordered;
+  auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*reordered.panel);
+  std::reverse(reordered.availableInstruments.begin(), reordered.availableInstruments.end());
+  // No timer probe: the visible index one still means Bass when the key arrives.
+  selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+  expect(selector.getSelectedInstrumentId() == "bass" && selector.getValue() == 0.0 &&
+             PracticePanelGestureTestAccess::selectedInstrument(*reordered.panel) == "bass",
+         "reordering sources between probes maps the wheel's selected ID instead of a stale index");
+  reordered.availableInstruments.erase(reordered.availableInstruments.begin());
+  PracticePanelGestureTestAccess::refreshWaveform(*reordered.panel);
+  expect(selector.getSelectedInstrumentId() == "piano", "removing the selection shows the remaining instrument");
+  reordered.availableInstruments.clear();
+  PracticePanelGestureTestAccess::refreshWaveform(*reordered.panel);
+  expect(!selector.isEnabled() && selector.getSelectedInstrumentId().isEmpty(),
+         "an empty instrument list disables the wheel and clears its identity");
+  reordered.availableInstruments = {{"single", "Only instrument"}};
+  PracticePanelGestureTestAccess::refreshWaveform(*reordered.panel);
+  selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+  expect(selector.getValue() == 0.0 && selector.getSelectedInstrumentId() == "single",
+         "a single-instrument wheel stays in range");
+
+  for (int change = 0; change < 5; ++change) {
+    Fixture fixture;
+    auto &wheel = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+    const auto start = wheel.getLocalBounds().toFloat().getCentre();
+    const auto end = start.translated(-wheel.getItemSpacing(), 0.0f);
+    wheel.mouseDown(fractionalPointerEvent(wheel, start, start));
+    wheel.mouseDrag(fractionalPointerEvent(wheel, end, start, 1, true));
+    if (change == 0) fixture.songId = "new-song";
+    if (change == 1) fixture.remote = true;
+    if (change == 2) fixture.connected = false;
+    if (change == 3) {
+      std::reverse(fixture.availableInstruments.begin(), fixture.availableInstruments.end());
+      PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+    }
+    if (change == 4) fixture.panel->setSize(320, 844);
+    wheel.mouseUp(fractionalPointerEvent(wheel, end, start, 1, true));
+    expect(PracticePanelGestureTestAccess::selectedInstrument(*fixture.panel) == "piano" &&
+               fixture.seeks.empty() && fixture.listeningChanges.empty(),
+           "song/mode/disconnect/list/resize changes cancel the previous wheel gesture");
+  }
+}
+
+void testInstrumentWheelPinchAndMagnify() {
+  for (const bool selectorFirst : {false, true}) {
+    for (const bool selectorReleasedFirst : {false, true}) {
+      Fixture fixture;
+      auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+      const auto point = selector.getLocalBounds().getCentre();
+      const auto header = selector.getBounds().toFloat().getCentre();
+      const auto wave = fixture.centre().toFloat();
+      if (!selectorFirst)
+        PracticePanelGestureTestAccess::touchDown(*fixture.panel, 1, wave);
+      PracticePanelGestureTestAccess::touchDown(*fixture.panel, 0, header);
+      selector.mouseDown(pointerEvent(selector, point, point));
+      if (selectorFirst)
+        PracticePanelGestureTestAccess::touchDown(*fixture.panel, 1, wave);
+      const int firstUp = selectorReleasedFirst ? 0 : 1;
+      expect(PracticePanelGestureTestAccess::touchUp(*fixture.panel, firstUp),
+             "first pinch release is consumed with a finger on the instrument wheel");
+      selector.mouseDrag(pointerEvent(selector, point.translated(-180, 0), point, 1, true));
+      selector.mouseUp(pointerEvent(selector, point.translated(-180, 0), point, 1, true));
+      expect(PracticePanelGestureTestAccess::touchUp(*fixture.panel, 1 - firstUp),
+             "last pinch release clears the latch after consuming the gesture");
+      expect(selector.getSelectedInstrumentId() == "piano" && fixture.seeks.empty() &&
+                 fixture.listeningChanges.empty(),
+             "pinch contacts in either order cannot leak an instrument selection or playback gesture");
+      selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+      expect(selector.getSelectedInstrumentId() == "bass", "selection works again after the pinch");
+    }
+  }
+  Fixture magnified;
+  auto &wheel = PracticePanelGestureTestAccess::instrumentSelector(*magnified.panel);
+  const auto point = wheel.getLocalBounds().getCentre();
+  wheel.mouseDown(pointerEvent(wheel, point, point));
+  wheel.mouseMagnify(pointerEvent(wheel, point, point), 2.0f);
+  wheel.mouseUp(pointerEvent(wheel, point.translated(-180, 0), point, 1, true));
+  expectNear(PracticePanelGestureTestAccess::visibleSpan(*magnified.panel), 6.0,
+             "trackpad magnification over the wheel zooms the shared waveform");
+  expect(wheel.getSelectedInstrumentId() == "piano" && magnified.seeks.empty(),
+         "magnification cancels the pending wheel selection");
+}
+
+void testInstrumentWheelLongNamesLayoutAndLifetime() {
+  for (const int width : {320, 390, 768}) {
+    Fixture fixture;
+    const juce::String longName = "Guitarra electrica principal con efectos y ambiente de concierto";
+    fixture.availableInstruments[0].name = longName;
+    PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+    fixture.panel->setSize(width, 844);
+    auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*fixture.panel);
+    expect(selector.getHeight() == 44 && selector.getItemSpacing() > 44.0f &&
+               PracticePanelGestureTestAccess::card(*fixture.panel).contains(selector.getBounds()),
+           "instrument wheel stays in the card header with wide labels and a 44-point touch target");
+    expect(selector.getTextFromValue(0.0) == longName && selector.getAccessibilityHandler() != nullptr,
+           "the full instrument name remains available to the Slider accessibility interface");
+    juce::Image image(juce::Image::ARGB, selector.getWidth(), selector.getHeight(), true);
+    juce::Graphics g(image);
+    selector.paint(g);
+    expectNear(PracticePanelGestureTestAccess::pitchSelector(*fixture.panel).getItemSpacing(), 44.0,
+               "instrument label widths do not alter pitch spacing");
+    expectNear(PracticePanelGestureTestAccess::tempoSelector(*fixture.panel).getItemSpacing(), 44.0,
+               "instrument label widths do not alter tempo spacing");
+  }
+  Fixture closing;
+  closing.afterSynchronousWaveform = [&](const juce::String &) { closing.panel.reset(); };
+  auto &selector = PracticePanelGestureTestAccess::instrumentSelector(*closing.panel);
+  selector.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+  expect(closing.panel == nullptr && closing.waveformRequests.back().cancelled->load(),
+         "a waveform provider may destroy the panel during the wheel's synchronous callback");
+}
+
 } // namespace
 
 int main() {
@@ -2702,6 +2888,11 @@ int main() {
   testZoomLimitsAndSeekScale();
   testPinchRebaselinesFingerMembership();
   testPitchControlsAndRemoteOptimism();
+  testInstrumentWheelSelectionAndRetarget();
+  testInstrumentWheelVerticalAndAxisOwnership();
+  testInstrumentWheelListAndContextChanges();
+  testInstrumentWheelPinchAndMagnify();
+  testInstrumentWheelLongNamesLayoutAndLifetime();
   testPitchSelectorDragAndNames();
   testPitchSelectorCancelledDrag();
   testTempoSelectorDragAndFractionalOriginal();

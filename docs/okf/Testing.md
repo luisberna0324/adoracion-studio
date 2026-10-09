@@ -457,3 +457,22 @@ acceso habitual y la instalación de la demo en un dispositivo Android.
 - La compilación posterior con secciones a ancho completo también se instaló
   y abrió en ese iPhone Simulator; la revisión visual confirmó la fila sin
   bandas laterales, con etiquetas y controles fuera del cutout.
+
+
+## Selector de instrumentos de Ensayo — 09/10/2026
+
+`practice_panel_gestures` incluye recorridos desde los handlers reales de
+`PracticeInstrumentSelector`: preview/confirmación única (incluido release
+coalesced), ausencia de seek/pausa al recorrer instrumentos, retarget por ID,
+gestos verticales de tres niveles y propiedad del eje, pinch en ambos órdenes,
+magnificación, reordenación antes del sondeo, listas vacías/únicas y cancelación
+por canción, contexto, desconexión o tamaño. También cubre nombres completos
+para accesibilidad, layout en 320/390/768 puntos, spacing sin cambios en
+Tono/Tempo y destrucción síncrona desde el proveedor de onda.
+
+Estas pruebas JUCE nuevas no se ejecutaron en el entorno cloud de esta revisión:
+no dispone de JUCE ni CMake. Los harnesses portables ejecutan código real con
+dobles de UI y no acreditan compilación nativa, accesibilidad del sistema,
+elipsis renderizada ni revisión visual/táctil en iOS/Android. Antes de publicar,
+compilar `MTControls_Standalone`, ejecutar `practice_panel_gestures` y revisar
+el carrusel con nombres largos y gestos interrumpidos en la app real.

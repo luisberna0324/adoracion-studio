@@ -32,9 +32,9 @@ En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
 `Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;
 al cerrar restaura las orientaciones landscape de performance. La vista usa
 los insets seguros reales, muestra inicialmente una ventana de 12 segundos y usa
-`PlaybackSession` para posición, Play/Pausa y Stop. Un toque en el encabezado
-de la tarjeta abre la lista de instrumentos. Elegir uno cambia el nombre y la
-onda individual; con una escucha de ensayo activa, también retargetea esa
+`PlaybackSession` para posición, Play/Pausa y Stop. El encabezado de la tarjeta
+muestra `PracticeInstrumentSelector`, que reutiliza la rueda horizontal real de
+Tono/Tempo. Elegir un instrumento cambia el nombre y la onda individual; con una escucha de ensayo activa, también retargetea esa
 escucha al nuevo instrumento. La onda individual se decodifica en background en
 tiempo fuente y se proyecta al tiempo del arreglo mediante una copia inmutable
 del `SectionScheduler` real. Las copias reutilizan los picos del mismo rango
@@ -106,6 +106,27 @@ persistencia local por setlist. Cambiar tempo altera la velocidad de reproducci�
 la onda y la grilla mantienen las posiciones del arreglo, con el mapa fuente
 de cada copia, sin estirar sus tiempos al cambiar BPM.
 
+El selector de instrumentos permanece bajo el handle de la tarjeta, con 18
+puntos de margen lateral y 44 puntos de alto. Comparte `PracticeWheelSelector`
+con tono y tempo: selección central resaltada, vecinos visibles, degradados y
+centrado de 160 ms. Cada casilla usa 104–180 puntos según el ancho disponible,
+con dos líneas y elipsis para nombres largos sin compresión horizontal; el nombre
+completo se conserva en la interfaz accesible del Slider. Los otros selectores
+conservan sus pasos de 44 puntos. Instrumentos no tiene un valor musical original:
+no dibuja el segundo relleno ni restaura otro instrumento al hacer doble toque.
+Flechas y rueda recorren la lista; Home/End eligen sus extremos.
+
+Arrastrar el carrusel solo previsualiza y confirma una vez al soltar; tocar un
+vecino selecciona el elemento visible. La selección usa el ID estable del stem,
+incluso si la lista se reordena antes del siguiente sondeo. Al quitar el seleccionado
+se muestra el primer disponible; una lista vacía deshabilita el control.
+Cambios de canción, contexto, lista, tamaño o conexión cancelan la selección
+pendiente. Sus gestos horizontales y toques no producen scrub, seek, salto de compás
+ni menú. Los verticales y el pinch siguen usando el arbitraje de la tarjeta,
+con un solo dueño por gesto y sin acción tardía al levantar el último dedo.
+Se mantienen los callbacks existentes de onda individual y retarget de escucha;
+no se modifica el motor de audio, los faders ni las ganancias de ensayo.
+
 En la fila inferior, A marca el inicio y B cierra la región e inicia la repetición.
 Ambos se ajustan al pulso musical más cercano dentro de Inicio/Fin; un empate
 elige el pulso posterior. El ajuste respeta el mapa de tempo y el denominador de
@@ -171,8 +192,8 @@ restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,
 la intención viaja por `practice.listen` y se aplica al audio del servidor;
 los gestos no envían comandos mientras la conexión está caída.
 
-La tarjeta se divide virtualmente en dos mitades iguales: un doble toque en
-la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques
+La tarjeta, fuera del carrusel de instrumentos, se divide virtualmente en dos
+mitades iguales: un doble toque en la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques
 deben pertenecer a la misma mitad, canción y modo local/remoto. El salto usa
 el BPM original y la métrica de la canción, conserva Play/Pausa y muestra una
 confirmación en la mitad tocada. Los saltos consecutivos en el mismo sentido
@@ -180,10 +201,10 @@ acumulan el contador (`−1 compás`, `−2 compases`, etc.) durante 1.5 segundo
 desde el último salto. Invertir el sentido, iniciar un arrastre, detener o
 cambiar canción reinicia esa cuenta; tocar un límite sin desplazamiento no
 incrementa el contador. Cada mitad lleva una ayuda pequeña y secundaria para
-el doble toque, fuera del cuerpo de la onda. Un toque en el encabezado espera el
-intervalo del doble toque antes de abrir el selector de instrumento.
+el doble toque, fuera del cuerpo de la onda. El carrusel elige instrumentos
+sin esperar el intervalo de un doble toque ni abrir un popup.
 
-El arrastre horizontal desplaza la onda bajo un cursor central: hacia la
+El arrastre horizontal fuera del carrusel desplaza la onda bajo un cursor central: hacia la
 derecha busca audio anterior y hacia la izquierda audio posterior. Durante
 el arrastre solo cambia la previsualización y pausa temporalmente el transporte
 si estaba reproduciendo. La cámara sigue el dedo con un suavizado de 35 ms y

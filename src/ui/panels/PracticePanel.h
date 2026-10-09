@@ -8,6 +8,7 @@
 #include "PracticeTimelineRuler.h"
 #include "PracticePitchSelector.h"
 #include "PracticeTempoSelector.h"
+#include "PracticeInstrumentSelector.h"
 #include "../learning/LearningGuideModel.h"
 #include <atomic>
 #include <functional>
@@ -21,10 +22,7 @@ class PracticePanel final : public juce::Component, private juce::Timer {
 public:
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   bool hasLoopMarks() const noexcept { return loopStartSeconds >= 0.0 || loopEndSeconds >= 0.0; }
-  struct Instrument {
-    juce::String id;
-    juce::String name;
-  };
+  using Instrument = PracticeInstrumentSelector::Item;
 
   struct Sources {
     std::function<juce::String()> songId;
@@ -93,7 +91,7 @@ public:
 
 private:
   void timerCallback() override;
-  void refreshWaveform();
+  void refreshWaveform(const juce::String &wheelSelectionId = {});
   void cancelWaveformRequest();
   bool waveformContextMatchesSources() const;
   void selectInstrument(int index, bool reloadWaveform = false);
@@ -113,7 +111,10 @@ private:
   void updateAnimationFrame(double frameTimestampSec, bool fromVBlank = false);
   void cancelScrub(bool restorePlayback);
   void showBarFeedback(int direction, double previousPosition, double target);
-  void showInstrumentMenu();
+  void selectInstrumentFromWheel();
+  void cancelInstrumentGesture();
+  bool routeInstrumentPointer(const juce::MouseEvent &event,
+                              PracticeInstrumentSelector::PointerPhase phase);
   void changePitch(int delta);
   void changeTempo(double bpm);
   void markLoopStart();
@@ -162,6 +163,7 @@ private:
   GestureAwareButton restoreMixButton;
   PracticePitchSelector pitchSelector;
   PracticeTempoSelector tempoSelector;
+  PracticeInstrumentSelector instrumentSelector;
   GestureAwareButton loopStartButton;
   GestureAwareButton loopEndButton;
   TransportIconButton loopToggleButton;
@@ -236,7 +238,6 @@ private:
   int pendingSeekMatchingFrames = 0;
   double handoffOffsetSeconds = 0.0;
   juce::uint32 handoffOffsetAtMs = 0;
-  juce::uint32 pendingInstrumentMenuMs = 0;
   juce::uint32 barFeedbackUntilMs = 0;
   juce::String gestureSongId;
   juce::String barFeedback;
@@ -248,7 +249,7 @@ private:
   bool pendingScrubFinish = false;
   bool scrubActive = false;
   bool scrubSettling = false;
-  bool instrumentHeaderPressed = false;
+  bool instrumentSelectorPressed = false;
   bool waveformPressed = false;
   bool listeningSwipeHandled = false;
   bool listeningActivatedHere = false;

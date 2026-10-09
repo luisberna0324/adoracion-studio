@@ -93,6 +93,12 @@ PracticePanel::PracticePanel(Sources nextSources)
   }
   addAndMakeVisible(pitchSelector);
   addAndMakeVisible(tempoSelector);
+  addAndMakeVisible(instrumentSelector);
+  instrumentSelector.onValueChange = [this] { selectInstrumentFromWheel(); };
+  instrumentSelector.onPointerEvent = [this](const juce::MouseEvent &event,
+      PracticeInstrumentSelector::PointerPhase phase) {
+    return routeInstrumentPointer(event, phase);
+  };
   closeButton.onClick = [this] {
     if (sources.close)
       sources.close();
@@ -109,7 +115,6 @@ PracticePanel::PracticePanel(Sources nextSources)
     pendingSeek = false;
     handoffOffsetSeconds = 0.0;
     waveformPressed = false;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     if (sources.stop)
@@ -239,6 +244,10 @@ void PracticePanel::resized() {
   area.removeFromBottom(18);
   waveformBounds = area;
   instrumentHeaderBounds = waveformBounds.reduced(18, 12).removeFromTop(54);
+  const auto selectorBounds = instrumentHeaderBounds.withTrimmedTop(10);
+  if (instrumentSelector.getBounds() != selectorBounds)
+    cancelInstrumentGesture();
+  instrumentSelector.setBounds(selectorBounds);
 }
 
 void PracticePanel::GestureAwareButton::paintButton(juce::Graphics &g,
@@ -523,10 +532,11 @@ bool PracticePanel::handleTouchDown(const int index, const juce::Point<float> po
     return pinchLatched;
   if (!pinchLatched) {
     cancelScrub(true);
-    waveformPressed = instrumentHeaderPressed = false;
+    instrumentSelector.cancelDrag();
+    waveformPressed = instrumentSelectorPressed = false;
     dragAxis = DragAxis::Undecided;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = barFeedbackUntilMs = 0;
+    barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     pinchLatched = true;
     updatePracticeControls();
@@ -904,17 +914,6 @@ void PracticePanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::textSecondary);
   g.fillRoundedRectangle(static_cast<float>(picker.getCentreX() - 18),
                          static_cast<float>(picker.getY()), 36.0f, 4.0f, 2.0f);
-  picker.removeFromTop(12);
-  g.setColour(UITheme::textPrimary);
-  g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
-  juce::String instrumentName = L10n::tr("Sin instrumento", "No instrument");
-  for (const auto &instrument : instruments)
-    if (instrument.id == selectedInstrumentId) {
-      instrumentName = instrument.name;
-      break;
-    }
-  g.drawFittedText(instrumentName + "  ⌄", picker,
-                   juce::Justification::centred, 1);
 
   const double length = sources.lengthSeconds ? sources.lengthSeconds() : 0.0;
   const double current = getDisplayedPositionSeconds();
@@ -1054,7 +1053,7 @@ void PracticePanel::paint(juce::Graphics &g) {
   drawBarFeedback();
 }
 
-void PracticePanel::refreshWaveform() {
+void PracticePanel::refreshWaveform(const juce::String &wheelSelectionId) {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
   const auto revision = sources.waveformRevision ? sources.waveformRevision()
@@ -1086,6 +1085,7 @@ void PracticePanel::refreshWaveform() {
     pitchSelector.cancelDrag();
     tempoPending = false;
     tempoSelector.cancelDrag();
+    cancelInstrumentGesture();
     clearLoopSelection();
     releasedLoopIdentities.clear();
     selectedInstrumentId.clear();
@@ -1096,7 +1096,6 @@ void PracticePanel::refreshWaveform() {
     waveformPressed = false;
     dragAxis = DragAxis::Undecided;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
   }
@@ -1112,6 +1111,7 @@ void PracticePanel::refreshWaveform() {
         break;
       }
   if (changed) {
+    cancelInstrumentGesture();
     instruments = std::move(latest);
     for (auto cached = waveformCache.begin(); cached != waveformCache.end();) {
       const auto found = std::find_if(instruments.begin(), instruments.end(),
@@ -1133,9 +1133,19 @@ void PracticePanel::refreshWaveform() {
       repaint(waveformBounds);
     }
   }
+  const bool canSelect = sources.canControl && sources.canControl();
+  const bool preserveWheelSelection = canSelect && !contextChanged &&
+      std::any_of(instruments.begin(), instruments.end(),
+          [&wheelSelectionId](const Instrument &entry) { return entry.id == wheelSelectionId; });
+  instrumentSelector.setInstruments(instruments,
+      preserveWheelSelection ? wheelSelectionId : selectedInstrumentId);
+  instrumentSelector.setEnabled(!instruments.empty() && canSelect);
   if (selectedInstrumentId.isEmpty() && !instruments.empty())
     selectInstrument(0);
-  else if (waveformChanged && selectedInstrumentId.isNotEmpty()) {
+  else if (waveformChanged && selectedInstrumentId.isNotEmpty() &&
+           !(preserveWheelSelection && wheelSelectionId != selectedInstrumentId)) {
+    // A committed wheel candidate will request its own fresh bins below in
+    // selectInstrumentFromWheel; reloading the old ID here would reset preview.
     const auto selected = std::find_if(instruments.begin(), instruments.end(),
         [this](const Instrument &entry) {
           return entry.id == selectedInstrumentId;
@@ -1165,7 +1175,7 @@ void PracticePanel::selectInstrument(const int index, const bool reloadWaveform)
     return;
   const auto id = instruments[static_cast<size_t>(index)].id;
   if (!waveformContextMatchesSources()) {
-    // A menu selection can precede the next 500 ms probe. Never use a cache
+    // A wheel selection can precede the next 500 ms probe. Never use a cache
     // entry from the previous content revision in that interval.
     auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
@@ -1184,6 +1194,10 @@ void PracticePanel::selectInstrument(const int index, const bool reloadWaveform)
   cancelWaveformRequest();
   const auto generation = waveformRequestGeneration;
   selectedInstrumentId = id;
+  if (instrumentSelector.getSelectedInstrumentId() != id)
+    cancelInstrumentGesture();
+  instrumentSelector.setInstruments(instruments, selectedInstrumentId);
+  instrumentSelector.setEnabled(sources.canControl && sources.canControl());
   auto safe = juce::Component::SafePointer<PracticePanel>(this);
   if (selectionChanged && listeningActivatedHere && requestedListeningMode != 0) {
     if (sources.setListeningMode && sources.canControl && sources.canControl() &&
@@ -1280,12 +1294,13 @@ void PracticePanel::updateWaveformGesture(const juce::Point<float> position,
       dragAxis = DragAxis::Vertical;
     if (dragAxis != DragAxis::Undecided) {
       lastTapSide = -1;
-      pendingInstrumentMenuMs = 0;
       barFeedbackUntilMs = 0;
       accumulatedBarSteps = 0;
     }
   }
   if (dragAxis == DragAxis::Horizontal) {
+    if (instrumentSelectorPressed)
+      return;
     if (!scrubActive) {
       scrubActive = true;
       visualPositionSeconds = dragOriginSeconds;
@@ -1304,23 +1319,55 @@ void PracticePanel::updateWaveformGesture(const juce::Point<float> position,
   }
 }
 
-void PracticePanel::showInstrumentMenu() {
-  if (instruments.empty())
+void PracticePanel::cancelInstrumentGesture() {
+  instrumentSelector.cancelDrag();
+  if (instrumentSelectorPressed) {
+    instrumentSelectorPressed = false;
+    waveformPressed = false;
+    dragAxis = DragAxis::Undecided;
+    lastTapSide = -1;
+  }
+}
+
+void PracticePanel::selectInstrumentFromWheel() {
+  // Capture the stable ID before refreshing; an index may now identify a
+  // different stem after a same-song reorder between the 500 ms probes.
+  const auto id = instrumentSelector.getSelectedInstrumentId();
+  const auto songId = displayedSongId;
+  const bool remote = displayedWasRemote;
+  const juce::Component::SafePointer<PracticePanel> safe(this);
+  refreshWaveform(id);
+  if (safe == nullptr || songId != displayedSongId || remote != displayedWasRemote ||
+      !sources.canControl || !sources.canControl())
     return;
-  juce::PopupMenu menu;
-  menu.addSectionHeader(L10n::tr("Instrumentos", "Instruments"));
-  for (size_t i = 0; i < instruments.size(); ++i)
-    menu.addItem(static_cast<int>(i) + 1, instruments[i].name, true,
-                 instruments[i].id == selectedInstrumentId);
-  auto safe = juce::Component::SafePointer<PracticePanel>(this);
-  menu.showMenuAsync(
-      makeTouchPopupMenuOptions(this).withTargetScreenArea(
-          localAreaToGlobal(instrumentHeaderBounds))
-          .withMinimumWidth(juce::jmin(320, instrumentHeaderBounds.getWidth())),
-      [safe](const int result) {
-        if (safe != nullptr && result > 0)
-          safe->selectInstrument(result - 1);
-      });
+  const auto found = std::find_if(instruments.begin(), instruments.end(),
+      [&id](const Instrument &entry) { return entry.id == id; });
+  if (found != instruments.end())
+    selectInstrument(static_cast<int>(found - instruments.begin()));
+}
+
+bool PracticePanel::routeInstrumentPointer(const juce::MouseEvent &event,
+    PracticeInstrumentSelector::PointerPhase phase) {
+  const juce::Component::SafePointer<PracticePanel> safe(this);
+  if (phase == PracticeInstrumentSelector::PointerPhase::down) {
+    mouseDown(event);
+    return safe == nullptr || pinchLatched || !instrumentSelectorPressed ||
+           !canFinishWaveformGesture();
+  }
+  // The wheel acquires a horizontal gesture at its own six-point threshold.
+  // Preserve that owner if the finger later turns vertically.
+  if (instrumentSelectorPressed && instrumentSelector.isHorizontalDragActive())
+    dragAxis = DragAxis::Horizontal;
+  mouseDrag(event);
+  if (safe == nullptr)
+    return true;
+  // Capture before mouseUp clears its axis and the last pinch contact. Running
+  // mouseDrag first also resolves a last/coalesced vertical movement on release.
+  const bool consumed = pinchLatched || dragAxis == DragAxis::Vertical ||
+                        !instrumentSelectorPressed || !canFinishWaveformGesture();
+  if (phase == PracticeInstrumentSelector::PointerPhase::up)
+    mouseUp(event);
+  return consumed;
 }
 
 void PracticePanel::mouseDown(const juce::MouseEvent &event) {
@@ -1347,8 +1394,7 @@ void PracticePanel::mouseDown(const juce::MouseEvent &event) {
     scrubSettling = false;
     previewPositionSeconds = visualPositionSeconds;
   }
-  instrumentHeaderPressed =
-      waveformBounds.withHeight(82).toFloat().contains(position);
+  instrumentSelectorPressed = event.eventComponent == &instrumentSelector;
   waveformPressed = waveformBounds.toFloat().contains(position);
   dragAxis = DragAxis::Undecided;
   gestureSongId = songId;
@@ -1357,7 +1403,6 @@ void PracticePanel::mouseDown(const juce::MouseEvent &event) {
   previewPositionSeconds = dragOriginSeconds;
   dragSecondsPerPixel = getVisibleSpanSeconds() /
                         juce::jmax(1, getWaveformLayout().plot.getWidth());
-  pendingInstrumentMenuMs = 0;
   listeningSwipeHandled = false;
   dragStart = position;
   motionSamples.clear();
@@ -1377,14 +1422,14 @@ void PracticePanel::mouseUp(const juce::MouseEvent &event) {
     return;
   const auto position = event.getEventRelativeTo(this).position;
   updateWaveformGesture(position, event.eventTime.toMilliseconds());
-  if (waveformPressed && dragAxis == DragAxis::Horizontal) {
+  if (waveformPressed && !instrumentSelectorPressed && dragAxis == DragAxis::Horizontal) {
     if (canFinishWaveformGesture())
       settleScrub(true);
     else {
       cancelScrub(false);
       pendingSeek = false;
     }
-  } else if (waveformPressed && dragAxis == DragAxis::Undecided &&
+  } else if (waveformPressed && !instrumentSelectorPressed && dragAxis == DragAxis::Undecided &&
              waveformBounds.toFloat().contains(position) &&
              event.getDistanceFromDragStart() < 12 &&
              !event.mouseWasDraggedSinceMouseDown() &&
@@ -1407,16 +1452,13 @@ void PracticePanel::mouseUp(const juce::MouseEvent &event) {
       lastTapSide = -1;
     } else {
       lastTapSide = side;
-      if (instrumentHeaderPressed && waveformBounds.withHeight(82).toFloat().contains(position))
-        pendingInstrumentMenuMs = juce::Time::getMillisecondCounter() +
-                                  juce::MouseEvent::getDoubleClickTimeout();
     }
   } else {
     lastTapSide = -1;
   }
   if (scrubActive && !scrubSettling)
     settleScrub();
-  instrumentHeaderPressed = false;
+  instrumentSelectorPressed = false;
   waveformPressed = false;
   listeningSwipeHandled = false;
   dragAxis = DragAxis::Undecided;
@@ -1477,6 +1519,7 @@ void PracticePanel::timerCallback() {
   const bool enabled = sources.canControl && sources.canControl();
   playPauseButton.setEnabled(enabled);
   stopButton.setEnabled(enabled);
+  instrumentSelector.setEnabled(enabled && !instruments.empty());
   const int mode = sources.listeningMode ? sources.listeningMode() : 0;
   const auto listeningInstrument = sources.listeningInstrumentId
       ? sources.listeningInstrumentId() : juce::String{};
@@ -1494,13 +1537,13 @@ void PracticePanel::timerCallback() {
   }
   restoreMixButton.setEnabled(enabled);
   if (!enabled) {
+    cancelInstrumentGesture();
     cancelScrub(false);
     listeningActivatedHere = false;
     requestedListeningMode = 0;
     pendingSeek = false;
     waveformPressed = false;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     touchPositions.clear();
@@ -1520,12 +1563,6 @@ void PracticePanel::timerCallback() {
   if (lastVBlankAtMs == 0 || now - lastVBlankAtMs > 100)
     updateAnimationFrame(juce::Time::getMillisecondCounterHiRes() * 0.001);
 #endif
-  if (pendingInstrumentMenuMs != 0 &&
-      static_cast<juce::int32>(now - pendingInstrumentMenuMs) >= 0) {
-    pendingInstrumentMenuMs = 0;
-    if (canFinishWaveformGesture())
-      showInstrumentMenu();
-  }
   const bool playing = sources.isPlaying && sources.isPlaying();
   const auto playLabel = playing
                              ? L10n::tr("Pausar", "Pause")
