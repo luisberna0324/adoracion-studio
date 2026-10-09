@@ -72,7 +72,10 @@ Referencias: [UIKit reloadInputViews](https://developer.apple.com/documentation/
    Las ondas ya guardadas se conservan hasta su regeneracion.
    Ensayo usa `buildStemWaveformBins` para previsualizar un solo instrumento
    local sin alterar la onda mezclada del proyecto. Se calcula fuera del hilo
-   de UI, se cancela al cambiar de pista y se alinea con la duracion global.
+   de UI y se cancela al cambiar de pista. Los bins se construyen con la
+   duración fuente real, conservando silencio para stems más cortos. Después,
+   `PracticeWaveform` los proyecta al arreglo usando el snapshot real del
+   scheduler, sin duplicar PCM ni normalizar cada copia por separado.
 4. Volver a abrir y validar el paquete, y registrar la cancion en Biblioteca.
    El registro final se serializa en el message thread antes de declarar exito;
    solo el worker espera ese resultado, sin retener locks.

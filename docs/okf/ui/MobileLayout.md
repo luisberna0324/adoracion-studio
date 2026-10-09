@@ -35,8 +35,11 @@ los insets seguros reales, muestra inicialmente una ventana de 12 segundos y usa
 `PlaybackSession` para posición, Play/Pausa y Stop. Un toque en el encabezado
 de la tarjeta abre la lista de instrumentos. Elegir uno cambia el nombre y la
 onda individual; con una escucha de ensayo activa, también retargetea esa
-escucha al nuevo instrumento. La onda individual se decodifica en background y se alinea al tiempo
-global de la canción. En Cliente se muestran los instrumentos del servidor,
+escucha al nuevo instrumento. La onda individual se decodifica en background en
+tiempo fuente y se proyecta al tiempo del arreglo mediante una copia inmutable
+del `SectionScheduler` real. Las copias reutilizan los picos del mismo rango
+fuente y desplazan correctamente el audio posterior; no duplican archivos ni
+normalizan cada sección por separado. En Cliente se muestran los instrumentos del servidor,
 pero el protocolo remoto actual solo transporta la onda mezclada, así que la
 onda individual indica su falta de disponibilidad. Play/Pausa y Stop no se
 envían cuando la conexión está caída.
@@ -100,7 +103,8 @@ y restaura el tempo original con doble toque o Home. Respeta los límites del
 motor (75 %–200 % del BPM original, dentro del rango admitido de 20–300 BPM)
 y usa `PlaybackSession::setPlaybackTempoBpm`, incluida su ruta remota y la
 persistencia local por setlist. Cambiar tempo altera la velocidad de reproducción;
-la onda y la grilla mantienen las posiciones de tiempo fuente.
+la onda y la grilla mantienen las posiciones del arreglo, con el mapa fuente
+de cada copia, sin estirar sus tiempos al cambiar BPM.
 
 En la fila inferior, A marca el inicio y B cierra la región e inicia la repetición.
 Ambos se ajustan al pulso musical más cercano dentro de Inicio/Fin; un empate
@@ -195,7 +199,24 @@ seek con `PlaybackSession` y se reanuda solo si esa pausa sigue perteneciendo
 al gesto. Tocar de nuevo interrumpe la inercia y conserva la propiedad de la
 misma pausa para continuar recorriendo la onda.
 
-`PracticeWaveformGeometry` agrupa los bins en intervalos fijos desde el tiempo
+`PracticeWaveform` recibe los picos fuente y un snapshot coherente del scheduler,
+su sample rate, duración fuente, duración del arreglo y revisión de carga. La
+proyección se ejecuta fuera del hilo de audio y divide cada intervalo en los
+límites de las copias antes de consultar máximos: nunca toma como un solo rango
+el salto entre dos posiciones fuente. La memoria se limita a los vectores de
+picos y las secciones del snapshot, independientemente del tamaño del PCM.
+Un stem más corto conserva silencio después de su final fuente, incluso cuando
+se copia ese rango. El helper no aplica otra normalización.
+
+`PracticePanel` invalida su caché por revisión del mapa/fuente, duración,
+canción y local/remoto. Reordenar o recortar copias con igual duración también
+invalida. Cada entrega asíncrona comprueba la identidad viva y la generación
+antes de guardar o mostrar bins; una respuesta de una revisión anterior no
+puede contaminar la caché al cambiar entre instrumentos. Cambiar el arreglo
+mantiene la selección del instrumento. No se consultan archivos desde paint
+ni desde el timer para calcular esta identidad.
+
+`PracticeWaveformGeometry` agrupa los bins proyectados en intervalos fijos desde el tiempo
 cero de la canción y conserva sus amplitudes al mover la cámara. Los puntos
 se conectan con curvas cúbicas sin exceder las amplitudes adyacentes, formando
 una envolvente continua y rellena. La geometría se cachea en tiles de 64

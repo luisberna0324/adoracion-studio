@@ -5652,6 +5652,29 @@ SongArrangementSnapshot MTControlsAudioProcessor::getSongArrangementSnapshot() c
   return sectionAutomationArrangement;
 }
 
+playworship::practice::WaveformTimeline
+MTControlsAudioProcessor::getPracticeWaveformTimeline() const {
+  // Source/range/rate writers already own this control-side lock. Guide-only
+  // republication may still occur, so acquire the scheduler's coherent atomic
+  // snapshot. Copy only bounded data here; decoding/projection/identity work
+  // happens after releasing the lock, never in the realtime callback.
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  playworship::practice::WaveformTimeline timeline;
+  timeline.sections = sectionScheduler.acquireSnapshot();
+  timeline.sampleRate = playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0;
+  timeline.sourceLengthSeconds =
+      loadedSongLengthSeconds.load(std::memory_order_relaxed);
+  timeline.customArrangement =
+      arrangementCustomActive.load(std::memory_order_relaxed);
+  timeline.lengthSeconds = timeline.customArrangement
+      ? juce::jmax(timeline.sourceLengthSeconds,
+                  arrangementTotalLengthSeconds.load(std::memory_order_relaxed))
+      : timeline.sourceLengthSeconds;
+  timeline.sourceRevision =
+      diagnosticSourceGeneration.load(std::memory_order_relaxed);
+  return timeline;
+}
+
 bool MTControlsAudioProcessor::beginSectionAutomationEditing(const juce::String &partId, const bool remoteOwned) {
   const juce::ScopedLock lock(sectionAutomationControlLock);
   if (isSectionAutomationEditing()) return false;

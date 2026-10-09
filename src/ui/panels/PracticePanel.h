@@ -61,6 +61,10 @@ public:
     std::function<bool()> isPlaying;
     std::function<bool()> canControl;
     std::function<std::vector<Instrument>()> instruments;
+    // Changes whenever waveform content or the arrangement changes, even when
+    // song ID, duration and instrument IDs stay the same. Optional for callers
+    // without a content revision; song, duration and local/remote still apply.
+    std::function<juce::String()> waveformRevision;
     std::function<void(const juce::String &,
                        std::shared_ptr<std::atomic<bool>>,
                        std::function<void(std::vector<float>)>)>
@@ -90,7 +94,9 @@ public:
 private:
   void timerCallback() override;
   void refreshWaveform();
-  void selectInstrument(int index);
+  void cancelWaveformRequest();
+  bool waveformContextMatchesSources() const;
+  void selectInstrument(int index, bool reloadWaveform = false);
   void applyListeningGesture(const juce::Point<float> &movement);
   void updateWaveformGesture(juce::Point<float> position, juce::int64 eventTimeMs);
   bool canFinishWaveformGesture() const;
@@ -203,6 +209,8 @@ private:
   std::map<juce::String, std::vector<float>> waveformCache;
   juce::String selectedInstrumentId;
   juce::String displayedSongId;
+  juce::String displayedWaveformRevision;
+  double displayedWaveformLengthSeconds = 0.0;
   juce::uint32 nextWaveformProbeMs = 0;
   juce::Point<float> dragStart;
   enum class DragAxis { Undecided, Horizontal, Vertical };

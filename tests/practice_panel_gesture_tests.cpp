@@ -1,6 +1,7 @@
 #include "ui/panels/PracticePanel.h"
 #include "ui/UiCommon.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -261,11 +262,53 @@ struct PracticePanelGestureTestAccess {
   static void selectInstrument(PracticePanel &panel, const int index) {
     panel.selectInstrument(index);
   }
+
+  static void refreshWaveform(PracticePanel &panel) {
+    panel.refreshWaveform();
+  }
+
+  static const std::vector<float> &waveform(const PracticePanel &panel) {
+    return panel.waveformBins;
+  }
+
+  static const std::map<juce::String, std::vector<float>> &waveformCache(
+      const PracticePanel &panel) {
+    return panel.waveformCache;
+  }
+
+  static juce::String selectedInstrument(const PracticePanel &panel) {
+    return panel.selectedInstrumentId;
+  }
+
+  static unsigned int waveformGeneration(const PracticePanel &panel) {
+    return panel.waveformRequestGeneration;
+  }
+
+  static bool scrubIsActive(const PracticePanel &panel) {
+    return panel.scrubActive;
+  }
+
+  static size_t waveformGeometrySize(PracticePanel &panel) {
+    panel.waveformGeometry.configure(panel.displayedWaveformLengthSeconds,
+                                    panel.viewport.getSpan(), 390.0f, 200.0f);
+    return panel.waveformGeometry.getBars().size();
+  }
 };
 
 namespace {
 struct Fixture {
   juce::String songId = "practice-song";
+  juce::String waveformRevision = "revision-1";
+  std::vector<PracticePanel::Instrument> availableInstruments{
+      {"piano", "Piano"}, {"bass", "Bass"}};
+  struct WaveformRequest {
+    juce::String instrument;
+    std::shared_ptr<std::atomic<bool>> cancelled;
+    std::function<void(std::vector<float>)> deliver;
+  };
+  std::vector<WaveformRequest> waveformRequests;
+  bool deferWaveforms = false;
+  std::function<void(const juce::String &)> afterSynchronousWaveform;
   juce::String signature = "4/4";
   juce::String key = "C";
   double bpm = 120.0;
@@ -316,9 +359,13 @@ struct Fixture {
   std::vector<bool> scrubCancellations;
   std::unique_ptr<PracticePanel> panel;
 
-  Fixture() {
+  explicit Fixture(const bool deferredWaveforms = false,
+                   const bool provideWaveformRevision = true)
+      : deferWaveforms(deferredWaveforms) {
     PracticePanel::Sources sources;
     sources.songId = [this] { return songId; };
+    if (provideWaveformRevision)
+      sources.waveformRevision = [this] { return waveformRevision; };
     sources.title = [] { return juce::String("Practice fixture"); };
     sources.positionSeconds = [this] { return position; };
     sources.lengthSeconds = [this] { return length; };
@@ -418,14 +465,18 @@ struct Fixture {
     };
     sources.isPlaying = [this] { return playing; };
     sources.canControl = [this] { return connected; };
-    sources.instruments = [] {
-      return std::vector<PracticePanel::Instrument>{{"piano", "Piano"},
-                                                    {"bass", "Bass"}};
-    };
+    sources.instruments = [this] { return availableInstruments; };
     sources.requestInstrumentWaveform =
-        [](const juce::String &, std::shared_ptr<std::atomic<bool>>,
+        [this](const juce::String &id,
+           std::shared_ptr<std::atomic<bool>> cancelled,
            std::function<void(std::vector<float>)> deliver) {
-          deliver(std::vector<float>(512, 0.5f));
+          waveformRequests.push_back({id, std::move(cancelled), deliver});
+          if (!deferWaveforms) {
+            const auto afterDelivery = afterSynchronousWaveform;
+            deliver(std::vector<float>(512, 0.5f));
+            if (afterDelivery)
+              afterDelivery(id);
+          }
         };
     sources.isRemote = [this] { return remote; };
     sources.listeningMode = [this] { return mode; };
@@ -452,6 +503,14 @@ struct Fixture {
   ~Fixture() {
     juce::PopupMenu::dismissAllActiveMenus();
     panel.reset();
+  }
+
+  void deliverWaveform(const size_t requestIndex, const float value) {
+    expect(requestIndex < waveformRequests.size(), "waveform request exists");
+    // Retain callbacks deliberately and ignore the cancellation flag to model
+    // work that completed before cancellation reached its worker.
+    const auto deliver = waveformRequests[requestIndex].deliver;
+    deliver(std::vector<float>(512, value));
   }
 
   juce::Point<int> left() const {
@@ -511,6 +570,223 @@ struct Fixture {
     static_cast<juce::Component &>(button).mouseUp(event);
   }
 };
+
+void expectWaveform(const PracticePanel &panel, const float value,
+                    const char *message) {
+  const auto &bins = PracticePanelGestureTestAccess::waveform(panel);
+  expect(!bins.empty() && std::all_of(bins.begin(), bins.end(),
+      [value](const float bin) { return bin == value; }), message);
+}
+
+void testWaveformRevisionInvalidatesSameDuration() {
+  Fixture fixture(true);
+  fixture.deliverWaveform(0, 0.2f);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  fixture.deliverWaveform(1, 0.6f);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).size() == 2,
+         "both instruments are cached before editing the arrangement");
+  expect(PracticePanelGestureTestAccess::waveformGeometrySize(*fixture.panel) > 0,
+         "loaded waveform has envelope geometry");
+
+  fixture.swipe(fixture.centre(), fixture.centre().translated(0, -60));
+  expect(fixture.mode == 1 && fixture.listeningInstrument == "bass",
+         "the selected instrument is focused before editing");
+  PracticePanelGestureTestAccess::zoom(*fixture.panel, 2.0);
+  const auto span = PracticePanelGestureTestAccess::visibleSpan(*fixture.panel);
+  const auto start = fixture.centre();
+  fixture.down(start);
+  fixture.drag(start, start.translated(60, 0));
+  const auto preview = PracticePanelGestureTestAccess::targetPosition(*fixture.panel);
+  const auto generation = PracticePanelGestureTestAccess::waveformGeneration(*fixture.panel);
+  const auto listeningChanges = fixture.listeningChanges.size();
+  const auto scrubCancellations = fixture.scrubCancellations.size();
+
+  fixture.waveformRevision = "same-length-reordered-sections";
+  PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+  expect(fixture.waveformRequests.size() == 3 &&
+             fixture.waveformRequests.back().instrument == "bass",
+         "same song and duration request the selected instrument again on revision change");
+  expect(fixture.waveformRequests[1].cancelled->load() &&
+             PracticePanelGestureTestAccess::waveformGeneration(*fixture.panel) > generation,
+         "a revision change cancels and supersedes the old request");
+  expect(PracticePanelGestureTestAccess::waveform(*fixture.panel).empty() &&
+             PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty() &&
+             PracticePanelGestureTestAccess::waveformGeometrySize(*fixture.panel) == 0,
+         "revision invalidation clears bins, every cached instrument and geometry");
+  expect(PracticePanelGestureTestAccess::selectedInstrument(*fixture.panel) == "bass" &&
+             fixture.mode == 1 && fixture.listeningInstrument == "bass" &&
+             fixture.listeningChanges.size() == listeningChanges,
+         "waveform-only invalidation preserves selection and active listening without retargeting");
+  expect(PracticePanelGestureTestAccess::scrubIsActive(*fixture.panel) &&
+             fixture.scrubCancellations.size() == scrubCancellations,
+         "waveform-only invalidation does not cancel an ongoing scrub");
+  expectNear(PracticePanelGestureTestAccess::targetPosition(*fixture.panel), preview,
+             "waveform-only invalidation preserves the gesture preview");
+  expectNear(PracticePanelGestureTestAccess::visibleSpan(*fixture.panel), span,
+             "waveform-only invalidation preserves zoom");
+  fixture.deliverWaveform(0, 0.9f);
+  fixture.deliverWaveform(1, 0.9f);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty(),
+         "old-revision deliveries cannot repopulate any instrument cache");
+  fixture.deliverWaveform(2, 0.3f);
+  expectWaveform(*fixture.panel, 0.3f, "new-revision waveform is displayed");
+  PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+  expect(fixture.waveformRequests.size() == 3,
+         "an unchanged revision reuses its waveform without another request");
+}
+
+void testWaveformDurationInvalidationWithoutRevisionProvider() {
+  Fixture fixture(true, false);
+  fixture.deliverWaveform(0, 0.2f);
+  fixture.length = 180.0;
+  PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+  expect(fixture.waveformRequests.size() == 2 &&
+             fixture.waveformRequests[0].cancelled->load() &&
+             PracticePanelGestureTestAccess::waveform(*fixture.panel).empty(),
+         "a changed duration invalidates the waveform even without a revision provider");
+  fixture.deliverWaveform(0, 0.9f);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty(),
+         "old-duration bins cannot enter the new cache");
+  fixture.deliverWaveform(1, 0.7f);
+  expectWaveform(*fixture.panel, 0.7f, "new-duration bins are accepted");
+}
+
+void testWaveformRejectsChangedLiveSourcesBeforeProbe() {
+  for (int change = 0; change < 4; ++change) {
+    Fixture fixture(true);
+    if (change == 0)
+      fixture.waveformRevision = "edited-before-probe";
+    else if (change == 1)
+      fixture.length += 30.0;
+    else if (change == 2)
+      fixture.songId = "different-song";
+    else
+      fixture.remote = true;
+
+    // No refresh/timer call: the displayed identity deliberately remains old.
+    fixture.deliverWaveform(0, 0.9f);
+    expect(PracticePanelGestureTestAccess::waveform(*fixture.panel).empty() &&
+               PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty(),
+           "live revision, duration, song and local/remote changes reject delivery before the next probe");
+    PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+    expect(fixture.waveformRequests.size() == 2,
+           "the next probe requests the new live context");
+    fixture.deliverWaveform(1, 0.4f);
+    expectWaveform(*fixture.panel, 0.4f, "the current context accepts its response");
+    fixture.deliverWaveform(0, 0.9f);
+    expectWaveform(*fixture.panel, 0.4f, "a late prior-context response cannot replace current bins");
+  }
+}
+
+void testWaveformCacheHitCancelsPendingSelection() {
+  Fixture fixture(true);
+  fixture.deliverWaveform(0, 0.2f);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  const auto generation = PracticePanelGestureTestAccess::waveformGeneration(*fixture.panel);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 0);
+  expect(fixture.waveformRequests.size() == 2 &&
+             fixture.waveformRequests[1].cancelled->load() &&
+             PracticePanelGestureTestAccess::waveformGeneration(*fixture.panel) > generation,
+         "switching to a cached instrument cancels and advances generation without another request");
+  fixture.deliverWaveform(1, 0.9f);
+  expectWaveform(*fixture.panel, 0.2f, "cancelled response cannot replace a cache hit");
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).count("bass") == 0,
+         "cancelled response cannot poison the unselected instrument cache");
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  expect(fixture.waveformRequests.size() == 3,
+         "returning to the cancelled instrument starts a fresh request");
+  fixture.deliverWaveform(1, 0.9f);
+  expect(PracticePanelGestureTestAccess::waveform(*fixture.panel).empty(),
+         "an older generation for the now-selected instrument is still rejected");
+  fixture.deliverWaveform(2, 0.6f);
+  expectWaveform(*fixture.panel, 0.6f, "the latest instrument request wins");
+  fixture.deliverWaveform(0, 0.9f);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 0);
+  expectWaveform(*fixture.panel, 0.2f, "late duplicates cannot overwrite an earlier valid cache entry");
+}
+
+void testWaveformSelectionChecksRevisionBeforeCacheHit() {
+  Fixture fixture(true);
+  fixture.deliverWaveform(0, 0.2f);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  fixture.deliverWaveform(1, 0.6f);
+  fixture.waveformRevision = "edited-before-menu-selection";
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 0);
+  expect(PracticePanelGestureTestAccess::selectedInstrument(*fixture.panel) == "piano" &&
+             PracticePanelGestureTestAccess::waveform(*fixture.panel).empty() &&
+             PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty(),
+         "a selection before the next probe cannot reuse a previous-revision cache entry");
+  expect(fixture.waveformRequests.back().instrument == "piano",
+         "a selection across revision change requests the intended instrument");
+  fixture.deliverWaveform(fixture.waveformRequests.size() - 1, 0.4f);
+  expectWaveform(*fixture.panel, 0.4f, "selected instrument uses only the new revision");
+}
+
+void testWaveformCachePrunesRemovedInstruments() {
+  Fixture fixture(true);
+  fixture.deliverWaveform(0, 0.2f);
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  fixture.deliverWaveform(1, 0.6f);
+  fixture.availableInstruments.pop_back();
+  PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).size() == 1 &&
+             PracticePanelGestureTestAccess::waveformCache(*fixture.panel).count("bass") == 0,
+         "retired instruments are removed from the cache");
+  expectWaveform(*fixture.panel, 0.2f, "removing selection chooses the remaining cached instrument");
+  fixture.deliverWaveform(1, 0.9f);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).count("bass") == 0,
+         "a retired instrument cannot return through a late delivery");
+  fixture.availableInstruments.clear();
+  PracticePanelGestureTestAccess::refreshWaveform(*fixture.panel);
+  expect(PracticePanelGestureTestAccess::waveformCache(*fixture.panel).empty() &&
+             PracticePanelGestureTestAccess::waveform(*fixture.panel).empty() &&
+             PracticePanelGestureTestAccess::selectedInstrument(*fixture.panel).isEmpty(),
+         "removing every instrument clears the selection and waveform");
+}
+
+void testWaveformSynchronousReentryAndPanelLifetime() {
+  Fixture reentrant;
+  reentrant.afterSynchronousWaveform = [&](const juce::String &id) {
+    if (id == "bass")
+      PracticePanelGestureTestAccess::selectInstrument(*reentrant.panel, 0);
+  };
+  PracticePanelGestureTestAccess::selectInstrument(*reentrant.panel, 1);
+  expect(PracticePanelGestureTestAccess::selectedInstrument(*reentrant.panel) == "piano" &&
+             reentrant.waveformRequests[1].cancelled->load(),
+         "a synchronous provider can re-enter selection without restoring the older request");
+  reentrant.deliverWaveform(1, 0.9f);
+  expectWaveform(*reentrant.panel, 0.5f, "reentrant selection keeps its waveform");
+  expect(PracticePanelGestureTestAccess::waveformCache(*reentrant.panel).at("bass").front() == 0.5f,
+         "a repeated synchronous delivery cannot poison cached bins after reentry");
+
+  Fixture destroyed(true);
+  const auto cancelled = destroyed.waveformRequests[0].cancelled;
+  destroyed.panel.reset();
+  expect(cancelled->load(), "destroying the panel cancels outstanding waveform work");
+  destroyed.deliverWaveform(0, 0.9f);
+
+  Fixture closesSynchronously;
+  closesSynchronously.afterSynchronousWaveform = [&](const juce::String &id) {
+    if (id == "bass")
+      closesSynchronously.panel.reset();
+  };
+  PracticePanelGestureTestAccess::selectInstrument(*closesSynchronously.panel, 1);
+  expect(closesSynchronously.panel == nullptr &&
+             closesSynchronously.waveformRequests[1].cancelled->load(),
+         "a synchronous provider may close the panel without a post-request member access");
+  closesSynchronously.deliverWaveform(1, 0.9f);
+
+  Fixture closesOnProbe;
+  closesOnProbe.afterSynchronousWaveform = [&](const juce::String &) {
+    closesOnProbe.panel.reset();
+  };
+  closesOnProbe.waveformRevision = "close-during-refresh";
+  PracticePanelGestureTestAccess::probeCurrentSong(*closesOnProbe.panel);
+  expect(closesOnProbe.panel == nullptr &&
+             closesOnProbe.waveformRequests[1].cancelled->load(),
+         "a synchronous provider may close the panel during its timer refresh");
+  closesOnProbe.deliverWaveform(1, 0.9f);
+}
 
 double releaseTimedSwipe(Fixture &fixture, const int travelMilliseconds,
                          const int heldMilliseconds = 0,
@@ -2396,6 +2672,13 @@ int main() {
   juce::ScopedJuceInitialiser_GUI gui;
   applyTheme(ThemePreset::Spotify);
   juce::MouseEvent::setDoubleClickTimeout(250);
+  testWaveformRevisionInvalidatesSameDuration();
+  testWaveformDurationInvalidationWithoutRevisionProvider();
+  testWaveformRejectsChangedLiveSourcesBeforeProbe();
+  testWaveformCacheHitCancelsPendingSelection();
+  testWaveformSelectionChecksRevisionBeforeCacheHit();
+  testWaveformCachePrunesRemovedInstruments();
+  testWaveformSynchronousReentryAndPanelLifetime();
   testBarJumpsAndTransportState();
   runPracticeWaveformGeometryTests();
   runPracticePlaybackClockTests();

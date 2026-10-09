@@ -8,6 +8,11 @@
 #include <cmath>
 
 namespace {
+double waveformLength(const PracticePanel::Sources &sources) {
+  const double length = sources.lengthSeconds ? sources.lengthSeconds() : 0.0;
+  return std::isfinite(length) ? juce::jmax(0.0, length) : 0.0;
+}
+
 void paintInsetWaveformFrame(juce::Graphics &g, juce::Rectangle<float> card) {
   const juce::Graphics::ScopedSaveState saved(g);
   juce::Path outline;
@@ -123,8 +128,10 @@ PracticePanel::PracticePanel(Sources nextSources)
     const auto songId = sources.songId ? sources.songId() : juce::String{};
     const bool remote = sources.isRemote && sources.isRemote();
     if (songId != displayedSongId || remote != displayedWasRemote) {
+      auto safe = juce::Component::SafePointer<PracticePanel>(this);
       refreshWaveform();
-      updatePracticeControls();
+      if (safe != nullptr)
+        updatePracticeControls();
       return;
     }
     const int current = pitchPending ? requestedPitch :
@@ -135,8 +142,10 @@ PracticePanel::PracticePanel(Sources nextSources)
     const auto songId = sources.songId ? sources.songId() : juce::String{};
     const bool remote = sources.isRemote && sources.isRemote();
     if (songId != displayedSongId || remote != displayedWasRemote) {
+      auto safe = juce::Component::SafePointer<PracticePanel>(this);
       refreshWaveform();
-      updatePracticeControls();
+      if (safe != nullptr)
+        updatePracticeControls();
       return;
     }
     changeTempo(tempoSelector.getValue());
@@ -159,13 +168,14 @@ PracticePanel::PracticePanel(Sources nextSources)
 PracticePanel::~PracticePanel() {
   stopTimer();
   playbackVBlankAttachment = {};
+  // Invalidate before calling providers: a provider may synchronously flush a
+  // retained delivery while its scrub/loop/listening state is being released.
+  cancelWaveformRequest();
   cancelScrub(true);
   if (sources.releaseLoop && sources.ownsLoop && sources.ownsLoop())
     sources.releaseLoop();
   if (listeningActivatedHere && sources.finishListening)
     sources.finishListening();
-  if (activeWaveformCancellation)
-    activeWaveformCancellation->store(true, std::memory_order_relaxed);
 }
 
 juce::Rectangle<int> PracticePanel::safeContentBounds() const {
@@ -318,8 +328,10 @@ void PracticePanel::clearPracticeRegion() {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
   if (songId != displayedSongId || remote != displayedWasRemote) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
-    updatePracticeControls();
+    if (safe != nullptr)
+      updatePracticeControls();
     return;
   }
   if (!sources.canControl || !sources.canControl() || scrubActive || pinchLatched || loopStartSeconds < 0.0)
@@ -1045,13 +1057,28 @@ void PracticePanel::paint(juce::Graphics &g) {
 void PracticePanel::refreshWaveform() {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
-  viewport.setLength(sources.lengthSeconds ? sources.lengthSeconds() : 0.0);
-  if (songId != displayedSongId || remote != displayedWasRemote) {
-    cancelScrub(false);
-    if (activeWaveformCancellation)
-      activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  const auto revision = sources.waveformRevision ? sources.waveformRevision()
+                                                  : juce::String{};
+  const double length = waveformLength(sources);
+  const bool contextChanged = songId != displayedSongId ||
+                              remote != displayedWasRemote;
+  const bool waveformChanged = contextChanged ||
+      revision != displayedWaveformRevision ||
+      length != displayedWaveformLengthSeconds;
+  viewport.setLength(length);
+  if (waveformChanged) {
+    cancelWaveformRequest();
     displayedSongId = songId;
     displayedWasRemote = remote;
+    displayedWaveformRevision = revision;
+    displayedWaveformLengthSeconds = length;
+    waveformBins.clear();
+    waveformGeometry.clear();
+    waveformCache.clear();
+    repaint(waveformBounds);
+  }
+  if (contextChanged) {
+    cancelScrub(false);
     viewport.reset();
     touchPositions.clear();
     pinchLatched = false;
@@ -1061,10 +1088,6 @@ void PracticePanel::refreshWaveform() {
     tempoSelector.cancelDrag();
     clearLoopSelection();
     releasedLoopIdentities.clear();
-    ++waveformRequestGeneration;
-    waveformBins.clear();
-    waveformGeometry.clear();
-    waveformCache.clear();
     selectedInstrumentId.clear();
     instruments.clear();
     listeningActivatedHere = false;
@@ -1090,34 +1113,86 @@ void PracticePanel::refreshWaveform() {
       }
   if (changed) {
     instruments = std::move(latest);
+    for (auto cached = waveformCache.begin(); cached != waveformCache.end();) {
+      const auto found = std::find_if(instruments.begin(), instruments.end(),
+          [&](const Instrument &entry) { return entry.id == cached->first; });
+      if (found == instruments.end())
+        cached = waveformCache.erase(cached);
+      else
+        ++cached;
+    }
     const auto found = std::find_if(
         instruments.begin(), instruments.end(), [this](const Instrument &entry) {
           return entry.id == selectedInstrumentId;
         });
     if (found == instruments.end()) {
+      cancelWaveformRequest();
       selectedInstrumentId.clear();
       waveformBins.clear();
       waveformGeometry.clear();
+      repaint(waveformBounds);
     }
   }
   if (selectedInstrumentId.isEmpty() && !instruments.empty())
     selectInstrument(0);
+  else if (waveformChanged && selectedInstrumentId.isNotEmpty()) {
+    const auto selected = std::find_if(instruments.begin(), instruments.end(),
+        [this](const Instrument &entry) {
+          return entry.id == selectedInstrumentId;
+        });
+    if (selected != instruments.end())
+      selectInstrument(static_cast<int>(selected - instruments.begin()), true);
+  }
 }
 
-void PracticePanel::selectInstrument(const int index) {
+void PracticePanel::cancelWaveformRequest() {
+  ++waveformRequestGeneration;
+  if (activeWaveformCancellation)
+    activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  activeWaveformCancellation.reset();
+}
+
+bool PracticePanel::waveformContextMatchesSources() const {
+  return displayedSongId == (sources.songId ? sources.songId() : juce::String{}) &&
+      displayedWasRemote == (sources.isRemote && sources.isRemote()) &&
+      displayedWaveformRevision == (sources.waveformRevision
+          ? sources.waveformRevision() : juce::String{}) &&
+      displayedWaveformLengthSeconds == waveformLength(sources);
+}
+
+void PracticePanel::selectInstrument(const int index, const bool reloadWaveform) {
   if (!juce::isPositiveAndBelow(index, static_cast<int>(instruments.size())))
     return;
   const auto id = instruments[static_cast<size_t>(index)].id;
-  if (id == selectedInstrumentId)
+  if (!waveformContextMatchesSources()) {
+    // A menu selection can precede the next 500 ms probe. Never use a cache
+    // entry from the previous content revision in that interval.
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
+    refreshWaveform();
+    if (safe == nullptr)
+      return;
+    const auto found = std::find_if(instruments.begin(), instruments.end(),
+        [&id](const Instrument &entry) { return entry.id == id; });
+    if (found != instruments.end())
+      selectInstrument(static_cast<int>(found - instruments.begin()));
     return;
-  if (activeWaveformCancellation)
-    activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  }
+  const bool selectionChanged = id != selectedInstrumentId;
+  if (!selectionChanged && !reloadWaveform)
+    return;
+  // Advance even for a cache hit: a cancelled provider may still deliver.
+  cancelWaveformRequest();
+  const auto generation = waveformRequestGeneration;
   selectedInstrumentId = id;
-  if (listeningActivatedHere && requestedListeningMode != 0) {
+  auto safe = juce::Component::SafePointer<PracticePanel>(this);
+  if (selectionChanged && listeningActivatedHere && requestedListeningMode != 0) {
     if (sources.setListeningMode && sources.canControl && sources.canControl() &&
-        sources.canRetargetListening && sources.canRetargetListening())
-      sources.setListeningMode(id, requestedListeningMode);
-    else {
+        sources.canRetargetListening && sources.canRetargetListening()) {
+      const auto retarget = sources.setListeningMode;
+      retarget(id, requestedListeningMode);
+      if (safe == nullptr || waveformRequestGeneration != generation)
+        return;
+    } else {
       listeningActivatedHere = false;
       requestedListeningMode = 0;
     }
@@ -1131,26 +1206,37 @@ void PracticePanel::selectInstrument(const int index) {
     repaint();
     return;
   }
-  const auto generation = ++waveformRequestGeneration;
   const auto songId = displayedSongId;
+  const auto revision = displayedWaveformRevision;
+  const bool remote = displayedWasRemote;
+  const double length = displayedWaveformLengthSeconds;
+  repaint();
   if (sources.requestInstrumentWaveform) {
     activeWaveformCancellation = std::make_shared<std::atomic<bool>>(false);
-    auto safe = juce::Component::SafePointer<PracticePanel>(this);
-    sources.requestInstrumentWaveform(
-        id, activeWaveformCancellation,
-        [safe, generation, songId, id](std::vector<float> bins) mutable {
-          if (safe == nullptr || safe->displayedSongId != songId)
+    const auto cancellation = activeWaveformCancellation;
+    // Keep the provider alive if it delivers synchronously and re-enters or
+    // closes the panel. All request state is installed before invoking it.
+    const auto request = sources.requestInstrumentWaveform;
+    request(id, cancellation,
+        [safe, cancellation, generation, songId, revision, remote, length, id]
+        (std::vector<float> bins) mutable {
+          if (cancellation->load(std::memory_order_relaxed) || safe == nullptr ||
+              safe->waveformRequestGeneration != generation ||
+              safe->selectedInstrumentId != id ||
+              safe->displayedSongId != songId ||
+              safe->displayedWasRemote != remote ||
+              safe->displayedWaveformRevision != revision ||
+              safe->displayedWaveformLengthSeconds != length ||
+              !safe->waveformContextMatchesSources())
             return;
+          // Check the live providers before touching either cache or UI. A
+          // source edit may arrive before refreshWaveform's next timer probe.
           safe->waveformCache[id] = bins;
-          if (safe->waveformRequestGeneration == generation &&
-              safe->selectedInstrumentId == id) {
-            safe->waveformBins = std::move(bins);
-            safe->waveformGeometry.setBins(safe->waveformBins);
-            safe->repaint();
-          }
+          safe->waveformBins = std::move(bins);
+          safe->waveformGeometry.setBins(safe->waveformBins);
+          safe->repaint();
         });
   }
-  repaint();
 }
 
 void PracticePanel::applyListeningGesture(const juce::Point<float> &movement) {
@@ -1240,8 +1326,12 @@ void PracticePanel::showInstrumentMenu() {
 void PracticePanel::mouseDown(const juce::MouseEvent &event) {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
-  if (songId != displayedSongId || remote != displayedWasRemote)
+  if (songId != displayedSongId || remote != displayedWasRemote) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
+    if (safe == nullptr)
+      return;
+  }
   if (gestureSongId != songId || gestureWasRemote != remote) {
     cancelScrub(false);
     lastTapSide = -1;
@@ -1378,7 +1468,10 @@ void PracticePanel::updateAnimationFrame(const double frameTimestampSec,
 void PracticePanel::timerCallback() {
   const auto now = juce::Time::getMillisecondCounter();
   if (now >= nextWaveformProbeMs) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
+    if (safe == nullptr)
+      return;
     nextWaveformProbeMs = now + 500;
   }
   const bool enabled = sources.canControl && sources.canControl();

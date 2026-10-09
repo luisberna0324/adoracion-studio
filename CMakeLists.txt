@@ -748,6 +748,12 @@ if(MTCONTROLS_BUILD_TESTS)
     target_include_directories(MTControlsAudioEngineCoreTests PRIVATE src)
     add_test(NAME audio_engine_core COMMAND MTControlsAudioEngineCoreTests)
 
+    add_executable(MTControlsPracticeWaveformMappingTests
+        tests/practice_waveform_mapping_tests.cpp
+        src/audio/SectionScheduler.cpp)
+    target_include_directories(MTControlsPracticeWaveformMappingTests PRIVATE src)
+    add_test(NAME practice_waveform_mapping COMMAND MTControlsPracticeWaveformMappingTests)
+
     add_executable(MTControlsPitchShiftTests
         tests/pitch_shift_tests.cpp
         src/PitchShiftProcessor.cpp

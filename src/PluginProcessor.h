@@ -8,6 +8,7 @@
 #include "audio/PracticeLoop.h"
 #include "audio/DynamicGuideEngine.h"
 #include "data/SongData.h"
+#include "data/PracticeWaveform.h"
 #include "data/AppSettings.h"
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
@@ -128,6 +129,9 @@ public:
   juce::String getSectionAutomationEditingPartId() const;
   juce::String getSectionAutomationEditingPartName() const;
   SongArrangementSnapshot getSongArrangementSnapshot() const;
+  // Control/UI-only immutable view of the actual playback mapping. No audio
+  // is decoded and no scheduler/audio state is changed by this accessor.
+  playworship::practice::WaveformTimeline getPracticeWaveformTimeline() const;
   bool isStemSectionAutomated(int stemIndex) const noexcept;
   bool isPadsSectionAutomated() const noexcept;
   float getStemBaseVolume(int stemIndex) const noexcept;

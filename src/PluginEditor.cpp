@@ -18,6 +18,7 @@
 #include "data/SessionAuthLogger.h"
 #include "data/SessionPersistence.h"
 #include "data/SongData.h"
+#include "data/PracticeWaveform.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
@@ -3755,6 +3756,29 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return result;
   };
   sources.isRemote = [this] { return playbackSession.isRemote(); };
+  sources.waveformRevision = [this] {
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong)
+      return juce::String{};
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    auto identity = juce::String::fromUTF8(
+        playworship::practice::waveformTimelineIdentity(timeline).c_str());
+    // Source metadata is in memory. Do not stat files from the panel's timer.
+    // The processor's source revision also invalidates same-path reloads.
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    for (const auto &stem : currentLoadedSong.stems) {
+      append(stem.stemId);
+      append(stem.storedPath);
+      append(stem.sourcePath);
+      append(juce::String(stem.include ? 1 : 0));
+      append(juce::String(stem.durationSec, 9));
+      append(juce::String(stem.sampleRate));
+      append(juce::String(stem.channels));
+    }
+    return identity;
+  };
   sources.listeningMode =
       [this] { return playbackSession.getPracticeListeningMode(); };
   sources.listeningInstrumentId = [this] {
@@ -3832,12 +3856,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
       return;
     }
     const auto stem = currentLoadedSong.stems[static_cast<size_t>(index)];
-    const auto songLength = playbackSession.getSongLengthSeconds();
-    std::thread([stem, songLength, cancel,
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    std::thread([stem, timeline, cancel,
                  deliver = std::move(deliver)]() mutable {
-      auto bins = buildStemWaveformBins(
-          stem, songLength, kWaveformPreviewBinCount,
-          [cancel] { return cancel->load(std::memory_order_relaxed); });
+      const auto cancelled = [cancel] {
+        return cancel->load(std::memory_order_relaxed);
+      };
+      const auto sourceBins = buildStemWaveformBins(
+          stem, timeline.sourceLengthSeconds, kWaveformPreviewBinCount, cancelled);
+      // Copies are views of the same source peaks, not new audio files or
+      // independently normalised waves. Use the playback scheduler's map.
+      auto bins = playworship::practice::projectWaveformBins(
+          sourceBins, timeline, kWaveformPreviewBinCount, cancelled);
       if (cancel->load(std::memory_order_relaxed))
         return;
       juce::MessageManager::callAsync(
