@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local-only PlayWorship builds. No CI dispatch, provisioning updates or publication."""
-import argparse, datetime, hashlib, json, os, platform, re, shutil, subprocess, sys, time
+import argparse, datetime, hashlib, json, os, platform, plistlib, re, shutil, subprocess, sys, time, zipfile
 from pathlib import Path
 
 TARGETS = ['backend', 'windows', 'android-debug', 'android-release', 'tests', 'macos', 'ios-simulator', 'ios-device']
@@ -51,7 +51,12 @@ def main():
         with (out/(current+'.log')).open('a') as log:
             log.write('\n$ '+ ' '.join(map(str,argv))+'\n');log.flush()
             completed=subprocess.run(list(map(str,argv)),cwd=cwd,env={**env,**(extra or {})},stdout=log,stderr=subprocess.STDOUT)
-        if completed.returncode: raise Failed(f'Command failed ({completed.returncode}); see {current}.log')
+        if completed.returncode:
+            if current == 'android-debug':
+                tail=(out/(current+'.log')).read_text(errors='replace')[-16000:].lower()
+                if any(term in tail for term in ['no cached version','offline mode','license not accepted','licenses have not been accepted','failed to find build tools']):
+                    raise Blocked('Android cached dependency/SDK/license missing; no installation or license acceptance attempted; see android-debug.log')
+            raise Failed(f'Command failed ({completed.returncode}); see {current}.log')
     def common():
         tool('cmake'); need(juce/'CMakeLists.txt','JUCE_DIR must point to existing JUCE checkout');need(bungee/'include/bungee/Bungee.h','Bungee SDK missing; pipeline never runs destructive bootstrap')
         return [f'-DJUCE_DIR={juce}',f'-DMTCONTROLS_BUNGEE_DIR={bungee}','-DMTCONTROLS_ENABLE_SENTRY=OFF',f'-DMTCONTROLS_APP_VERSION={version}','-DMTCONTROLS_BACKEND_MODE=cloud']
@@ -74,27 +79,38 @@ def main():
             if current=='android-release': raise Blocked('Release signing not executed: keystore use needs specific authorization; no key values inspected or generated.')
             if current=='backend':
                 tool('node');tool('npm');need(backend/'node_modules','Existing backend dependencies missing; install separately from approved registry')
+                if git(backend,'status','--porcelain'): raise Blocked('Backend checkout has changes; use clean worktree to preserve personal source')
                 result['backend_commit']=git(backend,'rev-parse','HEAD')
                 for name in ['.env','.env.local','.env.production','.env.production.local']:
                     if (backend/name).exists(): raise Blocked('Private dotenv file present; use a clean build checkout without credentials')
                 run(['npm','run','typecheck'],backend)
                 tests=['paddle-cloud','secret-cache','teams','cloud-catalog','teams-email','auth-callback','google-state','password-auth','apple-auth','device-restrictions']
                 run(['node','--import','tsx','--test',*[f'tests/{t}.test.ts' for t in tests]],backend)
-                run(['npm','run','build'],backend)
-                result['targets'][current]['artifacts']=[str(backend/'.next')]
+                next_env=backend/'next-env.d.ts'; original_next_env=next_env.read_bytes()
+                try: run(['npm','run','build'],backend)
+                finally: next_env.write_bytes(original_next_env)
+                standalone=backend/'.next/standalone'
+                if list(standalone.rglob('.env*')): raise Blocked('Standalone contains environment files; refuse packaging')
+                name=f'backend-Production-{version}-{result["backend_commit"][:12]}'
+                artifact(standalone,name)
+                packaged=out/name
+                shutil.copytree(backend/'.next/static',packaged/'.next/static',dirs_exist_ok=True)
+                if (backend/'public').exists(): shutil.copytree(backend/'public',packaged/'public',dirs_exist_ok=True)
+                (packaged/'local-build-metadata.json').write_text(json.dumps({'backend_commit':result['backend_commit'],'version':version,'credentials_embedded':False},indent=2)+'\n')
             if current=='tests':
+                run([sys.executable,'tests/test_local_pipeline.py'])
                 build=repo/'build/local-merge-tests';run(['cmake','-S',repo,'-B',build,'-G','Ninja','-DCMAKE_BUILD_TYPE=Debug','-DCMAKE_OSX_ARCHITECTURES=arm64','-DMTCONTROLS_BUILD_TESTS=ON',*common()])
                 cmake_build(build,'PlayWorshipTests');run(['ctest','--test-dir',build,'--output-on-failure','--no-tests=error','-LE','interactive|lan'])
             if current=='macos':
                 tool('pkgbuild');run(['cmake','--preset','macos-release',*common()]);build=repo/'build/macos-release';cmake_build(build,'MTControls_Standalone')
-                app=build/'MTControls_artefacts/Release/Standalone/PlayWorship.app';run(['codesign','--verify','--deep','--strict',app]);run(['lipo','-verify_arch','arm64','x86_64',app/'Contents/MacOS/PlayWorship'])
+                app=build/'MTControls_artefacts/Release/Standalone/PlayWorship.app';run(['codesign','--verify','--deep','--strict',app]);run(['lipo',app/'Contents/MacOS/PlayWorship','-verify_arch','arm64','x86_64'])
                 artifact(app,f'macos-Release-{version}-{sha[:12]}.app')
                 packages=out/'macos-packages';run(['bash','scripts/package_macos_pkg.sh','--version',version,'--standalone-dir',app.parent,'--output-dir',packages])
                 result['targets'][current]['artifacts'].append(str(packages/f'playworship-macos-installer-{version}.pkg'))
                 result['targets'][current]['distribution']='Local pkg only; not notarized, no certified distribution claim; Apple opt-in OFF/source production URL'
             if current in ['ios-simulator','ios-device']:
                 tool('xcodebuild');device=current=='ios-device';build=repo/'build'/('local-pipeline-ios-device' if device else 'local-pipeline-ios-simulator')
-                extra=['-DCMAKE_SYSTEM_NAME=iOS','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=18.5',f'-DCMAKE_OSX_SYSROOT={"iphoneos" if device else "iphonesimulator"}','-DMTCONTROLS_APPLE_SIGN_IN_ENABLED=ON',f'-DMTCONTROLS_IOS_BUILD_NUMBER={cfg.get("ios_build_number",4)}']
+                extra=['-DCMAKE_SYSTEM_NAME=iOS','-DCMAKE_OSX_ARCHITECTURES=arm64','-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0',f'-DCMAKE_OSX_SYSROOT={"iphoneos" if device else "iphonesimulator"}','-DMTCONTROLS_APPLE_SIGN_IN_ENABLED=ON',f'-DMTCONTROLS_IOS_BUILD_NUMBER={cfg.get("ios_build_number",4)}']
                 signing=[]
                 if device:
                     if not all(cfg.get(k) for k in ['ios_team','ios_profile','ios_identity']): raise Blocked('Supply existing authorized development team/profile/identity; no automatic provisioning')
@@ -103,7 +119,14 @@ def main():
                 else: signing=['CODE_SIGNING_ALLOWED=NO','CODE_SIGNING_REQUIRED=NO']
                 run(['cmake','-S',repo,'-B',build,'-G','Xcode',*common(),*extra]);cmake_build(build,'MTControls_Standalone','Debug',signing)
                 app=build/'MTControls_artefacts/Debug/Standalone/PlayWorship.app'
-                if device: run(['codesign','--verify','--deep','--strict',app])
+                if device:
+                    run(['codesign','--verify','--deep','--strict',app])
+                    def captured(argv): return subprocess.check_output(list(map(str,argv)),env=env,stderr=subprocess.DEVNULL)
+                    ent=plistlib.loads(captured(['codesign','-d','--entitlements',':-',app]))
+                    profile=plistlib.loads(captured(['security','cms','-D','-i',app/'embedded.mobileprovision']))
+                    if ent.get('com.apple.developer.applesignin') != ['Default'] or profile.get('Entitlements',{}).get('com.apple.developer.applesignin') != ['Default'] or cfg['ios_team'] not in profile.get('TeamIdentifier',[]):
+                        raise Failed('Signed app/profile Apple entitlement or team mismatch')
+                    result['targets'][current]['apple_entitlement_verified']=True
                 artifact(app,f'{current}-Debug-{version}-{sha[:12]}.app')
                 result['targets'][current]['distribution']='Development only, no device install/account login/App Store export; simulator unsigned' if not device else 'Existing development signature; preview backend; no installation or App Store export'
             if current=='android-debug':
@@ -114,12 +137,21 @@ def main():
                 extras={'ANDROID_SDK_ROOT':str(sdk),'ANDROID_HOME':str(sdk),'PLAYWORSHIP_VERSION_NAME':version,'PLAYWORSHIP_VERSION_CODE':str(cfg.get('android_version_code',4))}
                 if cfg.get('java_home'): extras['JAVA_HOME']=cfg['java_home']
                 run(['./gradlew',':app:assembleDebug','--offline','--no-daemon',f'--max-workers={jobs}','-Pandroid.builder.sdkDownload=false'],repo/'android',extras)
-                apk=repo/'android/app/build/outputs/apk/debug/app-debug.apk';artifact(apk,f'android-arm64-Debug-{version}-{sha[:12]}.apk')
+                apk=repo/'android/app/build/outputs/apk/debug/app-debug.apk'
+                need(apk,'APK missing')
+                names=set(zipfile.ZipFile(apk).namelist())
+                if not {'lib/arm64-v8a/libjuce_jni.so','lib/arm64-v8a/libbungee.so'} <= names: raise Failed('APK missing required arm64 libraries')
+                signers=sorted((sdk/'build-tools').glob('*/apksigner'))
+                if not signers: raise Blocked('Existing apksigner needed for APK verification')
+                run([signers[-1],'verify',apk],extra=extras)
+                artifact(apk,f'android-arm64-Debug-{version}-{sha[:12]}.apk')
             result['targets'][current]['status']='PASS'
         except Blocked as error: result['targets'][current].update(status='BLOCKED',detail=str(error))
         except (Failed, OSError, subprocess.SubprocessError) as error: result['targets'][current].update(status='FAIL',detail=str(error))
         except KeyboardInterrupt:
             result['targets'][current].update(status='BLOCKED',detail='Interrupted by user');summary();return 130
+        except Exception as error:
+            result['targets'][current].update(status='FAIL',detail='Unexpected '+type(error).__name__+'; independent targets continue')
         result['targets'][current]['seconds']=round(time.monotonic()-started,2);summary();print(current+': '+result['targets'][current]['status']+' '+result['targets'][current].get('detail',''),flush=True)
     print('Summary: '+str(out/'summary.json'),flush=True)
     return 1 if any(v['status']=='FAIL' for v in result['targets'].values()) else (2 if any(v['status']=='BLOCKED' for v in result['targets'].values()) else 0)

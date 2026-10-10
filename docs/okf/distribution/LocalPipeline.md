@@ -30,7 +30,7 @@ No guardar secretos, contraseñas, keystores o tokens en config. El proceso elim
 variables de credenciales/telemetría del entorno de builds; bloquea backend si existen
 archivos dotenv privados. Sentry upload está desactivado. Backend ejecuta typecheck,
 los 125 tests unitarios existentes y Next build; emuladores no se inician implícitamente.
-Next output se conserva en `.next`, sin empaquetar archivos de entorno o repos completos.
+Next standalone se copia con static/public y metadata de versión/SHA backend; se rechazan dotenv en el paquete. next-env.d.ts se preserva tras la regeneración automática de Next. No se empaqueta el repo completo.
 
 Android trabaja offline con Gradle cache y SDK/NDK/CMake existentes, sin descargar SDK
 ni aceptar licencias. Dependencias faltantes se informan; preparar caché separadamente
