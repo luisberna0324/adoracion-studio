@@ -206,7 +206,10 @@ Firebase ID token no revocado y auth_time de los ultimos cinco minutos.
 
 La configuracion queda deshabilitada hasta provisionar los valores Apple
 server-only, clave de cifrado de tokens, capacidad/perfiles y build opt-in.
-No se crearon claves ni se modifico el portal. Los tokens Apple se retienen
+No se crearon claves. Tras autorizacion especifica, se activo la capacidad
+en el App ID y se genero/instalo un perfil iOS de desarrollo con entitlement
+Apple; los perfiles de distribucion no pudieron generarse porque el portal
+no ofrece certificados disponibles. El backend sigue sin activar. Los tokens Apple se retienen
 cifrados para revocacion y no llegan a la app. El helper de revocacion esta
 preparado; falta un coordinador de eliminacion completa de cuenta. El backend
 y sus pruebas ya incluyen eventos firmados Apple y deduplicacion; su activacion
