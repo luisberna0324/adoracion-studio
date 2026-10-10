@@ -254,15 +254,11 @@ Reintenta.". El usuario puede volver a tocar **Iniciar sesión**.
   no reutiliza los fallbacks de secreto del state Google.
 
 
-## Vincular Apple durante el inicio de sesion
+## Métodos de acceso y cuentas separadas
 
-Ante AppleAccountLinkRequired se ofrece vincular una cuenta o cancelar dentro del acceso actual. Este error no confirma un conflicto: tambien puede faltar un correo Apple verificado. No se muestra informacion de cuentas ajenas ni se buscan cuentas desde el cliente. Se reutilizan Google y el formulario de correo existentes; su sesion autenticada se retiene temporalmente, sin aplicarla ni persistirla como sesion activa antes de la confirmacion.
+La interfaz no ofrece Vincular Apple en Cuenta ni invita a vincular durante el acceso. Google, Apple y correo conservan sus accesos normales. Cambiar de método abre la cuenta que el proveedor autentica; no fusiona cuentas ni crea vínculos nuevos. Los vínculos ya existentes y los contratos backend se conservan. Ante AppleAccountLinkRequired se muestra un error con indicación de usar el método habitual, sin ofrecer un flujo de vinculación.
 
-La confirmacion muestra solo la identidad de la cuenta autenticada y Apple como proveedor a añadir. Despues del consentimiento explicito se solicita un desafio purpose=link y una autorizacion Apple nuevos, con nonce/state nuevos; no se conserva ni reutiliza el codigo consumido del intento inicial. El backend existente sigue exigiendo autenticacion reciente, reserva transaccional de identidad y UID esperado. El resultado final pasa por completeAuthenticatedSession y mantiene la misma validacion de permisos y suscripcion.
-
-AppleLinkFlow contiene solo la etapa, generacion, UID elegido y limite de cinco minutos. Cada transicion invalida callbacks de dialogos anteriores. Cambiar entre Google y correo cancela el intento anterior conservando solo esta intencion; volver, cerrar, logout, expiracion o empezar otro acceso limpian la intencion y sesion temporal. No se guarda una vinculacion pendiente en disco. El formulario de prueba local y Apple como alternativa de autenticacion se ocultan durante la seleccion de cuenta. Los fallos del paso de vinculacion eliminan la intencion pendiente y requieren un nuevo intento; no hay vinculacion automatica en un login posterior.
-
-Verificacion: cinco pruebas nativas de autenticacion pasan; los contratos cubren doble confirmacion, cuenta diferente, cancelacion, generacion obsoleta y vencimiento. Pruebas UI comprueban Google reutilizado, demo oculto, volver accesible en iPhone, navegacion a correo sin cancelar la intencion, cancelacion al volver/cerrar y reauth. Typecheck y 39 regresiones backend Google/correo/Apple pasan sin cambios backend. La vinculacion real la confirma personalmente el usuario; estas pruebas no la simulan con cuentas reales.
+Este cambio requiere una compilación nueva para sustituir el build 4 de TestFlight. La ayuda de usuario debe explicar que Google y Apple pueden llevar a cuentas distintas, sin afirmar que todos los métodos siempre crean cuentas separadas. Los detalles API siguientes describen contratos backend existentes, no una acción disponible en la UI.
 
 ## Apple nativo — contrato y preview habilitado
 

@@ -366,7 +366,6 @@ private:
   void cancelAuthenticationAttempt(bool preserveAppleLinkFlow = false);
   void resetAppleLinkFlow();
   bool acceptAppleLinkCallback(const juce::String& expectedUid);
-  void offerInlineAppleLink();
   bool captureInlineAppleAccount(const PersistedSessionSnapshot&);
   void updateInlineAppleLinkUi(bool active);
   void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);

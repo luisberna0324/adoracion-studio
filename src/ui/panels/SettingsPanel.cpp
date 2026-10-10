@@ -1,6 +1,5 @@
 #include "AppIdentity.h"
 #include "SettingsPanel.h"
-#include "../../platform/NativeAppleSignIn.h"
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
@@ -965,13 +964,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(purgeButton);
 
-  appleLinkLabel.setFont(settingsOptionLabelFont());
-  appleLinkLabel.setJustificationType(juce::Justification::centredLeft);
-  appleLinkHelp.setFont(settingsHelpFont());
-  appleLinkHelp.setJustificationType(juce::Justification::topLeft);
-  appleLinkHelp.setMinimumHorizontalScale(1.0f);
-  accountPage.addChildComponent(appleLinkLabel);
-  accountPage.addChildComponent(appleLinkHelp);
+
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -1277,8 +1270,7 @@ void SettingsPanel::refreshThemeColours() {
   actionDeleteLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionPurgeLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, actionSecondary);
-  appleLinkLabel.setColour(juce::Label::textColourId, actionSecondary);
-  appleLinkHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
@@ -1455,8 +1447,7 @@ int SettingsPanel::mobilePageContentHeight(int width) const {
   switch (destination) {
     case Destination::Home: return homePage ? homePage->contentHeight() : 0;
     case Destination::Routing: return routingPageContentHeight(width);
-    case Destination::Account: return (width < 520 ? 1240 : 990) +
-                                     (appleLinkButton ? (width < 520 ? 136 : 100) : 0);
+    case Destination::Account: return width < 520 ? 1240 : 990;
     case Destination::Audio: return 900;
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
     case Destination::Appearance:
@@ -1740,11 +1731,7 @@ void SettingsPanel::applyLanguageTexts() {
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
-  appleLinkLabel.setText(L10n::tr("Vincular Apple", "Link Apple"), juce::dontSendNotification);
-  if (appleLinkHelp.getText().isEmpty())
-    appleLinkHelp.setText(L10n::tr("Añade Apple como acceso a esta misma cuenta, conservando tu biblioteca y permisos.",
-                                  "Add Apple sign-in to this account and keep your library and access."),
-                          juce::dontSendNotification);
+
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
   routingDeviceLabel.setText(L10n::tr("Salida de audio", "Audio output"),
@@ -1974,9 +1961,7 @@ void SettingsPanel::layoutAccountPage() {
   logoutButton.setBounds({});
   deleteAccountButton.setBounds({}); actionDeleteLabel.setBounds({}); actionDeleteHelp.setBounds({});
   purgeButton.setBounds({});
-  appleLinkLabel.setBounds({});
-  appleLinkHelp.setBounds({});
-  if (appleLinkButton) appleLinkButton->setBounds({});
+
   if (sessionIdentitySeparator != nullptr)
     sessionIdentitySeparator->setBounds({});
   if (actionsTitleSeparator != nullptr)
@@ -2087,8 +2072,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    const int actionsH = (compact ? 550 : 320) +
-                         (appleLinkButton ? (compact ? 136 : 100) : 0);
+    const int actionsH = compact ? 550 : 320;
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -2107,8 +2091,6 @@ void SettingsPanel::layoutAccountPage() {
         actions.removeFromTop(8);
       };
       action(actionLogoutLabel, actionLogoutHelp, logoutButton);
-      if (appleLinkButton)
-        action(appleLinkLabel, appleLinkHelp, *appleLinkButton, 52);
       action(actionPurgeLabel, actionPurgeHelp, purgeButton, 52);
       action(actionDeleteLabel, actionDeleteHelp, deleteAccountButton);
       action(actionInfoLabel, actionInfoHelp, infoLinkButton);
@@ -2123,12 +2105,7 @@ void SettingsPanel::layoutAccountPage() {
     if (actionsRowSeparator != nullptr)
       actionsRowSeparator->setBounds(actions.removeFromTop(1));
 
-    if (appleLinkButton) {
-      auto appleRow = actions.removeFromTop(100);
-      appleLinkLabel.setBounds(appleRow.removeFromTop(24));
-      appleLinkHelp.setBounds(appleRow.removeFromTop(30));
-      appleLinkButton->setBounds(appleRow.removeFromTop(44));
-    }
+
 
     auto purgeRow = actions.removeFromTop(60);
     auto purgeControl = purgeRow.removeFromRight(112).reduced(0, 8);
@@ -2146,25 +2123,6 @@ void SettingsPanel::layoutAccountPage() {
     actionInfoHelp.setBounds(helpRow);
     infoLinkButton.setBounds(helpControl);
   }
-}
-
-void SettingsPanel::setAppleSignInAvailable(bool available) {
-  if (available && !appleLinkButton) {
-    appleLinkButton = NativeAppleSignIn::createButton([this] {
-      if (onAppleLinkRequested) onAppleLinkRequested();
-    });
-    if (appleLinkButton) accountPage.addAndMakeVisible(*appleLinkButton);
-  } else if (!available) {
-    appleLinkButton.reset();
-  }
-  appleLinkLabel.setVisible(appleLinkButton != nullptr);
-  appleLinkHelp.setVisible(appleLinkButton != nullptr);
-  resized();
-}
-
-void SettingsPanel::setAppleSignInStatus(const juce::String &text, bool busy) {
-  appleLinkHelp.setText(text, juce::dontSendNotification);
-  if (appleLinkButton) appleLinkButton->setEnabled(!busy);
 }
 
 juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {

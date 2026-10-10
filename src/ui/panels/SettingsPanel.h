@@ -77,9 +77,6 @@ public:
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
   void setTeamsManagementEnabled(bool enabled);
-  void setAppleSignInAvailable(bool available);
-  void setAppleSignInStatus(const juce::String &text, bool busy = false);
-  std::function<void()> onAppleLinkRequested;
   std::function<void()> onAccountDeletionRequested;
   std::function<void()> onShareAudioDiagnostics;
   std::function<void()> onLearningRequested;
@@ -257,8 +254,6 @@ private:
   SettingsLogoutButton purgeButton;
   SettingsLogoutButton deleteAccountButton;
   juce::Label actionDeleteLabel, actionDeleteHelp;
-  juce::Label appleLinkLabel, appleLinkHelp;
-  std::unique_ptr<juce::Component> appleLinkButton;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;

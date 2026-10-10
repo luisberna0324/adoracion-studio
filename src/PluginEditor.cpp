@@ -3532,7 +3532,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       // Standalone mode is output-only. Keep inputs out of the routing UI too.
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setDiagnosticsBusy(diagnosticExportBusy);
-  panel->setAppleSignInAvailable(appleSignInAvailable);
   panel->onAccountDeletionRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (!safe || safe->localDemoSession || safe->activeSession.uid.isEmpty()) return;
     const auto uid = safe->activeSession.uid;
@@ -3639,20 +3638,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     options.dialogBackgroundColour = AuthUi::surface; options.useNativeTitleBar = true;
     options.resizable = false; options.escapeKeyTriggersCloseButton = true;
     options.launchAsync(); content->requestPreview();
-  };
-  panel->onAppleLinkRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
-    if (!safe) return;
-    const auto uid = safe->activeSession.uid;
-    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
-        juce::MessageBoxIconType::QuestionIcon,
-        L10n::tr("Vincular Apple", "Link Apple"),
-        L10n::tr("Apple se añadirá como acceso a esta cuenta. Se conservarán tu correo, biblioteca y permisos actuales, incluso si eliges ocultar el correo en Apple.",
-                 "Apple will be added as a sign-in method for this account. Your email, library and access will be preserved, even if you choose to hide your email with Apple."),
-        L10n::tr("Vincular", "Link"), L10n::tr("Cancelar", "Cancel"), safe.getComponent());
-    juce::AlertWindow::showAsync(options, [safe, uid](int result) {
-      if (result == 1 && safe && safe->activeSession.uid == uid)
-        safe->launchAppleLogin(true);
-    });
   };
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
