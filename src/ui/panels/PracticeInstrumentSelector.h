@@ -21,8 +21,16 @@ public:
     configureRange(0.0, 0.0, 1.0);
     setTitle(L10n::tr("Instrumento de ensayo", "Practice instrument"));
     setDescription(L10n::tr(
-        "Arrastra horizontalmente para elegir instrumento. Arriba para enfocar; abajo para reducir.",
-        "Drag horizontally to choose an instrument. Swipe up to focus; down to reduce."));
+        "Arrastra los nombres horizontalmente y suelta para elegir, o toca un nombre lateral. "
+        "El elegido queda en el centro; vuelve a seleccionar el anterior para regresar. "
+        "Con teclado, usa las flechas para elegir y Home/End para ir al primero/último. "
+        "Un gesto vertical cambia un nivel: Reducido, Normal, Enfoque. "
+        "Para volver a Normal, elige el instrumento indicado por Enfoque o Reducido y haz el gesto contrario. R restaura directamente. ? abre el recorrido de Ensayo.",
+        "Drag the names horizontally and release to choose, or tap a name on either side. "
+        "The chosen instrument is centred; select the previous one again to go back. "
+        "With a keyboard, use arrow keys to choose and Home/End for first/last. "
+        "A vertical swipe changes one level: Reduced, Normal, Focus. "
+        "To return to Normal, choose the instrument named by Focus or Reduced and swipe the opposite way. R restores directly. ? opens the Practice walkthrough."));
     setTooltip(getDescription());
   }
 

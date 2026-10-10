@@ -230,28 +230,24 @@ independientemente de la visibilidad de `?`. El texto breve es
 del instrumento se conserva en la ayuda. No cambian la tarjeta, la onda, la
 regla, los tiempos, el transporte ni los controles Guía/Metrónomo.
 
-El botón `?` de 44 × 44 abre `presentActionPopover()`, con el mismo estilo,
-ancla y posicionamiento en área segura que los demás popovers. Muestra el
-instrumento seleccionado, el modo confirmado, la espera de confirmación o
-falta de control y explica recorrido, zoom, doble toque de un compás, los tres
-niveles de escucha y restauración. El cuerpo es texto nativo de solo lectura,
-con saltos de línea, ajuste de palabras y scroll; al reducir el alto, se reduce
-la zona de lectura, sin truncar las instrucciones ni los botones de 44 puntos.
+El botón `?` de 44 × 44 abre el recorrido existente **Ensaya por instrumento**
+(`practice-sections`), mediante un callback hacia el editor. No crea otro popover
+ni duplica los controles de Ensayo. Conserva el estilo, navegación, resaltado,
+scroll y progreso del sistema de aprendizaje. Peticiones repetidas mantienen el
+paso actual; pausar con X/Escape devuelve el foco al botón si Ensayo sigue visible.
+Reabrir reanuda el paso guardado y un curso completado vuelve al inicio. Véase
+[LearningGuide](LearningGuide.md).
 
-Cerrar, Escape o un toque exterior descartan la ayuda. Cerrar/Escape devuelven
-el foco a `?`; Tab recorre Cerrar, texto y Restaurar. R y el botón
-`Restaurar mezcla (R)` restauran sin seek ni cambio de Guía/Metrónomo y cierran
-el popover. La acción comprueba el contexto actual incluso antes del siguiente
-sondeo. Cambiar canción, sesión, conexión, selección/lista de instrumentos,
-modo de escucha o tamaño descarta la ayuda para no dejar información obsoleta.
-La ayuda no acumula callouts y la acción de cierre es idempotente. El resto de
-la tarjeta conserva los gestos y el doble toque de compás; no se asigna ningún
-reset al doble toque. Cerrar Ensayo restaura la mezcla si esa
-vista sigue siendo propietaria de la escucha. Cargar otra canción, cambiar de
-modo local/cliente/servidor o desconectar al cliente propietario también la
-restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,
-la intención viaja por `practice.listen` y se aplica al audio del servidor;
-los gestos no envían comandos mientras la conexión está caída.
+Para restaurar por gesto, selecciona el instrumento indicado por Enfoque o
+Reducido: bajar desde Enfoque o subir desde Reducido vuelve a Normal. Hacerlo
+sobre otro instrumento inicia un modo nuevo, no un reset. R conserva la
+restauración directa de la mezcla incluso si está seleccionado otro instrumento,
+sin seek ni cambio de Guía/Metrónomo. No hay un botón Restaurar dentro de la ayuda.
+Cerrar Ensayo restaura solo si la vista sigue siendo propietaria de la escucha.
+Cargar otra canción, cambiar de modo local/cliente/servidor o desconectar al cliente
+propietario también la restaura. El deslizamiento hacia abajo no cambia de
+instrumento. En Cliente, la intención viaja por `practice.listen` y se aplica al
+audio del servidor; los gestos no envían comandos mientras la conexión está caída.
 
 La tarjeta, fuera del carrusel de instrumentos, se divide virtualmente en dos
 mitades iguales: un doble toque en la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques

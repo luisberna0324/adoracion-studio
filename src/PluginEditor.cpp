@@ -4009,6 +4009,11 @@ void MTControlsAudioProcessorEditor::showPractice() {
     });
   };
 
+  sources.showHelp = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (safe != nullptr)
+      safe->showPracticeLearningGuide();
+  };
+
   practiceOverlay = std::make_unique<PracticePanel>(std::move(sources));
   addAndMakeVisible(*practiceOverlay);
   practiceOverlay->setBounds(getLocalBounds());

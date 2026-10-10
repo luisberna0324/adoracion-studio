@@ -92,6 +92,7 @@ private:
   juce::var teamsDetails;
   uint64_t teamsDetailsGeneration = 0;
   void showLearningGuide();
+  void showPracticeLearningGuide();
   void offerDemoWelcome();
   void prepareDemoLesson();
   playworship::learning::DemoLearningProgress::Snapshot demoLearningSnapshot() const;

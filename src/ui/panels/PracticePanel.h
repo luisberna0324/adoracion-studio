@@ -94,6 +94,7 @@ public:
     std::function<void()> playPause;
     std::function<void()> stop;
     std::function<void()> close;
+    std::function<void()> showHelp;
   };
 
   explicit PracticePanel(Sources sources);
@@ -102,6 +103,7 @@ public:
   void paint(juce::Graphics &g) override;
   void resized() override;
   bool keyPressed(const juce::KeyPress &key) override;
+  void focusLearningHelp() { listeningHelpButton.grabKeyboardFocus(); }
   void mouseDown(const juce::MouseEvent &event) override;
   void mouseDrag(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
@@ -148,7 +150,6 @@ private:
   void toggleAccompaniment(bool guide);
   void restoreListeningMix();
   void showListeningHelp();
-  void dismissListeningHelp();
   int getSourceDisplayListeningMode() const;
   juce::String getSourceDisplayListeningInstrument() const;
   bool isListeningChangePending() const;
@@ -217,7 +218,6 @@ private:
   AccompanimentButton guideButton;
   AccompanimentButton metronomeButton;
   GestureAwareButton listeningHelpButton;
-  juce::Component::SafePointer<juce::CallOutBox> listeningHelpCallout;
   AccompanimentControl guideControl, metronomeControl;
   PracticePitchSelector pitchSelector;
   PracticeTempoSelector tempoSelector;
