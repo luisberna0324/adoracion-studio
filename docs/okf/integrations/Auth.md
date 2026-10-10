@@ -33,8 +33,11 @@ Google mantiene retorno con session/refresh token en URL, state HMAC de diez
 minutos, resolucion por correo de perfiles legados y fallback free/trial ante
 algunos fallos de validacion. UIDs nuevos Apple requieren subject Google ya
 asociado. El helper JWT Google no tiene todas las comprobaciones estrictas
-Apple. `AUTH_STATE_SECRET` necesita configuracion privada; no afirmar que
-el fallback de desarrollo es seguro. Apple y correo fallan con 503 si no
+Apple. `AUTH_STATE_SECRET` necesita configuracion privada. La rama backend ahora
+falla cerrada y elimina el fallback publico; el preview desplegado espera
+el handoff y la nueva imagen. Estados emitidos antes del cambio deben
+reiniciar el intento, sin compatibilidad de firma insegura. Sesiones Firebase
+previas no se invalidan por cambiar el secreto de state. Apple y correo fallan con 503 si no
 pueden validar acceso y no heredan ese fallback. No se implemento aqui una
 migracion de Google ni vinculacion simetrica general.
 
