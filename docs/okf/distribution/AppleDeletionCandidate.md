@@ -9,7 +9,7 @@ Rama feat/account-deletion-minimal. Integra fuente df0275e de autenticación/bor
 
 QA10oct: app macOS compilada; CTests account_deletion_flow, email_authentication_ui, apple_signin_contract, apple_credential_lifecycle y waveform_editing: 5/5. iOS Simulator arm64 con MTCONTROLS_APPLE_SIGN_IN_ENABLED=ON y CODE_SIGNING_ALLOWED=NO: BUILD SUCCEEDED, instalado y abierto en PlayWorship Apple Auth QA iOS26.5. Se verificó pantalla inicial y navegación al formulario de demo offline; no login/proveedor/borrado reales. Apple no visible cuando config de producción lo deshabilita (fail-closed). Se configuró candidato dispositivo arm64 con SDK Bungee existente en lectura; archive sin firma en evidencia externa, no IPA distribuible.
 
-Simulator metadata: com.multitracks.playworship, 1.1.4 build2, MinimumOSVersion18.5, ITSAppUsesNonExemptEncryption=false, PrivacyInfo.xcprivacy presente; entitlements generados Apple=[Default]. Esto no acredita capability del perfil de distribución ni firma. Buildnumber de exportación debe ser nuevo respecto a ASC, no reutilizar2.
+Simulator metadata: com.multitracks.playworship, 1.1.4 build2, MinimumOSVersion18.5, ITSAppUsesNonExemptEncryption=false, PrivacyInfo.xcprivacy presente; entitlements generados Apple=[Default]. Esto no acredita capability del perfil de distribución ni firma. TestFlight leído10oct muestra builds1,2,3 de1.1.4 En pruebas. Este build2 es solo QA local; para distribución usar4 o siguiente libre tras reconsulta, no reutilizar1–3.
 
 ## Portal Apple leído, sin cambios
 
