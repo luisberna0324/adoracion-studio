@@ -82,14 +82,14 @@ void AccountDeletionModal::update() {
     case State::reauthenticating: text = L10n::tr("Confirma tu identidad con la misma cuenta.", "Confirm your identity with the same account."); break;
     case State::confirmation: text = L10n::tr("Al confirmar se perderá el acceso a Cloud de inmediato, aunque quede tiempo pagado. No hay reembolso automático.", "Confirming removes Cloud access immediately, even if paid time remains. There is no automatic refund."); break;
     case State::submitting: text = L10n::tr("Enviando solicitud…", "Sending request…"); break;
-    case State::pending: text = L10n::tr("La eliminación sigue pendiente. No se ha confirmado que terminó. Consultaremos su estado antes de reintentar.", "Deletion is still pending. Completion has not been confirmed. We will check its status before retrying."); break;
+    case State::pending: text = L10n::tr("La eliminación sigue pendiente. No se ha confirmado que terminó. Al reintentar, continuaremos desde el último paso confirmado.", "Deletion is still pending. Completion has not been confirmed. Retrying continues from the last confirmed step."); break;
     case State::complete: text = L10n::tr("La cuenta y su Cloud se eliminaron. Los archivos locales se conservaron.", "The account and its Cloud were deleted. Local files were preserved."); break;
     case State::error: text = L10n::tr("No se pudo completar la consulta o confirmar tu identidad. Intenta de nuevo.", "Could not finish the lookup or confirm your identity. Try again."); break;
     case State::closed: break;
   }
   status.setText(text, juce::dontSendNotification);
   next.setButtonText(state == State::confirmation ? L10n::tr("Eliminar cuenta y Cloud", "Delete account and Cloud") :
-    state == State::pending ? L10n::tr("Consultar estado", "Check status") : state == State::error ? L10n::tr("Reintentar", "Retry") : L10n::tr("Confirmar identidad", "Confirm identity"));
+    state == State::pending ? L10n::tr("Reintentar eliminación", "Retry deletion") : state == State::error ? L10n::tr("Reintentar", "Retry") : L10n::tr("Confirmar identidad", "Confirm identity"));
   next.setEnabled((state == State::review && preview.executionAvailable) || state == State::confirmation || state == State::pending || state == State::error);
   cancel.setEnabled(state != State::submitting && state != State::pending && state != State::complete && state != State::closed);
   resized(); repaint();

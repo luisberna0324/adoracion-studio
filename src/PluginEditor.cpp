@@ -3603,15 +3603,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         const auto result = AccountDeletionApi::request(base, token, proofId, receipt);
         juce::MessageManager::callAsync([modal, uid, generation, result] {
           if (!modal) return;
-          if (!result.ok || result.state != "pending") { modal->fail(generation, uid); return; }
-          modal->receiveStatus(generation, uid, AccountDeletionModal::State::pending);
+          if (!result.ok || (result.state != "pending" && result.state != "complete")) { modal->fail(generation, uid); return; }
+          modal->receiveStatus(generation, uid, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
         });
       }).detach();
     };
     content->onStatusRequested = [modal, uid](int generation) {
       const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), base = getApiBaseUrl();
       std::thread([modal, uid, generation, receipt, base] {
-        const auto result = AccountDeletionApi::status(base, receipt);
+        const auto result = AccountDeletionApi::continuePending(base, receipt);
         juce::MessageManager::callAsync([modal, uid, generation, receipt, result] {
           if (!modal || modal->getGeneration() != generation) return;
           if (result.ok && result.state == "not-accepted" && SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt)) { modal->invalidate(); return; }
@@ -6008,7 +6008,7 @@ void MTControlsAudioProcessorEditor::showPendingAccountDeletion() {
   content->onStatusRequested = [safe, modal, receipt, scope, completed](int generation) {
     const auto base = getApiBaseUrl();
     std::thread([safe, modal, receipt, scope, completed, generation, base] {
-      const auto result = AccountDeletionApi::status(base, receipt);
+      const auto result = AccountDeletionApi::continuePending(base, receipt);
       juce::MessageManager::callAsync([safe, modal, receipt, scope, completed, generation, result] {
         if (!modal || !safe || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::pending) return;
         if (result.ok && ((result.state == "prepared" && SessionPersistence::clearUnsubmittedDeletionReceipt(receipt)) ||

@@ -96,3 +96,10 @@ AccountDeletionStatus AccountDeletionApi::request(const juce::String &base, cons
   auto *body = new juce::DynamicObject(); body->setProperty("proofId", proofId); body->setProperty("receipt", receipt);
   return parseStatus(deletionPost(base, "/api/account/deletion/request", juce::var(body), token));
 }
+
+AccountDeletionStatus AccountDeletionApi::continuePending(const juce::String &base, const juce::String &receipt) {
+  auto current = status(base, receipt);
+  if (!current.ok || current.state != "pending") return current;
+  auto *body = new juce::DynamicObject(); body->setProperty("receipt", receipt);
+  return parseStatus(deletionPost(base, "/api/account/deletion/continue", juce::var(body)));
+}
