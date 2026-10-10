@@ -2,6 +2,12 @@ name: Build Android on Google Cloud
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_artifacts:
+        description: "Autorizar Cloud Build y sus uploads de fuentes/APK a GCS y GitHub (consume recursos GCP)"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -13,6 +19,7 @@ concurrency:
 
 jobs:
   build-android:
+    if: inputs.publish_artifacts
     name: Compile Android APK in Cloud Build
     runs-on: ubuntu-latest
     steps:

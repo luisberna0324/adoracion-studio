@@ -21,6 +21,7 @@ jobs:
         run: ctest --test-dir build/binary-resources --output-on-failure --no-tests=error
 
   macos-ctest:
+    if: github.event_name == 'workflow_dispatch'
     name: CTest on macOS
     runs-on: macos-latest
     steps:
@@ -55,6 +56,7 @@ jobs:
         run: ctest --test-dir build/functional-tests --output-on-failure --no-tests=error -LE 'interactive|lan'
 
   windows-build:
+    if: github.event_name == 'workflow_dispatch'
     name: Build Windows ${{ matrix.arch }}
     runs-on: windows-2022
     strategy:

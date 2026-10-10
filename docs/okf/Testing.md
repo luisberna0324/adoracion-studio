@@ -10,15 +10,13 @@ timestamp: 2026-10-03
 
 ## Suite automatizada
 
-El workflow `.github/workflows/tests.yml` compila el target
-`PlayWorshipTests` y ejecuta CTest en cada PR. Los tests de
-archivos, MIDI, creación y exportación reciben una raíz temporal nueva por proceso mediante
-`tests/run_isolated_test.py`. Un retorno 77 de esos tests es un fallo:
-el CI debe comprobar el flujo en lugar de informar una omisión como éxito.
-En macOS, los tests de interfaz no interactivos tampoco aceptan una omisión;
-en Linux sin display conservan el código de skip para ejecución local. Cada PR
-también compila el target `MTControls` con los presets Windows x64 y x86, sin
-empaquetar ni publicar artefactos.
+El workflow `.github/workflows/tests.yml` ejecuta las regresiones de recursos
+binarios en cada PR. La suite completa `PlayWorshipTests` en macOS y las
+compilaciones Windows x64/x86 requieren `workflow_dispatch` explícito.
+Los tests de archivos, MIDI, creación y exportación reciben una raíz temporal
+nueva por proceso mediante `tests/run_isolated_test.py`. Un retorno 77 es un
+fallo en macOS; Linux sin display conserva skips en los tests de interfaz.
+La política de ejecución y publicación está en [LocalFirstCI](release/LocalFirstCI.md).
 
 El workflow `.github/workflows/android-cloudbuild.yml` compila manualmente el
 APK Android arm64 en Google Cloud Build desde GitHub Actions. Usa Workload
