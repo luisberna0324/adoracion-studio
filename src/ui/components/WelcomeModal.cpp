@@ -319,7 +319,10 @@ WelcomeModal::WelcomeModal() {
   backButton.setTitle(L10n::tr("Volver", "Back"));
   backButton.setTooltip(L10n::tr("Volver", "Back"));
   backButton.setExplicitFocusOrder(1);
-  backButton.onClick = [this] { emailForm.goBack(); };
+  backButton.onClick = [this] {
+    if (inlineAppleLink) showEmailForm(false);
+    else emailForm.goBack();
+  };
   addChildComponent(backButton);
   emailForm.onPasswordLoginRequested = [this](const auto& email, const auto& password) {
     if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
@@ -342,7 +345,7 @@ WelcomeModal::WelcomeModal() {
 WelcomeModal::~WelcomeModal() = default;
 
 void WelcomeModal::updateHeading() {
-  title.setText(!emailMode ? L10n::tr("Bienvenido", "Welcome")
+  title.setText(!emailMode ? (inlineAppleLink ? L10n::tr("Elige tu cuenta", "Choose your account") : L10n::tr("Bienvenido", "Welcome"))
       : emailForm.isLocalDemoMode() ? L10n::tr(u8"Prueba sin conexión", "Offline trial")
       : emailForm.isLinkSent() ? L10n::tr("Revisa tu correo", "Check your email")
       : emailForm.isResetMode() ? L10n::tr(u8"Tu contraseña", "Your password")
@@ -386,7 +389,7 @@ void WelcomeModal::setAuthenticationBusy(bool busy) {
 }
 
 void WelcomeModal::clearCredentials() { emailForm.clearCredentials(); }
-void WelcomeModal::visibilityChanged() { if (!isVisible()) clearCredentials(); }
+void WelcomeModal::visibilityChanged() { if (!isVisible()) { if (inlineAppleLink && onAuthenticationCancelled) onAuthenticationCancelled(); clearCredentials(); } }
 
 void WelcomeModal::showPasswordLinkSent() {
   if (emailForm.isLocalDemoMode()) return;
@@ -410,7 +413,9 @@ void WelcomeModal::showLocalDemoLogin() {
 }
 
 void WelcomeModal::showEmailForm(bool show) {
-  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  if (show && inlineAppleLink) {
+    if (onInlineAuthenticationNavigation) onInlineAuthenticationNavigation();
+  } else if (onAuthenticationCancelled) onAuthenticationCancelled();
   setAuthenticationBusy(false);
   emailMode = show;
   if (show) emailForm.showLogin();
@@ -425,12 +430,12 @@ void WelcomeModal::showEmailForm(bool show) {
 void WelcomeModal::updateActionVisibility() {
   loginButton.setVisible(!checking && !emailMode);
   emailButton.setVisible(!checking && !emailMode);
-  localDemoButton.setVisible(DevelopmentFeatures::testLogin && !emailMode);
+  localDemoButton.setVisible(DevelopmentFeatures::testLogin && !emailMode && !inlineAppleLink);
   separator.setVisible(!checking && !emailMode);
   emailForm.setVisible(!checking && emailMode);
-  backButton.setVisible(!checking && emailMode);
+  backButton.setVisible(!checking && (emailMode || inlineAppleLink));
   if (appleButton) {
-    appleButton->setVisible(!checking && !emailMode);
+    appleButton->setVisible(!checking && !emailMode && !inlineAppleLink);
     appleButton->setEnabled(!authenticationBusy);
   }
 }
@@ -471,7 +476,7 @@ void WelcomeModal::resized() {
     area.removeFromTop(18);
   }
   auto heading = area.removeFromTop(44);
-  if (emailMode) {
+  if (emailMode || inlineAppleLink) {
     backButton.setBounds(heading.removeFromLeft(44));
     heading.removeFromRight(44);
     AuthUi::label(title, 22, true);
@@ -511,4 +516,12 @@ void WelcomeModal::resized() {
     area.removeFromTop(10);
     localDemoButton.setBounds(area.removeFromTop(48));
   }
+}
+
+void WelcomeModal::setInlineAppleLink(bool active) {
+  inlineAppleLink = active;
+  clearCredentials();
+  updateHeading();
+  updateActionVisibility();
+  resized();
 }

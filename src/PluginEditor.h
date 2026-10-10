@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 #include "platform/NativeAppleSignIn.h"
 #include "data/SessionPersistence.h"
+#include "data/AppleLinkFlow.h"
 #include "data/CloudLibraryClient.h"
 #include "data/CloudSettingsClient.h"
 #include "data/SongData.h"
@@ -280,6 +281,9 @@ private:
   bool appleSignInAvailable = false;
   bool appleLoginInProgress = false;
   bool appleLinkInProgress = false;
+  AppleLinkFlow appleLinkFlow;
+  PersistedSessionSnapshot appleLinkCandidate;
+  juce::ScopedMessageBox appleLinkDialog;
   uint64_t authAttemptGeneration = 0;
   bool emailAuthenticationBusy = false;
   uint64_t appleConfigurationGeneration = 0;
@@ -355,7 +359,11 @@ private:
   void enterLocalDemoSession();
   void prepareDemoSong(bool startLesson);
   void requestPasswordLink(const juce::String& email);
-  void cancelAuthenticationAttempt();
+  void cancelAuthenticationAttempt(bool preserveAppleLinkFlow = false);
+  void resetAppleLinkFlow();
+  void offerInlineAppleLink();
+  bool captureInlineAppleAccount(const PersistedSessionSnapshot&);
+  void updateInlineAppleLinkUi(bool active);
   void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);
   void refreshAppleSignInConfiguration();
   void refreshAppleCredentialMonitoring();

@@ -17,8 +17,8 @@ juce::String appleErrorMessage(AppleSignInApi::Error error) {
   using Error = AppleSignInApi::Error;
   switch (error) {
     case Error::linkRequired:
-      return L10n::tr("Ingresa con Google o correo a tu cuenta y vincula Apple desde Configuración → Mi cuenta.",
-                      "Sign in to your account with Google or email and link Apple in Settings → My account.");
+      return L10n::tr("Para continuar con Apple, autentica y confirma la cuenta que quieres vincular.",
+                      "To continue with Apple, authenticate and confirm the account you want to link.");
     case Error::identityConflict:
     case Error::identityMismatch:
       return L10n::tr("Esta identidad Apple pertenece a otra cuenta. No se cambió tu cuenta actual.",
@@ -93,8 +93,21 @@ void MTControlsAudioProcessorEditor::setAppleAuthenticationStatus(
 void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
 #if MTCONTROLS_APPLE_SIGN_IN_ENABLED && (JUCE_IOS || JUCE_MAC)
   if (!appleSignInAvailable || appleLoginInProgress) return;
-  if (linkExisting && (!mainUiInitialized || activeSession.uid.isEmpty() ||
-      activeSession.refreshToken.isEmpty() || activeSession.firebaseApiKey.isEmpty())) return;
+  const bool inlineLink = linkExisting && appleLinkFlow.stage == AppleLinkFlow::Stage::linking;
+  if (!linkExisting) resetAppleLinkFlow();
+  auto snapshot = activeSession;
+  if (inlineLink) {
+    snapshot.uid = appleLinkCandidate.uid;
+    snapshot.refreshToken = appleLinkCandidate.refreshToken;
+    snapshot.firebaseApiKey = appleLinkCandidate.firebaseApiKey;
+  }
+  if (inlineLink && !appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
+    cancelAuthenticationAttempt();
+    setAppleAuthenticationStatus(appleErrorMessage(AppleSignInApi::Error::expiredChallenge), true, false);
+    return;
+  }
+  if (linkExisting && ((!inlineLink && !mainUiInitialized) || snapshot.uid.isEmpty() ||
+      snapshot.refreshToken.isEmpty() || snapshot.firebaseApiKey.isEmpty())) return;
   const auto generation = ++authAttemptGeneration;
   emailAuthenticationBusy = false;
   NativeAuthSession::cancel();
@@ -114,8 +127,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
   context.platform = AppleSignInApi::Platform::ios;
 #endif
   context.purpose = linkExisting ? AppleSignInApi::Purpose::link : AppleSignInApi::Purpose::signIn;
-  context.expectedUid = linkExisting ? activeSession.uid : juce::String{};
-  const auto snapshot = activeSession;
+  context.expectedUid = linkExisting ? snapshot.uid : juce::String{};
   const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   std::thread([safe, generation, context, snapshot, linkExisting]() mutable {
     if (linkExisting) {
@@ -123,9 +135,11 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
                                                                  snapshot.refreshToken);
       if (!refresh.ok) {
         juce::MessageManager::callAsync([safe, generation] {
-          if (safe && generation == safe->authAttemptGeneration)
+          if (safe && generation == safe->authAttemptGeneration) {
+            if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
             safe->setAppleAuthenticationStatus(
                 appleErrorMessage(AppleSignInApi::Error::reauthenticationRequired), true, false);
+          }
         });
         return;
       }
@@ -134,8 +148,9 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
     const auto challenge = AppleSignInApi::requestChallenge(context);
     juce::MessageManager::callAsync([safe, generation, context, challenge, linkExisting] {
       if (!safe || generation != safe->authAttemptGeneration ||
-          (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
+          (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
       if (!challenge.ok()) {
+        if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
         safe->setAppleAuthenticationStatus(appleErrorMessage(challenge.error), true, false);
         if (challenge.error == AppleSignInApi::Error::reauthenticationRequired ||
             challenge.error == AppleSignInApi::Error::unauthorized) {
@@ -145,18 +160,20 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
         }
         return;
       }
-      auto& anchor = linkExisting && safe->settingsPanelRaw
+      auto& anchor = linkExisting && safe->appleLinkFlow.stage != AppleLinkFlow::Stage::linking && safe->settingsPanelRaw
           ? static_cast<juce::Component&>(*safe->settingsPanelRaw) : static_cast<juce::Component&>(*safe);
       const auto started = NativeAppleSignIn::start(challenge.challenge.nativeRequest(!linkExisting), anchor,
           [safe, generation, context, challenge, linkExisting](NativeAppleSignIn::Result result) {
             if (!safe || generation != safe->authAttemptGeneration ||
-                (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
+                (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
             if (result.outcome == NativeAppleSignIn::Outcome::cancelled) {
+              if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
               safe->setAppleAuthenticationStatus(L10n::tr("Inicio de sesión cancelado.",
                                                          "Sign-in cancelled."), false, false);
               return;
             }
             if (result.outcome != NativeAppleSignIn::Outcome::succeeded) {
+              if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
               safe->setAppleAuthenticationStatus(appleErrorMessage(AppleSignInApi::Error::invalidCredential),
                                                 true, false);
               return;
@@ -165,9 +182,13 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
               const auto exchanged = AppleSignInApi::exchangeCredential(context, challenge.challenge, credential);
               juce::MessageManager::callAsync([safe, generation, context, exchanged, linkExisting] {
                 if (!safe || generation != safe->authAttemptGeneration ||
-                    (linkExisting && context.expectedUid != safe->activeSession.uid)) return;
+                    (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
                 if (!exchanged.ok()) {
                   safe->setAppleAuthenticationStatus(appleErrorMessage(exchanged.error), true, false);
+                  if (!linkExisting && exchanged.error == AppleSignInApi::Error::linkRequired)
+                    safe->offerInlineAppleLink();
+                  else if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking)
+                    safe->cancelAuthenticationAttempt();
                   return;
                 }
                 safe->setAppleAuthenticationStatus(
@@ -175,12 +196,15 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
                                            "Apple linked. You can sign in to this account with Apple.")
                                  : L10n::tr("Sesión iniciada.", "Signed in."), false, false);
                 safe->appleLinkInProgress = false;
+                safe->resetAppleLinkFlow();
                 safe->completeAuthenticatedSession(exchanged.session);
               });
             }).detach();
           });
-      if (!started)
+      if (!started) {
+        if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
         safe->setAppleAuthenticationStatus(appleErrorMessage(AppleSignInApi::Error::unavailable), true, false);
+      }
     });
   }).detach();
 #else
@@ -217,4 +241,71 @@ void MTControlsAudioProcessorEditor::applyAppleCredentialState(
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
     modal->setStatusText(L10n::tr("El acceso con Apple cambió. Vuelve a ingresar con Apple, Google o correo.",
                                 "Apple access changed. Sign in again with Apple, Google or email."), true);
+}
+
+void MTControlsAudioProcessorEditor::updateInlineAppleLinkUi(bool active) {
+  if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) modal->setInlineAppleLink(active);
+  if (auto* modal = dynamic_cast<ReauthPromptModal*>(reauthPromptModal.get())) modal->setInlineAppleLink(active);
+  resized();
+}
+void MTControlsAudioProcessorEditor::resetAppleLinkFlow() {
+  appleLinkFlow.cancel();
+  appleLinkCandidate = {};
+  appleLinkDialog.close();
+  updateInlineAppleLinkUi(false);
+}
+void MTControlsAudioProcessorEditor::offerInlineAppleLink() {
+  resetAppleLinkFlow();
+  appleLinkFlow.begin(juce::Time::currentTimeMillis());
+  const auto token = appleLinkFlow.generation;
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  setAppleAuthenticationStatus({}, false, true);
+  appleLinkDialog = juce::AlertWindow::showScopedAsync(
+      juce::MessageBoxOptions::makeOptionsOkCancel(juce::MessageBoxIconType::QuestionIcon,
+        L10n::tr("Vincular Apple", "Link Apple"),
+        L10n::tr("Para continuar, necesitamos confirmar la cuenta a la que añadir Apple. Puede faltar un correo verificado o ser necesaria una vinculación. Ingresa con Google o correo, revisa tu cuenta y confirma. No uniremos cuentas por coincidencia de correo.",
+                  "To continue, we need to confirm the account to add Apple to. A verified email may be missing or linking may be required. Sign in with Google or email, review your account and confirm. Matching email addresses will not merge accounts."),
+        L10n::tr("Vincular una cuenta", "Link an account"), L10n::tr("Cancelar", "Cancel"), this),
+      [safe, token](int result) {
+        if (!safe || token != safe->appleLinkFlow.generation) return;
+        if (result != 1 || !safe->appleLinkFlow.choose(juce::Time::currentTimeMillis())) {
+          safe->cancelAuthenticationAttempt(); return;
+        }
+        safe->updateInlineAppleLinkUi(true);
+        safe->setAppleAuthenticationStatus(
+          L10n::tr("Ingresa con Google o correo para elegir la cuenta. Después confirmarás Apple. Puedes volver para cancelar.",
+                    "Sign in with Google or email to choose the account. Then confirm Apple. Go back to cancel."), false, false);
+      });
+}
+bool MTControlsAudioProcessorEditor::captureInlineAppleAccount(const PersistedSessionSnapshot& snapshot) {
+  if (appleLinkFlow.stage != AppleLinkFlow::Stage::authenticate) return false;
+  if (snapshot.uid.isEmpty() || !snapshot.hasCredentials() ||
+      !appleLinkFlow.authenticated(snapshot.uid.toStdString(), juce::Time::currentTimeMillis())) {
+    cancelAuthenticationAttempt();
+    setAppleAuthenticationStatus(L10n::tr("El intento venció o la sesión no es válida. Vuelve a iniciar el acceso con Apple.",
+                                        "The attempt expired or the session is invalid. Start Apple sign-in again."), true, false);
+    return true;
+  }
+  ++authAttemptGeneration;
+  appleLinkCandidate = snapshot;
+  const auto token = appleLinkFlow.generation;
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  setAppleAuthenticationStatus({}, false, true);
+  const auto identity = snapshot.email.isNotEmpty() ? snapshot.email : snapshot.uid;
+  appleLinkDialog = juce::AlertWindow::showScopedAsync(
+      juce::MessageBoxOptions::makeOptionsOkCancel(juce::MessageBoxIconType::QuestionIcon,
+        L10n::tr("Confirma tu cuenta", "Confirm your account"),
+        L10n::tr("Cuenta autenticada: ", "Authenticated account: ") + identity +
+        L10n::tr("\nProveedor a añadir: Apple.\nSe conservarán la cuenta, biblioteca y permisos. A continuación autorizarás Apple de nuevo; confirma también la cuenta Apple en esa pantalla.",
+                  "\nProvider to add: Apple.\nYour account, library and access will be preserved. You will authorize Apple again next; check the Apple account on that screen too."),
+        L10n::tr("Vincular Apple", "Link Apple"), L10n::tr("Cancelar", "Cancel"), this),
+      [safe, token](int result) {
+        if (!safe || token != safe->appleLinkFlow.generation) return;
+        if (result != 1 || !safe->appleLinkFlow.confirm(safe->appleLinkCandidate.uid.toStdString(), juce::Time::currentTimeMillis())) {
+          safe->cancelAuthenticationAttempt(); return;
+        }
+        safe->setAppleAuthenticationStatus({}, false, false);
+        safe->launchAppleLogin(true);
+      });
+  return true;
 }

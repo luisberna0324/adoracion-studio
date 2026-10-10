@@ -1,4 +1,5 @@
 #include "data/AppleSignInApi.h"
+#include "data/AppleLinkFlow.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -201,6 +202,19 @@ void errorsAndConfigurationRemainBounded() {
 
 int main() {
   try {
+    AppleLinkFlow flow;
+    expect(!flow.confirm("uid", nowMs), "no link without explicit flow");
+    flow.begin(nowMs); const auto oldToken = flow.generation;
+    expect(flow.choose(nowMs + 1) && !flow.choose(nowMs + 2), "double offer acceptance rejected");
+    expect(oldToken != flow.generation, "obsolete dialog callback invalidated");
+    expect(flow.authenticated("account-one", nowMs + 3), "authenticate chosen account before confirmation");
+    expect(!flow.confirm("account-two", nowMs + 4), "account change cannot authorize link");
+    expect(flow.confirm("account-one", nowMs + 5) && !flow.confirm("account-one", nowMs + 6), "explicit consent authorizes exactly one link");
+    flow.cancel(); expect(flow.uid.empty() && !flow.valid(nowMs + 7), "cancel clears identity and pending intent");
+    flow.begin(nowMs); expect(!flow.choose(nowMs + 300000), "expired offers require fresh flow");
+    flow.begin(nowMs); flow.choose(nowMs); flow.authenticated("uid", nowMs);
+    expect(!flow.confirm("uid", nowMs + 300000), "expired confirmation cannot link");
+    flow.cancel(); flow.begin(nowMs); expect(flow.uid.empty(), "new Apple login never inherits old account");
     challengeRequiresFreshOpaqueProof();
     proofsAndLinkBearerStayOutOfUrls();
     exchangeRejectsWrongAttempt();
