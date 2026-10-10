@@ -36,6 +36,9 @@ public:
   void setLooping(bool shouldLoop) override;
   bool waitForNextAudioBlockReady(int numSamples,
                                   juce::uint32 timeoutMs) const;
+  void configureSectionEntries(const std::vector<juce::int64> &targets, int slots) { if (bufferingSource) bufferingSource->configureSectionEntries(targets, slots); }
+  void protectSectionTargets(juce::int64 jump, juce::int64 loop) noexcept { if (bufferingSource) bufferingSource->protectSectionTargets(jump, loop); }
+  juce::int64 getSectionCacheBytes() const noexcept { return bufferingSource ? bufferingSource->getSectionCacheBytes() : 0; }
   void requestPrefetchPosition(juce::int64 position,
                                int minimumFrames) noexcept;
   bool isPrefetchReady(juce::int64 position,
@@ -123,11 +126,7 @@ public:
 private:
   std::unique_ptr<juce::AudioFormatReaderSource> readerSource;
   std::unique_ptr<ResamplingPositionableSource> resamplingSource;
-  // P0.2 (perf): el segundo AudioFormatReader se mantiene crudo hasta
-  // el primer requestPrefetchPosition. Esto evita pagar el segundo
-  // FileInputStream::open y la duplicación del costo de AV en el
-  // loadSongStems. Cuando la cadena de prefetch se necesita (seek,
-  // loop, arrangement handoff), se construye en lazy.
+  // The secondary chain is built during preparation, never on a jump callback.
   std::unique_ptr<juce::AudioFormatReaderSource> prefetchReaderSource;
   std::unique_ptr<ResamplingPositionableSource> prefetchResamplingSource;
   std::unique_ptr<juce::AudioFormatReader> deferredPrefetchReader;

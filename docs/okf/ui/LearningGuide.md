@@ -57,6 +57,28 @@ condiciones de ejecución verificadas. Los dos recorridos remotos incorporan
 condiciones reales de avance en sus pasos de acción y pasos explicativos sin
 condición.
 
+El primer paso de `practice-sections` conserva el ID `open-practice` y el ancla
+`More`: antes de abrir Ensayo apunta a Más y dentro de Ensayo al selector de
+instrumentos. Su título es **Elige tu instrumento** y explica arrastre con
+confirmación al soltar, toque de un vecino, selección central y vuelta al
+instrumento anterior. También aclara los niveles de escucha, su restauración
+y que el retarget solo sigue al nuevo instrumento mientras esta vista conserve
+el control de la escucha. Mantiene cuatro pasos y avance manual; no añade
+acciones automáticas ni cambia progreso guardado. El botón `?` abre directamente este recorrido existente, sin un popover ni
+controles de mezcla duplicados. Si ya está abierto, conserva el paso. Pausar
+(con X/Escape) guarda el progreso y devuelve el foco a `?` mientras Ensayo esté
+visible. Al reabrir reanuda el paso guardado; un curso completado vuelve al
+primero, como desde el catálogo. Cambiar de curso conserva el progreso anterior.
+La selección del instrumento, el transporte y la mezcla no cambian al abrirlo.
+
+Restaurar con un gesto requiere seleccionar el instrumento nombrado por el
+estado Enfoque/Reducido: abajo desde Enfoque o arriba desde Reducido envía el
+mismo reset a Normal que R. Sobre otro instrumento, un gesto inicia otro modo;
+no equivale a restaurar. R conserva su reset directo aunque el seleccionado
+sea otro. En remoto se espera confirmación; cerrar Ensayo solo libera la escucha
+si aún le pertenece, por lo que no se enseña como sustituto universal. El
+recorrido no contiene botones que modifiquen la mezcla.
+
 El curso de teléfono enseña los gestos de **Ensayo**; no atribuye esos gestos
 de doble toque por compás a la onda principal. Sus marcas A y B se ajustan al
 pulso más cercano y su región es temporal. Véase

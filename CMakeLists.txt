@@ -732,6 +732,15 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME playback_diagnostic_report COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsDiagnosticReportTests>")
+    add_executable(MTControlsPracticeAccompanimentTests tests/practice_accompaniment_tests.cpp)
+    target_include_directories(MTControlsPracticeAccompanimentTests PRIVATE src)
+    add_test(NAME practice_accompaniment COMMAND MTControlsPracticeAccompanimentTests)
+    add_executable(MTControlsPracticeToggleRequestTests tests/practice_toggle_request_tests.cpp)
+    target_include_directories(MTControlsPracticeToggleRequestTests PRIVATE src)
+    add_test(NAME practice_toggle_request COMMAND MTControlsPracticeToggleRequestTests)
+    add_executable(MTControlsTouchWaveformNavigationTests tests/touch_waveform_navigation_tests.cpp)
+    target_include_directories(MTControlsTouchWaveformNavigationTests PRIVATE src)
+    add_test(NAME touch_waveform_navigation COMMAND MTControlsTouchWaveformNavigationTests)
     add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
     target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
     add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)
@@ -744,6 +753,12 @@ if(MTCONTROLS_BUILD_TESTS)
     )
     target_include_directories(MTControlsAudioEngineCoreTests PRIVATE src)
     add_test(NAME audio_engine_core COMMAND MTControlsAudioEngineCoreTests)
+
+    add_executable(MTControlsPracticeWaveformMappingTests
+        tests/practice_waveform_mapping_tests.cpp
+        src/audio/SectionScheduler.cpp)
+    target_include_directories(MTControlsPracticeWaveformMappingTests PRIVATE src)
+    add_test(NAME practice_waveform_mapping COMMAND MTControlsPracticeWaveformMappingTests)
 
     add_executable(MTControlsPitchShiftTests
         tests/pitch_shift_tests.cpp

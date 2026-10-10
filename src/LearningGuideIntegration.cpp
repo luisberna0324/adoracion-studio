@@ -84,6 +84,29 @@ void MTControlsAudioProcessorEditor::showLearningGuide() {
   learningGuide->grabKeyboardFocus();
 }
 
+void MTControlsAudioProcessorEditor::showPracticeLearningGuide() {
+  if (!mainUiInitialized || !practiceOverlay || !practiceOverlay->isShowing())
+    return;
+  // A repeated request keeps the current step instead of restarting the guide.
+  if (learningGuide && learningLessonId == "practice-sections" && learningPhoneContent) {
+    updateLearningGuideTarget();
+    learningGuide->grabKeyboardFocus();
+    return;
+  }
+  if (learningGuide)
+    pauseLearningGuide();
+  showLearningGuide();
+  // Practice is the phone-style surface even in a narrow desktop window.
+  // Do not route its ? to the desktop sections/automation variant.
+  if (!learningPhoneContent) {
+    learningPhoneContent = true;
+    learningLessons = playworship::learning::makeLessons(true, learningEnglishContent);
+    appendTeamsLearningLessons();
+  }
+  // Reuse saved progress and the catalog's completed-course replay behavior.
+  startLearningLesson("practice-sections");
+}
+
 void MTControlsAudioProcessorEditor::showLearningCatalog() {
   if (!learningGuide || !learningProgress) return;
   learningPhoneContent = isPhoneSizedTouchLayout(*this);
@@ -157,7 +180,11 @@ void MTControlsAudioProcessorEditor::pauseLearningGuide() {
   learningObservedStepKey.clear();
   learningRemoteAction.deactivate();
   demoLearningProgress.reset();
-  grabKeyboardFocus();
+  if (auto *practice = dynamic_cast<PracticePanel *>(practiceOverlay.get());
+      practice && practice->isShowing())
+    practice->focusLearningHelp();
+  else
+    grabKeyboardFocus();
 }
 
 void MTControlsAudioProcessorEditor::refreshLearningStep() {

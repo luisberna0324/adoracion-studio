@@ -86,7 +86,7 @@ No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
 | [Guías interactivas](ui/LearningGuide.md) | `learning_guide`: cinco cursos, condiciones remotas, requisitos temporales de sesión al reanudar, IDs, persistencia, reinicio y entradas inválidas; `learning_overlay`: spotlight, interacción y scroll, botones compactos, bloqueo de avance por botón/teclado, reparenting sobre Settings real y targets de Ensayo; `settings_panel`: acceso, destinos y scroll de aprendizaje; `remote_learning_action`: comando propio, distinción Play/Pausa, ACK y snapshot posterior, respuestas ajenas/atrasadas, rechazo, timeout y limpieza de evidencia |
-| [Ensayo por instrumento](ui/MobileLayout.md) | `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda y reloj visual; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
+| [Ensayo por instrumento](ui/MobileLayout.md) | `practice_waveform_mapping`: proyección de picos con el scheduler real, copias/recortes, desplazamientos, silencio fuente, límites e identidad de caché; `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda, reloj visual e invalidación/rechazo de entregas de onda obsoletas; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
 | [Cloud Sync](integrations/CloudSync.md) y versiones de ajustes | `cloud_settings_sync_state`, `cloud_sync_index`, `settings_versions_sheet` |
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
 | [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |
@@ -431,3 +431,76 @@ de consultas inexistentes/nulas. Otra prueba comprueba regeneración al modifica
 bytes/tamaños o añadir/quitar recursos, y que no se reescriban en un build sin cambios.
 El workflow `Functional tests` ejecuta estas pruebas antes de integrar cambios. No sustituye compilar la APK ni probar el
 acceso habitual y la instalación de la demo en un dispositivo Android.
+
+## Tarjetas Live y onda fuente — 08/10/2026
+
+- `waveform_editing` y `touch_waveform_navigation`: 2/2 pruebas pasaron en
+  `build/codex-modal-macos` (5.02 s, tras el ajuste de ancho completo).
+- La regresión de render inserta dos copias antes de secciones originales de
+  una fuente de 30 s. Comprueba que los originales desplazados más allá del
+  final de la fuente conservan la silueta de su onda y su rango de audio.
+- La navegación cubre anchos de 568, 844, 956, 1024 y 1200 puntos, márgenes del notch
+  a ambos lados, arrastre, rueda, asentamiento del trackpad y un toque que
+  interrumpe ese asentamiento. Las tarjetas quedan completas al detenerse y
+  sus acciones conservan un área de 44 × 44 puntos.
+- En teléfono, la señal real llega a ambos bordes físicos (considerando el
+  paso de dos píxeles de sus barras), sin descontar los insets del dibujo.
+  Las acciones quedan dentro del área segura con cutouts de 44 y 62 puntos,
+  al inicio, en posiciones intermedias y al final. Cambiar sólo los insets de
+  lado también actualiza sus límites. Las capturas de los componentes en
+  956 puntos verifican ambos extremos y ambas orientaciones.
+- La compilación Debug para iPhone Simulator terminó correctamente; la app se
+  instaló y abrió en el simulador iOS 26.5. La revisión visual de Forever Reign
+  confirmó Coro, Vamp, Puente y Final completos, con onda visible en los cuatro.
+  Se conservaron los bins de audio existentes. Esta revisión no acredita una
+  instalación física ni validación visual de iPad o Android.
+- La compilación posterior con secciones a ancho completo también se instaló
+  y abrió en ese iPhone Simulator; la revisión visual confirmó la fila sin
+  bandas laterales, con etiquetas y controles fuera del cutout.
+
+
+## Selector de instrumentos de Ensayo — 09/10/2026
+
+`practice_panel_gestures` incluye recorridos desde los handlers reales de
+`PracticeInstrumentSelector`: preview/confirmación única (incluido release
+coalesced), ausencia de seek/pausa al recorrer instrumentos, retarget por ID,
+gestos verticales de tres niveles y propiedad del eje, pinch en ambos órdenes,
+magnificación, reordenación antes del sondeo, listas vacías/únicas y cancelación
+por canción, contexto, desconexión o tamaño. También cubre nombres completos
+para accesibilidad, layout en 320/390/768 puntos, spacing sin cambios en
+Tono/Tempo y destrucción síncrona desde el proveedor de onda.
+
+Estas pruebas JUCE nuevas no se ejecutaron en el entorno cloud de esta revisión:
+no dispone de JUCE ni CMake. Los harnesses portables ejecutan código real con
+dobles de UI y no acreditan compilación nativa, accesibilidad del sistema,
+elipsis renderizada ni revisión visual/táctil en iOS/Android. Antes de publicar,
+compilar `MTControls_Standalone`, ejecutar `practice_panel_gestures` y revisar
+el carrusel con nombres largos y gestos interrumpidos en la app real.
+
+
+## Ensayo: halo y acompañamiento
+
+- `practice_accompaniment` prueba la lógica real de selección y comandos de
+  acompañamiento sin depender de JUCE. Los dobles de sesión comprueban guía
+  original/dinámica/ausente, índices de stems incluidos, independencia de los
+  buses y compuertas enable/división/mute del metrónomo. Es cobertura del contrato
+  de control; no sustituye un render ni una prueba de audio del motor real.
+- `practice_toggle_request` prueba el guard real usado por el panel: confirmación,
+  estado remoto anterior, timeout de 2 segundos, cambio de contexto, independencia
+  entre botones y wrap del contador de milisegundos.
+- `practice_panel_gestures` cubre geometría 320/390, estado checked/accesibilidad,
+  toque/arrastre/teclado, reconciliación asíncrona, A–B/errores reubicados, restauración
+  desde ayuda y halo exterior en los tres estados. Requiere JUCE y entorno GUI.
+- Validación manual pendiente de dispositivo: comparar la intensidad del halo
+  estático, legibilidad de Guía/Metrónomo y avisos, VoiceOver/TalkBack, foco por Tab,
+  latencia real del servidor y escucha audible de cada fuente. Confirmar que la
+  onda mantiene su tamaño y los gestos/doble toque siguen disponibles fuera de `?`.
+
+Comprobaciones pequeñas sin JUCE (no equivalen a `MTControls_Standalone`):
+
+```bash
+c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_accompaniment_tests.cpp -o /tmp/practice-accompaniment
+/tmp/practice-accompaniment
+c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_toggle_request_tests.cpp -o /tmp/practice-toggle-request
+/tmp/practice-toggle-request
+```

@@ -526,9 +526,11 @@ void optionalScreenshots() {
     capture(welcome, directory, juce::String(layout.name) + "-reset");
     welcome.showPasswordLinkSent();
     capture(welcome, directory, juce::String(layout.name) + "-link-sent");
+#if JUCE_DEBUG
     welcome.showLocalDemoLogin();
     editor(welcome, "Usuario", "Username").setText("usuarioplay0324", false);
     capture(welcome, directory, juce::String(layout.name) + "-offline-trial");
+#endif
   }
   ReauthPromptModal reauth;
   show(reauth, 530, 530);
@@ -619,8 +621,23 @@ int main() {
     testWelcomeNavigationAndCredentials();
     testInputValidationAndDispatch();
     testBusyCancellation();
+#if JUCE_DEBUG
     testLocalDemoFlowIsSeparateAndCancellable();
     testLocalDemoAndProviderLayouts();
+#else
+    {
+      WelcomeModal welcome; show(welcome, 820, 700);
+      int calls = 0;
+      welcome.onLocalDemoLoginRequested = [&](const auto &, const auto &) { ++calls; };
+      expect(find<juce::Button>(welcome, [](const auto &b) { return b.getButtonText() == L10n::tr("Prueba sin conexión", "Offline trial"); }) == nullptr,
+             "production contains no test-login button in its component tree");
+      welcome.showLocalDemoLogin();
+      auto &form = typed<EmailAuthenticationForm>(welcome);
+      form.showLocalDemoLogin();
+      expect(!form.isLocalDemoMode() && !form.isVisible() && calls == 0,
+             "production rejects direct test-login entry points");
+    }
+#endif
     testCompactLayoutsAndReachability();
     testReauthenticationStatusAndHeight();
     testPasswordLinkSuccess();

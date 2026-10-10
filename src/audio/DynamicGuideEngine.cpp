@@ -196,6 +196,13 @@ int DynamicGuideEngine::resolveTriggerId(
   return -1;
 }
 
+void DynamicGuideEngine::resetExceptTrigger(const int triggerId) noexcept {
+  const auto *keep = juce::isPositiveAndBelow(triggerId, static_cast<int>(samplesByTriggerId.size()))
+      ? samplesByTriggerId[static_cast<size_t>(triggerId)].get() : nullptr;
+  for (auto &voice : voices)
+    if (voice.sample != keep) voice = {};
+}
+
 bool DynamicGuideEngine::triggerForId(const int triggerId) noexcept {
   if (!juce::isPositiveAndBelow(
           triggerId, static_cast<int>(samplesByTriggerId.size()))) {

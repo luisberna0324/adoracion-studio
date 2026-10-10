@@ -1,4 +1,5 @@
 #include "WaveformBar.h"
+#include "TouchWaveformNavigation.h"
 #include "TimelineRulerStyle.h"
 #include "../../PluginProcessor.h"
 #include "../../audio/DynamicGuideEngine.h"
@@ -7,6 +8,13 @@
 #include "../../data/Localization.h"
 #include "../WaveformCacheWindow.h"
 #include "../SectionAutomationVisuals.h"
+#include "../LiveLoopBorder.h"
+#if JUCE_MAC
+#include <objc/message.h>
+#include <objc/runtime.h>
+#elif JUCE_IOS
+extern "C" bool UIAccessibilityIsReduceMotionEnabled();
+#endif
 
 #include <algorithm>
 #include <array>
@@ -15,6 +23,27 @@
 #include <map>
 
 namespace {
+// Query the OS preference on the message thread at most once per second.
+// No new animation timer or audio-thread work is introduced.
+bool liveBorderReducedMotion() {
+  static double nextQueryMs = 0.0;
+  static bool reduced = false;
+  const double now = juce::Time::getMillisecondCounterHiRes();
+  if (now < nextQueryMs) return reduced;
+  nextQueryMs = now + 1000.0;
+#if JUCE_MAC
+  const auto send = reinterpret_cast<id (*)(id, SEL)>(objc_msgSend);
+  const auto workspace = send(reinterpret_cast<id>(objc_getClass("NSWorkspace")),
+                              sel_registerName("sharedWorkspace"));
+  const auto selector = sel_registerName("accessibilityDisplayShouldReduceMotion");
+  const auto responds = reinterpret_cast<BOOL (*)(id, SEL, SEL)>(objc_msgSend);
+  if (responds(workspace, sel_registerName("respondsToSelector:"), selector))
+    reduced = reinterpret_cast<BOOL (*)(id, SEL)>(objc_msgSend)(workspace, selector) != 0;
+#elif JUCE_IOS
+  reduced = UIAccessibilityIsReduceMotionEnabled();
+#endif
+  return reduced;
+}
 // The visual marker stays small, while the accessible button keeps a generous
 // touch target. Forward pointer gestures to the waveform so dragging a cue is
 // part of the same undo transaction as the rest of the editor.
@@ -112,7 +141,7 @@ constexpr float kFollowWaveformCacheOverscan = 3.0f;
 #endif
 constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
 constexpr float kWheelPanSensitivity = 0.22f;
-constexpr float kTouchPanSlopPx = 6.0f;
+
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
 constexpr float kPlayheadHeadInsetY = 1.5f;
@@ -957,6 +986,94 @@ void SvgToolbarButton::paintButton(juce::Graphics &g,
   drawSvgIcon(g, b.withSizeKeepingCentre(18.0f, 18.0f), iconName, iconColour);
 }
 
+// Transparent action surfaces preserve the parent's flat icon rendering and
+// pointer arbitration. Keyboard/accessibility activation uses the same ID-bound
+// dispatch path; merely focusing an action never sends a musical command.
+class WaveformBar::SectionActionButton final : public juce::Component,
+                                               public juce::SettableTooltipClient {
+public:
+  SectionActionButton(WaveformBar &bar, juce::String id, int kind)
+      : owner(bar), partId(std::move(id)), action(kind) {
+    setComponentID("section-action:" + partId + ":" + juce::String(action));
+    setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  }
+  void paint(juce::Graphics &g) override {
+    const auto *handler = getAccessibilityHandler();
+    if (hasKeyboardFocus(false) || (handler && handler->hasFocus(false))) {
+      g.setColour(juce::Colours::white);
+      g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f, 2.0f);
+    }
+  }
+  void mouseDown(const juce::MouseEvent &e) override { owner.mouseDown(e.getEventRelativeTo(&owner)); }
+  void mouseDrag(const juce::MouseEvent &e) override { owner.mouseDrag(e.getEventRelativeTo(&owner)); }
+  void mouseUp(const juce::MouseEvent &e) override { owner.mouseUp(e.getEventRelativeTo(&owner)); }
+  void mouseDoubleClick(const juce::MouseEvent &e) override { owner.mouseDoubleClick(e.getEventRelativeTo(&owner)); }
+  void mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &d) override { owner.mouseWheelMove(e.getEventRelativeTo(&owner), d); }
+  void mouseMagnify(const juce::MouseEvent &e, float amount) override { owner.mouseMagnify(e.getEventRelativeTo(&owner), amount); }
+  bool keyPressed(const juce::KeyPress &key) override {
+    if (key.getModifiers().isAnyModifierKeyDown()) return false;
+    if (key.isKeyCode(juce::KeyPress::returnKey) || key.isKeyCode(juce::KeyPress::spaceKey)) {
+      if (!isEnabled()) return true;
+      owner.activateLiveSectionAction(partId, action); return true;
+    }
+    return owner.navigateLiveSectionAction(partId, action, key);
+  }
+  void focusGained(FocusChangeType) override { owner.revealLiveSectionAction(partId); repaint(); }
+  void focusLost(FocusChangeType) override { owner.suspendLiveFollow(); repaint(); }
+  std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override {
+    class Handler final : public juce::AccessibilityHandler {
+    public:
+      class Value final : public juce::AccessibilityTextValueInterface {
+      public:
+        explicit Value(SectionActionButton &b) : button(b) {}
+        bool isReadOnly() const override { return true; }
+        juce::String getCurrentValueAsString() const override { return button.getDescription(); }
+        void setValueAsString(const juce::String &) override {}
+      private:
+        SectionActionButton &button;
+      };
+      explicit Handler(SectionActionButton &b)
+          : juce::AccessibilityHandler(b, b.action == 0 ? juce::AccessibilityRole::button : juce::AccessibilityRole::toggleButton,
+              actionsFor(b), Interfaces{std::make_unique<Value>(b)}), button(b) {}
+      juce::AccessibleState getCurrentState() const override {
+        if (!button.isVisible() || !button.owner.isLiveMode())
+          return juce::AccessibleState().withIgnored();
+        auto state = juce::AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+        if (button.action != 0) {
+          state = state.withCheckable();
+          if (button.marked) state = state.withChecked();
+        }
+        return state;
+      }
+    private:
+      static juce::AccessibilityActions actionsFor(SectionActionButton &b) {
+        auto actions = juce::AccessibilityActions()
+            .addAction(juce::AccessibilityActionType::press, [&b] { b.owner.activateLiveSectionAction(b.partId, b.action); })
+            .addAction(juce::AccessibilityActionType::focus, [&b] {
+              b.owner.revealLiveSectionAction(b.partId); b.grabKeyboardFocus();
+            });
+        if (b.action != 0)
+          actions.addAction(juce::AccessibilityActionType::toggle, [&b] { b.owner.activateLiveSectionAction(b.partId, b.action); });
+        return actions;
+      }
+      SectionActionButton &button;
+    };
+    return std::make_unique<Handler>(*this);
+  }
+  WaveformBar &owner;
+  const juce::String partId;
+  const int action;
+  bool marked = false;
+};
+
+WaveformBar::~WaveformBar() { stopTimer(); liveSectionActions.clear(); }
+
+std::unique_ptr<juce::AccessibilityHandler> WaveformBar::createAccessibilityHandler() {
+  return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::group);
+}
+
 WaveformBar::WaveformBar() {
   cueTooltipWindow = std::make_unique<CueTooltipWindow>(*this);
 #if JUCE_ANDROID
@@ -966,6 +1083,8 @@ WaveformBar::WaveformBar() {
   setOpaque(true);
 #endif
   setWantsKeyboardFocus(true);
+  setFocusContainerType(juce::Component::FocusContainerType::focusContainer);
+  setTitle(L10n::tr("Vista de onda", "Waveform view"));
   setMouseClickGrabsKeyboardFocus(true);
 
   followButton.setClickingTogglesState(true);
@@ -974,6 +1093,7 @@ WaveformBar::WaveformBar() {
       L10n::tr("Auto centra la vista en la reproducción", "Auto-follow playback"));
   followButton.setViewportIgnoreDragFlag(true);
   followButton.onClick = [this] {
+    if (liveMode) return;
     followPlaybackEnabled = followButton.getToggleState();
     followLastFrameTimestampSec = 0.0;
     if (followPlaybackEnabled) {
@@ -1034,6 +1154,7 @@ WaveformBar::WaveformBar() {
               arrangementPartDisplayLabelForName(part.name),
           SvgIconName::Pencil, sectionAutomationEditingPartId.isEmpty(),
           true, [safeBar, part] {
+            if (safeBar) safeBar->setLiveMode(false);
             if (safeBar && safeBar->onSectionAutomationBegin &&
                 safeBar->onSectionAutomationBegin(part.id))
               safeBar->setSectionAutomationState(part.id);
@@ -1085,6 +1206,7 @@ WaveformBar::WaveformBar() {
   editButton.setClickingTogglesState(true);
   editButton.setViewportIgnoreDragFlag(true);
   editButton.onClick = [this] {
+    resetTouchWaveformNavigation();
     const bool editing = editButton.getToggleState();
     invalidateWaveformRenderCaches();
     timelineViewMode = TimelineViewMode::GuideMap;
@@ -1288,6 +1410,12 @@ WaveformBar::WaveformBar() {
 }
 
 void WaveformBar::resetPlaybackViewForSong() {
+  liveFollowPartId.clear();
+  liveFollowResumeMs = 0.0;
+  liveFollowAnimating = false;
+  liveScrollOffset = 0.0f;
+  livePointerActive = false;
+  resetTouchWaveformNavigation();
   followPendingJumpWasActive = false;
   followLastSongProgressValid = false;
   followLastFrameTimestampSec = 0.0;
@@ -1306,6 +1434,8 @@ void WaveformBar::resetPlaybackViewForSong() {
 }
 
 void WaveformBar::setWaveformBins(std::vector<float> bins) {
+  if (!liveMode || bins.empty() || waveformBins.empty())
+    resetTouchWaveformNavigation();
   const bool wasEditing = editButton.getToggleState();
   waveformBins = std::move(bins);
   invalidateWaveformRenderCaches();
@@ -1332,6 +1462,8 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
 void WaveformBar::setArrangement(
     const SongArrangementSnapshot &arrangementSnapshot,
     const bool isCustomArrangement) {
+  resetTouchWaveformNavigation();
+  livePointerActive = false;
   arrangement = arrangementSnapshot;
   migrateLegacyArrangementCues(arrangement);
   normalizeArrangementCues(arrangement);
@@ -1480,6 +1612,8 @@ void WaveformBar::setSectionAutomationCallbacks(
 
 void WaveformBar::setSectionAutomationState(const juce::String &partId) {
   if (sectionAutomationEditingPartId == partId) return;
+  if (partId.isNotEmpty()) setLiveMode(false);
+  resetTouchWaveformNavigation();
   sectionAutomationEditingPartId = partId;
   ++sectionAutomationUiRevision;
   lastSectionAutomationAnimationMs = 0.0;
@@ -1678,7 +1812,9 @@ void WaveformBar::setOnWaveformHeightToggle(WaveformHeightToggleCallback cb) {
 }
 
 void WaveformBar::setMinimalPhoneMode(const bool enabled) {
+  if (minimalPhoneMode == enabled) return;
   if (minimalPhoneMode != enabled) {
+    resetTouchWaveformNavigation();
     phoneTouchPositions.clear();
     phonePinchActive = false;
     viewportDragMoved = false;
@@ -1792,6 +1928,10 @@ void WaveformBar::showExportFormatPopover() {
   presentActionPopover(std::move(panel), anchor, parentComp, options);
 }
 
+void WaveformBar::setPreparingArrangementPartProvider(PendingArrangementPartProvider cb) {
+  preparingArrangementPartProvider = std::move(cb); repaint();
+}
+
 void WaveformBar::setPendingArrangementPartProvider(
     PendingArrangementPartProvider cb) {
   pendingArrangementPartProvider = std::move(cb);
@@ -1803,6 +1943,7 @@ void WaveformBar::setActiveArrangementLoopPartProvider(
 }
 
 void WaveformBar::setMidiLearnActive(const bool active) {
+  if (active) resetTouchWaveformNavigation();
   midiLearnActive = active;
   if (!midiLearnActive)
     midiLearnPendingTargetId = -1;
@@ -2009,6 +2150,7 @@ void WaveformBar::setSongLoadingState(const bool active,
                                       const juce::String &phaseText) {
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
   if (active && !songLoadingActive) {
+    resetTouchWaveformNavigation();
     songLoadingShownAtMs = nowMs;
     songLoadingHideAfterMs = 0.0;
   }
@@ -2044,6 +2186,7 @@ void WaveformBar::setRemoteIndicator(const RemoteIndicator state) {
 }
 
 void WaveformBar::paint(juce::Graphics &g) {
+  if (liveMode) { drawLiveSections(g); return; }
   const auto bounds = getLocalBounds().toFloat();
   if (bounds.getWidth() < 2.0f)
     return;
@@ -2209,6 +2352,28 @@ void WaveformBar::paintOverChildren(juce::Graphics &g) {
 }
 
 void WaveformBar::resized() {
+  if (liveMode) {
+    for (int i = 0; i < getNumChildComponents(); ++i)
+      if (dynamic_cast<SectionActionButton *>(getChildComponent(i)) == nullptr)
+        getChildComponent(i)->setVisible(false);
+    const auto row = getLiveRowBounds();
+    const float width = getLiveBlockWidth();
+    const bool geometryChanged = row != liveLayoutRow || width != liveLayoutBlockWidth ||
+                                 phoneSafeAreaInsets != liveLayoutInsets;
+    if (geometryChanged) {
+      resetTouchWaveformNavigation();
+      suspendLiveFollow();
+      snapLiveScrollOffset();
+    }
+    liveLayoutRow = row;
+    liveLayoutInsets = phoneSafeAreaInsets;
+    liveLayoutBlockWidth = width;
+    refreshLiveSectionActions();
+    return;
+  }
+  for (auto &action : liveSectionActions) action->setVisible(false);
+  livePointerActive = false;
+  if (touchWaveformNavigationActive) resetTouchWaveformNavigation();
   rebuildCueMarkers();
   invalidateWaveformRenderCaches();
   const auto localBounds = getLocalBounds().toFloat();
@@ -2441,7 +2606,649 @@ void WaveformBar::resized() {
   }
 }
 
+void WaveformBar::visibilityChanged() {
+  if (!isShowing()) resetTouchWaveformNavigation();
+}
+
+void WaveformBar::enablementChanged() {
+  if (!isEnabled()) resetTouchWaveformNavigation();
+}
+
+bool WaveformBar::usesTouchWaveformNavigation() const {
+#if JUCE_IOS || JUCE_ANDROID
+  return true;
+#else
+  return minimalPhoneMode;
+#endif
+}
+
+void WaveformBar::setLiveMode(bool enabled) {
+  if (enabled && (isEditingArrangement() || sectionAutomationEditingPartId.isNotEmpty())) return;
+  if (liveMode == enabled) return;
+  resetTouchWaveformNavigation();
+  cancelDeferredPartJumpFromDoubleClick();
+  livePointerActive = false;
+  cueTooltipWindow->hideTip();
+  liveMode = enabled;
+  setTitle(enabled ? L10n::tr("Vista de secciones", "Section view") : L10n::tr("Vista de onda", "Waveform view"));
+  setWantsKeyboardFocus(!enabled);
+  liveFollowResumeMs = 0.0;
+  liveFollowPartId.clear();
+  liveFollowAnimating = false;
+  // Switching presentation never sends a transport command or changes follow.
+  resized();
+  liveFollowResumeMs = 0.0;
+  repaint();
+}
+
+juce::Rectangle<float> WaveformBar::getLiveRowBounds() const {
+  if (minimalPhoneMode)
+    return getLocalBounds().toFloat();
+  return phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat()
+      .reduced(4.0f, 2.0f);
+}
+
+juce::Rectangle<float> WaveformBar::getLiveSectionContentBounds(
+    juce::Rectangle<float> body) const {
+  return minimalPhoneMode
+      ? body.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
+      : body;
+}
+
+float WaveformBar::getLiveBlockWidth() const {
+  constexpr float gap = 12.0f;
+  // The visual surface reaches both phone edges. An edge card must still fit
+  // its three 44-point actions (140 points including gaps) beyond the cutout.
+  const float minimumWidth = minimalPhoneMode
+      ? juce::jmax(176.0f, 152.0f + static_cast<float>(
+            juce::jmax(phoneSafeAreaInsets.getLeft(), phoneSafeAreaInsets.getRight())))
+      : 176.0f;
+  const float width = juce::jmax(0.0f, getLiveRowBounds().getWidth());
+  const int slots = juce::jmax(1, static_cast<int>((width + gap) / (minimumWidth + gap)));
+  // Fill the visual viewport with whole cards; all cards retain the same width,
+  // independently of their musical duration.
+  return juce::jmax(minimumWidth, (width - gap * (slots - 1)) / slots);
+}
+
+float WaveformBar::getLiveBlockStride() const {
+  return getLiveBlockWidth() + 12.0f;
+}
+
+void WaveformBar::setLiveScrollOffset(float offset) {
+  const float stride = getLiveBlockStride();
+  const float content = arrangement.parts.empty() ? 0.0f
+      : static_cast<float>(arrangement.parts.size()) * stride - 12.0f;
+  liveScrollOffset = juce::jlimit(0.0f,
+      juce::jmax(0.0f, content - getLiveRowBounds().getWidth()), offset);
+  refreshLiveSectionActions(false);
+}
+
+void WaveformBar::snapLiveScrollOffset() {
+  liveScrollSnapDueMs = 0.0;
+  const float stride = getLiveBlockStride();
+  setLiveScrollOffset(std::round(liveScrollOffset / stride) * stride);
+}
+
+void WaveformBar::stopLiveScrollMotion() {
+  liveScrollCoasting = liveScrollSettling = false;
+  liveScrollVelocity = 0.0f;
+  liveScrollSnapDueMs = 0.0;
+}
+
+void WaveformBar::sampleLiveDrag(double eventMs) {
+  const double elapsed = eventMs - liveDragSampleMs;
+  if (elapsed > 0.0) {
+    const float velocity = juce::jlimit(-2400.0f, 2400.0f,
+        static_cast<float>((liveScrollOffset - liveDragSampleOffset) * 1000.0 / elapsed));
+    const float blend = static_cast<float>(1.0 - std::exp(-elapsed / 40.0));
+    liveScrollVelocity = elapsed > 100.0 ? velocity
+        : liveScrollVelocity + blend * (velocity - liveScrollVelocity);
+  }
+  liveDragSampleMs = eventMs;
+  liveDragSampleOffset = liveScrollOffset;
+}
+
+void WaveformBar::startLiveScrollMotion(double nowMs, double releaseEventMs, bool reducedMotion) {
+  liveScrollSnapDueMs = 0.0;
+  if (releaseEventMs - liveDragSampleMs > 80.0) liveScrollVelocity = 0.0f;
+  liveMotionTimeMs = nowMs;
+  liveScrollCoasting = !reducedMotion && std::abs(liveScrollVelocity) >= 35.0f;
+  liveScrollSettling = false;
+  if (!liveScrollCoasting) {
+    liveSettleFrom = liveScrollOffset;
+    snapLiveScrollOffset();
+    liveSettleTarget = liveScrollOffset;
+    if (!reducedMotion) setLiveScrollOffset(liveSettleFrom);
+    liveScrollSettling = !reducedMotion && std::abs(liveSettleTarget - liveSettleFrom) > 0.1f;
+  }
+  liveFollowResumeMs = nowMs + 3000.0;
+}
+
+void WaveformBar::updateLiveScrollMotion(double nowMs, bool reducedMotion) {
+  if (!liveScrollCoasting && !liveScrollSettling) return;
+  if (reducedMotion) {
+    stopLiveScrollMotion(); snapLiveScrollOffset();
+    liveFollowResumeMs = nowMs + 3000.0;
+    return;
+  }
+  if (liveScrollCoasting) {
+    // Integrate exponential friction analytically; dropped frames do not
+    // change the travel distance or turn a delayed callback into a jump.
+    const double seconds = juce::jmax(0.0, (nowMs - liveMotionTimeMs) / 1000.0);
+    const double untilStop = std::log(std::abs(liveScrollVelocity) / 35.0) / 6.0;
+    const double elapsed = juce::jmin(seconds, juce::jmax(0.0, untilStop));
+    const float decay = static_cast<float>(std::exp(-6.0 * elapsed));
+    const float wanted = liveScrollOffset + liveScrollVelocity * (1.0f - decay) / 6.0f;
+    setLiveScrollOffset(wanted);
+    liveScrollVelocity *= decay;
+    liveMotionTimeMs += elapsed * 1000.0;
+    if (seconds >= untilStop || std::abs(wanted - liveScrollOffset) > 0.01f) {
+      liveScrollCoasting = false; liveScrollVelocity = 0.0f;
+      liveSettleFrom = liveScrollOffset;
+      snapLiveScrollOffset(); liveSettleTarget = liveScrollOffset;
+      setLiveScrollOffset(liveSettleFrom);
+      liveScrollSettling = true;
+    }
+  }
+  if (liveScrollSettling) {
+    const float t = static_cast<float>(juce::jlimit(0.0, 1.0, (nowMs - liveMotionTimeMs) / 180.0));
+    setLiveScrollOffset(liveSettleFrom + (liveSettleTarget - liveSettleFrom) * t * t * (3.0f - 2.0f * t));
+    if (t >= 1.0f) liveScrollSettling = false;
+  }
+  liveFollowResumeMs = nowMs + 3000.0;
+}
+
+void WaveformBar::suspendLiveFollow() {
+  liveFollowResumeMs = juce::Time::getMillisecondCounterHiRes() + 3000.0;
+  liveFollowPartId.clear();
+  liveFollowAnimating = false;
+}
+
+void WaveformBar::updateLiveFollow(double nowMs) {
+  for (const auto &action : liveSectionActions)
+    if (action->isVisible()) {
+      const auto *handler = action->getAccessibilityHandler();
+      if (action->hasKeyboardFocus(false) || (handler && handler->hasFocus(false))) return;
+    }
+  if (livePointerActive || !phoneTouchPositions.empty() || liveScrollCoasting || liveScrollSettling || liveScrollSnapDueMs > 0.0 || nowMs < liveFollowResumeMs ||
+      songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+      !playingProvider || !playingProvider()) return;
+  int active = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+  if (!juce::isPositiveAndBelow(active, static_cast<int>(arrangement.parts.size()))) {
+    active = -1;
+    for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
+      if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
+  }
+  if (active < 0) { liveFollowAnimating = false; liveFollowPartId.clear(); return; }
+  const auto &id = arrangement.parts[static_cast<size_t>(active)].id;
+  if (id != liveFollowPartId) {
+    liveFollowPartId = id;
+    liveFollowFrom = liveScrollOffset;
+    // Clamp the first/last cards instead of exposing empty space at the edges.
+    setLiveScrollOffset(active * getLiveBlockStride() + getLiveBlockWidth() * 0.5f -
+                        getLiveRowBounds().getWidth() * 0.5f);
+    liveFollowTarget = liveScrollOffset;
+    setLiveScrollOffset(liveFollowFrom);
+    liveFollowAnimationStartMs = nowMs;
+    liveFollowAnimating = true;
+  }
+  if (!liveFollowAnimating) return;
+  const float t = liveBorderReducedMotion() ? 1.0f : static_cast<float>(juce::jlimit(0.0, 1.0,
+      (nowMs - liveFollowAnimationStartMs) / 280.0));
+  const float eased = t * t * (3.0f - 2.0f * t);
+  setLiveScrollOffset(liveFollowFrom + (liveFollowTarget - liveFollowFrom) * eased);
+  if (t >= 1.0f) liveFollowAnimating = false;
+}
+
+void WaveformBar::rebuildLiveSectionBounds() {
+  partOverlayBounds.clear();
+  sharedSectionOverflowBounds = {};
+  const auto row = getLiveRowBounds();
+  const float width = getLiveBlockWidth();
+  const float stride = getLiveBlockStride();
+  for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
+    PartOverlayBounds item;
+    item.partIndex = i;
+    item.body = {row.getX() + static_cast<float>(i) * stride - liveScrollOffset,
+                 row.getY(), width, row.getHeight()};
+    const auto content = getLiveSectionContentBounds(item.body);
+    if (content.getHeight() >= 56.0f && content.getWidth() >= 140.0f &&
+        !arrangement.parts[static_cast<size_t>(i)].skipPlayback) {
+      const float x = content.getCentreX() - 70.0f;
+      const float y = content.getBottom() - 44.0f;
+      item.jumpButton = {x, y, 44.0f, 44.0f};
+      item.loopButton = {x + 48.0f, y, 44.0f, 44.0f};
+      item.muteButton = {x + 96.0f, y, 44.0f, 44.0f};
+      item.showsJumpButton = item.showsLoopButton = item.showsMuteButton = true;
+    }
+    partOverlayBounds.push_back(item);
+  }
+}
+
+float WaveformBar::liveSectionProgress(int index) const {
+  if (!juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size())) || !positionProvider) return -1.0f;
+  const auto &part = arrangement.parts[static_cast<size_t>(index)];
+  const double position = positionProvider();
+  const bool finalEnd = index == static_cast<int>(arrangement.parts.size()) - 1 &&
+                        nearlyEqual(position, part.endSec);
+  if (part.skipPlayback || part.endSec <= part.startSec || position < part.startSec ||
+      (position >= part.endSec && !finalEnd)) return -1.0f;
+  return static_cast<float>(juce::jlimit(0.0, 1.0,
+      (position - part.startSec) / (part.endSec - part.startSec)));
+}
+
+juce::String WaveformBar::liveSectionState(int index) const {
+  const bool current = liveSectionProgress(index) >= 0.0f;
+  const bool playing = playingProvider && playingProvider();
+  juce::StringArray states;
+  if (current) states.add(playing ? L10n::tr("Sonando", "Playing") : L10n::tr("Pausada", "Paused"));
+  if (preparingArrangementPartProvider && preparingArrangementPartProvider() == index)
+    states.add(L10n::tr("Preparando", "Preparing"));
+  else if (pendingArrangementPartProvider && pendingArrangementPartProvider() == index)
+    states.add(L10n::tr("Salto programado", "Jump scheduled"));
+  if (activeArrangementLoopPartProvider && activeArrangementLoopPartProvider() == index)
+    states.add(current && playing ? "Loop" : L10n::tr("Loop armado", "Loop armed"));
+  return states.joinIntoString(" · ");
+}
+
+float WaveformBar::livePendingPulse(double nowMs, bool reducedMotion) {
+  return reducedMotion ? 0.5f : static_cast<float>(0.5 + 0.5 * std::sin(
+      nowMs * (juce::MathConstants<double>::twoPi / 1800.0)));
+}
+
+void WaveformBar::refreshLiveSectionActions(bool updateState) {
+  if (!liveMode) return;
+  const auto count = arrangement.parts.size() * 3;
+  bool rebuild = liveSectionActions.size() != count;
+  if (!rebuild)
+    for (size_t i = 0; i < arrangement.parts.size(); ++i)
+      if (liveSectionActions[i * 3]->partId != arrangement.parts[i].id) { rebuild = true; break; }
+  if (rebuild) {
+    liveSectionActions.clear();
+    for (const auto &part : arrangement.parts)
+      for (int action = 0; action < 3; ++action) {
+        auto button = std::make_unique<SectionActionButton>(*this, part.id, action);
+        addChildComponent(*button);
+        liveSectionActions.push_back(std::move(button));
+      }
+    updateState = true;
+  }
+  rebuildLiveSectionBounds();
+  const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+  for (size_t i = 0; i < arrangement.parts.size(); ++i) {
+    const auto &part = arrangement.parts[i];
+    const auto &item = partOverlayBounds[i];
+    juce::Rectangle<float> bounds[] = {item.jumpButton, item.loopButton, item.muteButton};
+    // Offscreen phone cards still expose their actions to a screen reader and
+    // keyboard. Focus reveals the full card before activation; pointer input
+    // continues to use only the parent's actually drawn hit targets.
+    if (bounds[0].isEmpty() && !part.skipPlayback && item.body.getHeight() >= 56.0f && item.body.getWidth() >= 140.0f)
+      for (int action = 0; action < 3; ++action)
+        bounds[action] = {item.body.getCentreX() - 70.0f + 48.0f * action, item.body.getBottom() - 44.0f, 44.0f, 44.0f};
+    for (int action = 0; action < 3; ++action) {
+      auto &button = *liveSectionActions[i * 3 + static_cast<size_t>(action)];
+      button.setBounds(bounds[action].toNearestInt());
+      button.setVisible(!bounds[action].isEmpty());
+      button.setEnabled(!songLoadingActive && songLoadingHideAfterMs <= 0.0 && !midiLearnActive && !part.skipPlayback);
+      if (!updateState) continue;
+      const auto name = juce::String(static_cast<int>(i) + 1) + ". " + arrangementPartDisplayLabelForName(part.name);
+      const auto title = (action == 0 ? L10n::tr("Ir a ", "Go to ") : action == 1 ? juce::String("Loop · ") : juce::String("Mute · ")) + name;
+      const bool marked = action == 1 ? loop == static_cast<int>(i) : action == 2 && part.muteInstruments;
+      auto state = liveSectionState(static_cast<int>(i));
+      if (action == 2) state += (state.isEmpty() ? "" : " · ") + (part.muteInstruments ? L10n::tr("Instrumentos silenciados", "Instruments muted") : L10n::tr("Instrumentos habilitados", "Instruments enabled"));
+      const bool waiting = (preparingArrangementPartProvider && preparingArrangementPartProvider() == static_cast<int>(i)) ||
+                           (pendingArrangementPartProvider && pendingArrangementPartProvider() == static_cast<int>(i));
+      const auto help = action == 0
+          ? (waiting ? L10n::tr("Cancelar el salto a esta sección", "Cancel the jump to this section")
+                     : (playingProvider && playingProvider()
+                          ? L10n::tr("Preparar salto a esta sección con la espera de reproducción existente", "Prepare a jump to this section using the existing playback wait")
+                          : L10n::tr("Ir al inicio de esta sección sin iniciar reproducción", "Go to this section start without starting playback")))
+          : action == 1 ? L10n::tr("Activar o quitar Loop; conserva la cancelación de salto existente", "Toggle Loop; preserves existing jump cancellation")
+                        : L10n::tr("Silenciar o habilitar instrumentos; el click continúa", "Mute or enable instruments; click continues");
+      const bool titleChanged = button.getTitle() != title;
+      const bool stateChanged = button.getDescription() != state || button.marked != marked;
+      if (titleChanged) button.setTitle(title);
+      if (stateChanged) { button.setDescription(state); button.marked = marked; }
+      button.setHelpText(help); button.setTooltip(help);
+      if (titleChanged || stateChanged)
+        if (auto *handler = button.getAccessibilityHandler()) {
+          if (titleChanged) handler->notifyAccessibilityEvent(juce::AccessibilityEvent::titleChanged);
+          if (stateChanged) handler->notifyAccessibilityEvent(juce::AccessibilityEvent::valueChanged);
+        }
+    }
+  }
+}
+
+void WaveformBar::revealLiveSectionAction(const juce::String &partId) {
+  if (!liveMode) return;
+  for (size_t i = 0; i < arrangement.parts.size(); ++i)
+    if (arrangement.parts[i].id == partId) {
+      stopLiveScrollMotion(); suspendLiveFollow();
+      const auto row = getLiveRowBounds();
+      const float x = row.getX() + static_cast<float>(i) * getLiveBlockStride() - liveScrollOffset;
+      if (x < row.getX() || x + getLiveBlockWidth() > row.getRight())
+        setLiveScrollOffset(static_cast<float>(i) * getLiveBlockStride() + getLiveBlockWidth() * 0.5f - row.getWidth() * 0.5f);
+      repaint(); return;
+    }
+}
+
+void WaveformBar::activateLiveSectionAction(const juce::String &partId, int action) {
+  if (!liveMode || !isEnabled() || songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive) return;
+  for (size_t i = 0; i < arrangement.parts.size(); ++i)
+    if (arrangement.parts[i].id == partId && !arrangement.parts[i].skipPlayback) {
+      if (action < 0 || action > 2 || liveSectionActions.size() <= i * 3 + static_cast<size_t>(action) ||
+          !liveSectionActions[i * 3 + static_cast<size_t>(action)]->isVisible()) return;
+      revealLiveSectionAction(partId);
+      PartHitResult hit; hit.partIndex = static_cast<int>(i);
+      hit.jumpButton = action == 0; hit.loopButton = action == 1; hit.muteButton = action == 2;
+      dispatchInlineSectionAction(hit);
+      refreshLiveSectionActions(); return;
+    }
+}
+
+bool WaveformBar::navigateLiveSectionAction(const juce::String &partId, int action, const juce::KeyPress &key) {
+  int partIndex = -1;
+  for (size_t i = 0; i < arrangement.parts.size(); ++i)
+    if (arrangement.parts[i].id == partId) { partIndex = static_cast<int>(i); break; }
+  if (!liveMode || partIndex < 0 || arrangement.parts.empty()) return false;
+  const int code = key.getKeyCode();
+  if (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) partIndex += code == juce::KeyPress::leftKey ? -1 : 1;
+  else if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) action += code == juce::KeyPress::upKey ? -1 : 1;
+  else if (code == juce::KeyPress::homeKey) partIndex = 0;
+  else if (code == juce::KeyPress::endKey) partIndex = static_cast<int>(arrangement.parts.size()) - 1;
+  else return false; // Tab remains ordinary focus traversal; arrows never activate.
+  partIndex = juce::jlimit(0, static_cast<int>(arrangement.parts.size()) - 1, partIndex);
+  action = juce::jlimit(0, 2, action);
+  const int direction = code == juce::KeyPress::leftKey || code == juce::KeyPress::endKey ? -1 : 1;
+  for (int candidate = partIndex; juce::isPositiveAndBelow(candidate, static_cast<int>(arrangement.parts.size())); candidate += direction) {
+    auto &button = liveSectionActions[static_cast<size_t>(candidate * 3 + action)];
+    if (button->isVisible() && button->isEnabled()) {
+      revealLiveSectionAction(button->partId); button->grabKeyboardFocus(); break;
+    }
+  }
+  return true;
+}
+
+WaveformBar::LiveTextLayout WaveformBar::getLiveTextLayout(const PartOverlayBounds &item) const {
+  LiveTextLayout layout;
+  // Text belongs to the complete section, not its visible viewport fragment.
+  // Reserve the existing action row even when edge clipping hides its buttons.
+  const auto content = item.body;
+  if (content.isEmpty()) return layout;
+  const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
+  const bool reservesActions = content.getHeight() >= 56.0f && content.getWidth() >= 140.0f && !part.skipPlayback;
+  const float actionsTop = reservesActions ? content.getBottom() - 44.0f : content.getBottom();
+  const float available = juce::jmax(0.0f, actionsTop - content.getY());
+  const float paddingY = juce::jmin(6.0f, available * 0.08f);
+  const float paddingX = juce::jmin(10.0f, content.getWidth() * 0.06f);
+  const bool showsState = available >= 48.0f;
+  layout.stateLines = available >= 88.0f ? 2 : 1;
+  const float stateHeight = showsState ? 18.0f * layout.stateLines : 0.0f;
+  const float titleHeight = juce::jmin(72.0f, juce::jmax(0.0f, available - paddingY * 2.0f - stateHeight));
+  layout.title = {content.getX() + paddingX, content.getY() + paddingY,
+                  juce::jmax(0.0f, content.getWidth() - paddingX * 2.0f), titleHeight};
+  if (showsState) layout.state = layout.title.withY(layout.title.getBottom()).withHeight(stateHeight);
+  const auto label = arrangementPartDisplayLabelForName(arrangement.parts[static_cast<size_t>(item.partIndex)].name);
+  const float maximum = juce::jlimit(12.0f, 30.0f, titleHeight * 0.70f);
+  layout.fontSize = juce::jmin(maximum, juce::jmax(9.0f, titleHeight));
+  const float measured = juce::GlyphArrangement::getStringWidth(makeAppFont(layout.fontSize, AppFontWeight::SemiBold), label);
+  layout.lines = titleHeight >= 34.0f && measured > layout.title.getWidth() ? 2 : 1;
+  const float minimum = juce::jmin(14.0f, juce::jmax(9.0f, titleHeight / layout.lines));
+  layout.fontSize = juce::jmin(layout.fontSize, titleHeight / layout.lines);
+  while (layout.fontSize > minimum && juce::GlyphArrangement::getStringWidth(
+      makeAppFont(layout.fontSize, AppFontWeight::SemiBold), label) > layout.title.getWidth() * layout.lines * 0.90f)
+    layout.fontSize = juce::jmax(minimum, layout.fontSize - 1.0f);
+  return layout;
+}
+
+void WaveformBar::drawLiveSections(juce::Graphics &g) {
+  drawStudioBackground(g, getLocalBounds().toFloat());
+  g.setColour(UITheme::textPrimary);
+  const auto row = getLiveRowBounds();
+  g.saveState();
+  g.reduceClipRegion(row.toNearestInt());
+  rebuildLiveSectionBounds();
+  const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+  const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+  const double sourceLength = getWaveformSourceLengthSeconds();
+  if (arrangement.parts.empty()) {
+    g.drawText(L10n::tr("Sin secciones", "No sections"), row.toNearestInt(), juce::Justification::centred);
+  }
+  for (const auto &item : partOverlayBounds) {
+    if (!item.body.intersects(row)) continue;
+    if (!g.clipRegionIntersects(item.body.toNearestInt())) continue;
+    const auto &part = arrangement.parts[static_cast<size_t>(item.partIndex)];
+    const auto colour = partColorOrFallback(part, item.partIndex);
+    const float progress = liveSectionProgress(item.partIndex);
+    // Original parts move on the arrangement when copies are inserted. Their
+    // audio remains at its original source time, including the final parts.
+    const auto source = part.sourcePartId.isEmpty()
+        ? getPartOriginalSourceRange(part, sourceLength)
+        : getPartSourceRange(part, sourceLength);
+    drawWaveformSegment(g, item.body, source.first, source.second, 0.42f);
+    g.setColour(colour.darker(0.20f).withAlpha(0.64f));
+    g.fillRect(item.body);
+    if (progress >= 0.0f) {
+      g.setColour(colour.brighter(0.30f).withAlpha(0.28f));
+      g.fillRect(item.body.withWidth(item.body.getWidth() * progress));
+      g.setColour(colour.brighter(0.5f));
+      g.fillRect(item.body.withHeight(2.0f));
+    }
+    if (part.muteInstruments) {
+      g.setColour(UITheme::appBg.withAlpha(0.60f));
+      g.fillRect(item.body);
+    }
+    if (pending == item.partIndex) {
+      const float pulse = livePendingPulse(juce::Time::getMillisecondCounterHiRes(), liveBorderReducedMotion());
+      g.setColour(colour.brighter(0.4f).withAlpha(0.10f + 0.12f * pulse));
+      g.fillRect(item.body);
+      g.setColour(colour.brighter(0.5f).withAlpha(0.45f + 0.30f * pulse));
+      g.drawRect(item.body.reduced(1.0f), 1.2f);
+    }
+    if (loop == item.partIndex) {
+      const auto border = item.body.reduced(3.0f);
+      g.setColour(colour.interpolatedWith(juce::Colours::white, 0.85f));
+      liveLoopBorder::segments(border, liveLoopBorder::phase(border,
+          juce::Time::getMillisecondCounterHiRes(), liveBorderReducedMotion()),
+          [&](juce::Line<float> line) { g.drawLine(line, 1.2f); });
+    }
+    const auto ink = colour.interpolatedWith(juce::Colours::white, 0.85f);
+    const auto text = getLiveTextLayout(item);
+    // Draw after all musical-state overlays so Mute never dims the name.
+    // A feathered scrim and shadow keep text legible over waveform and pulse.
+    const auto header = text.title.getUnion(text.state);
+    g.setGradientFill(juce::ColourGradient(juce::Colours::black.withAlpha(0.42f),
+        header.getCentreX(), header.getY(), juce::Colours::transparentBlack,
+        header.getCentreX(), header.getBottom() + 6.0f, false));
+    g.fillRect(header.expanded(4.0f, 0.0f).getIntersection(item.body.reduced(5.0f)));
+    const auto label = arrangementPartDisplayLabelForName(part.name);
+    g.setFont(makeAppFont(text.fontSize, AppFontWeight::SemiBold));
+    g.setColour(juce::Colours::black.withAlpha(0.85f));
+    g.drawFittedText(label, text.title.translated(0.0f, 1.0f).toNearestInt(), juce::Justification::centred, text.lines, 1.0f);
+    g.setColour(juce::Colours::white);
+    g.drawFittedText(label, text.title.toNearestInt(), juce::Justification::centred, text.lines, 1.0f);
+    if (!text.state.isEmpty()) {
+      g.setColour(juce::Colours::white.withAlpha(0.95f));
+      g.setFont(makeAppFont(text.stateFontSize, AppFontWeight::Medium));
+      g.drawFittedText(liveSectionState(item.partIndex), text.state.toNearestInt(), juce::Justification::centred,
+                      text.stateLines, 1.0f);
+    }
+    // One soft scrim keeps the flat action row ahead of waveform/progress.
+    // It reserves no extra height and adds no individual button boxes.
+    const auto footer = item.body.withTop(item.body.getBottom() - 44.0f);
+    g.setGradientFill(juce::ColourGradient(juce::Colours::transparentBlack, footer.getCentreX(), footer.getY() - 8.0f,
+        juce::Colours::black.withAlpha(0.28f), footer.getCentreX(), footer.getBottom(), false));
+    g.fillRect(footer.withTop(footer.getY() - 8.0f));
+    const auto action = [&](juce::Rectangle<float> target, SvgIconName icon,
+                            const juce::String &label, bool marked) {
+      if (target.isEmpty()) return;
+      const auto iconBounds = target.withHeight(23.0f).withSizeKeepingCentre(20.0f, 20.0f);
+      drawSvgIcon(g, iconBounds, icon, ink);
+      g.setColour(ink);
+      g.setFont(makeAppFont(13.0f, marked ? AppFontWeight::Bold : AppFontWeight::Medium));
+      g.drawFittedText(label, target.withTrimmedTop(23.0f).toNearestInt(), juce::Justification::centredTop, 1, 1.0f);
+      if (marked) g.fillRect(target.getCentreX() - 9.0f, target.getBottom() - 3.0f, 18.0f, 2.0f);
+    };
+    action(item.jumpButton, SvgIconName::CornerDownRight, L10n::tr("Ir", "Go"), pending == item.partIndex);
+    action(item.loopButton, SvgIconName::Repeat, "Loop", loop == item.partIndex);
+    action(item.muteButton, SvgIconName::VolumeX, "Mute", part.muteInstruments);
+  }
+  g.restoreState();
+}
+
+void WaveformBar::resetTouchWaveformNavigation() {
+  stopLiveScrollMotion();
+  liveSuppressNativeMomentum = false;
+  livePointerActive = false;
+  liveScrollSnapDueMs = 0.0;
+  touchWaveformNavigationActive = false;
+  touchWaveformTapCancelled = false;
+  touchWaveformPrimarySource = -1;
+  touchWaveformDownHit = {};
+  touchWaveformDownPartId.clear();
+  phoneTouchPositions.clear();
+  phonePinchActive = false;
+  viewportDragMoved = false;
+  phonePanInertiaActive = false;
+  phonePanVelocity = 0.0f;
+  dragMode = DragMode::none;
+}
+
+bool WaveformBar::dispatchInlineSectionAction(const PartHitResult &hit) {
+  if (!liveMode) return false;
+  if (hit.overflowButton) {
+    if (hit.partIndex == -2) {
+      showInlineSectionMenu(-2, sharedSectionOverflowBounds);
+      return true;
+    }
+    for (const auto &overlay : partOverlayBounds) {
+      if (overlay.partIndex == hit.partIndex) {
+        showInlineSectionMenu(hit.partIndex, overlay.overflowButton);
+        return true;
+      }
+    }
+    return true;
+  }
+    if (juce::isPositiveAndBelow(hit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        hit.loopButton) {
+      setSingleSelectedPart(hit.partIndex);
+      playbackControlFocusPartIndex = hit.partIndex;
+      playbackControlFocus = PlaybackControlFocus::Loop;
+      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
+      cancelDeferredPartJumpFromDoubleClick();
+      if (onArrangementPartLoopToggleRequest)
+        onArrangementPartLoopToggleRequest(hit.partIndex);
+      repaint();
+      return true;
+    }
+
+    if (juce::isPositiveAndBelow(hit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        hit.jumpButton) {
+      setSingleSelectedPart(hit.partIndex);
+      playbackControlFocusPartIndex = hit.partIndex;
+      playbackControlFocus = PlaybackControlFocus::Jump;
+      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
+      cancelDeferredPartJumpFromDoubleClick();
+      if (onArrangementPartJumpRequest != nullptr)
+        onArrangementPartJumpRequest(hit.partIndex);
+      repaint();
+      return true;
+    }
+
+    if (juce::isPositiveAndBelow(hit.partIndex,
+                                 static_cast<int>(arrangement.parts.size())) &&
+        hit.muteButton) {
+      playbackControlFocusPartIndex = hit.partIndex;
+      playbackControlFocus = PlaybackControlFocus::Mute;
+      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
+      toggleArrangementPartMute(hit.partIndex);
+      return true;
+    }
+
+  return false;
+}
+
+void WaveformBar::showInlineSectionMenu(int partIndex, juce::Rectangle<float> anchor) {
+  if (!liveMode) return;
+  if (partIndex != -2 && !juce::isPositiveAndBelow(partIndex, static_cast<int>(arrangement.parts.size()))) return;
+  struct MenuAction { int menuId; juce::String partId; int action; };
+  std::vector<MenuAction> actions;
+  juce::PopupMenu menu;
+  const auto addActions = [&](juce::PopupMenu &target, int index) {
+    const auto &part = arrangement.parts[static_cast<size_t>(index)];
+    const int firstId = static_cast<int>(actions.size()) + 1;
+    target.addItem(firstId, L10n::tr("Ir a la sección", "Go to section"));
+    target.addItem(firstId + 1, "Loop", true,
+                   activeArrangementLoopPartProvider && activeArrangementLoopPartProvider() == index);
+    target.addItem(firstId + 2, L10n::tr("Silenciar instrumentos", "Mute instruments"), true, part.muteInstruments);
+    for (int action = 1; action <= 3; ++action)
+      actions.push_back({firstId + action - 1, part.id, action});
+  };
+  if (partIndex == -2) {
+    menu.addSectionHeader(L10n::tr("Secciones", "Sections"));
+    for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
+      if (arrangement.parts[static_cast<size_t>(i)].skipPlayback) continue;
+      juce::PopupMenu sectionMenu;
+      addActions(sectionMenu, i);
+      menu.addSubMenu(juce::String(i + 1) + ". " + arrangementPartDisplayLabelForName(
+          arrangement.parts[static_cast<size_t>(i)].name), sectionMenu);
+    }
+  } else {
+    menu.addSectionHeader(arrangementPartDisplayLabelForName(arrangement.parts[static_cast<size_t>(partIndex)].name));
+    addActions(menu, partIndex);
+  }
+  const auto safe = juce::Component::SafePointer<WaveformBar>(this);
+  menu.showMenuAsync(makeTouchPopupMenuOptions(this)
+                        .withTargetScreenArea(localAreaToGlobal(anchor.toNearestInt())),
+      [safe, actions = std::move(actions)](int result) {
+        if (safe == nullptr || result <= 0 || safe->songLoadingActive || safe->midiLearnActive ||
+            safe->sectionAutomationEditingPartId.isNotEmpty() || safe->isEditingArrangement()) return;
+        for (const auto &action : actions) {
+          if (action.menuId != result) continue;
+          for (int i = 0; i < static_cast<int>(safe->arrangement.parts.size()); ++i) {
+            if (safe->arrangement.parts[static_cast<size_t>(i)].id != action.partId) continue;
+            PartHitResult hit;
+            hit.partIndex = i;
+            hit.jumpButton = action.action == 1;
+            hit.loopButton = action.action == 2;
+            hit.muteButton = action.action == 3;
+            safe->dispatchInlineSectionAction(hit);
+            return;
+          }
+        }
+      });
+}
+
 void WaveformBar::mouseDown(const juce::MouseEvent &event) {
+  if (liveMode) {
+    liveSuppressNativeMomentum = true;
+    const bool stoppedMotion = liveScrollCoasting || liveScrollSettling;
+    stopLiveScrollMotion();
+    suspendLiveFollow();
+    if (livePointerActive) {
+      phoneTouchPositions[event.source.getIndex()] = event.position;
+      livePointerMoved = true;
+      return;
+    }
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+        event.mods.isPopupMenu() || !getLiveRowBounds().contains(event.position)) return;
+    rebuildLiveSectionBounds();
+    phoneTouchPositions[event.source.getIndex()] = event.position;
+    livePointerActive = true;
+    livePointerMoved = stoppedMotion; // A stopping tap never dispatches a moving control.
+    liveDragSampleMs = static_cast<double>(event.eventTime.toMilliseconds());
+    liveDragSampleOffset = liveScrollOffset;
+    livePointerSource = event.source.getIndex();
+    liveScrollSnapDueMs = 0.0;
+    livePointerStart = event.position;
+    livePointerStartOffset = liveScrollOffset;
+    liveDownHit = hitTestArrangementPart(event.position);
+    liveDownPartId = juce::isPositiveAndBelow(liveDownHit.partIndex, static_cast<int>(arrangement.parts.size()))
+        ? arrangement.parts[static_cast<size_t>(liveDownHit.partIndex)].id : juce::String{};
+    return;
+  }
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
   // Buttons and their background consume the gesture. Navigation can still
   // move the viewport without changing the fixed section or its arrangement.
@@ -2449,34 +3256,60 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
-  if (minimalPhoneMode && (!isEditingArrangement() || automationEditing) && event.source.isTouch()) {
-    const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
-    const auto mainWaveBodyBounds = getMainWaveBodyBounds(mainWaveBounds);
-    if (mainWaveBodyBounds.contains(event.position)) {
+  const bool mobilePointer = usesTouchWaveformNavigation() &&
+                             (event.source.isTouch() || minimalPhoneMode);
+  if (mobilePointer && (!isEditingArrangement() || automationEditing) &&
+      !event.mods.isPopupMenu()) {
+    const auto wave = getMainWaveBounds(getLocalBounds().toFloat());
+    const auto body = getMainWaveBodyBounds(wave);
+    const auto ruler = getSeekRulerBounds(wave);
+    if (touchWaveformNavigationActive || body.contains(event.position) ||
+        ruler.contains(event.position)) {
       phoneTouchPositions[event.source.getIndex()] = event.position;
-      if (phoneTouchPositions.size() >= 2) {
-        auto first = phoneTouchPositions.begin();
-        const auto firstPosition = first->second;
-        const auto secondPosition = std::next(first)->second;
-        const auto midpoint = (firstPosition + secondPosition) * 0.5f;
-        phonePinchStartDistance = juce::jmax(
-            1.0f, firstPosition.getDistanceFrom(secondPosition));
-        phonePinchStartViewportSpan = viewportSpan;
-        phonePinchAnchorRatio = juce::jlimit(
-            0.0f, 1.0f,
-            (midpoint.x - mainWaveBodyBounds.getX()) /
-                juce::jmax(1.0f, mainWaveBodyBounds.getWidth()));
-        phonePinchAnchorSource =
-            viewportStart + (phonePinchAnchorRatio * phonePinchStartViewportSpan);
-        phonePinchActive = true;
-        viewportDragMoved = true;
-        dragMode = DragMode::none;
-        followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
-                                 kFollowSuspendAfterManualViewportMs;
+      phonePanInertiaActive = false;
+      phonePanVelocity = 0.0f;
+      if (touchWaveformNavigationActive) {
+        touchWaveformTapCancelled = true;
+        if (phoneTouchPositions.size() >= 2 && !phonePinchActive) {
+          auto first = phoneTouchPositions.begin();
+          const auto a = first->second;
+          const auto b = std::next(first)->second;
+          phonePinchStartDistance = juce::jmax(1.0f, a.getDistanceFrom(b));
+          phonePinchStartViewportSpan = viewportSpan;
+          phonePinchAnchorRatio = juce::jlimit(0.0f, 1.0f,
+              ((a.x + b.x) * 0.5f - body.getX()) / juce::jmax(1.0f, body.getWidth()));
+          phonePinchAnchorSource = viewportStart + phonePinchAnchorRatio * viewportSpan;
+          phonePinchActive = true;
+        }
         return;
       }
+      touchWaveformNavigationActive = true;
+      touchWaveformTapCancelled = false;
+      touchWaveformPrimarySource = event.source.getIndex();
+      touchWaveformStartedOnRuler = ruler.contains(event.position);
+      touchWaveformDownHit = {};
+      touchWaveformDownPartId.clear();
+      if (!touchWaveformStartedOnRuler && !automationEditing) {
+        rebuildPartOverlayBounds(body);
+        touchWaveformDownHit = hitTestArrangementPart(event.position);
+        if (juce::isPositiveAndBelow(touchWaveformDownHit.partIndex,
+                                    static_cast<int>(arrangement.parts.size())))
+          touchWaveformDownPartId = arrangement.parts[static_cast<size_t>(touchWaveformDownHit.partIndex)].id;
+      }
+      viewportDragStartPosition = event.position;
+      phonePanLastNormalized = event.position.x / juce::jmax(1.0f, body.getWidth());
+      phonePanLastTimestampMs = juce::Time::getMillisecondCounterHiRes();
+      viewportDragMoved = false;
+      dragViewportStart = viewportStart;
+      dragViewportSpan = viewportSpan;
+      dragMode = DragMode::panViewport;
+      cancelDeferredPartJumpFromDoubleClick();
+      followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                               kFollowSuspendAfterManualViewportMs;
+      return;
     }
   }
+
 
   dragMode = DragMode::none;
   activeDragPartId.clear();
@@ -2573,31 +3406,6 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
   if (!mainWaveBounds.contains(event.position))
     return;
 
-  // Phones do not expose the desktop minimap. Pan the visible waveform
-  // directly with one finger instead, while preserving the arrange editor's
-  // section manipulation gestures.
-  if (minimalPhoneMode && (!isEditingArrangement() || automationEditing) &&
-      mainWaveBodyBounds.contains(event.position) && !event.mods.isPopupMenu()) {
-    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
-                             kFollowSuspendAfterManualViewportMs;
-    dragMode = DragMode::panViewport;
-    dragViewportStart = viewportStart;
-    dragViewportSpan = viewportSpan;
-    dragAnchorNormalized = juce::jlimit(
-        0.0f, 1.0f,
-        (event.position.x - mainWaveBodyBounds.getX()) /
-            juce::jmax(1.0f, mainWaveBodyBounds.getWidth()));
-    phonePanInertiaActive = false;
-    phonePanVelocity = 0.0f;
-    phonePanLastNormalized = dragAnchorNormalized;
-    phonePanLastTimestampMs = juce::Time::getMillisecondCounterHiRes();
-    viewportDragStartPosition = event.position;
-    viewportDragMoved = false;
-    phoneTouchPositions[event.source.getIndex()] = event.position;
-    setMouseCursor(juce::MouseCursor::DraggingHandCursor);
-    return;
-  }
-
   if (automationEditing) return;
 
   if (isEditingArrangement() && timelineViewMode == TimelineViewMode::TempoMap &&
@@ -2648,61 +3456,7 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
         setSectionAutomationState(partId);
       return;
     }
-    const auto clearMuteForJumpSelection = [this](const int partIndex) {
-      if (!juce::isPositiveAndBelow(partIndex,
-                                    static_cast<int>(arrangement.parts.size())))
-        return;
-
-      auto &part = arrangement.parts[static_cast<size_t>(partIndex)];
-      if (!part.muteInstruments)
-        return;
-
-      pushArrangementUndoSnapshot();
-      part.muteInstruments = false;
-      customArrangement = true;
-      notifyArrangementChanged(true);
-    };
-
-    if (juce::isPositiveAndBelow(actionHit.partIndex,
-                                 static_cast<int>(arrangement.parts.size())) &&
-        actionHit.loopButton) {
-      setSingleSelectedPart(actionHit.partIndex);
-      playbackControlFocusPartIndex = actionHit.partIndex;
-      playbackControlFocus = PlaybackControlFocus::Loop;
-      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      cancelDeferredPartJumpFromDoubleClick();
-      if (onArrangementPartLoopToggleRequest)
-        onArrangementPartLoopToggleRequest(actionHit.partIndex);
-      repaint();
-      return;
-    }
-
-    if (juce::isPositiveAndBelow(actionHit.partIndex,
-                                 static_cast<int>(arrangement.parts.size())) &&
-        actionHit.jumpButton) {
-      setSingleSelectedPart(actionHit.partIndex);
-      playbackControlFocusPartIndex = actionHit.partIndex;
-      playbackControlFocus = PlaybackControlFocus::Jump;
-      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      cancelDeferredPartJumpFromDoubleClick();
-      clearMuteForJumpSelection(actionHit.partIndex);
-      if (onArrangementPartJumpRequest != nullptr)
-        onArrangementPartJumpRequest(actionHit.partIndex);
-      repaint();
-      return;
-    }
-
-    if (juce::isPositiveAndBelow(actionHit.partIndex,
-                                 static_cast<int>(arrangement.parts.size())) &&
-        actionHit.muteButton) {
-      playbackControlFocusPartIndex = actionHit.partIndex;
-      playbackControlFocus = PlaybackControlFocus::Mute;
-      playbackControlFocusChangedAtMs = juce::Time::getMillisecondCounterHiRes();
-      if (onArrangementPendingJumpClearRequest != nullptr)
-        onArrangementPendingJumpClearRequest();
-      toggleArrangementPartMute(actionHit.partIndex);
-      return;
-    }
+    if (dispatchInlineSectionAction(actionHit)) return;
 
     if (isEditingArrangement() &&
         juce::isPositiveAndBelow(actionHit.partIndex,
@@ -2815,6 +3569,56 @@ void WaveformBar::mouseDown(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
+  if (liveMode) {
+    suspendLiveFollow();
+    if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
+    livePointerMoved = livePointerMoved || touchWaveformNavigation::crossedTapSlop(
+        livePointerStart.x, livePointerStart.y, event.position.x, event.position.y);
+    if (livePointerMoved) {
+      setLiveScrollOffset(livePointerStartOffset + livePointerStart.x - event.position.x);
+      sampleLiveDrag(static_cast<double>(event.eventTime.toMilliseconds()));
+      repaint();
+    }
+    return;
+  }
+  if (touchWaveformNavigationActive) {
+    const auto found = phoneTouchPositions.find(event.source.getIndex());
+    if (found == phoneTouchPositions.end()) return;
+    found->second = event.position;
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive) {
+      touchWaveformTapCancelled = true;
+      return;
+    }
+    const auto wave = getMainWaveBounds(getLocalBounds().toFloat());
+    const auto body = getMainWaveBodyBounds(wave);
+    if (phonePinchActive && phoneTouchPositions.size() >= 2) {
+      auto first = phoneTouchPositions.begin();
+      const float distance = juce::jmax(1.0f,
+          first->second.getDistanceFrom(std::next(first)->second));
+      const float span = juce::jlimit(kMinViewportSpan, 1.0f,
+          phonePinchStartViewportSpan * phonePinchStartDistance / distance);
+      setVisibleWindow(phonePinchAnchorSource - phonePinchAnchorRatio * span, span);
+    } else if (!touchWaveformTapCancelled &&
+               event.source.getIndex() == touchWaveformPrimarySource) {
+      if (touchWaveformNavigation::crossedTapSlop(viewportDragStartPosition.x,
+          viewportDragStartPosition.y, event.position.x, event.position.y))
+        viewportDragMoved = true;
+      if (viewportDragMoved) {
+        const float delta = (event.position.x - viewportDragStartPosition.x) /
+                            juce::jmax(1.0f, body.getWidth());
+        setVisibleWindow(dragViewportStart - delta * dragViewportSpan, dragViewportSpan);
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        const float normalized = event.position.x / juce::jmax(1.0f, body.getWidth());
+        const float dt = static_cast<float>(juce::jlimit(0.001, 0.1, (now - phonePanLastTimestampMs) * 0.001));
+        phonePanVelocity = phonePanVelocity * 0.65f - (normalized - phonePanLastNormalized) / dt * 0.35f;
+        phonePanLastNormalized = normalized;
+        phonePanLastTimestampMs = now;
+      }
+    }
+    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
+                             kFollowSuspendAfterManualViewportMs;
+    return;
+  }
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
@@ -2827,27 +3631,6 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
   const auto miniMapBounds = getMiniMapBounds(bounds);
   const auto seekBounds =
       mainWaveBodyBounds.getWidth() > 2.0f ? mainWaveBodyBounds : mainWaveBounds;
-
-  if (minimalPhoneMode && phonePinchActive && event.source.isTouch()) {
-    phoneTouchPositions[event.source.getIndex()] = event.position;
-    if (phoneTouchPositions.size() < 2)
-      return;
-
-    auto first = phoneTouchPositions.begin();
-    const auto firstPosition = first->second;
-    const auto secondPosition = std::next(first)->second;
-    const float currentDistance = juce::jmax(
-        1.0f, firstPosition.getDistanceFrom(secondPosition));
-    const float factor = currentDistance / phonePinchStartDistance;
-    const float nextSpan = juce::jlimit(
-        kMinViewportSpan, 1.0f, phonePinchStartViewportSpan / factor);
-    setVisibleWindow(phonePinchAnchorSource -
-                         (phonePinchAnchorRatio * nextSpan),
-                     nextSpan);
-    followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
-                             kFollowSuspendAfterManualViewportMs;
-    return;
-  }
 
   if (dragMode == DragMode::moveCue) {
     if (!isEditingArrangement() || activeDragCueId.isEmpty() ||
@@ -2879,9 +3662,7 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
     else
       setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
 
-    const bool directWaveformPan = minimalPhoneMode &&
-                                   miniMapBounds.getWidth() <= 2.0f;
-    const auto panBounds = directWaveformPan ? mainWaveBodyBounds : miniMapBounds;
+    const auto panBounds = miniMapBounds;
     if (panBounds.getWidth() <= 2.0f)
       return;
 
@@ -2891,29 +3672,8 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
             juce::jmax(1.0f, panBounds.getWidth()));
 
     if (dragMode == DragMode::panViewport) {
-      if (directWaveformPan &&
-          event.position.getDistanceFrom(viewportDragStartPosition) >=
-              kTouchPanSlopPx)
-        viewportDragMoved = true;
       const float delta = normalized - dragAnchorNormalized;
-      // Direct manipulation moves the waveform one-to-one with the finger.
-      // Convert the screen ratio into the currently visible source span; using
-      // the full timeline here would make a zoomed waveform race ahead.
-      const float viewportDelta = directWaveformPan
-                                      ? -(delta * dragViewportSpan)
-                                      : delta;
-      setVisibleWindow(dragViewportStart + viewportDelta, dragViewportSpan);
-      if (directWaveformPan) {
-        const double nowMs = juce::Time::getMillisecondCounterHiRes();
-        const float dt = static_cast<float>(juce::jlimit(
-            0.001, 0.1, (nowMs - phonePanLastTimestampMs) * 0.001));
-        const float sampleVelocity = -(normalized - phonePanLastNormalized) /
-                                     dt;
-        phonePanVelocity = (phonePanVelocity * 0.65f) +
-                           (sampleVelocity * 0.35f);
-        phonePanLastNormalized = normalized;
-        phonePanLastTimestampMs = nowMs;
-      }
+      setVisibleWindow(dragViewportStart + delta, dragViewportSpan);
       return;
     }
 
@@ -3383,24 +4143,98 @@ void WaveformBar::mouseDrag(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseUp(const juce::MouseEvent &event) {
+  if (liveMode) {
+    suspendLiveFollow();
+    phoneTouchPositions.erase(event.source.getIndex());
+    if (!livePointerActive || event.source.getIndex() != livePointerSource) return;
+    livePointerActive = false;
+    if (livePointerMoved) {
+      if (!phoneTouchPositions.empty() || !touchWaveformNavigation::crossedTapSlop(
+          livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) {
+        repaint(); return;
+      }
+      startLiveScrollMotion(juce::Time::getMillisecondCounterHiRes(),
+          static_cast<double>(event.eventTime.toMilliseconds()), liveBorderReducedMotion());
+      repaint();
+      return;
+    }
+    if (songLoadingActive || songLoadingHideAfterMs > 0.0 || midiLearnActive ||
+        !getLiveRowBounds().contains(event.position) ||
+        touchWaveformNavigation::crossedTapSlop(livePointerStart.x, livePointerStart.y, event.position.x, event.position.y)) {
+      snapLiveScrollOffset();
+      repaint();
+      return;
+    }
+    rebuildLiveSectionBounds();
+    const auto hit = hitTestArrangementPart(event.position);
+    // A valid tap keeps its row stationary, including fractional centering.
+    // Only an actual pan release or settled wheel input snaps whole cards.
+    repaint();
+    if (juce::isPositiveAndBelow(hit.partIndex, static_cast<int>(arrangement.parts.size())) &&
+        arrangement.parts[static_cast<size_t>(hit.partIndex)].id == liveDownPartId &&
+        hit.jumpButton == liveDownHit.jumpButton && hit.loopButton == liveDownHit.loopButton &&
+        hit.muteButton == liveDownHit.muteButton)
+      dispatchInlineSectionAction(hit);
+    return;
+  }
+  if (touchWaveformNavigationActive) {
+    if (phoneTouchPositions.find(event.source.getIndex()) == phoneTouchPositions.end()) return;
+    const auto wave = getMainWaveBounds(getLocalBounds().toFloat());
+    const auto body = getMainWaveBodyBounds(wave);
+    const auto tapBounds = touchWaveformStartedOnRuler ? getSeekRulerBounds(wave) : body;
+    const bool validTap = touchWaveformNavigation::isValidTap({
+        touchWaveformTapCancelled, viewportDragMoved, phonePinchActive,
+        phoneTouchPositions.size(), touchWaveformPrimarySource, event.source.getIndex(),
+        !touchWaveformNavigation::crossedTapSlop(viewportDragStartPosition.x,
+            viewportDragStartPosition.y, event.position.x, event.position.y),
+        tapBounds.contains(event.position),
+        !songLoadingActive && songLoadingHideAfterMs <= 0.0 && !midiLearnActive &&
+        sectionAutomationEditingPartId.isEmpty() && !isEditingArrangement()});
+    const bool continuePhoneInertia = minimalPhoneMode && viewportDragMoved &&
+        !touchWaveformTapCancelled && !phonePinchActive && phoneTouchPositions.size() == 1 &&
+        event.source.isTouch() && event.source.getIndex() == touchWaveformPrimarySource &&
+        !songLoadingActive && !midiLearnActive &&
+        juce::Time::getMillisecondCounterHiRes() - phonePanLastTimestampMs < 100.0;
+    const float releaseVelocity = phonePanVelocity;
+    const auto downHit = touchWaveformDownHit;
+    const auto downPartId = touchWaveformDownPartId;
+    phoneTouchPositions.erase(event.source.getIndex());
+    if (!phoneTouchPositions.empty()) {
+      touchWaveformTapCancelled = true;
+      phonePinchActive = false;
+      return;
+    }
+    resetTouchWaveformNavigation();
+    if (continuePhoneInertia && std::abs(releaseVelocity) > 0.01f) {
+      phonePanVelocity = releaseVelocity;
+      phonePanInertiaActive = true;
+    }
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+    if (!validTap) return;
+    rebuildPartOverlayBounds(body);
+    const auto upHit = hitTestArrangementPart(event.position);
+    const auto isAction = [](const PartHitResult &hit) {
+      return hit.loopButton || hit.jumpButton || hit.muteButton || hit.overflowButton;
+    };
+    if (isAction(downHit)) {
+      const bool samePart = (downHit.partIndex == -2 && upHit.partIndex == -2) ||
+          (juce::isPositiveAndBelow(upHit.partIndex, static_cast<int>(arrangement.parts.size())) &&
+           arrangement.parts[static_cast<size_t>(upHit.partIndex)].id == downPartId);
+      if (samePart && downHit.loopButton == upHit.loopButton &&
+          downHit.jumpButton == upHit.jumpButton && downHit.muteButton == upHit.muteButton &&
+          downHit.overflowButton == upHit.overflowButton)
+        dispatchInlineSectionAction(upHit);
+      return;
+    }
+    // A release over a button cannot turn a background tap into an action or seek.
+    if (!isAction(upHit)) handleSeek(event.position.x, tapBounds);
+    return;
+  }
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
   if (midiLearnActive)
     return;
-
-  if (minimalPhoneMode && event.source.isTouch()) {
-    const bool wasPhonePinch = phonePinchActive;
-    phoneTouchPositions.erase(event.source.getIndex());
-    if (wasPhonePinch) {
-      if (phoneTouchPositions.size() < 2)
-        phonePinchActive = false;
-      dragMode = DragMode::none;
-      viewportDragMoved = false;
-      setMouseCursor(juce::MouseCursor::NormalCursor);
-      return;
-    }
-  }
 
   if (dragMode == DragMode::moveCue) {
     dragMode = DragMode::none; activeDragCueId.clear();
@@ -3425,12 +4259,6 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
       dragMode == DragMode::resizeTempoRegionLeft ||
       dragMode == DragMode::resizeTempoRegionRight;
   const bool wasSelectionDrag = dragMode == DragMode::selectParts;
-  const bool wasPhoneWaveformTap =
-      minimalPhoneMode && dragMode == DragMode::panViewport &&
-      !viewportDragMoved && sectionAutomationEditingPartId.isEmpty();
-  const bool wasPhonePanDrag =
-      minimalPhoneMode && dragMode == DragMode::panViewport &&
-      viewportDragMoved && event.source.isTouch();
   dragMode = DragMode::none;
   activeDragPartId.clear();
   dragPartOrigins.clear();
@@ -3439,13 +4267,6 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
   dragAnchorEdgeIsStart = true;
   dragAnchoredBoundarySec = 0.0;
   viewportDragMoved = false;
-  if (wasPhonePanDrag && std::abs(phonePanVelocity) > 0.01f)
-    phonePanInertiaActive = true;
-  if (wasPhoneWaveformTap) {
-    const auto mainWaveBounds = getMainWaveBounds(getLocalBounds().toFloat());
-    const auto seekBounds = getMainWaveBodyBounds(mainWaveBounds);
-    handleSeek(event.position.x, seekBounds);
-  }
   if (wasArrangementDrag && arrangementDragPendingCommit) {
     if (hasArrangementDragUndoSnapshot)
       pushArrangementUndoSnapshot(arrangementDragUndoSnapshot);
@@ -3470,6 +4291,7 @@ void WaveformBar::mouseUp(const juce::MouseEvent &event) {
 }
 
 void WaveformBar::mouseMove(const juce::MouseEvent &event) {
+  if (liveMode) return;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0) {
     setMouseCursor(juce::MouseCursor::NormalCursor);
     return;
@@ -3632,6 +4454,9 @@ void WaveformBar::mouseExit(const juce::MouseEvent &) {
 }
 
 void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
+  if (liveMode) return;
+  if (usesTouchWaveformNavigation() && (event.source.isTouch() || minimalPhoneMode) &&
+      !isEditingArrangement()) return;
   if (sectionAutomationEditingPartId.isNotEmpty())
     return;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
@@ -3678,6 +4503,7 @@ void WaveformBar::mouseDoubleClick(const juce::MouseEvent &event) {
 }
 
 bool WaveformBar::keyPressed(const juce::KeyPress &key) {
+  if (liveMode) return false;
   if (sectionAutomationEditingPartId.isNotEmpty()) {
     if (key == juce::KeyPress::escapeKey) {
       if (onSectionAutomationFinish &&
@@ -3740,6 +4566,27 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
 
 void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                                  const juce::MouseWheelDetails &wheel) {
+  if (liveMode) {
+    if (!songLoadingActive && !midiLearnActive && getLiveRowBounds().contains(event.position)) {
+      if (wheel.isInertial && (liveSuppressNativeMomentum || livePointerActive)) return;
+      if (!wheel.isInertial) liveSuppressNativeMomentum = false;
+      stopLiveScrollMotion(); // OS smooth/inertial events already contain their own tail.
+      suspendLiveFollow();
+      livePointerMoved = true;
+      const float delta = wheel.deltaX != 0.0f ? wheel.deltaX : wheel.deltaY;
+      if (wheel.isSmooth || wheel.isInertial) {
+        setLiveScrollOffset(liveScrollOffset - delta * getLiveBlockStride());
+        liveScrollSnapDueMs = juce::Time::getMillisecondCounterHiRes() + 150.0;
+      } else if (delta != 0.0f) {
+        // Discrete wheel ticks must not snap back to the same card just
+        // because the OS reports a small fractional wheel delta.
+        setLiveScrollOffset(liveScrollOffset + (delta < 0.0f ? 1.0f : -1.0f) * getLiveBlockStride());
+        snapLiveScrollOffset();
+      }
+      repaint();
+    }
+    return;
+  }
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
@@ -3789,6 +4636,8 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
                                float magnifyAmount) {
+  if (liveMode) { stopLiveScrollMotion(); suspendLiveFollow(); livePointerMoved = true; return; }
+  if (touchWaveformNavigationActive) touchWaveformTapCancelled = true;
   if (songLoadingActive || songLoadingHideAfterMs > 0.0)
     return;
 
@@ -3821,6 +4670,61 @@ void WaveformBar::timerCallback() {
   if (sectionAutomationEditingPartProvider)
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
+  if (liveMode) {
+    const float previousOffset = liveScrollOffset;
+    if (!livePointerActive && liveScrollSnapDueMs > 0.0 && nowMs >= liveScrollSnapDueMs) {
+      liveScrollVelocity = 0.0f;
+      startLiveScrollMotion(nowMs, liveDragSampleMs, liveBorderReducedMotion());
+    }
+    updateLiveScrollMotion(nowMs, liveBorderReducedMotion());
+    if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
+      clearSongLoadingState();
+    updateLiveFollow(nowMs);
+    updateActiveTempoRegionFromTransport();
+    int active = -1;
+    for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
+      if (liveSectionProgress(i) >= 0.0f) { active = i; break; }
+    const float progress = active >= 0 ? liveSectionProgress(active) : -1.0f;
+    const bool reducedMotion = liveBorderReducedMotion();
+    const bool playing = playingProvider && playingProvider();
+    const int preparing = preparingArrangementPartProvider ? preparingArrangementPartProvider() : -1;
+    const int pending = pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
+    const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
+    const auto boundsFor = [&](int index) {
+      const auto row = getLiveRowBounds();
+      return juce::Rectangle<float>(row.getX() + index * getLiveBlockStride() - liveScrollOffset,
+                                   row.getY(), getLiveBlockWidth(), row.getHeight()).toNearestInt();
+    };
+    if (previousOffset != liveScrollOffset) {
+      repaint();
+    } else {
+      if (active != livePaintActive || progress != livePaintProgress || playing != livePaintPlaying)
+        for (const int index : {livePaintActive, active})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      if (preparing != livePaintPreparing)
+        for (const int index : {livePaintPreparing, preparing})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      if (pending != livePaintPending || !reducedMotion || reducedMotion != livePaintReducedMotion)
+        for (const int index : {livePaintPending, pending})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      if (loop != livePaintLoop) {
+        for (const int index : {livePaintLoop, loop})
+          if (juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) repaint(boundsFor(index));
+      } else if (juce::isPositiveAndBelow(loop, static_cast<int>(arrangement.parts.size())) &&
+                 (!reducedMotion || reducedMotion != livePaintReducedMotion)) {
+        const auto border = boundsFor(loop);
+        repaint(border.withHeight(6));
+        repaint(border.withTop(border.getBottom() - 6));
+        repaint(border.withWidth(6));
+        repaint(border.withLeft(border.getRight() - 6));
+      }
+    }
+    livePaintActive = active; livePaintPreparing = preparing; livePaintPending = pending; livePaintLoop = loop;
+    livePaintProgress = progress; livePaintReducedMotion = reducedMotion;
+    livePaintPlaying = playing;
+    refreshLiveSectionActions();
+    return;
+  }
   if (cueTooltipHideAtMs > 0.0 && nowMs >= cueTooltipHideAtMs) {
     cueTooltipWindow->hideTip(); cueTooltipHideAtMs = 0.0;
   }
@@ -3936,6 +4840,7 @@ void WaveformBar::timerCallback() {
 }
 
 void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
+  if (liveMode) return;
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
 #if JUCE_ANDROID
   if (isPlayingNow != androidWasPlaying) {
@@ -4991,7 +5896,7 @@ WaveformBar::getMainWaveBounds(const juce::Rectangle<float> &bounds) const {
     area = area.withTrimmedTop(kEditToolbarHeight + kEditToolbarBottomGap);
   // Phones use the full waveform height; the minimap/navigation strip is
   // deliberately omitted to preserve room for the mixer.
-  if (!minimalPhoneMode)
+  if (!usesTouchWaveformNavigation())
     area = area.withTrimmedBottom(kMiniMapHeight + kMiniMapGap);
   return area;
 }
@@ -5025,7 +5930,7 @@ juce::Rectangle<float> WaveformBar::getMainWaveBodyBounds(
 
 juce::Rectangle<float>
 WaveformBar::getMiniMapBounds(const juce::Rectangle<float> &bounds) const {
-  if (minimalPhoneMode)
+  if (usesTouchWaveformNavigation())
     return {};
 
   auto area = bounds.reduced(8.0f, 6.0f);
@@ -5303,6 +6208,12 @@ bool WaveformBar::mapArrangementSecondsToSourceSeconds(
 
 WaveformBar::PartHitResult
 WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
+  if (!sharedSectionOverflowBounds.isEmpty() && sharedSectionOverflowBounds.contains(pos)) {
+    PartHitResult hit;
+    hit.partIndex = -2; // Shared menu for sections narrower than one touch target.
+    hit.overflowButton = true;
+    return hit;
+  }
   for (int i = static_cast<int>(partOverlayBounds.size()) - 1; i >= 0; --i) {
     const auto &bounds = partOverlayBounds[static_cast<size_t>(i)];
     if (!bounds.body.contains(pos) && !bounds.editToolbar.contains(pos))
@@ -5310,6 +6221,8 @@ WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
 
     PartHitResult hit;
     hit.partIndex = bounds.partIndex;
+    hit.overflowButton = bounds.showsOverflowButton && bounds.overflowButton.contains(pos);
+    if (hit.overflowButton) return hit;
     hit.automateButton = bounds.showsAutomateButton && bounds.automateButton.contains(pos);
     if (hit.automateButton) return hit;
     hit.deleteButton = bounds.showsDeleteButton && bounds.deleteButton.contains(pos);
@@ -5329,8 +6242,8 @@ WaveformBar::hitTestArrangementPart(const juce::Point<float> pos) const {
       return hit;
     if (!bounds.body.contains(pos))
       return {};
-    hit.leftEdge = bounds.leftHandle.contains(pos);
-    hit.rightEdge = bounds.rightHandle.contains(pos);
+    hit.leftEdge = isEditingArrangement() && bounds.leftHandle.contains(pos);
+    hit.rightEdge = isEditingArrangement() && bounds.rightHandle.contains(pos);
     if (hit.leftEdge || hit.rightEdge)
       return hit;
     hit.loopButton = bounds.showsLoopButton && bounds.loopButton.contains(pos);
@@ -5386,6 +6299,7 @@ WaveformBar::hitTestTempoRegion(const juce::Point<float> pos) const {
 void WaveformBar::rebuildPartOverlayBounds(
     const juce::Rectangle<float> &mainWaveBounds) {
   partOverlayBounds.clear();
+  sharedSectionOverflowBounds = {};
 
   if (arrangement.parts.empty())
     return;
@@ -5400,11 +6314,6 @@ void WaveformBar::rebuildPartOverlayBounds(
 
   const auto window = getVisibleWindow();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
-  const int activeLoopPartIndex =
-      activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
-  const int pendingJumpPartIndex =
-      pendingArrangementPartProvider ? pendingArrangementPartProvider() : -1;
-  bool playbackFocusStillActive = false;
   for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i) {
     const auto &part = arrangement.parts[static_cast<size_t>(i)];
     const float startRatio =
@@ -5461,112 +6370,8 @@ void WaveformBar::rebuildPartOverlayBounds(
     overlay.showsJumpButton = false;
     overlay.showsDuplicateButton = false;
 
-    constexpr float actionHitSize = 28.0f;
-    constexpr float actionIconSize = 18.0f;
-    constexpr float actionGap = 8.0f;
     const bool editingNow = isEditingArrangement();
-    if (!editingNow && !automationEditing) {
-      const auto actionBounds = minimalPhoneMode
-          ? body.getIntersection(
-                phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
-          : body;
-      constexpr int actionCount = 3;
-      const float horizontalW =
-          (actionHitSize * static_cast<float>(actionCount)) +
-          (actionGap * static_cast<float>(actionCount - 1));
-      const float verticalH =
-          (actionHitSize * static_cast<float>(actionCount)) +
-          (actionGap * static_cast<float>(actionCount - 1));
-      const bool horizontal =
-          actionBounds.getWidth() >= (horizontalW + 8.0f) &&
-          actionBounds.getHeight() >= (actionHitSize + 8.0f);
-      const bool vertical =
-          !horizontal && actionBounds.getWidth() >= (actionHitSize + 8.0f) &&
-          actionBounds.getHeight() >= (verticalH + 8.0f);
-      if (!part.skipPlayback && (horizontal || vertical)) {
-        overlay.showsMuteButton = true;
-        overlay.showsLoopButton = true;
-        overlay.showsJumpButton = true;
-        if (horizontal) {
-          const float y = actionBounds.getCentreY() - (actionHitSize * 0.5f);
-          float x = actionBounds.getCentreX() - (horizontalW * 0.5f);
-          overlay.muteButton = {x, y, actionHitSize, actionHitSize};
-          x += actionHitSize + actionGap;
-          overlay.loopButton = {x, y, actionHitSize, actionHitSize};
-          x += actionHitSize + actionGap;
-          overlay.jumpButton = {x, y, actionHitSize, actionHitSize};
-        } else {
-          const float x = actionBounds.getCentreX() - (actionHitSize * 0.5f);
-          float y = actionBounds.getCentreY() - (verticalH * 0.5f);
-          overlay.muteButton = {x, y, actionHitSize, actionHitSize};
-          y += actionHitSize + actionGap;
-          overlay.loopButton = {x, y, actionHitSize, actionHitSize};
-          y += actionHitSize + actionGap;
-          overlay.jumpButton = {x, y, actionHitSize, actionHitSize};
-        }
-
-        std::array<juce::Rectangle<float>, 3> normalButtons = {
-            overlay.muteButton, overlay.loopButton, overlay.jumpButton};
-        std::array<juce::Rectangle<float>, 3> targetButtons = normalButtons;
-        PlaybackControlFocus activeFocus = PlaybackControlFocus::None;
-        if (i == activeLoopPartIndex)
-          activeFocus = PlaybackControlFocus::Loop;
-        else if (i == pendingJumpPartIndex)
-          activeFocus = PlaybackControlFocus::Jump;
-        else if (part.muteInstruments)
-          activeFocus = PlaybackControlFocus::Mute;
-
-        if (activeFocus != PlaybackControlFocus::None) {
-          if (i == playbackControlFocusPartIndex &&
-              activeFocus == playbackControlFocus)
-            playbackFocusStillActive = true;
-
-          const int focusIndex =
-              activeFocus == PlaybackControlFocus::Mute ? 0
-              : activeFocus == PlaybackControlFocus::Loop ? 1
-                                                          : 2;
-          const std::array<int, 3> order =
-              focusIndex == 0 ? std::array<int, 3>{1, 0, 2}
-              : focusIndex == 1 ? std::array<int, 3>{0, 1, 2}
-                                : std::array<int, 3>{0, 2, 1};
-          for (int slot = 0; slot < 3; ++slot) {
-            targetButtons[static_cast<size_t>(order[static_cast<size_t>(slot)])] =
-                normalButtons[static_cast<size_t>(slot)];
-          }
-
-          double progress = 1.0;
-          if (i == playbackControlFocusPartIndex &&
-              activeFocus == playbackControlFocus) {
-            const double elapsedMs =
-                juce::Time::getMillisecondCounterHiRes() -
-                playbackControlFocusChangedAtMs;
-            progress = juce::jlimit(0.0, 1.0, elapsedMs / 220.0);
-            progress = 1.0 - std::pow(1.0 - progress, 3.0);
-          }
-
-          const auto interpolateRect =
-              [progress](const juce::Rectangle<float> &from,
-                         const juce::Rectangle<float> &to) {
-                return juce::Rectangle<float>(
-                    static_cast<float>(from.getX() +
-                                       ((to.getX() - from.getX()) * progress)),
-                    static_cast<float>(from.getY() +
-                                       ((to.getY() - from.getY()) * progress)),
-                    from.getWidth(), from.getHeight());
-              };
-          overlay.muteButton = interpolateRect(normalButtons[0], targetButtons[0]);
-          overlay.loopButton = interpolateRect(normalButtons[1], targetButtons[1]);
-          overlay.jumpButton = interpolateRect(normalButtons[2], targetButtons[2]);
-        }
-
-        overlay.muteIcon =
-            overlay.muteButton.withSizeKeepingCentre(14.0f, 14.0f);
-        overlay.loopIcon =
-            overlay.loopButton.withSizeKeepingCentre(actionIconSize, actionIconSize);
-        overlay.jumpIcon =
-            overlay.jumpButton.withSizeKeepingCentre(actionIconSize, actionIconSize);
-      }
-    } else if (!automationEditing) {
+    if (editingNow && !automationEditing) {
       constexpr float editButtonSize = 24.0f;
       constexpr float editButtonGap = 4.0f;
       constexpr float editToolbarPadX = 5.0f;
@@ -5651,11 +6456,7 @@ void WaveformBar::rebuildPartOverlayBounds(
     partOverlayBounds.push_back(overlay);
   }
 
-  if (!playbackFocusStillActive) {
-    playbackControlFocusPartIndex = -1;
-    playbackControlFocus = PlaybackControlFocus::None;
-    playbackControlFocusChangedAtMs = 0.0;
-  }
+
 }
 
 void WaveformBar::drawWaveform(juce::Graphics &g,
@@ -6216,7 +7017,8 @@ void WaveformBar::drawCachedMiniMapWaveform(
 void WaveformBar::drawWaveformSegment(juce::Graphics &g,
                                       const juce::Rectangle<float> &bounds,
                                       const double sourceStartSec,
-                                      const double sourceEndSec) const {
+                                      const double sourceEndSec,
+                                      const float waveformAlpha) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
   if (waveformBins.size() < 2)
@@ -6230,7 +7032,7 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
   const float ampScale = bounds.getHeight() * 0.495f;
   const int widthPixels = juce::jmax(2, static_cast<int>(bounds.getWidth()));
 
-  g.setColour(juce::Colours::white.withAlpha(0.16f));
+  g.setColour(juce::Colours::white.withAlpha(waveformAlpha * (2.0f / 9.0f)));
   const float centerDashes[] = {2.0f, 4.0f};
   g.drawDashedLine({bounds.getX(), midY, bounds.getRight(), midY},
                    centerDashes, 2, 1.0f);
@@ -6250,7 +7052,7 @@ void WaveformBar::drawWaveformSegment(juce::Graphics &g,
     const float lineHalf = juce::jmax(1.2f, amp * ampScale);
     const float xPos = bounds.getX() + static_cast<float>(x);
 
-    g.setColour(juce::Colours::white.withAlpha(0.72f));
+    g.setColour(juce::Colours::white.withAlpha(waveformAlpha));
     g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
   }
 }
@@ -6523,66 +7325,43 @@ void WaveformBar::drawArrangementOverlay(
 
     }
 
-    const bool showsSectionActions = sectionAutomationEditingPartId.isEmpty() &&
-                                    hoveredActionPartIndex == overlay.partIndex;
-    const auto drawMuteTextButton =
-        [&g](const juce::Rectangle<float> &button, const bool hovered,
-             const bool active, const juce::Colour activeColour) {
-          const auto bubbleColour =
-              active ? activeColour.withAlpha(hovered ? 0.90f : 0.70f)
-                     : juce::Colours::black.withAlpha(hovered ? 0.30f : 0.18f);
-          g.setColour(juce::Colours::black.withAlpha(hovered ? 0.18f : 0.10f));
-          g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
-          g.setColour(bubbleColour);
-          g.fillEllipse(button.reduced(hovered ? 4.0f : 5.0f));
-          g.setColour(juce::Colours::white.withAlpha((hovered || active) ? 0.96f
-                                                                         : 0.64f));
-          g.setFont(makeAppFont(11.4f, AppFontWeight::Bold));
-          g.drawText("M", button.toNearestInt(), juce::Justification::centred,
-                     false);
-        };
-    if ((showsSectionActions || part.muteInstruments) &&
-        overlay.showsMuteButton && !editing) {
-      drawMuteTextButton(overlay.muteButton,
-                         hoveredMutePartIndex == overlay.partIndex,
-                         part.muteInstruments, UITheme::accent);
-    }
-
-    if ((showsSectionActions || loopActive) && overlay.showsLoopButton) {
-      const bool loopHovered = hoveredLoopPartIndex == overlay.partIndex;
-      const auto button = overlay.loopButton;
-      const auto icon = overlay.loopIcon.withSizeKeepingCentre(
-          overlay.loopIcon.getWidth() + (loopHovered ? 1.5f : 0.0f),
-          overlay.loopIcon.getHeight() + (loopHovered ? 1.5f : 0.0f));
-      const auto bubbleColour =
-          loopActive ? sectionColour.withAlpha(loopHovered ? 0.94f : 0.72f)
-                     : juce::Colours::black.withAlpha(loopHovered ? 0.30f : 0.18f);
-      const float iconAlpha = loopHovered || loopActive ? 0.96f : 0.58f;
-
-      g.setColour(juce::Colours::black.withAlpha(loopHovered ? 0.18f : 0.10f));
-      g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
-      g.setColour(bubbleColour);
-      g.fillEllipse(button.reduced(loopHovered ? 4.0f : 5.0f));
-      drawSvgIcon(g, icon, SvgIconName::Repeat,
-                  juce::Colours::white.withAlpha(iconAlpha));
-    }
-
-    if (showsSectionActions && overlay.showsJumpButton) {
-      const bool jumpHovered = hoveredJumpPartIndex == overlay.partIndex;
-      const auto button = overlay.jumpButton;
-      const auto icon = overlay.jumpIcon.withSizeKeepingCentre(
-          overlay.jumpIcon.getWidth() + (jumpHovered ? 1.5f : 0.0f),
-          overlay.jumpIcon.getHeight() + (jumpHovered ? 1.5f : 0.0f));
-      const auto bubbleColour =
-          jumpHovered ? sectionColour.withAlpha(0.58f)
-                      : juce::Colours::black.withAlpha(0.18f);
-
-      g.setColour(juce::Colours::black.withAlpha(jumpHovered ? 0.18f : 0.10f));
-      g.fillEllipse(button.reduced(1.0f).translated(0.0f, 1.0f));
-      g.setColour(bubbleColour);
-      g.fillEllipse(button.reduced(jumpHovered ? 4.0f : 5.0f));
-      drawSvgIcon(g, icon, SvgIconName::CornerDownRight,
-                  juce::Colours::white.withAlpha(jumpHovered ? 0.96f : 0.58f));
+    // The persistent controls belong to the waveform, not a floating toolbar.
+    if (usesTouchWaveformNavigation() && !editing && sectionAutomationEditingPartId.isEmpty()) {
+      const auto controls = overlay.body.withTrimmedTop(juce::jmax(0.0f, overlay.body.getHeight() - 56.0f));
+      g.setGradientFill(juce::ColourGradient(
+          sectionColour.darker(0.75f).withAlpha(0.0f), controls.getCentreX(), controls.getY(),
+          sectionColour.darker(0.75f).withAlpha(0.88f), controls.getCentreX(), controls.getBottom(), false));
+      g.fillRect(controls);
+      const auto drawInline = [&](juce::Rectangle<float> button,
+                                  juce::Rectangle<float> icon, SvgIconName iconName,
+                                  const juce::String &label, bool active, bool hovered) {
+        auto ink = sectionColour.interpolatedWith(juce::Colours::white, active ? 0.90f : 0.75f);
+        if (hovered) ink = ink.brighter(0.15f);
+        if (iconName == SvgIconName::CornerDownRight) {
+          g.setColour(ink);
+          g.drawArrow({icon.getX() + 2.0f, icon.getCentreY(), icon.getRight() - 2.0f, icon.getCentreY()},
+                      1.8f, 6.0f, 5.0f);
+        } else {
+          drawSvgIcon(g, icon, iconName, ink);
+        }
+        g.setColour(ink);
+        g.setFont(makeAppFont(10.5f, active ? AppFontWeight::Bold : AppFontWeight::Medium));
+        g.drawFittedText(label, button.withTrimmedTop(25.0f).toNearestInt(), juce::Justification::centredTop, 1);
+        if (active) g.fillRect(button.getCentreX() - 8.0f, button.getBottom() - 2.0f, 16.0f, 1.5f);
+      };
+      if (overlay.showsJumpButton)
+        drawInline(overlay.jumpButton, overlay.jumpIcon, SvgIconName::CornerDownRight,
+                   (preparingArrangementPartProvider && preparingArrangementPartProvider() == overlay.partIndex) ? L10n::tr("Preparando", "Preparing") : L10n::tr("Ir", "Go"), pendingJump, hoveredJumpPartIndex == overlay.partIndex);
+      if (overlay.showsLoopButton)
+        drawInline(overlay.loopButton, overlay.loopIcon, SvgIconName::Repeat,
+                   "Loop", loopActive, hoveredLoopPartIndex == overlay.partIndex);
+      if (overlay.showsMuteButton)
+        drawInline(overlay.muteButton, overlay.muteIcon, SvgIconName::VolumeX,
+                   "Mute", part.muteInstruments, hoveredMutePartIndex == overlay.partIndex);
+      if (overlay.showsOverflowButton)
+        drawSvgIcon(g, overlay.overflowButton.withSizeKeepingCentre(22.0f, 22.0f),
+                    SvgIconName::MoreHorizontal,
+                    sectionColour.interpolatedWith(juce::Colours::white, 0.8f));
     }
 
     if (part.skipPlayback && overlay.body.getWidth() >= 28.0f &&
@@ -6685,6 +7464,11 @@ void WaveformBar::drawArrangementOverlay(
     }
 
   }
+  if (!sharedSectionOverflowBounds.isEmpty()) {
+    drawSvgIcon(g, sharedSectionOverflowBounds.withSizeKeepingCentre(22.0f, 22.0f),
+                SvgIconName::MoreHorizontal, juce::Colours::white.withAlpha(0.94f));
+  }
+
 }
 
 void WaveformBar::drawTempoOverlay(

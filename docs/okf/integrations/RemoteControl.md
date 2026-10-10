@@ -224,6 +224,13 @@ un snapshot de secuencia posterior; un rechazo la descarta. Release,
 desconexión y cambio de canción también la limpian. La previsualización de
 modo normal no concede propiedad ni permite redirigir una escucha.
 
+El halo y el estado visual de enfoque usan los getters confirmados
+`getConfirmedPracticeListeningMode` y `getConfirmedPracticeListeningStem`:
+leen `practiceMode`/`practiceStemId` del snapshot, sin aplicar el preview.
+La máquina de gestos conserva los getters anteriores para recorrer niveles
+rápidamente. Una orden aún pendiente o rechazada nunca enciende el halo antes
+de que el servidor confirme el estado; desconectado se presenta modo normal.
+
 La escucha modifica el audio del servidor compartido. El último cliente que
 activa un modo se convierte en su propietario. La restauración explícita desde
 cualquier cliente es una intención nueva y se aplica a la mezcla compartida.
@@ -253,6 +260,50 @@ incluso si repite el mismo modo, revoca esa propiedad. Cambiar canción o el mod
 Local/Cliente/Servidor restaura la escucha temporal; cerrar Ensayo libera solo
 la escucha que aún pertenece a esa vista.
 Estos comandos no solicitan persistencia de mezcla ni de ajustes de canción.
+
+## Guía y metrónomo en Ensayo
+
+Los controles de acompañamiento leen estado confirmado del mismo
+`PlaybackSession`. Guía conserva la fuente seleccionada: cuando la fuente es
+dinámica sólo cambia `mix.mute` del destino `guide`; cuando es original cambia
+el mute de sus stems incluidos y realmente cargados. El mapeo cuenta únicamente
+stems incluidos, igual que el mixer. En remoto cada índice también necesita
+una fila de mezcla confirmada: que la metadata incluya un stem no prueba que
+el servidor haya podido cargarlo. No envía `guide.enabled`, que selecciona
+la fuente y no representa silencio. Una guía original con algún stem sin mute
+se muestra encendida; apagarla silencia todos sus stems de guía, sin cambiar
+instrumentos, click, Solo, niveles ni enfoque temporal.
+
+El snapshot añade dos booleanos en `ui`, publicados desde el processor:
+`isDynamicGuideEnabled` (fuente seleccionada) y `hasDynamicGuideAssets`
+(pack cargado). El cliente no deduce estos estados de `settings`, porque su
+caché/sidecar puede estar atrasado. Si el servidor no publica ambos campos
+booleanos, Guía queda deshabilitada y pide actualizar el servidor. También se
+deshabilita si no existen stems de guía original cargados o si la fuente
+dinámica seleccionada no tiene assets; nunca cambia de fuente como fallback.
+La consulta de assets ocurre en control/message thread, sin I/O ni cambios en
+el callback de audio.
+Guía dinámica también necesita su fila `guide` de mixer con `mute` booleano.
+Metrónomo requiere la fila `click` con `mute` booleano, sus dos flags UI
+booleanos y una máscara entera entre 0 y 7. Un snapshot incompleto o con tipos
+incorrectos deshabilita el control correspondiente con explicación; ningún
+campo faltante se interpreta como un bus desmuteado.
+
+Metrónomo controla exclusivamente Click Dyn, independiente del click original.
+ON habilita divisiones, desmutea el bus y habilita el motor. Preserva una máscara
+no vacía; si era cero, activa negras (`1`) para que ON tenga un pulso. OFF
+deshabilita el motor y conserva máscara, divisiones y mezcla. El estado ON
+requiere motor y divisiones habilitados, máscara no vacía y bus sin mute; no
+depende de estar reproduciendo ni del VU. Estos controles conservan los niveles,
+Solo y ruteo existentes, por lo que ON no garantiza señal audible cuando esos
+otros controles silencian la salida.
+
+La vista mantiene el estado confirmado mientras espera el cambio y evita
+duplicar pulsaciones pendientes. Confirma con el estado recibido, descarta la
+espera al cambiar canción, fuente, stems o conexión, y permite reintentar tras
+el timeout. Son ajustes normales de mezcla, con la persistencia existente del
+servidor/local; cerrar Ensayo no restaura guía ni metrónomo. No alteran el modo
+de enfoque ni su propiedad.
 
 ## Región A/B temporal de Ensayo
 

@@ -1,5 +1,6 @@
 #include "AppIdentity.h"
 #include "PluginEditor.h"
+#include "DevelopmentFeatures.h"
 #include "telemetry/Telemetry.h"
 #include "PluginEditorSupport.h"
 #include "SongLoadProbe.h"
@@ -17,6 +18,7 @@
 #include "data/SessionAuthLogger.h"
 #include "data/SessionPersistence.h"
 #include "data/SongData.h"
+#include "data/PracticeWaveform.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
@@ -31,6 +33,7 @@
 #include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
+#include "ui/panels/PracticeAccompaniment.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
 #include "ui/panels/TeamsPanel.h"
@@ -323,7 +326,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
-  localDemoSession = AppSettings::getLocalDemoSessionActive();
+  localDemoSession = DevelopmentFeatures::testLogin && AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
   const bool canFastBootFromSnapshot =
@@ -1395,6 +1398,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *waveformBarRaw = waveformBarImpl.get();
   waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
+  topBarRaw->setLiveModeControls(
+      [waveformBarRaw] { waveformBarRaw->setLiveMode(!waveformBarRaw->isLiveMode()); },
+      [waveformBarRaw] { return waveformBarRaw->isLiveMode(); },
+      [waveformBarRaw] { return waveformBarRaw->canToggleLiveMode(); });
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
@@ -1468,12 +1475,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       },
       [this] { return playbackSession.getSectionAutomationEditingPartId(); },
       [this] { return playbackSession.canEditSectionAutomation(); });
-  // The jump button now respects the active loop: the request is queued as a
-  // pending jump and the audio thread resolves whether it should escape the
-  // current loop (SectionScheduler::evaluate handles that precedence). Clearing
-  // the loop eagerly here would defeat the "loop on a section while
-  // pre-arranging a jump to the next one" workflow, and it also hides the
-  // pending-jump escape branch from the scheduler.
+  // Preparation preserves playback/Loop; confirmation queues the next valid boundary.
   waveformBarRaw->setOnArrangementPartJumpRequest(
       [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {
@@ -1487,6 +1489,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
     playbackSession.clearPendingArrangementPartJump();
   });
+  waveformBarRaw->setPreparingArrangementPartProvider(
+      [this] { return playbackSession.getPreparingArrangementPartJumpIndex(); });
   waveformBarRaw->setPendingArrangementPartProvider(
       [this] { return playbackSession.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
@@ -3733,6 +3737,113 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return playbackSession.hasLoadedSong() &&
            (!playbackSession.isRemote() || playbackSession.isConnected());
   };
+  const auto canControlAccompaniment = [this] {
+    return hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty() &&
+           !songLoadBusy && playbackSession.hasLoadedSong() &&
+           (!playbackSession.isRemote() || playbackSession.isConnected());
+  };
+  const auto accompanimentIdentity = [this] {
+    auto identity = playbackSession.isRemote() ? juce::String("remote")
+                                              : juce::String("local");
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    append(currentLoadedSong.id);
+    if (playbackSession.isRemote())
+      append(remoteSession.getSelectedServerName());
+    return identity;
+  };
+  const auto guideSelection = [this, canControlAccompaniment] {
+    playworship::practice::GuideSelection selection;
+    if (!canControlAccompaniment() || !playbackSession.hasGuideSourceState())
+      return selection;
+    selection.dynamic = playbackSession.isDynamicGuideEnabled();
+    if (selection.dynamic) {
+      selection.available = playbackSession.hasDynamicGuideAssets() &&
+                            playbackSession.hasConfirmedDynamicGuideMixState();
+    } else {
+      selection.stemIndices = playworship::practice::originalGuideStemIndices(
+          currentLoadedSong.stems, playbackSession.getLoadedStemCount(),
+          [](const ImportedStemData &stem) {
+            return stemPriorityForStripOrder(stem) == 1;
+          });
+      selection.stemIndices.erase(
+          std::remove_if(selection.stemIndices.begin(), selection.stemIndices.end(),
+                         [this](const int index) {
+                           return !playbackSession.hasConfirmedStemMixState(index);
+                         }),
+          selection.stemIndices.end());
+      selection.available = !selection.stemIndices.empty();
+    }
+    return selection;
+  };
+  sources.guideState = [this, canControlAccompaniment, accompanimentIdentity,
+                        guideSelection] {
+    PracticePanel::AccompanimentState state;
+    const auto selection = guideSelection();
+    state.identity = accompanimentIdentity() +
+        (playbackSession.hasGuideSourceState()
+             ? (playbackSession.isDynamicGuideEnabled() ? "|guide:dynamic"
+                                                        : "|guide:original")
+             : "|guide:unknown");
+    // Include the exact loaded targets so replacing/reordering guide stems
+    // cancels a pending request even if the song ID did not change.
+    int includedIndex = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include)
+        continue;
+      const int index = includedIndex++;
+      if (std::find(selection.stemIndices.begin(), selection.stemIndices.end(),
+                    index) == selection.stemIndices.end())
+        continue;
+      state.identity << '|' << index << ':' << stem.stemId.length() << ':'
+                     << stem.stemId;
+    }
+    state.available = selection.available;
+    state.enabled = playworship::practice::guideEnabled(playbackSession, selection);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!playbackSession.hasGuideSourceState())
+      state.unavailableReason = L10n::tr(
+          "Actualiza PlayWorship en el servidor para controlar la guía.",
+          "Update PlayWorship on the server to control the guide.");
+    else if (selection.dynamic && !playbackSession.hasConfirmedDynamicGuideMixState())
+      state.unavailableReason = L10n::tr("El estado de mezcla de la guía no está disponible.",
+                                         "The guide mixer state is unavailable.");
+    else if (!selection.available)
+      state.unavailableReason = selection.dynamic
+          ? L10n::tr("El paquete de guía dinámica no está cargado.",
+                     "The dynamic guide pack is not loaded.")
+          : L10n::tr("Esta canción no tiene una pista de guía original cargada.",
+                     "This song has no loaded original guide track.");
+    return state;
+  };
+  sources.setGuideEnabled = [this, guideSelection](const bool enabled) {
+    playworship::practice::setGuideEnabled(playbackSession, guideSelection(), enabled);
+  };
+  sources.metronomeState = [this, canControlAccompaniment, accompanimentIdentity] {
+    PracticePanel::AccompanimentState state;
+    state.identity = accompanimentIdentity() + "|metronome:dynamic";
+    state.available = canControlAccompaniment() &&
+                      playbackSession.hasConfirmedMetronomeState();
+    state.enabled = state.available &&
+                    playworship::practice::metronomeEnabled(playbackSession);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!state.available)
+      state.unavailableReason = L10n::tr("El estado del metrónomo no está disponible.",
+                                         "The metronome state is unavailable.");
+    return state;
+  };
+  sources.setMetronomeEnabled = [this, canControlAccompaniment](const bool enabled) {
+    if (!canControlAccompaniment() || !playbackSession.hasConfirmedMetronomeState())
+      return;
+    playworship::practice::setMetronomeEnabled(playbackSession, enabled);
+    if (!playbackSession.isRemote())
+      persistClickDynMetronomeEnabledForActiveSong(playbackSession.isMetronomeEnabled());
+  };
   sources.instruments = [this] {
     std::vector<PracticePanel::Instrument> result;
     if (!hasCurrentLoadedSong)
@@ -3753,6 +3864,29 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return result;
   };
   sources.isRemote = [this] { return playbackSession.isRemote(); };
+  sources.waveformRevision = [this] {
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong)
+      return juce::String{};
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    auto identity = juce::String::fromUTF8(
+        playworship::practice::waveformTimelineIdentity(timeline).c_str());
+    // Source metadata is in memory. Do not stat files from the panel's timer.
+    // The processor's source revision also invalidates same-path reloads.
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    for (const auto &stem : currentLoadedSong.stems) {
+      append(stem.stemId);
+      append(stem.storedPath);
+      append(stem.sourcePath);
+      append(juce::String(stem.include ? 1 : 0));
+      append(juce::String(stem.durationSec, 9));
+      append(juce::String(stem.sampleRate));
+      append(juce::String(stem.channels));
+    }
+    return identity;
+  };
   sources.listeningMode =
       [this] { return playbackSession.getPracticeListeningMode(); };
   sources.listeningInstrumentId = [this] {
@@ -3760,6 +3894,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
     int loadedIndex = 0;
     for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size();
          ++rawIndex) {
+      if (!currentLoadedSong.stems[rawIndex].include)
+        continue;
+      if (loadedIndex++ == target)
+        return juce::String(static_cast<int>(rawIndex));
+    }
+    return juce::String{};
+  };
+  sources.displayListeningMode =
+      [this] { return playbackSession.getConfirmedPracticeListeningMode(); };
+  sources.displayListeningInstrumentId = [this] {
+    const int target = playbackSession.getConfirmedPracticeListeningStem();
+    int loadedIndex = 0;
+    for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size(); ++rawIndex) {
       if (!currentLoadedSong.stems[rawIndex].include)
         continue;
       if (loadedIndex++ == target)
@@ -3830,12 +3977,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
       return;
     }
     const auto stem = currentLoadedSong.stems[static_cast<size_t>(index)];
-    const auto songLength = playbackSession.getSongLengthSeconds();
-    std::thread([stem, songLength, cancel,
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    std::thread([stem, timeline, cancel,
                  deliver = std::move(deliver)]() mutable {
-      auto bins = buildStemWaveformBins(
-          stem, songLength, kWaveformPreviewBinCount,
-          [cancel] { return cancel->load(std::memory_order_relaxed); });
+      const auto cancelled = [cancel] {
+        return cancel->load(std::memory_order_relaxed);
+      };
+      const auto sourceBins = buildStemWaveformBins(
+          stem, timeline.sourceLengthSeconds, kWaveformPreviewBinCount, cancelled);
+      // Copies are views of the same source peaks, not new audio files or
+      // independently normalised waves. Use the playback scheduler's map.
+      auto bins = playworship::practice::projectWaveformBins(
+          sourceBins, timeline, kWaveformPreviewBinCount, cancelled);
       if (cancel->load(std::memory_order_relaxed))
         return;
       juce::MessageManager::callAsync(
@@ -3853,6 +4007,11 @@ void MTControlsAudioProcessorEditor::showPractice() {
       if (safe != nullptr)
         safe->closePractice();
     });
+  };
+
+  sources.showHelp = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (safe != nullptr)
+      safe->showPracticeLearningGuide();
   };
 
   practiceOverlay = std::make_unique<PracticePanel>(std::move(sources));

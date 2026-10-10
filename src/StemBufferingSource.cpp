@@ -34,6 +34,8 @@ void StemBufferingSource::prepareToPlay(int samplesPerBlockExpected,
     isPrepared.store(true, std::memory_order_release);
     sampleRate = newSampleRate;
 
+    for (auto &entry : sectionEntries) { entry.position.store(-1); entry.frames.store(0); entry.audio.setSize(numberOfChannels, 0); }
+    sectionCacheBytes.store(0);
     source->prepareToPlay(samplesPerBlockExpected, newSampleRate);
     if (prefetchSource != nullptr)
       prefetchSource->prepareToPlay(samplesPerBlockExpected, newSampleRate);
@@ -102,6 +104,8 @@ void StemBufferingSource::releaseResources() {
       requestedBufferEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
   workerBufferEpoch = epoch;
   publishValidBufferRange(0, 0, epoch);
+  for (auto &entry : sectionEntries) { entry.position.store(-1); entry.frames.store(0); entry.audio.setSize(numberOfChannels, 0); }
+  sectionCacheBytes.store(0);
   buffer.setSize(numberOfChannels, 0);
   realtimeCacheFrames = 0;
   realtimeReadCache.setSize(numberOfChannels, 0);
@@ -130,7 +134,7 @@ void StemBufferingSource::getNextAudioBlock(
   const auto blockBufferEpoch =
       requestedBufferEpoch.load(std::memory_order_acquire);
   const auto blockPrefetchGeneration =
-      requestedPrefetchGeneration.load(std::memory_order_acquire);
+      publishedPrefetchGeneration.load(std::memory_order_acquire);
   const auto maximumPosition = std::numeric_limits<juce::int64>::max();
   const auto blockEnd = blockStart > maximumPosition - info.numSamples
       ? maximumPosition : blockStart + static_cast<juce::int64>(info.numSamples);
@@ -264,7 +268,7 @@ void StemBufferingSource::getNextAudioBlock(
             uncoveredStart, prefetchRange.getEnd());
       }
       if (!copySucceeded ||
-          requestedPrefetchGeneration.load(std::memory_order_acquire) !=
+          publishedPrefetchGeneration.load(std::memory_order_acquire) !=
               blockPrefetchGeneration) {
         for (int i = 0; i < copiedCount; ++i) {
           const auto range = copiedRanges[static_cast<size_t>(i)];
@@ -276,14 +280,20 @@ void StemBufferingSource::getNextAudioBlock(
     }
   }
 
+  // Entries are immutable while an audio reader owns a lease. They supply
+  // source audio only; automation, tempo and routing still run in the engine.
+  const bool primaryComplete = (mainRange.getStart() == 0 && mainRange.getEnd() >= info.numSamples) ||
+      (cachedRange.getStart() == 0 && cachedRange.getEnd() >= info.numSamples);
+  auto sectionRange = primaryComplete ? juce::Range<int>{} : copySectionEntry(info, blockStart, mainRange, cachedRange, prefetchRange);
+
   // A concurrent seek wins over every copy, including the private cache.
   if (cursorEpoch.load(std::memory_order_acquire) != blockCursorEpoch ||
       requestedBufferEpoch.load(std::memory_order_acquire) != blockBufferEpoch) {
     info.clearActiveBufferRegion();
-    cachedRange = mainRange = prefetchRange = {};
+    cachedRange = mainRange = prefetchRange = sectionRange = {};
   }
 
-  std::array<juce::Range<int>, 3> coveredRanges{cachedRange, mainRange, prefetchRange};
+  std::array<juce::Range<int>, 4> coveredRanges{cachedRange, mainRange, prefetchRange, sectionRange};
   std::sort(coveredRanges.begin(), coveredRanges.end(),
             [](auto left, auto right) { return left.getStart() < right.getStart(); });
   int coveredFrames = 0;
@@ -435,6 +445,8 @@ bool StemBufferingSource::isPrefetchReady(
     const juce::int64 position, const int minimumFrames) const noexcept {
   if (minimumFrames <= 0)
     return true;
+  if (sectionEntryReady(position, minimumFrames))
+    return true;
   if (prefetchSource == nullptr)
     return false;
   const int capacity =
@@ -572,14 +584,12 @@ juce::Range<int> StemBufferingSource::getValidPrefetchRange(
   if (numSamples <= 0)
     return {};
 
-  const auto requestedGeneration =
-      requestedPrefetchGeneration.load(std::memory_order_acquire);
   const auto snapshot = readPrefetchRangeSnapshot();
-  if (!snapshot.valid || snapshot.generation != requestedGeneration ||
-      requestedPrefetchGeneration.load(std::memory_order_acquire) !=
-          requestedGeneration) {
+  // Requests describe future work, not validity of already decoded source
+  // audio. The outgoing loop bank stays usable until a new bank is published.
+  if (!snapshot.valid || snapshot.generation == 0 ||
+      publishedPrefetchGeneration.load(std::memory_order_acquire) != snapshot.generation)
     return {};
-  }
 
   const auto maxPosition = std::numeric_limits<juce::int64>::max();
   const auto requestedEnd =
@@ -614,26 +624,28 @@ bool StemBufferingSource::readPendingPrefetch() {
   }
 
   workerPrefetchGeneration = generation;
-  publishPrefetchRange(0, 0, generation);
+  // A new request does not invalidate the outgoing bank. Keep it published
+  // while decoding, and retain a protected loop before replacing its samples.
   if (frames <= 0)
     return true;
 
-  // Prime the independent resampler before the published target. This avoids
-  // exposing the cold filter transient that follows flushBuffers() at a seek.
-  constexpr int prefetchPrerollFrames = 256;
-  const int preroll =
-      static_cast<int>(juce::jmin<juce::int64>(position,
-                                               prefetchPrerollFrames));
-  const auto warmupPosition = position - preroll;
-  prefetchSource->setNextReadPosition(warmupPosition);
-  readBuffer.setSize(numberOfChannels, juce::jmax(frames, preroll), false,
-                     false, true);
-  if (preroll > 0) {
-    juce::AudioSourceChannelInfo warmupInfo(&readBuffer, 0, preroll);
-    prefetchSource->getNextAudioBlock(warmupInfo);
+  // Save the outgoing loop bank before a preparing jump can replace it.
+  const auto previous = readPrefetchRangeSnapshot();
+  if (previous.valid && protectsEntry(previous.start, static_cast<int>(previous.end - previous.start))) {
+    retainSectionEntry(previous.start, prefetchBuffer, static_cast<int>(previous.end - previous.start));
+    if (!sectionEntryReady(previous.start, static_cast<int>(previous.end - previous.start))) {
+      workerPrefetchGeneration = generation - 1; // Retry after the main reader releases a cache lease.
+      return false;
+    }
   }
-  juce::AudioSourceChannelInfo info(&readBuffer, 0, frames);
-  prefetchSource->getNextAudioBlock(info);
+  if (!sectionEntryReady(position, frames))
+    decodePrefetch(position, frames);
+  else {
+    readBuffer.setSize(numberOfChannels, frames, false, false, true);
+    juce::AudioSourceChannelInfo cached(&readBuffer, 0, frames);
+    copySectionEntry(cached, position);
+  }
+  retainSectionEntry(position, readBuffer, frames);
 
   if (requestedPrefetchGeneration.load(std::memory_order_acquire) !=
       generation) {
@@ -654,16 +666,157 @@ bool StemBufferingSource::readPendingPrefetch() {
   return true;
 }
 
+void StemBufferingSource::decodePrefetch(juce::int64 position, int frames) {
+  // Prime the independent resampler before the published target. This avoids
+  // exposing the cold filter transient that follows flushBuffers() at a seek.
+  constexpr int prefetchPrerollFrames = 256;
+  const int preroll =
+      static_cast<int>(juce::jmin<juce::int64>(position,
+                                               prefetchPrerollFrames));
+  const auto warmupPosition = position - preroll;
+  prefetchSource->setNextReadPosition(warmupPosition);
+  readBuffer.setSize(numberOfChannels, juce::jmax(frames, preroll), false,
+                     false, true);
+  if (preroll > 0) {
+    juce::AudioSourceChannelInfo warmupInfo(&readBuffer, 0, preroll);
+    prefetchSource->getNextAudioBlock(warmupInfo);
+  }
+  juce::AudioSourceChannelInfo info(&readBuffer, 0, frames);
+  prefetchSource->getNextAudioBlock(info);
+
+}
+
+void StemBufferingSource::configureSectionEntries(const std::vector<juce::int64> &targets, int slots) {
+  const int count = juce::jmin(maxSectionTargets, static_cast<int>(targets.size()));
+  for (int i = 0; i < count; ++i) sectionTargets[static_cast<size_t>(i)].store(targets[static_cast<size_t>(i)]);
+  sectionTargetCount.store(count);
+  sectionCacheSlots.store(juce::jlimit(0, maxSectionEntries, slots));
+  sectionCacheConfiguration.fetch_add(1);
+}
+void StemBufferingSource::protectSectionTargets(juce::int64 jump, juce::int64 loop) noexcept {
+  protectedJump.store(jump); protectedLoop.store(loop);
+}
+bool StemBufferingSource::sectionEntryReady(juce::int64 position, int frames) const noexcept {
+  for (const auto &entry : sectionEntries) {
+    const auto start = entry.position.load();
+    if (start >= 0 && position >= start && frames <= entry.frames.load() && position - start <= entry.frames.load() - frames && entry.position.load() == start) return true;
+  }
+  return false;
+}
+juce::Range<int> StemBufferingSource::copySectionEntry(const juce::AudioSourceChannelInfo &info, juce::int64 position, juce::Range<int> primary, juce::Range<int> realtime, juce::Range<int> secondary) {
+  for (auto &entry : sectionEntries) {
+    const auto candidate = entry.position.load();
+    if (candidate < 0 || position < candidate || position - candidate >= entry.frames.load()) continue;
+    entry.readers.fetch_add(1);
+    const auto start = entry.position.load();
+    const int frames = entry.frames.load();
+    if (start >= 0 && position >= start && position - start < frames) {
+      const int count = juce::jmin(info.numSamples, frames - static_cast<int>(position - start));
+      std::array<juce::Range<int>, 3> covered{primary, realtime, secondary};
+      std::sort(covered.begin(), covered.end(), [](auto a, auto b) { return a.getStart() < b.getStart(); });
+      const auto copy = [&](int from, int to) {
+        if (to <= from) return;
+        for (int c = 0; c < juce::jmin(numberOfChannels, info.buffer->getNumChannels()); ++c)
+          info.buffer->copyFrom(c, info.startSample + from, entry.audio, c, static_cast<int>(position - start) + from, to - from);
+      };
+      int next = 0;
+      for (const auto range : covered) {
+        if (range.isEmpty()) continue;
+        copy(next, juce::jlimit(0, count, range.getStart()));
+        next = juce::jmax(next, juce::jmin(count, range.getEnd()));
+      }
+      copy(next, count);
+      entry.readers.fetch_sub(1);
+      return {0, count};
+    }
+    entry.readers.fetch_sub(1);
+  }
+  return {};
+}
+bool StemBufferingSource::protectsEntry(juce::int64 start, int frames) const noexcept {
+  if (start < 0) return false;
+  for (const auto target : {protectedJump.load(), protectedLoop.load()})
+    if (target >= start && target - start < frames) return true;
+  return false;
+}
+bool StemBufferingSource::retireSectionEntry(SectionEntry &entry) {
+  const auto old = entry.position.exchange(-1);
+  if (entry.readers.load() != 0 || (protectsEntry(old, entry.frames.load()))) { entry.position.store(old); return false; }
+  // seq_cst invalidation + reader lease excludes both the old and new readers
+  // before resizing; an acquiring reader observes either -1 or immutable audio.
+  return true;
+}
+void StemBufferingSource::retainSectionEntry(juce::int64 position, const juce::AudioBuffer<float> &audio, int frames) {
+  if (frames <= 0 || sectionEntryReady(position, frames)) return;
+  const int limit = juce::jmax(sectionCacheSlots.load(), protectsEntry(position, frames) ? 1 : 0);
+  SectionEntry *chosen = nullptr;
+  for (int i = 0; i < limit; ++i) {
+    auto &entry = sectionEntries[static_cast<size_t>(i)];
+    const auto start = entry.position.load();
+    const auto cursor = nextPlayPos.load();
+    const bool active = start >= 0 && cursor >= start && cursor - start < entry.frames.load() &&
+                        getValidBufferRange(juce::jmax(1, lastAudioBlockFrames.load()), cursor).getEnd() < juce::jmax(1, lastAudioBlockFrames.load());
+    if ((protectsEntry(start, entry.frames.load())) || active) continue;
+    if (start < 0) { chosen = &entry; break; }
+    if (chosen == nullptr || entry.age < chosen->age) chosen = &entry;
+  }
+  if (chosen == nullptr || !retireSectionEntry(*chosen)) return;
+  const auto previousBytes = static_cast<juce::int64>(chosen->audio.getNumSamples()) * numberOfChannels * sizeof(float);
+  chosen->audio.setSize(numberOfChannels, frames, false, false, false);
+  for (int c = 0; c < numberOfChannels; ++c) chosen->audio.copyFrom(c, 0, audio, c, 0, frames);
+  chosen->age = ++sectionCacheAge; chosen->stale = false;
+  chosen->frames.store(frames);
+  chosen->position.store(position);
+  sectionCacheBytes.fetch_add(static_cast<juce::int64>(frames) * numberOfChannels * sizeof(float) - previousBytes);
+}
+bool StemBufferingSource::maintainSectionEntries() {
+  const auto configuration = sectionCacheConfiguration.load();
+  if (configuration != workerSectionCacheConfiguration) {
+    const int count = sectionTargetCount.load();
+    for (auto &entry : sectionEntries) {
+      const auto position = entry.position.load();
+      bool listed = position < 0;
+      for (int i = 0; i < count; ++i) listed = listed || sectionTargets[static_cast<size_t>(i)].load() == position;
+      entry.stale = !listed;
+    }
+    workerSectionCacheConfiguration = configuration;
+  }
+  const int limit = sectionCacheSlots.load();
+  for (int i = 0; i < maxSectionEntries; ++i) {
+    auto &entry = sectionEntries[static_cast<size_t>(i)];
+    if (i < limit && !entry.stale) continue;
+    const auto start = entry.position.load();
+    const auto cursor = nextPlayPos.load();
+    if ((protectsEntry(start, entry.frames.load())) ||
+        (start >= 0 && cursor >= start && cursor - start < entry.frames.load() &&
+         getValidBufferRange(juce::jmax(1, lastAudioBlockFrames.load()), cursor).getEnd() < juce::jmax(1, lastAudioBlockFrames.load()))) continue;
+    if (entry.audio.getNumSamples() > 0 && retireSectionEntry(entry)) {
+      sectionCacheBytes.fetch_sub(static_cast<juce::int64>(entry.audio.getNumSamples()) * numberOfChannels * sizeof(float));
+      entry.audio.setSize(numberOfChannels, 0); entry.frames.store(0);
+    }
+  }
+  // Only fill as many initial entries as the budget holds; a requested target
+  // can later replace the least recently populated unleased entry.
+  const int count = juce::jmin(sectionTargetCount.load(), limit);
+  const int frames = prefetchCapacityFrames.load();
+  for (int i = 0; i < count && frames > 0; ++i) {
+    const auto position = sectionTargets[static_cast<size_t>(i)].load();
+    if (position < 0 || sectionEntryReady(position, frames)) continue;
+    bool empty = false;
+    for (int slot = 0; slot < limit; ++slot) empty = empty || sectionEntries[static_cast<size_t>(slot)].position.load() < 0;
+    if (!empty) return false;
+    decodePrefetch(position, frames); retainSectionEntry(position, readBuffer, frames);
+    return true;
+  }
+  return false;
+}
+
 void StemBufferingSource::setPrefetchSource(
     juce::PositionableAudioSource *newPrefetch, int sampleRate,
     int samplesPerBlockExpected) {
-  // P0.2 (perf): instalar (o reemplazar) la cadena de prefetch en
-  // runtime. La cadena se construye en lazy desde el primer
-  // requestPrefetchPosition del StemTrack, no en el loadSongStems. Esto
-  // evita el segundo createReaderFor y la duplicación del costo de AV
-  // en Windows durante el cambio de canción.
-  //
-  // Solo se llama desde el message thread. El prefetchLock existente
+  // Install the independent reader during preparation, before registering
+  // the worker. Audio-thread requests only publish atomic target metadata.
+  // The prefetchLock
   // serializa contra el audio thread que pueda estar copiando del
   // prefetchBuffer en getNextAudioBlock().
   if (prefetchSource == newPrefetch)
@@ -831,9 +984,10 @@ int StemBufferingSource::useTimeSlice() {
   // and the buffer is already full.
   const bool didPrefetch = readPendingPrefetch();
   const bool didMainRefill = !didPrefetch && readNextBufferChunk();
-  const bool didRealWork = didPrefetch || didMainRefill;
+  const bool didEntry = !didPrefetch && !didMainRefill && maintainSectionEntries();
+  const bool didRealWork = didPrefetch || didMainRefill || didEntry;
 
-  const int returnValue = didPrefetch ? 0 : (didMainRefill ? 5 : 10);
+  const int returnValue = didPrefetch || didEntry ? 0 : (didMainRefill ? 5 : 10);
 
   const int64_t drainEndTick = juce::Time::getHighResolutionTicks();
   const int64_t drainDuration = drainEndTick - drainStartTick;
