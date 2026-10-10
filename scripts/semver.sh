@@ -7,7 +7,7 @@ Usage:
   scripts/semver.sh [options]
 
 Options:
-  --branch <name>                  Branch name to classify (feature/*, bugfix/*, hotfix/*, codex/*).
+  --branch <name>                  Branch name to classify (feature/*, feat/*, bugfix/*, hotfix/*, codex/*).
   --sequence <number>              Numeric suffix for prerelease (default: GITHUB_RUN_NUMBER or 0).
   --release-kind <auto|major|minor|patch>
                                    Version bump strategy (default: auto).
@@ -99,7 +99,7 @@ fi
 classify_branch_kind() {
   local branch="$1"
 
-  if [[ "${branch}" == feature/* ]]; then
+  if [[ "${branch}" == feature/* || "${branch}" == feat/* ]]; then
     echo "feature"
     return
   fi
@@ -149,7 +149,7 @@ auto)
     ;;
   unsupported)
     if [[ "${require_supported_branch}" == "true" ]]; then
-      echo "Unsupported source branch '${branch_name}'. Allowed prefixes: feature/*, bugfix/*, hotfix/*, codex/*." >&2
+      echo "Unsupported source branch '${branch_name}'. Allowed prefixes: feature/*, feat/*, bugfix/*, hotfix/*, codex/*." >&2
       exit 1
     fi
     branch_kind="dev"
