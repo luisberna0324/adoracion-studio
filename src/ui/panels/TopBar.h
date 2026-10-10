@@ -68,7 +68,7 @@ public:
 
 private:
   friend struct WaveformEditingTestAccess;
-  void refreshLiveModeButton();
+  void refreshTimelineMenu();
   void selectTimelineView(bool sections);
   std::function<void()> onLiveModeToggle;
   std::function<bool()> liveModeState;
@@ -106,11 +106,6 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
-  class TimelineViewButton final : public juce::Button {
-  public:
-    TimelineViewButton() : juce::Button("timelineView") {}
-    void paintButton(juce::Graphics &, bool, bool) override;
-  } liveModeButton;
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:

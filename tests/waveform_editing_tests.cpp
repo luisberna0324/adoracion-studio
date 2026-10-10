@@ -56,35 +56,37 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
   static void clickLiveToggle(TopBar &bar) {
-    expect(bar.liveModeButton.isEnabled(), "topbar live toggle is enabled");
-    bar.selectTimelineView(!(bar.liveModeState && bar.liveModeState()));
+    auto menu = bar.createMorePopoverContent();
+    auto *toggle = dynamic_cast<juce::Button *>(menu->findChildWithID("timeline-sections"));
+    expect(toggle && toggle->isEnabled(), "section menu toggle is enabled");
+    toggle->onClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
   }
   static void expectTopbarLiveLayout(TopBar &bar) {
-    expect(bar.liveModeButton.isVisible() && bar.tabletMoreButton.isVisible(),
-           "live toggle and principal More are visible on every layout");
-    expect(bar.liveModeButton.getRight() <= bar.tabletMoreButton.getX() &&
-               bar.liveModeButton.getY() == bar.tabletMoreButton.getY(),
-           "live toggle sits immediately left of the principal More button");
-    expect(bar.liveModeButton.getWidth() >= 38 && bar.liveModeButton.getHeight() >= 38,
-           "desktop toggle keeps normal control dimensions");
+    expect(bar.tabletMoreButton.isVisible(), "More remains visible on every layout");
     for (int i = 0; i < bar.getNumChildComponents(); ++i) {
       const auto *child = bar.getChildComponent(i);
-      if (!child->isVisible() || child == &bar.liveModeButton) continue;
-      expect(!child->getBounds().intersects(bar.liveModeButton.getBounds()),
-             "live toggle does not overlap any visible topbar control");
+      if (!child->isVisible() || child == &bar.tabletMoreButton) continue;
+      expect(!child->getBounds().intersects(bar.tabletMoreButton.getBounds()), "More does not overlap other topbar controls");
     }
-    expect(bar.getLocalBounds().contains(bar.liveModeButton.getBounds()), "live toggle fits the topbar");
-    expect(bar.liveModeButton.getTitle().isNotEmpty() && bar.liveModeButton.getTooltip().isNotEmpty(),
-           "toggle has an accessible title and contextual tooltip");
+    expect(bar.songInfoBounds.getWidth() >= 80, "song title retains usable width");
+    expect(bar.getLocalBounds().contains(bar.tabletMoreButton.getBounds()), "More fits topbar");
+    auto panel = bar.createMorePopoverContent();
+    auto *toggle = dynamic_cast<juce::Button *>(panel->findChildWithID("timeline-sections"));
+    expect(toggle && toggle->getWidth() >= 44 && toggle->getHeight() >= 44, "menu option keeps accessible touch target");
+    expect(toggle->getTitle().isNotEmpty() && toggle->getDescription().isNotEmpty(), "menu option exposes accessible name and state");
+    expect(toggle->getToggleState() == (bar.liveModeState && bar.liveModeState()), "menu check reflects existing presentation state");
   }
+  static auto moreBounds(TopBar &bar) { return bar.tabletMoreButton.getBounds(); }
+  static auto songBounds(TopBar &bar) { return bar.songInfoBounds; }
   static auto morePanel(TopBar &bar) { return bar.createMorePopoverContent(); }
   static bool directMidi(const TopBar &bar) { return bar.midiLearnButton.isVisible(); }
   static bool directSettings(const TopBar &bar) { return bar.settingsButton.isVisible(); }
   static void midiEnabled(TopBar &bar, bool enabled) { bar.midiLearnButton.setEnabled(enabled); if (bar.refreshMorePopover) bar.refreshMorePopover(); }
   static void moreRefresh(TopBar &bar) { if (bar.refreshMorePopover) bar.refreshMorePopover(); }
-  static bool topbarLiveSelected(const TopBar &bar) { return bar.liveModeButton.getToggleState(); }
+  static bool topbarLiveSelected(const TopBar &bar) { return bar.liveModeState && bar.liveModeState(); }
   static void chooseTimeline(TopBar &bar, bool sections) { bar.selectTimelineView(sections); }
-  static auto timelineCaption(const TopBar &bar) { return bar.liveModeButton.getButtonText(); }
+  static auto timelineCaption(const TopBar &bar) { return bar.liveModeState && bar.liveModeState() ? juce::String("Secciones") : juce::String("Onda"); }
   static auto sectionState(const WaveformBar &wave, int index) { return wave.liveSectionState(index); }
   static auto pendingPulse(double now, bool reduced) { return WaveformBar::livePendingPulse(now, reduced); }
   static void refreshSectionActions(WaveformBar &wave) { wave.refreshLiveSectionActions(); }
@@ -1429,7 +1431,7 @@ void testDesktopMoreDeduplicatesVisibleActions() {
   };
   const auto verify = [&] {
     WaveformEditingTestAccess::moreRefresh(bar);
-    int expected = 1 + (WaveformEditingTestAccess::directMidi(bar) ? 0 : 1) + (WaveformEditingTestAccess::directSettings(bar) ? 0 : 1);
+    int expected = 2 + (WaveformEditingTestAccess::directMidi(bar) ? 0 : 1) + (WaveformEditingTestAccess::directSettings(bar) ? 0 : 1);
     expect(visibleButtons(*panel) >= expected && visibleButtons(*panel) <= expected + 1, "desktop overflow omits direct actions and keeps learning/window actions");
     expect(visibleButtons(*panel) > 0, "learning keeps the menu nonempty");
     const auto image = panel->createComponentSnapshot(panel->getLocalBounds(), true, 2.0f);
@@ -1438,7 +1440,7 @@ void testDesktopMoreDeduplicatesVisibleActions() {
   expect(WaveformEditingTestAccess::directMidi(bar) && WaveformEditingTestAccess::directSettings(bar), "wide desktop exposes primary toolbar actions"); verify();
   for (int width : {768, 1200, 956, 1280, 600, 1280}) { bar.setSize(width, 64); verify(); }
   bar.setSize(768, 64); bar.setMidiLearnActive(true); WaveformEditingTestAccess::moreRefresh(bar);
-  auto *midiRow = dynamic_cast<juce::Button *>(panel->getChildComponent(0));
+  auto *midiRow = dynamic_cast<juce::Button *>(panel->findChildWithID("midi-learn"));
   expect(midiRow && midiRow->isVisible() && midiRow->getToggleState(), "responsive MIDI menu preserves active state");
   bar.setMidiLearnActive(false); WaveformEditingTestAccess::moreRefresh(bar);
   expect(!midiRow->getToggleState(), "open menu reflects MIDI changes without reopening");
@@ -2544,6 +2546,29 @@ void testLiveResponsiveCompleteCardsAndNavigation() {
   }
 }
 
+void testSectionToggleMoreMenu() {
+  ProcessorFixture fixture; TopBar top(fixture.processor);
+  bool sections = false, enabled = true;
+  int changes = 0;
+  top.setLiveModeControls([&] { sections = !sections; ++changes; }, [&] { return sections; }, [&] { return enabled; });
+  top.setMinimalPhoneMode(true); top.setSize(700, 64);
+  auto panel = WaveformEditingTestAccess::morePanel(top);
+  auto *toggle = dynamic_cast<juce::Button *>(panel->findChildWithID("timeline-sections"));
+  expect(toggle && !toggle->getToggleState(), "normal waveform starts with section option unchecked");
+  sections = true; WaveformEditingTestAccess::moreRefresh(top);
+  expect(toggle->getToggleState(), "open touch menu synchronizes external view changes");
+  enabled = false; WaveformEditingTestAccess::moreRefresh(top);
+  expect(!toggle->isEnabled(), "disabled view capability disables menu action");
+  WaveformEditingTestAccess::chooseTimeline(top, false);
+  expect(sections && changes == 0, "blocked view cannot alter presentation");
+  enabled = true; WaveformEditingTestAccess::moreRefresh(top);
+  toggle->onClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(!sections && changes == 1, "same menu action returns to normal waveform once");
+  panel.reset(); panel = WaveformEditingTestAccess::morePanel(top);
+  toggle = dynamic_cast<juce::Button *>(panel->findChildWithID("timeline-sections"));
+  expect(toggle && !toggle->getToggleState(), "reopening preserves actual normal-waveform state");
+}
+
 void testTopbarLiveToggleAndWaveformBackground() {
   ProcessorFixture fixture;
   auto &wave = fixture.edit.waveform;
@@ -2557,7 +2582,7 @@ void testTopbarLiveToggleAndWaveformBackground() {
   TopBar top(fixture.processor);
   ImportedSongData demo;
   demo.id = "isolated-live-preview";
-  demo.title = "Demo de prueba";
+  demo.title = juce::String::fromUTF8("Una canción de adoración con un título especialmente largo");
   demo.artist = "Datos aislados";
   demo.key = "C";
   demo.bpm = 120;
@@ -2579,7 +2604,7 @@ void testTopbarLiveToggleAndWaveformBackground() {
     expect(juce::PNGImageFormat().writeImageToStream(preview.createComponentSnapshot(preview.getLocalBounds(), true, 2.0f), *stream),
            "topbar and waveform render together from production components");
   };
-  for (const int width : {568, 700, 844, 1024, 1280}) {
+  for (const int width : {568, 700, 844, 956, 1024, 1280}) {
     const bool phone = width <= 844;
     top.setMinimalPhoneMode(phone);
     wave.setMinimalPhoneMode(phone);
@@ -2587,6 +2612,14 @@ void testTopbarLiveToggleAndWaveformBackground() {
     top.setBounds(0, 0, width, 64);
     wave.setBounds(0, 64, width, 180);
     WaveformEditingTestAccess::expectTopbarLiveLayout(top);
+    const auto moreBounds = WaveformEditingTestAccess::moreBounds(top);
+    const auto titleBounds = WaveformEditingTestAccess::songBounds(top);
+    for (int repeat = 0; repeat < 4; ++repeat) {
+      WaveformEditingTestAccess::clickLiveToggle(top);
+      WaveformEditingTestAccess::expectTopbarLiveLayout(top);
+      expect(WaveformEditingTestAccess::moreBounds(top) == moreBounds && WaveformEditingTestAccess::songBounds(top) == titleBounds,
+             "repeated view toggles preserve title and controls geometry");
+    }
     WaveformEditingTestAccess::clickLiveToggle(top);
     expect(wave.isLiveMode() && WaveformEditingTestAccess::topbarLiveSelected(top),
            "topbar toggle enters live and reflects its state");
@@ -2606,6 +2639,13 @@ void testTopbarLiveToggleAndWaveformBackground() {
     expect(waveformVisible, "live background visibly reflects actual waveform bins under the section tint");
     wave.setWaveformBins(bins);
     capture("topbar-live-" + juce::String(width));
+    if (capturePath.isNotEmpty()) {
+      auto menu = WaveformEditingTestAccess::morePanel(top);
+      auto stream = juce::File(capturePath).getChildFile("sections-menu-" + juce::String(width) + ".png").createOutputStream();
+      expect(stream && stream->setPosition(0) && stream->truncate().wasOk() &&
+                 juce::PNGImageFormat().writeImageToStream(menu->createComponentSnapshot(menu->getLocalBounds(), true, 2.0f), *stream),
+             "checked section menu captures production components");
+    }
     WaveformEditingTestAccess::clickLiveToggle(top);
     expect(WaveformEditingTestAccess::timelineCaption(top) == "Onda", "return selection names the normal waveform view");
     expect(!wave.isLiveMode() && !WaveformEditingTestAccess::topbarLiveSelected(top) &&
@@ -2937,6 +2977,7 @@ int main() {
   run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
   run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);
+  run("More section toggle synchronizes state and capability", testSectionToggleMoreMenu);
   run("topbar live toggle and real waveform background", testTopbarLiveToggleAndWaveformBackground);
   run("section automation phone navigation preserves draft", testSectionAutomationMobileNavigation);
   run("returning drag preserves duration and ripple", testReturningDragDoesNotAccumulateRipple);

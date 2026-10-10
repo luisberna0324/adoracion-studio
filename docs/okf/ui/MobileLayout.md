@@ -765,14 +765,14 @@ contrato del motor de audio.
 
 ### Vista de secciones
 
-El topbar ofrece un selector `Onda / Secciones` inmediatamente a la izquierda
-del menú principal de tres puntos. Muestra la vista elegida y abre las dos
-opciones con marca de selección; volver a elegir la misma no cambia nada.
-Su título accesible es `Vista de secciones`. No usa badge LIVE ni sugiere otro
-estado de reproducción. El selector conserva los blancos del perfil; en teléfono
-estrecho reduce espacios exteriores y separaciones, sin reducir los 44 puntos
-de los controles. No se duplica la acción en el menú de onda; ese menú conserva
-sus funciones en normal y se oculta en Secciones, sin reservar una cabecera vacía.
+El menú principal de tres puntos contiene un único ítem activable `Vista de
+secciones`, con el mismo patrón de acción que MIDI. Marcado muestra secciones;
+desmarcado vuelve a la onda normal. La marca visual y el estado accesible se
+sincronizan al abrir/reabrir el menú y con cambios de vista externos. Se retiró
+el selector grande de la barra para recuperar espacio del título y controles.
+La fila conserva 44 puntos de alto. No se añade persistencia entre sesiones.
+No se duplica la acción en el menú de onda; ese menú conserva sus funciones en
+normal y se oculta en Secciones sin reservar una cabecera vacía.
 Es una presentación optativa, independiente del
 editor arrange y de la automatización. No se activa al cargar ni cambia el
 estado musical al alternar. Conserva el viewport y el ajuste de seguimiento

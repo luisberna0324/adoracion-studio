@@ -271,19 +271,6 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
   setBaseTooltip(midiLearnButton, L10n::tr("MIDI Learn", "MIDI Learn"));
   setBaseTooltip(tabletMoreButton,
                  L10n::tr("Más opciones", "More options"));
-  addAndMakeVisible(liveModeButton);
-  liveModeButton.setTitle(L10n::tr("Vista de secciones", "Section view"));
-  liveModeButton.onClick = [this] {
-    juce::PopupMenu menu;
-    const bool sections = liveModeState && liveModeState();
-    menu.addItem(1, L10n::tr("Onda", "Waveform"), true, !sections);
-    menu.addItem(2, L10n::tr("Secciones", "Sections"), true, sections);
-    auto safe = juce::Component::SafePointer<TopBar>(this);
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&liveModeButton)
-                          .withMinimumWidth(160).withStandardItemHeight(44), [safe](int result) {
-      if (safe && result > 0) safe->selectTimelineView(result == 2);
-    });
-  };
   songPickerButton.setTooltip(L10n::tr("Canciones del setlist", "Setlist songs"));
   songPickerButton.setMouseCursor(juce::MouseCursor::PointingHandCursor);
   setBaseTooltip(phonePadsButton, L10n::tr("Pads", "Pads"));
@@ -512,40 +499,17 @@ void TopBar::setLiveModeControls(std::function<void()> toggle,
   onLiveModeToggle = std::move(toggle);
   liveModeState = std::move(state);
   liveModeEnabled = std::move(enabled);
-  refreshLiveModeButton();
+  refreshTimelineMenu();
 }
 
-void TopBar::refreshLiveModeButton() {
-  const bool active = liveModeState && liveModeState();
-  liveModeButton.setToggleState(active, juce::dontSendNotification);
-  liveModeButton.setButtonText(active ? L10n::tr("Secciones", "Sections") : L10n::tr("Onda", "Waveform"));
-  liveModeButton.setDescription(L10n::tr("Vista seleccionada: ", "Selected view: ") + liveModeButton.getButtonText());
-  liveModeButton.setEnabled(onLiveModeToggle && (!liveModeEnabled || liveModeEnabled()));
-  liveModeButton.setTooltip(L10n::tr("Vista de secciones: Onda / Secciones", "Section view: Waveform / Sections"));
+void TopBar::refreshTimelineMenu() {
+  if (refreshMorePopover) refreshMorePopover();
 }
 
 void TopBar::selectTimelineView(bool sections) {
-  if (!liveModeButton.isEnabled() || !onLiveModeToggle) return;
+  if (!onLiveModeToggle || (liveModeEnabled && !liveModeEnabled())) return;
   if (sections != (liveModeState && liveModeState())) onLiveModeToggle();
-  refreshLiveModeButton();
-}
-
-void TopBar::TimelineViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
-  const auto bounds = getLocalBounds().toFloat().reduced(1.0f);
-  g.setColour(down ? UITheme::cardBgPressed : over ? UITheme::cardBgHover : UITheme::cardBg);
-  g.fillRoundedRectangle(bounds, 10.0f);
-  g.setColour(isEnabled() ? UITheme::textPrimary : UITheme::textSecondary.withAlpha(0.5f));
-  g.setFont(makeAppFont(13.0f, AppFontWeight::SemiBold));
-  g.drawFittedText(getButtonText(), getLocalBounds().reduced(6, 0).withTrimmedRight(12),
-                  juce::Justification::centred, 1, 1.0f);
-  juce::Path arrow;
-  const float x = bounds.getRight() - 10.0f, y = bounds.getCentreY();
-  arrow.startNewSubPath(x - 3.0f, y - 2.0f); arrow.lineTo(x, y + 1.0f); arrow.lineTo(x + 3.0f, y - 2.0f);
-  g.strokePath(arrow, juce::PathStrokeType(1.5f));
-  if (hasKeyboardFocus(false)) {
-    g.setColour(UITheme::textPrimary);
-    g.drawRoundedRectangle(bounds, 10.0f, 2.0f);
-  }
+  refreshTimelineMenu();
 }
 
 void TopBar::setOnSettingsWithAnchor(
@@ -1040,10 +1004,9 @@ void TopBar::resized() {
   const bool showDesktopExtras = !tabletProfile && contentBounds.getWidth() >= 1100;
   const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
   const bool showTabletMoreButton = true;
-  const int viewSelectorWidth = minimalPhoneProfile ? (contentBounds.getWidth() < 620 ? 88 : 96) : 108;
-  const int fixedButtonCount = 2 + (showWindowButton ? 1 : 0) + (showDesktopExtras ? 2 : 0);
+  const int fixedButtonCount = 1 + (showWindowButton ? 1 : 0) + (showDesktopExtras ? 2 : 0);
   const int minFixedButtonsW =
-      (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap) + viewSelectorWidth - square;
+      (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
   const int availableAfterTransport = contentBounds.getRight() - rightPadding - transportW - 8;
   bool showSystemUsage = !tabletProfile;
   const int maxUsageWidth =
@@ -1061,7 +1024,7 @@ void TopBar::resized() {
     int controlsW = (showTimeDisplay ? timeWidth + gap : 0) + metronomeW + gap + keyWidth;
     if (minimalPhoneProfile)
       controlsW += square + gap;
-    controlsW += gap + viewSelectorWidth + gap + square;
+    controlsW += gap + square;
     if (showWindowButton) controlsW += gap + square;
     if (showDesktopExtras) controlsW += 2 * (gap + square);
     if (usageVisible)
@@ -1070,7 +1033,6 @@ void TopBar::resized() {
     const int leftX = contentBounds.getRight() - rightPadding - controlsW;
 
     setVisibleIfChanged(timeDisplay, showTimeDisplay);
-    setVisibleIfChanged(liveModeButton, true);
     setVisibleIfChanged(midiLearnButton, showDesktopExtras);
     setVisibleIfChanged(settingsButton, showDesktopExtras);
     setVisibleIfChanged(keyDisplay, true);
@@ -1125,7 +1087,6 @@ void TopBar::resized() {
     if (showWindowButton)
       addItem(windowModeButton, square);
     if (showDesktopExtras) addItem(settingsButton, square);
-    addItem(liveModeButton, viewSelectorWidth);
     addItem(tabletMoreButton, square, !usageVisible);
     if (usageVisible)
       addItem(systemUsageDisplay, usageWidth, true);
@@ -1420,6 +1381,15 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
                   getToggleState() ? UITheme::accentSoft
                                    : UITheme::textPrimary);
       content.removeFromLeft(10);
+      if (getProperties().getWithDefault("timelineOption", false) && getToggleState()) {
+        auto mark = content.removeFromRight(20).toFloat();
+        juce::Path check;
+        check.startNewSubPath(mark.getX() + 2, mark.getCentreY());
+        check.lineTo(mark.getX() + 7, mark.getCentreY() + 5);
+        check.lineTo(mark.getX() + 16, mark.getCentreY() - 6);
+        g.setColour(UITheme::accentSoft);
+        g.strokePath(check, juce::PathStrokeType(2.0f));
+      }
       g.setColour(UITheme::textPrimary);
       g.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
       g.drawFittedText(title, content, juce::Justification::centredLeft, 1);
@@ -1433,12 +1403,14 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
 
   class MorePopover final : public juce::Component {
   public:
-    MorePopover(const bool midiActive, std::function<void()> onMidi,
+    MorePopover(std::function<void()> onSections,
+                const bool midiActive, std::function<void()> onMidi,
                 std::function<void()> onSettings,
                 std::function<void()> onPractice, const bool showPractice,
                 std::function<void()> onLearning,
                 std::function<void()> onWindow, const bool showWindow)
-        : midiButton(L10n::tr("MIDI Learn", "MIDI Learn"),
+        : sectionsButton(L10n::tr("Vista de secciones", "Sections view"), SvgIconName::Music, std::move(onSections)),
+          midiButton(L10n::tr("MIDI Learn", "MIDI Learn"),
                      SvgIconName::Midi, std::move(onMidi)),
           settingsButton(L10n::tr("Configuración", "Settings"),
                          SvgIconName::Settings, std::move(onSettings)),
@@ -1449,6 +1421,14 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
           songWindowButton(L10n::tr("Ventana de canción", "Song window"),
                            SvgIconName::Clock, std::move(onWindow)),
           hasPractice(showPractice), hasWindow(showWindow) {
+      sectionsButton.setComponentID("timeline-sections");
+      for (auto *option : {&sectionsButton}) {
+        option->setClickingTogglesState(true);
+        option->getProperties().set("timelineOption", true);
+        option->setTitle(option->getName());
+        addAndMakeVisible(*option);
+      }
+      midiButton.setComponentID("midi-learn");
       midiButton.setToggleState(midiActive, juce::dontSendNotification);
       addChildComponent(midiButton);
       addChildComponent(settingsButton);
@@ -1467,6 +1447,15 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
                              1.0f);
     }
 
+    void updateViewSelection(bool sections, bool enabled) {
+      sectionsButton.setToggleState(sections, juce::dontSendNotification);
+      for (auto *option : {&sectionsButton}) {
+        option->setEnabled(enabled);
+        option->setDescription(option->getName() + (option->getToggleState()
+            ? L10n::tr(" — seleccionada", " — selected") : juce::String{}));
+      }
+    }
+
     void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showWindow) {
       const bool layoutChanged = getWidth() == 0 || midiButton.isVisible() != showMidi || settingsButton.isVisible() != showSettings ||
                                  hasPractice != showPractice || hasWindow != showWindow;
@@ -1475,7 +1464,7 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
       hasPractice = showPractice; hasWindow = showWindow;
       practiceButton.setVisible(hasPractice); songWindowButton.setVisible(hasWindow);
       midiButton.setVisible(showMidi); settingsButton.setVisible(showSettings);
-      const int rows = 1 + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
+      const int rows = 2 + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
       setSize(getWidth() > 0 ? getWidth() : 300, rows * 48 + 8);
       resized();
     }
@@ -1483,7 +1472,7 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
     void resized() override {
       auto area = getLocalBounds().reduced(10, 6);
       constexpr int rowHeight = 44;
-      for (auto *button : {&midiButton, &settingsButton}) {
+      for (auto *button : {&sectionsButton, &midiButton, &settingsButton}) {
         if (button->isVisible()) {
           button->setBounds(area.removeFromTop(rowHeight)); area.removeFromTop(4);
         } else button->setBounds({});
@@ -1500,6 +1489,7 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
     }
 
   private:
+    ActionButton sectionsButton;
     ActionButton midiButton;
     ActionButton settingsButton;
     ActionButton practiceButton;
@@ -1511,6 +1501,7 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
 
   const auto safe = juce::Component::SafePointer<TopBar>(this);
   auto panel = std::make_unique<MorePopover>(
+      [safe] { if (safe) safe->selectTimelineView(!(safe->liveModeState && safe->liveModeState())); },
       midiLearnActive, [safe] { if (safe) safe->midiLearnButton.triggerClick(); },
       [safe] { if (safe) safe->openSettingsPanel(); }, [safe] {
         if (safe && safe->onPhonePractice) safe->onPhonePractice();
@@ -1520,6 +1511,9 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
   const auto panelSafe = juce::Component::SafePointer<MorePopover>(panel.get());
   const bool desktopMenu = !useTouchOptimisedControls() && !minimalPhoneMode;
   refreshMorePopover = [safe, panelSafe, desktopMenu, initialized = false]() mutable {
+    if (safe && panelSafe)
+      panelSafe->updateViewSelection(safe->liveModeState && safe->liveModeState(),
+          safe->onLiveModeToggle && (!safe->liveModeEnabled || safe->liveModeEnabled()));
     if (!desktopMenu && initialized) return; // Preserve existing touch-menu behavior.
     if (safe && panelSafe) {
       initialized = true;
@@ -1619,7 +1613,7 @@ void TopBar::configureMetronomeControls() {
 
 void TopBar::timerCallback() {
   if (refreshMorePopover) refreshMorePopover();
-  refreshLiveModeButton();
+  refreshTimelineMenu();
   refreshFromProviders();
   if (songTextOverflows && isShowing())
     repaint(songInfoBounds);
