@@ -20,6 +20,7 @@ public:
   static AccountDeletionStatus parseStatus(const juce::var &);
   static AccountDeletionReauthentication reauthenticate(const juce::String &base, const juce::String &currentIdToken,
       const juce::String &freshIdToken);
+  static AccountDeletionStatus request(const juce::String &base, const juce::String &freshIdToken, const juce::String &proofId, const juce::String &receipt);
   static AccountDeletionStatus status(const juce::String &base, const juce::String &receipt);
   static AccountDeletionPreview parsePreview(const juce::var &, const juce::String &expectedUid);
   // Blocking, background thread only; existing Firebase refresh/auth architecture.

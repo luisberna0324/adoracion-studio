@@ -43,5 +43,9 @@ public:
   static bool saveAccountDeletionReceipt(const juce::String &uid, const juce::String &receipt);
   static juce::String loadAccountDeletionReceipt(const juce::String &uid);
   static juce::StringArray listAccountDeletionReceipts();
+  static bool markAccountDeletionReceiptSubmitted(const juce::String &uid, const juce::String &receipt);
+  static bool clearUnsubmittedDeletionReceipt(const juce::String &receipt);
+  static bool acknowledgeCompletedDeletionReceipt(const juce::String &receipt);
+  static bool blockAccountForDeletionReceipt(const juce::String &receipt);
   static bool clearAccountDeletionReceipt(const juce::String &uid, const juce::String &expectedReceipt);
 };

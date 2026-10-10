@@ -36,6 +36,7 @@ bool AccountDeletionModal::accepts(int request, const juce::String &uid) const {
 void AccountDeletionModal::invalidate() {
   if (!dismissalHandled && onDismissed) onDismissed(state == State::submitting || state == State::pending || state == State::complete);
   dismissalHandled = true; ++generation; state = State::closed; proof.clear(); proofExpiresAtMs = 0; update(); if (onCancelled) onCancelled(); }
+void AccountDeletionModal::resumePendingStatus() { ++generation; state = State::pending; update(); if (onStatusRequested) onStatusRequested(generation); }
 void AccountDeletionModal::requestPreview() { if (state == State::pending || state == State::submitting || state == State::complete || state == State::closed) return; ++generation; proof.clear(); preview = {}; state = State::loading; update(); if (onPreviewRequested) onPreviewRequested(generation); else fail(generation, accountUid); }
 void AccountDeletionModal::receivePreview(int request, const juce::String &uid, AccountDeletionPreview value) {
   if (!accepts(request, uid) || state != State::loading) return;

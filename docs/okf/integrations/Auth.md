@@ -592,8 +592,7 @@ estados de reautenticación, confirmación, envío, pendiente y finalización pa
 con callbacks simulados. Un doble toque no duplica el envío. Una respuesta incierta
 pasa a pendiente y consulta estado; únicamente un resultado verificado permite
 mostrar éxito. Cancelación, UID ajeno, token de intención vencido y respuesta antigua
-no permiten avanzar. La revisión productiva fuerza ejecución deshabilitada: no tiene
-callbacks conectados para reauth, confirmación ni operaciones destructivas.
+no permiten avanzar. La revisión consulta la disponibilidad del backend; reauth, confirmación y recuperación están conectadas.
 
 Backend usa Firebase Admin/Firestore actuales y prueba `auth_time` reciente para la
 misma cuenta, consumición atómica de intención, jobs idempotentes con checkpoints y
@@ -603,20 +602,16 @@ fallo de facturación impide finalizar y no borra los datos necesarios para rein
 No se tocan datos de otros propietarios ni archivos locales. La política de producto
 fue confirmada por el usuario; el plazo legal de comprobantes sigue pendiente.
 
-Faltan adaptadores reales y su verificación, inventario completo de objetos/revisiones,
-barreras para todos los writers/webhooks tardíos, worker/status autenticado que sobreviva
-a invalidación de sesión y vinculación de reauth nativa al UID original. La UI de
+Se incorporaron adaptadores Paddle/R2, inventario de objetos/revisiones y worker con estado durable. Persisten bloqueos de habilitación documentados en el backend. La UI de
 revisión y los simuladores no constituyen eliminación real ni cumplimiento completo
 para App Review. Ninguna llamada de borrado/cancelación/revocación real se ejecutó.
 
-### Account deletion: durable status and reauthentication increment
+### Account deletion: request and restart recovery increment
 
-The deletion review remains disabled in production (`executionAvailable=false` is enforced in the editor). This increment is not a completed deletion feature or App Review readiness evidence.
+The native review now follows the server's executionAvailable flag. Production defaults to disabled and must remain disabled pending the backend enablement blockers documented in docs/account-deletion-execution.md. No production configuration was changed.
 
-The native deletion modal embeds the existing `ReauthPromptModal` for Apple, Google and password authentication. `completeAuthenticatedSession` intercepts deletion reauthentication before applying or persisting a candidate session. Both the local UID check and the backend fresh-token check must match the original UID; matching emails do not authorize switching or linking accounts. Apple linking is suppressed during deletion reauthentication. Provider cancellation, titlebar close and Escape fence callbacks and release the capture scope without replacing the original session.
+The existing ReauthPromptModal provides Apple, Google and password reauthentication. UID comparison happens before adopting/persisting a candidate session; Apple linking is suppressed. Confirmation sends only the fresh ID token, proof and random receipt to the existing backend. The receipt is persisted before transport and marked submitted durably. Uncertain submitted receipts cannot be discarded on cancellation or an unverified network failure.
 
-`AccountDeletionApi` supports bounded HTTPS/no-redirect reauthentication and coarse status reads. `SessionPersistence` stores a canonical 256-bit read-only status receipt independently of login credentials, before confirmation; logout does not remove it. A different receipt cannot replace an uncertain request. The modal may discard only its own definitely unsubmitted prepared receipt. Pending/submitting/completed dismissal preserves it. A receipt does not authorize login or deletion and must never appear in URLs or diagnostic logs.
+Startup opens receipt status recovery without login, prevents offline restoration for the matching account and persists the accepted-account fence before reporting success. Backend status supports prepared, pending, complete and definitive not-accepted for expired unconsumed intentions. Only verified complete/not-accepted clears a submitted receipt; unknown/404 status preserves uncertainty. Verified acceptance removes matching stored credentials and preserves another account's snapshot and local projects/audio.
 
-Backend accepted receipts bind directly to a job atomically with proof consumption and account blocking. Five-minute proof expiry does not end status access while deletion is pending; completion starts separately configured operational receipt retention. Status returns only `prepared`, `pending` or `complete` and bounded retry timing, without identity, steps or provider details. A completed job must have a durable completion checkpoint before the app reports success.
-
-Still required: request/worker integration with all real deletion steps, verified draining of outstanding storage/Auth operations, remaining delayed webhook/outbox/admin writer fences, removal of owned Teams and legacy storage, provider-specific Gumroad cancellation support or an explicit blocker, and startup UI recovery using persisted receipts without a login session. Native provider interception is compiled; available automated UI tests exercise modal callbacks and local persistence, not real provider sign-in or destructive execution.
+Local tests cover modal callbacks, submitted receipts, restart discovery, UID fences, uncertain retries and terminal status parsing. Native compilation and simulated tests do not establish real Apple sign-in, revocation, deletion or App Review readiness. Provider configuration and backend enablement remain separate release gates.

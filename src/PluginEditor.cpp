@@ -331,6 +331,8 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   localDemoSession = DevelopmentFeatures::testLogin && AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
+  if (!SessionPersistence::listAccountDeletionReceipts().isEmpty())
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] { if (safe) safe->showPendingAccountDeletion(); });
   const bool canFastBootFromSnapshot =
       hasBootSnapshot && canUseSnapshotForLocalBootstrap(bootSnap);
   if (hasBootSnapshot)
@@ -3537,6 +3539,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     auto *content = new AccountDeletionModal(uid);
     juce::Component::SafePointer<AccountDeletionModal> modal(content);
     const auto preparedReceipt = std::make_shared<juce::String>();
+    const auto freshDeletionIdToken = std::make_shared<juce::String>();
     content->setSize(juce::jmin(500, juce::jmax(320, safe->getWidth() - 24)), juce::jmin(620, juce::jmax(240, safe->getHeight() - 24)));
     content->onDismissed = [safe, uid, preparedReceipt](bool preserveReceipt) {
       if (!preserveReceipt && preparedReceipt->isNotEmpty()) SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt);
@@ -3551,7 +3554,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       if (safe->activeSession.uid == uid) safe->handleLogout();
       return true;
     };
-    content->onReauthenticationRequested = [safe, modal, uid, preparedReceipt](int generation) {
+    content->onReauthenticationRequested = [safe, modal, uid, preparedReceipt, freshDeletionIdToken](int generation) {
       // This flow cannot return to review after submission; only its own unused receipt can be cleared.
       if (preparedReceipt->isNotEmpty()) { SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt); preparedReceipt->clear(); }
       if (!safe || !modal || safe->activeSession.uid != uid) return;
@@ -3562,7 +3565,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       safe->deletionReauthStatus = [authForm](const juce::String &text, bool error, bool busy) {
         if (authForm) { authForm->setAuthenticationBusy(busy); authForm->setStatusText(text, error); }
       };
-      safe->deletionReauthCandidate = [safe, modal, uid, generation, original, authForm, preparedReceipt](PersistedSessionSnapshot candidate) {
+      safe->deletionReauthCandidate = [safe, modal, uid, generation, original, authForm, preparedReceipt, freshDeletionIdToken](PersistedSessionSnapshot candidate) {
         if (!safe || !modal || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::reauthenticating) return;
         if (candidate.uid != uid || safe->activeSession.uid != uid) {
           if (authForm) authForm->showError(L10n::tr("Usa la misma cuenta que deseas eliminar.", "Use the same account you want to delete."));
@@ -3570,15 +3573,15 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         }
         if (authForm) authForm->setAuthenticationBusy(true);
         const auto base = getApiBaseUrl();
-        std::thread([safe, modal, uid, generation, original, candidate, base, preparedReceipt] {
+        std::thread([safe, modal, uid, generation, original, candidate, base, preparedReceipt, freshDeletionIdToken] {
           const auto current = AuthSessionApi::refreshFirebaseIdToken(original.firebaseApiKey, original.refreshToken);
           const auto fresh = AuthSessionApi::refreshFirebaseIdToken(candidate.firebaseApiKey, candidate.refreshToken);
           const auto proof = current.ok && fresh.ok ? AccountDeletionApi::reauthenticate(base, current.idToken, fresh.idToken) : AccountDeletionReauthentication{};
-          juce::MessageManager::callAsync([safe, modal, uid, generation, proof, preparedReceipt] {
+          juce::MessageManager::callAsync([safe, modal, uid, generation, proof, preparedReceipt, freshDeletionIdToken, token = fresh.idToken] {
             if (!safe || !modal || modal->getGeneration() != generation || safe->activeSession.uid != uid) return;
             safe->deletionReauthCandidate = {}; safe->deletionReauthStatus = {}; safe->cancelAuthenticationAttempt();
             if (!proof.ok || !proof.executionAvailable || !SessionPersistence::saveAccountDeletionReceipt(uid, proof.receipt)) { modal->fail(generation, uid); return; }
-            *preparedReceipt = proof.receipt;
+            *preparedReceipt = proof.receipt; *freshDeletionIdToken = token;
             modal->receiveReauthentication(generation, uid, proof.proofId, proof.expiresAtMs);
           });
         }).detach();
@@ -3591,12 +3594,28 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       form->onLater = [modal] { if (modal) modal->invalidate(); };
       // Password reset cannot prove identity and is intentionally offered through the normal login UI.
     };
+    content->onConfirmationRequested = [safe, modal, uid, preparedReceipt, freshDeletionIdToken](int generation, const juce::String &proofId) {
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), token = *freshDeletionIdToken;
+      if (!SessionPersistence::markAccountDeletionReceiptSubmitted(uid, receipt)) { modal->fail(generation, uid); return; }
+      preparedReceipt->clear(); freshDeletionIdToken->clear(); // Once submitted, uncertainty always preserves the receipt.
+      const auto base = getApiBaseUrl();
+      std::thread([modal, uid, generation, proofId, receipt, token, base] {
+        const auto result = AccountDeletionApi::request(base, token, proofId, receipt);
+        juce::MessageManager::callAsync([modal, uid, generation, result] {
+          if (!modal) return;
+          if (!result.ok || result.state != "pending") { modal->fail(generation, uid); return; }
+          modal->receiveStatus(generation, uid, AccountDeletionModal::State::pending);
+        });
+      }).detach();
+    };
     content->onStatusRequested = [modal, uid](int generation) {
       const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), base = getApiBaseUrl();
       std::thread([modal, uid, generation, receipt, base] {
         const auto result = AccountDeletionApi::status(base, receipt);
-        juce::MessageManager::callAsync([modal, uid, generation, result] {
-          if (!modal) return;
+        juce::MessageManager::callAsync([modal, uid, generation, receipt, result] {
+          if (!modal || modal->getGeneration() != generation) return;
+          if (result.ok && result.state == "not-accepted" && SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt)) { modal->invalidate(); return; }
           if (!result.ok || result.state == "prepared") { modal->fail(generation, uid); return; }
           modal->receiveStatus(generation, uid, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
         });
@@ -3611,9 +3630,7 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
         juce::MessageManager::callAsync([safe, modal, uid, generation, result] {
           if (!modal) return;
           if (!safe || safe->activeSession.uid != uid) { modal->invalidate(); return; }
-          // Execution intentionally remains disabled: no production deletion adapters.
-          auto reviewed = result; reviewed.executionAvailable = false;
-          modal->receivePreview(generation, uid, reviewed);
+          modal->receivePreview(generation, uid, result);
         });
       }).detach();
     };
@@ -5989,4 +6006,37 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   }
 
   return false;
+}
+
+void MTControlsAudioProcessorEditor::showPendingAccountDeletion() {
+  const auto receipts = SessionPersistence::listAccountDeletionReceipts(); if (receipts.isEmpty()) return;
+  const auto receipt = receipts[0]; const juce::String scope("deletion-status-recovery");
+  auto *content = new AccountDeletionModal(scope); juce::Component::SafePointer<AccountDeletionModal> modal(content);
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this); const auto completed = std::make_shared<bool>(false);
+  content->setSize(juce::jmin(500, juce::jmax(320, getWidth() - 24)), juce::jmin(620, juce::jmax(240, getHeight() - 24)));
+  content->onAccepted = [receipt] { return SessionPersistence::blockAccountForDeletionReceipt(receipt); };
+  content->onDismissed = [safe, receipt, completed](bool) {
+    if (*completed) SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt);
+    if (safe && *completed) juce::MessageManager::callAsync([safe] { if (safe) safe->showPendingAccountDeletion(); });
+  };
+  content->onCancelled = [modal] { if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0); };
+  content->onStatusRequested = [safe, modal, receipt, scope, completed](int generation) {
+    const auto base = getApiBaseUrl();
+    std::thread([safe, modal, receipt, scope, completed, generation, base] {
+      const auto result = AccountDeletionApi::status(base, receipt);
+      juce::MessageManager::callAsync([safe, modal, receipt, scope, completed, generation, result] {
+        if (!modal || !safe || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::pending) return;
+        if (result.ok && ((result.state == "prepared" && SessionPersistence::clearUnsubmittedDeletionReceipt(receipt)) ||
+                          (result.state == "not-accepted" && SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt)))) {
+          modal->invalidate(); safe->tryResumeSessionAsync(); return;
+        }
+        if (!result.ok || result.state == "prepared") { modal->fail(generation, scope); return; }
+        modal->receiveStatus(generation, scope, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
+        *completed = modal->getState() == AccountDeletionModal::State::complete;
+      });
+    }).detach();
+  };
+  juce::DialogWindow::LaunchOptions options; options.content.setOwned(content); options.dialogTitle = L10n::tr("Estado de eliminación", "Deletion status");
+  options.dialogBackgroundColour = AuthUi::surface; options.useNativeTitleBar = true; options.resizable = false; options.escapeKeyTriggersCloseButton = true;
+  options.launchAsync(); content->resumePendingStatus();
 }

@@ -73,9 +73,9 @@ AccountDeletionStatus AccountDeletionApi::parseStatus(const juce::var &body) {
   if (!body.isObject() || !body["ok"].isBool() || !bool(body["ok"]) ||
       !body["state"].isString() || !body["retryAfterSeconds"].isInt()) return result;
   result.state = body["state"].toString(); result.retryAfterSeconds = int(body["retryAfterSeconds"]);
-  if (result.state != "prepared" && result.state != "pending" && result.state != "complete") return {};
+  if (result.state != "prepared" && result.state != "pending" && result.state != "complete" && result.state != "not-accepted") return {};
   if (result.retryAfterSeconds < 0 || result.retryAfterSeconds > 60 ||
-      ((result.state == "complete" || result.state == "prepared") && result.retryAfterSeconds != 0)) return {};
+      ((result.state == "complete" || result.state == "prepared" || result.state == "not-accepted") && result.retryAfterSeconds != 0)) return {};
   result.ok = true; return result;
 }
 AccountDeletionReauthentication AccountDeletionApi::reauthenticate(const juce::String &base, const juce::String &current,
@@ -88,4 +88,11 @@ AccountDeletionStatus AccountDeletionApi::status(const juce::String &base, const
   if (!validStatusReceipt(receipt)) return {};
   auto *body = new juce::DynamicObject(); body->setProperty("receipt", receipt);
   return parseStatus(deletionPost(base, "/api/account/deletion/status", juce::var(body)));
+}
+
+AccountDeletionStatus AccountDeletionApi::request(const juce::String &base, const juce::String &token,
+                                                const juce::String &proofId, const juce::String &receipt) {
+  if (token.isEmpty() || token.length() > 16384 || proofId.length() != 36 || !validStatusReceipt(receipt)) return {};
+  auto *body = new juce::DynamicObject(); body->setProperty("proofId", proofId); body->setProperty("receipt", receipt);
+  return parseStatus(deletionPost(base, "/api/account/deletion/request", juce::var(body), token));
 }

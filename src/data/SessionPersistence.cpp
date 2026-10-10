@@ -87,6 +87,7 @@ bool SessionPersistence::load(PersistedSessionSnapshot &out) {
 
   out.uid = o->getProperty("uid").toString().trim();
   if (isAccountDeletionPending(out.uid)) { out = {}; f.deleteFile(); return false; }
+  if (loadAccountDeletionReceipt(out.uid).isNotEmpty()) { out = {}; return false; }
   out.authProvider = o->getProperty("authProvider").toString();
   out.authProviderUser = o->getProperty("authProviderUser").toString();
   out.email = o->getProperty("email").toString().trim();
@@ -196,7 +197,8 @@ juce::String SessionPersistence::loadAccountDeletionReceipt(const juce::String &
   if (uid.isEmpty()) return {};
   const auto file = deletionReceiptFile(uid);
   if (!file.existsAsFile() || file.getSize() > 4096) return {};
-  const auto receipt = file.loadFileAsString();
+  const auto raw = file.loadFileAsString(); const auto body = juce::JSON::parse(raw);
+  const auto receipt = body.isObject() ? body["receipt"].toString() : raw;
   return validDeletionReceipt(receipt) ? receipt : juce::String{};
 }
 bool SessionPersistence::saveAccountDeletionReceipt(const juce::String &uid, const juce::String &receipt) {
@@ -204,7 +206,8 @@ bool SessionPersistence::saveAccountDeletionReceipt(const juce::String &uid, con
   if (uid.isEmpty() || !validDeletionReceipt(receipt)) return false;
   const auto file = deletionReceiptFile(uid);
   if (file.exists()) return loadAccountDeletionReceipt(uid) == receipt;
-  return file.getParentDirectory().createDirectory() && file.replaceWithText(receipt);
+  auto *body = new juce::DynamicObject(); body->setProperty("version", 1); body->setProperty("receipt", receipt); body->setProperty("submitted", false);
+  return file.getParentDirectory().createDirectory() && file.replaceWithText(juce::JSON::toString(juce::var(body)));
 }
 juce::StringArray SessionPersistence::listAccountDeletionReceipts() {
   const juce::ScopedLock lock(snapshotLock);
@@ -212,7 +215,8 @@ juce::StringArray SessionPersistence::listAccountDeletionReceipts() {
   for (const auto &file : getMtControlsDirectory().getChildFile("account-deletion-receipts")
        .findChildFiles(juce::File::findFiles, false)) {
     if (file.getSize() > 4096) continue;
-    const auto receipt = file.loadFileAsString();
+    const auto raw = file.loadFileAsString(); const auto body = juce::JSON::parse(raw);
+    const auto receipt = body.isObject() ? body["receipt"].toString() : raw;
     if (validDeletionReceipt(receipt)) receipts.addIfNotAlreadyThere(receipt);
   }
   return receipts;
@@ -221,4 +225,43 @@ bool SessionPersistence::clearAccountDeletionReceipt(const juce::String &uid, co
   const juce::ScopedLock lock(snapshotLock);
   if (uid.isEmpty() || !validDeletionReceipt(expected) || loadAccountDeletionReceipt(uid) != expected) return false;
   return deletionReceiptFile(uid).deleteFile();
+}
+
+bool SessionPersistence::markAccountDeletionReceiptSubmitted(const juce::String &uid, const juce::String &receipt) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (loadAccountDeletionReceipt(uid) != receipt || !validDeletionReceipt(receipt)) return false;
+  auto *body = new juce::DynamicObject(); body->setProperty("version", 1); body->setProperty("receipt", receipt); body->setProperty("submitted", true);
+  return deletionReceiptFile(uid).replaceWithText(juce::JSON::toString(juce::var(body)));
+}
+namespace {
+juce::File findDeletionReceiptFile(const juce::String &receipt) {
+  for (const auto &file : getMtControlsDirectory().getChildFile("account-deletion-receipts").findChildFiles(juce::File::findFiles, false)) {
+    if (file.getSize() > 4096) continue; const auto raw = file.loadFileAsString(); const auto body = juce::JSON::parse(raw);
+    if ((body.isObject() ? body["receipt"].toString() : raw) == receipt) return file;
+  }
+  return {};
+}
+}
+bool SessionPersistence::clearUnsubmittedDeletionReceipt(const juce::String &receipt) {
+  const juce::ScopedLock lock(snapshotLock); if (!validDeletionReceipt(receipt)) return false;
+  const auto file = findDeletionReceiptFile(receipt); const auto body = juce::JSON::parse(file.loadFileAsString());
+  // Legacy/unknown state is uncertain. Only explicit durable submitted=false may be discarded.
+  return body.isObject() && body["submitted"].isBool() && !bool(body["submitted"]) && file.deleteFile();
+}
+bool SessionPersistence::blockAccountForDeletionReceipt(const juce::String &receipt) {
+  const juce::ScopedLock lock(snapshotLock); if (!validDeletionReceipt(receipt)) return false;
+  const auto file = findDeletionReceiptFile(receipt); if (!file.existsAsFile()) return false;
+  const auto marker = getMtControlsDirectory().getChildFile("account-deletion-blocks").getChildFile(file.getFileName());
+  if (!marker.getParentDirectory().createDirectory() || !marker.replaceWithText("pending")) return false;
+  const auto snapshot = getSnapshotFile();
+  auto json = deobfuscateFromOblivion(snapshot.loadFileAsString());
+  if (!json.startsWithChar('{')) json = snapshot.loadFileAsString();
+  const auto uid = juce::JSON::parse(json)["uid"].toString().trim();
+  if (uid.isNotEmpty() && juce::SHA256(uid.toRawUTF8(), uid.getNumBytesAsUTF8()).toHexString() == file.getFileNameWithoutExtension())
+    return snapshot.deleteFile();
+  return true;
+}
+bool SessionPersistence::acknowledgeCompletedDeletionReceipt(const juce::String &receipt) {
+  const juce::ScopedLock lock(snapshotLock); if (!validDeletionReceipt(receipt)) return false;
+  const auto file = findDeletionReceiptFile(receipt); return file.existsAsFile() && file.deleteFile();
 }

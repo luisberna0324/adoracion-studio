@@ -15,6 +15,7 @@ public:
   std::function<void(bool preserveReceipt)> onDismissed; // Also called for titlebar/Escape destruction.
   std::function<bool()> onAccepted; // Persist UID block and clear session after verified acceptance.
   ReauthPromptModal *providerForm();
+  void resumePendingStatus();
   void requestPreview();
   void invalidate();
   void receivePreview(int generation, const juce::String &uid, AccountDeletionPreview);

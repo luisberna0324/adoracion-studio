@@ -386,6 +386,7 @@ private:
   juce::String consumePendingAuthCallbackUrl();
   void enqueueAuthCallbackUrl(const juce::String &callbackUrl);
   void tryResumeSessionAsync();
+  void showPendingAccountDeletion();
   PersistedSessionSnapshot persistedSnapshotFromActiveSession(
       juce::int64 lastOnlineMs) const;
   void applyPersistedSnapshotToActive(const PersistedSessionSnapshot &snap);
