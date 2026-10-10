@@ -208,8 +208,10 @@ La configuracion queda deshabilitada hasta provisionar los valores Apple
 server-only, clave de cifrado de tokens, capacidad/perfiles y build opt-in.
 No se crearon claves ni se modifico el portal. Los tokens Apple se retienen
 cifrados para revocacion y no llegan a la app. El helper de revocacion esta
-preparado; falta un coordinador de eliminacion completa de cuenta y eventos
-firmados de servidor Apple. El cliente ya consulta el estado de credenciales
+preparado; falta un coordinador de eliminacion completa de cuenta. El backend
+y sus pruebas ya incluyen eventos firmados Apple y deduplicacion; su activacion
+y registro en el portal requieren autorizacion. Revocaciones bloquean sesiones
+Apple anteriores sin borrar la cuenta ni afectar Google/correo. El cliente ya consulta el estado de credenciales
 al reanudar y recibe notificaciones nativas de revocacion: estados revocado,
 no encontrado o transferido cierran la sesion local existente; errores del
 sistema conservan la sesion. UID, usuario Apple y generacion descartan
