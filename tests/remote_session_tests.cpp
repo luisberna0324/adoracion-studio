@@ -1,6 +1,7 @@
 #include "network/RemoteSession.h"
 #include "network/PlaybackSession.h"
 #include "audio/PracticeLoop.h"
+#include "ui/panels/PracticeAccompaniment.h"
 #include <JuceHeader.h>
 #include <chrono>
 #include <cstring>
@@ -30,6 +31,10 @@ struct TestProcessor {
   int practiceStem = -1;
   int practiceMode = 0;
   int practiceWrites = 0;
+  bool dynamicGuideEnabled = false, guideAssets = false, guideMuted = true;
+  bool metronomeEnabled = false, clickDivisionEnabled = false, metronomeMuted = true;
+  int clickDivision = 0;
+  std::vector<bool> stemMutes{false, true, true};
   bool loaded = true;
   bool playing = false;
   double position = 4.0;
@@ -99,6 +104,20 @@ struct TestProcessor {
   float getMetronomeGain() const { return 1.0f; }
   float getDynamicGuideVolume() const { return volume; }
   float getDynamicGuideGain() const { return 1.0f; }
+  bool isDynamicGuideEnabled() const { return dynamicGuideEnabled; }
+  bool hasDynamicGuideAssets() const { return guideAssets; }
+  bool isDynamicGuideMuted() const { return guideMuted; }
+  bool isMetronomeEnabled() const { return metronomeEnabled; }
+  bool isClickDivisionEnabled() const { return clickDivisionEnabled; }
+  bool isMetronomeMuted() const { return metronomeMuted; }
+  int getClickDivision() const { return clickDivision; }
+  bool isStemMuted(int index) const { return stemMutes.at(index); }
+  void setDynamicGuideMuted(bool value) { guideMuted = value; ++writes; }
+  void setMetronomeEnabled(bool value) { metronomeEnabled = value; ++writes; }
+  void setClickDivisionEnabled(bool value) { clickDivisionEnabled = value; ++writes; }
+  void setMetronomeMuted(bool value) { metronomeMuted = value; ++writes; }
+  void setClickDivision(int value) { clickDivision = value; ++writes; }
+  void setStemMute(int index, bool value) { stemMutes.at(index) = value; ++writes; }
   float getPadsVolume() const { return volume; }
   float getPadsGain() const { return 1.0f; }
   void setStemVolume(int, float v) { volume = v; ++writes; }
@@ -547,24 +566,34 @@ bool testPracticeListeningPreview() {
       return true;
     std::cerr << message << '\n'; return false;
   };
+  auto expectConfirmed = [&](int mode, int stem, const char *message) {
+    if (session.getConfirmedPracticeListeningMode() == mode &&
+        session.getConfirmedPracticeListeningStem() == stem)
+      return true;
+    std::cerr << message << '\n'; return false;
+  };
   session.applyState(snapshot(10, 1, "second", "other-client"));
   session.setPracticeListeningMode(0, 2);
   const auto reducedId = lastId;
   if (!expect(2, 0, true, "Listen must preview mode and stem before a snapshot")) return false;
+  if (!expectConfirmed(1, 1, "Glow must retain the confirmed focus while a reduced gesture is pending")) return false;
   session.applyState(snapshot(10, 1, "second", "other-client"));
   if (!expect(2, 0, true, "A delayed snapshot cannot undo the latest listen")) return false;
 
   session.setPracticeListeningMode(-1, 0);
   const auto normalId = lastId;
   if (!expect(0, -1, false, "Normal must preview immediately and revoke retarget ownership")) return false;
+  if (!expectConfirmed(1, 1, "Pending restore cannot hide a still-confirmed focus")) return false;
   session.applyAcknowledgement(reducedId, true);
   session.applyState(snapshot(11, 2, "first", reducedId));
   if (!expect(0, -1, false, "An older ACK and snapshot cannot revive reduced mode")) return false;
+  if (!expectConfirmed(2, 0, "Presentation reflects actual reduced audio even while normal awaits confirmation")) return false;
   session.applyAcknowledgement(normalId, true);
   session.applyState(snapshot(11, 2, "first", reducedId));
   if (!expect(0, -1, false, "ACK alone cannot end the normal preview")) return false;
   session.applyState(snapshot(12, 0, {}, {}));
   if (!expect(0, -1, false, "The following sequence confirms normal")) return false;
+  if (!expectConfirmed(0, -1, "Confirmed normal removes the focus presentation")) return false;
 
   session.setPracticeListeningMode(1, 1);
   const auto earlierId = lastId;
@@ -582,6 +611,7 @@ bool testPracticeListeningPreview() {
   session.setPracticeListeningMode(0, 2);
   session.applyAcknowledgement(lastId, false);
   if (!expect(1, 1, false, "A rejected listen reverts to the confirmed mode and stem")) return false;
+  if (!expectConfirmed(1, 1, "A rejected request never replaces the confirmed focus")) return false;
   session.setPracticeListeningMode(1, 1);
   const auto ownedId = lastId;
   session.applyAcknowledgement(ownedId, true);
@@ -604,9 +634,11 @@ bool testPracticeListeningPreview() {
   session.setPracticeListeningMode(1, 1);
   session.setConnected(false);
   if (!expect(0, -1, false, "Disconnect clears a pending listen")) return false;
+  if (!expectConfirmed(0, -1, "Disconnect clears confirmed focus presentation")) return false;
 
   session.applyState(snapshot(17, 0, {}, {}, "new-song"));
   session.setPracticeListeningMode(1, 1);
+  if (!expectConfirmed(0, -1, "Pending focus from normal does not illuminate the glow")) return false;
   if (!expect(1, 1, true, "A fresh connected listen is optimistic")) return false;
   if (!waitUntil([&] { return session.getPracticeListeningMode() == 0; }, 2500) ||
       !expect(0, -1, false, "An unacknowledged preview expires even without another snapshot")) return false;
@@ -773,7 +805,181 @@ bool testPracticeLoopAdapter() {
                 "Song changes revoke preparation; clients never mutate local audio");
 }
 
+bool testPracticeAccompanimentIncompleteState() {
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  if (!session.hasConfirmedDynamicGuideMixState() ||
+      !session.hasConfirmedMetronomeState()) return false;
+  session.setRemote(true);
+  const auto snapshot = [] {
+    return juce::JSON::parse(R"({"song":{"id":"song"},"ui":{"isDynamicGuideEnabled":true,"hasDynamicGuideAssets":true,"isMetronomeEnabled":true,"isClickDivisionEnabled":true,"getClickDivision":1},"mixer":[{"target":"guide","mute":false},{"target":"click","mute":false}]})");
+  };
+  const auto expect = [](bool ok, const char *message) {
+    if (!ok) std::cerr << message << '\n';
+    return ok;
+  };
+  auto complete = snapshot();
+  session.applyState(complete);
+  if (!expect(session.hasConfirmedDynamicGuideMixState() && session.hasConfirmedMetronomeState(),
+              "Complete virtual mixer states are usable")) return false;
+
+  for (const int bus : {0, 1}) {
+    for (const int malformed : {0, 1, 2}) {
+      auto next = snapshot();
+      auto rows = BasicPlaybackSession<TestProcessor>::field(next, "mixer");
+      if (malformed == 0)
+        rows.getArray()->remove(bus);
+      else if (malformed == 1)
+        rows.getArray()->getReference(bus).getDynamicObject()->removeProperty("mute");
+      else
+        rows.getArray()->getReference(bus).getDynamicObject()->setProperty("mute", "false");
+      session.applyState(next);
+      if (!expect(bus == 0 ? !session.hasConfirmedDynamicGuideMixState()
+                           : !session.hasConfirmedMetronomeState(),
+                  "Missing mixer bus, missing mute and string mute cannot imply ON")) return false;
+      if (!expect(bus == 0 ? session.hasConfirmedMetronomeState()
+                           : session.hasConfirmedDynamicGuideMixState(),
+                  "A malformed bus does not disable the other valid bus")) return false;
+    }
+  }
+  for (const char *field : {"isMetronomeEnabled", "isClickDivisionEnabled", "getClickDivision"}) {
+    for (const bool remove : {false, true}) {
+      auto next = snapshot();
+      auto ui = BasicPlaybackSession<TestProcessor>::field(next, "ui");
+      if (remove) ui.getDynamicObject()->removeProperty(field);
+      else ui.getDynamicObject()->setProperty(field, "1");
+      session.applyState(next);
+      if (!expect(!session.hasConfirmedMetronomeState(),
+                  "Metronome flags and division require complete typed state")) return false;
+    }
+  }
+  for (const int mask : {-1, 8, 99}) {
+    auto next = snapshot();
+    BasicPlaybackSession<TestProcessor>::field(next, "ui").getDynamicObject()
+        ->setProperty("getClickDivision", mask);
+    session.applyState(next);
+    if (!expect(!session.hasConfirmedMetronomeState(),
+                "Out-of-range division masks cannot establish metronome state")) return false;
+  }
+  for (const int mask : {0, 1, 7}) {
+    auto next = snapshot();
+    BasicPlaybackSession<TestProcessor>::field(next, "ui").getDynamicObject()
+        ->setProperty("getClickDivision", mask);
+    session.applyState(next);
+    if (!expect(session.hasConfirmedMetronomeState(),
+                "Every supported mask, including recoverable zero, has valid state")) return false;
+  }
+  session.setConnected(false);
+  return expect(!session.hasConfirmedDynamicGuideMixState() &&
+                    !session.hasConfirmedMetronomeState(),
+                "Disconnected virtual bus snapshots are not usable state");
+}
+
+bool testPracticeAccompanimentAdapter() {
+  using namespace playworship::practice;
+  const auto expect = [](bool ok, const char *message) {
+    if (!ok) std::cerr << message << '\n';
+    return ok;
+  };
+  TestProcessor local;
+  BasicPlaybackSession<TestProcessor> session(local);
+  local.dynamicGuideEnabled = true;
+  local.guideAssets = true;
+  local.practiceMode = 1;
+  local.practiceStem = 0;
+  if (!expect(session.hasGuideSourceState() && session.isDynamicGuideEnabled() &&
+                  session.hasDynamicGuideAssets() &&
+                  session.getConfirmedPracticeListeningMode() == 1 &&
+                  session.getConfirmedPracticeListeningStem() == 0,
+              "Local guide state is read from the processor")) return false;
+  setGuideEnabled(session, GuideSelection{true, true, {}}, true);
+  if (!expect(!local.guideMuted && local.writes == 1,
+              "Local guide ON delegates only to dynamic mute")) return false;
+  const int localWrites = local.writes;
+  session.setRemote(true);
+  struct Command { juce::String action, target; juce::var value; };
+  std::vector<Command> commands;
+  session.onCommand = [&](const juce::String &, const juce::String &action,
+                          const juce::var &value, const juce::String &target) {
+    commands.push_back({action, target, value});
+  };
+  auto state = juce::JSON::parse(R"({"seq":1,"song":{"id":"song","stems":[{"id":"excluded","include":false},{"id":"music","include":true},{"id":"guide-a","include":true},{"id":"guide-b","include":true}]},"settings":{"dynamicGuide":{"enabled":true}},"ui":{"isMetronomeEnabled":false,"isClickDivisionEnabled":false,"getClickDivision":0},"mixer":[{"target":"guide","mute":true},{"target":"click","mute":true},{"target":"music","mute":false},{"target":"guide-a","mute":true},{"target":"guide-b","mute":true}]})");
+  session.applyState(state);
+  if (!expect(!session.hasGuideSourceState() && !session.isDynamicGuideEnabled() &&
+                  !session.hasDynamicGuideAssets(),
+              "Old servers must not infer guide selection from cached settings")) return false;
+  auto missingMixState = juce::JSON::parse(R"({"seq":1,"song":{"id":"song","stems":[{"id":"guide-metadata-only","include":true}]},"ui":{"isDynamicGuideEnabled":false,"hasDynamicGuideAssets":true},"mixer":[]})");
+  session.applyState(missingMixState);
+  if (!expect(session.getLoadedStemCount() == 1 && !session.hasConfirmedStemMixState(0),
+              "Included guide metadata without a server mixer row is not a loaded source")) return false;
+  session.applyState(state);
+  if (!expect(session.hasConfirmedStemMixState(1) && session.hasConfirmedStemMixState(2) &&
+                  !session.hasConfirmedStemMixState(-1) && !session.hasConfirmedStemMixState(3),
+              "Guide availability requires an authoritative mixer row for each included index")) return false;
+  auto ui = BasicPlaybackSession<TestProcessor>::field(state, "ui");
+  ui.getDynamicObject()->setProperty("isDynamicGuideEnabled", true);
+  session.applyState(state);
+  if (!expect(!session.hasGuideSourceState(),
+              "An incomplete source snapshot is not reliable")) return false;
+  ui.getDynamicObject()->setProperty("hasDynamicGuideAssets", "true");
+  session.applyState(state);
+  if (!expect(!session.hasGuideSourceState(),
+              "Source metadata requires booleans, not truthy strings")) return false;
+  ui.getDynamicObject()->setProperty("hasDynamicGuideAssets", false);
+  session.applyState(state);
+  if (!expect(session.hasGuideSourceState() && session.isDynamicGuideEnabled() &&
+                  !session.hasDynamicGuideAssets(),
+              "Selected dynamic source can correctly report an absent pack")) return false;
+  setGuideEnabled(session, GuideSelection{false, true, {}}, true);
+  if (!expect(commands.empty(), "Unavailable guide does not send an on/off command")) return false;
+  ui.getDynamicObject()->setProperty("hasDynamicGuideAssets", true);
+  session.applyState(state);
+  setGuideEnabled(session, GuideSelection{true, true, {}}, true);
+  if (!expect(commands.size() == 1 && commands.back().action == "mix.mute" &&
+                  commands.back().target == "guide" && !static_cast<bool>(commands.back().value) &&
+                  session.isDynamicGuideMuted() && local.writes == localWrites,
+              "Remote guide ON sends mute only, retaining the authoritative OFF state")) return false;
+  auto mixer = BasicPlaybackSession<TestProcessor>::field(state, "mixer");
+  mixer.getArray()->getReference(0).getDynamicObject()->setProperty("mute", false);
+  state.getDynamicObject()->setProperty("seq", 2);
+  session.applyState(state);
+  if (!expect(guideEnabled(session, GuideSelection{true, true, {}}),
+              "Dynamic guide ON is confirmed only by the next mixer state")) return false;
+  ui.getDynamicObject()->setProperty("isDynamicGuideEnabled", false);
+  session.applyState(state);
+  if (!expect(session.hasGuideSourceState() && !session.isDynamicGuideEnabled(),
+              "Original source state comes from live UI fields, not stale settings")) return false;
+  setGuideEnabled(session, GuideSelection{true, false, {1, 2}}, true);
+  if (!expect(commands.size() == 3 && commands[1].target == "guide-a" &&
+                  commands[2].target == "guide-b" && commands[1].action == "mix.mute" &&
+                  commands[2].action == "mix.mute" && local.writes == localWrites,
+              "Original guide commands use included stem IDs and never the local processor")) return false;
+  setMetronomeEnabled(session, true);
+  if (!expect(commands.size() == 7 && commands[3].action == "click.division" &&
+                  static_cast<int>(commands[3].value) == 1 &&
+                  commands[4].action == "click.enabled" &&
+                  commands[5].action == "mix.mute" && commands[5].target == "click" &&
+                  commands[6].action == "click.metronome" && !metronomeEnabled(session),
+              "Remote metronome enables all gates without optimistic ON")) return false;
+  ui.getDynamicObject()->setProperty("isMetronomeEnabled", true);
+  ui.getDynamicObject()->setProperty("isClickDivisionEnabled", true);
+  ui.getDynamicObject()->setProperty("getClickDivision", 1);
+  mixer.getArray()->getReference(1).getDynamicObject()->setProperty("mute", false);
+  state.getDynamicObject()->setProperty("seq", 3);
+  session.applyState(state);
+  if (!expect(metronomeEnabled(session) && local.writes == localWrites,
+              "Remote metronome reflects confirmed state without local audio writes")) return false;
+  session.setConnected(false);
+  setGuideEnabled(session, GuideSelection{true, true, {}}, false);
+  setMetronomeEnabled(session, false);
+  return expect(commands.size() == 7 && local.writes == localWrites &&
+                    local.practiceMode == 1 && local.practiceStem == 0,
+                "Disconnected accompaniment cannot send commands or mutate local audio");
+}
+
 int main() {
+  if (!testPracticeAccompanimentIncompleteState()) { std::cerr << "Incomplete accompaniment state failed\n"; return 1; }
+  if (!testPracticeAccompanimentAdapter()) { std::cerr << "Practice accompaniment adapter failed\n"; return 1; }
   if (!testSectionAutomationAdapter()) { std::cerr << "Section automation adapter failed\n"; return 1; }
   if (!testPracticeLoopAdapter()) { std::cerr << "Practice loop adapter failed\n"; return 1; }
   if (!testPracticeScrubLease()) { std::cerr << "Practice scrub ownership failed\n"; return 1; }

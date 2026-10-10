@@ -33,6 +33,7 @@
 #include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
+#include "ui/panels/PracticeAccompaniment.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
 #include "ui/panels/TeamsPanel.h"
@@ -3736,6 +3737,113 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return playbackSession.hasLoadedSong() &&
            (!playbackSession.isRemote() || playbackSession.isConnected());
   };
+  const auto canControlAccompaniment = [this] {
+    return hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty() &&
+           !songLoadBusy && playbackSession.hasLoadedSong() &&
+           (!playbackSession.isRemote() || playbackSession.isConnected());
+  };
+  const auto accompanimentIdentity = [this] {
+    auto identity = playbackSession.isRemote() ? juce::String("remote")
+                                              : juce::String("local");
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    append(currentLoadedSong.id);
+    if (playbackSession.isRemote())
+      append(remoteSession.getSelectedServerName());
+    return identity;
+  };
+  const auto guideSelection = [this, canControlAccompaniment] {
+    playworship::practice::GuideSelection selection;
+    if (!canControlAccompaniment() || !playbackSession.hasGuideSourceState())
+      return selection;
+    selection.dynamic = playbackSession.isDynamicGuideEnabled();
+    if (selection.dynamic) {
+      selection.available = playbackSession.hasDynamicGuideAssets() &&
+                            playbackSession.hasConfirmedDynamicGuideMixState();
+    } else {
+      selection.stemIndices = playworship::practice::originalGuideStemIndices(
+          currentLoadedSong.stems, playbackSession.getLoadedStemCount(),
+          [](const ImportedStemData &stem) {
+            return stemPriorityForStripOrder(stem) == 1;
+          });
+      selection.stemIndices.erase(
+          std::remove_if(selection.stemIndices.begin(), selection.stemIndices.end(),
+                         [this](const int index) {
+                           return !playbackSession.hasConfirmedStemMixState(index);
+                         }),
+          selection.stemIndices.end());
+      selection.available = !selection.stemIndices.empty();
+    }
+    return selection;
+  };
+  sources.guideState = [this, canControlAccompaniment, accompanimentIdentity,
+                        guideSelection] {
+    PracticePanel::AccompanimentState state;
+    const auto selection = guideSelection();
+    state.identity = accompanimentIdentity() +
+        (playbackSession.hasGuideSourceState()
+             ? (playbackSession.isDynamicGuideEnabled() ? "|guide:dynamic"
+                                                        : "|guide:original")
+             : "|guide:unknown");
+    // Include the exact loaded targets so replacing/reordering guide stems
+    // cancels a pending request even if the song ID did not change.
+    int includedIndex = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include)
+        continue;
+      const int index = includedIndex++;
+      if (std::find(selection.stemIndices.begin(), selection.stemIndices.end(),
+                    index) == selection.stemIndices.end())
+        continue;
+      state.identity << '|' << index << ':' << stem.stemId.length() << ':'
+                     << stem.stemId;
+    }
+    state.available = selection.available;
+    state.enabled = playworship::practice::guideEnabled(playbackSession, selection);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!playbackSession.hasGuideSourceState())
+      state.unavailableReason = L10n::tr(
+          "Actualiza PlayWorship en el servidor para controlar la guía.",
+          "Update PlayWorship on the server to control the guide.");
+    else if (selection.dynamic && !playbackSession.hasConfirmedDynamicGuideMixState())
+      state.unavailableReason = L10n::tr("El estado de mezcla de la guía no está disponible.",
+                                         "The guide mixer state is unavailable.");
+    else if (!selection.available)
+      state.unavailableReason = selection.dynamic
+          ? L10n::tr("El paquete de guía dinámica no está cargado.",
+                     "The dynamic guide pack is not loaded.")
+          : L10n::tr("Esta canción no tiene una pista de guía original cargada.",
+                     "This song has no loaded original guide track.");
+    return state;
+  };
+  sources.setGuideEnabled = [this, guideSelection](const bool enabled) {
+    playworship::practice::setGuideEnabled(playbackSession, guideSelection(), enabled);
+  };
+  sources.metronomeState = [this, canControlAccompaniment, accompanimentIdentity] {
+    PracticePanel::AccompanimentState state;
+    state.identity = accompanimentIdentity() + "|metronome:dynamic";
+    state.available = canControlAccompaniment() &&
+                      playbackSession.hasConfirmedMetronomeState();
+    state.enabled = state.available &&
+                    playworship::practice::metronomeEnabled(playbackSession);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!state.available)
+      state.unavailableReason = L10n::tr("El estado del metrónomo no está disponible.",
+                                         "The metronome state is unavailable.");
+    return state;
+  };
+  sources.setMetronomeEnabled = [this, canControlAccompaniment](const bool enabled) {
+    if (!canControlAccompaniment() || !playbackSession.hasConfirmedMetronomeState())
+      return;
+    playworship::practice::setMetronomeEnabled(playbackSession, enabled);
+    if (!playbackSession.isRemote())
+      persistClickDynMetronomeEnabledForActiveSong(playbackSession.isMetronomeEnabled());
+  };
   sources.instruments = [this] {
     std::vector<PracticePanel::Instrument> result;
     if (!hasCurrentLoadedSong)
@@ -3786,6 +3894,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
     int loadedIndex = 0;
     for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size();
          ++rawIndex) {
+      if (!currentLoadedSong.stems[rawIndex].include)
+        continue;
+      if (loadedIndex++ == target)
+        return juce::String(static_cast<int>(rawIndex));
+    }
+    return juce::String{};
+  };
+  sources.displayListeningMode =
+      [this] { return playbackSession.getConfirmedPracticeListeningMode(); };
+  sources.displayListeningInstrumentId = [this] {
+    const int target = playbackSession.getConfirmedPracticeListeningStem();
+    int loadedIndex = 0;
+    for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size(); ++rawIndex) {
       if (!currentLoadedSong.stems[rawIndex].include)
         continue;
       if (loadedIndex++ == target)

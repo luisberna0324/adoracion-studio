@@ -193,6 +193,14 @@ public:
   void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
   void setDynamicGuideSettings(const DynamicGuideSettings &settings);
   DynamicGuideSettings getDynamicGuideSettings() const;
+  bool isDynamicGuideEnabled() const noexcept {
+    return dynamicGuideEnabledState.load(std::memory_order_relaxed);
+  }
+  // Control/message-thread query, like guide loading. Does not touch disk or
+  // infer availability from the selected source when its pack failed to load.
+  bool hasDynamicGuideAssets() const noexcept {
+    return dynamicGuideEngine.getLoadedSectionCount() > 0;
+  }
   void setDynamicGuideLanguage(AppLanguage language);
   void setArrangementEditingActive(bool editingActive) noexcept;
   bool consumeDynamicGuideMissingSectionWarning(juce::String &outSectionName);

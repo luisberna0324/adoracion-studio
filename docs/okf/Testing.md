@@ -476,3 +476,31 @@ dobles de UI y no acreditan compilación nativa, accesibilidad del sistema,
 elipsis renderizada ni revisión visual/táctil en iOS/Android. Antes de publicar,
 compilar `MTControls_Standalone`, ejecutar `practice_panel_gestures` y revisar
 el carrusel con nombres largos y gestos interrumpidos en la app real.
+
+
+## Ensayo: halo y acompañamiento
+
+- `practice_accompaniment` prueba la lógica real de selección y comandos de
+  acompañamiento sin depender de JUCE. Los dobles de sesión comprueban guía
+  original/dinámica/ausente, índices de stems incluidos, independencia de los
+  buses y compuertas enable/división/mute del metrónomo. Es cobertura del contrato
+  de control; no sustituye un render ni una prueba de audio del motor real.
+- `practice_toggle_request` prueba el guard real usado por el panel: confirmación,
+  estado remoto anterior, timeout de 2 segundos, cambio de contexto, independencia
+  entre botones y wrap del contador de milisegundos.
+- `practice_panel_gestures` cubre geometría 320/390, estado checked/accesibilidad,
+  toque/arrastre/teclado, reconciliación asíncrona, A–B/errores reubicados, restauración
+  desde ayuda y halo exterior en los tres estados. Requiere JUCE y entorno GUI.
+- Validación manual pendiente de dispositivo: comparar la intensidad del halo
+  estático, legibilidad de Guía/Metrónomo y avisos, VoiceOver/TalkBack, foco por Tab,
+  latencia real del servidor y escucha audible de cada fuente. Confirmar que la
+  onda mantiene su tamaño y los gestos/doble toque siguen disponibles fuera de `?`.
+
+Comprobaciones pequeñas sin JUCE (no equivalen a `MTControls_Standalone`):
+
+```bash
+c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_accompaniment_tests.cpp -o /tmp/practice-accompaniment
+/tmp/practice-accompaniment
+c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_toggle_request_tests.cpp -o /tmp/practice-toggle-request
+/tmp/practice-toggle-request
+```

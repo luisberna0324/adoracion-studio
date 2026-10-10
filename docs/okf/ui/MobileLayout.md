@@ -63,10 +63,34 @@ el encabezado. `Ensayo` y el nombre de la canción comparten una línea base
 en la cabecera de 64 puntos, separados por 12 puntos. El nombre usa color
 secundario y elipsis cuando no cabe, sin comprimir su fuente ni invadir
 los 12 puntos de separación con Cerrar.
-La fila anterior al transporte queda fuera de la tarjeta de
-onda: muestra el estado de la mezcla a la izquierda y la cápsula textual
-`Restaurar mezcla` de 160 × 44 puntos a la derecha solo cuando hay una escucha
-de ensayo activa.
+La fila anterior al transporte queda fuera de la tarjeta de onda y conserva
+sus 44 puntos de alto. Contiene dos botones de igual ancho, `Guía` y
+`Metrónomo`, separados por 12 puntos. Toda la superficie conmuta; no son
+switches pequeños. Encendido usa un fondo de acento tenue, marca de verificación
+y texto `Encendido`; apagado usa fondo oscuro, borde discreto, signo menos y
+texto `Apagado`. El estado nativo accesible también expone checked, la etiqueta,
+la disponibilidad y el estado pendiente. Tab y Espacio activan los botones.
+
+`Guía` silencia/desilencia la fuente ya elegida, original o dinámica; nunca
+cambia esa selección. Si no existe una fuente fiable/disponible, el botón queda
+deshabilitado con motivo accesible. `Metrónomo` controla Click Dyn: encenderlo
+habilita su motor/divisiones y quita mute; conserva la máscara de divisiones
+existente o recupera negras si estaba vacía. No modifica click original, Solo,
+faders, routing ni escucha de ensayo. Ambos controles permanecen independientes
+de cambiar el instrumento enfocado.
+
+Los botones muestran siempre el estado confirmado por la sesión. Durante un
+comando asíncrono conservan ese estado y muestran `Confirmando…`; bloquean otros
+toques en ese botón hasta confirmación o un timeout de 2 segundos. Cambiar fuente,
+canción, modo local/remoto o disponibilidad cancela la intención pendiente. Un
+toque llegado antes del siguiente tick no se aplica a una fuente que cambió.
+El timeout avisa sin afirmar éxito ni invertir el estado de la fuente.
+
+No hay fila permanente de estado de mezcla ni botón grande `Restaurar mezcla`.
+Los avisos A–B y errores sustituyen temporalmente las pistas de doble toque en
+los 30 puntos ya reservados arriba de la regla; no cambian tamaño de onda, tiempos
+ni transporte. Una selección A–B conserva allí su estado hasta borrarla. Al
+terminar el aviso/selección vuelven las pistas de doble toque.
 
 Sobre la tarjeta de onda, tono y tempo comparten una fila en dos columnas con
 12 puntos de separación. Los títulos `Tono` (`Key` en inglés) y `Tempo` se
@@ -184,8 +208,23 @@ predominio vertical (1.2 veces el horizontal) activa una sola acción por gesto:
 
 Es una ganancia temporal suavizada durante 200 ms, independiente de faders,
 trim, Solo y Mute; los niveles no acumulan ganancia. El footer indica
-el siguiente gesto disponible según el estado; la fila de mezcla fuera de la onda indica el modo vigente
-y ofrece `Restaurar mezcla`. Cerrar Ensayo restaura la mezcla si esa
+el estado actual y el siguiente gesto disponible. El marco exterior de la tarjeta
+muestra un halo persistente tenue: superior y laterales hasta media altura para
+Enfoque, inferior y laterales desde media altura para Reducido. Normal no tiene
+halo. Solo se ilumina cuando el instrumento visible es el objetivo real de la
+sesión confirmado por el servidor y hay control disponible; el preview optimista
+sigue sirviendo únicamente para encadenar gestos, con ayuda `Confirmando mezcla…`
+mientras llega la confirmación. Si el objetivo es otro, el footer y la ayuda
+indican su nombre. No se pinta encima de la onda: los trazos exteriores se
+renderizan antes de la tarjeta opaca. Es estático también con reducción de
+movimiento; no hay pulsos, parpadeo, blur ni buffers de imagen por frame.
+
+El botón `?` de 44 × 44 en la ayuda abre el estado detallado y la acción
+`Restaurar mezcla (R)`. Esta acción y la tecla R restauran sin hacer seek ni
+alterar Guía/Metrónomo. El botón de ayuda es una superficie dedicada; el resto
+de la tarjeta conserva los gestos y el doble toque de compás. No se asigna ningún
+reset al doble toque. Una ayuda abierta no puede resetear otra canción o sesión
+si el contexto cambia antes de elegir su acción. Cerrar Ensayo restaura la mezcla si esa
 vista sigue siendo propietaria de la escucha. Cargar otra canción, cambiar de
 modo local/cliente/servidor o desconectar al cliente propietario también la
 restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,

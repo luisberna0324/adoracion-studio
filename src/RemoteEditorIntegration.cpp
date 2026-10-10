@@ -770,6 +770,10 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
   ui.getDynamicObject()->setProperty("getMetronomeBpm", p.getMetronomeBpm());
   ui.getDynamicObject()->setProperty("getClickDivision", p.getClickDivision());
   ui.getDynamicObject()->setProperty("isClickDivisionEnabled", p.isClickDivisionEnabled());
+  // Authoritative guide source/availability for PracticePanel. The settings
+  // sidecar may lag a source change and cannot confirm an audibility toggle.
+  ui.getDynamicObject()->setProperty("isDynamicGuideEnabled", p.isDynamicGuideEnabled());
+  ui.getDynamicObject()->setProperty("hasDynamicGuideAssets", p.hasDynamicGuideAssets());
   const auto jumpState = p.getArrangementJumpState();
   ui.getDynamicObject()->setProperty("getPendingArrangementPartJumpIndex", jumpState.first);
   ui.getDynamicObject()->setProperty("getPreparingArrangementPartJumpIndex", jumpState.second);

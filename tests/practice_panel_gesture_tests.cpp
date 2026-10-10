@@ -88,8 +88,47 @@ struct PracticePanelGestureTestAccess {
     return panel.instrumentSelector;
   }
 
-  static juce::TextButton &restoreButton(PracticePanel &panel) {
-    return panel.restoreMixButton;
+  static juce::TextButton &helpButton(PracticePanel &panel) {
+    return panel.listeningHelpButton;
+  }
+
+  static juce::TextButton &accompanimentButton(PracticePanel &panel, bool guide) {
+    return guide ? panel.guideButton : panel.metronomeButton;
+  }
+
+  static bool accompanimentPending(const PracticePanel &panel, bool guide) {
+    return (guide ? panel.guideControl : panel.metronomeControl).request.pending;
+  }
+
+  static void ageAccompanimentRequest(PracticePanel &panel, bool guide,
+                                     int milliseconds) {
+    auto &control = guide ? panel.guideControl : panel.metronomeControl;
+    control.request.requestedAt -= static_cast<juce::uint32>(milliseconds);
+  }
+
+  static juce::Rectangle<int> hints(const PracticePanel &panel) {
+    return panel.getWaveformLayout().hints;
+  }
+
+  static juce::Rectangle<int> footer(const PracticePanel &panel) {
+    return panel.getWaveformLayout().help;
+  }
+
+  static juce::String practiceFeedback(const PracticePanel &panel) {
+    return panel.currentPracticeFeedback();
+  }
+
+  static void expirePracticeFeedback(PracticePanel &panel) {
+    panel.practiceFeedbackUntilMs = juce::Time::getMillisecondCounter() - 1;
+    panel.timerCallback();
+  }
+
+  static int visibleListeningMode(const PracticePanel &panel) {
+    return panel.getVisibleListeningMode();
+  }
+
+  static bool listeningChangePending(const PracticePanel &panel) {
+    return panel.isListeningChangePending();
   }
 
   static juce::Button &stopButton(PracticePanel &panel) {
@@ -338,6 +377,14 @@ struct Fixture {
   bool acceptLoopRequest = true;
   bool acknowledgeLoopImmediately = true;
   bool loopRequestRejected = false;
+  juce::String loopError;
+  PracticePanel::AccompanimentState guideState{"guide-1", {}, true, false};
+  PracticePanel::AccompanimentState metronomeState{"metronome-1", {}, true, true};
+  bool acknowledgeGuideImmediately = true;
+  bool acknowledgeMetronomeImmediately = true;
+  std::vector<bool> guideChanges;
+  std::vector<bool> metronomeChanges;
+  std::function<void(bool)> afterAccompanimentWrite;
   double minimumLoopDuration = 0.25;
   juce::Range<double> activeLoopRange;
   std::vector<int> pitchChanges;
@@ -353,6 +400,9 @@ struct Fixture {
   int finishListeningCalls = 0;
   int mode = 0;
   juce::String listeningInstrument;
+  bool useConfirmedListening = false;
+  int confirmedListeningMode = 0;
+  juce::String confirmedListeningInstrument;
   std::vector<double> seeks;
   std::vector<int> listeningChanges;
   std::vector<juce::String> listeningTargets;
@@ -420,6 +470,7 @@ struct Fixture {
     };
     sources.ownsLoop = [this] { return loopOwned; };
     sources.loopRequestRejected = [this] { return loopRequestRejected; };
+    sources.loopError = [this] { return loopError; };
     sources.minimumLoopDuration = [this] { return minimumLoopDuration; };
     sources.seekRange = [this] { return range; };
     sources.seekToSeconds = [this](const double seconds) {
@@ -481,6 +532,12 @@ struct Fixture {
     sources.isRemote = [this] { return remote; };
     sources.listeningMode = [this] { return mode; };
     sources.listeningInstrumentId = [this] { return listeningInstrument; };
+    sources.displayListeningMode = [this] {
+      return useConfirmedListening ? confirmedListeningMode : mode;
+    };
+    sources.displayListeningInstrumentId = [this] {
+      return useConfirmedListening ? confirmedListeningInstrument : listeningInstrument;
+    };
     sources.setListeningMode = [this](const juce::String &id, const int next) {
       listeningInstrument = id;
       mode = next;
@@ -489,6 +546,24 @@ struct Fixture {
     };
     sources.canRetargetListening = [] { return true; };
     sources.finishListening = [this] { ++finishListeningCalls; };
+    sources.guideState = [this] { return guideState; };
+    sources.metronomeState = [this] { return metronomeState; };
+    sources.setGuideEnabled = [this](bool enabled) {
+      guideChanges.push_back(enabled);
+      if (acknowledgeGuideImmediately)
+        guideState.enabled = enabled;
+      const auto afterWrite = afterAccompanimentWrite;
+      if (afterWrite)
+        afterWrite(true);
+    };
+    sources.setMetronomeEnabled = [this](bool enabled) {
+      metronomeChanges.push_back(enabled);
+      if (acknowledgeMetronomeImmediately)
+        metronomeState.enabled = enabled;
+      const auto afterWrite = afterAccompanimentWrite;
+      if (afterWrite)
+        afterWrite(false);
+    };
     sources.playPause = [this] { ++playPauseCalls; playing = !playing; };
     sources.stop = [this] {
       ++stopCalls;
@@ -1366,93 +1441,582 @@ void testAccumulatedBarFeedback() {
   }
 }
 
-void testRestoreButtonTapAndDrag() {
+void testHelpButtonTapAndDrag() {
   Fixture tap;
   tap.mode = 1;
   tap.listeningInstrument = "piano";
   PracticePanelGestureTestAccess::refreshFromSources(*tap.panel);
-  auto &tapButton =
-      PracticePanelGestureTestAccess::restoreButton(*tap.panel);
+  auto &tapButton = PracticePanelGestureTestAccess::helpButton(*tap.panel);
   expect(tapButton.isVisible() && tapButton.isEnabled() &&
-             !tapButton.getLocalBounds().isEmpty(),
-         "an active listening mix exposes the real Restore button");
-  const auto tapPosition = tapButton.getLocalBounds().getCentre();
-  const auto tapEvent = pointerEvent(tapButton, tapPosition, tapPosition);
-  static_cast<juce::Component &>(tapButton).mouseDown(tapEvent);
-  tap.panel->mouseDown(tapEvent);
-  static_cast<juce::Component &>(tapButton).mouseUp(tapEvent);
-  tap.panel->mouseUp(tapEvent);
-  expect(tap.mode == 0 && tap.listeningChanges == std::vector<int>({0}) &&
-             tap.seeks.empty(),
-         "a real Restore button tap restores the mix without seeking");
+             tapButton.getWidth() == 44 && tapButton.getHeight() == 44 &&
+             tapButton.getButtonText() == "?",
+         "the footer exposes a real 44-point help button");
+  const auto point = tapButton.getLocalBounds().getCentre();
+  const auto event = pointerEvent(tapButton, point, point);
+  static_cast<juce::Component &>(tapButton).mouseDown(event);
+  tap.panel->mouseDown(event);
+  static_cast<juce::Component &>(tapButton).mouseUp(event);
+  tap.panel->mouseUp(event);
+  expect(juce::PopupMenu::dismissAllActiveMenus(),
+         "tapping help opens the native help menu");
+  pumpFor(10);
+  expect(tap.mode == 1 && tap.listeningChanges.empty() && tap.seeks.empty(),
+         "opening or dismissing help does not restore the mix or seek");
+  const auto second = pointerEvent(tapButton, point, point, 2);
+  static_cast<juce::Component &>(tapButton).mouseDown(second);
+  tap.panel->mouseDown(second);
+  static_cast<juce::Component &>(tapButton).mouseUp(second);
+  tap.panel->mouseUp(second);
+  expect(juce::PopupMenu::dismissAllActiveMenus() && tap.seeks.empty() &&
+             tap.listeningChanges.empty(),
+         "a second help tap cannot leak into the waveform double-tap seek");
+  pumpFor(10);
 
-  for (const juce::Point<int> movement : {juce::Point<int>{24, 0},
-                                         juce::Point<int>{0, 14}}) {
+  for (const juce::Point<int> movement : {juce::Point<int>{14, 0},
+                                         juce::Point<int>{0, 14},
+                                         juce::Point<int>{0, -60}}) {
     Fixture drag;
     drag.mode = 1;
     drag.listeningInstrument = "piano";
     drag.playing = true;
     PracticePanelGestureTestAccess::refreshFromSources(*drag.panel);
-    auto &dragButton =
-        PracticePanelGestureTestAccess::restoreButton(*drag.panel);
-    expect(dragButton.isVisible() && dragButton.isEnabled() &&
-               !dragButton.getLocalBounds().isEmpty(),
-           "the active listening mix lays out Restore before a drag");
-    expect(!PracticePanelGestureTestAccess::card(*drag.panel).intersects(
-               dragButton.getBounds()),
-           "Restore is outside the waveform gesture surface");
-    const auto start = dragButton.getLocalBounds().getCentre();
+    auto &button = PracticePanelGestureTestAccess::helpButton(*drag.panel);
+    const auto start = button.getLocalBounds().getCentre();
     const auto end = start + movement;
-    expect(dragButton.getLocalBounds().contains(end),
-           "the test drag releases inside the Restore button");
-    const auto down = pointerEvent(dragButton, start, start);
-    const auto release = pointerEvent(dragButton, end, start, 1, true);
-    static_cast<juce::Component &>(dragButton).mouseDown(down);
+    const auto down = pointerEvent(button, start, start);
+    const auto release = pointerEvent(button, end, start, 1, true);
+    static_cast<juce::Component &>(button).mouseDown(down);
     drag.panel->mouseDown(down);
     drag.panel->mouseDrag(release);
-    expect(dragButton.isDown() && drag.seeks.empty() && drag.beginScrubCalls == 0,
-           "dragging Restore outside the waveform cannot start scrubbing");
-    // Keep JUCE's actual button-before-listener release ordering, including
-    // a release inside the button that would otherwise trigger its onClick.
-    static_cast<juce::Component &>(dragButton).mouseUp(release);
+    // Exercise JUCE's actual button-before-listener release ordering.
+    static_cast<juce::Component &>(button).mouseUp(release);
     drag.panel->mouseUp(release);
     drag.finishAnimation();
-    expect(drag.mode == 1 && drag.listeningChanges.empty() && drag.seeks.empty() &&
+    expect(!juce::PopupMenu::dismissAllActiveMenus() && drag.mode == 1 &&
+               drag.listeningChanges.empty() && drag.seeks.empty() &&
                drag.beginScrubCalls == 0 && drag.pauseCalls == 0 && drag.playing,
-           "a drag on Restore changes neither mix, playback position nor transport");
+           "dragging help opens no menu and changes neither mix nor transport");
+  }
+
+  Fixture footer;
+  const auto area = PracticePanelGestureTestAccess::footer(*footer.panel);
+  const auto left = juce::Point<int>(area.getX() + 20, area.getCentreY());
+  footer.doubleTap(left);
+  expect(footer.seeks.size() == 1 && footer.listeningChanges.empty(),
+         "double tapping the footer outside help preserves the one-bar gesture");
+  expectNear(footer.seeks.back(), 38.0,
+             "left footer double tap moves exactly one bar backwards");
+}
+
+void testHelpMenuRestoreAndStaleContext() {
+  for (const int context : {0, 1, 2, 3, 4}) {
+    Fixture fixture;
+    fixture.mode = 1;
+    fixture.listeningInstrument = "piano";
+    PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+    fixture.clickButton(PracticePanelGestureTestAccess::helpButton(*fixture.panel));
+    auto *menu = juce::Component::getCurrentlyModalComponent();
+    expect(menu != nullptr, "help creates a real modal menu with an async callback");
+    if (context == 1) {
+      fixture.songId = "replacement-while-menu-open";
+      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+    } else if (context == 2) {
+      fixture.remote = true;
+      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+    } else if (context == 3)
+      fixture.connected = false;
+    else if (context == 4)
+      fixture.panel.reset();
+    // Complete the native menu with its Restore result. This exercises the
+    // actual asynchronous completion and lifetime/context guards, rather than
+    // calling the panel's private restore implementation directly.
+    menu->exitModalState(1);
+    pumpFor(10);
+    expect(fixture.seeks.empty() && fixture.guideChanges.empty() &&
+               fixture.metronomeChanges.empty(),
+           "the help menu result cannot change playback or accompaniment");
+    if (context == 0)
+      expect(fixture.mode == 0 && fixture.listeningInstrument.isEmpty() &&
+                 fixture.listeningChanges == std::vector<int>({0}),
+             "the Restore menu result returns the listening mix to normal once");
+    else
+      expect(fixture.listeningChanges.empty(),
+             "a stale help completion cannot reset a changed, disconnected or destroyed panel");
+  }
+}
+
+void testRestoreKeyboardAndContext() {
+  for (const int mode : {1, 2}) {
+    Fixture fixture;
+    fixture.mode = mode;
+    fixture.listeningInstrument = "bass";
+    PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+    const auto key = juce::KeyPress('r', juce::ModifierKeys{}, 'r');
+    expect(fixture.panel->keyPressed(key) && fixture.mode == 0 &&
+               fixture.listeningInstrument.isEmpty() &&
+               fixture.listeningChanges == std::vector<int>({0}),
+           "R restores an active mix even when another instrument is selected");
+    expect(fixture.panel->keyPressed(key) && fixture.listeningChanges.size() == 1,
+           "R in the normal mix does not send a redundant reset");
+    expect(fixture.seeks.empty() && fixture.guideChanges.empty() &&
+               fixture.metronomeChanges.empty() && fixture.playPauseCalls == 0,
+           "Restore affects only the temporary listening mix");
+  }
+  for (const int context : {0, 1, 2, 3}) {
+    Fixture fixture;
+    fixture.mode = 1;
+    fixture.listeningInstrument = "piano";
+    if (context == 0)
+      fixture.connected = false;
+    else if (context == 1)
+      fixture.songId = "replacement-before-keypress";
+    else if (context == 2)
+      fixture.remote = true;
+    const auto modifiers = context == 3
+        ? juce::ModifierKeys(juce::ModifierKeys::ctrlModifier) : juce::ModifierKeys{};
+    fixture.panel->keyPressed(juce::KeyPress('r', modifiers, 'r'));
+    expect(fixture.listeningChanges.empty(),
+           "disconnected, stale-context and modified R cannot reset a different mix");
   }
 }
 
 void testSharedTransportLayout() {
+  for (const int width : {320, 390, 768}) {
+    Fixture fixture;
+    fixture.panel->setSize(width, 844);
+    const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+    const auto close = PracticePanelGestureTestAccess::closeButton(*fixture.panel).getBounds();
+    const auto play = PracticePanelGestureTestAccess::playButton(*fixture.panel).getBounds();
+    const auto stop = PracticePanelGestureTestAccess::stopButton(*fixture.panel).getBounds();
+    const auto help = PracticePanelGestureTestAccess::helpButton(*fixture.panel).getBounds();
+    const auto guide = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, true).getBounds();
+    const auto metronome = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, false).getBounds();
+    const int transportSize = width == 320 ? 44 : 56;
+    expect(close.getWidth() == 44 && close.getHeight() == 44 &&
+               help.getWidth() == 44 && help.getHeight() == 44 &&
+               card.contains(help) &&
+               PracticePanelGestureTestAccess::footer(*fixture.panel).contains(help),
+           "Close and the in-card help keep 44-point targets on narrow and wide layouts");
+    expect(play.getWidth() == transportSize && play.getHeight() == transportSize &&
+               stop.getWidth() == transportSize && stop.getHeight() == transportSize &&
+               play.getCentreY() == stop.getCentreY(),
+           "shared Play and Stop retain matching responsive transport targets");
+    const auto clear = PracticePanelGestureTestAccess::loopClearButton(*fixture.panel).getBounds();
+    expect(stop.getX() - play.getRight() == (width == 320 ? 4 : 8) &&
+               std::abs(play.getUnion(clear).getCentreX() - card.getCentreX()) <= 1,
+           "the six-control transport row stays centered with consistent spacing");
+    expect(guide.getHeight() == 44 && metronome.getHeight() == 44 &&
+               guide.getWidth() == metronome.getWidth() && guide.getWidth() >= 132 &&
+               guide.getY() == metronome.getY() && metronome.getX() - guide.getRight() == 12 &&
+               !card.intersects(guide) && !card.intersects(metronome) &&
+               guide.getBottom() <= play.getY() && metronome.getBottom() <= play.getY(),
+           "equal-width Guide and Metronome occupy the sole row above transport");
+    const auto hints = PracticePanelGestureTestAccess::hints(*fixture.panel);
+    expect(card.contains(hints) && hints.getBottom() <=
+               PracticePanelGestureTestAccess::waveformRuler(*fixture.panel).getY(),
+           "A/B feedback remains in the existing hint strip above the ruler");
+    fixture.mode = 1;
+    fixture.listeningInstrument = "piano";
+    PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+    fixture.panel->resized();
+    expect(PracticePanelGestureTestAccess::card(*fixture.panel) == card &&
+               PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, true).getBounds() == guide &&
+               PracticePanelGestureTestAccess::helpButton(*fixture.panel).getBounds() == help,
+           "activating a listening mode adds no status row and changes no geometry");
+  }
+}
+
+void testAccompanimentIndependentControls() {
   Fixture fixture;
-  fixture.mode = 1;
+  auto &guide = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, true);
+  auto &metronome = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, false);
+  expect(guide.isEnabled() && metronome.isEnabled() &&
+             !guide.getToggleState() && metronome.getToggleState(),
+         "Guide and Metronome start from independent authoritative source states");
+  expect(guide.isToggleable() && metronome.isToggleable() &&
+             !guide.getClickingTogglesState() && !metronome.getClickingTogglesState() &&
+             guide.getTitle().isNotEmpty() && metronome.getTitle().isNotEmpty() &&
+             guide.getDescription().isNotEmpty() && metronome.getDescription().isNotEmpty(),
+         "accompaniment buttons expose real checkable state and named accessibility descriptions");
+  fixture.clickButton(guide);
+  expect(fixture.guideChanges == std::vector<bool>({true}) &&
+             fixture.metronomeChanges.empty() && guide.getToggleState() &&
+             metronome.getToggleState(),
+         "turning Guide on leaves the active Metronome untouched");
+  fixture.clickButton(metronome);
+  expect(fixture.guideChanges == std::vector<bool>({true}) &&
+             fixture.metronomeChanges == std::vector<bool>({false}) &&
+             guide.getToggleState() && !metronome.getToggleState(),
+         "turning Metronome off leaves Guide on");
+  fixture.mode = 2;
   fixture.listeningInstrument = "piano";
   PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
-  const auto close =
-      PracticePanelGestureTestAccess::closeButton(*fixture.panel).getBounds();
-  const auto play =
-      PracticePanelGestureTestAccess::playButton(*fixture.panel).getBounds();
-  const auto stop =
-      PracticePanelGestureTestAccess::stopButton(*fixture.panel).getBounds();
-  const auto restore =
-      PracticePanelGestureTestAccess::restoreButton(*fixture.panel).getBounds();
-  expect(PracticePanelGestureTestAccess::restoreButton(*fixture.panel).isVisible() &&
-             !restore.isEmpty(),
-         "Restore is laid out before checking shared transport geometry");
-  expect(close.getWidth() == 44 && close.getHeight() == 44,
-         "practice uses the shared 44-point header close control");
-  expect(play.getWidth() == 56 && play.getHeight() == 56 &&
-             stop.getWidth() == 56 && stop.getHeight() == 56 &&
-             play.getCentreY() == stop.getCentreY(),
-         "shared Play and Stop buttons have matching 56-point transport targets");
-  const auto clear = PracticePanelGestureTestAccess::loopClearButton(*fixture.panel).getBounds();
-  expect(stop.getX() - play.getRight() == 8 &&
-             play.getUnion(clear).getCentreX() ==
-                 PracticePanelGestureTestAccess::card(*fixture.panel).getCentreX(),
-         "the six-control transport row stays centered with consistent dock spacing");
-  expect(!PracticePanelGestureTestAccess::card(*fixture.panel).intersects(restore) &&
-             restore.getBottom() <= play.getY(),
-         "the secondary Restore control sits above transport outside the waveform");
+  fixture.clickButton(guide);
+  expect(fixture.mode == 2 && fixture.listeningInstrument == "piano" &&
+             fixture.listeningChanges.empty() && fixture.seeks.empty() &&
+             fixture.loopChanges.empty() && fixture.pitchChanges.empty() &&
+             fixture.tempoChanges.empty() && fixture.playPauseCalls == 0 &&
+             fixture.stopCalls == 0,
+         "accompaniment toggles do not modify listening, A/B, pitch, tempo or transport");
+  fixture.metronomeState.enabled = true;
+  PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+  expect(metronome.getToggleState() && !guide.getToggleState(),
+         "changes from another controller are reflected without another command");
+}
+
+void testAccompanimentAsyncConfirmationAndTimeout() {
+  for (const bool isGuide : {false, true}) {
+    Fixture fixture;
+    fixture.remote = true;
+    fixture.acknowledgeGuideImmediately = false;
+    fixture.acknowledgeMetronomeImmediately = false;
+    PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+    auto &button = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, isGuide);
+    auto &other = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, !isGuide);
+    auto &state = isGuide ? fixture.guideState : fixture.metronomeState;
+    auto &changes = isGuide ? fixture.guideChanges : fixture.metronomeChanges;
+    const bool before = state.enabled;
+    fixture.clickButton(button);
+    expect(changes == std::vector<bool>({!before}) && !button.isEnabled() &&
+               other.isEnabled() && button.getToggleState() == before &&
+               PracticePanelGestureTestAccess::accompanimentPending(*fixture.panel, isGuide),
+           "a remote request disables only its own button without optimistic checked state");
+    expect(button.getDescription().containsIgnoreCase("confirm"),
+           "pending remote control describes confirmation and its current actual state");
+    // Also exercise the callback guard, rather than relying only on disabled hit testing.
+    button.onClick();
+    PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+    expect(changes.size() == 1 && button.getToggleState() == before && !button.isEnabled(),
+           "rapid repeat activation and a stale snapshot cannot queue duplicate or optimistic requests");
+    state.enabled = !before;
+    PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+    expect(button.isEnabled() && button.getToggleState() == !before &&
+               !PracticePanelGestureTestAccess::accompanimentPending(*fixture.panel, isGuide),
+           "the first confirming snapshot updates checked and releases pending immediately");
+    fixture.clickButton(button);
+    expect(!button.isEnabled() && button.getToggleState() == !before && changes.size() == 2,
+           "the opposite request also keeps the last confirmed audible state");
+    PracticePanelGestureTestAccess::ageAccompanimentRequest(*fixture.panel, isGuide, 2001);
+    PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+    expect(button.isEnabled() && button.getToggleState() == !before &&
+               !PracticePanelGestureTestAccess::accompanimentPending(*fixture.panel, isGuide) &&
+               PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel).isNotEmpty(),
+           "two-second timeout releases the button with actual state and existing-strip feedback");
+    fixture.clickButton(button);
+    expect(changes.size() == 3 && !button.isEnabled(),
+           "an unconfirmed remote request can be retried after its timeout");
+  }
+
+  Fixture concurrent;
+  concurrent.acknowledgeGuideImmediately = false;
+  concurrent.acknowledgeMetronomeImmediately = false;
+  auto &guide = PracticePanelGestureTestAccess::accompanimentButton(*concurrent.panel, true);
+  auto &metronome = PracticePanelGestureTestAccess::accompanimentButton(*concurrent.panel, false);
+  concurrent.clickButton(guide);
+  concurrent.clickButton(metronome);
+  expect(concurrent.guideChanges == std::vector<bool>({true}) &&
+             concurrent.metronomeChanges == std::vector<bool>({false}) &&
+             !guide.isEnabled() && !metronome.isEnabled(),
+         "both controls may await their own independent confirmations");
+  concurrent.guideState.enabled = true;
+  PracticePanelGestureTestAccess::updateControls(*concurrent.panel);
+  expect(guide.isEnabled() && guide.getToggleState() && !metronome.isEnabled() &&
+             metronome.getToggleState(),
+         "confirming Guide cannot acknowledge or change a pending Metronome");
+}
+
+void testAccompanimentContextAndUnavailable() {
+  for (const bool isGuide : {false, true}) {
+    for (const int context : {0, 1, 2, 3, 4}) {
+      Fixture fixture;
+      fixture.acknowledgeGuideImmediately = false;
+      fixture.acknowledgeMetronomeImmediately = false;
+      auto &button = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, isGuide);
+      auto &state = isGuide ? fixture.guideState : fixture.metronomeState;
+      auto &changes = isGuide ? fixture.guideChanges : fixture.metronomeChanges;
+      fixture.clickButton(button);
+      expect(PracticePanelGestureTestAccess::accompanimentPending(*fixture.panel, isGuide),
+             "context regression starts with an actual pending accompaniment command");
+      if (context == 0)
+        state.identity = "replacement-source";
+      else if (context == 1)
+        fixture.songId = "replacement-song";
+      else if (context == 2)
+        fixture.remote = true;
+      else if (context == 3)
+        fixture.connected = false;
+      else {
+        state.available = false;
+        state.unavailableReason = "Source deliberately unavailable";
+      }
+      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+      expect(!PracticePanelGestureTestAccess::accompanimentPending(*fixture.panel, isGuide) &&
+                 changes.size() == 1 &&
+                 PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel).isEmpty(),
+             "source, song, session, disconnect or unavailable cancels pending without timeout error");
+      if (context >= 3) {
+        expect(!button.isEnabled() && !button.getToggleState() &&
+                   button.getDescription().isNotEmpty(),
+               "disconnected or unavailable accompaniment has no stale checked indicator");
+        button.onClick();
+        expect(changes.size() == 1,
+               "a disabled or stale accompaniment callback cannot send another command");
+        if (context == 4)
+          expect(button.getDescription().contains(state.unavailableReason),
+                 "source-specific unavailability is exposed to accessibility and tooltips");
+        fixture.connected = true;
+        state.available = true;
+        PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+      }
+      expect(button.isEnabled() && button.getToggleState() == state.enabled,
+             "valid replacement or reconnection immediately resumes the authoritative source state");
+    }
+
+    for (const int changedBeforeClick : {0, 1, 2, 3}) {
+      Fixture fixture;
+      auto &button = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, isGuide);
+      auto &state = isGuide ? fixture.guideState : fixture.metronomeState;
+      auto &changes = isGuide ? fixture.guideChanges : fixture.metronomeChanges;
+      if (changedBeforeClick == 0)
+        state.identity = "source-changed-between-polls";
+      else if (changedBeforeClick == 1)
+        fixture.songId = "song-changed-between-polls";
+      else if (changedBeforeClick == 2)
+        fixture.remote = true;
+      else
+        fixture.connected = false;
+      fixture.clickButton(button);
+      expect(changes.empty(),
+             "a tap intended for an old source cannot write after a live context change before polling");
+    }
+  }
+}
+
+void testAccompanimentDragAndCallbackLifetime() {
+  for (const bool isGuide : {false, true}) {
+    for (const juce::Point<int> motion : {juce::Point<int>{16, 0}, juce::Point<int>{0, 14}}) {
+      Fixture fixture;
+      auto &button = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, isGuide);
+      const auto start = button.getLocalBounds().getCentre();
+      const auto release = pointerEvent(button, start + motion, start, 1, true);
+      static_cast<juce::Component &>(button).mouseDown(pointerEvent(button, start, start));
+      fixture.panel->mouseDown(pointerEvent(button, start, start));
+      fixture.panel->mouseDrag(release);
+      static_cast<juce::Component &>(button).mouseUp(release);
+      fixture.panel->mouseUp(release);
+      expect(fixture.guideChanges.empty() && fixture.metronomeChanges.empty() &&
+                 fixture.seeks.empty() && fixture.listeningChanges.empty() &&
+                 fixture.beginScrubCalls == 0,
+             "dragging within an accompaniment target cannot toggle, scrub or change listening");
+    }
+    Fixture closing;
+    auto &button = PracticePanelGestureTestAccess::accompanimentButton(*closing.panel, isGuide);
+    closing.afterAccompanimentWrite = [&](bool) { closing.panel.reset(); };
+    // Use the real button release: it must not write to gestureRelease after
+    // onClick synchronously destroys the panel and this child button.
+    closing.clickButton(button);
+    expect(closing.panel == nullptr &&
+               (isGuide ? closing.guideChanges : closing.metronomeChanges).size() == 1,
+           "a synchronous accompaniment provider may close the panel safely");
+  }
+}
+
+juce::Image renderPracticePanel(PracticePanel &panel) {
+  juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true);
+  juce::Graphics g(image);
+  panel.paint(g);
+  return image;
+}
+
+int differentPixels(const juce::Image &a, const juce::Image &b,
+                    juce::Rectangle<int> area) {
+  expect(a.getBounds().contains(area) && b.getBounds().contains(area),
+         "pixel comparison region lies inside both renders");
+  int count = 0;
+  for (int y = area.getY(); y < area.getBottom(); ++y)
+    for (int x = area.getX(); x < area.getRight(); ++x)
+      if (a.getPixelAt(x, y) != b.getPixelAt(x, y))
+        ++count;
+  return count;
+}
+
+void testListeningGlowPixelsAndRemoteTarget() {
+  for (const int width : {320, 390}) {
+    for (const bool remote : {false, true}) {
+      Fixture fixture;
+      fixture.remote = remote;
+      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+      fixture.panel->setSize(width, 844);
+      const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+      const auto top = juce::Rectangle<int>(card.getX() + 24, card.getY() - 6,
+                                             card.getWidth() - 48, 6);
+      const auto bottom = juce::Rectangle<int>(card.getX() + 24, card.getBottom(),
+                                                card.getWidth() - 48, 6);
+      const auto plot = PracticePanelGestureTestAccess::waveformPlot(*fixture.panel);
+      const auto ruler = PracticePanelGestureTestAccess::waveformRuler(*fixture.panel);
+      const auto originalBins = PracticePanelGestureTestAccess::waveform(*fixture.panel);
+      const auto normal = renderPracticePanel(*fixture.panel);
+      for (const int mode : {1, 2}) {
+        fixture.mode = mode;
+        fixture.listeningInstrument = "piano";
+        PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+        expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == mode,
+               "selected local and remote target use the confirmed listening state");
+        const auto active = renderPracticePanel(*fixture.panel);
+        expect(differentPixels(normal, active, mode == 1 ? top : bottom) > 0 &&
+                   differentPixels(normal, active, mode == 1 ? bottom : top) == 0,
+               "focus changes only the top exterior and reduced only the bottom exterior");
+        expect(differentPixels(normal, active, plot) == 0 &&
+                   differentPixels(normal, active, ruler) == 0 &&
+                   PracticePanelGestureTestAccess::waveform(*fixture.panel) == originalBins,
+               "the listening glow cannot recolour, obscure or alter the waveform and ruler");
+        PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+        const auto later = renderPracticePanel(*fixture.panel);
+        expect(differentPixels(active, later, top) == 0 &&
+                   differentPixels(active, later, bottom) == 0,
+               "the exterior halo stays static across presentation refreshes");
+        fixture.listeningInstrument = "bass";
+        const auto other = renderPracticePanel(*fixture.panel);
+        expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0 &&
+                   differentPixels(normal, other, top) == 0 &&
+                   differentPixels(normal, other, bottom) == 0,
+               "another instrument's listening state never lights the selected card");
+        fixture.listeningInstrument = "piano";
+        fixture.connected = false;
+        const auto disconnected = renderPracticePanel(*fixture.panel);
+        expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0 &&
+                   differentPixels(normal, disconnected, top) == 0 &&
+                   differentPixels(normal, disconnected, bottom) == 0,
+               "a stale active snapshot cannot leave a halo after disconnection");
+        fixture.connected = true;
+      }
+      fixture.mode = 0;
+      fixture.listeningInstrument.clear();
+      const auto restored = renderPracticePanel(*fixture.panel);
+      expect(differentPixels(normal, restored, top) == 0 &&
+                 differentPixels(normal, restored, bottom) == 0,
+             "returning to normal fully removes both exterior indicators");
+      fixture.mode = 1;
+      fixture.listeningInstrument = "piano";
+      fixture.songId = "changed-before-paint";
+      expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0,
+             "a live song mismatch hides the old halo before the next context probe");
+      fixture.songId = "practice-song";
+      fixture.remote = !remote;
+      expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0,
+             "a live local/remote mismatch hides the old halo before the next context probe");
+    }
+  }
+}
+
+void testRemoteListeningGlowWaitsForConfirmation() {
+  Fixture fixture;
+  fixture.remote = true;
+  fixture.useConfirmedListening = true;
+  PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
+  const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+  const auto top = juce::Rectangle<int>(card.getX() + 24, card.getY() - 6,
+                                         card.getWidth() - 48, 6);
+  const auto bottom = juce::Rectangle<int>(card.getX() + 24, card.getBottom(),
+                                            card.getWidth() - 48, 6);
+  const auto normal = renderPracticePanel(*fixture.panel);
+  fixture.swipe(fixture.centre(), fixture.centre().translated(0, -60));
+  expect(fixture.mode == 1 &&
+             PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0 &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) == 0,
+         "a remote focus preview shows pending intent but no unconfirmed halo");
+  // A rejected request rolls its optimistic session value back to the snapshot.
+  fixture.mode = 0;
+  fixture.listeningInstrument.clear();
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+  expect(!PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) == 0,
+         "rejected focus stays at the confirmed normal appearance");
+  fixture.swipe(fixture.centre(), fixture.centre().translated(0, -60));
+  fixture.confirmedListeningMode = 1;
+  fixture.confirmedListeningInstrument = "piano";
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+  expect(!PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 1 &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) > 0,
+         "the confirming focus snapshot turns on the selected instrument's top halo");
+  PracticePanelGestureTestAccess::selectInstrument(*fixture.panel, 1);
+  expect(fixture.listeningInstrument == "bass" &&
+             PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 0 &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) == 0,
+         "a pending retarget cannot apply Piano's confirmed halo to the selected Bass");
+  fixture.confirmedListeningInstrument = "bass";
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+  expect(PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 1 &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) > 0,
+         "acknowledging the retarget lights Bass only when it is the real target");
+  fixture.panel->keyPressed(juce::KeyPress('r', juce::ModifierKeys{}, 'r'));
+  expect(PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             PracticePanelGestureTestAccess::visibleListeningMode(*fixture.panel) == 1,
+         "pending Restore retains the last confirmed audible mode until its acknowledgement");
+  fixture.confirmedListeningMode = 0;
+  fixture.confirmedListeningInstrument.clear();
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+  expect(!PracticePanelGestureTestAccess::listeningChangePending(*fixture.panel) &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), top) == 0 &&
+             differentPixels(normal, renderPracticePanel(*fixture.panel), bottom) == 0,
+         "confirmed normal clears both halo edges after Restore");
+
+  Fixture rapid;
+  rapid.remote = true;
+  rapid.useConfirmedListening = true;
+  PracticePanelGestureTestAccess::probeCurrentSong(*rapid.panel);
+  rapid.swipe(rapid.centre(), rapid.centre().translated(0, -60));
+  rapid.swipe(rapid.centre(), rapid.centre().translated(0, 60));
+  rapid.swipe(rapid.centre(), rapid.centre().translated(0, 60));
+  expect(rapid.listeningChanges == std::vector<int>({1, 0, 2}) &&
+             PracticePanelGestureTestAccess::visibleListeningMode(*rapid.panel) == 0,
+         "rapid remote swipes still use optimistic stepping without lighting an unconfirmed mode");
+  rapid.confirmedListeningMode = 2;
+  rapid.confirmedListeningInstrument = "piano";
+  PracticePanelGestureTestAccess::refreshFromSources(*rapid.panel);
+  expect(PracticePanelGestureTestAccess::visibleListeningMode(*rapid.panel) == 2,
+         "the confirmed reduced snapshot activates only its bottom-halo mode");
+}
+
+void testLoopFeedbackUsesExistingHints() {
+  Fixture fixture;
+  const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+  const auto hints = PracticePanelGestureTestAccess::hints(*fixture.panel);
+  const auto guide = PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, true).getBounds();
+  const auto initial = renderPracticePanel(*fixture.panel);
+  fixture.clickButton(PracticePanelGestureTestAccess::loopStartButton(*fixture.panel));
+  expect(PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel).startsWith("A "),
+         "A draft supplies feedback to the existing hint strip");
+  const auto marked = renderPracticePanel(*fixture.panel);
+  expect(differentPixels(initial, marked, hints) > 0 &&
+             fixture.panel->getDescription() ==
+                 PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel),
+         "A feedback is both painted in existing hints and exposed accessibly");
+  fixture.position += 1.0;
+  fixture.acknowledgeLoopImmediately = false;
+  PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+  fixture.clickButton(PracticePanelGestureTestAccess::loopEndButton(*fixture.panel));
+  fixture.loopError = "discontinuous-arrangement";
+  fixture.loopRequestRejected = true;
+  fixture.loopOwned = false;
+  PracticePanelGestureTestAccess::updateControls(*fixture.panel);
+  const auto error = PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel);
+  expect(error.contains("A") && error.containsChar('\n') &&
+             fixture.panel->getDescription() == error,
+         "the two-line A/B rejection is visible and accessible without a separate status row");
+  const auto rejected = renderPracticePanel(*fixture.panel);
+  expect(differentPixels(marked, rejected, hints) > 0 &&
+             PracticePanelGestureTestAccess::card(*fixture.panel) == card &&
+             PracticePanelGestureTestAccess::hints(*fixture.panel) == hints &&
+             PracticePanelGestureTestAccess::accompanimentButton(*fixture.panel, true).getBounds() == guide,
+         "A/B error changes the existing hints without moving card or accompaniment controls");
+  fixture.loopRequestRejected = false;
+  PracticePanelGestureTestAccess::expirePracticeFeedback(*fixture.panel);
+  expect(PracticePanelGestureTestAccess::practiceFeedback(*fixture.panel) != error,
+         "expired errors yield back to the retained A/B status");
 }
 
 void testFractionalDragCoordinates() {
@@ -2552,7 +3116,7 @@ void testListeningStateSelectionAndRestore() {
              fixture.listeningTargets.back() == "piano",
          "the next downward swipe reduces the newly selected instrument");
   PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
-  fixture.clickButton(PracticePanelGestureTestAccess::restoreButton(*fixture.panel));
+  fixture.panel->keyPressed(juce::KeyPress('r', juce::ModifierKeys{}, 'r'));
   expect(fixture.mode == 0 && fixture.listeningInstrument.isEmpty(),
          "Restore returns the reduced listening state to the normal centre");
   fixture.swipe(fixture.centre(), fixture.centre().translated(0, -60));
@@ -2887,8 +3451,17 @@ int main() {
   testScrubCancellationAndExplicitTransport();
   testAccumulatedBarFeedback();
   testRemoteSeekPreviewLifecycle();
-  testRestoreButtonTapAndDrag();
+  testHelpButtonTapAndDrag();
+  testHelpMenuRestoreAndStaleContext();
+  testRestoreKeyboardAndContext();
   testSharedTransportLayout();
+  testAccompanimentIndependentControls();
+  testAccompanimentAsyncConfirmationAndTimeout();
+  testAccompanimentContextAndUnavailable();
+  testAccompanimentDragAndCallbackLifetime();
+  testListeningGlowPixelsAndRemoteTarget();
+  testRemoteListeningGlowWaitsForConfirmation();
+  testLoopFeedbackUsesExistingHints();
   testFractionalDragCoordinates();
   testFullWidthWaveformDragTimeMapping();
   testPinchLatchAndScrubCancellation();
@@ -2921,5 +3494,5 @@ int main() {
   testListeningStateSelectionAndRestore();
   testCancelledAndDisconnectedGestures();
   testDoubleTapDisambiguation();
-  std::cout << "Practice panel: bar jumps, scrubbing, listening gestures and cancellation passed\n";
+  std::cout << "Practice panel: gestures, listening glow, accompaniment and cancellation passed\n";
 }

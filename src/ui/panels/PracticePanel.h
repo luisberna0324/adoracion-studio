@@ -5,6 +5,7 @@
 #include "PracticePlaybackClock.h"
 #include "PracticeWaveformGeometry.h"
 #include "PracticeViewport.h"
+#include "PracticeToggleRequest.h"
 #include "PracticeTimelineRuler.h"
 #include "PracticePitchSelector.h"
 #include "PracticeTempoSelector.h"
@@ -23,6 +24,13 @@ public:
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   bool hasLoopMarks() const noexcept { return loopStartSeconds >= 0.0 || loopEndSeconds >= 0.0; }
   using Instrument = PracticeInstrumentSelector::Item;
+
+  struct AccompanimentState {
+    juce::String identity;
+    juce::String unavailableReason;
+    bool available = false;
+    bool enabled = false;
+  };
 
   struct Sources {
     std::function<juce::String()> songId;
@@ -70,9 +78,19 @@ public:
     std::function<bool()> isRemote;
     std::function<int()> listeningMode;
     std::function<juce::String()> listeningInstrumentId;
+    // Optional confirmed state for presentation. The gesture machine retains
+    // the session's optimistic mode so quick remote swipes still step once.
+    std::function<int()> displayListeningMode;
+    std::function<juce::String()> displayListeningInstrumentId;
     std::function<void(const juce::String &, int)> setListeningMode;
     std::function<bool()> canRetargetListening;
     std::function<void()> finishListening;
+    // These control audibility of the already-selected guide/click source.
+    // They must not select a different source or alter practice listening.
+    std::function<AccompanimentState()> guideState;
+    std::function<AccompanimentState()> metronomeState;
+    std::function<void(bool)> setGuideEnabled;
+    std::function<void(bool)> setMetronomeEnabled;
     std::function<void()> playPause;
     std::function<void()> stop;
     std::function<void()> close;
@@ -126,6 +144,16 @@ private:
   void releaseOwnedLoop();
   double getLoopMarkPosition(bool isEnd) const;
   void updatePracticeControls();
+  void updateAccompanimentControls();
+  void toggleAccompaniment(bool guide);
+  void restoreListeningMix();
+  void showListeningHelp();
+  int getSourceDisplayListeningMode() const;
+  juce::String getSourceDisplayListeningInstrument() const;
+  bool isListeningChangePending() const;
+  int getVisibleListeningMode() const;
+  juce::String listeningContextText() const;
+  juce::String currentPracticeFeedback() const;
   bool handleTouchDown(int index, juce::Point<float> position);
   bool handleTouchMove(int index, juce::Point<float> position);
   bool handleTouchUp(int index);
@@ -148,19 +176,47 @@ private:
     void mouseUp(const juce::MouseEvent &event) override {
       gestureRelease = event.mouseWasDraggedSinceMouseDown() ||
                        event.getDistanceFromDragStart() >= 12;
+      juce::Component::SafePointer<GestureAwareButton> safe(this);
       juce::TextButton::mouseUp(event);
-      gestureRelease = false;
+      if (safe != nullptr)
+        safe->gestureRelease = false;
     }
 
   private:
     bool gestureRelease = false;
   };
 
+  class AccompanimentButton final : public juce::TextButton {
+  public:
+    explicit AccompanimentButton(const juce::String &name) : juce::TextButton(name) {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseUp(const juce::MouseEvent &event) override {
+      gestureRelease = event.mouseWasDraggedSinceMouseDown() ||
+                       event.getDistanceFromDragStart() >= 12;
+      juce::Component::SafePointer<AccompanimentButton> safe(this);
+      juce::TextButton::mouseUp(event);
+      if (safe != nullptr)
+        safe->gestureRelease = false;
+    }
+    bool gestureRelease = false;
+    bool pending = false;
+  };
+  struct AccompanimentControl {
+    AccompanimentState state;
+    PracticeToggleRequest request;
+    juce::String requestedIdentity;
+    juce::String requestedSongId;
+    bool requestedRemote = false;
+  };
+
   Sources sources;
   HeaderIconButton closeButton;
   TransportIconButton playPauseButton;
   TransportIconButton stopButton;
-  GestureAwareButton restoreMixButton;
+  AccompanimentButton guideButton;
+  AccompanimentButton metronomeButton;
+  GestureAwareButton listeningHelpButton;
+  AccompanimentControl guideControl, metronomeControl;
   PracticePitchSelector pitchSelector;
   PracticeTempoSelector tempoSelector;
   PracticeInstrumentSelector instrumentSelector;
@@ -195,7 +251,7 @@ private:
   juce::uint32 tempoRequestedAtMs = 0;
   juce::Rectangle<int> waveformBounds;
   juce::Rectangle<int> instrumentHeaderBounds;
-  juce::Rectangle<int> listeningStatusBounds;
+
   PracticePlaybackClock playbackClock;
   juce::VBlankAttachment playbackVBlankAttachment;
   juce::uint32 lastVBlankAtMs = 0;
@@ -203,6 +259,8 @@ private:
   double lastPresentedPositionSeconds = -1.0;
   double lastClockSourceSeconds = -1.0;
   int displayedListeningMode = -1;
+  bool displayedCanControl = false;
+  bool displayedListeningPending = false;
   juce::String displayedListeningInstrument;
   bool displayedBarFeedback = false;
   std::vector<float> waveformBins;
