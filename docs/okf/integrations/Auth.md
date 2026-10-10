@@ -8,6 +8,65 @@ timestamp: 2026-10-10T00:00:00Z
 
 # Auth — Google, Apple y correo con contrasena
 
+## Estado actual y referencia unificada (2026-10-10)
+
+Apple nativo funciona en el preview `playworship-00070-quj`; el usuario confirmo
+“Ya funciona”. El build 3 de desarrollo apunta a ese preview. Produccion conserva
+100 % en `playworship-00061-baw`; no se ha publicado ni promovido Apple. La guia
+unificada [Autenticacion de PlayWorship](https://github.com/luisberna0324/playworship/blob/feat/sign-in-with-apple/docs/operations/authentication-flow.md)
+explica las secuencias de Google, correo y Apple, tokens, vinculos, endpoints,
+QA y operacion. Ese enlace requiere publicar la rama; la guia existe localmente
+en el repo backend. Las notas de activacion e instalacion posteriores son historia
+fechada y no sustituyen este estado.
+
+### Contrato comun de sesion y sus limites
+
+Firebase conserva el UID; Firestore conserva perfil/licencia. El proveedor
+comprueba identidad y `/api/validate-access` comprueba acceso. Google y Apple
+intercambian custom tokens Firebase por ID/refresh token; correo usa
+`accounts:signInWithPassword`. Un custom token no autoriza endpoints; el ID
+token Bearer si. El refresh token Firebase renueva el ID token en
+`securetoken.googleapis.com/v1/token`. La app aplica el resultado mediante
+`completeAuthenticatedSession`, conserva denegaciones y valida plan/estado.
+
+Google mantiene retorno con session/refresh token en URL, state HMAC de diez
+minutos, resolucion por correo de perfiles legados y fallback free/trial ante
+algunos fallos de validacion. UIDs nuevos Apple requieren subject Google ya
+asociado. El helper JWT Google no tiene todas las comprobaciones estrictas
+Apple. `AUTH_STATE_SECRET` necesita configuracion privada; no afirmar que
+el fallback de desarrollo es seguro. Apple y correo fallan con 503 si no
+pueden validar acceso y no heredan ese fallback. No se implemento aqui una
+migracion de Google ni vinculacion simetrica general.
+
+Al reanudar se renueva Firebase y se consulta acceso. Red/parse pueden usar
+el snapshot permitido dentro de la ventana offline configurable (168 horas
+por defecto desde validacion online); una denegacion explicita no usa ese
+fallback. Reauth y gracia son politicas de build. El snapshot local contiene
+refresh token Firebase en archivo ofuscado, no Keychain/cifrado fuerte. Logout
+cancela callbacks y borra sesion/snapshot; no borra cuenta ni revoca Apple.
+
+El backend verifica el ID token emitido para Apple con `verifyIdToken(token,true)`
+y exige UID/provider/subject/appleAuthorizationTime correspondientes. No exige
+`localId` en la respuesta de custom-token, que no lo devuelve. El limite de
+dispositivos respeta `DEVICE_RESTRICTIONS_ENABLED=false`; no se desactivan
+licencias, propiedad de cuenta, suscripcion ni fechas de trial.
+
+### QA confirmada y trabajo de release
+
+Pasaron 43 pruebas unitarias auth/dispositivos, tres con Auth/Firestore locales,
+124 del gate Docker, compilacion Next, smoke y cinco pruebas nativas. El exito
+Apple real lo reporto el usuario; link real, relay/primera-repetida autorizacion,
+cancelacion, refresh/logout, Google/correo interactivos y revocacion no quedaron
+todos confirmados por ese mensaje. No inferirlos de compilacion o mocks.
+
+Notificaciones firmadas y helper de revocacion estan implementados, pero el
+receiver no esta activado/registrado y falta eliminacion completa de cuenta
+(UI, datos, Teams, billing y retencion). Antes de release: revision/publicacion
+aprobadas de ramas, deploy productivo aprobado, build con URL productiva y
+firma/perfiles de distribucion; completar eliminacion para App Review y
+configurar notificaciones/relay con su aprobacion. No hace falta Services ID
+para Apple nativo.
+
 ## Retorno en Android
 
 Android usa `NativeAuthSession::start` con `playworship://auth/callback`.
@@ -71,8 +130,8 @@ Google en el primer frame.
    - Verifica `id_token` contra `https://www.googleapis.com/oauth2/v3/certs`
      (JWKS cacheado 10 min, RS256, claim `aud` debe coincidir con
      `GOOGLE_CLIENT_ID`).
-   - Resuelve o crea el usuario Firebase por email
-     (`getAdminAuth().getUserByEmail` o `createUser`).
+   - Busca perfil Firestore por email (`findUserByEmail`) o crea usuario
+     Firebase; UIDs nuevos Apple exigen asociacion Google del mismo subject.
    - Minta `createCustomToken(uid)` con `provider: "google.com"` y
      `providerUid: sub`.
    - Intercambia el custom token por `idToken` + `refreshToken` vía
@@ -202,7 +261,7 @@ AppleLinkFlow contiene solo la etapa, generacion, UID elegido y limite de cinco 
 
 Verificacion: cinco pruebas nativas de autenticacion pasan; los contratos cubren doble confirmacion, cuenta diferente, cancelacion, generacion obsoleta y vencimiento. Pruebas UI comprueban Google reutilizado, demo oculto, volver accesible en iPhone, navegacion a correo sin cancelar la intencion, cancelacion al volver/cerrar y reauth. Typecheck y 39 regresiones backend Google/correo/Apple pasan sin cambios backend. La vinculacion real la confirma personalmente el usuario; estas pruebas no la simulan con cuentas reales.
 
-## Apple nativo — backend implementado, activacion condicionada
+## Apple nativo — contrato y preview habilitado
 
 El backend `playworship` implementa `/api/auth/apple/config`, `/challenge` y
 `/native` mediante `lib/apple-auth{,-server}.ts`. Reutiliza Firebase Admin y
@@ -215,25 +274,17 @@ asociaciones Admin incluso cuando el proveedor no la impone. Firebase providerDa
 coincidente requiere acceso existente y vinculo explicito. El vinculo exige
 Firebase ID token no revocado y auth_time de los ultimos cinco minutos.
 
-La configuracion queda deshabilitada hasta provisionar los valores Apple
-server-only, clave de cifrado de tokens, capacidad/perfiles y build opt-in.
-Tras autorizacion especifica, se registro una clave Apple solo para Sign in
-with Apple (Key ID publico TMCFK3TW29); la descarga privada queda al usuario
-y no se configuro el servidor. Tambien se activo la capacidad
-en el App ID y se genero/instalo un perfil iOS de desarrollo con entitlement
-Apple; los perfiles de distribucion no pudieron generarse porque el portal
-no ofrece certificados disponibles. El backend sigue sin activar. Los tokens Apple se retienen
-cifrados para revocacion y no llegan a la app. El helper de revocacion esta
-preparado; falta un coordinador de eliminacion completa de cuenta. El backend
-y sus pruebas ya incluyen eventos firmados Apple y deduplicacion; su activacion
-y registro en el portal requieren autorizacion. Revocaciones bloquean sesiones
-Apple anteriores sin borrar la cuenta ni afectar Google/correo. El cliente ya consulta el estado de credenciales
-al reanudar y recibe notificaciones nativas de revocacion: estados revocado,
-no encontrado o transferido cierran la sesion local existente; errores del
-sistema conservan la sesion. UID, usuario Apple y generacion descartan
-callbacks antiguos. Solo se persiste metadata de proveedor verificada, nunca
-tokens Apple. Ver `docs/operations/apple-auth.md` en el backend
-para variables, colecciones privadas, limites y pruebas reales pendientes.
+La configuracion se habilita solo cuando coinciden settings server-only,
+capacidad/perfiles y build opt-in. El preview ya tiene clave y cifrado mediante
+el mecanismo de secretos existente, audiencia `com.multitracks.playworship`,
+capacidad y perfil iOS de desarrollo Apple; el usuario confirmo acceso real.
+Produccion no se ha promovido. Distribucion conserva el bloqueo de perfiles
+por falta de certificado utilizable, pendiente de workflow aprobado.
+Los tokens Apple permanecen cifrados en servidor. Falta el coordinador completo
+de eliminacion; notificaciones firmadas estan implementadas, no activadas.
+El cliente observa credenciales al activar/reanudar: revocado/no encontrado/
+transferido cierra sesion local, errores del OS conservan sesion. Ver la guia
+unificada y `docs/operations/apple-auth.md` del backend para detalle.
 
 `src/platform/NativeAppleSignIn.{h,cpp,mm}` separa autorizacion Apple de la
 sesion PlayWorship. `src/data/AppleSignInApi.{h,cpp}` transporta y valida el
