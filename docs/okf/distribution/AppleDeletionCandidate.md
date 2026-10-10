@@ -1,6 +1,6 @@
 ---
 title: Candidato Apple y eliminación — evidencia local 2026-10-10
-status: Preparación; no habilitado ni distribuible
+status: Firmado localmente; no habilitado ni publicado
 ---
 
 # Candidato mínimo
@@ -11,19 +11,31 @@ QA10oct: app macOS compilada; CTests account_deletion_flow, email_authentication
 
 Simulator metadata: com.multitracks.playworship, 1.1.4 build2, MinimumOSVersion18.5, ITSAppUsesNonExemptEncryption=false, PrivacyInfo.xcprivacy presente; entitlements generados Apple=[Default]. Esto no acredita capability del perfil de distribución ni firma. TestFlight leído10oct muestra builds1,2,3 de1.1.4 En pruebas. Este build2 es solo QA local; para distribución usar4 o siguiente libre tras reconsulta, no reutilizar1–3.
 
-## Portal Apple leído, sin cambios
+## Portal Apple: auditoría y cambios explícitamente autorizados
 
 Registro6819361132, iOS/macOS1.1.4 en preparación. iOS sin build asociado; copyright, cuenta de prueba requerida, contacto y notas de revisión vacíos. Descripción/promo/keywords/URLs soporte y marketing existentes. Publicación manual seleccionada. iPad13 tiene cinco capturas; iPhone muestra cuatro imágenes reutilizadas pero cero para tamaño mediano seleccionado: revisar gestor tamaños/compatibilidad antes de afirmar cumplimiento.
 
 General nombre/subtítulo/categoría Música y EULA estándar presentes. Derechos de contenido y edades sin configurar. Privacidad URL presente y etiquetas todavía no iniciadas (Comenzar). Aviso comercianteUE visible; no se declaró situación ni aceptó acuerdo.
 
-Developer clave Apple ya existente10oct; perfil de desarrollo activo con Sign In with Apple, expira2027/10/10. Certificados gestionados Distribution/Mac Installer vigentes hasta2027/10/05. Solo identidades Development en llavero local; no perfil App Store visible en listado. Necesita autorización específica para firma/perfil distribución existentes o provisionamiento gestionado. No se crearon/descargaron claves, certificados ni grants.
+Developer conserva clave Apple y certificados previos. Tras aprobación específica
+se generó CSR con clave privada en llavero Mac y se emitió AppleDistribution
+RG6N9746XA (vigencia10oct2026–10oct2027). Se creó perfilAppStore
+H6DG2DGGNL, UUID41bfab24-08e5-4da3-afed-e65b5632cc88, paraTeamV9T23PX769
+ybundlecom.multitracks.playworship. Perfil activo con Sign In with Apple,
+get-task-allow=false; identidad privada reconocida localmente. Solo CSR público
+se transmitió aApple; no se exportó clave privada ni se revocó certificado.
+Archive firmado1.1.4 build4 verificado con codesign --verify --deep --strict; perfil/entitlements correctos, PrivacyInfo presente. Xcode generó dSYM fuera del archive por outputCMake; se incorporó tras verificar UUID idéntico al binario C5BDFB07-0EBC-3135-B9F7-562AB9541ECB. Ninguna subida aTestFlight/revisión.
+
+R2: código backend7049b27/appd971ff0 implementa multipart con finalización exclusiva
+del backend. QA178/178 backend,7/7 CTests (añadidosCloudSettings/CloudSyncIndex).
+Estas pruebas no verifican aborto físicoR2 ni drenaje dePUThistóricos. Mantener
+borrado productivo deshabilitado hasta evidencia real y políticas restantes.
 
 ## Checklist finito previo a publicación
 
 1. Resolver R2/retención/Gumroad y ejecutar backend/worker solo tras aprobación. El inicio dentro de app y estado durable están preparados; no marcar completado sin garantías reales.
 2. Configurar Apple en revisión nueva basada en producción61, preservando callback Google público. No promover preview72 ni cambiar sus credenciales. Prueba Apple real con cuenta autorizada.
-3. Autorizar firma/perfil distribución, archive/export con build nuevo, comprobar profile/entitlements/bundle/team, dSYM y privacidad; QA de dispositivo y del IPA final. No permitir creación automática de credenciales no aprobadas.
+3. Certificado/perfil ya autorizados y creados; finalizar archive/export local con build4, comprobar firma, dSYM y privacidad; QA de dispositivo y del IPA final. No permitir creación automática de credenciales no aprobadas.
 4. Completar campos ASC indicados con datos aprobados y nota de revisión exacta: ubicación de Apple/borrado, comportamiento asíncrono y datos retenidos conforme a política. No inventar cuenta/contacto/plazo.
 5. Revisar capturas y declaraciones contra binario final. Subida/TestFlight/AppReview/publicación requieren aprobación adicional; no realizadas.
 
