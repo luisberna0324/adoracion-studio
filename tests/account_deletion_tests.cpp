@@ -85,6 +85,32 @@ int main() {
     expect(localProject.loadFileAsString() == "local fixture", "local files are preserved");
     session.uid = "another-account"; expect(SessionPersistence::save(session), "marker is scoped to UID, other accounts unaffected");
     expect(SessionPersistence::load(restored) && restored.uid == session.uid, "other account restores normally");
+    int dismissed = 0; bool preserve = true;
+    { auto dismissedModal = std::make_unique<AccountDeletionModal>("owner");
+      dismissedModal->onDismissed = [&](bool keep) { ++dismissed; preserve = keep; }; }
+    expect(dismissed == 1 && !preserve, "titlebar/escape destruction cancels provider scope and unused intent");
+    { AccountDeletionModal dismissedModal("owner");
+      dismissedModal.onDismissed = [&](bool keep) { ++dismissed; preserve = keep; };
+      dismissedModal.invalidate(); }
+    expect(dismissed == 2 && !preserve, "explicit cancel and destructor dismiss exactly once");
+    auto progress = juce::JSON::parse(R"({"ok":true,"state":"pending","retryAfterSeconds":2})");
+    expect(AccountDeletionApi::parseStatus(progress).ok, "parse coarse verified pending status");
+    progress.getDynamicObject()->setProperty("state", "deleted");
+    expect(!AccountDeletionApi::parseStatus(progress).ok, "unknown state cannot claim success");
+    progress.getDynamicObject()->setProperty("state", "complete");
+    expect(!AccountDeletionApi::parseStatus(progress).ok, "complete with retry timing is malformed");
+    progress.getDynamicObject()->setProperty("retryAfterSeconds", 0);
+    expect(AccountDeletionApi::parseStatus(progress).ok, "complete only from well formed server result");
+    const auto receipt = juce::String::repeatedString("A", 43);
+    expect(!SessionPersistence::saveAccountDeletionReceipt("another-account", "weak"), "reject weak receipt");
+    expect(SessionPersistence::saveAccountDeletionReceipt("another-account", receipt), "receipt durable before request");
+    expect(SessionPersistence::saveAccountDeletionReceipt("another-account", receipt), "same receipt is idempotent");
+    expect(!SessionPersistence::saveAccountDeletionReceipt("another-account", juce::String::repeatedString("E", 43)), "cannot replace uncertain receipt");
+    SessionPersistence::clear();
+    expect(SessionPersistence::loadAccountDeletionReceipt("another-account") == receipt, "logout retains status receipt without login credentials");
+    expect(SessionPersistence::listAccountDeletionReceipts().contains(receipt), "restart discovers receipt without UID/profile");
+    expect(!SessionPersistence::clearAccountDeletionReceipt("another-account", juce::String::repeatedString("E", 43)), "foreign receipt cannot clear durable status");
+    expect(SessionPersistence::clearAccountDeletionReceipt("another-account", receipt), "verified completion acknowledgement clears exact receipt");
     SessionPersistence::clear();
     std::cout << "Account deletion: " << checks << " checks passed (simulated, no network/destructive adapters)\n";
     return 0;

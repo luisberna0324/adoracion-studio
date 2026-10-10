@@ -74,6 +74,7 @@ void MTControlsAudioProcessorEditor::refreshAppleSignInConfiguration() {
 
 void MTControlsAudioProcessorEditor::setAppleAuthenticationStatus(
     const juce::String& text, bool error, bool busy) {
+  if (deletionReauthStatus) deletionReauthStatus(text, error, busy);
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
     modal->setChecking(false);
     modal->setStatusText(text, error);
@@ -255,6 +256,11 @@ void MTControlsAudioProcessorEditor::resetAppleLinkFlow() {
   updateInlineAppleLinkUi(false);
 }
 void MTControlsAudioProcessorEditor::offerInlineAppleLink() {
+  if (deletionReauthCandidate) {
+    setAppleAuthenticationStatus(L10n::tr("Confirma tu identidad con un proveedor ya vinculado a esta cuenta.",
+      "Confirm your identity using a provider already linked to this account."), true, false);
+    return;
+  }
   resetAppleLinkFlow();
   appleLinkFlow.begin(juce::Time::currentTimeMillis());
   const auto token = appleLinkFlow.generation;

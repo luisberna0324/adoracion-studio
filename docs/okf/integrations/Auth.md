@@ -608,3 +608,15 @@ barreras para todos los writers/webhooks tardíos, worker/status autenticado que
 a invalidación de sesión y vinculación de reauth nativa al UID original. La UI de
 revisión y los simuladores no constituyen eliminación real ni cumplimiento completo
 para App Review. Ninguna llamada de borrado/cancelación/revocación real se ejecutó.
+
+### Account deletion: durable status and reauthentication increment
+
+The deletion review remains disabled in production (`executionAvailable=false` is enforced in the editor). This increment is not a completed deletion feature or App Review readiness evidence.
+
+The native deletion modal embeds the existing `ReauthPromptModal` for Apple, Google and password authentication. `completeAuthenticatedSession` intercepts deletion reauthentication before applying or persisting a candidate session. Both the local UID check and the backend fresh-token check must match the original UID; matching emails do not authorize switching or linking accounts. Apple linking is suppressed during deletion reauthentication. Provider cancellation, titlebar close and Escape fence callbacks and release the capture scope without replacing the original session.
+
+`AccountDeletionApi` supports bounded HTTPS/no-redirect reauthentication and coarse status reads. `SessionPersistence` stores a canonical 256-bit read-only status receipt independently of login credentials, before confirmation; logout does not remove it. A different receipt cannot replace an uncertain request. The modal may discard only its own definitely unsubmitted prepared receipt. Pending/submitting/completed dismissal preserves it. A receipt does not authorize login or deletion and must never appear in URLs or diagnostic logs.
+
+Backend accepted receipts bind directly to a job atomically with proof consumption and account blocking. Five-minute proof expiry does not end status access while deletion is pending; completion starts separately configured operational receipt retention. Status returns only `prepared`, `pending` or `complete` and bounded retry timing, without identity, steps or provider details. A completed job must have a durable completion checkpoint before the app reports success.
+
+Still required: request/worker integration with all real deletion steps, verified draining of outstanding storage/Auth operations, remaining delayed webhook/outbox/admin writer fences, removal of owned Teams and legacy storage, provider-specific Gumroad cancellation support or an explicit blocker, and startup UI recovery using persisted receipts without a login session. Native provider interception is compiled; available automated UI tests exercise modal callbacks and local persistence, not real provider sign-in or destructive execution.

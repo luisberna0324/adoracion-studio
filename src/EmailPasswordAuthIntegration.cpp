@@ -38,6 +38,7 @@ juce::String emailErrorMessage(EmailPasswordAuthApi::Error error) {
 
 void MTControlsAudioProcessorEditor::setEmailAuthenticationStatus(
     const juce::String& text, bool error, bool busy) {
+  if (deletionReauthStatus) deletionReauthStatus(text, error, busy);
   emailAuthenticationBusy = busy;
   reauthLoginInProgress = busy;
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
@@ -52,6 +53,7 @@ void MTControlsAudioProcessorEditor::setEmailAuthenticationStatus(
 }
 
 void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt(bool preserveAppleLinkFlow) {
+  if (deletionReauthStatus) deletionReauthStatus({}, false, false);
   if (!preserveAppleLinkFlow) resetAppleLinkFlow();
   ++authAttemptGeneration;
   authExpectedState.clear();

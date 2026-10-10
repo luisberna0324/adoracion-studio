@@ -180,3 +180,45 @@ bool SessionPersistence::markAccountDeletionPending(const juce::String &uid) {
   if (loaded && current.uid == uid) clear();
   return true;
 }
+
+namespace {
+juce::File deletionReceiptFile(const juce::String &uid) {
+  return getMtControlsDirectory().getChildFile("account-deletion-receipts")
+    .getChildFile(deletionMarker(uid).getFileName());
+}
+bool validDeletionReceipt(const juce::String &receipt) {
+  return receipt.length() == 43 && receipt.containsOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") &&
+    juce::String("AEIMQUYcgkosw048").containsChar(receipt.getLastCharacter());
+}
+}
+juce::String SessionPersistence::loadAccountDeletionReceipt(const juce::String &uid) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (uid.isEmpty()) return {};
+  const auto file = deletionReceiptFile(uid);
+  if (!file.existsAsFile() || file.getSize() > 4096) return {};
+  const auto receipt = file.loadFileAsString();
+  return validDeletionReceipt(receipt) ? receipt : juce::String{};
+}
+bool SessionPersistence::saveAccountDeletionReceipt(const juce::String &uid, const juce::String &receipt) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (uid.isEmpty() || !validDeletionReceipt(receipt)) return false;
+  const auto file = deletionReceiptFile(uid);
+  if (file.exists()) return loadAccountDeletionReceipt(uid) == receipt;
+  return file.getParentDirectory().createDirectory() && file.replaceWithText(receipt);
+}
+juce::StringArray SessionPersistence::listAccountDeletionReceipts() {
+  const juce::ScopedLock lock(snapshotLock);
+  juce::StringArray receipts;
+  for (const auto &file : getMtControlsDirectory().getChildFile("account-deletion-receipts")
+       .findChildFiles(juce::File::findFiles, false)) {
+    if (file.getSize() > 4096) continue;
+    const auto receipt = file.loadFileAsString();
+    if (validDeletionReceipt(receipt)) receipts.addIfNotAlreadyThere(receipt);
+  }
+  return receipts;
+}
+bool SessionPersistence::clearAccountDeletionReceipt(const juce::String &uid, const juce::String &expected) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (uid.isEmpty() || !validDeletionReceipt(expected) || loadAccountDeletionReceipt(uid) != expected) return false;
+  return deletionReceiptFile(uid).deleteFile();
+}

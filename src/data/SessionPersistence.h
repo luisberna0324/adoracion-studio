@@ -38,4 +38,10 @@ public:
    * rejects stale/offline credentials for this UID across app restarts. */
   static bool markAccountDeletionPending(const juce::String &uid);
   static bool isAccountDeletionPending(const juce::String &uid);
+  // Persist before submitting; independent of login snapshot and logout.
+  // A different receipt cannot replace an uncertain request for the same UID.
+  static bool saveAccountDeletionReceipt(const juce::String &uid, const juce::String &receipt);
+  static juce::String loadAccountDeletionReceipt(const juce::String &uid);
+  static juce::StringArray listAccountDeletionReceipts();
+  static bool clearAccountDeletionReceipt(const juce::String &uid, const juce::String &expectedReceipt);
 };

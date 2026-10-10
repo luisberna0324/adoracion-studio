@@ -1,5 +1,6 @@
 #pragma once
 #include "AuthenticationStyle.h"
+#include "ReauthPromptModal.h"
 #include "../../data/AccountDeletionApi.h"
 /** Reviewable native flow. Production currently supplies preview only; destructive
  * callbacks remain unbound until the server executor/status flow is approved. */
@@ -7,10 +8,13 @@ class AccountDeletionModal final : public juce::Component {
 public:
   enum class State { loading, review, reauthenticating, confirmation, submitting, pending, complete, error, closed };
   explicit AccountDeletionModal(juce::String uid);
+  ~AccountDeletionModal() override;
   std::function<void(int)> onPreviewRequested, onReauthenticationRequested, onStatusRequested;
   std::function<void(int, const juce::String &)> onConfirmationRequested;
   std::function<void()> onCancelled;
+  std::function<void(bool preserveReceipt)> onDismissed; // Also called for titlebar/Escape destruction.
   std::function<bool()> onAccepted; // Persist UID block and clear session after verified acceptance.
+  ReauthPromptModal *providerForm();
   void requestPreview();
   void invalidate();
   void receivePreview(int generation, const juce::String &uid, AccountDeletionPreview);
@@ -25,10 +29,11 @@ public:
 private:
   bool accepts(int, const juce::String &) const;
   void update();
+  std::unique_ptr<ReauthPromptModal> authentication;
   juce::String accountUid, proof;
   juce::int64 proofExpiresAtMs = 0;
   int generation = 0;
-  bool acceptanceHandled = false;
+  bool acceptanceHandled = false, dismissalHandled = false;
   State state = State::loading;
   AccountDeletionPreview preview;
   juce::Label title;

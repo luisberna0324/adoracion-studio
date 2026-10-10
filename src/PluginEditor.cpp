@@ -3054,6 +3054,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
   cancelAuthenticationAttempt(appleLinkFlow.stage == AppleLinkFlow::Stage::authenticate);
   sessionResumeCancelled = false;
+  if (deletionReauthStatus) deletionReauthStatus(L10n::tr("Esperando autenticación…", "Waiting for authentication…"), false, true);
 #if JUCE_IOS || JUCE_ANDROID
   NativeAuthSession::cancel();
   authExpectedState = juce::Uuid().toString();
@@ -3081,6 +3082,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
         }
         safe->cancelAuthenticationAttempt();
         if (error.isNotEmpty()) {
+          if (safe->deletionReauthStatus) safe->deletionReauthStatus(L10n::tr("No se completó la autenticación.", "Authentication did not complete."), true, false);
           if (auto *modal = dynamic_cast<WelcomeModal *>(safe->welcomeModal.get()))
             modal->setStatusText("No se completo la autenticacion.", true);
           if (auto *reauth = dynamic_cast<ReauthPromptModal *>(
@@ -3094,6 +3096,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (!started) {
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
       modal->setStatusText("No se pudo abrir el inicio de sesion.", true);
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
   }
   return;
@@ -3110,6 +3113,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
           "No se pudo iniciar el callback local. Verifica puertos locales.", true);
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError("No se pudo iniciar el callback local. Verifica puertos.");
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     authCallbackPort = 0;
     return;
@@ -3132,6 +3136,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
 
   if (!juce::URL(loginUrl).launchInDefaultBrowser()) {
     cancelAuthenticationAttempt();
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo abrir el navegador.", "Could not open the browser."), true, false);
     const auto message = L10n::tr(u8"No se pudo abrir el navegador. Puedes ingresar con correo.",
                                   "Couldn't open the browser. You can sign in with email.");
     if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
@@ -3154,6 +3159,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     }
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError("Autenticacion invalida. Reintenta.");
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     return;
   }
@@ -3169,6 +3175,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       modal->setStatusText(message, true);
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError(message);
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     return;
   }
@@ -3257,6 +3264,11 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
+  if (deletionReauthCandidate) {
+    auto capture = deletionReauthCandidate;
+    cancelAuthenticationAttempt(); // Fence duplicate callbacks before any candidate processing.
+    capture(std::move(snapshot)); return;
+  }
   if (SessionPersistence::isAccountDeletionPending(snapshot.uid)) {
     if (activeSession.uid == snapshot.uid) handleLogout();
     else {
@@ -3524,13 +3536,71 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
     const auto uid = safe->activeSession.uid;
     auto *content = new AccountDeletionModal(uid);
     juce::Component::SafePointer<AccountDeletionModal> modal(content);
+    const auto preparedReceipt = std::make_shared<juce::String>();
     content->setSize(juce::jmin(500, juce::jmax(320, safe->getWidth() - 24)), juce::jmin(620, juce::jmax(240, safe->getHeight() - 24)));
-    content->onCancelled = [modal] { if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0); };
+    content->onDismissed = [safe, uid, preparedReceipt](bool preserveReceipt) {
+      if (!preserveReceipt && preparedReceipt->isNotEmpty()) SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt);
+      if (safe) { safe->deletionReauthCandidate = {}; safe->deletionReauthStatus = {}; safe->cancelAuthenticationAttempt(); }
+    };
+    content->onCancelled = [modal] {
+      if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0);
+    };
     content->onAccepted = [safe, uid] {
-      if (!safe || safe->activeSession.uid != uid) return false;
+      if (!safe) return false;
       if (!SessionPersistence::markAccountDeletionPending(uid)) return false;
-      safe->handleLogout();
+      if (safe->activeSession.uid == uid) safe->handleLogout();
       return true;
+    };
+    content->onReauthenticationRequested = [safe, modal, uid, preparedReceipt](int generation) {
+      // This flow cannot return to review after submission; only its own unused receipt can be cleared.
+      if (preparedReceipt->isNotEmpty()) { SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt); preparedReceipt->clear(); }
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      auto *form = modal->providerForm(); if (!form) return;
+      const auto original = safe->activeSession;
+      juce::Component::SafePointer<ReauthPromptModal> authForm(form);
+      form->setAppleSignInAvailable(safe->appleSignInAvailable);
+      safe->deletionReauthStatus = [authForm](const juce::String &text, bool error, bool busy) {
+        if (authForm) { authForm->setAuthenticationBusy(busy); authForm->setStatusText(text, error); }
+      };
+      safe->deletionReauthCandidate = [safe, modal, uid, generation, original, authForm, preparedReceipt](PersistedSessionSnapshot candidate) {
+        if (!safe || !modal || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::reauthenticating) return;
+        if (candidate.uid != uid || safe->activeSession.uid != uid) {
+          if (authForm) authForm->showError(L10n::tr("Usa la misma cuenta que deseas eliminar.", "Use the same account you want to delete."));
+          return; // Never accept matching email as an account link or switch session.
+        }
+        if (authForm) authForm->setAuthenticationBusy(true);
+        const auto base = getApiBaseUrl();
+        std::thread([safe, modal, uid, generation, original, candidate, base, preparedReceipt] {
+          const auto current = AuthSessionApi::refreshFirebaseIdToken(original.firebaseApiKey, original.refreshToken);
+          const auto fresh = AuthSessionApi::refreshFirebaseIdToken(candidate.firebaseApiKey, candidate.refreshToken);
+          const auto proof = current.ok && fresh.ok ? AccountDeletionApi::reauthenticate(base, current.idToken, fresh.idToken) : AccountDeletionReauthentication{};
+          juce::MessageManager::callAsync([safe, modal, uid, generation, proof, preparedReceipt] {
+            if (!safe || !modal || modal->getGeneration() != generation || safe->activeSession.uid != uid) return;
+            safe->deletionReauthCandidate = {}; safe->deletionReauthStatus = {}; safe->cancelAuthenticationAttempt();
+            if (!proof.ok || !proof.executionAvailable || !SessionPersistence::saveAccountDeletionReceipt(uid, proof.receipt)) { modal->fail(generation, uid); return; }
+            *preparedReceipt = proof.receipt;
+            modal->receiveReauthentication(generation, uid, proof.proofId, proof.expiresAtMs);
+          });
+        }).detach();
+      };
+      form->onLoginNow = [safe] { if (safe) safe->launchExternalLogin(); };
+      form->onAppleLoginNow = [safe] { if (safe) safe->launchAppleLogin(); };
+      form->onPasswordLoginRequested = [safe](const juce::String &email, const juce::String &password) { if (safe) safe->launchPasswordLogin(email, password); };
+      form->onAuthenticationCancelled = [safe] { if (safe) safe->cancelAuthenticationAttempt(); };
+      form->onInlineAuthenticationNavigation = [safe] { if (safe) safe->cancelAuthenticationAttempt(true); };
+      form->onLater = [modal] { if (modal) modal->invalidate(); };
+      // Password reset cannot prove identity and is intentionally offered through the normal login UI.
+    };
+    content->onStatusRequested = [modal, uid](int generation) {
+      const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), base = getApiBaseUrl();
+      std::thread([modal, uid, generation, receipt, base] {
+        const auto result = AccountDeletionApi::status(base, receipt);
+        juce::MessageManager::callAsync([modal, uid, generation, result] {
+          if (!modal) return;
+          if (!result.ok || result.state == "prepared") { modal->fail(generation, uid); return; }
+          modal->receiveStatus(generation, uid, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
+        });
+      }).detach();
     };
     content->onPreviewRequested = [safe, modal, uid](int generation) {
       if (!safe || !modal || safe->activeSession.uid != uid) return;
@@ -4133,6 +4203,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 
 void MTControlsAudioProcessorEditor::handleLogout() {
   const bool wasLocalDemo = localDemoSession;
+  deletionReauthCandidate = {}; deletionReauthStatus = {};
   cancelAuthenticationAttempt();
   appleLoginInProgress = false;
   appleLinkInProgress = false;

@@ -284,6 +284,10 @@ private:
   AppleLinkFlow appleLinkFlow;
   PersistedSessionSnapshot appleLinkCandidate;
   juce::ScopedMessageBox appleLinkDialog;
+  // Existing provider login results are intercepted during deletion reauth;
+  // they never replace or persist the original account session.
+  std::function<void(PersistedSessionSnapshot)> deletionReauthCandidate;
+  std::function<void(const juce::String &, bool, bool)> deletionReauthStatus;
   uint64_t authAttemptGeneration = 0;
   bool emailAuthenticationBusy = false;
   uint64_t appleConfigurationGeneration = 0;

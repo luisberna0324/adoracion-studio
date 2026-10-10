@@ -24,12 +24,18 @@ AccountDeletionModal::AccountDeletionModal(juce::String uid) : accountUid(std::m
   };
   update();
 }
+AccountDeletionModal::~AccountDeletionModal() {
+  ++generation;
+  if (!dismissalHandled && onDismissed) onDismissed(state == State::submitting || state == State::pending || state == State::complete);
+}
 juce::String AccountDeletionModal::policyText() const {
   return L10n::tr("Se borrarán tu cuenta y todo tu contenido de Cloud. Si eres propietario de una nube compartida, sus miembros perderán el acceso. Se cancelará automáticamente la renovación de Cloud, sin reembolso automático. Tus proyectos, audio y copias descargadas permanecerán en este dispositivo. Los datos de otros propietarios no se borrarán. Los comprobantes obligatorios se tratarán según la política legal aplicable.",
     "Your account and all your Cloud content will be deleted. If you own a shared Cloud, its members will lose access. Cloud renewal will be cancelled automatically, with no automatic refund. Your projects, audio and downloaded copies will remain on this device. Other owners' data will be preserved. Required accounting records will be handled under the applicable legal policy.");
 }
 bool AccountDeletionModal::accepts(int request, const juce::String &uid) const { return request == generation && uid == accountUid && state != State::closed; }
-void AccountDeletionModal::invalidate() { ++generation; state = State::closed; proof.clear(); proofExpiresAtMs = 0; update(); if (onCancelled) onCancelled(); }
+void AccountDeletionModal::invalidate() {
+  if (!dismissalHandled && onDismissed) onDismissed(state == State::submitting || state == State::pending || state == State::complete);
+  dismissalHandled = true; ++generation; state = State::closed; proof.clear(); proofExpiresAtMs = 0; update(); if (onCancelled) onCancelled(); }
 void AccountDeletionModal::requestPreview() { if (state == State::pending || state == State::submitting || state == State::complete || state == State::closed) return; ++generation; proof.clear(); preview = {}; state = State::loading; update(); if (onPreviewRequested) onPreviewRequested(generation); else fail(generation, accountUid); }
 void AccountDeletionModal::receivePreview(int request, const juce::String &uid, AccountDeletionPreview value) {
   if (!accepts(request, uid) || state != State::loading) return;
@@ -56,7 +62,16 @@ void AccountDeletionModal::fail(int request, const juce::String &uid) {
   else { state = State::error; proof.clear(); proofExpiresAtMs = 0; }
   update();
 }
+ReauthPromptModal *AccountDeletionModal::providerForm() {
+  if (state != State::reauthenticating) return nullptr;
+  if (!authentication) { authentication = std::make_unique<ReauthPromptModal>(); content.addAndMakeVisible(*authentication);
+    authentication->onPreferredHeightChanged = [this] { resized(); }; }
+  update(); return authentication.get();
+}
 void AccountDeletionModal::update() {
+  const bool showForm = state == State::reauthenticating && authentication != nullptr;
+  message.setVisible(!showForm); status.setVisible(!showForm);
+  if (authentication) { authentication->setVisible(showForm); if (!showForm) authentication->clearCredentials(); }
   juce::String text;
   switch (state) {
     case State::loading: text = L10n::tr("Consultando el impacto…", "Checking the impact…"); break;
@@ -85,6 +100,10 @@ void AccountDeletionModal::resized() {
   next.setBounds(area.removeFromBottom(48)); area.removeFromBottom(12);
   viewport.setBounds(area);
   const auto width = juce::jmax(1, area.getWidth() - viewport.getScrollBarThickness());
+  if (authentication && state == State::reauthenticating) {
+    const auto height = authentication->preferredHeight(); content.setSize(width, height);
+    authentication->setBounds(0, 0, width, height); return;
+  }
   const auto messageHeight = message.heightForWidth(width), statusHeight = status.heightForWidth(width);
   content.setSize(width, messageHeight + statusHeight + 16);
   message.setBounds(0, 0, width, messageHeight); status.setBounds(0, messageHeight + 16, width, statusHeight);
