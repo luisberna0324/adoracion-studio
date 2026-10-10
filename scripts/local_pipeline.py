@@ -3,7 +3,7 @@
 import argparse, datetime, hashlib, json, os, platform, plistlib, re, shutil, subprocess, sys, time, zipfile
 from pathlib import Path
 
-TARGETS = ['backend', 'windows', 'android-debug', 'android-release', 'tests', 'macos', 'ios-simulator', 'ios-device']
+TARGETS = ['semver', 'resources', 'backend', 'windows', 'android-debug', 'android-release', 'tests', 'macos', 'ios-simulator', 'ios-device']
 class Blocked(Exception): pass
 class Failed(Exception): pass
 
@@ -12,6 +12,7 @@ def main():
     ap.add_argument('--config', type=Path)
     ap.add_argument('--targets', default='all', help='all or comma-separated '+','.join(TARGETS))
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--semver-branch', help='Source branch for local SemVer validation; defaults to checkout branch')
     ap.add_argument('--jobs', type=int, default=3)
     args = ap.parse_args()
     cfg = json.loads(args.config.read_text()) if args.config else {}
@@ -75,6 +76,15 @@ def main():
     for current in selected:
         started=time.monotonic();result['targets'][current]={'status':'RUNNING'};summary();print(current+': RUNNING',flush=True)
         try:
+            if current=='semver':
+                branch=args.semver_branch or git(repo,'rev-parse','--abbrev-ref','HEAD')
+                run(['bash','scripts/semver.sh','--branch',branch,'--sequence','0','--prerelease','--require-supported-branch'])
+                result['targets'][current]['branch']=branch
+            if current=='resources':
+                tool('cmake');tool('ninja');build=repo/'build/binary-resources'
+                run(['cmake','-S','tests/binary_resources','-B',build,'-G','Ninja'])
+                cmake_build(build,'binary_resources')
+                run(['ctest','--test-dir',build,'--output-on-failure','--no-tests=error'])
             if current=='windows': raise Blocked('UNSUPPORTED on this Mac: no Windows Visual Studio 2022/SDK/Inno Setup. No VM or tools installed.')
             if current=='android-release': raise Blocked('Release signing not executed: keystore use needs specific authorization; no key values inspected or generated.')
             if current=='backend':

@@ -1,66 +1,96 @@
-# Validación local y CI manual
+# QA fuera de Actions y releases manuales
 
-Los pushes de ramas y tags no construyen instaladores. En PR se conservan
-`binary-resources` (Linux, sin JUCE) y la comprobación SemVer de ramas hacia
-main. Fusionar no crea tags ni despacha workflows. Las validaciones obsoletas de un
-PR se cancelan por workflow y número de PR; los dispatch manuales tienen grupo
-por run y no se cancelan. Build/publicación y Cloud Build conservan
-`cancel-in-progress: false` en sus grupos separados.
+Solo `.github/workflows/ci.yml` permanece activo: genera instaladores de release
+mediante `workflow_dispatch`. No hay eventos push, PR, merge, tag, schedule,
+workflow_run ni workflows auxiliares. Actions no ejecuta tests ni checks,
+automáticos o manuales. Se retiraron tests.yml, pr-semver.yml y
+android-cloudbuild.yml; sus pruebas fuente permanecen intactas.
 
-## Antes de una release
+## Coordinación principal en Codex Cloud
 
-1. Registrar SHA de app y backend. Ejecutar en el backend `npm ci`,
-   `npm run typecheck` y los cinco scripts `test:auth-callback`,
-   `test:secret-cache`, `test:paddle`, `test:teams`, `test:password-auth`.
-   `node --import tsx --test tests/*.test.ts` ejecuta todas esas pruebas.
-   Ejecutar también `npm run build` sin token de subida Sentry.
-2. Ejecutar los recursos sin SDK:
+Codex Cloud inicia y coordina QA de app/backend sobre una revisión fijada.
+Ejecutar allí todos los tests que sus dependencias permitan y guardar resultados
+por SHA. Los targets no disponibles se marcan BLOCKED; complementar Apple,
+Windows y hardware en sus entornos y devolver esos logs al informe Cloud.
+Solo cuando ese informe esté completo decidir si hace falta generar una release.
+Subir código o activar releases requiere aprobación concreta adicional.
 
-   ```sh
-   cmake -S tests/binary_resources -B build/binary-resources -G Ninja
-   cmake --build build/binary-resources --parallel 3
-   ctest --test-dir build/binary-resources --output-on-failure --no-tests=error
-   ```
+## Pipeline local complementario del mismo SHA
 
-3. Con JUCE fijado al SHA del workflow, Bungee y dependencias de plataforma,
-   ejecutar la suite completa descrita en [Testing](../Testing.md), compilar
-   `MTControls_Standalone` y comprobar la app en dispositivos reales.
-   `tests/run_isolated_test.py` conserva el aislamiento de datos.
-   Alternativamente ejecutar manualmente `tests.yml`: macOS CTest y Windows
-   x64/x86. El resultado de recursos no acredita la compilación completa JUCE.
-4. Para construir instaladores manualmente usar `ci.yml` con `ref` y
-   `publish_release=false` (predeterminado). No sube símbolos Sentry ni
-   instaladores a GCS, no limpia versiones, no cambia manifiestos ni crea
-   tags/releases. La matriz completa sigue siendo costosa y Android requiere
-   los secretos de firma ya previstos; las pruebas locales no los necesitan.
-5. Solo tras solicitar publicación ejecutar `ci.yml` con
-   `publish_release=true`. Este permiso incluye uploads Sentry/GCS, retención
-   de las últimas tres versiones, manifiesto de descargas y GitHub Release.
-   La creación del tag no dispara una segunda compilación.
+En un worktree limpio, registrar SHA de app y backend. Para el Mac preparado:
 
-`ref` acepta rama, SHA o tag estable existente. El resolver fija un SHA antes
-de compilar; un tag explícito conserva su versión. Para rama/SHA se calcula el
-incremento `release_kind` usando únicamente tags estables. Las ramas se
-resuelven desde el origen aunque el dispatch use otra rama; el SHA fijado
-identifica también la release Sentry. Una colisión de tag calculado falla
-en lugar de sustituir silenciosamente la revisión solicitada. No usar una build sin publicación como evidencia
-para otra revisión del código.
+```sh
+python3 scripts/local_pipeline.py --config ../local-pipeline-mac.json --targets all
+```
 
-## Android Cloud Build
+SemVer y recursos (sin JUCE) también pueden ejecutarse por separado:
 
-`android-cloudbuild.yml` sigue siendo exclusivamente manual. Requiere además
-`publish_artifacts=true`: Cloud Build necesariamente sube fuentes y produce
-APK en GCS, y el workflow sube un artefacto GitHub de depuración. Sin esa
-opción el job no se ejecuta. Este camino consume recursos GCP y no publica
-una release firmada. Usar el build Android local si se desea evitar cualquier
-subida externa; requiere SDK/NDK/Java y `scripts/bootstrap_bungee.sh`.
+```sh
+python3 scripts/local_pipeline.py --targets semver,resources
+bash scripts/semver.sh --branch feat/nombre --sequence 0 --prerelease --require-supported-branch
+cmake -S tests/binary_resources -B build/binary-resources -G Ninja
+cmake --build build/binary-resources --parallel 3
+ctest --test-dir build/binary-resources --output-on-failure --no-tests=error
+```
 
-## Límites del entorno Linux guardado
+El pipeline conserva backend typecheck/pruebas/build y PlayWorshipTests completo.
+Guardar summary.json, logs, commits, plataformas, resultados y blockers.
+Un resultado anterior de otro SHA o un target BLOCKED no acredita QA de release.
+Para Windows ejecutar sus presets VS2022 x64/x86 en Windows; para Android Release
+se requiere firma autorizada. Probar audio/MIDI, UI, login y hardware pertinentes
+fuera de Actions. El PKG local no notarizado y iOS development no acreditan
+una distribución certificada. Ver [Testing](../Testing.md) y
+[LocalPipeline](../distribution/LocalPipeline.md).
 
-La auditoría del 10/10/2026 validó recursos C++ y backend. No había JUCE,
-Bungee ni paquetes de desarrollo ALSA/X11/FreeType/OpenGL, por lo que no se
-acredita la app Linux ni `PlayWorshipTests`. Los presets macOS/iOS necesitan
-Xcode/SDK Apple; Windows necesita Visual Studio 2022 y su SDK. Firma,
-instaladores, audio/MIDI físico, foco de UI y descubrimiento LAN deben
-verificarse en sus plataformas. `scripts/e2e-local.mjs` requiere servidor
-Next y emuladores Firebase Auth/Firestore; los tests unitarios no lo sustituyen.
+## Codex Cloud
+
+En Linux, SemVer y las regresiones de tests/binary_resources usan los comandos
+anteriores directamente. En el checkout backend limpio y con dependencias:
+
+```sh
+npm run typecheck
+node --import tsx --test tests/*.test.ts
+npm run build
+```
+
+No subir secretos; desactivar tokens de subida Sentry. El pipeline Mac exige
+Darwin y no se usa como evidencia Cloud. Cloud solo acredita pruebas realmente
+ejecutadas con logs/SHA. El entorno Cloud revisado no dispone de JUCE/Bungee y
+SDKs Apple/Windows completos: no acredita PlayWorshipTests ni builds nativos.
+Tests E2E con Firebase requieren sus emuladores y servidor; unit tests no los
+sustituyen. Los tests interactivos y LAN mantienen su validación específica.
+
+## Solicitar release
+
+1. Completar el informe principal de QA en Codex Cloud con evidencia nativa complementaria y revisar blockers para el SHA exacto y plataformas.
+2. Tras aprobación, disparar manualmente ci.yml con ref (preferir SHA completo),
+   qa_sha completo y qa_confirmed=true. El resolver fija la revisión y falla
+   antes de la matriz si no coincide con QA. La confirmación es una declaración
+   del operador; no ejecuta ni certifica QA automáticamente.
+3. retain_artifacts=true autoriza guardar instaladores en artefactos del run
+   GitHub por siete días (almacenamiento facturable según presupuesto).
+   publish_release=false genera instaladores sin uploads Sentry/GCS, cleanup,
+   manifiesto ni tag/GitHub Release. La matriz sigue consumiendo Actions y usa
+   los secretos de firma Android existentes. Solo ejecutarla por solicitud
+   concreta de generación de release. Si retain_artifacts y publish_release
+   están desactivados, prepare falla antes de compilar: no se gastan matrices
+   para generar instaladores sin destino.
+4. publish_release=true requiere autorización adicional: incluye uploads
+   Sentry/GCS, retención de tres versiones, manifiesto y tag/GitHub Release.
+   Todos están protegidos por el opt-in; no hay publicación por eventos.
+
+Un tag explícito conserva su versión; rama/SHA calcula release_kind desde tags
+estables. La revisión fijada identifica también símbolos Sentry. No se cancela
+una operación de release activa por una ejecución nueva. Subir esta rama o
+fusionarla necesita aprobación; nada de esta preparación despacha Actions.
+
+## Activación sin consumo accidental
+
+Estos cambios locales no alteran los workflows remotos vigentes. Antes de subir
+la rama o abrir/fusionar PR, el propietario puede deshabilitar temporalmente
+Actions del repositorio en Settings → Actions → General. Con aprobación concreta,
+subir/fusionar la configuración y verificar que solo ci.yml manual permanezca;
+reactivar Actions únicamente cuando se quiera habilitar releases manuales.
+No modificar presupuestos ni iniciar runs como parte de esta activación.
+Mantener límite de gasto cero es complementario y no sustituye deshabilitar
+los workflows existentes si se quiere impedir toda ejecución.
