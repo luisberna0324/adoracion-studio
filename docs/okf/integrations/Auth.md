@@ -463,3 +463,10 @@ clic o toque sostenido no compitan con un contenedor anidado.
 Sus selectores propagan rueda/trackpad al viewport y abren solo al completar
 un clic/tap, para que desplazar la lista no altere una salida. Ver
 [Mobile Layout](../ui/MobileLayout.md).
+
+
+### Signed Apple preview — 2026-10-10
+
+The isolated iOS Debug development build is manually signed with the existing Apple Development identity and the authorized PlayWorship Apple Sign In iOS Development 2026-10-10 profile. Strict signature verification passed; app and embedded profile contain com.apple.developer.applesignin=[Default], team V9T23PX769. The build uses MTCONTROLS_BACKEND_MODE=custom and MTCONTROLS_API_BASE_URL=https://apple-auth-preview---playworship-yumomf2xoq-ue.a.run.app; binary inspection verified this exact URL. Source defaults still select production cloud mode with Apple opt-in disabled. Backend preview revision playworship-00067-yed passed non-account-creating HTTP smoke and receives zero production traffic. All five scoped native authentication tests pass when run with the required macOS graphical session. An accidental unfiltered CTest invocation included unbuilt unrelated targets and lacked graphical access; it is not an all-suite validation.
+
+The artifact is build/apple-ios-device/MTControls_artefacts/Debug/Standalone/PlayWorship.app in this isolated worktree. It has not been installed on a physical device or used for real Apple authorization. A consenting user must personally test first/repeat Apple login, hidden email, cancellation, explicit linking and session lifecycle; compilation and endpoint smoke are not real-login validation. No App Store distribution, branch publication or production traffic rollout occurred.
