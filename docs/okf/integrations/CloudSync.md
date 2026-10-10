@@ -727,3 +727,32 @@ URLs firmadas y hashes del Cloud personal. El cliente crea una identidad local
 por cuenta después de verificar el paquete; no registra esa descarga en el
 índice Cloud personal del miembro ni publica ajustes hacia el propietario.
 No se generan setlists de preparación. Ver [contrato de Teams](Teams.md).
+
+## Transporte R2 con borrado de cuenta (candidato local 2026-10-10)
+
+`prepare-upload` exige `uploadProtocol: multipart-single-part-v1`; clientes
+anteriores reciben HTTP 426 y no nuevas URLs PUT finales. Cada objeto y el
+descriptor usan un multipart de una sola parte final (máximo 5 GiB por objeto;
+descriptor máximo 5 MiB). La app conserva streaming desde archivo, sube
+`UploadPart` y llama `complete-upload` con un ID de sesión. El servidor consulta
+las partes y su tamaño, y completa usando el ETag obtenido de R2. La app no
+recibe permisos para completar ni claves R2. Rechaza respuestas de transporte
+antiguo antes de subir contenido.
+
+Firestore vincula sesión, UID, clave, tamaño y uploadId. Create y Complete
+registran una operación durable antes de llamar R2; una respuesta perdida
+mantiene el bloqueo, sin borrarlo en `finally` ni por caducidad. Solo un resultado
+terminal confirmado libera esa operación. El borrado y Complete compiten contra
+la misma barrera transaccional. Los multipart preparados se abortan antes de
+purgar; `NoSuchUpload` es la comprobación API de cierre, pendiente de QA real de
+R2 para partes en vuelo. La limpieza existente reclama sesiones preparadas
+caducadas (24h, igual que leases), con presupuesto de 60s, llamadas de 20s y
+reintentos de abortos fallidos. Create/Complete ambiguos requieren recuperación
+operativa verificada; no se eliminan automáticamente.
+
+Las capacidades PUT finales de versiones antiguas no quedan canceladas por este
+cambio. El runtime exige evidencia operacional explícita por UID en
+`accountStorageMigrations` antes de aceptar un borrado y repite la comprobación
+al congelar. Ningún código escribe automáticamente esa certificación. Una
+expiración, lista vacía o timeout del cliente no certifican drenaje. Mantener
+borrado productivo deshabilitado hasta resolver la migración y QA del proveedor.

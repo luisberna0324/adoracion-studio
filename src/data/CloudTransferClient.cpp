@@ -247,6 +247,7 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       prepare->setProperty("songId", request.descriptor.songId);
       prepare->setProperty("baseRevision", request.baseRevision);
       prepare->setProperty("objects", juce::var(objects));
+      prepare->setProperty("uploadProtocol", "multipart-single-part-v1");
       juce::String response;
       SessionAuthLogger::write("[CloudUpload] prepare request api=" +
                                normalizedBase(credentials.apiBaseUrl) +
@@ -274,6 +275,15 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       if (request.descriptor.revision <= 0) {
         deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Invalid prepared revision")); return jobHasFinished;
       }
+      const auto completePart = [&](const JsonObject* upload) {
+        if (upload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1" ||
+            upload->getProperty("uploadSessionId").toString().isEmpty()) {
+          error = makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable"); return false;
+        }
+        auto* body = new JsonObject(); body->setProperty("uploadSessionId", upload->getProperty("uploadSessionId"));
+        return postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/complete-upload", idToken,
+                        juce::JSON::toString(juce::var(body)), response, error);
+      };
       const int total = uploads->size() + 1;
       int completed = 0;
       for (const auto& uploadValue : *uploads) {
@@ -283,6 +293,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
         const auto it = objectByHash.find(hash);
         if (it == objectByHash.end()) { deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Unexpected upload object")); return jobHasFinished; }
         const auto signedUrl = upload->getProperty("uploadUrl").toString().trim();
+        if (signedUrl.isNotEmpty() && upload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1") {
+          deliverUpload(std::move(callback), {}, makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable")); return jobHasFinished;
+        }
         if (signedUrl.isNotEmpty() && !putFile(signedUrl, *it->second, error)) {
           SessionAuthLogger::write("[CloudUpload] object upload failed file=" +
                                    it->second->file.getFileName() + " status=" +
@@ -290,8 +303,14 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
                                    error.code + " message=" + error.message);
           deliverUpload(std::move(callback), {}, error); return jobHasFinished;
         }
+        if (signedUrl.isNotEmpty() && !completePart(upload)) {
+          deliverUpload(std::move(callback), {}, error); return jobHasFinished;
+        }
         ++completed;
         deliverProgress(progress, {"uploading", hash, completed, total, static_cast<double>(completed) / total});
+      }
+      if (descriptorUpload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1") {
+        deliverUpload(std::move(callback), {}, makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable")); return jobHasFinished;
       }
       const auto descriptorUrl = descriptorUpload->getProperty("uploadUrl").toString().trim();
       const auto descriptorJson = CloudSyncJson::toJsonString(request.descriptor);
@@ -308,6 +327,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
                                  juce::String(descriptorStatus));
         deliverUpload(std::move(callback), {}, descriptorStream ? responseError(body, descriptorStatus) : makeError("NETWORK", "Descriptor upload unavailable"));
         return jobHasFinished;
+      }
+      if (!completePart(descriptorUpload)) {
+        deliverUpload(std::move(callback), {}, error); return jobHasFinished;
       }
       ++completed;
       deliverProgress(progress, {"uploading-descriptor", {}, completed, total, 1.0});
