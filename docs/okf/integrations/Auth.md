@@ -549,3 +549,15 @@ La URL de callback Google configurada sigue en produccion: prueba real con
 inicio/callback preview requiere autorizacion de URI adicional en el cliente
 Web existente y override solo preview. Produccion 100% en `00061-baw`;
 credenciales, grants y referencias existentes intactas.
+
+
+## Retorno Google en el mismo preview (2026-10-10)
+
+Tras aprobacion expresa, se agrego solo el callback exacto del preview al
+cliente Web Google existente, preservando redirects de produccion/MCP y
+origenes. `playworship-00072-siv` cambia solo `GOOGLE_OAUTH_CALLBACK_URL`;
+imagen, state version 1 y secretos intactos, produccion 100% en `00061-baw`.
+Start y callback sintetico/cancelacion fueron verificados en la misma revision,
+sin cuenta real. El build 3 instalado conserva la URL del tag y no necesita
+reinstalacion; el usuario debe probar Google y luego correo personalmente
+sin compartir contrasenas. No afirmar login real Google a partir del smoke.
