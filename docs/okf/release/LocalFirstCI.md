@@ -2,7 +2,10 @@
 
 Los pushes de ramas y tags no construyen instaladores. En PR se conservan
 `binary-resources` (Linux, sin JUCE) y la comprobación SemVer de ramas hacia
-main. Fusionar no crea tags ni despacha workflows.
+main. Fusionar no crea tags ni despacha workflows. Las validaciones obsoletas de un
+PR se cancelan por workflow y número de PR; los dispatch manuales tienen grupo
+por run y no se cancelan. Build/publicación y Cloud Build conservan
+`cancel-in-progress: false` en sus grupos separados.
 
 ## Antes de una release
 

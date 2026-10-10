@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+# Only replace obsolete PR checks; manual builds never cancel one another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   binary-resources:
     name: Android bundled resources
