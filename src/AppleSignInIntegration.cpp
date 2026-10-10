@@ -187,3 +187,34 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
   juce::ignoreUnused(linkExisting);
 #endif
 }
+
+void MTControlsAudioProcessorEditor::refreshAppleCredentialMonitoring() {
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
+#if MTCONTROLS_APPLE_SIGN_IN_ENABLED && (JUCE_IOS || JUCE_MAC)
+  if (localDemoSession || activeSession.authProvider != "apple.com" ||
+      activeSession.uid.isEmpty() || activeSession.authProviderUser.isEmpty()) return;
+  const auto generation = appleCredentialGeneration;
+  const auto uid = activeSession.uid, user = activeSession.authProviderUser;
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  appleCredentialMonitor = NativeAppleSignIn::monitorCredential(user,
+      [safe, generation, uid, user](NativeAppleSignIn::CredentialState state) {
+        if (safe) safe->applyAppleCredentialState(generation, uid, user, state);
+      });
+#endif
+}
+
+void MTControlsAudioProcessorEditor::applyAppleCredentialState(
+    uint64_t generation, const juce::String& uid, const juce::String& appleUser,
+    NativeAppleSignIn::CredentialState state) {
+  if (generation != appleCredentialGeneration || localDemoSession ||
+      activeSession.uid != uid || activeSession.authProvider != "apple.com" ||
+      activeSession.authProviderUser != appleUser ||
+      !NativeAppleSignIn::requiresFreshLogin(state)) return;
+  // Reuse logout to invalidate every pending auth/network callback and clear
+  // only this device's session. Do not delete or unlink the Firebase account.
+  handleLogout();
+  if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
+    modal->setStatusText(L10n::tr("El acceso con Apple cambió. Vuelve a ingresar con Apple, Google o correo.",
+                                "Apple access changed. Sign in again with Apple, Google or email."), true);
+}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PluginProcessor.h"
+#include "platform/NativeAppleSignIn.h"
 #include "data/SessionPersistence.h"
 #include "data/CloudLibraryClient.h"
 #include "data/CloudSettingsClient.h"
@@ -193,6 +194,8 @@ private:
   struct SessionSummary {
     juce::String uid;
     juce::String email;
+    juce::String authProvider;
+    juce::String authProviderUser;
     juce::String plan;
     juce::String subscriptionStatus;
     juce::String expiresAt;
@@ -280,6 +283,8 @@ private:
   uint64_t authAttemptGeneration = 0;
   bool emailAuthenticationBusy = false;
   uint64_t appleConfigurationGeneration = 0;
+  uint64_t appleCredentialGeneration = 0;
+  std::unique_ptr<NativeAppleSignIn::CredentialMonitor> appleCredentialMonitor;
   std::unique_ptr<juce::Component> reauthPromptModal;
   std::unique_ptr<PadsComponent> padsComponent;
   std::unique_ptr<PadsHandlePanel> padsHandlePanel;
@@ -353,6 +358,9 @@ private:
   void cancelAuthenticationAttempt();
   void setEmailAuthenticationStatus(const juce::String& text, bool error, bool busy);
   void refreshAppleSignInConfiguration();
+  void refreshAppleCredentialMonitoring();
+  void applyAppleCredentialState(uint64_t generation, const juce::String& uid,
+                                const juce::String& appleUser, NativeAppleSignIn::CredentialState);
   void launchAppleLogin(bool linkExisting = false);
   void setAppleAuthenticationStatus(const juce::String &text, bool error, bool busy);
   void completeAuthenticatedSession(PersistedSessionSnapshot snapshot);

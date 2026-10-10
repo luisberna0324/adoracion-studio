@@ -241,6 +241,9 @@ AppleSignInApi::SessionResult AppleSignInApi::parseSessionResponse(
   PersistedSessionSnapshot snapshot;
   if (session == nullptr || !session->getProperty("allowed").isBool() ||
       !readText(*session, "uid", snapshot.uid, 256, true) ||
+      !readText(*session, "authProvider", snapshot.authProvider, 64, true) ||
+      !readText(*session, "authProviderUser", snapshot.authProviderUser, 256, true) ||
+      snapshot.authProvider != "apple.com" ||
       !readText(*session, "email", snapshot.email, 320) ||
       !readText(*session, "plan", snapshot.plan, 96, true) ||
       !readText(*session, "subscriptionStatus", snapshot.subscriptionStatus, 96, true) ||

@@ -371,6 +371,20 @@ if(MTCONTROLS_BUILD_TESTS)
     endif()
     juce_generate_juce_header(MTControlsAppleSignInTests)
     add_test(NAME apple_signin_contract COMMAND "$<TARGET_FILE:MTControlsAppleSignInTests>")
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_console_app(MTControlsAppleLifecycleTests PRODUCT_NAME "Native Apple Credential Lifecycle Tests")
+        target_sources(MTControlsAppleLifecycleTests PRIVATE tests/apple_credential_lifecycle_tests.mm
+            src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.mm)
+        target_include_directories(MTControlsAppleLifecycleTests PRIVATE src)
+        target_compile_definitions(MTControlsAppleLifecycleTests PRIVATE
+            MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+        target_link_libraries(MTControlsAppleLifecycleTests PRIVATE
+            juce::juce_core juce::juce_gui_extra juce::juce_cryptography "-framework AuthenticationServices")
+        juce_generate_juce_header(MTControlsAppleLifecycleTests)
+        add_test(NAME apple_credential_lifecycle COMMAND "$<TARGET_FILE:MTControlsAppleLifecycleTests>")
+    endif()
+
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
     target_sources(MTControlsRemoteSessionTests PRIVATE
         tests/remote_session_tests.cpp

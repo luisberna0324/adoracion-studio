@@ -4102,6 +4102,8 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     localAuthServer->stop();
   authCallbackPort = 0;
 
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   activeSession = {};
   activeSession.allowed = false;
   localDemoSession = false;
@@ -4160,6 +4162,8 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
   PersistedSessionSnapshot p;
   p.uid = activeSession.uid;
   p.email = activeSession.email;
+  p.authProvider = activeSession.authProvider;
+  p.authProviderUser = activeSession.authProviderUser;
   p.plan = activeSession.plan;
   p.subscriptionStatus = activeSession.subscriptionStatus;
   p.expiresAt = activeSession.expiresAt;
@@ -4181,6 +4185,8 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     invalidateCloudAccountView();
   activeSession.uid = snap.uid;
   activeSession.email = snap.email;
+  activeSession.authProvider = snap.authProvider;
+  activeSession.authProviderUser = snap.authProviderUser;
   activeSession.plan = snap.plan;
   activeSession.subscriptionStatus = snap.subscriptionStatus;
   activeSession.expiresAt = snap.expiresAt;
@@ -4192,6 +4198,7 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
   activeSession.firebaseApiKey = snap.firebaseApiKey;
   activeSession.idTokenExpiresAtMs = snap.idTokenExpiresAtMs;
   lastOnlineValidationMs = snap.lastOnlineValidationMs;
+  refreshAppleCredentialMonitoring();
 }
 
 void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
@@ -5036,6 +5043,8 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   ++authAttemptGeneration;
   ++appleConfigurationGeneration;
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   NativeAppleSignIn::cancel();
   NativeAuthSession::cancel();
   stopTimer();

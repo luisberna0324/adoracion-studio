@@ -53,6 +53,8 @@ NativeAppleSignIn::Credential credential() {
 juce::var sessionBody(const juce::String& uid, bool allowed = true) {
   auto* session = new juce::DynamicObject();
   session->setProperty("uid", uid);
+  session->setProperty("authProvider", "apple.com");
+  session->setProperty("authProviderUser", "verified-apple-subject");
   session->setProperty("email", "canonical@example.test");
   session->setProperty("plan", "trial");
   session->setProperty("subscriptionStatus", "trial");
@@ -205,6 +207,11 @@ int main() {
     originsAndHeadersFailClosed();
     serverSessionPreservesUidAndDenials();
     errorsAndConfigurationRemainBounded();
+    expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::authorized), "authorized credential keeps session");
+    expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::unavailable), "temporary OS errors do not sign out");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::revoked), "revoked credential requires fresh login");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::notFound), "missing credential requires fresh login");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::transferred), "transferred credential requires fresh login");
     std::cout << "Apple sign-in contract tests passed\n";
     return 0;
   } catch (const std::exception& error) {
