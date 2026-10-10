@@ -148,7 +148,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
     const auto challenge = AppleSignInApi::requestChallenge(context);
     juce::MessageManager::callAsync([safe, generation, context, challenge, linkExisting] {
       if (!safe || generation != safe->authAttemptGeneration ||
-          (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
+          (linkExisting && !safe->acceptAppleLinkCallback(context.expectedUid))) return;
       if (!challenge.ok()) {
         if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
         safe->setAppleAuthenticationStatus(appleErrorMessage(challenge.error), true, false);
@@ -165,7 +165,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
       const auto started = NativeAppleSignIn::start(challenge.challenge.nativeRequest(!linkExisting), anchor,
           [safe, generation, context, challenge, linkExisting](NativeAppleSignIn::Result result) {
             if (!safe || generation != safe->authAttemptGeneration ||
-                (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
+                (linkExisting && !safe->acceptAppleLinkCallback(context.expectedUid))) return;
             if (result.outcome == NativeAppleSignIn::Outcome::cancelled) {
               if (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking) safe->cancelAuthenticationAttempt();
               safe->setAppleAuthenticationStatus(L10n::tr("Inicio de sesión cancelado.",
@@ -182,7 +182,7 @@ void MTControlsAudioProcessorEditor::launchAppleLogin(bool linkExisting) {
               const auto exchanged = AppleSignInApi::exchangeCredential(context, challenge.challenge, credential);
               juce::MessageManager::callAsync([safe, generation, context, exchanged, linkExisting] {
                 if (!safe || generation != safe->authAttemptGeneration ||
-                    (linkExisting && context.expectedUid != (safe->appleLinkFlow.stage == AppleLinkFlow::Stage::linking ? safe->appleLinkCandidate.uid : safe->activeSession.uid))) return;
+                    (linkExisting && !safe->acceptAppleLinkCallback(context.expectedUid))) return;
                 if (!exchanged.ok()) {
                   safe->setAppleAuthenticationStatus(appleErrorMessage(exchanged.error), true, false);
                   if (!linkExisting && exchanged.error == AppleSignInApi::Error::linkRequired)
@@ -308,4 +308,14 @@ bool MTControlsAudioProcessorEditor::captureInlineAppleAccount(const PersistedSe
         safe->launchAppleLogin(true);
       });
   return true;
+}
+
+bool MTControlsAudioProcessorEditor::acceptAppleLinkCallback(const juce::String& expectedUid) {
+  if (appleLinkFlow.stage != AppleLinkFlow::Stage::linking) return expectedUid == activeSession.uid;
+  if (!appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
+    cancelAuthenticationAttempt();
+    setAppleAuthenticationStatus(appleErrorMessage(AppleSignInApi::Error::expiredChallenge), true, false);
+    return false;
+  }
+  return expectedUid == appleLinkCandidate.uid;
 }

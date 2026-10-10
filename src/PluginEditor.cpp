@@ -5050,6 +5050,9 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  appleLinkFlow.cancel();
+  appleLinkCandidate = {};
+  appleLinkDialog.close();
   ++authAttemptGeneration;
   ++appleConfigurationGeneration;
   ++appleCredentialGeneration;
