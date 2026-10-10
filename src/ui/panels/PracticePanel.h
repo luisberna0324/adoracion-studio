@@ -148,6 +148,7 @@ private:
   void toggleAccompaniment(bool guide);
   void restoreListeningMix();
   void showListeningHelp();
+  void dismissListeningHelp();
   int getSourceDisplayListeningMode() const;
   juce::String getSourceDisplayListeningInstrument() const;
   bool isListeningChangePending() const;
@@ -163,7 +164,7 @@ private:
   void showPracticeFeedback(juce::String message);
   juce::Rectangle<int> safeContentBounds() const;
   struct WaveformLayout {
-    juce::Rectangle<int> plot, ruler, hints, times, help;
+    juce::Rectangle<int> plot, ruler, hints, times, help, helpText;
   };
   WaveformLayout getWaveformLayout() const;
   static juce::String formatTime(double seconds);
@@ -216,6 +217,7 @@ private:
   AccompanimentButton guideButton;
   AccompanimentButton metronomeButton;
   GestureAwareButton listeningHelpButton;
+  juce::Component::SafePointer<juce::CallOutBox> listeningHelpCallout;
   AccompanimentControl guideControl, metronomeControl;
   PracticePitchSelector pitchSelector;
   PracticeTempoSelector tempoSelector;

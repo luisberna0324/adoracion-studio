@@ -88,6 +88,16 @@ struct PracticePanelGestureTestAccess {
     return panel.instrumentSelector;
   }
 
+  static juce::Rectangle<int> helpText(const PracticePanel &panel) {
+    return panel.getWaveformLayout().helpText;
+  }
+
+  static juce::CallOutBox *helpCallout(const PracticePanel &panel) {
+    return panel.listeningHelpCallout.getComponent();
+  }
+
+  static void dismissHelp(PracticePanel &panel) { panel.dismissListeningHelp(); }
+
   static juce::TextButton &helpButton(PracticePanel &panel) {
     return panel.listeningHelpButton;
   }
@@ -355,6 +365,7 @@ struct Fixture {
   double position = 40.0;
   double length = 120.0;
   juce::Range<double> range{0.0, 120.0};
+  int closeCalls = 0;
   bool playing = false;
   bool connected = true;
   bool remote = false;
@@ -564,6 +575,7 @@ struct Fixture {
       if (afterWrite)
         afterWrite(false);
     };
+    sources.close = [this] { ++closeCalls; };
     sources.playPause = [this] { ++playPauseCalls; playing = !playing; };
     sources.stop = [this] {
       ++stopCalls;
@@ -1441,6 +1453,21 @@ void testAccumulatedBarFeedback() {
   }
 }
 
+juce::Component *findHelpChild(juce::Component *root, const juce::String &name) {
+  if (root == nullptr || root->getName() == name)
+    return root;
+  for (int i = 0; i < root->getNumChildComponents(); ++i)
+    if (auto *found = findHelpChild(root->getChildComponent(i), name))
+      return found;
+  return nullptr;
+}
+
+bool dismissHelpPopover(PracticePanel &panel) {
+  const bool open = PracticePanelGestureTestAccess::helpCallout(panel) != nullptr;
+  PracticePanelGestureTestAccess::dismissHelp(panel);
+  return open;
+}
+
 void testHelpButtonTapAndDrag() {
   Fixture tap;
   tap.mode = 1;
@@ -1457,8 +1484,8 @@ void testHelpButtonTapAndDrag() {
   tap.panel->mouseDown(event);
   static_cast<juce::Component &>(tapButton).mouseUp(event);
   tap.panel->mouseUp(event);
-  expect(juce::PopupMenu::dismissAllActiveMenus(),
-         "tapping help opens the native help menu");
+  expect(dismissHelpPopover(*tap.panel),
+         "tapping help opens the shared action popover");
   pumpFor(10);
   expect(tap.mode == 1 && tap.listeningChanges.empty() && tap.seeks.empty(),
          "opening or dismissing help does not restore the mix or seek");
@@ -1467,7 +1494,7 @@ void testHelpButtonTapAndDrag() {
   tap.panel->mouseDown(second);
   static_cast<juce::Component &>(tapButton).mouseUp(second);
   tap.panel->mouseUp(second);
-  expect(juce::PopupMenu::dismissAllActiveMenus() && tap.seeks.empty() &&
+  expect(dismissHelpPopover(*tap.panel) && tap.seeks.empty() &&
              tap.listeningChanges.empty(),
          "a second help tap cannot leak into the waveform double-tap seek");
   pumpFor(10);
@@ -1492,7 +1519,7 @@ void testHelpButtonTapAndDrag() {
     static_cast<juce::Component &>(button).mouseUp(release);
     drag.panel->mouseUp(release);
     drag.finishAnimation();
-    expect(!juce::PopupMenu::dismissAllActiveMenus() && drag.mode == 1 &&
+    expect(PracticePanelGestureTestAccess::helpCallout(*drag.panel) == nullptr && drag.mode == 1 &&
                drag.listeningChanges.empty() && drag.seeks.empty() &&
                drag.beginScrubCalls == 0 && drag.pauseCalls == 0 && drag.playing,
            "dragging help opens no menu and changes neither mix nor transport");
@@ -1508,41 +1535,123 @@ void testHelpButtonTapAndDrag() {
              "left footer double tap moves exactly one bar backwards");
 }
 
-void testHelpMenuRestoreAndStaleContext() {
+void testHelpPopoverRestoreAndStaleContext() {
   for (const int context : {0, 1, 2, 3, 4}) {
     Fixture fixture;
     fixture.mode = 1;
     fixture.listeningInstrument = "piano";
     PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
     fixture.clickButton(PracticePanelGestureTestAccess::helpButton(*fixture.panel));
-    auto *menu = juce::Component::getCurrentlyModalComponent();
-    expect(menu != nullptr, "help creates a real modal menu with an async callback");
-    if (context == 1) {
-      fixture.songId = "replacement-while-menu-open";
-      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
-    } else if (context == 2) {
+    auto *callout = PracticePanelGestureTestAccess::helpCallout(*fixture.panel);
+    expect(callout != nullptr, "help creates the shared action popover");
+    auto *restore = dynamic_cast<juce::TextButton *>(findHelpChild(callout, "practiceHelpRestore"));
+    expect(restore != nullptr && restore->isEnabled(), "active listening exposes Restore");
+    if (context == 1)
+      fixture.songId = "replacement-while-help-open";
+    else if (context == 2)
       fixture.remote = true;
-      PracticePanelGestureTestAccess::probeCurrentSong(*fixture.panel);
-    } else if (context == 3)
+    else if (context == 3)
       fixture.connected = false;
     else if (context == 4)
       fixture.panel.reset();
-    // Complete the native menu with its Restore result. This exercises the
-    // actual asynchronous completion and lifetime/context guards, rather than
-    // calling the panel's private restore implementation directly.
-    menu->exitModalState(1);
-    pumpFor(10);
+    // Invoke the real UI callback before polling the provider; it must check
+    // live context too. Destruction instead exercises modal/lifetime cleanup.
+    if (context != 4)
+      restore->onClick();
+    pumpFor(20);
     expect(fixture.seeks.empty() && fixture.guideChanges.empty() &&
                fixture.metronomeChanges.empty(),
-           "the help menu result cannot change playback or accompaniment");
+           "help cannot change playback or accompaniment");
     if (context == 0)
       expect(fixture.mode == 0 && fixture.listeningInstrument.isEmpty() &&
                  fixture.listeningChanges == std::vector<int>({0}),
-             "the Restore menu result returns the listening mix to normal once");
+             "Restore returns the listening mix to normal exactly once");
     else
       expect(fixture.listeningChanges.empty(),
-             "a stale help completion cannot reset a changed, disconnected or destroyed panel");
+             "stale help cannot reset a changed, disconnected or destroyed panel");
   }
+}
+
+void testHelpPopoverLayoutAndRepeatedDismissal() {
+  for (const int width : {320, 390, 768}) {
+    Fixture fixture;
+    fixture.panel->setSize(width, 568);
+    PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+    const auto card = PracticePanelGestureTestAccess::card(*fixture.panel);
+    const auto plot = PracticePanelGestureTestAccess::waveformPlot(*fixture.panel);
+    const auto centered = PracticePanelGestureTestAccess::helpText(*fixture.panel);
+    auto &help = PracticePanelGestureTestAccess::helpButton(*fixture.panel);
+    expect(centered.getCentreX() == card.getCentreX() &&
+               !centered.intersects(help.getBounds()),
+           "footer text is centred on the card and never overlaps help");
+    help.setVisible(false);
+    expect(PracticePanelGestureTestAccess::helpText(*fixture.panel) == centered,
+           "removing the help icon cannot move the centred hints");
+    help.setVisible(true);
+    for (int pass = 0; pass < 4; ++pass) {
+      fixture.clickButton(help);
+      auto *callout = PracticePanelGestureTestAccess::helpCallout(*fixture.panel);
+      auto *content = findHelpChild(callout, "practiceHelpContent");
+      auto *body = dynamic_cast<juce::TextEditor *>(findHelpChild(callout, "practiceHelpInstructions"));
+      auto *close = dynamic_cast<juce::TextButton *>(findHelpChild(callout, "practiceHelpClose"));
+      auto *restore = dynamic_cast<juce::TextButton *>(findHelpChild(callout, "practiceHelpRestore"));
+      expect(callout != nullptr && content != nullptr && body != nullptr &&
+                 close != nullptr && restore != nullptr,
+             "popover exposes accessible native text and both actions");
+      expect(body->isReadOnly() && body->isMultiLine() &&
+                 body->getText().contains("+2 dB") && body->getText().contains("−12 dB") &&
+                 body->getText().contains("Normal") && body->getHeight() > 0,
+             "full explanatory text stays in a wrapping, scrollable read-only body");
+      expect(content->getLocalBounds().contains(body->getBounds()) &&
+                 content->getLocalBounds().contains(close->getBounds()) &&
+                 content->getLocalBounds().contains(restore->getBounds()) &&
+                 close->getHeight() == 44 && restore->getHeight() == 44 &&
+                 !body->getBounds().intersects(restore->getBounds()),
+             "phone layout preserves complete 44-point controls and a separate reading area");
+      expect(fixture.panel->getLocalBounds().contains(callout->getBounds()),
+             "shared positioning keeps the callout inside the panel");
+      if (pass % 2 == 0)
+        close->onClick();
+      else
+        content->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+      pumpFor(30);
+      expect(PracticePanelGestureTestAccess::helpCallout(*fixture.panel) == nullptr &&
+                 fixture.listeningChanges.empty() && fixture.seeks.empty() && fixture.closeCalls == 0,
+             "Close and Escape repeatedly dismiss help only, without closing practice or seeking");
+    }
+    expect(PracticePanelGestureTestAccess::card(*fixture.panel) == card &&
+               PracticePanelGestureTestAccess::waveformPlot(*fixture.panel) == plot,
+           "opening help does not resize the card or waveform");
+  }
+}
+
+void testHelpPopoverKeyboardFocus() {
+  Fixture fixture;
+  fixture.panel->addToDesktop(juce::ComponentPeer::windowIsTemporary);
+  fixture.panel->setVisible(true);
+  fixture.panel->toFront(true);
+  PracticePanelGestureTestAccess::refreshFromSources(*fixture.panel);
+  auto &help = PracticePanelGestureTestAccess::helpButton(*fixture.panel);
+  help.grabKeyboardFocus();
+  pumpFor(30);
+  for (int pass = 0; pass < 2; ++pass) {
+    fixture.clickButton(help);
+    pumpFor(30);
+    auto *callout = PracticePanelGestureTestAccess::helpCallout(*fixture.panel);
+    auto *content = findHelpChild(callout, "practiceHelpContent");
+    expect(content != nullptr && content->hasKeyboardFocus(true),
+           "help moves keyboard focus into its native focus container");
+    content->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    pumpFor(50);
+    expect(help.hasKeyboardFocus(false) && fixture.closeCalls == 0,
+           "Escape returns focus to help and leaves the practice panel open");
+  }
+  fixture.clickButton(help);
+  pumpFor(20);
+  fixture.panel->setSize(320, 568);
+  pumpFor(20);
+  expect(PracticePanelGestureTestAccess::helpCallout(*fixture.panel) == nullptr,
+         "resizing dismisses the old anchor before a new popover can open");
 }
 
 void testRestoreKeyboardAndContext() {
@@ -3452,7 +3561,10 @@ int main() {
   testAccumulatedBarFeedback();
   testRemoteSeekPreviewLifecycle();
   testHelpButtonTapAndDrag();
-  testHelpMenuRestoreAndStaleContext();
+  testHelpPopoverRestoreAndStaleContext();
+  testHelpPopoverLayoutAndRepeatedDismissal();
+  if (std::getenv("PW_PRACTICE_FOCUS_QA") != nullptr)
+    testHelpPopoverKeyboardFocus();
   testRestoreKeyboardAndContext();
   testSharedTransportLayout();
   testAccompanimentIndependentControls();

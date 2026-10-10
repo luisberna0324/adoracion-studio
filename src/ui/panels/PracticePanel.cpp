@@ -8,6 +8,113 @@
 #include <cmath>
 
 namespace {
+// A read-only, wrapping body keeps the full instructions available at every
+// popover size. Header/restore remain 44-point touch targets while text scrolls.
+class PracticeHelpContent final : public juce::Component, private juce::KeyListener {
+public:
+  PracticeHelpContent(juce::String text, bool canRestore,
+                      std::function<void()> restore,
+                      std::function<void()> returnFocus)
+      : restoreAction(std::move(restore)), focusOrigin(std::move(returnFocus)),
+        closeButton(L10n::tr("Cerrar", "Close")),
+        restoreButton(L10n::tr("Restaurar mezcla (R)", "Restore mix (R)")) {
+    setName("practiceHelpContent");
+    setTitle(L10n::tr("Ayuda de ensayo", "Practice help"));
+    setWantsKeyboardFocus(true);
+    setFocusContainerType(juce::Component::FocusContainerType::keyboardFocusContainer);
+    title.setText(L10n::tr("Gestos de ensayo", "Practice gestures"), juce::dontSendNotification);
+    title.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
+    title.setColour(juce::Label::textColourId, UITheme::textPrimary);
+    addAndMakeVisible(title);
+    body.setName("practiceHelpInstructions");
+    body.setTitle(L10n::tr("Instrucciones de ensayo", "Practice instructions"));
+    body.setMultiLine(true, true);
+    body.setReadOnly(true);
+    body.setScrollbarsShown(true);
+    body.setCaretVisible(false);
+    body.setPopupMenuEnabled(false);
+    body.setFont(makeAppFont(13.0f));
+    body.setColour(juce::TextEditor::backgroundColourId, juce::Colours::transparentBlack);
+    body.setColour(juce::TextEditor::textColourId, UITheme::textPrimary);
+    body.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    body.setColour(juce::TextEditor::focusedOutlineColourId, UITheme::accent);
+    body.setText(text, false);
+    body.setCaretPosition(0);
+    body.addKeyListener(this);
+    addAndMakeVisible(body);
+    closeButton.setName("practiceHelpClose");
+    restoreButton.setName("practiceHelpRestore");
+    for (auto *button : {&closeButton, &restoreButton}) {
+      button->setWantsKeyboardFocus(true);
+      button->addKeyListener(this);
+      addAndMakeVisible(button);
+    }
+    closeButton.setTitle(L10n::tr("Cerrar ayuda", "Close help"));
+    closeButton.setExplicitFocusOrder(1);
+    body.setExplicitFocusOrder(2);
+    restoreButton.setExplicitFocusOrder(3);
+    restoreButton.setEnabled(canRestore);
+    restoreButton.setDescription(L10n::tr(
+        "Vuelve a la mezcla normal. No cambia Guía, Metrónomo ni la posición.",
+        "Returns to the normal mix. Does not change Guide, Metronome or position."));
+    closeButton.onClick = [this] { close(false); };
+    restoreButton.onClick = [this] { close(true); };
+    setSize(360, 420);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(12);
+    auto header = area.removeFromTop(44);
+    closeButton.setBounds(header.removeFromRight(72));
+    title.setBounds(header);
+    area.removeFromTop(8);
+    restoreButton.setBounds(area.removeFromBottom(44));
+    area.removeFromBottom(8);
+    body.setBounds(area);
+  }
+
+  void focusGained(FocusChangeType) override { closeButton.grabKeyboardFocus(); }
+  bool keyPressed(const juce::KeyPress &key) override {
+    if (key == juce::KeyPress::escapeKey) {
+      close(false);
+      return true;
+    }
+    if (!key.getModifiers().isAnyModifierKeyDown() &&
+        (key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R')) {
+      if (restoreButton.isEnabled())
+        close(true);
+      return true;
+    }
+    return false;
+  }
+
+private:
+  bool keyPressed(const juce::KeyPress &key, juce::Component *) override {
+    return keyPressed(key);
+  }
+
+  void close(bool restore) {
+    if (closing)
+      return;
+    closing = true;
+    // Copy callbacks before dismissal: restoring can synchronously destroy the
+    // panel, and callout deletion belongs to JUCE's modal lifecycle.
+    const auto action = restore ? restoreAction : std::function<void()>{};
+    const auto focus = focusOrigin;
+    if (auto *callout = findParentComponentOfClass<juce::CallOutBox>())
+      callout->dismiss();
+    if (action)
+      action();
+    juce::MessageManager::callAsync(focus);
+  }
+
+  bool closing = false;
+  std::function<void()> restoreAction, focusOrigin;
+  juce::Label title;
+  juce::TextEditor body;
+  juce::TextButton closeButton, restoreButton;
+};
+
 double waveformLength(const PracticePanel::Sources &sources) {
   const double length = sources.lengthSeconds ? sources.lengthSeconds() : 0.0;
   return std::isfinite(length) ? juce::jmax(0.0, length) : 0.0;
@@ -215,6 +322,7 @@ PracticePanel::PracticePanel(Sources nextSources)
 }
 
 PracticePanel::~PracticePanel() {
+  dismissListeningHelp();
   stopTimer();
   playbackVBlankAttachment = {};
   // Invalidate before calling providers: a provider may synchronously flush a
@@ -242,12 +350,16 @@ PracticePanel::WaveformLayout PracticePanel::getWaveformLayout() const {
   layout.hints = area.removeFromTop(30).reduced(18, 0);
   layout.ruler = area.removeFromTop(24);
   layout.help = area.removeFromBottom(44).reduced(18, 0);
+  // Reserve matching gutters on BOTH sides, independent of icon visibility.
+  // The hint centre is the card centre, never the remaining area left of '?'.
+  layout.helpText = layout.help.reduced(48, 0);
   layout.times = area.removeFromBottom(28).reduced(18, 0);
   layout.plot = area.reduced(0, juce::jmin(18, area.getHeight() / 8));
   return layout;
 }
 
 void PracticePanel::resized() {
+  dismissListeningHelp();
   auto area = safeContentBounds();
   auto header = area.removeFromTop(64);
   closeButton.setBounds(header.removeFromRight(44).withSizeKeepingCentre(44, 44));
@@ -324,7 +436,9 @@ void PracticePanel::AccompanimentButton::paintButton(juce::Graphics &g,
       : getToggleState() ? UITheme::accent.withAlpha(0.65f)
                          : UITheme::textSecondary.withAlpha(0.22f));
   g.drawRoundedRectangle(bounds, 12.0f, hasKeyboardFocus(true) ? 2.0f : 1.0f);
-  // The check/minus and explicit state label remain legible without colour.
+  // The check/minus and inline ON/OFF remain legible without colour. Keep the
+  // authoritative toggle state while a request is pending; availability and
+  // confirmation details remain in the accessible description and tooltip.
   const auto ink = UITheme::textPrimary.withMultipliedAlpha(isEnabled() || pending ? 1.0f : 0.5f);
   auto text = getLocalBounds().reduced(10, 3);
   const auto icon = text.removeFromLeft(18).toFloat().withSizeKeepingCentre(12.0f, 12.0f);
@@ -332,13 +446,8 @@ void PracticePanel::AccompanimentButton::paintButton(juce::Graphics &g,
   text.removeFromLeft(4);
   g.setColour(ink);
   g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
-  g.drawFittedText(getButtonText(), text.removeFromTop(20), juce::Justification::centredLeft, 1);
-  g.setColour(ink.withMultipliedAlpha(0.75f));
-  g.setFont(makeAppFont(10.0f));
-  g.drawFittedText(pending ? L10n::tr("Confirmando…", "Confirming…")
-      : !isEnabled() ? L10n::tr("No disponible", "Unavailable")
-      : getToggleState() ? L10n::tr("Encendido", "On") : L10n::tr("Apagado", "Off"),
-      text, juce::Justification::centredLeft, 1);
+  g.drawFittedText(getButtonText() + " • " + (getToggleState() ? "ON" : "OFF"),
+      text, juce::Justification::centredLeft, 1, 0.75f);
 }
 
 void PracticePanel::updateAccompanimentControls() {
@@ -472,23 +581,71 @@ void PracticePanel::restoreListeningMix() {
     repaint(waveformBounds.expanded(6));
 }
 
+void PracticePanel::dismissListeningHelp() {
+  if (listeningHelpCallout != nullptr) {
+    listeningHelpCallout->dismiss();
+    listeningHelpCallout = nullptr;
+  }
+}
+
 void PracticePanel::showListeningHelp() {
-  juce::PopupMenu menu;
-  menu.addSectionHeader(listeningContextText());
-  menu.addItem(1, L10n::tr("Restaurar mezcla (R)", "Restore mix (R)"),
-      sources.canControl && sources.canControl() && sources.setListeningMode &&
-      sources.listeningMode && sources.listeningMode() != 0);
-  menu.addSectionHeader(L10n::tr("↑ Enfocar · ↓ Reducir · Doble toque: un compás",
-                                 "↑ Focus · ↓ Reduce · Double tap: one bar"));
+  if (listeningHelpCallout != nullptr) {
+    dismissListeningHelp();
+    return;
+  }
   const auto song = displayedSongId;
   const bool remote = displayedWasRemote;
   auto safe = juce::Component::SafePointer<PracticePanel>(this);
-  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&listeningHelpButton),
-      [safe, song, remote](int result) {
-        if (safe != nullptr && result == 1 && safe->displayedSongId == song &&
+  const auto selected = std::find_if(instruments.begin(), instruments.end(),
+      [this](const Instrument &item) { return item.id == selectedInstrumentId; });
+  const auto instrument = selected != instruments.end() ? selected->name
+      : L10n::tr("ninguno", "none");
+  const bool canControl = sources.canControl && sources.canControl();
+  const auto text = L10n::tr("Instrumento: ", "Instrument: ") + instrument + "\n" +
+      listeningContextText() +
+      (isListeningChangePending() ? L10n::tr(" · Confirmando cambio…", " · Confirming change…") : juce::String{}) +
+      (canControl ? juce::String{} : L10n::tr("\nControl no disponible. Carga una canción y conecta el control.",
+          "\nControl unavailable. Load a song and connect the controller.")) +
+      L10n::tr(
+          "\n\nRECORRER\nDesliza horizontalmente sobre la onda para recorrer la canción. "
+          "Pellizca con dos dedos para ampliar o reducir el detalle.\n\n"
+          "SALTAR UN COMPÁS\nDa un doble toque a la izquierda para retroceder un compás; "
+          "a la derecha, para avanzar uno.\n\n"
+          "ENFOCAR O REDUCIR\nDesliza hacia arriba o abajo sobre la tarjeta de onda. "
+          "Cada gesto cambia un nivel: Reducido ↔ Normal ↔ Enfoque. "
+          "Enfoque resalta el instrumento seleccionado (+2 dB) y baja los demás (−12 dB). "
+          "Reducido baja solo el seleccionado (−12 dB). "
+          "Desde Enfoque, baja para volver a Normal; desde Reducido, sube. "
+          "Guía y Metrónomo conservan sus ajustes.\n\n"
+          "RESTAURAR\nRestaurar mezcla o la tecla R vuelve a Normal sin mover la reproducción "
+          "ni cambiar Guía o Metrónomo. Cierra esta ayuda con Cerrar, Escape o tocando fuera.",
+          "\n\nBROWSE\nSwipe horizontally on the waveform to browse the song. "
+          "Pinch with two fingers to zoom in or out.\n\n"
+          "JUMP ONE BAR\nDouble-tap the left side to go back one bar; "
+          "double-tap the right side to advance one bar.\n\n"
+          "FOCUS OR REDUCE\nSwipe up or down on the waveform card. "
+          "Each gesture changes one level: Reduced ↔ Normal ↔ Focus. "
+          "Focus raises the selected instrument (+2 dB) and lowers the others (−12 dB). "
+          "Reduced lowers only the selected instrument (−12 dB). "
+          "From Focus, swipe down to return to Normal; from Reduced, swipe up. "
+          "Guide and Metronome keep their settings.\n\n"
+          "RESTORE\nRestore mix or the R key returns to Normal without moving playback "
+          "or changing Guide or Metronome. Close this help with Close, Escape or by tapping outside.");
+  auto content = std::make_unique<PracticeHelpContent>(text,
+      canControl && sources.setListeningMode && sources.listeningMode &&
+          sources.listeningMode() != 0,
+      [safe, song, remote] {
+        if (safe != nullptr && safe->displayedSongId == song &&
             safe->displayedWasRemote == remote)
           safe->restoreListeningMix();
+      },
+      [safe] {
+        if (safe != nullptr && safe->isShowing() &&
+            juce::Component::getCurrentlyModalComponent() == nullptr)
+          safe->listeningHelpButton.grabKeyboardFocus();
       });
+  listeningHelpCallout = &presentActionPopover(std::move(content),
+      listeningHelpButton.getBounds(), this);
 }
 
 juce::String PracticePanel::currentPracticeFeedback() const {
@@ -1159,17 +1316,18 @@ void PracticePanel::paint(juce::Graphics &g) {
   const auto ruler = layout.ruler;
   g.setColour(UITheme::textSecondary.withMultipliedAlpha(0.75f));
   g.setFont(makeAppFont(11.0f));
-  auto help = layout.help.withTrimmedRight(44);
+  const auto help = layout.helpText;
   const auto listeningHint = isListeningChangePending()
       ? L10n::tr("Confirmando mezcla…", "Confirming mix…")
       : selectedIsTarget && mode == 1
       ? L10n::tr("Enfoque · ↓ Normal", "Focus · ↓ Normal")
       : selectedIsTarget && mode == 2
           ? L10n::tr("Reducido · ↑ Normal", "Reduced · ↑ Normal")
-          : mode != 0 ? listeningContextText()
+          : mode != 0 ? (mode == 1 ? L10n::tr("Enfoque en otra pista", "Focus on another track")
+                                   : L10n::tr("Otra pista reducida", "Another track reduced"))
           : L10n::tr("↑ Enfocar · ↓ Reducir", "↑ Focus · ↓ Reduce");
-  g.drawFittedText(L10n::tr("↔ Recorrer · Pellizca para ampliar\n",
-                           "↔ Browse · Pinch to zoom\n") + listeningHint,
+  g.drawFittedText(L10n::tr("↔ Recorrer · Pellizca: zoom\n",
+                           "↔ Browse · Pinch: zoom\n") + listeningHint,
                    help, juce::Justification::centred, 2);
   auto times = layout.times;
   g.setColour(UITheme::textSecondary);
@@ -1309,6 +1467,7 @@ void PracticePanel::refreshWaveform(const juce::String &wheelSelectionId) {
     repaint(waveformBounds);
   }
   if (contextChanged) {
+    dismissListeningHelp();
     cancelScrub(false);
     viewport.reset();
     touchPositions.clear();
@@ -1345,6 +1504,7 @@ void PracticePanel::refreshWaveform(const juce::String &wheelSelectionId) {
         break;
       }
   if (changed) {
+    dismissListeningHelp();
     cancelInstrumentGesture();
     instruments = std::move(latest);
     for (auto cached = waveformCache.begin(); cached != waveformCache.end();) {
@@ -1427,6 +1587,8 @@ void PracticePanel::selectInstrument(const int index, const bool reloadWaveform)
   // Advance even for a cache hit: a cancelled provider may still deliver.
   cancelWaveformRequest();
   const auto generation = waveformRequestGeneration;
+  if (selectionChanged)
+    dismissListeningHelp();
   selectedInstrumentId = id;
   if (instrumentSelector.getSelectedInstrumentId() != id)
     cancelInstrumentGesture();
@@ -1761,6 +1923,7 @@ void PracticePanel::timerCallback() {
   if (mode != displayedListeningMode || enabled != displayedCanControl ||
       listeningPending != displayedListeningPending ||
       listeningInstrument != displayedListeningInstrument) {
+    dismissListeningHelp();
     displayedCanControl = enabled;
     displayedListeningPending = listeningPending;
     displayedListeningMode = mode;

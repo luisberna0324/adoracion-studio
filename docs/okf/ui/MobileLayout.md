@@ -67,8 +67,11 @@ La fila anterior al transporte queda fuera de la tarjeta de onda y conserva
 sus 44 puntos de alto. Contiene dos botones de igual ancho, `Guía` y
 `Metrónomo`, separados por 12 puntos. Toda la superficie conmuta; no son
 switches pequeños. Encendido usa un fondo de acento tenue, marca de verificación
-y texto `Encendido`; apagado usa fondo oscuro, borde discreto, signo menos y
-texto `Apagado`. El estado nativo accesible también expone checked, la etiqueta,
+y etiqueta en una sola línea `Guía • ON` o `Metrónomo • ON`; apagado usa fondo
+oscuro, borde discreto, signo menos y la misma etiqueta con `OFF`. Se conservan
+los bounds exteriores, la tipografía base de 12 puntos y el alto de 44 puntos;
+el ajuste horizontal del texto evita recortar Metrónomo en teléfonos estrechos.
+El estado nativo accesible también expone checked, la etiqueta,
 la disponibilidad y el estado pendiente. Tab y Espacio activan los botones.
 
 `Guía` silencia/desilencia la fuente ya elegida, original o dinámica; nunca
@@ -80,8 +83,9 @@ faders, routing ni escucha de ensayo. Ambos controles permanecen independientes
 de cambiar el instrumento enfocado.
 
 Los botones muestran siempre el estado confirmado por la sesión. Durante un
-comando asíncrono conservan ese estado y muestran `Confirmando…`; bloquean otros
-toques en ese botón hasta confirmación o un timeout de 2 segundos. Cambiar fuente,
+comando asíncrono conservan ese estado `ON`/`OFF` en la misma línea; la descripción
+accesible y el tooltip indican `Confirmando cambio`. El botón bloquea otros
+toques hasta confirmación o un timeout de 2 segundos. Cambiar fuente,
 canción, modo local/remoto o disponibilidad cancela la intención pendiente. Un
 toque llegado antes del siguiente tick no se aplica a una fuente que cambió.
 El timeout avisa sin afirmar éxito ni invertir el estado de la fuente.
@@ -219,12 +223,30 @@ indican su nombre. No se pinta encima de la onda: los trazos exteriores se
 renderizan antes de la tarjeta opaca. Es estático también con reducción de
 movimiento; no hay pulsos, parpadeo, blur ni buffers de imagen por frame.
 
-El botón `?` de 44 × 44 en la ayuda abre el estado detallado y la acción
-`Restaurar mezcla (R)`. Esta acción y la tecla R restauran sin hacer seek ni
-alterar Guía/Metrónomo. El botón de ayuda es una superficie dedicada; el resto
-de la tarjeta conserva los gestos y el doble toque de compás. No se asigna ningún
-reset al doble toque. Una ayuda abierta no puede resetear otra canción o sesión
-si el contexto cambia antes de elegir su acción. Cerrar Ensayo restaura la mezcla si esa
+Las dos leyendas inferiores se centran respecto de toda la tarjeta. La franja
+reserva 48 puntos simétricos a izquierda y derecha (44 para ayuda y 4 de aire),
+independientemente de la visibilidad de `?`. El texto breve es
+`↔ Recorrer · Pellizca: zoom` y el estado/siguiente gesto; el nombre completo
+del instrumento se conserva en la ayuda. No cambian la tarjeta, la onda, la
+regla, los tiempos, el transporte ni los controles Guía/Metrónomo.
+
+El botón `?` de 44 × 44 abre `presentActionPopover()`, con el mismo estilo,
+ancla y posicionamiento en área segura que los demás popovers. Muestra el
+instrumento seleccionado, el modo confirmado, la espera de confirmación o
+falta de control y explica recorrido, zoom, doble toque de un compás, los tres
+niveles de escucha y restauración. El cuerpo es texto nativo de solo lectura,
+con saltos de línea, ajuste de palabras y scroll; al reducir el alto, se reduce
+la zona de lectura, sin truncar las instrucciones ni los botones de 44 puntos.
+
+Cerrar, Escape o un toque exterior descartan la ayuda. Cerrar/Escape devuelven
+el foco a `?`; Tab recorre Cerrar, texto y Restaurar. R y el botón
+`Restaurar mezcla (R)` restauran sin seek ni cambio de Guía/Metrónomo y cierran
+el popover. La acción comprueba el contexto actual incluso antes del siguiente
+sondeo. Cambiar canción, sesión, conexión, selección/lista de instrumentos,
+modo de escucha o tamaño descarta la ayuda para no dejar información obsoleta.
+La ayuda no acumula callouts y la acción de cierre es idempotente. El resto de
+la tarjeta conserva los gestos y el doble toque de compás; no se asigna ningún
+reset al doble toque. Cerrar Ensayo restaura la mezcla si esa
 vista sigue siendo propietaria de la escucha. Cargar otra canción, cambiar de
 modo local/cliente/servidor o desconectar al cliente propietario también la
 restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,
