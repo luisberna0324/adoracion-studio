@@ -61,11 +61,17 @@ Error validateCredential(const Request& request, const Credential& credential,
   return Error::none;
 }
 
+bool requiresFreshLogin(CredentialState state) {
+  return state == CredentialState::revoked || state == CredentialState::notFound ||
+         state == CredentialState::transferred;
+}
+
 #if !JUCE_IOS && !JUCE_MAC
 bool isSupported() { return false; }
 std::unique_ptr<juce::Component> createButton(std::function<void()>, bool) { return nullptr; }
 bool start(const Request&, juce::Component&, Completion) { return false; }
 void cancel() {}
+std::unique_ptr<CredentialMonitor> monitorCredential(const juce::String&, CredentialStateCompletion) { return nullptr; }
 #endif
 
 } // namespace NativeAppleSignIn

@@ -618,6 +618,31 @@ int main() {
   try {
     juce::ScopedJuceInitialiser_GUI gui;
     applyTheme(ThemePreset::Spotify);
+    {
+      WelcomeModal welcome; show(welcome, 390, 844);
+      int cancelled = 0;
+      welcome.onAuthenticationCancelled = [&] { ++cancelled; welcome.setInlineAppleLink(false); };
+      welcome.setInlineAppleLink(true);
+      expect(effectivelyVisible(button(welcome, "Continuar con Google", "Continue with Google")), "inline linking reuses Google authentication");
+#if JUCE_DEBUG
+      expect(!effectivelyVisible(button(welcome, "Prueba sin conexión", "Offline trial")), "inline linking excludes demo account");
+#endif
+      expect(button(welcome, "Volver", "Back").getWidth() >= 40, "inline back has reachable bounds on iPhone");
+      click(button(welcome, "Volver", "Back"));
+      expect(cancelled == 1, "inline provider screen back cancels intent");
+      welcome.setInlineAppleLink(true);
+      click(button(welcome, "Ingresar con correo", "Sign in with email"));
+      expect(cancelled == 1, "email navigation preserves pending explicit linking flow");
+      click(button(welcome, "Volver", "Back"));
+      expect(cancelled == 2, "inline email back cancels intent");
+      welcome.setInlineAppleLink(true); welcome.setVisible(false);
+      expect(cancelled == 3, "closing inline authentication cancels intent");
+      ReauthPromptModal reauth; show(reauth, 390, 800);
+      int reauthCancelled = 0;
+      reauth.onAuthenticationCancelled = [&] { ++reauthCancelled; reauth.setInlineAppleLink(false); };
+      reauth.setInlineAppleLink(true); click(button(reauth, "Volver", "Back"));
+      expect(reauthCancelled == 1, "reauth back cancels inline link too");
+    }
     testWelcomeNavigationAndCredentials();
     testInputValidationAndDispatch();
     testBusyCancellation();

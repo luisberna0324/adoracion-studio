@@ -84,6 +84,8 @@ bool SessionPersistence::load(PersistedSessionSnapshot &out) {
   }
 
   out.uid = o->getProperty("uid").toString().trim();
+  out.authProvider = o->getProperty("authProvider").toString();
+  out.authProviderUser = o->getProperty("authProviderUser").toString();
   out.email = o->getProperty("email").toString().trim();
   out.plan = o->getProperty("plan").toString().trim();
   out.subscriptionStatus =
@@ -120,6 +122,8 @@ bool SessionPersistence::save(const PersistedSessionSnapshot &snapshot) {
   auto *o = new juce::DynamicObject();
   o->setProperty("version", kSnapshotVersion);
   o->setProperty("uid", snapshot.uid);
+  o->setProperty("authProvider", snapshot.authProvider);
+  o->setProperty("authProviderUser", snapshot.authProviderUser);
   o->setProperty("email", snapshot.email);
   o->setProperty("plan", snapshot.plan);
   o->setProperty("subscriptionStatus", snapshot.subscriptionStatus);

@@ -2956,6 +2956,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     };
     prompt->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
     prompt->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+    prompt->onInlineAuthenticationNavigation = [this] { cancelAuthenticationAttempt(true); };
     prompt->onPreferredHeightChanged = [this] { resized(); };
     prompt->setAppleSignInAvailable(appleSignInAvailable);
     reauthPromptModal = std::move(prompt);
@@ -3040,6 +3041,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
   };
   modal->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
   modal->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+  modal->onInlineAuthenticationNavigation = [this] { cancelAuthenticationAttempt(true); };
   modal->setAppleSignInAvailable(appleSignInAvailable);
   welcomeModal = std::move(modal);
   addAndMakeVisible(*welcomeModal);
@@ -3048,7 +3050,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
-  cancelAuthenticationAttempt();
+  cancelAuthenticationAttempt(appleLinkFlow.stage == AppleLinkFlow::Stage::authenticate);
   sessionResumeCancelled = false;
 #if JUCE_IOS || JUCE_ANDROID
   NativeAuthSession::cancel();
@@ -3075,7 +3077,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
           safe->enqueueAuthCallbackUrl(callbackUrl);
           return;
         }
-        safe->reauthLoginInProgress = false;
+        safe->cancelAuthenticationAttempt();
         if (error.isNotEmpty()) {
           if (auto *modal = dynamic_cast<WelcomeModal *>(safe->welcomeModal.get()))
             modal->setStatusText("No se completo la autenticacion.", true);
@@ -3254,6 +3256,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
   if (localDemoSession) return;
+  if (captureInlineAppleAccount(snapshot)) return;
   ++authAttemptGeneration;
   emailAuthenticationBusy = false;
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
@@ -4102,6 +4105,8 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     localAuthServer->stop();
   authCallbackPort = 0;
 
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   activeSession = {};
   activeSession.allowed = false;
   localDemoSession = false;
@@ -4160,6 +4165,8 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
   PersistedSessionSnapshot p;
   p.uid = activeSession.uid;
   p.email = activeSession.email;
+  p.authProvider = activeSession.authProvider;
+  p.authProviderUser = activeSession.authProviderUser;
   p.plan = activeSession.plan;
   p.subscriptionStatus = activeSession.subscriptionStatus;
   p.expiresAt = activeSession.expiresAt;
@@ -4181,6 +4188,8 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     invalidateCloudAccountView();
   activeSession.uid = snap.uid;
   activeSession.email = snap.email;
+  activeSession.authProvider = snap.authProvider;
+  activeSession.authProviderUser = snap.authProviderUser;
   activeSession.plan = snap.plan;
   activeSession.subscriptionStatus = snap.subscriptionStatus;
   activeSession.expiresAt = snap.expiresAt;
@@ -4192,6 +4201,7 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
   activeSession.firebaseApiKey = snap.firebaseApiKey;
   activeSession.idTokenExpiresAtMs = snap.idTokenExpiresAtMs;
   lastOnlineValidationMs = snap.lastOnlineValidationMs;
+  refreshAppleCredentialMonitoring();
 }
 
 void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
@@ -4767,6 +4777,12 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+  if (appleLinkFlow.stage != AppleLinkFlow::Stage::idle &&
+      !appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
+    cancelAuthenticationAttempt();
+    setAppleAuthenticationStatus(L10n::tr("La vinculación venció. Vuelve a iniciar el acceso con Apple.",
+                                         "Linking expired. Start Apple sign-in again."), true, false);
+  }
 #if JUCE_IOS
   // Keyboard notifications update JUCE's display insets without necessarily
   // resizing the fullscreen window. Relayout visible auth only when they change.
@@ -5034,8 +5050,13 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  appleLinkFlow.cancel();
+  appleLinkCandidate = {};
+  appleLinkDialog.close();
   ++authAttemptGeneration;
   ++appleConfigurationGeneration;
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   NativeAppleSignIn::cancel();
   NativeAuthSession::cancel();
   stopTimer();

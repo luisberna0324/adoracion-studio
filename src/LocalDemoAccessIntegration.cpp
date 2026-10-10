@@ -26,6 +26,8 @@ void MTControlsAudioProcessorEditor::enterLocalDemoSession() {
   cancelAuthenticationAttempt();
   sessionResumeCancelled = true;
   ++appleConfigurationGeneration;
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   appleSignInAvailable = false;
   invalidateCloudAccountView();
   if (remoteSession.getMode() != playworship::remote::RemoteSession::Mode::Local)

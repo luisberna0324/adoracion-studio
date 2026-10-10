@@ -51,7 +51,8 @@ void MTControlsAudioProcessorEditor::setEmailAuthenticationStatus(
   }
 }
 
-void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt() {
+void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt(bool preserveAppleLinkFlow) {
+  if (!preserveAppleLinkFlow) resetAppleLinkFlow();
   ++authAttemptGeneration;
   authExpectedState.clear();
   NativeAuthSession::cancel();
@@ -74,7 +75,7 @@ void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt() {
 void MTControlsAudioProcessorEditor::launchPasswordLogin(
     const juce::String& email, const juce::String& password) {
   if (emailAuthenticationBusy) return;
-  cancelAuthenticationAttempt();
+  cancelAuthenticationAttempt(appleLinkFlow.stage == AppleLinkFlow::Stage::authenticate);
   sessionResumeCancelled = false;
   const auto generation = authAttemptGeneration;
   const auto baseUrl = getAuthBaseUrl();

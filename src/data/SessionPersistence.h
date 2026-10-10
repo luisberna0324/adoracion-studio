@@ -6,6 +6,9 @@
 struct PersistedSessionSnapshot {
   juce::String uid;
   juce::String email;
+  // Verified provider metadata only; never Apple access/refresh tokens.
+  juce::String authProvider;
+  juce::String authProviderUser;
   juce::String plan;
   juce::String subscriptionStatus;
   juce::String expiresAt;
