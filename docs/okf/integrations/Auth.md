@@ -576,3 +576,35 @@ Plan concreto, todavía no ejecutado:
 4. Rollback al ID exacto de la reserva verificada, conservando secretos, identidades/reservas y datos. La revisión 61 es una alternativa de emergencia con riesgo conocido: carece del secreto privado y de la nueva protección de UID Apple; no es el rollback seguro por defecto. No eliminar proveedores ni revertir datos.
 
 Antes de distribución pública/App Review: completar flujo de eliminación de cuenta con coordinación/revocación Apple y políticas, obtener firma/perfiles de distribución y compilar Release con URL productiva/Apple opt-in según rollout. Registrar/activar/probar notificaciones y verificar remitentes relay son tareas operativas separadas que necesitan su autorización. Services ID para Apple web y TTL son ampliaciones opcionales. Publicar PR/merge no autoriza despliegue, tráfico ni release.
+
+## Eliminación de cuenta: fundamento aislado, todavía sin ejecución (2026-10-10)
+
+La rama `feat/account-deletion-foundation` añade en Configuración > Cuenta una
+revisión nativa del impacto. Reutiliza el refresh Firebase y consulta el nuevo
+`GET /api/account/deletion/preview` con Bearer; confirma el UID devuelto y descarta
+callbacks de otra cuenta/intento. No guarda credenciales nuevas ni restaura el
+snapshot de una cuenta que cerró sesión. La confirmación explica: borrar cuenta
+más Cloud propio, pérdida de acceso de miembros si eres propietario, cancelar
+renovación sin reembolso automático y conservar proyectos/audio/copias locales.
+
+El componente reutiliza estilos de autenticación y desplazamiento de JUCE; incluye
+estados de reautenticación, confirmación, envío, pendiente y finalización para pruebas
+con callbacks simulados. Un doble toque no duplica el envío. Una respuesta incierta
+pasa a pendiente y consulta estado; únicamente un resultado verificado permite
+mostrar éxito. Cancelación, UID ajeno, token de intención vencido y respuesta antigua
+no permiten avanzar. La revisión productiva fuerza ejecución deshabilitada: no tiene
+callbacks conectados para reauth, confirmación ni operaciones destructivas.
+
+Backend usa Firebase Admin/Firestore actuales y prueba `auth_time` reciente para la
+misma cuenta, consumición atómica de intención, jobs idempotentes con checkpoints y
+reintentos. Orden revisable: barrera de escritura y drenaje, cancelación de renovación
+verificada, revocación Apple, Teams propios/membresías, Cloud propio, identidad. Un
+fallo de facturación impide finalizar y no borra los datos necesarios para reintentar.
+No se tocan datos de otros propietarios ni archivos locales. La política de producto
+fue confirmada por el usuario; el plazo legal de comprobantes sigue pendiente.
+
+Faltan adaptadores reales y su verificación, inventario completo de objetos/revisiones,
+barreras para todos los writers/webhooks tardíos, worker/status autenticado que sobreviva
+a invalidación de sesión y vinculación de reauth nativa al UID original. La UI de
+revisión y los simuladores no constituyen eliminación real ni cumplimiento completo
+para App Review. Ninguna llamada de borrado/cancelación/revocación real se ejecutó.

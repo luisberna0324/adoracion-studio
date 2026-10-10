@@ -34,4 +34,8 @@ public:
   static bool load(PersistedSessionSnapshot &out);
   static bool save(const PersistedSessionSnapshot &snapshot);
   static void clear();
+  /** After server acceptance only. This marker preserves projects/audio, but
+   * rejects stale/offline credentials for this UID across app restarts. */
+  static bool markAccountDeletionPending(const juce::String &uid);
+  static bool isAccountDeletionPending(const juce::String &uid);
 };

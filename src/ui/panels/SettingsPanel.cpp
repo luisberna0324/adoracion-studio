@@ -942,10 +942,17 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(logoutButton);
 
+  actionDeleteLabel.setFont(settingsOptionLabelFont());
+  actionDeleteLabel.setJustificationType(juce::Justification::centredLeft);
+  accountPage.addAndMakeVisible(actionDeleteLabel);
+  accountPage.addAndMakeVisible(deleteAccountButton);
+  deleteAccountButton.setComponentID("account-deletion-review");
+  deleteAccountButton.onClick = [this] { if (onAccountDeletionRequested) onAccountDeletionRequested(); };
+
   actionPurgeLabel.setJustificationType(juce::Justification::centredLeft);
   actionPurgeLabel.setFont(settingsOptionLabelFont());
   accountPage.addAndMakeVisible(actionPurgeLabel);
-  for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp}) {
+  for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp}) {
     help->setFont(settingsHelpFont());
     help->setJustificationType(juce::Justification::topLeft);
     help->setMinimumHorizontalScale(1.0f);
@@ -1138,7 +1145,7 @@ void SettingsPanel::resized() {
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (needsVerticalScroll ? 900 : 0));
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1186,7 +1193,7 @@ void SettingsPanel::refreshThemeColours() {
                      &primeImportHelp, &stemOptimizationHelp,
                      &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp,
-                     &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp})
+                     &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp})
     help->setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
@@ -1267,6 +1274,7 @@ void SettingsPanel::refreshThemeColours() {
   sessionVersionValue.setColour(juce::Label::textColourId, sessionPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, sessionPrimary);
   actionLogoutLabel.setColour(juce::Label::textColourId, actionSecondary);
+  actionDeleteLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionPurgeLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, actionSecondary);
   appleLinkLabel.setColour(juce::Label::textColourId, actionSecondary);
@@ -1447,7 +1455,7 @@ int SettingsPanel::mobilePageContentHeight(int width) const {
   switch (destination) {
     case Destination::Home: return homePage ? homePage->contentHeight() : 0;
     case Destination::Routing: return routingPageContentHeight(width);
-    case Destination::Account: return (width < 520 ? 1120 : 920) +
+    case Destination::Account: return (width < 520 ? 1240 : 990) +
                                      (appleLinkButton ? (width < 520 ? 136 : 100) : 0);
     case Destination::Audio: return 900;
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
@@ -1725,6 +1733,10 @@ void SettingsPanel::applyLanguageTexts() {
   actionInfoHelp.setText(L10n::tr("Abre un correo para contactar a soporte.",
                                   "Opens an email to contact support."),
                          juce::dontSendNotification);
+  actionDeleteLabel.setText(L10n::tr("Eliminar cuenta y Cloud", "Delete account and Cloud"), juce::dontSendNotification);
+  actionDeleteHelp.setText(L10n::tr("Revisa el impacto. Los archivos locales se conservarán.", "Review the impact. Local files will be preserved."), juce::dontSendNotification);
+  deleteAccountButton.setButtonText(L10n::tr("Revisar", "Review"));
+  deleteAccountButton.setEnabled(!session.localDemo && session.uid.isNotEmpty());
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
@@ -1960,6 +1972,7 @@ void SettingsPanel::layoutAccountPage() {
   actionInfoHelp.setBounds({});
   infoLinkButton.setBounds({});
   logoutButton.setBounds({});
+  deleteAccountButton.setBounds({}); actionDeleteLabel.setBounds({}); actionDeleteHelp.setBounds({});
   purgeButton.setBounds({});
   appleLinkLabel.setBounds({});
   appleLinkHelp.setBounds({});
@@ -2074,7 +2087,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    const int actionsH = (compact ? 430 : 250) +
+    const int actionsH = (compact ? 550 : 320) +
                          (appleLinkButton ? (compact ? 136 : 100) : 0);
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
@@ -2097,6 +2110,7 @@ void SettingsPanel::layoutAccountPage() {
       if (appleLinkButton)
         action(appleLinkLabel, appleLinkHelp, *appleLinkButton, 52);
       action(actionPurgeLabel, actionPurgeHelp, purgeButton, 52);
+      action(actionDeleteLabel, actionDeleteHelp, deleteAccountButton);
       action(actionInfoLabel, actionInfoHelp, infoLinkButton);
       return;
     }
@@ -2122,6 +2136,10 @@ void SettingsPanel::layoutAccountPage() {
     actionPurgeHelp.setBounds(purgeRow);
     purgeButton.setBounds(purgeControl);
 
+    auto deleteRow = actions.removeFromTop(70);
+    deleteAccountButton.setBounds(deleteRow.removeFromRight(112).reduced(0, 8));
+    actionDeleteLabel.setBounds(deleteRow.removeFromTop(24));
+    actionDeleteHelp.setBounds(deleteRow);
     auto helpRow = actions.removeFromTop(60);
     auto helpControl = helpRow.removeFromRight(112);
     actionInfoLabel.setBounds(helpRow.removeFromTop(24));

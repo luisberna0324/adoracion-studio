@@ -318,6 +318,16 @@ endif()
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsAccountDeletionTests PRODUCT_NAME "Account Deletion Flow Tests")
+    target_sources(MTControlsAccountDeletionTests PRIVATE tests/account_deletion_tests.cpp
+        src/ui/components/AccountDeletionModal.cpp src/data/AccountDeletionApi.cpp
+        src/data/AuthSessionApi.cpp src/data/AppSettings.cpp src/data/SessionPersistence.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionAuthLogger.cpp)
+    target_include_directories(MTControlsAccountDeletionTests PRIVATE src)
+    target_compile_definitions(MTControlsAccountDeletionTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsAccountDeletionTests PRIVATE MTControls juce::juce_audio_utils juce::juce_cryptography MTControlsAssets)
+    juce_generate_juce_header(MTControlsAccountDeletionTests)
+    add_test(NAME account_deletion_flow COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsAccountDeletionTests>")
     juce_add_console_app(MTControlsEmailPasswordAuthTests PRODUCT_NAME "Email Password Auth Contract Tests")
     target_sources(MTControlsEmailPasswordAuthTests PRIVATE
         tests/email_password_auth_tests.cpp src/data/EmailPasswordAuthApi.cpp)
@@ -1194,6 +1204,7 @@ target_sources(MTControls
         src/data/AppSettings.h
         src/data/AssetBootstrapManager.cpp
         src/data/AssetBootstrapManager.h
+        src/data/AccountDeletionApi.cpp
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
         src/data/EmailPasswordAuthApi.cpp
@@ -1305,6 +1316,7 @@ target_sources(MTControls
         src/ui/components/PowerButton.h
         src/ui/components/PadsHandlePanel.cpp
         src/ui/components/PadsHandlePanel.h
+        src/ui/components/AccountDeletionModal.cpp
         src/ui/components/ReauthPromptModal.cpp
         src/ui/components/AppModal.cpp
         src/ui/components/AppModal.h

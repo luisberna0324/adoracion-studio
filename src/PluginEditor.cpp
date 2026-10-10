@@ -36,6 +36,8 @@
 #include "ui/panels/PracticeAccompaniment.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
+#include "ui/components/AccountDeletionModal.h"
+#include "data/AccountDeletionApi.h"
 #include "ui/panels/TeamsPanel.h"
 
 #include "ui/panels/SongListPanel.h"
@@ -3255,6 +3257,15 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
+  if (SessionPersistence::isAccountDeletionPending(snapshot.uid)) {
+    if (activeSession.uid == snapshot.uid) handleLogout();
+    else {
+      cancelAuthenticationAttempt();
+      setEmailAuthenticationStatus(L10n::tr("Esta cuenta tiene una eliminación pendiente.",
+        "Account deletion is pending for this account."), true, false);
+    }
+    return;
+  }
   if (localDemoSession) return;
   if (captureInlineAppleAccount(snapshot)) return;
   ++authAttemptGeneration;
@@ -3508,6 +3519,40 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setDiagnosticsBusy(diagnosticExportBusy);
   panel->setAppleSignInAvailable(appleSignInAvailable);
+  panel->onAccountDeletionRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (!safe || safe->localDemoSession || safe->activeSession.uid.isEmpty()) return;
+    const auto uid = safe->activeSession.uid;
+    auto *content = new AccountDeletionModal(uid);
+    juce::Component::SafePointer<AccountDeletionModal> modal(content);
+    content->setSize(juce::jmin(500, juce::jmax(320, safe->getWidth() - 24)), juce::jmin(620, juce::jmax(240, safe->getHeight() - 24)));
+    content->onCancelled = [modal] { if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0); };
+    content->onAccepted = [safe, uid] {
+      if (!safe || safe->activeSession.uid != uid) return false;
+      if (!SessionPersistence::markAccountDeletionPending(uid)) return false;
+      safe->handleLogout();
+      return true;
+    };
+    content->onPreviewRequested = [safe, modal, uid](int generation) {
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      const auto base = getApiBaseUrl(); const auto key = safe->activeSession.firebaseApiKey;
+      const auto refresh = safe->activeSession.refreshToken;
+      std::thread([safe, modal, uid, generation, base, key, refresh] {
+        const auto result = AccountDeletionApi::preview(base, key, refresh, uid);
+        juce::MessageManager::callAsync([safe, modal, uid, generation, result] {
+          if (!modal) return;
+          if (!safe || safe->activeSession.uid != uid) { modal->invalidate(); return; }
+          // Execution intentionally remains disabled: no production deletion adapters.
+          auto reviewed = result; reviewed.executionAvailable = false;
+          modal->receivePreview(generation, uid, reviewed);
+        });
+      }).detach();
+    };
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(content); options.dialogTitle = L10n::tr("Eliminar cuenta", "Delete account");
+    options.dialogBackgroundColour = AuthUi::surface; options.useNativeTitleBar = true;
+    options.resizable = false; options.escapeKeyTriggersCloseButton = true;
+    options.launchAsync(); content->requestPreview();
+  };
   panel->onAppleLinkRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (!safe) return;
     const auto uid = safe->activeSession.uid;

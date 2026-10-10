@@ -3,6 +3,7 @@
 #include "SongLibraryStore.h"
 
 namespace {
+juce::CriticalSection snapshotLock;
 juce::File getMtControlsDirectory() {
   // Reuse the library's root, including its explicitly isolated test root.
   auto dir = SongLibraryStore::getRootDirectory();
@@ -55,6 +56,7 @@ juce::File SessionPersistence::getSnapshotFile() {
 }
 
 bool SessionPersistence::load(PersistedSessionSnapshot &out) {
+  const juce::ScopedLock lock(snapshotLock);
   const auto f = getSnapshotFile();
   if (!f.existsAsFile()) {
     SessionAuthLogger::write("SessionPersistence::load: no snapshot file at " +
@@ -84,6 +86,7 @@ bool SessionPersistence::load(PersistedSessionSnapshot &out) {
   }
 
   out.uid = o->getProperty("uid").toString().trim();
+  if (isAccountDeletionPending(out.uid)) { out = {}; f.deleteFile(); return false; }
   out.authProvider = o->getProperty("authProvider").toString();
   out.authProviderUser = o->getProperty("authProviderUser").toString();
   out.email = o->getProperty("email").toString().trim();
@@ -119,6 +122,8 @@ bool SessionPersistence::load(PersistedSessionSnapshot &out) {
 }
 
 bool SessionPersistence::save(const PersistedSessionSnapshot &snapshot) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (isAccountDeletionPending(snapshot.uid)) return false;
   auto *o = new juce::DynamicObject();
   o->setProperty("version", kSnapshotVersion);
   o->setProperty("uid", snapshot.uid);
@@ -150,6 +155,28 @@ bool SessionPersistence::save(const PersistedSessionSnapshot &snapshot) {
 }
 
 void SessionPersistence::clear() {
+  const juce::ScopedLock lock(snapshotLock);
   SessionAuthLogger::write("SessionPersistence::clear: deleting snapshot");
   getSnapshotFile().deleteFile();
+}
+
+namespace {
+juce::File deletionMarker(const juce::String &uid) {
+  const auto bytes = uid.toUTF8();
+  return getMtControlsDirectory().getChildFile("account-deletion-blocks")
+    .getChildFile(juce::SHA256(bytes.getAddress(), bytes.sizeInBytes() - 1).toHexString());
+}
+}
+bool SessionPersistence::isAccountDeletionPending(const juce::String &uid) {
+  const juce::ScopedLock lock(snapshotLock);
+  return uid.isNotEmpty() && deletionMarker(uid).exists();
+}
+bool SessionPersistence::markAccountDeletionPending(const juce::String &uid) {
+  const juce::ScopedLock lock(snapshotLock);
+  if (uid.isEmpty()) return false;
+  PersistedSessionSnapshot current; const bool loaded = load(current);
+  const auto marker = deletionMarker(uid);
+  if (!marker.getParentDirectory().createDirectory() || !marker.replaceWithText("pending")) return false;
+  if (loaded && current.uid == uid) clear();
+  return true;
 }
