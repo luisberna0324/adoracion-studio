@@ -34,8 +34,8 @@ minutos, resolucion por correo de perfiles legados y fallback free/trial ante
 algunos fallos de validacion. UIDs nuevos Apple requieren subject Google ya
 asociado. El helper JWT Google no tiene todas las comprobaciones estrictas
 Apple. `AUTH_STATE_SECRET` necesita configuracion privada. La rama backend ahora
-falla cerrada y elimina el fallback publico; el preview desplegado espera
-el handoff y la nueva imagen. Estados emitidos antes del cambio deben
+falla cerrada y elimina el fallback publico; el preview `playworship-00071-bes`
+ya usa `AUTH_STATE_SECRET:1` y la nueva imagen. Estados emitidos antes del cambio deben
 reiniciar el intento, sin compatibilidad de firma insegura. Sesiones Firebase
 previas no se invalidan por cambiar el secreto de state. Apple y correo fallan con 503 si no
 pueden validar acceso y no heredan ese fallback. No se implemento aqui una
@@ -538,3 +538,14 @@ The artifact is build/apple-ios-device/MTControls_artefacts/Debug/Standalone/Pla
 
 
 The owner then specifically authorized replacing the installed PlayWorship 1.1.4/build 1 on the paired iPhone 16 (Puto el que lo lea) over its existing Wi-Fi connection. Preflight verified strict signature, bundle com.multitracks.playworship, build 2, Default Apple entitlement, eligible development profile and the exact preview URL; the deterministic Wi-Fi helper verified the selected device absent from USB registry. Installation as an update and launch succeeded without uninstall, reset, manual migration or data deletion. Post-install inventory confirms 1.1.4/build 2 and a subsequent process query confirms PlayWorship running (PID 1505). No user credentials, Apple consent, real account creation or linking were performed. Runtime contents/data preservation and real Apple login remain for the owner to validate interactively.
+
+
+## Preview con firma Google privada (2026-10-10)
+
+Preview actualizado a `playworship-00071-bes`, secreto version 1 verificado
+solo por metadata, sin reinstalar build 3. 44 pruebas locales, 125 Docker,
+Next build y HTTP sintetico pasan; no autenticacion real Google por agente.
+La URL de callback Google configurada sigue en produccion: prueba real con
+inicio/callback preview requiere autorizacion de URI adicional en el cliente
+Web existente y override solo preview. Produccion 100% en `00061-baw`;
+credenciales, grants y referencias existentes intactas.
