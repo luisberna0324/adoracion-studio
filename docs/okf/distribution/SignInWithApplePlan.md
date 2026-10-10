@@ -3,12 +3,14 @@ type: Distribution Plan
 title: PlayWorship — alternativa de inicio de sesión con Apple
 description: Auditoría de autenticación actual y plan de implementación Apple para iOS, iPadOS y macOS, con identidad Firebase y conservación de acceso.
 tags: [distribution, auth, apple, firebase, ios, macos]
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-10T00:00:00Z
 ---
 
 # PlayWorship — inicio de sesión con Apple
 
-Estado al 2026-10-05: **cliente Apple nativo y contrato HTTPS implementados localmente; activación condicionada a build, backend y capacidad de firma configurados**. Se añadieron `NativeAppleSignIn` y `AppleSignInApi`, con botón Apple real y pruebas aisladas de contrato. La integración del editor/UI y el backend se desarrollan aparte; este estado no acredita un ingreso Apple real ni despliegue. No se consultaron usuarios reales, valores de secretos, consola Firebase ni claves privadas; no se modificaron servicios, cuentas o suscripciones por este trabajo.
+Estado al 2026-10-10: **cliente/UI nativos existentes reutilizados y backend Apple implementado en ramas locales; activación y autorización Apple real pendientes**. El backend `luisberna0324/playworship` implementa config/challenge/native y conserva Firebase Admin/custom tokens como arquitectura de sesiones. Los desafios se consumen atomicamente y la asociacion Firebase se protege con reservas de unicidad en el mismo Firestore: el Auth Emulator permite duplicados mediante una actualizacion Admin directa, por lo que no se supone que providerToLink garantice esa unicidad. Se comprobaron pruebas backend, asociacion Admin en Auth Emulator, contratos/UI macOS, builds nativos macOS e iOS y arranque en un iPad Simulator aislado. No se crearon claves persistentes ni se modificaron portal, reglas de seguridad o produccion; no hubo despliegue ni login Apple real.
+
+Ver [Auth](../integrations/Auth.md) y `docs/operations/apple-auth.md` en el backend para el contrato implementado, variables y colecciones privadas requeridas. El estado de eliminacion completa, notificaciones de revocacion, correo relay y pruebas Apple reales sigue pendiente. La tabla siguiente conserva la auditoria historica del 2026-10-05; no describe como ausentes los componentes que ahora ya existen.
 
 ## Recomendación
 

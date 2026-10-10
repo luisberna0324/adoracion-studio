@@ -17,16 +17,16 @@ juce::String appleErrorMessage(AppleSignInApi::Error error) {
   using Error = AppleSignInApi::Error;
   switch (error) {
     case Error::linkRequired:
-      return L10n::tr("Ingresa con Google a tu cuenta y vincula Apple desde Configuración → Mi cuenta.",
-                      "Sign in to your account with Google and link Apple in Settings → My account.");
+      return L10n::tr("Ingresa con Google o correo a tu cuenta y vincula Apple desde Configuración → Mi cuenta.",
+                      "Sign in to your account with Google or email and link Apple in Settings → My account.");
     case Error::identityConflict:
     case Error::identityMismatch:
       return L10n::tr("Esta identidad Apple pertenece a otra cuenta. No se cambió tu cuenta actual.",
                       "This Apple identity belongs to another account. Your current account was not changed.");
     case Error::reauthenticationRequired:
     case Error::unauthorized:
-      return L10n::tr("Renueva tu sesión con Google y luego vuelve a vincular Apple.",
-                      "Renew your session with Google, then link Apple again.");
+      return L10n::tr("Renueva tu sesión con Google o correo y luego vuelve a vincular Apple.",
+                      "Renew your session with Google or email, then link Apple again.");
     case Error::network:
       return L10n::tr("No pudimos conectar. Comprueba tu conexión y reintenta.",
                       "Couldn't connect. Check your connection and try again.");

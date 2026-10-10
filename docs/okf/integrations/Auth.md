@@ -3,7 +3,7 @@ type: Integration Contract
 title: Auth — Google, Apple y acceso con correo
 description: Acceso Google, Apple y correo con contrasena, sesion Firebase y recuperacion segura sin cambiar la cuenta ni los permisos.
 tags: [auth, ios, macos, apple, google, oauth, aswebauthenticationsession, firebase]
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-10T00:00:00Z
 ---
 
 # Auth — Google, Apple y correo con contrasena
@@ -191,7 +191,26 @@ Reintenta.". El usuario puede volver a tocar **Iniciar sesión**.
   en memoria. El flujo Apple usa un desafio persistido y consumido en servidor;
   no reutiliza los fallbacks de secreto del state Google.
 
-## Apple nativo — cliente preparado, activacion condicionada
+## Apple nativo — backend implementado, activacion condicionada
+
+El backend `playworship` implementa `/api/auth/apple/config`, `/challenge` y
+`/native` mediante `lib/apple-auth{,-server}.ts`. Reutiliza Firebase Admin y
+custom tokens, el objeto de sesion existente y `/api/validate-access`; no
+introduce un SDK de Firebase cliente ni otra autoridad de identidad. Guarda
+el desafio en Firestore, lo consume atomicamente y valida firma RS256/JWKS,
+issuer/audience/timestamps y SHA-256 del nonce antes de intercambiar el codigo
+Apple. Reservas transaccionales de subject/UID protegen la unicidad de las
+asociaciones Admin incluso cuando el proveedor no la impone. Firebase providerData `apple.com` es la asociacion principal; correo
+coincidente requiere acceso existente y vinculo explicito. El vinculo exige
+Firebase ID token no revocado y auth_time de los ultimos cinco minutos.
+
+La configuracion queda deshabilitada hasta provisionar los valores Apple
+server-only, clave de cifrado de tokens, capacidad/perfiles y build opt-in.
+No se crearon claves ni se modifico el portal. Los tokens Apple se retienen
+cifrados para revocacion y no llegan a la app. El helper de revocacion esta
+preparado; falta un coordinador de eliminacion completa de cuenta y manejo
+de eventos de revocacion. Ver `docs/operations/apple-auth.md` en el backend
+para variables, colecciones privadas, limites y pruebas reales pendientes.
 
 `src/platform/NativeAppleSignIn.{h,cpp,mm}` separa autorizacion Apple de la
 sesion PlayWorship. `src/data/AppleSignInApi.{h,cpp}` transporta y valida el
