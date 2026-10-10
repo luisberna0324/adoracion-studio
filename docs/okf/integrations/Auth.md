@@ -561,3 +561,18 @@ Start y callback sintetico/cancelacion fueron verificados en la misma revision,
 sin cuenta real. El build 3 instalado conserva la URL del tag y no necesita
 reinstalacion; el usuario debe probar Google y luego correo personalmente
 sin compartir contrasenas. No afirmar login real Google a partir del smoke.
+
+
+## Cierre QA y rollout pendiente — 2026-10-10
+
+El usuario confirmó a las 15:24 UTC que funcionan Apple, Google y correo/contraseña en el preview `playworship-00072-siv`. Es evidencia de login real reportada por el propietario; el agente no autenticó cuentas. Excluyó «Prueba sin conexión» por ser una demo interna. Verificación estática: `DevelopmentFeatures::testLogin=false` fuera de `JUCE_DEBUG`; WelcomeModal no crea/ejecuta su botón, LocalDemoAccessIntegration no ejecuta su sesión y PluginEditor no restaura ese modo en Release. Esto no demuestra la operación offline normal de una sesión válida. Vinculación explícita, relay/primera/repetida autorización, revocación y eliminación requieren sus casos específicos.
+
+Readiness backend: GO condicionado a aprobación expresa del rollout; no es aprobación App Store. Evidencia: 44 pruebas locales auth/device y typecheck, 125 gates Docker/Next build, tres tests emulador y cinco tests nativos acotados; la comprobación Release anterior es estática, no una nueva compilación Release. Producción conserva 100 % en `playworship-00061-baw`.
+
+Plan concreto, todavía no ejecutado:
+1. Crear una revisión candidata sin tráfico con imagen inmutable `gcr.io/play-worship/saas-license-backend@sha256:e5abcfe6bcf94a9673a965ac768a3447c22d65ea10c41029c2c5ca4f8a0e99de`, `AUTH_STATE_SECRET:1`, referencias Apple existentes, Apple habilitado, `DEVICE_RESTRICTIONS_ENABLED=false` y notificaciones deshabilitadas. Configurar `GOOGLE_OAUTH_CALLBACK_URL=https://api.playworship.app/api/auth/google/callback`, ya registrado. Conservar el resto de configuración/IAM y todos los tags. No promover directamente la revisión 72: contiene callback preview.
+2. Preparar también una reserva sin tráfico con imagen previa probada `sha256:295b458807633d72645a5d2cef4c6402d52a1155169d4445211052eb772cbf8f` (código d4be508), el mismo secreto privado explícito y callback productivo. Ese código prioriza el secreto configurado y conserva las protecciones de identidad Apple y política de dispositivos. Verificar ambas revisiones y anotar sus IDs reales; aún no existen ni se inventan aquí.
+3. Después de aprobación, corte coordinado al 100 % a la candidata verificada, sin repartir aleatoriamente inicio/callback entre revisiones con firmas distintas. Los intentos Google antiguos deben reiniciarse; sesiones Firebase emitidas permanecen. Verificar salud pública, callback productivo, rechazo de state inválido y errores acotados; observar fallos sin registrar credenciales.
+4. Rollback al ID exacto de la reserva verificada, conservando secretos, identidades/reservas y datos. La revisión 61 es una alternativa de emergencia con riesgo conocido: carece del secreto privado y de la nueva protección de UID Apple; no es el rollback seguro por defecto. No eliminar proveedores ni revertir datos.
+
+Antes de distribución pública/App Review: completar flujo de eliminación de cuenta con coordinación/revocación Apple y políticas, obtener firma/perfiles de distribución y compilar Release con URL productiva/Apple opt-in según rollout. Registrar/activar/probar notificaciones y verificar remitentes relay son tareas operativas separadas que necesitan su autorización. Services ID para Apple web y TTL son ampliaciones opcionales. Publicar PR/merge no autoriza despliegue, tráfico ni release.
