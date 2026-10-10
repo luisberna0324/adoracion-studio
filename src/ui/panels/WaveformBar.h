@@ -174,7 +174,7 @@ private:
   double liveMotionTimeMs = 0.0, liveDragSampleMs = 0.0;
   float liveDragSampleOffset = 0.0f, liveScrollVelocity = 0.0f;
   float liveSettleFrom = 0.0f, liveSettleTarget = 0.0f;
-  void updateLiveFollow(double nowMs);
+  void updateLiveFollow(double nowMs, bool reducedMotion);
   double liveFollowResumeMs = 0.0;
   double liveFollowAnimationStartMs = 0.0;
   float liveFollowFrom = 0.0f, liveFollowTarget = 0.0f;

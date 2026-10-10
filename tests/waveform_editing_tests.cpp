@@ -104,7 +104,7 @@ struct WaveformEditingTestAccess {
   }
   static auto liveText(WaveformBar &wave, const WaveformBar::PartOverlayBounds &item) { return wave.getLiveTextLayout(item); }
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
-  static void followAt(WaveformBar &waveform, double now) { waveform.updateLiveFollow(now); }
+  static void followAt(WaveformBar &waveform, double now, bool reduced = false) { waveform.updateLiveFollow(now, reduced); }
   static void vblank(WaveformBar &waveform, double now) { waveform.updatePlaybackAnimation(now); }
   static double resumeAt(const WaveformBar &waveform) { return waveform.liveFollowResumeMs; }
   static void setLiveOffset(WaveformBar &waveform, float offset) { waveform.setLiveScrollOffset(offset); }
@@ -2161,6 +2161,23 @@ void testDesktopNormalAndLiveFollow() {
   }
 }
 
+void testReducedMotionLiveFollow() {
+  Fixture f;
+  f.waveform.setMinimalPhoneMode(true);
+  f.waveform.setSize(390, 250);
+  f.waveform.setTransportProviders([] { return 25.0; }, [] { return 30.0; }, [] { return true; });
+  f.waveform.setLiveMode(true);
+  WaveformEditingTestAccess::followAt(f.waveform, 100.0, true);
+  const auto end = WaveformEditingTestAccess::liveScroll(f.waveform);
+  expect(end > 0.0f, "reduced motion centers final section immediately");
+  const auto blocks = WaveformEditingTestAccess::liveBounds(f.waveform);
+  expectNear(blocks.back().body.getRight(), WaveformEditingTestAccess::liveRow(f.waveform).getRight(),
+             "reduced motion clamps final section without trailing space");
+  WaveformEditingTestAccess::followAt(f.waveform, 240.0, true);
+  expectNear(WaveformEditingTestAccess::liveScroll(f.waveform), end,
+             "reduced motion has no delayed centering animation");
+}
+
 void testLiveSectionsAndNavigation() {
   Fixture f;
   expect(!f.waveform.isLiveMode(), "live presentation is opt-in");
@@ -2912,6 +2929,7 @@ int main() {
   run("adaptive centered Live titles", testAdaptiveLiveTitles);
   run("live inertial navigation", testLiveInertialNavigation);
   run("desktop normal actions and discrete live follow", testDesktopNormalAndLiveFollow);
+  run("reduced motion centers Live immediately", testReducedMotionLiveFollow);
   run("live actions survive layout refresh", testLiveActionsSurviveLayoutRefresh);
   run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);
   run("Loop border phase and corner continuity", testLoopBorderPhaseAndCorners);

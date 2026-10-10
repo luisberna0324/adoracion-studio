@@ -504,3 +504,5 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_accompanimen
 c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_toggle_request_tests.cpp -o /tmp/practice-toggle-request
 /tmp/practice-toggle-request
 ```
+
+La regresión waveform_editing pasa explícitamente la preferencia de reducir movimiento al seguimiento de Secciones: prueba transición de 280 ms y centrado inmediato por separado, independientemente del ajuste de accesibilidad del runner. El runtime sigue consultando la preferencia del sistema.

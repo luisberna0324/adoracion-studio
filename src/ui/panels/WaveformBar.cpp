@@ -2764,7 +2764,7 @@ void WaveformBar::suspendLiveFollow() {
   liveFollowAnimating = false;
 }
 
-void WaveformBar::updateLiveFollow(double nowMs) {
+void WaveformBar::updateLiveFollow(double nowMs, bool reducedMotion) {
   for (const auto &action : liveSectionActions)
     if (action->isVisible()) {
       const auto *handler = action->getAccessibilityHandler();
@@ -2793,7 +2793,7 @@ void WaveformBar::updateLiveFollow(double nowMs) {
     liveFollowAnimating = true;
   }
   if (!liveFollowAnimating) return;
-  const float t = liveBorderReducedMotion() ? 1.0f : static_cast<float>(juce::jlimit(0.0, 1.0,
+  const float t = reducedMotion ? 1.0f : static_cast<float>(juce::jlimit(0.0, 1.0,
       (nowMs - liveFollowAnimationStartMs) / 280.0));
   const float eased = t * t * (3.0f - 2.0f * t);
   setLiveScrollOffset(liveFollowFrom + (liveFollowTarget - liveFollowFrom) * eased);
@@ -4679,7 +4679,7 @@ void WaveformBar::timerCallback() {
     updateLiveScrollMotion(nowMs, liveBorderReducedMotion());
     if (songLoadingHideAfterMs > 0.0 && nowMs >= songLoadingHideAfterMs)
       clearSongLoadingState();
-    updateLiveFollow(nowMs);
+    updateLiveFollow(nowMs, liveBorderReducedMotion());
     updateActiveTempoRegionFromTransport();
     int active = -1;
     for (int i = 0; i < static_cast<int>(arrangement.parts.size()); ++i)
