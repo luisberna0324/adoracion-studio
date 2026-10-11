@@ -45,6 +45,8 @@ void testServiceTermsPrompt() {
   expectTerms(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, 9999));
   expectTerms(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version) == 1234);
   expectTerms(!AppSettings::hasServiceTermsAcceptance("new-version"));
+  expectTerms(AppSettings::acceptServiceTermsLocally("preview-" + ServiceTermsPolicy::version, 5678));
+  expectTerms(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version) == 1234);
 }
 
 int main() {

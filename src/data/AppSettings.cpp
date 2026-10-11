@@ -182,12 +182,12 @@ juce::File AppSettings::getSettingsFile() {
 
 juce::int64 AppSettings::serviceTermsAcceptedAtMs(const juce::String& version) {
   const juce::ScopedLock lock(backgroundSettingsWriteLock);
-  const auto record = juce::JSON::parse(getSettingsFile())["serviceTerms"];
+  const auto record = juce::JSON::parse(getSettingsFile())[version.startsWith("preview-") ? "serviceTermsPreview" : "serviceTerms"];
   return record["version"].toString() == version ? static_cast<juce::int64>(record["acceptedAtMs"]) : 0;
 }
 bool AppSettings::hasServiceTermsAcceptance(const juce::String& version) {
   const juce::ScopedLock lock(backgroundSettingsWriteLock);
-  const auto record = juce::JSON::parse(getSettingsFile())["serviceTerms"];
+  const auto record = juce::JSON::parse(getSettingsFile())[version.startsWith("preview-") ? "serviceTermsPreview" : "serviceTerms"];
   return record["version"].toString() == version && static_cast<juce::int64>(record["acceptedAtMs"]) > 0;
 }
 bool AppSettings::acceptServiceTermsLocally(const juce::String& version, juce::int64 acceptedAtMs) {
@@ -195,10 +195,10 @@ bool AppSettings::acceptServiceTermsLocally(const juce::String& version, juce::i
   const juce::ScopedLock lock(backgroundSettingsWriteLock);
   auto root = juce::JSON::parse(getSettingsFile());
   if (!root.isObject()) root = juce::var(new juce::DynamicObject());
-  const auto previous = root["serviceTerms"];
+  const auto previous = root[version.startsWith("preview-") ? "serviceTermsPreview" : "serviceTerms"];
   if (previous["version"].toString() == version && static_cast<juce::int64>(previous["acceptedAtMs"]) > 0) return true;
   auto* record = new juce::DynamicObject(); record->setProperty("version", version); record->setProperty("acceptedAtMs", acceptedAtMs);
-  root.getDynamicObject()->setProperty("serviceTerms", juce::var(record));
+  root.getDynamicObject()->setProperty(version.startsWith("preview-") ? "serviceTermsPreview" : "serviceTerms", juce::var(record));
   return getSettingsFile().replaceWithText(juce::JSON::toString(root));
 }
 
