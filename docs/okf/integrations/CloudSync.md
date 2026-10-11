@@ -759,12 +759,13 @@ borrado productivo deshabilitado hasta resolver la migración y QA del proveedor
 
 ## Condiciones del servicio: aceptación explícita
 
-El primer inicio presenta enlaces a términos, privacidad y copyright y explica
-Cloud personal, propiedad del usuario, permisos y reclamaciones. No concede ni
-verifica licencias musicales. `Ahora no`/Escape no registra aceptación ni borra
-archivos: reproducción e importación local permanecen disponibles. El registro
-anónimo del dispositivo usa versión y fecha local en `AppSettings`; no constituye
-aceptación de una cuenta ni se envía como tal al servidor.
+El primer inicio presenta información y enlaces a términos, privacidad y copyright.
+Explica Cloud personal, propiedad del usuario, permisos y reclamaciones. `Entendido`
+registra únicamente información vista en `serviceTermsIntro` (versión y fecha
+local); `Cerrar`/Escape no registra nada. No constituye aceptación de cuenta.
+Reproducción e importación local permanecen disponibles. El panel desplaza el
+contenido y mantiene ambos botones visibles, con áreas táctiles de 48 puntos.
+Los registros locales y de vista previa anteriores se conservan.
 
 Al entrar en una cuenta (Google, Apple o correo), se consulta la constancia de esa
 cuenta. Falta de red permite seguir en local y reintentar al subir. El cliente
@@ -785,9 +786,7 @@ anteriores permanecen compatibles sin registrar aceptación implícita.
 `CLOUD_TERMS_REQUIRED=true` sólo debe activarse para todos tras migración y aviso
 aprobados; no se ha activado. La aceptación no activa ni cobra un plan.
 
-En Debug, el recorrido local sin servidor es una vista previa identificada: su
-constancia usa `preview-` y nunca acredita aceptación de cuenta ni de documentos
-públicos distintos. Los enlaces abren los documentos públicos actuales. No se
-borran ni simulan constancias anteriores para forzar esta revisión. Cuando el
-backend y documentos estén publicados, la aceptación de cuenta usa el flujo
-autenticado real igual que Release.
+Antes del login, también en Debug, el aviso es informativo. Los enlaces abren
+los documentos públicos actuales. No se borran ni simulan constancias anteriores
+para forzar esta revisión. La aceptación de cuenta requiere el flujo autenticado
+real, igual que Release, y el despliegue de los documentos y backend correspondientes.

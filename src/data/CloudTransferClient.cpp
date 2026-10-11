@@ -105,7 +105,7 @@ bool ensureTerms(const CloudTransferCredentials& credentials, const juce::String
   }
   if (static_cast<bool>(status["accepted"])) return true;
   auto decision = std::make_shared<std::atomic<int>>(0);
-  auto prompt = std::make_shared<juce::Component::SafePointer<juce::AlertWindow>>();
+  auto prompt = std::make_shared<juce::Component::SafePointer<ServiceTermsPanel>>();
   juce::MessageManager::callAsync([decision, prompt, email = status["accountEmail"].toString()] {
     if (decision->load() != 0) return;
     *prompt = ServiceTermsPrompt::show(email, [decision](bool accepted) {

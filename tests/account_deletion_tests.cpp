@@ -14,39 +14,48 @@ juce::Button &action(AccountDeletionModal &modal, const char *id) {
 }
 void click(juce::Button &button) { if (button.isEnabled() && button.onClick) button.onClick(); }
 void testServiceTermsPrompt() {
-  int checkpoint = 0;
-  auto expectTerms = [&](bool condition) { ++checkpoint; if (!condition) { std::cerr << "Service terms test failed checkpoint " << checkpoint << "\n"; std::exit(1); } };
-  expectTerms(!AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
-  bool completed = false, accepted = true;
-  ServiceTermsPrompt::show({}, [&](bool result) { completed = true; accepted = result; });
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
-  auto* alert = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
-  expectTerms(alert != nullptr);
-  alert->exitModalState(0);
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
-  expectTerms(completed && !accepted && !AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
-  ServiceTermsLinks links;
-  expectTerms(links.getNumChildComponents() == 3);
-  completed = false;
-  ServiceTermsPrompt::show("review@example.test", [&](bool result) {
-    accepted = result; completed = true;
-    if (result) expectTerms(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, 1234));
-  });
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
-  alert = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
-  expectTerms(alert != nullptr);
-  bool found = false;
-  for (auto* child : alert->getChildren()) {
-    auto* button = dynamic_cast<juce::TextButton*>(child);
-    if (button && (button->getButtonText().contains("Acepto") || button->getButtonText().contains("I accept"))) { button->triggerClick(); found = true; break; }
+  auto check = [](bool ok, const char* message) { if (!ok) { std::cerr << message << "\n"; std::exit(1); } };
+  check(!AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version), "no implicit acceptance");
+  juce::Component host; host.setBounds(0, 0, 390, 700); host.addToDesktop(0); host.setVisible(true);
+  for (auto language : {AppLanguage::Spanish, AppLanguage::English}) {
+    AppSettings::setLanguage(language);
+    for (auto size : {juce::Point<int>{320,620}, {390,700}, {568,244}, {844,620}}) {
+      ServiceTermsPanel panel({}, false); panel.setSize(size.x,size.y);
+      check(panel.getLocalBounds().contains(panel.cardBounds()), "terms card fits phone/tablet");
+      check(panel.cardBounds().contains(panel.primary.getBounds()) && panel.cardBounds().contains(panel.secondary.getBounds()), "both terms actions remain visible");
+      check(panel.primary.getHeight() >= 44 && panel.secondary.getHeight() >= 44, "terms touch targets");
+      check(panel.bodyViewport().getHeight() > 0 && panel.cardBounds().contains(panel.bodyViewport().getBounds()), "terms scroll region fits card");
+      auto* content = panel.bodyViewport().getViewedComponent();
+      check(content != nullptr, "terms content exists");
+      int links=0;
+      for (auto* child : content->getChildren()) if (dynamic_cast<AuthUi::Button*>(child)) { ++links; check(content->getLocalBounds().contains(child->getBounds()) && child->getHeight()>=44,"readable terms links fit scroll content"); }
+      check(links==3,"all legal document links remain available");
+      if (language==AppLanguage::Spanish && size==juce::Point<int>{390,700}) {
+        const auto output=juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_TERMS_SNAPSHOT",{});
+        if (output.startsWith("/tmp/")) { auto stream=juce::File(output).createOutputStream(); if(stream) juce::PNGImageFormat{}.writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds(),true,2.0f),*stream); }
+      }
+    }
   }
+  AppSettings::setLanguage(AppLanguage::Spanish);
+  bool completed=false, accepted=true;
+  auto panel=ServiceTermsPrompt::show({},[&](bool result){completed=true;accepted=result;});
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+  check(panel != nullptr,"terms modal attached to app"); panel->secondary.triggerClick();
   juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
-  expectTerms(found && completed && accepted && AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
-  expectTerms(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, 9999));
-  expectTerms(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version) == 1234);
-  expectTerms(!AppSettings::hasServiceTermsAcceptance("new-version"));
-  expectTerms(AppSettings::acceptServiceTermsLocally("preview-" + ServiceTermsPolicy::version, 5678));
-  expectTerms(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version) == 1234);
+  check(completed && !accepted && !AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version),"cancel records no consent");
+  completed=false;
+  panel=ServiceTermsPrompt::show("review@example.test",[&](bool result){completed=true;accepted=result;if(result)check(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version,1234),"save explicit local consent");});
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30); check(panel != nullptr,"account consent panel exists"); panel->primary.triggerClick();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+  check(completed && accepted && AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version),"explicit button records version");
+  check(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version,9999),"repeat consent succeeds");
+  check(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version)==1234,"repeat retains original date");
+  check(!AppSettings::hasServiceTermsAcceptance("new-version"),"changed version not silently accepted");
+  check(AppSettings::acceptServiceTermsLocally("preview-"+ServiceTermsPolicy::version,5678),"keep prior preview acknowledgement");
+  check(AppSettings::acknowledgeServiceTermsIntro(ServiceTermsPolicy::version,9876),"intro acknowledgement stored separately");
+  check(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version)==1234 && AppSettings::serviceTermsAcceptedAtMs("preview-"+ServiceTermsPolicy::version)==5678,"intro preserves all previous consent records");
+  ServiceTermsPanel information({},true);
+  check(information.primary.getButtonText()=="Entendido","prelogin is informational, not acceptance");
 }
 
 int main() {
