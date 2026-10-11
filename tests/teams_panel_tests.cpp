@@ -1,4 +1,5 @@
 #include "ui/panels/TeamsPanel.h"
+#include "data/TeamsClient.h"
 #include "ui/components/AppModal.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/Localization.h"
@@ -327,6 +328,13 @@ int main() {
     (void)ApplicationDataPaths::isolatedTestRoot();
     juce::ScopedJuceInitialiser_GUI gui;
     applyTheme(ThemePreset::Spotify);
+    TeamsClient pausedClient;
+    bool pauseReturned = false;
+    pausedClient.request({}, "download", {}, [&](juce::var, CloudTransferError error) {
+      expect(error.httpCode == 403 && error.code == "TEAM_SHARING_PAUSED", "distributed client must reject shared download before networking");
+      pauseReturned = true;
+    });
+    expect(pauseReturned, "sharing pause is effective without credentials or network");
     testOwnCloudSelectionAndCapability();
     testResponsiveAccessAndBusyState();
     testMemberAddition();

@@ -1560,7 +1560,7 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 
 void SettingsPanel::applyLanguageTexts() {
   teamsLabel.setText("Teams", juce::dontSendNotification);
-  teamsHelp.setText(L10n::tr("Consulta tu acceso al Team o administra los usuarios de tu nube.", "View your Team access or manage the users of your Cloud."), juce::dontSendNotification);
+  teamsHelp.setText(L10n::tr("El intercambio de archivos de Teams está temporalmente deshabilitado. Tu Cloud personal sigue disponible.", "Teams file sharing is temporarily disabled. Your personal Cloud remains available."), juce::dontSendNotification);
   teamsButton.setButtonText(L10n::tr("Abrir Teams", "Open Teams"));
   learningLabel.setText(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"), juce::dontSendNotification);
   learningHelp.setText(L10n::tr("Guías interactivas que puedes pausar y retomar.", "Interactive guides you can pause and resume."), juce::dontSendNotification);
