@@ -50,7 +50,7 @@ private:
   bool busy = false;
 };
 
-class WelcomeModal final : public juce::Component {
+class WelcomeModal final : public juce::Component, private juce::Timer {
 public:
   std::function<void()> onLoginRequested;
   std::function<void()> onAppleLoginRequested;
@@ -82,6 +82,8 @@ public:
 private:
   void showEmailForm(bool show);
   void updateActionVisibility();
+  void updateAppleButtonVisibility();
+  void timerCallback() override;
   void updateHeading();
   juce::ImageComponent logo;
   juce::Image logoImage;

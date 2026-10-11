@@ -183,7 +183,10 @@ Los controles de navegación son compactos:
 - `Más` reúne `Cursos`, que vuelve al catálogo, y `Reiniciar guía`, que vuelve
   al primer paso y elimina el estado completado de ese curso.
   Su menú se dibuja como hijo de la guía, dentro de su ventana actual.
-- La `X` (`Pausar guía`) y Escape cierran la guía conservando el paso actual.
+- `Cerrar` aparece en el pie junto a Continuar/Terminar y conserva el paso
+  actual, igual que Escape. La tarjeta de paso no presenta otra `X` arriba.
+  El catálogo conserva su `X` para cerrar. El foco recorre Anterior, Cerrar,
+  Continuar/Terminar y Más en ese orden.
 - Con la guía enfocada, las flechas izquierda y derecha recorren pasos. No se
   utilizan para buscar audio ni para realizar la tarea sugerida. La flecha
   derecha respeta la misma validación que Continuar.

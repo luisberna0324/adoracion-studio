@@ -343,6 +343,20 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsEmailAuthUiTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsEmailAuthUiTests)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_console_app(MTControlsLoginHelpModalUiTests PRODUCT_NAME "Login and Help Modal UI Tests")
+        target_sources(MTControlsLoginHelpModalUiTests PRIVATE
+            tests/login_help_modal_ui_tests.mm src/data/AppSettings.cpp)
+        target_include_directories(MTControlsLoginHelpModalUiTests PRIVATE src)
+        target_compile_definitions(MTControlsLoginHelpModalUiTests PRIVATE
+            MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+        target_link_libraries(MTControlsLoginHelpModalUiTests PRIVATE MTControls MTControlsAssets
+            juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsLoginHelpModalUiTests)
+        add_test(NAME login_help_modal_ui COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+            "$<TARGET_FILE:MTControlsLoginHelpModalUiTests>")
+    endif()
     add_test(NAME email_authentication_ui COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsEmailAuthUiTests>")

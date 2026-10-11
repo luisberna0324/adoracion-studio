@@ -207,15 +207,24 @@ public:
 
 LearningGuideOverlay::LearningGuideOverlay()
     : nextButton(std::make_unique<ActionButton>("learningNext", true)),
+      closeButton(std::make_unique<ActionButton>("learningPause")),
       textContent(std::make_unique<TextContent>()),
       catalogContent(std::make_unique<CatalogContent>()) {
   setOpaque(false);
   setWantsKeyboardFocus(true);
   setInterceptsMouseClicks(true, true);
-  closeButton.setSubtleHighlight(true);
-  closeButton.setTitle(L10n::tr("Pausar guía", "Pause guide"));
-  closeButton.setTooltip(L10n::tr("Cierra la guía y conserva tu progreso.",
-                                 "Close the guide and keep your progress."));
+  catalogCloseButton.setSubtleHighlight(true);
+  for (auto* button : std::initializer_list<juce::Button*>{closeButton.get(), &catalogCloseButton}) {
+    button->setTitle(L10n::tr("Pausar guía", "Pause guide"));
+    button->setTooltip(L10n::tr("Cierra la guía y conserva tu progreso.",
+                               "Close the guide and keep your progress."));
+    button->onClick = [this] { dispatch(Action::Pause); };
+  }
+  closeButton->setButtonText(L10n::tr("Cerrar", "Close"));
+  previousButton.setExplicitFocusOrder(1);
+  closeButton->setExplicitFocusOrder(2);
+  nextButton->setExplicitFocusOrder(3);
+  moreButton.setExplicitFocusOrder(4);
   previousButton.setSubtleHighlight(true);
   previousButton.setTitle(L10n::tr("Paso anterior", "Previous step"));
   previousButton.setTooltip(L10n::tr("Volver al paso anterior", "Return to the previous step"));
@@ -223,7 +232,7 @@ LearningGuideOverlay::LearningGuideOverlay()
   moreButton.setTitle(L10n::tr("Opciones de la guía", "Guide options"));
   moreButton.setTooltip(L10n::tr("Cursos y reiniciar guía", "Courses and restart guide"));
   for (auto *component : std::initializer_list<juce::Component *>{
-           &closeButton, &previousButton, nextButton.get(), &moreButton,
+           &catalogCloseButton, closeButton.get(), &previousButton, nextButton.get(), &moreButton,
            &textViewport, &catalogViewport})
     addAndMakeVisible(*component);
   textViewport.setViewedComponent(textContent.get(), false);
@@ -239,7 +248,6 @@ LearningGuideOverlay::LearningGuideOverlay()
   previousButton.onClick = [this] { dispatch(Action::Previous); };
   nextButton->onClick = [this] { dispatch(Action::Next); };
   moreButton.onClick = [this] { showActionsMenu(); };
-  closeButton.onClick = [this] { dispatch(Action::Pause); };
 }
 
 LearningGuideOverlay::~LearningGuideOverlay() {
@@ -481,6 +489,8 @@ void LearningGuideOverlay::resized() {
   previousButton.setVisible(!catalog);
   nextButton->setVisible(!catalog);
   moreButton.setVisible(!catalog);
+  closeButton->setVisible(!catalog);
+  catalogCloseButton.setVisible(catalog);
   nextButton->setButtonText(hasSteps && stepIndex + 1 == static_cast<int>(lesson.steps.size())
                                ? L10n::tr("Terminar", "Finish")
                                : L10n::tr("Continuar", "Continue"));
@@ -496,7 +506,7 @@ void LearningGuideOverlay::resized() {
     const int width = juce::jmin(560, safe.getWidth());
     const int height = juce::jmin(660, safe.getHeight());
     cardBounds = {safe.getCentreX() - width / 2, safe.getCentreY() - height / 2, width, height};
-    closeButton.setBounds(cardBounds.getRight() - 56, cardBounds.getY() + 10, 44, 44);
+    catalogCloseButton.setBounds(cardBounds.getRight() - 56, cardBounds.getY() + 10, 44, 44);
     auto body = cardBounds.reduced(14);
     body.removeFromTop(96);
     if (statusMessage.isNotEmpty()) {
@@ -514,8 +524,6 @@ void LearningGuideOverlay::resized() {
   auto content = cardBounds.reduced(12);
   const int controlHeight = juce::jmin(44, juce::jmax(0, (content.getHeight() - 12) / 3));
   auto header = content.removeFromTop(controlHeight);
-  closeButton.setBounds(header.removeFromRight(44));
-  header.removeFromRight(6);
   moreButton.setBounds(header.removeFromLeft(44));
   content.removeFromTop(4);
   auto footer = content.removeFromBottom(controlHeight);
@@ -524,8 +532,11 @@ void LearningGuideOverlay::resized() {
   const int labelWidth = juce::roundToInt(makeLayout(
       {nextButton->getButtonText(), 14.0f, AppFontWeight::Medium,
        UITheme::textPrimary, 0}, 500).getWidth());
-  const int buttonWidth = juce::jmin(footer.getWidth(), juce::jmax(88, labelWidth + 28));
+  const int buttonWidth = juce::jmin(juce::jmax(0, (footer.getWidth() - 8) / 2),
+                                   juce::jmax(88, labelWidth + 28));
   nextButton->setBounds(footer.removeFromRight(buttonWidth));
+  footer.removeFromRight(8);
+  closeButton->setBounds(footer.removeFromRight(juce::jmin(88, footer.getWidth())));
   content.removeFromBottom(6);
   textViewport.setBounds(content);
   textContent->setSize(juce::jmax(1, content.getWidth() - 6), textContent->getHeight());

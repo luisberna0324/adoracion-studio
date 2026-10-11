@@ -374,9 +374,20 @@ void WelcomeModal::setChecking(bool isChecking) {
 
 void WelcomeModal::setAppleSignInAvailable(bool available) {
   if (available && !appleButton) {
-    appleButton = NativeAppleSignIn::createButton([this] { if (onAppleLoginRequested) onAppleLoginRequested(); });
-    if (appleButton) addAndMakeVisible(*appleButton);
-  } else if (!available) appleButton.reset();
+    appleButton = NativeAppleSignIn::createButton([this] {
+      if (!isCurrentlyBlockedByAnotherModalComponent() && !authenticationBusy &&
+          onAppleLoginRequested) onAppleLoginRequested();
+    });
+    if (appleButton) {
+      addChildComponent(*appleButton);
+      // Native Apple views sit above JUCE's painted children. Modal changes
+      // have no JUCE listener, so also restore visibility after dismissal.
+      startTimerHz(30);
+    }
+  } else if (!available) {
+    stopTimer();
+    appleButton.reset();
+  }
   updateActionVisibility();
   resized();
 }
@@ -435,12 +446,23 @@ void WelcomeModal::updateActionVisibility() {
   emailForm.setVisible(!checking && emailMode);
   backButton.setVisible(!checking && (emailMode || inlineAppleLink));
   if (appleButton) {
-    appleButton->setVisible(!checking && !emailMode && !inlineAppleLink);
+    updateAppleButtonVisibility();
     appleButton->setEnabled(!authenticationBusy);
   }
 }
 
+void WelcomeModal::updateAppleButtonVisibility() {
+  if (appleButton)
+    appleButton->setVisible(!checking && !emailMode && !inlineAppleLink &&
+                           !isCurrentlyBlockedByAnotherModalComponent());
+}
+
+void WelcomeModal::timerCallback() { updateAppleButtonVisibility(); }
+
 void WelcomeModal::paint(juce::Graphics& g) {
+  // Hide the native view in the first repaint under an overlaid modal,
+  // without waiting for the timer or changing the legal prompt's timing.
+  updateAppleButtonVisibility();
   g.fillAll(juce::Colour(0xff101713));
   juce::ColourGradient glow(AuthUi::accent.withAlpha(0.07f), (float)getWidth() * 0.3f, 0,
       juce::Colours::transparentBlack, (float)getWidth(), (float)getHeight(), true);

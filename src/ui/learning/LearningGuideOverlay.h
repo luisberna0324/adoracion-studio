@@ -44,10 +44,11 @@ private:
   juce::Rectangle<int> safeBounds() const;
   juce::Rectangle<int> chooseStepCard() const;
 
-  HeaderIconButton closeButton{"learningPause", IconGlyph::Close};
+  HeaderIconButton catalogCloseButton{"learningCatalogClose", IconGlyph::Close};
   HeaderIconButton previousButton{"learningPrevious", IconGlyph::ArrowLeft};
   HeaderIconButton moreButton{"learningMore", IconGlyph::More};
   std::unique_ptr<ActionButton> nextButton;
+  std::unique_ptr<ActionButton> closeButton;
   juce::Viewport textViewport, catalogViewport;
   std::unique_ptr<TextContent> textContent;
   std::unique_ptr<CatalogContent> catalogContent;

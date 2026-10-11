@@ -378,7 +378,6 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   }
 
   tryResumeSessionAsync();
-  juce::Timer::callAfterDelay(1200, [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] { if (safe) safe->showServiceTermsIfNeeded(); });
   if (!mainUiInitialized)
     startTimerHz(12);
 
@@ -1238,31 +1237,20 @@ void MTControlsAudioProcessorEditor::refreshCloudLibrary(
 }
 
 void MTControlsAudioProcessorEditor::showServiceTermsIfNeeded() {
-  if (serviceTermsRequestPending) return;
+  if (serviceTermsRequestPending || localDemoSession || !activeSession.allowed ||
+      activeSession.uid.isEmpty() || activeSession.refreshToken.isEmpty()) return;
   const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
-  auto localPrompt = [safe] {
-    if (!safe || AppSettings::hasServiceTermsIntroSeen(ServiceTermsPolicy::version)) return;
-    safe->serviceTermsRequestPending = true;
-    ServiceTermsPrompt::show({}, [safe](bool acknowledged) {
-      if (!safe) return;
-      safe->serviceTermsRequestPending = false;
-      if (acknowledged) AppSettings::acknowledgeServiceTermsIntro(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
-      // Informational only: preserve all previous local/preview acceptance records.
-    }, true);
-  };
-  if (localDemoSession || !activeSession.allowed || activeSession.uid.isEmpty() || activeSession.refreshToken.isEmpty()) {
-    localPrompt(); return;
-  }
+  // Consent belongs to an authenticated account. Do not open an informational
+  // prompt over login or fall back to one after a failed Cloud request.
   serviceTermsRequestPending = true;
   if (!serviceTermsClient) serviceTermsClient = std::make_unique<CloudTransferClient>();
   const auto uid = activeSession.uid;
   serviceTermsClient->requestTerms({getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken},
-    [safe, uid, localPrompt](CloudTransferError error) {
+    [safe, uid](CloudTransferError error) {
       if (!safe) return;
       safe->serviceTermsRequestPending = false;
       if (safe->activeSession.uid != uid) return;
       if (error.code.isEmpty()) AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
-      else if (error.code != "CLOUD_CONSENT_CANCELLED") localPrompt();
       // Closing/refusing records nothing; local playback and imports continue.
     });
 }

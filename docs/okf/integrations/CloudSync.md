@@ -759,13 +759,18 @@ borrado productivo deshabilitado hasta resolver la migración y QA del proveedor
 
 ## Condiciones del servicio: aceptación explícita
 
-El primer inicio presenta información y enlaces a términos, privacidad y copyright.
-Explica Cloud personal, propiedad del usuario, permisos y reclamaciones. `Entendido`
-registra únicamente información vista en `serviceTermsIntro` (versión y fecha
-local); `Cerrar`/Escape no registra nada. No constituye aceptación de cuenta.
-Reproducción e importación local permanecen disponibles. El panel desplaza el
-contenido y mantiene ambos botones visibles, con áreas táctiles de 48 puntos.
-Los registros locales y de vista previa anteriores se conservan.
+El login no abre el aviso informativo «Tu contenido es tuyo», ni utiliza un
+temporizador para solicitar condiciones antes de autenticar. Tampoco se abre
+ese aviso como alternativa tras un error de red. Reproducción e importación
+local permanecen disponibles. Los registros `serviceTermsIntro`, de aceptación
+local y de vista previa anteriores se conservan sin modificarlos.
+
+Si otro modal cubre el login, `WelcomeModal` oculta temporalmente el botón
+nativo de Apple: las vistas UIView/NSView se dibujan por encima de los hijos
+pintados por JUCE. El primer repintado y un temporizador de 30 Hz sincronizan
+la visibilidad con el bloqueo modal. Cerrar el panel restaura el botón respetando
+el estado de comprobación, formulario y autenticación en curso. Este ajuste
+no cambia la constancia de aceptación de cuenta.
 
 Al entrar en una cuenta (Google, Apple o correo), se consulta la constancia de esa
 cuenta. Falta de red permite seguir en local y reintentar al subir. El cliente
