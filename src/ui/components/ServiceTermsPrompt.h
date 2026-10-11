@@ -18,12 +18,12 @@ inline juce::String explanation() {
     "Your content remains yours. Personal Cloud stores and syncs files you choose between your devices. You need the necessary permissions; PlayWorship does not grant music licenses. Claims follow the copyright policy. You can continue locally without accepting or uploading files. If you cannot read the documents, choose Not now and read them after reconnecting.");
 }
 inline bool promptOpen = false;
-inline juce::Component::SafePointer<juce::AlertWindow> show(const juce::String& accountEmail, std::function<void(bool)> done) {
+inline juce::Component::SafePointer<juce::AlertWindow> show(const juce::String& accountEmail, std::function<void(bool)> done, bool preview = false) {
   if (promptOpen) { if (done) done(false); return {}; }
   promptOpen = true;
   auto links = std::make_shared<ServiceTermsLinks>();
   auto* alert = new juce::AlertWindow(L10n::tr("Condiciones de PlayWorship", "PlayWorship terms"),
-    explanation() + (accountEmail.isNotEmpty() ? "\n\n" + L10n::tr("Cuenta: ", "Account: ") + accountEmail : ""), juce::MessageBoxIconType::NoIcon);
+    (preview ? L10n::tr("Vista previa local para revisar esta interfaz. No registra aceptación de cuenta Cloud. Los enlaces muestran los documentos públicos actuales.\n\n", "Local preview to review this interface. It does not record Cloud account acceptance. Links show the current public documents.\n\n") : juce::String{}) + explanation() + (accountEmail.isNotEmpty() ? "\n\n" + L10n::tr("Cuenta: ", "Account: ") + accountEmail : ""), juce::MessageBoxIconType::NoIcon);
   alert->addCustomComponent(links.get());
   alert->addButton(L10n::tr("Acepto los términos", "I accept the terms"), 1);
   alert->addButton(L10n::tr("Ahora no · usar local", "Not now · use locally"), 0, juce::KeyPress(juce::KeyPress::escapeKey));

@@ -1241,13 +1241,20 @@ void MTControlsAudioProcessorEditor::showServiceTermsIfNeeded() {
   if (serviceTermsRequestPending) return;
   const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
   auto localPrompt = [safe] {
-    if (!safe || AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version)) return;
+#if JUCE_DEBUG
+    const juce::String localVersion = "preview-" + ServiceTermsPolicy::version;
+    constexpr bool preview = true;
+#else
+    const juce::String localVersion = ServiceTermsPolicy::version;
+    constexpr bool preview = false;
+#endif
+    if (!safe || AppSettings::hasServiceTermsAcceptance(localVersion)) return;
     safe->serviceTermsRequestPending = true;
-    ServiceTermsPrompt::show({}, [safe](bool accepted) {
+    ServiceTermsPrompt::show({}, [safe, localVersion](bool accepted) {
       if (!safe) return;
       safe->serviceTermsRequestPending = false;
-      if (accepted) AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
-    });
+      if (accepted) AppSettings::acceptServiceTermsLocally(localVersion, juce::Time::currentTimeMillis());
+    }, preview);
   };
   if (localDemoSession || !activeSession.allowed || activeSession.uid.isEmpty() || activeSession.refreshToken.isEmpty()) {
     localPrompt(); return;

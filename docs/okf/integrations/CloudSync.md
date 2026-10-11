@@ -784,3 +784,10 @@ exige constancia en prepare-upload, commit y publicación de ajustes. Clientes
 anteriores permanecen compatibles sin registrar aceptación implícita.
 `CLOUD_TERMS_REQUIRED=true` sólo debe activarse para todos tras migración y aviso
 aprobados; no se ha activado. La aceptación no activa ni cobra un plan.
+
+En Debug, el recorrido local sin servidor es una vista previa identificada: su
+constancia usa `preview-` y nunca acredita aceptación de cuenta ni de documentos
+públicos distintos. Los enlaces abren los documentos públicos actuales. No se
+borran ni simulan constancias anteriores para forzar esta revisión. Cuando el
+backend y documentos estén publicados, la aceptación de cuenta usa el flujo
+autenticado real igual que Release.
