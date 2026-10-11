@@ -200,3 +200,9 @@ Las pruebas de persistencia y del asistente compilan sus unidades de almacenamie
 `PLAYWORSHIP_CREATION_TEST_ROOT` apuntando a un directorio temporal nuevo.
 Sin aislamiento se omite antes de escribir. El binario de produccion ignora
 esta variable y mantiene las rutas habituales de preferencias y Biblioteca.
+
+## Catálogo externo retirado
+
+La creación y edición usan título, artista, BPM y tono introducidos manualmente.
+No consultan MultiTracks/Secuencias ni descargan sus portadas. Elegir audio y
+portadas locales sigue disponible. Esta regla aplica a todas las distribuciones.
