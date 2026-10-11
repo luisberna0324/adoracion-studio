@@ -1,3 +1,6 @@
+#include "ui/components/ServiceTermsPrompt.h"
+#include "data/ServiceTermsPolicy.h"
+#include "data/AppSettings.h"
 #include "ui/components/AccountDeletionModal.h"
 #include "data/AppSettings.h"
 #include "data/SessionPersistence.h"
@@ -10,10 +13,45 @@ juce::Button &action(AccountDeletionModal &modal, const char *id) {
   throw std::runtime_error("missing deletion action");
 }
 void click(juce::Button &button) { if (button.isEnabled() && button.onClick) button.onClick(); }
+void testServiceTermsPrompt() {
+  int checkpoint = 0;
+  auto expectTerms = [&](bool condition) { ++checkpoint; if (!condition) { std::cerr << "Service terms test failed checkpoint " << checkpoint << "\n"; std::exit(1); } };
+  expectTerms(!AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
+  bool completed = false, accepted = true;
+  ServiceTermsPrompt::show({}, [&](bool result) { completed = true; accepted = result; });
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+  auto* alert = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
+  expectTerms(alert != nullptr);
+  alert->exitModalState(0);
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+  expectTerms(completed && !accepted && !AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
+  ServiceTermsLinks links;
+  expectTerms(links.getNumChildComponents() == 3);
+  completed = false;
+  ServiceTermsPrompt::show("review@example.test", [&](bool result) {
+    accepted = result; completed = true;
+    if (result) expectTerms(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, 1234));
+  });
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+  alert = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0));
+  expectTerms(alert != nullptr);
+  bool found = false;
+  for (auto* child : alert->getChildren()) {
+    auto* button = dynamic_cast<juce::TextButton*>(child);
+    if (button && (button->getButtonText().contains("Acepto") || button->getButtonText().contains("I accept"))) { button->triggerClick(); found = true; break; }
+  }
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+  expectTerms(found && completed && accepted && AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version));
+  expectTerms(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, 9999));
+  expectTerms(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version) == 1234);
+  expectTerms(!AppSettings::hasServiceTermsAcceptance("new-version"));
+}
+
 int main() {
   if (juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CREATION_TEST_ROOT", {}).isEmpty()) return 77;
   try {
     juce::ScopedJuceInitialiser_GUI gui;
+  testServiceTermsPrompt();
     using State = AccountDeletionModal::State;
     for (auto language : {AppLanguage::Spanish, AppLanguage::English}) {
       AppSettings::setLanguage(language);

@@ -67,6 +67,9 @@ public:
 
   static bool getExpandWindowOnLaunch();
   static bool getDemoWelcomeSeen();
+  static juce::int64 serviceTermsAcceptedAtMs(const juce::String& version);
+  static bool hasServiceTermsAcceptance(const juce::String& version);
+  static bool acceptServiceTermsLocally(const juce::String& version, juce::int64 acceptedAtMs);
   static void setDemoWelcomeSeen(bool value);
   // Local demo preference, separate from the authenticated account snapshot.
   static bool getLocalDemoSessionActive();

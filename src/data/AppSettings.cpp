@@ -180,6 +180,28 @@ juce::File AppSettings::getSettingsFile() {
   return getMtControlsDirectory().getChildFile("app_settings.json");
 }
 
+juce::int64 AppSettings::serviceTermsAcceptedAtMs(const juce::String& version) {
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto record = juce::JSON::parse(getSettingsFile())["serviceTerms"];
+  return record["version"].toString() == version ? static_cast<juce::int64>(record["acceptedAtMs"]) : 0;
+}
+bool AppSettings::hasServiceTermsAcceptance(const juce::String& version) {
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto record = juce::JSON::parse(getSettingsFile())["serviceTerms"];
+  return record["version"].toString() == version && static_cast<juce::int64>(record["acceptedAtMs"]) > 0;
+}
+bool AppSettings::acceptServiceTermsLocally(const juce::String& version, juce::int64 acceptedAtMs) {
+  if (version.isEmpty() || acceptedAtMs <= 0) return false;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  auto root = juce::JSON::parse(getSettingsFile());
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  const auto previous = root["serviceTerms"];
+  if (previous["version"].toString() == version && static_cast<juce::int64>(previous["acceptedAtMs"]) > 0) return true;
+  auto* record = new juce::DynamicObject(); record->setProperty("version", version); record->setProperty("acceptedAtMs", acceptedAtMs);
+  root.getDynamicObject()->setProperty("serviceTerms", juce::var(record));
+  return getSettingsFile().replaceWithText(juce::JSON::toString(root));
+}
+
 bool AppSettings::getDemoWelcomeSeen() {
   return static_cast<bool>(juce::JSON::parse(getSettingsFile())["demoWelcomeSeen"]);
 }

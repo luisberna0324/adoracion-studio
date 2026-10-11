@@ -756,3 +756,31 @@ cambio. El runtime exige evidencia operacional explícita por UID en
 al congelar. Ningún código escribe automáticamente esa certificación. Una
 expiración, lista vacía o timeout del cliente no certifican drenaje. Mantener
 borrado productivo deshabilitado hasta resolver la migración y QA del proveedor.
+
+## Condiciones del servicio: aceptación explícita
+
+El primer inicio presenta enlaces a términos, privacidad y copyright y explica
+Cloud personal, propiedad del usuario, permisos y reclamaciones. No concede ni
+verifica licencias musicales. `Ahora no`/Escape no registra aceptación ni borra
+archivos: reproducción e importación local permanecen disponibles. El registro
+anónimo del dispositivo usa versión y fecha local en `AppSettings`; no constituye
+aceptación de una cuenta ni se envía como tal al servidor.
+
+Al entrar en una cuenta (Google, Apple o correo), se consulta la constancia de esa
+cuenta. Falta de red permite seguir en local y reintentar al subir. El cliente
+repite la consulta antes de subir proyectos y ajustes; únicamente el clic
+explícito permite POST de aceptación. El backend vincula por UID del token,
+registra fecha del servidor y huellas exactas de los tres documentos. Repetir la
+misma versión mantiene la fecha original. No se usa coincidencia de correo,
+fecha ni constancia local para aceptar por una cuenta distinta. Logout cancela
+la solicitud pendiente y cierra su diálogo; una respuesta tardía no acepta.
+
+La versión legal usa hashes de documentos aprobados, no una fecha legal
+inventada. Si el servidor cambia a una versión que el cliente no conoce, Cloud
+requiere actualizar la app; los datos locales siguen disponibles. Publicar los
+documentos exactos primero, después el backend y finalmente distribuir la app.
+El cliente nuevo envía `X-PlayWorship-Cloud-Consent: cloud-terms-v1`; el backend
+exige constancia en prepare-upload, commit y publicación de ajustes. Clientes
+anteriores permanecen compatibles sin registrar aceptación implícita.
+`CLOUD_TERMS_REQUIRED=true` sólo debe activarse para todos tras migración y aviso
+aprobados; no se ha activado. La aceptación no activa ni cobra un plan.

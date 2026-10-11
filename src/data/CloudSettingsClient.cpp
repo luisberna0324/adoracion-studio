@@ -48,7 +48,7 @@ bool post(const CloudTransferCredentials &credentials, const juce::var &payload,
   auto stream = url.createInputStream(
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
           .withExtraHeaders("Authorization: Bearer " + token.idToken +
-                            "\r\nContent-Type: application/json\r\n")
+                            "\r\nContent-Type: application/json\r\nX-PlayWorship-Cloud-Consent: cloud-terms-v1\r\n")
           .withConnectionTimeoutMs(kTimeoutMs)
           .withHttpRequestCmd("POST")
           .withStatusCode(&status));
@@ -155,6 +155,10 @@ void CloudSettingsClient::publish(CloudTransferCredentials credentials,
           progress(std::move(onProgress)),
           callback(std::move(done)) {}
     JobStatus runJob() override {
+      CloudTransferError consentError;
+      if (!ensureCloudTermsForJob(credentials, *this, consentError)) {
+        deliverPublish(std::move(callback), false, {}, consentError); return jobHasFinished;
+      }
       deliverProgress(progress, 0.08, "preparing-settings");
       auto *snapshot = new juce::DynamicObject();
       snapshot->setProperty("schemaVersion", 1);

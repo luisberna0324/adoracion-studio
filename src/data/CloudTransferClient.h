@@ -67,6 +67,7 @@ public:
   CloudTransferClient();
   ~CloudTransferClient();
 
+  void requestTerms(CloudTransferCredentials, std::function<void(CloudTransferError)>);
   void upload(CloudTransferCredentials credentials, CloudUploadRequest request,
               ProgressCallback progress, UploadCallback callback);
   void download(CloudTransferCredentials credentials, juce::String songId,
@@ -81,3 +82,6 @@ public:
 private:
   juce::ThreadPool pool{2};
 };
+
+// Shared by personal project and settings uploads; read-only Cloud stays available.
+bool ensureCloudTermsForJob(const CloudTransferCredentials&, juce::ThreadPoolJob&, CloudTransferError&);

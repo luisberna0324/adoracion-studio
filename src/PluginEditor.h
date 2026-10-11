@@ -209,6 +209,9 @@ private:
     juce::String licenseKey;
   };
   SessionSummary activeSession;
+  void showServiceTermsIfNeeded();
+  bool serviceTermsRequestPending = false;
+  std::unique_ptr<CloudTransferClient> serviceTermsClient;
   std::unique_ptr<SongSyncService> songSyncService;
   std::unique_ptr<CloudLibraryClient> cloudLibraryClient;
   std::unique_ptr<CloudSettingsClient> cloudSettingsClient;

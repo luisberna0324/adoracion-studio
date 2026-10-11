@@ -1,3 +1,5 @@
+#include "ui/components/ServiceTermsPrompt.h"
+#include "data/ServiceTermsPolicy.h"
 #include "AppIdentity.h"
 #include "PluginEditor.h"
 #include "DevelopmentFeatures.h"
@@ -376,6 +378,7 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
   }
 
   tryResumeSessionAsync();
+  juce::Timer::callAfterDelay(1200, [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] { if (safe) safe->showServiceTermsIfNeeded(); });
   if (!mainUiInitialized)
     startTimerHz(12);
 
@@ -1232,6 +1235,35 @@ void MTControlsAudioProcessorEditor::refreshCloudLibrary(
           safeThis->songListPanelRaw->setCloudSongs(std::move(page.songs));
         }
       });
+}
+
+void MTControlsAudioProcessorEditor::showServiceTermsIfNeeded() {
+  if (serviceTermsRequestPending) return;
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  auto localPrompt = [safe] {
+    if (!safe || AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version)) return;
+    safe->serviceTermsRequestPending = true;
+    ServiceTermsPrompt::show({}, [safe](bool accepted) {
+      if (!safe) return;
+      safe->serviceTermsRequestPending = false;
+      if (accepted) AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
+    });
+  };
+  if (localDemoSession || !activeSession.allowed || activeSession.uid.isEmpty() || activeSession.refreshToken.isEmpty()) {
+    localPrompt(); return;
+  }
+  serviceTermsRequestPending = true;
+  if (!serviceTermsClient) serviceTermsClient = std::make_unique<CloudTransferClient>();
+  const auto uid = activeSession.uid;
+  serviceTermsClient->requestTerms({getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken},
+    [safe, uid, localPrompt](CloudTransferError error) {
+      if (!safe) return;
+      safe->serviceTermsRequestPending = false;
+      if (safe->activeSession.uid != uid) return;
+      if (error.code.isEmpty()) AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
+      else if (error.code != "CLOUD_CONSENT_CANCELLED") localPrompt();
+      // Closing/refusing records nothing; local playback and imports continue.
+    });
 }
 
 void MTControlsAudioProcessorEditor::initializeMainUi() {
@@ -3346,6 +3378,7 @@ void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
   initializeMainUi();
   if (songListPanelRaw) songListPanelRaw->refreshFromStorageView();
   refreshCloudLibrary({});
+  showServiceTermsIfNeeded();
 }
 
 juce::String MTControlsAudioProcessorEditor::consumePendingAuthCallbackUrl() {
@@ -4225,6 +4258,8 @@ void MTControlsAudioProcessorEditor::handleLogout() {
 
   ++appleCredentialGeneration;
   appleCredentialMonitor.reset();
+  if (serviceTermsClient) serviceTermsClient->cancelAll();
+  serviceTermsRequestPending = false;
   activeSession = {};
   activeSession.allowed = false;
   localDemoSession = false;
@@ -4302,8 +4337,11 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
 void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     const PersistedSessionSnapshot &snap) {
   if (localDemoSession) return;
-  if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid)
+  if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid) {
+    if (serviceTermsClient) serviceTermsClient->cancelAll();
+    serviceTermsRequestPending = false;
     invalidateCloudAccountView();
+  }
   activeSession.uid = snap.uid;
   activeSession.email = snap.email;
   activeSession.authProvider = snap.authProvider;
