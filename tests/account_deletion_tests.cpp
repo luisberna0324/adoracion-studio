@@ -1,0 +1,182 @@
+#include "ui/components/ServiceTermsPrompt.h"
+#include "data/ServiceTermsPolicy.h"
+#include "data/AppSettings.h"
+#include "ui/components/AccountDeletionModal.h"
+#include "data/AppSettings.h"
+#include "data/SessionPersistence.h"
+#include <iostream>
+#include <stdexcept>
+int checks = 0;
+void expect(bool value, const char *text) { ++checks; if (!value) throw std::runtime_error(text); }
+juce::Button &action(AccountDeletionModal &modal, const char *id) {
+  for (auto *component : modal.getChildren()) if (component->getComponentID() == id) return *dynamic_cast<juce::Button *>(component);
+  throw std::runtime_error("missing deletion action");
+}
+void click(juce::Button &button) { if (button.isEnabled() && button.onClick) button.onClick(); }
+void testServiceTermsPrompt() {
+  auto check = [](bool ok, const char* message) { if (!ok) { std::cerr << message << "\n"; std::exit(1); } };
+  check(!AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version), "no implicit acceptance");
+  juce::Component host; host.setBounds(0, 0, 390, 700); host.addToDesktop(0); host.setVisible(true);
+  for (auto language : {AppLanguage::Spanish, AppLanguage::English}) {
+    AppSettings::setLanguage(language);
+    for (auto size : {juce::Point<int>{320,620}, {390,700}, {568,244}, {844,620}}) {
+      ServiceTermsPanel panel({}, false); panel.setSize(size.x,size.y);
+      check(panel.getLocalBounds().contains(panel.cardBounds()), "terms card fits phone/tablet");
+      check(panel.cardBounds().contains(panel.primary.getBounds()) && panel.cardBounds().contains(panel.secondary.getBounds()), "both terms actions remain visible");
+      check(panel.primary.getHeight() >= 44 && panel.secondary.getHeight() >= 44, "terms touch targets");
+      check(panel.bodyViewport().getHeight() > 0 && panel.cardBounds().contains(panel.bodyViewport().getBounds()), "terms scroll region fits card");
+      auto* content = panel.bodyViewport().getViewedComponent();
+      check(content != nullptr, "terms content exists");
+      int links=0;
+      for (auto* child : content->getChildren()) if (dynamic_cast<AuthUi::Button*>(child)) { ++links; check(content->getLocalBounds().contains(child->getBounds()) && child->getHeight()>=44,"readable terms links fit scroll content"); }
+      check(links==3,"all legal document links remain available");
+      if (language==AppLanguage::Spanish && size==juce::Point<int>{390,700}) {
+        const auto output=juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_TERMS_SNAPSHOT",{});
+        if (output.startsWith("/tmp/")) { auto stream=juce::File(output).createOutputStream(); if(stream) juce::PNGImageFormat{}.writeImageToStream(panel.createComponentSnapshot(panel.getLocalBounds(),true,2.0f),*stream); }
+      }
+    }
+  }
+  AppSettings::setLanguage(AppLanguage::Spanish);
+  bool completed=false, accepted=true;
+  auto panel=ServiceTermsPrompt::show({},[&](bool result){completed=true;accepted=result;});
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+  check(panel != nullptr,"terms modal attached to app"); panel->secondary.triggerClick();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+  check(completed && !accepted && !AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version),"cancel records no consent");
+  completed=false;
+  panel=ServiceTermsPrompt::show("review@example.test",[&](bool result){completed=true;accepted=result;if(result)check(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version,1234),"save explicit local consent");});
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(30); check(panel != nullptr,"account consent panel exists"); panel->primary.triggerClick();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(100);
+  check(completed && accepted && AppSettings::hasServiceTermsAcceptance(ServiceTermsPolicy::version),"explicit button records version");
+  check(AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version,9999),"repeat consent succeeds");
+  check(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version)==1234,"repeat retains original date");
+  check(!AppSettings::hasServiceTermsAcceptance("new-version"),"changed version not silently accepted");
+  check(AppSettings::acceptServiceTermsLocally("preview-"+ServiceTermsPolicy::version,5678),"keep prior preview acknowledgement");
+  check(AppSettings::acknowledgeServiceTermsIntro(ServiceTermsPolicy::version,9876),"intro acknowledgement stored separately");
+  check(AppSettings::serviceTermsAcceptedAtMs(ServiceTermsPolicy::version)==1234 && AppSettings::serviceTermsAcceptedAtMs("preview-"+ServiceTermsPolicy::version)==5678,"intro preserves all previous consent records");
+  ServiceTermsPanel information({},true);
+  check(information.primary.getButtonText()=="Entendido","prelogin is informational, not acceptance");
+}
+
+int main() {
+  if (juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CREATION_TEST_ROOT", {}).isEmpty()) return 77;
+  try {
+    juce::ScopedJuceInitialiser_GUI gui;
+  testServiceTermsPrompt();
+    using State = AccountDeletionModal::State;
+    for (auto language : {AppLanguage::Spanish, AppLanguage::English}) {
+      AppSettings::setLanguage(language);
+      for (const auto size : {juce::Point<int>{320, 620}, {390, 700}, {568, 244}, {844, 620}}) {
+        AccountDeletionModal modal("owner"); modal.setVisible(true); modal.setSize(size.x, size.y);
+        int request = -1; modal.onPreviewRequested = [&](int generation) { request = generation; };
+        modal.requestPreview();
+        modal.receivePreview(request, "foreign", {true, true, true, 12, 4});
+        expect(modal.getState() == State::loading, "foreign UID preview must not change state");
+        modal.receivePreview(request, "owner", {true, false, true, 12, 4});
+        expect(modal.getState() == State::review, "valid impact preview shows review");
+        expect(!action(modal, "deletion-next").isEnabled(), "disabled production execution must not offer deletion");
+        expect(modal.getLocalBounds().contains(action(modal, "deletion-next").getBounds()), "primary action contained at responsive sizes");
+        expect(modal.getLocalBounds().contains(action(modal, "deletion-cancel").getBounds()), "cancel contained at responsive sizes");
+        expect(action(modal, "deletion-next").getHeight() >= 44, "primary touch target at least 44");
+        const auto copy = modal.policyText();
+        expect(copy.contains(language == AppLanguage::Spanish ? "miembros" : "members"), "copy explains member access loss");
+        expect(copy.contains(language == AppLanguage::Spanish ? "sin reembolso" : "no automatic refund"), "copy explains billing/refund");
+        expect(copy.contains(language == AppLanguage::Spanish ? "permanecerán" : "remain"), "copy preserves local data");
+        click(action(modal, "deletion-cancel"));
+        modal.receivePreview(request, "owner", {true, true, true, 12, 4});
+        expect(modal.getState() == State::closed, "cancel invalidates late callback");
+      }
+    }
+    AccountDeletionModal modal("owner"); modal.setVisible(true); modal.setSize(390, 700);
+    int request = 0, reauths = 0, confirmations = 0, statuses = 0, acceptances = 0;
+    modal.onAccepted = [&] { ++acceptances; return true; };
+    modal.onPreviewRequested = [&](int value) { request = value; };
+    modal.onReauthenticationRequested = [&](int value) { ++reauths; expect(value == request, "reauth keeps attempt generation"); };
+    modal.onConfirmationRequested = [&](int, const juce::String &proof) { ++confirmations; expect(proof == "simulated-proof", "confirmation reuses exact proof"); };
+    modal.onStatusRequested = [&](int) { ++statuses; };
+    modal.requestPreview(); modal.receivePreview(request, "owner", {true, true, true, 3, 2});
+    click(action(modal, "deletion-next")); click(action(modal, "deletion-next"));
+    expect(reauths == 1 && modal.getState() == State::reauthenticating, "double click reauth dispatched once");
+    modal.receiveReauthentication(request, "foreign", "proof", juce::Time::currentTimeMillis() + 300000);
+    expect(modal.getState() == State::reauthenticating, "foreign reauth never confirms or replaces account");
+    modal.receiveReauthentication(request, "owner", "simulated-proof", juce::Time::currentTimeMillis() + 300000);
+    click(action(modal, "deletion-next")); click(action(modal, "deletion-next"));
+    expect(confirmations == 1 && modal.getState() == State::submitting, "double click cannot submit twice");
+    modal.fail(request, "owner"); expect(modal.getState() == State::pending, "uncertain response stays pending, never success");
+    expect(acceptances == 0, "uncertain response does not clear original session before verified acceptance");
+    click(action(modal, "deletion-next")); click(action(modal, "deletion-next"));
+    expect(statuses == 1 && confirmations == 1, "retry queries status instead of starting another job");
+    modal.receiveStatus(request, "owner", State::pending);
+    expect(action(modal, "deletion-next").isEnabled(), "pending status allows another lookup");
+    expect(acceptances == 1, "verified acceptance triggers credential cleanup");
+    modal.receiveStatus(request, "foreign", State::complete);
+    expect(modal.getState() == State::pending, "wrong account cannot claim completion");
+    modal.receiveStatus(request, "owner", State::complete);
+    expect(modal.getState() == State::complete && !action(modal, "deletion-next").isEnabled(), "only verified completion displays success");
+    expect(acceptances == 1, "repeated accepted/completed responses do not duplicate credential cleanup");
+    AccountDeletionModal stale("owner"); stale.setVisible(true); stale.setSize(390, 700);
+    stale.onPreviewRequested = [&](int value) { request = value; }; stale.onReauthenticationRequested = [](int) {};
+    stale.requestPreview(); auto old = request; stale.fail(request, "owner"); click(action(stale, "deletion-next"));
+    stale.receivePreview(old, "owner", {true, true, false, 0, 0}); expect(stale.getState() == State::loading, "old response ignored after retry");
+    stale.receivePreview(request, "owner", {true, true, false, 0, 0}); click(action(stale, "deletion-next"));
+    stale.receiveReauthentication(request, "owner", "expired", 1); expect(stale.getState() == State::error, "expired proof cannot delete");
+    auto response = juce::JSON::parse(R"({"ok":true,"uid":"owner","executionAvailable":false,"impact":{"cloudSongs":3,"sharedMembers":2,"ownsSharedCloud":true,"localFilesPreserved":true}})");
+    expect(AccountDeletionApi::parsePreview(response, "owner").ok, "parse scoped backend preview");
+    expect(!AccountDeletionApi::parsePreview(response, "foreign").ok, "parser rejects account mismatch");
+    response.getDynamicObject()->setProperty("executionAvailable", "true");
+    expect(!AccountDeletionApi::parsePreview(response, "owner").ok, "parser rejects malformed execution availability");
+    PersistedSessionSnapshot session; session.uid = "deletion-fixture"; session.refreshToken = "fake-refresh"; session.firebaseApiKey = "fake-api-key";
+    session.allowed = true; expect(SessionPersistence::save(session), "fixture session saves before deletion acceptance");
+    const auto localProject = SessionPersistence::getSnapshotFile().getSiblingFile("keep-local.pwproj"); localProject.replaceWithText("local fixture");
+    expect(SessionPersistence::markAccountDeletionPending(session.uid), "acceptance marker persists before clearing credentials");
+    PersistedSessionSnapshot restored; expect(!SessionPersistence::load(restored), "restart cannot restore deletion-pending credentials");
+    expect(!SessionPersistence::save(session), "late login/refresh callback cannot persist blocked credentials");
+    expect(localProject.loadFileAsString() == "local fixture", "local files are preserved");
+    session.uid = "another-account"; expect(SessionPersistence::save(session), "marker is scoped to UID, other accounts unaffected");
+    expect(SessionPersistence::load(restored) && restored.uid == session.uid, "other account restores normally");
+    int dismissed = 0; bool preserve = true;
+    { auto dismissedModal = std::make_unique<AccountDeletionModal>("owner");
+      dismissedModal->onDismissed = [&](bool keep) { ++dismissed; preserve = keep; }; }
+    expect(dismissed == 1 && !preserve, "titlebar/escape destruction cancels provider scope and unused intent");
+    { AccountDeletionModal dismissedModal("owner");
+      dismissedModal.onDismissed = [&](bool keep) { ++dismissed; preserve = keep; };
+      dismissedModal.invalidate(); }
+    expect(dismissed == 2 && !preserve, "explicit cancel and destructor dismiss exactly once");
+    auto progress = juce::JSON::parse(R"({"ok":true,"state":"pending","retryAfterSeconds":2})");
+    expect(AccountDeletionApi::parseStatus(progress).ok, "parse coarse verified pending status");
+    progress.getDynamicObject()->setProperty("state", "deleted");
+    expect(!AccountDeletionApi::parseStatus(progress).ok, "unknown state cannot claim success");
+    progress.getDynamicObject()->setProperty("state", "complete");
+    expect(!AccountDeletionApi::parseStatus(progress).ok, "complete with retry timing is malformed");
+    progress.getDynamicObject()->setProperty("retryAfterSeconds", 0);
+    expect(AccountDeletionApi::parseStatus(progress).ok, "complete only from well formed server result");
+    const auto receipt = juce::String::repeatedString("A", 43);
+    expect(!SessionPersistence::saveAccountDeletionReceipt("another-account", "weak"), "reject weak receipt");
+    expect(SessionPersistence::saveAccountDeletionReceipt("another-account", receipt), "receipt durable before request");
+    expect(SessionPersistence::saveAccountDeletionReceipt("another-account", receipt), "same receipt is idempotent");
+    expect(!SessionPersistence::saveAccountDeletionReceipt("another-account", juce::String::repeatedString("E", 43)), "cannot replace uncertain receipt");
+    SessionPersistence::clear();
+    expect(SessionPersistence::loadAccountDeletionReceipt("another-account") == receipt, "logout retains status receipt without login credentials");
+    expect(SessionPersistence::listAccountDeletionReceipts().contains(receipt), "restart discovers receipt without UID/profile");
+    expect(!SessionPersistence::clearAccountDeletionReceipt("another-account", juce::String::repeatedString("E", 43)), "foreign receipt cannot clear durable status");
+    expect(SessionPersistence::clearAccountDeletionReceipt("another-account", receipt), "verified completion acknowledgement clears exact receipt");
+    const auto retryReceipt = juce::String::repeatedString("A", 43);
+    expect(SessionPersistence::saveAccountDeletionReceipt("restart-account", retryReceipt), "save restart receipt");
+    expect(SessionPersistence::markAccountDeletionReceiptSubmitted("restart-account", retryReceipt), "submission checkpoint persists before transport");
+    expect(!SessionPersistence::clearUnsubmittedDeletionReceipt(retryReceipt), "uncertain submitted request cannot be discarded");
+    expect(SessionPersistence::listAccountDeletionReceipts().contains(retryReceipt), "submitted receipt survives restart without session");
+    expect(SessionPersistence::blockAccountForDeletionReceipt(retryReceipt), "accepted status creates durable UID fence without authentication");
+    expect(SessionPersistence::isAccountDeletionPending("restart-account"), "recovered fence matches original UID");
+    expect(SessionPersistence::acknowledgeCompletedDeletionReceipt(retryReceipt), "verified terminal result can clear exact receipt");
+    expect(SessionPersistence::isAccountDeletionPending("restart-account"), "completion retains protection against stale credentials");
+    progress.getDynamicObject()->setProperty("state", "not-accepted");
+    expect(AccountDeletionApi::parseStatus(progress).ok, "expired unconsumed intent is definitive nonacceptance");
+    AccountDeletionModal recovered("recovery-scope"); int recoveryChecks = 0;
+    recovered.onStatusRequested = [&](int) { ++recoveryChecks; };
+    recovered.resumePendingStatus();
+    expect(recovered.getState() == AccountDeletionModal::State::pending && recoveryChecks == 1, "restart queries receipt status before enabling account use");
+    SessionPersistence::clear();
+    std::cout << "Account deletion: " << checks << " checks passed (simulated, no network/destructive adapters)\n";
+    return 0;
+  } catch (const std::exception &e) { std::cerr << "FAILED: " << e.what() << '\n'; return 1; }
+}

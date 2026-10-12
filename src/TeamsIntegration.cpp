@@ -1,3 +1,4 @@
+#include "data/TeamsAvailability.h"
 #include "PluginEditor.h"
 #include "PluginEditorSupport.h"
 #include "ui/panels/TeamsPanel.h"
@@ -85,6 +86,7 @@ void MTControlsAudioProcessorEditor::invalidateCloudAccountView() {
 }
 
 void MTControlsAudioProcessorEditor::showTeams() {
+  if (!teamsFileSharingAvailable) return;
   if (localDemoSession) return;
   if ((!canManageSharedCloud && !hasTeamsMembership) || !activeSession.allowed) return;
   if (teamsOverlay) { teamsOverlay->toFront(true); return; }
@@ -119,6 +121,7 @@ void MTControlsAudioProcessorEditor::displayTeamDetails(juce::var details) {
 }
 
 void MTControlsAudioProcessorEditor::handleTeamsAction(const juce::String &operation, juce::var data) {
+  if (!teamsFileSharingAvailable) return;
   const auto uid = activeSession.uid;
   if (uid.isEmpty() || !activeSession.allowed || activeSession.refreshToken.isEmpty()) {
     if (teamsOverlay)
@@ -182,6 +185,7 @@ void MTControlsAudioProcessorEditor::handleTeamsAction(const juce::String &opera
 
 void MTControlsAudioProcessorEditor::downloadSharedCloudSong(
     const CloudSongSummary &source, const juce::String &targetSetlistId) {
+  if (!teamsFileSharingAvailable) return;
   if (!teamsMembershipsVerified || !source.isSharedCloud() || source.ownerUid.isEmpty() || source.songId.isEmpty() ||
       source.revision <= 0 || activeSession.uid.isEmpty() || !activeSession.allowed ||
       activeSession.firebaseApiKey.isEmpty() || activeSession.refreshToken.isEmpty())
@@ -244,6 +248,7 @@ void MTControlsAudioProcessorEditor::openTeamsLearningCloud() {
 }
 
 void MTControlsAudioProcessorEditor::updateTeamsOnboarding() {
+  if (!teamsFileSharingAvailable) { canManageSharedCloud = false; hasTeamsMembership = false; return; }
   if (!mainUiInitialized || activeSession.uid.isEmpty() || !activeSession.allowed ||
       activeSession.refreshToken.isEmpty() || activeSession.firebaseApiKey.isEmpty()) return;
   processTeamsRevocations();

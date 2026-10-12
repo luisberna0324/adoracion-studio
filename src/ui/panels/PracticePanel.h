@@ -5,9 +5,11 @@
 #include "PracticePlaybackClock.h"
 #include "PracticeWaveformGeometry.h"
 #include "PracticeViewport.h"
+#include "PracticeToggleRequest.h"
 #include "PracticeTimelineRuler.h"
 #include "PracticePitchSelector.h"
 #include "PracticeTempoSelector.h"
+#include "PracticeInstrumentSelector.h"
 #include "../learning/LearningGuideModel.h"
 #include <atomic>
 #include <functional>
@@ -21,9 +23,13 @@ class PracticePanel final : public juce::Component, private juce::Timer {
 public:
   juce::Rectangle<int> getLearningTargetBounds(playworship::learning::Anchor) const;
   bool hasLoopMarks() const noexcept { return loopStartSeconds >= 0.0 || loopEndSeconds >= 0.0; }
-  struct Instrument {
-    juce::String id;
-    juce::String name;
+  using Instrument = PracticeInstrumentSelector::Item;
+
+  struct AccompanimentState {
+    juce::String identity;
+    juce::String unavailableReason;
+    bool available = false;
+    bool enabled = false;
   };
 
   struct Sources {
@@ -61,6 +67,10 @@ public:
     std::function<bool()> isPlaying;
     std::function<bool()> canControl;
     std::function<std::vector<Instrument>()> instruments;
+    // Changes whenever waveform content or the arrangement changes, even when
+    // song ID, duration and instrument IDs stay the same. Optional for callers
+    // without a content revision; song, duration and local/remote still apply.
+    std::function<juce::String()> waveformRevision;
     std::function<void(const juce::String &,
                        std::shared_ptr<std::atomic<bool>>,
                        std::function<void(std::vector<float>)>)>
@@ -68,12 +78,23 @@ public:
     std::function<bool()> isRemote;
     std::function<int()> listeningMode;
     std::function<juce::String()> listeningInstrumentId;
+    // Optional confirmed state for presentation. The gesture machine retains
+    // the session's optimistic mode so quick remote swipes still step once.
+    std::function<int()> displayListeningMode;
+    std::function<juce::String()> displayListeningInstrumentId;
     std::function<void(const juce::String &, int)> setListeningMode;
     std::function<bool()> canRetargetListening;
     std::function<void()> finishListening;
+    // These control audibility of the already-selected guide/click source.
+    // They must not select a different source or alter practice listening.
+    std::function<AccompanimentState()> guideState;
+    std::function<AccompanimentState()> metronomeState;
+    std::function<void(bool)> setGuideEnabled;
+    std::function<void(bool)> setMetronomeEnabled;
     std::function<void()> playPause;
     std::function<void()> stop;
     std::function<void()> close;
+    std::function<void()> showHelp;
   };
 
   explicit PracticePanel(Sources sources);
@@ -82,6 +103,7 @@ public:
   void paint(juce::Graphics &g) override;
   void resized() override;
   bool keyPressed(const juce::KeyPress &key) override;
+  void focusLearningHelp() { listeningHelpButton.grabKeyboardFocus(); }
   void mouseDown(const juce::MouseEvent &event) override;
   void mouseDrag(const juce::MouseEvent &event) override;
   void mouseUp(const juce::MouseEvent &event) override;
@@ -89,8 +111,10 @@ public:
 
 private:
   void timerCallback() override;
-  void refreshWaveform();
-  void selectInstrument(int index);
+  void refreshWaveform(const juce::String &wheelSelectionId = {});
+  void cancelWaveformRequest();
+  bool waveformContextMatchesSources() const;
+  void selectInstrument(int index, bool reloadWaveform = false);
   void applyListeningGesture(const juce::Point<float> &movement);
   void updateWaveformGesture(juce::Point<float> position, juce::int64 eventTimeMs);
   bool canFinishWaveformGesture() const;
@@ -107,7 +131,10 @@ private:
   void updateAnimationFrame(double frameTimestampSec, bool fromVBlank = false);
   void cancelScrub(bool restorePlayback);
   void showBarFeedback(int direction, double previousPosition, double target);
-  void showInstrumentMenu();
+  void selectInstrumentFromWheel();
+  void cancelInstrumentGesture();
+  bool routeInstrumentPointer(const juce::MouseEvent &event,
+                              PracticeInstrumentSelector::PointerPhase phase);
   void changePitch(int delta);
   void changeTempo(double bpm);
   void markLoopStart();
@@ -119,6 +146,16 @@ private:
   void releaseOwnedLoop();
   double getLoopMarkPosition(bool isEnd) const;
   void updatePracticeControls();
+  void updateAccompanimentControls();
+  void toggleAccompaniment(bool guide);
+  void restoreListeningMix();
+  void showListeningHelp();
+  int getSourceDisplayListeningMode() const;
+  juce::String getSourceDisplayListeningInstrument() const;
+  bool isListeningChangePending() const;
+  int getVisibleListeningMode() const;
+  juce::String listeningContextText() const;
+  juce::String currentPracticeFeedback() const;
   bool handleTouchDown(int index, juce::Point<float> position);
   bool handleTouchMove(int index, juce::Point<float> position);
   bool handleTouchUp(int index);
@@ -128,7 +165,7 @@ private:
   void showPracticeFeedback(juce::String message);
   juce::Rectangle<int> safeContentBounds() const;
   struct WaveformLayout {
-    juce::Rectangle<int> plot, ruler, hints, times, help;
+    juce::Rectangle<int> plot, ruler, hints, times, help, helpText;
   };
   WaveformLayout getWaveformLayout() const;
   static juce::String formatTime(double seconds);
@@ -141,21 +178,50 @@ private:
     void mouseUp(const juce::MouseEvent &event) override {
       gestureRelease = event.mouseWasDraggedSinceMouseDown() ||
                        event.getDistanceFromDragStart() >= 12;
+      juce::Component::SafePointer<GestureAwareButton> safe(this);
       juce::TextButton::mouseUp(event);
-      gestureRelease = false;
+      if (safe != nullptr)
+        safe->gestureRelease = false;
     }
 
   private:
     bool gestureRelease = false;
   };
 
+  class AccompanimentButton final : public juce::TextButton {
+  public:
+    explicit AccompanimentButton(const juce::String &name) : juce::TextButton(name) {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseUp(const juce::MouseEvent &event) override {
+      gestureRelease = event.mouseWasDraggedSinceMouseDown() ||
+                       event.getDistanceFromDragStart() >= 12;
+      juce::Component::SafePointer<AccompanimentButton> safe(this);
+      juce::TextButton::mouseUp(event);
+      if (safe != nullptr)
+        safe->gestureRelease = false;
+    }
+    bool gestureRelease = false;
+    bool pending = false;
+  };
+  struct AccompanimentControl {
+    AccompanimentState state;
+    PracticeToggleRequest request;
+    juce::String requestedIdentity;
+    juce::String requestedSongId;
+    bool requestedRemote = false;
+  };
+
   Sources sources;
   HeaderIconButton closeButton;
   TransportIconButton playPauseButton;
   TransportIconButton stopButton;
-  GestureAwareButton restoreMixButton;
+  AccompanimentButton guideButton;
+  AccompanimentButton metronomeButton;
+  GestureAwareButton listeningHelpButton;
+  AccompanimentControl guideControl, metronomeControl;
   PracticePitchSelector pitchSelector;
   PracticeTempoSelector tempoSelector;
+  PracticeInstrumentSelector instrumentSelector;
   GestureAwareButton loopStartButton;
   GestureAwareButton loopEndButton;
   TransportIconButton loopToggleButton;
@@ -187,7 +253,7 @@ private:
   juce::uint32 tempoRequestedAtMs = 0;
   juce::Rectangle<int> waveformBounds;
   juce::Rectangle<int> instrumentHeaderBounds;
-  juce::Rectangle<int> listeningStatusBounds;
+
   PracticePlaybackClock playbackClock;
   juce::VBlankAttachment playbackVBlankAttachment;
   juce::uint32 lastVBlankAtMs = 0;
@@ -195,6 +261,8 @@ private:
   double lastPresentedPositionSeconds = -1.0;
   double lastClockSourceSeconds = -1.0;
   int displayedListeningMode = -1;
+  bool displayedCanControl = false;
+  bool displayedListeningPending = false;
   juce::String displayedListeningInstrument;
   bool displayedBarFeedback = false;
   std::vector<float> waveformBins;
@@ -203,6 +271,8 @@ private:
   std::map<juce::String, std::vector<float>> waveformCache;
   juce::String selectedInstrumentId;
   juce::String displayedSongId;
+  juce::String displayedWaveformRevision;
+  double displayedWaveformLengthSeconds = 0.0;
   juce::uint32 nextWaveformProbeMs = 0;
   juce::Point<float> dragStart;
   enum class DragAxis { Undecided, Horizontal, Vertical };
@@ -228,7 +298,6 @@ private:
   int pendingSeekMatchingFrames = 0;
   double handoffOffsetSeconds = 0.0;
   juce::uint32 handoffOffsetAtMs = 0;
-  juce::uint32 pendingInstrumentMenuMs = 0;
   juce::uint32 barFeedbackUntilMs = 0;
   juce::String gestureSongId;
   juce::String barFeedback;
@@ -240,7 +309,7 @@ private:
   bool pendingScrubFinish = false;
   bool scrubActive = false;
   bool scrubSettling = false;
-  bool instrumentHeaderPressed = false;
+  bool instrumentSelectorPressed = false;
   bool waveformPressed = false;
   bool listeningSwipeHandled = false;
   bool listeningActivatedHere = false;

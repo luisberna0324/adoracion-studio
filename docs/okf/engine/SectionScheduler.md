@@ -259,8 +259,18 @@ instrumentales de esa sección en cada vuelta sin alterar click ni guía.
 
 ### Jump a sección
 
-1. Establecer `pendingSection` en evaluate
-2. Al alcanzar el límite actual, usar el offset exacto y saltar al destino
+1. Ir publica una solicitud revisionada en estado **Preparando**. Conserva
+   reproducción, Loop y anuncios de la ruta musical actual.
+2. Audio confirma sólo cuando todos los stems tienen el destino residente. En
+   ese momento libera Loop y publica `pendingSection` para el próximo final
+   válido de sección; nunca recupera un límite pasado ni salta anticipadamente.
+3. El destino queda protegido hasta consumir/cancelar la intención. Mute no
+   cambia. Si el recorrido natural ya alcanzó la sección durante la preparación,
+   la petición queda cumplida y se limpia sin crear una cola que no puede consumirse.
+
+No se congela posición ni se silencia click/guía por preparar Ir. La UI distingue
+**Preparando** de **En cola** y sólo pulsa/anuncia el destino confirmado. La CAS
+revisionada impide que una confirmación tardía reemplace una petición nueva.
 
 #### Lead-in announcement
 
@@ -357,3 +367,37 @@ Los cues de una sección omitida permanecen publicados con `skipPlayback`, para
 que el snapshot normal los filtre y Ensayo A–B pueda habilitarlos junto con el
 audio de esa sección. No se borran al compilar: el snapshot temporal de Ensayo
 limpia ambos flags, de sección y de cue.
+
+### Caché de entradas y continuidad
+
+La cadena secundaria se prepara antes de publicar el track. El callback sólo
+publica solicitudes atómicas y lee buffers inmutables con leases; nunca asigna,
+decodifica ni espera por caché. Los workers precargan entradas de sección y
+recortan las no protegidas. No guardan canciones completas. Duplicados que usan
+el mismo frame fuente comparten entrada.
+
+Presupuesto global adicional: escritorio hasta 64 MiB, iOS/Android hasta 16 MiB,
+y como máximo RAM física/128. Se divide por stems y tamaño real del banco
+(estéreo float32, al menos 32768 frames; hasta 64 entradas por stem). Cargar ocho
+stems con seis inicios requiere 12 MiB adicionales, conservando el banco
+secundario existente. La advertencia nativa de memoria reduce el presupuesto a
+la mitad; el worker devuelve memoria no arrendada. Una entrada seleccionada,
+un loop saliente o una entrada que aún alimenta al lector no se expulsa bajo
+presión: puede exceder temporalmente el nuevo límite, sin crecer indefinidamente.
+Una reserva mínima de un banco por stem preserva Loop durante una preparación
+con presupuesto reducido. Cancelación, consumo y cambio de canción liberan las
+reservas; la destrucción retira el worker antes de liberar buffers.
+
+Una solicitud futura no invalida el audio fuente ya publicado del banco anterior.
+Antes de reemplazar un banco protegido, el worker conserva su entrada. Audio
+lee primero el ring principal, luego sus copias y bancos/entradas residentes.
+Tras el salto el reader principal se posiciona en el destino y retoma streaming;
+las entradas sirven como puente y no incluyen presets de mezcla ni Mute.
+
+32768 frames equivalen a 0.743 s a 44.1 kHz o 0.683 s a 48 kHz (menos tiempo
+real a tempo mayor). Esa cifra no garantiza continuidad frente a una detención
+indefinida de disco: se verifica el sufijo necesario, la reserva y la transición
+real a streaming. Las pruebas automatizadas cubren I/O pausado durante preparar,
+recuperación, presión de caché y frames exactos más allá de la entrada. No
+constituyen validación física en móviles ni una garantía ante cualquier fallo
+prolongado del almacenamiento.

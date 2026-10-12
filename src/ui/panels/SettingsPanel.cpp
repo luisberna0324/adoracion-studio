@@ -1,6 +1,6 @@
 #include "AppIdentity.h"
 #include "SettingsPanel.h"
-#include "../../platform/NativeAppleSignIn.h"
+#include "../../DevelopmentFeatures.h"
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
@@ -89,7 +89,7 @@ public:
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
     if (owner.teamsManagementEnabled)
       pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
-    pageSubtitles.addArray({owner.session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+    pageSubtitles.addArray({(DevelopmentFeatures::testLogin && owner.session.localDemo) ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
         L10n::tr("Informe para soporte", "Report for support"),
         L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -942,10 +942,17 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(logoutButton);
 
+  actionDeleteLabel.setFont(settingsOptionLabelFont());
+  actionDeleteLabel.setJustificationType(juce::Justification::centredLeft);
+  accountPage.addAndMakeVisible(actionDeleteLabel);
+  accountPage.addAndMakeVisible(deleteAccountButton);
+  deleteAccountButton.setComponentID("account-deletion-review");
+  deleteAccountButton.onClick = [this] { if (onAccountDeletionRequested) onAccountDeletionRequested(); };
+
   actionPurgeLabel.setJustificationType(juce::Justification::centredLeft);
   actionPurgeLabel.setFont(settingsOptionLabelFont());
   accountPage.addAndMakeVisible(actionPurgeLabel);
-  for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp}) {
+  for (auto *help : {&actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp}) {
     help->setFont(settingsHelpFont());
     help->setJustificationType(juce::Justification::topLeft);
     help->setMinimumHorizontalScale(1.0f);
@@ -958,13 +965,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   };
   accountPage.addAndMakeVisible(purgeButton);
 
-  appleLinkLabel.setFont(settingsOptionLabelFont());
-  appleLinkLabel.setJustificationType(juce::Justification::centredLeft);
-  appleLinkHelp.setFont(settingsHelpFont());
-  appleLinkHelp.setJustificationType(juce::Justification::topLeft);
-  appleLinkHelp.setMinimumHorizontalScale(1.0f);
-  accountPage.addChildComponent(appleLinkLabel);
-  accountPage.addChildComponent(appleLinkHelp);
+
 
   routingSectionLabel.setJustificationType(juce::Justification::centredLeft);
   routingSectionLabel.setFont(juce::FontOptions(14.0f));
@@ -1138,7 +1139,7 @@ void SettingsPanel::resized() {
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (needsVerticalScroll ? 900 : 0));
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1186,7 +1187,7 @@ void SettingsPanel::refreshThemeColours() {
                      &primeImportHelp, &stemOptimizationHelp,
                      &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp,
-                     &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp})
+                     &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp})
     help->setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(themeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
@@ -1267,10 +1268,10 @@ void SettingsPanel::refreshThemeColours() {
   sessionVersionValue.setColour(juce::Label::textColourId, sessionPrimary);
   actionsSectionLabel.setColour(juce::Label::textColourId, sessionPrimary);
   actionLogoutLabel.setColour(juce::Label::textColourId, actionSecondary);
+  actionDeleteLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionPurgeLabel.setColour(juce::Label::textColourId, actionSecondary);
   actionInfoLabel.setColour(juce::Label::textColourId, actionSecondary);
-  appleLinkLabel.setColour(juce::Label::textColourId, actionSecondary);
-  appleLinkHelp.setColour(juce::Label::textColourId, UITheme::textSecondary);
+
   infoLinkButton.setColour(juce::HyperlinkButton::textColourId,
                            UITheme::accent);
   routingSectionLabel.setColour(juce::Label::textColourId, UITheme::textPrimary);
@@ -1447,8 +1448,7 @@ int SettingsPanel::mobilePageContentHeight(int width) const {
   switch (destination) {
     case Destination::Home: return homePage ? homePage->contentHeight() : 0;
     case Destination::Routing: return routingPageContentHeight(width);
-    case Destination::Account: return (width < 520 ? 1120 : 920) +
-                                     (appleLinkButton ? (width < 520 ? 136 : 100) : 0);
+    case Destination::Account: return width < 520 ? 1240 : 990;
     case Destination::Audio: return 900;
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
     case Destination::Appearance:
@@ -1560,8 +1560,9 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 }
 
 void SettingsPanel::applyLanguageTexts() {
+  const bool localDemo = DevelopmentFeatures::testLogin && session.localDemo;
   teamsLabel.setText("Teams", juce::dontSendNotification);
-  teamsHelp.setText(L10n::tr("Consulta tu acceso al Team o administra los usuarios de tu nube.", "View your Team access or manage the users of your Cloud."), juce::dontSendNotification);
+  teamsHelp.setText(L10n::tr("El intercambio de archivos de Teams está temporalmente deshabilitado. Tu Cloud personal sigue disponible.", "Teams file sharing is temporarily disabled. Your personal Cloud remains available."), juce::dontSendNotification);
   teamsButton.setButtonText(L10n::tr("Abrir Teams", "Open Teams"));
   learningLabel.setText(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"), juce::dontSendNotification);
   learningHelp.setText(L10n::tr("Guías interactivas que puedes pausar y retomar.", "Interactive guides you can pause and resume."), juce::dontSendNotification);
@@ -1641,7 +1642,7 @@ void SettingsPanel::applyLanguageTexts() {
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
-  sessionEmailLabel.setText(session.localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
+  sessionEmailLabel.setText(localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
@@ -1653,11 +1654,11 @@ void SettingsPanel::applyLanguageTexts() {
                               juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
-  sessionEmailValue.setText(session.localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
+  sessionEmailValue.setText(localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
                             juce::dontSendNotification);
   sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
                            juce::dontSendNotification);
-  sessionStatusValue.setText(session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
+  sessionStatusValue.setText(localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
@@ -1682,8 +1683,9 @@ void SettingsPanel::applyLanguageTexts() {
       : session.accountType.isNotEmpty() ? session.accountType : session.plan;
     sessionQuotaValue.setText(account, juce::dontSendNotification);
     sessionDevicesQuotaLabel.setText(L10n::tr("Dispositivos", "Devices"), juce::dontSendNotification);
-    sessionDevicesQuotaValue.setText(juce::String(session.usedDevices) + " / " +
-        juce::String(session.maxDevices), juce::dontSendNotification);
+    sessionDevicesQuotaValue.setText(session.maxDevices > 0
+        ? juce::String(session.usedDevices) + " / " + juce::String(session.maxDevices)
+        : L10n::tr("Sin límite", "Unlimited"), juce::dontSendNotification);
     sessionSongsQuotaLabel.setText(L10n::tr("Canciones sincronizadas", "Synced songs"), juce::dontSendNotification);
     sessionSongsQuotaValue.setText(juce::String(session.syncedSongCount) + " / " +
         juce::String(session.maxSyncedSongs), juce::dontSendNotification);
@@ -1692,7 +1694,7 @@ void SettingsPanel::applyLanguageTexts() {
         formatBytes(session.maxStorageBytes), juce::dontSendNotification);
   } else {
     sessionQuotaValue.setText(
-        session.localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
+        localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
             ? L10n::tr("No se pudieron actualizar las cuotas.",
                        "Couldn't refresh quotas.")
             : L10n::tr("Consultando cuotas…", "Loading quotas…"),
@@ -1725,14 +1727,14 @@ void SettingsPanel::applyLanguageTexts() {
   actionInfoHelp.setText(L10n::tr("Abre un correo para contactar a soporte.",
                                   "Opens an email to contact support."),
                          juce::dontSendNotification);
+  actionDeleteLabel.setText(L10n::tr("Eliminar cuenta y Cloud", "Delete account and Cloud"), juce::dontSendNotification);
+  actionDeleteHelp.setText(L10n::tr("Revisa el impacto. Los archivos locales se conservarán.", "Review the impact. Local files will be preserved."), juce::dontSendNotification);
+  deleteAccountButton.setButtonText(L10n::tr("Revisar", "Review"));
+  deleteAccountButton.setEnabled(!localDemo && session.uid.isNotEmpty());
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
-  appleLinkLabel.setText(L10n::tr("Vincular Apple", "Link Apple"), juce::dontSendNotification);
-  if (appleLinkHelp.getText().isEmpty())
-    appleLinkHelp.setText(L10n::tr("Añade Apple como acceso a esta misma cuenta, conservando tu biblioteca y permisos.",
-                                  "Add Apple sign-in to this account and keep your library and access."),
-                          juce::dontSendNotification);
+
   routingSectionLabel.setText(L10n::tr("Ruteo por tipo", "Routing by category"),
                               juce::dontSendNotification);
   routingDeviceLabel.setText(L10n::tr("Salida de audio", "Audio output"),
@@ -1960,10 +1962,9 @@ void SettingsPanel::layoutAccountPage() {
   actionInfoHelp.setBounds({});
   infoLinkButton.setBounds({});
   logoutButton.setBounds({});
+  deleteAccountButton.setBounds({}); actionDeleteLabel.setBounds({}); actionDeleteHelp.setBounds({});
   purgeButton.setBounds({});
-  appleLinkLabel.setBounds({});
-  appleLinkHelp.setBounds({});
-  if (appleLinkButton) appleLinkButton->setBounds({});
+
   if (sessionIdentitySeparator != nullptr)
     sessionIdentitySeparator->setBounds({});
   if (actionsTitleSeparator != nullptr)
@@ -2074,8 +2075,7 @@ void SettingsPanel::layoutAccountPage() {
   area.removeFromTop(sectionGap);
 
   if (actionsCard != nullptr) {
-    const int actionsH = (compact ? 430 : 250) +
-                         (appleLinkButton ? (compact ? 136 : 100) : 0);
+    const int actionsH = compact ? 550 : 320;
     actionsCard->setBounds(area.removeFromTop(actionsH));
     auto actions = actionsCard->getBounds().reduced(22, 4);
     actions.removeFromTop(16);
@@ -2094,9 +2094,8 @@ void SettingsPanel::layoutAccountPage() {
         actions.removeFromTop(8);
       };
       action(actionLogoutLabel, actionLogoutHelp, logoutButton);
-      if (appleLinkButton)
-        action(appleLinkLabel, appleLinkHelp, *appleLinkButton, 52);
       action(actionPurgeLabel, actionPurgeHelp, purgeButton, 52);
+      action(actionDeleteLabel, actionDeleteHelp, deleteAccountButton);
       action(actionInfoLabel, actionInfoHelp, infoLinkButton);
       return;
     }
@@ -2109,12 +2108,7 @@ void SettingsPanel::layoutAccountPage() {
     if (actionsRowSeparator != nullptr)
       actionsRowSeparator->setBounds(actions.removeFromTop(1));
 
-    if (appleLinkButton) {
-      auto appleRow = actions.removeFromTop(100);
-      appleLinkLabel.setBounds(appleRow.removeFromTop(24));
-      appleLinkHelp.setBounds(appleRow.removeFromTop(30));
-      appleLinkButton->setBounds(appleRow.removeFromTop(44));
-    }
+
 
     auto purgeRow = actions.removeFromTop(60);
     auto purgeControl = purgeRow.removeFromRight(112).reduced(0, 8);
@@ -2122,31 +2116,16 @@ void SettingsPanel::layoutAccountPage() {
     actionPurgeHelp.setBounds(purgeRow);
     purgeButton.setBounds(purgeControl);
 
+    auto deleteRow = actions.removeFromTop(70);
+    deleteAccountButton.setBounds(deleteRow.removeFromRight(112).reduced(0, 8));
+    actionDeleteLabel.setBounds(deleteRow.removeFromTop(24));
+    actionDeleteHelp.setBounds(deleteRow);
     auto helpRow = actions.removeFromTop(60);
     auto helpControl = helpRow.removeFromRight(112);
     actionInfoLabel.setBounds(helpRow.removeFromTop(24));
     actionInfoHelp.setBounds(helpRow);
     infoLinkButton.setBounds(helpControl);
   }
-}
-
-void SettingsPanel::setAppleSignInAvailable(bool available) {
-  if (available && !appleLinkButton) {
-    appleLinkButton = NativeAppleSignIn::createButton([this] {
-      if (onAppleLinkRequested) onAppleLinkRequested();
-    });
-    if (appleLinkButton) accountPage.addAndMakeVisible(*appleLinkButton);
-  } else if (!available) {
-    appleLinkButton.reset();
-  }
-  appleLinkLabel.setVisible(appleLinkButton != nullptr);
-  appleLinkHelp.setVisible(appleLinkButton != nullptr);
-  resized();
-}
-
-void SettingsPanel::setAppleSignInStatus(const juce::String &text, bool busy) {
-  appleLinkHelp.setText(text, juce::dontSendNotification);
-  if (appleLinkButton) appleLinkButton->setEnabled(!busy);
 }
 
 juce::String SettingsPanel::formatIsoDateTime(const juce::String &isoDateTime) {

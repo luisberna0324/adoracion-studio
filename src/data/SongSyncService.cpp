@@ -7,7 +7,8 @@
 namespace {
 void deliver(SongSyncService::CompletionCallback callback, ImportedSongData song,
              CloudTransferError error) {
-  if (error.code.isNotEmpty() && error.code != "NO_CHANGES")
+  if (error.code.isNotEmpty() && error.code != "NO_CHANGES" &&
+      error.code != "CLOUD_CONSENT_CANCELLED")
     playworship::telemetry::capture(
         playworship::telemetry::Incident::cloudSyncFailed);
   if (!callback) return;

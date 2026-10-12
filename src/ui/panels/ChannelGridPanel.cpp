@@ -1629,6 +1629,7 @@ void ChannelGridPanel::addMasterSlot() {
       });
   auto &strip = slot->getStrip();
   strip.setCardBgColour(UITheme::cardBgMaster);
+  strip.setLeadingBoundaryVisible(true);
   strip.setChannelBandColours(UITheme::accentMaster, UITheme::onAccent);
   strip.setSoloEnabled(false);
   strip.setSoloVisible(false);

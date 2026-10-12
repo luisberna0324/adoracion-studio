@@ -1,4 +1,7 @@
 #include "CloudTransferClient.h"
+#include "../ui/components/ServiceTermsPrompt.h"
+#include "ServiceTermsPolicy.h"
+#include <atomic>
 
 #include "AuthSessionApi.h"
 #include "CloudSignedUpload.h"
@@ -75,7 +78,7 @@ bool postJson(const juce::String& urlText, const juce::String& idToken,
   int status = 0;
   auto url = juce::URL(urlText).withPOSTData(body);
   auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-      .withExtraHeaders("Authorization: Bearer " + idToken + "\r\nContent-Type: application/json\r\n")
+      .withExtraHeaders("Authorization: Bearer " + idToken + "\r\nContent-Type: application/json\r\nX-PlayWorship-Cloud-Consent: cloud-terms-v1\r\n")
       .withConnectionTimeoutMs(kTimeoutMs).withHttpRequestCmd("POST").withStatusCode(&status);
   auto stream = url.createInputStream(options);
   if (!stream) {
@@ -88,6 +91,36 @@ bool postJson(const juce::String& urlText, const juce::String& idToken,
     return false;
   }
   return true;
+}
+
+bool ensureTerms(const CloudTransferCredentials& credentials, const juce::String& idToken,
+                 juce::ThreadPoolJob& job, CloudTransferError& error) {
+  juce::String response;
+  const auto url = normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/consent";
+  if (!postJson(url, idToken, "{\"action\":\"status\"}", response, error)) return false;
+  const auto status = juce::JSON::parse(response);
+  const auto version = status["version"].toString();
+  if (version != ServiceTermsPolicy::version || !status["accepted"].isBool()) {
+    error = makeError("CLOUD_CONSENT_VERSION_CHANGED", "Las condiciones cambiaron. Actualiza la app para usar Cloud; tus archivos locales siguen disponibles."); return false;
+  }
+  if (static_cast<bool>(status["accepted"])) return true;
+  auto decision = std::make_shared<std::atomic<int>>(0);
+  auto prompt = std::make_shared<juce::Component::SafePointer<ServiceTermsPanel>>();
+  juce::MessageManager::callAsync([decision, prompt, email = status["accountEmail"].toString()] {
+    if (decision->load() != 0) return;
+    *prompt = ServiceTermsPrompt::show(email, [decision](bool accepted) {
+      int pending = 0; decision->compare_exchange_strong(pending, accepted ? 1 : 2);
+    });
+  });
+  while (decision->load() == 0 && !job.shouldExit()) juce::Thread::sleep(50);
+  if (job.shouldExit() || decision->load() != 1) {
+    decision->store(2);
+    juce::MessageManager::callAsync([prompt] { if (*prompt) (*prompt)->exitModalState(0); });
+    error = makeError("CLOUD_CONSENT_CANCELLED", "No se aceptaron las condiciones. Puedes continuar usando tus archivos locales."); return false;
+  }
+  auto* body = new JsonObject(); body->setProperty("action", "accept");
+  body->setProperty("accepted", true); body->setProperty("version", version);
+  return postJson(url, idToken, juce::JSON::toString(juce::var(body)), response, error);
 }
 
 bool putFile(const juce::String& urlText, const CloudUploadObject& object,
@@ -199,9 +232,29 @@ bool refreshToken(const CloudTransferCredentials& credentials, juce::String& idT
 }
 }  // namespace
 
+bool ensureCloudTermsForJob(const CloudTransferCredentials& credentials, juce::ThreadPoolJob& job, CloudTransferError& error) {
+  juce::String token;
+  return refreshToken(credentials, token, error) && ensureTerms(credentials, token, job, error);
+}
+
 CloudTransferClient::CloudTransferClient() = default;
 CloudTransferClient::~CloudTransferClient() { cancelAll(); }
 void CloudTransferClient::cancelAll() { pool.removeAllJobs(true, 3000); }
+
+void CloudTransferClient::requestTerms(CloudTransferCredentials credentials, std::function<void(CloudTransferError)> callback) {
+  struct Job final : juce::ThreadPoolJob {
+    CloudTransferCredentials credentials; std::function<void(CloudTransferError)> callback;
+    Job(CloudTransferCredentials c, std::function<void(CloudTransferError)> done)
+      : ThreadPoolJob("CloudTerms"), credentials(std::move(c)), callback(std::move(done)) {}
+    JobStatus runJob() override {
+      CloudTransferError error; juce::String token;
+      if (refreshToken(credentials, token, error)) ensureTerms(credentials, token, *this, error);
+      juce::MessageManager::callAsync([done = std::move(callback), error] { if (done) done(error); });
+      return jobHasFinished;
+    }
+  };
+  pool.addJob(new Job(std::move(credentials), std::move(callback)), true);
+}
 
 void CloudTransferClient::upload(CloudTransferCredentials credentials,
                                  CloudUploadRequest request,
@@ -220,6 +273,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       if (!refreshToken(credentials, idToken, error)) {
         SessionAuthLogger::write("[CloudUpload] token refresh failed code=" +
                                  error.code + " message=" + error.message);
+        deliverUpload(std::move(callback), {}, error); return jobHasFinished;
+      }
+      if (!ensureTerms(credentials, idToken, *this, error)) {
         deliverUpload(std::move(callback), {}, error); return jobHasFinished;
       }
       if (request.descriptor.songId.isEmpty())
@@ -247,6 +303,7 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       prepare->setProperty("songId", request.descriptor.songId);
       prepare->setProperty("baseRevision", request.baseRevision);
       prepare->setProperty("objects", juce::var(objects));
+      prepare->setProperty("uploadProtocol", "multipart-single-part-v1");
       juce::String response;
       SessionAuthLogger::write("[CloudUpload] prepare request api=" +
                                normalizedBase(credentials.apiBaseUrl) +
@@ -274,6 +331,15 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       if (request.descriptor.revision <= 0) {
         deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Invalid prepared revision")); return jobHasFinished;
       }
+      const auto completePart = [&](const JsonObject* upload) {
+        if (upload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1" ||
+            upload->getProperty("uploadSessionId").toString().isEmpty()) {
+          error = makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable"); return false;
+        }
+        auto* body = new JsonObject(); body->setProperty("uploadSessionId", upload->getProperty("uploadSessionId"));
+        return postJson(normalizedBase(credentials.apiBaseUrl) + "/api/song-sync/complete-upload", idToken,
+                        juce::JSON::toString(juce::var(body)), response, error);
+      };
       const int total = uploads->size() + 1;
       int completed = 0;
       for (const auto& uploadValue : *uploads) {
@@ -283,6 +349,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
         const auto it = objectByHash.find(hash);
         if (it == objectByHash.end()) { deliverUpload(std::move(callback), {}, makeError("INVALID_RESPONSE", "Unexpected upload object")); return jobHasFinished; }
         const auto signedUrl = upload->getProperty("uploadUrl").toString().trim();
+        if (signedUrl.isNotEmpty() && upload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1") {
+          deliverUpload(std::move(callback), {}, makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable")); return jobHasFinished;
+        }
         if (signedUrl.isNotEmpty() && !putFile(signedUrl, *it->second, error)) {
           SessionAuthLogger::write("[CloudUpload] object upload failed file=" +
                                    it->second->file.getFileName() + " status=" +
@@ -290,8 +359,14 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
                                    error.code + " message=" + error.message);
           deliverUpload(std::move(callback), {}, error); return jobHasFinished;
         }
+        if (signedUrl.isNotEmpty() && !completePart(upload)) {
+          deliverUpload(std::move(callback), {}, error); return jobHasFinished;
+        }
         ++completed;
         deliverProgress(progress, {"uploading", hash, completed, total, static_cast<double>(completed) / total});
+      }
+      if (descriptorUpload->getProperty("uploadProtocol").toString() != "multipart-single-part-v1") {
+        deliverUpload(std::move(callback), {}, makeError("CLIENT_UPDATE_REQUIRED", "Secure upload protocol unavailable")); return jobHasFinished;
       }
       const auto descriptorUrl = descriptorUpload->getProperty("uploadUrl").toString().trim();
       const auto descriptorJson = CloudSyncJson::toJsonString(request.descriptor);
@@ -299,7 +374,7 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
       int descriptorStatus = 0;
       auto descriptorRequest = juce::URL(descriptorUrl).withPOSTData(descriptorBody);
       auto descriptorOptions = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-          .withExtraHeaders("Content-Type: application/json\r\n").withConnectionTimeoutMs(kTimeoutMs)
+          .withExtraHeaders("Content-Type: application/json\r\nX-PlayWorship-Cloud-Consent: cloud-terms-v1\r\n").withConnectionTimeoutMs(kTimeoutMs)
           .withHttpRequestCmd("PUT").withStatusCode(&descriptorStatus);
       auto descriptorStream = descriptorRequest.createInputStream(descriptorOptions);
       if (!descriptorStream || descriptorStatus < 200 || descriptorStatus >= 300) {
@@ -308,6 +383,9 @@ void CloudTransferClient::upload(CloudTransferCredentials credentials,
                                  juce::String(descriptorStatus));
         deliverUpload(std::move(callback), {}, descriptorStream ? responseError(body, descriptorStatus) : makeError("NETWORK", "Descriptor upload unavailable"));
         return jobHasFinished;
+      }
+      if (!completePart(descriptorUpload)) {
+        deliverUpload(std::move(callback), {}, error); return jobHasFinished;
       }
       ++completed;
       deliverProgress(progress, {"uploading-descriptor", {}, completed, total, 1.0});

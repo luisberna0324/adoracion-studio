@@ -171,6 +171,11 @@ public:
   }
   bool moreThanOneInstanceAllowed() override { return false; }
 
+  void memoryWarningReceived() override {
+    if (auto *p = mainWindow != nullptr ? dynamic_cast<MTControlsAudioProcessor *>(mainWindow->getAudioProcessor()) : nullptr)
+      p->setSectionEntryCacheBudget(p->getSectionEntryCacheBudget() / 2);
+  }
+
   bool backButtonPressed() override {
     auto *processor = mainWindow != nullptr ? mainWindow->getAudioProcessor() : nullptr;
     auto *editor = processor != nullptr

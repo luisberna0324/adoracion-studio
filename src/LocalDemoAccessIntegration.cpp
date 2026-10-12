@@ -6,6 +6,7 @@
 
 void MTControlsAudioProcessorEditor::launchLocalDemoLogin(
     const juce::String& username, const juce::String& password) {
+#if JUCE_DEBUG
   // Public test credentials select a local workspace. They never represent a
   // backend identity and are never passed to a network authentication method.
   if (username.trim() != "usuarioplay0324" || password != "usuarioplay0324") {
@@ -15,12 +16,18 @@ void MTControlsAudioProcessorEditor::launchLocalDemoLogin(
     return;
   }
   enterLocalDemoSession();
+#else
+  juce::ignoreUnused(username, password);
+#endif
 }
 
 void MTControlsAudioProcessorEditor::enterLocalDemoSession() {
+#if JUCE_DEBUG
   cancelAuthenticationAttempt();
   sessionResumeCancelled = true;
   ++appleConfigurationGeneration;
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   appleSignInAvailable = false;
   invalidateCloudAccountView();
   if (remoteSession.getMode() != playworship::remote::RemoteSession::Mode::Local)
@@ -42,4 +49,5 @@ void MTControlsAudioProcessorEditor::enterLocalDemoSession() {
   SessionAuthLogger::write("Local demo: entering offline workspace (no account credentials)");
   initializeMainUi();
   prepareDemoSong(false);
+#endif
 }

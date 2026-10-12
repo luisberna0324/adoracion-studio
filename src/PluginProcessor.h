@@ -8,6 +8,7 @@
 #include "audio/PracticeLoop.h"
 #include "audio/DynamicGuideEngine.h"
 #include "data/SongData.h"
+#include "data/PracticeWaveform.h"
 #include "data/AppSettings.h"
 #include "data/SongLibraryStore.h"
 #include "audio/SimpleDelayLine.h"
@@ -128,6 +129,9 @@ public:
   juce::String getSectionAutomationEditingPartId() const;
   juce::String getSectionAutomationEditingPartName() const;
   SongArrangementSnapshot getSongArrangementSnapshot() const;
+  // Control/UI-only immutable view of the actual playback mapping. No audio
+  // is decoded and no scheduler/audio state is changed by this accessor.
+  playworship::practice::WaveformTimeline getPracticeWaveformTimeline() const;
   bool isStemSectionAutomated(int stemIndex) const noexcept;
   bool isPadsSectionAutomated() const noexcept;
   float getStemBaseVolume(int stemIndex) const noexcept;
@@ -144,6 +148,11 @@ public:
   void clearArrangementPartLoop() noexcept;
   void clearPendingArrangementPartJump() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
+  int getPreparingArrangementPartJumpIndex() const noexcept;
+  std::pair<int, int> getArrangementJumpState() const noexcept;
+  void setSectionEntryCacheBudget(juce::int64 bytes);
+  juce::int64 getSectionEntryCacheBudget() const noexcept { return sectionEntryCacheBudgetBytes; }
+  juce::int64 getSectionEntryCacheBytes() const;
   int getPendingArrangementPartJumpIndex() const noexcept;
   bool isCustomArrangementActive() const noexcept;
   void setFadeActive(bool shouldFadeOut) noexcept;
@@ -184,6 +193,14 @@ public:
   void setStemPitchShiftMask(const std::vector<bool> &mask) noexcept;
   void setDynamicGuideSettings(const DynamicGuideSettings &settings);
   DynamicGuideSettings getDynamicGuideSettings() const;
+  bool isDynamicGuideEnabled() const noexcept {
+    return dynamicGuideEnabledState.load(std::memory_order_relaxed);
+  }
+  // Control/message-thread query, like guide loading. Does not touch disk or
+  // infer availability from the selected source when its pack failed to load.
+  bool hasDynamicGuideAssets() const noexcept {
+    return dynamicGuideEngine.getLoadedSectionCount() > 0;
+  }
   void setDynamicGuideLanguage(AppLanguage language);
   void setArrangementEditingActive(bool editingActive) noexcept;
   bool consumeDynamicGuideMissingSectionWarning(juce::String &outSectionName);
@@ -640,6 +657,12 @@ private:
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
+  // Low 16 bits: index+1; bit16: confirmed; high32: request revision.
+  // One CAS protects replacement/cancellation against late audio confirmations.
+  std::atomic<uint64_t> arrangementJumpCommand{0};
+  void setArrangementJumpCommand(int index, bool confirmed) noexcept;
+  void configureSectionEntryCache();
+  std::atomic<juce::int64> sectionEntryCacheBudgetBytes{0};
   std::atomic<int> arrangementLoopPartIndex{-1};
   std::atomic<uint64_t> arrangementTransitionIntentGeneration{1};
   std::atomic<double> arrangementTotalLengthSeconds{0.0};
@@ -683,6 +706,8 @@ private:
   // announcement. Reset whenever the pending jump is consumed, so a fresh
   // jump from the same UI click re-arms the lead-in voice prompt.
   int lastAnnouncedPendingJumpTarget = -1;
+  int lastObservedGuidePendingTarget = -1;
+  uint64_t lastObservedGuidePendingGeneration = 0;
   // Last loop section that already received its one-bar lead-in
   // announcement. Reset on every loop wrap (or when the loop is cleared /
   // re-targeted) so the next iteration re-arms the voice prompt.

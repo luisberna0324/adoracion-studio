@@ -597,38 +597,8 @@ SongImportWizardComponent::SongImportWizardComponent(
   timeSignatureBox.setExplicitFocusOrder(5);
 
   songTitleEditor.onTextChange = [this] {
-    if (suppressTitleAutocomplete || currentStep != Step::Metadata)
-      return;
-
-    secuenciasSearchToken++;
-    const auto localToken = secuenciasSearchToken;
-    selectedSongDetail.reset();
-    secuenciasDetailLabel.setText({}, juce::dontSendNotification);
-
-    const auto text = songTitleEditor.getText().trim();
-    if (text.length() < 2) {
-      secuenciasResults.clear();
-      secuenciasStatusLabel.setText(
-          L10n::tr("Escribe al menos 2 caracteres", "Type at least 2 characters"),
-          juce::dontSendNotification);
-      secuenciasList.updateContent();
-      secuenciasList.selectRow(-1);
-      secuenciasList.setVisible(false);
-      return;
-    }
-
-    secuenciasStatusLabel.setText(L10n::tr("Buscando...", "Searching..."),
-                                  juce::dontSendNotification);
-    secuenciasList.setVisible(true);
-    auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
-    juce::Timer::callAfterDelay(500, [safeThis, localToken] {
-      if (safeThis == nullptr)
-        return;
-      if (safeThis->secuenciasSearchToken != localToken)
-        return;
-      safeThis->triggerSecuenciasSearch();
-    });
-  };
+    // Metadata is entered manually; no remote catalog autocomplete.
+};
   songTitleEditor.onReturnKey = [this] {
     hideSecuenciasSuggestions(true);
     if (useTouchOptimisedControls())
@@ -1676,7 +1646,11 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   }
   if (secuenciasList.getParentComponent() != metadataParent)
     metadataParent->addChildComponent(secuenciasList);
-  secuenciasList.setVisible(visible && !secuenciasResults.empty());
+  secuenciasList.setVisible(false);
+  secuenciasStatusLabel.setVisible(false);
+  secuenciasDetailLabel.setVisible(false);
+  secuenciasArtworkCaption.setVisible(false);
+  clearSongSearchButton.setVisible(false);
   if (!visible) {
     artworkOverlayButtonBounds = {};
     metadataCardBounds = {};
@@ -3307,68 +3281,11 @@ juce::Image SongImportWizardComponent::getCachedArtwork(const juce::String &url)
 }
 
 void SongImportWizardComponent::requestArtworkAsync(const juce::String &url) {
-  const auto trimmed = url.trim();
-  if (trimmed.isEmpty())
-    return;
-
-  const auto key = trimmed.toStdString();
-  {
-    const juce::ScopedLock sl(artworkLock);
-    if (artworkCache.find(key) != artworkCache.end())
-      return;
-    if (artworkInFlight.find(key) != artworkInFlight.end())
-      return;
-    artworkInFlight.insert(key);
-  }
-
-  auto safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this);
-  std::thread([safeThis, trimmed, key] {
-    juce::Image loaded;
-    juce::URL artworkUrl(trimmed);
-    auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                       .withExtraHeaders("User-Agent: Mozilla/5.0\r\n")
-                       .withConnectionTimeoutMs(7000)
-                       .withHttpRequestCmd("GET");
-    if (auto stream = artworkUrl.createInputStream(options)) {
-      juce::MemoryBlock bytes;
-      stream->readIntoMemoryBlock(bytes);
-      if (bytes.getSize() > 0)
-        loaded = juce::ImageFileFormat::loadFrom(bytes.getData(), bytes.getSize());
-    }
-
-    juce::MessageManager::callAsync([safeThis, loaded, key] {
-      if (safeThis == nullptr)
-        return;
-      {
-        const juce::ScopedLock sl(safeThis->artworkLock);
-        safeThis->artworkInFlight.erase(key);
-        if (loaded.isValid())
-          safeThis->artworkCache[key] = loaded;
-      }
-      safeThis->secuenciasList.repaint();
-      if (safeThis->selectedArtworkUrl.toStdString() == key && loaded.isValid())
-        safeThis->secuenciasArtworkPreview.setImage(
-            loaded, juce::RectanglePlacement::centred);
-    });
-  }).detach();
+  juce::ignoreUnused(url); // Remote artwork extraction has been retired.
 }
 
 void SongImportWizardComponent::triggerSecuenciasSearch() {
-  const auto query = songTitleEditor.getText().trim();
-  if (query.length() < 2)
-    return;
-
-  const int requestId = ++latestSearchRequestId;
-  secuenciasClient.searchSongs(query, 1,
-                               [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
-                                requestId](std::vector<SongSearchResult> results,
-                                           SecuenciasError err) {
-                                 if (safeThis == nullptr)
-                                   return;
-                                 if (requestId != safeThis->latestSearchRequestId)
-                                   return;
-                                 safeThis->handleSecuenciasResult(results, err);
-                               });
+  hideSecuenciasSuggestions(false);
 }
 
 void SongImportWizardComponent::hideSecuenciasSuggestions(const bool resetStatus) {
@@ -3435,117 +3352,10 @@ void SongImportWizardComponent::handleSecuenciasResult(
 }
 
 void SongImportWizardComponent::fetchSecuenciasDetailForSelected() {
-  if (!juce::isPositiveAndBelow(secuenciasSelectedRow,
-                                static_cast<int>(secuenciasResults.size()))) {
-    selectedSongDetail.reset();
-    return;
-  }
-
-  const auto selected =
-      secuenciasResults[static_cast<size_t>(secuenciasSelectedRow)];
-
-  selectedArtworkUrl = selected.artworkUrl;
-  secuenciasArtworkCaption.setText(
-      selected.artist.isNotEmpty() ? selected.artist : selected.title,
-      juce::dontSendNotification);
-  if (const auto image = getCachedArtwork(selected.artworkUrl); image.isValid())
-    secuenciasArtworkPreview.setImage(image, juce::RectanglePlacement::centred);
-  else {
-    secuenciasArtworkPreview.setImage(juce::Image(), juce::RectanglePlacement::centred);
-    requestArtworkAsync(selected.artworkUrl);
-  }
-
-  applySecuenciasMetadata(selected, nullptr);
-
-  secuenciasDetailLabel.setText(L10n::tr("Cargando detalle técnico...",
-                                         "Loading technical details..."),
-                                juce::dontSendNotification);
-
-  const int requestId = ++latestDetailRequestId;
-  secuenciasClient.getSongDetails(
-      selected.songId, 15,
-      [safeThis = juce::Component::SafePointer<SongImportWizardComponent>(this),
-       requestId, selected](SongDetail detail, SecuenciasError err) {
-        if (safeThis == nullptr)
-          return;
-        if (requestId != safeThis->latestDetailRequestId)
-          return;
-        if (err.type != SecuenciasError::Type::None) {
-          safeThis->selectedSongDetail.reset();
-          safeThis->secuenciasDetailLabel.setText(
-              L10n::tr("Detalle no disponible. Puedes usar metadata básica.",
-                       "Detail unavailable. You can still use basic metadata."),
-              juce::dontSendNotification);
-          return;
-        }
-
-        safeThis->selectedSongDetail = detail;
-        juce::StringArray names;
-        for (size_t i = 0; i < detail.tracks.size() && i < 8; ++i)
-          names.add(detail.tracks[i].name);
-
-        juce::String info =
-            "BPM " + juce::String(static_cast<int>(std::round(detail.bpm))) +
-            " • " + L10n::tr("Duración", "Duration") + " " +
-            juce::String(static_cast<int>(std::round(detail.durationSeconds))) + "s";
-        if (names.size() > 0)
-          info << " • " << L10n::tr("Tracks", "Tracks") << ": "
-               << names.joinIntoString(", ");
-
-        safeThis->secuenciasDetailLabel.setText(info, juce::dontSendNotification);
-        safeThis->applySecuenciasMetadata(selected, &detail);
-      });
+  hideSecuenciasSuggestions(false);
 }
 
 void SongImportWizardComponent::applySecuenciasMetadata(const SongSearchResult &result,
                                                          const SongDetail *detail) {
-  if (metadataReadOnlyFromLocal) {
-    secuenciasStatusLabel.setText(
-        L10n::tr("Artwork aplicado. Metadata de canción local permanece en solo lectura.",
-                 "Artwork applied. Local song metadata remains read-only."),
-        juce::dontSendNotification);
-
-    secuenciasResults.clear();
-    secuenciasList.updateContent();
-    secuenciasList.selectRow(-1);
-    secuenciasList.setVisible(false);
-    resized();
-    return;
-  }
-
-  setMetadataReadOnlyFromLocal(false);
-  suppressTitleAutocomplete = true;
-  songTitleEditor.setText(result.title, juce::dontSendNotification);
-  suppressTitleAutocomplete = false;
-
-  if (artistEditor.getText().trim().isEmpty() || result.artist.isNotEmpty())
-    artistEditor.setText(result.artist, juce::dontSendNotification);
-
-  if (detail != nullptr && detail->bpm > 0.0)
-    bpmEditor.setText(juce::String(static_cast<int>(std::round(detail->bpm))),
-                      juce::dontSendNotification);
-
-  if (result.originalKey.isNotEmpty())
-    keyBox.setText(result.originalKey, juce::dontSendNotification);
-
-  // Los resultados de Secuencias describen tracks remotos, pero no son stems
-  // importables. No se crean placeholders: la lista queda vacía hasta que el
-  // usuario elija archivos reales en el paso de stems.
-  stems.erase(std::remove_if(stems.begin(), stems.end(), [](const StemDraft &stem) {
-                return !stem.file.existsAsFile() && stem.sourcePath.trim().isEmpty() &&
-                       stem.storedPath.trim().isEmpty();
-              }), stems.end());
-  updateSelectedFilesText();
-  rebuildMappingRows();
-
-  secuenciasStatusLabel.setText(
-      L10n::tr("Metadata aplicada. Puedes editarla manualmente.",
-               "Metadata applied. You can edit it manually."),
-      juce::dontSendNotification);
-
-  secuenciasResults.clear();
-  secuenciasList.updateContent();
-  secuenciasList.selectRow(-1);
-  secuenciasList.setVisible(false);
-  resized();
+  juce::ignoreUnused(result, detail);
 }

@@ -6,6 +6,7 @@
 #include "PracticeTimelineRuler.h"
 #include <JuceHeader.h>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -53,6 +54,13 @@ public:
   using ActiveArrangementLoopPartProvider = std::function<int()>;
 
   WaveformBar();
+  ~WaveformBar() override;
+  std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
+  void setLiveMode(bool enabled);
+  bool isLiveMode() const { return liveMode; }
+  bool canToggleLiveMode() const {
+    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty());
+  }
 
   void setWaveformBins(std::vector<float> bins);
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
@@ -102,6 +110,7 @@ public:
       std::function<void(juce::Rectangle<int>)> cb);
   void setExportBusy(bool busy);
   void setPendingArrangementPartProvider(PendingArrangementPartProvider cb);
+  void setPreparingArrangementPartProvider(PendingArrangementPartProvider cb);
   void setActiveArrangementLoopPartProvider(
       ActiveArrangementLoopPartProvider cb);
   void setMidiLearnActive(bool active);
@@ -140,6 +149,56 @@ public:
 
 private:
   friend struct WaveformEditingTestAccess;
+  juce::Rectangle<float> getLiveRowBounds() const;
+  juce::Rectangle<float> getLiveSectionContentBounds(juce::Rectangle<float> body) const;
+  float getLiveBlockWidth() const;
+  float getLiveBlockStride() const;
+  void rebuildLiveSectionBounds();
+  void drawLiveSections(juce::Graphics &g);
+  class SectionActionButton;
+  std::vector<std::unique_ptr<SectionActionButton>> liveSectionActions;
+  void refreshLiveSectionActions(bool updateState = true);
+  void activateLiveSectionAction(const juce::String &partId, int action);
+  void revealLiveSectionAction(const juce::String &partId);
+  bool navigateLiveSectionAction(const juce::String &partId, int action, const juce::KeyPress &);
+  juce::String liveSectionState(int index) const;
+  static float livePendingPulse(double nowMs, bool reducedMotion);
+  void setLiveScrollOffset(float offset);
+  void snapLiveScrollOffset();
+  void suspendLiveFollow();
+  void stopLiveScrollMotion();
+  void sampleLiveDrag(double eventMs);
+  void startLiveScrollMotion(double nowMs, double releaseEventMs, bool reducedMotion);
+  void updateLiveScrollMotion(double nowMs, bool reducedMotion);
+  bool liveScrollCoasting = false, liveScrollSettling = false;
+  bool liveSuppressNativeMomentum = false;
+  double liveMotionTimeMs = 0.0, liveDragSampleMs = 0.0;
+  float liveDragSampleOffset = 0.0f, liveScrollVelocity = 0.0f;
+  float liveSettleFrom = 0.0f, liveSettleTarget = 0.0f;
+  void updateLiveFollow(double nowMs, bool reducedMotion);
+  double liveFollowResumeMs = 0.0;
+  double liveFollowAnimationStartMs = 0.0;
+  float liveFollowFrom = 0.0f, liveFollowTarget = 0.0f;
+  bool liveFollowAnimating = false;
+  juce::String liveFollowPartId;
+  float liveSectionProgress(int index) const;
+  bool liveMode = false;
+  float liveScrollOffset = 0.0f;
+  int livePaintPreparing = -1;
+  int livePaintActive = -1, livePaintPending = -1, livePaintLoop = -1;
+  float livePaintProgress = -1.0f;
+  bool livePaintReducedMotion = false;
+  bool livePaintPlaying = false;
+  double liveScrollSnapDueMs = 0.0;
+  juce::Rectangle<float> liveLayoutRow;
+  juce::BorderSize<int> liveLayoutInsets;
+  float liveLayoutBlockWidth = 0.0f;
+  bool livePointerActive = false;
+  bool livePointerMoved = false;
+  int livePointerSource = -1;
+  juce::Point<float> livePointerStart;
+  float livePointerStartOffset = 0.0f;
+  juce::String liveDownPartId;
   enum class SnapMode { Bar = 1, Beat, HalfBeat, Free };
   enum class TimelineViewMode { GuideMap = 1, TempoMap };
   enum class PlaybackControlFocus { None, Mute, Loop, Jump };
@@ -193,6 +252,15 @@ private:
     bool showsAutomateButton = false;
   };
 
+  struct LiveTextLayout {
+    juce::Rectangle<float> title, state;
+    float fontSize = 14.0f;
+    float stateFontSize = 14.0f;
+    int stateLines = 1;
+    int lines = 1;
+  };
+  LiveTextLayout getLiveTextLayout(const PartOverlayBounds &item) const;
+
   struct PartHitResult {
     int partIndex = -1;
     bool leftEdge = false;
@@ -207,6 +275,7 @@ private:
     bool skipButton = false;
     bool automateButton = false;
   };
+  PartHitResult liveDownHit;
 
   struct TempoRegionHitResult {
     int regionIndex = -1;
@@ -283,6 +352,7 @@ private:
   std::function<void(juce::Rectangle<int>)>
       onCloudSettingsVersionsRequested;
   PendingArrangementPartProvider pendingArrangementPartProvider;
+  PendingArrangementPartProvider preparingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
   std::function<bool(const juce::String &)> onSectionAutomationBegin;
   std::function<void(bool)> onSectionAutomationFinish;
@@ -428,9 +498,13 @@ private:
   bool androidVisualProgressValid = false;
   float androidVisualProgressRatio = 0.0f;
   double androidVisualProgressTimestampSec = 0.0;
-  int androidLastFixedPlayheadX = -1;
-  bool androidWasPlaying = false;
 #endif
+  int playbackPaintPreparingPart = -1;
+  int playbackPaintPendingPart = -1;
+  int playbackPaintLoopPart = -1;
+  bool playbackWasPlaying = false;
+  float lastFixedPlaybackProgress = -1.0f;
+  float lastFixedTransportProgress = -1.0f;
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
   bool lastTimerEndValid = false;
@@ -446,8 +520,8 @@ private:
   float phonePanLastNormalized = 0.0f;
   double phonePanLastTimestampMs = 0.0;
 
-  // The follow view moves every frame, but its waveform data is static. Keep
-  // a bounded overscanned raster around the visible window so each frame only
+  // Playback moves the needle (and optionally the viewport), while its data
+  // stays static. Keep a bounded overscanned raster around the visible window so each frame only
   // composites an image slice plus the moving playback overlay.
   mutable juce::Image followWaveformBaseCache;
   mutable juce::Image followWaveformHighlightMaskCache;
@@ -467,6 +541,8 @@ private:
   bool isFollowTrackingActive() const;
   PlaybackVisualState getPlaybackVisualState() const;
   void invalidateWaveformRenderCaches();
+  std::array<juce::Rectangle<int>, 3>
+  getPlaybackRepaintRegions(float fromProgress, float toProgress) const;
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   bool getPlaybackEndGuideSeconds(double &endSecondsOut) const;
@@ -527,7 +603,10 @@ private:
   void drawWaveformDirect(juce::Graphics &g,
                           const juce::Rectangle<float> &bounds,
                           float windowStart, float windowSpan, bool showGrid,
-                          bool showPlayhead) const;
+                          bool showPlayhead, bool showPlayableWindow = true) const;
+  void drawPlayableWindowOverlay(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds,
+                                 float windowStart, float windowSpan) const;
   bool drawCachedFollowWaveform(juce::Graphics &g,
                                 const juce::Rectangle<float> &bounds,
                                 float windowStart, float windowSpan) const;
@@ -541,7 +620,8 @@ private:
   void drawWaveformSegment(juce::Graphics &g,
                            const juce::Rectangle<float> &bounds,
                            double sourceStartSec,
-                           double sourceEndSec) const;
+                           double sourceEndSec,
+                           float waveformAlpha = 0.72f) const;
   double getWaveformSourceLengthSeconds() const;
   std::pair<double, double>
   getPartSourceRange(const SongArrangementPartSnapshot &part,

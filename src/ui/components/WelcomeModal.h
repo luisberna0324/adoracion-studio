@@ -26,7 +26,13 @@ public:
   void clearCredentials();
   bool isResetMode() const { return mode == Mode::reset || mode == Mode::linkSent; }
   bool isLinkSent() const { return mode == Mode::linkSent; }
-  bool isLocalDemoMode() const { return mode == Mode::localDemoLogin; }
+  bool isLocalDemoMode() const {
+#if JUCE_DEBUG
+    return mode == Mode::localDemoLogin;
+#else
+    return false;
+#endif
+  }
   int preferredHeight(int width = 0) const;
   void focusEmail();
   void resized() override;
@@ -50,11 +56,12 @@ private:
   bool busy = false;
 };
 
-class WelcomeModal final : public juce::Component {
+class WelcomeModal final : public juce::Component, private juce::Timer {
 public:
   std::function<void()> onLoginRequested;
   std::function<void()> onAppleLoginRequested;
   std::function<void()> onAuthenticationCancelled;
+  std::function<void()> onInlineAuthenticationNavigation;
   std::function<void(const juce::String &, const juce::String &)>
       onPasswordLoginRequested;
   std::function<void(const juce::String &, const juce::String &)>
@@ -68,6 +75,7 @@ public:
   void resetStatusToDefault();
   void setChecking(bool isChecking);
   void setAppleSignInAvailable(bool available);
+  void setInlineAppleLink(bool active);
   void setAuthenticationBusy(bool busy);
   void clearCredentials();
   void showPasswordLinkSent();
@@ -80,6 +88,8 @@ public:
 private:
   void showEmailForm(bool show);
   void updateActionVisibility();
+  void updateAppleButtonVisibility();
+  void timerCallback() override;
   void updateHeading();
   juce::ImageComponent logo;
   juce::Image logoImage;
@@ -95,6 +105,7 @@ private:
   std::unique_ptr<juce::Component> appleButton;
   bool checking = false;
   bool emailMode = false;
+  bool inlineAppleLink = false;
   bool authenticationBusy = false;
   juce::Rectangle<int> contentBounds;
 };

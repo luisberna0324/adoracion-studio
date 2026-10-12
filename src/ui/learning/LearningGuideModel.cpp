@@ -45,6 +45,11 @@ bool evaluateStepCondition(const StepCondition condition, const StepFacts &facts
   return false;
 }
 
+Anchor demoSectionLoopAnchor(Anchor requested, bool sectionsView, bool canChangeView) {
+  if (requested != Anchor::Waveform) return requested;
+  return sectionsView || !canChangeView ? Anchor::Waveform : Anchor::More;
+}
+
 RemotePrerequisite remoteStepPrerequisite(const juce::String &lessonId,
                                          const Step &step, const StepFacts &facts) {
   const bool playerStep = step.condition == StepCondition::SongLoaded ||
@@ -125,9 +130,13 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
                "Solo lets you hear an instrument in isolation within the mix. Turn it on and then off on the same channel. A Solo that was already on does not count as an action in this step.",
                "Activa Solo en un instrumento y vuelve a desactivarlo.", "Turn Solo on for one instrument, then turn it off again.", Anchor::Mixer, true, StepCondition::DemoExercise),
           step("demo-section-loop", "Repite una sección", "Repeat a section",
-               "Fuera del modo Editar, toca una sección (o pasa el puntero sobre ella) para ver sus acciones. Pulsa el icono de repetición para activar su loop y vuelve a pulsarlo para desactivarlo. Si ya había un loop activo, desactívalo antes de comenzar.",
-               "Outside Edit mode, tap a section (or hover over it) to reveal its actions. Press the repeat icon to enable its loop, then press it again to turn it off. If a loop was already active, turn it off before starting.",
-               "Activa el loop de una sección y vuelve a desactivarlo.", "Turn on a section loop, then turn it off again.", Anchor::Waveform, true, StepCondition::DemoExercise),
+               phone
+                   ? "Si ves la onda, abre Más y activa Vista de secciones. Allí, toca Loop en una tarjeta y vuelve a tocarlo para apagarlo. Sal de Editar si está activo y apaga cualquier loop previo antes de probar."
+                   : "Si ves la onda, abre Más y activa Vista de secciones. Allí, haz clic en Loop de una tarjeta y vuelve a pulsarlo para apagarlo. Sal de Editar si está activo y apaga cualquier loop previo antes de probar.",
+               phone
+                   ? "If you see the waveform, open More and enable Sections view. There, tap Loop on a card and tap it again to turn it off. Leave Edit if active and turn off any existing loop before trying."
+                   : "If you see the waveform, open More and enable Sections view. There, click Loop on a card and click it again to turn it off. Leave Edit if active and turn off any existing loop before trying.",
+               "Activa y desactiva Loop en una tarjeta.", "Turn Loop on and off on a card.", Anchor::Waveform, true, StepCondition::DemoExercise),
       }};
   if (phone) {
     demo.steps.push_back(step("demo-open-practice", "Abre Ensayo", "Open Practice",
@@ -228,17 +237,22 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
       {}};
   if (phone) {
     practice.steps = {
-        step("open-practice", "Abre Ensayo", "Open Practice",
-             "El menú Más de la barra superior abre Ensayo en vertical. Elige un instrumento desde el nombre sobre la tarjeta de onda. En remoto, la onda individual no está disponible y el audio sigue saliendo del servidor.",
-             "The top bar's More menu opens Practice in portrait. Choose an instrument using the name above its waveform card. In remote mode, individual waveforms are unavailable and audio still comes from the server.",
-             "Abre Más y entra en Ensayo.", "Open More and enter Practice.", Anchor::More, true),
+        step("open-practice", "Elige tu instrumento", "Choose your instrument",
+             "Abre Ensayo desde Más. En el selector sobre la onda, arrastra los nombres a izquierda o derecha y suelta para elegir; también puedes tocar un nombre lateral. El instrumento elegido queda resaltado en el centro. Para volver al anterior, selecciónalo otra vez.\n\n"
+             "Cambiar de instrumento no mueve la reproducción. Si activaste Enfoque o Reducido aquí, ese modo sigue al nuevo instrumento mientras conservas el control de la escucha. En remoto, el audio sale del servidor.\n\n"
+             "Un gesto vertical cambia un nivel: Reducido ↔ Normal ↔ Enfoque. Sube para enfocar desde Normal; baja para reducir desde Normal. Para volver a Normal, selecciona el instrumento indicado por Enfoque o Reducido y haz el gesto contrario. Con teclado, R restaura directamente la mezcla.",
+             "Open Practice from More. In the selector above the waveform, drag the names left or right and release to choose; you can also tap a name on either side. The chosen instrument is highlighted in the centre. To return to the previous one, select it again.\n\n"
+             "Changing instruments does not move playback. If you enabled Focus or Reduced here, that mode follows the new instrument while you retain control of listening. In remote mode, audio comes from the server.\n\n"
+             "A vertical swipe changes one level: Reduced ↔ Normal ↔ Focus. Swipe up to focus from Normal; down to reduce from Normal. To return to Normal, select the instrument named by Focus or Reduced and swipe the opposite way. With a keyboard, R restores the mix directly.",
+             "Elige otro instrumento, suelta y vuelve al anterior.",
+             "Choose another instrument, release, then return to the previous one.", Anchor::More, true),
         step("practice-navigation", "Muévete por la canción", "Move through the song",
              "Arrastra la onda hacia la derecha para retroceder y a la izquierda para avanzar. El audio se pausa durante el movimiento y continúa al asentarse si ya estaba reproduciendo. Un doble toque en la mitad izquierda retrocede un compás; en la derecha, avanza uno. Pellizca para ampliar la vista.",
              "Drag the waveform right to move back and left to move forward. Audio pauses during movement and resumes when it settles if it was already playing. Double-tap the left half to go back one bar or the right half to go forward one. Pinch to zoom.",
              "Prueba un arrastre corto o un doble toque.", "Try a short drag or a double-tap.", Anchor::Waveform, true),
         step("practice-listen", "Enfoca tu instrumento", "Focus your instrument",
-             "Un swipe hacia arriba en la tarjeta enfoca el instrumento seleccionado. Hacia abajo vuelve a la mezcla normal; otro swipe hacia abajo reduce ese instrumento. Clic, guía y Pads conservan su nivel. Restaurar mezcla recupera la escucha normal.",
-             "Swipe up on the card to focus the selected instrument. Swipe down to restore the normal mix; another swipe down reduces that instrument. Click, guide and Pads keep their levels. Restore mix returns to normal listening.",
+             "Desde Normal, desliza arriba en la tarjeta para enfocar o abajo para reducir el instrumento seleccionado. Cada gesto cambia un nivel: Reducido ↔ Normal ↔ Enfoque. Para volver a Normal, selecciona el instrumento indicado por Enfoque o Reducido: baja desde Enfoque o sube desde Reducido. Sobre otro instrumento el gesto inicia un modo nuevo. Clic, guía y Pads conservan su nivel. Con teclado, R restaura la mezcla directamente. En remoto, espera la confirmación del servidor.",
+             "From Normal, swipe up on the card to focus or down to reduce the selected instrument. Each gesture changes one level: Reduced ↔ Normal ↔ Focus. To return to Normal, select the instrument named by Focus or Reduced: swipe down from Focus or up from Reduced. On another instrument, the gesture starts a new mode. Click, guide and Pads keep their levels. With a keyboard, R restores the mix directly. In remote mode, wait for confirmation from the server.",
              "Enfoca un instrumento y restaura la mezcla.", "Focus an instrument, then restore the mix.", Anchor::Waveform, true),
         step("practice-ab", "Repite una región A–B", "Repeat an A–B region",
              "A marca el inicio y B cierra la región y activa su repetición. Ambas marcas encajan al pulso más cercano. Repetir apaga el loop conservando las marcas; la papelera borra la región. Es temporal y se libera al cerrar Ensayo si todavía pertenece a esa vista.",

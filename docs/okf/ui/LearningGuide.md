@@ -14,6 +14,7 @@ timestamp: 2026-10-03
 `Aprender PlayWorship` abre un catálogo de cursos desde:
 
 - El menú `Más` de la barra superior en layouts táctiles de teléfono y tablet.
+- El botón independiente `?` de la barra superior en escritorio.
 - Configuración en todas las plataformas. La portada agrupada contiene la
   entrada de aprendizaje y el layout de escritorio ancho incluye `Abrir guías`
   en General. El catálogo puede permanecer dentro de Configuración.
@@ -56,6 +57,28 @@ navegación manual. Son introducciones; sus ejercicios todavía no tienen
 condiciones de ejecución verificadas. Los dos recorridos remotos incorporan
 condiciones reales de avance en sus pasos de acción y pasos explicativos sin
 condición.
+
+El primer paso de `practice-sections` conserva el ID `open-practice` y el ancla
+`More`: antes de abrir Ensayo apunta a Más y dentro de Ensayo al selector de
+instrumentos. Su título es **Elige tu instrumento** y explica arrastre con
+confirmación al soltar, toque de un vecino, selección central y vuelta al
+instrumento anterior. También aclara los niveles de escucha, su restauración
+y que el retarget solo sigue al nuevo instrumento mientras esta vista conserve
+el control de la escucha. Mantiene cuatro pasos y avance manual; no añade
+acciones automáticas ni cambia progreso guardado. El botón `?` abre directamente este recorrido existente, sin un popover ni
+controles de mezcla duplicados. Si ya está abierto, conserva el paso. Pausar
+(con X/Escape) guarda el progreso y devuelve el foco a `?` mientras Ensayo esté
+visible. Al reabrir reanuda el paso guardado; un curso completado vuelve al
+primero, como desde el catálogo. Cambiar de curso conserva el progreso anterior.
+La selección del instrumento, el transporte y la mezcla no cambian al abrirlo.
+
+Restaurar con un gesto requiere seleccionar el instrumento nombrado por el
+estado Enfoque/Reducido: abajo desde Enfoque o arriba desde Reducido envía el
+mismo reset a Normal que R. Sobre otro instrumento, un gesto inicia otro modo;
+no equivale a restaurar. R conserva su reset directo aunque el seleccionado
+sea otro. En remoto se espera confirmación; cerrar Ensayo solo libera la escucha
+si aún le pertenece, por lo que no se enseña como sustituto universal. El
+recorrido no contiene botones que modifiquen la mezcla.
 
 El curso de teléfono enseña los gestos de **Ensayo**; no atribuye esos gestos
 de doble toque por compás a la onda principal. Sus marcas A y B se ajustan al
@@ -121,6 +144,18 @@ Completar un requisito habilita Continuar, pero no salta automáticamente al
 siguiente paso. La guía no abre páginas, elige un servidor, cambia de modo ni
 envía acciones por su cuenta: observa los controles existentes.
 
+En `demo-section-loop` (paso 8), Loop se usa en `Vista de secciones`. Si está
+activa la vista de onda, la guía resalta y deja accesible el `Más` existente de
+la barra superior en teléfono/tablet para elegir esa vista. En escritorio,
+resalta directamente `Secciones` en el selector `Onda / Secciones` y adapta la
+instrucción a ese botón. El menú ajeno oculta temporalmente la
+guía; al cerrarlo se conserva el paso y se resalta la onda/tarjetas. Si una
+edición impide cambiar la vista, sus controles permanecen accesibles para
+terminarla o cancelarla. Entrar directamente en Vista de secciones omite ese
+desvío. Cambiar de vista nunca cumple el ejercicio: Continuar sigue esperando
+el ciclo explícito de activar y desactivar Loop durante ese paso. El texto de
+teléfono usa tocar y el de escritorio hacer clic; no promete acciones al hover.
+
 ## Interacción y navegación
 
 Cada paso presenta título, descripción y una tarea breve. La guía oscurece
@@ -156,12 +191,18 @@ Los controles de navegación son compactos:
   ancho según texto, no media tarjeta: conserva un área táctil de 44 px de alto
   con un relleno visible de 35 px.
 - `Continuar` y `Terminar` permanecen deshabilitados mientras la condición del
-  paso esté pendiente. Anterior, Más y cerrar conservan su disponibilidad;
+  paso esté pendiente. Anterior y cerrar conservan su disponibilidad;
   Anterior se deshabilita solamente en el primer paso.
-- `Más` reúne `Cursos`, que vuelve al catálogo, y `Reiniciar guía`, que vuelve
-  al primer paso y elimina el estado completado de ese curso.
-  Su menú se dibuja como hijo de la guía, dentro de su ventana actual.
-- La `X` (`Pausar guía`) y Escape cierran la guía conservando el paso actual.
+- La tarjeta de paso no tiene menú de tres puntos ni una fila reservada para
+  él: ese espacio se dedica a las instrucciones. El catálogo sigue accesible
+  desde `Aprender PlayWorship` en la barra superior y en Configuración.
+  Un curso completado se abre de nuevo desde el primer paso; uno en progreso
+  conserva su continuación. El reinicio explícito ya no tiene un control
+  visible dentro de la tarjeta.
+- `Cerrar` aparece en el pie junto a Continuar/Terminar y conserva el paso
+  actual, igual que Escape. La tarjeta de paso no presenta otra `X` arriba.
+  El catálogo conserva su `X` para cerrar. El foco recorre Anterior, Cerrar,
+  Continuar/Terminar en ese orden.
 - Con la guía enfocada, las flechas izquierda y derecha recorren pasos. No se
   utilizan para buscar audio ni para realizar la tarea sugerida. La flecha
   derecha respeta la misma validación que Continuar.
@@ -191,8 +232,6 @@ introductorios se ocultan mientras Configuración está abierta. Los modales
 ajenos, la autenticación y los menús/pickers modales ajenos ocultan temporalmente
 la ayuda para conservar sus controles y comportamiento. Al cerrarlos, vuelve
 en el mismo paso. Abrir una página o cerrar un panel no avanza el curso.
-El menú Más propio conserva la guía visible: la integración reconoce su modal
-descendiente y no lo confunde con un menú ajeno ni abre una ventana separada.
 
 Ensayo mantiene la guía disponible porque ofrece los destinos del curso de
 teléfono. Si el usuario elige otro curso con Ensayo aún abierto, se resalta

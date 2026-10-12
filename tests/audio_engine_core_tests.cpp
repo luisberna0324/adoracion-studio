@@ -225,38 +225,21 @@ void testSectionSchedulerLoopEscape() {
   expect(!decision.transition && decision.currentSection == 1,
          "loop without pending jump keeps playhead inside section");
 
-  // Block fully inside the loop WITH a pending jump to a different section:
-  // the pending jump escapes the loop at the next loop boundary, landing in
-  // the target section. The transition offset is clamped to blockFrames when
-  // the block ends before the loop boundary, signalling that the transition
-  // will fire on the next block that crosses the loop end.
   decision = Scheduler::evaluate(snapshot, 1500, 100, false, 3, 1);
-  expect(decision.transition && decision.currentSection == 1 &&
-             decision.targetSection == 3 && decision.targetFrame == 3000 &&
+  expect(!decision.transition, "pending escape waits for the actual section boundary");
+  decision = Scheduler::evaluate(snapshot, 1900, 200, false, 3, 1);
+  expect(decision.transition && decision.targetSection == 3 && decision.targetFrame == 3000 &&
              decision.transitionOffsetFrames == 100,
-         "pending jump from inside loop schedules escape at loop boundary");
+         "pending forward jump wins over loop on its exact boundary");
+  decision = Scheduler::evaluate(snapshot, 1900, 200, false, 0, 1);
+  expect(decision.transition && decision.targetSection == 0 && decision.targetFrame == 0 &&
+             decision.transitionOffsetFrames == 100,
+         "pending backward jump wins at the same boundary");
+  decision = Scheduler::evaluate(snapshot, 1900, 100, false, -1, 1);
+  expect(decision.transition && decision.targetSection == 1 && decision.targetFrame == 1000 &&
+             decision.transitionOffsetFrames == 100,
+         "unopposed Loop wraps only its own section even exactly at block end");
 
-  // Pending jump that targets the loop section itself is a no-op while the
-  // playhead is already inside the loop. We stay in the loop without
-  // emitting a transition (consuming the jump here would be redundant).
-  decision = Scheduler::evaluate(snapshot, 1500, 100, false, 1, 1);
-  expect(!decision.transition && decision.currentSection == 1,
-         "pending jump targeting the loop section is a no-op inside the loop");
-
-  // Block that already crosses the loop end with a pending jump to another
-  // section: the loop wrap wins on the boundary, the pending jump is queued
-  // for the next boundary that we just wrapped past.
-  decision = Scheduler::evaluate(snapshot, 1900, 200, false, 3, 1);
-  expect(decision.transition && decision.targetSection == 1 &&
-             decision.targetFrame == 1000 && decision.transitionOffsetFrames == 100,
-         "loop wrap still wins on the boundary block, pending jump deferred");
-
-  // Block that crosses the loop end with a pending jump still wins as a
-  // wrap-around: the loop is the dominant intent on the boundary.
-  decision = Scheduler::evaluate(snapshot, 1900, 200, false, 3, 1);
-  expect(decision.transition && decision.targetSection == 1 &&
-             decision.targetFrame == 1000 && decision.transitionOffsetFrames == 100,
-         "loop wrap still beats pending jump on the boundary block");
 }
 
 std::vector<playworship::audio::SectionScheduler::Section>

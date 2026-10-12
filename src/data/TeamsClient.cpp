@@ -1,3 +1,4 @@
+#include "TeamsAvailability.h"
 #include "TeamsClient.h"
 
 #include "AuthSessionApi.h"
@@ -42,6 +43,10 @@ void TeamsClient::cancelAll() {
 void TeamsClient::request(CloudTransferCredentials credentials,
                           juce::String operation, juce::var payload,
                           Callback callback) {
+  if (!teamsFileSharingAvailable) {
+    if (callback) callback({}, {403, "TEAM_SHARING_PAUSED", "Teams file sharing is temporarily unavailable. Personal Cloud remains available."});
+    return;
+  }
   struct Job final : juce::ThreadPoolJob {
     CloudTransferCredentials credentials;
     juce::String operation;

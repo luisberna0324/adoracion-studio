@@ -1,4 +1,5 @@
 #include "data/AppleSignInApi.h"
+#include "data/AppleLinkFlow.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -53,6 +54,8 @@ NativeAppleSignIn::Credential credential() {
 juce::var sessionBody(const juce::String& uid, bool allowed = true) {
   auto* session = new juce::DynamicObject();
   session->setProperty("uid", uid);
+  session->setProperty("authProvider", "apple.com");
+  session->setProperty("authProviderUser", "verified-apple-subject");
   session->setProperty("email", "canonical@example.test");
   session->setProperty("plan", "trial");
   session->setProperty("subscriptionStatus", "trial");
@@ -199,12 +202,30 @@ void errorsAndConfigurationRemainBounded() {
 
 int main() {
   try {
+    AppleLinkFlow flow;
+    expect(!flow.confirm("uid", nowMs), "no link without explicit flow");
+    flow.begin(nowMs); const auto oldToken = flow.generation;
+    expect(flow.choose(nowMs + 1) && !flow.choose(nowMs + 2), "double offer acceptance rejected");
+    expect(oldToken != flow.generation, "obsolete dialog callback invalidated");
+    expect(flow.authenticated("account-one", nowMs + 3), "authenticate chosen account before confirmation");
+    expect(!flow.confirm("account-two", nowMs + 4), "account change cannot authorize link");
+    expect(flow.confirm("account-one", nowMs + 5) && !flow.confirm("account-one", nowMs + 6), "explicit consent authorizes exactly one link");
+    flow.cancel(); expect(flow.uid.empty() && !flow.valid(nowMs + 7), "cancel clears identity and pending intent");
+    flow.begin(nowMs); expect(!flow.choose(nowMs + 300000), "expired offers require fresh flow");
+    flow.begin(nowMs); flow.choose(nowMs); flow.authenticated("uid", nowMs);
+    expect(!flow.confirm("uid", nowMs + 300000), "expired confirmation cannot link");
+    flow.cancel(); flow.begin(nowMs); expect(flow.uid.empty(), "new Apple login never inherits old account");
     challengeRequiresFreshOpaqueProof();
     proofsAndLinkBearerStayOutOfUrls();
     exchangeRejectsWrongAttempt();
     originsAndHeadersFailClosed();
     serverSessionPreservesUidAndDenials();
     errorsAndConfigurationRemainBounded();
+    expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::authorized), "authorized credential keeps session");
+    expect(!NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::unavailable), "temporary OS errors do not sign out");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::revoked), "revoked credential requires fresh login");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::notFound), "missing credential requires fresh login");
+    expect(NativeAppleSignIn::requiresFreshLogin(NativeAppleSignIn::CredentialState::transferred), "transferred credential requires fresh login");
     std::cout << "Apple sign-in contract tests passed\n";
     return 0;
   } catch (const std::exception& error) {

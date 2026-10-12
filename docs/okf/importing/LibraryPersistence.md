@@ -99,3 +99,9 @@ procedencia validado y usa deleteSong para quitar referencias de todos los setli
 Conserva blobs usados por canciones restantes y archivos externos. Persiste inventario
 antes de borrar para reintentar fallos. El editor descarga del motor la canción afectada
 solo después de detener reproducción; no limpia ante fallos de red ni de suscripción.
+
+## Portadas con fuentes históricas remotas
+
+Abrir o guardar una canción no descarga portadas remotas. Se conserva la portada
+local existente y la metadata de origen; si falta el archivo, se usa el estado sin
+portada. Elegir manualmente una imagen local sigue copiándola al proyecto.

@@ -202,8 +202,9 @@ std::vector<float> buildMixedWaveformBins(
     const ImportedSongData &song, int binCount = kWaveformPreviewBinCount,
     const std::function<void(double progress01)> &onProgress = {});
 
-// Decode a single local stem for the rehearsal preview. Keeps the bins aligned
-// with the whole-song timeline so its playhead can use the shared transport.
+// Decode a single local stem against the source song's duration (not the
+// extended arrangement duration). Shorter stems retain a silent source tail;
+// PracticeWaveform projects these peaks through the playback map for rehearsal.
 std::vector<float> buildStemWaveformBins(const ImportedStemData &stem,
                                          double songLengthSeconds,
                                          int binCount = kWaveformPreviewBinCount,

@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-11T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -32,11 +32,14 @@ En teléfonos, el botón de tres puntos horizontales del `TopBar` incluye
 `Ensayo`. Abre `PracticePanel` como superficie completa y solicita portrait;
 al cerrar restaura las orientaciones landscape de performance. La vista usa
 los insets seguros reales, muestra inicialmente una ventana de 12 segundos y usa
-`PlaybackSession` para posición, Play/Pausa y Stop. Un toque en el encabezado
-de la tarjeta abre la lista de instrumentos. Elegir uno cambia el nombre y la
-onda individual; con una escucha de ensayo activa, también retargetea esa
-escucha al nuevo instrumento. La onda individual se decodifica en background y se alinea al tiempo
-global de la canción. En Cliente se muestran los instrumentos del servidor,
+`PlaybackSession` para posición, Play/Pausa y Stop. El encabezado de la tarjeta
+muestra `PracticeInstrumentSelector`, que reutiliza la rueda horizontal real de
+Tono/Tempo. Elegir un instrumento cambia el nombre y la onda individual; con una escucha de ensayo activa, también retargetea esa
+escucha al nuevo instrumento. La onda individual se decodifica en background en
+tiempo fuente y se proyecta al tiempo del arreglo mediante una copia inmutable
+del `SectionScheduler` real. Las copias reutilizan los picos del mismo rango
+fuente y desplazan correctamente el audio posterior; no duplican archivos ni
+normalizan cada sección por separado. En Cliente se muestran los instrumentos del servidor,
 pero el protocolo remoto actual solo transporta la onda mezclada, así que la
 onda individual indica su falta de disponibilidad. Play/Pausa y Stop no se
 envían cuando la conexión está caída.
@@ -60,10 +63,38 @@ el encabezado. `Ensayo` y el nombre de la canción comparten una línea base
 en la cabecera de 64 puntos, separados por 12 puntos. El nombre usa color
 secundario y elipsis cuando no cabe, sin comprimir su fuente ni invadir
 los 12 puntos de separación con Cerrar.
-La fila anterior al transporte queda fuera de la tarjeta de
-onda: muestra el estado de la mezcla a la izquierda y la cápsula textual
-`Restaurar mezcla` de 160 × 44 puntos a la derecha solo cuando hay una escucha
-de ensayo activa.
+La fila anterior al transporte queda fuera de la tarjeta de onda y conserva
+sus 44 puntos de alto. Contiene dos botones de igual ancho, `Guía` y
+`Metrónomo`, separados por 12 puntos. Toda la superficie conmuta; no son
+switches pequeños. Encendido usa un fondo de acento tenue, marca de verificación
+y etiqueta en una sola línea `Guía • ON` o `Metrónomo • ON`; apagado usa fondo
+oscuro, borde discreto, signo menos y la misma etiqueta con `OFF`. Se conservan
+los bounds exteriores, la tipografía base de 12 puntos y el alto de 44 puntos;
+el ajuste horizontal del texto evita recortar Metrónomo en teléfonos estrechos.
+El estado nativo accesible también expone checked, la etiqueta,
+la disponibilidad y el estado pendiente. Tab y Espacio activan los botones.
+
+`Guía` silencia/desilencia la fuente ya elegida, original o dinámica; nunca
+cambia esa selección. Si no existe una fuente fiable/disponible, el botón queda
+deshabilitado con motivo accesible. `Metrónomo` controla Click Dyn: encenderlo
+habilita su motor/divisiones y quita mute; conserva la máscara de divisiones
+existente o recupera negras si estaba vacía. No modifica click original, Solo,
+faders, routing ni escucha de ensayo. Ambos controles permanecen independientes
+de cambiar el instrumento enfocado.
+
+Los botones muestran siempre el estado confirmado por la sesión. Durante un
+comando asíncrono conservan ese estado `ON`/`OFF` en la misma línea; la descripción
+accesible y el tooltip indican `Confirmando cambio`. El botón bloquea otros
+toques hasta confirmación o un timeout de 2 segundos. Cambiar fuente,
+canción, modo local/remoto o disponibilidad cancela la intención pendiente. Un
+toque llegado antes del siguiente tick no se aplica a una fuente que cambió.
+El timeout avisa sin afirmar éxito ni invertir el estado de la fuente.
+
+No hay fila permanente de estado de mezcla ni botón grande `Restaurar mezcla`.
+Los avisos A–B y errores sustituyen temporalmente las pistas de doble toque en
+los 30 puntos ya reservados arriba de la regla; no cambian tamaño de onda, tiempos
+ni transporte. Una selección A–B conserva allí su estado hasta borrarla. Al
+terminar el aviso/selección vuelven las pistas de doble toque.
 
 Sobre la tarjeta de onda, tono y tempo comparten una fila en dos columnas con
 12 puntos de separación. Los títulos `Tono` (`Key` en inglés) y `Tempo` se
@@ -100,7 +131,29 @@ y restaura el tempo original con doble toque o Home. Respeta los límites del
 motor (75 %–200 % del BPM original, dentro del rango admitido de 20–300 BPM)
 y usa `PlaybackSession::setPlaybackTempoBpm`, incluida su ruta remota y la
 persistencia local por setlist. Cambiar tempo altera la velocidad de reproducción;
-la onda y la grilla mantienen las posiciones de tiempo fuente.
+la onda y la grilla mantienen las posiciones del arreglo, con el mapa fuente
+de cada copia, sin estirar sus tiempos al cambiar BPM.
+
+El selector de instrumentos permanece bajo el handle de la tarjeta, con 18
+puntos de margen lateral y 44 puntos de alto. Comparte `PracticeWheelSelector`
+con tono y tempo: selección central resaltada, vecinos visibles, degradados y
+centrado de 160 ms. Cada casilla usa 104–180 puntos según el ancho disponible,
+con dos líneas y elipsis para nombres largos sin compresión horizontal; el nombre
+completo se conserva en la interfaz accesible del Slider. Los otros selectores
+conservan sus pasos de 44 puntos. Instrumentos no tiene un valor musical original:
+no dibuja el segundo relleno ni restaura otro instrumento al hacer doble toque.
+Flechas y rueda recorren la lista; Home/End eligen sus extremos.
+
+Arrastrar el carrusel solo previsualiza y confirma una vez al soltar; tocar un
+vecino selecciona el elemento visible. La selección usa el ID estable del stem,
+incluso si la lista se reordena antes del siguiente sondeo. Al quitar el seleccionado
+se muestra el primer disponible; una lista vacía deshabilita el control.
+Cambios de canción, contexto, lista, tamaño o conexión cancelan la selección
+pendiente. Sus gestos horizontales y toques no producen scrub, seek, salto de compás
+ni menú. Los verticales y el pinch siguen usando el arbitraje de la tarjeta,
+con un solo dueño por gesto y sin acción tardía al levantar el último dedo.
+Se mantienen los callbacks existentes de onda individual y retarget de escucha;
+no se modifica el motor de audio, los faders ni las ganancias de ensayo.
 
 En la fila inferior, A marca el inicio y B cierra la región e inicia la repetición.
 Ambos se ajustan al pulso musical más cercano dentro de Inicio/Fin; un empate
@@ -159,16 +212,45 @@ predominio vertical (1.2 veces el horizontal) activa una sola acción por gesto:
 
 Es una ganancia temporal suavizada durante 200 ms, independiente de faders,
 trim, Solo y Mute; los niveles no acumulan ganancia. El footer indica
-el siguiente gesto disponible según el estado; la fila de mezcla fuera de la onda indica el modo vigente
-y ofrece `Restaurar mezcla`. Cerrar Ensayo restaura la mezcla si esa
-vista sigue siendo propietaria de la escucha. Cargar otra canción, cambiar de
-modo local/cliente/servidor o desconectar al cliente propietario también la
-restaura. El deslizamiento hacia abajo ya no cambia de instrumento. En Cliente,
-la intención viaja por `practice.listen` y se aplica al audio del servidor;
-los gestos no envían comandos mientras la conexión está caída.
+el estado actual y el siguiente gesto disponible. El marco exterior de la tarjeta
+muestra un halo persistente tenue: superior y laterales hasta media altura para
+Enfoque, inferior y laterales desde media altura para Reducido. Normal no tiene
+halo. Solo se ilumina cuando el instrumento visible es el objetivo real de la
+sesión confirmado por el servidor y hay control disponible; el preview optimista
+sigue sirviendo únicamente para encadenar gestos, con ayuda `Confirmando mezcla…`
+mientras llega la confirmación. Si el objetivo es otro, el footer y la ayuda
+indican su nombre. No se pinta encima de la onda: los trazos exteriores se
+renderizan antes de la tarjeta opaca. Es estático también con reducción de
+movimiento; no hay pulsos, parpadeo, blur ni buffers de imagen por frame.
 
-La tarjeta se divide virtualmente en dos mitades iguales: un doble toque en
-la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques
+Las dos leyendas inferiores se centran respecto de toda la tarjeta. La franja
+reserva 48 puntos simétricos a izquierda y derecha (44 para ayuda y 4 de aire),
+independientemente de la visibilidad de `?`. El texto breve es
+`↔ Recorrer · Pellizca: zoom` y el estado/siguiente gesto; el nombre completo
+del instrumento se conserva en la ayuda. No cambian la tarjeta, la onda, la
+regla, los tiempos, el transporte ni los controles Guía/Metrónomo.
+
+El botón `?` de 44 × 44 abre el recorrido existente **Ensaya por instrumento**
+(`practice-sections`), mediante un callback hacia el editor. No crea otro popover
+ni duplica los controles de Ensayo. Conserva el estilo, navegación, resaltado,
+scroll y progreso del sistema de aprendizaje. Peticiones repetidas mantienen el
+paso actual; pausar con X/Escape devuelve el foco al botón si Ensayo sigue visible.
+Reabrir reanuda el paso guardado y un curso completado vuelve al inicio. Véase
+[LearningGuide](LearningGuide.md).
+
+Para restaurar por gesto, selecciona el instrumento indicado por Enfoque o
+Reducido: bajar desde Enfoque o subir desde Reducido vuelve a Normal. Hacerlo
+sobre otro instrumento inicia un modo nuevo, no un reset. R conserva la
+restauración directa de la mezcla incluso si está seleccionado otro instrumento,
+sin seek ni cambio de Guía/Metrónomo. No hay un botón Restaurar dentro de la ayuda.
+Cerrar Ensayo restaura solo si la vista sigue siendo propietaria de la escucha.
+Cargar otra canción, cambiar de modo local/cliente/servidor o desconectar al cliente
+propietario también la restaura. El deslizamiento hacia abajo no cambia de
+instrumento. En Cliente, la intención viaja por `practice.listen` y se aplica al
+audio del servidor; los gestos no envían comandos mientras la conexión está caída.
+
+La tarjeta, fuera del carrusel de instrumentos, se divide virtualmente en dos
+mitades iguales: un doble toque en la izquierda retrocede un compás y en la derecha avanza un compás. Ambos toques
 deben pertenecer a la misma mitad, canción y modo local/remoto. El salto usa
 el BPM original y la métrica de la canción, conserva Play/Pausa y muestra una
 confirmación en la mitad tocada. Los saltos consecutivos en el mismo sentido
@@ -176,10 +258,10 @@ acumulan el contador (`−1 compás`, `−2 compases`, etc.) durante 1.5 segundo
 desde el último salto. Invertir el sentido, iniciar un arrastre, detener o
 cambiar canción reinicia esa cuenta; tocar un límite sin desplazamiento no
 incrementa el contador. Cada mitad lleva una ayuda pequeña y secundaria para
-el doble toque, fuera del cuerpo de la onda. Un toque en el encabezado espera el
-intervalo del doble toque antes de abrir el selector de instrumento.
+el doble toque, fuera del cuerpo de la onda. El carrusel elige instrumentos
+sin esperar el intervalo de un doble toque ni abrir un popup.
 
-El arrastre horizontal desplaza la onda bajo un cursor central: hacia la
+El arrastre horizontal fuera del carrusel desplaza la onda bajo un cursor central: hacia la
 derecha busca audio anterior y hacia la izquierda audio posterior. Durante
 el arrastre solo cambia la previsualización y pausa temporalmente el transporte
 si estaba reproduciendo. La cámara sigue el dedo con un suavizado de 35 ms y
@@ -195,7 +277,24 @@ seek con `PlaybackSession` y se reanuda solo si esa pausa sigue perteneciendo
 al gesto. Tocar de nuevo interrumpe la inercia y conserva la propiedad de la
 misma pausa para continuar recorriendo la onda.
 
-`PracticeWaveformGeometry` agrupa los bins en intervalos fijos desde el tiempo
+`PracticeWaveform` recibe los picos fuente y un snapshot coherente del scheduler,
+su sample rate, duración fuente, duración del arreglo y revisión de carga. La
+proyección se ejecuta fuera del hilo de audio y divide cada intervalo en los
+límites de las copias antes de consultar máximos: nunca toma como un solo rango
+el salto entre dos posiciones fuente. La memoria se limita a los vectores de
+picos y las secciones del snapshot, independientemente del tamaño del PCM.
+Un stem más corto conserva silencio después de su final fuente, incluso cuando
+se copia ese rango. El helper no aplica otra normalización.
+
+`PracticePanel` invalida su caché por revisión del mapa/fuente, duración,
+canción y local/remoto. Reordenar o recortar copias con igual duración también
+invalida. Cada entrega asíncrona comprueba la identidad viva y la generación
+antes de guardar o mostrar bins; una respuesta de una revisión anterior no
+puede contaminar la caché al cambiar entre instrumentos. Cambiar el arreglo
+mantiene la selección del instrumento. No se consultan archivos desde paint
+ni desde el timer para calcular esta identidad.
+
+`PracticeWaveformGeometry` agrupa los bins proyectados en intervalos fijos desde el tiempo
 cero de la canción y conserva sus amplitudes al mover la cámara. Los puntos
 se conectan con curvas cúbicas sin exceder las amplitudes adyacentes, formando
 una envolvente continua y rellena. La geometría se cachea en tiles de 64
@@ -309,6 +408,9 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   El fondo y la banda inferior del primer y ultimo canal se prolongan por ese
   padding lateral para evitar una franja vacia. Esta prolongacion es decorativa:
   no replica controles ni cambia sus posiciones o el recorrido del scroll.
+  El borde izquierdo real de Master se dibuja dentro del strip con un trazo
+  de un punto en `cardBorder`, también sobre su banda inferior. Delimita el
+  canal frente al padding decorativo sin agregar otra franja ni mover controles.
 - En Android se respetan los insets reportados por el sistema para los controles,
   incluyendo cutouts y barras visibles. No se recorta toda la superficie por el
   inset lateral: waveform y mixer se extienden bajo esa zona, y el fondo de la
@@ -637,22 +739,45 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 Mediciones y limites de la verificacion:
 [`perf/analysis_20260915/INFORME.md`](../../../perf/analysis_20260915/INFORME.md).
 
+## Dibujo de la onda durante reproducción (todas las plataformas)
+
+`WaveformBar` reutiliza su raster de playback también con Follow apagado.
+El avance del transporte no vuelve a muestrear todos los picos ni a mapear cada
+columna del arreglo en cada cuadro. Se conservan la máscara de brillo de la
+porción reproducida en escritorio/iOS y el raster sin máscara de Android.
+Los cambios de bins, arreglo, tamaño, tema o escala del viewport invalidan la
+caché; mover Follow conserva el overscan mientras cubra la nueva ventana.
+Los límites de reproducción se componen después de la onda y su máscara,
+conservando el oscurecimiento de las partes excluidas también con caché.
+El minimapa compone estos límites fuera de su raster, para que no conserve
+un sombreado anterior al cambiar o quitar un recorte.
+
+Con viewport fijo se invalidan las franjas entre la posición anterior y nueva
+en las tres superficies: onda, regla y minimapa. Incluyen los márgenes de la
+aguja y el tramo cuyo brillo cambia, también al retroceder o cruzar un loop.
+Los saltos pendientes, la carga, la edición y las transiciones Play/Pausa/Stop
+conservan el repaint completo. Follow sigue invalidando toda la vista cuando
+`setVisibleWindow` desplaza la cámara. Los cambios de Preparing, salto pendiente
+y Loop recibidos por remoto/MIDI invalidan también las secciones fuera de las
+franjas. El pulso de automatización conserva su invalidación específica de
+sección y toolbar.
+
+El dibujo detallado limita el muestreo a las columnas incluidas en el clip,
+sin alterar su fase de dos píxeles. Las secciones fuera del clip omiten el
+trabajo de dibujo y texto. Se consulta la región exacta del clip, también si
+contiene varias franjas separadas, para no confundirla con su rectángulo
+envolvente; su geometría completa sigue disponible para hit testing. Esto no modifica el transporte, los buffers ni el callback de audio.
+
 ## Controles integrados de secciones y navegación de la onda
 
-En reproducción, Ir, Loop y Mute permanecen visibles dentro de la parte inferior
-de cada sección. Los iconos de línea y sus textos heredan el color de la sección;
-una atenuación gradual de la onda aporta contraste sin cajas ni círculos por
-botón. Su posición es fija: activar una acción no reordena los controles.
-Las secciones conservan su ancho proporcional al tiempo y los objetivos miden
-como mínimo 44 × 44 puntos. Con menos ancho se conservan Ir y Loop cuando caben,
-y Más ofrece Mute. Si sólo cabe un objetivo, la elipsis abre las tres acciones.
-Las regiones menores que un objetivo usan la elipsis compartida de Secciones,
-que lista las secciones por número y nombre, sin ensanchar la línea de tiempo.
-Los menús resuelven el ID persistente de la sección al ejecutar la acción.
+La vista Onda normal no muestra Ir, Loop ni Mute en ninguna plataforma.
+No reserva objetivos táctiles, foco, nodos accesibles ni menús de acciones de
+reproducción por sección. Estas acciones pertenecen únicamente a Secciones.
+Los anchos y límites de Onda siguen siendo proporcionales al tiempo.
 
 En iOS y Android, tanto teléfonos como tablets, arrastrar la onda en reproducción
 sólo desplaza su viewport. El toque sobre el fondo mueve la posición al soltar;
-los controles también se ejecutan al soltar y no buscan la posición subyacente.
+en Secciones, los controles se ejecutan al soltar y no buscan la posición subyacente.
 Superar 6 puntos de movimiento, soltar fuera del destino, cambiar de objetivo,
 utilizar otro dedo o iniciar zoom cancela la acción pendiente. Volver al punto
 inicial no convierte un arrastre en toque. Pinch conserva su ancla; el gesto no
@@ -666,3 +791,160 @@ borrador de automatización permanecen vigentes. Ir reutiliza la solicitud de
 salto existente, con su temporización pendiente actual; Loop reutiliza su
 callback y Mute silencia instrumentos sin detener el click. No se modifica el
 contrato del motor de audio.
+
+### Vista de secciones
+
+El menú principal de tres puntos contiene un único ítem activable `Vista de
+secciones`, con el mismo patrón de acción que MIDI. Marcado muestra secciones;
+desmarcado vuelve a la onda normal. La marca visual y el estado accesible se
+sincronizan al abrir/reabrir el menú y con cambios de vista externos. Se retiró
+el selector grande de la barra para recuperar espacio del título y controles.
+La fila conserva 44 puntos de alto. No se añade persistencia entre sesiones.
+No se duplica la acción en el menú de onda; ese menú conserva sus funciones en
+normal y se oculta en Secciones sin reservar una cabecera vacía.
+Es una presentación optativa, independiente del
+editor arrange y de la automatización. No se activa al cargar ni cambia el
+estado musical al alternar. Conserva el viewport y el ajuste de seguimiento
+de la vista normal.
+
+Secciones presenta una fila manual de bloques de al menos 176 puntos con Ir, Loop
+y Mute persistentes de 44 × 44 puntos. El ancho se reparte entre un número
+entero de tarjetas, con 12 puntos entre ellas. En teléfono, la fila, el color
+y la onda de las secciones ocupan todo el ancho físico, igual que la onda normal,
+sin bandas laterales ni padding exterior. Sólo las etiquetas y acciones se
+limitan a la intersección de la tarjeta con el área segura; el grupo Ir/Loop/Mute
+se centra en ese espacio. El ancho mínimo también reserva espacio para los tres
+objetivos junto al mayor inset lateral. Cambiar los insets al rotar actualiza
+esta distribución aunque el tamaño del componente no cambie. Escritorio y
+tablet conservan su fila dentro del área segura. Al soltar un arrastre, la fila se
+ajusta a la tarjeta más cercana. El trackpad conserva el desplazamiento continuo
+y ajusta la fila tras 150 ms sin eventos; la rueda discreta avanza una tarjeta
+por paso. Así no quedan títulos ni acciones
+cortados en los extremos cuando la fila está detenida, incluidas ambas
+orientaciones landscape con sus insets. Conserva la paleta de sección con una capa de
+color de transparencia moderada sobre la onda real de su rango de audio. Las
+copias usan su rango fuente explícito; las originales descuentan las inserciones
+anteriores mediante `ArrangementSourceMapping`, con sesgo izquierdo en el
+final del rango. Esto permite dibujar originales desplazadas más allá de la
+duración fuente sin colapsar su onda. No se genera una señal de adorno. El progreso se
+distingue mediante un relleno más claro y su indicador superior. El ancho
+visual no representa ni modifica la duración musical.
+El llenado interior usa la posición confirmada del transporte relativa al
+rango real de la sección: vuelve a cero al repetir y cambia de bloque tras el
+salto confirmado. El destino pendiente se marca en Ir, el loop en Loop y el
+mute en Mute; no se confunden con la sección activa.
+
+Secciones reserva un área de título centrada en el bloque completo,
+por encima de los controles y separada de los indicadores. La fuente semibold
+se adapta al ancho y alto (14–30 puntos en alturas habituales); nombres largos
+usan hasta dos líneas y elipsis sin compresión horizontal ilegible. El padding
+se calcula con el tamaño real del bloque. Scroll e inercia no cambian fuente,
+anchura ni saltos de línea: el viewport sólo recorta el título al salir de pantalla,
+sin recentrarlo ni encogerlo. La fila de acciones se reserva aunque el recorte
+oculte sus botones; sólo cambiar el tamaño real recalcula el layout.
+El nombre blanco con sombra y degradado de contraste se dibuja después de
+Mute/progreso/pulso; Mute no atenúa sus glifos. En alturas extraordinariamente
+bajas se reduce la fuente para no invadir los objetivos táctiles existentes.
+
+El estado usa 14 puntos Medium, con una o dos líneas según la altura real,
+sin compresión horizontal. Reserva su espacio incluso cuando no hay estado;
+activarse, pausarse o pasar por el recorte del viewport nunca cambia el tamaño
+ni el layout del título. `Sonando` depende de transporte reproduciendo;
+`Pausada` identifica la sección bajo el cursor con transporte detenido/pausado.
+`Preparando` permanece distinto de `Salto programado`, que requiere destino
+pendiente confirmado. Loop futuro se presenta como `Loop armado`. Ir conserva
+su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
+Ir/Loop/Mute usan etiquetas de 13 puntos. La onda y el relleno de progreso
+ceden intensidad y una sombra gradual compartida mejora la lectura de las
+acciones, sin cajas individuales ni cambios en sus blancos de 44 × 44.
+
+Cada acción expone un nodo accesible con nombre/ordinal de sección, estado y
+ayuda contextual. Loop y Mute son toggles con estado real; Mute explica que
+el click continúa y la ayuda de Ir indica cancelación cuando corresponde.
+Tab recorre acciones; izquierda/derecha recorren secciones, arriba/abajo
+recorren acciones, Home/End van a los extremos, Return/Espacio ejecutan la
+acción. Navegar o enfocar sólo revela la sección y no manda comandos musicales.
+Foco de teclado muestra un borde temporal y suspende el centrado mientras se
+opera. Acciones fuera de vista siguen accesibles y se revelan al enfocarse.
+Los proxies de puntero delegan down/drag/up/pinch/rueda al arbitraje existente;
+no añaden un click al soltar tras arrastrar ni cambian el segundo toque.
+
+La onda normal de escritorio conserva regla, mouse y ancho proporcional, sin
+Ir/Loop/Mute integrados ni elipsis por sección o compartida. Secciones mantiene
+sus acciones en todas las plataformas.
+
+Secciones prioriza el destino real de Ir pendiente para su centrado; mientras
+existe no vuelve a la sección que suena por el timeout de exploración. Cambiar
+destino actualiza el objetivo; cancelar o ejecutar retoma el bloque activo.
+La navegación manual conserva la pausa de 3 segundos antes de volver al destino.
+Sin Ir pendiente, centra la sección activa una vez al cambiar de sección durante la
+reproducción, con transición suave de 280 ms y límites en los extremos.
+La interacción interrumpe el centrado inmediatamente; durante el gesto y los
+3 segundos posteriores al final del movimiento no compite con la exploración. Tras la inactividad vuelve
+a centrar la sección activa. Dentro de cada sección la fila queda estática,
+incluido el loop; sólo cambia su progreso. Este seguimiento es independiente
+del follow de la onda normal y nunca envía seek ni comandos de transporte.
+Drag y rueda sólo cambian su desplazamiento manual. Al soltar drag, la velocidad
+filtrada (40 ms, máximo 2400 puntos/s) continúa con fricción exponencial de
+6/s hasta 35 puntos/s y alineación suave de 180 ms. La integración usa tiempo
+transcurrido, no frames; los límites se claman sin rebote. Un nuevo gesto
+interrumpe la cola inmediatamente; un tap que detiene movimiento se consume
+sin Ir/Loop/Mute. El seguimiento espera tres segundos desde el último movimiento
+y mantiene prioridad del Ir confirmado. Rueda/trackpad smooth, incluidos eventos
+inerciales nativos, se aplican directamente sin sumar otra inercia. Un nuevo
+contacto descarta momentum nativo residual hasta otra secuencia de rueda; al cesar
+150 ms, sólo se alinea suavemente. Rueda discreta conserva pasos por sección.
+Reducir movimiento desactiva la inercia y las transiciones de alineación/centrado. No hay regla, minimapa ni
+línea de seek, y el progreso no acepta interacción. Tocar el fondo no envía
+comandos. Las acciones se confirman al soltar en su objetivo original; mover,
+usar otro dedo, magnificar o soltar fuera cancela la acción. El transporte y
+la vista normal conservan sus contratos existentes.
+
+En escritorio, el menú principal omite MIDI Learn y Configuración si sus
+botones directos están visibles, habilitados y completos dentro de la barra.
+Al ocultarse por responsive reaparecen en el menú, incluso si permanece abierto;
+el estado MIDI y los callbacks se conservan. Aprender PlayWorship siempre
+permanece disponible. Teléfono/tablet conservan sus entradas actuales.
+En teléfonos especialmente estrechos, el tiempo cede espacio al toggle y su
+acción `Ventana de canción` permanece accesible desde ese menú. Los objetivos
+del topbar siguen las dimensiones del perfil de dispositivo.
+
+Los refrescos de layout sin cambios de geometría y los nuevos bins de preview
+de la misma canción conservan una pulsación Secciones pendiente. Cambiar canción,
+arrangement, tamaño o insets sí cancela el gesto para no activar otro destino.
+Soltar un botón válido no ajusta el scroll a otra tarjeta; drag y rueda conservan
+su snap. El callback de VBlank de la onda normal no modifica su viewport durante
+Secciones. Ir en reproducción mantiene cola/cancelación existente y Loop mantiene
+su alternancia; no se convierten en seek inmediato.
+
+El bloque con Ir pendiente pulsa suavemente cada 1,8 segundos mediante su
+relleno y borde; no atenúa el nombre ni los botones. Loop usa un borde punteado
+interior distinto de progreso y pulso. Mute atenúa el fondo y la onda, dejando
+el nombre y todas las acciones con su tinta habitual, incluido desmute.
+Estas tres señales pueden coexistir y reflejan los estados reales; no cambian
+colas, loops, mute musical ni click.
+
+Con Reducir movimiento de macOS/iOS, el destino mantiene relleno/borde y
+`Salto programado` estáticos; el pulso consulta la misma preferencia que Loop,
+inercia y centrado. No se invalida periódicamente ese bloque sólo para pulsar.
+
+El estado muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
+estar listo en todos los stems se confirma Salto programado, libera Loop y espera el
+próximo final válido, también hacia atrás o al revisitar una sección. El destino
+no hereda Loop. Preparando aparece sólo en la línea de estado, sin pulso de cola,
+sin anunciar el destino y sin reducir sus blancos táctiles.
+Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
+Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
+La representación usa el estado real del transporte para cola, Loop y progreso.
+
+El borde de Loop en Secciones desplaza su patrón alrededor de un perímetro
+continuo a 6 puntos por segundo, según tiempo transcurrido y no frames.
+El patrón ajusta períodos completos al contorno para conservar continuidad en
+las esquinas y la unión inicial/final. Al quitar Loop desaparece. No cambia
+geometría ni hit targets y convive con progreso, pulso de Ir y Mute reales.
+Con Reducir movimiento de macOS/iOS el borde permanece punteado y estático;
+la preferencia se consulta en UI como máximo una vez por segundo. El proyecto
+no expone actualmente una preferencia equivalente en Android.
+El timer existente invalida sólo bordes de Loop cuando el bloque no cambia;
+progreso/pulso invalidan sus bloques y el pan invalida la fila. Las secciones
+fuera del clip se omiten en el render. No hay trabajo nuevo en audio.

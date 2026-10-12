@@ -700,6 +700,13 @@ struct SongImportWizardTestAccess {
     expect(juce::ImageFileFormat::loadFrom(juce::File(persisted.artworkPath)).isValid(),
            "self-copy of saved artwork does not delete the source");
 
+    persisted.artworkSource = "https://invalid.example.test/historical-cover.png";
+    expect(SongLibraryStore::updateSongMetadata(persisted, &error),
+           "historical remote source preserves local cover without downloading");
+    persisted = SongLibraryStore::loadSongs().back();
+    expect(juce::ImageFileFormat::loadFrom(juce::File(persisted.artworkPath)).isValid(),
+           "retired remote source does not discard existing local artwork");
+
     persisted.artworkSource = "manual:" + newCover.getFullPathName();
     persisted.bpm = 132;
     expect(SongLibraryStore::updateSongMetadata(persisted, &error),
@@ -866,6 +873,15 @@ int main() {
     return 77;
   juce::ScopedJuceInitialiser_GUI gui;
   applyTheme(ThemePreset::Spotify);
+  SecuenciasClient retiredCatalog;
+  bool searchRejected = false, detailRejected = false;
+  retiredCatalog.searchSongs("Title", 1, [&](auto rows, auto error) {
+    searchRejected = rows.empty() && error.type != SecuenciasError::Type::None;
+  });
+  retiredCatalog.getSongDetails("historical-id", 15, [&](auto detail, auto error) {
+    detailRejected = detail.tracks.empty() && error.type != SecuenciasError::Type::None;
+  });
+  expect(searchRejected && detailRejected, "retired catalog cannot return remote metadata");
   AudioFixtures fixtures;
   SongImportWizardTestAccess::testStepLayouts(fixtures);
   SongImportWizardTestAccess::testDesktopEditLayout();

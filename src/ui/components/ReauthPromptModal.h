@@ -9,6 +9,7 @@ public:
   std::function<void()> onAppleLoginNow;
   std::function<void()> onLater;
   std::function<void()> onAuthenticationCancelled;
+  std::function<void()> onInlineAuthenticationNavigation;
   std::function<void()> onPreferredHeightChanged;
   std::function<void(const juce::String &, const juce::String &)>
       onPasswordLoginRequested;
@@ -21,6 +22,7 @@ public:
   void showError(const juce::String &text);
   void showPasswordLinkSent();
   void setAppleSignInAvailable(bool available);
+  void setInlineAppleLink(bool active);
   void setAuthenticationBusy(bool busy);
   void setStatusText(const juce::String &text, bool isError);
   void clearCredentials();
@@ -48,4 +50,5 @@ private:
   std::unique_ptr<juce::Component> appleButton;
   bool waiting = false;
   bool emailMode = false;
+  bool inlineAppleLink = false;
 };

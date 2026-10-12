@@ -210,9 +210,102 @@ private:
   ASAuthorizationAppleIDButton* button = nil;
   PlayWorshipAppleButtonTarget* target = nil;
 };
+
+struct CredentialObservationState {
+  juce::String user;
+  NativeAppleSignIn::CredentialStateCompletion completion;
+  uint64_t generation = 0;
+  uint64_t deliveredGeneration = 0;
+};
+
+#if defined(MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS)
+NativeAppleSignIn::TestCredentialQuery testCredentialQuery;
+#endif
+
+void checkObservedCredential(const std::weak_ptr<CredentialObservationState>& weak) {
+  jassert([NSThread isMainThread]);
+  auto state = weak.lock();
+  if (!state || !state->completion) return;
+  const auto generation = ++state->generation;
+  const auto deliver = [weak, generation](NativeAppleSignIn::CredentialState result) {
+    juce::MessageManager::callAsync([weak, generation, result] {
+      auto current = weak.lock();
+      if (!current || current->generation != generation || current->deliveredGeneration >= generation ||
+          !current->completion) return;
+      current->deliveredGeneration = generation;
+      const auto callback = current->completion;
+      callback(result);
+    });
+  };
+#if defined(MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS)
+  if (testCredentialQuery) { testCredentialQuery(deliver); return; }
+#endif
+  auto* provider = [[ASAuthorizationAppleIDProvider alloc] init];
+  auto* user = [NSString stringWithUTF8String:state->user.toRawUTF8()];
+  [provider getCredentialStateForUserID:user completion:^(ASAuthorizationAppleIDProviderCredentialState nativeState, NSError* error) {
+    auto result = NativeAppleSignIn::CredentialState::unavailable;
+    if (error == nil) {
+      switch (nativeState) {
+        case ASAuthorizationAppleIDProviderCredentialAuthorized: result = NativeAppleSignIn::CredentialState::authorized; break;
+        case ASAuthorizationAppleIDProviderCredentialRevoked: result = NativeAppleSignIn::CredentialState::revoked; break;
+        case ASAuthorizationAppleIDProviderCredentialNotFound: result = NativeAppleSignIn::CredentialState::notFound; break;
+        case ASAuthorizationAppleIDProviderCredentialTransferred: result = NativeAppleSignIn::CredentialState::transferred; break;
+      }
+    }
+    // NSError/user identifiers never enter logs or UI. Weak ownership prevents
+    // an old OS completion from reviving a monitor after logout/destruction.
+    deliver(result);
+  }];
+#if !__has_feature(objc_arc)
+  [provider release];
+#endif
+}
+
+class AppleCredentialMonitor final : public NativeAppleSignIn::CredentialMonitor {
+public:
+  AppleCredentialMonitor(const juce::String& user, NativeAppleSignIn::CredentialStateCompletion callback)
+      : state(std::make_shared<CredentialObservationState>()) {
+    state->user = user;
+    state->completion = std::move(callback);
+    const std::weak_ptr<CredentialObservationState> weak(state);
+    auto* center = NSNotificationCenter.defaultCenter;
+    revokedObserver = [center addObserverForName:ASAuthorizationAppleIDProviderCredentialRevokedNotification
+        object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification*) { checkObservedCredential(weak); }];
+#if JUCE_IOS
+    auto* foregroundName = UIApplicationDidBecomeActiveNotification;
+#else
+    auto* foregroundName = NSApplicationDidBecomeActiveNotification;
+#endif
+    foregroundObserver = [center addObserverForName:foregroundName object:nil
+        queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification*) { checkObservedCredential(weak); }];
+#if !__has_feature(objc_arc)
+    [revokedObserver retain]; [foregroundObserver retain];
+#endif
+    check();
+  }
+  ~AppleCredentialMonitor() override {
+    jassert([NSThread isMainThread]);
+    state->completion = {};
+    ++state->generation;
+    [NSNotificationCenter.defaultCenter removeObserver:revokedObserver];
+    [NSNotificationCenter.defaultCenter removeObserver:foregroundObserver];
+#if !__has_feature(objc_arc)
+    [revokedObserver release]; [foregroundObserver release];
+#endif
+    state.reset();
+  }
+  void check() override { checkObservedCredential(state); }
+private:
+  std::shared_ptr<CredentialObservationState> state;
+  id revokedObserver = nil, foregroundObserver = nil;
+};
 } // namespace
 
 namespace NativeAppleSignIn {
+#if defined(MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS)
+void setCredentialQueryForTests(TestCredentialQuery query) { testCredentialQuery = std::move(query); }
+#endif
+
 bool isSupported() {
   if (@available(iOS 13.0, macOS 10.15, *))
     return true;
@@ -224,6 +317,13 @@ std::unique_ptr<juce::Component> createButton(std::function<void()> onClick,
   if (![NSThread isMainThread] || !isSupported() || !onClick)
     return nullptr;
   return std::make_unique<AppleButton>(std::move(onClick), darkBackground);
+}
+
+std::unique_ptr<CredentialMonitor> monitorCredential(const juce::String& appleUser,
+                                                     CredentialStateCompletion callback) {
+  if (![NSThread isMainThread] || !isSupported() || appleUser.isEmpty() ||
+      appleUser.length() > 256 || !callback) return nullptr;
+  return std::make_unique<AppleCredentialMonitor>(appleUser, std::move(callback));
 }
 
 bool start(const Request& request, juce::Component& anchor, Completion completion) {

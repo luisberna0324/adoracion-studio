@@ -727,3 +727,76 @@ URLs firmadas y hashes del Cloud personal. El cliente crea una identidad local
 por cuenta después de verificar el paquete; no registra esa descarga en el
 índice Cloud personal del miembro ni publica ajustes hacia el propietario.
 No se generan setlists de preparación. Ver [contrato de Teams](Teams.md).
+
+## Transporte R2 con borrado de cuenta (candidato local 2026-10-10)
+
+`prepare-upload` exige `uploadProtocol: multipart-single-part-v1`; clientes
+anteriores reciben HTTP 426 y no nuevas URLs PUT finales. Cada objeto y el
+descriptor usan un multipart de una sola parte final (máximo 5 GiB por objeto;
+descriptor máximo 5 MiB). La app conserva streaming desde archivo, sube
+`UploadPart` y llama `complete-upload` con un ID de sesión. El servidor consulta
+las partes y su tamaño, y completa usando el ETag obtenido de R2. La app no
+recibe permisos para completar ni claves R2. Rechaza respuestas de transporte
+antiguo antes de subir contenido.
+
+Firestore vincula sesión, UID, clave, tamaño y uploadId. Create y Complete
+registran una operación durable antes de llamar R2; una respuesta perdida
+mantiene el bloqueo, sin borrarlo en `finally` ni por caducidad. Solo un resultado
+terminal confirmado libera esa operación. El borrado y Complete compiten contra
+la misma barrera transaccional. Los multipart preparados se abortan antes de
+purgar; `NoSuchUpload` es la comprobación API de cierre, pendiente de QA real de
+R2 para partes en vuelo. La limpieza existente reclama sesiones preparadas
+caducadas (24h, igual que leases), con presupuesto de 60s, llamadas de 20s y
+reintentos de abortos fallidos. Create/Complete ambiguos requieren recuperación
+operativa verificada; no se eliminan automáticamente.
+
+Las capacidades PUT finales de versiones antiguas no quedan canceladas por este
+cambio. El runtime exige evidencia operacional explícita por UID en
+`accountStorageMigrations` antes de aceptar un borrado y repite la comprobación
+al congelar. Ningún código escribe automáticamente esa certificación. Una
+expiración, lista vacía o timeout del cliente no certifican drenaje. Mantener
+borrado productivo deshabilitado hasta resolver la migración y QA del proveedor.
+
+## Condiciones del servicio: aceptación explícita
+
+El login no abre el aviso informativo «Tu contenido es tuyo», ni utiliza un
+temporizador para solicitar condiciones antes de autenticar. Tampoco se abre
+ese aviso como alternativa tras un error de red. Reproducción e importación
+local permanecen disponibles. Los registros `serviceTermsIntro`, de aceptación
+local y de vista previa anteriores se conservan sin modificarlos.
+
+Si otro modal cubre el login, `WelcomeModal` oculta temporalmente el botón
+nativo de Apple: las vistas UIView/NSView se dibujan por encima de los hijos
+pintados por JUCE. El primer repintado y un temporizador de 30 Hz sincronizan
+la visibilidad con el bloqueo modal. Cerrar el panel restaura el botón respetando
+el estado de comprobación, formulario y autenticación en curso. Este ajuste
+no cambia la constancia de aceptación de cuenta.
+
+Al entrar en una cuenta (Google, Apple o correo), se consulta la constancia de esa
+cuenta inmediatamente después del login exitoso y al restaurar una sesión
+validada en línea; no espera a que se abra Cloud. Una versión ya aceptada no
+vuelve a mostrar el diálogo. La tarjeta de condiciones mantiene disposición
+vertical incluso dentro del reproductor horizontal, con contenido y enlaces
+desplazables y botones apilados, sin cambiar la orientación del dispositivo.
+Falta de red permite seguir en local y reintentar al subir. El cliente
+repite la consulta antes de subir proyectos y ajustes; únicamente el clic
+explícito permite POST de aceptación. El backend vincula por UID del token,
+registra fecha del servidor y huellas exactas de los tres documentos. Repetir la
+misma versión mantiene la fecha original. No se usa coincidencia de correo,
+fecha ni constancia local para aceptar por una cuenta distinta. Logout cancela
+la solicitud pendiente y cierra su diálogo; una respuesta tardía no acepta.
+
+La versión legal usa hashes de documentos aprobados, no una fecha legal
+inventada. Si el servidor cambia a una versión que el cliente no conoce, Cloud
+requiere actualizar la app; los datos locales siguen disponibles. Publicar los
+documentos exactos primero, después el backend y finalmente distribuir la app.
+El cliente nuevo envía `X-PlayWorship-Cloud-Consent: cloud-terms-v1`; el backend
+exige constancia en prepare-upload, commit y publicación de ajustes. Clientes
+anteriores permanecen compatibles sin registrar aceptación implícita.
+`CLOUD_TERMS_REQUIRED=true` sólo debe activarse para todos tras migración y aviso
+aprobados; no se ha activado. La aceptación no activa ni cobra un plan.
+
+Antes del login, también en Debug, el aviso es informativo. Los enlaces abren
+los documentos públicos actuales. No se borran ni simulan constancias anteriores
+para forzar esta revisión. La aceptación de cuenta requiere el flujo autenticado
+real, igual que Release, y el despliegue de los documentos y backend correspondientes.

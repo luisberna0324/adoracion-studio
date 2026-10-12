@@ -43,7 +43,10 @@ ReauthPromptModal::ReauthPromptModal() {
 
   backButton.setButtonText(L10n::tr("Volver", "Back"));
   backButton.setTooltip(L10n::tr("Volver", "Back"));
-  backButton.onClick = [this] { emailForm.goBack(); };
+  backButton.onClick = [this] {
+    if (inlineAppleLink) showEmailForm(false);
+    else emailForm.goBack();
+  };
   addChildComponent(backButton);
 
   loginNowButton.setButtonText(L10n::tr("Continuar con Google", "Continue with Google"));
@@ -111,7 +114,7 @@ void ReauthPromptModal::resized() {
   area = area.withSizeKeepingCentre(controlsWidth, area.getHeight());
   auto header = area.removeFromTop(44);
   backButton.setBounds(header.withWidth(44));
-  title.setBounds(emailMode ? header.reduced(44, 0) : header);
+  title.setBounds(emailMode || inlineAppleLink ? header.reduced(44, 0) : header);
 
   message.setVisible(!emailMode);
   if (!emailMode) {
@@ -206,11 +209,13 @@ void ReauthPromptModal::setAuthenticationBusy(bool busy) {
 void ReauthPromptModal::clearCredentials() { emailForm.clearCredentials(); }
 
 void ReauthPromptModal::visibilityChanged() {
-  if (!isVisible()) clearCredentials();
+  if (!isVisible()) { if (inlineAppleLink && onAuthenticationCancelled) onAuthenticationCancelled(); clearCredentials(); }
 }
 
 void ReauthPromptModal::showEmailForm(bool show) {
-  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  if (show && inlineAppleLink) {
+    if (onInlineAuthenticationNavigation) onInlineAuthenticationNavigation();
+  } else if (onAuthenticationCancelled) onAuthenticationCancelled();
   setAuthenticationBusy(false);
   emailMode = show;
   if (show) emailForm.showLogin();
@@ -248,10 +253,18 @@ void ReauthPromptModal::updateActionVisibility() {
   emailButton.setVisible(!emailMode);
   separator.setVisible(!emailMode);
   graceInfo.setVisible(!emailMode);
-  backButton.setVisible(emailMode);
+  backButton.setVisible(emailMode || inlineAppleLink);
   emailForm.setVisible(emailMode);
   if (appleButton) {
-    appleButton->setVisible(!emailMode);
+    appleButton->setVisible(!emailMode && !inlineAppleLink);
     appleButton->setEnabled(!waiting);
   }
+}
+
+void ReauthPromptModal::setInlineAppleLink(bool active) {
+  inlineAppleLink = active;
+  clearCredentials();
+  updateHeader();
+  updateActionVisibility();
+  resized();
 }

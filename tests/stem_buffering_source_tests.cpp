@@ -951,9 +951,53 @@ void testConcurrentSeekWinsOverInFlightBlockAdvance() {
 }
 #endif
 
+void testSectionEntriesPreparePinAndReleaseWithoutAudioIO() {
+  RampSource main(1000000), independent(1000000);
+  juce::TimeSliceThread worker("section entry cache worker");
+  expect(worker.startThread(), "entry worker starts");
+  StemBufferingSource source(&main, worker, false, 32768, 2, false, &independent);
+  source.prepareToPlay(256, 48000.0);
+  source.configureSectionEntries({60000, 20000}, 2);
+  const auto wait = [](auto predicate) {
+    for (int i = 0; i < 1000; ++i) { if (predicate()) return true; juce::Thread::sleep(2); }
+    return false;
+  };
+  expect(wait([&] { return source.isPrefetchReady(60000, 256) && source.isPrefetchReady(20000, 256); }),
+         "loading prepares section entries in background without a target request");
+  expect(source.getSectionCacheBytes() == 2 * 32768 * 2 * static_cast<int>(sizeof(float)), "cache accounts for exactly two float entry buffers");
+  expect(worker.stopThread(1000), "worker stops for deterministic cache handoff");
+  const int readsBefore = main.getSetPositionCallCount() + independent.getSetPositionCallCount();
+  source.protectSectionTargets(60000, -1); source.setNextReadPosition(60000);
+  juce::AudioBuffer<float> output(2, 256); juce::AudioSourceChannelInfo info(&output, 0, 256);
+  source.getNextAudioBlock(info);
+  for (int frame = 0; frame < 256; ++frame)
+    expectNear(output.getSample(0, frame), RampSource::sampleAt(60000 + frame), "cold primary reads exact cached source frames without silence");
+  expect(main.getSetPositionCallCount() + independent.getSetPositionCallCount() == readsBefore,
+         "audio cache handoff never seeks or reads either decoder");
+  source.requestPrefetchPosition(80000, 32768);
+  expect(source.isPrefetchReady(60000, 256), "another preparation cannot replace resident selected entry");
+  source.configureSectionEntries({60000, 20000}, 0);
+  expect(worker.startThread(), "worker restarts for memory pressure");
+  expect(wait([&] { source.requestPrefetchPosition(80000, 32768); return source.isPrefetchReady(80000, 256); }),
+         "different foreground target actually finishes while the selected cache lease remains protected");
+  expect(source.isPrefetchReady(60000, 256), "replacement bank cannot evict the protected selected prefix");
+  expect(wait([&] { return source.getSectionCacheBytes() == 32768 * 2 * static_cast<int>(sizeof(float)); }),
+         "pressure evicts unleased entries and preserves the selected destination");
+  for (int block = 0; block < 140; ++block) {
+    source.getNextAudioBlock(info); juce::Thread::sleep(6);
+    for (int frame = 0; frame < 256; ++frame)
+      expectNear(output.getSample(0, frame), RampSource::sampleAt(60256 + block * 256 + frame),
+                 "cached entry hands off beyond its end to exact streaming frames");
+  }
+  source.protectSectionTargets(-1, -1);
+  expect(wait([&] { return source.getSectionCacheBytes() == 0; }), "released lease returns cache memory under the reduced budget");
+  source.releaseResources(); worker.stopThread(1000);
+}
+
 } // namespace
 
 int main() {
+  testSectionEntriesPreparePinAndReleaseWithoutAudioIO();
   testEmptyReadAheadAdvancesAndCountsMissingFrames();
   testPartialReadAheadPreservesValidAudioAndAdvances();
   testEmptyLoopingRangeAdvancesModuloSourceLength();
