@@ -6,6 +6,7 @@
 #include "PracticeTimelineRuler.h"
 #include <JuceHeader.h>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -497,9 +498,13 @@ private:
   bool androidVisualProgressValid = false;
   float androidVisualProgressRatio = 0.0f;
   double androidVisualProgressTimestampSec = 0.0;
-  int androidLastFixedPlayheadX = -1;
-  bool androidWasPlaying = false;
 #endif
+  int playbackPaintPreparingPart = -1;
+  int playbackPaintPendingPart = -1;
+  int playbackPaintLoopPart = -1;
+  bool playbackWasPlaying = false;
+  float lastFixedPlaybackProgress = -1.0f;
+  float lastFixedTransportProgress = -1.0f;
   bool lastTimerSongProgressValid = false;
   float lastTimerSongProgressRatio = 0.0f;
   bool lastTimerEndValid = false;
@@ -515,8 +520,8 @@ private:
   float phonePanLastNormalized = 0.0f;
   double phonePanLastTimestampMs = 0.0;
 
-  // The follow view moves every frame, but its waveform data is static. Keep
-  // a bounded overscanned raster around the visible window so each frame only
+  // Playback moves the needle (and optionally the viewport), while its data
+  // stays static. Keep a bounded overscanned raster around the visible window so each frame only
   // composites an image slice plus the moving playback overlay.
   mutable juce::Image followWaveformBaseCache;
   mutable juce::Image followWaveformHighlightMaskCache;
@@ -536,6 +541,8 @@ private:
   bool isFollowTrackingActive() const;
   PlaybackVisualState getPlaybackVisualState() const;
   void invalidateWaveformRenderCaches();
+  std::array<juce::Rectangle<int>, 3>
+  getPlaybackRepaintRegions(float fromProgress, float toProgress) const;
   bool getPendingJumpProgressRatio(float &ratioOut) const;
   double getSongLengthSeconds() const;
   bool getPlaybackEndGuideSeconds(double &endSecondsOut) const;
@@ -596,7 +603,10 @@ private:
   void drawWaveformDirect(juce::Graphics &g,
                           const juce::Rectangle<float> &bounds,
                           float windowStart, float windowSpan, bool showGrid,
-                          bool showPlayhead) const;
+                          bool showPlayhead, bool showPlayableWindow = true) const;
+  void drawPlayableWindowOverlay(juce::Graphics &g,
+                                 const juce::Rectangle<float> &bounds,
+                                 float windowStart, float windowSpan) const;
   bool drawCachedFollowWaveform(juce::Graphics &g,
                                 const juce::Rectangle<float> &bounds,
                                 float windowStart, float windowSpan) const;

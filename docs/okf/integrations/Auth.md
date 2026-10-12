@@ -8,6 +8,18 @@ timestamp: 2026-10-05T00:00:00-03:00
 
 # Auth — Google, Apple y correo con contrasena
 
+## Restricción de dispositivos
+
+El backend tiene la admisión por cantidad de equipos desactivada por defecto
+(`DEVICE_RESTRICTIONS_ENABLED` distinto de `true`). Con ella apagada,
+`/api/validate-access` no exige ni registra `deviceId`, pero sigue validando la
+licencia, la suscripción y el vencimiento de la prueba. Los registros antiguos
+no se borran. `/api/song-sync/capabilities` informa `maxDevices: 0` como
+sentinela de acceso sin límite; Configuración → Sesión lo muestra como
+«Sin límite». Una app ya instalada puede seguir mostrando la cuota anterior
+hasta que reciba una versión que entienda el sentinela, aunque el backend ya no
+bloquee nuevos ingresos.
+
 ## Retorno en Android
 
 Android usa `NativeAuthSession::start` con `playworship://auth/callback`.

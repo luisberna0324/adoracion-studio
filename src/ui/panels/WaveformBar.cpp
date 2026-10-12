@@ -1426,7 +1426,6 @@ void WaveformBar::resetPlaybackViewForSong() {
 #if JUCE_ANDROID
   androidVisualProgressValid = false;
   androidVisualProgressTimestampSec = 0.0;
-  androidLastFixedPlayheadX = -1;
 #endif
   const float span = followPlaybackEnabled ? kFollowEnabledViewportSpan : 1.0f;
   setVisibleWindow(0.0f, span);
@@ -4796,6 +4795,21 @@ void WaveformBar::timerCallback() {
     }
   }
 
+  const int preparingPart = preparingArrangementPartProvider
+                                ? preparingArrangementPartProvider() : -1;
+  const int pendingPart = pendingArrangementPartProvider
+                              ? pendingArrangementPartProvider() : -1;
+  const int loopPart = activeArrangementLoopPartProvider
+                           ? activeArrangementLoopPartProvider() : -1;
+  if (preparingPart != playbackPaintPreparingPart ||
+      pendingPart != playbackPaintPendingPart || loopPart != playbackPaintLoopPart) {
+    // Remote/MIDI commands can change a section away from the playhead stripe.
+    playbackPaintPreparingPart = preparingPart;
+    playbackPaintPendingPart = pendingPart;
+    playbackPaintLoopPart = loopPart;
+    repaint();
+  }
+
   const bool transportVisualChanged =
       hasSongProgress &&
       (!lastTimerSongProgressValid ||
@@ -4842,16 +4856,14 @@ void WaveformBar::timerCallback() {
 void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
   if (liveMode) return;
   const bool isPlayingNow = playingProvider ? playingProvider() : false;
-#if JUCE_ANDROID
-  if (isPlayingNow != androidWasPlaying) {
+  if (isPlayingNow != playbackWasPlaying) {
     // Playback uses a cached image; pause/stop use the detailed waveform.
     // Retained GPU rendering requires replacing the entire old representation
     // at the transition before resuming narrow playhead invalidations.
-    androidWasPlaying = isPlayingNow;
-    androidLastFixedPlayheadX = -1;
+    playbackWasPlaying = isPlayingNow;
+    lastFixedPlaybackProgress = lastFixedTransportProgress = -1.0f;
     repaint();
   }
-#endif
   float pendingJumpRatio = 0.0f;
   const bool hasPendingJumpRatio = getPendingJumpProgressRatio(pendingJumpRatio);
   const bool followJumpJustExecuted =
@@ -4873,6 +4885,7 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
     }
   }
 
+  const float transportProgress = songProgress;
 #if JUCE_ANDROID
   if (hasSongProgress) {
     if (!isPlayingNow || !androidVisualProgressValid ||
@@ -4954,38 +4967,32 @@ void WaveformBar::updatePlaybackAnimation(const double frameTimestampSec) {
   }
 
   if (isPlayingNow || hasPendingJumpRatio || followJumpJustExecuted) {
-#if JUCE_ANDROID
-    if (isPlayingNow && hasSongProgress &&
-        !hasPendingJumpRatio && !followJumpJustExecuted) {
-      const auto waveBounds =
-          getMainWaveBodyBounds(getMainWaveBounds(getLocalBounds().toFloat()));
-      const auto window = getVisibleWindow();
-      const float playheadNorm =
-          juce::jlimit(0.0f, 1.0f,
-                       (songProgress - window.first) /
-                           juce::jmax(0.0001f, window.second));
-      const int currentX = juce::roundToInt(
-          waveBounds.getX() + playheadNorm * waveBounds.getWidth());
-      const int firstX = androidLastFixedPlayheadX >= 0
-                             ? juce::jmin(androidLastFixedPlayheadX, currentX)
-                             : currentX;
-      const int lastX = androidLastFixedPlayheadX >= 0
-                            ? juce::jmax(androidLastFixedPlayheadX, currentX)
-                            : currentX;
-      const int stripeWidth =
-          juce::jmax(11, lastX - firstX + 11);
-      // A fixed viewport only needs the playhead stripe. If follow moved the
-      // viewport above, setVisibleWindow already requested a full repaint.
-      repaint(firstX - 5, juce::roundToInt(waveBounds.getY()), stripeWidth,
-              juce::roundToInt(waveBounds.getHeight()));
-      androidLastFixedPlayheadX = currentX;
+    if (isPlayingNow && hasSongProgress && !isEditingArrangement() &&
+        !songLoadingActive && songLoadingHideAfterMs <= 0.0 &&
+        !hasPendingJumpRatio && !followJumpJustExecuted &&
+        lastFixedPlaybackProgress >= 0.0f) {
+      // Include both visual and transport positions: Android smooths the main
+      // needle, while the ruler and minimap use the actual transport position.
+      const float first = juce::jmin(lastFixedPlaybackProgress,
+                                    lastFixedTransportProgress,
+                                    songProgress, transportProgress);
+      const float last = juce::jmax(lastFixedPlaybackProgress,
+                                   lastFixedTransportProgress,
+                                   songProgress, transportProgress);
+      for (const auto &region : getPlaybackRepaintRegions(first, last))
+        repaint(region);
+      // If follow moved the viewport, setVisibleWindow already requested a
+      // full repaint. Fixed views only redraw changed needles/highlight.
     } else {
-      androidLastFixedPlayheadX = -1;
       repaint();
     }
-#else
-    repaint();
-#endif
+    if (isPlayingNow && hasSongProgress && !hasPendingJumpRatio &&
+        !followJumpJustExecuted) {
+      lastFixedPlaybackProgress = songProgress;
+      lastFixedTransportProgress = transportProgress;
+    } else {
+      lastFixedPlaybackProgress = lastFixedTransportProgress = -1.0f;
+    }
   }
 }
 
@@ -5162,7 +5169,31 @@ WaveformBar::PlaybackVisualState WaveformBar::getPlaybackVisualState() const {
   return state;
 }
 
+std::array<juce::Rectangle<int>, 3> WaveformBar::getPlaybackRepaintRegions(
+    const float fromProgress, const float toProgress) const {
+  const auto bounds = getLocalBounds().toFloat();
+  const auto main = getMainWaveBounds(bounds);
+  const auto window = getVisibleWindow();
+  const auto stripe = [&](juce::Rectangle<float> area, bool useViewport) {
+    if (area.isEmpty())
+      return juce::Rectangle<int>{};
+    const auto xAt = [&](float progress) {
+      if (useViewport)
+        progress = (progress - window.first) / juce::jmax(0.0001f, window.second);
+      return area.getX() + juce::jlimit(0.0f, 1.0f, progress) * area.getWidth();
+    };
+    const float a = xAt(fromProgress), b = xAt(toProgress);
+    return area.withLeft(juce::jmin(a, b)).withRight(juce::jmax(a, b))
+        .getSmallestIntegerContainer().expanded(5, 1)
+        .getIntersection(getLocalBounds());
+  };
+  return {stripe(getMainWaveBodyBounds(main), true),
+          stripe(getSeekRulerBounds(main), true),
+          stripe(getMiniMapBounds(bounds), false)};
+}
+
 void WaveformBar::invalidateWaveformRenderCaches() {
+  lastFixedPlaybackProgress = lastFixedTransportProgress = -1.0f;
   followWaveformBaseCache = {};
   followWaveformHighlightMaskCache = {};
   followWaveformCacheWidth = 0;
@@ -6478,7 +6509,8 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
                                      const float windowStart,
                                      const float windowSpan,
                                      const bool showGrid,
-                                     const bool showPlayhead) const {
+                                     const bool showPlayhead,
+                                     const bool showPlayableWindow) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
   if (waveformBins.empty())
@@ -6579,47 +6611,6 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
   const float playheadX = snapToPixelCenter(
       bounds.getX() + (playheadRatio * bounds.getWidth()));
 
-  float playableStartRatio = 0.0f;
-  float playableEndRatio = 1.0f;
-  bool showPlayableWindow = false;
-  if (lengthProvider && songWindowStartProvider &&
-      songWindowEndProvider) {
-    const double sourceLengthForWindow = sourceLengthProvider
-                                            ? juce::jmax(0.0, sourceLengthProvider())
-                                            : juce::jmax(0.0, lengthProvider());
-    const double transportLength =
-        hasCustomArrangement ? songLength : sourceLengthForWindow;
-    if (transportLength > 0.0) {
-      double startSec = songWindowStartProvider();
-      double endSec = songWindowEndProvider();
-      endSec = juce::jlimit(0.0, transportLength, endSec);
-      startSec = juce::jlimit(0.0, endSec, startSec);
-      playableStartRatio =
-          static_cast<float>(juce::jlimit(0.0, 1.0, startSec / transportLength));
-      playableEndRatio =
-          static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
-      if (hasCustomArrangement) {
-        double startGuideSec = 0.0;
-        showPlayableWindow = getPlaybackEndGuideSeconds(endSec) ||
-                             getPlaybackStartGuideSeconds(startGuideSec);
-      } else {
-        showPlayableWindow =
-            playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
-      }
-    }
-  }
-
-  const float playableStartNorm = juce::jlimit(
-      0.0f, 1.0f,
-      (playableStartRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
-  const float playableEndNorm = juce::jlimit(
-      0.0f, 1.0f,
-      (playableEndRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
-  const float playableStartX =
-      snapToPixelCenter(bounds.getX() + playableStartNorm * bounds.getWidth());
-  const float playableEndX = snapToPixelCenter(
-      bounds.getX() + playableEndNorm * bounds.getWidth());
-
   g.setColour(juce::Colours::white.withAlpha(0.22f));
   const float centerDashes[] = {2.0f, 4.0f};
   g.drawDashedLine({bounds.getX(), midY, bounds.getRight(), midY},
@@ -6637,7 +6628,16 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
   const double sourceSecondsPerColumn =
       songLength * static_cast<double>(windowSpan) *
       (static_cast<double>(step) / samplingWidth);
-  for (int x = 0; x < widthPixels; x += step) {
+  const auto visibleColumns = g.getClipBounds().toFloat().getIntersection(bounds);
+  const int firstColumn = juce::jmax(0, static_cast<int>(std::floor(
+      (visibleColumns.getX() - bounds.getX() - 1.0f) / step)) * step);
+  const int lastColumn = juce::jmin(widthPixels, static_cast<int>(std::ceil(
+      visibleColumns.getRight() - bounds.getX() + 1.0f)));
+  for (int x = firstColumn; !visibleColumns.isEmpty() && x < lastColumn; x += step) {
+    if (!g.clipRegionIntersects(juce::Rectangle<float>(
+            bounds.getX() + x - 1.0f, bounds.getY(), 2.0f, bounds.getHeight())
+                                   .getSmallestIntegerContainer()))
+      continue;
     const double t = static_cast<double>(x) / samplingWidth;
     const double arrangementSec = songLength * (windowStart + (t * windowSpan));
     double sourceSec = arrangementSec;
@@ -6660,19 +6660,8 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
     g.drawLine(xPos, midY - lineHalf, xPos, midY + lineHalf, 1.0f);
   }
 
-  if (showPlayableWindow) {
-    g.setColour(juce::Colours::black.withAlpha(0.34f));
-    if (playableStartX > bounds.getX())
-      g.fillRect(bounds.withRight(playableStartX));
-    if (playableEndX < bounds.getRight())
-      g.fillRect(bounds.withLeft(playableEndX));
-
-    g.setColour(UITheme::accent.withAlpha(0.82f));
-    g.drawLine(playableStartX, bounds.getY(), playableStartX, bounds.getBottom(), 1.25f);
-    g.drawLine(playableEndX, bounds.getY(), playableEndX, bounds.getBottom(), 1.25f);
-
-    juce::ignoreUnused(showGrid);
-  }
+  if (showPlayableWindow)
+    drawPlayableWindowOverlay(g, bounds, windowStart, windowSpan);
 
   if (!minimalPhoneMode) {
     g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
@@ -6692,6 +6681,65 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
       g.drawLine(pendingTravelX, bounds.getY(), pendingTravelX,
                  bounds.getBottom(), 1.0f);
     }
+  }
+}
+
+void WaveformBar::drawPlayableWindowOverlay(
+    juce::Graphics &g, const juce::Rectangle<float> &bounds,
+    const float windowStart, const float windowSpan) const {
+  const bool hasCustomArrangement = customArrangement && !arrangement.parts.empty();
+  const double songLength = getSongLengthSeconds();
+  float playableStartRatio = 0.0f;
+  float playableEndRatio = 1.0f;
+  bool hasPlayableWindow = false;
+  if (lengthProvider && songWindowStartProvider &&
+      songWindowEndProvider) {
+    const double sourceLengthForWindow = sourceLengthProvider
+                                            ? juce::jmax(0.0, sourceLengthProvider())
+                                            : juce::jmax(0.0, lengthProvider());
+    const double transportLength =
+        hasCustomArrangement ? songLength : sourceLengthForWindow;
+    if (transportLength > 0.0) {
+      double startSec = songWindowStartProvider();
+      double endSec = songWindowEndProvider();
+      endSec = juce::jlimit(0.0, transportLength, endSec);
+      startSec = juce::jlimit(0.0, endSec, startSec);
+      playableStartRatio =
+          static_cast<float>(juce::jlimit(0.0, 1.0, startSec / transportLength));
+      playableEndRatio =
+          static_cast<float>(juce::jlimit(0.0, 1.0, endSec / transportLength));
+      if (hasCustomArrangement) {
+        double startGuideSec = 0.0;
+        hasPlayableWindow = getPlaybackEndGuideSeconds(endSec) ||
+                             getPlaybackStartGuideSeconds(startGuideSec);
+      } else {
+        hasPlayableWindow =
+            playableStartRatio > 0.0005f || playableEndRatio < 0.9995f;
+      }
+    }
+  }
+
+  const float playableStartNorm = juce::jlimit(
+      0.0f, 1.0f,
+      (playableStartRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+  const float playableEndNorm = juce::jlimit(
+      0.0f, 1.0f,
+      (playableEndRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+  const float playableStartX =
+      snapToPixelCenter(bounds.getX() + playableStartNorm * bounds.getWidth());
+  const float playableEndX = snapToPixelCenter(
+      bounds.getX() + playableEndNorm * bounds.getWidth());
+
+  if (hasPlayableWindow) {
+    g.setColour(juce::Colours::black.withAlpha(0.34f));
+    if (playableStartX > bounds.getX())
+      g.fillRect(bounds.withRight(playableStartX));
+    if (playableEndX < bounds.getRight())
+      g.fillRect(bounds.withLeft(playableEndX));
+
+    g.setColour(UITheme::accent.withAlpha(0.82f));
+    g.drawLine(playableStartX, bounds.getY(), playableStartX, bounds.getBottom(), 1.25f);
+    g.drawLine(playableEndX, bounds.getY(), playableEndX, bounds.getBottom(), 1.25f);
   }
 }
 
@@ -6774,35 +6822,14 @@ float WaveformBar::sampleWaveformAmplitude(
 bool WaveformBar::drawCachedFollowWaveform(
     juce::Graphics &g, const juce::Rectangle<float> &bounds,
     const float windowStart, const float windowSpan) const {
-#if JUCE_ANDROID
   const bool mayUsePlaybackCache = playingProvider != nullptr && playingProvider();
-#else
-  const bool mayUsePlaybackCache = isFollowTrackingActive();
-#endif
   if (!mayUsePlaybackCache || waveformBins.size() < 2 ||
       bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f ||
       windowSpan <= 0.0f)
     return false;
 
-  // A restricted playback window needs its darkened region composited after
-  // the waveform. This also applies to a manual end trim in an arrangement.
-  double playbackEndGuideSeconds = 0.0;
-  if (getPlaybackEndGuideSeconds(playbackEndGuideSeconds))
-    return false;
-  double playbackStartGuideSeconds = 0.0;
-  if (getPlaybackStartGuideSeconds(playbackStartGuideSeconds))
-    return false;
-  if (!customArrangement && lengthProvider != nullptr &&
-      songWindowStartProvider != nullptr && songWindowEndProvider != nullptr) {
-    const double length = juce::jmax(0.0, lengthProvider());
-    if (length > 0.0) {
-      const double start = juce::jlimit(0.0, length, songWindowStartProvider());
-      const double end = juce::jlimit(start, length, songWindowEndProvider());
-      if (start > 0.0001 || end < length - 0.0001)
-        return false;
-    }
-  }
-
+  // Playback limits are composited after the cached waveform/highlight,
+  // so trimming no longer forces a complete re-raster on every frame.
 #if JUCE_ANDROID
   const auto cacheWindow = playworship::ui::makeWaveformCacheWindow(
       windowStart, windowSpan, bounds.getWidth());
@@ -6867,7 +6894,7 @@ bool WaveformBar::drawCachedFollowWaveform(
     juce::Graphics cacheGraphics(followWaveformBaseCache);
     cacheGraphics.addTransform(juce::AffineTransform::scale(cacheScale));
     drawWaveformDirect(cacheGraphics, cacheBounds, cacheStart, cacheSpan, false,
-                       false);
+                       false, false);
 
 #if !JUCE_ANDROID
     juce::Graphics highlightMaskGraphics(followWaveformHighlightMaskCache);
@@ -6928,9 +6955,12 @@ bool WaveformBar::drawCachedFollowWaveform(
 #endif
   }
 
-  const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);
-  g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
-  g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+  drawPlayableWindowOverlay(g, bounds, windowStart, windowSpan);
+  if (!minimalPhoneMode) {
+    const auto waveformBg = juce::Colour::fromRGB(0x1E, 0x1E, 0x1E);
+    g.setColour(waveformBg.brighter(0.16f).withAlpha(0.9f));
+    g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+  }
   drawPlayheadNeedle(g, bounds, playheadX, false, false, 1.0f);
 
   if (playbackVisual.showPendingTravelSeek) {
@@ -7005,7 +7035,7 @@ void WaveformBar::drawCachedMiniMapWaveform(
         cacheGraphics,
         {0.0f, 0.0f, static_cast<float>(cacheWidth),
          static_cast<float>(cacheHeight)},
-        0.0f, 1.0f, false, false);
+        0.0f, 1.0f, false, false, false);
     miniMapWaveformCacheWidth = cacheWidth;
     miniMapWaveformCacheHeight = cacheHeight;
   }
@@ -7061,7 +7091,8 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
                                 const juce::Rectangle<float> &bounds,
                                 const float windowStart,
                                 const float windowSpan) const {
-  if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
+  if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f ||
+      !g.clipRegionIntersects(bounds.getSmallestIntegerContainer()))
     return;
 
   const double songLength = getSongLengthSeconds();
@@ -7187,6 +7218,9 @@ void WaveformBar::drawArrangementOverlay(
   }
 
   for (const auto &overlay : partOverlayBounds) {
+    if (!g.clipRegionIntersects(overlay.body.expanded(3.0f).getSmallestIntegerContainer()) &&
+        !g.clipRegionIntersects(overlay.editToolbar.expanded(3.0f).getSmallestIntegerContainer()))
+      continue;
     const bool selected = editing && isPartSelected(overlay.partIndex);
     const bool loopActive = overlay.partIndex == activeLoopPartIndex;
     const bool pendingJump = showPendingJumpSectionHighlight && !loopActive &&
@@ -7289,7 +7323,8 @@ void WaveformBar::drawArrangementOverlay(
               phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
         : overlay.body;
     auto textArea = labelBounds.toNearestInt().reduced(6, 4);
-    if (labelBounds.getWidth() >= 18.0f && textArea.getHeight() >= 13) {
+    if (labelBounds.getWidth() >= 18.0f && textArea.getHeight() >= 13 &&
+        g.clipRegionIntersects(labelBounds.withHeight(22.0f).getSmallestIntegerContainer())) {
       const bool useAbbreviation = labelBounds.getWidth() < 54.0f;
       const auto visibleName =
           (useAbbreviation ? abbreviatedArrangementLabel(partName) : partName) +
@@ -7315,6 +7350,7 @@ void WaveformBar::drawArrangementOverlay(
           : sectionColour.brighter(0.18f).withAlpha(highlighted ? 0.95f : 0.72f);
       g.setColour(labelBorderColour);
       g.drawRect(flag, highlighted ? 1.2f : 0.8f);
+      g.setFont(labelFont);
       g.setColour(juce::Colours::black.withAlpha(0.48f));
       g.drawText(visibleName, flag.translated(0.7f, 0.8f).toNearestInt().reduced(4, 0),
                  juce::Justification::centred, false);
@@ -7575,13 +7611,15 @@ void WaveformBar::drawTempoOverlay(
 
 void WaveformBar::drawMiniMap(juce::Graphics &g,
                               const juce::Rectangle<float> &miniMapBounds) const {
-  if (miniMapBounds.getWidth() <= 2.0f || miniMapBounds.getHeight() <= 2.0f)
+  if (miniMapBounds.getWidth() <= 2.0f || miniMapBounds.getHeight() <= 2.0f ||
+      !g.clipRegionIntersects(miniMapBounds.getSmallestIntegerContainer()))
     return;
 
   g.setColour(UITheme::panelDark.withAlpha(0.45f));
   g.fillRoundedRectangle(miniMapBounds, 4.0f);
 
   drawCachedMiniMapWaveform(g, miniMapBounds);
+  drawPlayableWindowOverlay(g, miniMapBounds, 0.0f, 1.0f);
 
   const double songLength = getSongLengthSeconds();
   if (songLength > 0.0) {

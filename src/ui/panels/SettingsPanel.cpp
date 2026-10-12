@@ -1682,8 +1682,9 @@ void SettingsPanel::applyLanguageTexts() {
       : session.accountType.isNotEmpty() ? session.accountType : session.plan;
     sessionQuotaValue.setText(account, juce::dontSendNotification);
     sessionDevicesQuotaLabel.setText(L10n::tr("Dispositivos", "Devices"), juce::dontSendNotification);
-    sessionDevicesQuotaValue.setText(juce::String(session.usedDevices) + " / " +
-        juce::String(session.maxDevices), juce::dontSendNotification);
+    sessionDevicesQuotaValue.setText(session.maxDevices > 0
+        ? juce::String(session.usedDevices) + " / " + juce::String(session.maxDevices)
+        : L10n::tr("Sin límite", "Unlimited"), juce::dontSendNotification);
     sessionSongsQuotaLabel.setText(L10n::tr("Canciones sincronizadas", "Synced songs"), juce::dontSendNotification);
     sessionSongsQuotaValue.setText(juce::String(session.syncedSongCount) + " / " +
         juce::String(session.maxSyncedSongs), juce::dontSendNotification);
