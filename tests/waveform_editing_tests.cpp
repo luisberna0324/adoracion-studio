@@ -56,6 +56,12 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
   static void clickLiveToggle(TopBar &bar) {
+    if (bar.sectionsViewButton.isVisible()) {
+      auto &button = bar.liveModeState && bar.liveModeState() ? bar.waveformViewButton : bar.sectionsViewButton;
+      expect(button.isEnabled(), "desktop view selector is enabled");
+      button.onClick();
+      return;
+    }
     auto menu = bar.createMorePopoverContent();
     auto *toggle = dynamic_cast<juce::Button *>(menu->findChildWithID("timeline-sections"));
     expect(toggle && toggle->isEnabled(), "section menu toggle is enabled");
@@ -63,13 +69,28 @@ struct WaveformEditingTestAccess {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
   }
   static void expectTopbarLiveLayout(TopBar &bar) {
-    expect(bar.tabletMoreButton.isVisible(), "More remains visible on every layout");
+    const bool desktop = !useTouchOptimisedControls() && !bar.minimalPhoneMode;
+    expect(bar.tabletMoreButton.isVisible() != desktop, "only touch layouts retain More");
+    expect(bar.sectionsViewButton.isVisible() == desktop && bar.helpButton.isVisible() == desktop,
+           "desktop exposes view selection and help directly");
     for (int i = 0; i < bar.getNumChildComponents(); ++i) {
       const auto *child = bar.getChildComponent(i);
-      if (!child->isVisible() || child == &bar.tabletMoreButton) continue;
-      expect(!child->getBounds().intersects(bar.tabletMoreButton.getBounds()), "More does not overlap other topbar controls");
+      if (!child->isVisible() || child->getBounds().isEmpty()) continue;
+      expect(bar.getLocalBounds().contains(child->getBounds()), "visible controls fit topbar");
+      if (child != &bar.songPickerButton)
+        expect(!child->getBounds().intersects(bar.songInfoBounds), "controls never overlap the song title");
+      for (int j = i + 1; j < bar.getNumChildComponents(); ++j) {
+        const auto *other = bar.getChildComponent(j);
+        if (other->isVisible()) expect(!child->getBounds().intersects(other->getBounds()), "topbar controls do not overlap");
+      }
     }
     expect(bar.songInfoBounds.getWidth() >= 80, "song title retains usable width");
+    if (desktop) {
+      expect(bar.waveformViewButton.getToggleState() != bar.sectionsViewButton.getToggleState(), "exactly one view is selected");
+      expect(bar.sectionsViewButton.getToggleState() == (bar.liveModeState && bar.liveModeState()), "desktop state follows the real view");
+      expect(bar.getLearningTargetBounds(playworship::learning::Anchor::More) == bar.sectionsViewButton.getBounds(), "demo guidance targets Sections directly");
+      return;
+    }
     expect(bar.getLocalBounds().contains(bar.tabletMoreButton.getBounds()), "More fits topbar");
     auto panel = bar.createMorePopoverContent();
     auto *toggle = dynamic_cast<juce::Button *>(panel->findChildWithID("timeline-sections"));
@@ -79,6 +100,14 @@ struct WaveformEditingTestAccess {
   }
   static auto moreBounds(TopBar &bar) { return bar.tabletMoreButton.getBounds(); }
   static auto songBounds(TopBar &bar) { return bar.songInfoBounds; }
+  static juce::Button &waveformChoice(TopBar &bar) { return bar.waveformViewButton; }
+  static juce::Button &sectionsChoice(TopBar &bar) { return bar.sectionsViewButton; }
+  static juce::Button &help(TopBar &bar) { return bar.helpButton; }
+  static juce::Button &settings(TopBar &bar) { return bar.settingsButton; }
+  static juce::Button &midi(TopBar &bar) { return bar.midiLearnButton; }
+  static bool timeVisible(TopBar &bar) { return bar.timeDisplay.isVisible(); }
+  static bool midiActive(TopBar &bar) { return bar.midiLearnActive; }
+  static void refreshTimeline(TopBar &bar) { bar.refreshTimelineMenu(); }
   static auto morePanel(TopBar &bar) { return bar.createMorePopoverContent(); }
   static bool directMidi(const TopBar &bar) { return bar.midiLearnButton.isVisible(); }
   static bool directSettings(const TopBar &bar) { return bar.settingsButton.isVisible(); }
@@ -1431,55 +1460,52 @@ void testLoopBorderPhaseAndCorners() {
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
 }
 
-void testDesktopMoreDeduplicatesVisibleActions() {
-  ProcessorFixture f; TopBar bar(f.processor); bar.setMinimalPhoneMode(false); bar.setSize(1280, 64);
-  auto panel = WaveformEditingTestAccess::morePanel(bar);
-  const auto visibleButtons = [](juce::Component &content) {
-    int count = 0;
-    for (int i = 0; i < content.getNumChildComponents(); ++i)
-      if (auto *button = dynamic_cast<juce::Button *>(content.getChildComponent(i)); button && button->isVisible()) {
-        expect(!button->getBounds().isEmpty(), "every visible menu action has an accessible target"); ++count;
-      }
-    return count;
-  };
-  const auto verify = [&] {
-    WaveformEditingTestAccess::moreRefresh(bar);
-    int expected = 2 + (WaveformEditingTestAccess::directMidi(bar) ? 0 : 1) + (WaveformEditingTestAccess::directSettings(bar) ? 0 : 1);
-    expect(visibleButtons(*panel) >= expected && visibleButtons(*panel) <= expected + 1, "desktop overflow omits direct actions and keeps learning/window actions");
-    expect(visibleButtons(*panel) > 0, "learning keeps the menu nonempty");
-    const auto image = panel->createComponentSnapshot(panel->getLocalBounds(), true, 2.0f);
-    expect(image.isValid(), "deduplicated menu renders from the production component");
-  };
-  expect(WaveformEditingTestAccess::directMidi(bar) && WaveformEditingTestAccess::directSettings(bar), "wide desktop exposes primary toolbar actions"); verify();
-  for (int width : {768, 1200, 956, 1280, 600, 1280}) { bar.setSize(width, 64); verify(); }
-  bar.setSize(768, 64); bar.setMidiLearnActive(true); WaveformEditingTestAccess::moreRefresh(bar);
-  auto *midiRow = dynamic_cast<juce::Button *>(panel->findChildWithID("midi-learn"));
-  expect(midiRow && midiRow->isVisible() && midiRow->getToggleState(), "responsive MIDI menu preserves active state");
-  bar.setMidiLearnActive(false); WaveformEditingTestAccess::moreRefresh(bar);
-  expect(!midiRow->getToggleState(), "open menu reflects MIDI changes without reopening");
-  bar.setSize(1280, 64); verify();
-
-  WaveformEditingTestAccess::midiEnabled(bar, false);
-  expect(visibleButtons(*panel) >= 2, "an inaccessible direct control returns to overflow");
-  WaveformEditingTestAccess::midiEnabled(bar, true); verify();
-  for (int iteration = 0; iteration < 4; ++iteration) { panel.reset(); WaveformEditingTestAccess::moreRefresh(bar); panel = WaveformEditingTestAccess::morePanel(bar); verify(); }
-  const auto capture = juce::SystemStats::getEnvironmentVariable("PW_DESKTOP_MENU_CAPTURE", {});
-  if (capture.isNotEmpty()) {
-    juce::Image evidence(juce::Image::RGB, 640, 420, true); juce::Graphics g(evidence); g.fillAll(UITheme::appBg);
-    int x = 0;
-    for (int width : {1280, 768}) {
-      bar.setSize(width, 64); verify();
-      g.setColour(juce::Colours::white); g.setFont(makeAppFont(16.0f));
-      g.drawText(juce::String(width) + " px", x + 10, 8, 280, 24, juce::Justification::centredLeft);
-      g.drawImageAt(panel->createComponentSnapshot(panel->getLocalBounds(), true, 1.0f), x + 10, 38); x += 320;
+void testDesktopToolbarPreservesActionsAndTitle() {
+  ProcessorFixture f; TopBar bar(f.processor);
+  bool sections = false, enabled = true;
+  int changes = 0, helpRequests = 0, settingsRequests = 0, midiRequests = 0;
+  bar.setLiveModeControls([&] { sections = !sections; ++changes; }, [&] { return sections; }, [&] { return enabled; });
+  bar.setOnLearningRequested([&] { ++helpRequests; });
+  bar.setOnSettings([&] { ++settingsRequests; });
+  bar.setOnMidiLearnModeChanged([&](bool) { ++midiRequests; });
+  ImportedSongData song; song.id = "desktop-toolbar";
+  song.title = juce::String::fromUTF8("Una canción con un título especialmente largo");
+  song.artist = "Datos aislados";
+  bar.setTransportProviders([] { return false; }, [] { return 15.0; }, [] { return 30.0; },
+      [] { return juce::String("C"); }, [&] { return song.id; }, [&] { return &song; });
+  for (auto profile : {ResponsiveLayoutProfile::Compact, ResponsiveLayoutProfile::Standard, ResponsiveLayoutProfile::Large}) {
+    bar.setResponsiveProfile(profile);
+    for (int width : {940, 956, 1024, 1100, 1120, 1280, 1600}) {
+      bar.setSize(width, 64);
+      WaveformEditingTestAccess::expectTopbarLiveLayout(bar);
+      expect(WaveformEditingTestAccess::midi(bar).isVisible() && WaveformEditingTestAccess::settings(bar).isVisible() && WaveformEditingTestAccess::timeVisible(bar), "MIDI, Settings and Song window remain directly available");
+      const auto title = WaveformEditingTestAccess::songBounds(bar);
+      WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(sections && WaveformEditingTestAccess::sectionsChoice(bar).getToggleState(), "Sections button selects the real view");
+      const int before = changes; WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(changes == before, "selected view is idempotent");
+      WaveformEditingTestAccess::waveformChoice(bar).onClick();
+      expect(!sections && WaveformEditingTestAccess::waveformChoice(bar).getToggleState(), "Waveform button restores the real view");
+      expect(title == WaveformEditingTestAccess::songBounds(bar), "view changes keep the title in place");
+      enabled = false; WaveformEditingTestAccess::refreshTimeline(bar); WaveformEditingTestAccess::sectionsChoice(bar).onClick();
+      expect(!sections && !WaveformEditingTestAccess::sectionsChoice(bar).isEnabled() && !WaveformEditingTestAccess::waveformChoice(bar).isEnabled(), "editing lock disables both direct choices without changing view");
+      enabled = true; sections = true; WaveformEditingTestAccess::refreshTimeline(bar);
+      expect(WaveformEditingTestAccess::sectionsChoice(bar).getToggleState(), "external view updates reconcile the selection");
+      WaveformEditingTestAccess::waveformChoice(bar).onClick();
     }
-    const juce::File file(capture); auto output = file.createOutputStream();
-    expect(output && output->setPosition(0) && output->truncate().wasOk() && juce::PNGImageFormat().writeImageToStream(evidence, *output),
-           "desktop overflow evidence saves from real production menu content");
   }
-  bar.setMinimalPhoneMode(true); bar.setSize(390, 64);
-  panel.reset(); panel = WaveformEditingTestAccess::morePanel(bar); verify();
-  expect(visibleButtons(*panel) >= 3, "phone retains its existing menu actions");
+  WaveformEditingTestAccess::help(bar).onClick(); expect(helpRequests == 1, "question mark opens the existing learning catalog once");
+  WaveformEditingTestAccess::settings(bar).onClick(); expect(settingsRequests == 1, "direct Settings keeps its callback");
+  WaveformEditingTestAccess::midi(bar).triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(midiRequests == 1 && WaveformEditingTestAccess::midiActive(bar), "direct MIDI Learn preserves toggle behavior");
+  WaveformEditingTestAccess::midi(bar).triggerClick(); juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+  expect(midiRequests == 2 && !WaveformEditingTestAccess::midiActive(bar), "MIDI Learn can leave learn mode");
+  for (auto *button : {&WaveformEditingTestAccess::waveformChoice(bar), &WaveformEditingTestAccess::sectionsChoice(bar), &WaveformEditingTestAccess::help(bar)})
+    expect(button->getTitle().isNotEmpty() && button->getTooltip().isNotEmpty(), "direct controls have accessible names and help");
+  bar.setMinimalPhoneMode(true); bar.setSize(700, 64);
+  WaveformEditingTestAccess::expectTopbarLiveLayout(bar);
+  auto panel = WaveformEditingTestAccess::morePanel(bar);
+  expect(panel->findChildWithID("timeline-sections") && panel->findChildWithID("midi-learn")->isVisible(), "phone preserves its original menu actions");
 }
 
 void testSectionViewStatesAccessibilityAndKeyboard() {
@@ -3159,7 +3185,7 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
-  run("desktop overflow deduplicates visible actions", testDesktopMoreDeduplicatesVisibleActions);
+  run("desktop toolbar preserves actions and title", testDesktopToolbarPreservesActionsAndTitle);
   run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
   run("section view states, accessibility tree and keyboard", testSectionViewStatesAccessibilityAndKeyboard);
   run("section view readable states and responsive previews", testSectionViewReadableStatesPreview);

@@ -106,6 +106,12 @@ private:
   IconButton settingsButton;
   IconButton midiLearnButton;
   IconButton tabletMoreButton;
+  class DesktopTextButton final : public juce::Button {
+  public:
+    explicit DesktopTextButton(const juce::String &name) : juce::Button(name) {}
+    void paintButton(juce::Graphics &, bool, bool) override;
+  } waveformViewButton{"timeline-waveform"}, sectionsViewButton{"timeline-sections"},
+      helpButton{"learning-help"};
   // The parent paints the song card; this button supplies touch/keyboard access.
   class SongPickerButton final : public juce::Button {
   public:

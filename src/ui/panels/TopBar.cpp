@@ -193,6 +193,23 @@ void TopBar::ClickableLabel::mouseDown(const juce::MouseEvent &) {
 TopBar::BpmSegmentButton::BpmSegmentButton()
     : juce::Button("bpmSegment") {}
 
+void TopBar::DesktopTextButton::paintButton(juce::Graphics &g, bool over, bool down) {
+  const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+  const auto path = roundedControlPath(bounds, getConnectedEdgeFlags(), 7.0f);
+  auto fill = getToggleState() ? UITheme::accent.withAlpha(0.22f) : UITheme::cardBg;
+  if (over) fill = fill.brighter(0.05f);
+  if (down) fill = fill.darker(0.06f);
+  g.setColour(fill.withMultipliedAlpha(isEnabled() ? 1.0f : 0.5f));
+  g.fillPath(path);
+  g.setColour((getToggleState() ? UITheme::accentSoft : UITheme::cardBorder)
+                  .withMultipliedAlpha(isEnabled() ? 0.85f : 0.4f));
+  g.strokePath(path, juce::PathStrokeType(1.0f));
+  g.setColour((getToggleState() ? UITheme::accentSoft : UITheme::textPrimary)
+                  .withMultipliedAlpha(isEnabled() ? 1.0f : 0.5f));
+  g.setFont(makeAppFont(getButtonText() == "?" ? 21.0f : 12.0f, AppFontWeight::SemiBold));
+  g.drawFittedText(getButtonText(), getLocalBounds().reduced(4, 2), juce::Justification::centred, 1);
+}
+
 void TopBar::BpmSegmentButton::paintButton(juce::Graphics &g,
                                            bool isMouseOverButton,
                                            bool isButtonDown) {
@@ -245,6 +262,20 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
     addAndMakeVisible(*btn);
   }
   addChildComponent(songPickerButton);
+  for (auto *button : {&waveformViewButton, &sectionsViewButton, &helpButton}) {
+    addChildComponent(*button);
+    button->setComponentID(button->getName());
+    button->setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  }
+  waveformViewButton.setConnectedEdges(juce::Button::ConnectedOnRight);
+  sectionsViewButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
+  waveformViewButton.setToggleable(true);
+  sectionsViewButton.setToggleable(true);
+  waveformViewButton.onClick = [this] { selectTimelineView(false); };
+  sectionsViewButton.onClick = [this] { selectTimelineView(true); };
+  helpButton.setButtonText("?");
+  helpButton.onClick = [this] { if (onLearningRequested) onLearningRequested(); };
+  refreshTimelineMenu();
   phonePadsButton.setVisible(false);
   windowModeButton.setVisible(shouldShowWindowModeButton());
 
@@ -503,6 +534,26 @@ void TopBar::setLiveModeControls(std::function<void()> toggle,
 }
 
 void TopBar::refreshTimelineMenu() {
+  const bool sections = liveModeState && liveModeState();
+  const bool enabled = onLiveModeToggle && (!liveModeEnabled || liveModeEnabled());
+  for (auto *button : {&waveformViewButton, &sectionsViewButton}) {
+    const auto text = button == &waveformViewButton ? L10n::tr("Onda", "Waveform")
+                                                   : L10n::tr("Secciones", "Sections");
+    const bool selected = (button == &sectionsViewButton) == sections;
+    setButtonTextIfChanged(*button, text);
+    button->setTitle(text);
+    button->setTooltip(text);
+    button->setDescription(text + (selected ? L10n::tr(" — seleccionada", " — selected") : juce::String{}));
+    // JUCE ignores setToggleState on a disabled button. Reconcile the actual
+    // view even when an editing lock has disabled the selector.
+    if (button->getToggleState() != selected) {
+      button->setEnabled(true);
+      button->setToggleState(selected, juce::dontSendNotification);
+    }
+    button->setEnabled(enabled);
+  }
+  helpButton.setTitle(L10n::tr("Ayuda", "Help"));
+  helpButton.setTooltip(L10n::tr("Aprender PlayWorship", "Learn PlayWorship"));
   if (refreshMorePopover) refreshMorePopover();
 }
 
@@ -544,7 +595,8 @@ juce::Rectangle<int> TopBar::getLearningTargetBounds(playworship::learning::Anch
   case Anchor::Tempo: target = &bpmSegmentButton; break;
   case Anchor::Key: target = &keyDisplay; break;
   case Anchor::Pads: target = &phonePadsButton; break;
-  case Anchor::More: target = tabletMoreButton.isVisible() ? &tabletMoreButton : &settingsButton; break;
+  case Anchor::More: target = sectionsViewButton.isVisible() ? static_cast<const juce::Component *>(&sectionsViewButton)
+      : tabletMoreButton.isVisible() ? static_cast<const juce::Component *>(&tabletMoreButton) : &settingsButton; break;
   case Anchor::Settings: target = settingsButton.isVisible() ? &settingsButton : &tabletMoreButton; break;
   default: break;
   }
@@ -952,6 +1004,17 @@ void TopBar::resized() {
     }
   }
 
+  const bool desktopProfile = !useTouchOptimisedControls() && !minimalPhoneMode;
+  if (desktopProfile && contentBounds.getWidth() < 1120) {
+    square = 32;
+    gap = 4;
+    keyWidth = 52;
+    metroTotalW = 84;
+    metroIconW = 32;
+    timeWidth = 80;
+    minCardW = 148;
+  }
+
   const bool minimalPhoneProfile = minimalPhoneMode;
   setVisibleIfChanged(songPickerButton, minimalPhoneProfile);
   setVisibleIfChanged(phonePadsButton, minimalPhoneProfile);
@@ -1001,9 +1064,18 @@ void TopBar::resized() {
 
   const int transportW = leftPadding + transportControlsW + gap;
   const bool tabletProfile = useTouchOptimisedControls() || minimalPhoneMode;
-  const bool showDesktopExtras = !tabletProfile && contentBounds.getWidth() >= 1100;
+  const bool showDesktopExtras = !tabletProfile;
   const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
-  const bool showTabletMoreButton = true;
+  const bool showTabletMoreButton = tabletProfile;
+  const int waveformViewWidth = 62;
+  const int sectionsViewWidth = 78;
+  const int timelineWidth = waveformViewWidth + sectionsViewWidth;
+  setVisibleIfChanged(waveformViewButton, desktopProfile);
+  setVisibleIfChanged(sectionsViewButton, desktopProfile);
+  setVisibleIfChanged(helpButton, desktopProfile);
+  if (!desktopProfile) {
+    waveformViewButton.setBounds({}); sectionsViewButton.setBounds({}); helpButton.setBounds({});
+  }
   const int fixedButtonCount = 1 + (showWindowButton ? 1 : 0) + (showDesktopExtras ? 2 : 0);
   const int minFixedButtonsW =
       (fixedButtonCount * square) + ((fixedButtonCount - 1) * gap);
@@ -1025,6 +1097,7 @@ void TopBar::resized() {
     if (minimalPhoneProfile)
       controlsW += square + gap;
     controlsW += gap + square;
+    if (desktopProfile) controlsW += gap + timelineWidth;
     if (showWindowButton) controlsW += gap + square;
     if (showDesktopExtras) controlsW += 2 * (gap + square);
     if (usageVisible)
@@ -1087,7 +1160,14 @@ void TopBar::resized() {
     if (showWindowButton)
       addItem(windowModeButton, square);
     if (showDesktopExtras) addItem(settingsButton, square);
-    addItem(tabletMoreButton, square, !usageVisible);
+    if (desktopProfile) {
+      rightRow.items.add(juce::FlexItem(waveformViewButton)
+          .withWidth(static_cast<float>(waveformViewWidth)).withHeight(static_cast<float>(square)));
+      addItem(sectionsViewButton, sectionsViewWidth);
+      addItem(helpButton, square, !usageVisible);
+    } else {
+      addItem(tabletMoreButton, square, !usageVisible);
+    }
     if (usageVisible)
       addItem(systemUsageDisplay, usageWidth, true);
 
@@ -1105,6 +1185,10 @@ void TopBar::resized() {
     const int requiredCenterWidth = minCardW;
     if (centerW >= requiredCenterWidth)
       break;
+    if (desktopProfile && showSystemUsage) {
+      showSystemUsage = false;
+      continue;
+    }
     if (showBpmText) {
       showBpmText = false;
       continue;

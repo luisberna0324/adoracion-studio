@@ -14,6 +14,7 @@ timestamp: 2026-10-03
 `Aprender PlayWorship` abre un catálogo de cursos desde:
 
 - El menú `Más` de la barra superior en layouts táctiles de teléfono y tablet.
+- El botón independiente `?` de la barra superior en escritorio.
 - Configuración en todas las plataformas. La portada agrupada contiene la
   entrada de aprendizaje y el layout de escritorio ancho incluye `Abrir guías`
   en General. El catálogo puede permanecer dentro de Configuración.
@@ -145,7 +146,9 @@ envía acciones por su cuenta: observa los controles existentes.
 
 En `demo-section-loop` (paso 8), Loop se usa en `Vista de secciones`. Si está
 activa la vista de onda, la guía resalta y deja accesible el `Más` existente de
-la barra superior para elegir esa vista. El menú ajeno oculta temporalmente la
+la barra superior en teléfono/tablet para elegir esa vista. En escritorio,
+resalta directamente `Secciones` en el selector `Onda / Secciones` y adapta la
+instrucción a ese botón. El menú ajeno oculta temporalmente la
 guía; al cerrarlo se conserva el paso y se resalta la onda/tarjetas. Si una
 edición impide cambiar la vista, sus controles permanecen accesibles para
 terminarla o cancelarla. Entrar directamente en Vista de secciones omite ese
