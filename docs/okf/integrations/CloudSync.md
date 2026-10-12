@@ -773,7 +773,12 @@ el estado de comprobación, formulario y autenticación en curso. Este ajuste
 no cambia la constancia de aceptación de cuenta.
 
 Al entrar en una cuenta (Google, Apple o correo), se consulta la constancia de esa
-cuenta. Falta de red permite seguir en local y reintentar al subir. El cliente
+cuenta inmediatamente después del login exitoso y al restaurar una sesión
+validada en línea; no espera a que se abra Cloud. Una versión ya aceptada no
+vuelve a mostrar el diálogo. La tarjeta de condiciones mantiene disposición
+vertical incluso dentro del reproductor horizontal, con contenido y enlaces
+desplazables y botones apilados, sin cambiar la orientación del dispositivo.
+Falta de red permite seguir en local y reintentar al subir. El cliente
 repite la consulta antes de subir proyectos y ajustes; únicamente el clic
 explícito permite POST de aceptación. El backend vincula por UID del token,
 registra fecha del servidor y huellas exactas de los tres documentos. Repetir la

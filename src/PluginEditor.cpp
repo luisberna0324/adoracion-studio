@@ -3365,9 +3365,9 @@ void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
       "completeAuthenticatedSession: login OK, snapshot saved, calling "
       "initializeMainUi");
   initializeMainUi();
+  showServiceTermsIfNeeded();
   if (songListPanelRaw) songListPanelRaw->refreshFromStorageView();
   refreshCloudLibrary({});
-  showServiceTermsIfNeeded();
 }
 
 juce::String MTControlsAudioProcessorEditor::consumePendingAuthCallbackUrl() {
@@ -4596,6 +4596,7 @@ void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
 
   initializeMainUi();
   refreshCloudLibrary({});
+  if (validatedOnline) showServiceTermsIfNeeded();
 }
 
 void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {

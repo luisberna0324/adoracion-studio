@@ -166,8 +166,12 @@ void testGuideFooter() {
            "footer actions preserve touch targets");
     expect(!button(guide, "learningCatalogClose").isVisible(),
            "the step has no redundant upper close icon");
-    expect(button(guide, "learningMore").isVisible() && button(guide, "learningMore").isEnabled(),
-           "Courses and Restart remain available from the options menu");
+    expect(std::none_of(guide.getChildren().begin(), guide.getChildren().end(),
+             [](const auto* child) { return child->getName() == "learningMore"; }),
+           "the help step has no overflow control or reserved menu header");
+    for (auto* child : guide.getChildren())
+      if (auto* viewport = dynamic_cast<juce::Viewport*>(child); viewport && viewport->isVisible())
+        expect(viewport->getHeight() >= 130, "removing the menu header gives the instructions more reading space");
     expect(host.getComponentAt(host.getLocalPoint(&close, close.getLocalBounds().getCentre())) == &close,
            "a real pointer or touch reaches the footer Close button");
     expect(previous.getExplicitFocusOrder() < close.getExplicitFocusOrder() &&
@@ -206,6 +210,34 @@ void testGuideFooter() {
     next = 0;
   }
 }
+
+void testVerticalAccountConsent() {
+  for (const auto size : {juce::Point<int>(320, 667), juce::Point<int>(390, 844),
+                          juce::Point<int>(844, 390), juce::Point<int>(1200, 800)}) {
+    Surface host;
+    host.setVisible(true);
+    host.setSize(size.x, size.y);
+    ServiceTermsPanel consent({}, false);
+    consent.attach(host);
+    const auto card = consent.cardBounds();
+    expect(card.getHeight() > card.getWidth() && host.getLocalBounds().contains(card),
+           "account consent uses a vertical card inside portrait and landscape surfaces");
+    expect(card.contains(consent.primary.getBounds()) && card.contains(consent.secondary.getBounds()) &&
+           consent.primary.getHeight() >= 44 && consent.secondary.getHeight() >= 44,
+           "accept and decline remain readable, tappable and inside the card");
+    expect(consent.primary.getX() == consent.secondary.getX() &&
+           consent.primary.getBottom() < consent.secondary.getY(),
+           "consent actions stay vertically stacked without overlap");
+    auto& viewport = consent.bodyViewport();
+    expect(viewport.getViewHeight() >= 44, "vertical consent retains a reading viewport");
+    capture(host, "terms-vertical-" + juce::String(size.x) + "x" + juce::String(size.y));
+    viewport.setViewPosition(0, viewport.getViewedComponent()->getHeight());
+    expect(viewport.getViewPositionY() + viewport.getViewHeight() >=
+           viewport.getViewedComponent()->getHeight(), "all legal content and links are reachable by scrolling");
+    if (size.x > size.y)
+      capture(host, "terms-vertical-" + juce::String(size.x) + "x" + juce::String(size.y) + "-bottom");
+  }
+}
 }
 
 int main() {
@@ -214,7 +246,8 @@ int main() {
   try {
     testNativeLoginAndAccountConsent();
     testGuideFooter();
-    std::cout << "PASS: native login modal visibility, cancellation, footer layout and navigation\n";
+    testVerticalAccountConsent();
+    std::cout << "PASS: native login modal visibility, footer without overflow, navigation and vertical account consent\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';

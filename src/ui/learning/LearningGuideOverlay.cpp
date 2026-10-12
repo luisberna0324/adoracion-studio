@@ -224,15 +224,11 @@ LearningGuideOverlay::LearningGuideOverlay()
   previousButton.setExplicitFocusOrder(1);
   closeButton->setExplicitFocusOrder(2);
   nextButton->setExplicitFocusOrder(3);
-  moreButton.setExplicitFocusOrder(4);
   previousButton.setSubtleHighlight(true);
   previousButton.setTitle(L10n::tr("Paso anterior", "Previous step"));
   previousButton.setTooltip(L10n::tr("Volver al paso anterior", "Return to the previous step"));
-  moreButton.setBare(true);
-  moreButton.setTitle(L10n::tr("Opciones de la guía", "Guide options"));
-  moreButton.setTooltip(L10n::tr("Cursos y reiniciar guía", "Courses and restart guide"));
   for (auto *component : std::initializer_list<juce::Component *>{
-           &catalogCloseButton, closeButton.get(), &previousButton, nextButton.get(), &moreButton,
+           &catalogCloseButton, closeButton.get(), &previousButton, nextButton.get(),
            &textViewport, &catalogViewport})
     addAndMakeVisible(*component);
   textViewport.setViewedComponent(textContent.get(), false);
@@ -247,7 +243,6 @@ LearningGuideOverlay::LearningGuideOverlay()
   textContent->setInterceptsMouseClicks(true, false);
   previousButton.onClick = [this] { dispatch(Action::Previous); };
   nextButton->onClick = [this] { dispatch(Action::Next); };
-  moreButton.onClick = [this] { showActionsMenu(); };
 }
 
 LearningGuideOverlay::~LearningGuideOverlay() {
@@ -488,7 +483,6 @@ void LearningGuideOverlay::resized() {
   textViewport.setVisible(!catalog || statusMessage.isNotEmpty());
   previousButton.setVisible(!catalog);
   nextButton->setVisible(!catalog);
-  moreButton.setVisible(!catalog);
   closeButton->setVisible(!catalog);
   catalogCloseButton.setVisible(catalog);
   nextButton->setButtonText(hasSteps && stepIndex + 1 == static_cast<int>(lesson.steps.size())
@@ -523,8 +517,6 @@ void LearningGuideOverlay::resized() {
   cardBounds = chooseStepCard();
   auto content = cardBounds.reduced(12);
   const int controlHeight = juce::jmin(44, juce::jmax(0, (content.getHeight() - 12) / 3));
-  auto header = content.removeFromTop(controlHeight);
-  moreButton.setBounds(header.removeFromLeft(44));
   content.removeFromTop(4);
   auto footer = content.removeFromBottom(controlHeight);
   previousButton.setBounds(footer.removeFromLeft(44));
@@ -633,27 +625,6 @@ void LearningGuideOverlay::dispatch(Action action) {
         }
         if (callback)
           callback();
-      });
-}
-
-void LearningGuideOverlay::showActionsMenu() {
-  if (catalog)
-    return;
-  juce::PopupMenu menu;
-  menu.addItem(1, L10n::tr("Cursos", "Courses"));
-  menu.addItem(2, L10n::tr("Reiniciar guía", "Restart guide"), !lesson.steps.empty());
-  const auto revision = presentationRevision;
-  // Keep our own menu inside the guide's host (including modal Settings).
-  // The host can recognise this modal as a guide descendant and leave its
-  // anchor visible while foreign menus still temporarily hide the guide.
-  menu.showMenuAsync(makeTouchPopupMenuOptions(&moreButton).withParentComponent(this),
-      [safe = juce::Component::SafePointer<LearningGuideOverlay>(this), revision](int id) {
-        if (safe == nullptr || safe->presentationRevision != revision || safe->catalog)
-          return;
-        if (id == 1)
-          safe->dispatch(Action::Courses);
-        else if (id == 2)
-          safe->dispatch(Action::Restart);
       });
 }
 

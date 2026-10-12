@@ -178,15 +178,18 @@ Los controles de navegación son compactos:
   ancho según texto, no media tarjeta: conserva un área táctil de 44 px de alto
   con un relleno visible de 35 px.
 - `Continuar` y `Terminar` permanecen deshabilitados mientras la condición del
-  paso esté pendiente. Anterior, Más y cerrar conservan su disponibilidad;
+  paso esté pendiente. Anterior y cerrar conservan su disponibilidad;
   Anterior se deshabilita solamente en el primer paso.
-- `Más` reúne `Cursos`, que vuelve al catálogo, y `Reiniciar guía`, que vuelve
-  al primer paso y elimina el estado completado de ese curso.
-  Su menú se dibuja como hijo de la guía, dentro de su ventana actual.
+- La tarjeta de paso no tiene menú de tres puntos ni una fila reservada para
+  él: ese espacio se dedica a las instrucciones. El catálogo sigue accesible
+  desde `Aprender PlayWorship` en la barra superior y en Configuración.
+  Un curso completado se abre de nuevo desde el primer paso; uno en progreso
+  conserva su continuación. El reinicio explícito ya no tiene un control
+  visible dentro de la tarjeta.
 - `Cerrar` aparece en el pie junto a Continuar/Terminar y conserva el paso
   actual, igual que Escape. La tarjeta de paso no presenta otra `X` arriba.
   El catálogo conserva su `X` para cerrar. El foco recorre Anterior, Cerrar,
-  Continuar/Terminar y Más en ese orden.
+  Continuar/Terminar en ese orden.
 - Con la guía enfocada, las flechas izquierda y derecha recorren pasos. No se
   utilizan para buscar audio ni para realizar la tarea sugerida. La flecha
   derecha respeta la misma validación que Continuar.
@@ -216,8 +219,6 @@ introductorios se ocultan mientras Configuración está abierta. Los modales
 ajenos, la autenticación y los menús/pickers modales ajenos ocultan temporalmente
 la ayuda para conservar sus controles y comportamiento. Al cerrarlos, vuelve
 en el mismo paso. Abrir una página o cerrar un panel no avanza el curso.
-El menú Más propio conserva la guía visible: la integración reconoce su modal
-descendiente y no lo confunde con un menú ajeno ni abre una ventana separada.
 
 Ensayo mantiene la guía disponible porque ofrece los destinos del curso de
 teléfono. Si el usuario elige otro curso con Ensayo aún abierto, se resalta

@@ -46,7 +46,12 @@ public:
    #endif
     const bool compact = available.getHeight() < 300;
     available = available.reduced(compact ? 8 : 12);
-    card = available.withSizeKeepingCentre(juce::jmin(520, available.getWidth()), juce::jmin(620, available.getHeight()));
+    const int cardHeight = juce::jmin(620, available.getHeight());
+    // Keep a vertical reading card even inside the landscape player. Only
+    // the dialog layout changes; the device/player orientation stays intact.
+    const int cardWidth = juce::jmin(available.getWidth(),
+        juce::jmin(520, juce::jmax(240, juce::roundToInt(cardHeight * 0.8f))));
+    card = available.withSizeKeepingCentre(cardWidth, cardHeight);
     auto inner = card.reduced(compact ? 12 : 16);
     title.setBounds(inner.removeFromTop(compact ? 28 : 32)); inner.removeFromTop(compact ? 6 : 10);
     const int actionHeight = compact ? 44 : 48;
