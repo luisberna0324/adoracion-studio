@@ -3979,7 +3979,7 @@ void SongListPanel::openSongImportWizard(const bool withinLibrary) {
         });
         return true;
       },
-      AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Import,
+      SongImportWizardComponent::Mode::Import,
       ImportedSongData{}, SongProjectCreation::resolveDestination);
 
   if (withinLibrary)
@@ -4063,7 +4063,7 @@ void SongListPanel::openSongEditWizard(const juce::String &songId) {
         juce::MessageManager::callAsync(refreshEditedSong);
         return true;
       },
-      AppSettings::getPrimeImportEnabled(), SongImportWizardComponent::Mode::Edit,
+      SongImportWizardComponent::Mode::Edit,
       baseSong,
       std::function<bool(const ImportedSongData &, juce::File &, juce::String &)>{},
       [editedSongId = trimmedSongId, refreshEditedSong](ImportedSongData song,

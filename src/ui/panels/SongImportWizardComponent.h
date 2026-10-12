@@ -1,6 +1,5 @@
 #pragma once
 
-#include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
 #include "../../data/SongLibraryStore.h"
 #include "../../data/SecuenciasClient.h"
@@ -27,7 +26,7 @@ public:
       std::function<bool(ImportedSongData, juce::String &,
                          const SongImportProgressFn &)>
           onSubmitSong,
-      bool primeImportEnabled, Mode mode = Mode::Import,
+      Mode mode = Mode::Import,
       ImportedSongData initialSong = {},
       std::function<bool(const ImportedSongData &, juce::File &,
                          juce::String &)> projectDestinationResolver = {},
@@ -66,7 +65,6 @@ private:
   };
 
   class MappingRow;
-  class PrimeSongListModel;
   class StemImportListModel;
   class StemListRowComponent;
   class SecuenciasResultListModel;
@@ -90,9 +88,6 @@ private:
   void removeStemAtIndex(int rowIndex);
   void rebuildMappingRows();
   void layoutMappingRows();
-  void reloadPrimeSongs();
-  void useSelectedPrimeSong();
-  void applyPrimeSong(size_t index);
   void syncMappingsToDrafts();
   void updateSummaryText();
   void goToNextStep();
@@ -109,7 +104,6 @@ private:
   juce::String stepSubtitle(Step step) const;
   void applyEditorTheme(juce::TextEditor &editor,
                         const juce::String &placeholder);
-  void stylePrimaryButton(juce::TextButton &button);
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
   bool usesCreationLayout() const {
@@ -138,12 +132,10 @@ private:
     }
   };
 
-  void triggerSecuenciasSearch();
   void hideSecuenciasSuggestions(bool resetStatus);
   void handleSecuenciasResult(const std::vector<SongSearchResult>& results, const SecuenciasError& err);
   void fetchSecuenciasDetailForSelected();
   void applySecuenciasMetadata(const SongSearchResult& result, const SongDetail* detail);
-  void setMetadataReadOnlyFromLocal(bool shouldBeReadOnly);
   void openArtworkChooser();
 
   juce::Image getCachedArtwork(const juce::String &url) const;
@@ -159,7 +151,6 @@ private:
   std::function<void()> onDismissRequested;
   Mode mode = Mode::Import;
   ImportedSongData initialSong;
-  bool primeImportEnabled = false;
   bool isSubmitting = false;
   std::unique_ptr<SongLoadProgressOverlay> submissionOverlay;
   Step currentStep = Step::Metadata;
@@ -169,15 +160,11 @@ private:
   std::unordered_map<std::string, juce::File> stagedMobileFiles;
   std::vector<StemDraft> stems;
   std::vector<std::unique_ptr<MappingRow>> mappingRows;
-  std::vector<PrimeSongData> primeSongs;
-  std::unique_ptr<PrimeSongListModel> primeSongListModel;
   std::unique_ptr<StemImportListModel> stemImportListModel;
 
   juce::Label titleLabel;
   juce::Label subtitleLabel;
   juce::Label stemsSectionLabel;
-  juce::Label primeSectionLabel;
-  juce::Label primeStatusLabel;
   juce::Label infoSectionLabel;
   juce::Label songTitleLabel;
   juce::Label artistLabel;
@@ -191,9 +178,6 @@ private:
 
   juce::TextButton addFilesButton;
   juce::TextButton replaceFilesButton;
-  juce::TextButton refreshPrimeButton;
-  juce::TextButton usePrimeSongButton;
-  juce::ListBox primeSongsList;
   juce::Label selectedFilesLabel;
   juce::ListBox stemsList;
   juce::TextEditor songTitleEditor;
@@ -237,7 +221,6 @@ private:
   std::optional<SongDetail> selectedSongDetail;
   int secuenciasSelectedRow = -1;
   juce::String selectedArtworkUrl;
-  bool metadataReadOnlyFromLocal = false;
   bool artworkOverlayHovered = false;
   juce::Rectangle<int> artworkOverlayButtonBounds;
 

@@ -401,7 +401,7 @@ void testGuideReparentedInsideSettings() {
   editor.setVisible(true);
   editor.setSize(390, 844);
   SettingsPanel settings(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
-      false, {}, false, {}, false, {}, PadsCrossfadePreset{}, {},
+      PadsCrossfadePreset{}, {},
       MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8, {}, nullptr, 0, 8);
   editor.addAndMakeVisible(settings);
   settings.setBounds(editor.getLocalBounds());

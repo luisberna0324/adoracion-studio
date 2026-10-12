@@ -662,7 +662,7 @@ if(MTCONTROLS_BUILD_TESTS)
         target_sources(MTControlsMacAppStoreTests PRIVATE
             tests/mac_app_store_tests.cpp
             src/data/AssetBootstrapManager.cpp src/data/AppSettings.cpp
-            src/data/SongData.cpp src/data/PrimeLibrarySource.cpp
+            src/data/SongData.cpp
             src/data/MobileImportStaging.cpp src/data/PortableFlacConversion.cpp
             src/telemetry/Telemetry.cpp)
         target_include_directories(MTControlsMacAppStoreTests PRIVATE src)
@@ -1254,8 +1254,6 @@ target_sources(MTControls
         src/data/SecuenciasClient.cpp
         src/data/SecuenciasClient.h
         src/data/Localization.h
-        src/data/PrimeLibrarySource.cpp
-        src/data/PrimeLibrarySource.h
         src/data/SongProjectCreation.cpp
         src/data/SongProjectCreation.h
         src/data/ProjectStore.cpp
@@ -1398,7 +1396,6 @@ target_compile_definitions(MTControls
         JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
-        JUCE_USE_MP3AUDIOFORMAT=1
         MTCONTROLS_API_BASE_URL=\"${MTCONTROLS_RESOLVED_API_BASE_URL}\"
         MTCONTROLS_AUTH_BASE_URL=\"${MTCONTROLS_AUTH_BASE_URL}\"
         MTCONTROLS_ASSETS_BASE_URL=\"${MTCONTROLS_ASSETS_BASE_URL}\"
@@ -1411,6 +1408,8 @@ target_compile_definitions(MTControls
         MTCONTROLS_SENTRY_ENVIRONMENT="${MTCONTROLS_SENTRY_ENVIRONMENT}"
         MTCONTROLS_SENTRY_RELEASE="playworship-app@${MTCONTROLS_APP_VERSION}+${MTCONTROLS_IOS_BUILD_NUMBER}.${MTCONTROLS_GIT_COMMIT}"
     PUBLIC
+        # JUCE modules must share codec configuration with their consumers.
+        JUCE_USE_MP3AUDIOFORMAT=1
         # Public processor headers must use the same audio backend and sample
         # type as the library, including when compiled by regression tests.
         SOUNDTOUCH_FLOAT_SAMPLES=1

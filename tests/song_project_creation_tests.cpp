@@ -92,6 +92,20 @@ void writeFlac(const juce::File &file) {
          "write actual FLAC samples");
 }
 
+void writeWav(const juce::File &file) {
+  std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+  juce::WavAudioFormat format;
+  auto writer = format.createWriterFor(
+      stream, juce::AudioFormatWriterOptions{}
+                  .withSampleRate(sampleRate).withNumChannels(1).withBitsPerSample(16));
+  expect(writer != nullptr, "create actual WAV writer");
+  juce::AudioBuffer<float> audio(1, sampleCount);
+  for (int i = 0; i < sampleCount; ++i)
+    audio.setSample(0, i, expectedSample(i));
+  expect(writer->writeFromAudioSampleBuffer(audio, 0, sampleCount),
+         "write actual WAV samples");
+}
+
 void writePng(const juce::File &file) {
   juce::Image image(juce::Image::ARGB, 8, 8, true);
   image.setPixelAt(3, 4, juce::Colour(0xff27cd68));
@@ -891,6 +905,138 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
          "package-only operations do not register prematurely in the library");
   testLibraryRegistration(fixtures, opened.song);
 }
+void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
+  // Old settings must not disable automatic storage conversion. Write the
+  // historical key directly so the removed public toggle is not needed.
+  const auto settings = ApplicationDataPaths::applicationDataDirectory()
+                            .getChildFile("MTControls/app_settings.json");
+  expect(settings.getParentDirectory().createDirectory().wasOk() &&
+             settings.replaceWithText(R"({"stemOptimizationEnabled":false})"),
+         "seed the historical disabled optimization preference");
+
+  const auto wav = fixtures.directory.getChildFile("automatic.wav");
+  const auto flac = fixtures.directory.getChildFile("unrelated-original-name.flac");
+  const auto unsupported = fixtures.directory.getChildFile("preserve-original.audio");
+  writeWav(wav);
+  writeFlac(flac);
+  expect(unsupported.replaceWithText("unsupported audio payload retained exactly"),
+         "create an unconvertible legacy payload");
+  juce::MemoryBlock originalWav, originalFlac, originalUnsupported;
+  expect(wav.loadFileAsData(originalWav) && flac.loadFileAsData(originalFlac) &&
+             unsupported.loadFileAsData(originalUnsupported),
+         "record source bytes before importing");
+
+  ImportedSongData draft;
+  draft.id = juce::Uuid().toString();
+  draft.title = "Automatic legacy storage";
+  draft.fileType = "WAV";
+  draft.bpm = 96;
+  auto makeStem = [](const juce::File &file, const char *id) {
+    ImportedStemData stem;
+    stem.stemId = id;
+    stem.displayName = id;
+    stem.category = "Other";
+    stem.include = true;
+    stem.sourcePath = file.getFullPathName();
+    stem.fileName = file.getFileName();
+    stem.durationSec = static_cast<double>(sampleCount) / sampleRate;
+    stem.sampleRate = sampleRate;
+    stem.channels = 1;
+    return stem;
+  };
+  draft.stems = {makeStem(wav, "convert-wav"), makeStem(flac, "copy-flac"),
+                 makeStem(unsupported, "keep-original")};
+  juce::String error;
+  expect(SongLibraryStore::appendSong(draft, &error),
+         "legacy import succeeds with automatic conversion and fallback together");
+  const auto readSong = [&]() {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) {
+      return song.id == draft.id;
+    });
+    expect(found != songs.end(), "automatic storage song is registered");
+    return *found;
+  };
+  const auto readStem = [](const ImportedSongData &song, const char *id) {
+    const auto found = std::find_if(song.stems.begin(), song.stems.end(),
+                                   [&](const auto &stem) { return stem.stemId == id; });
+    expect(found != song.stems.end(), "all imported stems are preserved");
+    return *found;
+  };
+  const auto sameBytes = [](const juce::File &file, const juce::MemoryBlock &bytes) {
+    juce::MemoryBlock current;
+    return file.loadFileAsData(current) && current == bytes;
+  };
+  const auto expectStoredAudio = [&](const ImportedSongData &song) {
+    const juce::File optimized(readStem(song, "convert-wav").storedPath);
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(
+        formats.createReaderFor(optimized));
+    expect(optimized.hasFileExtension("flac") && reader != nullptr &&
+               reader->getFormatName().containsIgnoreCase("flac") &&
+               reader->sampleRate == sampleRate && reader->numChannels == 1 &&
+               reader->lengthInSamples == sampleCount,
+           "WAV is automatically stored as decodable FLAC with unchanged dimensions");
+    expect(sameBytes(juce::File(readStem(song, "copy-flac").storedPath), originalFlac),
+           "an existing FLAC is copied byte-for-byte regardless of origin or filename");
+    const juce::File fallback(readStem(song, "keep-original").storedPath);
+    expect(fallback.hasFileExtension("audio") && sameBytes(fallback, originalUnsupported) &&
+               !fallback.withFileExtension("flac").exists(),
+           "failed conversion preserves original format and bytes without partial FLAC");
+    expect(sameBytes(wav, originalWav) && sameBytes(flac, originalFlac) &&
+               sameBytes(unsupported, originalUnsupported),
+           "automatic storage never modifies the original files");
+  };
+
+  auto imported = readSong();
+  expectStoredAudio(imported);
+  // A replacement WAV must optimize during editing as well. Clearing the
+  // cached path makes the existing production source-selection path use it.
+  const auto replacement = fixtures.directory.getChildFile("replacement.wav");
+  writeWav(replacement);
+  auto edited = imported;
+  edited.title = "Edited automatic storage";
+  for (auto &stem : edited.stems) {
+    if (stem.stemId == "convert-wav") {
+      stem.sourcePath = replacement.getFullPathName();
+      stem.storedPath.clear();
+    }
+  }
+  expect(SongLibraryStore::updateSong(edited, &error),
+         "legacy edit automatically converts a replacement WAV");
+  imported = readSong();
+  expectStoredAudio(imported);
+  expect(imported.title == edited.title && replacement.existsAsFile(),
+         "editing persists metadata and retains the replacement original");
+
+  // Reject the database replacement after audio staging has completed; the
+  // previous song directory and metadata must survive the failed commit.
+  const juce::File previousAudio(readStem(imported, "convert-wav").storedPath);
+  juce::MemoryBlock previousBytes;
+  expect(previousAudio.loadFileAsData(previousBytes), "record edited audio before rollback");
+  auto rejected = imported;
+  rejected.title = "Must not replace saved metadata";
+  bool blockedAtCommit = false;
+  {
+    BlockedLibraryFile blocked(fixtures);
+    expect(!SongLibraryStore::updateSong(rejected, &error,
+               [&](double progress, const juce::String &) {
+                 if (!blockedAtCommit && progress >= 0.86) {
+                   blocked.block();
+                   blockedAtCommit = true;
+                 }
+               }) && blockedAtCommit && blocked.isIntact() && error.isNotEmpty(),
+           "failed final database commit reports failure after audio staging");
+    expect(sameBytes(previousAudio, previousBytes),
+           "failed edit restores the previous stored audio byte-for-byte");
+    expect(blocked.restore(), "restore the test database after injected failure");
+  }
+  expect(readSong().title == imported.title && replacement.existsAsFile(),
+         "failed edit preserves registered metadata and source files");
+  expect(SongLibraryStore::deleteSong(draft.id), "remove only the legacy fixture song");
+}
+
 } // namespace
 
 int main() {
@@ -908,6 +1054,7 @@ int main() {
     testArrangementCues(fixtures);
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
+    testAutomaticLegacyStemStorage(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

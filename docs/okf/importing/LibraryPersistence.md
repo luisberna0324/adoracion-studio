@@ -3,7 +3,7 @@ type: Storage Contract
 title: Library Persistence on iOS
 description: Conservacion y reubicacion de canciones locales al actualizar builds de iPhone y iPad
 resource: src/data/SongLibraryStore.cpp
-timestamp: 2026-09-21T00:00:00-03:00
+timestamp: 2026-10-12T00:00:00-03:00
 ---
 
 # Library Persistence on iOS
@@ -22,6 +22,28 @@ se guardan en Biblioteca. Una exportacion fallida conserva el proyecto interno.
 La conversion a FLAC de esta variante usa codecs integrados, incluido
 CoreAudio para entradas M4A. El perfil desktop normal conserva su comportamiento.
 Ver [Mac App Store](../release/MacAppStore.md).
+
+## Optimizacion automatica de almacenamiento
+
+Al importar o editar una cancion legacy se intenta convertir a FLAC con codecs
+locales; los FLAC existentes se copian sin recodificar. No hay preferencia de
+usuario para desactivarlo, y los valores antiguos de `stemOptimizationEnabled`
+se ignoran. El flujo no interpreta rutas de otras aplicaciones ni requiere un
+nombre de stem particular para reutilizar audio FLAC.
+
+Si los codecs integrados no admiten la entrada, escritorio puede usar un encoder
+ya instalado; optimizar una cancion legacy no descarga ejecutables. Si tampoco
+puede convertir, se copia el original con su extension y se elimina cualquier
+salida FLAC incompleta. Los archivos fuente externos permanecen intactos.
+La edicion conserva el staging y backup: la nueva carpeta de audio solo se
+confirma junto con `songs.json`, y un fallo al persistir restaura la anterior.
+Si tambien falla restaurar la carpeta original (por ejemplo, permisos o un
+archivo bloqueado), se conserva el backup y el error muestra su ruta para
+recuperarlo; la limpieza de un fallo nunca elimina ese unico respaldo.
+No se convierten canciones existentes al arrancar ni al leer Biblioteca.
+Los proyectos `.pwproj` conservan su contrato de audio FLAC obligatorio y su
+transaccion de guardado/reapertura. La cache de decodificacion `StemCache`
+conserva su politica de rendimiento; no depende de esta optimizacion de espacio.
 
 ## Persistencia en iOS
 

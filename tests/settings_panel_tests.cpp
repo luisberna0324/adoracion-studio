@@ -41,7 +41,7 @@ struct SettingsPanelTestAccess {
   static void run() {
     int routingChanges = 0;
     SettingsPanel panel(ThemePreset::Spotify, {}, AppLanguage::Spanish, {},
-        false, {}, false, {}, false, {}, PadsCrossfadePreset{}, {},
+        PadsCrossfadePreset{}, {},
         MetronomeClickStyle{}, {}, {}, {}, {}, {}, {}, 8,
         [&](const auto &, const auto &) { ++routingChanges; }, nullptr, 0, 8);
     panel.setVisible(true);
@@ -130,8 +130,12 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
-           "ordinary accounts do not have a Teams settings entry");
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
+           "ordinary accounts expose only available settings destinations");
+    for (auto *child : home->getChildren())
+      if (auto *button = dynamic_cast<juce::Button *>(child))
+        expect(button->getButtonText() != "Biblioteca",
+               "removed import preferences leave no empty Library settings page");
     int learningRequests = 0;
     panel.onLearningRequested = [&] { ++learningRequests; };
     int teamsRequests = 0;
@@ -142,7 +146,7 @@ struct SettingsPanelTestAccess {
                !panel.teamsLabel.isVisible() && !panel.teamsHelp.isVisible(),
            "default denied Teams cannot be opened through navigation or a direct callback");
     panel.setTeamsManagementEnabled(true);
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 9 : 10),
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
            "enabled management profile gains exactly one Teams settings entry");
     snapshot(panel, "settings-home");
 
@@ -220,15 +224,14 @@ struct SettingsPanelTestAccess {
 
     for (const auto width : {320, 390, 560}) {
       panel.setSize(width, 640);
-      for (const auto page : {Destination::Appearance, Destination::Playback, Destination::Library}) {
+      for (const auto page : {Destination::Appearance, Destination::Playback}) {
         panel.showSettingsPage(page);
         for (auto *control : panel.generalPage.getChildren())
           if (control->isVisible())
             expect(!control->getBounds().isEmpty() && panel.generalPage.getLocalBounds().contains(control->getBounds()),
                    "every visible preference fits in narrow pages");
         const juce::Label *const helps[] = {
-            &panel.themeHelp, &panel.languageHelp, &panel.expandLaunchHelp,
-            &panel.primeImportHelp, &panel.stemOptimizationHelp,
+            &panel.themeHelp, &panel.languageHelp,
             &panel.padsCrossfadeHelp, &panel.metronomeClickStyleHelp};
         int visibleHelps = 0;
         for (const auto *help : helps)
@@ -244,11 +247,6 @@ struct SettingsPanelTestAccess {
                      panel.languageHelp.getY() - panel.languageBox.getBottom() == 6 &&
                      panel.languageLabel.getY() - panel.themeHelp.getBottom() == 12,
                  "choice explanations stay directly below their controls");
-        }
-        if (page == Destination::Library) {
-          expect(panel.primeImportHelp.getY() - panel.primeImportToggle.getBottom() == 4 &&
-                     panel.stemOptimizationHelp.getY() - panel.stemOptimizationToggle.getBottom() == 4,
-                 "toggle explanations stay directly below their controls");
         }
       }
       panel.showSettingsPage(Destination::Account);
@@ -299,6 +297,15 @@ struct SettingsPanelTestAccess {
     expect(panel.generalTabButton.isVisible() && !panel.backButton.isVisible() &&
                panel.themeBox.isVisible() && panel.remoteModeControl.isVisible(),
            "wide desktop retains its full settings navigation and controls");
+    for (auto *child : panel.generalPage.getChildren()) {
+      expect(dynamic_cast<juce::ToggleButton *>(child) == nullptr,
+             "removed startup, Prime and optimization options leave no hidden toggles");
+      if (auto *label = dynamic_cast<juce::Label *>(child))
+        expect(!label->getText().containsIgnoreCase("Prime") &&
+                   !label->getText().containsIgnoreCase("Ventana al iniciar") &&
+                   !label->getText().containsIgnoreCase("Optimización de stems"),
+               "removed options have no leftover labels or help text");
+    }
     expect(panel.learningButton.isVisible() && panel.learningButton.getHeight() >= 36 &&
                panel.generalPage.getLocalBounds().contains(panel.learningButton.getBounds()),
            "desktop General retains an accessible guide entry after compact navigation");
