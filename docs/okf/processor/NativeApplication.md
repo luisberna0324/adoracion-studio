@@ -4,7 +4,7 @@ title: Aplicación nativa PlayWorship
 description: Inicio, audio, MIDI y persistencia sin wrapper de plugin
 resource: src/StandaloneApp.cpp
 tags: [juce, standalone, lifecycle, audio, midi]
-timestamp: 2026-10-01
+timestamp: 2026-10-12
 ---
 
 # Aplicación nativa PlayWorship
@@ -48,6 +48,20 @@ confirmación asíncrona de salida y cancelación de modales. iOS conserva másc
 de orientación previa al arranque, sincronización fullscreen y `resumed()`.
 Android conserva su raíz OpenGL/ventana y usa el mismo runtime de audio/MIDI;
 no adopta los cambios de layout de escritorio.
+
+## Ventana de escritorio al iniciar
+
+macOS, Windows y Linux abren una ventana normal, redimensionable, que ocupa
+el área de trabajo del monitor principal. No se activa fullscreen al arrancar:
+se conservan la barra de título nativa y el espacio reservado por el sistema
+para su menú, Dock o barra de tareas. `expandTopLevelWindowToPrimaryWorkArea`
+descuenta el marco nativo de los límites del contenido; la misma geometría se
+usa al detectar y alternar maximizado/restaurado. No existe una preferencia
+para activar esta expansión: también se aplica al pasar del acceso al espacio
+de reproducción. Las preferencias antiguas de expansión se ignoran.
+
+iOS y Android conservan su ventana móvil y su comportamiento de orientación;
+esta regla de escritorio no modifica sus superficies fullscreen.
 
 ## Validación
 

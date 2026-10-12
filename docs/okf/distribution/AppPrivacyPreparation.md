@@ -91,10 +91,10 @@ En iOS, la entrega debe incluir el manifiesto que CMake agrega actualmente al
 bundle y verificarse despues de exportacion. Mac tiene bloqueos adicionales:
 App Sandbox y permisos de archivos/red; firma de distribucion que reemplace
 el POST_BUILD ad hoc; inclusion y revision del manifiesto; eliminar la
-descarga de FFmpeg ejecutable o usar un helper incluido y firmado; resolver
-el acceso directo al contenedor de Prime y su proceso SQLite; revisar la
-validacion propia de licencias para Mac App Store. El detalle y las fuentes
-estan en [App Store](../release/AppStore.md#bloqueos-adicionales-de-mac-app-store).
+descarga de FFmpeg ejecutable o usar un helper incluido y firmado; revisar la
+validacion propia de licencias para Mac App Store. La importacion usa el
+selector de archivos y no accede a contenedores privados de otras aplicaciones.
+El detalle y las fuentes estan en [App Store](../release/AppStore.md#bloqueos-adicionales-de-mac-app-store).
 
 ## Comprobacion antes de guardar respuestas
 

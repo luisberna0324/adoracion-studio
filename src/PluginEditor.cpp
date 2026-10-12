@@ -1333,33 +1333,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     setResizeLimits(kMinWindowW, kMinWindowH, 32000, 32000);
 #endif
 
-    const auto userArea =
-        juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea;
 #if JUCE_IOS || JUCE_ANDROID
     fitMobileEditorToHost();
 #else
-#if MTCONTROLS_NATIVE_APP && !JUCE_ANDROID
     juce::MessageManager::callAsync(
         [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
           if (safe != nullptr)
             expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
         });
-#else
-    const int maxW = juce::jmax(kMinWindowW, userArea.getWidth() - kScreenMargin);
-    const int maxH = juce::jmax(kMinWindowH, userArea.getHeight() - kScreenMargin);
-    const int w = juce::jlimit(kMinWindowW, maxW, kDefaultWindowW);
-    const int h = juce::jlimit(kMinWindowH, maxH, kDefaultWindowH);
-    if (AppSettings::getExpandWindowOnLaunch()) {
-      juce::MessageManager::callAsync(
-          [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-               this)] {
-            if (safe != nullptr)
-              expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-        });
-    } else {
-      setSize(w, h);
-    }
-#endif
 #endif
 
     applyResponsiveLayoutProfile(resolveResponsiveLayoutProfile());
@@ -3030,14 +3011,11 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
       });
 #elif !JUCE_IOS && !JUCE_ANDROID
-  if (AppSettings::getExpandWindowOnLaunch()) {
-    juce::MessageManager::callAsync(
-        [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(
-             this)] {
-          if (safe != nullptr)
-            expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
-        });
-  }
+  juce::MessageManager::callAsync(
+      [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+        if (safe != nullptr)
+          expandTopLevelWindowToPrimaryWorkArea(safe.getComponent());
+      });
 #endif
 
   setWantsKeyboardFocus(true);
@@ -3414,14 +3392,6 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
           songListPanelRaw->refreshLanguageTexts();
         repaint();
       },
-      AppSettings::getExpandWindowOnLaunch(),
-      [](const bool expandOnLaunch) {
-        AppSettings::setExpandWindowOnLaunch(expandOnLaunch);
-      },
-      AppSettings::getPrimeImportEnabled(),
-      [](const bool enabled) { AppSettings::setPrimeImportEnabled(enabled); },
-      AppSettings::getStemOptimizationEnabled(),
-      [](const bool enabled) { AppSettings::setStemOptimizationEnabled(enabled); },
       AppSettings::getPadsCrossfadePreset(),
       [this](const PadsCrossfadePreset preset) {
         AppSettings::setPadsCrossfadePreset(preset);

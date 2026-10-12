@@ -160,7 +160,7 @@ struct SongImportWizardTestAccess {
   }
 
   static void testStepLayouts(const AudioFixtures &files) {
-    Wizard wizard({}, false);
+    Wizard wizard({});
     fillMetadata(wizard);
     wizard.handleSelectedStemFiles({files.first, files.second}, false);
 
@@ -264,7 +264,7 @@ struct SongImportWizardTestAccess {
   }
 
   static void testDesktopEditLayout() {
-    Wizard wizard({}, false, Wizard::Mode::Edit);
+    Wizard wizard({}, Wizard::Mode::Edit);
     wizard.setSize(860, 640);
     expect(!wizard.metadataViewport.isVisible() &&
                wizard.songTitleEditor.getParentComponent() == &wizard &&
@@ -273,7 +273,7 @@ struct SongImportWizardTestAccess {
   }
 
   static void testDraftNavigation(const AudioFixtures &files) {
-    Wizard wizard({}, false, Wizard::Mode::Import, {},
+    Wizard wizard({}, Wizard::Mode::Import, {},
                   [](const ImportedSongData &, juce::File &, juce::String &) {
                     return false;
                   });
@@ -330,7 +330,7 @@ struct SongImportWizardTestAccess {
         [&](ImportedSongData, juce::String &, const SongImportProgressFn &) {
           ++saved;
           return true;
-        }, false, Wizard::Mode::Import, {},
+        }, Wizard::Mode::Import, {},
         [&](const ImportedSongData &, juce::File &, juce::String &) {
           ++resolved;
           expect(subject->isSubmissionInProgress(),
@@ -366,7 +366,7 @@ struct SongImportWizardTestAccess {
           expect(finishSaving.wait(5000), "test releases the mock save worker");
           progress(1.0, "Test complete");
           return true;
-        }, false, Wizard::Mode::Import, {},
+        }, Wizard::Mode::Import, {},
         [&](const ImportedSongData &, juce::File &destination, juce::String &) {
           destination = files.directory.getChildFile("mock.pwproj");
           return true;
@@ -428,7 +428,7 @@ struct SongImportWizardTestAccess {
           });
       saveError = error;
       return ok;
-    }, false, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+    }, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
     wizard.setSize(860, 640);
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
@@ -534,7 +534,7 @@ struct SongImportWizardTestAccess {
             saveError = error;
             return saved;
           },
-          false, Wizard::Mode::Edit, SongLibraryStore::loadSongs().front(),
+          Wizard::Mode::Edit, SongLibraryStore::loadSongs().front(),
           {}, [&](ImportedSongData draft, juce::String &error) {
             return SongLibraryStore::updateSongMetadata(std::move(draft), &error);
           });
@@ -787,7 +787,7 @@ struct SongImportWizardTestAccess {
         const bool ok = SongProjectCreation::save(std::move(song), error, progress);
         saveError = error;
         return ok;
-      }, false, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
+      }, Wizard::Mode::Import, {}, SongProjectCreation::resolveDestination);
       wizard.setOnDismissRequested([&] { ++dismissed; });
       fillMetadata(wizard);
       wizard.songTitleEditor.setText(name, juce::dontSendNotification);

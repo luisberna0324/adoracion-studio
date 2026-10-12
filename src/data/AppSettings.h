@@ -55,17 +55,12 @@ enum class MetronomeClickStyle {
 /** Preferencias de la app (Standalone), persistidas en disco. */
 class AppSettings {
 public:
-  /** Por defecto: expandir la ventana al area de trabajo al abrir la app. */
-  static constexpr bool kDefaultExpandWindowOnLaunch = true;
-  static constexpr bool kDefaultPrimeImportEnabled = false;
-  static constexpr bool kDefaultStemOptimizationEnabled = false;
   static constexpr AppLanguage kDefaultLanguage = AppLanguage::Spanish;
   static constexpr PadsCrossfadePreset kDefaultPadsCrossfadePreset =
       PadsCrossfadePreset::Medium;
   static constexpr MetronomeClickStyle kDefaultMetronomeClickStyle =
       MetronomeClickStyle::Classic;
 
-  static bool getExpandWindowOnLaunch();
   static bool getDemoWelcomeSeen();
   static bool hasServiceTermsIntroSeen(const juce::String& version);
   static bool acknowledgeServiceTermsIntro(const juce::String& version, juce::int64 viewedAtMs);
@@ -76,11 +71,6 @@ public:
   // Local demo preference, separate from the authenticated account snapshot.
   static bool getLocalDemoSessionActive();
   static void setLocalDemoSessionActive(bool value);
-  static void setExpandWindowOnLaunch(bool value);
-  static bool getPrimeImportEnabled();
-  static void setPrimeImportEnabled(bool value);
-  static bool getStemOptimizationEnabled();
-  static void setStemOptimizationEnabled(bool value);
   static PadsCrossfadePreset getPadsCrossfadePreset();
   static void setPadsCrossfadePreset(PadsCrossfadePreset preset);
   static AppLanguage getLanguage();

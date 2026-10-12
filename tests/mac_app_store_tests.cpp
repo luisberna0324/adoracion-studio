@@ -2,7 +2,6 @@
 #include "data/AssetBootstrapManager.h"
 #include "data/MobileImportStaging.h"
 #include "data/PortableFlacConversion.h"
-#include "data/PrimeLibrarySource.h"
 
 #include <cmath>
 #include <iostream>
@@ -32,9 +31,6 @@ void testNoExecutableBootstrap(const juce::File &root) {
   expect(root.findChildFiles(juce::File::findFiles, true).size() == before &&
              encoder.loadFileAsString() == "not-an-executable",
          "rejection must not install, replace or persist asset state");
-  expect(!PrimeLibrarySource::isAvailable(), "Store edition must not scan another app container");
-  expect(PrimeLibrarySource::loadSongs(error).empty() && error.isNotEmpty(),
-         "direct Prime access rejects with an explanation");
 }
 
 void createWav(const juce::File &file) {

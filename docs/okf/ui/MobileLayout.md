@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-11T00:00:00-03:00
+timestamp: 2026-10-12T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -556,7 +556,7 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   mientras el encabezado y contenido respetan los insets seguros y del teclado.
   En tablet permanece como panel centrado.
 - La portada móvil agrupa filas de 72 pt con icono, título, descripción y flecha:
-  Personalización (Apariencia e idioma, Reproducción, Biblioteca), Audio y
+  Personalización (Apariencia e idioma, Reproducción), Audio y
   conexiones (Ruteo de salidas, Control remoto), Cuenta y
   soporte (Mi cuenta, Diagnóstico). Cada fila navega a los controles existentes;
   volver recupera el desplazamiento de la portada. Un drag sobre una fila no
@@ -569,8 +569,9 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   Local compacta la tarjeta al estado; Cliente y Servidor muestran el campo
   correspondiente. Las actualizaciones de conexión no muestran esos controles
   en otras páginas.
-  Mi cuenta apila cuotas y acciones en anchos estrechos. La preferencia de
-  expansión de ventana se mantiene en escritorio, donde tiene efecto.
+  Mi cuenta apila cuotas y acciones en anchos estrechos. En escritorio, la app
+  inicia en una ventana normal que ocupa el área de trabajo disponible; no usa
+  pantalla completa ni ofrece una preferencia para cambiar este inicio.
 - En los detalles de Configuración, Volver y Cerrar usan los mismos botones
   circulares del encabezado de Biblioteca y setlists, con objetivos táctiles
   de al menos 44 pt/dp. El contenido comienza inmediatamente bajo el encabezado.
@@ -578,14 +579,16 @@ editores de texto únicamente en los campos que llaman `applyTextEditorTheme`.
   15 pt medium y ayudas de 13.5 pt regular en color secundario. Cada ayuda queda
   dentro de su tarjeta, entre 4 y 6 pt bajo el control correspondiente, con
   12 pt antes de la siguiente opción. En escritorio las etiquetas y ayudas usan
-  14 y 12.5 pt respectivamente. Apariencia, Reproducción, Biblioteca y Control
-  remoto explican cada selector o interruptor junto a él. Ruteo explica
+  14 y 12.5 pt respectivamente. Apariencia, Reproducción y Control remoto
+  explican cada selector junto a él. Ruteo explica
   el dispositivo y la asignación de canales. Mi cuenta explica las acciones,
   incluida la purga que vacía la
   Biblioteca local sin borrar proyectos `.pwproj` ni contenido en la nube.
-  Diagnóstico conserva sus notas sobre el informe y su privacidad. La opción de
-  importar la biblioteca de Prime indica que solo funciona en macOS y queda
-  deshabilitada en otras plataformas.
+  Diagnóstico conserva sus notas sobre el informe y su privacidad. No se ofrecen
+  opciones de importación de Prime ni de optimización de stems. La importación
+  de archivos compatibles optimiza el almacenamiento automáticamente cuando
+  puede hacerlo y conserva los originales si la conversión no está disponible.
+  Al retirar ambas opciones, se elimina la página de Biblioteca de Configuración.
 - El escritorio ancho conserva sus pestañas. Las ventanas de menos de 760 px
   también usan la portada agrupada para evitar pestañas comprimidas.
 - Configuración usa desplazamiento vertical con rueda/trackpad y también admite

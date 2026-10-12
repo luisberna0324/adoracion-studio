@@ -5,6 +5,7 @@
 #include <JuceHeader.h>
 #include "audio/StandaloneAudioRuntime.h"
 #include "ui/NativeEditorBoundsConstrainer.h"
+#include "ui/UiCommon.h"
 #if JUCE_IOS
 #include "platform/IOSWindowLayout.h"
 #endif
@@ -210,8 +211,13 @@ public:
     mainWindow = std::make_unique<PlayWorshipStandaloneWindow>(
         *processor, appProperties.getUserSettings());
 
-#if JUCE_IOS || JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
+#if JUCE_IOS
     mainWindow->setFullScreen(true);
+#elif !JUCE_ANDROID
+    // Desktop opens as a regular, resizable window filling the available
+    // work area, keeping the native title bar, menu bar and taskbar visible.
+    mainWindow->setFullScreen(false);
+    expandTopLevelWindowToPrimaryWorkArea(mainWindow.get());
 #endif
     mainWindow->setVisible(true);
 #if JUCE_IOS

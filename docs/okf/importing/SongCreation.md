@@ -3,7 +3,7 @@ type: Import Contract
 title: Song Creation
 description: Creacion portable compartida entre escritorio y movil
 resource: src/ui/panels/SongImportWizardComponent.cpp
-timestamp: 2026-09-26T00:00:00-03:00
+timestamp: 2026-10-12T00:00:00-03:00
 ---
 
 # Creacion de canciones
@@ -107,7 +107,9 @@ cuando termina toda la seleccion. Cancelar o fallar conserva la seleccion
 anterior; agregar reutiliza las copias existentes. La portada usa el mismo
 recorrido y se decodifica antes de aceptarla. El temporal vive hasta terminar
 el guardado y se elimina al liberar el borrador; nunca borra los originales.
-Escritorio mantiene su selector y sus rutas locales existentes.
+Escritorio mantiene su selector y sus rutas locales existentes. La creacion
+usa archivos elegidos por el usuario; no inspecciona bibliotecas privadas
+de otras aplicaciones.
 
 En Android el picker abre con `setType("*/*")` y sin `EXTRA_MIME_TYPES`:
 `juce::FileChooser` traduce el wildcard de extensiones a tipos MIME y al
@@ -137,6 +139,22 @@ evita una segunda conversion al empaquetar y conserva los originales.
 Los temporales se eliminan al terminar o fallar. Un M4A corrupto no genera
 un proyecto ni una entrada de Biblioteca; el asistente mantiene el borrador.
 El soporte de importacion movil continua siendo WAV/AIFF/FLAC/MP3.
+
+La optimizacion de almacenamiento es automatica y no tiene interruptor en
+Configuracion ni cambios temporales de preferencias desde el asistente. Los
+paquetes `.pwproj` mantienen FLAC como formato portable obligatorio. Los stems
+que ya estan en FLAC se reutilizan sin recodificar,
+independientemente de la biblioteca de origen o del nombre del archivo.
+
+La importacion y edicion legacy tambien intentan guardar FLAC automaticamente:
+usan primero los codecs integrados y, en escritorio normal, un FFmpeg ya
+instalado como respaldo para otros formatos. Esta optimizacion no descarga
+encoders. Si el formato no se puede convertir, conservan una copia del archivo
+original con su extension; un fallo no elimina la fuente ni deja un FLAC parcial.
+La preferencia historica `stemOptimizationEnabled` ya no modifica el resultado.
+La creacion portable conserva su validacion estricta: si no puede generar el
+FLAC requerido informa el error y conserva el borrador en vez de producir un
+paquete incompatible.
 
 Una portada manual referenciada como `manual:<path>` se copia al staging y se
 incluye en el ZIP; si desaparecio se informa error. Una portada HTTP(S) usa la
@@ -175,7 +193,9 @@ paquete para aplicar los cambios.
 - `mobile_import_staging`: copias privadas, nombres, bytes, errores y limpieza;
   los permisos de proveedores nativos requieren ademas prueba en dispositivo.
 - `project_artwork`: resolucion manual/remota y empaquetado sin dependencia externa.
-- `song_project_creation`: save/open reales, FLAC+PNG y fallos sin sobrescritura;
+- `song_project_creation`: save/open reales, FLAC+PNG, optimizacion automatica
+  en importacion/edicion legacy, copia FLAC sin recodificar, fallback con bytes
+  originales y rollback del audio si falla la escritura de Biblioteca;
   exige directorio de datos temporal aislado antes de ejecutar persistencia.
 - `song_import_wizard`: layouts movil/escritorio, borrador al recorrer los cuatro
   pasos, envio real en background con progreso y bloqueo de reentrancia; crea un
