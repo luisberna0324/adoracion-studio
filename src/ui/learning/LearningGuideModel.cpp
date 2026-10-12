@@ -45,6 +45,11 @@ bool evaluateStepCondition(const StepCondition condition, const StepFacts &facts
   return false;
 }
 
+Anchor demoSectionLoopAnchor(Anchor requested, bool sectionsView, bool canChangeView) {
+  if (requested != Anchor::Waveform) return requested;
+  return sectionsView || !canChangeView ? Anchor::Waveform : Anchor::More;
+}
+
 RemotePrerequisite remoteStepPrerequisite(const juce::String &lessonId,
                                          const Step &step, const StepFacts &facts) {
   const bool playerStep = step.condition == StepCondition::SongLoaded ||
@@ -125,9 +130,13 @@ std::vector<Lesson> makeLessons(const bool phone, const bool english) {
                "Solo lets you hear an instrument in isolation within the mix. Turn it on and then off on the same channel. A Solo that was already on does not count as an action in this step.",
                "Activa Solo en un instrumento y vuelve a desactivarlo.", "Turn Solo on for one instrument, then turn it off again.", Anchor::Mixer, true, StepCondition::DemoExercise),
           step("demo-section-loop", "Repite una sección", "Repeat a section",
-               "Fuera del modo Editar, toca una sección (o pasa el puntero sobre ella) para ver sus acciones. Pulsa el icono de repetición para activar su loop y vuelve a pulsarlo para desactivarlo. Si ya había un loop activo, desactívalo antes de comenzar.",
-               "Outside Edit mode, tap a section (or hover over it) to reveal its actions. Press the repeat icon to enable its loop, then press it again to turn it off. If a loop was already active, turn it off before starting.",
-               "Activa el loop de una sección y vuelve a desactivarlo.", "Turn on a section loop, then turn it off again.", Anchor::Waveform, true, StepCondition::DemoExercise),
+               phone
+                   ? "Si ves la onda, abre Más y activa Vista de secciones. Allí, toca Loop en una tarjeta y vuelve a tocarlo para apagarlo. Sal de Editar si está activo y apaga cualquier loop previo antes de probar."
+                   : "Si ves la onda, abre Más y activa Vista de secciones. Allí, haz clic en Loop de una tarjeta y vuelve a pulsarlo para apagarlo. Sal de Editar si está activo y apaga cualquier loop previo antes de probar.",
+               phone
+                   ? "If you see the waveform, open More and enable Sections view. There, tap Loop on a card and tap it again to turn it off. Leave Edit if active and turn off any existing loop before trying."
+                   : "If you see the waveform, open More and enable Sections view. There, click Loop on a card and click it again to turn it off. Leave Edit if active and turn off any existing loop before trying.",
+               "Activa y desactiva Loop en una tarjeta.", "Turn Loop on and off on a card.", Anchor::Waveform, true, StepCondition::DemoExercise),
       }};
   if (phone) {
     demo.steps.push_back(step("demo-open-practice", "Abre Ensayo", "Open Practice",

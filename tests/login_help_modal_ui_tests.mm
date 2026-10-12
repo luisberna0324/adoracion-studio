@@ -2,6 +2,8 @@
 #include "ui/components/WelcomeModal.h"
 #include "ui/components/ServiceTermsPrompt.h"
 #include "ui/learning/LearningGuideOverlay.h"
+#include "ui/learning/DemoLearningProgress.h"
+#include "ui/panels/WaveformBar.h"
 #include "data/Localization.h"
 
 #include <algorithm>
@@ -15,6 +17,12 @@ void expect(bool value, const char* message) {
 }
 
 void drain() { juce::MessageManager::getInstance()->runDispatchLoopUntil(90); }
+
+void drainUntil(const std::function<bool()>& completed) {
+  const auto deadline = juce::Time::getMillisecondCounterHiRes() + 750.0;
+  while (!completed() && juce::Time::getMillisecondCounterHiRes() < deadline)
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+}
 
 juce::Button& button(juce::Component& host, const char* name) {
   for (auto* child : host.getChildren())
@@ -238,6 +246,130 @@ void testVerticalAccountConsent() {
       capture(host, "terms-vertical-" + juce::String(size.x) + "x" + juce::String(size.y) + "-bottom");
   }
 }
+
+void testDemoSectionLoopRoute() {
+  using namespace playworship::learning;
+  for (const bool phone : {true, false}) {
+    const auto lessons = makeLessons(phone, false);
+    const auto course = std::find_if(lessons.begin(), lessons.end(), [](const auto& value) { return value.id == "demo-song"; });
+    const auto step = std::find_if(course->steps.begin(), course->steps.end(), [](const auto& value) { return value.id == "demo-section-loop"; });
+    const int index = static_cast<int>(std::distance(course->steps.begin(), step));
+    expect(step->description.contains("Más") && step->description.contains("Vista de secciones") &&
+           !step->description.contains("puntero"), "step 8 describes existing controls without hover instructions");
+    for (const bool alreadySections : {false, true}) {
+      Surface host;
+      host.setSize(phone ? 844 : 1200, phone ? 390 : 800);
+      host.addToDesktop(juce::ComponentPeer::windowIsTemporary);
+      host.setVisible(true);
+      WaveformBar waveform;
+      waveform.setMinimalPhoneMode(phone);
+      waveform.setTransportProviders([] { return 0.0; }, [] { return 90.0; }, [] { return false; });
+      waveform.setWaveformBins(std::vector<float>(512, 0.4f));
+      SongArrangementSnapshot arrangement;
+      for (int i = 0; i < 3; ++i) {
+        SongArrangementPartSnapshot part;
+        part.id = "demo-preview-" + juce::String(i);
+        part.name = i == 0 ? "Verso" : i == 1 ? "Coro" : "Puente";
+        part.startSec = part.sourceStartSec = i * 30.0;
+        part.endSec = part.sourceEndSec = (i + 1) * 30.0;
+        arrangement.parts.push_back(part);
+      }
+      waveform.setArrangement(arrangement, false);
+      host.addAndMakeVisible(waveform);
+      waveform.setBounds(20, 64, host.getWidth() - 40, 160);
+      waveform.setLiveMode(alreadySections);
+      SvgToolbarButton more("fixtureGlobalMore", SvgIconName::MoreHorizontal);
+      more.setTitle("Más");
+      host.addAndMakeVisible(more);
+      more.setBounds(host.getWidth() - 64, 10, 44, 44);
+      SvgToolbarButton play("fixturePlay", SvgIconName::Play);
+      host.addAndMakeVisible(play);
+      play.setBounds(20, 10, 44, 44);
+      LearningGuideOverlay guide;
+      host.addAndMakeVisible(guide);
+      guide.setBounds(host.getLocalBounds());
+      guide.showStep(*course, index, {}, true);
+      DemoLearningProgress progress;
+      DemoLearningProgress::Snapshot snapshot;
+      snapshot.songId = "local-demo-preview";
+      snapshot.isDemo = true;
+      progress.begin(step->id, snapshot);
+      int next = 0, previous = 0, pauses = 0, loops = 0;
+      const auto sync = [&] {
+        const auto anchor = demoSectionLoopAnchor(Anchor::Waveform, waveform.isLiveMode(), waveform.canToggleLiveMode());
+        guide.updateTarget(anchor == Anchor::More ? more.getBounds() : waveform.getBounds(), true);
+        const auto playbackAnchor = demoSectionLoopAnchor(Anchor::PlayPause, waveform.isLiveMode(), waveform.canToggleLiveMode());
+        expect(playbackAnchor == Anchor::PlayPause, "routing the view selector never replaces the supplementary Play destination");
+        guide.setSupplementaryTarget(play.getBounds());
+        guide.setStepReadiness(progress.satisfied(), progress.satisfied() ? juce::String{} : step->task);
+      };
+      guide.onNext = [&] { ++next; };
+      guide.onPrevious = [&] { ++previous; };
+      guide.onPause = [&] { ++pauses; guide.setVisible(false); };
+      waveform.setActiveArrangementLoopPartProvider([&] { return snapshot.sectionLoopIndex; });
+      waveform.setOnArrangementPartLoopToggleRequest([&](int part) {
+        ++loops;
+        snapshot.sectionLoopIndex = snapshot.sectionLoopIndex == part ? -1 : part;
+        progress.observe(snapshot);
+        sync();
+      });
+      more.onClick = [&] {
+        // Production hides help while the ordinary, foreign More menu is open.
+        guide.setVisible(false);
+        juce::PopupMenu menu;
+        menu.addItem(1, "Vista de secciones");
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&more).withParentComponent(&host),
+          [&](int choice) { if (choice == 1) waveform.setLiveMode(true); guide.setVisible(true); sync(); });
+      };
+      sync();
+      expect(host.getComponentAt(play.getBounds().getCentre()) == &play,
+             "Play remains available while the loop exercise is waiting");
+      const auto suffix = phone ? "phone" : "desktop";
+      if (!alreadySections) {
+        expect(host.getComponentAt(more.getBounds().getCentre()) == &more,
+               "step 8 leaves the existing global More control hittable from Waveform view");
+        capture(host, "step8-waveform-" + juce::String(suffix));
+        button(guide, "learningPause").onClick();
+        drainUntil([&] { return pauses > 0; });
+        expect(pauses == 1 && !guide.isVisible() && !progress.satisfied(),
+               "Close works while still waiting for Sections view without completing the exercise");
+        guide.setVisible(true);
+        sync();
+        more.onClick();
+        auto* menu = juce::Component::getCurrentlyModalComponent();
+        expect(menu != nullptr && !guide.isVisible(), "the ordinary menu remains usable while help is temporarily hidden");
+        menu->keyPressed(juce::KeyPress(juce::KeyPress::downKey));
+        menu->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+        drainUntil([&] { return waveform.isLiveMode() && guide.isVisible(); });
+        expect(waveform.isLiveMode() && guide.isVisible(), "selecting Sections view returns to the same guide step");
+      }
+      expect(!button(guide, "learningNext").isEnabled() && loops == 0,
+             "entering Sections view alone never completes the loop exercise");
+      juce::Component* loopControl = nullptr;
+      for (auto* child : waveform.getChildren())
+        if (child->getComponentID() == "section-action:demo-preview-0:1") loopControl = child;
+      expect(loopControl != nullptr && loopControl->isVisible(), "the real WaveformBar exposes its existing Loop control");
+      const auto centre = host.getLocalPoint(loopControl, loopControl->getLocalBounds().getCentre());
+      expect(host.getComponentAt(centre) == loopControl, "the guide does not block the real section Loop control");
+      capture(host, "step8-sections-" + juce::String(suffix));
+      loopControl->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+      expect(loops == 1 && !progress.satisfied() && !button(guide, "learningNext").isEnabled(),
+             "turning Loop on alone does not allow Continue");
+      loopControl->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+      expect(loops == 2 && progress.satisfied() && button(guide, "learningNext").isEnabled(),
+             "the same existing on/off cycle enables Continue");
+      guide.keyPressed(juce::KeyPress(juce::KeyPress::leftKey));
+      drain();
+      button(guide, "learningNext").onClick();
+      drain();
+      expect(previous == 1 && next == 1, "previous and validated forward navigation still work");
+      button(guide, "learningPause").onClick();
+      drain();
+      expect(pauses == (alreadySections ? 1 : 2) && !guide.isVisible(), "Close still pauses the current guide");
+      host.removeFromDesktop();
+    }
+  }
+}
 }
 
 int main() {
@@ -247,7 +379,8 @@ int main() {
     testNativeLoginAndAccountConsent();
     testGuideFooter();
     testVerticalAccountConsent();
-    std::cout << "PASS: native login modal visibility, footer without overflow, navigation and vertical account consent\n";
+    testDemoSectionLoopRoute();
+    std::cout << "PASS: login, vertical consent and step 8 Waveform-to-Sections loop route\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';

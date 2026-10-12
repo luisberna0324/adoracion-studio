@@ -143,6 +143,16 @@ Completar un requisito habilita Continuar, pero no salta automáticamente al
 siguiente paso. La guía no abre páginas, elige un servidor, cambia de modo ni
 envía acciones por su cuenta: observa los controles existentes.
 
+En `demo-section-loop` (paso 8), Loop se usa en `Vista de secciones`. Si está
+activa la vista de onda, la guía resalta y deja accesible el `Más` existente de
+la barra superior para elegir esa vista. El menú ajeno oculta temporalmente la
+guía; al cerrarlo se conserva el paso y se resalta la onda/tarjetas. Si una
+edición impide cambiar la vista, sus controles permanecen accesibles para
+terminarla o cancelarla. Entrar directamente en Vista de secciones omite ese
+desvío. Cambiar de vista nunca cumple el ejercicio: Continuar sigue esperando
+el ciclo explícito de activar y desactivar Loop durante ese paso. El texto de
+teléfono usa tocar y el de escritorio hacer clic; no promete acciones al hover.
+
 ## Interacción y navegación
 
 Cada paso presenta título, descripción y una tarea breve. La guía oscurece
