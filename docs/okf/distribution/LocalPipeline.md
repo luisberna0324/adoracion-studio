@@ -1,13 +1,19 @@
-# Pipeline local
+# Pipeline local complementario
+
+Codex Cloud coordina QA principal; este pipeline aporta evidencia Apple y otras
+pruebas disponibles en el Mac, conservando blockers Windows/firma/hardware.
 
 `python3 scripts/local_pipeline.py --config .local-pipeline.json --targets all`
 
-Ejecuta secuencialmente backend, Windows (bloqueo explícito en Mac), Android Debug,
+Ejecuta secuencialmente SemVer, recursos binarios, backend, Windows (bloqueo explícito en Mac), Android Debug,
 Android Release (firma no autorizada), tests macOS, macOS Release universal y PKG,
 iOS simulador y iOS device Debug con firma de desarrollo manual existente.
 No instala ni lanza apps, no autentica cuentas, no exporta a App Store, no notariza,
 no despacha Actions ni usa gcloud/GCS, tags, releases o manifiestos remotos.
 No ejecuta bootstrap_bungee: ese script reemplaza su destino.
+
+`--targets semver,resources` ejecuta las validaciones trasladadas desde Actions.
+`--semver-branch` selecciona la rama de origen si el checkout está detached.
 
 `--dry-run` muestra dependencias y plan sin builds ni crear reportes. `--targets`
 acepta nombres separados por coma; `--jobs` limita a un máximo de tres. El proceso
@@ -40,4 +46,4 @@ Windows necesita equipo Windows con VS2022/SDK e Inno Setup: el Mac no simula é
 
 El PKG macOS generado por el script existente no se firma/notariza para distribución.
 Firma ad hoc de app y build development iOS no equivalen a release certificado.
-No modificar los workflows GitHub para utilizar este pipeline.
+GitHub Actions queda limitado a releases manuales después de QA externo del mismo SHA.

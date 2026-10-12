@@ -10,24 +10,17 @@ timestamp: 2026-10-03
 
 ## Suite automatizada
 
-El workflow `.github/workflows/tests.yml` compila el target
-`PlayWorshipTests` y ejecuta CTest en cada PR. Los tests de
-archivos, MIDI, creación y exportación reciben una raíz temporal nueva por proceso mediante
-`tests/run_isolated_test.py`. Un retorno 77 de esos tests es un fallo:
-el CI debe comprobar el flujo en lugar de informar una omisión como éxito.
-En macOS, los tests de interfaz no interactivos tampoco aceptan una omisión;
-en Linux sin display conservan el código de skip para ejecución local. Cada PR
-también compila el target `MTControls` con los presets Windows x64 y x86, sin
-empaquetar ni publicar artefactos.
-
-El workflow `.github/workflows/android-cloudbuild.yml` compila manualmente el
-APK Android arm64 en Google Cloud Build desde GitHub Actions. Usa Workload
-Identity Federation para evitar guardar una llave JSON permanente en GitHub.
-El APK de depuración queda disponible como artefacto del run durante 14 días.
-Esta compilación no firma versiones de distribución ni reemplaza el build
-firmado del workflow de releases.
-Cloud Build ejecuta los pasos Linux; macOS/iOS y Windows conservan sus runners
-específicos en GitHub Actions.
+GitHub Actions no ejecuta pruebas ni validaciones de PR, tampoco manualmente.
+Los workflows tests.yml, pr-semver.yml y android-cloudbuild.yml se retiraron;
+solo ci.yml genera instaladores de release bajo workflow_dispatch explícito.
+No se borró ninguna prueba de aplicación/backend. Ejecutar SemVer, recursos,
+backend y PlayWorshipTests fuera de Actions mediante el pipeline local;
+[LocalFirstCI](release/LocalFirstCI.md) documenta comandos y límites de Codex Cloud.
+Los tests de archivos, MIDI, creación y exportación conservan raíz temporal
+por proceso mediante tests/run_isolated_test.py. Un retorno 77 es fallo en
+macOS; Linux sin display conserva skips en los tests de interfaz.
+Codex Cloud coordina QA principal del mismo SHA que se entregará al workflow
+de release; los entornos nativos complementan los targets no disponibles allí.
 
 En macOS, con JUCE y Bungee disponibles:
 
@@ -53,7 +46,7 @@ En el primer run del PR, el runner alojado de macOS no entregó los paquetes
 multicast mDNS del backend portátil a procesos de la misma máquina. Las pruebas
 `remote_session_portable` y `remote_discovery_interop` llevan la etiqueta `lan`
 y se ejecutan en una Mac con red local mediante `ctest --test-dir
-build/functional-tests --output-on-failure -L lan`. El gate de PR ejecuta
+build/functional-tests --output-on-failure -L lan`. El gate local ejecuta
 `remote_session` con Bonjour nativo y `remote_session_portable_transport` con
 conexión WebSocket directa a loopback; este último ejercita comandos, snapshots,
 onda, VU y reconexión con la compilación portátil.
@@ -429,7 +422,7 @@ Compara cada recurso con su archivo original, tamaños, nombres, terminadores y
 búsquedas directas/dinámicas; incluye el icono de Google y el paquete demo, además
 de consultas inexistentes/nulas. Otra prueba comprueba regeneración al modificar
 bytes/tamaños o añadir/quitar recursos, y que no se reescriban en un build sin cambios.
-El workflow `Functional tests` ejecuta estas pruebas antes de integrar cambios. No sustituye compilar la APK ni probar el
+El target local `resources` ejecuta estas pruebas antes de integrar cambios. No sustituye compilar la APK ni probar el
 acceso habitual y la instalación de la demo en un dispositivo Android.
 
 ## Tarjetas Live y onda fuente — 08/10/2026

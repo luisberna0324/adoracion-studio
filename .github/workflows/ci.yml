@@ -1,13 +1,10 @@
-name: Build Artifacts
+name: Generate Release Installers
 
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag o SHA para construir (si el tag existe, tiene prioridad)"
+        description: "Rama, tag estable o SHA aprobado por QA para generar instaladores de release"
         required: true
         default: main
         type: string
@@ -20,8 +17,22 @@ on:
           - major
           - minor
           - patch
+      qa_sha:
+        description: "SHA completo de app validado localmente/Codex Cloud; debe coincidir con ref"
+        required: true
+        type: string
+      qa_confirmed:
+        description: "Confirmar QA del mismo SHA y plataformas de release fuera de Actions"
+        required: true
+        default: false
+        type: boolean
+      retain_artifacts:
+        description: "Autorizar guardar instaladores en artefactos GitHub por 7 dias (consume almacenamiento)"
+        required: true
+        default: false
+        type: boolean
       publish_release:
-        description: "Publicar GitHub Release con los artefactos"
+        description: "Publicar instaladores en GCS, simbolos Sentry, limpiar versiones y actualizar manifiesto/Release"
         required: true
         default: false
         type: boolean
@@ -50,6 +61,13 @@ jobs:
       - name: Resolve version, tag and ref
         id: resolve
         shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_RELEASE_KIND: ${{ inputs.release_kind }}
+          REQUESTED_PUBLISH: ${{ inputs.publish_release }}
+          REQUESTED_QA_SHA: ${{ inputs.qa_sha }}
+          REQUESTED_QA_CONFIRMED: ${{ inputs.qa_confirmed }}
+          REQUESTED_RETAIN_ARTIFACTS: ${{ inputs.retain_artifacts }}
         run: |
           set -euo pipefail
 
@@ -60,31 +78,48 @@ jobs:
             printf '%s' "${value}"
           }
 
-          REF_INPUT="$(trim "${{ inputs.ref }}")"
+          [[ "${REQUESTED_PUBLISH}" == "true" || "${REQUESTED_RETAIN_ARTIFACTS}" == "true" ]] || { echo "Autorizar guardar artefactos o publicar; no generar instaladores sin entregables." >&2; exit 1; }
+          [[ "${REQUESTED_QA_CONFIRMED}" == "true" ]] || { echo "Confirmar QA fuera de Actions antes de generar una release." >&2; exit 1; }
+          [[ "${REQUESTED_QA_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "qa_sha requiere SHA completo de 40 caracteres." >&2; exit 1; }
+          verify_qa_sha() {
+            [[ "$1" == "${REQUESTED_QA_SHA}" ]] || { echo "La revisión resuelta no coincide con QA; repetir QA o seleccionar su SHA." >&2; exit 1; }
+          }
+
+          REF_INPUT="$(trim "${REQUESTED_REF}")"
           if [[ -z "${REF_INPUT}" ]]; then
             REF_INPUT="main"
           fi
-          RELEASE_KIND_INPUT="$(trim "${{ inputs.release_kind }}")"
-          PUBLISH_INPUT="${{ inputs.publish_release }}"
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-            SEMVER="${GITHUB_REF_NAME#v}"
-            echo "release_ref=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
-            echo "semver=${SEMVER}" >> "${GITHUB_OUTPUT}"
-            echo "tag=${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
-            echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
-            echo "publish_release=true" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
+          RELEASE_KIND_INPUT="$(trim "${REQUESTED_RELEASE_KIND}")"
+          PUBLISH_INPUT="${REQUESTED_PUBLISH}"
 
           if [[ "${RELEASE_KIND_INPUT}" != "major" && "${RELEASE_KIND_INPUT}" != "minor" && "${RELEASE_KIND_INPUT}" != "patch" ]]; then
             echo "release_kind invalido '${RELEASE_KIND_INPUT}'. Valores permitidos: major|minor|patch." >&2
             exit 1
           fi
 
-          git fetch --tags --force origin
-          LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1 || true)"
+          git fetch --tags --force origin '+refs/heads/*:refs/remotes/origin/*'
+          resolve_ref() {
+            local requested="$1"
+            local branch="${requested#refs/heads/}"
+            if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+              git rev-parse --verify --end-of-options "refs/remotes/origin/${branch}^{commit}"
+            else
+              git rev-parse --verify --end-of-options "${requested}^{commit}"
+            fi
+          }
+          # An explicitly requested stable tag keeps its own version.
+          if [[ "${REF_INPUT}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            RELEASE_SHA="$(git rev-parse --verify --end-of-options "refs/tags/${REF_INPUT}^{commit}")"
+            verify_qa_sha "${RELEASE_SHA}"
+            echo "release_ref=${RELEASE_SHA}" >> "${GITHUB_OUTPUT}"
+            echo "semver=${REF_INPUT#v}" >> "${GITHUB_OUTPUT}"
+            echo "tag=${REF_INPUT}" >> "${GITHUB_OUTPUT}"
+            echo "tag_exists=true" >> "${GITHUB_OUTPUT}"
+            echo "publish_release=${PUBLISH_INPUT}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          LATEST_TAG="$(git tag --list | sed -nE '/^v[0-9]+\.[0-9]+\.[0-9]+$/p' | sort -rV | head -n1 || true)"
           if [[ -z "${LATEST_TAG}" ]]; then
             BASE_MAJOR=0
             BASE_MINOR=0
@@ -124,15 +159,14 @@ jobs:
           fi
 
           TAG="v${SEMVER}"
-          RELEASE_REF="${REF_INPUT}"
+          RELEASE_REF="$(resolve_ref "${REF_INPUT}")"
+          verify_qa_sha "${RELEASE_REF}"
           TAG_EXISTS="false"
 
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
-            TAG_EXISTS="true"
-            RELEASE_REF="${TAG}"
-          elif git ls-remote --exit-code --refs --tags origin "${TAG}" >/dev/null 2>&1; then
-            TAG_EXISTS="true"
-            RELEASE_REF="${TAG}"
+          # A collision must not silently replace the requested revision.
+          if git show-ref --verify --quiet "refs/tags/${TAG}"; then
+            echo "Tag ${TAG} already exists; request that tag explicitly." >&2
+            exit 1
           fi
 
           echo "release_ref=${RELEASE_REF}" >> "${GITHUB_OUTPUT}"
@@ -190,16 +224,18 @@ jobs:
           cmake --preset macos-release
           -DMTCONTROLS_ENABLE_SENTRY=ON
           -DSENTRY_NATIVE_DIR="${{ github.workspace }}/third_party/sentry-native"
+          -DMTCONTROLS_GIT_COMMIT="${{ needs.prepare.outputs.release_ref }}"
 
       - name: Build (macOS)
         run: cmake --build --preset macos-release
 
       - name: Upload Sentry debug symbols (macOS)
+        if: needs.prepare.outputs.publish_release == 'true'
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: lujuma
           SENTRY_PROJECT: playworship-app
-          SENTRY_RELEASE: playworship-app@${{ needs.prepare.outputs.semver }}+${{ github.run_number }}.${{ github.sha }}
+          SENTRY_RELEASE: playworship-app@${{ needs.prepare.outputs.semver }}+${{ github.run_number }}.${{ needs.prepare.outputs.release_ref }}
         run: bash scripts/upload_sentry_debug_symbols.sh build/macos-release/MTControls_artefacts/Release/Standalone
 
       - name: Verify Bungee bundled (macOS)
@@ -221,15 +257,27 @@ jobs:
             --standalone-dir build/macos-release/MTControls_artefacts/Release/Standalone \
             --output-dir dist
 
+      - name: Retain requested macOS release installer
+        if: inputs.retain_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
+          path: dist/playworship-macos-installer-${{ needs.prepare.outputs.semver }}.pkg
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Authenticate to Google Cloud
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Setup gcloud SDK
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Upload installer to GCS (macOS)
+        if: needs.prepare.outputs.publish_release == 'true'
         shell: bash
         env:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
@@ -303,6 +351,7 @@ jobs:
           cmake --preset ${{ matrix.preset }}
           -DMTCONTROLS_ENABLE_SENTRY=ON
           -DSENTRY_NATIVE_DIR="${{ github.workspace }}\\third_party\\sentry-native"
+          -DMTCONTROLS_GIT_COMMIT="${{ needs.prepare.outputs.release_ref }}"
 
       - name: Build (Windows)
         run: cmake --build --preset ${{ matrix.preset }}
@@ -346,15 +395,27 @@ jobs:
             -OutputDir "dist" `
             -IssFile "packaging/windows/MTControls.iss"
 
+      - name: Retain requested Windows release installer
+        if: inputs.retain_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.arch }}-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
+          path: dist/playworship-windows-installer-${{ needs.prepare.outputs.semver }}-${{ matrix.arch }}.exe
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Authenticate to Google Cloud
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Setup gcloud SDK
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Upload installer to GCS (Windows ${{ matrix.arch }})
+        if: needs.prepare.outputs.publish_release == 'true'
         shell: bash
         env:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
@@ -433,12 +494,23 @@ jobs:
           "${ANDROID_HOME}/build-tools/36.0.0/aapt" dump badging "${APK}" | grep -F "versionName='${SEMVER}'"
           mkdir -p dist
           cp "${APK}" "dist/playworship-android-${SEMVER}-arm64.apk"
+      - name: Retain requested Android release installer
+        if: inputs.retain_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-android-arm64-${{ needs.prepare.outputs.semver }}-${{ needs.prepare.outputs.release_ref }}
+          path: dist/playworship-android-${{ needs.prepare.outputs.semver }}-arm64.apk
+          if-no-files-found: error
+          retention-days: 7
       - name: Authenticate to Google Cloud
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
+        if: needs.prepare.outputs.publish_release == 'true'
       - name: Upload installer to GCS (Android)
+        if: needs.prepare.outputs.publish_release == 'true'
         shell: bash
         env:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
@@ -450,6 +522,7 @@ jobs:
           gcloud storage cp "dist/playworship-android-${SEMVER}-arm64.apk" "gs://${GCS_BUCKET}/${PREFIX}/android/v${SEMVER}/"
 
   retention-gcs:
+    if: needs.prepare.outputs.publish_release == 'true'
     name: Retain latest 3 versions in GCS
     needs:
       - prepare
@@ -459,11 +532,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate to Google Cloud
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Setup gcloud SDK
+        if: needs.prepare.outputs.publish_release == 'true'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Retention cleanup
@@ -507,6 +582,7 @@ jobs:
           retain_latest_three "android"
 
   publish-downloads:
+    if: needs.prepare.outputs.publish_release == 'true'
     name: Publish landing download manifest
     needs:
       - prepare
@@ -520,6 +596,7 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
       - uses: google-github-actions/setup-gcloud@v2
+        if: needs.prepare.outputs.publish_release == 'true'
       - name: Publish latest release metadata
         shell: bash
         env:
