@@ -305,9 +305,11 @@ struct SettingsPanelTestAccess {
     panel.learningButton.onClick();
     expect(learningRequests == 2,
            "the desktop guide button shares the same learning request as the grouped row");
-    expect(panel.teamsButton.isVisible() && panel.teamsHelp.getText().containsIgnoreCase("usuarios") &&
+    expect(panel.teamsButton.isVisible() &&
+               panel.teamsHelp.getText().containsIgnoreCase("temporalmente deshabilitado") &&
+               panel.teamsHelp.getText().containsIgnoreCase("Cloud personal") &&
                panel.generalPage.getLocalBounds().contains(panel.teamsButton.getBounds()),
-           "enabled desktop profile exposes Teams with user administration help");
+           "enabled desktop profile exposes Teams with the current sharing availability help");
     panel.teamsButton.onClick();
     expect(teamsRequests == 2, "desktop Teams action uses the same enabled navigation guard");
     snapshot(panel, "settings-desktop");
