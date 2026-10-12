@@ -8,6 +8,11 @@
 #include <cmath>
 
 namespace {
+double waveformLength(const PracticePanel::Sources &sources) {
+  const double length = sources.lengthSeconds ? sources.lengthSeconds() : 0.0;
+  return std::isfinite(length) ? juce::jmax(0.0, length) : 0.0;
+}
+
 void paintInsetWaveformFrame(juce::Graphics &g, juce::Rectangle<float> card) {
   const juce::Graphics::ScopedSaveState saved(g);
   juce::Path outline;
@@ -38,6 +43,38 @@ void paintInsetWaveformFrame(juce::Graphics &g, juce::Rectangle<float> card) {
   g.drawRoundedRectangle(card.reduced(1.0f), 15.0f, 1.0f);
 }
 
+// Draw before the opaque card, so every inward pixel is covered by the
+// unchanged card/waveform. Fixed vector strokes need no blur buffer, animation,
+// timer, or reduced-motion exception; the halo is always static.
+void paintListeningGlow(juce::Graphics &g, juce::Rectangle<float> card, int mode) {
+  if (mode != 1 && mode != 2)
+    return;
+  const juce::Graphics::ScopedSaveState saved(g);
+  const float radius = 16.0f;
+  const float left = card.getX(), right = card.getRight();
+  const float edge = mode == 1 ? card.getY() : card.getBottom();
+  const float direction = mode == 1 ? 1.0f : -1.0f;
+  const float middle = card.getCentreY();
+  juce::Path outline;
+  outline.startNewSubPath(left, middle);
+  outline.lineTo(left, edge + direction * radius);
+  outline.quadraticTo(left, edge, left + radius, edge);
+  outline.lineTo(right - radius, edge);
+  outline.quadraticTo(right, edge, right, edge + direction * radius);
+  outline.lineTo(right, middle);
+  const auto stroke = [&](float width, float opacity) {
+    g.setGradientFill(juce::ColourGradient(UITheme::accent.withAlpha(opacity),
+        card.getCentreX(), edge, UITheme::accent.withAlpha(0.0f),
+        card.getCentreX(), middle, false));
+    g.strokePath(outline, juce::PathStrokeType(width,
+        juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+  };
+  stroke(10.0f, 0.035f);
+  stroke(6.0f, 0.065f);
+  stroke(3.0f, 0.16f);
+  stroke(1.5f, 0.70f);
+}
+
 juce::String loopErrorMessage(const juce::String &error) {
   if (error == "discontinuous-arrangement")
     return L10n::tr("A–B cruza un corte.\nElige un tramo continuo.",
@@ -56,7 +93,9 @@ PracticePanel::PracticePanel(Sources nextSources)
       closeButton("practiceClose", IconGlyph::Close),
       playPauseButton("practicePlay", SvgIconName::Play, true),
       stopButton("practiceStop", SvgIconName::Square),
-      restoreMixButton(L10n::tr("Restaurar mezcla", "Restore mix")),
+      guideButton(L10n::tr("Guía", "Guide")),
+      metronomeButton(L10n::tr("Metrónomo", "Metronome")),
+      listeningHelpButton("?"),
       loopStartButton("A"), loopEndButton("B"),
       loopToggleButton("practiceLoop", SvgIconName::Repeat),
       loopClearButton("practiceLoopClear", SvgIconName::Trash) {
@@ -67,8 +106,19 @@ PracticePanel::PracticePanel(Sources nextSources)
   closeButton.setTitle(L10n::tr("Cerrar ensayo", "Close practice"));
   playPauseButton.setTitle(L10n::tr("Reproducir o pausar", "Play or pause"));
   stopButton.setTitle(L10n::tr("Detener reproducción", "Stop playback"));
-  restoreMixButton.setTitle(
-      L10n::tr("Restaurar mezcla original", "Restore original mix"));
+  listeningHelpButton.setTitle(L10n::tr("Abrir recorrido de Ensayo",
+                                       "Open Practice walkthrough"));
+  listeningHelpButton.setTooltip(L10n::tr("Aprende Ensayo paso a paso", "Learn Practice step by step"));
+  for (auto *button : {&guideButton, &metronomeButton}) {
+    // Native Button accessibility exposes a checkable state, while clicks wait
+    // for the session's actual state instead of toggling optimistically.
+    button->setToggleable(true);
+    button->setClickingTogglesState(false);
+    button->setWantsKeyboardFocus(true);
+  }
+  guideButton.setExplicitFocusOrder(4);
+  metronomeButton.setExplicitFocusOrder(5);
+  listeningHelpButton.setExplicitFocusOrder(6);
   closeButton.setSubtleHighlight(true);
   loopStartButton.setTitle(L10n::tr("Marcar A: inicio del loop", "Mark A: loop start"));
   loopEndButton.setTitle(L10n::tr("Marcar B: final e iniciar loop", "Mark B: end and start looping"));
@@ -79,7 +129,9 @@ PracticePanel::PracticePanel(Sources nextSources)
   for (auto *button : {static_cast<juce::Button *>(&closeButton),
                        static_cast<juce::Button *>(&playPauseButton),
                        static_cast<juce::Button *>(&stopButton),
-                       static_cast<juce::Button *>(&restoreMixButton),
+                       static_cast<juce::Button *>(&guideButton),
+                       static_cast<juce::Button *>(&metronomeButton),
+                       static_cast<juce::Button *>(&listeningHelpButton),
                        static_cast<juce::Button *>(&loopStartButton),
                        static_cast<juce::Button *>(&loopEndButton),
                        static_cast<juce::Button *>(&loopToggleButton),
@@ -88,6 +140,12 @@ PracticePanel::PracticePanel(Sources nextSources)
   }
   addAndMakeVisible(pitchSelector);
   addAndMakeVisible(tempoSelector);
+  addAndMakeVisible(instrumentSelector);
+  instrumentSelector.onValueChange = [this] { selectInstrumentFromWheel(); };
+  instrumentSelector.onPointerEvent = [this](const juce::MouseEvent &event,
+      PracticeInstrumentSelector::PointerPhase phase) {
+    return routeInstrumentPointer(event, phase);
+  };
   closeButton.onClick = [this] {
     if (sources.close)
       sources.close();
@@ -104,27 +162,25 @@ PracticePanel::PracticePanel(Sources nextSources)
     pendingSeek = false;
     handoffOffsetSeconds = 0.0;
     waveformPressed = false;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     if (sources.stop)
       sources.stop();
   };
-  restoreMixButton.onClick = [this] {
-    if (restoreMixButton.isGestureRelease())
-      return;
-    if (sources.setListeningMode)
-      sources.setListeningMode({}, 0);
-    listeningActivatedHere = false;
-    requestedListeningMode = 0;
+  guideButton.onClick = [this] { toggleAccompaniment(true); };
+  metronomeButton.onClick = [this] { toggleAccompaniment(false); };
+  listeningHelpButton.onClick = [this] {
+    if (!listeningHelpButton.isGestureRelease())
+      showListeningHelp();
   };
-  restoreMixButton.setVisible(false);
   pitchSelector.onValueChange = [this] {
     const auto songId = sources.songId ? sources.songId() : juce::String{};
     const bool remote = sources.isRemote && sources.isRemote();
     if (songId != displayedSongId || remote != displayedWasRemote) {
+      auto safe = juce::Component::SafePointer<PracticePanel>(this);
       refreshWaveform();
-      updatePracticeControls();
+      if (safe != nullptr)
+        updatePracticeControls();
       return;
     }
     const int current = pitchPending ? requestedPitch :
@@ -135,8 +191,10 @@ PracticePanel::PracticePanel(Sources nextSources)
     const auto songId = sources.songId ? sources.songId() : juce::String{};
     const bool remote = sources.isRemote && sources.isRemote();
     if (songId != displayedSongId || remote != displayedWasRemote) {
+      auto safe = juce::Component::SafePointer<PracticePanel>(this);
       refreshWaveform();
-      updatePracticeControls();
+      if (safe != nullptr)
+        updatePracticeControls();
       return;
     }
     changeTempo(tempoSelector.getValue());
@@ -159,13 +217,14 @@ PracticePanel::PracticePanel(Sources nextSources)
 PracticePanel::~PracticePanel() {
   stopTimer();
   playbackVBlankAttachment = {};
+  // Invalidate before calling providers: a provider may synchronously flush a
+  // retained delivery while its scrub/loop/listening state is being released.
+  cancelWaveformRequest();
   cancelScrub(true);
   if (sources.releaseLoop && sources.ownsLoop && sources.ownsLoop())
     sources.releaseLoop();
   if (listeningActivatedHere && sources.finishListening)
     sources.finishListening();
-  if (activeWaveformCancellation)
-    activeWaveformCancellation->store(true, std::memory_order_relaxed);
 }
 
 juce::Rectangle<int> PracticePanel::safeContentBounds() const {
@@ -183,6 +242,9 @@ PracticePanel::WaveformLayout PracticePanel::getWaveformLayout() const {
   layout.hints = area.removeFromTop(30).reduced(18, 0);
   layout.ruler = area.removeFromTop(24);
   layout.help = area.removeFromBottom(44).reduced(18, 0);
+  // Reserve matching gutters on BOTH sides, independent of icon visibility.
+  // The hint centre is the card centre, never the remaining area left of '?'.
+  layout.helpText = layout.help.reduced(48, 0);
   layout.times = area.removeFromBottom(28).reduced(18, 0);
   layout.plot = area.reduced(0, juce::jmin(18, area.getHeight() / 8));
   return layout;
@@ -201,12 +263,12 @@ void PracticePanel::resized() {
   tempoSelector.setBounds(tools);
 
   auto dock = area.removeFromBottom(120);
-  auto mixRow = dock.removeFromTop(44);
-  if (restoreMixButton.isVisible()) {
-    restoreMixButton.setBounds(mixRow.removeFromRight(160));
-    mixRow.removeFromRight(12);
-  }
-  listeningStatusBounds = mixRow;
+  auto accompanimentRow = dock.removeFromTop(44);
+  const int accompanimentGap = 12;
+  const int accompanimentWidth = (accompanimentRow.getWidth() - accompanimentGap) / 2;
+  guideButton.setBounds(accompanimentRow.removeFromLeft(accompanimentWidth));
+  accompanimentRow.removeFromLeft(accompanimentGap);
+  metronomeButton.setBounds(accompanimentRow.removeFromLeft(accompanimentWidth));
   dock.removeFromTop(8);
   auto controls = dock;
   const bool compact = controls.getWidth() < 328;
@@ -229,6 +291,11 @@ void PracticePanel::resized() {
   area.removeFromBottom(18);
   waveformBounds = area;
   instrumentHeaderBounds = waveformBounds.reduced(18, 12).removeFromTop(54);
+  const auto selectorBounds = instrumentHeaderBounds.withTrimmedTop(10);
+  if (instrumentSelector.getBounds() != selectorBounds)
+    cancelInstrumentGesture();
+  instrumentSelector.setBounds(selectorBounds);
+  listeningHelpButton.setBounds(getWaveformLayout().help.removeFromRight(44));
 }
 
 void PracticePanel::GestureAwareButton::paintButton(juce::Graphics &g,
@@ -245,6 +312,184 @@ void PracticePanel::GestureAwareButton::paintButton(juce::Graphics &g,
   g.setFont(makeAppFont(twoLines ? 11.0f : 13.0f, AppFontWeight::Medium));
   g.drawFittedText(getButtonText(), getLocalBounds().reduced(twoLines ? 3 : 8, 2),
                    juce::Justification::centred, twoLines ? 2 : 1);
+}
+
+void PracticePanel::AccompanimentButton::paintButton(juce::Graphics &g,
+                                                       bool over, bool down) {
+  const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
+  auto fill = getToggleState() ? UITheme::panelDark.interpolatedWith(UITheme::accent, 0.24f)
+                              : UITheme::panelDark;
+  if (isEnabled() && (over || down))
+    fill = fill.brighter(down ? 0.10f : 0.04f);
+  g.setColour(fill);
+  g.fillRoundedRectangle(bounds, 12.0f);
+  g.setColour(hasKeyboardFocus(true) ? UITheme::accent
+      : getToggleState() ? UITheme::accent.withAlpha(0.65f)
+                         : UITheme::textSecondary.withAlpha(0.22f));
+  g.drawRoundedRectangle(bounds, 12.0f, hasKeyboardFocus(true) ? 2.0f : 1.0f);
+  // The check/minus and inline ON/OFF remain legible without colour. Keep the
+  // authoritative toggle state while a request is pending; availability and
+  // confirmation details remain in the accessible description and tooltip.
+  const auto ink = UITheme::textPrimary.withMultipliedAlpha(isEnabled() || pending ? 1.0f : 0.5f);
+  auto text = getLocalBounds().reduced(10, 3);
+  const auto icon = text.removeFromLeft(18).toFloat().withSizeKeepingCentre(12.0f, 12.0f);
+  drawIconGlyph(g, icon, getToggleState() ? IconGlyph::Check : IconGlyph::Remove, ink, 1.5f);
+  text.removeFromLeft(4);
+  g.setColour(ink);
+  g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
+  g.drawFittedText(getButtonText() + " • " + (getToggleState() ? "ON" : "OFF"),
+      text, juce::Justification::centredLeft, 1, 0.75f);
+}
+
+void PracticePanel::updateAccompanimentControls() {
+  const auto now = juce::Time::getMillisecondCounter();
+  const auto song = sources.songId ? sources.songId() : juce::String{};
+  const bool remote = sources.isRemote && sources.isRemote();
+  const bool canControl = sources.canControl && sources.canControl();
+  const auto update = [&](AccompanimentButton &button, AccompanimentControl &control,
+      const std::function<AccompanimentState()> &read, bool writable) {
+    auto state = read ? read() : AccompanimentState{};
+    const bool available = canControl && state.available && writable;
+    const bool contextMatches = available && state.identity == control.requestedIdentity &&
+        song == control.requestedSongId && remote == control.requestedRemote;
+    if (control.request.reconcile(state.enabled, contextMatches, now))
+      showPracticeFeedback(button.getButtonText() +
+          L10n::tr(": cambio sin confirmar. Intenta de nuevo.", ": change not confirmed. Try again."));
+    control.state = std::move(state);
+    if (button.pending != control.request.pending) {
+      button.pending = control.request.pending;
+      button.repaint();
+    }
+    const bool checked = available && control.state.enabled;
+    if (button.getToggleState() != checked) {
+      // JUCE may ignore toggle state changes on a disabled button. Sync the
+      // authoritative state first, including the first acknowledgement frame.
+      button.setEnabled(true);
+      button.setToggleState(checked, juce::dontSendNotification);
+    }
+    button.setEnabled(available && !control.request.pending);
+    const auto reason = !canControl ? L10n::tr("Sin conexión o reproducción disponible.",
+                                               "No connection or playback available.")
+        : control.state.unavailableReason.isNotEmpty() ? control.state.unavailableReason
+        : L10n::tr("Esta canción no tiene esta fuente disponible.",
+                   "This song has no available source for this control.");
+    const auto description = button.getButtonText() + ": " +
+        (!available ? reason : control.request.pending
+            ? L10n::tr("Confirmando cambio; estado actual: ", "Confirming change; current state: ") +
+                (control.state.enabled ? L10n::tr("encendido", "on") : L10n::tr("apagado", "off"))
+            : control.state.enabled ? L10n::tr("Encendido", "On") : L10n::tr("Apagado", "Off"));
+    if (button.getDescription() != description) {
+      button.setTitle(description);
+      button.setDescription(description);
+      button.setTooltip(description);
+    }
+  };
+  update(guideButton, guideControl, sources.guideState, static_cast<bool>(sources.setGuideEnabled));
+  update(metronomeButton, metronomeControl, sources.metronomeState,
+         static_cast<bool>(sources.setMetronomeEnabled));
+}
+
+void PracticePanel::toggleAccompaniment(bool guide) {
+  auto &button = guide ? guideButton : metronomeButton;
+  auto &control = guide ? guideControl : metronomeControl;
+  if (button.gestureRelease)
+    return;
+  const auto identityBeforeClick = control.state.identity;
+  const auto song = sources.songId ? sources.songId() : juce::String{};
+  const bool remote = sources.isRemote && sources.isRemote();
+  // A source/song change may arrive between UI ticks. Refresh without acting
+  // on the replacement source from a tap intended for the old one.
+  updateAccompanimentControls();
+  if (!button.isEnabled() || identityBeforeClick != control.state.identity ||
+      song != displayedSongId || remote != displayedWasRemote)
+    return;
+  control.requestedIdentity = control.state.identity;
+  control.requestedSongId = song;
+  control.requestedRemote = remote;
+  control.request.begin(!control.state.enabled, juce::Time::getMillisecondCounter());
+  const auto write = guide ? sources.setGuideEnabled : sources.setMetronomeEnabled;
+  const bool desired = control.request.requested;
+  auto safe = juce::Component::SafePointer<PracticePanel>(this);
+  write(desired);
+  if (safe != nullptr)
+    updateAccompanimentControls();
+}
+
+int PracticePanel::getSourceDisplayListeningMode() const {
+  return sources.displayListeningMode ? sources.displayListeningMode()
+      : sources.listeningMode ? sources.listeningMode() : 0;
+}
+
+juce::String PracticePanel::getSourceDisplayListeningInstrument() const {
+  return sources.displayListeningInstrumentId ? sources.displayListeningInstrumentId()
+      : sources.listeningInstrumentId ? sources.listeningInstrumentId() : juce::String{};
+}
+
+bool PracticePanel::isListeningChangePending() const {
+  const int intendedMode = sources.listeningMode ? sources.listeningMode() : 0;
+  const auto intendedTarget = sources.listeningInstrumentId
+      ? sources.listeningInstrumentId() : juce::String{};
+  return intendedMode != getSourceDisplayListeningMode() ||
+      (intendedMode != 0 && intendedTarget != getSourceDisplayListeningInstrument());
+}
+
+int PracticePanel::getVisibleListeningMode() const {
+  if (!sources.canControl || !sources.canControl() || selectedInstrumentId.isEmpty() ||
+      getSourceDisplayListeningInstrument() != selectedInstrumentId ||
+      (sources.songId ? sources.songId() : juce::String{}) != displayedSongId ||
+      (sources.isRemote && sources.isRemote()) != displayedWasRemote)
+    return 0;
+  const int mode = getSourceDisplayListeningMode();
+  return mode == 1 || mode == 2 ? mode : 0;
+}
+
+juce::String PracticePanel::listeningContextText() const {
+  const int mode = getSourceDisplayListeningMode();
+  if (mode == 0)
+    return L10n::tr("Mezcla normal", "Normal mix");
+  const auto target = getSourceDisplayListeningInstrument();
+  const auto found = std::find_if(instruments.begin(), instruments.end(),
+      [&target](const Instrument &instrument) { return instrument.id == target; });
+  const auto name = found != instruments.end() ? found->name
+      : L10n::tr("otro instrumento", "another instrument");
+  return (mode == 1 ? L10n::tr("Enfoque: ", "Focus: ") : L10n::tr("Reducido: ", "Reduced: ")) + name;
+}
+
+void PracticePanel::restoreListeningMix() {
+  if (!sources.canControl || !sources.canControl() || !sources.setListeningMode ||
+      (sources.songId ? sources.songId() : juce::String{}) != displayedSongId ||
+      (sources.isRemote && sources.isRemote()) != displayedWasRemote)
+    return;
+  const int mode = sources.listeningMode ? sources.listeningMode() : 0;
+  if (mode == 0)
+    return;
+  listeningActivatedHere = false;
+  requestedListeningMode = 0;
+  const auto reset = sources.setListeningMode;
+  auto safe = juce::Component::SafePointer<PracticePanel>(this);
+  reset({}, 0);
+  if (safe != nullptr)
+    repaint(waveformBounds.expanded(6));
+}
+
+void PracticePanel::showListeningHelp() {
+  // Help belongs to the editor's existing learning flow. Copy before invoking:
+  // opening the guide may synchronously change or destroy this panel.
+  const auto show = sources.showHelp;
+  if (show)
+    show();
+}
+
+juce::String PracticePanel::currentPracticeFeedback() const {
+  const auto now = juce::Time::getMillisecondCounter();
+  if (practiceFeedbackUntilMs != 0 && static_cast<juce::int32>(practiceFeedbackUntilMs - now) > 0)
+    return practiceFeedback;
+  if (markingLoop)
+    return "A " + formatTime(loopStartSeconds) + L10n::tr(" · Pulsa B", " · Tap B");
+  if (loopStartSeconds >= 0.0 && loopEndSeconds >= 0.0)
+    return (loopToggleButton.getToggleState() ? L10n::tr("Loop · ", "Loop · ") : "A–B · ") +
+           formatTime(loopStartSeconds) + "–" + formatTime(loopEndSeconds);
+  return {};
 }
 
 juce::String PracticePanel::formatTime(double seconds) {
@@ -265,7 +510,8 @@ double PracticePanel::getVisibleSpanSeconds() const {
 void PracticePanel::showPracticeFeedback(juce::String message) {
   practiceFeedback = std::move(message);
   practiceFeedbackUntilMs = juce::Time::getMillisecondCounter() + 3000;
-  repaint(listeningStatusBounds);
+  setDescription(practiceFeedback);
+  repaint(getWaveformLayout().hints);
 }
 
 void PracticePanel::changePitch(const int delta) {
@@ -318,8 +564,10 @@ void PracticePanel::clearPracticeRegion() {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
   if (songId != displayedSongId || remote != displayedWasRemote) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
-    updatePracticeControls();
+    if (safe != nullptr)
+      updatePracticeControls();
     return;
   }
   if (!sources.canControl || !sources.canControl() || scrubActive || pinchLatched || loopStartSeconds < 0.0)
@@ -339,7 +587,7 @@ void PracticePanel::clearPracticeRegion() {
   clearedLoopIdentity = identity;
   updatePracticeControls();
   repaint(waveformBounds);
-  repaint(listeningStatusBounds);
+  repaint(getWaveformLayout().hints);
 }
 
 void PracticePanel::markLoopStart() {
@@ -359,7 +607,7 @@ void PracticePanel::markLoopStart() {
     sources.prepareLoop(position);
   updatePracticeControls();
   repaint(waveformBounds);
-  repaint(listeningStatusBounds);
+  repaint(getWaveformLayout().hints);
 }
 
 bool PracticePanel::activateMarkedLoop() {
@@ -397,7 +645,7 @@ void PracticePanel::markLoopEnd() {
     markingLoop = false;
   updatePracticeControls();
   repaint(waveformBounds);
-  repaint(listeningStatusBounds);
+  repaint(getWaveformLayout().hints);
 }
 
 void PracticePanel::togglePracticeLoop() {
@@ -411,10 +659,11 @@ void PracticePanel::togglePracticeLoop() {
   }
   updatePracticeControls();
   repaint(waveformBounds);
-  repaint(listeningStatusBounds);
+  repaint(getWaveformLayout().hints);
 }
 
 void PracticePanel::updatePracticeControls() {
+  updateAccompanimentControls();
   const double oldStart = loopStartSeconds;
   const double oldEnd = loopEndSeconds;
   const bool oldActive = loopToggleButton.getToggleState();
@@ -491,9 +740,11 @@ void PracticePanel::updatePracticeControls() {
       enabled && resting && !markingLoop &&
           loopEndSeconds - loopStartSeconds >= getMinimumLoopDuration() &&
           (!active || owned || loopPending || isClearedSnapshot));
+  if (getDescription() != currentPracticeFeedback())
+    setDescription(currentPracticeFeedback());
   if (oldStart != loopStartSeconds || oldEnd != loopEndSeconds || oldActive != loopToggleButton.getToggleState()) {
     repaint(waveformBounds);
-    repaint(listeningStatusBounds);
+    repaint(getWaveformLayout().hints);
   }
 }
 
@@ -511,10 +762,11 @@ bool PracticePanel::handleTouchDown(const int index, const juce::Point<float> po
     return pinchLatched;
   if (!pinchLatched) {
     cancelScrub(true);
-    waveformPressed = instrumentHeaderPressed = false;
+    instrumentSelector.cancelDrag();
+    waveformPressed = instrumentSelectorPressed = false;
     dragAxis = DragAxis::Undecided;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = barFeedbackUntilMs = 0;
+    barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     pinchLatched = true;
     updatePracticeControls();
@@ -859,32 +1111,13 @@ void PracticePanel::paint(juce::Graphics &g) {
   drawSelectorTitle(pitchSelector, L10n::tr("Tono", "Key"));
   drawSelectorTitle(tempoSelector, L10n::tr("Tempo", "Tempo"));
 
-  const int mode = sources.listeningMode ? sources.listeningMode() : 0;
-  const auto targetId = sources.listeningInstrumentId
-                            ? sources.listeningInstrumentId() : juce::String{};
+  const int mode = getSourceDisplayListeningMode();
+  const auto targetId = getSourceDisplayListeningInstrument();
   const bool selectedIsTarget = targetId == selectedInstrumentId;
-  auto mixStatus = mode == 0
-      ? L10n::tr("Mezcla normal", "Normal mix")
-      : !selectedIsTarget ? L10n::tr("Mezcla de ensayo", "Practice mix")
-      : mode == 1 ? L10n::tr("Enfoque activo", "Focus active")
-                  : L10n::tr("Instrumento reducido", "Instrument reduced");
-  const auto now = juce::Time::getMillisecondCounter();
-  if (practiceFeedbackUntilMs != 0 && static_cast<juce::int32>(practiceFeedbackUntilMs - now) > 0)
-    mixStatus = practiceFeedback;
-  else if (markingLoop)
-    mixStatus = "A " + formatTime(loopStartSeconds) + L10n::tr(" · Pulsa B", " · Tap B");
-  else if (loopStartSeconds >= 0.0 && loopEndSeconds >= 0.0)
-    mixStatus = (loopToggleButton.getToggleState() ? L10n::tr("Loop · ", "Loop · ")
-                                                 : L10n::tr("A–B · ", "A–B · ")) +
-                formatTime(loopStartSeconds) + "–" + formatTime(loopEndSeconds);
-  g.setColour(mode != 0 ? UITheme::accent : UITheme::textSecondary);
-  g.setFont(makeAppFont(12.0f));
-  g.drawFittedText(mixStatus, listeningStatusBounds,
-                   juce::Justification::centredLeft, 2);
-
   if (waveformBounds.isEmpty())
     return;
   const auto card = waveformBounds.toFloat();
+  paintListeningGlow(g, card, getVisibleListeningMode());
   g.setColour(UITheme::cardBg);
   g.fillRoundedRectangle(card, 16.0f);
 
@@ -892,17 +1125,6 @@ void PracticePanel::paint(juce::Graphics &g) {
   g.setColour(UITheme::textSecondary);
   g.fillRoundedRectangle(static_cast<float>(picker.getCentreX() - 18),
                          static_cast<float>(picker.getY()), 36.0f, 4.0f, 2.0f);
-  picker.removeFromTop(12);
-  g.setColour(UITheme::textPrimary);
-  g.setFont(makeAppFont(16.0f, AppFontWeight::SemiBold));
-  juce::String instrumentName = L10n::tr("Sin instrumento", "No instrument");
-  for (const auto &instrument : instruments)
-    if (instrument.id == selectedInstrumentId) {
-      instrumentName = instrument.name;
-      break;
-    }
-  g.drawFittedText(instrumentName + "  ⌄", picker,
-                   juce::Justification::centred, 1);
 
   const double length = sources.lengthSeconds ? sources.lengthSeconds() : 0.0;
   const double current = getDisplayedPositionSeconds();
@@ -910,24 +1132,35 @@ void PracticePanel::paint(juce::Graphics &g) {
   const auto wave = layout.plot;
   auto tapHints = layout.hints;
   const int hintWidth = tapHints.getWidth() / 2;
-  g.setColour(UITheme::textSecondary.withMultipliedAlpha(0.55f));
+  const auto feedback = currentPracticeFeedback();
   g.setFont(makeAppFont(11.0f));
-  g.drawFittedText(L10n::tr("−1 compás · Doble toque", "−1 bar · Double tap"),
-                   tapHints.removeFromLeft(hintWidth),
-                   juce::Justification::centred, 1);
-  g.drawFittedText(L10n::tr("+1 compás · Doble toque", "+1 bar · Double tap"),
-                   tapHints, juce::Justification::centred, 1);
+  if (feedback.isNotEmpty()) {
+    g.setColour(UITheme::textPrimary);
+    g.drawFittedText(feedback, tapHints, juce::Justification::centred, 2);
+  } else {
+    g.setColour(UITheme::textSecondary.withMultipliedAlpha(0.55f));
+    g.drawFittedText(L10n::tr("−1 compás · Doble toque", "−1 bar · Double tap"),
+                     tapHints.removeFromLeft(hintWidth),
+                     juce::Justification::centred, 1);
+    g.drawFittedText(L10n::tr("+1 compás · Doble toque", "+1 bar · Double tap"),
+                     tapHints, juce::Justification::centred, 1);
+  }
   const auto ruler = layout.ruler;
   g.setColour(UITheme::textSecondary.withMultipliedAlpha(0.75f));
   g.setFont(makeAppFont(11.0f));
-  const auto listeningHint = selectedIsTarget && mode == 1
-      ? L10n::tr("↓ Mezcla normal", "↓ Normal mix")
+  const auto help = layout.helpText;
+  const auto listeningHint = isListeningChangePending()
+      ? L10n::tr("Confirmando mezcla…", "Confirming mix…")
+      : selectedIsTarget && mode == 1
+      ? L10n::tr("Enfoque · ↓ Normal", "Focus · ↓ Normal")
       : selectedIsTarget && mode == 2
-          ? L10n::tr("↑ Mezcla normal", "↑ Normal mix")
-          : L10n::tr("↑ Enfocar · ↓ Bajar instrumento", "↑ Focus · ↓ Lower instrument");
-  g.drawFittedText(L10n::tr("↔ Recorrer · Pellizca para ampliar\n",
-                           "↔ Browse · Pinch to zoom\n") + listeningHint,
-                   layout.help, juce::Justification::centred, 2);
+          ? L10n::tr("Reducido · ↑ Normal", "Reduced · ↑ Normal")
+          : mode != 0 ? (mode == 1 ? L10n::tr("Enfoque en otra pista", "Focus on another track")
+                                   : L10n::tr("Otra pista reducida", "Another track reduced"))
+          : L10n::tr("↑ Enfocar · ↓ Reducir", "↑ Focus · ↓ Reduce");
+  g.drawFittedText(L10n::tr("↔ Recorrer · Pellizca: zoom\n",
+                           "↔ Browse · Pinch: zoom\n") + listeningHint,
+                   help, juce::Justification::centred, 2);
   auto times = layout.times;
   g.setColour(UITheme::textSecondary);
   g.setFont(makeAppFont(13.0f));
@@ -1042,29 +1275,43 @@ void PracticePanel::paint(juce::Graphics &g) {
   drawBarFeedback();
 }
 
-void PracticePanel::refreshWaveform() {
+void PracticePanel::refreshWaveform(const juce::String &wheelSelectionId) {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
-  viewport.setLength(sources.lengthSeconds ? sources.lengthSeconds() : 0.0);
-  if (songId != displayedSongId || remote != displayedWasRemote) {
-    cancelScrub(false);
-    if (activeWaveformCancellation)
-      activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  const auto revision = sources.waveformRevision ? sources.waveformRevision()
+                                                  : juce::String{};
+  const double length = waveformLength(sources);
+  const bool contextChanged = songId != displayedSongId ||
+                              remote != displayedWasRemote;
+  const bool waveformChanged = contextChanged ||
+      revision != displayedWaveformRevision ||
+      length != displayedWaveformLengthSeconds;
+  viewport.setLength(length);
+  if (waveformChanged) {
+    cancelWaveformRequest();
     displayedSongId = songId;
     displayedWasRemote = remote;
+    displayedWaveformRevision = revision;
+    displayedWaveformLengthSeconds = length;
+    waveformBins.clear();
+    waveformGeometry.clear();
+    waveformCache.clear();
+    repaint(waveformBounds);
+  }
+  if (contextChanged) {
+    cancelScrub(false);
     viewport.reset();
     touchPositions.clear();
     pinchLatched = false;
     pitchPending = false;
     pitchSelector.cancelDrag();
     tempoPending = false;
+    guideControl.request.pending = false;
+    metronomeControl.request.pending = false;
     tempoSelector.cancelDrag();
+    cancelInstrumentGesture();
     clearLoopSelection();
     releasedLoopIdentities.clear();
-    ++waveformRequestGeneration;
-    waveformBins.clear();
-    waveformGeometry.clear();
-    waveformCache.clear();
     selectedInstrumentId.clear();
     instruments.clear();
     listeningActivatedHere = false;
@@ -1073,7 +1320,6 @@ void PracticePanel::refreshWaveform() {
     waveformPressed = false;
     dragAxis = DragAxis::Undecided;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
   }
@@ -1089,35 +1335,102 @@ void PracticePanel::refreshWaveform() {
         break;
       }
   if (changed) {
+    cancelInstrumentGesture();
     instruments = std::move(latest);
+    for (auto cached = waveformCache.begin(); cached != waveformCache.end();) {
+      const auto found = std::find_if(instruments.begin(), instruments.end(),
+          [&](const Instrument &entry) { return entry.id == cached->first; });
+      if (found == instruments.end())
+        cached = waveformCache.erase(cached);
+      else
+        ++cached;
+    }
     const auto found = std::find_if(
         instruments.begin(), instruments.end(), [this](const Instrument &entry) {
           return entry.id == selectedInstrumentId;
         });
     if (found == instruments.end()) {
+      cancelWaveformRequest();
       selectedInstrumentId.clear();
       waveformBins.clear();
       waveformGeometry.clear();
+      repaint(waveformBounds);
     }
   }
+  const bool canSelect = sources.canControl && sources.canControl();
+  const bool preserveWheelSelection = canSelect && !contextChanged &&
+      std::any_of(instruments.begin(), instruments.end(),
+          [&wheelSelectionId](const Instrument &entry) { return entry.id == wheelSelectionId; });
+  instrumentSelector.setInstruments(instruments,
+      preserveWheelSelection ? wheelSelectionId : selectedInstrumentId);
+  instrumentSelector.setEnabled(!instruments.empty() && canSelect);
   if (selectedInstrumentId.isEmpty() && !instruments.empty())
     selectInstrument(0);
+  else if (waveformChanged && selectedInstrumentId.isNotEmpty() &&
+           !(preserveWheelSelection && wheelSelectionId != selectedInstrumentId)) {
+    // A committed wheel candidate will request its own fresh bins below in
+    // selectInstrumentFromWheel; reloading the old ID here would reset preview.
+    const auto selected = std::find_if(instruments.begin(), instruments.end(),
+        [this](const Instrument &entry) {
+          return entry.id == selectedInstrumentId;
+        });
+    if (selected != instruments.end())
+      selectInstrument(static_cast<int>(selected - instruments.begin()), true);
+  }
 }
 
-void PracticePanel::selectInstrument(const int index) {
+void PracticePanel::cancelWaveformRequest() {
+  ++waveformRequestGeneration;
+  if (activeWaveformCancellation)
+    activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  activeWaveformCancellation.reset();
+}
+
+bool PracticePanel::waveformContextMatchesSources() const {
+  return displayedSongId == (sources.songId ? sources.songId() : juce::String{}) &&
+      displayedWasRemote == (sources.isRemote && sources.isRemote()) &&
+      displayedWaveformRevision == (sources.waveformRevision
+          ? sources.waveformRevision() : juce::String{}) &&
+      displayedWaveformLengthSeconds == waveformLength(sources);
+}
+
+void PracticePanel::selectInstrument(const int index, const bool reloadWaveform) {
   if (!juce::isPositiveAndBelow(index, static_cast<int>(instruments.size())))
     return;
   const auto id = instruments[static_cast<size_t>(index)].id;
-  if (id == selectedInstrumentId)
+  if (!waveformContextMatchesSources()) {
+    // A wheel selection can precede the next 500 ms probe. Never use a cache
+    // entry from the previous content revision in that interval.
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
+    refreshWaveform();
+    if (safe == nullptr)
+      return;
+    const auto found = std::find_if(instruments.begin(), instruments.end(),
+        [&id](const Instrument &entry) { return entry.id == id; });
+    if (found != instruments.end())
+      selectInstrument(static_cast<int>(found - instruments.begin()));
     return;
-  if (activeWaveformCancellation)
-    activeWaveformCancellation->store(true, std::memory_order_relaxed);
+  }
+  const bool selectionChanged = id != selectedInstrumentId;
+  if (!selectionChanged && !reloadWaveform)
+    return;
+  // Advance even for a cache hit: a cancelled provider may still deliver.
+  cancelWaveformRequest();
+  const auto generation = waveformRequestGeneration;
   selectedInstrumentId = id;
-  if (listeningActivatedHere && requestedListeningMode != 0) {
+  if (instrumentSelector.getSelectedInstrumentId() != id)
+    cancelInstrumentGesture();
+  instrumentSelector.setInstruments(instruments, selectedInstrumentId);
+  instrumentSelector.setEnabled(sources.canControl && sources.canControl());
+  auto safe = juce::Component::SafePointer<PracticePanel>(this);
+  if (selectionChanged && listeningActivatedHere && requestedListeningMode != 0) {
     if (sources.setListeningMode && sources.canControl && sources.canControl() &&
-        sources.canRetargetListening && sources.canRetargetListening())
-      sources.setListeningMode(id, requestedListeningMode);
-    else {
+        sources.canRetargetListening && sources.canRetargetListening()) {
+      const auto retarget = sources.setListeningMode;
+      retarget(id, requestedListeningMode);
+      if (safe == nullptr || waveformRequestGeneration != generation)
+        return;
+    } else {
       listeningActivatedHere = false;
       requestedListeningMode = 0;
     }
@@ -1131,26 +1444,37 @@ void PracticePanel::selectInstrument(const int index) {
     repaint();
     return;
   }
-  const auto generation = ++waveformRequestGeneration;
   const auto songId = displayedSongId;
+  const auto revision = displayedWaveformRevision;
+  const bool remote = displayedWasRemote;
+  const double length = displayedWaveformLengthSeconds;
+  repaint();
   if (sources.requestInstrumentWaveform) {
     activeWaveformCancellation = std::make_shared<std::atomic<bool>>(false);
-    auto safe = juce::Component::SafePointer<PracticePanel>(this);
-    sources.requestInstrumentWaveform(
-        id, activeWaveformCancellation,
-        [safe, generation, songId, id](std::vector<float> bins) mutable {
-          if (safe == nullptr || safe->displayedSongId != songId)
+    const auto cancellation = activeWaveformCancellation;
+    // Keep the provider alive if it delivers synchronously and re-enters or
+    // closes the panel. All request state is installed before invoking it.
+    const auto request = sources.requestInstrumentWaveform;
+    request(id, cancellation,
+        [safe, cancellation, generation, songId, revision, remote, length, id]
+        (std::vector<float> bins) mutable {
+          if (cancellation->load(std::memory_order_relaxed) || safe == nullptr ||
+              safe->waveformRequestGeneration != generation ||
+              safe->selectedInstrumentId != id ||
+              safe->displayedSongId != songId ||
+              safe->displayedWasRemote != remote ||
+              safe->displayedWaveformRevision != revision ||
+              safe->displayedWaveformLengthSeconds != length ||
+              !safe->waveformContextMatchesSources())
             return;
+          // Check the live providers before touching either cache or UI. A
+          // source edit may arrive before refreshWaveform's next timer probe.
           safe->waveformCache[id] = bins;
-          if (safe->waveformRequestGeneration == generation &&
-              safe->selectedInstrumentId == id) {
-            safe->waveformBins = std::move(bins);
-            safe->waveformGeometry.setBins(safe->waveformBins);
-            safe->repaint();
-          }
+          safe->waveformBins = std::move(bins);
+          safe->waveformGeometry.setBins(safe->waveformBins);
+          safe->repaint();
         });
   }
-  repaint();
 }
 
 void PracticePanel::applyListeningGesture(const juce::Point<float> &movement) {
@@ -1194,12 +1518,13 @@ void PracticePanel::updateWaveformGesture(const juce::Point<float> position,
       dragAxis = DragAxis::Vertical;
     if (dragAxis != DragAxis::Undecided) {
       lastTapSide = -1;
-      pendingInstrumentMenuMs = 0;
       barFeedbackUntilMs = 0;
       accumulatedBarSteps = 0;
     }
   }
   if (dragAxis == DragAxis::Horizontal) {
+    if (instrumentSelectorPressed)
+      return;
     if (!scrubActive) {
       scrubActive = true;
       visualPositionSeconds = dragOriginSeconds;
@@ -1218,30 +1543,66 @@ void PracticePanel::updateWaveformGesture(const juce::Point<float> position,
   }
 }
 
-void PracticePanel::showInstrumentMenu() {
-  if (instruments.empty())
+void PracticePanel::cancelInstrumentGesture() {
+  instrumentSelector.cancelDrag();
+  if (instrumentSelectorPressed) {
+    instrumentSelectorPressed = false;
+    waveformPressed = false;
+    dragAxis = DragAxis::Undecided;
+    lastTapSide = -1;
+  }
+}
+
+void PracticePanel::selectInstrumentFromWheel() {
+  // Capture the stable ID before refreshing; an index may now identify a
+  // different stem after a same-song reorder between the 500 ms probes.
+  const auto id = instrumentSelector.getSelectedInstrumentId();
+  const auto songId = displayedSongId;
+  const bool remote = displayedWasRemote;
+  const juce::Component::SafePointer<PracticePanel> safe(this);
+  refreshWaveform(id);
+  if (safe == nullptr || songId != displayedSongId || remote != displayedWasRemote ||
+      !sources.canControl || !sources.canControl())
     return;
-  juce::PopupMenu menu;
-  menu.addSectionHeader(L10n::tr("Instrumentos", "Instruments"));
-  for (size_t i = 0; i < instruments.size(); ++i)
-    menu.addItem(static_cast<int>(i) + 1, instruments[i].name, true,
-                 instruments[i].id == selectedInstrumentId);
-  auto safe = juce::Component::SafePointer<PracticePanel>(this);
-  menu.showMenuAsync(
-      makeTouchPopupMenuOptions(this).withTargetScreenArea(
-          localAreaToGlobal(instrumentHeaderBounds))
-          .withMinimumWidth(juce::jmin(320, instrumentHeaderBounds.getWidth())),
-      [safe](const int result) {
-        if (safe != nullptr && result > 0)
-          safe->selectInstrument(result - 1);
-      });
+  const auto found = std::find_if(instruments.begin(), instruments.end(),
+      [&id](const Instrument &entry) { return entry.id == id; });
+  if (found != instruments.end())
+    selectInstrument(static_cast<int>(found - instruments.begin()));
+}
+
+bool PracticePanel::routeInstrumentPointer(const juce::MouseEvent &event,
+    PracticeInstrumentSelector::PointerPhase phase) {
+  const juce::Component::SafePointer<PracticePanel> safe(this);
+  if (phase == PracticeInstrumentSelector::PointerPhase::down) {
+    mouseDown(event);
+    return safe == nullptr || pinchLatched || !instrumentSelectorPressed ||
+           !canFinishWaveformGesture();
+  }
+  // The wheel acquires a horizontal gesture at its own six-point threshold.
+  // Preserve that owner if the finger later turns vertically.
+  if (instrumentSelectorPressed && instrumentSelector.isHorizontalDragActive())
+    dragAxis = DragAxis::Horizontal;
+  mouseDrag(event);
+  if (safe == nullptr)
+    return true;
+  // Capture before mouseUp clears its axis and the last pinch contact. Running
+  // mouseDrag first also resolves a last/coalesced vertical movement on release.
+  const bool consumed = pinchLatched || dragAxis == DragAxis::Vertical ||
+                        !instrumentSelectorPressed || !canFinishWaveformGesture();
+  if (phase == PracticeInstrumentSelector::PointerPhase::up)
+    mouseUp(event);
+  return consumed;
 }
 
 void PracticePanel::mouseDown(const juce::MouseEvent &event) {
   const auto songId = sources.songId ? sources.songId() : juce::String{};
   const bool remote = sources.isRemote && sources.isRemote();
-  if (songId != displayedSongId || remote != displayedWasRemote)
+  if (songId != displayedSongId || remote != displayedWasRemote) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
+    if (safe == nullptr)
+      return;
+  }
   if (gestureSongId != songId || gestureWasRemote != remote) {
     cancelScrub(false);
     lastTapSide = -1;
@@ -1257,9 +1618,9 @@ void PracticePanel::mouseDown(const juce::MouseEvent &event) {
     scrubSettling = false;
     previewPositionSeconds = visualPositionSeconds;
   }
-  instrumentHeaderPressed =
-      waveformBounds.withHeight(82).toFloat().contains(position);
-  waveformPressed = waveformBounds.toFloat().contains(position);
+  instrumentSelectorPressed = event.eventComponent == &instrumentSelector;
+  waveformPressed = event.eventComponent != &listeningHelpButton &&
+                    waveformBounds.toFloat().contains(position);
   dragAxis = DragAxis::Undecided;
   gestureSongId = songId;
   gestureWasRemote = remote;
@@ -1267,7 +1628,6 @@ void PracticePanel::mouseDown(const juce::MouseEvent &event) {
   previewPositionSeconds = dragOriginSeconds;
   dragSecondsPerPixel = getVisibleSpanSeconds() /
                         juce::jmax(1, getWaveformLayout().plot.getWidth());
-  pendingInstrumentMenuMs = 0;
   listeningSwipeHandled = false;
   dragStart = position;
   motionSamples.clear();
@@ -1287,18 +1647,18 @@ void PracticePanel::mouseUp(const juce::MouseEvent &event) {
     return;
   const auto position = event.getEventRelativeTo(this).position;
   updateWaveformGesture(position, event.eventTime.toMilliseconds());
-  if (waveformPressed && dragAxis == DragAxis::Horizontal) {
+  if (waveformPressed && !instrumentSelectorPressed && dragAxis == DragAxis::Horizontal) {
     if (canFinishWaveformGesture())
       settleScrub(true);
     else {
       cancelScrub(false);
       pendingSeek = false;
     }
-  } else if (waveformPressed && dragAxis == DragAxis::Undecided &&
+  } else if (waveformPressed && !instrumentSelectorPressed && dragAxis == DragAxis::Undecided &&
              waveformBounds.toFloat().contains(position) &&
              event.getDistanceFromDragStart() < 12 &&
              !event.mouseWasDraggedSinceMouseDown() &&
-             event.eventComponent != &restoreMixButton) {
+             event.eventComponent != &listeningHelpButton) {
     const int side = position.x < waveformBounds.getCentreX() ? 0 : 1;
     const bool doubleTap = event.getNumberOfClicks() >= 2 &&
                            event.getNumberOfClicks() % 2 == 0 && lastTapSide == side;
@@ -1317,16 +1677,13 @@ void PracticePanel::mouseUp(const juce::MouseEvent &event) {
       lastTapSide = -1;
     } else {
       lastTapSide = side;
-      if (instrumentHeaderPressed && waveformBounds.withHeight(82).toFloat().contains(position))
-        pendingInstrumentMenuMs = juce::Time::getMillisecondCounter() +
-                                  juce::MouseEvent::getDoubleClickTimeout();
     }
   } else {
     lastTapSide = -1;
   }
   if (scrubActive && !scrubSettling)
     settleScrub();
-  instrumentHeaderPressed = false;
+  instrumentSelectorPressed = false;
   waveformPressed = false;
   listeningSwipeHandled = false;
   dragAxis = DragAxis::Undecided;
@@ -1378,36 +1735,39 @@ void PracticePanel::updateAnimationFrame(const double frameTimestampSec,
 void PracticePanel::timerCallback() {
   const auto now = juce::Time::getMillisecondCounter();
   if (now >= nextWaveformProbeMs) {
+    auto safe = juce::Component::SafePointer<PracticePanel>(this);
     refreshWaveform();
+    if (safe == nullptr)
+      return;
     nextWaveformProbeMs = now + 500;
   }
   const bool enabled = sources.canControl && sources.canControl();
   playPauseButton.setEnabled(enabled);
   stopButton.setEnabled(enabled);
-  const int mode = sources.listeningMode ? sources.listeningMode() : 0;
-  const auto listeningInstrument = sources.listeningInstrumentId
-      ? sources.listeningInstrumentId() : juce::String{};
-  if (mode != displayedListeningMode ||
+  instrumentSelector.setEnabled(enabled && !instruments.empty());
+  const int mode = getSourceDisplayListeningMode();
+  const auto listeningInstrument = getSourceDisplayListeningInstrument();
+  const bool listeningPending = isListeningChangePending();
+  if (mode != displayedListeningMode || enabled != displayedCanControl ||
+      listeningPending != displayedListeningPending ||
       listeningInstrument != displayedListeningInstrument) {
+    displayedCanControl = enabled;
+    displayedListeningPending = listeningPending;
     displayedListeningMode = mode;
     displayedListeningInstrument = listeningInstrument;
-    repaint(listeningStatusBounds);
-    repaint(getWaveformLayout().help);
+    repaint(getWaveformLayout().hints);
+    repaint(waveformBounds.expanded(6));
+    listeningHelpButton.setDescription(listeningContextText() +
+        (listeningPending ? L10n::tr(" · Confirmando cambio", " · Confirming change") : juce::String{}));
   }
-  if (restoreMixButton.isVisible() != (mode != 0)) {
-    restoreMixButton.setVisible(mode != 0);
-    resized();
-    repaint();
-  }
-  restoreMixButton.setEnabled(enabled);
   if (!enabled) {
+    cancelInstrumentGesture();
     cancelScrub(false);
     listeningActivatedHere = false;
     requestedListeningMode = 0;
     pendingSeek = false;
     waveformPressed = false;
     lastTapSide = -1;
-    pendingInstrumentMenuMs = 0;
     barFeedbackUntilMs = 0;
     accumulatedBarSteps = 0;
     touchPositions.clear();
@@ -1419,7 +1779,8 @@ void PracticePanel::timerCallback() {
   updatePracticeControls();
   if (practiceFeedbackUntilMs != 0 && static_cast<juce::int32>(now - practiceFeedbackUntilMs) >= 0) {
     practiceFeedbackUntilMs = 0;
-    repaint(listeningStatusBounds);
+    setDescription(currentPracticeFeedback());
+    repaint(getWaveformLayout().hints);
   }
 #if JUCE_ANDROID
   updateAnimationFrame(juce::Time::getMillisecondCounterHiRes() * 0.001);
@@ -1427,12 +1788,6 @@ void PracticePanel::timerCallback() {
   if (lastVBlankAtMs == 0 || now - lastVBlankAtMs > 100)
     updateAnimationFrame(juce::Time::getMillisecondCounterHiRes() * 0.001);
 #endif
-  if (pendingInstrumentMenuMs != 0 &&
-      static_cast<juce::int32>(now - pendingInstrumentMenuMs) >= 0) {
-    pendingInstrumentMenuMs = 0;
-    if (canFinishWaveformGesture())
-      showInstrumentMenu();
-  }
   const bool playing = sources.isPlaying && sources.isPlaying();
   const auto playLabel = playing
                              ? L10n::tr("Pausar", "Pause")
@@ -1451,6 +1806,12 @@ void PracticePanel::timerCallback() {
 }
 
 bool PracticePanel::keyPressed(const juce::KeyPress &key) {
+  if (key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R') {
+    if (!key.getModifiers().isAnyModifierKeyDown()) {
+      restoreListeningMix();
+      return true;
+    }
+  }
   if (key == juce::KeyPress::escapeKey) {
     if (sources.close)
       sources.close();

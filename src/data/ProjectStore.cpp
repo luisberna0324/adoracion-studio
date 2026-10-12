@@ -610,19 +610,9 @@ juce::String artworkExtensionFromUrl(const juce::String &url) {
 
 bool downloadArtworkToCache(const juce::String &url, const juce::File &cache,
                             juce::String &outPath) {
-  if (!url.startsWithIgnoreCase("http")) return false;
-  juce::URL remote(url);
-  auto options = juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-                     .withExtraHeaders("User-Agent: Mozilla/5.0\r\n")
-                     .withConnectionTimeoutMs(8000).withHttpRequestCmd("GET");
-  auto stream = remote.createInputStream(options);
-  if (stream == nullptr) return false;
-  juce::MemoryBlock bytes; stream->readIntoMemoryBlock(bytes);
-  if (bytes.getSize() == 0) return false;
-  const auto target = cache.getChildFile("artwork" + artworkExtensionFromUrl(url));
-  if (!target.replaceWithData(bytes.getData(), bytes.getSize())) return false;
-  outPath = target.getFullPathName();
-  return true;
+  // Historical remote artwork is not fetched when opening a project.
+  juce::ignoreUnused(url, cache, outPath);
+  return false;
 }
 } // namespace
 

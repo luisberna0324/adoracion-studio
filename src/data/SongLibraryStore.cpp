@@ -355,36 +355,10 @@ bool copyArtworkIntoDirectory(const juce::File &sourceFile,
 bool downloadArtworkIntoDirectory(const juce::String &url,
                                   const juce::File &directory,
                                   juce::String &outArtworkPath) {
-  if (url.trim().isEmpty())
-    return false;
-
-  juce::URL artworkUrl(url.trim());
-  auto options = juce::URL::InputStreamOptions(
-                     juce::URL::ParameterHandling::inAddress)
-                     .withExtraHeaders("User-Agent: Mozilla/5.0\r\n")
-                     .withConnectionTimeoutMs(8000)
-                     .withHttpRequestCmd("GET");
-  auto stream = artworkUrl.createInputStream(options);
-  if (stream == nullptr)
-    return false;
-
-  juce::MemoryBlock bytes;
-  stream->readIntoMemoryBlock(bytes);
-  if (bytes.getSize() == 0)
-    return false;
-
-  const auto ext = inferArtworkExtensionFromSource(url);
-  const auto target = directory.getChildFile("artwork" + ext);
-  if (directory.createDirectory().failed() ||
-      !target.replaceWithData(bytes.getData(), bytes.getSize()))
-    return false;
-  for (const auto &old : directory.findChildFiles(juce::File::findFiles,
-                                                   false, "artwork.*"))
-    if (old != target)
-      old.deleteFile();
-
-  outArtworkPath = target.getFullPathName();
-  return true;
+  // Older projects retain their source metadata, but opening/saving them must
+  // never fetch remote catalog artwork. Manual images and local copies remain.
+  juce::ignoreUnused(url, directory, outArtworkPath);
+  return false;
 }
 
 bool persistSongArtwork(ImportedSongData &song, const juce::File &targetDirectory,
@@ -423,6 +397,11 @@ bool persistSongArtwork(ImportedSongData &song, const juce::File &targetDirector
     if (copyArtworkIntoDirectory(prevArtwork, targetDirectory, song.artworkPath))
       return true;
   }
+
+  // Keep an existing local cover even if its historical source is remote.
+  if (copyArtworkIntoDirectory(juce::File(song.artworkPath), targetDirectory,
+                               song.artworkPath))
+    return true;
 
   if (downloadArtworkIntoDirectory(song.artworkSource, targetDirectory,
                                    song.artworkPath)) {

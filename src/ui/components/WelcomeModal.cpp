@@ -1,4 +1,5 @@
 #include "WelcomeModal.h"
+#include "DevelopmentFeatures.h"
 #include "../../data/Localization.h"
 #include "../../platform/NativeAppleSignIn.h"
 
@@ -91,6 +92,9 @@ void EmailAuthenticationForm::showLogin() {
 }
 
 void EmailAuthenticationForm::showLocalDemoLogin() {
+#if !JUCE_DEBUG
+  return;
+#endif
   clearCredentials();
   emailEditor.clear();
   mode = Mode::localDemoLogin;
@@ -228,7 +232,9 @@ void EmailAuthenticationForm::submit() {
   }
   clearCredentials();
   if (isLocalDemoMode()) {
+#if JUCE_DEBUG
     if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(email, password);
+#endif
     return;
   }
   if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
@@ -304,20 +310,27 @@ WelcomeModal::WelcomeModal() {
   emailButton.setButtonText(L10n::tr("Ingresar con correo", "Sign in with email"));
   emailButton.onClick = [this] { showEmailForm(true); };
   addAndMakeVisible(emailButton);
+#if JUCE_DEBUG
   localDemoButton.setButtonText(L10n::tr(u8"Prueba sin conexión", "Offline trial"));
   localDemoButton.onClick = [this] { showLocalDemoLogin(); };
   addAndMakeVisible(localDemoButton);
+#endif
   backButton.setButtonText(L10n::tr("Volver", "Back"));
   backButton.setTitle(L10n::tr("Volver", "Back"));
   backButton.setTooltip(L10n::tr("Volver", "Back"));
   backButton.setExplicitFocusOrder(1);
-  backButton.onClick = [this] { emailForm.goBack(); };
+  backButton.onClick = [this] {
+    if (inlineAppleLink) showEmailForm(false);
+    else emailForm.goBack();
+  };
   addChildComponent(backButton);
   emailForm.onPasswordLoginRequested = [this](const auto& email, const auto& password) {
     if (onPasswordLoginRequested) onPasswordLoginRequested(email, password);
   };
   emailForm.onLocalDemoLoginRequested = [this](const auto& username, const auto& password) {
+#if JUCE_DEBUG
     if (onLocalDemoLoginRequested) onLocalDemoLoginRequested(username, password);
+#endif
   };
   emailForm.onPasswordResetRequested = [this](const auto& email) {
     if (onPasswordResetRequested) onPasswordResetRequested(email);
@@ -332,7 +345,7 @@ WelcomeModal::WelcomeModal() {
 WelcomeModal::~WelcomeModal() = default;
 
 void WelcomeModal::updateHeading() {
-  title.setText(!emailMode ? L10n::tr("Bienvenido", "Welcome")
+  title.setText(!emailMode ? (inlineAppleLink ? L10n::tr("Elige tu cuenta", "Choose your account") : L10n::tr("Bienvenido", "Welcome"))
       : emailForm.isLocalDemoMode() ? L10n::tr(u8"Prueba sin conexión", "Offline trial")
       : emailForm.isLinkSent() ? L10n::tr("Revisa tu correo", "Check your email")
       : emailForm.isResetMode() ? L10n::tr(u8"Tu contraseña", "Your password")
@@ -361,9 +374,20 @@ void WelcomeModal::setChecking(bool isChecking) {
 
 void WelcomeModal::setAppleSignInAvailable(bool available) {
   if (available && !appleButton) {
-    appleButton = NativeAppleSignIn::createButton([this] { if (onAppleLoginRequested) onAppleLoginRequested(); });
-    if (appleButton) addAndMakeVisible(*appleButton);
-  } else if (!available) appleButton.reset();
+    appleButton = NativeAppleSignIn::createButton([this] {
+      if (!isCurrentlyBlockedByAnotherModalComponent() && !authenticationBusy &&
+          onAppleLoginRequested) onAppleLoginRequested();
+    });
+    if (appleButton) {
+      addChildComponent(*appleButton);
+      // Native Apple views sit above JUCE's painted children. Modal changes
+      // have no JUCE listener, so also restore visibility after dismissal.
+      startTimerHz(30);
+    }
+  } else if (!available) {
+    stopTimer();
+    appleButton.reset();
+  }
   updateActionVisibility();
   resized();
 }
@@ -376,7 +400,7 @@ void WelcomeModal::setAuthenticationBusy(bool busy) {
 }
 
 void WelcomeModal::clearCredentials() { emailForm.clearCredentials(); }
-void WelcomeModal::visibilityChanged() { if (!isVisible()) clearCredentials(); }
+void WelcomeModal::visibilityChanged() { if (!isVisible()) { if (inlineAppleLink && onAuthenticationCancelled) onAuthenticationCancelled(); clearCredentials(); } }
 
 void WelcomeModal::showPasswordLinkSent() {
   if (emailForm.isLocalDemoMode()) return;
@@ -386,6 +410,9 @@ void WelcomeModal::showPasswordLinkSent() {
 }
 
 void WelcomeModal::showLocalDemoLogin() {
+#if !JUCE_DEBUG
+  return;
+#endif
   if (onAuthenticationCancelled) onAuthenticationCancelled();
   resetStatusToDefault();
   emailMode = true;
@@ -397,7 +424,9 @@ void WelcomeModal::showLocalDemoLogin() {
 }
 
 void WelcomeModal::showEmailForm(bool show) {
-  if (onAuthenticationCancelled) onAuthenticationCancelled();
+  if (show && inlineAppleLink) {
+    if (onInlineAuthenticationNavigation) onInlineAuthenticationNavigation();
+  } else if (onAuthenticationCancelled) onAuthenticationCancelled();
   setAuthenticationBusy(false);
   emailMode = show;
   if (show) emailForm.showLogin();
@@ -412,17 +441,28 @@ void WelcomeModal::showEmailForm(bool show) {
 void WelcomeModal::updateActionVisibility() {
   loginButton.setVisible(!checking && !emailMode);
   emailButton.setVisible(!checking && !emailMode);
-  localDemoButton.setVisible(!emailMode);
+  localDemoButton.setVisible(DevelopmentFeatures::testLogin && !emailMode && !inlineAppleLink);
   separator.setVisible(!checking && !emailMode);
   emailForm.setVisible(!checking && emailMode);
-  backButton.setVisible(!checking && emailMode);
+  backButton.setVisible(!checking && (emailMode || inlineAppleLink));
   if (appleButton) {
-    appleButton->setVisible(!checking && !emailMode);
+    updateAppleButtonVisibility();
     appleButton->setEnabled(!authenticationBusy);
   }
 }
 
+void WelcomeModal::updateAppleButtonVisibility() {
+  if (appleButton)
+    appleButton->setVisible(!checking && !emailMode && !inlineAppleLink &&
+                           !isCurrentlyBlockedByAnotherModalComponent());
+}
+
+void WelcomeModal::timerCallback() { updateAppleButtonVisibility(); }
+
 void WelcomeModal::paint(juce::Graphics& g) {
+  // Hide the native view in the first repaint under an overlaid modal,
+  // without waiting for the timer or changing the legal prompt's timing.
+  updateAppleButtonVisibility();
   g.fillAll(juce::Colour(0xff101713));
   juce::ColourGradient glow(AuthUi::accent.withAlpha(0.07f), (float)getWidth() * 0.3f, 0,
       juce::Colours::transparentBlack, (float)getWidth(), (float)getHeight(), true);
@@ -444,7 +484,7 @@ void WelcomeModal::resized() {
   const int sidePadding = getWidth() < 600 ? 22 : 32;
   const bool hasStatus = status.getText().isNotEmpty();
   const int preferred = emailMode ? 48 + 44 + 20 + emailForm.preferredHeight(cardWidth - sidePadding * 2) + (hasStatus ? 68 : 0)
-                                  : 436 + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
+                                  : (DevelopmentFeatures::testLogin ? 436 : 378) + (appleButton ? 58 : 0) + (hasStatus ? 68 : 0);
   contentBounds = juce::Rectangle<int>(cardWidth,
       juce::jmin(preferred, available.getHeight())).withCentre(available.getCentre());
   // Changing steps moves the card without resizing this component. Invalidate
@@ -458,7 +498,7 @@ void WelcomeModal::resized() {
     area.removeFromTop(18);
   }
   auto heading = area.removeFromTop(44);
-  if (emailMode) {
+  if (emailMode || inlineAppleLink) {
     backButton.setBounds(heading.removeFromLeft(44));
     heading.removeFromRight(44);
     AuthUi::label(title, 22, true);
@@ -480,7 +520,7 @@ void WelcomeModal::resized() {
     area.removeFromTop(12);
   }
   if (checking) {
-    localDemoButton.setBounds(area.removeFromTop(48));
+    if (DevelopmentFeatures::testLogin) localDemoButton.setBounds(area.removeFromTop(48));
     return;
   }
   if (emailMode) {
@@ -494,6 +534,16 @@ void WelcomeModal::resized() {
   }
   separator.setBounds(area.removeFromTop(34));
   emailButton.setBounds(area.removeFromTop(48));
-  area.removeFromTop(10);
-  localDemoButton.setBounds(area.removeFromTop(48));
+  if (DevelopmentFeatures::testLogin) {
+    area.removeFromTop(10);
+    localDemoButton.setBounds(area.removeFromTop(48));
+  }
+}
+
+void WelcomeModal::setInlineAppleLink(bool active) {
+  inlineAppleLink = active;
+  clearCredentials();
+  updateHeading();
+  updateActionVisibility();
+  resized();
 }

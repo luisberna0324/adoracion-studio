@@ -2,6 +2,8 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <cstdint>
+#include <array>
+#include <vector>
 
 class StemBufferingSource : public juce::PositionableAudioSource,
                             private juce::TimeSliceClient {
@@ -90,14 +92,13 @@ public:
   bool isPrefetchReady(juce::int64 position,
                        int minimumFrames) const noexcept;
 
-  // P0.2 (perf): inyectar el prefetch source después de la construcción.
-  // En Windows, abrir el mismo archivo dos veces (una para la cadena
-  // principal y otra para la de prefetch) duplica el costo de antivirus
-  // en el primer read. Si el prefetch source no está listo al
-  // prepareToPlay, podemos crearlo en lazy desde un thread aparte o
-  // en el primer requestPrefetchPosition. El método re-asigna el
-  // prefetch buffer si hace falta. Solo se debe llamar desde el
-  // message thread (aloca memoria).
+  // Control thread publishes destinations; allocation/decoding/eviction is worker-only.
+  void configureSectionEntries(const std::vector<juce::int64> &, int slots);
+  void protectSectionTargets(juce::int64 jump, juce::int64 loop) noexcept;
+  juce::int64 getSectionCacheBytes() const noexcept { return sectionCacheBytes.load(); }
+
+  // Install the independent reader on the control thread during preparation,
+  // before registering the worker. This allocates; audio requests never call it.
   void setPrefetchSource(juce::PositionableAudioSource *newPrefetch,
                          int sampleRate, int samplesPerBlockExpected);
 
@@ -132,6 +133,31 @@ public:
 #endif
 
 private:
+  static constexpr int maxSectionEntries = 64;
+  static constexpr int maxSectionTargets = 256;
+  struct SectionEntry {
+    juce::AudioBuffer<float> audio;
+    std::atomic<juce::int64> position{-1};
+    std::atomic<int> frames{0}, readers{0};
+    uint64_t age = 0;
+    bool stale = false;
+  };
+  std::array<SectionEntry, maxSectionEntries> sectionEntries;
+  std::array<std::atomic<juce::int64>, maxSectionTargets> sectionTargets{};
+  std::atomic<int> sectionTargetCount{0}, sectionCacheSlots{0};
+  std::atomic<juce::int64> protectedJump{-1}, protectedLoop{-1}, sectionCacheBytes{0};
+  uint64_t sectionCacheAge = 0;
+  std::atomic<uint64_t> sectionCacheConfiguration{0};
+  uint64_t workerSectionCacheConfiguration = 0;
+  bool sectionEntryReady(juce::int64, int) const noexcept;
+  juce::Range<int> copySectionEntry(const juce::AudioSourceChannelInfo &, juce::int64,
+      juce::Range<int> primary = {}, juce::Range<int> realtime = {}, juce::Range<int> secondary = {});
+  bool maintainSectionEntries();
+  void retainSectionEntry(juce::int64, const juce::AudioBuffer<float> &, int);
+  bool retireSectionEntry(SectionEntry &);
+  bool protectsEntry(juce::int64 start, int frames) const noexcept;
+  void decodePrefetch(juce::int64, int);
+
   struct PrefetchRangeSnapshot {
     juce::int64 start = 0;
     juce::int64 end = 0;

@@ -65,6 +65,30 @@ struct LocalDemoAccessTestAccess {
   static void logout(MTControlsAudioProcessorEditor &editor) {
     editor.handleLogout();
   }
+  static uint64_t appleFixture(MTControlsAudioProcessorEditor& editor, const juce::String& provider = "apple.com") {
+    editor.appleCredentialMonitor.reset();
+    editor.localDemoSession = false;
+    editor.sessionResumeCancelled = false;
+    editor.activeSession.uid = "apple-lifecycle-fixture";
+    editor.activeSession.email = "canonical@example.test";
+    editor.activeSession.authProvider = provider;
+    editor.activeSession.authProviderUser = "verified-apple-subject";
+    editor.activeSession.refreshToken = "fixture-refresh-not-real";
+    editor.activeSession.firebaseApiKey = "fixture-public-key";
+    editor.activeSession.allowed = true;
+    ++editor.appleCredentialGeneration;
+    editor.saveSessionSnapshotToDisk();
+    return editor.appleCredentialGeneration;
+  }
+  static void appleState(MTControlsAudioProcessorEditor& editor, uint64_t generation,
+                         NativeAppleSignIn::CredentialState state,
+                         const juce::String& uid = "apple-lifecycle-fixture",
+                         const juce::String& user = "verified-apple-subject") {
+    editor.applyAppleCredentialState(generation, uid, user, state);
+  }
+  static void lateResume(MTControlsAudioProcessorEditor& editor, PersistedSessionSnapshot snapshot) {
+    editor.applySessionResumeOnMessageThread(true, true, std::move(snapshot), {}, false);
+  }
   static bool local(const MTControlsAudioProcessorEditor &editor) {
     return editor.localDemoSession;
   }
@@ -314,6 +338,42 @@ void previewLocalDemoLogin(int seconds) {
 }
 } // namespace
 
+namespace {
+void testAppleCredentialStateIsolation() {
+  AppSettings::setLocalDemoSessionActive(false);
+  SessionPersistence::clear();
+  MTControlsAudioProcessor processor;
+  MTControlsAudioProcessorEditor editor(processor);
+  const auto generation = LocalDemoAccessTestAccess::appleFixture(editor);
+  PersistedSessionSnapshot snapshot;
+  expect(SessionPersistence::load(snapshot) && snapshot.authProvider == "apple.com" &&
+         snapshot.authProviderUser == "verified-apple-subject",
+         "Apple provider metadata survives the existing session snapshot without Apple tokens");
+  LocalDemoAccessTestAccess::appleState(editor, generation, NativeAppleSignIn::CredentialState::authorized);
+  LocalDemoAccessTestAccess::appleState(editor, generation, NativeAppleSignIn::CredentialState::unavailable);
+  LocalDemoAccessTestAccess::appleState(editor, generation - 1, NativeAppleSignIn::CredentialState::revoked);
+  LocalDemoAccessTestAccess::appleState(editor, generation, NativeAppleSignIn::CredentialState::revoked, "old-uid");
+  LocalDemoAccessTestAccess::appleState(editor, generation, NativeAppleSignIn::CredentialState::revoked,
+                                     "apple-lifecycle-fixture", "old-apple-user");
+  expect(LocalDemoAccessTestAccess::hasCloudIdentity(editor) && SessionPersistence::getSnapshotFile().existsAsFile(),
+         "authorized, OS errors and stale or foreign revocation callbacks preserve the current session");
+  const auto googleGeneration = LocalDemoAccessTestAccess::appleFixture(editor, "google.com");
+  LocalDemoAccessTestAccess::appleState(editor, googleGeneration, NativeAppleSignIn::CredentialState::revoked);
+  expect(LocalDemoAccessTestAccess::hasCloudIdentity(editor), "Apple revocation never signs out a Google session");
+  for (auto state : {NativeAppleSignIn::CredentialState::revoked,
+                     NativeAppleSignIn::CredentialState::notFound,
+                     NativeAppleSignIn::CredentialState::transferred}) {
+    const auto current = LocalDemoAccessTestAccess::appleFixture(editor);
+    LocalDemoAccessTestAccess::appleState(editor, current, state);
+    LocalDemoAccessTestAccess::appleState(editor, current, state);
+    LocalDemoAccessTestAccess::lateResume(editor, snapshot);
+    expect(!LocalDemoAccessTestAccess::hasCloudIdentity(editor) &&
+           !SessionPersistence::getSnapshotFile().existsAsFile() && LocalDemoAccessTestAccess::welcome(editor),
+           "confirmed credential loss clears local session once; late resume cannot restore it");
+  }
+}
+} // namespace
+
 int main(int argc, char **argv) {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
@@ -339,7 +399,21 @@ int main(int argc, char **argv) {
       previewLocalDemoLogin(seconds);
       return 0;
     }
+#if JUCE_DEBUG
     testLocalSessionIsolationAndRestart();
+    testAppleCredentialStateIsolation();
+#else
+    {
+      AppSettings::setLocalDemoSessionActive(true);
+      MTControlsAudioProcessor processor;
+      MTControlsAudioProcessorEditor editor(processor);
+      expect(!LocalDemoAccessTestAccess::local(editor), "production never restores persisted test access");
+      const bool allowedBefore = LocalDemoAccessTestAccess::allowed(editor);
+      LocalDemoAccessTestAccess::login(editor, "usuarioplay0324", "usuarioplay0324");
+      expect(!LocalDemoAccessTestAccess::local(editor) && LocalDemoAccessTestAccess::allowed(editor) == allowedBefore,
+             "production rejects direct test-login dispatch");
+    }
+#endif
     ProjectStore::flushAllPendingSettings();
     std::cout << "Local demo access: " << checks
               << " checks passed; Firebase transports: 0; eight bundled stems, no autoplay\n";

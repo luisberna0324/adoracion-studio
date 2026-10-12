@@ -74,6 +74,7 @@ public:
   void setMuteAlignedToFader(bool aligned);
   void setChannelBandColours(juce::Colour bandColour, juce::Colour textColour);
   void setCardBgColour(juce::Colour colour);
+  void setLeadingBoundaryVisible(bool visible) { leadingBoundaryVisible = visible; repaint(); }
   void setSectionAutomationState(bool automated, bool editing);
   void refreshThemeColours();
   void setOnVolumeChanged(std::function<void(float)> cb);
@@ -135,6 +136,7 @@ private:
   StereoVUMeter meter;
   juce::TextButton soloButton;
   juce::TextButton muteButton;
+  bool leadingBoundaryVisible = false;
   juce::Colour cardBgColour;
   juce::Colour channelBandColour;
   juce::Colour channelBandTextColour;

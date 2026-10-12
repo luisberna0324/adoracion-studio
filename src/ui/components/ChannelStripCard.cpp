@@ -204,6 +204,12 @@ void ChannelStripCard::paint(juce::Graphics &g) {
 }
 
 void ChannelStripCard::paintOverChildren(juce::Graphics &g) {
+  if (leadingBoundaryVisible) {
+    // The Master starts after decorative safe-area padding. Define that true
+    // left edge inside the card, including its footer, without a new gutter.
+    g.setColour(UITheme::cardBorder);
+    g.fillRect(0, 0, 1, getHeight());
+  }
   drawGainValueTooltip(g);
   if (sectionAutomated || sectionAutomationEditing) {
     const auto colour = sectionAutomationEditing ? UITheme::accent

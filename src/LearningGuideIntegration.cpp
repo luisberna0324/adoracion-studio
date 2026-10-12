@@ -8,6 +8,7 @@
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SongListPanel.h"
 #include "ui/panels/TopBar.h"
+#include "ui/panels/WaveformBar.h"
 #include "ui/panels/SettingsPanel.h"
 #include "ui/components/AppModal.h"
 #include <algorithm>
@@ -84,6 +85,29 @@ void MTControlsAudioProcessorEditor::showLearningGuide() {
   learningGuide->grabKeyboardFocus();
 }
 
+void MTControlsAudioProcessorEditor::showPracticeLearningGuide() {
+  if (!mainUiInitialized || !practiceOverlay || !practiceOverlay->isShowing())
+    return;
+  // A repeated request keeps the current step instead of restarting the guide.
+  if (learningGuide && learningLessonId == "practice-sections" && learningPhoneContent) {
+    updateLearningGuideTarget();
+    learningGuide->grabKeyboardFocus();
+    return;
+  }
+  if (learningGuide)
+    pauseLearningGuide();
+  showLearningGuide();
+  // Practice is the phone-style surface even in a narrow desktop window.
+  // Do not route its ? to the desktop sections/automation variant.
+  if (!learningPhoneContent) {
+    learningPhoneContent = true;
+    learningLessons = playworship::learning::makeLessons(true, learningEnglishContent);
+    appendTeamsLearningLessons();
+  }
+  // Reuse saved progress and the catalog's completed-course replay behavior.
+  startLearningLesson("practice-sections");
+}
+
 void MTControlsAudioProcessorEditor::showLearningCatalog() {
   if (!learningGuide || !learningProgress) return;
   learningPhoneContent = isPhoneSizedTouchLayout(*this);
@@ -157,7 +181,11 @@ void MTControlsAudioProcessorEditor::pauseLearningGuide() {
   learningObservedStepKey.clear();
   learningRemoteAction.deactivate();
   demoLearningProgress.reset();
-  grabKeyboardFocus();
+  if (auto *practice = dynamic_cast<PracticePanel *>(practiceOverlay.get());
+      practice && practice->isShowing())
+    practice->focusLearningHelp();
+  else
+    grabKeyboardFocus();
 }
 
 void MTControlsAudioProcessorEditor::refreshLearningStep() {
@@ -222,6 +250,9 @@ juce::Rectangle<int> MTControlsAudioProcessorEditor::getLearningTargetBounds(Lea
       const auto &id = lesson->steps[static_cast<size_t>(learningStepIndex)].id;
       if (id == "demo-open-practice" && practiceOverlay) anchor = LearningAnchor::PracticeExit;
       if (id == "demo-close-practice" && !practiceOverlay) anchor = LearningAnchor::More;
+      if (id == "demo-section-loop" && waveformBarPtr)
+        anchor = playworship::learning::demoSectionLoopAnchor(
+            anchor, waveformBarPtr->isLiveMode(), waveformBarPtr->canToggleLiveMode());
     }
   }
   if (practiceOverlay && practiceOverlay->isShowing()) {
@@ -324,6 +355,13 @@ void MTControlsAudioProcessorEditor::updateLearningGuideTarget() {
           "You can press Play to listen while practicing this step.");
     const bool ready = canAdvanceLearningStep();
     auto pendingMessage = ready ? juce::String{} : step.task;
+    if (!ready && lesson->id == "demo-song" && step.id == "demo-section-loop" &&
+        waveformBarPtr && !waveformBarPtr->isLiveMode())
+      pendingMessage = waveformBarPtr->canToggleLiveMode()
+          ? L10n::tr("Abre Más y activa Vista de secciones para acceder a Loop.",
+                     "Open More and enable Sections view to access Loop.")
+          : L10n::tr("Termina o cancela la edición antes de cambiar a Vista de secciones.",
+                     "Finish or cancel editing before switching to Sections view.");
     switch (prerequisite) {
     case Prerequisite::OpenSettings:
       pendingMessage = L10n::tr("Para retomar este paso, abre Configuración.", "To resume this step, open Settings."); break;

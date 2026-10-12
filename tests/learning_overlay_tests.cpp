@@ -197,7 +197,7 @@ void testResponsiveSpotlightAndInteraction() {
     expect(buttonNamed(fixture.guide, "learningPrevious").getWidth() == 44 &&
                buttonNamed(fixture.guide, "learningNext").getWidth() <= 124,
            "navigation uses a shared back icon and a compact text-width forward action");
-    for (const auto *name : {"learningPrevious", "learningNext", "learningMore", "learningPause"})
+    for (const auto *name : {"learningPrevious", "learningNext", "learningPause"})
       expect(buttonNamed(fixture.guide, name).getHeight() == 44,
              "compact visuals preserve comfortable 44-point touch targets");
     auto &viewport = LearningOverlayTestAccess::stepViewport(fixture.guide);
@@ -356,7 +356,6 @@ void testValidatedStepReadiness() {
   expect(!forward.isEnabled() && forward.getDescription() == pending,
          "a pending real action disables Finish and exposes its instruction to accessibility");
   expect(buttonNamed(guide, "learningPrevious").isEnabled() &&
-             buttonNamed(guide, "learningMore").isEnabled() &&
              buttonNamed(guide, "learningPause").isEnabled(),
          "pending tasks retain all escape and course navigation actions");
   expect(!guide.hitTest(322, 122),
@@ -439,23 +438,10 @@ void testGuideReparentedInsideSettings() {
   expect(modeChanges == 1 && buttonNamed(guide, "learningNext").isEnabled(),
          "the real Settings callback validates the action without a duplicate guide control");
   capture(settings, "learning-settings-client");
-  // JUCE PopupMenu dereferences the desktop display when positioning even an
-  // embedded menu. Fail explicitly in a sandbox without WindowServer access;
-  // this case must still run, rather than silently report a complete UI pass.
-  expect(juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr,
-         "the embedded menu test requires desktop display access; rerun outside the filesystem sandbox");
-  buttonNamed(guide, "learningMore").onClick();
-  const auto *menu = juce::Component::getCurrentlyModalComponent();
-  const bool embeddedGuideMenu = menu != nullptr && guide.isParentOf(menu) &&
-                                !menu->isOnDesktop();
-  capture(settings, "learning-settings-options");
-  juce::PopupMenu::dismissAllActiveMenus();
-  drainMessages();
-  expect(embeddedGuideMenu,
-         "guide options render as an owned child modal inside Settings instead of a separate desktop window");
+  capture(settings, "learning-settings-without-overflow");
   expect(guide.isVisible() && settings.isVisible() &&
              guide.getParentComponent() == &settings && !guide.isShowingCatalog(),
-         "dismissing its own menu leaves the guide at the same visible step");
+         "the guide remains at the same visible step inside Settings");
   editor.addAndMakeVisible(guide);
   guide.setBounds(editor.getLocalBounds());
   guide.updateTarget({320, 60, 44, 44}, true);

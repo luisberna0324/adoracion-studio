@@ -54,6 +54,27 @@ Request prepareRequest(const juce::String& state, const juce::String& rawNonce,
 Error validateRequest(const Request&, juce::int64 nowMs);
 Error validateCredential(const Request&, const Credential&, juce::int64 nowMs);
 
+enum class CredentialState { authorized, revoked, notFound, transferred, unavailable };
+using CredentialStateCompletion = std::function<void(CredentialState)>;
+// A confirmed revoked/missing/transferred credential requires fresh login;
+// temporary OS errors preserve the existing session policy.
+bool requiresFreshLogin(CredentialState);
+class CredentialMonitor {
+public:
+  virtual ~CredentialMonitor() = default;
+  virtual void check() = 0;
+};
+// Checks immediately and on foreground/revocation notifications. RAII removes
+// observers and invalidates pending completions on the message/main thread.
+std::unique_ptr<CredentialMonitor> monitorCredential(const juce::String& appleUser,
+                                                    CredentialStateCompletion);
+
+#if defined(MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS)
+// Test-only injection, absent from application builds. Queries no Apple account.
+using TestCredentialQuery = std::function<void(CredentialStateCompletion)>;
+void setCredentialQueryForTests(TestCredentialQuery);
+#endif
+
 // OS support does not imply portal entitlements or backend configuration.
 bool isSupported();
 // A real ASAuthorizationAppleIDButton. Creating it does not start authorization.

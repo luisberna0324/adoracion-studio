@@ -526,9 +526,11 @@ void optionalScreenshots() {
     capture(welcome, directory, juce::String(layout.name) + "-reset");
     welcome.showPasswordLinkSent();
     capture(welcome, directory, juce::String(layout.name) + "-link-sent");
+#if JUCE_DEBUG
     welcome.showLocalDemoLogin();
     editor(welcome, "Usuario", "Username").setText("usuarioplay0324", false);
     capture(welcome, directory, juce::String(layout.name) + "-offline-trial");
+#endif
   }
   ReauthPromptModal reauth;
   show(reauth, 530, 530);
@@ -616,11 +618,51 @@ int main() {
   try {
     juce::ScopedJuceInitialiser_GUI gui;
     applyTheme(ThemePreset::Spotify);
+    {
+      WelcomeModal welcome; show(welcome, 390, 844);
+      int cancelled = 0;
+      welcome.onAuthenticationCancelled = [&] { ++cancelled; welcome.setInlineAppleLink(false); };
+      welcome.setInlineAppleLink(true);
+      expect(effectivelyVisible(button(welcome, "Continuar con Google", "Continue with Google")), "inline linking reuses Google authentication");
+#if JUCE_DEBUG
+      expect(!effectivelyVisible(button(welcome, "Prueba sin conexión", "Offline trial")), "inline linking excludes demo account");
+#endif
+      expect(button(welcome, "Volver", "Back").getWidth() >= 40, "inline back has reachable bounds on iPhone");
+      click(button(welcome, "Volver", "Back"));
+      expect(cancelled == 1, "inline provider screen back cancels intent");
+      welcome.setInlineAppleLink(true);
+      click(button(welcome, "Ingresar con correo", "Sign in with email"));
+      expect(cancelled == 1, "email navigation preserves pending explicit linking flow");
+      click(button(welcome, "Volver", "Back"));
+      expect(cancelled == 2, "inline email back cancels intent");
+      welcome.setInlineAppleLink(true); welcome.setVisible(false);
+      expect(cancelled == 3, "closing inline authentication cancels intent");
+      ReauthPromptModal reauth; show(reauth, 390, 800);
+      int reauthCancelled = 0;
+      reauth.onAuthenticationCancelled = [&] { ++reauthCancelled; reauth.setInlineAppleLink(false); };
+      reauth.setInlineAppleLink(true); click(button(reauth, "Volver", "Back"));
+      expect(reauthCancelled == 1, "reauth back cancels inline link too");
+    }
     testWelcomeNavigationAndCredentials();
     testInputValidationAndDispatch();
     testBusyCancellation();
+#if JUCE_DEBUG
     testLocalDemoFlowIsSeparateAndCancellable();
     testLocalDemoAndProviderLayouts();
+#else
+    {
+      WelcomeModal welcome; show(welcome, 820, 700);
+      int calls = 0;
+      welcome.onLocalDemoLoginRequested = [&](const auto &, const auto &) { ++calls; };
+      expect(find<juce::Button>(welcome, [](const auto &b) { return b.getButtonText() == L10n::tr("Prueba sin conexión", "Offline trial"); }) == nullptr,
+             "production contains no test-login button in its component tree");
+      welcome.showLocalDemoLogin();
+      auto &form = typed<EmailAuthenticationForm>(welcome);
+      form.showLocalDemoLogin();
+      expect(!form.isLocalDemoMode() && !form.isVisible() && calls == 0,
+             "production rejects direct test-login entry points");
+    }
+#endif
     testCompactLayoutsAndReachability();
     testReauthenticationStatusAndHeight();
     testPasswordLinkSuccess();

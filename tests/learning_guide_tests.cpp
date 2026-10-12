@@ -164,9 +164,33 @@ int main() {
          "independent Pads lesson does not require a song");
   const auto &phonePractice = findLesson(phone, "practice-sections");
   const auto &desktopSections = findLesson(desktop, "practice-sections");
+  const auto &instrumentHelp = findStep(phonePractice, "open-practice");
+  const auto &instrumentHelpEn = findStep(findLesson(phoneEnglish, "practice-sections"), "open-practice");
+  expect(phonePractice.steps.size() == 4 && instrumentHelp.title == "Elige tu instrumento" &&
+             instrumentHelpEn.title == "Choose your instrument",
+         "instrument help keeps four stable steps and names the highlighted control in both languages");
+  expect(instrumentHelp.description.contains("suelta para elegir") &&
+             instrumentHelp.description.contains("nombre lateral") &&
+             instrumentHelp.description.contains("selecciónalo otra vez") &&
+             instrumentHelp.description.contains("conservas el control") &&
+             instrumentHelp.description.contains("R restaura directamente"),
+         "Spanish instrument help covers release, side tap, return, ownership and restore");
+  expect(instrumentHelpEn.description.contains("release to choose") &&
+             instrumentHelpEn.description.contains("tap a name") &&
+             instrumentHelpEn.description.contains("select it again") &&
+             instrumentHelpEn.description.contains("retain control") &&
+             instrumentHelpEn.description.contains("R restores the mix directly"),
+         "English instrument help covers release, side tap, return, ownership and restore");
+  expect(instrumentHelp.condition == StepCondition::None &&
+             instrumentHelp.task.contains("vuelve al anterior"),
+         "instrument exercise remains manual and asks the user to undo selection");
   expect(findStep(phonePractice, "open-practice").anchor == Anchor::More &&
              findStep(phonePractice, "open-practice").needsSong,
          "phone practice starts from More and requires a song");
+  expect(findStep(phonePractice, "practice-listen").description.contains("Sobre otro instrumento") &&
+             findStep(phonePractice, "practice-listen").description.contains("confirmación del servidor") &&
+             findStep(phonePractice, "practice-listen").description.contains("R restaura"),
+         "listening walkthrough explains target-specific restoration and remote confirmation");
   expect(findStep(phonePractice, "practice-navigation").anchor == Anchor::Waveform &&
              findStep(phonePractice, "practice-ab").anchor == Anchor::PracticeLoop,
          "practice gestures target the waveform and A-B exposes waveform plus region controls");

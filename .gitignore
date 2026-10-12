@@ -49,3 +49,8 @@ output/
 tmp/
 firebase-debug.log
 firestore-debug.log
+
+# Local pipeline dependency symlinks and machine configuration
+third_party/JUCE
+third_party/bungee
+.local-pipeline.json

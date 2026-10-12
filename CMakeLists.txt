@@ -318,6 +318,16 @@ endif()
 if(MTCONTROLS_BUILD_TESTS)
     enable_testing()
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    juce_add_console_app(MTControlsAccountDeletionTests PRODUCT_NAME "Account Deletion Flow Tests")
+    target_sources(MTControlsAccountDeletionTests PRIVATE tests/account_deletion_tests.cpp
+        src/ui/components/AccountDeletionModal.cpp src/data/AccountDeletionApi.cpp
+        src/data/AuthSessionApi.cpp src/data/AppSettings.cpp src/data/SessionPersistence.cpp
+        src/data/SongLibraryStore.cpp src/data/SessionAuthLogger.cpp)
+    target_include_directories(MTControlsAccountDeletionTests PRIVATE src)
+    target_compile_definitions(MTControlsAccountDeletionTests PRIVATE JUCE_MODAL_LOOPS_PERMITTED=1 MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
+    target_link_libraries(MTControlsAccountDeletionTests PRIVATE MTControls juce::juce_audio_utils juce::juce_cryptography MTControlsAssets)
+    juce_generate_juce_header(MTControlsAccountDeletionTests)
+    add_test(NAME account_deletion_flow COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py" "$<TARGET_FILE:MTControlsAccountDeletionTests>")
     juce_add_console_app(MTControlsEmailPasswordAuthTests PRODUCT_NAME "Email Password Auth Contract Tests")
     target_sources(MTControlsEmailPasswordAuthTests PRIVATE
         tests/email_password_auth_tests.cpp src/data/EmailPasswordAuthApi.cpp)
@@ -333,6 +343,20 @@ if(MTCONTROLS_BUILD_TESTS)
     target_link_libraries(MTControlsEmailAuthUiTests PRIVATE MTControls MTControlsAssets
         juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
     juce_generate_juce_header(MTControlsEmailAuthUiTests)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_console_app(MTControlsLoginHelpModalUiTests PRODUCT_NAME "Login and Help Modal UI Tests")
+        target_sources(MTControlsLoginHelpModalUiTests PRIVATE
+            tests/login_help_modal_ui_tests.mm src/data/AppSettings.cpp)
+        target_include_directories(MTControlsLoginHelpModalUiTests PRIVATE src)
+        target_compile_definitions(MTControlsLoginHelpModalUiTests PRIVATE
+            MTCONTROLS_ISOLATED_STORAGE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+        target_link_libraries(MTControlsLoginHelpModalUiTests PRIVATE MTControls MTControlsAssets
+            juce::juce_audio_utils juce::juce_dsp juce::juce_cryptography)
+        juce_generate_juce_header(MTControlsLoginHelpModalUiTests)
+        add_test(NAME login_help_modal_ui COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+            "$<TARGET_FILE:MTControlsLoginHelpModalUiTests>")
+    endif()
     add_test(NAME email_authentication_ui COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsEmailAuthUiTests>")
@@ -371,6 +395,20 @@ if(MTCONTROLS_BUILD_TESTS)
     endif()
     juce_generate_juce_header(MTControlsAppleSignInTests)
     add_test(NAME apple_signin_contract COMMAND "$<TARGET_FILE:MTControlsAppleSignInTests>")
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        juce_add_console_app(MTControlsAppleLifecycleTests PRODUCT_NAME "Native Apple Credential Lifecycle Tests")
+        target_sources(MTControlsAppleLifecycleTests PRIVATE tests/apple_credential_lifecycle_tests.mm
+            src/platform/NativeAppleSignIn.cpp src/platform/NativeAppleSignIn.mm)
+        target_include_directories(MTControlsAppleLifecycleTests PRIVATE src)
+        target_compile_definitions(MTControlsAppleLifecycleTests PRIVATE
+            MTCONTROLS_NATIVE_APPLE_LIFECYCLE_TESTS=1 JUCE_MODAL_LOOPS_PERMITTED=1
+            JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+        target_link_libraries(MTControlsAppleLifecycleTests PRIVATE
+            juce::juce_core juce::juce_gui_extra juce::juce_cryptography "-framework AuthenticationServices")
+        juce_generate_juce_header(MTControlsAppleLifecycleTests)
+        add_test(NAME apple_credential_lifecycle COMMAND "$<TARGET_FILE:MTControlsAppleLifecycleTests>")
+    endif()
+
     juce_add_console_app(MTControlsRemoteSessionTests PRODUCT_NAME "Remote Session Tests")
     target_sources(MTControlsRemoteSessionTests PRIVATE
         tests/remote_session_tests.cpp
@@ -732,6 +770,15 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME playback_diagnostic_report COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsDiagnosticReportTests>")
+    add_executable(MTControlsPracticeAccompanimentTests tests/practice_accompaniment_tests.cpp)
+    target_include_directories(MTControlsPracticeAccompanimentTests PRIVATE src)
+    add_test(NAME practice_accompaniment COMMAND MTControlsPracticeAccompanimentTests)
+    add_executable(MTControlsPracticeToggleRequestTests tests/practice_toggle_request_tests.cpp)
+    target_include_directories(MTControlsPracticeToggleRequestTests PRIVATE src)
+    add_test(NAME practice_toggle_request COMMAND MTControlsPracticeToggleRequestTests)
+    add_executable(MTControlsTouchWaveformNavigationTests tests/touch_waveform_navigation_tests.cpp)
+    target_include_directories(MTControlsTouchWaveformNavigationTests PRIVATE src)
+    add_test(NAME touch_waveform_navigation COMMAND MTControlsTouchWaveformNavigationTests)
     add_executable(MTControlsWaveformCacheTests tests/waveform_cache_tests.cpp)
     target_include_directories(MTControlsWaveformCacheTests PRIVATE src)
     add_test(NAME waveform_cache COMMAND MTControlsWaveformCacheTests)
@@ -744,6 +791,12 @@ if(MTCONTROLS_BUILD_TESTS)
     )
     target_include_directories(MTControlsAudioEngineCoreTests PRIVATE src)
     add_test(NAME audio_engine_core COMMAND MTControlsAudioEngineCoreTests)
+
+    add_executable(MTControlsPracticeWaveformMappingTests
+        tests/practice_waveform_mapping_tests.cpp
+        src/audio/SectionScheduler.cpp)
+    target_include_directories(MTControlsPracticeWaveformMappingTests PRIVATE src)
+    add_test(NAME practice_waveform_mapping COMMAND MTControlsPracticeWaveformMappingTests)
 
     add_executable(MTControlsPitchShiftTests
         tests/pitch_shift_tests.cpp
@@ -1165,6 +1218,7 @@ target_sources(MTControls
         src/data/AppSettings.h
         src/data/AssetBootstrapManager.cpp
         src/data/AssetBootstrapManager.h
+        src/data/AccountDeletionApi.cpp
         src/data/AuthSessionApi.cpp
         src/data/AuthSessionApi.h
         src/data/EmailPasswordAuthApi.cpp
@@ -1276,6 +1330,7 @@ target_sources(MTControls
         src/ui/components/PowerButton.h
         src/ui/components/PadsHandlePanel.cpp
         src/ui/components/PadsHandlePanel.h
+        src/ui/components/AccountDeletionModal.cpp
         src/ui/components/ReauthPromptModal.cpp
         src/ui/components/AppModal.cpp
         src/ui/components/AppModal.h

@@ -1,5 +1,8 @@
+#include "ui/components/ServiceTermsPrompt.h"
+#include "data/ServiceTermsPolicy.h"
 #include "AppIdentity.h"
 #include "PluginEditor.h"
+#include "DevelopmentFeatures.h"
 #include "telemetry/Telemetry.h"
 #include "PluginEditorSupport.h"
 #include "SongLoadProbe.h"
@@ -17,6 +20,7 @@
 #include "data/SessionAuthLogger.h"
 #include "data/SessionPersistence.h"
 #include "data/SongData.h"
+#include "data/PracticeWaveform.h"
 #include "data/SongLibraryStore.h"
 #include "ui/UiCommon.h"
 #include "ui/components/PadsHandlePanel.h"
@@ -31,8 +35,11 @@
 #include "ui/components/SongLoadProgressOverlay.h"
 #include "ui/panels/ChannelGridPanel.h"
 #include "ui/panels/PadsComponent.h"
+#include "ui/panels/PracticeAccompaniment.h"
 #include "ui/panels/PracticePanel.h"
 #include "ui/panels/SettingsPanel.h"
+#include "ui/components/AccountDeletionModal.h"
+#include "data/AccountDeletionApi.h"
 #include "ui/panels/TeamsPanel.h"
 
 #include "ui/panels/SongListPanel.h"
@@ -323,9 +330,11 @@ MTControlsAudioProcessorEditor::MTControlsAudioProcessorEditor(
 
   lastSuccessfulLoginMs = AppSettings::getLastSuccessfulLoginMs();
   reauthGraceDeadlineMs = AppSettings::getReauthGraceDeadlineMs();
-  localDemoSession = AppSettings::getLocalDemoSessionActive();
+  localDemoSession = DevelopmentFeatures::testLogin && AppSettings::getLocalDemoSessionActive();
   PersistedSessionSnapshot bootSnap;
   const bool hasBootSnapshot = SessionPersistence::load(bootSnap);
+  if (!SessionPersistence::listAccountDeletionReceipts().isEmpty())
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] { if (safe) safe->showPendingAccountDeletion(); });
   const bool canFastBootFromSnapshot =
       hasBootSnapshot && canUseSnapshotForLocalBootstrap(bootSnap);
   if (hasBootSnapshot)
@@ -1227,6 +1236,25 @@ void MTControlsAudioProcessorEditor::refreshCloudLibrary(
       });
 }
 
+void MTControlsAudioProcessorEditor::showServiceTermsIfNeeded() {
+  if (serviceTermsRequestPending || localDemoSession || !activeSession.allowed ||
+      activeSession.uid.isEmpty() || activeSession.refreshToken.isEmpty()) return;
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this);
+  // Consent belongs to an authenticated account. Do not open an informational
+  // prompt over login or fall back to one after a failed Cloud request.
+  serviceTermsRequestPending = true;
+  if (!serviceTermsClient) serviceTermsClient = std::make_unique<CloudTransferClient>();
+  const auto uid = activeSession.uid;
+  serviceTermsClient->requestTerms({getApiBaseUrl(), activeSession.firebaseApiKey, activeSession.refreshToken},
+    [safe, uid](CloudTransferError error) {
+      if (!safe) return;
+      safe->serviceTermsRequestPending = false;
+      if (safe->activeSession.uid != uid) return;
+      if (error.code.isEmpty()) AppSettings::acceptServiceTermsLocally(ServiceTermsPolicy::version, juce::Time::currentTimeMillis());
+      // Closing/refusing records nothing; local playback and imports continue.
+    });
+}
+
 void MTControlsAudioProcessorEditor::initializeMainUi() {
 #if JUCE_ANDROID
   const auto androidUiBuildStartedMs = juce::Time::getMillisecondCounterHiRes();
@@ -1395,6 +1423,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   auto *waveformBarRaw = waveformBarImpl.get();
   waveformBarPtr = waveformBarRaw;
   waveformBar = std::move(waveformBarImpl);
+  topBarRaw->setLiveModeControls(
+      [waveformBarRaw] { waveformBarRaw->setLiveMode(!waveformBarRaw->isLiveMode()); },
+      [waveformBarRaw] { return waveformBarRaw->isLiveMode(); },
+      [waveformBarRaw] { return waveformBarRaw->canToggleLiveMode(); });
   waveformBarRaw->setMidiLearnBindingLabelProvider(
       midiLearnBindingLabelForTarget);
   waveformBarRaw->setTransportProviders(
@@ -1468,12 +1500,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       },
       [this] { return playbackSession.getSectionAutomationEditingPartId(); },
       [this] { return playbackSession.canEditSectionAutomation(); });
-  // The jump button now respects the active loop: the request is queued as a
-  // pending jump and the audio thread resolves whether it should escape the
-  // current loop (SectionScheduler::evaluate handles that precedence). Clearing
-  // the loop eagerly here would defeat the "loop on a section while
-  // pre-arranging a jump to the next one" workflow, and it also hides the
-  // pending-jump escape branch from the scheduler.
+  // Preparation preserves playback/Loop; confirmation queues the next valid boundary.
   waveformBarRaw->setOnArrangementPartJumpRequest(
       [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {
@@ -1487,6 +1514,8 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
     playbackSession.clearPendingArrangementPartJump();
   });
+  waveformBarRaw->setPreparingArrangementPartProvider(
+      [this] { return playbackSession.getPreparingArrangementPartJumpIndex(); });
   waveformBarRaw->setPendingArrangementPartProvider(
       [this] { return playbackSession.getPendingArrangementPartJumpIndex(); });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
@@ -2952,6 +2981,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     };
     prompt->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
     prompt->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+    prompt->onInlineAuthenticationNavigation = [this] { cancelAuthenticationAttempt(true); };
     prompt->onPreferredHeightChanged = [this] { resized(); };
     prompt->setAppleSignInAvailable(appleSignInAvailable);
     reauthPromptModal = std::move(prompt);
@@ -3036,6 +3066,7 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
   };
   modal->onPasswordResetRequested = [this](const juce::String& email) { requestPasswordLink(email); };
   modal->onAuthenticationCancelled = [this] { cancelAuthenticationAttempt(); };
+  modal->onInlineAuthenticationNavigation = [this] { cancelAuthenticationAttempt(true); };
   modal->setAppleSignInAvailable(appleSignInAvailable);
   welcomeModal = std::move(modal);
   addAndMakeVisible(*welcomeModal);
@@ -3044,8 +3075,9 @@ void MTControlsAudioProcessorEditor::initializeWelcomeModal() {
 }
 
 void MTControlsAudioProcessorEditor::launchExternalLogin() {
-  cancelAuthenticationAttempt();
+  cancelAuthenticationAttempt(appleLinkFlow.stage == AppleLinkFlow::Stage::authenticate);
   sessionResumeCancelled = false;
+  if (deletionReauthStatus) deletionReauthStatus(L10n::tr("Esperando autenticación…", "Waiting for authentication…"), false, true);
 #if JUCE_IOS || JUCE_ANDROID
   NativeAuthSession::cancel();
   authExpectedState = juce::Uuid().toString();
@@ -3071,8 +3103,9 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
           safe->enqueueAuthCallbackUrl(callbackUrl);
           return;
         }
-        safe->reauthLoginInProgress = false;
+        safe->cancelAuthenticationAttempt();
         if (error.isNotEmpty()) {
+          if (safe->deletionReauthStatus) safe->deletionReauthStatus(L10n::tr("No se completó la autenticación.", "Authentication did not complete."), true, false);
           if (auto *modal = dynamic_cast<WelcomeModal *>(safe->welcomeModal.get()))
             modal->setStatusText("No se completo la autenticacion.", true);
           if (auto *reauth = dynamic_cast<ReauthPromptModal *>(
@@ -3086,6 +3119,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
   if (!started) {
     if (auto *modal = dynamic_cast<WelcomeModal *>(welcomeModal.get()))
       modal->setStatusText("No se pudo abrir el inicio de sesion.", true);
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
   }
   return;
@@ -3102,6 +3136,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
           "No se pudo iniciar el callback local. Verifica puertos locales.", true);
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError("No se pudo iniciar el callback local. Verifica puertos.");
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     authCallbackPort = 0;
     return;
@@ -3124,6 +3159,7 @@ void MTControlsAudioProcessorEditor::launchExternalLogin() {
 
   if (!juce::URL(loginUrl).launchInDefaultBrowser()) {
     cancelAuthenticationAttempt();
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo abrir el navegador.", "Could not open the browser."), true, false);
     const auto message = L10n::tr(u8"No se pudo abrir el navegador. Puedes ingresar con correo.",
                                   "Couldn't open the browser. You can sign in with email.");
     if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get()))
@@ -3146,6 +3182,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
     }
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError("Autenticacion invalida. Reintenta.");
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     return;
   }
@@ -3161,6 +3198,7 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
       modal->setStatusText(message, true);
     if (auto *reauth = dynamic_cast<ReauthPromptModal *>(reauthPromptModal.get()))
       reauth->showError(message);
+    if (deletionReauthStatus) deletionReauthStatus(L10n::tr("No se pudo completar Google. Intenta de nuevo.", "Google sign-in did not complete. Try again."), true, false);
     reauthLoginInProgress = false;
     return;
   }
@@ -3249,7 +3287,22 @@ void MTControlsAudioProcessorEditor::completeBootstrapLogin(
 
 void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
     PersistedSessionSnapshot snapshot) {
+  if (deletionReauthCandidate) {
+    auto capture = deletionReauthCandidate;
+    cancelAuthenticationAttempt(); // Fence duplicate callbacks before any candidate processing.
+    capture(std::move(snapshot)); return;
+  }
+  if (SessionPersistence::isAccountDeletionPending(snapshot.uid)) {
+    if (activeSession.uid == snapshot.uid) handleLogout();
+    else {
+      cancelAuthenticationAttempt();
+      setEmailAuthenticationStatus(L10n::tr("Esta cuenta tiene una eliminación pendiente.",
+        "Account deletion is pending for this account."), true, false);
+    }
+    return;
+  }
   if (localDemoSession) return;
+  if (captureInlineAppleAccount(snapshot)) return;
   ++authAttemptGeneration;
   emailAuthenticationBusy = false;
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
@@ -3312,6 +3365,7 @@ void MTControlsAudioProcessorEditor::completeAuthenticatedSession(
       "completeAuthenticatedSession: login OK, snapshot saved, calling "
       "initializeMainUi");
   initializeMainUi();
+  showServiceTermsIfNeeded();
   if (songListPanelRaw) songListPanelRaw->refreshFromStorageView();
   refreshCloudLibrary({});
 }
@@ -3500,20 +3554,112 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
       // Standalone mode is output-only. Keep inputs out of the routing UI too.
       audioCtx.manager, 0, audioCtx.maxOutputs);
   panel->setDiagnosticsBusy(diagnosticExportBusy);
-  panel->setAppleSignInAvailable(appleSignInAvailable);
-  panel->onAppleLinkRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
-    if (!safe) return;
+  panel->onAccountDeletionRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (!safe || safe->localDemoSession || safe->activeSession.uid.isEmpty()) return;
     const auto uid = safe->activeSession.uid;
-    const auto options = juce::MessageBoxOptions::makeOptionsOkCancel(
-        juce::MessageBoxIconType::QuestionIcon,
-        L10n::tr("Vincular Apple", "Link Apple"),
-        L10n::tr("Apple se añadirá como acceso a esta cuenta. Se conservarán tu correo, biblioteca y permisos actuales, incluso si eliges ocultar el correo en Apple.",
-                 "Apple will be added as a sign-in method for this account. Your email, library and access will be preserved, even if you choose to hide your email with Apple."),
-        L10n::tr("Vincular", "Link"), L10n::tr("Cancelar", "Cancel"), safe.getComponent());
-    juce::AlertWindow::showAsync(options, [safe, uid](int result) {
-      if (result == 1 && safe && safe->activeSession.uid == uid)
-        safe->launchAppleLogin(true);
-    });
+    auto *content = new AccountDeletionModal(uid);
+    juce::Component::SafePointer<AccountDeletionModal> modal(content);
+    const auto preparedReceipt = std::make_shared<juce::String>();
+    const auto freshDeletionIdToken = std::make_shared<juce::String>();
+    content->setSize(juce::jmin(500, juce::jmax(320, safe->getWidth() - 24)), juce::jmin(620, juce::jmax(240, safe->getHeight() - 24)));
+    content->onDismissed = [safe, uid, preparedReceipt](bool preserveReceipt) {
+      if (!preserveReceipt && preparedReceipt->isNotEmpty()) SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt);
+      if (safe) { safe->deletionReauthCandidate = {}; safe->deletionReauthStatus = {}; safe->cancelAuthenticationAttempt(); }
+    };
+    content->onCancelled = [modal] {
+      if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0);
+    };
+    content->onAccepted = [safe, uid] {
+      if (!safe) return false;
+      if (!SessionPersistence::markAccountDeletionPending(uid)) return false;
+      if (safe->activeSession.uid == uid) safe->handleLogout();
+      return true;
+    };
+    content->onReauthenticationRequested = [safe, modal, uid, preparedReceipt, freshDeletionIdToken](int generation) {
+      // This flow cannot return to review after submission; only its own unused receipt can be cleared.
+      if (preparedReceipt->isNotEmpty()) { SessionPersistence::clearAccountDeletionReceipt(uid, *preparedReceipt); preparedReceipt->clear(); }
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      auto *form = modal->providerForm(); if (!form) return;
+      const auto original = safe->activeSession;
+      juce::Component::SafePointer<ReauthPromptModal> authForm(form);
+      form->setAppleSignInAvailable(safe->appleSignInAvailable);
+      safe->deletionReauthStatus = [authForm](const juce::String &text, bool error, bool busy) {
+        if (authForm) { authForm->setAuthenticationBusy(busy); authForm->setStatusText(text, error); }
+      };
+      safe->deletionReauthCandidate = [safe, modal, uid, generation, original, authForm, preparedReceipt, freshDeletionIdToken](PersistedSessionSnapshot candidate) {
+        if (!safe || !modal || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::reauthenticating) return;
+        if (candidate.uid != uid || safe->activeSession.uid != uid) {
+          if (authForm) authForm->showError(L10n::tr("Usa la misma cuenta que deseas eliminar.", "Use the same account you want to delete."));
+          return; // Never accept matching email as an account link or switch session.
+        }
+        if (authForm) authForm->setAuthenticationBusy(true);
+        const auto base = getApiBaseUrl();
+        std::thread([safe, modal, uid, generation, original, candidate, base, preparedReceipt, freshDeletionIdToken] {
+          const auto current = AuthSessionApi::refreshFirebaseIdToken(original.firebaseApiKey, original.refreshToken);
+          const auto fresh = AuthSessionApi::refreshFirebaseIdToken(candidate.firebaseApiKey, candidate.refreshToken);
+          const auto proof = current.ok && fresh.ok ? AccountDeletionApi::reauthenticate(base, current.idToken, fresh.idToken) : AccountDeletionReauthentication{};
+          juce::MessageManager::callAsync([safe, modal, uid, generation, proof, preparedReceipt, freshDeletionIdToken, token = fresh.idToken] {
+            if (!safe || !modal || modal->getGeneration() != generation || safe->activeSession.uid != uid) return;
+            safe->deletionReauthCandidate = {}; safe->deletionReauthStatus = {}; safe->cancelAuthenticationAttempt();
+            if (!proof.ok || !proof.executionAvailable || !SessionPersistence::saveAccountDeletionReceipt(uid, proof.receipt)) { modal->fail(generation, uid); return; }
+            *preparedReceipt = proof.receipt; *freshDeletionIdToken = token;
+            modal->receiveReauthentication(generation, uid, proof.proofId, proof.expiresAtMs);
+          });
+        }).detach();
+      };
+      form->onLoginNow = [safe] { if (safe) safe->launchExternalLogin(); };
+      form->onAppleLoginNow = [safe] { if (safe) safe->launchAppleLogin(); };
+      form->onPasswordLoginRequested = [safe](const juce::String &email, const juce::String &password) { if (safe) safe->launchPasswordLogin(email, password); };
+      form->onAuthenticationCancelled = [safe] { if (safe) safe->cancelAuthenticationAttempt(); };
+      form->onInlineAuthenticationNavigation = [safe] { if (safe) safe->cancelAuthenticationAttempt(true); };
+      form->onLater = [modal] { if (modal) modal->invalidate(); };
+      // Password reset cannot prove identity and is intentionally offered through the normal login UI.
+    };
+    content->onConfirmationRequested = [safe, modal, uid, preparedReceipt, freshDeletionIdToken](int generation, const juce::String &proofId) {
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), token = *freshDeletionIdToken;
+      if (!SessionPersistence::markAccountDeletionReceiptSubmitted(uid, receipt)) { modal->fail(generation, uid); return; }
+      preparedReceipt->clear(); freshDeletionIdToken->clear(); // Once submitted, uncertainty always preserves the receipt.
+      const auto base = getApiBaseUrl();
+      std::thread([modal, uid, generation, proofId, receipt, token, base] {
+        const auto result = AccountDeletionApi::request(base, token, proofId, receipt);
+        juce::MessageManager::callAsync([modal, uid, generation, result] {
+          if (!modal) return;
+          if (!result.ok || (result.state != "pending" && result.state != "complete")) { modal->fail(generation, uid); return; }
+          modal->receiveStatus(generation, uid, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
+        });
+      }).detach();
+    };
+    content->onStatusRequested = [modal, uid](int generation) {
+      const auto receipt = SessionPersistence::loadAccountDeletionReceipt(uid), base = getApiBaseUrl();
+      std::thread([modal, uid, generation, receipt, base] {
+        const auto result = AccountDeletionApi::continuePending(base, receipt);
+        juce::MessageManager::callAsync([modal, uid, generation, receipt, result] {
+          if (!modal || modal->getGeneration() != generation) return;
+          if (result.ok && result.state == "not-accepted" && SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt)) { modal->invalidate(); return; }
+          if (!result.ok || result.state == "prepared") { modal->fail(generation, uid); return; }
+          modal->receiveStatus(generation, uid, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
+        });
+      }).detach();
+    };
+    content->onPreviewRequested = [safe, modal, uid](int generation) {
+      if (!safe || !modal || safe->activeSession.uid != uid) return;
+      const auto base = getApiBaseUrl(); const auto key = safe->activeSession.firebaseApiKey;
+      const auto refresh = safe->activeSession.refreshToken;
+      std::thread([safe, modal, uid, generation, base, key, refresh] {
+        const auto result = AccountDeletionApi::preview(base, key, refresh, uid);
+        juce::MessageManager::callAsync([safe, modal, uid, generation, result] {
+          if (!modal) return;
+          if (!safe || safe->activeSession.uid != uid) { modal->invalidate(); return; }
+          modal->receivePreview(generation, uid, result);
+        });
+      }).detach();
+    };
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(content); options.dialogTitle = L10n::tr("Eliminar cuenta", "Delete account");
+    options.dialogBackgroundColour = AuthUi::surface; options.useNativeTitleBar = true;
+    options.resizable = false; options.escapeKeyTriggersCloseButton = true;
+    options.launchAsync(); content->requestPreview();
   };
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
@@ -3733,6 +3879,113 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return playbackSession.hasLoadedSong() &&
            (!playbackSession.isRemote() || playbackSession.isConnected());
   };
+  const auto canControlAccompaniment = [this] {
+    return hasCurrentLoadedSong && currentLoadedSong.id.isNotEmpty() &&
+           !songLoadBusy && playbackSession.hasLoadedSong() &&
+           (!playbackSession.isRemote() || playbackSession.isConnected());
+  };
+  const auto accompanimentIdentity = [this] {
+    auto identity = playbackSession.isRemote() ? juce::String("remote")
+                                              : juce::String("local");
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    append(currentLoadedSong.id);
+    if (playbackSession.isRemote())
+      append(remoteSession.getSelectedServerName());
+    return identity;
+  };
+  const auto guideSelection = [this, canControlAccompaniment] {
+    playworship::practice::GuideSelection selection;
+    if (!canControlAccompaniment() || !playbackSession.hasGuideSourceState())
+      return selection;
+    selection.dynamic = playbackSession.isDynamicGuideEnabled();
+    if (selection.dynamic) {
+      selection.available = playbackSession.hasDynamicGuideAssets() &&
+                            playbackSession.hasConfirmedDynamicGuideMixState();
+    } else {
+      selection.stemIndices = playworship::practice::originalGuideStemIndices(
+          currentLoadedSong.stems, playbackSession.getLoadedStemCount(),
+          [](const ImportedStemData &stem) {
+            return stemPriorityForStripOrder(stem) == 1;
+          });
+      selection.stemIndices.erase(
+          std::remove_if(selection.stemIndices.begin(), selection.stemIndices.end(),
+                         [this](const int index) {
+                           return !playbackSession.hasConfirmedStemMixState(index);
+                         }),
+          selection.stemIndices.end());
+      selection.available = !selection.stemIndices.empty();
+    }
+    return selection;
+  };
+  sources.guideState = [this, canControlAccompaniment, accompanimentIdentity,
+                        guideSelection] {
+    PracticePanel::AccompanimentState state;
+    const auto selection = guideSelection();
+    state.identity = accompanimentIdentity() +
+        (playbackSession.hasGuideSourceState()
+             ? (playbackSession.isDynamicGuideEnabled() ? "|guide:dynamic"
+                                                        : "|guide:original")
+             : "|guide:unknown");
+    // Include the exact loaded targets so replacing/reordering guide stems
+    // cancels a pending request even if the song ID did not change.
+    int includedIndex = 0;
+    for (const auto &stem : currentLoadedSong.stems) {
+      if (!stem.include)
+        continue;
+      const int index = includedIndex++;
+      if (std::find(selection.stemIndices.begin(), selection.stemIndices.end(),
+                    index) == selection.stemIndices.end())
+        continue;
+      state.identity << '|' << index << ':' << stem.stemId.length() << ':'
+                     << stem.stemId;
+    }
+    state.available = selection.available;
+    state.enabled = playworship::practice::guideEnabled(playbackSession, selection);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!playbackSession.hasGuideSourceState())
+      state.unavailableReason = L10n::tr(
+          "Actualiza PlayWorship en el servidor para controlar la guía.",
+          "Update PlayWorship on the server to control the guide.");
+    else if (selection.dynamic && !playbackSession.hasConfirmedDynamicGuideMixState())
+      state.unavailableReason = L10n::tr("El estado de mezcla de la guía no está disponible.",
+                                         "The guide mixer state is unavailable.");
+    else if (!selection.available)
+      state.unavailableReason = selection.dynamic
+          ? L10n::tr("El paquete de guía dinámica no está cargado.",
+                     "The dynamic guide pack is not loaded.")
+          : L10n::tr("Esta canción no tiene una pista de guía original cargada.",
+                     "This song has no loaded original guide track.");
+    return state;
+  };
+  sources.setGuideEnabled = [this, guideSelection](const bool enabled) {
+    playworship::practice::setGuideEnabled(playbackSession, guideSelection(), enabled);
+  };
+  sources.metronomeState = [this, canControlAccompaniment, accompanimentIdentity] {
+    PracticePanel::AccompanimentState state;
+    state.identity = accompanimentIdentity() + "|metronome:dynamic";
+    state.available = canControlAccompaniment() &&
+                      playbackSession.hasConfirmedMetronomeState();
+    state.enabled = state.available &&
+                    playworship::practice::metronomeEnabled(playbackSession);
+    if (!canControlAccompaniment())
+      state.unavailableReason = L10n::tr("Carga una canción y conecta el control.",
+                                         "Load a song and connect the controller.");
+    else if (!state.available)
+      state.unavailableReason = L10n::tr("El estado del metrónomo no está disponible.",
+                                         "The metronome state is unavailable.");
+    return state;
+  };
+  sources.setMetronomeEnabled = [this, canControlAccompaniment](const bool enabled) {
+    if (!canControlAccompaniment() || !playbackSession.hasConfirmedMetronomeState())
+      return;
+    playworship::practice::setMetronomeEnabled(playbackSession, enabled);
+    if (!playbackSession.isRemote())
+      persistClickDynMetronomeEnabledForActiveSong(playbackSession.isMetronomeEnabled());
+  };
   sources.instruments = [this] {
     std::vector<PracticePanel::Instrument> result;
     if (!hasCurrentLoadedSong)
@@ -3753,6 +4006,29 @@ void MTControlsAudioProcessorEditor::showPractice() {
     return result;
   };
   sources.isRemote = [this] { return playbackSession.isRemote(); };
+  sources.waveformRevision = [this] {
+    if (playbackSession.isRemote() || !hasCurrentLoadedSong)
+      return juce::String{};
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    auto identity = juce::String::fromUTF8(
+        playworship::practice::waveformTimelineIdentity(timeline).c_str());
+    // Source metadata is in memory. Do not stat files from the panel's timer.
+    // The processor's source revision also invalidates same-path reloads.
+    const auto append = [&identity](const juce::String &value) {
+      identity << '|' << value.length() << ':' << value;
+    };
+    for (const auto &stem : currentLoadedSong.stems) {
+      append(stem.stemId);
+      append(stem.storedPath);
+      append(stem.sourcePath);
+      append(juce::String(stem.include ? 1 : 0));
+      append(juce::String(stem.durationSec, 9));
+      append(juce::String(stem.sampleRate));
+      append(juce::String(stem.channels));
+    }
+    return identity;
+  };
   sources.listeningMode =
       [this] { return playbackSession.getPracticeListeningMode(); };
   sources.listeningInstrumentId = [this] {
@@ -3760,6 +4036,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
     int loadedIndex = 0;
     for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size();
          ++rawIndex) {
+      if (!currentLoadedSong.stems[rawIndex].include)
+        continue;
+      if (loadedIndex++ == target)
+        return juce::String(static_cast<int>(rawIndex));
+    }
+    return juce::String{};
+  };
+  sources.displayListeningMode =
+      [this] { return playbackSession.getConfirmedPracticeListeningMode(); };
+  sources.displayListeningInstrumentId = [this] {
+    const int target = playbackSession.getConfirmedPracticeListeningStem();
+    int loadedIndex = 0;
+    for (size_t rawIndex = 0; rawIndex < currentLoadedSong.stems.size(); ++rawIndex) {
       if (!currentLoadedSong.stems[rawIndex].include)
         continue;
       if (loadedIndex++ == target)
@@ -3830,12 +4119,19 @@ void MTControlsAudioProcessorEditor::showPractice() {
       return;
     }
     const auto stem = currentLoadedSong.stems[static_cast<size_t>(index)];
-    const auto songLength = playbackSession.getSongLengthSeconds();
-    std::thread([stem, songLength, cancel,
+    const auto timeline = static_cast<MTControlsAudioProcessor &>(processor)
+                              .getPracticeWaveformTimeline();
+    std::thread([stem, timeline, cancel,
                  deliver = std::move(deliver)]() mutable {
-      auto bins = buildStemWaveformBins(
-          stem, songLength, kWaveformPreviewBinCount,
-          [cancel] { return cancel->load(std::memory_order_relaxed); });
+      const auto cancelled = [cancel] {
+        return cancel->load(std::memory_order_relaxed);
+      };
+      const auto sourceBins = buildStemWaveformBins(
+          stem, timeline.sourceLengthSeconds, kWaveformPreviewBinCount, cancelled);
+      // Copies are views of the same source peaks, not new audio files or
+      // independently normalised waves. Use the playback scheduler's map.
+      auto bins = playworship::practice::projectWaveformBins(
+          sourceBins, timeline, kWaveformPreviewBinCount, cancelled);
       if (cancel->load(std::memory_order_relaxed))
         return;
       juce::MessageManager::callAsync(
@@ -3853,6 +4149,11 @@ void MTControlsAudioProcessorEditor::showPractice() {
       if (safe != nullptr)
         safe->closePractice();
     });
+  };
+
+  sources.showHelp = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
+    if (safe != nullptr)
+      safe->showPracticeLearningGuide();
   };
 
   practiceOverlay = std::make_unique<PracticePanel>(std::move(sources));
@@ -3926,6 +4227,7 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
 
 void MTControlsAudioProcessorEditor::handleLogout() {
   const bool wasLocalDemo = localDemoSession;
+  deletionReauthCandidate = {}; deletionReauthStatus = {};
   cancelAuthenticationAttempt();
   appleLoginInProgress = false;
   appleLinkInProgress = false;
@@ -3943,6 +4245,10 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     localAuthServer->stop();
   authCallbackPort = 0;
 
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
+  if (serviceTermsClient) serviceTermsClient->cancelAll();
+  serviceTermsRequestPending = false;
   activeSession = {};
   activeSession.allowed = false;
   localDemoSession = false;
@@ -4001,6 +4307,8 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
   PersistedSessionSnapshot p;
   p.uid = activeSession.uid;
   p.email = activeSession.email;
+  p.authProvider = activeSession.authProvider;
+  p.authProviderUser = activeSession.authProviderUser;
   p.plan = activeSession.plan;
   p.subscriptionStatus = activeSession.subscriptionStatus;
   p.expiresAt = activeSession.expiresAt;
@@ -4018,10 +4326,15 @@ MTControlsAudioProcessorEditor::persistedSnapshotFromActiveSession(
 void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
     const PersistedSessionSnapshot &snap) {
   if (localDemoSession) return;
-  if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid)
+  if (activeSession.uid.isNotEmpty() && activeSession.uid != snap.uid) {
+    if (serviceTermsClient) serviceTermsClient->cancelAll();
+    serviceTermsRequestPending = false;
     invalidateCloudAccountView();
+  }
   activeSession.uid = snap.uid;
   activeSession.email = snap.email;
+  activeSession.authProvider = snap.authProvider;
+  activeSession.authProviderUser = snap.authProviderUser;
   activeSession.plan = snap.plan;
   activeSession.subscriptionStatus = snap.subscriptionStatus;
   activeSession.expiresAt = snap.expiresAt;
@@ -4033,6 +4346,7 @@ void MTControlsAudioProcessorEditor::applyPersistedSnapshotToActive(
   activeSession.firebaseApiKey = snap.firebaseApiKey;
   activeSession.idTokenExpiresAtMs = snap.idTokenExpiresAtMs;
   lastOnlineValidationMs = snap.lastOnlineValidationMs;
+  refreshAppleCredentialMonitoring();
 }
 
 void MTControlsAudioProcessorEditor::saveSessionSnapshotToDisk() {
@@ -4282,6 +4596,7 @@ void MTControlsAudioProcessorEditor::applySessionResumeOnMessageThread(
 
   initializeMainUi();
   refreshCloudLibrary({});
+  if (validatedOnline) showServiceTermsIfNeeded();
 }
 
 void MTControlsAudioProcessorEditor::evaluateReauthPolicy() {
@@ -4608,6 +4923,12 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
+  if (appleLinkFlow.stage != AppleLinkFlow::Stage::idle &&
+      !appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
+    cancelAuthenticationAttempt();
+    setAppleAuthenticationStatus(L10n::tr("La vinculación venció. Vuelve a iniciar el acceso con Apple.",
+                                         "Linking expired. Start Apple sign-in again."), true, false);
+  }
 #if JUCE_IOS
   // Keyboard notifications update JUCE's display insets without necessarily
   // resizing the fullscreen window. Relayout visible auth only when they change.
@@ -4875,8 +5196,13 @@ void MTControlsAudioProcessorEditor::timerCallback() {
 }
 
 MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
+  appleLinkFlow.cancel();
+  appleLinkCandidate = {};
+  appleLinkDialog.close();
   ++authAttemptGeneration;
   ++appleConfigurationGeneration;
+  ++appleCredentialGeneration;
+  appleCredentialMonitor.reset();
   NativeAppleSignIn::cancel();
   NativeAuthSession::cancel();
   stopTimer();
@@ -5693,4 +6019,37 @@ bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   }
 
   return false;
+}
+
+void MTControlsAudioProcessorEditor::showPendingAccountDeletion() {
+  const auto receipts = SessionPersistence::listAccountDeletionReceipts(); if (receipts.isEmpty()) return;
+  const auto receipt = receipts[0]; const juce::String scope("deletion-status-recovery");
+  auto *content = new AccountDeletionModal(scope); juce::Component::SafePointer<AccountDeletionModal> modal(content);
+  const auto safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this); const auto completed = std::make_shared<bool>(false);
+  content->setSize(juce::jmin(500, juce::jmax(320, getWidth() - 24)), juce::jmin(620, juce::jmax(240, getHeight() - 24)));
+  content->onAccepted = [receipt] { return SessionPersistence::blockAccountForDeletionReceipt(receipt); };
+  content->onDismissed = [safe, receipt, completed](bool) {
+    if (*completed) SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt);
+    if (safe && *completed) juce::MessageManager::callAsync([safe] { if (safe) safe->showPendingAccountDeletion(); });
+  };
+  content->onCancelled = [modal] { if (modal) if (auto *window = modal->findParentComponentOfClass<juce::DialogWindow>()) window->exitModalState(0); };
+  content->onStatusRequested = [safe, modal, receipt, scope, completed](int generation) {
+    const auto base = getApiBaseUrl();
+    std::thread([safe, modal, receipt, scope, completed, generation, base] {
+      const auto result = AccountDeletionApi::continuePending(base, receipt);
+      juce::MessageManager::callAsync([safe, modal, receipt, scope, completed, generation, result] {
+        if (!modal || !safe || modal->getGeneration() != generation || modal->getState() != AccountDeletionModal::State::pending) return;
+        if (result.ok && ((result.state == "prepared" && SessionPersistence::clearUnsubmittedDeletionReceipt(receipt)) ||
+                          (result.state == "not-accepted" && SessionPersistence::acknowledgeCompletedDeletionReceipt(receipt)))) {
+          modal->invalidate(); safe->tryResumeSessionAsync(); return;
+        }
+        if (!result.ok || result.state == "prepared") { modal->fail(generation, scope); return; }
+        modal->receiveStatus(generation, scope, result.state == "complete" ? AccountDeletionModal::State::complete : AccountDeletionModal::State::pending);
+        *completed = modal->getState() == AccountDeletionModal::State::complete;
+      });
+    }).detach();
+  };
+  juce::DialogWindow::LaunchOptions options; options.content.setOwned(content); options.dialogTitle = L10n::tr("Estado de eliminación", "Deletion status");
+  options.dialogBackgroundColour = AuthUi::surface; options.useNativeTitleBar = true; options.resizable = false; options.escapeKeyTriggersCloseButton = true;
+  options.launchAsync(); content->resumePendingStatus();
 }

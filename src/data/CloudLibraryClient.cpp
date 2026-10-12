@@ -1,3 +1,4 @@
+#include "TeamsAvailability.h"
 #include "CloudLibraryClient.h"
 
 #include "AuthSessionApi.h"
@@ -138,6 +139,7 @@ void CloudLibraryClient::search(
           song.teamId = object->getProperty("teamId").toString().trim();
           song.ownerUid = object->getProperty("ownerUid").toString().trim();
           song.ownerEmail = object->getProperty("ownerEmail").toString().trim();
+          if (!teamsFileSharingAvailable && !song.teamId.isEmpty()) continue;
           song.title = object->getProperty("title").toString();
           song.artist = object->getProperty("artist").toString();
           song.key = object->getProperty("key").toString();
@@ -193,7 +195,7 @@ void CloudLibraryClient::fetchCapabilities(
       if (!root) { deliverCapabilities({}, {status, "INVALID_RESPONSE", "Invalid cloud response"}); return jobHasFinished; }
       CloudCapabilities caps;
       const auto teamsCapability = root->getProperty("canManageSharedCloud");
-      caps.canManageSharedCloud = teamsCapability.isBool() && static_cast<bool>(teamsCapability);
+      caps.canManageSharedCloud = teamsFileSharingAvailable && teamsCapability.isBool() && static_cast<bool>(teamsCapability);
       caps.enabled = static_cast<bool>(root->getProperty("enabled")); caps.isOverride = static_cast<bool>(root->getProperty("isOverride"));
       caps.accountType = root->getProperty("accountType").toString(); caps.trialEndsAt = root->getProperty("trialEndsAt").toString(); caps.updatedAt = root->getProperty("updatedAt").toString();
       caps.usedDevices = static_cast<int>(root->getProperty("usedDevices")); caps.maxDevices = static_cast<int>(root->getProperty("maxDevices"));

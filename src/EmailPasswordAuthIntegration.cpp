@@ -38,6 +38,7 @@ juce::String emailErrorMessage(EmailPasswordAuthApi::Error error) {
 
 void MTControlsAudioProcessorEditor::setEmailAuthenticationStatus(
     const juce::String& text, bool error, bool busy) {
+  if (deletionReauthStatus) deletionReauthStatus(text, error, busy);
   emailAuthenticationBusy = busy;
   reauthLoginInProgress = busy;
   if (auto* modal = dynamic_cast<WelcomeModal*>(welcomeModal.get())) {
@@ -51,7 +52,9 @@ void MTControlsAudioProcessorEditor::setEmailAuthenticationStatus(
   }
 }
 
-void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt() {
+void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt(bool preserveAppleLinkFlow) {
+  if (deletionReauthStatus) deletionReauthStatus({}, false, false);
+  if (!preserveAppleLinkFlow) resetAppleLinkFlow();
   ++authAttemptGeneration;
   authExpectedState.clear();
   NativeAuthSession::cancel();
@@ -74,7 +77,7 @@ void MTControlsAudioProcessorEditor::cancelAuthenticationAttempt() {
 void MTControlsAudioProcessorEditor::launchPasswordLogin(
     const juce::String& email, const juce::String& password) {
   if (emailAuthenticationBusy) return;
-  cancelAuthenticationAttempt();
+  cancelAuthenticationAttempt(appleLinkFlow.stage == AppleLinkFlow::Stage::authenticate);
   sessionResumeCancelled = false;
   const auto generation = authAttemptGeneration;
   const auto baseUrl = getAuthBaseUrl();

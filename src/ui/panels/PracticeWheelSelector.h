@@ -5,11 +5,14 @@
 #include <cmath>
 #include <limits>
 
-// Shared pitch/tempo interaction: preview while dragging, one change on release.
+// Shared pitch/tempo/instrument interaction: preview while dragging, one change on release.
 // The Slider value is the committed value exposed to keyboard/accessibility.
 class PracticeWheelSelector : public juce::Slider, private juce::Timer {
 public:
   static constexpr float itemSpacing = 44.0f;
+
+  virtual float getItemSpacing() const { return itemSpacing; }
+  bool isHorizontalDragActive() const { return dragging && moved && !rejected; }
 
   void cancelDrag() {
     dragging = moved = rejected = false;
@@ -28,6 +31,8 @@ public:
     const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
     const float centre = bounds.getCentreX();
     const float alpha = isEnabled() ? 1.0f : 0.45f;
+    const float spacing = getItemSpacing();
+    const float selectionWidth = getSelectionWidth();
     g.setColour(UITheme::cardBg);
     g.fillRoundedRectangle(bounds, 12.0f);
     g.setColour(UITheme::cardBorder.withAlpha(0.65f));
@@ -39,35 +44,39 @@ public:
     g.reduceClipRegion(contentClip);
     // The original value moves with the wheel in a cool neutral fill. The
     // current selection stays at the centre in the theme's accent fill.
-    const float originalX = centre + static_cast<float>(originalValue() - visualValue) * itemSpacing;
+    const float originalX = centre + static_cast<float>(originalValue() - visualValue) * spacing;
     const float valueTop = bounds.getCentreY() - 17.0f;
     const auto originalFill = UITheme::cardBg.interpolatedWith(UITheme::textSecondary, 0.2f)
                                   .interpolatedWith(juce::Colour::fromRGB(98, 130, 156), 0.2f);
-    g.setColour(originalFill.withMultipliedAlpha(alpha));
-    g.fillRoundedRectangle({originalX - 22.0f, valueTop, 44.0f, 34.0f}, 8.0f);
+    if (highlightOriginalValue()) {
+      g.setColour(originalFill.withMultipliedAlpha(alpha));
+      g.fillRoundedRectangle({originalX - selectionWidth * 0.5f, valueTop,
+                              selectionWidth, 34.0f}, 8.0f);
+    }
     g.setColour(UITheme::accentMuted.withMultipliedAlpha(alpha));
-    g.fillRoundedRectangle({centre - 22.0f, valueTop, 44.0f, 34.0f}, 8.0f);
+    g.fillRoundedRectangle({centre - selectionWidth * 0.5f, valueTop, selectionWidth, 34.0f}, 8.0f);
     const double origin = detentOrigin();
     const int centreIndex = juce::roundToInt(visualValue - origin);
-    const int radius = static_cast<int>(std::ceil(bounds.getWidth() / (2.0f * itemSpacing))) + 1;
+    const int radius = static_cast<int>(std::ceil(bounds.getWidth() / (2.0f * spacing))) + 1;
     for (int index = centreIndex - radius; index <= centreIndex + radius; ++index) {
       const double value = origin + static_cast<double>(index);
       if (value < wheelMinimum - 0.000001 || value > wheelMaximum + 0.000001)
         continue;
       const float distance = static_cast<float>(value - visualValue);
-      const float x = centre + distance * itemSpacing;
-      if (x < -itemSpacing || x > static_cast<float>(getWidth()) + itemSpacing)
+      const float x = centre + distance * spacing;
+      if (x < -spacing || x > static_cast<float>(getWidth()) + spacing)
         continue;
       const float emphasis = juce::jmax(0.0f, 1.0f - std::abs(distance));
-      const auto textColour = std::abs(value - originalValue()) < 0.001
+      const auto textColour = highlightOriginalValue() && std::abs(value - originalValue()) < 0.001
           ? UITheme::textPrimary
           : UITheme::textSecondary.interpolatedWith(UITheme::textPrimary, emphasis);
       g.setColour(textColour.withMultipliedAlpha(alpha));
       g.setFont(makeAppFont(16.0f + 2.0f * emphasis,
                            emphasis > 0.5f ? AppFontWeight::SemiBold : AppFontWeight::Medium));
       const auto label = itemText(value);
-      g.drawFittedText(label, juce::Rectangle<float>(x - 22.0f, bounds.getY(), 44.0f, bounds.getHeight()).toNearestInt(),
-                       juce::Justification::centred, 1);
+      paintItemText(g, label,
+          juce::Rectangle<float>(x - selectionWidth * 0.5f, bounds.getY(),
+                                  selectionWidth, bounds.getHeight()).toNearestInt());
     }
     // Fade the moving notes into the surface at both edges.
     const float fadeWidth = juce::jmin(30.0f, bounds.getWidth() * 0.18f);
@@ -104,7 +113,7 @@ public:
         return;
       moved = true;
     }
-    visualValue = bounded(dragOrigin - delta.x / itemSpacing);
+    visualValue = bounded(dragOrigin - delta.x / getItemSpacing());
     repaint();
   }
 
@@ -112,7 +121,7 @@ public:
     if (!dragging || event.source.getIndex() != pointerIndex)
       return;
     // The last position may arrive only with release after coalesced input.
-    mouseDrag(event);
+    PracticeWheelSelector::mouseDrag(event);
     const bool commitDrag = moved;
     const bool ignore = rejected || !isEnabled() || event.getNumberOfClicks() > 1;
     dragging = false;
@@ -124,7 +133,7 @@ public:
       commit(snapToDetent(visualValue));
     else if (!event.mouseWasDraggedSinceMouseDown())
       commit(snapToDetent(visualValue +
-          (event.position.x - static_cast<float>(getWidth()) * 0.5f) / itemSpacing));
+          (event.position.x - static_cast<float>(getWidth()) * 0.5f) / getItemSpacing()));
     else
       animateTo(getValue());
   }
@@ -188,6 +197,12 @@ protected:
     animateTo(next);
   }
 
+  virtual float getSelectionWidth() const { return getItemSpacing(); }
+  virtual bool highlightOriginalValue() const { return true; }
+  virtual void paintItemText(juce::Graphics &g, const juce::String &text,
+                             juce::Rectangle<int> bounds) {
+    g.drawFittedText(text, bounds, juce::Justification::centred, 1);
+  }
   virtual double originalValue() const = 0;
   virtual double detentOrigin() const { return 0.0; }
   virtual juce::String itemText(double value) { return getTextFromValue(value); }
@@ -218,8 +233,10 @@ private:
 
   void commit(double value) {
     dragging = false;
+    const juce::Component::SafePointer<PracticeWheelSelector> safe(this);
     setValue(bounded(value), juce::sendNotificationSync);
-    animateTo(getValue());
+    if (safe != nullptr)
+      animateTo(getValue());
   }
 
   void animateTo(double target) {

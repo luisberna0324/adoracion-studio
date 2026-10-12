@@ -77,9 +77,7 @@ public:
   void updateSessionSummary(SessionSummary sessionSummary);
   void setQuotaUnavailable();
   void setTeamsManagementEnabled(bool enabled);
-  void setAppleSignInAvailable(bool available);
-  void setAppleSignInStatus(const juce::String &text, bool busy = false);
-  std::function<void()> onAppleLinkRequested;
+  std::function<void()> onAccountDeletionRequested;
   std::function<void()> onShareAudioDiagnostics;
   std::function<void()> onLearningRequested;
   std::function<void()> onTeamsRequested;
@@ -254,8 +252,8 @@ private:
       "Soporte", juce::URL("mailto:hola@playworship.app")};
   SettingsLogoutButton logoutButton;
   SettingsLogoutButton purgeButton;
-  juce::Label appleLinkLabel, appleLinkHelp;
-  std::unique_ptr<juce::Component> appleLinkButton;
+  SettingsLogoutButton deleteAccountButton;
+  juce::Label actionDeleteLabel, actionDeleteHelp;
   std::unique_ptr<SettingsCard> appearanceCard;
   std::unique_ptr<SettingsCard> playbackCard;
   std::unique_ptr<SettingsCard> sessionCard;

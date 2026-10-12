@@ -330,6 +330,42 @@ public:
   double getMetronomeBpm() const { return remote ? static_cast<double>(field(field(state, "ui"), "getMetronomeBpm")) : local.getMetronomeBpm(); }
   int getClickDivision() const { return remote ? static_cast<int>(field(field(state, "ui"), "getClickDivision")) : local.getClickDivision(); }
   bool isClickDivisionEnabled() const { return remote ? static_cast<bool>(field(field(state, "ui"), "isClickDivisionEnabled")) : local.isClickDivisionEnabled(); }
+  // These fields are published directly from the processor, unlike cached
+  // settings. An older server cannot safely identify the selected guide bus.
+  bool hasGuideSourceState() const {
+    if (!remote) return true;
+    const auto ui = field(state, "ui");
+    return field(ui, "isDynamicGuideEnabled").isBool() &&
+           field(ui, "hasDynamicGuideAssets").isBool();
+  }
+  bool isDynamicGuideEnabled() const {
+    return remote ? hasGuideSourceState() &&
+                        static_cast<bool>(field(field(state, "ui"), "isDynamicGuideEnabled"))
+                  : local.isDynamicGuideEnabled();
+  }
+  bool hasDynamicGuideAssets() const {
+    return remote ? hasGuideSourceState() &&
+                        static_cast<bool>(field(field(state, "ui"), "hasDynamicGuideAssets"))
+                  : local.hasDynamicGuideAssets();
+  }
+  bool hasConfirmedDynamicGuideMixState() const {
+    return !remote || (connected && field(mix("guide"), "mute").isBool());
+  }
+  bool hasConfirmedMetronomeState() const {
+    if (!remote) return true;
+    if (!connected || !field(mix("click"), "mute").isBool()) return false;
+    const auto ui = field(state, "ui");
+    const auto division = field(ui, "getClickDivision");
+    return field(ui, "isMetronomeEnabled").isBool() &&
+           field(ui, "isClickDivisionEnabled").isBool() &&
+           division.isInt() && static_cast<int>(division) >= 0 &&
+           static_cast<int>(division) <= 7;
+  }
+  int getPreparingArrangementPartJumpIndex() const {
+    if (!remote) return local.getPreparingArrangementPartJumpIndex();
+    const auto ui = field(state, "ui");
+    return ui.hasProperty("getPreparingArrangementPartJumpIndex") ? static_cast<int>(field(ui, "getPreparingArrangementPartJumpIndex")) : -1;
+  }
   int getPendingArrangementPartJumpIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getPendingArrangementPartJumpIndex")) : local.getPendingArrangementPartJumpIndex(); }
   int getArrangementPartLoopIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getArrangementPartLoopIndex")) : local.getArrangementPartLoopIndex(); }
   bool isPracticeLoopActive() const {
@@ -480,6 +516,13 @@ public:
   void setDynamicGuideSolo(bool value) { if (remote) send("mix.solo", value, "guide"); else local.setDynamicGuideSolo(value); }
   float getStemVolume(int index) const { return remote ? static_cast<float>(controlValue("mix.volume", stemId(index), number(mix(stemId(index)), "volume"))) : local.getStemVolume(index); }
   float getStemGain(int index) const { return remote ? static_cast<float>(controlValue("mix.gain", stemId(index), number(mix(stemId(index)), "gain"))) : local.getStemGain(index); }
+  bool hasConfirmedStemMixState(int index) const {
+    if (!remote) return juce::isPositiveAndBelow(index, local.getLoadedStemCount());
+    if (!connected || stemId(index).isEmpty()) return false;
+    // Metadata can include stems that the server did not actually load. Only
+    // the processor-backed mixer row establishes that this source exists.
+    return field(mix(stemId(index)), "mute").isBool();
+  }
   bool isStemMuted(int index) const { return remote ? static_cast<bool>(number(mix(stemId(index)), "mute")) : local.isStemMuted(index); }
   bool isStemSoloed(int index) const { return remote ? static_cast<bool>(number(mix(stemId(index)), "solo")) : local.isStemSoloed(index); }
   int getStemOutputChannel(int index) const { return remote ? static_cast<int>(number(mix(stemId(index)), "outputChannel")) : local.getStemOutputChannel(index); }
@@ -516,6 +559,19 @@ public:
     return remote ? (connected ? (hasPendingPracticeListening() ? practiceListeningPendingMode
                                 : static_cast<int>(number(state, "practiceMode"))) : 0)
                   : local.getPracticeListeningMode();
+  }
+  // Presentation of audible focus must not use the optimistic gesture state.
+  // Keep the existing getters above for consecutive gestures and ownership.
+  int getConfirmedPracticeListeningMode() const {
+    if (!remote) return local.getPracticeListeningMode();
+    if (!connected) return 0;
+    const int mode = static_cast<int>(number(state, "practiceMode"));
+    return mode == 1 || mode == 2 ? mode : 0;
+  }
+  int getConfirmedPracticeListeningStem() const {
+    if (!remote) return local.getPracticeListeningStem();
+    if (!connected || getConfirmedPracticeListeningMode() == 0) return -1;
+    return includedStemIds.indexOf(field(state, "practiceStemId").toString());
   }
   void setStemVolume(int index, float value) { if (remote) send("mix.volume", value, stemId(index)); else if (canEditSectionAutomationStem(index)) local.setStemVolume(index, value); }
   void setStemGain(int index, float value) { if (remote) send("mix.gain", value, stemId(index)); else if (canEditSectionAutomationStem(index)) local.setStemGain(index, value); }

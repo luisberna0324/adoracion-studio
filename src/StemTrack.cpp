@@ -16,16 +16,10 @@ StemTrack::StemTrack(std::unique_ptr<juce::AudioFormatReader> reader,
   resamplingSource = std::make_unique<ResamplingPositionableSource>(
       readerSource.get(), sampleRateToUse, 2);
 
-  // P0.2 (perf): diferir la construcción de la cadena de prefetch. El
-  // segundo AudioFormatReader se guarda crudo y se materializa en
-  // ensurePrefetchChain() la primera vez que se necesita. Esto evita
-  // el segundo FileInputStream::open y la duplicación del costo de AV
-  // en Windows durante el loadSongStems. El bufferingSource arranca
-  // sin prefetch source; requestPrefetchPosition lo inyecta.
+  // Finish the independent prefetch chain in prepareToPlay, before playback.
   deferredPrefetchReader = std::move(prefetchReader);
   prefetchSampleRate = sampleRateToUse;
-  // Se ajustará con la primera llamada a ensurePrefetchChain; por
-  // ahora un valor seguro para que ensurePrefetchChain no asuma cero.
+  // Updated with the host configuration during preparation.
   prefetchBlockSize = 512;
 
   if (useReadAhead) {
@@ -227,12 +221,13 @@ void StemTrack::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
       sampleRate, playworship::audio::practiceListening::rampSeconds);
   practiceListeningSmoother.setCurrentAndTargetValue(
       practiceListeningGain.load(std::memory_order_relaxed));
-  activeSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
-  // P0.2 (perf): capturar el block size real del host para que cuando
-  // la cadena de prefetch se construya en lazy, use el valor vigente
-  // y no un default hardcodeado.
   prefetchBlockSize = samplesPerBlockExpected;
   prefetchSampleRate = sampleRate;
+  // Build the secondary reader before publishing this prepared track. A late
+  // jump must only publish an atomic request from the audio callback, never
+  // allocate buffers, prepare a resampler or enter call_once there.
+  ensurePrefetchChain();
+  activeSource->prepareToPlay(samplesPerBlockExpected, sampleRate);
 }
 
 void StemTrack::releaseResources() {
@@ -277,13 +272,6 @@ void StemTrack::requestPrefetchPosition(const juce::int64 position,
                                         const int minimumFrames) noexcept {
   if (bufferingSource == nullptr)
     return;
-  // P0.2 (perf): construir la cadena de prefetch en lazy la primera
-  // vez que se pide. Esto saca el segundo createReaderFor y su costo
-  // de AV del path crítico del loadSongStems. Llamar esto desde el
-  // message thread es seguro: el I/O se paga una vez por canción
-  // cuando el usuario solicita un seek/loop/arrangement, no durante
-  // el cambio de canción.
-  ensurePrefetchChain();
   bufferingSource->requestPrefetchPosition(position, minimumFrames);
 }
 
@@ -302,16 +290,8 @@ void StemTrack::ensurePrefetchChain() {
     prefetchResamplingSource = std::make_unique<ResamplingPositionableSource>(
         prefetchReaderSource.get(), prefetchSampleRate, 2);
 
-    // Preparar la fuente ya con el sample rate del host para que el
-    // primer read del worker no tenga que hacerlo después.
-    if (prefetchBlockSize > 0 && prefetchSampleRate > 0.0) {
-      prefetchResamplingSource->prepareToPlay(prefetchBlockSize,
-                                              prefetchSampleRate);
-    }
-
-    // Inyectar en el buffering source. setPrefetchSource re-asigna el
-    // prefetch buffer y bumpea la generación para invalidar cualquier
-    // request pendiente contra la cadena vieja.
+    // Install before the buffering source starts its read worker. Its upcoming
+    // prepareToPlay prepares both readers and allocates their buffers.
     bufferingSource->setPrefetchSource(prefetchResamplingSource.get(),
                                        static_cast<int>(prefetchSampleRate),
                                        prefetchBlockSize);

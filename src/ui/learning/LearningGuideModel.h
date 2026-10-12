@@ -70,6 +70,10 @@ struct Lesson {
 // Content is resolved in the current language and for the real phone features.
 std::vector<Lesson> makeLessons(bool phone, bool english);
 
+// Route the demo loop exercise through the existing view selector. When an
+// edit prevents switching views, keep its real waveform controls accessible.
+Anchor demoSectionLoopAnchor(Anchor requested, bool sectionsView, bool canChangeView);
+
 Lesson makeSharedCloudLesson(const juce::String &id, const juce::String &owner, bool english);
 
 struct LessonProgress {
