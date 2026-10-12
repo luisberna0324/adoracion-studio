@@ -26,7 +26,13 @@ public:
   void clearCredentials();
   bool isResetMode() const { return mode == Mode::reset || mode == Mode::linkSent; }
   bool isLinkSent() const { return mode == Mode::linkSent; }
-  bool isLocalDemoMode() const { return mode == Mode::localDemoLogin; }
+  bool isLocalDemoMode() const {
+#if JUCE_DEBUG
+    return mode == Mode::localDemoLogin;
+#else
+    return false;
+#endif
+  }
   int preferredHeight(int width = 0) const;
   void focusEmail();
   void resized() override;
