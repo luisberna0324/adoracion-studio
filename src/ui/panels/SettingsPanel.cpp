@@ -1,5 +1,6 @@
 #include "AppIdentity.h"
 #include "SettingsPanel.h"
+#include "../../DevelopmentFeatures.h"
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
@@ -88,7 +89,7 @@ public:
         mode + juce::String::fromUTF8(" · ") + L10n::tr("Conexiones en red local", "Local network connections")});
     if (owner.teamsManagementEnabled)
       pageSubtitles.add(L10n::tr("Usuarios de tu nube", "Your Cloud users"));
-    pageSubtitles.addArray({owner.session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
+    pageSubtitles.addArray({(DevelopmentFeatures::testLogin && owner.session.localDemo) ? L10n::tr("Prueba sin conexión", "Offline trial") : owner.session.email.isNotEmpty() ? owner.session.email : L10n::tr(u8"Sesión, plan y almacenamiento", "Session, plan and storage"),
         L10n::tr("Informe para soporte", "Report for support"),
         L10n::tr("Guías paso a paso; continúa donde quedaste", "Step-by-step guides; pick up where you left off")});
     for (size_t i = 0; i < rows.size(); ++i) {
@@ -1559,6 +1560,7 @@ void SettingsPanel::updateTabButtonStates(const int activeIndex) {
 }
 
 void SettingsPanel::applyLanguageTexts() {
+  const bool localDemo = DevelopmentFeatures::testLogin && session.localDemo;
   teamsLabel.setText("Teams", juce::dontSendNotification);
   teamsHelp.setText(L10n::tr("El intercambio de archivos de Teams está temporalmente deshabilitado. Tu Cloud personal sigue disponible.", "Teams file sharing is temporarily disabled. Your personal Cloud remains available."), juce::dontSendNotification);
   teamsButton.setButtonText(L10n::tr("Abrir Teams", "Open Teams"));
@@ -1640,7 +1642,7 @@ void SettingsPanel::applyLanguageTexts() {
   sessionSectionLabel.setText(L10n::tr(u8"Sesión", "Session"),
                               juce::dontSendNotification);
   sessionUidLabel.setText("UID", juce::dontSendNotification);
-  sessionEmailLabel.setText(session.localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
+  sessionEmailLabel.setText(localDemo ? L10n::tr("Usuario", "Username") : "Email", juce::dontSendNotification);
   sessionPlanLabel.setText(L10n::tr("Plan", "Plan"), juce::dontSendNotification);
   sessionStatusLabel.setText(L10n::tr("Estado", "Status"),
                              juce::dontSendNotification);
@@ -1652,11 +1654,11 @@ void SettingsPanel::applyLanguageTexts() {
                               juce::dontSendNotification);
   sessionUidValue.setText(session.uid.isNotEmpty() ? session.uid : "-",
                           juce::dontSendNotification);
-  sessionEmailValue.setText(session.localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
+  sessionEmailValue.setText(localDemo ? "usuarioplay0324" : session.email.isNotEmpty() ? session.email : "-",
                             juce::dontSendNotification);
   sessionPlanValue.setText(session.plan.isNotEmpty() ? session.plan : "-",
                            juce::dontSendNotification);
-  sessionStatusValue.setText(session.localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
+  sessionStatusValue.setText(localDemo ? L10n::tr("Prueba sin conexión", "Offline trial") : session.subscriptionStatus.isNotEmpty()
                                  ? session.subscriptionStatus
                                  : "-",
                              juce::dontSendNotification);
@@ -1692,7 +1694,7 @@ void SettingsPanel::applyLanguageTexts() {
         formatBytes(session.maxStorageBytes), juce::dontSendNotification);
   } else {
     sessionQuotaValue.setText(
-        session.localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
+        localDemo ? L10n::tr("Nube no disponible en la prueba local.", "Cloud is unavailable in the local trial.") : quotaFetchFailed
             ? L10n::tr("No se pudieron actualizar las cuotas.",
                        "Couldn't refresh quotas.")
             : L10n::tr("Consultando cuotas…", "Loading quotas…"),
@@ -1728,7 +1730,7 @@ void SettingsPanel::applyLanguageTexts() {
   actionDeleteLabel.setText(L10n::tr("Eliminar cuenta y Cloud", "Delete account and Cloud"), juce::dontSendNotification);
   actionDeleteHelp.setText(L10n::tr("Revisa el impacto. Los archivos locales se conservarán.", "Review the impact. Local files will be preserved."), juce::dontSendNotification);
   deleteAccountButton.setButtonText(L10n::tr("Revisar", "Review"));
-  deleteAccountButton.setEnabled(!session.localDemo && session.uid.isNotEmpty());
+  deleteAccountButton.setEnabled(!localDemo && session.uid.isNotEmpty());
   logoutButton.setButtonText(L10n::tr(u8"Cerrar sesión", "Sign out"));
   purgeButton.setButtonText(L10n::tr("Purgar", "Purge"));
   infoLinkButton.setButtonText(L10n::tr("Contactar soporte", "Contact support"));
