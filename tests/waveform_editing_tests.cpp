@@ -108,6 +108,19 @@ struct WaveformEditingTestAccess {
   static float liveScroll(const WaveformBar &waveform) { return waveform.liveScrollOffset; }
   static void followAt(WaveformBar &waveform, double now, bool reduced = false) { waveform.updateLiveFollow(now, reduced); }
   static void vblank(WaveformBar &waveform, double now) { waveform.updatePlaybackAnimation(now); }
+  static auto playbackRepaintRegions(const WaveformBar &waveform, float from, float to) {
+    return waveform.getPlaybackRepaintRegions(from, to);
+  }
+  static void fixedPlaybackViewport(WaveformBar &waveform, float start, float span) {
+    waveform.followPlaybackEnabled = false;
+    waveform.setVisibleWindow(start, span);
+  }
+  static juce::Image playbackWaveformCache(const WaveformBar &waveform) {
+    return waveform.followWaveformBaseCache;
+  }
+  static void invalidatePlaybackWaveformCache(WaveformBar &waveform) {
+    waveform.invalidateWaveformRenderCaches();
+  }
   static double resumeAt(const WaveformBar &waveform) { return waveform.liveFollowResumeMs; }
   static void setLiveOffset(WaveformBar &waveform, float offset) { waveform.setLiveScrollOffset(offset); }
   static bool moving(const WaveformBar &wave) { return wave.liveScrollCoasting || wave.liveScrollSettling; }
@@ -2884,6 +2897,187 @@ void testCueCapacityRejectsCopyWithoutChangingTimeline() {
          "rejected paste publishes nothing and does not ripple following sections");
 }
 
+struct PlaybackPaintFixture {
+  static constexpr double length = 30.0;
+  double position = 6.0;
+  WaveformBar waveform;
+
+  PlaybackPaintFixture() {
+    waveform.setTransportProviders([this] { return position; },
+                                   [] { return length; }, [] { return true; });
+    waveform.setSongSourceLengthProvider([] { return length; });
+    waveform.setSongRhythm(120.0, "4/4");
+    std::vector<float> bins(2048);
+    for (size_t i = 0; i < bins.size(); ++i)
+      bins[i] = 0.08f + 0.72f * std::abs(std::sin(i * 0.037f)) *
+                                      std::abs(std::cos(i * 0.013f));
+    waveform.setWaveformBins(std::move(bins));
+    SongArrangementSnapshot arrangement;
+    arrangement.parts = {original("Intro", 0.0, 10.0),
+                         original("Verse", 10.0, 20.0),
+                         original("Chorus", 20.0, 30.0)};
+    waveform.setArrangement(arrangement, true);
+    waveform.setSize(1200, 420);
+    WaveformEditingTestAccess::fixedPlaybackViewport(waveform, 0.0f, 1.0f);
+  }
+
+  juce::Image paint() {
+    juce::Image image(juce::Image::ARGB, waveform.getWidth(), waveform.getHeight(), true);
+    juce::Graphics g(image);
+    g.fillAll(juce::Colours::black);
+    waveform.paint(g);
+    return image;
+  }
+
+  void paintProgressChange(juce::Image &image, float from, float to) {
+    juce::RectangleList<int> dirty;
+    for (const auto &region : WaveformEditingTestAccess::playbackRepaintRegions(waveform, from, to))
+      if (!region.isEmpty()) dirty.add(region);
+    expect(!dirty.isEmpty(), "moving playback invalidates visible transport regions");
+    juce::Graphics g(image);
+    g.reduceClipRegion(dirty);
+    // A nonopaque component receives its parent's freshly painted background
+    // in each invalidated area, rather than accumulating translucent layers.
+    g.fillAll(juce::Colours::black);
+    waveform.paint(g);
+  }
+};
+
+void expectSamePlaybackPixels(const juce::Image &actual, const juce::Image &expected,
+                              const std::string &message,
+                              juce::Rectangle<int> exactArea = {},
+                              int backgroundTolerance = 0) {
+  expect(actual.getBounds() == expected.getBounds(), message + " dimensions");
+  for (int y = 0; y < actual.getHeight(); ++y)
+    for (int x = 0; x < actual.getWidth(); ++x)
+      if (actual.getPixelAt(x, y) != expected.getPixelAt(x, y))
+      {
+        const auto a = actual.getPixelAt(x, y), b = expected.getPixelAt(x, y);
+        const int delta = std::max({std::abs(int(a.getRed()) - int(b.getRed())),
+                                    std::abs(int(a.getGreen()) - int(b.getGreen())),
+                                    std::abs(int(a.getBlue()) - int(b.getBlue())),
+                                    std::abs(int(a.getAlpha()) - int(b.getAlpha()))});
+        if (!exactArea.contains(x, y) && delta <= backgroundTolerance) continue;
+        throw std::runtime_error(message + " at " + std::to_string(x) + "," + std::to_string(y) +
+          " actual=" + a.toString().toStdString() + " expected=" + b.toString().toStdString() +
+          " channel delta=" + std::to_string(delta));
+      }
+}
+
+void testPlaybackDirtyRegionsMatchFullPaint() {
+  // Both unrestricted and trimmed playback reuse the waveform raster; limits
+  // are composed separately and must survive partial playhead updates.
+  for (const bool trimmedWindow : {false, true}) {
+    PlaybackPaintFixture f;
+    if (trimmedWindow)
+      f.waveform.setSongWindowProviders([] { return 2.0; }, [] { return 27.0; });
+    const auto verifyMove = [&](float start, float span, float from, float to,
+                                const char *description) {
+      WaveformEditingTestAccess::fixedPlaybackViewport(f.waveform, start, span);
+      f.position = static_cast<double>(from) * PlaybackPaintFixture::length;
+      auto partial = f.paint();
+      f.position = static_cast<double>(to) * PlaybackPaintFixture::length;
+      f.paintProgressChange(partial, from, to);
+      // JUCE's software gradient compositing rounds background channels by up
+      // to 3/255 when its clip changes. Keep the opaque waveform exact; ruler
+      // and minimap still reject a stale needle or changed geometry by far.
+      expectSamePlaybackPixels(partial, f.paint(),
+          std::string(trimmedWindow ? "cached trimmed " : "cached unrestricted ") + description,
+          WaveformEditingTestAccess::waveBody(f.waveform).toNearestInt(), 3);
+    };
+    verifyMove(0.0f, 1.0f, 0.20f, 0.24f, "forward repaint updates wave, ruler and minimap");
+    verifyMove(0.0f, 1.0f, 0.74f, 0.18f, "backward repaint removes old playheads and played shading");
+    verifyMove(0.25f, 0.5f, 0.38f, 0.43f, "zoomed repaint uses each timeline's coordinates");
+  }
+}
+
+void testPlaybackCacheReuseAndInvalidation() {
+  PlaybackPaintFixture f;
+  f.paint();
+  const auto firstCache = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+  expect(firstCache.isValid(), "playback builds the waveform cache with Follow disabled");
+  f.position += 1.0;
+  f.paint();
+  expect(firstCache == WaveformEditingTestAccess::playbackWaveformCache(f.waveform),
+         "moving only playback reuses the rasterized waveform");
+
+  const auto verifyRebuild = [&](const juce::Image &previousCache, const char *description) {
+    const auto actual = f.paint();
+    const auto rebuilt = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+    expect(rebuilt.isValid() && rebuilt != previousCache,
+           std::string(description) + " rebuilds cached image data");
+    WaveformEditingTestAccess::invalidatePlaybackWaveformCache(f.waveform);
+    expectSamePlaybackPixels(actual, f.paint(),
+                             std::string(description) + " matches a fresh render");
+  };
+
+  std::vector<float> replacementBins(2048);
+  for (size_t i = 0; i < replacementBins.size(); ++i)
+    replacementBins[i] = 0.10f + 0.30f * std::abs(std::sin(i * 0.021f));
+  f.waveform.setWaveformBins(std::move(replacementBins));
+  verifyRebuild(firstCache, "replacing waveform bins");
+  const auto binsCache = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+  f.waveform.setSize(1024, 360);
+  verifyRebuild(binsCache, "resizing the waveform");
+  const auto resizedCache = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+  auto arrangement = WaveformEditingTestAccess::snapshot(f.waveform);
+  arrangement.parts[1].sourcePartId = "Intro";
+  arrangement.parts[1].sourceStartSec = 0.0;
+  arrangement.parts[1].sourceEndSec = 10.0;
+  f.waveform.setArrangement(arrangement, true);
+  verifyRebuild(resizedCache, "changing arrangement source mapping");
+}
+
+void testPlaybackLimitsReuseCacheWithoutBakingShading() {
+  PlaybackPaintFixture f;
+  f.position = 24.0;
+  double start = 0.0, end = PlaybackPaintFixture::length;
+  f.waveform.setSongWindowProviders([&] { return start; }, [&] { return end; });
+  const auto unrestricted = f.paint();
+  const auto firstCache = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+  expect(firstCache.isValid(), "unrestricted playback starts with a valid waveform raster");
+
+  // Mutable providers simulate a live trim without publishing new bins or
+  // resetting the waveform component and its existing raster.
+  start = 6.0; end = 18.0;
+  const auto trimmed = f.paint();
+  expect(firstCache == WaveformEditingTestAccess::playbackWaveformCache(f.waveform),
+         "changing playback limits reuses the existing waveform raster");
+  const auto body = WaveformEditingTestAccess::waveBody(f.waveform);
+  const auto sampleArea = [&](float progress) {
+    return juce::Rectangle<int>(12, 12).withCentre(
+        juce::Point<int>(juce::roundToInt(body.getX() + progress * body.getWidth()),
+                         juce::roundToInt(body.getCentreY() - 12.0f)));
+  };
+  const auto brightness = [](const juce::Image &image, juce::Rectangle<int> area) {
+    double sum = 0.0;
+    for (int y = area.getY(); y < area.getBottom(); ++y)
+      for (int x = area.getX(); x < area.getRight(); ++x)
+        sum += image.getPixelAt(x, y).getBrightness();
+    return sum / static_cast<double>(area.getWidth() * area.getHeight());
+  };
+  for (const float outside : {0.10f, 0.70f})
+    expect(brightness(trimmed, sampleArea(outside)) <
+               brightness(unrestricted, sampleArea(outside)),
+           "trimmed audio is darkened even where played-waveform highlighting is active");
+  const auto interior = sampleArea(0.40f);
+  for (int y = interior.getY(); y < interior.getBottom(); ++y)
+    for (int x = interior.getX(); x < interior.getRight(); ++x)
+      expect(trimmed.getPixelAt(x, y) == unrestricted.getPixelAt(x, y),
+             "playable interior retains its original waveform and played highlight");
+
+  WaveformEditingTestAccess::invalidatePlaybackWaveformCache(f.waveform);
+  expectSamePlaybackPixels(trimmed, f.paint(),
+                           "live limits match a fresh cache built while already trimmed");
+  const auto trimmedCache = WaveformEditingTestAccess::playbackWaveformCache(f.waveform);
+  start = 0.0; end = PlaybackPaintFixture::length;
+  const auto restored = f.paint();
+  expect(trimmedCache == WaveformEditingTestAccess::playbackWaveformCache(f.waveform),
+         "removing playback limits still reuses the waveform raster");
+  expectSamePlaybackPixels(restored, unrestricted,
+                           "a cache rebuilt during a trim never retains its shading or boundary guides");
+}
+
 void testCueVisualPreview() {
   const auto path = juce::SystemStats::getEnvironmentVariable("PW_CUE_CAPTURE_DIR",{});
   if (path.isEmpty()) return;
@@ -2944,6 +3138,9 @@ int main() {
       std::cerr << "FAIL: " << name << ": " << error.what() << '\n';
     }
   };
+  run("playback dirty regions match complete waveform paint", testPlaybackDirtyRegionsMatchFullPaint);
+  run("playback cache reuse and source invalidation", testPlaybackCacheReuseAndInvalidation);
+  run("playback limits reuse cache without baked shading", testPlaybackLimitsReuseCacheWithoutBakingShading);
   run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);

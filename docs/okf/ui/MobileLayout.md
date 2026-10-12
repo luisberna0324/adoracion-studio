@@ -3,7 +3,7 @@ type: Technical Contract
 title: Mobile Layout
 description: Contrato responsive y de area segura para telefonos y tablets iOS y Android
 resource: src/PluginEditor.cpp
-timestamp: 2026-10-05T00:00:00-03:00
+timestamp: 2026-10-11T00:00:00-03:00
 ---
 
 # Mobile Layout
@@ -738,6 +738,35 @@ Probar ambas direcciones landscape en iOS y, como minimo, estos canvas utiles:
 
 Mediciones y limites de la verificacion:
 [`perf/analysis_20260915/INFORME.md`](../../../perf/analysis_20260915/INFORME.md).
+
+## Dibujo de la onda durante reproducción (todas las plataformas)
+
+`WaveformBar` reutiliza su raster de playback también con Follow apagado.
+El avance del transporte no vuelve a muestrear todos los picos ni a mapear cada
+columna del arreglo en cada cuadro. Se conservan la máscara de brillo de la
+porción reproducida en escritorio/iOS y el raster sin máscara de Android.
+Los cambios de bins, arreglo, tamaño, tema o escala del viewport invalidan la
+caché; mover Follow conserva el overscan mientras cubra la nueva ventana.
+Los límites de reproducción se componen después de la onda y su máscara,
+conservando el oscurecimiento de las partes excluidas también con caché.
+El minimapa compone estos límites fuera de su raster, para que no conserve
+un sombreado anterior al cambiar o quitar un recorte.
+
+Con viewport fijo se invalidan las franjas entre la posición anterior y nueva
+en las tres superficies: onda, regla y minimapa. Incluyen los márgenes de la
+aguja y el tramo cuyo brillo cambia, también al retroceder o cruzar un loop.
+Los saltos pendientes, la carga, la edición y las transiciones Play/Pausa/Stop
+conservan el repaint completo. Follow sigue invalidando toda la vista cuando
+`setVisibleWindow` desplaza la cámara. Los cambios de Preparing, salto pendiente
+y Loop recibidos por remoto/MIDI invalidan también las secciones fuera de las
+franjas. El pulso de automatización conserva su invalidación específica de
+sección y toolbar.
+
+El dibujo detallado limita el muestreo a las columnas incluidas en el clip,
+sin alterar su fase de dos píxeles. Las secciones fuera del clip omiten el
+trabajo de dibujo y texto. Se consulta la región exacta del clip, también si
+contiene varias franjas separadas, para no confundirla con su rectángulo
+envolvente; su geometría completa sigue disponible para hit testing. Esto no modifica el transporte, los buffers ni el callback de audio.
 
 ## Controles integrados de secciones y navegación de la onda
 
