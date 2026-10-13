@@ -143,8 +143,14 @@ public:
   int getBasePadNoteIndex() const noexcept;
   int getBasePadOctave() const noexcept;
   int getActivePadOctave() const noexcept;
-  void requestArrangementPartJump(int partIndex);
-  void toggleArrangementPartLoop(int partIndex);
+  bool requestArrangementPartJump(int partIndex);
+  bool toggleArrangementPartLoop(int partIndex);
+  bool requestArrangementPartJumpById(const juce::String &partId,
+                                    const juce::String &expectedRevision = {});
+  bool toggleArrangementPartLoopById(const juce::String &partId,
+                                   const juce::String &expectedRevision = {});
+  juce::String getArrangementPartId(int runtimeIndex) const;
+  juce::String getArrangementControlRevision() const;
   void clearArrangementPartLoop() noexcept;
   void clearPendingArrangementPartJump() noexcept;
   int getArrangementPartLoopIndex() const noexcept;
@@ -685,6 +691,7 @@ private:
   playworship::audio::TransportClock transportClock;
   playworship::audio::SectionScheduler sectionScheduler;
   std::atomic<uint64_t> arrangementStructurePublicationSequence{0};
+  const juce::String arrangementControlEpoch{juce::Uuid().toString()};
   playworship::audio::SectionScheduler::Snapshot audioSectionSnapshot;
   AudioArrangementRuntimeSnapshot audioArrangementRuntimeSnapshot;
   uint64_t audioArrangementStructureSequence = 0;

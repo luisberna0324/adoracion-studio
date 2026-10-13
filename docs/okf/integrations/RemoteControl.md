@@ -131,6 +131,53 @@ inicio, evitando que la barra aparezca y desaparezca al esperar el snapshot.
   message thread, en orden de recepción, y distribuye `ack` con el resultado.
   Todos los clientes reciben los cambios confirmados.
 
+### Destinos de Ir y Loop
+
+El snapshot anuncia la extensión `sectionControls` con `v: 1`, `songId` y
+`revision` (cadena opaca), además de `pendingPartId`, `preparingPartId` y
+`loopPartId`. La revisión combina una época única por instancia del motor con
+su publicación de estructura, evitando colisiones tras reiniciar el servidor;
+cambiar o recargar canción/arreglo la invalida. Las intenciones de transporte
+no cambian esa revisión.
+
+El contexto del comando pertenece al arreglo instalado en la UI. Si un snapshot
+nuevo llega durante un gesto y la actualización visual queda diferida, el
+cliente conserva la canción/revisión de esa vista hasta instalar el nuevo
+arreglo. Nunca combina una tarjeta antigua con la identidad recién recibida
+de otra canción, incluso si ambas reutilizan IDs como `verse`. Mientras esos
+contextos difieren, los indicadores nuevos no se proyectan sobre las tarjetas
+antiguas.
+
+`arrange.jumpById` y `arrange.loopById` llevan `target` con el ID estable de la
+ocurrencia y `value: { songId, revision }`. Nombres repetidos o `sourcePartId`
+no identifican el destino. El servidor rechaza una carga en curso, canción o
+revisión distinta, ID ausente/duplicado y sección que el runtime no pueda
+reproducir. El procesador vuelve a resolver y validar bajo su lock de control
+antes de modificar intenciones; el ACK refleja el resultado de esa aceptación.
+Aceptar Ir no significa que ya haya sonado: conserva Preparando, confirmación
+de buffers y ejecución en la frontera válida. Loop no provoca un salto inmediato.
+
+`arrange.clearJumpById` y `arrange.clearLoopById` llevan el mismo contexto sin
+destino. Loop cancela el salto dentro de su única acción validada; un destino
+rechazado no cancela una intención anterior ni modifica el mute. La UI resuelve
+las acciones y los indicadores por ID, porque el runtime puede ordenar o
+filtrar partes de forma distinta a la metadata. La metadata y su persistencia
+conservan su orden y contenido.
+
+El cliente presenta `Solicitando` mientras espera ACK y snapshot posterior;
+un rechazo/timeout muestra `No aplicado` con el motivo en la ayuda del control.
+Los indicadores Loop/Preparando siguen leyendo estado confirmado del servidor.
+Desconexión, cambio de canción o una nueva solicitud descartan feedback anterior.
+
+La envoltura general sigue en protocolo v1. Las conexiones antiguas y sus otros
+controles permanecen disponibles, pero no hay fallback inseguro a índices:
+un cliente nuevo frente a un servidor sin `sectionControls.v = 1` no envía
+Ir/Loop y solicita actualizar el servidor. Un servidor nuevo rechaza
+`arrange.jump`, `arrange.loop`, `arrange.clearJump` y `arrange.clearLoop` de
+clientes anteriores con ACK negativo y petición de actualizar el cliente,
+manteniendo la conexión. Esas órdenes no contienen contexto suficiente para
+demostrar qué canción/ocurrencia vio el cliente.
+
 ### Presupuesto de interfaz y clientes lentos
 
 Cada conexión dispone de `RemoteSendQueue`, con serialización JSON y envío TCP

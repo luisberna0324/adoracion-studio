@@ -84,6 +84,24 @@ No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 | [Exportación](audio-systems/SongMixExporter.md) | `song_mix_export_timeline`, `song_mix_exporter` |
 | [Control remoto LAN](integrations/RemoteControl.md) | `remote_session`, `remote_session_portable_transport` en CI; `remote_session_portable` y `remote_discovery_interop` en una LAN |
 
+`remote_section_control` usa WebSocket real en loopback y el helper de dispatch
+de producción: aceptación/ACK/snapshot, nombres de coro repetidos, IDs de
+ocurrencia, canción/arreglo atrasados, destinos filtrados o ambiguos, carga en
+curso, contexto visual diferido, época de servidor, compatibilidad v1 explícita
+y feedback de rechazo. Usa un doble de estado
+del procesador; la prueba de frontera usa el scheduler real, sin acreditar
+prefetch ni render de audio. `section_automation` prueba además el procesador
+real por ID, validación sin efectos y Loop→Ir con audio; `waveform_editing`
+comprueba mapeo de las tarjetas reales y feedback en una sección distinta.
+
+En la revisión de nube del 13/10/2026, el target nuevo y `remote_session`
+pasaron mediante un build aislado con JUCE 8.0.12 e IXWebSocket fijado al SHA
+del proyecto. `audio_engine_core` también pasó. La configuración completa de
+la app quedó bloqueada al construir juceaide por FreeType ausente; tampoco
+está disponible el SDK obligatorio de Bungee. Los tests gráficos/audio nativos
+y la sesión física iPad/Mac siguen pendientes. Estas pruebas no atribuyen el
+reporte del tester a una versión concreta ni acreditan hardware Apple.
+
 Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmaciones,
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,
 lo registran en Biblioteca y lo reabren desde esa ruta. El test de exportación

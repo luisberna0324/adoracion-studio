@@ -1483,24 +1483,51 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       [this] { return playbackSession.canEditSectionAutomation(); });
   // Preparation preserves playback/Loop; confirmation queues the next valid boundary.
   waveformBarRaw->setOnArrangementPartJumpRequest(
-      [this](int partIndex) { playbackSession.requestArrangementPartJump(partIndex); });
-  waveformBarRaw->setOnArrangementPartLoopToggleRequest([this](int partIndex) {
+      [this, waveformBarRaw](int partIndex) {
+        playbackSession.requestArrangementPartJumpById(waveformBarRaw->getArrangementPartId(partIndex));
+      });
+  waveformBarRaw->setOnArrangementPartLoopToggleRequest([this, waveformBarRaw](int partIndex) {
     // Marking a loop must NOT auto-jump the playhead; the loop waits for
     // natural playback to reach the section. We still drop any previously
     // queued jump so the user can replace a pending jump with a loop target
     // without the two intents fighting each other.
-    playbackSession.clearPendingArrangementPartJump();
-    playbackSession.toggleArrangementPartLoop(partIndex);
+    // The validated motor action cancels the jump atomically with Loop. An
+    // invalid/stale request must not cancel a different valid pending jump.
+    playbackSession.toggleArrangementPartLoopById(waveformBarRaw->getArrangementPartId(partIndex));
   });
   waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
     playbackSession.clearPendingArrangementPartJump();
   });
   waveformBarRaw->setPreparingArrangementPartProvider(
-      [this] { return playbackSession.getPreparingArrangementPartJumpIndex(); });
+      [this, waveformBarRaw] {
+        return waveformBarRaw->getArrangementPartIndex(playbackSession.getPreparingArrangementPartJumpId());
+      });
   waveformBarRaw->setPendingArrangementPartProvider(
-      [this] { return playbackSession.getPendingArrangementPartJumpIndex(); });
+      [this, waveformBarRaw] {
+        return waveformBarRaw->getArrangementPartIndex(playbackSession.getPendingArrangementPartJumpId());
+      });
   waveformBarRaw->setActiveArrangementLoopPartProvider(
-      [this] { return playbackSession.getArrangementPartLoopIndex(); });
+      [this, waveformBarRaw] {
+        return waveformBarRaw->getArrangementPartIndex(playbackSession.getArrangementPartLoopId());
+      });
+  waveformBarRaw->setArrangementControlFeedbackProviders(
+      [this](const juce::String &partId) {
+        const auto error = playbackSession.getArrangementControlError(partId);
+        if (error == "Update the server app to control sections safely")
+          return L10n::tr("Actualiza la app del servidor para controlar las secciones.", "Update the server app to control sections safely");
+        if (error == "The song changed; select the section again")
+          return L10n::tr("La canción cambió; selecciona la sección de nuevo.", "The song changed; select the section again");
+        if (error == "The arrangement changed; select the section again")
+          return L10n::tr("El arreglo cambió; selecciona la sección de nuevo.", "The arrangement changed; select the section again");
+        if (error == "Wait for the song to finish loading")
+          return L10n::tr("Espera a que termine de cargar la canción.", "Wait for the song to finish loading");
+        if (error == "The section is unavailable; select another section")
+          return L10n::tr("La sección no está disponible; selecciona otra.", "The section is unavailable; select another section");
+        if (error == "The section request timed out; try again")
+          return L10n::tr("La solicitud no se confirmó; inténtalo de nuevo.", "The section request timed out; try again");
+        return error;
+      },
+      [this](const juce::String &partId) { return playbackSession.isArrangementControlPending(partId); });
   waveformBarRaw->setOnEditToggle([this](const bool editing) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
     if (!playbackSession.isRemote()) processorRef.setArrangementEditingActive(editing);
@@ -3825,7 +3852,8 @@ void MTControlsAudioProcessorEditor::showPractice() {
                                       playbackSession.getSongEndSeconds());
     if (playbackSession.isPracticeLoopActive())
       return range.getIntersectionWith(playbackSession.getPracticeLoopRange());
-    const int loop = playbackSession.getArrangementPartLoopIndex();
+    const int loop = waveformBarPtr != nullptr
+        ? waveformBarPtr->getArrangementPartIndex(playbackSession.getArrangementPartLoopId()) : -1;
     if (loop >= 0 && waveformBarPtr != nullptr) {
       const auto loopRange = waveformBarPtr->getArrangementPartTimeRange(loop);
       if (!loopRange.isEmpty())

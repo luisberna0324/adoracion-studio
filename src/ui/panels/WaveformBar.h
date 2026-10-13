@@ -69,6 +69,11 @@ public:
                       bool isCustomArrangement);
   void setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot);
   juce::Range<double> getArrangementPartTimeRange(int index) const;
+  juce::String getArrangementPartId(int index) const;
+  int getArrangementPartIndex(const juce::String &id) const;
+  void setArrangementControlFeedbackProviders(
+      std::function<juce::String(const juce::String &)> error,
+      std::function<bool(const juce::String &)> pending);
   std::vector<PracticeTimelineMark> getPracticeTimelineMarks(
       juce::Range<double> visibleRange, float width) const;
   double getPracticeSnappedPosition(double position,
@@ -354,6 +359,8 @@ private:
   PendingArrangementPartProvider pendingArrangementPartProvider;
   PendingArrangementPartProvider preparingArrangementPartProvider;
   ActiveArrangementLoopPartProvider activeArrangementLoopPartProvider;
+  std::function<juce::String(const juce::String &)> arrangementControlErrorProvider;
+  std::function<bool(const juce::String &)> arrangementControlPendingProvider;
   std::function<bool(const juce::String &)> onSectionAutomationBegin;
   std::function<void(bool)> onSectionAutomationFinish;
   std::function<void(const juce::String &)> onSectionAutomationClear;

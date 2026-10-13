@@ -5,6 +5,7 @@
 #include "../../audio/DynamicGuideEngine.h"
 #include "../../audio/DynamicGuideTiming.h"
 #include "../../data/ArrangementSourceMapping.h"
+#include "../../data/ArrangementIdentity.h"
 #include "../../data/Localization.h"
 #include "../WaveformCacheWindow.h"
 #include "../SectionAutomationVisuals.h"
@@ -1516,6 +1517,23 @@ void WaveformBar::setTempoMap(const SongTempoMapSnapshot &tempoMapSnapshot) {
   repaint();
 }
 
+juce::String WaveformBar::getArrangementPartId(const int index) const {
+  if (!juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size()))) return {};
+  const auto &id = arrangement.parts[static_cast<size_t>(index)].id;
+  return getArrangementPartIndex(id) == index ? id : juce::String{};
+}
+
+int WaveformBar::getArrangementPartIndex(const juce::String &id) const {
+  return playworship::arrangement::uniquePartIndex(arrangement.parts, id);
+}
+
+void WaveformBar::setArrangementControlFeedbackProviders(
+    std::function<juce::String(const juce::String &)> error,
+    std::function<bool(const juce::String &)> pending) {
+  arrangementControlErrorProvider = std::move(error);
+  arrangementControlPendingProvider = std::move(pending);
+}
+
 juce::Range<double> WaveformBar::getArrangementPartTimeRange(const int index) const {
   if (!juce::isPositiveAndBelow(index, static_cast<int>(arrangement.parts.size())))
     return {};
@@ -2840,6 +2858,11 @@ juce::String WaveformBar::liveSectionState(int index) const {
   const bool current = liveSectionProgress(index) >= 0.0f;
   const bool playing = playingProvider && playingProvider();
   juce::StringArray states;
+  const auto partId = getArrangementPartId(index);
+  if (arrangementControlErrorProvider && arrangementControlErrorProvider(partId).isNotEmpty())
+    states.add(L10n::tr("No aplicado", "Not applied"));
+  else if (arrangementControlPendingProvider && arrangementControlPendingProvider(partId))
+    states.add(L10n::tr("Solicitando", "Requesting"));
   if (current) states.add(playing ? L10n::tr("Sonando", "Playing") : L10n::tr("Pausada", "Paused"));
   if (preparingArrangementPartProvider && preparingArrangementPartProvider() == index)
     states.add(L10n::tr("Preparando", "Preparing"));
@@ -2897,17 +2920,24 @@ void WaveformBar::refreshLiveSectionActions(bool updateState) {
       if (action == 2) state += (state.isEmpty() ? "" : " · ") + (part.muteInstruments ? L10n::tr("Instrumentos silenciados", "Instruments muted") : L10n::tr("Instrumentos habilitados", "Instruments enabled"));
       const bool waiting = (preparingArrangementPartProvider && preparingArrangementPartProvider() == static_cast<int>(i)) ||
                            (pendingArrangementPartProvider && pendingArrangementPartProvider() == static_cast<int>(i));
-      const auto help = action == 0
+      auto help = action == 0
           ? (waiting ? L10n::tr("Cancelar el salto a esta sección", "Cancel the jump to this section")
                      : (playingProvider && playingProvider()
                           ? L10n::tr("Preparar salto a esta sección con la espera de reproducción existente", "Prepare a jump to this section using the existing playback wait")
                           : L10n::tr("Ir al inicio de esta sección sin iniciar reproducción", "Go to this section start without starting playback")))
           : action == 1 ? L10n::tr("Activar o quitar Loop; conserva la cancelación de salto existente", "Toggle Loop; preserves existing jump cancellation")
                         : L10n::tr("Silenciar o habilitar instrumentos; el click continúa", "Mute or enable instruments; click continues");
+      if (action != 2 && arrangementControlErrorProvider) {
+        const auto error = arrangementControlErrorProvider(getArrangementPartId(static_cast<int>(i)));
+        if (error.isNotEmpty()) help = error;
+      }
       const bool titleChanged = button.getTitle() != title;
       const bool stateChanged = button.getDescription() != state || button.marked != marked;
       if (titleChanged) button.setTitle(title);
-      if (stateChanged) { button.setDescription(state); button.marked = marked; }
+      if (stateChanged) {
+        button.setDescription(state); button.marked = marked;
+        repaint(item.body.toNearestInt()); // ACK/error feedback also updates a paused card.
+      }
       button.setHelpText(help); button.setTooltip(help);
       if (titleChanged || stateChanged)
         if (auto *handler = button.getAccessibilityHandler()) {

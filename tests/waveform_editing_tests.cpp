@@ -4,6 +4,7 @@
 #include "PluginProcessor.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/Localization.h"
 #include "ui/components/ChannelStripCard.h"
 
 #include <algorithm>
@@ -2060,6 +2061,30 @@ void testLiveActionsSurviveLayoutRefresh() {
   }
 }
 
+void testStableSectionIndicatorMapping() {
+  WaveformBar wave;
+  wave.setSize(768, 250);
+  wave.setTransportProviders([] { return 0.0; }, [] { return 30.0; }, [] { return false; });
+  SongArrangementPartSnapshot longChorus, shortChorus;
+  longChorus.id = "long"; longChorus.name = "Coro"; longChorus.startSec = 10; longChorus.endSec = 30;
+  shortChorus = longChorus; shortChorus.id = "short"; shortChorus.endSec = 20;
+  wave.setArrangement({{longChorus, shortChorus}}, true);
+  expect(wave.getArrangementPartId(0) == "long" && wave.getArrangementPartIndex("short") == 1,
+         "real UI retains same-start order while resolving occurrences by ID");
+  wave.setActiveArrangementLoopPartProvider([&] { return wave.getArrangementPartIndex("long"); });
+  wave.setArrangementControlFeedbackProviders(
+      [](const juce::String &id) { return id == "short" ? juce::String("Rejected") : juce::String{}; },
+      [](const juce::String &) { return false; });
+  wave.setLiveMode(true);
+  expect(WaveformEditingTestAccess::sectionState(wave, 0).contains("Loop") &&
+         WaveformEditingTestAccess::sectionState(wave, 1).contains(L10n::tr("No aplicado", "Not applied")),
+         "confirmed Loop and rejection feedback belong to their own cards");
+  shortChorus.id = longChorus.id;
+  wave.setArrangement({{longChorus, shortChorus}}, true);
+  expect(wave.getArrangementPartId(0).isEmpty() && wave.getArrangementPartIndex("long") == -1,
+         "real UI rejects ambiguous IDs rather than selecting the first occurrence");
+}
+
 void testLiveActionsReachRealTransport() {
   ProcessorFixture fixture;
   auto &wave = fixture.edit.waveform;
@@ -2068,10 +2093,9 @@ void testLiveActionsReachRealTransport() {
   wave.setMinimalPhoneMode(true);
   wave.setSize(390, 250);
   wave.setLiveMode(true);
-  wave.setOnArrangementPartJumpRequest([&](int index) { processor.requestArrangementPartJump(index); });
+  wave.setOnArrangementPartJumpRequest([&](int index) { processor.requestArrangementPartJumpById(wave.getArrangementPartId(index)); });
   wave.setOnArrangementPartLoopToggleRequest([&](int index) {
-    processor.clearPendingArrangementPartJump();
-    processor.toggleArrangementPartLoop(index);
+    processor.toggleArrangementPartLoopById(wave.getArrangementPartId(index));
   });
   const auto block = WaveformEditingTestAccess::liveBounds(wave)[1];
   const auto press = [&](juce::Point<float> point) {
@@ -3211,6 +3235,7 @@ int main() {
   run("pending Live priority and combined state visuals", testPendingLivePriorityAndCombinedStates);
   run("Loop border phase and corner continuity", testLoopBorderPhaseAndCorners);
   run("live actions reach real transport", testLiveActionsReachRealTransport);
+  run("stable section indicator mapping and rejected feedback", testStableSectionIndicatorMapping);
   run("Master leading boundary", testMasterLeadingBoundary);
   run("live originals preserve waveform beyond source duration", testLiveWaveformForOriginalsShiftedBeyondSource);
   run("live responsive complete cards and settled navigation", testLiveResponsiveCompleteCardsAndNavigation);

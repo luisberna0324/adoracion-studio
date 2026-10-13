@@ -8,6 +8,7 @@
 #include "audio/PracticeListening.h"
 #include "audio/StemCache.h"
 #include "data/AppSettings.h"
+#include "data/ArrangementIdentity.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/SongLibraryStore.h"
 #include "telemetry/Telemetry.h"
@@ -5307,15 +5308,35 @@ void MTControlsAudioProcessor::setSongArrangement(
       1, std::memory_order_release);
 }
 
-void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
-  if (!songLoaded.load()) return;
-  clearPracticeLoop();
-  transportControlRevision.fetch_add(1, std::memory_order_release);
+bool MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
+  return requestArrangementPartJumpById(getArrangementPartId(partIndex));
+}
+
+juce::String MTControlsAudioProcessor::getArrangementControlRevision() const {
+  return arrangementControlEpoch + ":" + juce::String(static_cast<juce::int64>(
+      arrangementStructurePublicationSequence.load(std::memory_order_acquire)));
+}
+
+juce::String MTControlsAudioProcessor::getArrangementPartId(const int runtimeIndex) const {
+  const juce::SpinLock::ScopedLockType lock(stemListLock);
+  if (!juce::isPositiveAndBelow(runtimeIndex, static_cast<int>(arrangementParts.size())) ||
+      runtimeIndex >= playworship::audio::SectionScheduler::maxSections) return {};
+  const auto &id = arrangementParts[static_cast<size_t>(runtimeIndex)].id;
+  return playworship::arrangement::uniquePartIndex(arrangementParts, id) == runtimeIndex ? id : juce::String{};
+}
+
+bool MTControlsAudioProcessor::requestArrangementPartJumpById(
+    const juce::String &partId, const juce::String &expectedRevision) {
   double target = 0.0;
   bool seek = false;
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
-    if (!juce::isPositiveAndBelow(partIndex, static_cast<int>(arrangementParts.size()))) return;
+    const int partIndex = playworship::arrangement::uniquePartIndex(
+        arrangementParts, partId, playworship::audio::SectionScheduler::maxSections);
+    if (!songLoaded.load() || partIndex < 0 ||
+        (expectedRevision.isNotEmpty() && expectedRevision != getArrangementControlRevision())) return false;
+    clearPracticeLoop();
+    transportControlRevision.fetch_add(1, std::memory_order_release);
     if (getTransportState() == TransportState::playing) {
       if (getPendingArrangementPartJumpIndex() == partIndex || getPreparingArrangementPartJumpIndex() == partIndex)
         setArrangementJumpCommand(-1, false);
@@ -5324,25 +5345,30 @@ void MTControlsAudioProcessor::requestArrangementPartJump(const int partIndex) {
       } else
         setArrangementJumpCommand(partIndex, false); // Keep Loop until all stems are ready.
       arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
-      return;
+      return true;
     }
     setArrangementJumpCommand(-1, false); arrangementLoopPartIndex.store(-1);
     target = arrangementParts[static_cast<size_t>(partIndex)].startSec; seek = true;
   }
   if (seek) seekSongTo(target);
+  return true;
 }
 
-void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
-  if (!songLoaded.load(std::memory_order_relaxed))
-    return;
-  clearPracticeLoop();
-  transportControlRevision.fetch_add(1, std::memory_order_release);
+bool MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
+  return toggleArrangementPartLoopById(getArrangementPartId(partIndex));
+}
+
+bool MTControlsAudioProcessor::toggleArrangementPartLoopById(
+    const juce::String &partId, const juce::String &expectedRevision) {
 
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
-    if (!juce::isPositiveAndBelow(partIndex,
-                                  static_cast<int>(arrangementParts.size())))
-      return;
+    const int partIndex = playworship::arrangement::uniquePartIndex(
+        arrangementParts, partId, playworship::audio::SectionScheduler::maxSections);
+    if (!songLoaded.load(std::memory_order_relaxed) || partIndex < 0 ||
+        (expectedRevision.isNotEmpty() && expectedRevision != getArrangementControlRevision())) return false;
+    clearPracticeLoop();
+    transportControlRevision.fetch_add(1, std::memory_order_release);
 
     const int activeLoopIndex =
         arrangementLoopPartIndex.load(std::memory_order_relaxed);
@@ -5354,7 +5380,7 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
       setArrangementJumpCommand(-1, false);
       arrangementTransitionIntentGeneration.fetch_add(
           1, std::memory_order_release);
-      return;
+      return true;
     }
 
     // Marking a section as loop must NOT auto-jump to it. The loop stays
@@ -5367,6 +5393,7 @@ void MTControlsAudioProcessor::toggleArrangementPartLoop(const int partIndex) {
     arrangementTransitionIntentGeneration.fetch_add(
         1, std::memory_order_release);
   }
+  return true;
 }
 
 void MTControlsAudioProcessor::clearArrangementPartLoop() noexcept {
