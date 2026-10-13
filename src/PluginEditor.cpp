@@ -1527,7 +1527,15 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
           return L10n::tr("La solicitud no se confirmó; inténtalo de nuevo.", "The section request timed out; try again");
         return error;
       },
-      [this](const juce::String &partId) { return playbackSession.isArrangementControlPending(partId); });
+      [this](const juce::String &partId) { return playbackSession.isArrangementControlPending(partId); },
+      [this](const juce::String &partId) {
+        const auto error = playbackSession.getArrangementControlError(partId);
+        if (error == "Update the server app to control sections safely")
+          return L10n::tr("Actualiza servidor", "Update server");
+        if (error == "Update the client app to control sections safely")
+          return L10n::tr("Actualiza cliente", "Update client");
+        return L10n::tr("No aplicado", "Not applied");
+      });
   waveformBarRaw->setOnEditToggle([this](const bool editing) {
     auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
     if (!playbackSession.isRemote()) processorRef.setArrangementEditingActive(editing);

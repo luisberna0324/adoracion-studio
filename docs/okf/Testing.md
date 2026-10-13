@@ -97,10 +97,38 @@ comprueba mapeo de las tarjetas reales y feedback en una sección distinta.
 En la revisión de nube del 13/10/2026, el target nuevo y `remote_session`
 pasaron mediante un build aislado con JUCE 8.0.12 e IXWebSocket fijado al SHA
 del proyecto. `audio_engine_core` también pasó. La configuración completa de
-la app quedó bloqueada al construir juceaide por FreeType ausente; tampoco
-está disponible el SDK obligatorio de Bungee. Los tests gráficos/audio nativos
-y la sesión física iPad/Mac siguen pendientes. Estas pruebas no atribuyen el
-reporte del tester a una versión concreta ni acreditan hardware Apple.
+la app inicialmente quedó bloqueada por FreeType y Bungee ausentes. Se resolvió
+con dependencias Debian verificadas, extraídas en una raíz temporal sin ejecutar
+scripts de instalación, y `scripts/bootstrap_bungee.sh` con un destino temporal
+nuevo: Bungee público 2.4.24, archivo y licencia verificados contra los hashes
+fijados por el repo. No se compró ni se aceptó una licencia adicional.
+
+El build nativo usó el JUCE del workflow (`501c07674e1ad693085a7e7c398f205c2677f5da`)
+y Bungee real. El build por defecto con GCC 14 falla en la expresión preexistente
+`juce::jmax<juce::int64>(1, bytes)` por instanciar SIMDNativeOps de `long long`.
+Con `JUCE_USE_SIMD=0`, sin cambiar el código ni sustituir Bungee, compilaron
+`MTControls_Standalone` y los cinco targets relevantes de test. La app abrió
+durante ocho segundos en Xvfb/Openbox y fue detenida de forma controlada. Es un
+smoke de arranque: las variables XDG temporales no aíslan por completo este
+JUCE en Linux; su consulta de sesión estándar no encontró un snapshot. Los
+tests de archivos sí usaron sus wrappers de almacenamiento temporal aislado.
+
+En el gate nativo pasaron `remote_session`, `remote_section_control` y
+`audio_engine_core`. `waveform_editing` y `section_automation` no quedaron
+verdes: comparación de repintado (delta de un canal), desplazamiento del toolbar
+de automatización, silueta de onda fuente desplazada y duración de la voz de
+guía pendiente. Los cuatro fallos se reprodujeron con `main` limpio `5a425c0`
+en un worktree separado, mismo SDK/configuración/escritorio, por lo que no son
+regresiones de este cambio. No se corrigieron esos contratos ajenos al alcance.
+
+Los casos nuevos nativos de identidad/validación y de indicador por tarjeta
+pasaron, al igual que los casos principales de Loop→Ir, preparación fría y
+mezcla en callbacks divididos. `PW_LIVE_CAPTURE_DIR` genera
+`remote-section-update-required.png` con la tarjeta real mostrando directamente
+`Actualiza servidor`; fue revisada visualmente en Linux. Esto acredita render
+de componentes y ejecución nativa Linux escalar, no compilación con SIMD,
+dispositivo iPad/Mac ni la causa del reporte del tester. La validación física
+Apple y la atribución a una versión concreta siguen pendientes.
 
 Las pruebas de red comprueban descubrimiento, conexión, comandos, confirmaciones,
 estado y reconexión entre procesos locales. Las de creación generan un `.pwproj`,

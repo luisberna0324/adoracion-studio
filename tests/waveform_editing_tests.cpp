@@ -2079,6 +2079,19 @@ void testStableSectionIndicatorMapping() {
   expect(WaveformEditingTestAccess::sectionState(wave, 0).contains("Loop") &&
          WaveformEditingTestAccess::sectionState(wave, 1).contains(L10n::tr("No aplicado", "Not applied")),
          "confirmed Loop and rejection feedback belong to their own cards");
+  wave.setArrangementControlFeedbackProviders(
+      [](const juce::String &id) { return id == "short" ? juce::String("Update the server app to control sections safely") : juce::String{}; },
+      [](const juce::String &) { return false; },
+      [](const juce::String &) { return L10n::tr("Actualiza servidor", "Update server"); });
+  expect(WaveformEditingTestAccess::sectionState(wave, 1).contains(L10n::tr("Actualiza servidor", "Update server")),
+         "update requirement is visible in the real card, not only in a tooltip");
+  const auto capture = juce::SystemStats::getEnvironmentVariable("PW_LIVE_CAPTURE_DIR", {});
+  if (capture.isNotEmpty()) {
+    const juce::File directory(capture); expect(directory.createDirectory().wasOk(), "section feedback capture directory");
+    auto stream = directory.getChildFile("remote-section-update-required.png").createOutputStream();
+    expect(stream != nullptr && juce::PNGImageFormat().writeImageToStream(
+        wave.createComponentSnapshot(wave.getLocalBounds(), true, 2.0f), *stream), "section update feedback capture");
+  }
   shortChorus.id = longChorus.id;
   wave.setArrangement({{longChorus, shortChorus}}, true);
   expect(wave.getArrangementPartId(0).isEmpty() && wave.getArrangementPartIndex("long") == -1,

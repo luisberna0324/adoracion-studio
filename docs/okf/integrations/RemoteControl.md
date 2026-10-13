@@ -166,6 +166,10 @@ conservan su orden y contenido.
 
 El cliente presenta `Solicitando` mientras espera ACK y snapshot posterior;
 un rechazo/timeout muestra `No aplicado` con el motivo en la ayuda del control.
+Cuando falta compatibilidad, la tarjeta muestra directamente `Actualiza servidor`
+en vez de `No aplicado`, con la instrucción completa en la ayuda. El cliente
+anterior recibe `Update the client app to control sections safely` en el motivo
+del ACK; su flujo existente lo muestra en Configuración → Control remoto.
 Los indicadores Loop/Preparando siguen leyendo estado confirmado del servidor.
 Desconexión, cambio de canción o una nueva solicitud descartan feedback anterior.
 

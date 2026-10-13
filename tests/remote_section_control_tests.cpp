@@ -76,6 +76,7 @@ struct Fixture {
   bool loading = false, advertiseIds = true;
   int sequence = 0;
   std::map<juce::String, bool> acks;
+  std::map<juce::String, juce::String> ackReasons;
   juce::String lastSentId;
   juce::var lastCommand;
   Fixture() {
@@ -128,6 +129,7 @@ struct Fixture {
         const auto id = value.getProperty("id", {}).toString();
         const bool accepted = static_cast<bool>(value.getProperty("accepted", false));
         acks[id] = accepted;
+        ackReasons[id] = value.getProperty("reason", {}).toString();
         client.applyAcknowledgement(id, accepted, value.getProperty("reason", {}).toString());
       }
     }
@@ -201,6 +203,8 @@ void compatibilityAndMalformedRequests() {
     f.wait([&] { return f.acks.count(id) != 0; });
     expect(!f.acks[id] && f.engine.writes == 0 && f.wire.isConnected(),
            "legacy section commands reject explicitly while keeping the connection");
+    expect(f.ackReasons[id].contains("Update the client app"),
+           "legacy client receives an explicit update instruction in the ACK reason");
   }
   for (const char *json : {R"({"songId":"song-A","revision":2})", R"({"songId":"song-A"})", R"({"songId":true,"revision":"2"})"}) {
     const auto id = juce::Uuid().toString();

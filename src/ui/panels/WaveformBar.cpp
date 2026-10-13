@@ -1529,9 +1529,11 @@ int WaveformBar::getArrangementPartIndex(const juce::String &id) const {
 
 void WaveformBar::setArrangementControlFeedbackProviders(
     std::function<juce::String(const juce::String &)> error,
-    std::function<bool(const juce::String &)> pending) {
+    std::function<bool(const juce::String &)> pending,
+    std::function<juce::String(const juce::String &)> status) {
   arrangementControlErrorProvider = std::move(error);
   arrangementControlPendingProvider = std::move(pending);
+  arrangementControlStatusProvider = std::move(status);
 }
 
 juce::Range<double> WaveformBar::getArrangementPartTimeRange(const int index) const {
@@ -2860,7 +2862,8 @@ juce::String WaveformBar::liveSectionState(int index) const {
   juce::StringArray states;
   const auto partId = getArrangementPartId(index);
   if (arrangementControlErrorProvider && arrangementControlErrorProvider(partId).isNotEmpty())
-    states.add(L10n::tr("No aplicado", "Not applied"));
+    states.add(arrangementControlStatusProvider ? arrangementControlStatusProvider(partId)
+                                               : L10n::tr("No aplicado", "Not applied"));
   else if (arrangementControlPendingProvider && arrangementControlPendingProvider(partId))
     states.add(L10n::tr("Solicitando", "Requesting"));
   if (current) states.add(playing ? L10n::tr("Sonando", "Playing") : L10n::tr("Pausada", "Paused"));
