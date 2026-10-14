@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 constexpr double sampleRate = 8000.0;
@@ -90,6 +91,20 @@ void writeFlac(const juce::File &file) {
     audio.setSample(0, i, expectedSample(i));
   expect(writer->writeFromAudioSampleBuffer(audio, 0, sampleCount),
          "write actual FLAC samples");
+}
+
+void writeWav(const juce::File &file) {
+  std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+  juce::WavAudioFormat format;
+  auto writer = format.createWriterFor(
+      stream, juce::AudioFormatWriterOptions{}
+                  .withSampleRate(sampleRate).withNumChannels(1).withBitsPerSample(16));
+  expect(writer != nullptr, "create actual WAV writer");
+  juce::AudioBuffer<float> audio(1, sampleCount);
+  for (int i = 0; i < sampleCount; ++i)
+    audio.setSample(0, i, expectedSample(i));
+  expect(writer->writeFromAudioSampleBuffer(audio, 0, sampleCount),
+         "write actual WAV samples");
 }
 
 void writePng(const juce::File &file) {
@@ -891,6 +906,244 @@ void runRoundtripAndFailureChecks(Fixtures &fixtures) {
          "package-only operations do not register prematurely in the library");
   testLibraryRegistration(fixtures, opened.song);
 }
+void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
+  // Old settings must not disable automatic storage conversion. Write the
+  // historical key directly so the removed public toggle is not needed.
+  const auto settings = ApplicationDataPaths::applicationDataDirectory()
+                            .getChildFile("MTControls/app_settings.json");
+  expect(settings.getParentDirectory().createDirectory().wasOk() &&
+             settings.replaceWithText(R"({"stemOptimizationEnabled":false})"),
+         "seed the historical disabled optimization preference");
+
+  const auto wav = fixtures.directory.getChildFile("automatic.wav");
+  const auto flac = fixtures.directory.getChildFile("unrelated-original-name.flac");
+  const auto unsupported = fixtures.directory.getChildFile("preserve-original.audio");
+  writeWav(wav);
+  writeFlac(flac);
+  expect(unsupported.replaceWithText("unsupported audio payload retained exactly"),
+         "create an unconvertible legacy payload");
+  juce::MemoryBlock originalWav, originalFlac, originalUnsupported;
+  expect(wav.loadFileAsData(originalWav) && flac.loadFileAsData(originalFlac) &&
+             unsupported.loadFileAsData(originalUnsupported),
+         "record source bytes before importing");
+
+  ImportedSongData draft;
+  draft.id = juce::Uuid().toString();
+  draft.title = "Automatic legacy storage";
+  draft.fileType = "WAV";
+  draft.bpm = 96;
+  auto makeStem = [](const juce::File &file, const char *id) {
+    ImportedStemData stem;
+    stem.stemId = id;
+    stem.displayName = id;
+    stem.category = "Other";
+    stem.include = true;
+    stem.sourcePath = file.getFullPathName();
+    stem.fileName = file.getFileName();
+    stem.durationSec = static_cast<double>(sampleCount) / sampleRate;
+    stem.sampleRate = sampleRate;
+    stem.channels = 1;
+    return stem;
+  };
+  draft.stems = {makeStem(wav, "convert-wav"), makeStem(flac, "copy-flac"),
+                 makeStem(unsupported, "keep-original")};
+  juce::String error;
+  expect(SongLibraryStore::appendSong(draft, &error),
+         "legacy import succeeds with automatic conversion and fallback together");
+  const auto readSong = [&]() {
+    const auto songs = SongLibraryStore::loadSongs();
+    const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto &song) {
+      return song.id == draft.id;
+    });
+    expect(found != songs.end(), "automatic storage song is registered");
+    return *found;
+  };
+  const auto readStem = [](const ImportedSongData &song, const char *id) {
+    const auto found = std::find_if(song.stems.begin(), song.stems.end(),
+                                   [&](const auto &stem) { return stem.stemId == id; });
+    expect(found != song.stems.end(), "all imported stems are preserved");
+    return *found;
+  };
+  const auto sameBytes = [](const juce::File &file, const juce::MemoryBlock &bytes) {
+    juce::MemoryBlock current;
+    return file.loadFileAsData(current) && current == bytes;
+  };
+  const auto expectStoredAudio = [&](const ImportedSongData &song) {
+    const juce::File optimized(readStem(song, "convert-wav").storedPath);
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+    const auto reader = std::unique_ptr<juce::AudioFormatReader>(
+        formats.createReaderFor(optimized));
+    expect(optimized.hasFileExtension("flac") && reader != nullptr &&
+               reader->getFormatName().containsIgnoreCase("flac") &&
+               reader->sampleRate == sampleRate && reader->numChannels == 1 &&
+               reader->lengthInSamples == sampleCount,
+           "WAV is automatically stored as decodable FLAC with unchanged dimensions");
+    expect(sameBytes(juce::File(readStem(song, "copy-flac").storedPath), originalFlac),
+           "an existing FLAC is copied byte-for-byte regardless of origin or filename");
+    const juce::File fallback(readStem(song, "keep-original").storedPath);
+    expect(fallback.hasFileExtension("audio") && sameBytes(fallback, originalUnsupported) &&
+               !fallback.withFileExtension("flac").exists(),
+           "failed conversion preserves original format and bytes without partial FLAC");
+    expect(sameBytes(wav, originalWav) && sameBytes(flac, originalFlac) &&
+               sameBytes(unsupported, originalUnsupported),
+           "automatic storage never modifies the original files");
+  };
+
+  auto imported = readSong();
+  expectStoredAudio(imported);
+  // A replacement WAV must optimize during editing as well. Clearing the
+  // cached path makes the existing production source-selection path use it.
+  const auto replacement = fixtures.directory.getChildFile("replacement.wav");
+  writeWav(replacement);
+  auto edited = imported;
+  edited.title = "Edited automatic storage";
+  for (auto &stem : edited.stems) {
+    if (stem.stemId == "convert-wav") {
+      stem.sourcePath = replacement.getFullPathName();
+      stem.storedPath.clear();
+    }
+  }
+  expect(SongLibraryStore::updateSong(edited, &error),
+         "legacy edit automatically converts a replacement WAV");
+  imported = readSong();
+  expectStoredAudio(imported);
+  expect(imported.title == edited.title && replacement.existsAsFile(),
+         "editing persists metadata and retains the replacement original");
+
+  // Reject the database replacement after audio staging has completed; the
+  // previous song directory and metadata must survive the failed commit.
+  const juce::File previousAudio(readStem(imported, "convert-wav").storedPath);
+  juce::MemoryBlock previousBytes;
+  expect(previousAudio.loadFileAsData(previousBytes), "record edited audio before rollback");
+  auto rejected = imported;
+  rejected.title = "Must not replace saved metadata";
+  bool blockedAtCommit = false;
+  {
+    BlockedLibraryFile blocked(fixtures);
+    expect(!SongLibraryStore::updateSong(rejected, &error,
+               [&](double progress, const juce::String &) {
+                 if (!blockedAtCommit && progress >= 0.86) {
+                   blocked.block();
+                   blockedAtCommit = true;
+                 }
+               }) && blockedAtCommit && blocked.isIntact() && error.isNotEmpty(),
+           "failed final database commit reports failure after audio staging");
+    expect(sameBytes(previousAudio, previousBytes),
+           "failed edit restores the previous stored audio byte-for-byte");
+    expect(blocked.restore(), "restore the test database after injected failure");
+  }
+  expect(readSong().title == imported.title && replacement.existsAsFile(),
+         "failed edit preserves registered metadata and source files");
+  expect(SongLibraryStore::deleteSong(draft.id), "remove only the legacy fixture song");
+}
+
+void testColdProjectExtractionProgress(const Fixtures &fixtures) {
+  const auto archive = fixtures.directory.getChildFile("cold-progress.pwproj");
+  const auto shortSource = fixtures.directory.getChildFile("progress-short.flac");
+  const auto longSource = fixtures.directory.getChildFile("progress-long.flac");
+  constexpr int shortSamples = 2 * 1024 * 1024;
+  constexpr int longSamples = 32 * 1024 * 1024;
+  constexpr double fixtureRate = 48000.0;
+  auto writeNoise = [](const juce::File &file, const int frames) {
+    std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+    juce::FlacAudioFormat format;
+    auto writer = format.createWriterFor(
+        stream, juce::AudioFormatWriterOptions{}
+                    .withSampleRate(fixtureRate).withNumChannels(1)
+                    .withBitsPerSample(16));
+    expect(writer != nullptr, "create cold-load FLAC fixture writer");
+    juce::AudioBuffer<float> block(1, 8192);
+    juce::uint32 noise = 0x71a64b25;
+    for (int written = 0; written < frames;) {
+      const int count = juce::jmin(block.getNumSamples(), frames - written);
+      for (int i = 0; i < count; ++i) {
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        block.setSample(0, i,
+                        (static_cast<int>(noise & 0xffff) - 32768) / 32768.0f);
+      }
+      expect(writer->writeFromAudioSampleBuffer(block, 0, count),
+             "write actual cold-load FLAC samples");
+      written += count;
+    }
+  };
+  // Four real FLAC entries with different lengths keep extraction in flight
+  // after the first worker finishes. Noise avoids a tiny compressed fixture
+  // that could finish before any visible progress is meaningful on fast SSDs.
+  // Sources are streamed in 8K blocks; the test never allocates their PCM in RAM.
+  writeNoise(shortSource, shortSamples);
+  writeNoise(longSource, longSamples);
+  ProjectDocument document;
+  document.song.id = juce::Uuid().toString();
+  document.song.projectId = document.song.id;
+  document.song.title = "Cold extraction progress";
+  document.song.bpm = 96;
+  document.song.key = "C";
+  document.song.timeSignature = "4/4";
+  document.song.fileType = "FLAC";
+  for (int index = 0; index < 4; ++index) {
+    const bool shorter = index == 0;
+    const auto source = shorter ? shortSource : longSource;
+    ImportedStemData stem;
+    stem.stemId = "progress-stem-" + juce::String(index);
+    stem.displayName = "Progress stem " + juce::String(index);
+    stem.category = "Piano";
+    stem.include = true;
+    stem.sourcePath = source.getFullPathName();
+    stem.storedPath = stem.sourcePath;
+    stem.fileName = source.getFileName();
+    stem.sampleRate = static_cast<int>(fixtureRate);
+    stem.channels = 1;
+    stem.durationSec = (shorter ? shortSamples : longSamples) / fixtureRate;
+    document.song.stems.push_back(std::move(stem));
+  }
+  document.settings.tempoBpm = 96.0;
+  document.settings.window.endSec = longSamples / fixtureRate;
+  struct Cleanup {
+    juce::String projectId;
+    juce::File archive;
+    ~Cleanup() { ProjectStore::discardLocalState(projectId, archive); }
+  } cleanup{document.song.id, archive};
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error),
+         "save a real multi-stem package for cold extraction");
+  expect(!ProjectStore::getCacheDirectory(document.song.id).exists(),
+         "progress test starts without an extracted cache");
+
+  std::vector<double> updates;
+  const auto caller = std::this_thread::get_id();
+  bool callbacksUseCaller = true;
+  bool sawPartialExtraction = false;
+  ProjectDocument opened;
+  expect(ProjectStore::open(
+             archive, opened, &error, true,
+             [&](const double progress, const juce::String &) {
+               callbacksUseCaller = callbacksUseCaller &&
+                                    std::this_thread::get_id() == caller;
+               updates.push_back(progress);
+               sawPartialExtraction = sawPartialExtraction ||
+                                      (progress > 0.05 && progress < 0.95);
+             }),
+         "cold multi-stem package opens successfully");
+  expect(callbacksUseCaller,
+         "parallel extraction publishes all progress on the calling thread");
+  expect(sawPartialExtraction,
+         "cold extraction reports actual partial work before validation finishes");
+  expect(!updates.empty() && updates.front() == 0.0 && updates.back() == 1.0 &&
+             std::is_sorted(updates.begin(), updates.end()),
+         "cold-load progress is monotonic from start through successful completion");
+  expect(opened.song.stems.size() == document.song.stems.size(),
+         "progress reporting preserves every extracted stem");
+  for (size_t index = 0; index < opened.song.stems.size(); ++index) {
+    const juce::File extracted(opened.song.stems[index].storedPath);
+    const juce::File source(document.song.stems[index].storedPath);
+    expect(extracted.existsAsFile() && extracted.getSize() == source.getSize(),
+           "every extracted FLAC retains its complete real payload");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -908,6 +1161,8 @@ int main() {
     testArrangementCues(fixtures);
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
+    testAutomaticLegacyStemStorage(fixtures);
+    testColdProjectExtractionProgress(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

@@ -1234,15 +1234,25 @@ void drawIconGlyph(juce::Graphics &g, juce::Rectangle<float> area,
 
 namespace {
 
+juce::Rectangle<int> contentBoundsForWorkArea(
+    const juce::Component *top, juce::Rectangle<int> userArea) {
+  if (top != nullptr)
+    if (const auto *peer = top->getPeer())
+      if (const auto frame = peer->getFrameSizeIfPresent())
+        userArea = frame->subtractedFrom(userArea);
+  return userArea;
+}
+
 bool fillsPrimaryWorkArea(const juce::Component *top,
                           const juce::Rectangle<int> &userArea) {
   if (top == nullptr)
     return false;
+  const auto workBounds = contentBoundsForWorkArea(top, userArea);
   const auto b = top->getBounds();
-  return b.getWidth() >= userArea.getWidth() - 4 &&
-         b.getHeight() >= userArea.getHeight() - 4 &&
-         std::abs(b.getX() - userArea.getX()) <= 2 &&
-         std::abs(b.getY() - userArea.getY()) <= 2;
+  return b.getWidth() >= workBounds.getWidth() - 4 &&
+         b.getHeight() >= workBounds.getHeight() - 4 &&
+         std::abs(b.getX() - workBounds.getX()) <= 2 &&
+         std::abs(b.getY() - workBounds.getY()) <= 2;
 }
 
 /** Ultimo tamano antes de expandir (JUCE 8+ ya no expone setMaximised en la API publica). */
@@ -1267,8 +1277,9 @@ void expandTopLevelWindowToPrimaryWorkArea(juce::Component *fromComponent) {
       juce::Desktop::getInstance().getDisplays().getPrimaryDisplay();
   if (display == nullptr)
     return;
-  g_boundsBeforeExpand = top->getBounds();
-  top->setBounds(display->userArea);
+  if (!fillsPrimaryWorkArea(top, display->userArea))
+    g_boundsBeforeExpand = top->getBounds();
+  top->setBounds(contentBoundsForWorkArea(top, display->userArea));
 }
 
 void toggleTopLevelWindowMaximised(juce::Component *fromComponent) {
@@ -1288,7 +1299,7 @@ void toggleTopLevelWindowMaximised(juce::Component *fromComponent) {
     top->setBounds(g_boundsBeforeExpand);
   } else {
     g_boundsBeforeExpand = top->getBounds();
-    top->setBounds(userArea);
+    top->setBounds(contentBoundsForWorkArea(top, userArea));
   }
 }
 

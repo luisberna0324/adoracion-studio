@@ -3,7 +3,6 @@
 
 #include "../../audio/OutputChannelCatalog.h"
 #include "../../data/Localization.h"
-#include "../../data/PrimeLibrarySource.h"
 #include "../../data/SongData.h"
 
 #include <algorithm>
@@ -12,7 +11,6 @@
 namespace {
 // Label, 48 pt control, local explanation, then space before the next option.
 constexpr int mobileChoiceHeight = 128;
-constexpr int mobileToggleHeight = 100;
 constexpr int mobileRemoteChoiceHeight = 128;
 constexpr int mobileCardPadding = 32;
 
@@ -35,8 +33,7 @@ public:
   void refreshEntries() {
     rows.clear();
     remoteRow = nullptr;
-    std::vector<Destination> pages{Destination::Appearance, Destination::Playback,
-                                   Destination::Library};
+    std::vector<Destination> pages{Destination::Appearance, Destination::Playback};
     if (!useTouchOptimisedControls())
       pages.push_back(Destination::Audio);
     pages.insert(pages.end(), {Destination::Routing, Destination::Remote});
@@ -63,8 +60,7 @@ public:
   void refreshTexts() {
     const juce::StringArray titles{
         L10n::tr("Apariencia e idioma", "Appearance & language"),
-        L10n::tr(u8"Reproducción", "Playback"),
-        L10n::tr("Biblioteca", "Library")};
+        L10n::tr(u8"Reproducción", "Playback")};
     juce::StringArray pageTitles = titles;
     if (!useTouchOptimisedControls())
       pageTitles.add(L10n::tr("Dispositivo de audio", "Audio device"));
@@ -79,8 +75,7 @@ public:
         : owner.remoteMode == Mode::Server ? L10n::tr("Servidor", "Server") : juce::String("Local");
     const juce::StringArray subtitles{
         L10n::tr("Tema e idioma de la app", "App theme and language"),
-        L10n::tr("Click y transiciones de pads", "Click and pad transitions"),
-        L10n::tr(u8"Importación y almacenamiento", "Import and storage")};
+        L10n::tr("Click y transiciones de pads", "Click and pad transitions")};
     juce::StringArray pageSubtitles = subtitles;
     if (!useTouchOptimisedControls())
       pageSubtitles.add(L10n::tr("Interfaz, entradas y salidas", "Interface, inputs and outputs"));
@@ -107,8 +102,9 @@ public:
     size_t index = 0;
     for (size_t group = 0; group < cards.size(); ++group) {
       headings[group] = area.removeFromTop(34).reduced(12, 0);
-      const int count = group == 2 ? (owner.teamsManagementEnabled ? 4 : 3) :
-          group == 1 && useTouchOptimisedControls() ? 2 : 3;
+      const int count = group == 0 ? 2 :
+          group == 2 ? (owner.teamsManagementEnabled ? 4 : 3) :
+          useTouchOptimisedControls() ? 2 : 3;
       cards[group] = area.removeFromTop(count * 72);
       auto card = cards[group];
       for (int row = 0; row < count; ++row)
@@ -194,11 +190,7 @@ private:
                          .translated(icon.getX(), icon.getY()));
       g.setColour(colour);
       juce::Path p;
-      if (page == Destination::Library) {
-        p.startNewSubPath(3, 5); p.lineTo(10, 5); p.lineTo(12, 8);
-        p.lineTo(21, 8); p.lineTo(21, 20); p.lineTo(3, 20); p.closeSubPath();
-        p.startNewSubPath(3, 10); p.lineTo(21, 10);
-      } else if (page == Destination::Routing) {
+      if (page == Destination::Routing) {
         p.addRoundedRectangle(2, 9, 6, 6, 1.5f);
         p.addRoundedRectangle(16, 2, 6, 6, 1.5f);
         p.addRoundedRectangle(16, 16, 6, 6, 1.5f);
@@ -473,12 +465,6 @@ private:
 SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              const AppLanguage language,
                              LanguageChanged languageCb,
-                             const bool expandWindowOnLaunch,
-                             ExpandLaunchChanged expandCb,
-                             const bool primeImportEnabled,
-                             PrimeImportChanged primeImportCb,
-                             const bool stemOptimizationEnabled,
-                             StemOptimizationChanged stemOptimizationCb,
                              const PadsCrossfadePreset padsCrossfadePreset,
                              PadsCrossfadeChanged padsCrossfadeCb,
                              const MetronomeClickStyle metronomeClickStyle,
@@ -495,9 +481,6 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
                              int maxOutputChannels)
     : onThemeChanged(std::move(cb)),
       onLanguageChanged(std::move(languageCb)),
-      onExpandLaunchChanged(std::move(expandCb)),
-      onPrimeImportChanged(std::move(primeImportCb)),
-      onStemOptimizationChanged(std::move(stemOptimizationCb)),
       onPadsCrossfadeChanged(std::move(padsCrossfadeCb)),
       onMetronomeClickStyleChanged(std::move(metronomeClickStyleCb)),
       onCloseRequested(std::move(closeCb)),
@@ -652,8 +635,8 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   accountPage.addAndMakeVisible(*actionsTitleSeparator);
   accountPage.addAndMakeVisible(*actionsRowSeparator);
 
-  generalRowSeparators.reserve(7);
-  for (int i = 0; i < 7; ++i) {
+  generalRowSeparators.reserve(6);
+  for (int i = 0; i < 6; ++i) {
     auto separator = std::make_unique<SettingsRowSeparator>();
     generalPage.addAndMakeVisible(*separator);
     generalRowSeparators.push_back(std::move(separator));
@@ -696,49 +679,6 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
     repaint();
   };
   generalPage.addAndMakeVisible(languageBox);
-
-  expandLaunchLabel.setJustificationType(juce::Justification::centredLeft);
-  expandLaunchLabel.setFont(settingsOptionLabelFont());
-  generalPage.addAndMakeVisible(expandLaunchLabel);
-
-  expandLaunchToggle.setClickingTogglesState(true);
-  expandLaunchToggle.setToggleState(expandWindowOnLaunch,
-                                    juce::dontSendNotification);
-  applyToggleSwitchTheme(expandLaunchToggle);
-  expandLaunchToggle.onClick = [this] {
-    if (onExpandLaunchChanged)
-      onExpandLaunchChanged(expandLaunchToggle.getToggleState());
-  };
-  generalPage.addAndMakeVisible(expandLaunchToggle);
-
-  primeImportLabel.setJustificationType(juce::Justification::centredLeft);
-  primeImportLabel.setFont(settingsOptionLabelFont());
-  generalPage.addAndMakeVisible(primeImportLabel);
-
-  primeImportToggle.setClickingTogglesState(true);
-  primeImportToggle.setToggleState(primeImportEnabled,
-                                   juce::dontSendNotification);
-  primeImportToggle.setEnabled(PrimeLibrarySource::isSupportedOnCurrentPlatform());
-  applyToggleSwitchTheme(primeImportToggle);
-  primeImportToggle.onClick = [this] {
-    if (onPrimeImportChanged)
-      onPrimeImportChanged(primeImportToggle.getToggleState());
-  };
-  generalPage.addAndMakeVisible(primeImportToggle);
-
-  stemOptimizationLabel.setJustificationType(juce::Justification::centredLeft);
-  stemOptimizationLabel.setFont(settingsOptionLabelFont());
-  generalPage.addAndMakeVisible(stemOptimizationLabel);
-
-  stemOptimizationToggle.setClickingTogglesState(true);
-  stemOptimizationToggle.setToggleState(stemOptimizationEnabled,
-                                        juce::dontSendNotification);
-  applyToggleSwitchTheme(stemOptimizationToggle);
-  stemOptimizationToggle.onClick = [this] {
-    if (onStemOptimizationChanged)
-      onStemOptimizationChanged(stemOptimizationToggle.getToggleState());
-  };
-  generalPage.addAndMakeVisible(stemOptimizationToggle);
 
   padsCrossfadeLabel.setJustificationType(juce::Justification::centredLeft);
   padsCrossfadeLabel.setFont(settingsOptionLabelFont());
@@ -825,8 +765,7 @@ SettingsPanel::SettingsPanel(ThemePreset current, ThemeChanged cb,
   remoteServerNameEditor.onFocusLost = saveRemoteServerAlias;
   generalPage.addAndMakeVisible(remoteServerNameEditor);
   generalPage.addAndMakeVisible(remoteStatus);
-  for (auto *help : {&themeHelp, &languageHelp, &expandLaunchHelp,
-                     &primeImportHelp, &stemOptimizationHelp,
+  for (auto *help : {&themeHelp, &languageHelp,
                      &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp}) {
     help->setFont(settingsHelpFont());
@@ -1138,7 +1077,7 @@ void SettingsPanel::resized() {
   const auto requiredHeight = [this, needsVerticalScroll](const int width) {
     return tabs.getCurrentTabIndex() == 3
                ? routingPageContentHeight(width)
-               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 1060 : 980) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
+               : (tabs.getCurrentTabIndex() == 0 ? (teamsManagementEnabled ? 728 : 648) : (tabs.getCurrentTabIndex() == 1 ? 1060 : (needsVerticalScroll ? 900 : 0)));
   };
   int contentWidth = juce::jmax(1, area.getWidth());
   if (requiredHeight(contentWidth) > area.getHeight())
@@ -1182,8 +1121,7 @@ void SettingsPanel::refreshThemeColours() {
     button->setClickingTogglesState(false);
   }
   themeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  for (auto *help : {&themeHelp, &languageHelp, &expandLaunchHelp,
-                     &primeImportHelp, &stemOptimizationHelp,
+  for (auto *help : {&themeHelp, &languageHelp,
                      &padsCrossfadeHelp, &metronomeClickStyleHelp,
                      &remoteControlHelp, &remoteTargetHelp,
                      &actionLogoutHelp, &actionPurgeHelp, &actionInfoHelp, &actionDeleteHelp})
@@ -1205,28 +1143,6 @@ void SettingsPanel::refreshThemeColours() {
                        UITheme::cardBorder);
   applyComboBoxTheme(languageBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
-  expandLaunchLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  expandLaunchToggle.setColour(juce::ToggleButton::textColourId,
-                               UITheme::textPrimary);
-  expandLaunchToggle.setColour(juce::ToggleButton::tickColourId,
-                               UITheme::accent);
-  expandLaunchToggle.setColour(juce::ToggleButton::tickDisabledColourId,
-                               UITheme::textSecondary);
-  primeImportLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
-  primeImportToggle.setColour(juce::ToggleButton::textColourId,
-                              UITheme::textPrimary);
-  primeImportToggle.setColour(juce::ToggleButton::tickColourId,
-                              UITheme::accent);
-  primeImportToggle.setColour(juce::ToggleButton::tickDisabledColourId,
-                              UITheme::textSecondary);
-  stemOptimizationLabel.setColour(juce::Label::textColourId,
-                                  UITheme::textSecondary);
-  stemOptimizationToggle.setColour(juce::ToggleButton::textColourId,
-                                   UITheme::textPrimary);
-  stemOptimizationToggle.setColour(juce::ToggleButton::tickColourId,
-                                   UITheme::accent);
-  stemOptimizationToggle.setColour(juce::ToggleButton::tickDisabledColourId,
-                                   UITheme::textSecondary);
   padsCrossfadeLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
   applyComboBoxTheme(padsCrossfadeBox, UITheme::cardBgHover.withAlpha(0.78f),
                      UITheme::cardBorder.withAlpha(0.84f));
@@ -1374,7 +1290,6 @@ juce::String SettingsPanel::pageTitle() const {
     case Destination::Teams: return "Teams";
     case Destination::Appearance: return L10n::tr("Apariencia e idioma", "Appearance & language");
     case Destination::Playback: return L10n::tr(u8"Reproducción", "Playback");
-    case Destination::Library: return L10n::tr("Biblioteca", "Library");
     case Destination::Audio: return L10n::tr("Dispositivo de audio", "Audio device");
     case Destination::Routing: return L10n::tr("Ruteo de salidas", "Output routing");
     case Destination::Remote: return L10n::tr("Control remoto", "Remote control");
@@ -1430,12 +1345,9 @@ int SettingsPanel::mobileGeneralCardHeight() const {
     case Destination::Diagnostics:
       return 0;
     case Destination::Appearance:
-      return mobileCardPadding + 2 * mobileChoiceHeight +
-             (useTouchOptimisedControls() ? 0 : mobileToggleHeight);
+      return mobileCardPadding + 2 * mobileChoiceHeight;
     case Destination::Playback:
       return mobileCardPadding + 2 * mobileChoiceHeight;
-    case Destination::Library:
-      return mobileCardPadding + 2 * mobileToggleHeight;
     case Destination::Remote:
       return mobileCardPadding + mobileRemoteChoiceHeight +
              (remoteMode == playworship::remote::RemoteSession::Mode::Local ? 44 : 158);
@@ -1452,7 +1364,6 @@ int SettingsPanel::mobilePageContentHeight(int width) const {
     case Destination::Diagnostics: return width < 520 ? 456 : 320;
     case Destination::Appearance:
     case Destination::Playback:
-    case Destination::Library:
     case Destination::Remote:
       return mobileGeneralCardHeight() + 32;
     default: return 360;
@@ -1479,18 +1390,6 @@ void SettingsPanel::layoutMobileGeneralPage() {
     help.setBounds(content.removeFromTop(helpHeight));
     content.removeFromTop(afterHelp);
   };
-  auto toggle = [&](juce::Label &label, juce::ToggleButton &control,
-                    juce::Label &help) {
-    label.setVisible(true); control.setVisible(true); help.setVisible(true);
-    auto row = content.removeFromTop(48);
-    control.setBounds(row.removeFromRight(56).withSizeKeepingCentre(56, 48));
-    row.removeFromRight(8);
-    label.setBounds(row);
-    label.setMinimumHorizontalScale(1.0f);
-    content.removeFromTop(4);
-    help.setBounds(content.removeFromTop(36));
-    content.removeFromTop(12);
-  };
   for (auto *box : {&themeBox, &languageBox, &padsCrossfadeBox,
                     &metronomeClickStyleBox, &remoteServersBox})
     box->setMobileFormMode(true);
@@ -1498,16 +1397,10 @@ void SettingsPanel::layoutMobileGeneralPage() {
   if (destination == Destination::Appearance) {
     choice(themeLabel, themeBox, themeHelp);
     choice(languageLabel, languageBox, languageHelp);
-    if (!useTouchOptimisedControls()) {
-      toggle(expandLaunchLabel, expandLaunchToggle, expandLaunchHelp);
-    }
   } else if (destination == Destination::Playback) {
     choice(padsCrossfadeLabel, padsCrossfadeBox, padsCrossfadeHelp);
     choice(metronomeClickStyleLabel, metronomeClickStyleBox,
            metronomeClickStyleHelp);
-  } else if (destination == Destination::Library) {
-    toggle(primeImportLabel, primeImportToggle, primeImportHelp);
-    toggle(stemOptimizationLabel, stemOptimizationToggle, stemOptimizationHelp);
   } else if (destination == Destination::Remote) {
     choice(remoteControlLabel, remoteModeControl, remoteControlHelp, 48, 0);
     auto buttons = remoteModeControl.getLocalBounds();
@@ -1582,38 +1475,6 @@ void SettingsPanel::applyLanguageTexts() {
   languageHelp.setText(L10n::tr("Se aplica a menús, controles y mensajes.",
                                  "Applies to menus, controls, and messages."),
                        juce::dontSendNotification);
-  expandLaunchLabel.setText(L10n::tr("Ventana al iniciar", "Window on launch"),
-                            juce::dontSendNotification);
-  expandLaunchHelp.setText(L10n::tr("Usa el área de trabajo disponible al abrir la app.",
-                                     "Uses the available desktop space when opening the app."),
-                           juce::dontSendNotification);
-  expandLaunchToggle.setButtonText(
-      L10n::tr("Expandir al area de trabajo", "Expand to work area"));
-  primeImportLabel.setText(
-      L10n::tr("Importar desde Prime", "Import from Prime"),
-                           juce::dontSendNotification);
-#if MTCONTROLS_MAC_APP_STORE
-  primeImportHelp.setText(L10n::tr("En esta versión, importa los archivos de audio desde Biblioteca.",
-                                   "In this edition, import audio files from Library."),
-                         juce::dontSendNotification);
-#else
-  primeImportHelp.setText(L10n::tr("Solo en macOS: importa la biblioteca local de Prime.",
-                                   "macOS only: imports the local Prime library."),
-                         juce::dontSendNotification);
-#endif
-  primeImportToggle.setButtonText(
-      L10n::tr(u8"Habilitar importación de Prime",
-               "Enable Prime import"));
-  stemOptimizationLabel.setText(
-      L10n::tr(u8"Optimización de stems",
-               "Stem optimization"),
-      juce::dontSendNotification);
-  stemOptimizationHelp.setText(L10n::tr("En importaciones compatibles, reduce el espacio de los stems.",
-                                        "Reduces stem storage in supported imports."),
-                               juce::dontSendNotification);
-  stemOptimizationToggle.setButtonText(
-      L10n::tr("Convertir stems para ahorrar almacenamiento",
-               "Convert stems to save storage"));
   padsCrossfadeLabel.setText(
       L10n::tr("Crossfade de pads", "Pads crossfade"),
       juce::dontSendNotification);
@@ -1826,14 +1687,6 @@ void SettingsPanel::layoutGeneralPage() {
     control.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
   };
 
-  auto layoutToggleRow = [&](juce::Rectangle<int> row, juce::Label &label,
-                             juce::ToggleButton &toggle, juce::Label &help) {
-    auto right = row.removeFromRight(rightW);
-    label.setBounds(row.removeFromTop(28));
-    help.setBounds(row);
-    toggle.setBounds(right.withSizeKeepingCentre(right.getWidth(), controlH));
-  };
-
   int separatorIndex = 0;
   auto addSeparator = [&] {
     const int separatorY = area.getY() + rowGap / 2;
@@ -1888,15 +1741,6 @@ void SettingsPanel::layoutGeneralPage() {
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), languageLabel, languageBox,
                   languageHelp);
-  addSeparator();
-  layoutToggleRow(area.removeFromTop(rowH), expandLaunchLabel,
-                  expandLaunchToggle, expandLaunchHelp);
-  addSeparator();
-  layoutToggleRow(area.removeFromTop(rowH), primeImportLabel,
-                  primeImportToggle, primeImportHelp);
-  addSeparator();
-  layoutToggleRow(area.removeFromTop(rowH), stemOptimizationLabel,
-                  stemOptimizationToggle, stemOptimizationHelp);
   addSeparator();
   layoutChoiceRow(area.removeFromTop(rowH), padsCrossfadeLabel,
                   padsCrossfadeBox, padsCrossfadeHelp);
@@ -2351,7 +2195,7 @@ void SettingsPanel::refreshRoutingForDevice() {
                            : juce::String{};
     if (currentDevice != nullptr) {
       availableOutputChannels =
-          juce::jmax(1, currentDevice->getOutputChannelNames().size());
+          juce::jmax(1, currentDevice->getActiveOutputChannels().countNumberOfSetBits());
     }
   }
 

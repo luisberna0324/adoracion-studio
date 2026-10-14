@@ -41,7 +41,7 @@ if /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' "$app_path/Info.pli
 fi
 
 full_screen=$(/usr/libexec/PlistBuddy -c 'Print :UIRequiresFullScreen' "$app_path/Info.plist")
-[ "$full_screen" = "true" ] || fail "UIRequiresFullScreen must be true for the performance layout on iPad"
+[ "$full_screen" = "false" ] || fail "UIRequiresFullScreen must be false to allow scene resizing on iPad"
 
 device_families=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$app_path/Info.plist")
 echo "$device_families" | grep -Eq '^[[:space:]]*1[[:space:]]*$' || fail "iPhone device family is missing"
@@ -54,10 +54,9 @@ echo "$orientations" | grep -q 'UIInterfaceOrientationPortrait' || fail "iPhone 
 ipad_orientations=$(/usr/libexec/PlistBuddy -c 'Print :UISupportedInterfaceOrientations~ipad' "$app_path/Info.plist")
 echo "$ipad_orientations" | grep -q 'UIInterfaceOrientationLandscapeLeft' || fail "iPad Landscape Left is missing"
 echo "$ipad_orientations" | grep -q 'UIInterfaceOrientationLandscapeRight' || fail "iPad Landscape Right is missing"
-if echo "$ipad_orientations" | grep -q 'Portrait'; then
-    fail "iPad orientations must remain landscape for the current performance layout"
-fi
-pass "universal device families, iPhone portrait/landscape and iPad landscape"
+echo "$ipad_orientations" | grep -Eq '^[[:space:]]*UIInterfaceOrientationPortrait[[:space:]]*$' || fail "iPad Portrait is missing"
+echo "$ipad_orientations" | grep -Eq '^[[:space:]]*UIInterfaceOrientationPortraitUpsideDown[[:space:]]*$' || fail "iPad Portrait Upside Down is missing"
+pass "universal device families, iPhone portrait/landscape and all four iPad orientations"
 
 encryption=$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' "$app_path/Info.plist")
 [ "$encryption" = "false" ] || fail "ITSAppUsesNonExemptEncryption must be false for exempt standard encryption"

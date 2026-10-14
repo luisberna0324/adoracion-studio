@@ -302,7 +302,7 @@ private:
       const juce::File &source, const juce::File &destination,
       const juce::String &audioCodec, const juce::String &formatLabel,
       juce::String &errorMessage, double durationSec = 0.0,
-      const SongImportProgressFn &onProgress = {});
+      const SongImportProgressFn &onProgress = {}, bool allowBootstrap = true);
   static juce::var stemToVar(const ImportedStemData &stem);
   static ImportedStemData stemFromVar(const juce::var &v);
   static juce::var songToVar(const ImportedSongData &song);

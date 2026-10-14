@@ -66,6 +66,13 @@ comprobar el ancho del bus sin entradas, rutas al último par, persistencia y
 cambios de salidas activas. Conserva compatibilidad mono/estéreo y rechaza
 layouts fuera de los límites del procesador. El procesador sintético verifica
 señal por canal y número de callbacks; no sustituye la negociación del real.
+Ocho casos adicionales miden clic y guía reales después del callback del player:
+mono Out 1/Out 2, tempo/tono originales y modificados, señal en destino y cero
+exacto en el opuesto. Se verifican defaults sobre snapshots estéreo, stems
+Click/Guide con categoría Other, herencia y persistencia tras reinicio, y
+defaults estéreo reducidos a mono con una salida activa. `settings_panel`
+comprueba que un dispositivo de ocho salidas solo ofrezca sus canales activos
+(dos, uno y cuatro) y deshabilite estéreo con un único canal.
 No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 
 ## Cobertura por contrato
@@ -77,6 +84,7 @@ No sustituye pruebas físicas de audio/MIDI ni comprobaciones móviles de UI.
 | [Motor de audio](engine/StemMixEngine.md), click y pads | `stem_mix_engine`, `stem_buffering_source`, `metronome_engine`, `pads_engine`, `bungee_processor` |
 | [MIDI](midi/MidiBindings.md) | `midi_settings` comprueba persistencia, modos, límites y disparos de CC/Note |
 | [Creación de canciones](importing/SongCreation.md) | `song_project_creation`, `song_import_wizard`, `portable_flac_conversion`, `mobile_import_staging` |
+| [Importación de proyectos desde disco](importing/LibraryPersistence.md#importar-un-proyecto-desde-disco) | `project_import`: respuesta del message loop, una sola activación, errores/reintento, copia privada y destrucción segura durante carga; `song_project_creation`: avance real durante extracción paralela y preservación del paquete |
 | [Configuración móvil](ui/MobileLayout.md) | `settings_panel`: navegación agrupada, retorno con scroll conservado, controles remotos entre páginas, acciones de cuenta y alcance del último selector de ruteo |
 | [Guías interactivas](ui/LearningGuide.md) | `learning_guide`: cinco cursos, condiciones remotas, requisitos temporales de sesión al reanudar, IDs, persistencia, reinicio y entradas inválidas; `learning_overlay`: spotlight, interacción y scroll, botones compactos, bloqueo de avance por botón/teclado, reparenting sobre Settings real y targets de Ensayo; `settings_panel`: acceso, destinos y scroll de aprendizaje; `remote_learning_action`: comando propio, distinción Play/Pausa, ACK y snapshot posterior, respuestas ajenas/atrasadas, rechazo, timeout y limpieza de evidencia |
 | [Ensayo por instrumento](ui/MobileLayout.md) | `practice_waveform_mapping`: proyección de picos con el scheduler real, copias/recortes, desplazamientos, silencio fuente, límites e identidad de caché; `practice_panel_gestures`: gestos en toda la tarjeta, enfoque de tres estados, arrastre e inercia, zoom, tono y tempo, regla y snap de A/B, limpieza de loops, geometría de onda, reloj visual e invalidación/rechazo de entregas de onda obsoletas; `stem_mix_engine`: ganancias temporales y transiciones de audio; `remote_session`: propiedad, comandos pendientes y reconciliación |
