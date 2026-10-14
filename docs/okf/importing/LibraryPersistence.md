@@ -23,6 +23,42 @@ La conversion a FLAC de esta variante usa codecs integrados, incluido
 CoreAudio para entradas M4A. El perfil desktop normal conserva su comportamiento.
 Ver [Mac App Store](../release/MacAppStore.md).
 
+## Importar un proyecto desde disco
+
+El selector de `.pwproj` y la apertura recibida desde el sistema usan
+`SongListPanel::beginProjectImport`. Antes de leer el paquete se presenta el
+overlay compartido `SongLoadProgressOverlay`, con porcentaje y fase. La copia
+desde un proveedor de documentos (iOS, Android y Mac App Store), la validación
+del manifiesto y la extracción se ejecutan fuera del message thread. El URL
+original se conserva por valor durante la copia para mantener su permiso de
+acceso; `MobileImportStaging` valida longitud, escritura y cierre antes de
+confirmar la copia privada. El archivo fuente nunca se modifica.
+
+El progreso se basa en bytes copiados y extraídos, con un único publicador
+desde el hilo llamador de `ProjectStore::open`, aunque la extracción use hasta
+cuatro workers. Mientras espera esos workers se publica como máximo cada
+75 ms, además de al finalizar uno; la interfaz recibe actualizaciones
+agrupadas mediante `callAsync`. No se bombea un bucle modal durante la copia
+o extracción. La barra separa copia (cuando corresponde), validación/extracción,
+registro y preparación final de reproducción.
+
+El registro en Biblioteca, la adición al setlist solicitado y la activación
+siguen en el message thread para conservar la transacción read-modify-write
+existente. El editor recibe el `ProjectDocument` ya validado y no reabre el
+ZIP para esa activación. La importación explícita consume ese documento incluso
+si coincide con el proyecto cargado; la deduplicación de navegación habitual
+no descarta esa carga. La preparación final del motor mantiene su contrato
+actual de cambio de canción; no se mueve el callback de audio ni se cambia
+la política de autoplay. Durante la importación se bloquean cargas reentrantes
+y se difieren las pendientes de inicio o del sistema operativo.
+
+Cerrar/destruir el panel o pasar a biblioteca remota invalida la entrega del
+worker; este conserva sus entradas hasta terminar, sin acceder a componentes.
+Un fallo retira el overlay y muestra un `AppModal` con el error. Sólo se elimina
+la copia privada de esa importación si no llegó a registrarse, nunca el origen,
+una caché compartida o una canción existente. El overlay sigue el tamaño de su
+host al rotar o redimensionar.
+
 ## Optimizacion automatica de almacenamiento
 
 Al importar o editar una cancion legacy se intenta convertir a FLAC con codecs

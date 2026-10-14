@@ -5979,6 +5979,61 @@ bool MTControlsAudioProcessor::isStemSoloed(
       std::memory_order_relaxed);
 }
 
+void MTControlsAudioProcessor::applySongOutputRoutingDefaults(
+    const ImportedSongData &song,
+    const std::vector<CategoryRoutingDefaults> &defaults) {
+  const auto routeForCategory = [&defaults](const juce::String &category) {
+    const auto normalizedCategory = category.trim();
+    if (normalizedCategory.isEmpty())
+      return CategoryRoutingDefaults{};
+    int fallback = -1;
+    for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+      const juce::String name = kTrackCategories[i];
+      if (name.equalsIgnoreCase("Other"))
+        fallback = static_cast<int>(i);
+      if (name.equalsIgnoreCase(normalizedCategory))
+        return i < defaults.size() ? defaults[i] : CategoryRoutingDefaults{};
+    }
+    return juce::isPositiveAndBelow(fallback, static_cast<int>(defaults.size()))
+               ? defaults[static_cast<size_t>(fallback)]
+               : CategoryRoutingDefaults{};
+  };
+
+  // Dynamic sources also need the device routes when no corresponding stem
+  // exists. Saved song snapshots must not override the current routing panel.
+  const auto click = routeForCategory("Click");
+  const auto guide = routeForCategory("Cues");
+  const bool hasStereoOutputs = getAvailableOutputChannelCount() >= 2;
+  setMetronomeOutputRouting(click.baseChannel, hasStereoOutputs ? click.width : 1);
+  setDynamicGuideOutputRouting(guide.baseChannel, hasStereoOutputs ? guide.width : 1);
+
+  int stemIndex = 0;
+  const int stemCount = getLoadedStemCount();
+  for (const auto &stem : song.stems) {
+    if (!stem.include)
+      continue;
+    if (stemIndex >= stemCount)
+      break;
+    const int priority = stemPriorityForStripOrder(stem);
+    const auto category = priority == 0 ? juce::String("Click")
+                         : priority == 1 ? juce::String("Cues")
+                                         : stem.category;
+    const auto route = routeForCategory(category);
+    const int previousWidth = getStemOutputWidth(stemIndex);
+    const int previousChannel = getStemOutputChannel(stemIndex);
+    setStemOutputWidth(stemIndex, hasStereoOutputs ? route.width : 1);
+    setStemOutputChannel(stemIndex, route.baseChannel);
+    SongLoadProbe::instance().recordEvent(
+        "routing", "apply.stem",
+        "idx=" + juce::String(stemIndex) + " cat=" + category +
+            " prevW=" + juce::String(previousWidth) +
+            " newW=" + juce::String(route.width) +
+            " prevC=" + juce::String(previousChannel) +
+            " newC=" + juce::String(route.baseChannel));
+    ++stemIndex;
+  }
+}
+
 void MTControlsAudioProcessor::setStemOutputChannel(
     const int stemIndex, const int outputChannel) noexcept {
   if (!juce::isPositiveAndBelow(stemIndex, maxStemCount))

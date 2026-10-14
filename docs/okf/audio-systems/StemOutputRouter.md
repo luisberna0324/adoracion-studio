@@ -85,6 +85,31 @@ for (int i = 0; i < stemCount; i++) {
 - La UI puede mostrar 1-indexed ("Out 1" = índice 0)
 - El caller debe asegurar que hay suficiente espacio en outputBuffer
 
+## Ruteo de canción y dispositivo
+
+`MTControlsAudioProcessor::applySongOutputRoutingDefaults(song, defaults)` aplica
+la tabla del dispositivo en el hilo de control después de restaurar la mezcla
+legacy o `.pwproj`. La tabla gobierna canal y ancho; un snapshot de canción no
+vuelve a sobrescribirlos después. Volumen, gain, mute y solo conservan su
+restauración habitual.
+
+- Click y Cues se aplican también a Click Dyn y Guía Dyn sin stems equivalentes.
+- Los stems usan la misma identidad que el cargador (`stemPriorityForStripOrder`):
+  Click/Clic y Guía/Guide/Cue reconocidos por nombre, categoría o archivo reciben
+  sus respectivas rutas aunque la categoría almacenada sea Other o Keys.
+- El catálogo de ruteo se limita al número de salidas activas que recibe el
+  procesador, no a la capacidad total anunciada por el dispositivo. Cambiar la
+  máscara de salidas dentro del mismo dispositivo también reaplica su tabla.
+  Con una sola salida activa, los defaults estéreo se aplican como mono para no
+  descartar stems al intentar escribir un segundo canal inexistente.
+- Mono pliega L+R al destino elegido y deja sin señal de esa fuente los demás
+  canales del buffer. Esta regla es común a Windows, macOS, Linux, iOS y Android.
+
+`standalone_audio_runtime` comprueba clic y guía reales tras el callback del
+player; `stem_output_router` y `stem_mix_engine` cubren el plegado y el aislamiento
+con procesamiento de tempo/tono. El dispositivo simulado no verifica las
+conversiones posteriores de WASAPI/ASIO ni la salida física de Windows.
+
 ## Archivos relacionados
 
 - [OutputChannelCatalog](OutputChannelCatalog.md)

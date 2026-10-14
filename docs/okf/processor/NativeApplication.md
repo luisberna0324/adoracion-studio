@@ -61,7 +61,30 @@ para activar esta expansión: también se aplica al pasar del acceso al espacio
 de reproducción. Las preferencias antiguas de expansión se ignoran.
 
 iOS y Android conservan su ventana móvil y su comportamiento de orientación;
-esta regla de escritorio no modifica sus superficies fullscreen.
+esta regla de escritorio no modifica sus superficies móviles.
+
+## Geometría y orientación de iPad
+
+Antes de crear la ventana iOS, el runtime admite en iPad `upright`,
+`upsideDown`, `rotatedClockwise` y `rotatedAntiClockwise`, en concordancia con
+las cuatro orientaciones de `UISupportedInterfaceOrientations~ipad`. iPhone
+conserva su flujo existente: acceso/paneles en portrait y performance en landscape.
+
+En iPad, UIKit conserva la propiedad de la geometría de `UIWindowScene`.
+Al terminar una rotación o reanudar la app, la ventana propaga el tamaño efectivo
+al contenedor y al editor sin reconstruir una proporción landscape desde el
+cache de displays. El editor conserva el perfil tablet y aplica el área segura
+una sola vez. TopBar, setlist, mixer y Pads conservan su distribución habitual
+y se ajustan al rectángulo disponible mediante las reglas responsive existentes,
+sin una presentación especial para portrait. Rotar no reinicializa audio ni cambia
+canción, transporte o mezcla.
+
+`UIRequiresFullScreen=false` permite que iPadOS redimensione la escena; no se
+fuerza una superficie fullscreen ni una proporción fija. El layout responde a
+los límites efectivos que UIKit entrega al girar o cambiar la ventana. La
+validación de orientación y resize no sustituye una revisión completa de los
+flujos de multitarea de Split View o Stage Manager. Ver
+[Mobile Layout](../ui/MobileLayout.md).
 
 ## Validación
 
@@ -72,6 +95,10 @@ La negociación también se ejecuta con `MTControlsAudioProcessor` real y su
 propio bridge: verifica cero entradas internas, restauración del último par de
 salidas, reinicio, cambios de salidas activas y normalización de rutas. El
 procesador sintético conserva la prueba de señal/callback en cada salida.
+También mide la salida del clic y la guía reales a través de `AudioProcessorPlayer`:
+Out 1/Out 2 mono, tempo/tono originales y modificados, sin señal en el canal
+opuesto. Comprueba defaults mono sobre snapshots estéreo, herencia de stems
+Click/Guide categorizados Other, persistencia y reducción a una salida activa.
 También comprueba que la restauración vea el ancho del dispositivo antes de
 normalizar rutas y que los límites de ventana sigan los cambios del editor.
 No acredita un controlador MIDI físico ni audio audible sobre una interfaz real.

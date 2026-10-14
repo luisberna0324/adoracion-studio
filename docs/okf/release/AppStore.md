@@ -57,18 +57,23 @@ Los borradores de metadata y material de entrega se conservan en
 
 - Bundle ID: `com.multitracks.playworship`.
 - App universal para iPhone y iPad (`TARGETED_DEVICE_FAMILY=1,2`).
-- Inicio y vista de performance en ambas orientaciones horizontales.
+- En iPhone, inicio del espacio de performance y reproducción en ambas
+  orientaciones horizontales.
 - En iPhone, el plist tambien permite `Portrait`. El runtime habilita
   orientacion vertical en Biblioteca, setlists, Configuracion, Teams y Ensayo
   mientras el panel correspondiente esta abierto; al cerrar restaura las dos
-  orientaciones horizontales. iPad conserva el layout horizontal. Ver
+  orientaciones horizontales. iPad admite las cuatro orientaciones desde el
+  inicio, conservando su perfil tablet y la distribución habitual de TopBar,
+  setlist, mixer y Pads, ajustada al tamaño efectivo de la escena. Ver
   [Mobile Layout](../ui/MobileLayout.md).
-- `UIRequiresFullScreen=true` solicita el modo de compatibilidad de iPad,
-  con tamano de escena fijo. En iPadOS 26 con `Windowed Apps` no obliga al
-  sistema a presentar la app automaticamente a pantalla completa; la ventana
-  puede coexistir con otras y el sistema escala su presentacion. Esta clave
-  esta deprecada. La captura iPad se preparo seleccionando `Full Screen Apps`
-  en el simulador; esto no cambia el comportamiento contractual del plist.
+- `UIRequiresFullScreen=false` permite redimensionar la escena en iPad.
+  El layout se adapta al tamaño y orientación efectivos de `UIWindowScene`,
+  sin imponer una proporción horizontal fija ni escalar una escena de
+  compatibilidad. El preflight exige esta clave y las cuatro orientaciones
+  de iPad. La captura iPad anterior se preparó con `UIRequiresFullScreen=true`
+  y `Full Screen Apps` en el simulador; no acredita por sí sola la rotación,
+  distribución vertical o resize del nuevo binario. Estos cambios requieren
+  revisión visual; no equivalen a QA completo de Split View o Stage Manager.
 - En iPad, `PluginEditor::resized` sustrae `safeAreaInsets` del rectangulo de
   contenido antes de distribuir TopBar, waveform, mixer y pads. El drawer y
   su scrim usan ese mismo rectangulo y comienzan debajo del TopBar. La tablet

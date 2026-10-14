@@ -2197,7 +2197,7 @@ void SettingsPanel::refreshRoutingForDevice() {
                            : juce::String{};
     if (currentDevice != nullptr) {
       availableOutputChannels =
-          juce::jmax(1, currentDevice->getOutputChannelNames().size());
+          juce::jmax(1, currentDevice->getActiveOutputChannels().countNumberOfSetBits());
     }
   }
 

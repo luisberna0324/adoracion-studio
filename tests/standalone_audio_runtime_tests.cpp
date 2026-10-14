@@ -1,7 +1,9 @@
 #include "audio/StandaloneAudioRuntime.h"
 #include "PluginProcessor.h"
 #include "IsolatedTestRoot.h"
+#include "data/AssetBootstrapManager.h"
 #include "ui/NativeEditorBoundsConstrainer.h"
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -276,6 +278,205 @@ void testRealProcessorRuntime(int outputCount) {
   runtime.stop();
 }
 
+void writeRoutingFixtureWav(const juce::File &file, int frames, float level) {
+  expect(file.isAChildOf(isolatedTestRoot()), "routing WAV fixtures stay isolated");
+  expect(file.getParentDirectory().createDirectory().wasOk(), "routing fixture directory opens");
+  expect(file.deleteFile(), "routing fixture replaces any old WAV");
+  auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+  juce::WavAudioFormat format;
+  auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+      .withSampleRate(48000.0).withNumChannels(1).withBitsPerSample(16));
+  expect(writer != nullptr, "routing fixture WAV writer opens");
+  juce::AudioBuffer<float> block(1, 4096);
+  for (int sample = 0; sample < block.getNumSamples(); ++sample)
+    block.setSample(0, sample, level);
+  while (frames > 0) {
+    const int count = juce::jmin(frames, block.getNumSamples());
+    expect(writer->writeFromAudioSampleBuffer(block, 0, count), "routing fixture WAV writes");
+    frames -= count;
+  }
+}
+
+std::vector<CategoryRoutingDefaults> monoBusDefaults(int clickChannel, int guideChannel) {
+  std::vector<CategoryRoutingDefaults> defaults(kTrackCategories.size(), {1, 2});
+  for (size_t i = 0; i < kTrackCategories.size(); ++i) {
+    const juce::String category = kTrackCategories[i];
+    if (category == "Click") defaults[i] = {clickChannel, 1};
+    if (category == "Cues") defaults[i] = {guideChannel, 1};
+  }
+  return defaults;
+}
+
+void testRealProcessorMonoClickAndGuide() {
+  // Bootstrap only the bundled local pack, then replace one actual guide WAV
+  // in isolated storage. The processor's public settings API decodes it; no
+  // guide-engine scratch buffer or synthetic processor stands in for output.
+  juce::String guideError;
+  expect(AssetBootstrapManager::ensureGuidesPackReady(&guideError),
+         "bundled guide pack is available without network access");
+  for (const auto *language : {"en", "es"}) {
+    const auto directory = AssetBootstrapManager::getGuidesLanguageSectionsDirectory(language);
+    // Avoid an equal-priority bundled "1.mp3" winning resolution over WAV.
+    for (const auto &old : directory.findChildFiles(juce::File::findFiles, false, "1.*"))
+      expect(old.deleteFile(), "isolated count sample is replaced by the mono WAV");
+    writeRoutingFixtureWav(directory.getChildFile("1.wav"), 4800, 0.25f);
+  }
+  const auto source = isolatedTestRoot().getChildFile("mono-bus-silent-source.wav");
+  writeRoutingFixtureWav(source, 48000 * 4, 0.0f);
+
+  auto processor = std::make_unique<MTControlsAudioProcessor>();
+  auto &p = *processor;
+  auto &bridge = p.getAudioDeviceBridge();
+  auto &manager = bridge.getAudioDeviceManager();
+  manager.addAudioDeviceType(std::make_unique<TestDeviceType>(2));
+  juce::PropertySet settings;
+  const auto setup = juce::parseXML(
+      "<DEVICESETUP deviceType=\"Test audio\" audioOutputDeviceName=\"Test output\" "
+      "audioDeviceRate=\"48000\" audioDeviceBufferSize=\"64\"/>");
+  settings.setValue("audioSetup", setup.get());
+  StandaloneAudioRuntime runtime(p, bridge, &settings);
+  expect(runtime.start(64).isEmpty(), "real mono-bus runtime starts on two physical outputs");
+  p.setPadsEnabled(false);
+  p.setMasterVolume(1.0f);
+  p.setMasterGain(1.0f);
+  p.setMasterMute(false);
+  p.clearMetronomeClickSamples(); // Exercise the actual dynamic synth click.
+  p.setMetronomeVolume(1.0f);
+  p.setMetronomeGain(1.0f);
+  p.setMetronomeMuted(false);
+  p.setMetronomeSolo(false);
+  p.setClickDivision(1);
+  p.setClickDivisionEnabled(true);
+  p.setDynamicGuideVolume(1.0f);
+  p.setDynamicGuideGain(1.0f);
+  p.setDynamicGuideMuted(false);
+  p.setDynamicGuideSolo(false);
+
+  ImportedSongData song;
+  song.id = "mono-bus-routing";
+  song.title = "Mono bus routing";
+  ImportedStemData stem;
+  stem.category = "Other";
+  stem.displayName = "Silent instrument";
+  stem.storedPath = source.getFullPathName();
+  song.stems.push_back(stem);
+  SongArrangementPartSnapshot verse;
+  verse.id = "verse"; verse.name = "Verse"; verse.endSec = 4.0;
+  SongArrangementCueSnapshot cue;
+  cue.id = "one"; cue.name = "1"; cue.partId = verse.id;
+  cue.positionSec = cue.offsetSec = 0.25;
+  SongArrangementSnapshot arrangement;
+  arrangement.parts.push_back(verse);
+  arrangement.cues.push_back(cue);
+
+  // No matching click/guide stem: current device defaults must replace old
+  // stereo song snapshots on both virtual buses independently.
+  p.setMetronomeOutputRouting(1, 2);
+  p.setDynamicGuideOutputRouting(1, 2);
+  p.applySongOutputRoutingDefaults({}, monoBusDefaults(1, 2));
+  expect(p.getMetronomeOutputChannel() == 1 && p.getMetronomeOutputWidth() == 1 &&
+             p.getDynamicGuideOutputChannel() == 2 && p.getDynamicGuideOutputWidth() == 1,
+         "device mono defaults override stereo snapshots without corresponding stems");
+
+  for (bool alteredTime : {false, true}) {
+    for (bool guide : {false, true}) {
+      for (int destination : {1, 2}) {
+        p.pauseSong();
+        expect(p.loadSongStems({source.getFullPathName()}, song.id, song.title, "C", 120.0),
+               "mono-bus fixture loads a real silent stem");
+        p.setSongFadeOutSeconds(0.0);
+        p.setSongArrangement(arrangement, false);
+        p.setStemClickGuideMask({false});
+        p.setStemGuideMask({false});
+        p.setMetronomeClickStemIndex(-1);
+        auto guideSettings = p.getDynamicGuideSettings();
+        guideSettings.enabled = guide;
+        p.setDynamicGuideSettings(guideSettings);
+        if (guide) expect(p.hasDynamicGuideAssets(), "real guide WAV assets are decoded");
+        p.setMetronomeEnabled(!guide);
+        p.setMetronomeOutputRouting(1, 2);
+        p.setDynamicGuideOutputRouting(1, 2);
+        p.applySongOutputRoutingDefaults(song, monoBusDefaults(destination, destination));
+        p.setPitchSemiTones(alteredTime ? 3 : 0);
+        p.setPlaybackTempoBpm(alteredTime ? 108.0 : 120.0);
+        p.playSong();
+
+        auto *device = dynamic_cast<TestDevice *>(manager.getCurrentAudioDevice());
+        expect(device != nullptr, "mono buses use the actual runtime device callback");
+        std::array<float, 2> peaks{};
+        juce::AudioBuffer<float> output(2, 64);
+        for (int callback = 0; callback < 750; ++callback) {
+          // A stale/unwritten channel must fail too, not look like silence.
+          for (int ch = 0; ch < 2; ++ch)
+            for (int sample = 0; sample < output.getNumSamples(); ++sample)
+              output.setSample(ch, sample, 1.0f);
+          device->render(output);
+          for (int ch = 0; ch < 2; ++ch)
+            peaks[static_cast<size_t>(ch)] = juce::jmax(
+                peaks[static_cast<size_t>(ch)], output.getMagnitude(ch, 0, output.getNumSamples()));
+          if ((callback % 32) == 0) juce::Thread::sleep(1);
+        }
+        std::cout << (guide ? "Guide WAV" : "Dynamic click") << " mono Out " << destination
+                  << (alteredTime ? " with tempo/pitch" : " at original tempo/pitch")
+                  << ": L=" << peaks[0] << ", R=" << peaks[1] << '\n';
+        expect(peaks[static_cast<size_t>(destination - 1)] > 0.01f,
+               "real mono bus reaches the selected physical channel");
+        expect(peaks[static_cast<size_t>(2 - destination)] == 0.0f,
+               "real mono bus never leaks to the opposite physical channel");
+      }
+    }
+  }
+
+  // Legacy/imported sources may be classified Other while their names still
+  // identify click/guide. The same device policy must reach their inherited
+  // virtual buses, and the resulting stem routes must survive runtime restore.
+  p.pauseSong();
+  expect(p.loadSongStems({source.getFullPathName(), source.getFullPathName()},
+                        song.id, song.title, "C", 120.0), "linked click/guide stems load");
+  song.stems[0].displayName = "Click";
+  song.stems.push_back(song.stems[0]);
+  song.stems[1].displayName = "Guide";
+  p.setStemClickGuideMask({true, true});
+  p.setStemGuideMask({false, true});
+  p.setMetronomeClickStemIndex(0);
+  p.setStemOutputWidth(0, 2);
+  p.setStemOutputWidth(1, 2);
+  p.applySongOutputRoutingDefaults(song, monoBusDefaults(1, 2));
+  const auto checkInheritedRoutes = [&] {
+    expect(p.getStemOutputChannel(0) == 1 && p.getStemOutputWidth(0) == 1 &&
+               p.getStemOutputChannel(1) == 2 && p.getStemOutputWidth(1) == 1,
+           "Other stems named Click/Guide use their mono category routes");
+    expect(p.getMetronomeOutputChannel() == 1 && p.getMetronomeOutputWidth() == 1 &&
+               p.getDynamicGuideOutputChannel() == 2 && p.getDynamicGuideOutputWidth() == 1,
+           "dynamic buses inherit their linked stem's mono route");
+  };
+  checkInheritedRoutes();
+  runtime.saveState();
+  runtime.stop();
+  p.setStemOutputWidth(0, 2);
+  p.setStemOutputWidth(1, 2);
+  expect(runtime.start(64).isEmpty(), "mono routes restart through persisted standalone state");
+  checkInheritedRoutes();
+
+  // A saved stereo default must remain playable after narrowing the same
+  // device to one active channel. The UI cannot offer a stereo destination.
+  juce::AudioDeviceManager::AudioDeviceSetup monoSetup;
+  manager.getAudioDeviceSetup(monoSetup);
+  monoSetup.useDefaultOutputChannels = false;
+  monoSetup.outputChannels.clear();
+  monoSetup.outputChannels.setBit(0);
+  expect(manager.setAudioDeviceSetup(monoSetup, true).isEmpty(),
+         "real mono-bus runtime accepts one active output");
+  expect(p.getTotalNumOutputChannels() == 1 && bridge.getAvailableOutputChannelCount() == 1,
+         "one-channel output selection reaches the real processor");
+  p.applySongOutputRoutingDefaults(song,
+      std::vector<CategoryRoutingDefaults>(kTrackCategories.size(), {1, 2}));
+  expect(p.getStemOutputWidth(0) == 1 && p.getStemOutputWidth(1) == 1 &&
+             p.getMetronomeOutputWidth() == 1 && p.getDynamicGuideOutputWidth() == 1,
+         "stereo defaults fold to mono when only one callback channel is active");
+  runtime.stop();
+}
+
 void testRealProcessorLayoutLimits() {
   auto processor = std::make_unique<MTControlsAudioProcessor>();
   auto layout = processor->getBusesLayout();
@@ -305,6 +506,7 @@ int main() {
     testRealProcessorRuntime(8);
     testRealProcessorRuntime(2);
     testRealProcessorRuntime(64);
+    testRealProcessorMonoClickAndGuide();
     testRealProcessorLayoutLimits();
     testRuntime(2);
     testRuntime(8);

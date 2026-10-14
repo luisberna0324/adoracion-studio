@@ -188,17 +188,23 @@ public:
 #if JUCE_IOS || JUCE_ANDROID
     // Set the launch mask before JUCE creates its window/controller. iPhone
     // starts with portrait authentication; the editor restores landscape when
-    // a saved or new session opens performance. Tablets remain landscape.
+    // a saved or new session opens performance. iPad follows the orientation
+    // and size of its native scene instead of using a fixed landscape canvas.
     const bool startsWithPhoneLogin =
 #if JUCE_IOS
         juce::SystemStats::getDeviceDescription().containsIgnoreCase("iPhone");
 #else
         false;
 #endif
-    juce::Desktop::getInstance().setOrientationsEnabled(
-        startsWithPhoneLogin ? juce::Desktop::upright
-                             : juce::Desktop::rotatedClockwise |
-                                   juce::Desktop::rotatedAntiClockwise);
+    int launchOrientations = juce::Desktop::rotatedClockwise |
+                             juce::Desktop::rotatedAntiClockwise;
+#if JUCE_IOS
+    launchOrientations = startsWithPhoneLogin
+                             ? juce::Desktop::upright
+                             : launchOrientations | juce::Desktop::upright |
+                                   juce::Desktop::upsideDown;
+#endif
+    juce::Desktop::getInstance().setOrientationsEnabled(launchOrientations);
 #endif
     processor = std::make_unique<MTControlsAudioProcessor>();
     audioRuntime = std::make_unique<StandaloneAudioRuntime>(

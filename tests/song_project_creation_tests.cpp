@@ -9,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 constexpr double sampleRate = 8000.0;
@@ -1037,6 +1038,112 @@ void testAutomaticLegacyStemStorage(const Fixtures &fixtures) {
   expect(SongLibraryStore::deleteSong(draft.id), "remove only the legacy fixture song");
 }
 
+void testColdProjectExtractionProgress(const Fixtures &fixtures) {
+  const auto archive = fixtures.directory.getChildFile("cold-progress.pwproj");
+  const auto shortSource = fixtures.directory.getChildFile("progress-short.flac");
+  const auto longSource = fixtures.directory.getChildFile("progress-long.flac");
+  constexpr int shortSamples = 2 * 1024 * 1024;
+  constexpr int longSamples = 32 * 1024 * 1024;
+  constexpr double fixtureRate = 48000.0;
+  auto writeNoise = [](const juce::File &file, const int frames) {
+    std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+    juce::FlacAudioFormat format;
+    auto writer = format.createWriterFor(
+        stream, juce::AudioFormatWriterOptions{}
+                    .withSampleRate(fixtureRate).withNumChannels(1)
+                    .withBitsPerSample(16));
+    expect(writer != nullptr, "create cold-load FLAC fixture writer");
+    juce::AudioBuffer<float> block(1, 8192);
+    juce::uint32 noise = 0x71a64b25;
+    for (int written = 0; written < frames;) {
+      const int count = juce::jmin(block.getNumSamples(), frames - written);
+      for (int i = 0; i < count; ++i) {
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        block.setSample(0, i,
+                        (static_cast<int>(noise & 0xffff) - 32768) / 32768.0f);
+      }
+      expect(writer->writeFromAudioSampleBuffer(block, 0, count),
+             "write actual cold-load FLAC samples");
+      written += count;
+    }
+  };
+  // Four real FLAC entries with different lengths keep extraction in flight
+  // after the first worker finishes. Noise avoids a tiny compressed fixture
+  // that could finish before any visible progress is meaningful on fast SSDs.
+  // Sources are streamed in 8K blocks; the test never allocates their PCM in RAM.
+  writeNoise(shortSource, shortSamples);
+  writeNoise(longSource, longSamples);
+  ProjectDocument document;
+  document.song.id = juce::Uuid().toString();
+  document.song.projectId = document.song.id;
+  document.song.title = "Cold extraction progress";
+  document.song.bpm = 96;
+  document.song.key = "C";
+  document.song.timeSignature = "4/4";
+  document.song.fileType = "FLAC";
+  for (int index = 0; index < 4; ++index) {
+    const bool shorter = index == 0;
+    const auto source = shorter ? shortSource : longSource;
+    ImportedStemData stem;
+    stem.stemId = "progress-stem-" + juce::String(index);
+    stem.displayName = "Progress stem " + juce::String(index);
+    stem.category = "Piano";
+    stem.include = true;
+    stem.sourcePath = source.getFullPathName();
+    stem.storedPath = stem.sourcePath;
+    stem.fileName = source.getFileName();
+    stem.sampleRate = static_cast<int>(fixtureRate);
+    stem.channels = 1;
+    stem.durationSec = (shorter ? shortSamples : longSamples) / fixtureRate;
+    document.song.stems.push_back(std::move(stem));
+  }
+  document.settings.tempoBpm = 96.0;
+  document.settings.window.endSec = longSamples / fixtureRate;
+  struct Cleanup {
+    juce::String projectId;
+    juce::File archive;
+    ~Cleanup() { ProjectStore::discardLocalState(projectId, archive); }
+  } cleanup{document.song.id, archive};
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error),
+         "save a real multi-stem package for cold extraction");
+  expect(!ProjectStore::getCacheDirectory(document.song.id).exists(),
+         "progress test starts without an extracted cache");
+
+  std::vector<double> updates;
+  const auto caller = std::this_thread::get_id();
+  bool callbacksUseCaller = true;
+  bool sawPartialExtraction = false;
+  ProjectDocument opened;
+  expect(ProjectStore::open(
+             archive, opened, &error, true,
+             [&](const double progress, const juce::String &) {
+               callbacksUseCaller = callbacksUseCaller &&
+                                    std::this_thread::get_id() == caller;
+               updates.push_back(progress);
+               sawPartialExtraction = sawPartialExtraction ||
+                                      (progress > 0.05 && progress < 0.95);
+             }),
+         "cold multi-stem package opens successfully");
+  expect(callbacksUseCaller,
+         "parallel extraction publishes all progress on the calling thread");
+  expect(sawPartialExtraction,
+         "cold extraction reports actual partial work before validation finishes");
+  expect(!updates.empty() && updates.front() == 0.0 && updates.back() == 1.0 &&
+             std::is_sorted(updates.begin(), updates.end()),
+         "cold-load progress is monotonic from start through successful completion");
+  expect(opened.song.stems.size() == document.song.stems.size(),
+         "progress reporting preserves every extracted stem");
+  for (size_t index = 0; index < opened.song.stems.size(); ++index) {
+    const juce::File extracted(opened.song.stems[index].storedPath);
+    const juce::File source(document.song.stems[index].storedPath);
+    expect(extracted.existsAsFile() && extracted.getSize() == source.getSize(),
+           "every extracted FLAC retains its complete real payload");
+  }
+}
+
 } // namespace
 
 int main() {
@@ -1055,6 +1162,7 @@ int main() {
     testMusicalWaveform(fixtures);
     runRoundtripAndFailureChecks(fixtures);
     testAutomaticLegacyStemStorage(fixtures);
+    testColdProjectExtractionProgress(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

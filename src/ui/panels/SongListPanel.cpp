@@ -2,21 +2,26 @@
 
 #include "SongImportWizardComponent.h"
 #include "../components/AppModal.h"
+#include "../components/SongLoadProgressOverlay.h"
 #include "../../PluginEditor.h"
 #include "../../data/AppSettings.h"
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongProjectCreation.h"
+#include "../../data/MobileImportStaging.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <utility>
 
-#if JUCE_ANDROID
-#include <jni.h>
-#include <juce_core/native/juce_JNIHelpers_android.h>
-#endif
+class ProjectOpenProgressOverlay final : public SongLoadProgressOverlay {
+public:
+  void parentSizeChanged() override {
+    if (auto *parent = getParentComponent())
+      setBounds(parent->getLocalBounds());
+  }
+};
 
 class SongWizardOverlay final : public juce::Component {
 public:
@@ -195,84 +200,39 @@ juce::File makeImportedProjectTarget(const juce::URL &url) {
 }
 
 juce::File importProjectUrlToSandbox(const juce::URL &url,
-                                     juce::String &error) {
-  error.clear();
-  const auto target = makeImportedProjectTarget(url);
-#if JUCE_ANDROID
-  auto *env = juce::getEnv();
-  const auto helper = env->FindClass("com/rmsl/juce/ProjectImport");
-  const auto copy = helper != nullptr
-                        ? env->GetStaticMethodID(
-                              helper, "copyToFile",
-                              "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Z")
-                        : nullptr;
-  if (copy == nullptr) {
-    env->ExceptionClear();
-    error = L10n::tr("No se pudo preparar la importación del proyecto.",
-                     "Couldn't prepare the project import.");
+                                     juce::String &error,
+                                     const MobileImportStaging::ProgressFn &progress) {
+  // Use the same provider-safe, byte-counted copy as song creation. Keeping
+  // the original URL alive retains the iOS bookmark / Android document grant.
+  MobileImportStaging staging;
+  const auto staged = staging.stage(url, error, progress);
+  if (staged == juce::File{})
+    return {};
+  const auto target = makeImportedProjectTarget(url).getNonexistentSibling();
+  juce::TemporaryFile temporary(target);
+  if (!staged.moveFileTo(temporary.getFile()) ||
+      !temporary.overwriteTargetFileWithTemporary()) {
+    error = L10n::tr("No se pudo guardar la copia local del proyecto.",
+                     "Couldn't store the local project copy.");
     return {};
   }
-
-  const auto source = env->NewStringUTF(url.toString(true).toRawUTF8());
-  const auto destination = env->NewStringUTF(target.getFullPathName().toRawUTF8());
-  const auto copied = env->CallStaticBooleanMethod(
-      helper, copy, juce::getAppContext().get(), source, destination) != 0;
-  env->DeleteLocalRef(source);
-  env->DeleteLocalRef(destination);
-  env->DeleteLocalRef(helper);
-  if (env->ExceptionCheck()) {
-    env->ExceptionClear();
-    error = L10n::tr("No se pudo acceder al archivo seleccionado desde Archivos.",
-                     "Couldn't access the selected file from Files.");
-    return {};
-  }
-  if (!copied) {
-    error = L10n::tr("No se pudo copiar el proyecto al almacenamiento local.",
-                     "Couldn't copy the project to local storage.");
-    return {};
-  }
-#else
-  auto input = url.createInputStream(
-      juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-          .withConnectionTimeoutMs(60000));
-  if (input == nullptr) {
-    error = L10n::tr(
-        "No se pudo acceder al archivo seleccionado desde Archivos.",
-        "Couldn't access the selected file from Files.");
-    return {};
-  }
-
-  auto output = target.createOutputStream();
-  if (output == nullptr) {
-    error = L10n::tr("No se pudo preparar la importación del proyecto.",
-                     "Couldn't prepare the project import.");
-    return {};
-  }
-
-  constexpr int64_t bufferSize = 256 * 1024;
-  juce::HeapBlock<char> buffer(static_cast<size_t>(bufferSize));
-  while (!input->isExhausted()) {
-    const auto bytesRead = input->read(buffer.getData(),
-                                       static_cast<int>(bufferSize));
-    if (bytesRead <= 0)
-      break;
-    if (!output->write(buffer.getData(), static_cast<size_t>(bytesRead))) {
-      error = L10n::tr("No se pudo copiar el proyecto al almacenamiento local.",
-                       "Couldn't copy the project to local storage.");
-      return {};
-    }
-  }
-
-  output->flush();
-#endif
-  if (!target.existsAsFile() || target.getSize() <= 0) {
-    error = L10n::tr("La copia local del proyecto quedó incompleta.",
-                     "The local project copy is incomplete.");
-    return {};
-  }
-
   return target;
 }
+
+struct ProjectImportResult final {
+  ProjectDocument document;
+  juce::String error;
+  juce::File importedCopy;
+  bool opened = false;
+  bool registered = false;
+  ~ProjectImportResult() {
+    // Only this request's private copy is disposable. Never delete the source
+    // document, an existing project cache or another library entry on failure.
+    if (!registered && importedCopy != juce::File{})
+      importedCopy.deleteFile();
+  }
+};
+
 } // namespace
 
 SongListPanel::SwipeHintHandle::SwipeHintHandle(
@@ -1044,7 +1004,12 @@ SongListPanel::SongListPanel() {
   showPage(viewMode == ViewMode::Setlists ? 0 : 1, false);
 }
 
-SongListPanel::~SongListPanel() = default;
+SongListPanel::~SongListPanel() {
+  if (projectImportCancelled)
+    projectImportCancelled->store(true);
+  if (projectOpenOverlay)
+    projectOpenOverlay->exitModalState(0);
+}
 
 void SongListPanel::setMinimalPhoneMode(const bool enabled) {
   if (minimalPhoneMode == enabled)
@@ -3711,7 +3676,7 @@ void SongListPanel::showLibraryCreationPage(
 }
 
 void SongListPanel::openProjectFileChooser() {
-  if (remoteLibrary) return;
+  if (remoteLibrary || isProjectImportInProgress()) return;
   // Some Windows native file dialogs hide every entry when filtering by an
   // application-specific extension that is not yet registered on the system.
   // Keep all files visible there, then enforce .pwproj in openProjectFile().
@@ -3733,87 +3698,170 @@ void SongListPanel::openProjectFileChooser() {
 }
 
 void SongListPanel::openProjectFileFromUrl(const juce::URL &url) {
-  if (url.isEmpty())
-    return;
-
-  const auto file = url.getLocalFile();
-  SessionAuthLogger::write("[ProjectOpenUI] picker url=" + url.toString(false) +
-                           " localPath=" + file.getFullPathName());
-
 #if JUCE_IOS || JUCE_ANDROID || MTCONTROLS_MAC_APP_STORE
-  juce::String importError;
-  const auto importedFile = importProjectUrlToSandbox(url, importError);
-  if (importedFile == juce::File{}) {
-    SessionAuthLogger::write("[ProjectOpenUI] import failed url=" +
-                             url.toString(false) + " error=\"" +
-                             importError + "\"");
-    juce::NativeMessageBox::showMessageBoxAsync(
-        juce::MessageBoxIconType::WarningIcon,
-        L10n::tr("No se pudo importar el proyecto", "Couldn't import project"),
-        importError);
-    return;
-  }
-
-  SessionAuthLogger::write("[ProjectOpenUI] imported url to path=" +
-                           importedFile.getFullPathName() + " size=" +
-                           juce::String(importedFile.getSize()));
-  openProjectFile(importedFile);
+  beginProjectImport(url, true);
 #else
-  openProjectFile(file);
+  beginProjectImport(url, false);
 #endif
 }
 
 void SongListPanel::openProjectFile(const juce::File &file) {
-  if (remoteLibrary) return;
-  SessionAuthLogger::write("[ProjectOpenUI] requested path=" +
-                           file.getFullPathName() + " exists=" +
-                           juce::String(file.existsAsFile() ? 1 : 0) +
-                           " size=" + juce::String(file.getSize()));
-  if (!file.existsAsFile()) {
-    SessionAuthLogger::write("[ProjectOpenUI] file missing path=" +
-                             file.getFullPathName());
-    juce::NativeMessageBox::showMessageBoxAsync(
-        juce::MessageBoxIconType::WarningIcon,
-        L10n::tr("Proyecto no encontrado", "Project not found"),
-        L10n::tr("El archivo seleccionado ya no existe o no está disponible.",
-                 "The selected file no longer exists or is unavailable."));
+  if (file != juce::File{})
+    beginProjectImport(juce::URL(file), false);
+}
+
+void SongListPanel::showProjectImportError(const juce::String &error) {
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  auto *host = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                 : static_cast<juce::Component *>(this);
+  const auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  appModal = std::make_unique<AppModal>(
+      *host, AppModal::Kind::Information,
+      L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"),
+      error.isNotEmpty() ? error
+                        : L10n::tr("No se pudo importar el proyecto seleccionado.",
+                                   "Couldn't import the selected project."),
+      L10n::tr("Entendido", "OK"), juce::String{}, nullptr);
+  appModal->onClosed = [safeThis] {
+    if (safeThis != nullptr) safeThis->appModal.reset();
+  };
+  appModal->show();
+}
+
+void SongListPanel::beginProjectImport(const juce::URL &url,
+                                      const bool copyToSandbox) {
+  if (url.isEmpty() || remoteLibrary || isProjectImportInProgress())
     return;
-  }
-  if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
-    SessionAuthLogger::write("[ProjectOpenUI] invalid extension path=" +
-                             file.getFullPathName());
-    juce::NativeMessageBox::showMessageBoxAsync(
-        juce::MessageBoxIconType::WarningIcon,
-        L10n::tr("Archivo no compatible", "Unsupported file"),
-        L10n::tr("Selecciona un proyecto con extensión .pwproj.",
-                 "Select a project with the .pwproj extension."));
-    return;
-  }
-  SessionAuthLogger::write("[ProjectOpenUI] opening path=" +
-                           file.getFullPathName());
-  ProjectDocument document;
-  juce::String error;
-  if (!ProjectStore::open(file, document, &error) ||
-      !SongLibraryStore::registerProjectSong(document.song)) {
-    SessionAuthLogger::write("[ProjectOpenUI] failed path=" +
-                             file.getFullPathName() + " error=\"" + error +
-                             "\" songId=" + document.song.id);
-    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-        L10n::tr("No se pudo abrir el proyecto", "Couldn't open project"), error);
-    return;
-  }
-  SessionAuthLogger::write("[ProjectOpenUI] success path=" +
-                           file.getFullPathName() + " songId=" +
-                           document.song.id + " stems=" +
-                           juce::String(static_cast<int>(document.song.stems.size())));
-  selectedSongId = document.song.id;
-  if (!remoteLibrary) AppSettings::setLastSelectedSongId(selectedSongId);
-  if (libraryTargetSetlistId.isNotEmpty())
-    SongLibraryStore::addSongToSetlist(libraryTargetSetlistId, selectedSongId);
-  refreshFromStorage();
-  if (onSongActivated != nullptr) {
-    const int index = getSongIndexById(selectedSongId);
-    onSongActivated(document.song, index);
+  auto *editor = findParentComponentOfClass<MTControlsAudioProcessorEditor>();
+  auto *host = editor != nullptr ? static_cast<juce::Component *>(editor)
+                                 : static_cast<juce::Component *>(this);
+  projectImportCancelled = std::make_shared<std::atomic<bool>>(false);
+  const auto cancelled = projectImportCancelled;
+  projectOpenOverlay = std::make_unique<ProjectOpenProgressOverlay>();
+  projectOpenOverlay->setTitleText(L10n::tr("Importando proyecto", "Importing project"));
+  projectOpenOverlay->setPhaseText(copyToSandbox
+      ? L10n::tr("Copiando proyecto...", "Copying project...")
+      : L10n::tr("Validando proyecto...", "Validating project..."));
+  projectOpenOverlay->setProgress(0.0);
+  host->addAndMakeVisible(*projectOpenOverlay);
+  projectOpenOverlay->setBounds(host->getLocalBounds());
+  projectOpenOverlay->setAlwaysOnTop(true);
+  projectOpenOverlay->enterModalState(true, nullptr, false);
+  const auto safeThis = juce::Component::SafePointer<SongListPanel>(this);
+  const auto targetSetlist = libraryTargetSetlistId;
+  const bool started = juce::Thread::launch(
+      [safeThis, url, copyToSandbox, cancelled, targetSetlist] {
+        const auto result = std::make_shared<ProjectImportResult>();
+        juce::uint32 lastReport = 0;
+        juce::String lastPhase;
+        const auto report = [&](double progress, const juce::String &phase) {
+          if (cancelled->load()) return;
+          const auto now = juce::Time::getMillisecondCounter();
+          if (phase == lastPhase && progress < 1.0 && now - lastReport < 33)
+            return;
+          lastReport = now;
+          lastPhase = phase;
+          juce::MessageManager::callAsync([safeThis, cancelled, progress, phase] {
+            if (safeThis == nullptr || cancelled->load() ||
+                safeThis->projectImportCancelled != cancelled ||
+                safeThis->projectOpenOverlay == nullptr) return;
+            safeThis->projectOpenOverlay->setProgress(progress);
+            safeThis->projectOpenOverlay->setPhaseText(phase);
+          });
+        };
+        try {
+          auto file = url.getLocalFile();
+          if (copyToSandbox) {
+            file = importProjectUrlToSandbox(url, result->error,
+                [&](double value) {
+                  report(0.25 * value,
+                         L10n::tr("Copiando proyecto...", "Copying project..."));
+                });
+            result->importedCopy = file;
+          }
+          if (cancelled->load()) return;
+          if (file == juce::File{} || !file.existsAsFile()) {
+            if (result->error.isEmpty())
+              result->error = L10n::tr(
+                  "El archivo seleccionado ya no existe o no está disponible.",
+                  "The selected file no longer exists or is unavailable.");
+          } else if (!file.hasFileExtension(ProjectStore::kFileExtension)) {
+            result->error = L10n::tr("Selecciona un proyecto con extensión .pwproj.",
+                                     "Select a project with the .pwproj extension.");
+          } else {
+            SessionAuthLogger::write("[ProjectOpenUI] background open path=" + file.getFullPathName());
+            const double start = copyToSandbox ? 0.25 : 0.0;
+            result->opened = ProjectStore::open(file, result->document, &result->error, true,
+                [&](double value, const juce::String &phase) {
+                  report(start + (0.95 - start) * value, phase);
+                });
+          }
+        } catch (const std::exception &error) {
+          result->error = juce::String::fromUTF8(error.what());
+        } catch (...) {
+          result->error = L10n::tr("No se pudo leer el proyecto.", "Couldn't read the project.");
+        }
+        juce::MessageManager::callAsync([safeThis, cancelled, targetSetlist, result] {
+          if (safeThis == nullptr || cancelled->load() ||
+              safeThis->projectImportCancelled != cancelled) return;
+          if (safeThis->remoteLibrary || !result->opened) {
+            safeThis->projectOpenOverlay->exitModalState(0);
+            safeThis->projectOpenOverlay.reset();
+            if (!safeThis->remoteLibrary) safeThis->showProjectImportError(result->error);
+            return;
+          }
+          // The library is a read-modify-write store. Register on its normal
+          // message thread, never on the extraction worker.
+          safeThis->projectOpenOverlay->setProgress(0.96);
+          safeThis->projectOpenOverlay->setPhaseText(
+              L10n::tr("Agregando a Biblioteca...", "Adding to Library..."));
+          if (!SongLibraryStore::registerProjectSong(result->document.song)) {
+            safeThis->projectOpenOverlay->exitModalState(0);
+            safeThis->projectOpenOverlay.reset();
+            safeThis->showProjectImportError(L10n::tr(
+                "No se pudo registrar el proyecto en Biblioteca.",
+                "Couldn't register the project in Library."));
+            return;
+          }
+          result->registered = true;
+          safeThis->selectedSongId = result->document.song.id;
+          AppSettings::setLastSelectedSongId(safeThis->selectedSongId);
+          if (targetSetlist.isNotEmpty())
+            SongLibraryStore::addSongToSetlist(targetSetlist, safeThis->selectedSongId);
+          safeThis->refreshFromStorage();
+          safeThis->projectOpenOverlay->setProgress(0.98);
+          safeThis->projectOpenOverlay->setPhaseText(
+              L10n::tr("Preparando reproducción...", "Preparing playback..."));
+          // Give the final phase a normal message-loop turn before applying
+          // the existing song/audio transition; no nested dispatch in extraction.
+          juce::MessageManager::callAsync([safeThis, cancelled, result] {
+            if (safeThis == nullptr || cancelled->load() ||
+                safeThis->projectImportCancelled != cancelled) return;
+            const int index = safeThis->getSongIndexById(result->document.song.id);
+            if (safeThis->onProjectActivated)
+              safeThis->onProjectActivated(std::move(result->document), index);
+            else if (safeThis->onSongActivated)
+              safeThis->onSongActivated(result->document.song, index);
+            if (safeThis == nullptr || cancelled->load() ||
+                safeThis->projectImportCancelled != cancelled) return;
+            safeThis->projectOpenOverlay->setProgress(1.0);
+            safeThis->projectOpenOverlay->setPhaseText(
+                L10n::tr("Proyecto listo", "Project ready"));
+            juce::Timer::callAfterDelay(100, [safeThis, cancelled] {
+              if (safeThis == nullptr || cancelled->load() ||
+                  safeThis->projectImportCancelled != cancelled ||
+                  safeThis->projectOpenOverlay == nullptr) return;
+              safeThis->projectOpenOverlay->exitModalState(0);
+              safeThis->projectOpenOverlay.reset();
+            });
+          });
+        });
+      });
+  if (!started) {
+    projectOpenOverlay->exitModalState(0);
+    projectOpenOverlay.reset();
+    showProjectImportError(L10n::tr("No se pudo iniciar la importación.",
+                                    "Couldn't start the import."));
   }
 }
 
@@ -4393,6 +4441,13 @@ void SongListPanel::refreshFromStorage() {
 }
 
 void SongListPanel::setRemoteLibrary(std::shared_ptr<const LibraryState> library) {
+  if (library != nullptr && projectImportCancelled) {
+    projectImportCancelled->store(true);
+    if (projectOpenOverlay) {
+      projectOpenOverlay->exitModalState(0);
+      projectOpenOverlay.reset();
+    }
+  }
   remoteLibrary = std::move(library);
   libraryCatalogPanel.onRemoteAction = onRemoteAction;
   refreshFromStorage();

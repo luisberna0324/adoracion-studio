@@ -10,6 +10,7 @@
 #include <JuceHeader.h>
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <array>
@@ -19,6 +20,7 @@
 class SongImportWizardComponent;
 class SongWizardOverlay;
 class AppModal;
+class ProjectOpenProgressOverlay;
 
 class SongListPanel final : public juce::Component, private juce::Timer {
 public:
@@ -53,6 +55,10 @@ public:
 
   void setOnSongActivated(
       std::function<void(const ImportedSongData &, int)> cb);
+  void setOnProjectActivated(std::function<void(ProjectDocument, int)> cb) {
+    onProjectActivated = std::move(cb);
+  }
+  bool isProjectImportInProgress() const { return projectOpenOverlay != nullptr; }
   void setOnSongEditStarted(std::function<void(const juce::String &)> cb);
   void setOnSongEdited(
       std::function<void(const ImportedSongData &, int)> cb);
@@ -232,6 +238,8 @@ private:
   void showSongImportOverlay(std::unique_ptr<SongImportWizardComponent> panel);
   void openProjectFileChooser();
   void openProjectFileFromUrl(const juce::URL &url);
+  void beginProjectImport(const juce::URL &url, bool copyToSandbox);
+  void showProjectImportError(const juce::String &error);
   void openSongEditWizard(const juce::String &songId);
   void beginLegacySongConversion(const juce::String &songId);
   void convertLegacySongAtDestination(const juce::String &songId,
@@ -331,6 +339,7 @@ private:
   };
   std::unordered_map<std::string, CloudUploadIndicator> cloudUploadIndicators;
   std::function<void(const ImportedSongData &, int)> onSongActivated;
+  std::function<void(ProjectDocument, int)> onProjectActivated;
   std::function<void(const juce::String &)> onSongEditStarted;
   std::function<void(const ImportedSongData &, int)> onSongEdited;
   std::function<void(const juce::String &)> onSetlistNameChanged;
@@ -355,4 +364,6 @@ private:
   std::unique_ptr<SongImportWizardComponent> libraryCreationWizard;
   std::unique_ptr<juce::FileChooser> projectFileChooser;
   std::unique_ptr<juce::FileChooser> projectConversionFileChooser;
+  std::unique_ptr<ProjectOpenProgressOverlay> projectOpenOverlay;
+  std::shared_ptr<std::atomic<bool>> projectImportCancelled;
 };

@@ -105,6 +105,12 @@ como `ClickDynMixSnapshot`. El origen es la biblioteca para canciones legacy
 y `ProjectSongSettings` para `.pwproj`; los cambios observados en el processor
 también se persisten para cubrir controles externos a la interacción de UI.
 
+Al cargar la canción, `applySongOutputRoutingDefaults` aplica después la tabla
+de Ruteo del dispositivo a Click Dyn y al stem Click reconocido por su
+nombre/categoría/archivo. No se restaura nuevamente el canal/ancho del snapshot
+sobre esa tabla; el Mono seleccionado se conserva también cuando no hay un stem
+Click. El resto de los valores del snapshot mantiene su restauración habitual.
+
 ### Mute
 
 ```cpp

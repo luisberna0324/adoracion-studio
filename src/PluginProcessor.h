@@ -248,6 +248,11 @@ public:
   int getStemOutputChannel(int stemIndex) const noexcept;
   void setStemOutputWidth(int stemIndex, int width) noexcept;
   int getStemOutputWidth(int stemIndex) const noexcept;
+  // Control thread: apply the current device's routes after restoring a song's
+  // mix. Click/guide sources use the same identity as their dynamic buses.
+  void applySongOutputRoutingDefaults(
+      const ImportedSongData &song,
+      const std::vector<CategoryRoutingDefaults> &defaults);
   juce::StringArray getAvailableOutputChannelNames() const;
   int getAvailableOutputChannelCount() const noexcept;
   AppAudioMode getCurrentAudioMode() const noexcept;
