@@ -12,8 +12,10 @@ Codex Cloud inicia y coordina QA de app/backend sobre una revisión fijada.
 Ejecutar allí todos los tests que sus dependencias permitan y guardar resultados
 por SHA. Los targets no disponibles se marcan BLOCKED; complementar Apple,
 Windows y hardware en sus entornos y devolver esos logs al informe Cloud.
-Solo cuando ese informe esté completo decidir si hace falta generar una release.
-Subir código o activar releases requiere aprobación concreta adicional.
+Ese informe permite decidir si una release esta lista para publicarse. La
+generacion manual de instaladores puede usarse para preparar su validacion;
+no declara ni certifica QA de las plataformas. Subir codigo o activar releases
+requiere aprobacion concreta adicional.
 
 ## Pipeline local complementario del mismo SHA
 
@@ -62,11 +64,12 @@ sustituyen. Los tests interactivos y LAN mantienen su validación específica.
 
 ## Solicitar release
 
-1. Completar el informe principal de QA en Codex Cloud con evidencia nativa complementaria y revisar blockers para el SHA exacto y plataformas.
-2. Tras aprobación, disparar manualmente ci.yml con ref (preferir SHA completo),
-   qa_sha completo y qa_confirmed=true. El resolver fija la revisión y falla
-   antes de la matriz si no coincide con QA. La confirmación es una declaración
-   del operador; no ejecuta ni certifica QA automáticamente.
+1. Para generar instaladores, seleccionar la revision de app que se quiere
+   construir. Antes de publicar, revisar la evidencia de QA y los blockers del
+   SHA exacto y las plataformas correspondientes.
+2. Tras aprobacion, disparar manualmente ci.yml con ref (preferir SHA completo)
+   y release_kind. El resolver fija la revision; no exige qa_sha ni
+   qa_confirmed y la generacion no ejecuta ni certifica QA automaticamente.
 3. retain_artifacts=true autoriza guardar instaladores en artefactos del run
    GitHub por siete días (almacenamiento facturable según presupuesto).
    publish_release=false genera instaladores sin uploads Sentry/GCS, cleanup,
