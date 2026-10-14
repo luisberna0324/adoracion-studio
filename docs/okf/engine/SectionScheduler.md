@@ -11,6 +11,12 @@ timestamp: 2026-10-03T00:00:00Z
 
 Gestiona secciones de arrange musical. Permite definir partes, loops, jumps y transiciones entre secciones.
 
+Sus índices pertenecen exclusivamente al snapshot compilado de audio. El
+procesador resuelve las órdenes de UI/remoto por ID estable de ocurrencia antes
+de convertirlas a esos índices, rechazando IDs ambiguos y destinos fuera de
+`maxSections`. El cambio no altera la evaluación ni el momento musical del
+loop/salto; ver [Control remoto](../integrations/RemoteControl.md).
+
 ## Namespace
 
 ```cpp

@@ -91,11 +91,18 @@ public:
   explicit BasicPlaybackSession(Processor &p) : local(p) {}
   bool isRemote() const { return remote; }
   bool isConnected() const { return connected; }
-  void setRemote(bool enabled) { cancelPracticeScrub(false); releasePracticeLoop(); clearSectionAutomationOwnership(); remote = enabled; connected = false; state = juce::var(); meters = juce::var(); includedStemIds.clear(); pendingControls.clear(); clearPracticeListeningOwnership(); clearPracticeLoopOwnership(); position = frozenPosition = receivedAt = 0; }
+  void setRemote(bool enabled) {
+    cancelPracticeScrub(false); releasePracticeLoop(); clearSectionAutomationOwnership(); clearArrangementControl();
+    arrangementControlViewBound = false;
+    arrangementControlViewSongId.clear(); arrangementControlViewRevision.clear();
+    remote = enabled; connected = false; state = juce::var(); meters = juce::var();
+    includedStemIds.clear(); pendingControls.clear(); clearPracticeListeningOwnership(); clearPracticeLoopOwnership();
+    position = frozenPosition = receivedAt = 0;
+  }
   void setConnected(bool enabled) {
     if (!enabled && connected) frozenPosition = getSongCurrentPositionSeconds();
     connected = enabled;
-    if (!enabled) { clearPracticeScrub(); clearPracticeLoopOwnership(); clearSectionAutomationOwnership(); meters = juce::var(); pendingControls.clear(); clearPracticeListeningOwnership(); }
+    if (!enabled) { clearPracticeScrub(); clearPracticeLoopOwnership(); clearSectionAutomationOwnership(); clearArrangementControl(); meters = juce::var(); pendingControls.clear(); clearPracticeListeningOwnership(); }
   }
   std::function<bool()> sectionAutomationCanEdit;
   std::function<bool(int)> sectionAutomationStemCanEdit;
@@ -130,6 +137,12 @@ public:
   }
   void applyAcknowledgement(const juce::String &id, bool accepted,
                             const juce::String &reason = {}) {
+    if (id.isNotEmpty() && id == arrangementControlCommandId) {
+      if (!accepted) {
+        arrangementControlPending = false;
+        arrangementControlError = reason.isEmpty() ? "The section request was not accepted" : reason;
+      } else arrangementControlAckSequence = static_cast<juce::int64>(field(state, "seq"));
+    }
     if (id.isNotEmpty() && id == sectionAutomationCommandId) {
       if (!accepted) clearSectionAutomationOwnership();
       else sectionAutomationAcknowledgedAtSequence = static_cast<juce::int64>(field(state, "seq"));
@@ -165,9 +178,12 @@ public:
       pendingControls.clear();
       clearPracticeListeningOwnership();
       clearSectionAutomationOwnership();
+      clearArrangementControl();
     }
     const auto sequence = static_cast<juce::int64>(field(next, "seq"));
     const auto now = juce::Time::getMillisecondCounterHiRes();
+    if (arrangementControlAckSequence >= 0 && sequence > arrangementControlAckSequence)
+      arrangementControlPending = false;
     if (sectionAutomationPending &&
         (now >= sectionAutomationExpiresAt ||
          (sectionAutomationAcknowledgedAtSequence >= 0 && sequence > sectionAutomationAcknowledgedAtSequence)))
@@ -368,6 +384,41 @@ public:
   }
   int getPendingArrangementPartJumpIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getPendingArrangementPartJumpIndex")) : local.getPendingArrangementPartJumpIndex(); }
   int getArrangementPartLoopIndex() const { return remote ? static_cast<int>(field(field(state, "ui"), "getArrangementPartLoopIndex")) : local.getArrangementPartLoopIndex(); }
+  // Bind to the arrangement actually installed in the UI. Snapshots can be
+  // applied to the session while a pointer gesture defers the visual update.
+  void setArrangementControlView(const juce::String &songId, const juce::String &revision) {
+    arrangementControlViewBound = true;
+    arrangementControlViewSongId = songId; arrangementControlViewRevision = revision;
+  }
+  bool isArrangementControlView(const juce::String &songId, const juce::String &revision) const {
+    return arrangementControlViewBound && arrangementControlViewSongId == songId &&
+           arrangementControlViewRevision == revision;
+  }
+  juce::String getPendingArrangementPartJumpId() const {
+    if (remote && !hasCurrentArrangementControlView()) return {};
+    return remote ? field(field(state, "sectionControls"), "pendingPartId").toString()
+                  : local.getArrangementPartId(local.getPendingArrangementPartJumpIndex());
+  }
+  juce::String getPreparingArrangementPartJumpId() const {
+    if (remote && !hasCurrentArrangementControlView()) return {};
+    return remote ? field(field(state, "sectionControls"), "preparingPartId").toString()
+                  : local.getArrangementPartId(local.getPreparingArrangementPartJumpIndex());
+  }
+  juce::String getArrangementPartLoopId() const {
+    if (remote && !hasCurrentArrangementControlView()) return {};
+    return remote ? field(field(state, "sectionControls"), "loopPartId").toString()
+                  : local.getArrangementPartId(local.getArrangementPartLoopIndex());
+  }
+  bool isArrangementControlPending(const juce::String &partId) const {
+    return remote && connected && partId == arrangementControlPartId &&
+           arrangementControlPending && juce::Time::getMillisecondCounterHiRes() < arrangementControlExpiresAt;
+  }
+  juce::String getArrangementControlError(const juce::String &partId) const {
+    if ((remote && !connected) || partId != arrangementControlPartId) return {};
+    if (arrangementControlPending && juce::Time::getMillisecondCounterHiRes() >= arrangementControlExpiresAt)
+      return "The section request timed out; try again";
+    return arrangementControlError;
+  }
   bool isPracticeLoopActive() const {
     if (!remote) return local.isPracticeLoopActive();
     return connected && ((!practiceLoopPendingRange.isEmpty() && hasPendingPracticeLoop()) ||
@@ -587,12 +638,18 @@ public:
   void setSongStartSeconds(double value) { if (remote) send("window.start", value); else local.setSongStartSeconds(value); }
   void setSongEndSeconds(double value) { if (remote) send("window.end", value); else local.setSongEndSeconds(value); }
   void setSongFadeOutSeconds(double value) { if (remote) send("window.fade", value); else local.setSongFadeOutSeconds(value); }
-  void requestArrangementPartJump(int value) { if (remote) send("arrange.jump", value); else local.requestArrangementPartJump(value); }
-  void toggleArrangementPartLoop(int value) { if (remote) send("arrange.loop", value); else local.toggleArrangementPartLoop(value); }
+  bool requestArrangementPartJumpById(const juce::String &partId) {
+    return remote ? sendArrangementControl("arrange.jumpById", partId)
+                  : noteLocalArrangementControl(local.requestArrangementPartJumpById(partId), partId);
+  }
+  bool toggleArrangementPartLoopById(const juce::String &partId) {
+    return remote ? sendArrangementControl("arrange.loopById", partId)
+                  : noteLocalArrangementControl(local.toggleArrangementPartLoopById(partId), partId);
+  }
   void toggleSongPlayPause() { if (remote) send("transport.toggle"); else local.toggleSongPlayPause(); }
   void stopSong() { if (remote) send("transport.stop"); else local.stopSong(); }
-  void clearPendingArrangementPartJump() { if (remote) send("arrange.clearJump"); else local.clearPendingArrangementPartJump(); }
-  void clearArrangementPartLoop() { if (remote) send("arrange.clearLoop"); else local.clearArrangementPartLoop(); }
+  void clearPendingArrangementPartJump() { if (remote) sendArrangementControl("arrange.clearJumpById", {}); else local.clearPendingArrangementPartJump(); }
+  void clearArrangementPartLoop() { if (remote) sendArrangementControl("arrange.clearLoopById", {}); else local.clearArrangementPartLoop(); }
   void seekSongTo(double seconds) { if (remote) send("transport.seek", seconds); else local.seekSongTo(seconds); }
   void seekSongRelative(double seconds) { seekSongTo(getSongCurrentPositionSeconds() + seconds); }
   // A second drag during settling keeps the same lease and original intent.
@@ -695,6 +752,51 @@ private:
                name.contains("guia") || name.contains("guide") || name.contains("cue"));
     }
     return false;
+  }
+  juce::String arrangementControlCommandId, arrangementControlPartId, arrangementControlError;
+  bool arrangementControlViewBound = false;
+  juce::String arrangementControlViewSongId, arrangementControlViewRevision;
+  bool hasCurrentArrangementControlView() const {
+    return !arrangementControlViewBound || isArrangementControlView(
+        field(field(state, "song"), "id").toString(), field(field(state, "sectionControls"), "revision").toString());
+  }
+  bool arrangementControlPending = false;
+  double arrangementControlExpiresAt = 0.0;
+  juce::int64 arrangementControlAckSequence = -1;
+  void clearArrangementControl() {
+    arrangementControlCommandId.clear(); arrangementControlPartId.clear(); arrangementControlError.clear();
+    arrangementControlPending = false; arrangementControlAckSequence = -1;
+  }
+  bool noteLocalArrangementControl(bool accepted, const juce::String &partId) {
+    clearArrangementControl(); arrangementControlPartId = partId;
+    if (!accepted) arrangementControlError = "The section is unavailable; select another section";
+    return accepted;
+  }
+  bool sendArrangementControl(const juce::String &action, const juce::String &partId) {
+    clearArrangementControl();
+    arrangementControlPartId = partId;
+    if (!connected) return false;
+    if (partId.isEmpty() && (action == "arrange.jumpById" || action == "arrange.loopById")) {
+      arrangementControlError = "The section is unavailable; select another section";
+      return false;
+    }
+    const auto controls = field(state, "sectionControls");
+    const auto song = field(field(state, "song"), "id").toString();
+    const auto version = field(controls, "v");
+    if (!version.isInt() || static_cast<int>(version) != 1 ||
+        !field(controls, "songId").isString() || field(controls, "songId").toString() != song ||
+        !field(controls, "revision").isString() || field(controls, "revision").toString().isEmpty()) {
+      arrangementControlError = "Update the server app to control sections safely";
+      return false;
+    }
+    auto *payload = new juce::DynamicObject();
+    payload->setProperty("songId", arrangementControlViewBound ? arrangementControlViewSongId : song);
+    payload->setProperty("revision", arrangementControlViewBound ? juce::var(arrangementControlViewRevision) : field(controls, "revision"));
+    arrangementControlCommandId = send(action, juce::var(payload), partId);
+    arrangementControlPending = arrangementControlCommandId.isNotEmpty();
+    if (!arrangementControlPending) arrangementControlError = "The section request was not accepted";
+    arrangementControlExpiresAt = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    return arrangementControlPending;
   }
   juce::String sectionAutomationCommandId, sectionAutomationPendingPartId;
   bool sectionAutomationPending = false;

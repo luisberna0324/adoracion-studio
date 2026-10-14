@@ -730,7 +730,7 @@ processor.setSongArrangement(arrangement, true);
 processor.playSong();
 
 // Saltar a chorus
-processor.requestArrangementPartJump(2);
+processor.requestArrangementPartJumpById("chorus-2");
 ```
 
 ## Archivos relacionados
@@ -746,6 +746,14 @@ procesador local o al estado autoritativo del servidor. El cliente extrapola
 como máximo 250 ms entre mensajes de posición y congela al desconectar. Los
 comandos solo se aceptan tras recibir el snapshot inicial; no hay una segunda
 vista de transporte. Ver [Control remoto](../integrations/RemoteControl.md).
+
+Las acciones e indicadores de sección se resuelven por ID de ocurrencia, no
+por el índice de la metadata. El procesador conserva índices internos para el
+scheduler, devuelve aceptación booleana y rechaza antes de cambiar intenciones
+un ID ausente/duplicado, fuera del límite reproducible o de una revisión vieja.
+La UI traduce el ID confirmado a su propio orden; la compilación del runtime
+puede ordenar o filtrar partes sin dirigir Ir/Loop a otra tarjeta. Los métodos
+por índice del procesador conservan su uso interno y también devuelven aceptación.
 
 ### Transporte de indicaciones independientes
 

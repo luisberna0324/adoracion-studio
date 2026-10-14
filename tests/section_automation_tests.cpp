@@ -3,6 +3,7 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
 #include "ui/panels/PadsComponent.h"
+#include "network/SectionControl.h"
 
 #include <atomic>
 #include <cmath>
@@ -214,6 +215,37 @@ struct ProcessorFixture {
   }
 };
 
+void testStableSectionControlIdentity() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  auto arrangement = p.getSongArrangementSnapshot();
+  auto longChorus = arrangement.parts[1], shortChorus = longChorus;
+  longChorus.id = "chorus-long"; longChorus.endSec = 6.0;
+  shortChorus.id = "chorus-short"; shortChorus.endSec = 4.0;
+  arrangement.parts = {arrangement.parts[0], longChorus, shortChorus};
+  p.setSongArrangement(arrangement, false);
+  expect(p.getArrangementPartId(1) == "chorus-short" && p.getArrangementPartId(2) == "chorus-long",
+         "native runtime sorts equal starts independently of UI metadata order");
+  const auto revision = p.getArrangementControlRevision();
+  expect(p.toggleArrangementPartLoopById("chorus-long", revision) && p.getArrangementPartLoopIndex() == 2,
+         "native stable ID selects the intended repeated occurrence");
+  const auto transportRevision = p.getTransportControlRevision();
+  expect(!p.requestArrangementPartJump(-1) && !p.toggleArrangementPartLoop(256) &&
+         !p.requestArrangementPartJumpById("missing", revision) &&
+         p.getArrangementPartLoopIndex() == 2 && p.getTransportControlRevision() == transportRevision,
+         "invalid native destinations reject before changing valid intents");
+  arrangement.parts[0].muteInstruments = true;
+  p.setSongArrangement(arrangement, false);
+  expect(!p.toggleArrangementPartLoopById("chorus-long", revision), "native revision rejects a superseded arrangement");
+  juce::String error;
+  auto request = juce::JSON::parse(R"({"songId":"other-song","revision":""})");
+  request.getDynamicObject()->setProperty("revision", p.getArrangementControlRevision());
+  expect(!playworship::remote::applySectionControl(p, "song", false, "arrange.jumpById", request, "verse", error),
+         "shared dispatcher rejects another song with the real processor");
+  arrangement.parts.push_back(arrangement.parts[0]);
+  p.setSongArrangement(arrangement, false);
+  expect(!p.requestArrangementPartJumpById("verse"), "native runtime rejects duplicate IDs");
+}
+
 void testDraftSaveCancelAndBaseMix() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
   p.playSong();
@@ -352,8 +384,8 @@ void testJumpIntentSurvivesLoopBlocks() {
   p.setSongArrangement(arrangement, true);
   p.setStemVolume(1, 0.4f);
   fixture.seekAndWait(2.5); p.playSong(); fixture.waitForPendingSeek();
-  p.toggleArrangementPartLoop(1);
-  p.requestArrangementPartJump(0);
+  p.toggleArrangementPartLoopById("chorus");
+  p.requestArrangementPartJumpById("verse");
   expect(p.getPreparingArrangementPartJumpIndex() == 0 && p.getPendingArrangementPartJumpIndex() == -1 && p.getArrangementPartLoopIndex() == 1, "preparation preserves Loop and has no confirmed queue");
   expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "backward target prepares");
   fixture.block();
@@ -997,6 +1029,7 @@ int main() {
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
   run("bounded coherent timeline selection", testTimelineSelectionAndPublication);
+  run("stable section identity and rejected native controls", testStableSectionControlIdentity);
   run("sparse draft save cancel base and remote-ready state", testDraftSaveCancelAndBaseMix);
   run("audio section boundary and smoothed mix targets", testAudioBoundaryAndRamp);
   run("long callbacks cross every section and annotation gap", testLongBlockMultipleSectionEdges);

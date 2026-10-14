@@ -420,6 +420,15 @@ if(MTCONTROLS_BUILD_TESTS)
         juce::juce_core juce::juce_data_structures juce::juce_cryptography
         ixwebsocket::ixwebsocket)
     add_test(NAME remote_session COMMAND MTControlsRemoteSessionTests)
+    juce_add_console_app(MTControlsRemoteSectionControlTests PRODUCT_NAME "Remote Section Control Tests")
+    target_sources(MTControlsRemoteSectionControlTests PRIVATE
+        tests/remote_section_control_tests.cpp src/network/LanDiscovery.cpp
+        src/network/RemoteSession.cpp src/audio/SectionScheduler.cpp)
+    juce_generate_juce_header(MTControlsRemoteSectionControlTests)
+    target_include_directories(MTControlsRemoteSectionControlTests PRIVATE src)
+    target_link_libraries(MTControlsRemoteSectionControlTests PRIVATE
+        juce::juce_core juce::juce_data_structures juce::juce_cryptography ixwebsocket::ixwebsocket)
+    add_test(NAME remote_section_control COMMAND MTControlsRemoteSectionControlTests)
     if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
         juce_add_console_app(MTControlsPortableRemoteSessionTests PRODUCT_NAME "Portable Remote Session Tests")
         target_sources(MTControlsPortableRemoteSessionTests PRIVATE
