@@ -107,10 +107,6 @@ bool save(ImportedSongData song, juce::String &errorMessage,
   if (document.song.blankSong) {
     document.settings.arrangement = document.song.arrangement;
     document.settings.arrangementCustomized = !document.song.arrangement.parts.empty();
-    document.settings.blankPadEnabled = document.song.blankPadEnabled;
-    document.settings.clickDynMix.metronomeEnabled = document.song.blankClickEnabled;
-    document.settings.clickDynMix.divisionMask = 1;
-    document.settings.clickDynMix.enabled = true;
   }
   document.settings.window.fadeOutSec = juce::jmin(1.0, document.settings.window.endSec);
   for (const auto &stem : document.song.stems) {
@@ -120,18 +116,20 @@ bool save(ImportedSongData song, juce::String &errorMessage,
     mix.stemId = stem.stemId;
     document.settings.mix.stems.push_back(mix);
   }
-  if (progress) {
-    progress(0.05, L10n::tr(u8"Generando forma de onda...",
-                            "Generating waveform preview..."));
+  if (!document.song.blankSong) {
+    if (progress) {
+      progress(0.05, L10n::tr(u8"Generando forma de onda...",
+                              "Generating waveform preview..."));
+    }
+    document.waveformBins = buildMixedWaveformBins(
+        document.song, kWaveformPreviewBinCount,
+        [&progress](const double waveformProgress) {
+          if (progress)
+            progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
+                     L10n::tr(u8"Generando forma de onda...",
+                              "Generating waveform preview..."));
+        });
   }
-  document.waveformBins = buildMixedWaveformBins(
-      document.song, kWaveformPreviewBinCount,
-      [&progress](const double waveformProgress) {
-        if (progress)
-          progress(0.05 + 0.15 * juce::jlimit(0.0, 1.0, waveformProgress),
-                   L10n::tr(u8"Generando forma de onda...",
-                            "Generating waveform preview..."));
-      });
   juce::String importError;
   const bool packaged = ProjectStore::save(
       document, selectedDestination, &importError, nullptr,

@@ -289,7 +289,6 @@ public:
   double getPadsCrossfadeDurationSeconds() const noexcept;
   void beginPadsSongTransitionFadeOut() noexcept;
   void beginPadsSongTransitionFadeIn() noexcept;
-  void configureBlankSongPad(bool enabled, int noteIndex);
   void triggerPadNote(int noteIndex, int octave);
   void triggerPadNoteForSongTransition(int noteIndex, int octave);
   void stopPadNote(int noteIndex);

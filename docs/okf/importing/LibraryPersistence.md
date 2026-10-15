@@ -172,5 +172,8 @@ libre. No se infiere a partir de `stems: []`; las referencias antiguas sin
 archivos conservan su significado. `ProjectStore` permite un paquete sin audio
 sólo si este contrato es válido. No incluye `audio/` ni `waveform.bin`.
 Las secciones, IDs y automatización usan el codec existente. La preferencia
-opcional `settings.blankPadEnabled` acompaña a click/mezcla en el paquete y
-sidecar y se conserva al actualizar los demás controles.
+opcional histórica `settings.blankPadEnabled` sigue leyéndose y conservándose
+en paquete/sidecar por compatibilidad con el prototipo `11f804d`; la creación
+simplificada no la añade ni la aplica como un control distinto del pad global.
+Los campos históricos `clickEnabled`/`padEnabled` no reemplazan los ajustes
+habituales del reproductor. El botón nuevo guarda cero compases y arreglo vacío.

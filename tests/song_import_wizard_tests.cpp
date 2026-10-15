@@ -137,80 +137,79 @@ struct SongImportWizardTestAccess {
   using Step = Wizard::Step;
 
   static void testBlankCreation(const AudioFixtures &files) {
-    int dismissed = 0;
+    int dismissed = 0, destinations = 0;
     juce::String saveError;
     const auto destination = files.directory.getChildFile("blank-wizard.pwproj");
     Wizard wizard([&](ImportedSongData song, juce::String &error, const SongImportProgressFn &progress) {
       const bool ok = SongProjectCreation::save(std::move(song), error, progress);
       saveError = error; return ok;
     }, Wizard::Mode::Import, {}, [&](const auto &, juce::File &out, auto &) {
-      out = destination; return true;
+      ++destinations; out = destination; return true;
     });
     wizard.setEmbeddedLibraryPage(true);
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
-    wizard.songKindBox.setSelectedId(2, juce::sendNotificationSync);
-    wizard.setSize(390, 760);
-    expect(wizard.blankClickButton.isVisible() && wizard.blankPadButton.isVisible(), "blank creation exposes independent accompaniment controls");
-    wizard.blankClickButton.setToggleState(false, juce::dontSendNotification);
-    wizard.blankPadButton.setToggleState(true, juce::dontSendNotification);
-    wizard.nextButton.onClick();
-    expect(wizard.currentStep == Step::Stems && wizard.blankFormBox.isVisible() && !wizard.addFilesButton.isVisible(), "blank flow goes to form without requiring files");
-    wizard.nextButton.onClick();
-    expect(wizard.currentStep == Step::Review && wizard.buildSongData().blankSongBars == 0, "free blank reaches review with no stems or artificial duration");
-    wizard.backButton.onClick();
-    expect(wizard.currentStep == Step::Stems, "blank Back returns to form without a mapping step");
-    wizard.blankFormBox.setSelectedId(2, juce::sendNotificationSync);
-    wizard.addBlankSectionButton.onClick();
-    auto *row = wizard.blankSectionsContent.getChildComponent(1);
-    expect(row != nullptr, "Add section creates a second row");
-    auto *name = dynamic_cast<juce::TextEditor *>(row->getChildComponent(0));
-    auto *bars = dynamic_cast<juce::TextEditor *>(row->getChildComponent(1));
-    expect(name && bars, "section uses native text controls for name and bars");
-    name->setText("Verso"); bars->setText("8");
     for (int width : {320, 390, 768, 1200}) {
       wizard.setSize(width, 760);
-      expect(wizard.blankSectionsViewport.isVisible() && row->getWidth() > 240 && name->getWidth() > 70 &&
-          wizard.blankSectionsViewport.getBounds().getBottom() <= wizard.addBlankSectionButton.getY(),
-          "blank section rows fit phone, tablet and desktop without overlapping Add");
+      expect(wizard.currentStep == Step::Metadata && wizard.createBlankSongButton.isVisible(),
+             "existing metadata step exposes the direct blank-song action");
+      expectInside(wizard.createBlankSongButton, wizard.getLocalBounds(),
+                   "blank-song action fits phone, tablet and desktop");
+      expect(wizard.createBlankSongButton.getHeight() >= 44 &&
+          wizard.metadataViewport.getBottom() <= wizard.createBlankSongButton.getY() &&
+          wizard.createBlankSongButton.getBottom() <= wizard.nextButton.getY(),
+          "blank-song action has a touch target without overlapping metadata or footer");
     }
-    wizard.setSize(390, 760);
-    const auto capture = juce::SystemStats::getEnvironmentVariable("PW_BLANK_CAPTURE_DIR", {});
-    if (capture.isNotEmpty()) {
-      juce::File directory(capture); directory.createDirectory();
-      for (int width : {390, 768, 1200}) {
-        wizard.setSize(width, 760);
-        auto image = wizard.createComponentSnapshot(wizard.getLocalBounds());
-        const auto output = directory.getChildFile("blank-form-" + juce::String(width) + ".png");
-        output.deleteFile();
-        juce::FileOutputStream stream(output);
-        expect(stream.openedOk() && juce::PNGImageFormat().writeImageToStream(image, stream), "native blank form snapshot writes");
-      }
-    }
-    wizard.nextButton.onClick();
-    const auto draft = wizard.buildSongData();
-    expect(wizard.currentStep == Step::Review && draft.stems.empty() && draft.blankSongBars == 12 &&
-        draft.arrangement.parts.size() == 2 && !draft.blankClickEnabled && draft.blankPadEnabled &&
-        std::abs(estimateSongLengthSeconds(draft) - 24.0) < 1.0e-8,
-        "blank review contains 4+8 bars and independent click/pad choices");
-    const auto id = draft.arrangement.parts.front().id;
-    wizard.backButton.onClick(); wizard.nextButton.onClick();
-    expect(wizard.buildSongData().arrangement.parts.front().id == id, "navigation retains section identity");
-    wizard.submitButton.onClick();
+    wizard.createBlankSongButton.onClick();
+    expect(wizard.isSubmissionInProgress() && wizard.currentStep == Step::Metadata &&
+        !wizard.createBlankSongButton.isEnabled() && !wizard.nextButton.isEnabled(),
+        "direct creation submits from metadata without audio, mapping or review screens");
+    wizard.createBlankSongButton.onClick(); wizard.nextButton.onClick();
+    expect(destinations == 1 && wizard.currentStep == Step::Metadata,
+           "pending blank save blocks duplicate submission and navigation");
     pumpUntil([&] { return !wizard.isSubmissionInProgress(); }, "blank project transaction completes");
     expect(dismissed == 1 && saveError.isEmpty(), "blank save closes after successful registration");
     ProjectDocument reopened; juce::String error;
-    expect(ProjectStore::open(destination, reopened, &error) && reopened.song.blankSong && reopened.song.stems.empty() &&
-        reopened.waveformBins.empty() && reopened.song.blankSongBars == 12 &&
-        reopened.settings.clickDynMix.metronomeEnabled == false && reopened.settings.blankPadEnabled == true,
-        "blank UI saves and reopens its portable project without importing audio");
-    // Editing BPM reconstructs the same named bar counts and stable IDs.
-    Wizard editWizard({}, Wizard::Mode::Edit, reopened.song);
+    expect(ProjectStore::open(destination, reopened, &error) && reopened.song.blankSong &&
+        reopened.song.stems.empty() && reopened.waveformBins.empty() &&
+        reopened.song.blankSongBars == 0 && reopened.settings.arrangement.parts.empty() &&
+        reopened.settings.clickDynMix.metronomeEnabled == ClickDynMixSnapshot{}.metronomeEnabled &&
+        !reopened.settings.blankPadEnabled.has_value(),
+        "direct action saves an empty portable project with ordinary accompaniment defaults");
+
+    ImportedSongData draft;
+    int attempts = 0;
+    Wizard cancelled({}, Wizard::Mode::Import, {}, [&](const auto &song, auto &, auto &) {
+      draft = song; ++attempts; return false;
+    });
+    // A callback is required, but destination cancellation must never call it.
+    cancelled.onSubmit = [](auto, auto &, const auto &) { expect(false, "cancelled destination must not save"); return false; };
+    cancelled.setEmbeddedLibraryPage(true); cancelled.setSize(390, 760);
+    cancelled.songTitleEditor.clear(); cancelled.bpmEditor.clear();
+    cancelled.createBlankSongButton.onClick();
+    expect(attempts == 1 && draft.title.isNotEmpty() && draft.bpm == 120 &&
+        draft.blankSong && draft.stems.empty() && !cancelled.isSubmissionInProgress() &&
+        cancelled.createBlankSongButton.isEnabled() && cancelled.currentStep == Step::Metadata,
+        "blank defaults require no extra form and cancellation leaves the existing step usable");
+    cancelled.nextButton.onClick();
+    expect(cancelled.currentStep == Step::Stems && !cancelled.creatingBlankSong &&
+        !cancelled.buildSongData().blankSong,
+        "normal Next still enters the ordinary audio-import flow after cancellation");
+
+    // Metadata editing keeps the saved arrangement; it does not reconstruct a
+    // special bar-count form or rescale existing seconds when BPM changes.
+    auto existing = reopened.song;
+    SongArrangementPartSnapshot part; part.id = "saved-section";
+    part.name = "Intro"; part.startSec = 0; part.endSec = 8;
+    existing.arrangement.parts.push_back(part);
+    Wizard editWizard({}, Wizard::Mode::Edit, existing);
+    editWizard.setSize(768, 760);
     editWizard.bpmEditor.setText("60", juce::dontSendNotification);
     const auto edited = editWizard.buildSongData();
-    expect(edited.blankSongBars == 12 && edited.arrangement.parts.front().id == id &&
-        std::abs(estimateSongLengthSeconds(edited) - 48.0) < 1.0e-8,
-        "editing base BPM keeps section bars and stable IDs while changing source duration");
+    expect(!editWizard.createBlankSongButton.isVisible() && edited.blankSong &&
+        edited.arrangement.parts.size() == 1 && edited.arrangement.parts.front().id == part.id &&
+        edited.arrangement.parts.front().endSec == 8,
+        "ordinary metadata editing preserves blank sections and their absolute times");
   }
 
   static void fillMetadata(Wizard &wizard) {
@@ -250,7 +249,7 @@ struct SongImportWizardTestAccess {
       expect(wizard.metadataViewport.getBounds() == content,
              "mobile Detalles fits the available content viewport");
       const auto form = wizard.metadataContent.getLocalBounds();
-      expect(form.getHeight() == 610, "metadata content including the song-type selector remains stable-height");
+      expect(form.getHeight() == 550, "metadata content remains stable-height");
       for (auto *control : {static_cast<juce::Component *>(&wizard.songTitleEditor),
                             static_cast<juce::Component *>(&wizard.artistEditor),
                             static_cast<juce::Component *>(&wizard.bpmEditor),

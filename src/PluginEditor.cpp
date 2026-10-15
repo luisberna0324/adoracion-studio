@@ -2504,14 +2504,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     // has a different key, followSongKey triggers the engine's voice-level
     // crossfade: the outgoing pad stays audible while the new key enters.
     // The pads bus is deliberately not faded to silence during a song load.
-    if (loadedSong.blankSong) {
-      // Select a note in the existing local/imported pad pack. No asset lookup
-      // or download belongs to blank-song creation/loading.
-      const juce::StringArray keys{"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
-      const int note = keys.indexOf(loadedSong.key);
-      p.configureBlankSongPad(hasProjectSettings ? projectSettings.blankPadEnabled.value_or(loadedSong.blankPadEnabled)
-          : loadedSong.blankPadEnabled, (juce::jmax(0, note) + savedPitchSemitones + 24) % 12);
-    } else if (padsComponent != nullptr)
+    if (padsComponent != nullptr)
       padsComponent->followSongKey(loadedSong.key, savedPitchSemitones);
 
     // The processor kept the replacement at zero while the complete mix,
@@ -4895,19 +4888,6 @@ void MTControlsAudioProcessorEditor::
   }
 
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
-  const bool padEnabled = processorRef.isPadsBaseEnabled();
-  if (currentLoadedSong.blankSong && !playbackSession.isRemote() &&
-      currentLoadedSong.blankPadEnabled != padEnabled) {
-    ProjectSongSettings saved;
-    if (ProjectStore::getCachedSettings(projectIdentityForSong(currentLoadedSong), saved)) {
-      if (saved.blankPadEnabled != padEnabled) {
-        saved.blankPadEnabled = padEnabled;
-        ProjectStore::scheduleSettingsSave(juce::File(currentLoadedSong.projectPath),
-            projectIdentityForSong(currentLoadedSong), saved);
-      }
-      currentLoadedSong.blankPadEnabled = padEnabled;
-    }
-  }
   const bool enabled = processorRef.isMetronomeEnabled();
   if (hasTrackedClickDynMetronomeEnabled &&
       trackedClickDynMetronomeEnabled == enabled) {

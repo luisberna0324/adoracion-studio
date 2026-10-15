@@ -229,36 +229,35 @@ portadas locales sigue disponible. Esta regla aplica a todas las distribuciones.
 
 ## Nueva canción en blanco
 
-En Detalles, `Nueva canción · En blanco` conserva nombre, artista opcional,
-BPM (obligatorio, 20–300), tonalidad y compás. Click y Pad son opciones
-independientes. Forma sustituye a Archivos/Mapeo: Libre continúa hasta Detener;
-Con secciones admite filas de nombre y compases (1–10000 por fila, hasta 128
-filas y 100000 compases). Atrás conserva el borrador y los IDs de sección.
-Se utiliza el mismo viewport y la misma transacción background que al importar.
+La vista Detalles del asistente de Biblioteca incluye el botón
+`Crear canción en blanco`. Usa los metadatos habituales y la misma resolución
+de destino/transacción background que la importación. Si el título o BPM están
+vacíos, propone `Canción en blanco` y 120 BPM; un BPM explícito inválido sigue
+rechazándose. Guarda, registra en Biblioteca y cierra el asistente directamente,
+sin pasar por Archivos, Mapeo, Revisar ni otra pantalla. Siguiente conserva el
+flujo normal de importación y sus validaciones de audio. El botón queda bloqueado
+junto con la navegación durante el guardado; cancelar el destino permite reintentar.
 
-El modelo requiere `blankSong` explícito; una canción antigua sin audio no se
-convierte en canción en blanco. `blankSongBars = 0` representa duración abierta;
-un valor positivo define la duración fuente en compases. Las secciones son
-`SongArrangementPartSnapshot` normales con IDs estables y tiempos fuente,
-calculados usando `songBarDurationSeconds`: 60/BPM por negra, y la conversión
-existente de compás a negras (4/4 = 4; 3/4 y 6/8 = 3). No se crean stems,
-archivos de silencio ni bins de waveform.
+No hay un selector Libre/Con secciones ni un formulario de click/pad/secciones.
+Esos controles siguen siendo los del reproductor. El proyecto nuevo tiene cero
+stems, cero secciones y duración abierta hasta Detener, sin WAV silencioso ni
+bins de waveform. El metrónomo usa los ajustes iniciales habituales de un proyecto;
+el pad conserva su comportamiento global y sigue la tonalidad mediante el panel
+existente. No se crea una preferencia de pad por canción ni se fuerza una nota
+al cargar desde el motor.
 
-El paquete `.pwproj`, Biblioteca y setlists utilizan sus rutas habituales. El
-JSON añade un objeto opcional `blankSong` con `bars`, `clickEnabled` y
-`padEnabled`; su ausencia mantiene el comportamiento anterior. Click utiliza
-`clickDynMix`; el estado de Pad se conserva opcionalmente como
-`ProjectSongSettings::blankPadEnabled`, también en el sidecar. Los cambios de
-mezcla/ruteo conservan esa opción. Versiones anteriores de la app no pueden
-abrir estos proyectos sin stems; los proyectos actuales con audio conservan
-el esquema y comportamiento existentes.
+El modelo requiere `blankSong` explícito; una referencia antigua sin audio no
+se convierte en canción en blanco. `.pwproj`, Biblioteca y setlists utilizan
+sus rutas habituales. Se conserva la lectura del objeto opcional `blankSong`
+con `bars`, `clickEnabled` y `padEnabled`, y del ajuste opcional
+`settings.blankPadEnabled`, para poder reabrir proyectos del primer prototipo
+recuperable en `11f804d`. El nuevo botón usa `bars = 0`; los campos históricos
+de acompañamiento no sustituyen los controles habituales. Los proyectos con
+audio conservan el esquema y comportamiento existentes.
 
-Editar metadatos parte del arreglo guardado más reciente. Si no se cambia la
-forma, conserva copias, cues y automatización; un cambio de BPM/compás escala
-sus tiempos con la duración del compás sin cambiar IDs. Cambiar las filas de
-la forma construye el arreglo secuencial solicitado. Elegir Libre permite
-retirar las secciones de una canción en blanco.
-
-Pad usa el pack local o importado seleccionado en el reproductor existente.
-Cargar una canción en blanco no solicita otro catálogo ni descarga un pack;
-si no está disponible se conserva el estado informativo del panel de Pads.
+Editar metadatos conserva el arreglo guardado, sus IDs, cues y automatización.
+No reconstruye filas de compases ni escala automáticamente los tiempos de
+sección por un cambio de BPM. La edición expansible de una canción vacía aún
+requiere cambios de timeline: con duración cero, el editor actual no permite
+añadir una primera sección. La regla en segundos y el crecimiento están sólo
+analizados en [la propuesta de timeline](BlankSongTimelineProposal.md).

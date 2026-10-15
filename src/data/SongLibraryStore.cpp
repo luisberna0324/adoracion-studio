@@ -234,7 +234,6 @@ ProjectSongSettings projectSettingsFromItem(const SetlistItem &item,
   ProjectSongSettings settings;
   if (song.blankSong) {
     ProjectStore::getCachedSettings(projectIdentityForSong(song), settings);
-    if (!settings.blankPadEnabled.has_value()) settings.blankPadEnabled = song.blankPadEnabled;
   }
   settings.mix = item.mix;
   settings.pitchSemitones = item.pitchSemitones;
@@ -1203,13 +1202,8 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     settings.mix = reconcileMixForSong(settings.mix, song, mixChanged);
     if (!settings.windowCustomized)
       settings.window = createDefaultWindowForSong(song);
-    settings.arrangement = reconcileArrangementForSong(
-        song.blankSong ? song.arrangement : settings.arrangement, song, arrangementChanged);
-    if (song.blankSong) {
-      settings.arrangementCustomized = !settings.arrangement.parts.empty();
-      settings.clickDynMix.metronomeEnabled = song.blankClickEnabled;
-      settings.blankPadEnabled = song.blankPadEnabled;
-    }
+    settings.arrangement = reconcileArrangementForSong(settings.arrangement,
+                                                       song, arrangementChanged);
     const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
     if (std::abs(settings.tempoBpm - previousBaseBpm) < 0.01)
       settings.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;

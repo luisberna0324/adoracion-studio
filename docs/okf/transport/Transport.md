@@ -781,19 +781,20 @@ las importaciones normales siguen rechazando audio ausente. Reutiliza el mismo
 reemplazo, transición, `TransportClock`, mixer, metrónomo, PadsEngine y
 SectionScheduler. No hay transportes ni lectores de silencio adicionales.
 
-La duración fuente estructurada es compases × duración del compás. En modo
-Libre, duración/Fin son cero (abierto): el reloj y el click avanzan normalmente,
-y Seek no se limita a cero. Play continúa, Pause conserva la posición y Stop
-vuelve a Inicio. Las secciones estructuradas usan los mismos IDs, Ir/Loop,
-ventanas, automatización, cambio de tempo y parada natural que las canciones
-con stems. El tiempo sigue siendo tiempo fuente; el ratio de tempo existente
-controla cuántos frames fuente consume un callback.
+Las nuevas canciones se crean sin duración: duración/Fin cero significa abierto.
+El reloj y el click avanzan normalmente, y Seek no se limita a cero. Play continúa,
+Pause conserva la posición y Stop vuelve a Inicio. Los proyectos del primer
+prototipo con `blankSongBars > 0` conservan la duración compases × duración del
+compás. Sus secciones usan los mismos IDs, Ir/Loop, ventanas, automatización,
+cambio de tempo y parada natural que las canciones con stems. El tiempo sigue
+siendo tiempo fuente; el ratio de tempo existente controla los frames consumidos.
 
-La canción en blanco selecciona la nota del pad local según su tonalidad;
-click y pad se habilitan independientemente. Sólo para este tipo de canción,
-Pause/Stop desactivan su voz mediante el control existente de PadsEngine,
-conservando la preferencia de encendido para Play. Las colas usan el crossfade
-existente. El comportamiento global del pad de canciones con stems se conserva.
+Click y pad se manejan desde sus controles existentes. Cargar desde el motor
+no fuerza sus estados; el editor restaura los ajustes habituales de click y
+sigue la tonalidad con `PadsComponent::followSongKey`. El pad global conserva
+el mismo comportamiento ante Play/Pause/Stop que en canciones con audio; no hay
+un apagado especial para canciones en blanco. Usa packs locales o importados,
+sin solicitar un catálogo externo.
 
 WaveformBar representa una línea de tiempo musical vacía, cursor, secciones y
 progreso de compás, sin bins ni una señal fabricada. La vista Secciones conserva
@@ -801,3 +802,6 @@ sus tarjetas y acciones táctiles, con progreso de compás dentro de la sección
 Libre muestra el compás transcurrido, también después de una hora. El cliente
 remoto recibe el tipo explícito y permite extrapolar la posición abierta sin
 limitarla a duración cero; comandos y autoridad siguen en el servidor.
+
+La regla en segundos y el espacio de edición que crece al ampliar secciones
+no están implementados. Ver [análisis de duración y viewport](../importing/BlankSongTimelineProposal.md).

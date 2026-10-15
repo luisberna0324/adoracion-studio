@@ -606,23 +606,27 @@ Logs locales: `build/blank-song-final-tests.log`,
 compilación/QA de macOS, iOS, Android y Windows. No se ejecutaron Actions,
 push, PR, publicación ni despliegue.
 
-### Capturas reproducibles
+### Alcance simplificado posterior
 
-`tests/blank_song_ui_preview.cpp` renderiza los componentes JUCE reales del
-wizard y WaveformBar con datos de ejemplo. No es una maqueta ni una captura
-sobre un dispositivo físico; la posición de la vista Live es un proveedor de
-prueba. La ejecución usa app-data aislada y no guarda una canción del usuario.
-`tools/render_blank_song_preview.py` reutiliza los objetos JUCE/Bungee de un
-`MTControlsSongWizardTests` ya compilado con Ninja, y compila/enlaza la unidad de
-preview con sus mismos flags. Ejecutar en el entorno Linux con display:
+El diseño anterior queda recuperable en el commit `11f804d`. Se retiraron sus
+formularios especiales y sus herramientas de capturas; la entrega de capturas
+se canceló. La creación actual se prueba desde el botón `Crear canción en blanco`
+en Detalles, con transacción real `.pwproj`, bloqueo de reentrancia, valores
+vacíos por defecto, cancelación del destino y retorno al flujo de importación.
+El test verifica el botón sin solapamientos a 320, 390, 768 y 1200 puntos.
 
-```bash
-cmake --build build/blank-song --target MTControlsSongWizardTests
-DISPLAY=:99 python3 tools/render_blank_song_preview.py build/blank-song build/blank-song-delivery
-```
+El transporte mantiene el pad global habitual al pausar/detener y carga sin
+sobrescribir click/pad. Los tests de compases estructurados siguen comprobando
+compatibilidad con paquetes del prototipo; ya no describen una opción del wizard.
+La regla en segundos y el crecimiento están sólo analizados, no implementados.
+Verificación posterior: Standalone Linux y los 13 targets del gate compilaron
+con el mismo JUCE/Bungee real. Gate: **12/13 suites aprobadas**, 51,23 s. Pasaron
+la nueva creación directa, persistencia, transporte sin stems, automatización,
+remote, motores de audio/click/pads y exportadores. `waveform_editing` conserva
+los dos fallos de renderer ya contrastados con `main`; la nueva prueba sin bins
+sigue pasando. No se modificó `WaveformBar.cpp` en esta simplificación.
 
-Produce Detalles móvil/escritorio, forma libre, secciones móvil/escritorio,
-Revisar y Live de 390/1000 puntos. Los PNG se reemplazan completos, no se
-anexan. La suite del wizard también puede capturar mediante
-`PW_BLANK_CAPTURE_DIR`, y `waveform_editing` captura la presentación sin bins
-en 320, 390, 768 y 1200 puntos.
+Logs: `build/blank-song-simplified-build.log`,
+`build/blank-song-simplified-build2.log`,
+`build/blank-song-simplified-tests.log`. Esta verificación no prueba el crecimiento
+propuesto ni sustituye audio/MIDI físico y QA en dispositivos/plataformas reales.

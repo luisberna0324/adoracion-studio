@@ -1025,9 +1025,11 @@ void testBlankSongNativeTransport() {
   ImportedSongData song;
   song.id = "blank-transport"; song.title = "Free blank"; song.blankSong = true;
   song.bpm = 120; song.key = "C"; song.timeSignature = "4/4";
-  song.blankClickEnabled = false;
+  song.blankClickEnabled = true; song.blankPadEnabled = true; // Legacy choices must not override ordinary controls.
+  p.setMetronomeEnabled(false); p.setPadsEnabled(false);
   expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "native blank song loads with no stem readers");
   expect(p.hasLoadedSong() && p.getLoadedStemCount() == 0 && p.getSongLengthSeconds() == 0.0, "free song is loaded with open-ended duration");
+  expect(!p.isMetronomeEnabled() && !p.isPadsEnabled(), "loading a blank preserves ordinary click and pad controls");
   juce::AudioBuffer<float> output(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
   const auto render = [&](int blocks) {
     for (int i = 0; i < blocks; ++i) p.processBlock(output, midi);
@@ -1060,7 +1062,7 @@ void testBlankSongNativeTransport() {
   for (int wait = 0; wait < 500 && p.isPadsPreloadRunning(); ++wait) juce::Thread::sleep(2);
   expect(p.ensurePadsPackReady(false) && p.ensurePadsNoteReady(0, true), "test prepares a real local pad, without a stub or download");
   p.setPadsCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
-  p.configureBlankSongPad(true, 0); p.playSong(); render(400);
+  p.setPadsEnabled(true); p.triggerPadNote(0, 0); p.playSong(); render(400);
   expect(p.getPadsOutputLevel() > 0.01f && output.getMagnitude(0, 256) > 0.0f && !p.isMetronomeEnabled(), "pad plays independently with click disabled");
   p.setMetronomeEnabled(true); render(10);
   expect(p.getPadsOutputLevel() > 0.01f && p.isMetronomeEnabled(), "pad and click can both remain enabled");
@@ -1068,9 +1070,11 @@ void testBlankSongNativeTransport() {
   expect(p.isMetronomeEnabled() && p.getPadsOutputLevel() < 0.0001f, "disabling pad leaves click enabled independently");
   p.setPadsEnabled(true); render(400);
   p.pauseSong(); render(400);
-  expect(output.getMagnitude(0, 256) < 0.0001f && p.isPadsBaseEnabled(), "pause fades the blank pad voice but preserves its independent enable setting");
-  p.playSong(); render(400); expect(p.getPadsOutputLevel() > 0.01f, "play restores the selected pad after pause");
-  p.stopSong(); render(400); expect(output.getMagnitude(0, 256) < 0.0001f, "stop silences both blank buses");
+  expect(p.getPadsOutputLevel() > 0.01f && p.isPadsBaseEnabled(), "pause preserves the ordinary independently playing pad");
+  p.playSong(); render(400); expect(p.getPadsOutputLevel() > 0.01f, "play preserves the selected global pad");
+  p.stopSong(); render(400);
+  expect(p.getPadsOutputLevel() > 0.01f, "stop preserves ordinary pad behavior rather than adding blank-specific gating");
+  p.stopPadNote(0); p.setPadsEnabled(false); p.setMetronomeEnabled(false); render(400);
 
   song.blankSongBars = 3;
   for (int index = 0; index < 3; ++index) {

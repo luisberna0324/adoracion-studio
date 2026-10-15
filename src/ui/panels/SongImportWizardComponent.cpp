@@ -3,7 +3,6 @@
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
 #include "../../data/SongLibraryStore.h"
-#include "../../data/ProjectStore.h"
 #include "../UiCommon.h"
 #include "../components/SongLoadProgressOverlay.h"
 
@@ -109,120 +108,6 @@ public:
   }
 };
 } // namespace
-
-class SongImportWizardComponent::BlankSectionRow : public juce::Component {
-public:
-  juce::TextEditor name, bars;
-  juce::TextButton remove;
-  SongArrangementPartSnapshot original;
-  explicit BlankSectionRow(SongImportWizardComponent &owner) {
-    owner.configureTextEditor(name, L10n::tr("Nombre de sección", "Section name"));
-    owner.configureTextEditor(bars, L10n::tr("Compases", "Bars"));
-    bars.setInputRestrictions(5, "0123456789");
-    bars.setKeyboardType(juce::TextInputTarget::numericKeyboard);
-    name.setText("Intro"); bars.setText("4");
-    name.onTextChange = [&owner] { owner.blankArrangementEdited = true; };
-    bars.onTextChange = [&owner] { owner.blankArrangementEdited = true; };
-    name.onReturnKey = [&owner] { owner.advanceTextEditor(); };
-    bars.onReturnKey = [&owner] { owner.advanceTextEditor(); };
-    remove.setButtonText(L10n::tr("Quitar", "Remove"));
-    owner.styleSecondaryButton(remove);
-    for (auto *c : {static_cast<juce::Component *>(&name), static_cast<juce::Component *>(&bars), static_cast<juce::Component *>(&remove)})
-      addAndMakeVisible(c);
-  }
-  void resized() override {
-    auto row = getLocalBounds().reduced(0, 5);
-    remove.setBounds(row.removeFromRight(68)); row.removeFromRight(6);
-    bars.setBounds(row.removeFromRight(66)); row.removeFromRight(6);
-    name.setBounds(row);
-  }
-};
-
-void SongImportWizardComponent::addBlankSection(const SongArrangementPartSnapshot *part) {
-  if (blankSections.size() >= 128) return;
-  auto row = std::make_unique<BlankSectionRow>(*this);
-  if (part != nullptr) {
-    row->original = *part;
-    row->name.setText(part->name, false);
-    const auto bar = songBarDurationSeconds(initialSong);
-    row->bars.setText(juce::String(juce::jmax(1, static_cast<int>(std::lround(
-        bar > 0.0 ? (part->endSec - part->startSec) / bar : 4.0)))), false);
-  }
-  if (row->original.id.isEmpty()) row->original.id = juce::Uuid().toString();
-  auto *identity = row.get();
-  const auto safe = juce::Component::SafePointer<SongImportWizardComponent>(this);
-  row->remove.onClick = [safe, identity] {
-    juce::MessageManager::callAsync([safe, identity] {
-      if (!safe || safe->isSubmitting) return;
-      auto &rows = safe->blankSections;
-      rows.erase(std::remove_if(rows.begin(), rows.end(), [identity](const auto &r) {
-        return r.get() == identity;
-      }), rows.end());
-      safe->blankArrangementEdited = true;
-      safe->layoutBlankSections();
-    });
-  };
-  blankSectionsContent.addAndMakeVisible(*row);
-  blankSections.push_back(std::move(row));
-  blankArrangementEdited = true;
-  layoutBlankSections();
-}
-
-void SongImportWizardComponent::layoutBlankSections() {
-  const int width = juce::jmax(1, blankSectionsViewport.getWidth() - 14);
-  blankSectionsContent.setSize(width, static_cast<int>(blankSections.size()) * 58);
-  int y = 0;
-  for (auto &row : blankSections) { row->setBounds(0, y, width, 58); y += 58; }
-}
-
-bool SongImportWizardComponent::buildBlankArrangement(ImportedSongData &song) const {
-  song.blankSong = true;
-  song.blankClickEnabled = blankClickButton.getToggleState();
-  song.blankPadEnabled = blankPadButton.getToggleState();
-  if (mode == Mode::Edit && !blankArrangementEdited) {
-    song.blankSongBars = initialSong.blankSongBars;
-    song.arrangement = initialSong.arrangement;
-    const double previousBar = songBarDurationSeconds(initialSong);
-    const double scale = previousBar > 0.0 ? songBarDurationSeconds(song) / previousBar : 1.0;
-    for (auto &part : song.arrangement.parts) {
-      part.startSec *= scale; part.endSec *= scale;
-      part.sourceStartSec *= scale; part.sourceEndSec *= scale;
-    }
-    for (auto &cue : song.arrangement.cues) {
-      cue.positionSec *= scale; cue.offsetSec *= scale; cue.countIntervalSec *= scale;
-      for (auto &offset : cue.countOffsetsSec) offset *= scale;
-    }
-    song.fileType = "blank";
-    return isValidBlankSong(song);
-  }
-  song.blankSongBars = 0;
-  song.arrangement = {};
-  song.tempoMap = {};
-  song.stems.clear();
-  if (blankFormBox.getSelectedId() == 2) {
-    if (blankSections.empty()) return false;
-    const double bar = songBarDurationSeconds(song);
-    if (bar <= 0.0) return false;
-    for (const auto &row : blankSections) {
-      const int count = row->bars.getText().getIntValue();
-      if (row->name.getText().trim().isEmpty() || count < 1 || count > 10000 ||
-          song.blankSongBars + count > 100000) return false;
-      auto part = row->original;
-      if (part.id.isEmpty()) part.id = juce::Uuid().toString();
-      part.name = row->name.getText().trim();
-      part.color = fallbackArrangementPartColorForName(part.name);
-      part.startSec = song.blankSongBars * bar;
-      song.blankSongBars += count;
-      part.endSec = song.blankSongBars * bar;
-      part.sourcePartId.clear();
-      part.sourceStartSec = part.startSec;
-      part.sourceEndSec = part.endSec;
-      song.arrangement.parts.push_back(std::move(part));
-    }
-  }
-  song.fileType = "blank";
-  return isValidBlankSong(song);
-}
 
 class SongImportWizardComponent::MappingRow final : public juce::Component {
 public:
@@ -532,11 +417,6 @@ SongImportWizardComponent::SongImportWizardComponent(
       resolveProjectDestination(std::move(projectDestinationResolver)),
       onMetadataOnlySubmit(std::move(onSaveMetadataOnly)),
       mode(modeIn), initialSong(std::move(initialSongIn)) {
-  if (initialSong.blankSong) {
-    ProjectSongSettings saved;
-    if (ProjectStore::getCachedSettings(projectIdentityForSong(initialSong), saved))
-      initialSong.arrangement = saved.arrangement;
-  }
   setSize(820, 620);
 
   titleLabel.setText(mode == Mode::Edit
@@ -640,39 +520,6 @@ SongImportWizardComponent::SongImportWizardComponent(
 
   addAndMakeVisible(keyBox);
   addAndMakeVisible(timeSignatureBox);
-  songKindBox.addItem(L10n::tr("Nueva canción · Con pistas", "New song · With tracks"), 1);
-  songKindBox.addItem(L10n::tr("Nueva canción · En blanco", "New song · Blank"), 2);
-  configureCombo(songKindBox);
-  songKindBox.setSelectedId(initialSong.blankSong ? 2 : 1, juce::dontSendNotification);
-  songKindBox.onChange = [this] {
-    if (isBlankMode() && bpmEditor.getText().isEmpty()) bpmEditor.setText("120");
-    changeStep(Step::Metadata);
-  };
-  blankClickButton.setButtonText(L10n::tr("Click", "Click"));
-  blankPadButton.setButtonText(L10n::tr("Pad (pack local)", "Pad (local pack)"));
-  blankClickButton.setToggleState(initialSong.blankSong ? initialSong.blankClickEnabled : true, juce::dontSendNotification);
-  blankPadButton.setToggleState(initialSong.blankPadEnabled, juce::dontSendNotification);
-  for (auto *button : {&blankClickButton, &blankPadButton})
-    button->setColour(juce::ToggleButton::textColourId, UITheme::textPrimary);
-  blankFormBox.addItem(L10n::tr("Libre · hasta Detener", "Free · until Stop"), 1);
-  blankFormBox.addItem(L10n::tr("Con secciones", "With sections"), 2);
-  configureCombo(blankFormBox);
-  blankFormBox.setSelectedId(initialSong.blankSongBars > 0 || !initialSong.arrangement.parts.empty() ? 2 : 1, juce::dontSendNotification);
-  blankFormBox.onChange = [this] { blankArrangementEdited = true; resized(); };
-  blankSectionHelp.setText(L10n::tr("Sección y número de compases. Ir y Loop estarán disponibles al reproducir.",
-      "Section name and bar count. Go and Loop are available during playback."), juce::dontSendNotification);
-  blankSectionHelp.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  addBlankSectionButton.setButtonText(L10n::tr("+ Sección", "+ Section"));
-  styleSecondaryButton(addBlankSectionButton);
-  addBlankSectionButton.onClick = [this] { if (!isSubmitting) addBlankSection(); };
-  blankSectionsViewport.setViewedComponent(&blankSectionsContent, false);
-  blankSectionsViewport.setScrollBarsShown(true, false);
-  for (auto *c : {static_cast<juce::Component *>(&blankFormBox), static_cast<juce::Component *>(&blankSectionHelp),
-       static_cast<juce::Component *>(&addBlankSectionButton), static_cast<juce::Component *>(&blankSectionsViewport)}) addChildComponent(c);
-  for (const auto &part : initialSong.arrangement.parts)
-    if (initialSong.blankSong) addBlankSection(&part);
-  if (blankSections.empty()) addBlankSection();
-  blankArrangementEdited = false;
   songTitleEditor.setExplicitFocusOrder(1);
   artistEditor.setExplicitFocusOrder(2);
   bpmEditor.setExplicitFocusOrder(3);
@@ -845,8 +692,7 @@ SongImportWizardComponent::SongImportWizardComponent(
   backButton.onClick = [this] {
     if (isSubmitting || currentStep == Step::Metadata)
       return;
-    changeStep(isBlankMode() && currentStep == Step::Review ? Step::Stems
-        : static_cast<Step>(static_cast<int>(currentStep) - 1));
+    changeStep(static_cast<Step>(static_cast<int>(currentStep) - 1));
   };
   nextButton.setButtonText(L10n::tr("Siguiente", "Next"));
   nextButton.onClick = [this] { goToNextStep(); };
@@ -858,6 +704,10 @@ SongImportWizardComponent::SongImportWizardComponent(
   submitButton.onClick = [this] { submitSong(); };
   saveMetadataButton.setButtonText(L10n::tr("Guardar", "Save"));
   saveMetadataButton.onClick = [this] { saveMetadataOnly(); };
+  createBlankSongButton.setButtonText(L10n::tr("Crear canción en blanco", "Create blank song"));
+  styleSecondaryButton(createBlankSongButton);
+  createBlankSongButton.onClick = [this] { createBlankSong(); };
+  addChildComponent(createBlankSongButton);
 
   mobileCloseButton.setBare(true);
   mobileCloseButton.setTooltip(L10n::tr("Cerrar", "Close"));
@@ -918,8 +768,6 @@ void SongImportWizardComponent::timerCallback() {
     return;
   }
 
-  if (phoneCreationLayout && currentStep == Step::Stems && isBlankMode())
-    layoutStepImport(blankFormBox.getBounds().getUnion(blankSectionsViewport.getBounds()).getUnion(addBlankSectionButton.getBounds()));
   if (phoneCreationLayout && currentStep == Step::Mapping) {
     auto *focused = juce::Component::getCurrentlyFocusedComponent();
     if (lastMappingFocus.getComponent() != focused) {
@@ -972,8 +820,6 @@ std::vector<juce::TextEditor *> SongImportWizardComponent::currentFormEditors() 
   std::vector<juce::TextEditor *> editors;
   if (currentStep == Step::Metadata)
     editors = {&songTitleEditor, &artistEditor, &bpmEditor};
-  else if (currentStep == Step::Stems && isBlankMode())
-    for (auto &row : blankSections) { editors.push_back(&row->name); editors.push_back(&row->bars); }
   else if (currentStep == Step::Mapping)
     for (auto &row : mappingRows)
       editors.push_back(&row->nameEditor());
@@ -1066,7 +912,6 @@ bool SongImportWizardComponent::usesPhoneCreationLayout() const {
 }
 
 juce::String SongImportWizardComponent::mobileMetadataSummary() const {
-  if (isBlankMode()) return L10n::tr("Sin pistas de audio · click y pad independientes", "No audio tracks · independent click and pad");
   int trackCount = 0;
   double duration = 0.0;
 
@@ -1103,19 +948,17 @@ void SongImportWizardComponent::paint(juce::Graphics &g) {
     drawStudioBackground(g, b);
 
     if (!stepperBounds.isEmpty()) {
-      const std::vector<juce::String> labels = isBlankMode()
-          ? std::vector<juce::String>{L10n::tr("Detalles", "Details"), L10n::tr("Forma", "Form"), L10n::tr("Revisar", "Review")}
-          : std::vector<juce::String>{
+      static const std::array<juce::String, 4> labels{
           L10n::tr("Detalles", "Details"),
           L10n::tr("Archivos", "Files"),
           L10n::tr("Secciones", "Sections"),
           L10n::tr("Revisar", "Review")};
-      const int active = isBlankMode() && currentStep == Step::Review ? 2 : static_cast<int>(currentStep);
+      const int active = static_cast<int>(currentStep);
       auto stepper = stepperBounds.toFloat();
       const float left = stepper.getX() + 31.0f;
       const float right = stepper.getRight() - 31.0f;
       const float circleY = stepper.getY() + 22.0f;
-      const float spacing = (right - left) / static_cast<float>(labels.size() - 1);
+      const float spacing = (right - left) / 3.0f;
 
       g.setColour(UITheme::cardBorder.withAlpha(0.95f));
       g.drawLine(left, circleY, right, circleY, 1.5f);
@@ -1125,7 +968,7 @@ void SongImportWizardComponent::paint(juce::Graphics &g) {
                    left + spacing * static_cast<float>(active), circleY, 1.8f);
       }
 
-      for (int index = 0; index < static_cast<int>(labels.size()); ++index) {
+      for (int index = 0; index < 4; ++index) {
         const float x = left + spacing * static_cast<float>(index);
         const bool reached = index <= active;
         auto circle = juce::Rectangle<float>(x - 14.0f, circleY - 14.0f,
@@ -1218,7 +1061,7 @@ void SongImportWizardComponent::paintPhoneMetadata(juce::Graphics &g) {
       text.setRight(card.getRight() - 38.0f);
       g.setColour(UITheme::textPrimary);
       g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
-      g.drawFittedText(isBlankMode() ? L10n::tr("Acompañamiento", "Accompaniment") : mode == Mode::Edit
+      g.drawFittedText(mode == Mode::Edit
                            ? L10n::tr("BPM original", "Original BPM")
                            : L10n::tr("Metadatos detectados", "Detected metadata"),
                        text.removeFromTop(24.0f).toNearestInt(),
@@ -1368,6 +1211,13 @@ void SongImportWizardComponent::resized() {
                         &timeSignatureLabel})
       label->setFont(makeAppFont(14.0f, AppFontWeight::Regular));
 
+    const bool canCreateBlank = mode == Mode::Import && currentStep == Step::Metadata &&
+        static_cast<bool>(resolveProjectDestination) && !phoneKeyboardVisible;
+    createBlankSongButton.setVisible(canCreateBlank);
+    if (canCreateBlank) {
+      auto blankAction = content.removeFromBottom(52);
+      createBlankSongButton.setBounds(blankAction.removeFromTop(44));
+    }
     layoutStepImport(content);
     layoutStepMetadata(content);
     layoutStepMapping(content);
@@ -1462,6 +1312,13 @@ void SongImportWizardComponent::resized() {
       placeRight(saveMetadataButton, 112);
   }
 
+  const bool canCreateBlank = mode == Mode::Import && currentStep == Step::Metadata &&
+      static_cast<bool>(resolveProjectDestination);
+  createBlankSongButton.setVisible(canCreateBlank);
+  if (canCreateBlank) {
+    auto blankAction = area.removeFromBottom(52);
+    createBlankSongButton.setBounds(blankAction.removeFromTop(44));
+  }
   layoutStepImport(area);
   layoutStepMetadata(area);
   layoutStepMapping(area);
@@ -1554,18 +1411,7 @@ void SongImportWizardComponent::refreshThemeColours() {
 
   configureCombo(keyBox);
   configureCombo(timeSignatureBox);
-  configureCombo(songKindBox);
-  configureCombo(blankFormBox);
-  for (auto *button : {&blankClickButton, &blankPadButton})
-    button->setColour(juce::ToggleButton::textColourId, UITheme::textPrimary);
-  blankSectionHelp.setColour(juce::Label::textColourId, UITheme::textPrimary);
-  styleSecondaryButton(addBlankSectionButton);
-  for (auto &row : blankSections) {
-    applyEditorTheme(row->name, L10n::tr("Nombre de sección", "Section name"));
-    applyEditorTheme(row->bars, L10n::tr("Compases", "Bars"));
-    styleSecondaryButton(row->remove);
-  }
-
+  styleSecondaryButton(createBlankSongButton);
 
   styleSecondaryButton(addFilesButton);
   styleSecondaryButton(replaceFilesButton);
@@ -1616,30 +1462,7 @@ void SongImportWizardComponent::configureCombo(AdaptiveComboBox &combo) {
 }
 
 void SongImportWizardComponent::layoutStepImport(juce::Rectangle<int> bounds) {
-  const bool blankPage = currentStep == Step::Stems && isBlankMode();
-  blankFormBox.setVisible(blankPage);
-  blankSectionHelp.setVisible(blankPage);
-  const bool structured = blankPage && blankFormBox.getSelectedId() == 2;
-  blankSectionsViewport.setVisible(structured);
-  addBlankSectionButton.setVisible(structured);
-  if (blankPage) {
-    blankFormBox.setBounds(bounds.removeFromTop(44)); bounds.removeFromTop(8);
-    blankSectionHelp.setBounds(bounds.removeFromTop(52)); bounds.removeFromTop(8);
-    addBlankSectionButton.setBounds(bounds.removeFromBottom(44));
-    bounds.removeFromBottom(6);
-    blankSectionsViewport.setBounds(bounds);
-    layoutBlankSections();
-  }
-  if (blankPage && structured && phoneCreationLayout) {
-    if (auto *focused = juce::Component::getCurrentlyFocusedComponent(); focused != nullptr && blankSectionsContent.isParentOf(focused)) {
-      const auto target = blankSectionsContent.getLocalArea(focused, focused->getLocalBounds());
-      const int top = blankSectionsViewport.getViewPositionY();
-      const int bottom = top + blankSectionsViewport.getViewHeight();
-      if (target.getBottom() + 8 > bottom) blankSectionsViewport.setViewPosition(0, target.getBottom() + 8 - blankSectionsViewport.getViewHeight());
-      else if (target.getY() < top) blankSectionsViewport.setViewPosition(0, target.getY());
-    }
-  }
-  const bool visible = currentStep == Step::Stems && !isBlankMode();
+  const bool visible = currentStep == Step::Stems;
   const bool showReplace = visible && mode == Mode::Edit;
 
   for (auto *c :
@@ -1718,9 +1541,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&bpmEditor),
                   static_cast<juce::Component *>(&keyBox),
                   static_cast<juce::Component *>(&timeSignatureBox),
-                  static_cast<juce::Component *>(&songKindBox),
-                  static_cast<juce::Component *>(&blankClickButton),
-                  static_cast<juce::Component *>(&blankPadButton),
                   static_cast<juce::Component *>(&secuenciasStatusLabel),
                   static_cast<juce::Component *>(&secuenciasDetailLabel),
                   static_cast<juce::Component *>(&secuenciasArtworkPreview),
@@ -1731,9 +1551,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
       metadataParent->addChildComponent(c);
     c->setVisible(visible);
   }
-  songKindBox.setVisible(visible && mode == Mode::Import);
-  blankClickButton.setVisible(visible && isBlankMode());
-  blankPadButton.setVisible(visible && isBlankMode());
   if (secuenciasList.getParentComponent() != metadataParent)
     metadataParent->addChildComponent(secuenciasList);
   secuenciasList.setVisible(false);
@@ -1763,12 +1580,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     metadataViewport.setBounds(bounds);
     // Content geometry is independent of keyboard height. Only its visible
     // window changes, so editing never swaps the form for a different layout.
-    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), (phoneCreationLayout ? 550 : 460) + 60 + (isBlankMode() ? 54 : 0));
+    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), phoneCreationLayout ? 550 : 460);
     bounds = metadataContent.getLocalBounds();
-    if (mode == Mode::Import) {
-      songKindBox.setBounds(bounds.removeFromTop(44));
-      bounds.removeFromTop(12);
-    }
     const int artworkSize = phoneCreationLayout ? 128 : 104;
     auto artworkLine = bounds.removeFromTop(artworkSize);
     auto artwork = artworkLine.withSizeKeepingCentre(artworkSize, artworkSize);
@@ -1802,12 +1615,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 
     bounds.removeFromTop(12);
-    if (isBlankMode()) {
-      auto options = bounds.removeFromTop(44);
-      blankClickButton.setBounds(options.removeFromLeft(options.getWidth() / 3));
-      blankPadButton.setBounds(options);
-      bounds.removeFromTop(8);
-    }
     metadataCardBounds = bounds.removeFromTop(70);
 
     if (!secuenciasResults.empty()) {
@@ -1830,10 +1637,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   const int fieldLabelH = 16;
   const int fieldH = touchOptimisedControlHeight();
 
-  if (mode == Mode::Import) {
-    songKindBox.setBounds(bounds.removeFromTop(44));
-    bounds.removeFromTop(12);
-  }
   infoSectionLabel.setBounds(bounds.removeFromTop(sectionLabelH));
   bounds.removeFromTop(8);
 
@@ -2196,13 +1999,6 @@ void SongImportWizardComponent::handleSelectedStemFiles(
 }
 
 void SongImportWizardComponent::preloadFromExistingSong() {
-  if (initialSong.blankSong) {
-    ProjectSongSettings saved;
-    if (ProjectStore::getCachedSettings(projectIdentityForSong(initialSong), saved)) {
-      blankClickButton.setToggleState(saved.clickDynMix.metronomeEnabled, juce::dontSendNotification);
-      blankPadButton.setToggleState(saved.blankPadEnabled.value_or(initialSong.blankPadEnabled), juce::dontSendNotification);
-    }
-  }
   songTitleEditor.setText(initialSong.title, juce::dontSendNotification);
   artistEditor.setText(initialSong.artist, juce::dontSendNotification);
   bpmEditor.setText(initialSong.bpm > 0 ? juce::String(initialSong.bpm)
@@ -2417,20 +2213,6 @@ void SongImportWizardComponent::updateSummaryText() {
               stem.category + " (" + fileName + ")");
   }
 
-  if (isBlankMode()) {
-    const auto song = buildSongData();
-    lines.clear();
-    lines.add(song.title);
-    lines.add(juce::String(song.bpm) + " BPM · " + song.timeSignature + " · " + song.key);
-    lines.add(L10n::tr("En blanco", "Blank") + juce::String(" · ") +
-        (song.blankSongBars == 0 ? L10n::tr("Libre hasta Detener", "Free until Stop")
-          : juce::String(song.blankSongBars) + L10n::tr(" compases", " bars")));
-    lines.add(juce::String("Click: ") + (song.blankClickEnabled ? "On" : "Off") +
-        " · Pad: " + (song.blankPadEnabled ? "On" : "Off"));
-    for (size_t i = 0; i < song.arrangement.parts.size(); ++i)
-      lines.add(song.arrangement.parts[i].name + " · " + blankSections[i]->bars.getText() + L10n::tr(" compases", " bars"));
-    lines.add(L10n::tr("Se guardará en Biblioteca como proyecto .pwproj.", "Saved in Library as a .pwproj project."));
-  }
   summaryEditor.setText(lines.joinIntoString("\n"),
                         juce::dontSendNotification);
 }
@@ -2438,6 +2220,7 @@ void SongImportWizardComponent::updateSummaryText() {
 void SongImportWizardComponent::goToNextStep() {
   if (isSubmitting)
     return;
+  creatingBlankSong = false;
   switch (currentStep) {
   case Step::Metadata:
     if (!validateStepMetadata())
@@ -2446,18 +2229,6 @@ void SongImportWizardComponent::goToNextStep() {
     changeStep(Step::Stems);
     return;
   case Step::Stems:
-    if (isBlankMode()) {
-      auto song = buildSongData();
-      if (!buildBlankArrangement(song)) {
-        juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
-          L10n::tr("Revisa las secciones", "Check the sections"),
-          L10n::tr("Agrega un nombre y entre 1 y 10000 compases por sección (máximo 100000 en total).",
-                   "Enter a name and 1–10000 bars per section (100000 total maximum)."));
-        return;
-      }
-      changeStep(Step::Review);
-      return;
-    }
     if (!validateStepImport())
       return;
     changeStep(Step::Mapping);
@@ -2476,7 +2247,7 @@ void SongImportWizardComponent::goToNextStep() {
 void SongImportWizardComponent::saveMetadataOnly() {
   if (isSubmitting || mode != Mode::Edit || currentStep != Step::Metadata)
     return;
-  if (!validateStepMetadata() || (isBlankMode() && !validateStepImport()))
+  if (!validateStepMetadata())
     return;
   if (isProjectBackedSong(initialSong)) {
     // Updating a portable project repacks its manifest and artwork. Keep that
@@ -2522,10 +2293,6 @@ void SongImportWizardComponent::saveMetadataOnly() {
 }
 
 bool SongImportWizardComponent::validateStepImport() {
-  if (isBlankMode()) {
-    auto song = buildSongData();
-    return buildBlankArrangement(song);
-  }
   const bool creatingPortableProject =
       mode == Mode::Import && static_cast<bool>(resolveProjectDestination);
   if (creatingPortableProject) {
@@ -2632,7 +2399,7 @@ bool SongImportWizardComponent::validateStepMetadata() {
     return false;
   }
   const auto bpmText = bpmEditor.getText().trim();
-  if ((isBlankMode() || bpmText.isNotEmpty()) &&
+  if (bpmText.isNotEmpty() &&
       (bpmText.getIntValue() < 20 || bpmText.getIntValue() > 300)) {
     juce::NativeMessageBox::showMessageBoxAsync(
         juce::MessageBoxIconType::WarningIcon,
@@ -2645,7 +2412,6 @@ bool SongImportWizardComponent::validateStepMetadata() {
 }
 
 bool SongImportWizardComponent::validateStepMapping() {
-  if (isBlankMode()) return validateStepImport();
   syncMappingsToDrafts();
   if (stems.empty())
     return true;
@@ -2682,7 +2448,8 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.bpm = bpmEditor.getText().getIntValue();
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
-  song.fileType = stems.empty() ? "remote-reference" : "FLAC";
+  song.fileType = (creatingBlankSong || song.blankSong) ? "blank"
+      : (stems.empty() ? "remote-reference" : "FLAC");
   song.artworkSource = selectedArtworkUrl.trim();
   // A newly selected cover must not be shadowed by the old local image when
   // the project package is rebuilt. An unchanged source keeps its local copy.
@@ -2692,8 +2459,14 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   if (song.createdMs <= 0)
     song.createdMs = juce::Time::getCurrentTime().toMilliseconds();
 
-  if (isBlankMode()) {
-    buildBlankArrangement(song);
+  if (creatingBlankSong) {
+    song.blankSong = true;
+    song.blankSongBars = 0;
+    song.blankClickEnabled = ClickDynMixSnapshot{}.metronomeEnabled;
+    song.blankPadEnabled = false; // Legacy metadata only; pads retain normal session controls.
+    song.stems.clear();
+    song.arrangement = {};
+    song.tempoMap = {};
     return song;
   }
   song.stems.clear();
@@ -2744,13 +2517,26 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   return song;
 }
 
+void SongImportWizardComponent::createBlankSong() {
+  if (isSubmitting || mode != Mode::Import || currentStep != Step::Metadata ||
+      !resolveProjectDestination) return;
+  finishTextEditing();
+  if (songTitleEditor.getText().trim().isEmpty())
+    songTitleEditor.setText(L10n::tr("Canción en blanco", "Blank song"), false);
+  if (bpmEditor.getText().trim().isEmpty()) bpmEditor.setText("120", false);
+  if (!validateStepMetadata()) return;
+  creatingBlankSong = true;
+  submitSong();
+}
+
 void SongImportWizardComponent::submitSong() {
-  if (isSubmitting || currentStep != Step::Review)
+  if (isSubmitting || (currentStep != Step::Review && !creatingBlankSong))
     return;
 
   // Sources may disappear between the file picker and the final review.
   // Re-check the complete draft before choosing a destination or writing it.
-  if (!validateStepMetadata() || !validateStepMapping() || !validateStepImport())
+  if (!validateStepMetadata() ||
+      (!creatingBlankSong && (!validateStepMapping() || !validateStepImport())))
     return;
 
   if (!onSubmit) {
@@ -2960,7 +2746,7 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
 void SongImportWizardComponent::setSubmitting(const bool submitting) {
   isSubmitting = submitting;
   for (auto *button : {&submitButton, &backButton, &nextButton, &cancelButton,
-                       &saveMetadataButton})
+                       &saveMetadataButton, &createBlankSongButton})
     button->setEnabled(!submitting);
   mobileCloseButton.setEnabled(!submitting);
   keyboardDoneButton.setEnabled(!submitting);
@@ -2981,6 +2767,8 @@ void SongImportWizardComponent::changeStep(const Step step) {
   if (currentStep == Step::Review)
     updateSummaryText();
 
+  createBlankSongButton.setVisible(mode == Mode::Import && currentStep == Step::Metadata &&
+      static_cast<bool>(resolveProjectDestination));
   backButton.setVisible(currentStep != Step::Metadata);
   nextButton.setVisible(currentStep != Step::Review);
   submitButton.setVisible(currentStep == Step::Review);

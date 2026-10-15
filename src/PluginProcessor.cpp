@@ -4495,11 +4495,6 @@ bool MTControlsAudioProcessor::loadSongStems(
 
   if (isBlank) {
     setMetronomeBeatsPerBar(timeSignatureBeatsPerBar(blankSong->timeSignature));
-    setClickDivision(1);
-    setClickDivisionEnabled(true);
-    setMetronomeEnabled(blankSong->blankClickEnabled);
-    const juce::StringArray keys{"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
-    configureBlankSongPad(blankSong->blankPadEnabled, juce::jmax(0, keys.indexOf(blankSong->key)));
     setSongArrangement(blankSong->arrangement, !blankSong->arrangement.parts.empty());
   }
   if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
@@ -5890,8 +5885,6 @@ playworship::audio::SectionAutomation::Pads MTControlsAudioProcessor::resolveSec
     const auto &manual = sectionAutomationManual.pads;
     apply(manual.mask.load(std::memory_order_acquire), manual.volume.load(), manual.gain.load(), manual.enabled.load(), manual.note.load(), manual.octave.load());
   }
-  if (blankSongLoaded.load(std::memory_order_relaxed) && !isSongPlaying())
-    result.enabled = false;
   return result;
 }
 
@@ -6671,14 +6664,6 @@ void MTControlsAudioProcessor::setPadNoteAutomationTarget(const int note, const 
     padsBaseNote.store(note, std::memory_order_relaxed);
     padsBaseOctave.store(octave, std::memory_order_relaxed);
   }
-}
-
-void MTControlsAudioProcessor::configureBlankSongPad(const bool enabled, const int noteIndex) {
-  if (!blankSongLoaded.load(std::memory_order_relaxed)) return;
-  setPadsEnabled(enabled);
-  padsAwaitingManualAfterAutomation.store(false, std::memory_order_release);
-  setPadNoteAutomationTarget(juce::jlimit(0, 11, noteIndex), 0);
-  if (enabled) startPadsPreloadAsync(false);
 }
 
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex, const int octave) {
