@@ -2268,7 +2268,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         juce::String(resolvedStems.size()) + "/" +
         juce::String(sourceSong.stems.size()) + " project=" +
         juce::String(isProjectSong ? 1 : 0));
-    if (resolvedStems.empty()) {
+    if (resolvedStems.empty() && !isValidBlankSong(sourceSong)) {
       juce::NativeMessageBox::showMessageBoxAsync(
           juce::MessageBoxIconType::WarningIcon,
           L10n::tr("Pistas no disponibles", "Tracks unavailable"),
@@ -2310,7 +2310,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
                      L10n::tr(u8"Leyendo audio de las pistas...",
                               u8"Reading stem audio..."));
         },
-        true);
+        true, sourceSong.blankSong ? &sourceSong : nullptr);
     SongLoadProbe::instance().endPhase();
     SessionAuthLogger::write("[SongLoad] processor result title=" +
                              sourceSong.title + " loaded=" +
@@ -2504,7 +2504,14 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     // has a different key, followSongKey triggers the engine's voice-level
     // crossfade: the outgoing pad stays audible while the new key enters.
     // The pads bus is deliberately not faded to silence during a song load.
-    if (padsComponent != nullptr)
+    if (loadedSong.blankSong) {
+      // Select a note in the existing local/imported pad pack. No asset lookup
+      // or download belongs to blank-song creation/loading.
+      const juce::StringArray keys{"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
+      const int note = keys.indexOf(loadedSong.key);
+      p.configureBlankSongPad(hasProjectSettings ? projectSettings.blankPadEnabled.value_or(loadedSong.blankPadEnabled)
+          : loadedSong.blankPadEnabled, (juce::jmax(0, note) + savedPitchSemitones + 24) % 12);
+    } else if (padsComponent != nullptr)
       padsComponent->followSongKey(loadedSong.key, savedPitchSemitones);
 
     // The processor kept the replacement at zero while the complete mix,
@@ -2522,8 +2529,13 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     pushLoadUi(0.80, L10n::tr(u8"Cargando forma de onda...",
                               u8"Loading waveform..."));
 
-    auto cachedBins = SongLibraryStore::loadWaveformCache(loadedSong.id);
-    if (cachedBins.empty()) {
+    waveformBarRaw->setBlankSong(loadedSong.blankSong);
+    auto cachedBins = loadedSong.blankSong ? std::vector<float>{}
+        : SongLibraryStore::loadWaveformCache(loadedSong.id);
+    if (loadedSong.blankSong) {
+      waveformGeneration.fetch_add(1, std::memory_order_acq_rel);
+      waveformBarRaw->setWaveformBins({});
+    } else if (cachedBins.empty()) {
       // P0.5 (perf): buildMixedWaveformBins decodifica TODOS los stems
       // completos en el UI thread. En Windows con stems largos y
       // antivirus activo, puede tomar 1-3s y congelar la UI durante el
@@ -4770,6 +4782,7 @@ bool MTControlsAudioProcessorEditor::unloadActiveSongForLocalPurge() {
 
   if (waveformBarPtr != nullptr) {
     waveformBarPtr->clearSongLoadingState();
+    waveformBarPtr->setBlankSong(false);
     waveformBarPtr->setWaveformBins({});
     waveformBarPtr->setSongRhythm(0.0, {});
     waveformBarPtr->setArrangement({}, false);
@@ -4882,6 +4895,19 @@ void MTControlsAudioProcessorEditor::
   }
 
   auto &processorRef = static_cast<MTControlsAudioProcessor &>(processor);
+  const bool padEnabled = processorRef.isPadsBaseEnabled();
+  if (currentLoadedSong.blankSong && !playbackSession.isRemote() &&
+      currentLoadedSong.blankPadEnabled != padEnabled) {
+    ProjectSongSettings saved;
+    if (ProjectStore::getCachedSettings(projectIdentityForSong(currentLoadedSong), saved)) {
+      if (saved.blankPadEnabled != padEnabled) {
+        saved.blankPadEnabled = padEnabled;
+        ProjectStore::scheduleSettingsSave(juce::File(currentLoadedSong.projectPath),
+            projectIdentityForSong(currentLoadedSong), saved);
+      }
+      currentLoadedSong.blankPadEnabled = padEnabled;
+    }
+  }
   const bool enabled = processorRef.isMetronomeEnabled();
   if (hasTrackedClickDynMetronomeEnabled &&
       trackedClickDynMetronomeEnabled == enabled) {

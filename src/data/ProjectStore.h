@@ -15,6 +15,7 @@ struct ProjectSongSettings {
   bool dynamicGuideCustomized = false;
   DynamicGuideMixSnapshot dynamicGuideMix;
   ClickDynMixSnapshot clickDynMix;
+  std::optional<bool> blankPadEnabled;
 };
 
 struct ProjectDocument {

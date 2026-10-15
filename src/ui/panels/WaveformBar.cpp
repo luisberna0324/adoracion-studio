@@ -1439,7 +1439,7 @@ void WaveformBar::setWaveformBins(std::vector<float> bins) {
   const bool wasEditing = editButton.getToggleState();
   waveformBins = std::move(bins);
   invalidateWaveformRenderCaches();
-  const bool hasLoadedSong = !waveformBins.empty();
+  const bool hasLoadedSong = blankSongTimeline || !waveformBins.empty();
 
   if (!hasLoadedSong && wasEditing) {
     snapMode = SnapMode::Bar;
@@ -1465,7 +1465,7 @@ void WaveformBar::setArrangement(
   resetTouchWaveformNavigation();
   livePointerActive = false;
   arrangement = arrangementSnapshot;
-  migrateLegacyArrangementCues(arrangement);
+  if (!blankSongTimeline) migrateLegacyArrangementCues(arrangement);
   normalizeArrangementCues(arrangement);
   selectedCueId.clear();
   activeDragCueId.clear();
@@ -1853,8 +1853,8 @@ void WaveformBar::setMinimalPhoneMode(const bool enabled) {
   }
   waveHeightButton.setVisible(!enabled);
   waveHeightButton.setEnabled(!enabled);
-  editButton.setVisible(!enabled && !waveformBins.empty());
-  editButton.setEnabled(!enabled && !waveformBins.empty());
+  editButton.setVisible(!enabled && (blankSongTimeline || !waveformBins.empty()));
+  editButton.setEnabled(!enabled && (blankSongTimeline || !waveformBins.empty()));
   resized();
 }
 
@@ -2277,7 +2277,7 @@ void WaveformBar::paint(juce::Graphics &g) {
       mainWaveBodyBounds.getHeight() < 2.0f)
     return;
 
-  if (waveformBins.empty()) {
+  if (waveformBins.empty() && (!blankSongTimeline || getSongLengthSeconds() <= 0.0)) {
     const bool isShowingLoadingState =
         songLoadingActive || songLoadingHideAfterMs > 0.0;
     g.setColour(isShowingLoadingState ? juce::Colours::white
@@ -2286,7 +2286,12 @@ void WaveformBar::paint(juce::Graphics &g) {
     juce::String emptyText =
         L10n::tr(u8"Doble click en una canción para cargar waveform",
                  "Double-click a song to load stems waveform");
-    if (isShowingLoadingState) {
+    if (blankSongTimeline) {
+      const double seconds = positionProvider ? positionProvider() : 0.0;
+      const double bars = getBarDurationSeconds() > 0.0 ? seconds / getBarDurationSeconds() : 0.0;
+      emptyText = L10n::tr("Libre", "Free") + juce::String(" · ") +
+          L10n::tr("Compás ", "Bar ") + juce::String(1 + static_cast<int>(bars));
+    } else if (isShowingLoadingState) {
       const int percent = static_cast<int>(
           std::round(juce::jlimit(0.0, 1.0, songLoadingProgress01) * 100.0));
       emptyText = L10n::tr(u8"Cargando canción...", "Loading song...") + " " +
@@ -2315,6 +2320,18 @@ void WaveformBar::paint(juce::Graphics &g) {
     drawTempoOverlay(g, mainWaveBodyBounds);
   else
     drawArrangementOverlay(g, mainWaveBodyBounds);
+
+  if (blankSongTimeline && getBarDurationSeconds() > 0.0) {
+    const double position = positionProvider ? positionProvider() : 0.0;
+    const int total = juce::jmax(1, static_cast<int>(std::lround(getSongLengthSeconds() / getBarDurationSeconds())));
+    const int bar = juce::jlimit(1, total, 1 + static_cast<int>(position / getBarDurationSeconds()));
+    const auto label = L10n::tr("Compás ", "Bar ") + juce::String(bar) + "/" + juce::String(total);
+    auto pill = mainWaveBodyBounds.withHeight(20.0f).withWidth(120.0f)
+        .withPosition(mainWaveBodyBounds.getRight() - 124.0f, mainWaveBodyBounds.getBottom() - 24.0f);
+    g.setColour(UITheme::panelDark.withAlpha(0.9f)); g.fillRoundedRectangle(pill, 4.0f);
+    g.setColour(UITheme::textPrimary); g.setFont(makeAppFont(12.0f, AppFontWeight::Medium));
+    g.drawText(label, pill.toNearestInt(), juce::Justification::centred);
+  }
 
   // The arrangement overlay is painted after the waveform. Draw the playback
   // limit here so it remains visible over section cards and cannot be mistaken
@@ -2403,7 +2420,7 @@ void WaveformBar::resized() {
   const int followGap = 6;
   const int snapModeGroupW = 186;
   const int snapModeLabelW = 56;
-  const bool hasLoadedSong = !waveformBins.empty();
+  const bool hasLoadedSong = blankSongTimeline || !waveformBins.empty();
   const bool automationEditing = sectionAutomationEditingPartId.isNotEmpty();
   layoutSectionAutomationToolbar();
   if (automationEditing) {
@@ -2866,7 +2883,16 @@ juce::String WaveformBar::liveSectionState(int index) const {
                                                : L10n::tr("No aplicado", "Not applied"));
   else if (arrangementControlPendingProvider && arrangementControlPendingProvider(partId))
     states.add(L10n::tr("Solicitando", "Requesting"));
-  if (current) states.add(playing ? L10n::tr("Sonando", "Playing") : L10n::tr("Pausada", "Paused"));
+  if (current) {
+    states.add(playing ? L10n::tr("Sonando", "Playing") : L10n::tr("Pausada", "Paused"));
+    if (blankSongTimeline && getBarDurationSeconds() > 0.0) {
+      const auto &part = arrangement.parts[static_cast<size_t>(index)];
+      const double barLength = getBarDurationSeconds();
+      const int total = juce::jmax(1, static_cast<int>(std::lround((part.endSec - part.startSec) / barLength)));
+      const int bar = juce::jlimit(1, total, 1 + static_cast<int>((positionProvider() - part.startSec) / barLength));
+      states.add(L10n::tr("Compás ", "Bar ") + juce::String(bar) + "/" + juce::String(total));
+    }
+  }
   if (preparingArrangementPartProvider && preparingArrangementPartProvider() == index)
     states.add(L10n::tr("Preparando", "Preparing"));
   else if (pendingArrangementPartProvider && pendingArrangementPartProvider() == index)
@@ -3044,7 +3070,10 @@ void WaveformBar::drawLiveSections(juce::Graphics &g) {
   const int loop = activeArrangementLoopPartProvider ? activeArrangementLoopPartProvider() : -1;
   const double sourceLength = getWaveformSourceLengthSeconds();
   if (arrangement.parts.empty()) {
-    g.drawText(L10n::tr("Sin secciones", "No sections"), row.toNearestInt(), juce::Justification::centred);
+    const double seconds = positionProvider ? positionProvider() : 0.0;
+    const int bar = getBarDurationSeconds() > 0.0 ? 1 + static_cast<int>(seconds / getBarDurationSeconds()) : 1;
+    g.drawText(blankSongTimeline ? L10n::tr("Libre · Compás ", "Free · Bar ") + juce::String(bar)
+        : L10n::tr("Sin secciones", "No sections"), row.toNearestInt(), juce::Justification::centred);
   }
   for (const auto &item : partOverlayBounds) {
     if (!item.body.intersects(row)) continue;
@@ -4699,6 +4728,8 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
 }
 
 void WaveformBar::timerCallback() {
+  // Open-ended songs have no normalized waveform progress to invalidate paint.
+  if (blankSongTimeline && getSongLengthSeconds() <= 0.0) repaint();
   if (sectionAutomationEditingPartProvider)
     setSectionAutomationState(sectionAutomationEditingPartProvider());
   const double nowMs = juce::Time::getMillisecondCounterHiRes();
@@ -6546,6 +6577,17 @@ void WaveformBar::drawWaveformDirect(juce::Graphics &g,
                                      const bool showPlayableWindow) const {
   if (bounds.getWidth() <= 2.0f || bounds.getHeight() <= 2.0f)
     return;
+  if (blankSongTimeline && waveformBins.empty()) {
+    g.setColour(UITheme::panelDark);
+    g.fillRoundedRectangle(bounds, 4.0f);
+    if (showPlayhead) {
+      const auto visual = getPlaybackVisualState();
+      const float ratio = juce::jlimit(0.0f, 1.0f,
+          (visual.progressRatio - windowStart) / juce::jmax(0.0001f, windowSpan));
+      drawPlayheadNeedle(g, bounds, bounds.getX() + ratio * bounds.getWidth(), false, false, 1.0f);
+    }
+    return;
+  }
   if (waveformBins.empty())
     return;
 
@@ -8714,7 +8756,7 @@ void WaveformBar::rebuildCueMarkers() {
   const auto safeBody = minimalPhoneMode
       ? body.getIntersection(phoneSafeAreaInsets.subtractedFrom(getLocalBounds()).toFloat())
       : body;
-  const bool visible = !waveformBins.empty() && safeBody.getHeight() >= 24.0f &&
+  const bool visible = (blankSongTimeline || !waveformBins.empty()) && safeBody.getHeight() >= 24.0f &&
       safeBody.getWidth() >= 48.0f && timelineViewMode == TimelineViewMode::GuideMap;
   const bool touch = minimalPhoneMode || useTouchOptimisedControls();
   const float target = touch ? 44.0f : 24.0f;

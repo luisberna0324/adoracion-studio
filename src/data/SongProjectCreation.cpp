@@ -104,6 +104,14 @@ bool save(ImportedSongData song, juce::String &errorMessage,
   document.song = std::move(song);
   document.settings.tempoBpm = document.song.bpm > 0 ? document.song.bpm : 120.0;
   document.settings.window.endSec = estimateSongLengthSeconds(document.song);
+  if (document.song.blankSong) {
+    document.settings.arrangement = document.song.arrangement;
+    document.settings.arrangementCustomized = !document.song.arrangement.parts.empty();
+    document.settings.blankPadEnabled = document.song.blankPadEnabled;
+    document.settings.clickDynMix.metronomeEnabled = document.song.blankClickEnabled;
+    document.settings.clickDynMix.divisionMask = 1;
+    document.settings.clickDynMix.enabled = true;
+  }
   document.settings.window.fadeOutSec = juce::jmin(1.0, document.settings.window.endSec);
   for (const auto &stem : document.song.stems) {
     if (!stem.include)

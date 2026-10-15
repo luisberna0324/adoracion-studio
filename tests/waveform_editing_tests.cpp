@@ -56,6 +56,9 @@ SongArrangementPartSnapshot original(const char *id, const double start,
 // Access hit geometry and published presentation state. Copy, movement,
 // resizing, selection and history all use production input handlers.
 struct WaveformEditingTestAccess {
+  static bool hasNoWaveform(const WaveformBar &bar) { return bar.waveformBins.empty(); }
+  static bool blankEditEnabled(const WaveformBar &bar) { return bar.editButton.isEnabled(); }
+
   static bool isEditing(const WaveformBar &waveform) {
     return waveform.isEditingArrangement();
   }
@@ -3198,6 +3201,42 @@ void testCueVisualPreview() {
 
 } // namespace
 
+void testBlankTimelineWithoutWaveform() {
+  WaveformBar bar;
+  double position = 3.0;
+  bar.setTransportProviders([&] { return position; }, [] { return 24.0; }, [] { return true; });
+  bar.setBlankSong(true); bar.setWaveformBins({}); bar.setSongRhythm(120.0, "4/4");
+  SongArrangementSnapshot arrangement;
+  arrangement.parts = {original("blank-intro", 0.0, 8.0), original("blank-verse", 8.0, 24.0)};
+  arrangement.parts[0].name = "Intro"; arrangement.parts[1].name = "Verso";
+  bar.setArrangement(arrangement, true);
+  for (int width : {320, 390, 768, 1200}) {
+    bar.setSize(width, 180);
+    bar.setLiveMode(false);
+    expect(WaveformEditingTestAccess::hasNoWaveform(bar) && WaveformEditingTestAccess::blankEditEnabled(bar),
+        "blank timeline exposes section controls with no waveform bins");
+    auto image = bar.createComponentSnapshot(bar.getLocalBounds());
+    expect(image.isValid(), "blank musical timeline renders natively at every responsive width");
+    bar.setLiveMode(true);
+    expect(WaveformEditingTestAccess::liveBounds(bar).size() == 2,
+        "blank live view retains both section cards without audio");
+    image = bar.createComponentSnapshot(bar.getLocalBounds());
+    const auto capture = juce::SystemStats::getEnvironmentVariable("PW_BLANK_CAPTURE_DIR", {});
+    if (capture.isNotEmpty()) {
+      juce::File directory(capture); directory.createDirectory();
+      const auto output = directory.getChildFile("blank-live-" + juce::String(width) + ".png");
+      output.deleteFile();
+      juce::FileOutputStream stream(output);
+      expect(stream.openedOk() && juce::PNGImageFormat().writeImageToStream(image, stream), "native blank timeline snapshot writes");
+    }
+  }
+  bar.setArrangement({}, false);
+  bar.setTransportProviders([&] { return position; }, [] { return 0.0; }, [] { return true; });
+  position = 3600.0;
+  expect(bar.createComponentSnapshot(bar.getLocalBounds()).isValid() && WaveformEditingTestAccess::hasNoWaveform(bar),
+      "free timeline renders bar progress after an hour without allocating waveform data");
+}
+
 int main() {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr)
@@ -3219,6 +3258,7 @@ int main() {
   run("playback cache reuse and source invalidation", testPlaybackCacheReuseAndInvalidation);
   run("playback limits reuse cache without baked shading", testPlaybackLimitsReuseCacheWithoutBakingShading);
   run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
+  run("blank timeline renders sections and bars without fabricated audio", testBlankTimelineWithoutWaveform);
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);
   run("independent cue drag, history and deletion", testIndependentCueEditing);

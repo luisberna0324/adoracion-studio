@@ -230,7 +230,10 @@ public:
     if (!connected) return frozenPosition;
     const auto rate = getPlaybackTempoBpm() / juce::jmax(1.0, number(field(state, "song"), "bpm", 120));
     const auto elapsed = juce::jlimit(0.0, 0.25, (juce::Time::getMillisecondCounterHiRes() - receivedAt) / 1000.0);
-    return juce::jlimit(0.0, getSongLengthSeconds(), position + (isSongPlaying() ? elapsed * rate : 0.0));
+    const double candidate = position + (isSongPlaying() ? elapsed * rate : 0.0);
+    const bool openEnded = static_cast<bool>(field(field(state, "song"), "blankSong")) &&
+        getSongLengthSeconds() == 0.0;
+    return openEnded ? juce::jmax(0.0, candidate) : juce::jlimit(0.0, getSongLengthSeconds(), candidate);
   }
   bool hasLoadedSong() const { return remote ? field(field(state, "song"), "id").toString().isNotEmpty() : local.hasLoadedSong(); }
   bool isSectionAutomationEditing() const {

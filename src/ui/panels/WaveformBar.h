@@ -63,6 +63,12 @@ public:
   }
 
   void setWaveformBins(std::vector<float> bins);
+  void setBlankSong(bool enabled) {
+    if (blankSongTimeline == enabled) return;
+    blankSongTimeline = enabled;
+    resized();
+    repaint();
+  }
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
   void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,
@@ -336,6 +342,7 @@ private:
 
   std::vector<float> waveformBins;
   PlayingProvider playingProvider;
+  bool blankSongTimeline = false;
   PositionProvider positionProvider;
   LengthProvider lengthProvider;
   LengthProvider sourceLengthProvider;

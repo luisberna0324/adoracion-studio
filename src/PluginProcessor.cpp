@@ -3431,7 +3431,7 @@ void MTControlsAudioProcessor::timerCallback() {
   if (midiPendingPadLoadMask.load(std::memory_order_acquire) != 0 ||
       padsFullLoadRequested.load(std::memory_order_acquire) ||
       pendingPadNote.load(std::memory_order_acquire) >= 0)
-    startPadsPreloadAsync();
+    startPadsPreloadAsync(!blankSongLoaded.load(std::memory_order_relaxed));
 
   if (!isPadsPreloadRunning() &&
       padsNetworkPreloadPending.exchange(false, std::memory_order_acq_rel))
@@ -4014,7 +4014,11 @@ bool MTControlsAudioProcessor::loadSongStems(
     const juce::String &songTitle, const juce::String &songKey,
     const double songBpm,
     const std::function<void(double)> &onLoadProgress,
-    const bool deferTransitionFadeInUntilConfigured) {
+    const bool deferTransitionFadeInUntilConfigured,
+    const ImportedSongData *blankSong) {
+  const bool isBlank = blankSong != nullptr && isValidBlankSong(*blankSong);
+  if (blankSong != nullptr && (!isBlank || !stemPaths.isEmpty()))
+    return false;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   // Snapshot playback configuration safely before we start building transports.
@@ -4028,7 +4032,7 @@ bool MTControlsAudioProcessor::loadSongStems(
   const bool wasPlayingBeforeLoad = isSongPlaying();
 
   std::vector<std::unique_ptr<StemTrack>> newTracks;
-  if (stemPaths.isEmpty())
+  if (stemPaths.isEmpty() && !isBlank)
     return false;
 
   const int pathCount = stemPaths.size();
@@ -4057,7 +4061,7 @@ bool MTControlsAudioProcessor::loadSongStems(
     workerLoad.assign(stemReadThreads.size(), 0);
   }
 
-  double maxLengthSeconds = 0.0;
+  double maxLengthSeconds = isBlank ? estimateSongLengthSeconds(*blankSong) : 0.0;
   for (int i = 0; i < pathCount; ++i) {
     if (newTracks.size() >= static_cast<size_t>(maxStemCount))
       break;
@@ -4189,7 +4193,7 @@ bool MTControlsAudioProcessor::loadSongStems(
                      static_cast<double>(denom));
   }
 
-  if (newTracks.empty())
+  if (newTracks.empty() && !isBlank)
     return false;
 
   // prepareToPlay pre-fills each read-ahead buffer. Verify the first callback
@@ -4366,6 +4370,7 @@ bool MTControlsAudioProcessor::loadSongStems(
     masterMuted.store(false, std::memory_order_relaxed);
     requestedSeekPosition.store(-1, std::memory_order_relaxed);
 
+    blankSongLoaded.store(isBlank, std::memory_order_relaxed);
     loadedSongLengthSeconds = maxLengthSeconds;
     songStartSeconds.store(0.0, std::memory_order_relaxed);
     songEndSeconds.store(maxLengthSeconds, std::memory_order_relaxed);
@@ -4488,6 +4493,15 @@ bool MTControlsAudioProcessor::loadSongStems(
         "loadSongStems", "progress.1.0", progressUs, "");
   }
 
+  if (isBlank) {
+    setMetronomeBeatsPerBar(timeSignatureBeatsPerBar(blankSong->timeSignature));
+    setClickDivision(1);
+    setClickDivisionEnabled(true);
+    setMetronomeEnabled(blankSong->blankClickEnabled);
+    const juce::StringArray keys{"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
+    configureBlankSongPad(blankSong->blankPadEnabled, juce::jmax(0, keys.indexOf(blankSong->key)));
+    setSongArrangement(blankSong->arrangement, !blankSong->arrangement.parts.empty());
+  }
   if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
     finishPendingSongTransition();
 
@@ -4659,8 +4673,9 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
     end = playbackLength;
   }
   start = juce::jlimit(0.0, end, start);
-  const double target =
-      juce::jlimit(start, end, current + deltaSeconds);
+  const double target = blankSongLoaded.load() && playbackLength == 0.0
+      ? juce::jmax(0.0, current + deltaSeconds)
+      : juce::jlimit(start, end, current + deltaSeconds);
 
   seekSongTo(target);
 }
@@ -4690,7 +4705,8 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
     end = playbackLength;
   }
   start = juce::jlimit(0.0, end, start);
-  double target = juce::jlimit(start, end, positionSeconds);
+  double target = blankSongLoaded.load(std::memory_order_relaxed) && playbackLength == 0.0
+      ? juce::jmax(0.0, positionSeconds) : juce::jlimit(start, end, positionSeconds);
   setArrangementJumpCommand(-1, false);
   const auto practiceRange = getPracticeLoopRange();
   const int loopPartIndex = practiceRange.isEmpty()
@@ -4973,7 +4989,7 @@ void MTControlsAudioProcessor::setSongArrangement(
   auto arrangement = incomingArrangement;
   // All entry points (local, restored project and remote) must compile the
   // same safely migrated structure that the waveform shows.
-  migrateLegacyArrangementCues(arrangement);
+  if (!blankSongLoaded.load(std::memory_order_relaxed)) migrateLegacyArrangementCues(arrangement);
   {
     const juce::ScopedLock automationLock(sectionAutomationControlLock);
     sectionAutomationEditing.store(false, std::memory_order_release);
@@ -5874,6 +5890,8 @@ playworship::audio::SectionAutomation::Pads MTControlsAudioProcessor::resolveSec
     const auto &manual = sectionAutomationManual.pads;
     apply(manual.mask.load(std::memory_order_acquire), manual.volume.load(), manual.gain.load(), manual.enabled.load(), manual.note.load(), manual.octave.load());
   }
+  if (blankSongLoaded.load(std::memory_order_relaxed) && !isSongPlaying())
+    result.enabled = false;
   return result;
 }
 
@@ -6655,6 +6673,14 @@ void MTControlsAudioProcessor::setPadNoteAutomationTarget(const int note, const 
   }
 }
 
+void MTControlsAudioProcessor::configureBlankSongPad(const bool enabled, const int noteIndex) {
+  if (!blankSongLoaded.load(std::memory_order_relaxed)) return;
+  setPadsEnabled(enabled);
+  padsAwaitingManualAfterAutomation.store(false, std::memory_order_release);
+  setPadNoteAutomationTarget(juce::jlimit(0, 11, noteIndex), 0);
+  if (enabled) startPadsPreloadAsync(false);
+}
+
 void MTControlsAudioProcessor::triggerPadNote(const int noteIndex, const int octave) {
   if (!juce::isPositiveAndBelow(noteIndex, PadsEngine::kNoteCount)) return;
   if (!isSectionAutomationEditing())
@@ -6689,7 +6715,7 @@ void MTControlsAudioProcessor::triggerPadNoteInternal(const int noteIndex, const
 
   pendingPadOctave.store(octave, std::memory_order_release);
   pendingPadNote.store(noteIndex, std::memory_order_release);
-  startPadsPreloadAsync();
+  startPadsPreloadAsync(!blankSongLoaded.load(std::memory_order_relaxed));
 }
 
 void MTControlsAudioProcessor::triggerPadNoteForSongTransition(
@@ -7015,6 +7041,7 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   resetSectionAutomationState();
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
+  blankSongLoaded.store(false, std::memory_order_relaxed);
   loadedSongLengthSeconds = 0.0;
   loadedSongBpm = 120.0;
   playbackTempoBpm.store(120.0, std::memory_order_relaxed);

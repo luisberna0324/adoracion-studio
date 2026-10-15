@@ -1146,6 +1146,64 @@ void testColdProjectExtractionProgress(const Fixtures &fixtures) {
 
 } // namespace
 
+void testBlankSongPersistence(const Fixtures &fixtures) {
+  ImportedSongData song;
+  song.id = juce::Uuid().toString(); song.title = "Blank fixture";
+  song.blankSong = true; song.bpm = 120; song.key = "D"; song.timeSignature = "4/4";
+  song.blankSongBars = 20; song.blankPadEnabled = true; song.blankClickEnabled = false;
+  expect(std::abs(estimateSongLengthSeconds(song) - 40.0) < 1.0e-8, "20 bars in 4/4 at 120 BPM last 40 seconds");
+  for (const auto &meter : {"3/4", "6/8"}) {
+    song.timeSignature = meter;
+    expect(std::abs(estimateSongLengthSeconds(song) - 30.0) < 1.0e-8, "written denominator is converted once to quarter-note units");
+  }
+  song.timeSignature = "4/4";
+  SongArrangementPartSnapshot intro, verse;
+  intro.id = "blank-intro"; intro.name = "Intro"; intro.endSec = 8.0;
+  verse.id = "blank-verse"; verse.name = "Verso"; verse.startSec = 8.0; verse.endSec = 40.0;
+  song.arrangement.parts = {intro, verse};
+  ProjectDocument document; document.song = song;
+  document.settings.arrangement = song.arrangement;
+  document.settings.arrangementCustomized = true;
+  document.settings.blankPadEnabled = true;
+  const auto archive = fixtures.directory.getChildFile("blank.pwproj");
+  juce::String error;
+  expect(ProjectStore::save(document, archive, &error), "explicit blank project saves without audio");
+  juce::ZipFile zip(archive);
+  for (int i = 0; i < zip.getNumEntries(); ++i)
+    expect(!zip.getEntry(i)->filename.startsWith("audio/") && zip.getEntry(i)->filename != "waveform.bin",
+           "blank project contains neither generated silent audio nor fabricated waveform");
+  ProjectDocument reopened;
+  expect(ProjectStore::open(archive, reopened, &error), "blank project reopens");
+  expect(reopened.song.blankSong && reopened.song.stems.empty() && reopened.waveformBins.empty() &&
+      reopened.song.blankSongBars == 20 && reopened.song.blankPadEnabled && !reopened.song.blankClickEnabled &&
+      reopened.settings.blankPadEnabled == true && reopened.song.arrangement.parts[1].id == "blank-verse",
+      "blank metadata, accompaniment, duration and stable section IDs survive packaging");
+  expect(SongLibraryStore::registerProjectSong(reopened.song), "blank project registers in the normal library");
+  const auto list = SongLibraryStore::createSetlist("Blank fixture setlist");
+  expect(SongLibraryStore::addSongToSetlist(list, reopened.song.id), "blank song joins a regular setlist");
+  expect(SongLibraryStore::setActiveSetlistId(list), "blank setlist opens");
+  ClickDynMixSnapshot mix; mix.metronomeEnabled = true;
+  expect(SongLibraryStore::updateClickDynMixForActiveSetlist(reopened.song.id, mix), "blank click toggles through existing persistence");
+  ProjectSongSettings saved;
+  expect(ProjectStore::getCachedSettings(projectIdentityForSong(reopened.song), saved) && saved.blankPadEnabled == true,
+      "updating click preserves independent pad preference");
+  song.blankSongBars = 0; song.arrangement = {};
+  document.song = song; document.settings.arrangement = {}; document.settings.arrangementCustomized = false;
+  const auto free = fixtures.directory.getChildFile("blank-free.pwproj");
+  expect(ProjectStore::save(document, free, &error) && ProjectStore::open(free, reopened, &error) &&
+      estimateSongLengthSeconds(reopened.song) == 0.0 && reopened.song.blankSong,
+      "zero bars round-trip as an open-ended blank song without a synthetic duration");
+  bool changed = false;
+  const auto legacy = SongLibraryStore::songDataFromVar(juce::JSON::parse(R"({"id":"legacy","title":"Missing audio","bpm":120,"stems":[]})"), changed);
+  expect(!legacy.blankSong && !isValidBlankSong(legacy), "legacy metadata-only entries never migrate into blank playback");
+  document.song = legacy;
+  expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-legacy.pwproj"), &error), "legacy no-audio project still rejects missing audio");
+  song.blankSongBars = -1; document.song = song;
+  expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-blank.pwproj"), &error), "invalid blank duration is rejected");
+  const auto remote = playworship::remote::decodeSong(playworship::remote::encodeSong(reopened.song, false));
+  expect(remote.blankSong && remote.stems.empty() && remote.blankSongBars == 0 && remote.projectPath.isEmpty(), "remote blank metadata round-trips without local file paths");
+}
+
 int main() {
   juce::File isolatedRoot;
   if (!isolatedStorageRoot(isolatedRoot)) {
@@ -1163,6 +1221,7 @@ int main() {
     runRoundtripAndFailureChecks(fixtures);
     testAutomaticLegacyStemStorage(fixtures);
     testColdProjectExtractionProgress(fixtures);
+    testBlankSongPersistence(fixtures);
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
     return 1;

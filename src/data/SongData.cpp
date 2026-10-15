@@ -907,7 +907,22 @@ juce::String arrangementPartDisplayLabelForName(const juce::String &name) {
   return trimmed.isNotEmpty() ? trimmed : L10n::tr("Parte", "Part");
 }
 
+double songBarDurationSeconds(const ImportedSongData &song) {
+  // timeSignatureBeatsPerBar already converts written meters into quarter
+  // notes (6/8 = 3), the unit shared by TransportClock and the metronome.
+  return song.bpm > 0 ? (60.0 / song.bpm) * timeSignatureBeatsPerBar(song.timeSignature) : 0.0;
+}
+
+bool isValidBlankSong(const ImportedSongData &song) {
+  return song.blankSong && song.stems.empty() && !song.title.trim().isEmpty() &&
+      song.bpm >= 20 && song.bpm <= 300 && song.blankSongBars >= 0 &&
+      song.blankSongBars <= 100000 &&
+      (song.timeSignature == "4/4" || song.timeSignature == "3/4" || song.timeSignature == "6/8");
+}
+
 double estimateSongLengthSeconds(const ImportedSongData &song) {
+  if (song.blankSong)
+    return isValidBlankSong(song) ? song.blankSongBars * songBarDurationSeconds(song) : 0.0;
   double maxDuration = 0.0;
   for (const auto &stem : song.stems) {
     if (!stem.include)

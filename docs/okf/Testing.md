@@ -558,3 +558,71 @@ c++ -std=c++17 -Wall -Wextra -Werror -pedantic -Isrc tests/practice_toggle_reque
 ```
 
 La regresión waveform_editing pasa explícitamente la preferencia de reducir movimiento al seguimiento de Secciones: prueba transición de 280 ms y centrado inmediato por separado, independientemente del ajuste de accesibilidad del runner. El runtime sigue consultando la preferencia del sistema.
+
+## Canción en blanco — nube Linux, 15/10/2026
+
+Base `origin/main` y `v2.3.3^{}`:
+`f31df144c84f4bd8f225f6c563495844531d9be8`. Trabajo en `feat/blank-song`,
+sin incorporar ramas Android experimentales ni utilizar el Mac.
+
+- Linux x86_64 / GCC 14, Debug, JUCE 8.0.12 (checkout de CI
+  `501c07674e1ad693085a7e7c398f205c2677f5da`) y Bungee 2.4.24 real.
+  El bootstrap verificó el archivo y la licencia por SHA-256. Se configuró
+  `JUCE_USE_SIMD=0`, por compatibilidad con GCC 14; no se usaron stubs.
+- `MTControls_Standalone` y los targets del gate compilaron. La app arrancó
+  en Xvfb. El entorno no tiene dispositivos físicos de audio/MIDI; los
+  asserts/avisos de ALSA y las capturas no acreditan escucha ni latencia real.
+- Gate de 13 suites: **12 aprobadas, 1 fallida**, en 50,92 s. Pasaron
+  `blank_song_transport`, `song_project_creation`, `song_import_wizard`,
+  `section_automation`, `remote_session`, `remote_section_control`,
+  `audio_engine_core`, `metronome_engine`, `pads_engine`,
+  `song_mix_export_timeline`, `song_mix_exporter` y `stem_mix_engine`.
+- `blank_song_transport` procesa bloques con el procesador, metrónomo,
+  PadsEngine y scheduler reales y cero lectores de stems. Cubre libre después
+  de una hora, pausa/reanudación/stop, cuatro combinaciones click/pad, parada
+  natural, loop, Ir por ID, rechazo de ID inválido, 3/4 y 6/8, ratio de tempo y
+  posición remota con duración abierta. El test de fase usa el click sintético
+  existente del motor, con su duración conocida, independiente del sample que
+  pueda estar instalado.
+- Persistencia prueba `.pwproj`, Biblioteca, setlist, codec anterior sin flag,
+  duración inválida y conservación independiente del pad al guardar click.
+  Reabre paquetes sin `audio/` ni `waveform.bin`. El wizard recorre la creación
+  real y verifica cambios de BPM con compases e IDs conservados.
+- La nueva comprobación de timeline sin bins pasó dentro de `waveform_editing`.
+  La suite sigue fallando en dos asserts anteriores: diferencia de un nivel
+  RGB en el repaint parcial de waveform y desplazamiento del ancla de la barra
+  de automatización al hacer scroll horizontal. Ambos se reprodujeron con el
+  `WaveformBar.cpp` original de `origin/main`, compilado contra el mismo harness
+  y headers en nube; no se relajaron esos asserts. Esto compara el renderer
+  original, no acredita una compilación completa de `main` en otras plataformas.
+- Se corrigió el aislamiento de `song_mix_exporter`: su AssetBootstrapManager
+  ahora se compila con la raíz temporal, igual que los otros tests de I/O.
+  El fixture de guía larga usa una ruta distinta al sample corto ya calentado.
+  No se cambiaron los motores de exportación ni de guía para hacer pasar tests.
+
+Logs locales: `build/blank-song-final-tests.log`,
+`build/blank-waveform-baseline-tests.log`, `build/blank-song-build6.log` y
+`build/blank-song-build7.log`. Quedan pendientes audio/MIDI físicos y
+compilación/QA de macOS, iOS, Android y Windows. No se ejecutaron Actions,
+push, PR, publicación ni despliegue.
+
+### Capturas reproducibles
+
+`tests/blank_song_ui_preview.cpp` renderiza los componentes JUCE reales del
+wizard y WaveformBar con datos de ejemplo. No es una maqueta ni una captura
+sobre un dispositivo físico; la posición de la vista Live es un proveedor de
+prueba. La ejecución usa app-data aislada y no guarda una canción del usuario.
+`tools/render_blank_song_preview.py` reutiliza los objetos JUCE/Bungee de un
+`MTControlsSongWizardTests` ya compilado con Ninja, y compila/enlaza la unidad de
+preview con sus mismos flags. Ejecutar en el entorno Linux con display:
+
+```bash
+cmake --build build/blank-song --target MTControlsSongWizardTests
+DISPLAY=:99 python3 tools/render_blank_song_preview.py build/blank-song build/blank-song-delivery
+```
+
+Produce Detalles móvil/escritorio, forma libre, secciones móvil/escritorio,
+Revisar y Live de 390/1000 puntos. Los PNG se reemplazan completos, no se
+anexan. La suite del wizard también puede capturar mediante
+`PW_BLANK_CAPTURE_DIR`, y `waveform_editing` captura la presentación sin bins
+en 320, 390, 768 y 1200 puntos.

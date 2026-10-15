@@ -107,6 +107,7 @@ private:
     juce::String key;
     juce::String dominantCategory;
     juce::String artworkPath;
+    bool blankSong = false;
     double durationSeconds = 0.0;
     int64_t createdMs = 0;
     int bpm = 0;

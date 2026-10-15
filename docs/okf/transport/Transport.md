@@ -772,3 +772,32 @@ Un recibo de baja confirmado se procesa solo sin reproducción, carga, edición
 o sesión remota. Si la canción retirada está cargada, se usa
 `unloadActiveSongForLocalPurge` antes de borrar su entrada/archivos. No se fuerza
 Stop durante una actuación; el trabajo permanece pendiente por dispositivo.
+
+### Canciones en blanco
+
+`loadSongStems` acepta un `ImportedSongData*` opcional para una canción en
+blanco explícita y válida. Sólo ese caso permite una lista de rutas vacía;
+las importaciones normales siguen rechazando audio ausente. Reutiliza el mismo
+reemplazo, transición, `TransportClock`, mixer, metrónomo, PadsEngine y
+SectionScheduler. No hay transportes ni lectores de silencio adicionales.
+
+La duración fuente estructurada es compases × duración del compás. En modo
+Libre, duración/Fin son cero (abierto): el reloj y el click avanzan normalmente,
+y Seek no se limita a cero. Play continúa, Pause conserva la posición y Stop
+vuelve a Inicio. Las secciones estructuradas usan los mismos IDs, Ir/Loop,
+ventanas, automatización, cambio de tempo y parada natural que las canciones
+con stems. El tiempo sigue siendo tiempo fuente; el ratio de tempo existente
+controla cuántos frames fuente consume un callback.
+
+La canción en blanco selecciona la nota del pad local según su tonalidad;
+click y pad se habilitan independientemente. Sólo para este tipo de canción,
+Pause/Stop desactivan su voz mediante el control existente de PadsEngine,
+conservando la preferencia de encendido para Play. Las colas usan el crossfade
+existente. El comportamiento global del pad de canciones con stems se conserva.
+
+WaveformBar representa una línea de tiempo musical vacía, cursor, secciones y
+progreso de compás, sin bins ni una señal fabricada. La vista Secciones conserva
+sus tarjetas y acciones táctiles, con progreso de compás dentro de la sección.
+Libre muestra el compás transcurrido, también después de una hora. El cliente
+remoto recibe el tipo explícito y permite extrapolar la posición abierta sin
+limitarla a duración cero; comandos y autoridad siguen en el servidor.

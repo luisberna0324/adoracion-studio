@@ -83,7 +83,8 @@ public:
       const juce::String &songTitle, const juce::String &songKey,
       double songBpm,
       const std::function<void(double progress01)> &onLoadProgress = {},
-      bool deferTransitionFadeInUntilConfigured = false);
+      bool deferTransitionFadeInUntilConfigured = false,
+      const ImportedSongData *blankSong = nullptr);
   /** Safely releases the active song and leaves the transport stopped. */
   bool unloadSong();
   void finishPendingSongTransition();
@@ -288,6 +289,7 @@ public:
   double getPadsCrossfadeDurationSeconds() const noexcept;
   void beginPadsSongTransitionFadeOut() noexcept;
   void beginPadsSongTransitionFadeIn() noexcept;
+  void configureBlankSongPad(bool enabled, int noteIndex);
   void triggerPadNote(int noteIndex, int octave);
   void triggerPadNoteForSongTransition(int noteIndex, int octave);
   void stopPadNote(int noteIndex);
@@ -587,6 +589,7 @@ private:
   juce::String loadedSongKey;
   juce::String loadedSongTitle;
   std::atomic<bool> songLoaded{false};
+  std::atomic<bool> blankSongLoaded{false};
   mutable juce::CriticalSection midiBindingsLock;
   std::vector<MidiBinding> midiBindings;
   static constexpr int maxRealtimeMidiBindings = 512;

@@ -402,6 +402,8 @@ juce::var settingsToVar(const ProjectSongSettings &settings) {
   window->setProperty("fadeOutSec", settings.window.fadeOutSec);
   o->setProperty("window", window);
   o->setProperty("windowCustomized", settings.windowCustomized);
+  if (settings.blankPadEnabled.has_value())
+    o->setProperty("blankPadEnabled", *settings.blankPadEnabled);
   ImportedSongData arrangementCarrier;
   arrangementCarrier.arrangement = settings.arrangement;
   o->setProperty("arrangement", SongLibraryStore::songDataToVar(arrangementCarrier)
@@ -474,6 +476,7 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
   out.windowCustomized = static_cast<bool>(o->getProperty("windowCustomized"));
   if (o->hasProperty("arrangement")) {
     auto *songObj = new juce::DynamicObject(); songObj->setProperty("arrangement", o->getProperty("arrangement"));
+    if (o->hasProperty("blankPadEnabled")) songObj->setProperty("blankSong", new juce::DynamicObject());
     bool changed = false; out.arrangement = SongLibraryStore::songDataFromVar(juce::var(songObj), changed).arrangement;
   }
   out.arrangementCustomized = static_cast<bool>(o->getProperty("arrangementCustomized"));
@@ -484,6 +487,8 @@ ProjectSongSettings settingsFromVar(const juce::var &value) {
     out.dynamicGuide.languagePolicy = static_cast<DynamicGuideLanguagePolicy>(static_cast<int>(g->getProperty("languagePolicy")));
     out.dynamicGuide.guideChannelPolicy = static_cast<DynamicGuideChannelPolicy>(static_cast<int>(g->getProperty("channelPolicy")));
   }
+  if (o->hasProperty("blankPadEnabled"))
+    out.blankPadEnabled = static_cast<bool>(o->getProperty("blankPadEnabled"));
   out.dynamicGuideCustomized = static_cast<bool>(o->getProperty("dynamicGuideCustomized"));
   parseVirtualMix(o->getProperty("dynamicGuideMix"), out.dynamicGuideMix.volume, out.dynamicGuideMix.gain,
                   out.dynamicGuideMix.mute, out.dynamicGuideMix.solo, out.dynamicGuideMix.outputChannel,
@@ -646,7 +651,11 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   auto &song = document.song;
   if (song.id.trim().isEmpty()) song.id = juce::Uuid().toString();
   if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
-  if (song.stems.empty()) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
+  if (song.stems.empty() && !isValidBlankSong(song)) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
+  if (song.blankSong && !isValidBlankSong(song)) {
+    if (errorMessage != nullptr) *errorMessage = "Invalid blank song.";
+    return false;
+  }
   const auto temp = destination.getSiblingFile(destination.getFileName() + ".tmp");
   if (temp.exists() && !temp.deleteFile()) {
     if (errorMessage != nullptr)
@@ -895,7 +904,8 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
   }
   bool changed = false;
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
-  if (song.id.isEmpty() || song.stems.empty()) {
+  if (song.id.isEmpty() || (song.stems.empty() && !isValidBlankSong(song)) ||
+      (song.blankSong && !isValidBlankSong(song))) {
     SessionAuthLogger::write("[ProjectOpen] invalid song payload path=" +
                              file.getFullPathName() + " songId=" + song.id +
                              " stems=" +

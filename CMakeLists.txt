@@ -786,6 +786,10 @@ if(MTCONTROLS_BUILD_TESTS)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set_tests_properties(section_automation PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+    add_test(NAME blank_song_transport COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsSectionAutomationTests>" --blank-only)
+
     juce_add_console_app(MTControlsDiagnosticReportTests PRODUCT_NAME "Playback Diagnostic Report Tests")
     target_sources(MTControlsDiagnosticReportTests PRIVATE tests/playback_diagnostic_report_tests.cpp)
     juce_generate_juce_header(MTControlsDiagnosticReportTests)
@@ -908,7 +912,10 @@ if(MTCONTROLS_BUILD_TESTS)
     juce_add_console_app(MTControlsSongMixExporterTests
         PRODUCT_NAME "Song Mix Exporter Tests")
     target_sources(MTControlsSongMixExporterTests PRIVATE
-        tests/song_mix_exporter_tests.cpp)
+        tests/song_mix_exporter_tests.cpp src/data/AssetBootstrapManager.cpp
+        src/data/AppSettings.cpp src/data/SessionAuthLogger.cpp)
+    target_compile_definitions(MTControlsSongMixExporterTests PRIVATE
+        MTCONTROLS_ISOLATED_STORAGE_TESTS=1)
     juce_generate_juce_header(MTControlsSongMixExporterTests)
     target_include_directories(MTControlsSongMixExporterTests PRIVATE src)
     target_link_libraries(MTControlsSongMixExporterTests PRIVATE

@@ -772,7 +772,8 @@ void LibraryCatalogPanel::CatalogContent::paint(juce::Graphics &g) {
     const auto metadataText =
         (item.key.isNotEmpty() ? item.key : "-") + u8" • " +
         (item.bpm > 0 ? juce::String(item.bpm) : "--") + " BPM" + u8" • " +
-        juce::String(item.stemCount) + " stems" + u8" • " + formatDurationMMSS(item.durationSeconds);
+        (item.blankSong ? L10n::tr("En blanco", "Blank") : juce::String(item.stemCount) + " stems") + u8" • " +
+        (item.blankSong && item.durationSeconds == 0.0 ? L10n::tr("Libre", "Free") : formatDurationMMSS(item.durationSeconds));
     g.setColour(UITheme::textSecondary.withAlpha(0.76f * rowAlpha));
     g.setFont(makeAppFont(10.8f, AppFontWeight::Regular));
     g.drawFittedText(metadataText, metaArea, juce::Justification::centredLeft, 1);
@@ -1415,6 +1416,7 @@ void LibraryCatalogPanel::rebuildRows() {
     item.key = song.key;
     item.dominantCategory = dominantCategoryForSong(song);
     item.artworkPath = song.artworkPath.trim();
+    item.blankSong = song.blankSong;
     item.durationSeconds = estimateSongLengthSeconds(song);
     item.createdMs = song.createdMs;
     item.bpm = song.bpm;

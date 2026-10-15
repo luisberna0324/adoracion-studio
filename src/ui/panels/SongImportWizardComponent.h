@@ -65,6 +65,11 @@ private:
   };
 
   class MappingRow;
+  class BlankSectionRow;
+  bool isBlankMode() const { return initialSong.blankSong || songKindBox.getSelectedId() == 2; }
+  void addBlankSection(const SongArrangementPartSnapshot *part = nullptr);
+  void layoutBlankSections();
+  bool buildBlankArrangement(ImportedSongData &song) const;
   class StemImportListModel;
   class StemListRowComponent;
   class SecuenciasResultListModel;
@@ -107,7 +112,7 @@ private:
   void styleSecondaryButton(juce::TextButton &button);
   bool usesPhoneCreationLayout() const;
   bool usesCreationLayout() const {
-    return phoneCreationLayout ||
+    return isBlankMode() || phoneCreationLayout ||
            (mode == Mode::Import &&
             (embeddedLibraryPage || !useTouchOptimisedControls()));
   }
@@ -185,6 +190,15 @@ private:
   juce::TextEditor bpmEditor;
   AdaptiveComboBox keyBox;
   AdaptiveComboBox timeSignatureBox;
+  AdaptiveComboBox songKindBox;
+  juce::ToggleButton blankClickButton, blankPadButton;
+  AdaptiveComboBox blankFormBox;
+  juce::Label blankSectionHelp;
+  juce::TextButton addBlankSectionButton;
+  juce::Viewport blankSectionsViewport;
+  juce::Component blankSectionsContent;
+  std::vector<std::unique_ptr<BlankSectionRow>> blankSections;
+  bool blankArrangementEdited = false;
 
   MetadataViewport metadataViewport;
   juce::Component metadataContent;

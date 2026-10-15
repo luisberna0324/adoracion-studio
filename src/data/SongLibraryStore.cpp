@@ -231,8 +231,11 @@ ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
 
 ProjectSongSettings projectSettingsFromItem(const SetlistItem &item,
                                             const ImportedSongData &song) {
-  juce::ignoreUnused(song);
   ProjectSongSettings settings;
+  if (song.blankSong) {
+    ProjectStore::getCachedSettings(projectIdentityForSong(song), settings);
+    if (!settings.blankPadEnabled.has_value()) settings.blankPadEnabled = song.blankPadEnabled;
+  }
   settings.mix = item.mix;
   settings.pitchSemitones = item.pitchSemitones;
   settings.tempoBpm = item.tempoBpm;
@@ -1179,7 +1182,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
                                       return !stem.include;
                                     }),
                      song.stems.end());
-    if (song.stems.empty()) {
+    if (song.stems.empty() && !isValidBlankSong(song)) {
       if (errorMessage != nullptr)
         *errorMessage = L10n::tr("Debes dejar al menos un stem cargado.",
                                  "At least one stem must remain loaded.");
@@ -1188,7 +1191,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     sortStemsForStripOrder(song.stems);
     bool arrangementChanged = false;
     song.arrangement = reconcileArrangementForSong(
-        song.arrangement.parts.empty() && song.arrangement.cues.empty()
+        !song.blankSong && song.arrangement.parts.empty() && song.arrangement.cues.empty()
             ? previousSong.arrangement
                                        : song.arrangement,
         song, arrangementChanged);
@@ -1200,8 +1203,13 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
     settings.mix = reconcileMixForSong(settings.mix, song, mixChanged);
     if (!settings.windowCustomized)
       settings.window = createDefaultWindowForSong(song);
-    settings.arrangement = reconcileArrangementForSong(settings.arrangement,
-                                                       song, arrangementChanged);
+    settings.arrangement = reconcileArrangementForSong(
+        song.blankSong ? song.arrangement : settings.arrangement, song, arrangementChanged);
+    if (song.blankSong) {
+      settings.arrangementCustomized = !settings.arrangement.parts.empty();
+      settings.clickDynMix.metronomeEnabled = song.blankClickEnabled;
+      settings.blankPadEnabled = song.blankPadEnabled;
+    }
     const double previousBaseBpm = previousSong.bpm > 0 ? previousSong.bpm : 120.0;
     if (std::abs(settings.tempoBpm - previousBaseBpm) < 0.01)
       settings.tempoBpm = song.bpm > 0 ? song.bpm : 120.0;
@@ -1379,7 +1387,7 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   song.stems = std::move(includedStems);
   sortStemsForStripOrder(song.stems);
 
-  if (song.stems.empty()) {
+  if (song.stems.empty() && !isValidBlankSong(song)) {
     if (errorMessage != nullptr) {
       *errorMessage = L10n::tr("Debes dejar al menos un stem cargado.",
                                "At least one stem must remain loaded.");
@@ -2907,6 +2915,13 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("artworkPath", song.artworkPath);
   obj->setProperty("artworkSource", song.artworkSource);
   obj->setProperty("projectPath", song.projectPath);
+  if (song.blankSong) {
+    auto *blank = new juce::DynamicObject();
+    blank->setProperty("bars", song.blankSongBars);
+    blank->setProperty("clickEnabled", song.blankClickEnabled);
+    blank->setProperty("padEnabled", song.blankPadEnabled);
+    obj->setProperty("blankSong", blank);
+  }
   obj->setProperty("createdMs", static_cast<juce::int64>(song.createdMs));
 
   juce::Array<juce::var> stemVars;
@@ -2939,6 +2954,12 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   song.projectPath = obj->getProperty("projectPath").toString();
   song.createdMs = static_cast<juce::int64>(obj->getProperty("createdMs"));
 
+  if (const auto *blank = obj->getProperty("blankSong").getDynamicObject()) {
+    song.blankSong = true;
+    song.blankSongBars = static_cast<int>(blank->getProperty("bars"));
+    song.blankClickEnabled = static_cast<bool>(blank->getProperty("clickEnabled"));
+    song.blankPadEnabled = static_cast<bool>(blank->getProperty("padEnabled"));
+  }
   auto *stemsArray = obj->getProperty("stems").getArray();
   if (stemsArray != nullptr) {
     song.stems.reserve(static_cast<size_t>(stemsArray->size()));
@@ -3274,7 +3295,7 @@ SongArrangementSnapshot SongLibraryStore::reconcileArrangementForSong(
     out.parts = std::move(sorted);
   }
 
-  if (migrateLegacyArrangementCues(out))
+  if (!song.blankSong && migrateLegacyArrangementCues(out))
     changed = true;
   return out;
 }

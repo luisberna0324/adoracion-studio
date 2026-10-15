@@ -790,7 +790,9 @@ void testPendingJumpOwnsSectionGuide() {
   }
   {
     ProcessorFixture f; setup(f, 2.99); auto &p = *f.processor;
-    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide");
+    // A separate immutable asset path prevents a warmed 16-frame section
+    // sample from the setup fixture from standing in for this longer voice.
+    const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide-long");
     writeWav(directory.getChildFile("intro.wav"), 1024, 0.1f);
     expect(SectionAutomationTestAccess::loadGuides(p, directory), "long late-destination voice loads");
     p.requestArrangementPartJump(0);
@@ -803,6 +805,7 @@ void testPendingJumpOwnsSectionGuide() {
     }
     expect(p.getPendingArrangementPartJumpIndex() == -1 && SectionAutomationTestAccess::currentPart(p) == 0,
            "late jump still executes at the existing section boundary");
+    if (voicedSamples != 1024) std::cerr << "Late destination voiced samples=" << voicedSamples << '\n';
     expect(voicedSamples == 1024, "late destination voice continues completely across the jump without duplication");
   }
 }
@@ -1017,7 +1020,99 @@ void testSongKeyFollowUsesBaseAndNeverEchoesRemote() {
 
 }
 
-int main() {
+void testBlankSongNativeTransport() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  ImportedSongData song;
+  song.id = "blank-transport"; song.title = "Free blank"; song.blankSong = true;
+  song.bpm = 120; song.key = "C"; song.timeSignature = "4/4";
+  song.blankClickEnabled = false;
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "native blank song loads with no stem readers");
+  expect(p.hasLoadedSong() && p.getLoadedStemCount() == 0 && p.getSongLengthSeconds() == 0.0, "free song is loaded with open-ended duration");
+  juce::AudioBuffer<float> output(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  const auto render = [&](int blocks) {
+    for (int i = 0; i < blocks; ++i) p.processBlock(output, midi);
+  };
+  p.playSong(); render(100);
+  near(p.getSongCurrentPositionSeconds(), 25600.0 / 44100.0, "free transport advances without audio stems");
+  expect(p.isSongPlaying() && output.getMagnitude(0, 256) == 0.0f, "free playback with click and pad off is silent and keeps running");
+  p.pauseSong(); const double paused = p.getSongCurrentPositionSeconds(); render(30);
+  near(p.getSongCurrentPositionSeconds(), paused, "pause preserves blank position");
+  p.playSong(); render(10);
+  expect(p.getSongCurrentPositionSeconds() > paused, "play resumes the same blank clock");
+  p.seekSongTo(3600.0); render(2);
+  expect(p.getSongCurrentPositionSeconds() > 3600.0 && p.isSongPlaying(), "free song can keep playing past an hour without an invented maximum");
+  p.stopSong(); render(2); near(p.getSongCurrentPositionSeconds(), 0.0, "stop resets free song to zero");
+
+  // Use the real engine's short synthetic click so this phase assertion does
+  // not depend on the duration of a locally installed click sample.
+  p.clearMetronomeClickSamples();
+  p.setMetronomeEnabled(true); p.playSong(); render(1);
+  expect(output.getMagnitude(0, 256) > 0.0f && !p.isPadsEnabled(), "click can play with pad disabled");
+  render(42);
+  if (output.getMagnitude(0, 256) != 0.0f)
+    std::cerr << "Blank click offbeat magnitude=" << output.getMagnitude(0, 256)
+              << " position=" << p.getSongCurrentPositionSeconds() << '\n';
+  expect(output.getMagnitude(0, 256) == 0.0f, "free click phase follows source time instead of retriggering every block");
+  p.pauseSong(); render(1);
+  expect(output.getMagnitude(0, 256) == 0.0f, "pause silences the click");
+  p.stopSong(); render(1);
+  p.setMetronomeEnabled(false);
+  for (int wait = 0; wait < 500 && p.isPadsPreloadRunning(); ++wait) juce::Thread::sleep(2);
+  expect(p.ensurePadsPackReady(false) && p.ensurePadsNoteReady(0, true), "test prepares a real local pad, without a stub or download");
+  p.setPadsCrossfadePreset(PadsEngine::CrossfadePreset::Fast);
+  p.configureBlankSongPad(true, 0); p.playSong(); render(400);
+  expect(p.getPadsOutputLevel() > 0.01f && output.getMagnitude(0, 256) > 0.0f && !p.isMetronomeEnabled(), "pad plays independently with click disabled");
+  p.setMetronomeEnabled(true); render(10);
+  expect(p.getPadsOutputLevel() > 0.01f && p.isMetronomeEnabled(), "pad and click can both remain enabled");
+  p.setPadsEnabled(false); render(400);
+  expect(p.isMetronomeEnabled() && p.getPadsOutputLevel() < 0.0001f, "disabling pad leaves click enabled independently");
+  p.setPadsEnabled(true); render(400);
+  p.pauseSong(); render(400);
+  expect(output.getMagnitude(0, 256) < 0.0001f && p.isPadsBaseEnabled(), "pause fades the blank pad voice but preserves its independent enable setting");
+  p.playSong(); render(400); expect(p.getPadsOutputLevel() > 0.01f, "play restores the selected pad after pause");
+  p.stopSong(); render(400); expect(output.getMagnitude(0, 256) < 0.0001f, "stop silences both blank buses");
+
+  song.blankSongBars = 3;
+  for (int index = 0; index < 3; ++index) {
+    SongArrangementPartSnapshot part; part.id = "blank-section-" + juce::String(index);
+    part.name = index == 0 ? "Intro" : index == 1 ? "Verso" : "Coro";
+    part.startSec = index * 2.0; part.endSec = (index + 1) * 2.0;
+    song.arrangement.parts.push_back(part);
+  }
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "structured blank song uses the normal load transaction");
+  near(p.getSongLengthSeconds(), 6.0, "structured duration follows bars");
+  expect(p.toggleArrangementPartLoopById("blank-section-0"), "existing section Loop accepts stable blank section ID");
+  p.playSong(); render(800);
+  expect(p.isSongPlaying() && p.getSongCurrentPositionSeconds() < 2.0, "native section scheduler repeats blank section boundaries");
+  expect(p.requestArrangementPartJumpById("blank-section-2"), "existing Ir accepts blank destination ID");
+  for (int attempt = 0; attempt < 360 && p.getSongCurrentPositionSeconds() < 4.0; ++attempt) render(1);
+  expect(p.getSongCurrentPositionSeconds() >= 4.0 && p.getSongCurrentPositionSeconds() < 4.02,
+      "queued Ir leaves the loop at the musical boundary and lands in Coro");
+  expect(!p.requestArrangementPartJumpById("missing"), "invalid remote/local section ID remains rejected");
+  render(400);
+  expect(!p.isSongPlaying(), "structured blank stops at its natural end");
+  near(p.getSongCurrentPositionSeconds(), 6.0, "natural stop preserves exact structured end");
+  p.playSong(); render(1); expect(p.getSongCurrentPositionSeconds() < 0.02, "Play after natural end restarts at the beginning");
+  p.stopSong(); render(1);
+  song.arrangement = {};
+  for (const auto &meter : {"3/4", "6/8"}) {
+    song.timeSignature = meter;
+    expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "blank meter change loads without a nested transport lock");
+    near(p.getSongLengthSeconds(), 4.5, "three bars in 3/4 or 6/8 use three quarter notes per bar");
+    p.setPlaybackTempoBpm(180.0); p.playSong(); render(100);
+    const double before = p.getSongCurrentPositionSeconds(); render(100);
+    near(p.getSongCurrentPositionSeconds() - before, 38400.0 / 44100.0, "blank tempo change advances the existing source clock at its effective ratio");
+    p.stopSong(); render(1);
+  }
+  PlaybackSession remote(p); remote.setRemote(true); remote.setConnected(true);
+  auto *state = new juce::DynamicObject(); auto *metadata = new juce::DynamicObject();
+  metadata->setProperty("id", "free-remote"); metadata->setProperty("blankSong", true); metadata->setProperty("bpm", 120);
+  state->setProperty("song", metadata); state->setProperty("position", 42.0); state->setProperty("length", 0.0); state->setProperty("playing", true);
+  remote.applyState(juce::var(state));
+  expect(remote.getSongCurrentPositionSeconds() >= 42.0, "remote free position is not clamped to zero by open-ended duration");
+}
+
+int main(int argc, char **argv) {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
 #endif
@@ -1028,6 +1123,10 @@ int main() {
     try { test(); std::cout << "PASS: " << name << '\n'; }
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
+  if (argc > 1 && juce::String(argv[1]) == "--blank-only") {
+    run("blank native transport, duration, accompaniment and section controls", testBlankSongNativeTransport);
+    return failures == 0 ? 0 : 1;
+  }
   run("bounded coherent timeline selection", testTimelineSelectionAndPublication);
   run("stable section identity and rejected native controls", testStableSectionControlIdentity);
   run("sparse draft save cancel base and remote-ready state", testDraftSaveCancelAndBaseMix);

@@ -163,3 +163,14 @@ solo después de detener reproducción; no limpia ante fallos de red ni de suscr
 Abrir o guardar una canción no descarga portadas remotas. Se conserva la portada
 local existente y la metadata de origen; si falta el archivo, se usa el estado sin
 portada. Elegir manualmente una imagen local sigue copiándola al proyecto.
+
+## Canciones en blanco
+
+El objeto opcional `song.blankSong` (`bars`, `clickEnabled`, `padEnabled`)
+identifica explícitamente el nuevo tipo. Cero compases indica reproducción
+libre. No se infiere a partir de `stems: []`; las referencias antiguas sin
+archivos conservan su significado. `ProjectStore` permite un paquete sin audio
+sólo si este contrato es válido. No incluye `audio/` ni `waveform.bin`.
+Las secciones, IDs y automatización usan el codec existente. La preferencia
+opcional `settings.blankPadEnabled` acompaña a click/mezcla en el paquete y
+sidecar y se conserva al actualizar los demás controles.
