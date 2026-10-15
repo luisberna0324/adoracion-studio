@@ -467,3 +467,13 @@ descubrimiento y conexión WebSocket nativo → portátil y portátil → nativo
 Las tres pruebas pasaron tras reemplazar el multicast directo en Apple.
 
 Referencia: [Apple TN3179 — privacidad de red local](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+## Canción en blanco libre
+
+Una canción `blankSong` se controla con transporte, click, pads, tono y tempo
+habituales. Su duración es cero/abierta y el cliente extrapola posiciones sin
+recortarlas a cero. La zona de onda permanece vacía también en Cliente; para
+este tipo no se muestra la etiqueta de conexión sobre ella (el estado sigue
+disponible en Configuración). El snapshot del motor no contiene secciones
+sintéticas. El servidor rechaza `arrange.*`, `window.*` y `tempoMap.set` para
+este tipo, sin afectar sus controles de acompañamiento ni las canciones normales.

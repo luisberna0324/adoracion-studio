@@ -3203,38 +3203,59 @@ void testCueVisualPreview() {
 
 void testBlankTimelineWithoutWaveform() {
   WaveformBar bar;
-  double position = 3.0;
-  bar.setTransportProviders([&] { return position; }, [] { return 24.0; }, [] { return true; });
-  bar.setBlankSong(true); bar.setWaveformBins({}); bar.setSongRhythm(120.0, "4/4");
-  SongArrangementSnapshot arrangement;
-  arrangement.parts = {original("blank-intro", 0.0, 8.0), original("blank-verse", 8.0, 24.0)};
-  arrangement.parts[0].name = "Intro"; arrangement.parts[1].name = "Verso";
-  bar.setArrangement(arrangement, true);
+  double position = 3600.0;
+  bar.setTransportProviders([&] { return position; }, [] { return 0.0; }, [] { return true; });
+  bar.setBlankSong(true); bar.setWaveformBins({0.1f, 0.8f, 0.2f});
+  SongArrangementSnapshot stale;
+  stale.parts = {original("old-blank-intro", 0.0, 8.0)};
+  bar.setArrangement(stale, true);
   for (int width : {320, 390, 768, 1200}) {
     bar.setSize(width, 180);
-    bar.setLiveMode(false);
-    expect(WaveformEditingTestAccess::hasNoWaveform(bar) && WaveformEditingTestAccess::blankEditEnabled(bar),
-        "blank timeline exposes section controls with no waveform bins");
-    auto image = bar.createComponentSnapshot(bar.getLocalBounds());
-    expect(image.isValid(), "blank musical timeline renders natively at every responsive width");
     bar.setLiveMode(true);
-    expect(WaveformEditingTestAccess::liveBounds(bar).size() == 2,
-        "blank live view retains both section cards without audio");
-    image = bar.createComponentSnapshot(bar.getLocalBounds());
-    const auto capture = juce::SystemStats::getEnvironmentVariable("PW_BLANK_CAPTURE_DIR", {});
-    if (capture.isNotEmpty()) {
-      juce::File directory(capture); directory.createDirectory();
-      const auto output = directory.getChildFile("blank-live-" + juce::String(width) + ".png");
-      output.deleteFile();
-      juce::FileOutputStream stream(output);
-      expect(stream.openedOk() && juce::PNGImageFormat().writeImageToStream(image, stream), "native blank timeline snapshot writes");
-    }
+    expect(!bar.isVisible() && !bar.canToggleLiveMode() &&
+        WaveformEditingTestAccess::hasNoWaveform(bar) &&
+        WaveformEditingTestAccess::liveBounds(bar).empty(),
+        "blank exposes no waveform, sections, ruler or section-view action at any width");
+    for (auto *child : bar.getChildren())
+      expect(!child->isVisible(), "blank hides every waveform and section action");
+    // Paint directly as well: no empty-state text, free/bar label, progress
+    // needle or remote badge may leak into this deliberately empty area.
+    const auto image = bar.createComponentSnapshot(bar.getLocalBounds());
+    expect(image.isValid(), "blank area snapshot is valid");
+    for (int y = 0; y < image.getHeight(); y += 3)
+      for (int x = 0; x < image.getWidth(); x += 3)
+        expect(image.getPixelAt(x, y) == UITheme::panelDark,
+               "blank area contains only its background");
   }
-  bar.setArrangement({}, false);
-  bar.setTransportProviders([&] { return position; }, [] { return 0.0; }, [] { return true; });
-  position = 3600.0;
-  expect(bar.createComponentSnapshot(bar.getLocalBounds()).isValid() && WaveformEditingTestAccess::hasNoWaveform(bar),
-      "free timeline renders bar progress after an hour without allocating waveform data");
+  bar.setBlankSong(false); bar.setWaveformBins({0.1f, 0.8f, 0.2f});
+  bar.setArrangement(stale, true); bar.setLiveMode(true);
+  expect(bar.isVisible() && bar.canToggleLiveMode() &&
+      WaveformEditingTestAccess::liveBounds(bar).size() == 1,
+      "loading a normal song restores waveform visibility and existing section controls");
+
+  ProcessorFixture fixture; TopBar top(fixture.processor);
+  ImportedSongData song; song.id = "blank-menu"; song.title = "Blank";
+  song.blankSong = true; song.bpm = 120; song.key = "C";
+  top.setTransportProviders([] { return true; }, [] { return 3600.0; },
+      [] { return 0.0; }, [] { return juce::String("C"); },
+      [&] { return song.id; }, [&] { return &song; });
+  int toggles = 0;
+  top.setLiveModeControls([&] { ++toggles; }, [] { return false; }, [] { return true; });
+  for (bool phone : {false, true}) {
+    top.setMinimalPhoneMode(phone); top.setSize(phone ? 390 : 1200, 80);
+    expect(!WaveformEditingTestAccess::sectionsChoice(top).isVisible() &&
+        !WaveformEditingTestAccess::waveformChoice(top).isVisible(),
+        "blank hides desktop Waveform/Sections choices");
+    auto panel = WaveformEditingTestAccess::morePanel(top);
+    expect(!panel->findChildWithID("timeline-sections")->isVisible(),
+        "blank hides the section action in the phone/tablet More menu");
+    WaveformEditingTestAccess::chooseTimeline(top, true);
+    expect(toggles == 0, "blank cannot enter section view through stale callbacks");
+  }
+  song.blankSong = false;
+  top.setMinimalPhoneMode(false); top.setSize(1280, 80);
+  expect(WaveformEditingTestAccess::sectionsChoice(top).isVisible(),
+      "normal song restores the standard desktop section selector");
 }
 
 int main() {
@@ -3258,7 +3279,7 @@ int main() {
   run("playback cache reuse and source invalidation", testPlaybackCacheReuseAndInvalidation);
   run("playback limits reuse cache without baked shading", testPlaybackLimitsReuseCacheWithoutBakingShading);
   run("cue counts follow regional tempo grid", testCueSequenceUsesRegionalPulseGrid);
-  run("blank timeline renders sections and bars without fabricated audio", testBlankTimelineWithoutWaveform);
+  run("blank area stays empty and hides section actions", testBlankTimelineWithoutWaveform);
   run("cue capacity rejects copy and paste atomically", testCueCapacityRejectsCopyWithoutChangingTimeline);
   run("cue component previews", testCueVisualPreview);
   run("independent cue drag, history and deletion", testIndependentCueEditing);

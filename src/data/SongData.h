@@ -170,9 +170,9 @@ struct ImportedSongData {
   // interno del proyecto: es una referencia local de la biblioteca reciente.
   juce::String projectPath;
   // Explicit opt-in: legacy metadata-only/missing-audio songs are never inferred
-  // to be playable blank songs. Zero bars means an open-ended performance.
+  // to be playable blank songs. Blank playback is always open-ended.
   bool blankSong = false;
-  int blankSongBars = 0;
+  int blankSongBars = 0; // Historical prototype metadata, ignored by playback.
   bool blankClickEnabled = true;
   bool blankPadEnabled = false;
   int64_t createdMs = 0;
@@ -198,7 +198,6 @@ bool isKnownArrangementSectionName(const juce::String &name);
 juce::String standardArrangementPartColorForName(const juce::String &name);
 juce::String fallbackArrangementPartColorForName(const juce::String &name);
 juce::String arrangementPartDisplayLabelForName(const juce::String &name);
-double songBarDurationSeconds(const ImportedSongData &song);
 bool isValidBlankSong(const ImportedSongData &song);
 double estimateSongLengthSeconds(const ImportedSongData &song);
 bool isProjectBackedSong(const ImportedSongData &song);

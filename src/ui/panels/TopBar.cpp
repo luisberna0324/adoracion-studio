@@ -534,8 +534,13 @@ void TopBar::setLiveModeControls(std::function<void()> toggle,
 }
 
 void TopBar::refreshTimelineMenu() {
+  const bool available = timelineControlsAvailable();
+  if (available != lastTimelineControlsAvailable) {
+    lastTimelineControlsAvailable = available;
+    resized();
+  }
   const bool sections = liveModeState && liveModeState();
-  const bool enabled = onLiveModeToggle && (!liveModeEnabled || liveModeEnabled());
+  const bool enabled = available && onLiveModeToggle && (!liveModeEnabled || liveModeEnabled());
   for (auto *button : {&waveformViewButton, &sectionsViewButton}) {
     const auto text = button == &waveformViewButton ? L10n::tr("Onda", "Waveform")
                                                    : L10n::tr("Secciones", "Sections");
@@ -558,6 +563,7 @@ void TopBar::refreshTimelineMenu() {
 }
 
 void TopBar::selectTimelineView(bool sections) {
+  if (!timelineControlsAvailable()) return;
   if (!onLiveModeToggle || (liveModeEnabled && !liveModeEnabled())) return;
   if (sections != (liveModeState && liveModeState())) onLiveModeToggle();
   refreshTimelineMenu();
@@ -1069,9 +1075,10 @@ void TopBar::resized() {
   const bool showTabletMoreButton = tabletProfile;
   const int waveformViewWidth = 62;
   const int sectionsViewWidth = 78;
-  const int timelineWidth = waveformViewWidth + sectionsViewWidth;
-  setVisibleIfChanged(waveformViewButton, desktopProfile);
-  setVisibleIfChanged(sectionsViewButton, desktopProfile);
+  const bool showTimeline = timelineControlsAvailable();
+  const int timelineWidth = showTimeline ? waveformViewWidth + sectionsViewWidth : 0;
+  setVisibleIfChanged(waveformViewButton, desktopProfile && showTimeline);
+  setVisibleIfChanged(sectionsViewButton, desktopProfile && showTimeline);
   setVisibleIfChanged(helpButton, desktopProfile);
   if (!desktopProfile) {
     waveformViewButton.setBounds({}); sectionsViewButton.setBounds({}); helpButton.setBounds({});
@@ -1097,7 +1104,7 @@ void TopBar::resized() {
     if (minimalPhoneProfile)
       controlsW += square + gap;
     controlsW += gap + square;
-    if (desktopProfile) controlsW += gap + timelineWidth;
+    if (desktopProfile && showTimeline) controlsW += gap + timelineWidth;
     if (showWindowButton) controlsW += gap + square;
     if (showDesktopExtras) controlsW += 2 * (gap + square);
     if (usageVisible)
@@ -1161,9 +1168,11 @@ void TopBar::resized() {
       addItem(windowModeButton, square);
     if (showDesktopExtras) addItem(settingsButton, square);
     if (desktopProfile) {
-      rightRow.items.add(juce::FlexItem(waveformViewButton)
-          .withWidth(static_cast<float>(waveformViewWidth)).withHeight(static_cast<float>(square)));
-      addItem(sectionsViewButton, sectionsViewWidth);
+      if (showTimeline) {
+        rightRow.items.add(juce::FlexItem(waveformViewButton)
+            .withWidth(static_cast<float>(waveformViewWidth)).withHeight(static_cast<float>(square)));
+        addItem(sectionsViewButton, sectionsViewWidth);
+      }
       addItem(helpButton, square, !usageVisible);
     } else {
       addItem(tabletMoreButton, square, !usageVisible);
@@ -1540,15 +1549,16 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
       }
     }
 
-    void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showWindow) {
+    void updatePrimaryActions(bool showMidi, bool showSettings, bool active, bool showPractice, bool showWindow, bool showTimeline) {
       const bool layoutChanged = getWidth() == 0 || midiButton.isVisible() != showMidi || settingsButton.isVisible() != showSettings ||
-                                 hasPractice != showPractice || hasWindow != showWindow;
+                                 hasPractice != showPractice || hasWindow != showWindow || sectionsButton.isVisible() != showTimeline;
       midiButton.setToggleState(active, juce::dontSendNotification);
       if (!layoutChanged) return;
       hasPractice = showPractice; hasWindow = showWindow;
       practiceButton.setVisible(hasPractice); songWindowButton.setVisible(hasWindow);
       midiButton.setVisible(showMidi); settingsButton.setVisible(showSettings);
-      const int rows = 2 + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
+      sectionsButton.setVisible(showTimeline);
+      const int rows = 1 + (showTimeline ? 1 : 0) + (showMidi ? 1 : 0) + (showSettings ? 1 : 0) + (hasPractice ? 1 : 0) + (hasWindow ? 1 : 0);
       setSize(getWidth() > 0 ? getWidth() : 300, rows * 48 + 8);
       resized();
     }
@@ -1597,13 +1607,16 @@ std::unique_ptr<juce::Component> TopBar::createMorePopoverContent() {
   refreshMorePopover = [safe, panelSafe, desktopMenu, initialized = false]() mutable {
     if (safe && panelSafe)
       panelSafe->updateViewSelection(safe->liveModeState && safe->liveModeState(),
-          safe->onLiveModeToggle && (!safe->liveModeEnabled || safe->liveModeEnabled()));
-    if (!desktopMenu && initialized) return; // Preserve existing touch-menu behavior.
+          safe->timelineControlsAvailable() && safe->onLiveModeToggle && (!safe->liveModeEnabled || safe->liveModeEnabled()));
+    const bool timelineVisibilityChanged = safe && panelSafe &&
+        panelSafe->findChildWithID("timeline-sections")->isVisible() != safe->timelineControlsAvailable();
+    if (!desktopMenu && initialized && !timelineVisibilityChanged) return;
     if (safe && panelSafe) {
       initialized = true;
       const auto actions = safe->morePrimaryActions();
       panelSafe->updatePrimaryActions(actions.first, actions.second, safe->midiLearnActive,
-          safe->minimalPhoneMode && safe->onPhonePractice != nullptr, !safe->timeDisplay.isVisible());
+          safe->timelineControlsAvailable() && safe->minimalPhoneMode && safe->onPhonePractice != nullptr,
+          safe->timelineControlsAvailable() && !safe->timeDisplay.isVisible(), safe->timelineControlsAvailable());
     }
   };
   refreshMorePopover();
@@ -2084,6 +2097,7 @@ void TopBar::showKeyPopover() {
 }
 
 void TopBar::showSongWindowPopover() {
+  if (!timelineControlsAvailable()) return;
   class SongWindowPopover final : public juce::Component {
   public:
     SongWindowPopover(PlaybackSession &sessionRef,
@@ -2368,11 +2382,12 @@ void TopBar::refreshFromProviders() {
   const double len = lengthProvider ? lengthProvider() : 0.0;
   setLabelTextIfChanged(
       timeDisplay,
-      (minimalPhoneMode ||
-       (useTouchOptimisedControls() &&
-        responsiveProfile == ResponsiveLayoutProfile::Compact))
-          ? formatTimeSeconds(pos) + " /\n" + formatTimeSeconds(len)
-          : formatTimeSeconds(pos) + " / " + formatTimeSeconds(len));
+      !timelineControlsAvailable() ? formatTimeSeconds(pos)
+          : (minimalPhoneMode ||
+             (useTouchOptimisedControls() &&
+              responsiveProfile == ResponsiveLayoutProfile::Compact))
+                ? formatTimeSeconds(pos) + " /\n" + formatTimeSeconds(len)
+                : formatTimeSeconds(pos) + " / " + formatTimeSeconds(len));
 
   updateBpmDisplay();
 

@@ -251,13 +251,20 @@ se convierte en canción en blanco. `.pwproj`, Biblioteca y setlists utilizan
 sus rutas habituales. Se conserva la lectura del objeto opcional `blankSong`
 con `bars`, `clickEnabled` y `padEnabled`, y del ajuste opcional
 `settings.blankPadEnabled`, para poder reabrir proyectos del primer prototipo
-recuperable en `11f804d`. El nuevo botón usa `bars = 0`; los campos históricos
-de acompañamiento no sustituyen los controles habituales. Los proyectos con
+recuperable en `11f804d`. El nuevo botón usa `bars = 0`; ningún valor histórico de compases fija duración.
+Los campos históricos de acompañamiento no sustituyen los controles habituales. Los proyectos con
 audio conservan el esquema y comportamiento existentes.
 
-Editar metadatos conserva el arreglo guardado, sus IDs, cues y automatización.
-No reconstruye filas de compases ni escala automáticamente los tiempos de
-sección por un cambio de BPM. La edición expansible de una canción vacía aún
-requiere cambios de timeline: con duración cero, el editor actual no permite
-añadir una primera sección. La regla en segundos y el crecimiento están sólo
-analizados en [la propuesta de timeline](BlankSongTimelineProposal.md).
+La canción en blanco no admite secciones ni mapa regional de tempo en esta
+versión. Su zona de onda queda completamente vacía: no muestra señal, regla,
+cursor, compases, tarjetas ni aviso para importar audio. Se ocultan Editar,
+Onda/Secciones y sus opciones de menú, también en Cliente. El reloj de la barra
+superior muestra sólo el tiempo transcurrido y no abre ajustes Inicio/Fin.
+Click, pad, tono y tempo mantienen sus controles habituales. Al cargar de nuevo
+una canción con audio se restauran sus vistas, edición y acciones existentes.
+
+Los metadatos históricos de compases/secciones del prototipo siguen siendo
+legibles, pero no definen duración ni se ejecutan en una canción en blanco.
+La creación/redimensión de secciones, regla ampliable y Fin automático/manual
+para este tipo quedan fuera del alcance de la versión. El análisis anterior
+se conserva en el historial `a25bcd9`; no hay una fase pendiente que ejecutar.

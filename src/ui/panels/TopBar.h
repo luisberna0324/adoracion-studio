@@ -152,6 +152,11 @@ private:
   std::function<juce::String()> keyProvider;
   std::function<juce::String()> songIdProvider;
   std::function<const ImportedSongData *()> songProvider;
+  bool timelineControlsAvailable() const {
+    const auto *song = songProvider ? songProvider() : nullptr;
+    return song == nullptr || !song->blankSong;
+  }
+  bool lastTimelineControlsAvailable = true;
   MTControlsAudioProcessor &processor;
   PlaybackSession localSession;
   PlaybackSession &session;

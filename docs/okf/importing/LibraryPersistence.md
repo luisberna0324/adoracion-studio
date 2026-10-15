@@ -167,11 +167,13 @@ portada. Elegir manualmente una imagen local sigue copiándola al proyecto.
 ## Canciones en blanco
 
 El objeto opcional `song.blankSong` (`bars`, `clickEnabled`, `padEnabled`)
-identifica explícitamente el nuevo tipo. Cero compases indica reproducción
-libre. No se infiere a partir de `stems: []`; las referencias antiguas sin
+identifica explícitamente el nuevo tipo. La reproducción siempre es libre;
+`bars` se conserva como metadata histórica sin efecto en duración. No se infiere a partir de `stems: []`; las referencias antiguas sin
 archivos conservan su significado. `ProjectStore` permite un paquete sin audio
 sólo si este contrato es válido. No incluye `audio/` ni `waveform.bin`.
-Las secciones, IDs y automatización usan el codec existente. La preferencia
+Los datos históricos de secciones siguen siendo legibles, pero el motor y la
+UI no los activan en una canción en blanco. Las canciones normales conservan
+el codec de secciones, IDs y automatización existente. La preferencia
 opcional histórica `settings.blankPadEnabled` sigue leyéndose y conservándose
 en paquete/sidecar por compatibilidad con el prototipo `11f804d`; la creación
 simplificada no la añade ni la aplica como un control distinto del pad global.

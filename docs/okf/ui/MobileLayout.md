@@ -995,3 +995,13 @@ no expone actualmente una preferencia equivalente en Android.
 El timer existente invalida sólo bordes de Loop cuando el bloque no cambia;
 progreso/pulso invalidan sus bloques y el pan invalida la fila. Las secciones
 fuera del clip se omiten en el render. No hay trabajo nuevo en audio.
+
+### Canción en blanco sin zona de onda
+
+En canción en blanco, WaveformBar conserva su espacio de layout pero queda
+oculto y sin controles, regla, cursor, compases ni texto vacío. El selector
+Onda/Secciones de escritorio y la opción de Secciones del menú táctil no se
+muestran; tampoco la ventana Inicio/Fin ni Ensayo en ese menú. Click, Pads,
+tono y tempo conservan sus posiciones y componentes habituales. El reloj
+superior muestra sólo tiempo transcurrido. La misma regla aplica al cliente
+remoto y se revierte al cargar una canción normal con audio.

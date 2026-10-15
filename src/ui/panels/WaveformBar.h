@@ -59,16 +59,11 @@ public:
   void setLiveMode(bool enabled);
   bool isLiveMode() const { return liveMode; }
   bool canToggleLiveMode() const {
-    return liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty());
+    return !blankSongTimeline && (liveMode || (!isEditingArrangement() && sectionAutomationEditingPartId.isEmpty()));
   }
 
   void setWaveformBins(std::vector<float> bins);
-  void setBlankSong(bool enabled) {
-    if (blankSongTimeline == enabled) return;
-    blankSongTimeline = enabled;
-    resized();
-    repaint();
-  }
+  void setBlankSong(bool enabled);
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
   void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,

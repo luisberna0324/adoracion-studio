@@ -656,7 +656,7 @@ void MTControlsAudioProcessorEditor::publishRemoteState() {
     remoteWaveformBins.clear();
     remoteWaveformHash.clear();
   }
-  if (songId.isNotEmpty() && remoteWaveformBins.empty()) {
+  if (songId.isNotEmpty() && !currentLoadedSong.blankSong && remoteWaveformBins.empty()) {
     if (waveformBarPtr != nullptr)
       remoteWaveformBins = waveformBarPtr->getWaveformBinsCopy();
     if (remoteWaveformBins.empty())
@@ -941,6 +941,7 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     p.setClickDivision(static_cast<int>(value)); return true;
   }
   if (action.startsWith("window.")) {
+    if (p.isBlankSongLoaded()) { error = "Blank songs have no playback window"; return false; }
     if (!hasCurrentLoadedSong || !isNumber(value) || !std::isfinite(static_cast<double>(value)) || static_cast<double>(value) < 0) { error = "Invalid window"; return false; }
     const double seconds = static_cast<double>(value);
     if (action == "window.start") p.setSongStartSeconds(seconds);
@@ -950,6 +951,7 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     maybePersistSongWindowForActiveSong(); return true;
   }
   if (action.startsWith("arrange.")) {
+    if (p.isBlankSongLoaded()) { error = "Blank songs have no sections"; return false; }
     if (playworship::remote::isSectionControlAction(action))
       return playworship::remote::applySectionControl(p,
           hasCurrentLoadedSong ? currentLoadedSong.id : juce::String{},
@@ -986,6 +988,7 @@ bool MTControlsAudioProcessorEditor::applyRemoteCommand(
     return true;
   }
   if (action == "tempoMap.set") {
+    if (p.isBlankSongLoaded()) { error = "Blank songs use the tempo control"; return false; }
     if (!hasCurrentLoadedSong || !value.isArray() || value.size() > 1024) { error = "Invalid tempo map"; return false; }
     const auto map = playworship::remote::decodeTempoMap(value);
     for (const auto &r : map.regions) if (!std::isfinite(r.startSec) || !std::isfinite(r.endSec) || !std::isfinite(r.bpm) || r.startSec < 0 || r.endSec < r.startSec || r.bpm < 20 || r.bpm > 300) { error = "Invalid tempo region"; return false; }

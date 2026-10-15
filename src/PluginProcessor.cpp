@@ -4061,7 +4061,7 @@ bool MTControlsAudioProcessor::loadSongStems(
     workerLoad.assign(stemReadThreads.size(), 0);
   }
 
-  double maxLengthSeconds = isBlank ? estimateSongLengthSeconds(*blankSong) : 0.0;
+  double maxLengthSeconds = 0.0;
   for (int i = 0; i < pathCount; ++i) {
     if (newTracks.size() >= static_cast<size_t>(maxStemCount))
       break;
@@ -4402,21 +4402,23 @@ bool MTControlsAudioProcessor::loadSongStems(
           arrangementStructurePublicationSequence);
       arrangementParts.clear();
       arrangementCues.clear();
-      ArrangementRuntimePart initialPart;
-      initialPart.id = "part-1";
-      initialPart.name = "Part";
-      initialPart.sectionKey =
-          DynamicGuideEngine::normalizeSectionKey(initialPart.name);
-      initialPart.guideTriggerId =
-          dynamicGuideEngine.resolveTriggerId(initialPart.sectionKey);
-      initialPart.startSec = 0.0;
-      initialPart.endSec = maxLengthSeconds;
-      initialPart.sourceStartSec = initialPart.startSec;
-      initialPart.sourceEndSec = initialPart.endSec;
-      arrangementParts.push_back(std::move(initialPart));
+      if (!isBlank) {
+        ArrangementRuntimePart initialPart;
+        initialPart.id = "part-1";
+        initialPart.name = "Part";
+        initialPart.sectionKey =
+            DynamicGuideEngine::normalizeSectionKey(initialPart.name);
+        initialPart.guideTriggerId =
+            dynamicGuideEngine.resolveTriggerId(initialPart.sectionKey);
+        initialPart.startSec = 0.0;
+        initialPart.endSec = maxLengthSeconds;
+        initialPart.sourceStartSec = initialPart.startSec;
+        initialPart.sourceEndSec = initialPart.endSec;
+        arrangementParts.push_back(std::move(initialPart));
+      }
       rebuildSectionScheduler();
       configureSectionEntryCache();
-      arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+      arrangementCurrentPartIndex.store(isBlank ? -1 : 0, std::memory_order_relaxed);
       setArrangementJumpCommand(-1, false);
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
       arrangementCustomActive.store(false, std::memory_order_relaxed);
@@ -4495,7 +4497,7 @@ bool MTControlsAudioProcessor::loadSongStems(
 
   if (isBlank) {
     setMetronomeBeatsPerBar(timeSignatureBeatsPerBar(blankSong->timeSignature));
-    setSongArrangement(blankSong->arrangement, !blankSong->arrangement.parts.empty());
+    setSongArrangement({}, false);
   }
   if (shouldResumeAfterLoad && !deferTransitionFadeInUntilConfigured)
     finishPendingSongTransition();
@@ -4845,6 +4847,7 @@ juce::String MTControlsAudioProcessor::getPracticeLoopError() const {
 }
 
 void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   const double sourceLength =
@@ -4877,6 +4880,7 @@ void MTControlsAudioProcessor::setSongStartSeconds(double seconds) noexcept {
 }
 
 void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   const double sourceLength =
@@ -4909,6 +4913,7 @@ void MTControlsAudioProcessor::setSongEndSeconds(double seconds) noexcept {
 }
 
 void MTControlsAudioProcessor::setSongFadeOutSeconds(double seconds) noexcept {
+  if (isBlankSongLoaded()) return;
   const double start = songStartSeconds.load(std::memory_order_relaxed);
   double end = songEndSeconds.load(std::memory_order_relaxed);
   const double sourceLength =
@@ -4981,7 +4986,9 @@ double MTControlsAudioProcessor::getSongFadeOutSeconds() const noexcept {
 
 void MTControlsAudioProcessor::setSongArrangement(
     const SongArrangementSnapshot &incomingArrangement, bool isCustomArrangement) {
-  auto arrangement = incomingArrangement;
+  const bool isBlank = isBlankSongLoaded();
+  auto arrangement = isBlank ? SongArrangementSnapshot{} : incomingArrangement;
+  if (isBlank) isCustomArrangement = false;
   // All entry points (local, restored project and remote) must compile the
   // same safely migrated structure that the waveform shows.
   if (!blankSongLoaded.load(std::memory_order_relaxed)) migrateLegacyArrangementCues(arrangement);
@@ -5196,7 +5203,7 @@ void MTControlsAudioProcessor::setSongArrangement(
     }
   }
 
-  if (next.empty()) {
+  if (next.empty() && !isBlank) {
     ArrangementRuntimePart runtimePart;
     runtimePart.id = "part-1";
     runtimePart.name = "Part";
@@ -5282,14 +5289,14 @@ void MTControlsAudioProcessor::setSongArrangement(
       const int currentPartIndex =
           findArrangementPartIndexForArrangementTime(currentSec);
       arrangementCurrentPartIndex.store(
-          currentPartIndex >= 0 ? currentPartIndex : 0,
+          currentPartIndex >= 0 ? currentPartIndex : (isBlank ? -1 : 0),
           std::memory_order_relaxed);
       if (preparingPartId.isNotEmpty()) setArrangementJumpCommand(findPartIndexById(preparingPartId), false);
       else setArrangementJumpCommand(findPartIndexById(pendingPartId), true);
       arrangementLoopPartIndex.store(findPartIndexById(loopPartId),
                                      std::memory_order_relaxed);
     } else {
-      arrangementCurrentPartIndex.store(0, std::memory_order_relaxed);
+      arrangementCurrentPartIndex.store(isBlank ? -1 : 0, std::memory_order_relaxed);
       setArrangementJumpCommand(-1, false);
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
     }

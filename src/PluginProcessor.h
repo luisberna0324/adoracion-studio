@@ -111,6 +111,7 @@ public:
   uint64_t getPracticeLoopRevision() const noexcept;
   double getMinimumPracticeLoopDuration() const noexcept;
   juce::String getPracticeLoopError() const;
+  bool isBlankSongLoaded() const noexcept { return blankSongLoaded.load(std::memory_order_relaxed); }
   void setSongStartSeconds(double seconds) noexcept;
   void setSongEndSeconds(double seconds) noexcept;
   void setSongFadeOutSeconds(double seconds) noexcept;

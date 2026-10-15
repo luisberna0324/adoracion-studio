@@ -1076,33 +1076,37 @@ void testBlankSongNativeTransport() {
   expect(p.getPadsOutputLevel() > 0.01f, "stop preserves ordinary pad behavior rather than adding blank-specific gating");
   p.stopPadNote(0); p.setPadsEnabled(false); p.setMetronomeEnabled(false); render(400);
 
+  // Old prototype metadata or a stale client must not turn a blank into an
+  // arrangement, install a finite stop, or expose a synthetic default section.
   song.blankSongBars = 3;
-  for (int index = 0; index < 3; ++index) {
-    SongArrangementPartSnapshot part; part.id = "blank-section-" + juce::String(index);
-    part.name = index == 0 ? "Intro" : index == 1 ? "Verso" : "Coro";
-    part.startSec = index * 2.0; part.endSec = (index + 1) * 2.0;
-    song.arrangement.parts.push_back(part);
-  }
-  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "structured blank song uses the normal load transaction");
-  near(p.getSongLengthSeconds(), 6.0, "structured duration follows bars");
-  expect(p.toggleArrangementPartLoopById("blank-section-0"), "existing section Loop accepts stable blank section ID");
+  SongArrangementPartSnapshot oldPart; oldPart.id = "old-blank-section";
+  oldPart.name = "Intro"; oldPart.endSec = 6.0;
+  song.arrangement.parts.push_back(oldPart);
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song),
+      "historical blank metadata still loads as an audio-free song");
+  p.setSongArrangement(song.arrangement, true);
+  expect(SectionAutomationTestAccess::scheduler(p).count == 0 &&
+      p.getSongArrangementSnapshot().parts.empty() && !p.isCustomArrangementActive() &&
+      !p.requestArrangementPartJumpById(oldPart.id) &&
+      !p.toggleArrangementPartLoopById("part-1") &&
+      !p.beginSectionAutomationEditing(oldPart.id),
+      "blank has no generated sections, Loop, Ir or automation destinations");
   p.playSong(); render(800);
-  expect(p.isSongPlaying() && p.getSongCurrentPositionSeconds() < 2.0, "native section scheduler repeats blank section boundaries");
-  expect(p.requestArrangementPartJumpById("blank-section-2"), "existing Ir accepts blank destination ID");
-  for (int attempt = 0; attempt < 360 && p.getSongCurrentPositionSeconds() < 4.0; ++attempt) render(1);
-  expect(p.getSongCurrentPositionSeconds() >= 4.0 && p.getSongCurrentPositionSeconds() < 4.02,
-      "queued Ir leaves the loop at the musical boundary and lands in Coro");
-  expect(!p.requestArrangementPartJumpById("missing"), "invalid remote/local section ID remains rejected");
-  render(400);
-  expect(!p.isSongPlaying(), "structured blank stops at its natural end");
-  near(p.getSongCurrentPositionSeconds(), 6.0, "natural stop preserves exact structured end");
-  p.playSong(); render(1); expect(p.getSongCurrentPositionSeconds() < 0.02, "Play after natural end restarts at the beginning");
+  const double beforeWindow = p.getSongCurrentPositionSeconds();
+  p.setSongStartSeconds(1.0); p.setSongEndSeconds(2.0); p.setSongFadeOutSeconds(1.0);
+  render(800);
+  expect(p.isSongPlaying() && p.getSongCurrentPositionSeconds() > beforeWindow &&
+      p.getSongLengthSeconds() == 0.0 && p.getSongStartSeconds() == 0.0 &&
+      p.getSongEndSeconds() == 0.0 && !p.isSongEndCustomized(),
+      "blank remains open beyond historical bars and ignores finite window edits");
+  p.setPitchSemiTones(2); render(10);
+  expect(p.getPitchSemiTones() == 2 && p.isSongPlaying(),
+      "ordinary pitch control works without stems or interrupting the free clock");
   p.stopSong(); render(1);
-  song.arrangement = {};
   for (const auto &meter : {"3/4", "6/8"}) {
     song.timeSignature = meter;
     expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "blank meter change loads without a nested transport lock");
-    near(p.getSongLengthSeconds(), 4.5, "three bars in 3/4 or 6/8 use three quarter notes per bar");
+    near(p.getSongLengthSeconds(), 0.0, "changing meter never creates a blank duration");
     p.setPlaybackTempoBpm(180.0); p.playSong(); render(100);
     const double before = p.getSongCurrentPositionSeconds(); render(100);
     near(p.getSongCurrentPositionSeconds() - before, 38400.0 / 44100.0, "blank tempo change advances the existing source clock at its effective ratio");
@@ -1111,9 +1115,18 @@ void testBlankSongNativeTransport() {
   PlaybackSession remote(p); remote.setRemote(true); remote.setConnected(true);
   auto *state = new juce::DynamicObject(); auto *metadata = new juce::DynamicObject();
   metadata->setProperty("id", "free-remote"); metadata->setProperty("blankSong", true); metadata->setProperty("bpm", 120);
-  state->setProperty("song", metadata); state->setProperty("position", 42.0); state->setProperty("length", 0.0); state->setProperty("playing", true);
+  state->setProperty("song", metadata); state->setProperty("position", 42.0); state->setProperty("length", 0.0); state->setProperty("playing", true); state->setProperty("tempo", 120.0);
   remote.applyState(juce::var(state));
   expect(remote.getSongCurrentPositionSeconds() >= 42.0, "remote free position is not clamped to zero by open-ended duration");
+  juce::StringArray actions;
+  remote.onCommand = [&](const auto &, const juce::String &action, const auto &, const auto &) { actions.add(action); };
+  remote.setPlaybackTempoBpm(150.0); remote.setPitchSemiTones(-2);
+  remote.setMetronomeEnabled(true); remote.setPadsEnabled(true);
+  remote.toggleSongPlayPause(); remote.stopSong();
+  expect(actions.contains("tempo.set") && actions.contains("pitch.set") &&
+      actions.contains("click.metronome") && actions.contains("pads.enabled") &&
+      actions.contains("transport.toggle") && actions.contains("transport.stop"),
+      "blank remote retains ordinary tempo, pitch, click/pad and transport commands");
 }
 
 int main(int argc, char **argv) {
@@ -1128,7 +1141,7 @@ int main(int argc, char **argv) {
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
   if (argc > 1 && juce::String(argv[1]) == "--blank-only") {
-    run("blank native transport, duration, accompaniment and section controls", testBlankSongNativeTransport);
+    run("blank free transport, accompaniment, pitch/tempo and no section controls", testBlankSongNativeTransport);
     return failures == 0 ? 0 : 1;
   }
   run("bounded coherent timeline selection", testTimelineSelectionAndPublication);

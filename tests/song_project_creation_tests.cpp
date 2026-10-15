@@ -1151,10 +1151,10 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
   song.id = juce::Uuid().toString(); song.title = "Blank fixture";
   song.blankSong = true; song.bpm = 120; song.key = "D"; song.timeSignature = "4/4";
   song.blankSongBars = 20; song.blankPadEnabled = true; song.blankClickEnabled = false;
-  expect(std::abs(estimateSongLengthSeconds(song) - 40.0) < 1.0e-8, "20 bars in 4/4 at 120 BPM last 40 seconds");
+  expect(estimateSongLengthSeconds(song) == 0.0, "historical bar counts never impose a duration on blank playback");
   for (const auto &meter : {"3/4", "6/8"}) {
     song.timeSignature = meter;
-    expect(std::abs(estimateSongLengthSeconds(song) - 30.0) < 1.0e-8, "written denominator is converted once to quarter-note units");
+    expect(estimateSongLengthSeconds(song) == 0.0, "meter changes preserve open-ended blank duration");
   }
   song.timeSignature = "4/4";
   SongArrangementPartSnapshot intro, verse;
@@ -1177,7 +1177,7 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
   expect(reopened.song.blankSong && reopened.song.stems.empty() && reopened.waveformBins.empty() &&
       reopened.song.blankSongBars == 20 && reopened.song.blankPadEnabled && !reopened.song.blankClickEnabled &&
       reopened.settings.blankPadEnabled == true && reopened.song.arrangement.parts[1].id == "blank-verse",
-      "blank metadata, accompaniment, duration and stable section IDs survive packaging");
+      "historical prototype metadata remains readable without defining playback duration");
   expect(SongLibraryStore::registerProjectSong(reopened.song), "blank project registers in the normal library");
   const auto list = SongLibraryStore::createSetlist("Blank fixture setlist");
   expect(SongLibraryStore::addSongToSetlist(list, reopened.song.id), "blank song joins a regular setlist");
@@ -1198,8 +1198,8 @@ void testBlankSongPersistence(const Fixtures &fixtures) {
   expect(!legacy.blankSong && !isValidBlankSong(legacy), "legacy metadata-only entries never migrate into blank playback");
   document.song = legacy;
   expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-legacy.pwproj"), &error), "legacy no-audio project still rejects missing audio");
-  song.blankSongBars = -1; document.song = song;
-  expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-blank.pwproj"), &error), "invalid blank duration is rejected");
+  song.bpm = -1; document.song = song;
+  expect(!ProjectStore::save(document, fixtures.directory.getChildFile("invalid-blank.pwproj"), &error), "invalid blank tempo is rejected");
   const auto remote = playworship::remote::decodeSong(playworship::remote::encodeSong(reopened.song, false));
   expect(remote.blankSong && remote.stems.empty() && remote.blankSongBars == 0 && remote.projectPath.isEmpty(), "remote blank metadata round-trips without local file paths");
 }

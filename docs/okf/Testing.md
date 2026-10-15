@@ -630,3 +630,51 @@ Logs: `build/blank-song-simplified-build.log`,
 `build/blank-song-simplified-build2.log`,
 `build/blank-song-simplified-tests.log`. Esta verificación no prueba el crecimiento
 propuesto ni sustituye audio/MIDI físico y QA en dispositivos/plataformas reales.
+
+### Alcance final: libre, sin secciones ni contenido de onda
+
+La decisión final sustituye el prototipo estructurado: el botón de Detalles
+sigue guardando y cerrando el asistente, pero toda canción en blanco se reproduce
+libre hasta Detener. Se retiraron el cómputo de duración por compases, las
+secciones de respaldo y el contenido visual de la zona de onda. Los campos y
+arreglos históricos del prototipo siguen siendo legibles, pero no se ejecutan
+ni fijan duración. El análisis de timeline ampliable quedó fuera de esta versión
+y está recuperable en `a25bcd9`; no hay una fase de crecimiento pendiente.
+
+Verificación final en nube Linux, GCC 14 / JUCE 8.0.12 / Bungee 2.4.24 real,
+`JUCE_USE_SIMD=0`:
+
+- Standalone y todos los targets del gate compilaron; una segunda comprobación
+  de Ninja confirmó que los binarios correspondían al código actual.
+- Gate de 13 suites: **12 aprobadas, 1 fallida**, 50,66 s. Pasan
+  `song_project_creation`, `song_import_wizard`, `blank_song_transport`,
+  `section_automation`, `remote_session`, `remote_section_control`,
+  `audio_engine_core`, `metronome_engine`, `pads_engine`, `stem_mix_engine`,
+  `song_mix_export_timeline` y `song_mix_exporter`.
+- El test nuevo de UI pasa dentro de `waveform_editing`: área de onda uniforme,
+  sin hijos visibles, bins, regla, cursor, texto de compases ni acciones de
+  sección, a 320/390/768/1200 puntos; menú táctil y selector de escritorio
+  ocultos, callbacks antiguos bloqueados y restauración de la vista/secciones
+  normales al salir de la vacía. Usa componentes JUCE reales en Xvfb; no acredita
+  interacción táctil en dispositivos físicos ni compara la imagen de referencia.
+- El transporte real procesa sin stems ni secciones en el scheduler, mantiene
+  reproducción después de Seek a una hora, pausa/reanuda y Stop vuelve a cero.
+  Se verifican click/pad independientes, pad global durante pausa/stop, cambios
+  de pitch/tempo, métricas 3/4 y 6/8 sin duración, metadata histórica que no
+  activa partes ni Fin, y órdenes remotas ordinarias de tempo/tono/click/pads/
+  play-pause/stop. Estas últimas comprueban el adaptador y sus comandos; las
+  suites remotas existentes además ejercitan loopback y controles normales.
+- Persistencia reabre `.pwproj` sin `audio/` ni `waveform.bin`, registra en
+  Biblioteca/setlist y conserva la lectura de metadata histórica sin convertir
+  las referencias antiguas sin audio en canciones reproducibles.
+- `waveform_editing` sigue fallando sólo en los dos asserts conocidos: repaint
+  parcial con diferencia de un nivel RGB y ancla de automatización tras scroll.
+  Son los mismos fallos reproducidos antes con el renderer de `origin/main`;
+  la nueva prueba de canción vacía pasa. No se relajaron esos asserts.
+
+Logs: `build/blank-song-free-build3.log`,
+`build/blank-song-free-build-final.log`, `build/blank-song-free-tests.log`.
+No se usaron stubs para compilar o validar audio. No hay dispositivos físicos
+de audio/MIDI; quedan sin verificar escucha, latencia, tacto y builds de macOS,
+iOS, Android y Windows. Todo se ejecutó en nube: sin Mac, push, PR, Actions,
+publicación, despliegue ni incorporación de los experimentos Android excluidos.
