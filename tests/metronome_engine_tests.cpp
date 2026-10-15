@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <vector>
 
 struct MetronomeEngineTestPeer {
   static int activeSubdivision(const MetronomeEngine &engine) noexcept {
@@ -65,7 +66,7 @@ void testSubdivisionPublicationPersistsUntilBeatBoundary() {
          "subdivision starts from the prepared target");
 
   engine.setSubdivision(4);
-  juce::AudioBuffer<float> beforeBoundary(2, 999);
+  juce::AudioBuffer<float> beforeBoundary(2, 1000);
   beforeBoundary.clear();
   engine.process(beforeBoundary);
   expect(MetronomeEngineTestPeer::activeSubdivision(engine) == 1,
@@ -211,15 +212,114 @@ void testSyncedBeatBoundaryRendersAtBlockStart() {
            "sync inside a beat does not create a false boundary click");
 }
 
+void testCallbackBoundariesDoNotDuplicateAttacks() {
+  const auto folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                          .getNonexistentChildFile("metronome-attacks", {}, false);
+  expect(folder.createDirectory().wasOk(), "attack fixture directory opens");
+  const auto file = folder.getChildFile("click-probe-quarter.wav");
+  {
+    auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+    juce::WavAudioFormat format;
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(1024.0).withNumChannels(1).withBitsPerSample(24));
+    expect(writer != nullptr, "attack fixture WAV opens");
+    juce::AudioBuffer<float> impulse(1, 32); impulse.clear();
+    impulse.setSample(0, 0, 0.5f);
+    expect(writer->writeFromAudioSampleBuffer(impulse, 0, 32), "attack fixture writes");
+  }
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  for (const int blockSize : {64, 256, 1024}) {
+    MetronomeEngine engine; engine.prepare(1024.0);
+    engine.setEnabled(true); engine.setDivisionMask(1);
+    expect(engine.loadClickSamplesFromFolder(folder, "probe", formats), "real sample loader accepts probe");
+    std::vector<int> attacks;
+    for (int start = 0; start < 3072; start += blockSize) {
+      engine.syncPhaseForBeatPosition(start / 1024.0, 60.0);
+      juce::AudioBuffer<float> audio(1, blockSize); audio.clear();
+      engine.process(audio);
+      for (int i = 0; i < blockSize; ++i)
+        if (std::abs(audio.getSample(0, i)) > 0.01f) attacks.push_back(start + i);
+    }
+    std::cerr << "callback=" << blockSize << " attack frames:";
+    for (auto frame : attacks) std::cerr << ' ' << frame;
+    std::cerr << '\n';
+    expect(attacks == std::vector<int>({0, 1024, 2048}),
+           "each beat has one attack at its frame, independent of callback boundaries");
+  }
+  folder.deleteRecursively();
+}
+
+void testSubdivisionsAreIndependentOfCallbackPartition() {
+  for (const auto rateAndBpm : {std::pair<double, double>{1024.0, 60.0},
+                              {44100.0, 126.0}, {48000.0, 120.0}}) {
+    const auto [rate, bpm] = rateAndBpm;
+    const int frames = static_cast<int>(rate * 1.5);
+    for (const int mask : {1, 2, 4, 7}) {
+      const auto render = [&](int blockSize) {
+        MetronomeEngine engine; engine.prepare(rate); engine.setEnabled(true);
+        engine.setSubdivision(4); engine.setDivisionMask(mask);
+        juce::AudioBuffer<float> audio(1, frames); audio.clear();
+        for (int start = 0; start < frames; start += blockSize) {
+          engine.syncPhaseForBeatPosition(start * bpm / (60.0 * rate), bpm);
+          engine.process(audio, start, std::min(blockSize, frames - start));
+        }
+        return audio;
+      };
+      const auto reference = render(frames);
+      for (const int blockSize : {64, 256, 257, 1024}) {
+        const auto audio = render(blockSize);
+        for (int frame = 0; frame < frames; ++frame)
+          expect(std::abs(audio.getSample(0, frame) - reference.getSample(0, frame)) < 1.0e-6f,
+                 "quarter/eighth/sixteenth attacks and tails do not depend on block boundaries");
+      }
+    }
+  }
+}
+
+void captureMetronomeAudio(const juce::File &directory) {
+  expect(directory.createDirectory().wasOk(), "capture directory opens");
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  const auto samples = juce::File(__FILE__).getParentDirectory().getParentDirectory()
+                           .getChildFile("assets/clicks/samples");
+  for (const auto &name : {"single_click", "callback_boundary", "late_start_request", "resume_before_beat"}) {
+    MetronomeEngine engine; engine.prepare(48000.0); engine.setEnabled(true);
+    engine.setVolume(0.4f); engine.setDivisionMask(1);
+    expect(engine.loadClickSamplesFromFolder(samples, "woodblock", formats), "shipped woodblock loads");
+    const juce::String scenario(name);
+    const int frames = scenario == "callback_boundary" ? 52800 : 4096;
+    const int blockSize = scenario == "late_start_request" ? 256 : 64;
+    juce::AudioBuffer<float> audio(1, frames); audio.clear();
+    for (int start = 0; start < frames; start += blockSize) {
+      const double beatPosition = (scenario == "resume_before_beat" ? 0.98 : 0.0) + start / 24000.0;
+      engine.syncPhaseForBeatPosition(beatPosition, 120.0);
+      if ((scenario == "late_start_request" && start == 256) ||
+          (scenario == "resume_before_beat" && start == 0)) engine.triggerImmediateClick();
+      engine.process(audio, start, std::min(blockSize, frames - start));
+    }
+    const auto file = directory.getChildFile(scenario + ".wav"); file.deleteFile();
+    auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+    juce::WavAudioFormat format;
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(48000.0).withNumChannels(1).withBitsPerSample(24));
+    expect(writer && writer->writeFromAudioSampleBuffer(audio, 0, frames), "real metronome capture writes");
+  }
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  if (argc == 3 && juce::String(argv[1]) == "--capture") {
+    captureMetronomeAudio(juce::File(argv[2]));
+    return 0;
+  }
   testSubdivisionPublicationPersistsUntilBeatBoundary();
   testLatestSubdivisionRequestWinsWithoutAConsumableSentinel();
   testResetGenerationIsConsumedByCoherentBeatSync();
   testProcessDoesNotConsumeControlResetBetweenSyncAndRender();
   testRangeProcessingDoesNotTouchAdjacentSamples();
   testSyncedBeatBoundaryRendersAtBlockStart();
+  testCallbackBoundariesDoNotDuplicateAttacks();
+  testSubdivisionsAreIndependentOfCallbackPartition();
   std::cout << "Metronome engine tests passed\n";
   return 0;
 }

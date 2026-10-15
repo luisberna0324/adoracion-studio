@@ -730,7 +730,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   playworship::audio::DynamicGuideEvents guideEvents;
   int pendingGuideLeadOffsetThisBlock = -1;
   juce::int64 guideBlockStartFrame = 0;
-  bool guideTimelinePlaying = false;
+  bool songTimelinePlaying = false;
   const playworship::audio::SectionScheduler::Snapshot *guideTimelineSnapshot = &audioSectionSnapshot;
   bool dynamicGuideShouldRender = false;
   bool dynamicGuideAnnouncementsActive = false;
@@ -789,8 +789,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
           dynamicGuideLatencyDelay.reset();
           virtualTimelineStateFlushedThisBlock = true;
         };
-    const bool isPlaying = getTransportState() == TransportState::playing;
-    guideTimelinePlaying = isPlaying;
+    const bool isPlaying = getTransportState() == TransportState::playing &&
+                           transportClock.isPlaying();
+    songTimelinePlaying = isPlaying;
     const bool dynamicGuideEnabled =
         dynamicGuideEnabledState.load(std::memory_order_relaxed);
     const bool arrangementEditingActive =
@@ -2455,7 +2456,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
   }
 
   const bool metronomePlaybackActive =
-      isMetronomeEnabled() && getTransportState() == TransportState::playing;
+      // Play can arrive after this callback took its timeline snapshot.
+      // Never emit its first beat until the same callback advances the clock.
+      isMetronomeEnabled() && songTimelinePlaying &&
+      getTransportState() == TransportState::playing;
   if (metronomePlaybackActive) {
     metronomeRenderBuffer.clear();
 
@@ -2493,7 +2497,6 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
       syncMetronomeToSourceSeconds(
           playworship::audio::TransportClock::framesToSeconds(
               inBlockTransitionTargetSourceFrame, playbackSampleRate));
-      metronome.triggerImmediateClick();
       if (inBlockTransitionOutputOffset < numSamples) {
         metronome.process(metronomeRenderBuffer,
                           inBlockTransitionOutputOffset,
@@ -2694,7 +2697,7 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         ? inBlockTransitionOutputOffset : numSamples;
     const int prefixSource = inBlockArrangementTransitionApplied
         ? inBlockTransitionPrefixFrames : (sourceFramesThisBlock);
-    if (guideTimelinePlaying)
+    if (songTimelinePlaying)
       guideEvents.addCues(*guideTimelineSnapshot, guideBlockStartFrame,
                           prefixSource, 0, prefixOutput);
     guideEvents.render(dynamicGuideEngine, dynamicGuideRenderBuffer, 0, prefixOutput);
@@ -4597,8 +4600,8 @@ void MTControlsAudioProcessor::playSong() {
   else if (customArrangement)
     seekSongTo(current);
   setTransportState(TransportState::playing);
-  if (isMetronomeEnabled())
-    metronome.triggerImmediateClick();
+  // The audio callback owns grid attacks. A control-thread preview trigger
+  // can arrive after the first callback or just before the next beat.
 }
 
 void MTControlsAudioProcessor::pauseSong() {
@@ -6781,8 +6784,6 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
   metronome.setEnabled(enabled);
   metronome.requestReset();
-  if (enabled && getTransportState() == TransportState::playing)
-    metronome.triggerImmediateClick();
 }
 
 bool MTControlsAudioProcessor::isMetronomeEnabled() const noexcept {

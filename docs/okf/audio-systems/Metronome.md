@@ -154,10 +154,23 @@ source y BPM original, y `effectiveBpm` desde el ratio de tempo audio-owned.
 Así fase y velocidad no pueden pertenecer a dos targets de tempo distintos
 dentro del mismo callback.
 
-Si la posición sincronizada cae exactamente en un límite de negra, el motor
-arma ese golpe para el primer frame del callback. Esto evita perder clicks
-cuando el tamaño de bloque coincide con la grilla. El trigger inmediato de
-play/seek se combina con ese golpe para no duplicar voces.
+Si la posición sincronizada cae exactamente en un límite de negra o de una
+subdivisión activa, el motor arma ese golpe para el primer frame del callback.
+Cada frame se renderiza antes de avanzar su fase: un golpe situado en el final
+exclusivo de un bloque pertenece al siguiente bloque. Así no se pierde ni se
+duplica una voz cuando la grilla coincide con un límite entre callbacks o rangos.
+
+Play, reanudación, activación del clic, Loop e Ir usan exclusivamente esta
+grilla de audio. No publican un trigger manual adicional: cerca de un beat ese
+trigger generaba dos ataques, y desde el control thread podía llegar un callback
+después del golpe inicial. Reanudar entre beats conserva la fase y espera el
+siguiente golpe de la grilla. Arrancar en cero emite un solo golpe en el frame cero.
+
+El callback sólo considera playback cuando el estado publicado y
+`TransportClock` están en playing. El clic exige además que el snapshot de ese
+callback haya procesado la línea de tiempo. Un Play recibido después de tomar
+un snapshot detenido espera al siguiente callback; no emite un beat con el
+reloj todavía en cero que se volvería a emitir en el bloque siguiente.
 
 ### Trigger manual
 
@@ -165,7 +178,9 @@ play/seek se combina con ese golpe para no duplicar voces.
 void triggerImmediateClick() noexcept;
 ```
 
-Fuerza un click inmediato (para preview).
+Fuerza un click inmediato (para preview explícito, no para el transporte).
+Si coincide con un golpe armado en el primer frame, ambos se combinan en una
+sola voz. Un preview solicitado fuera de la grilla sigue siendo un ataque manual.
 
 ### Procesamiento
 

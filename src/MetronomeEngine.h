@@ -113,6 +113,7 @@ private:
   int subIndex = 0;
   int activeSubdivision = 1;
   bool boundaryClickPending = false;
+  bool subdivisionClickPending = false;
   int boundarySubdivision = 1;
   bool currentClickIsMainBeat = true;
   float clickGain = 0.22f;

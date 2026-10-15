@@ -718,3 +718,71 @@ la etapa anterior: sus dos fallos conocidos de `waveform_editing` no se reparan
 ni se vuelven a acreditar con este cambio de formulario. No hubo audio/MIDI
 físico ni builds de macOS/iOS/Android/Windows. Sin Mac, push, PR, Actions,
 publicación ni despliegue.
+
+## Clic único al iniciar y reanudar (2026-10-15)
+
+Investigación sobre `d1a0881` de `feat/blank-song`, sólo en nube Linux. El
+`MetronomeEngine.cpp` previo era idéntico al de `origin/main` (`f31df144`);
+main también publicaba triggers manuales desde Play y al activar el clic.
+El defecto no dependía de crear una canción en blanco.
+
+Se confirmaron tres mecanismos con el motor/procesador reales:
+
+- Un trigger manual publicado tras el primer callback agregaba otro ataque
+  256 frames después (5,33 ms a 48 kHz). Reanudar/activar/repetir Play justo antes
+  del beat produjo dos ataques a 0 y 289 frames, separados 6,55 ms a 44,1 kHz,
+  tanto con stems como sin ellos. El ajuste de la captura woodblock a dos copias
+  de su propio sample tuvo residuo relativo menor que `7e-7`; no era sólo la cola.
+- Al coincidir un beat con el borde del callback se disparaba en el último
+  frame del bloque anterior y de nuevo en el primero del siguiente. En la
+  captura a 48 kHz ocurrió en los frames 23999/24000.
+- Con Play y el callback concurrentes se reprodujo un arranque doble 0/256 en
+  una de 500 iteraciones, incluso tras retirar los triggers manuales. El clic
+  podía consultar playing después de que ese callback ya hubiera tomado un
+  snapshot detenido, sin avanzar el reloj. También se cubre de forma
+  determinista la publicación parcial de Play entre el espejo y TransportClock.
+
+El clic usa ahora la grilla y el snapshot de playback del reloj. Renderiza el
+frame actual antes de avanzar, incluyendo subdivisiones exactamente en el
+inicio de un callback. La API de preview manual se conserva. No cambian samples,
+acentos, mezcla, ruteo, pad, persistencia ni interfaz.
+
+`metronome_engine` compara muestras entre render continuo y callbacks de
+64/256/257/1024 frames, a 1024/44100/48000 Hz, con negras, corcheas y
+semicorcheas independientes/combinadas. Comprueba un ataque por beat y mantiene
+las pruebas previas de publicación/reset/rangos. `metronome_transport` usa un
+WAV de un frame como click de medida cargado por el motor real; no es un stem
+silencioso ni reemplaza el motor. Comprueba arranque, pausa, reanudación,
+activación, Play repetido, Stop y reinicio rápido en canciones con/sin stems;
+Loop e Ir con destino a 100 frames del beat; 500 publicaciones concurrentes
+con cero arranques dobles; y publicación parcial determinista. El stress publica
+el mismo estado final que Play mediante el acceso de test para evitar reabrir
+un dispositivo host ausente en cada iteración. Los demás casos llaman a Play.
+
+Para capturar también la salida real con el woodblock incluido, ejecutar el
+binario `MTControlsSectionAutomationTests --click-only` mediante
+`tests/run_isolated_test.py`, con `DISPLAY` y
+`PLAYWORSHIP_CLICK_CAPTURE_DIR` apuntando a un directorio de salida. El binario
+`MTControlsMetronomeTests --capture <directorio>` conserva escenarios de
+caracterización del motor; sus peticiones manuales deliberadas son previews,
+no el comportamiento corregido de Play. Las capturas son PCM de la salida del
+procesador/motor, sin grabador de pantalla ni dispositivo físico.
+
+Resultado final: `MTControls_Standalone` compilado en Linux Debug con JUCE
+8.0.12, Bungee 2.4.24 real y `JUCE_USE_SIMD=0`. Gate dirigido **12/12**, 57,06 s:
+`remote_session`, `remote_section_control`, `song_project_creation`,
+`song_import_wizard`, `section_automation`, `blank_song_transport`,
+`metronome_transport`, `audio_engine_core`, `metronome_engine`, `pads_engine`,
+`bungee_processor` y `stem_mix_engine`. Se recompilaron los targets antes de
+la pasada final; una pasada preliminar no había encontrado el ejecutable de
+`bungee_processor`, que se compiló y pasó en el gate final.
+
+Después de corregir, las capturas con/sin stems tienen sólo el ataque esperado
+en el frame 290, y la captura de borde sólo en el 24000. El ajuste a una copia
+del woodblock tiene residuo relativo menor que `6e-7`. Arranque y reinicio desde
+Stop producen un ataque inicial; pausa y Stop producen silencio del clic.
+Capturas, análisis y logs locales en `/workspace/scratch/click-investigation/`.
+No se ejecutó la suite completa de UI ni se atribuyen a este cambio los fallos
+previos de `waveform_editing`. No se usó un dispositivo de audio/MIDI físico,
+ni se verificaron macOS, iOS, Android o Windows. Sin Mac, push, PR, Actions,
+publicación ni despliegue; se conserva la tarjeta aprobada de `d1a0881`.

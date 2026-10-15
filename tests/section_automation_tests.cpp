@@ -26,6 +26,20 @@ struct SectionAutomationTestAccess {
   static float guideSample(const MTControlsAudioProcessor &processor, int frame) {
     return processor.dynamicGuideRenderStorage.getSample(0, frame);
   }
+  static float metronomeSample(const MTControlsAudioProcessor &processor, int frame) {
+    return processor.metronomeRenderStorage.getSample(0, frame);
+  }
+  static void publishPlayingState(MTControlsAudioProcessor &processor) {
+    // The final publication made by playSong(), without reopening an absent
+    // host device on every stress iteration. The renderer and clock are real.
+    processor.setTransportState(MTControlsAudioProcessor::TransportState::playing);
+  }
+  static void publishPlayingMirror(MTControlsAudioProcessor &processor) {
+    processor.transportState.store(static_cast<int>(MTControlsAudioProcessor::TransportState::playing), std::memory_order_relaxed);
+  }
+  static void finishPlayingPublication(MTControlsAudioProcessor &processor) {
+    processor.transportClock.play();
+  }
   static int currentPart(const MTControlsAudioProcessor &processor) {
     return processor.arrangementCurrentPartIndex.load();
   }
@@ -1129,6 +1143,173 @@ void testBlankSongNativeTransport() {
       "blank remote retains ordinary tempo, pitch, click/pad and transport commands");
 }
 
+// Render the actual processor output. The one-frame probe is a loaded click
+// sample, not a replacement transport or a silent song stem. Optional captures
+// repeat the same gestures with the shipped woodblock to inspect its real tail.
+void testMetronomeTransportAttacks() {
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_CLICK_CAPTURE_DIR", {});
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("click-probe");
+  probe.createDirectory();
+  {
+    auto stream = std::unique_ptr<juce::OutputStream>(probe.getChildFile("click-probe-quarter.wav").createOutputStream());
+    juce::WavAudioFormat format;
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(44100.0).withNumChannels(1).withBitsPerSample(24));
+    expect(writer != nullptr, "click probe WAV opens");
+    juce::AudioBuffer<float> audio(1, 128); audio.clear(); audio.setSample(0, 0, 0.5f);
+    expect(writer->writeFromAudioSampleBuffer(audio, 0, 128), "click probe WAV writes");
+  }
+  bool passed = true;
+  for (const bool blank : {false, true}) {
+    for (const bool woodblock : {false, true}) {
+      if (woodblock && capturePath.isEmpty()) continue;
+      ProcessorFixture fixture; auto &p = *fixture.processor;
+      if (blank) {
+        ImportedSongData song; song.blankSong = true; song.id = "click-blank";
+        song.title = "Click blank"; song.key = "C"; song.bpm = 120; song.timeSignature = "4/4";
+        expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "click test loads a blank");
+      }
+      auto guides = p.getDynamicGuideSettings(); guides.enabled = false;
+      p.setDynamicGuideSettings(guides); p.setPadsEnabled(false);
+      for (int stem = 0; stem < p.getLoadedStemCount(); ++stem) p.setStemMute(stem, true);
+      p.setClickDivision(1); p.setClickDivisionEnabled(true);
+      p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+      const auto samples = woodblock ? juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile("assets/clicks/samples") : probe;
+      expect(p.loadMetronomeClickSamplesFromFolder(samples, woodblock ? "woodblock" : "probe"), "native engine loads click samples");
+      p.playSong(); fixture.block(100); p.stopSong(); fixture.block(2); // Settle stem mute ramps.
+
+      const auto capture = [&](const juce::String &gesture, const std::vector<int> &expected) {
+        juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 1536); audio.clear();
+        juce::AudioBuffer<float> block(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+        for (int offset = 0; offset < audio.getNumSamples(); offset += 256) {
+          expect(SectionAutomationTestAccess::waitForSource(p, 256), "real source reader is ready for capture");
+          p.processBlock(block, midi);
+          for (int ch = 0; ch < audio.getNumChannels(); ++ch) audio.copyFrom(ch, offset, block, ch, 0, 256);
+        }
+        const auto name = juce::String(blank ? "blank_" : "stems_") + (woodblock ? "woodblock_" : "probe_") + gesture;
+        if (capturePath.isNotEmpty()) {
+          const auto file = juce::File(capturePath).getChildFile(name + ".wav");
+          file.getParentDirectory().createDirectory(); file.deleteFile();
+          auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream());
+          juce::WavAudioFormat format;
+          auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+              .withSampleRate(44100.0).withNumChannels(audio.getNumChannels()).withBitsPerSample(24));
+          expect(writer && writer->writeFromAudioSampleBuffer(audio, 0, audio.getNumSamples()), "native output capture writes");
+        }
+        if (!woodblock) {
+          std::vector<int> attacks;
+          for (int frame = 0; frame < audio.getNumSamples(); ++frame)
+            if (std::abs(audio.getSample(0, frame)) > 0.01f) attacks.push_back(frame);
+          std::cout << name << " attack frames:";
+          for (auto frame : attacks) std::cout << ' ' << frame;
+          std::cout << '\n';
+          passed = passed && attacks == expected;
+        }
+      };
+      const auto reset = [&] { p.stopSong(); fixture.block(2); };
+      p.setMetronomeEnabled(true); p.playSong(); capture("start", {0});
+      p.pauseSong(); capture("paused", {});
+      reset(); p.playSong(); fixture.block(85); p.pauseSong(); fixture.block(2);
+      p.playSong(); capture("resume_before_beat", {290});
+      reset(); p.setMetronomeEnabled(false); p.playSong(); fixture.block(85);
+      p.setMetronomeEnabled(true); capture("enable_before_beat", {290});
+      reset(); p.playSong(); fixture.block(85); p.playSong(); capture("play_again", {290});
+      p.stopSong(); p.playSong(); capture("rapid_restart", {0});
+      p.stopSong(); capture("stopped", {});
+    }
+  }
+  for (const bool loop : {false, true}) {
+    ProcessorFixture fixture; auto &p = *fixture.processor;
+    p.prepareToPlay(44100.0, 8192);
+    auto arrangement = p.getSongArrangementSnapshot();
+    // Destination is 100 frames before a real beat. Neither a jump nor a
+    // loop should add a second attack there, or at the exclusive prefix end.
+    arrangement.parts[1].startSec = 3.0 - 100.0 / 44100.0;
+    arrangement.parts[1].endSec = 5.0;
+    p.setSongArrangement(arrangement, false);
+    p.setPadsEnabled(false); p.setClickDivision(1); p.setClickDivisionEnabled(true);
+    p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+    expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "split callback loads real click probe");
+    p.setMetronomeEnabled(true);
+    fixture.seekAndWait(loop ? 4.95 : 1.95);
+    p.playSong();
+    expect(loop ? p.toggleArrangementPartLoop(1) : p.requestArrangementPartJump(1), "real section command accepts");
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+        SectionAutomationTestAccess::waitForTransitionTarget(p, arrangement.parts[1].startSec), "split source and destination are resident");
+    juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+    p.processBlock(audio, midi);
+    std::vector<int> attacks;
+    for (int frame = 0; frame < 8192; ++frame)
+      if (std::abs(SectionAutomationTestAccess::metronomeSample(p, frame)) > 0.01f) attacks.push_back(frame);
+    std::cout << (loop ? "loop" : "jump") << " attack frames:";
+    for (auto frame : attacks) std::cout << ' ' << frame;
+    std::cout << '\n';
+    passed = passed && attacks == std::vector<int>({2305});
+  }
+  expect(passed, "native click emits only grid attacks across play, resume, enable and restart for stems and blank songs");
+}
+
+void testMetronomeConcurrentStart() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  ImportedSongData song; song.blankSong = true; song.id = "concurrent-click";
+  song.title = "Concurrent click"; song.key = "C"; song.bpm = 120; song.timeSignature = "4/4";
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "concurrent click blank loads");
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("concurrent-click-probe");
+  writeWav(probe.getChildFile("click-probe-quarter.wav"), 1, 0.5f);
+  expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "concurrent click probe loads");
+  auto guides = p.getDynamicGuideSettings(); guides.enabled = false;
+  p.setDynamicGuideSettings(guides); p.setPadsEnabled(false);
+  p.setClickDivision(1); p.setClickDivisionEnabled(true);
+  p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+  p.setMetronomeEnabled(true);
+  int duplicateStarts = 0;
+  constexpr int trials = 500;
+  for (int trial = 0; trial < trials; ++trial) {
+    p.stopSong(); fixture.block(2);
+    std::atomic<bool> started{false};
+    std::vector<int> attacks;
+    std::thread audio([&] {
+      juce::AudioBuffer<float> buffer(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+      started.store(true, std::memory_order_release);
+      for (int block = 0; block < 10000; ++block) {
+        p.processBlock(buffer, midi);
+        for (int i = 0; i < 256; ++i)
+          if (std::abs(buffer.getSample(0, i)) > 0.01f) attacks.push_back(block * 256 + i);
+        if (p.getSongCurrentPositionSeconds() > 0.06) break;
+      }
+    });
+    while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (int i = 0; i < trial % 8; ++i) std::this_thread::yield();
+    SectionAutomationTestAccess::publishPlayingState(p); audio.join();
+    if (attacks.size() != 1) {
+      if (++duplicateStarts <= 3) {
+        std::cout << "concurrent start trial=" << trial << " attack frames:";
+        for (auto frame : attacks) std::cout << ' ' << frame;
+        std::cout << '\n';
+      }
+    }
+  }
+  std::cout << "concurrent starts=" << trials << " invalid=" << duplicateStarts << '\n';
+  expect(duplicateStarts == 0, "concurrent Play cannot render a click before that callback starts the song clock");
+
+  // Deterministically hold the real two-atomic Play publication between its
+  // mirrored state store and TransportClock::play(). No rendering substitute.
+  p.stopSong(); fixture.block(2);
+  SectionAutomationTestAccess::publishPlayingMirror(p);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  p.processBlock(audio, midi);
+  expect(audio.getMagnitude(0, 256) == 0.0f && p.getSongCurrentPositionSeconds() == 0.0,
+         "partial Play publication cannot emit a beat before its clock is ready");
+  SectionAutomationTestAccess::finishPlayingPublication(p);
+  int attacks = 0;
+  for (int block = 0; block < 3; ++block) {
+    p.processBlock(audio, midi);
+    for (int frame = 0; frame < 256; ++frame)
+      if (std::abs(audio.getSample(0, frame)) > 0.01f) ++attacks;
+  }
+  expect(attacks == 1, "completing Play publication emits the initial beat exactly once");
+}
+
 int main(int argc, char **argv) {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
@@ -1140,6 +1321,15 @@ int main(int argc, char **argv) {
     try { test(); std::cout << "PASS: " << name << '\n'; }
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
+  if (argc > 1 && juce::String(argv[1]) == "--click-only") {
+    run("native metronome transport attacks", testMetronomeTransportAttacks);
+    run("native metronome concurrent start", testMetronomeConcurrentStart);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--click-race-only") {
+    run("native metronome concurrent start", testMetronomeConcurrentStart);
+    return failures == 0 ? 0 : 1;
+  }
   if (argc > 1 && juce::String(argv[1]) == "--blank-only") {
     run("blank free transport, accompaniment, pitch/tempo and no section controls", testBlankSongNativeTransport);
     return failures == 0 ? 0 : 1;

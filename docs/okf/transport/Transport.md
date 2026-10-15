@@ -60,6 +60,11 @@ bool unloadSong();         // Liberar stems y dejar el transporte vacío
 void toggleSongPlayPause(); // Toggle
 ```
 
+El metrónomo sigue la posición fuente del callback al iniciar o reanudar.
+Play no añade un golpe manual: desde cero suena el beat inicial; desde una
+pausa entre beats continúa la misma grilla. Activar el clic durante reproducción
+y los saltos/loops siguen la misma regla, sin agregar un ataque junto al beat.
+
 `unloadSong()` suspende el callback, espera a que termine cualquier bloque en
 curso, libera las fuentes bajo `stemListLock` y reinicia transporte, arrange,
 mix y metadatos. Devuelve `false` si el callback no pudo detenerse dentro del

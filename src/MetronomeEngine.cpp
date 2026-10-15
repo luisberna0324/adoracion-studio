@@ -57,6 +57,7 @@ void MetronomeEngine::resetAudioState() noexcept {
   beatIndex = juce::jmax(1, beatsPerBar.load(std::memory_order_relaxed)) - 1;
   subIndex = 0;
   boundaryClickPending = false;
+  subdivisionClickPending = false;
   boundarySubdivision = activeSubdivision;
   currentClickIsMainBeat = true;
   clickGain = 1.00f;
@@ -157,9 +158,8 @@ void MetronomeEngine::syncPhaseForBeatPosition(
   phase = beatPos - std::floor(beatPos);
 
   // The processor synchronizes the metronome at the beginning of every audio
-  // callback. When a beat lands exactly on that boundary, phase is zero and
-  // the normal increment-before-trigger loop would otherwise wait one full
-  // beat before sounding it. Half a sample is enough tolerance for floating
+  // callback. A grid boundary at phase zero belongs to its first frame.
+  // Half a sample is enough tolerance for floating
   // point conversion between transport frames, seconds and beat position.
   const double samplesPerBeat = (sampleRate * 60.0) / activeBpm;
   const double boundaryTolerance =
@@ -174,6 +174,8 @@ void MetronomeEngine::syncPhaseForBeatPosition(
   const double subBeatPos = phase * static_cast<double>(subdiv);
   subIndex = static_cast<int>(std::floor(subBeatPos)) % subdiv;
   subPhase = subBeatPos - std::floor(subBeatPos);
+  subdivisionClickPending = !boundaryClickPending && subIndex != 0 &&
+                            subPhase <= boundaryTolerance * subdiv;
 }
 
 void MetronomeEngine::process(juce::AudioBuffer<float> &buffer) noexcept {
@@ -214,7 +216,9 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
   const bool consumeImmediateClick =
       pendingImmediateClick.exchange(false, std::memory_order_relaxed);
   const bool consumeBoundaryClick = boundaryClickPending;
+  const bool consumeSubdivisionClick = subdivisionClickPending;
   boundaryClickPending = false;
+  subdivisionClickPending = false;
   if (consumeBoundaryClick) {
     // A callback-aligned beat is still a real musical boundary. Publish a
     // pending subdivision change here just as the in-buffer boundary path
@@ -243,14 +247,22 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
     triggerClick(ClickLayer::downbeat, true,
                  (beatIndex == 0) ? 0.95f : 0.80f);
     sampleVoicesActive = true;
+  } else if (consumeSubdivisionClick && shouldRenderAudio) {
+    const auto layer = (subdiv == 2 || subIndex == 2)
+                           ? ClickLayer::eighth : ClickLayer::sixteenth;
+    if (isLayerEnabled(activeMask, layer)) {
+      triggerClick(layer, false, layer == ClickLayer::eighth ? 0.72f : 0.60f);
+      sampleVoicesActive = true;
+    }
   }
 
   for (int sample = 0; sample < numSamples; ++sample) {
-    phase += phaseInc;
-
-    // Main beat boundary
-    if (phase >= 1.0) {
-      phase -= 1.0;
+    // Render the current frame before advancing to the next. A boundary at
+    // the end of this range belongs to the next range/callback, never both.
+    // The epsilon only absorbs arithmetic roundoff (far below one sample).
+    constexpr double phaseEpsilon = 1.0e-10;
+    if (phase >= 1.0 - phaseEpsilon) {
+      phase = juce::jmax(0.0, phase - 1.0);
       beatIndex = (beatIndex + 1) % beats;
       subIndex = 0;
       subPhase = 0.0;
@@ -272,9 +284,8 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
       }
     } else if (subdiv > 1) {
       // Sub-beat tracking
-      subPhase += subPhaseInc;
-      if (subPhase >= 1.0) {
-        subPhase -= 1.0;
+      if (subPhase >= 1.0 - phaseEpsilon) {
+        subPhase = juce::jmax(0.0, subPhase - 1.0);
         subIndex = (subIndex + 1) % subdiv;
         if (subIndex != 0) {
           const auto layer = (subdiv == 2 || (subdiv >= 4 && subIndex == 2))
@@ -295,6 +306,10 @@ void MetronomeEngine::process(juce::AudioBuffer<float> &buffer,
     if (clickSamplesRemaining > 0)
       clickSample += renderSyntheticClick();
     clickSample *= gain;
+
+    phase += phaseInc;
+    if (subdiv > 1)
+      subPhase += subPhaseInc;
 
     if (clickSample == 0.0f)
       continue;
