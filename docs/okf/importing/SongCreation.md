@@ -229,14 +229,19 @@ portadas locales sigue disponible. Esta regla aplica a todas las distribuciones.
 
 ## Nueva canción en blanco
 
-La vista Detalles del asistente de Biblioteca incluye el botón
-`Crear canción en blanco`. Usa los metadatos habituales y la misma resolución
+Detalles reutiliza la tarjeta que antes mostraba información/búsqueda de
+metadatos como única acción `Crear canción en blanco`, con la descripción
+`Empieza sin pistas de audio y usa el clic y los pads.`. No hay un botón adicional
+al pie. La tarjeta completa acepta ratón, toque y teclado, y se desplaza con los
+campos dentro del viewport; mantiene su texto accesible y se bloquea al guardar.
+Usa los metadatos habituales y la misma resolución
 de destino/transacción background que la importación. Si el título o BPM están
 vacíos, propone `Canción en blanco` y 120 BPM; un BPM explícito inválido sigue
 rechazándose. Guarda, registra en Biblioteca y cierra el asistente directamente,
 sin pasar por Archivos, Mapeo, Revisar ni otra pantalla. Siguiente conserva el
-flujo normal de importación y sus validaciones de audio. El botón queda bloqueado
-junto con la navegación durante el guardado; cancelar el destino permite reintentar.
+flujo normal de importación y sus validaciones de audio. La tarjeta sólo está
+disponible en Detalles al crear un proyecto, y se oculta al editar una canción
+o avanzar a Archivos. Cancelar el destino permite reintentar.
 
 No hay un selector Libre/Con secciones ni un formulario de click/pad/secciones.
 Esos controles siguen siendo los del reproductor. El proyecto nuevo tiene cero

@@ -4,6 +4,7 @@
 #include "data/ProjectStore.h"
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
+#include "data/Localization.h"
 
 #include <atomic>
 #include <cmath>
@@ -149,22 +150,48 @@ struct SongImportWizardTestAccess {
     wizard.setEmbeddedLibraryPage(true);
     wizard.setOnDismissRequested([&] { ++dismissed; });
     fillMetadata(wizard);
+    auto &action = *wizard.blankSongMetadataAction;
+    expect(action.getButtonText() == L10n::tr("Crear canción en blanco", "Create blank song") &&
+        action.getDescription() == L10n::tr("Empieza sin pistas de audio y usa el clic y los pads.",
+                                           "Start without audio tracks and use the click and pads."),
+        "metadata card exposes the approved action and accessible description");
+    int actions = 0;
+    std::function<void(juce::Component &)> countActions = [&](auto &component) {
+      if (auto *button = dynamic_cast<juce::Button *>(&component))
+        if (button->getButtonText() == action.getButtonText()) ++actions;
+      for (auto *child : component.getChildren()) countActions(*child);
+    };
+    countActions(wizard);
+    expect(actions == 1, "Details contains exactly one blank-song action");
     for (int width : {320, 390, 768, 1200}) {
       wizard.setSize(width, 760);
-      expect(wizard.currentStep == Step::Metadata && wizard.createBlankSongButton.isVisible(),
-             "existing metadata step exposes the direct blank-song action");
-      expectInside(wizard.createBlankSongButton, wizard.getLocalBounds(),
-                   "blank-song action fits phone, tablet and desktop");
-      expect(wizard.createBlankSongButton.getHeight() >= 44 &&
-          wizard.metadataViewport.getBottom() <= wizard.createBlankSongButton.getY() &&
-          wizard.createBlankSongButton.getBottom() <= wizard.nextButton.getY(),
-          "blank-song action has a touch target without overlapping metadata or footer");
+      expect(wizard.currentStep == Step::Metadata && action.isVisible() &&
+          action.getParentComponent() == &wizard.metadataContent &&
+          action.getBounds() == wizard.metadataCardBounds,
+          "blank action reuses the metadata card within the scrollable form");
+      expectInside(action, wizard.metadataContent.getLocalBounds(),
+                   "metadata card fits phone, tablet and desktop form");
+      expect(action.getHeight() >= 84 && action.getY() >= wizard.bpmEditor.getBottom(),
+          "metadata action reserves readable description and does not overlap fields");
+      // The card stays reachable when the available form is shorter (including
+      // a phone keyboard); it scrolls with metadata instead of adding a footer.
+      for (bool phone : {false, true}) {
+        wizard.phoneCreationLayout = phone;
+        wizard.layoutStepMetadata({17, 150, width - 34, 250});
+        wizard.metadataViewport.setViewPosition(0, action.getBottom() - 250);
+        expect(wizard.metadataViewport.getViewArea().contains(action.getBounds()),
+            "metadata action remains fully reachable in the short scrolled viewport");
+        expect(!action.getBounds().intersects(wizard.songTitleEditor.getBounds()) &&
+            !action.getBounds().intersects(wizard.keyBox.getBounds()),
+            "native phone and desktop form fields stay separate from the action");
+      }
     }
-    wizard.createBlankSongButton.onClick();
+    wizard.setSize(390, 760); wizard.resized();
+    wizard.blankSongMetadataAction->onClick();
     expect(wizard.isSubmissionInProgress() && wizard.currentStep == Step::Metadata &&
-        !wizard.createBlankSongButton.isEnabled() && !wizard.nextButton.isEnabled(),
+        !wizard.blankSongMetadataAction->isEnabled() && !wizard.nextButton.isEnabled(),
         "direct creation submits from metadata without audio, mapping or review screens");
-    wizard.createBlankSongButton.onClick(); wizard.nextButton.onClick();
+    wizard.blankSongMetadataAction->onClick(); wizard.nextButton.onClick();
     expect(destinations == 1 && wizard.currentStep == Step::Metadata,
            "pending blank save blocks duplicate submission and navigation");
     pumpUntil([&] { return !wizard.isSubmissionInProgress(); }, "blank project transaction completes");
@@ -186,12 +213,14 @@ struct SongImportWizardTestAccess {
     cancelled.onSubmit = [](auto, auto &, const auto &) { expect(false, "cancelled destination must not save"); return false; };
     cancelled.setEmbeddedLibraryPage(true); cancelled.setSize(390, 760);
     cancelled.songTitleEditor.clear(); cancelled.bpmEditor.clear();
-    cancelled.createBlankSongButton.onClick();
+    cancelled.blankSongMetadataAction->onClick();
     expect(attempts == 1 && draft.title.isNotEmpty() && draft.bpm == 120 &&
         draft.blankSong && draft.stems.empty() && !cancelled.isSubmissionInProgress() &&
-        cancelled.createBlankSongButton.isEnabled() && cancelled.currentStep == Step::Metadata,
+        cancelled.blankSongMetadataAction->isEnabled() && cancelled.currentStep == Step::Metadata,
         "blank defaults require no extra form and cancellation leaves the existing step usable");
     cancelled.nextButton.onClick();
+    expect(!cancelled.blankSongMetadataAction->isVisible(),
+           "normal audio import hides the blank-song action outside Details");
     expect(cancelled.currentStep == Step::Stems && !cancelled.creatingBlankSong &&
         !cancelled.buildSongData().blankSong,
         "normal Next still enters the ordinary audio-import flow after cancellation");
@@ -206,7 +235,7 @@ struct SongImportWizardTestAccess {
     editWizard.setSize(768, 760);
     editWizard.bpmEditor.setText("60", juce::dontSendNotification);
     const auto edited = editWizard.buildSongData();
-    expect(!editWizard.createBlankSongButton.isVisible() && edited.blankSong &&
+    expect(!editWizard.blankSongMetadataAction->isVisible() && edited.blankSong &&
         edited.arrangement.parts.size() == 1 && edited.arrangement.parts.front().id == part.id &&
         edited.arrangement.parts.front().endSec == 8,
         "ordinary metadata editing preserves blank sections and their absolute times");

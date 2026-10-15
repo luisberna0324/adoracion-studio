@@ -678,3 +678,43 @@ No se usaron stubs para compilar o validar audio. No hay dispositivos físicos
 de audio/MIDI; quedan sin verificar escucha, latencia, tacto y builds de macOS,
 iOS, Android y Windows. Todo se ejecutó en nube: sin Mac, push, PR, Actions,
 publicación, despliegue ni incorporación de los experimentos Android excluidos.
+
+### Crear canción en blanco desde la tarjeta de Detalles
+
+Sobre `fb65c0c`, la tarjeta de información de metadatos pasa a ser la única
+acción `Crear canción en blanco`, con la descripción aprobada
+`Empieza sin pistas de audio y usa el clic y los pads.`. Se retira el botón
+separado y su reserva de espacio al pie. La tarjeta es un botón JUCE con nombre,
+descripción accesible y foco de teclado; se desplaza dentro del formulario.
+Se conserva la transacción de creación, los campos y Siguiente para importar
+audio. No cambian modelo, motores, canvas del reproductor ni control remoto.
+
+Verificación en nube Linux, Debug, JUCE 8.0.12 y Bungee 2.4.24 real con
+`JUCE_USE_SIMD=0`:
+
+- Compilaron `MTControls_Standalone` y los targets preparados para la
+  verificación. Arranque real del Standalone en Xvfb; crear desde la tarjeta
+  vuelve a Biblioteca y genera un `.pwproj` con sólo `manifest.json`, cero
+  stems, nombre y BPM introducidos. Se comprobó también su carga.
+- **3/3 suites aprobadas**, 11,24 s: `song_import_wizard`,
+  `song_project_creation` y `blank_song_transport`. El asistente cubre importación
+  normal y edición, WAV/FLAC/M4A según disponibilidad local, persistencia real,
+  cancelación, reentrancia y cierre después del guardado.
+- El test de creación en blanco comprueba una sola acción, el texto y la
+  descripción aprobados, tamaños 320/390/768/1200, posiciones separadas de los
+  campos y acceso por scroll con viewport corto en geometría móvil/escritorio.
+  Mantiene las comprobaciones de guardado/reapertura, valores vacíos por
+  defecto, cancelación de destino, navegación normal e invisibilidad al editar
+  o salir de Detalles.
+- Se revisaron renders nativos de la tarjeta/formulario a esos cuatro anchos
+  y la vista de Detalles del Standalone. Son verificaciones Linux de componentes
+  reales; no acreditan teclado, safe-area ni interacción táctil en dispositivos.
+
+Logs locales: `build/blank-song-metadata-card-build.log`,
+`build/blank-song-metadata-card-tests.log` y
+`build/metadata-card-app-smoke.log`. Renders de QA en
+`build/metadata-card-preview/`. No se repitió el gate completo de audio/UI de
+la etapa anterior: sus dos fallos conocidos de `waveform_editing` no se reparan
+ni se vuelven a acreditar con este cambio de formulario. No hubo audio/MIDI
+físico ni builds de macOS/iOS/Android/Windows. Sin Mac, push, PR, Actions,
+publicación ni despliegue.

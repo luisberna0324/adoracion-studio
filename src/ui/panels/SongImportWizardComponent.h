@@ -112,7 +112,6 @@ private:
            (mode == Mode::Import &&
             (embeddedLibraryPage || !useTouchOptimisedControls()));
   }
-  juce::String mobileMetadataSummary() const;
   void timerCallback() override;
   void revealFocusedMappingEditor();
   void revealFocusedMetadataEditor();
@@ -207,7 +206,7 @@ private:
   juce::TextButton nextButton;
   juce::TextButton submitButton;
   juce::TextButton saveMetadataButton;
-  juce::TextButton createBlankSongButton;
+  std::unique_ptr<juce::Button> blankSongMetadataAction;
   bool creatingBlankSong = false;
   juce::TextButton clearSongSearchButton;
 

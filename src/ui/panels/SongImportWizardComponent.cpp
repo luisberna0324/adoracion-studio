@@ -88,6 +88,55 @@ combinedPhoneInsets(const juce::BorderSize<int> &safe,
 #endif
 }
 
+void drawMetadataCard(juce::Graphics &g, juce::Rectangle<float> card,
+                      const juce::String &title, const juce::String &description,
+                      bool highlighted = false) {
+  juce::ColourGradient gradient(
+      UITheme::accent.withAlpha(0.10f), card.getX(), card.getCentreY(),
+      UITheme::cardBgHover.withAlpha(0.96f), card.getRight(), card.getCentreY(), false);
+  g.setGradientFill(gradient);
+  g.fillRoundedRectangle(card, 14.0f);
+  g.setColour(highlighted ? UITheme::accent : UITheme::cardBorder.withAlpha(0.62f));
+  g.drawRoundedRectangle(card.reduced(0.5f), 14.0f, highlighted ? 1.8f : 1.0f);
+  auto icon = card.withWidth(48.0f).withSizeKeepingCentre(48.0f, 54.0f).reduced(8.0f);
+  g.setColour(UITheme::accent.withAlpha(0.10f));
+  g.fillRoundedRectangle(icon.expanded(5.0f), 10.0f);
+  drawSvgIcon(g, icon, SvgIconName::AudioWaveform, UITheme::accent);
+  auto text = card.reduced(66.0f, 9.0f);
+  text.setRight(card.getRight() - 38.0f);
+  g.setColour(UITheme::textPrimary);
+  g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
+  g.drawFittedText(title, text.removeFromTop(24.0f).toNearestInt(),
+                   juce::Justification::centredLeft, 1);
+  g.setColour(UITheme::textSecondary);
+  g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
+  g.drawFittedText(description, text.toNearestInt(), juce::Justification::centredLeft, 3);
+  const float cx = card.getRight() - 25.0f, cy = card.getCentreY();
+  juce::Path chevron;
+  chevron.startNewSubPath(cx - 4.0f, cy - 6.0f);
+  chevron.lineTo(cx + 2.0f, cy);
+  chevron.lineTo(cx - 4.0f, cy + 6.0f);
+  g.setColour(UITheme::textSecondary);
+  g.strokePath(chevron, juce::PathStrokeType(2.0f));
+}
+
+class BlankSongMetadataCard final : public juce::Button {
+public:
+  BlankSongMetadataCard()
+      : juce::Button(L10n::tr("Crear canción en blanco", "Create blank song")) {
+    setDescription(L10n::tr("Empieza sin pistas de audio y usa el clic y los pads.",
+                           "Start without audio tracks and use the click and pads."));
+    setTooltip(getDescription());
+    setExplicitFocusOrder(6);
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  }
+  void paintButton(juce::Graphics &g, bool over, bool down) override {
+    g.setOpacity(isEnabled() ? 1.0f : 0.5f);
+    drawMetadataCard(g, getLocalBounds().toFloat(), getButtonText(), getDescription(),
+                     over || down || hasKeyboardFocus(false));
+  }
+};
+
 class MobileWizardButtonLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
   void drawButtonBackground(juce::Graphics &g, juce::Button &button,
@@ -417,6 +466,9 @@ SongImportWizardComponent::SongImportWizardComponent(
       resolveProjectDestination(std::move(projectDestinationResolver)),
       onMetadataOnlySubmit(std::move(onSaveMetadataOnly)),
       mode(modeIn), initialSong(std::move(initialSongIn)) {
+  blankSongMetadataAction = std::make_unique<BlankSongMetadataCard>();
+  blankSongMetadataAction->onClick = [this] { createBlankSong(); };
+  addChildComponent(*blankSongMetadataAction);
   setSize(820, 620);
 
   titleLabel.setText(mode == Mode::Edit
@@ -704,10 +756,6 @@ SongImportWizardComponent::SongImportWizardComponent(
   submitButton.onClick = [this] { submitSong(); };
   saveMetadataButton.setButtonText(L10n::tr("Guardar", "Save"));
   saveMetadataButton.onClick = [this] { saveMetadataOnly(); };
-  createBlankSongButton.setButtonText(L10n::tr("Crear canción en blanco", "Create blank song"));
-  styleSecondaryButton(createBlankSongButton);
-  createBlankSongButton.onClick = [this] { createBlankSong(); };
-  addChildComponent(createBlankSongButton);
 
   mobileCloseButton.setBare(true);
   mobileCloseButton.setTooltip(L10n::tr("Cerrar", "Close"));
@@ -911,36 +959,6 @@ bool SongImportWizardComponent::usesPhoneCreationLayout() const {
   return getWidth() > 0 && getWidth() < 600 && isPhoneSizedTouchLayout(*this);
 }
 
-juce::String SongImportWizardComponent::mobileMetadataSummary() const {
-  int trackCount = 0;
-  double duration = 0.0;
-
-  if (selectedSongDetail.has_value()) {
-    trackCount = static_cast<int>(selectedSongDetail->tracks.size());
-    duration = selectedSongDetail->durationSeconds;
-  }
-
-  if (trackCount == 0)
-    trackCount = static_cast<int>(std::count_if(
-        stems.begin(), stems.end(),
-        [](const StemDraft &stem) { return stem.include; }));
-  if (duration <= 0.0) {
-    for (const auto &stem : stems)
-      duration = juce::jmax(duration, stem.durationSec);
-  }
-
-  if (trackCount == 0 && duration <= 0.0)
-    return L10n::tr("Se completarán al agregar los archivos",
-                    "Completed after adding files");
-
-  juce::String text;
-  if (trackCount > 0)
-    text << trackCount << " " << L10n::tr("pistas", "tracks");
-  if (duration > 0.0)
-    text << (text.isNotEmpty() ? u8" • " : "")
-         << formatTimeSeconds(duration);
-  return text;
-}
 
 void SongImportWizardComponent::paint(juce::Graphics &g) {
   auto b = getLocalBounds().toFloat();
@@ -1041,48 +1059,11 @@ void SongImportWizardComponent::paintPhoneMetadata(juce::Graphics &g) {
       }
     }
 
-    if (currentStep == Step::Metadata && !metadataCardBounds.isEmpty()) {
-      auto card = metadataCardBounds.toFloat();
-      juce::ColourGradient cardGradient(
-          UITheme::accent.withAlpha(0.10f), card.getX(), card.getCentreY(),
-          UITheme::cardBgHover.withAlpha(0.96f), card.getRight(),
-          card.getCentreY(), false);
-      g.setGradientFill(cardGradient);
-      g.fillRoundedRectangle(card, 14.0f);
-      g.setColour(UITheme::cardBorder.withAlpha(0.62f));
-      g.drawRoundedRectangle(card.reduced(0.5f), 14.0f, 1.0f);
-
-      auto iconTile = card.withWidth(48.0f).reduced(8.0f);
-      g.setColour(UITheme::accent.withAlpha(0.10f));
-      g.fillRoundedRectangle(iconTile.expanded(5.0f), 10.0f);
-      drawSvgIcon(g, iconTile, SvgIconName::AudioWaveform, UITheme::accent);
-
-      auto text = card.reduced(66.0f, 9.0f);
-      text.setRight(card.getRight() - 38.0f);
-      g.setColour(UITheme::textPrimary);
-      g.setFont(makeAppFont(15.5f, AppFontWeight::SemiBold));
-      g.drawFittedText(mode == Mode::Edit
-                           ? L10n::tr("BPM original", "Original BPM")
-                           : L10n::tr("Metadatos detectados", "Detected metadata"),
-                       text.removeFromTop(24.0f).toNearestInt(),
-                       juce::Justification::centredLeft, 1);
-      g.setColour(UITheme::textSecondary);
-      g.setFont(makeAppFont(13.0f, AppFontWeight::Regular));
-      g.drawFittedText(mode == Mode::Edit
-                           ? L10n::tr("Tempo de reproducción: en el reproductor.",
-                                      "Playback tempo: in the player.")
-                           : mobileMetadataSummary(), text.toNearestInt(),
-                       juce::Justification::centredLeft, 2);
-
-      const float cx = card.getRight() - 25.0f;
-      const float cy = card.getCentreY();
-      juce::Path chevron;
-      chevron.startNewSubPath(cx - 4.0f, cy - 6.0f);
-      chevron.lineTo(cx + 2.0f, cy);
-      chevron.lineTo(cx - 4.0f, cy + 6.0f);
-      g.setColour(UITheme::textSecondary);
-      g.strokePath(chevron, juce::PathStrokeType(2.0f));
-    }
+    if (mode == Mode::Edit && currentStep == Step::Metadata && !metadataCardBounds.isEmpty())
+      drawMetadataCard(g, metadataCardBounds.toFloat(),
+                       L10n::tr("BPM original", "Original BPM"),
+                       L10n::tr("Tempo de reproducción: en el reproductor.",
+                                "Playback tempo: in the player."));
 }
 
 void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
@@ -1211,13 +1192,6 @@ void SongImportWizardComponent::resized() {
                         &timeSignatureLabel})
       label->setFont(makeAppFont(14.0f, AppFontWeight::Regular));
 
-    const bool canCreateBlank = mode == Mode::Import && currentStep == Step::Metadata &&
-        static_cast<bool>(resolveProjectDestination) && !phoneKeyboardVisible;
-    createBlankSongButton.setVisible(canCreateBlank);
-    if (canCreateBlank) {
-      auto blankAction = content.removeFromBottom(52);
-      createBlankSongButton.setBounds(blankAction.removeFromTop(44));
-    }
     layoutStepImport(content);
     layoutStepMetadata(content);
     layoutStepMapping(content);
@@ -1312,13 +1286,6 @@ void SongImportWizardComponent::resized() {
       placeRight(saveMetadataButton, 112);
   }
 
-  const bool canCreateBlank = mode == Mode::Import && currentStep == Step::Metadata &&
-      static_cast<bool>(resolveProjectDestination);
-  createBlankSongButton.setVisible(canCreateBlank);
-  if (canCreateBlank) {
-    auto blankAction = area.removeFromBottom(52);
-    createBlankSongButton.setBounds(blankAction.removeFromTop(44));
-  }
   layoutStepImport(area);
   layoutStepMetadata(area);
   layoutStepMapping(area);
@@ -1411,7 +1378,6 @@ void SongImportWizardComponent::refreshThemeColours() {
 
   configureCombo(keyBox);
   configureCombo(timeSignatureBox);
-  styleSecondaryButton(createBlankSongButton);
 
   styleSecondaryButton(addFilesButton);
   styleSecondaryButton(replaceFilesButton);
@@ -1546,7 +1512,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&secuenciasArtworkPreview),
                   static_cast<juce::Component *>(&secuenciasArtworkCaption),
                   static_cast<juce::Component *>(&changeArtworkLabel),
-                  static_cast<juce::Component *>(&clearSongSearchButton)}) {
+                  static_cast<juce::Component *>(&clearSongSearchButton),
+                  static_cast<juce::Component *>(blankSongMetadataAction.get())}) {
     if (c->getParentComponent() != metadataParent)
       metadataParent->addChildComponent(c);
     c->setVisible(visible);
@@ -1558,6 +1525,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   secuenciasDetailLabel.setVisible(false);
   secuenciasArtworkCaption.setVisible(false);
   clearSongSearchButton.setVisible(false);
+  blankSongMetadataAction->setVisible(visible && mode == Mode::Import &&
+      static_cast<bool>(resolveProjectDestination));
   if (!visible) {
     artworkOverlayButtonBounds = {};
     metadataCardBounds = {};
@@ -1615,7 +1584,8 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 
     bounds.removeFromTop(12);
-    metadataCardBounds = bounds.removeFromTop(70);
+    metadataCardBounds = bounds.removeFromTop(mode == Mode::Import ? 84 : 70);
+    blankSongMetadataAction->setBounds(metadataCardBounds);
 
     if (!secuenciasResults.empty()) {
       const int listH = juce::jmin(
@@ -1686,6 +1656,10 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
   timeSignatureBox.setBounds(col.removeFromTop(fieldH));
 
   left.removeFromTop(10);
+  if (blankSongMetadataAction->isVisible()) {
+    metadataCardBounds = left.removeFromTop(84);
+    blankSongMetadataAction->setBounds(metadataCardBounds);
+  }
   secuenciasStatusLabel.setBounds(left.removeFromTop(16));
   left.removeFromTop(4);
   secuenciasDetailLabel.setBounds(left.removeFromTop(40));
@@ -2746,8 +2720,9 @@ bool SongImportWizardComponent::submitSongInBackground(ImportedSongData song) {
 void SongImportWizardComponent::setSubmitting(const bool submitting) {
   isSubmitting = submitting;
   for (auto *button : {&submitButton, &backButton, &nextButton, &cancelButton,
-                       &saveMetadataButton, &createBlankSongButton})
+                       &saveMetadataButton})
     button->setEnabled(!submitting);
+  blankSongMetadataAction->setEnabled(!submitting);
   mobileCloseButton.setEnabled(!submitting);
   keyboardDoneButton.setEnabled(!submitting);
 }
@@ -2767,8 +2742,6 @@ void SongImportWizardComponent::changeStep(const Step step) {
   if (currentStep == Step::Review)
     updateSummaryText();
 
-  createBlankSongButton.setVisible(mode == Mode::Import && currentStep == Step::Metadata &&
-      static_cast<bool>(resolveProjectDestination));
   backButton.setVisible(currentStep != Step::Metadata);
   nextButton.setVisible(currentStep != Step::Review);
   submitButton.setVisible(currentStep == Step::Review);
