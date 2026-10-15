@@ -1441,8 +1441,8 @@ void WaveformBar::setBlankSong(const bool enabled) {
     setArrangement({}, false);
     setTempoMap({});
   }
-  // Preserve the allocated responsive area, but expose no waveform controls,
-  // empty-state prompt, ruler, cursor or section cards for an audio-free song.
+  // The host collapses this area; expose no waveform-only controls while the
+  // audio-free song is selected, including through stale UI callbacks.
   setVisible(!enabled);
   resized();
   repaint();

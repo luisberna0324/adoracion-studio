@@ -2487,6 +2487,11 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   }
 
   sortStemsForStripOrder(song.stems);
+  if (song.blankSong && !song.stems.empty()) {
+    song.blankSong = false;
+    song.blankSongBars = 0;
+    song.fileType = "FLAC";
+  }
 
   return song;
 }

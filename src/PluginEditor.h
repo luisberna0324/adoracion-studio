@@ -68,6 +68,9 @@ public:
                                          bool clearSnapshotFile);
 
 private:
+  bool shouldCollapseWaveformArea() const;
+  void refreshWaveformPresentationForSong();
+  void layoutMainUi(bool minimalPhoneProfile);
   void updateTeamsOnboarding();
   void processTeamsRevocations();
   juce::var teamsPendingRevocations;

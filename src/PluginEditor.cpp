@@ -1316,7 +1316,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
       channelGridPanel != nullptr && songListPanel != nullptr &&
       setlistHandlePanel != nullptr) {
     topBar->setVisible(true);
-    waveformBar->setVisible(true);
+    waveformBar->setVisible(!shouldCollapseWaveformArea());
     channelGridPanel->setVisible(true);
     songListPanel->setVisible(true);
     setlistHandlePanel->setVisible(true);
@@ -2334,6 +2334,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         channelGridRaw->setSong(ImportedSongData{});
         hasCurrentLoadedSong = false;
         currentLoadedSong = ImportedSongData{};
+        refreshWaveformPresentationForSong();
         resetTrackedSongWindow();
       }
       return false;
@@ -2522,7 +2523,7 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
     pushLoadUi(0.80, L10n::tr(u8"Cargando forma de onda...",
                               u8"Loading waveform..."));
 
-    waveformBarRaw->setBlankSong(loadedSong.blankSong);
+    refreshWaveformPresentationForSong();
     auto cachedBins = loadedSong.blankSong ? std::vector<float>{}
         : SongLibraryStore::loadWaveformCache(loadedSong.id);
     if (loadedSong.blankSong) {
@@ -4775,7 +4776,7 @@ bool MTControlsAudioProcessorEditor::unloadActiveSongForLocalPurge() {
 
   if (waveformBarPtr != nullptr) {
     waveformBarPtr->clearSongLoadingState();
-    waveformBarPtr->setBlankSong(false);
+    refreshWaveformPresentationForSong();
     waveformBarPtr->setWaveformBins({});
     waveformBarPtr->setSongRhythm(0.0, {});
     waveformBarPtr->setArrangement({}, false);
@@ -5284,6 +5285,24 @@ void MTControlsAudioProcessorEditor::paint(juce::Graphics &g) {
   }
 }
 
+bool MTControlsAudioProcessorEditor::shouldCollapseWaveformArea() const {
+  return hasCurrentLoadedSong && currentLoadedSong.blankSong &&
+         currentLoadedSong.stems.empty();
+}
+
+void MTControlsAudioProcessorEditor::refreshWaveformPresentationForSong() {
+  if (waveformBarPtr == nullptr)
+    return;
+  const bool collapsed = shouldCollapseWaveformArea();
+  const bool changed = waveformBarPtr->isBlankSong() != collapsed;
+  waveformBarPtr->setBlankSong(collapsed);
+  if (changed) {
+    if (topBar != nullptr)
+      topBar->resized();
+    resized();
+  }
+}
+
 void MTControlsAudioProcessorEditor::resized() {
   if (demoLoadingOverlay) demoLoadingOverlay->setBounds(getLocalBounds());
   // Authentication also owns the phone orientation before the main UI exists.
@@ -5308,12 +5327,15 @@ void MTControlsAudioProcessorEditor::resized() {
     return;
   }
 
-  auto area = getLocalBounds();
   updateResponsiveLayoutProfile();
   // Phone behaviour is determined by the available short side, not by the
   // user-selectable desktop density profile. A wide landscape phone can use
   // the Standard profile while still needing the phone-safe surface.
-  const bool minimalPhoneProfile = isPhoneSizedLayout(*this);
+  layoutMainUi(isPhoneSizedLayout(*this));
+}
+
+void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile) {
+  auto area = getLocalBounds();
   if (auto *bar = dynamic_cast<TopBar *>(topBar.get()))
     bar->setMinimalPhoneMode(minimalPhoneProfile);
   if (auto *wave = dynamic_cast<WaveformBar *>(waveformBar.get()))
@@ -5456,8 +5478,12 @@ void MTControlsAudioProcessorEditor::resized() {
   // pushed down instead of being covered by the expanded bar.
   if (waveformBarPtr)
     waveH += waveformBarPtr->getExtraHeightForHostLayout();
+  const bool collapsed = shouldCollapseWaveformArea();
+  if (collapsed)
+    waveH = 0;
   auto waveformArea = area.removeFromTop(waveH);
   waveformBar->setBounds(waveformArea);
+  waveformBar->setVisible(!collapsed && topBar->isVisible());
 
   auto mainArea = area;
   const int handleW = minimalPhoneProfile ? 0 : 14;
@@ -5567,6 +5593,8 @@ void MTControlsAudioProcessorEditor::resized() {
     setlistHandlePanel->setVisible(true);
     if (padsHandlePanel)
       padsHandlePanel->setVisible(true);
+    if (padsComponent && padsComponent->getParentComponent() == this)
+      padsComponent->setVisible(!isPadsCollapsed);
   }
 
   if (setlistOverlaySupported && isSetlistDrawerOpen) {

@@ -998,10 +998,33 @@ fuera del clip se omiten en el render. No hay trabajo nuevo en audio.
 
 ### Canción en blanco sin zona de onda
 
-En canción en blanco, WaveformBar conserva su espacio de layout pero queda
-oculto y sin controles, regla, cursor, compases ni texto vacío. El selector
-Onda/Secciones de escritorio y la opción de Secciones del menú táctil no se
-muestran; tampoco la ventana Inicio/Fin ni Ensayo en ese menú. Click, Pads,
-tono y tempo conservan sus posiciones y componentes habituales. El reloj
-superior muestra sólo tiempo transcurrido. La misma regla aplica al cliente
-remoto y se revierte al cargar una canción normal con audio.
+Una canción cargada explícitamente como en blanco y sin stems colapsa toda
+el área de WaveformBar a altura cero. No reserva padding ni altura expandida
+o de toolbars. El mixer y el setlist comienzan debajo de TopBar y recuperan
+ese alto; Pads conserva su drawer/popover existente. La misma distribución
+común se usa en teléfono, tablet y escritorio, con sus insets habituales.
+Al salir del perfil teléfono se restaura la visibilidad del contenido de Pads
+según el estado abierto/cerrado guardado, sin apropiarse de un panel que siga
+en su popover. No se deja su contenedor vacío por haber ocultado Pads en teléfono.
+
+No se muestran controles, regla, cursor, compases ni texto vacío de la onda.
+El selector Onda/Secciones de escritorio y la opción de Secciones del menú
+táctil no se muestran; tampoco Inicio/Fin ni Ensayo en ese menú. Transporte,
+Click, Pads, tono y tempo conservan sus componentes y su estado. El reloj
+superior muestra sólo tiempo transcurrido.
+
+`refreshWaveformPresentationForSong()` actualiza la presentación al cambiar
+el tipo de canción local/remota y sólo pide un nuevo layout al cambiar el
+estado colapsado. No toca el transporte ni recrea componentes. `layoutMainUi()`
+recibe el perfil de teléfono resuelto por `resized()` y distribuye los mismos
+componentes; permite comprobar esa geometría nativa en el harness Linux.
+La preferencia de onda expandida se conserva para la próxima canción con audio.
+
+La condición usa metadatos de la canción cargada: `blankSong` y `stems.empty()`.
+No depende del nivel de señal, de la caché de picos, de la duración ni de cuántos
+readers están disponibles durante una carga. Una canción normal silenciosa,
+en carga o con audio ausente no se convierte visualmente en blanco. Al cargar
+pistas, incluso para el mismo ID remoto, se restaura el área normal sin otra
+interacción. Agregar stems mediante la edición existente convierte la canción
+en blanco a metadatos de audio conservando su ID/proyecto. La carga y el guardado
+siguen sus transacciones existentes; el layout no reinicia el motor de audio.

@@ -239,6 +239,37 @@ struct SongImportWizardTestAccess {
         edited.arrangement.parts.size() == 1 && edited.arrangement.parts.front().id == part.id &&
         edited.arrangement.parts.front().endSec == 8,
         "ordinary metadata editing preserves blank sections and their absolute times");
+    editWizard.handleSelectedStemFiles({files.first}, false);
+    const auto withAudio = editWizard.buildSongData();
+    expect(!withAudio.blankSong && withAudio.fileType == "FLAC" && withAudio.stems.size() == 1 &&
+               withAudio.id == existing.id && withAudio.title == existing.title,
+           "adding real audio to a blank converts the same song to ordinary audio metadata");
+    if (!AssetBootstrapManager::getAvailableEncoderBinary().existsAsFile()) {
+      // Keep the package roundtrip offline where no desktop encoder is
+      // installed. WAV metadata above is still covered; canonical FLAC can be
+      // embedded by the real project writer without a download or a stub.
+      const auto flac = files.directory.getChildFile("blank-added-audio.flac");
+      {
+        auto stream = std::unique_ptr<juce::OutputStream>(flac.createOutputStream());
+        juce::FlacAudioFormat format;
+        auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+            .withSampleRate(44100.0).withNumChannels(1).withBitsPerSample(16));
+        juce::AudioBuffer<float> audio(1, 256); audio.clear(); audio.setSample(0, 16, 0.25f);
+        expect(writer && writer->writeFromAudioSampleBuffer(audio, 0, 256), "real local FLAC fixture writes");
+      }
+      editWizard.handleSelectedStemFiles({flac}, true);
+    }
+    juce::String conversionError;
+    const bool convertedSaved = SongLibraryStore::updateSong(editWizard.buildSongData(), &conversionError);
+    if (!convertedSaved) std::cerr << "Blank -> audio save: " << conversionError << '\n';
+    expect(convertedSaved,
+           "the normal project-edit transaction saves added audio to the former blank");
+    ProjectDocument converted;
+    expect(ProjectStore::open(destination, converted, &conversionError) &&
+               converted.song.id == existing.id && !converted.song.blankSong &&
+               converted.song.stems.size() == 1 &&
+               juce::File(converted.song.stems.front().storedPath).existsAsFile(),
+           "reopening the same project restores ordinary audio metadata and embedded stem");
   }
 
   static void fillMetadata(Wizard &wizard) {

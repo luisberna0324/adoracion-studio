@@ -6,6 +6,10 @@
 #include "data/DemoSongService.h"
 #include "data/SessionPersistence.h"
 #include "IsolatedTestRoot.h"
+#include "ui/panels/TopBar.h"
+#include "ui/panels/WaveformBar.h"
+#include "ui/panels/PadsComponent.h"
+#include "network/RemoteStateCodec.h"
 
 #include <atomic>
 #include <cmath>
@@ -58,6 +62,37 @@ ValidateAccessResult AuthSessionApi::fetchValidateAccess(
 }
 
 struct LocalDemoAccessTestAccess {
+  static bool load(MTControlsAudioProcessorEditor &editor, const ImportedSongData &song) {
+    return editor.loadSongAction(song, -1);
+  }
+  static void layout(MTControlsAudioProcessorEditor &editor, int width, int height, bool phone) {
+    editor.setSize(width, height);
+    editor.layoutMainUi(phone); // Same layout used by resized(), without pretending Linux is an iPhone.
+  }
+  static auto &wave(MTControlsAudioProcessorEditor &editor) { return *editor.waveformBarPtr; }
+  static auto &top(MTControlsAudioProcessorEditor &editor) { return *editor.topBar; }
+  static auto mixerBounds(MTControlsAudioProcessorEditor &editor) { return editor.channelGridPanel->getBounds(); }
+  static void expandWave(MTControlsAudioProcessorEditor &editor, bool expanded) { editor.isWaveformHeightExpanded = expanded; editor.resized(); }
+  static bool expanded(MTControlsAudioProcessorEditor &editor) { return editor.isWaveformHeightExpanded; }
+  static bool padsMatchProfile(MTControlsAudioProcessorEditor &editor, bool phone) {
+    return editor.padsComponent &&
+           editor.padsComponent->isVisible() == (!phone && !editor.isPadsCollapsed);
+  }
+  static void refreshPresentation(MTControlsAudioProcessorEditor &editor) { editor.refreshWaveformPresentationForSong(); }
+  static void presentMetadata(MTControlsAudioProcessorEditor &editor, ImportedSongData song) {
+    editor.currentLoadedSong = std::move(song); editor.hasCurrentLoadedSong = true;
+    editor.refreshWaveformPresentationForSong();
+  }
+  static void remoteSnapshot(MTControlsAudioProcessorEditor &editor, const ImportedSongData &song) {
+    editor.playbackSession.setRemote(true); editor.playbackSession.setConnected(true);
+    auto *snapshot = new juce::DynamicObject();
+    snapshot->setProperty("song", playworship::remote::encodeSong(song));
+    snapshot->setProperty("playing", false); snapshot->setProperty("position", 42.0);
+    snapshot->setProperty("length", song.blankSong ? 0.0 : 90.0);
+    snapshot->setProperty("settings", ProjectStore::serializeSettings({}));
+    editor.applyRemoteSnapshot(juce::var(snapshot));
+  }
+  static void leaveRemotePreview(MTControlsAudioProcessorEditor &editor) { editor.playbackSession.setRemote(false); }
   static void login(MTControlsAudioProcessorEditor &editor,
                     const juce::String &user, const juce::String &password) {
     editor.launchLocalDemoLogin(user, password);
@@ -124,6 +159,31 @@ struct LocalDemoAccessTestAccess {
     return !editor.teamsOnboardingPending && !editor.hasTeamsMembership &&
         !editor.canManageSharedCloud && editor.cloudCatalogSongs.empty() &&
         editor.cloudDownloadsInProgress.empty() && editor.cloudUploadsInProgress.empty();
+  }
+};
+
+struct WaveformEditingTestAccess {
+  static std::vector<juce::Component *> controls(TopBar &top) {
+    return {&top.playButton, &top.stopButton, &top.metroToggleButton, &top.keyDisplay, &top.bpmSegmentButton};
+  }
+  static void refreshTop(TopBar &top) { top.refreshFromProviders(); }
+  static std::vector<bool> availability(TopBar &top) {
+    std::vector<bool> result; for (auto *control : controls(top)) result.push_back(control->isVisible()); return result;
+  }
+  static void checkTop(TopBar &top, bool blank, const std::vector<bool> &before) {
+    expect(!blank || (!top.waveformViewButton.isVisible() && !top.sectionsViewButton.isVisible()),
+           "blank hides waveform and section selectors");
+    const auto children = controls(top);
+    for (size_t index = 0; index < children.size(); ++index) {
+      auto *control = children[index];
+      // Existing compact phones can fold the direct BPM segment away. The
+      // blank layout must preserve every control available in that profile.
+      if (!before[index]) continue;
+      const bool fits = control->isVisible() && !control->getBounds().isEmpty() && top.getLocalBounds().contains(control->getBounds());
+      if (!fits) std::cerr << "top control='" << control->getName() << "' bounds=" << control->getBounds().toString()
+                          << " visible=" << control->isVisible() << " parent=" << top.getLocalBounds().toString() << '\n';
+      expect(fits, "transport, click, key and tempo remain visible inside the top bar");
+    }
   }
 };
 
@@ -225,6 +285,117 @@ void assertPreparedDemo(MTControlsAudioProcessor &processor,
     expect(juce::File(stem.storedPath).existsAsFile() &&
                juce::File(stem.storedPath).isAChildOf(isolatedTestRoot()),
            "every instrument comes from the bundled private installation");
+}
+
+void testBlankSongLayoutAndTransitions() {
+  AppSettings::setLocalDemoSessionActive(true);
+  MTControlsAudioProcessor processor; processor.prepareToPlay(44100.0, 256);
+  MTControlsAudioProcessorEditor editor(processor);
+  assertPreparedDemo(processor, editor);
+  const auto audioSong = LocalDemoAccessTestAccess::song(editor);
+  auto &wave = LocalDemoAccessTestAccess::wave(editor);
+  waitFor([&] { return !wave.getWaveformBinsCopy().empty(); }, "normal song waveform arrives through its real cache/decoder");
+  const auto capturePath = juce::SystemStats::getEnvironmentVariable("PLAYWORSHIP_BLANK_LAYOUT_CAPTURE_DIR", {});
+  juce::Array<juce::var> geometry;
+  struct Size { int width, height; bool phone; const char *name; };
+  const Size sizes[] = {{667, 375, true, "phone-small"}, {844, 390, true, "phone"},
+                        {1024, 768, false, "tablet"}, {768, 1024, false, "tablet-portrait"},
+                        {1280, 900, false, "desktop"}, {1440, 900, false, "desktop-wide"}};
+  std::vector<juce::Rectangle<int>> normalMixer;
+  std::vector<int> normalWave;
+  std::vector<std::vector<bool>> normalControls;
+  const auto capture = [&](const Size &size, const char *phase) {
+    WaveformEditingTestAccess::refreshTop(LocalDemoAccessTestAccess::top(editor));
+    auto *row = new juce::DynamicObject();
+    row->setProperty("phase", phase); row->setProperty("profile", size.name);
+    row->setProperty("size", juce::String(size.width) + "x" + juce::String(size.height));
+    row->setProperty("wave", wave.getBounds().toString());
+    row->setProperty("mixer", LocalDemoAccessTestAccess::mixerBounds(editor).toString());
+    geometry.add(juce::var(row));
+    if (capturePath.isEmpty()) return;
+    const auto file = juce::File(capturePath).getChildFile(juce::String(phase) + "-" + size.name + ".png");
+    file.getParentDirectory().createDirectory(); file.deleteFile();
+    juce::FileOutputStream stream(file); juce::PNGImageFormat png;
+    expect(stream.openedOk() && png.writeImageToStream(editor.createComponentSnapshot(editor.getLocalBounds()), stream),
+           "real editor snapshot writes");
+  };
+  for (const auto &size : sizes) {
+    LocalDemoAccessTestAccess::layout(editor, size.width, size.height, size.phone);
+    expect(wave.isVisible() && wave.getHeight() > 0, "normal song reserves its real waveform area");
+    expect(LocalDemoAccessTestAccess::padsMatchProfile(editor, size.phone), "ordinary profile keeps the existing pad drawer available");
+    normalMixer.push_back(LocalDemoAccessTestAccess::mixerBounds(editor)); normalWave.push_back(wave.getHeight());
+    capture(size, "audio");
+    normalControls.push_back(WaveformEditingTestAccess::availability(LocalDemoAccessTestAccess::top(editor)));
+  }
+  LocalDemoAccessTestAccess::expandWave(editor, true);
+  ImportedSongData blank; blank.blankSong = true; blank.id = "blank-layout";
+  blank.title = juce::String::fromUTF8("Adoración libre"); blank.key = "C"; blank.bpm = 126; blank.timeSignature = "4/4";
+  expect(LocalDemoAccessTestAccess::load(editor, blank), "editor loads a real blank song without stems");
+  drainMessages(220);
+  expect(LocalDemoAccessTestAccess::expanded(editor), "collapsing does not discard the normal waveform height preference");
+  processor.setMetronomeEnabled(true); processor.setPadsEnabled(true); processor.setPadsVolume(0.37f);
+  processor.setPlaybackTempoBpm(136.0); processor.setPitchSemiTones(2); processor.playSong();
+  juce::AudioBuffer<float> output(processor.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int block = 0; block < 8; ++block) processor.processBlock(output, midi);
+  const auto position = processor.getSongCurrentPositionSeconds();
+  const auto revision = processor.getTransportControlRevision();
+  for (size_t index = 0; index < std::size(sizes); ++index) {
+    const auto &size = sizes[index];
+    LocalDemoAccessTestAccess::layout(editor, size.width, size.height, size.phone);
+    const auto mixer = LocalDemoAccessTestAccess::mixerBounds(editor);
+    expect(!wave.isVisible() && wave.getHeight() == 0 && wave.getBounds().isEmpty(), "blank waveform occupies zero host space");
+    expect(mixer.getY() == LocalDemoAccessTestAccess::top(editor).getBottom() &&
+               mixer.getY() == normalMixer[index].getY() - normalWave[index] &&
+               mixer.getHeight() == normalMixer[index].getHeight() + normalWave[index],
+           "all former waveform height is recovered by the existing mixer");
+    expect(editor.getLocalBounds().contains(mixer), "expanded mixer fits the phone/tablet/desktop editor");
+    expect(LocalDemoAccessTestAccess::padsMatchProfile(editor, size.phone), "blank preserves the existing phone pad action or desktop drawer visibility");
+    capture(size, "blank");
+    WaveformEditingTestAccess::checkTop(LocalDemoAccessTestAccess::top(editor), true, normalControls[index]);
+    expect(processor.isSongPlaying() && processor.getSongCurrentPositionSeconds() == position &&
+               processor.getTransportControlRevision() == revision && processor.isMetronomeEnabled() &&
+               processor.isPadsEnabled() && std::abs(processor.getPadsVolume() - 0.37f) < 0.001f &&
+               processor.getPlaybackTempoBpm() == 136.0 && processor.getPitchSemiTones() == 2,
+           "layout changes never restart transport or overwrite click/pad/key/tempo state");
+  }
+  processor.processBlock(output, midi);
+  expect(processor.getSongCurrentPositionSeconds() > position, "audio clock continues after relayout");
+  processor.pauseSong();
+  expect(LocalDemoAccessTestAccess::load(editor, audioSong), "normal song restores through the existing loader");
+  drainMessages(220);
+  expect(!processor.isBlankSongLoaded() && processor.getLoadedStemCount() == 8 && !processor.isSongPlaying(),
+         "restoring ordinary audio loads its real stems without unintended autoplay");
+  expect(LocalDemoAccessTestAccess::expanded(editor) && wave.isVisible() && wave.getHeight() > 0,
+         "normal song restores the saved expanded waveform without another resize");
+  LocalDemoAccessTestAccess::expandWave(editor, false);
+  waitFor([&] { return !wave.getWaveformBinsCopy().empty(); }, "normal waveform returns after blank playback");
+  for (size_t index = 0; index < std::size(sizes); ++index) {
+    const auto &size = sizes[index]; LocalDemoAccessTestAccess::layout(editor, size.width, size.height, size.phone);
+    expect(wave.isVisible() && wave.getHeight() == normalWave[index] &&
+               LocalDemoAccessTestAccess::mixerBounds(editor) == normalMixer[index],
+           "ordinary audio restores the exact original adaptive geometry");
+    expect(LocalDemoAccessTestAccess::padsMatchProfile(editor, size.phone), "restored audio keeps the pad drawer visible after leaving phone mode");
+    capture(size, "restored");
+  }
+  wave.setWaveformBins({}); wave.setSongLoadingState(true, 0.25, "Leyendo audio");
+  LocalDemoAccessTestAccess::refreshPresentation(editor);
+  expect(wave.isVisible() && wave.getHeight() > 0, "normal missing bins/loading state never collapses the waveform");
+  auto missing = audioSong; missing.stems.clear();
+  LocalDemoAccessTestAccess::presentMetadata(editor, missing);
+  expect(wave.isVisible() && wave.getHeight() > 0, "normal missing-audio metadata is not inferred to be a blank");
+  const auto beforeRemote = processor.getTransportControlRevision();
+  LocalDemoAccessTestAccess::remoteSnapshot(editor, blank);
+  expect(!wave.isVisible() && wave.getHeight() == 0, "remote blank snapshot immediately collapses the host area");
+  auto withAudio = blank; withAudio.blankSong = false; withAudio.stems = audioSong.stems;
+  LocalDemoAccessTestAccess::remoteSnapshot(editor, withAudio);
+  expect(wave.isVisible() && wave.getHeight() > 0, "adding audio to the same remote song restores its waveform area");
+  withAudio.blankSong = true; // A stale flag must not hide received real stems.
+  LocalDemoAccessTestAccess::remoteSnapshot(editor, withAudio);
+  expect(wave.isVisible() && wave.getHeight() > 0, "explicit stems win over a stale blank flag");
+  expect(processor.getTransportControlRevision() == beforeRemote, "remote presentation does not mutate the local transport");
+  LocalDemoAccessTestAccess::leaveRemotePreview(editor);
+  if (capturePath.isNotEmpty())
+    expect(juce::File(capturePath).getChildFile("geometry.json").replaceWithText(juce::JSON::toString(juce::var(geometry))), "geometry report writes");
 }
 
 void testLocalSessionIsolationAndRestart() {
@@ -391,6 +562,12 @@ int main(int argc, char **argv) {
       return 77;
     }
     testOfflineAssetGateAndPrepareResidentPads();
+    if (argc > 1 && juce::String(argv[1]) == "--blank-layout-only") {
+      testBlankSongLayoutAndTransitions();
+      ProjectStore::flushAllPendingSettings();
+      std::cout << "Blank layout: " << checks << " checks passed; native editor, transport and remote snapshots\n";
+      return 0;
+    }
     const bool environmentPreview = juce::SystemStats::getEnvironmentVariable(
         "PLAYWORSHIP_LOCAL_DEMO_PREVIEW", {}) == "1";
     if (environmentPreview || (argc > 1 && juce::String(argv[1]) == "--preview")) {

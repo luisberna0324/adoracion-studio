@@ -261,12 +261,16 @@ Los campos históricos de acompañamiento no sustituyen los controles habituales
 audio conservan el esquema y comportamiento existentes.
 
 La canción en blanco no admite secciones ni mapa regional de tempo en esta
-versión. Su zona de onda queda completamente vacía: no muestra señal, regla,
+versión. Su zona de onda se colapsa a altura cero y libera espacio al mixer:
+no muestra señal, regla,
 cursor, compases, tarjetas ni aviso para importar audio. Se ocultan Editar,
 Onda/Secciones y sus opciones de menú, también en Cliente. El reloj de la barra
 superior muestra sólo el tiempo transcurrido y no abre ajustes Inicio/Fin.
 Click, pad, tono y tempo mantienen sus controles habituales. Al cargar de nuevo
 una canción con audio se restauran sus vistas, edición y acciones existentes.
+Agregar stems desde la edición habitual también convierte la misma canción a
+metadatos de audio (`blankSong = false`), conservando su ID y proyecto. El área
+normal reaparece al aplicar esa carga; el layout no reinicia el transporte.
 
 Los metadatos históricos de compases/secciones del prototipo siguen siendo
 legibles, pero no definen duración ni se ejecutan en una canción en blanco.

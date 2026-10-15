@@ -90,7 +90,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     wasSongPlaying = false; remoteVisualStatePending = false;
     if (auto *grid = dynamic_cast<ChannelGridPanel *>(channelGridPanel.get())) grid->setSong(currentLoadedSong);
     if (waveformBarPtr) {
-      waveformBarPtr->setBlankSong(currentLoadedSong.blankSong);
+      refreshWaveformPresentationForSong();
       waveformBarPtr->setWaveformBins(std::move(remoteSavedLocalWaveform));
       waveformBarPtr->resetPlaybackViewForSong();
       waveformBarPtr->setSongRhythm(currentLoadedSong.bpm, currentLoadedSong.timeSignature);
@@ -129,6 +129,7 @@ void MTControlsAudioProcessorEditor::setRemoteMode(playworship::remote::RemoteSe
     };
     remoteLibrarySignature.clear(); remoteSettingsSignature.clear(); remoteChannelSignature.clear(); remoteExpectedWaveformHash.clear();
     currentLoadedSong = {}; hasCurrentLoadedSong = false;
+    refreshWaveformPresentationForSong();
     remoteDisplayedLibrary = std::make_shared<LibraryState>();
     if (songListPanelRaw) {
       songListPanelRaw->onRemoteAction = [this](const juce::String &action, const juce::var &value, const juce::String &target) { playbackSession.send(action, value, target); };
@@ -215,7 +216,7 @@ void MTControlsAudioProcessorEditor::applyRemoteSnapshot(const juce::var &snapsh
     currentLoadedSong = playworship::remote::decodeSong(song);
   }
   hasCurrentLoadedSong = songId.isNotEmpty();
-  if (waveformBarPtr) waveformBarPtr->setBlankSong(currentLoadedSong.blankSong);
+  refreshWaveformPresentationForSong();
   const auto hash = stringProperty(snapshot, "waveformHash");
   if (oldId != songId || hash != remoteExpectedWaveformHash) {
     if (waveformBarPtr) {

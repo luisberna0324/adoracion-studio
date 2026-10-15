@@ -856,3 +856,73 @@ La auditoría es del motor del clic, no del callback completo: el harness nativo
 renderiza PCM sin dispositivo host y conserva avisos/asserts Debug de dispositivo
 no configurado y FileLogger presentes en sus logs. No acredita audio físico,
 latencia de un driver ni todas las plataformas. Se mantiene la UI de `d1a0881`.
+
+## Colapso de onda en canción en blanco (2026-10-15)
+
+Base `9150e054` en `feat/blank-song`, trabajo sólo en nube. El editor reservaba
+la altura de WaveformBar aunque el componente estuviera oculto. Ahora la canción
+cargada con `blankSong` y sin stems reserva **cero** altura, incluyendo toolbar
+extra y altura expandida. Mixer/setlist empiezan debajo de TopBar; Pads conserva
+su drawer/popover y al salir del perfil teléfono recupera su visibilidad según
+el estado abierto/cerrado, sin recrear sus componentes.
+
+La transición actualiza inmediatamente el layout en carga local, snapshots
+remotos (también el mismo ID al recibir stems), retorno de Cliente y descarga
+local. No infiere el tipo por silencio, duración, bins vacíos ni errores de
+lectura. La altura expandida anterior se conserva para la próxima canción con
+audio. Agregar stems en la edición habitual retira el flag de blanco; la
+transacción real guarda/reabre el mismo `.pwproj` e ID con audio incluido.
+La tarjeta de creación aprobada y los motores de clic/pads/transporte de
+`9150e054` no se modifican.
+
+Verificación Linux Debug, JUCE 8.0.12, GCC 14, Bungee 2.4.24 real,
+`JUCE_USE_SIMD=0`:
+
+- `MTControls_Standalone` y targets de integración compilados. La nueva suite
+  `blank_song_layout` ejecuta el Editor completo y su loader real, con sólo los
+  transportes externos de autenticación sustituidos por las fixtures offline
+  existentes; no sustituye audio ni Bungee.
+- Se revisaron 18 snapshots nativos (audio/blanco/audio restaurado), con sus
+  bounds en `build/blank-waveform-collapse-qa/geometry.json`. Perfil teléfono
+  667x375: mixer 209 -> 317 puntos de alto; 844x390: 202 -> 326. Geometrías
+  tablet 1024x768 y 768x1024: +166 puntos; escritorio 1280x900 y 1440x900:
+  +192. Al volver a audio se recuperaron exactamente los bounds anteriores.
+- La pasada con capturas pasó 153 comprobaciones; sin exportar imágenes, 134.
+  Comprueba ocultación de selectores de onda/secciones, conservación de los
+  controles disponibles en cada perfil, Pads al volver de teléfono, reloj en
+  reproducción y revisión del transporte intactos durante resize, clic/pad/
+  volumen/tono/tempo conservados, audio normal sin autoplay, onda todavía sin
+  bins/en carga, referencia normal sin stems y cambio remoto con stems aun si
+  llega un flag de blanco atrasado.
+- `song_import_wizard` verifica la tarjeta original, convertir el borrador al
+  agregar un WAV real, persistencia/reapertura con un stem y el mismo ID. La
+  fixture usa FLAC real si no hay encoder instalado, para no descargar nada ni
+  inventar un conversor. Esa ruta pasó; además se probó con FFmpeg 7.1.5 real
+  del host, disponible sólo junto al ejecutable de test. Pasaron WAV -> FLAC
+  y AAC/ALAC M4A -> FLAC -> proyecto -> Biblioteca.
+- Gate principal **13/13**, 53,91 s: `local_demo_access`, `blank_song_layout`,
+  `remote_session`, `remote_section_control`, `song_project_creation`,
+  `song_import_wizard`, `blank_song_transport`, `metronome_transport`,
+  `metronome_engine`, `audio_engine_core`, `pads_engine`, `bungee_processor`
+  y `stem_mix_engine`. `section_automation` pasó aparte en 27,07 s: 14 suites
+  dirigidas aprobadas en total. El clic mantiene 500 inicios concurrentes sin
+  duplicados, 189 pulsos en 120 s sin pares próximos y sus rampas de tempo.
+- `waveform_editing` se ejecutó aparte: conserva sus **dos fallos previos**,
+  repaint con diferencia RGB de 1 y ancla flotante tras scroll horizontal;
+  no aparecieron fallos nuevos. No se afirma una suite global completamente
+  verde. Los avisos/asserts Debug de fonts/dispositivo/singletons del harness
+  permanecen visibles en los logs.
+
+El harness Linux invoca el mismo `layoutMainUi()` con perfil teléfono para
+comprobar esa rama y renderiza componentes JUCE reales; las otras capturas son
+geometrías de tablet/escritorio bajo Linux. No acredita safe-area, teclado,
+giros, touch ni GPU de iOS/Android reales. No hubo audio/MIDI físico, builds
+macOS/iOS/Android/Windows ni instalación en Mac. La nueva distribución no toca
+el DSP; cargar/editar audio conserva sus transacciones existentes, no promete
+mantener una reproducción activa durante el reemplazo de stems.
+
+Logs locales: `/workspace/scratch/blank-collapsed-final-build.log`,
+`blank-collapsed-layout-final.log`, `blank-collapse-final-tests.log`,
+`blank-collapse-gate-output.log`, `blank-conversion-offline-test.log` y
+`blank-collapse-waveform-regressions.log`. Capturas en
+`build/blank-waveform-collapse-qa/`. Sin push, PR, Actions, publicación o deploy.

@@ -154,7 +154,7 @@ private:
   std::function<const ImportedSongData *()> songProvider;
   bool timelineControlsAvailable() const {
     const auto *song = songProvider ? songProvider() : nullptr;
-    return song == nullptr || !song->blankSong;
+    return song == nullptr || !song->blankSong || !song->stems.empty();
   }
   bool lastTimelineControlsAvailable = true;
   MTControlsAudioProcessor &processor;

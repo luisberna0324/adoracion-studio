@@ -64,6 +64,7 @@ public:
 
   void setWaveformBins(std::vector<float> bins);
   void setBlankSong(bool enabled);
+  bool isBlankSong() const noexcept { return blankSongTimeline; }
   std::vector<float> getWaveformBinsCopy() const { return waveformBins; }
   void resetPlaybackViewForSong();
   void setArrangement(const SongArrangementSnapshot &arrangementSnapshot,

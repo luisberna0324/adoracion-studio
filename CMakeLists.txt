@@ -375,6 +375,9 @@ if(MTCONTROLS_BUILD_TESTS)
     add_test(NAME local_demo_access COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
         "$<TARGET_FILE:MTControlsLocalDemoAccessTests>")
+    add_test(NAME blank_song_layout COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_isolated_test.py"
+        "$<TARGET_FILE:MTControlsLocalDemoAccessTests>" --blank-layout-only)
     if(MSVC)
         target_compile_options(MTControlsLocalDemoAccessTests PRIVATE /utf-8)
     endif()
