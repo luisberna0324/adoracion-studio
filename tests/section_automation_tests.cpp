@@ -49,6 +49,9 @@ struct SectionAutomationTestAccess {
   static double tempoRatio(const MTControlsAudioProcessor &processor) {
     return processor.getPlaybackTempoRatio();
   }
+  static double activeTempoRatio(const MTControlsAudioProcessor &processor) {
+    return processor.playbackTempoRatioActive;
+  }
   static bool seekApplied(const MTControlsAudioProcessor &processor) {
     return processor.seekRequestGeneration.load(std::memory_order_acquire) ==
            processor.appliedSeekRequestGeneration;
@@ -1310,6 +1313,76 @@ void testMetronomeConcurrentStart() {
   expect(attacks == 1, "completing Play publication emits the initial beat exactly once");
 }
 
+void testMetronomeLongTempoCadence() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 257);
+  ImportedSongData song; song.blankSong = true; song.id = "tempo-click";
+  song.title = "Tempo click"; song.key = "C"; song.bpm = 126; song.timeSignature = "4/4";
+  expect(p.loadSongStems({}, song.id, song.title, song.key, song.bpm, {}, false, &song), "tempo click blank loads");
+  const auto probe = ApplicationDataPaths::isolatedTestRoot().getChildFile("tempo-click-probe");
+  writeWav(probe.getChildFile("click-probe-quarter.wav"), 1, 0.5f);
+  expect(p.loadMetronomeClickSamplesFromFolder(probe, "probe"), "tempo click probe loads");
+  p.setPadsEnabled(false); auto guides = p.getDynamicGuideSettings(); guides.enabled = false; p.setDynamicGuideSettings(guides);
+  p.setClickDivision(1); p.setClickDivisionEnabled(true); p.setMetronomeEnabled(true);
+  p.setMetronomeVolume(0.5f); p.setMetronomeGain(1.0f); p.setMetronomeMuted(false);
+  p.setPlaybackTempoBpm(94.5); fixture.block(2); p.playSong();
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 257); juce::MidiBuffer midi;
+  std::vector<int> attacks;
+  constexpr int frames = 44100 * 120;
+  for (int start = 0; start < frames; start += 257) {
+    p.processBlock(audio, midi);
+    for (int i = 0; i < std::min(257, frames - start); ++i)
+      if (std::abs(audio.getSample(0, i)) > 0.01f) attacks.push_back(start + i);
+  }
+  const double period = 44100.0 * 60.0 / 94.5;
+  double maxError = 0.0; int closePairs = 0;
+  for (size_t i = 0; i < attacks.size(); ++i) {
+    maxError = std::max(maxError, std::abs(attacks[i] - i * period));
+    if (i && attacks[i] - attacks[i - 1] < period / 2.0) {
+      ++closePairs; std::cout << "tempo close attacks: " << attacks[i - 1] << ' ' << attacks[i] << '\n';
+    }
+  }
+  std::cout << "tempo 126->94.5, block=257, seconds=120, attacks=" << attacks.size()
+            << " close_pairs=" << closePairs << " max_frame_error=" << maxError
+            << " source_position=" << p.getSongCurrentPositionSeconds()
+            << " original_bpm=" << p.getOriginalSongBpm() << " effective_ratio=" << SectionAutomationTestAccess::tempoRatio(p) << '\n';
+  std::cout << "first attacks:"; for (size_t i = 0; i < std::min<size_t>(attacks.size(), 22); ++i) std::cout << ' ' << attacks[i]; std::cout << '\n';
+  expect(closePairs == 0 && attacks.size() == 189 && maxError <= 2.0,
+         "long slow-tempo playback has one grid attack per beat without accumulated drift");
+  p.stopSong(); fixture.block(2);
+  fixture.seekAndWait(3737808.0 / 44100.0);
+  p.playSong(); attacks.clear();
+  for (int block = 0; block < 3; ++block) {
+    if (block == 1) p.setMetronomeEnabled(true); // A repeated UI/remote value is not a restart.
+    p.processBlock(audio, midi);
+    for (int frame = 0; frame < 257; ++frame)
+      if (std::abs(audio.getSample(0, frame)) > 0.01f) attacks.push_back(block * 257 + frame);
+  }
+  std::cout << "quantized tempo edge attacks:"; for (auto frame : attacks) std::cout << ' ' << frame; std::cout << '\n';
+  expect(attacks == std::vector<int>({256}), "fractional source consumption cannot retrigger a beat at the next callback");
+
+  p.stopSong(); fixture.block(2); p.setPlaybackTempoBpm(126.0); fixture.block(2); p.playSong();
+  int previousBeat = -1, rampAttacks = 0; double maxSourceError = 0.0;
+  for (const double target : {126.0, 252.0, 94.5}) {
+    p.setPlaybackTempoBpm(target);
+    for (int block = 0; block < 690; ++block) {
+      const double sourceStart = p.getSongCurrentPositionSeconds() * 44100.0;
+      p.processBlock(audio, midi);
+      const double ratio = SectionAutomationTestAccess::activeTempoRatio(p);
+      for (int frame = 0; frame < 257; ++frame) {
+        if (std::abs(audio.getSample(0, frame)) <= 0.01f) continue;
+        const double sourceFrame = sourceStart + frame * ratio;
+        const int beat = static_cast<int>(std::llround(sourceFrame / 21000.0));
+        expect(beat == previousBeat + 1, "live tempo ramps cannot skip or repeat a beat");
+        maxSourceError = std::max(maxSourceError, std::abs(sourceFrame - beat * 21000.0));
+        previousBeat = beat; ++rampAttacks;
+      }
+    }
+  }
+  std::cout << "live tempo 126->252->94.5 attacks=" << rampAttacks << " max_source_frame_error=" << maxSourceError << '\n';
+  expect(maxSourceError <= 2.0, "live tempo click stays within two source frames of the musical grid");
+}
+
 int main(int argc, char **argv) {
 #if JUCE_LINUX
   if (std::getenv("DISPLAY") == nullptr) return 77;
@@ -1324,10 +1397,15 @@ int main(int argc, char **argv) {
   if (argc > 1 && juce::String(argv[1]) == "--click-only") {
     run("native metronome transport attacks", testMetronomeTransportAttacks);
     run("native metronome concurrent start", testMetronomeConcurrentStart);
+    run("native metronome tempo cadence and ramps", testMetronomeLongTempoCadence);
     return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && juce::String(argv[1]) == "--click-race-only") {
     run("native metronome concurrent start", testMetronomeConcurrentStart);
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--click-timing-only") {
+    run("native metronome long tempo cadence", testMetronomeLongTempoCadence);
     return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && juce::String(argv[1]) == "--blank-only") {

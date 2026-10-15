@@ -64,6 +64,10 @@ El metrónomo sigue la posición fuente del callback al iniciar o reanudar.
 Play no añade un golpe manual: desde cero suena el beat inicial; desde una
 pausa entre beats continúa la misma grilla. Activar el clic durante reproducción
 y los saltos/loops siguen la misma regla, sin agregar un ataque junto al beat.
+En una canción sin stems, el cambio de tempo conserva el cálculo existente de
+frames fuente, pero omite el render de un bus de stems vacío y su compensación
+de latencia. El clic vivo no espera a un time-stretcher que no tiene audio.
+Las canciones con stems conservan su procesamiento y alineación de latencia.
 
 `unloadSong()` suspende el callback, espera a que termine cualquier bloque en
 curso, libera las fuentes bajo `stemListLock` y reinicia transporte, arrange,

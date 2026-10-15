@@ -172,6 +172,19 @@ callback haya procesado la línea de tiempo. Un Play recibido después de tomar
 un snapshot detenido espera al siguiente callback; no emite un beat con el
 reloj todavía en cero que se volvería a emitir en el bloque siguiente.
 
+El motor conserva `absoluteBeatIndex` y `lastGridTick` (negra/subdivisión en
+una grilla de semicorcheas). El consumo fraccionario de tempo se publica en
+frames fuente enteros y puede volver a visitar el último beat en un sync;
+su identidad evita emitirlo dos veces. `reset()`/`requestReset()` limpian esa
+identidad en seeks, Stop y saltos/loops intencionales. Un llamador que vuelve a
+una posición para repetirla debe resetear antes del sync; un preview explícito
+fuera de la grilla sigue usando `triggerImmediateClick()`.
+
+`setMetronomeEnabled()` es idempotente: recibir el mismo valor desde UI/remoto
+no resetea voces ni la identidad del pulso. En un cambio real publica primero
+el reset y después enabled con release/acquire, para que el callback no vea
+la activación antes de su reset pendiente.
+
 ### Trigger manual
 
 ```cpp
@@ -222,6 +235,13 @@ motor. `clearClickSamples()` retira el set para triggers nuevos, pero las voces
 activas pueden terminar de leer memoria válida sin tomar locks ni destruir
 buffers desde el audio thread.
 
+La carga recorta sólo frames finales exactamente cero en todos los canales,
+conservando un cero después del último valor no nulo para interpolar igual al
+remuestrear. No aplica umbral, fade ni corta colas no nulas. Un archivo totalmente
+silencioso retiene un frame válido. El renderer deja de recorrer las voces
+dentro del mismo bloque cuando termina la última; el fallback sintético no
+fuerza el recorrido de voces de sample vacías.
+
 ## Estructura interna
 
 ### ClickSample
@@ -260,7 +280,7 @@ struct SampleVoice {
 
 Hay 16 voces de sample para permitir overlaps.
 
-`phase`, `subPhase`, `beatIndex`, `subIndex`, `activeBpm`,
+`phase`, `subPhase`, `beatIndex`, `absoluteBeatIndex`, `lastGridTick`, `subIndex`, `activeBpm`,
 `activeSubdivision`, las voces y `appliedResetGeneration` pertenecen
 exclusivamente al audio thread. Control sólo escribe atomics de configuración,
 generaciones y el puntero publicado a samples. La retención de

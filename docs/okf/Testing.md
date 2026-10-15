@@ -786,3 +786,73 @@ No se ejecutó la suite completa de UI ni se atribuyen a este cambio los fallos
 previos de `waveform_editing`. No se usó un dispositivo de audio/MIDI físico,
 ni se verificaron macOS, iOS, Android o Windows. Sin Mac, push, PR, Actions,
 publicación ni despliegue; se conserva la tarjeta aprobada de `d1a0881`.
+
+### Estabilidad de tempo y coste del clic
+
+Revisión ampliada autorizada por el usuario después del checkpoint `0a79567`:
+
+- En una canción en blanco a 126 BPM llevada a 94,5 BPM se estaba renderizando
+  el bus vacío de stems con Bungee y compensando esa latencia inexistente.
+  La captura de medida empezó en el frame 146230 (3,32 s tarde) y en 12 s
+  registró 20 ataques con seis pares próximos. Omitir sólo el render sin stems
+  produjo 19 ataques desde cero, sin pares próximos y con error máximo de un
+  frame. El cálculo de consumo fuente y el procesamiento de canciones con
+  stems se mantienen.
+- El consumo de tempo fraccionario puede volver a sincronizar sobre un beat
+  ya renderizado: se reprodujo con 44,1 kHz, bloques de 257, ratio 0,75,
+  source frame inicial 3737808, como ataques 256/257. La identidad del último
+  pulso musical deja sólo el ataque 256. Se limpia en resets/seeks/Loop/Ir.
+- La prueba nativa añade dos minutos a tempo reducido, el borde determinista
+  anterior y cambios en vivo 126 -> 252 -> 94,5 BPM con la rampa existente de
+  100 ms. Exige un ataque por beat, ausencia de deriva acumulada y continuidad
+  de la identidad musical. La prueba de rampas midió 32 ataques y error máximo
+  de 0,5 frames fuente.
+- Los samples woodblock guardan un segundo de PCM, pero el último frame no
+  cero de la negra está a 54,94 ms. La carga elimina sólo ceros finales,
+  conservando un cero para la interpolación. El renderer abandona el recorrido
+  de voces vacías al terminar la última, también con click sintético. Se prueba
+  equivalencia de PCM estéreo remuestreado 44,1 -> 48 kHz y samples totalmente
+  cero. Las cuatro capturas woodblock de referencia fueron **PCM bit a bit
+  idéntico** antes/después de optimizar colas y voces.
+
+Microbenchmark del motor, Linux x86_64, GCC 14, JUCE 8.0.12, Release,
+`JUCE_USE_SIMD=0`: tres pasadas por versión, cada una de 20.000 callbacks de
+256 frames a 44,1 kHz. Medianas de las medias por pasada:
+
+| Caso | Antes (us/bloque) | Después (us/bloque) | Reducción |
+| --- | ---: | ---: | ---: |
+| Woodblock, negras, 120 BPM | 4,287 | 1,235 | 71,2 % |
+| Woodblock, todas las subdivisiones, 300 BPM | 21,791 | 5,095 | 76,6 % |
+| Sintético, todas las subdivisiones, 300 BPM | 3,115 | 3,012 | 3,3 % |
+
+El p99 mediano del caso woodblock denso pasó de 74,923 a 14,112 us. Es una
+medida del componente en esta máquina, no del callback completo, un dispositivo
+móvil ni una garantía de deadline: el host compartido puede introducir pausas.
+
+El benchmark `MTControlsMetronomeTests --benchmark` admite una auditoría Linux/
+glibc mediante `tests/metronome_rt_audit.c`, que se compila como biblioteca de
+prueba con `cc -O2 -shared -fPIC ... -ldl -pthread` y se carga con `LD_PRELOAD`.
+Su autoprueba exige detectar malloc/free y mutex deliberados antes de medir.
+Observó **cero malloc/calloc/realloc, free y pthread_mutex_lock** en el hilo de
+render durante las pasadas. Sin ese preload el JSON indica `rt_audit:false`;
+los ceros no acreditan auditoría. El probe no se enlaza ni distribuye con la app.
+La inspección del hot path del clic no encontró I/O, creación de buffers,
+publicación de generaciones ni locks; la carga/recorte sigue fuera del callback.
+
+La orden repetida `setMetronomeEnabled(true)` también reprodujo ataques 256/257
+en el borde de tempo: borraba innecesariamente la identidad del beat. Ahora el
+setter es idempotente y el test repite el valor entre ambos callbacks. Un cambio
+real publica reset antes de enabled mediante release/acquire.
+
+Evidencia local adicional: `benchmark-summary-final.json`,
+`benchmark-release-{before,after}-*.log`, `tempo-*-tests.log` y
+`engine-optimized/` bajo `/workspace/scratch/click-investigation/`.
+
+Gate final ampliado tras todas las correcciones: **12/12**, 67,40 s, con los
+mismos targets anteriores recompilados y Bungee real. La cadencia de 120 s
+midió 189 ataques, cero pares próximos y error máximo de un frame; la orden
+repetida dejó sólo el ataque 256. También pasó `metronome_engine` en Release.
+La auditoría es del motor del clic, no del callback completo: el harness nativo
+renderiza PCM sin dispositivo host y conserva avisos/asserts Debug de dispositivo
+no configurado y FileLogger presentes en sus logs. No acredita audio físico,
+latencia de un driver ni todas las plataformas. Se mantiene la UI de `d1a0881`.

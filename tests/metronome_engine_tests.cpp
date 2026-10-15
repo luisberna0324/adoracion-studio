@@ -4,8 +4,20 @@
 #include <cstdlib>
 #include <iostream>
 #include <vector>
+#include <chrono>
+
+#if defined(__linux__) && defined(__GNUC__)
+extern "C" void playworship_rt_audit_begin() __attribute__((weak));
+extern "C" void playworship_rt_audit_end(uint64_t *, uint64_t *, uint64_t *) __attribute__((weak));
+#endif
 
 struct MetronomeEngineTestPeer {
+  static int quarterFrames(const MetronomeEngine &engine) {
+    return engine.publishedClickSamples.load()->quarter.data.getNumSamples();
+  }
+  static bool voicesActive(const MetronomeEngine &engine) {
+    return engine.hasActiveSampleVoices();
+  }
   static int activeSubdivision(const MetronomeEngine &engine) noexcept {
     return engine.activeSubdivision;
   }
@@ -305,9 +317,100 @@ void captureMetronomeAudio(const juce::File &directory) {
   }
 }
 
+void benchmarkMetronome() {
+  const auto samples = juce::File(__FILE__).getParentDirectory().getParentDirectory().getChildFile("assets/clicks/samples");
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  bool audited = false;
+#if defined(__linux__) && defined(__GNUC__)
+  audited = playworship_rt_audit_begin && playworship_rt_audit_end;
+  if (audited) {
+    juce::CriticalSection mutex; juce::HeapBlock<char> allocation;
+    uint64_t allocations = 0, frees = 0, locks = 0;
+    playworship_rt_audit_begin();
+    allocation.malloc(4096); volatile char *memory = allocation.getData(); memory[0] = 1;
+    mutex.enter(); mutex.exit(); allocation.free();
+    playworship_rt_audit_end(&allocations, &frees, &locks);
+    expect(allocations > 0 && frees > 0 && locks > 0, "realtime audit detects deliberate allocation, free and mutex lock");
+  }
+#endif
+  constexpr int blocks = 20000, blockSize = 256;
+  for (const int scenario : {0, 1, 2}) {
+    MetronomeEngine engine; engine.prepare(44100.0); engine.setEnabled(true); engine.setVolume(0.4f);
+    const double bpm = scenario == 0 ? 120.0 : 300.0;
+    engine.setSubdivision(scenario == 0 ? 1 : 4); engine.setDivisionMask(scenario == 0 ? 1 : 7);
+    if (scenario != 2) expect(engine.loadClickSamplesFromFolder(samples, "woodblock", formats), "benchmark loads real woodblock");
+    juce::AudioBuffer<float> audio(2, blockSize);
+    std::vector<double> times(blocks);
+    uint64_t allocations = 0, frees = 0, locks = 0;
+#if defined(__linux__) && defined(__GNUC__)
+    if (playworship_rt_audit_begin) playworship_rt_audit_begin();
+#endif
+    for (int block = 0; block < blocks; ++block) {
+      audio.clear();
+      const auto start = std::chrono::steady_clock::now();
+      engine.syncPhaseForBeatPosition(block * blockSize * bpm / (44100.0 * 60.0), bpm);
+      engine.process(audio);
+      times[block] = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+    }
+#if defined(__linux__) && defined(__GNUC__)
+    if (playworship_rt_audit_end) playworship_rt_audit_end(&allocations, &frees, &locks);
+#endif
+    double mean = 0.0; for (auto value : times) mean += value / blocks;
+    std::sort(times.begin(), times.end());
+    std::cout << "{\"scenario\":\"" << (scenario == 0 ? "woodblock_quarter_120" : scenario == 1 ? "woodblock_sixteenths_300" : "synthetic_sixteenths_300")
+              << "\",\"blocks\":" << blocks << ",\"mean_us\":" << mean
+              << ",\"p50_us\":" << times[blocks / 2] << ",\"p99_us\":" << times[blocks * 99 / 100]
+              << ",\"max_us\":" << times.back() << ",\"allocations\":" << allocations
+              << ",\"frees\":" << frees << ",\"mutex_locks\":" << locks
+              << ",\"rt_audit\":" << (audited ? "true" : "false") << "}\n";
+    expect(allocations == 0 && frees == 0 && locks == 0, "metronome render does not allocate, free or lock a mutex");
+  }
+}
+
+void testExactZeroTailTrimPreservesResampling() {
+  const auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                             .getNonexistentChildFile("metronome-tail", {}, false);
+  expect(directory.createDirectory().wasOk(), "tail fixture directory opens");
+  juce::AudioBuffer<float> source(2, 44100); source.clear();
+  source.setSample(0, 3, 0.25f); source.setSample(1, 4, -0.5f);
+  const auto write = [&] {
+    const auto file = directory.getChildFile("click-tail-quarter.wav"); file.deleteFile();
+    auto stream = std::unique_ptr<juce::OutputStream>(file.createOutputStream()); juce::WavAudioFormat format;
+    auto writer = format.createWriterFor(stream, juce::AudioFormatWriterOptions{}
+        .withSampleRate(44100.0).withNumChannels(2).withBitsPerSample(24));
+    expect(writer && writer->writeFromAudioSampleBuffer(source, 0, source.getNumSamples()), "tail fixture writes");
+  };
+  write();
+  MetronomeEngine engine; engine.prepare(48000.0); engine.setEnabled(true);
+  juce::AudioFormatManager formats; formats.registerBasicFormats();
+  expect(engine.loadClickSamplesFromFolder(directory, "tail", formats), "stereo tail sample loads");
+  expect(MetronomeEngineTestPeer::quarterFrames(engine) == 6, "trim retains the last channel's nonzero frame plus one interpolation zero");
+  engine.syncPhaseForBeatPosition(0.0, 120.0);
+  juce::AudioBuffer<float> audio(1, 16); audio.clear(); engine.process(audio);
+  for (int frame = 0; frame < 16; ++frame) {
+    const double position = frame * 44100.0 / 48000.0;
+    const int first = static_cast<int>(position); const float fraction = static_cast<float>(position - first);
+    float expected = 0.0f;
+    for (int ch = 0; ch < 2; ++ch)
+      expected += source.getSample(ch, first) + fraction * (source.getSample(ch, first + 1) - source.getSample(ch, first));
+    expected *= 0.5f * 1.96f * 0.95f;
+    expect(std::abs(audio.getSample(0, frame) - expected) < 1.0e-6f, "trimmed stereo/resampled tail equals the original PCM including its final interpolation");
+  }
+  expect(!MetronomeEngineTestPeer::voicesActive(engine), "the completed tail releases its voice inside the same block");
+  source.clear(); write(); engine.reset();
+  expect(engine.loadClickSamplesFromFolder(directory, "tail", formats), "all-zero click sample remains loadable");
+  expect(MetronomeEngineTestPeer::quarterFrames(engine) == 1, "all-zero sample retains a valid single zero frame");
+  engine.syncPhaseForBeatPosition(0.0, 120.0); audio.clear(); engine.process(audio);
+  expect(audio.getMagnitude(0, 16) == 0.0f && !MetronomeEngineTestPeer::voicesActive(engine), "silent sample neither emits sound nor retains a voice");
+  directory.deleteRecursively();
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 2 && juce::String(argv[1]) == "--benchmark") {
+    benchmarkMetronome(); return 0;
+  }
   if (argc == 3 && juce::String(argv[1]) == "--capture") {
     captureMetronomeAudio(juce::File(argv[2]));
     return 0;
@@ -320,6 +423,7 @@ int main(int argc, char **argv) {
   testSyncedBeatBoundaryRendersAtBlockStart();
   testCallbackBoundariesDoNotDuplicateAttacks();
   testSubdivisionsAreIndependentOfCallbackPartition();
+  testExactZeroTailTrimPreservesResampling();
   std::cout << "Metronome engine tests passed\n";
   return 0;
 }

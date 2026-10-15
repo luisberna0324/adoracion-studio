@@ -2423,7 +2423,9 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
            : juce::jlimit(0.0f, 1.0f,
                           masterVolume.load(std::memory_order_relaxed))) *
       juce::jlimit(0.0f, 2.0f, masterGain.load(std::memory_order_relaxed));
-  if (usedSeparatedMix) {
+  // A source-free song has no stretched stem bus to render or align with.
+  // Running the empty bus would add its Bungee latency to the live click.
+  if (usedSeparatedMix && !stemTracks.empty()) {
     const bool timeProcessActive =
         (pitchActiveSemiTones != 0) ||
         !juce::approximatelyEqual(playbackTempoRatioActive, 1.0);
@@ -6782,8 +6784,10 @@ bool MTControlsAudioProcessor::isFadeStopsPlayback() const noexcept {
 }
 
 void MTControlsAudioProcessor::setMetronomeEnabled(bool enabled) noexcept {
-  metronome.setEnabled(enabled);
+  if (metronome.isEnabled() == enabled)
+    return;
   metronome.requestReset();
+  metronome.setEnabled(enabled);
 }
 
 bool MTControlsAudioProcessor::isMetronomeEnabled() const noexcept {

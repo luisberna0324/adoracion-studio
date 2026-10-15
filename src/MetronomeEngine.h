@@ -110,6 +110,8 @@ private:
   double activeBpm = 120.0;
   int clickSamplesRemaining = 0;
   int beatIndex = 0;
+  int64_t absoluteBeatIndex = 0;
+  int64_t lastGridTick = -1;
   int subIndex = 0;
   int activeSubdivision = 1;
   bool boundaryClickPending = false;
@@ -137,6 +139,7 @@ private:
   void resetAudioState() noexcept;
   void applyPendingReset() noexcept;
   void triggerClick(ClickLayer layer, bool mainBeat, float triggerGain) noexcept;
+  void triggerGridClick(ClickLayer layer, bool mainBeat, float triggerGain) noexcept;
   const ClickSample *selectSampleForTrigger(
       const ClickSampleSet &sampleSet, ClickLayer layer) const noexcept;
   void triggerSyntheticClick(ClickLayer layer, bool mainBeat,
@@ -148,5 +151,5 @@ private:
                           const ClickSample *sample,
                           float triggerGain) noexcept;
   float renderSyntheticClick() noexcept;
-  float renderSampleVoices() noexcept;
+  float renderSampleVoices(bool &voicesRemain) noexcept;
 };
