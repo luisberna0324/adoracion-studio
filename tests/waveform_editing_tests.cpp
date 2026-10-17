@@ -1249,7 +1249,7 @@ void testSectionAutomationToolbarTracksViewport() {
   WaveformEditingTestAccess::expectAutomationLayout(f.waveform);
   WaveformEditingTestAccess::expectAutomationAnchor(f.waveform, 10.0, 20.0);
   const auto magnifiedAnchor = WaveformEditingTestAccess::automationAnchorX(f.waveform);
-  juce::MouseWheelDetails wheel;
+  juce::MouseWheelDetails wheel{};
   wheel.deltaX = -0.06f;
   const auto panPoint = WaveformEditingTestAccess::waveBody(f.waveform).getCentre();
   f.waveform.mouseWheelMove(pointerEvent(f.waveform, panPoint, panPoint), wheel);
@@ -2244,7 +2244,7 @@ void testDesktopNormalAndLiveFollow() {
     const double afterButton = WaveformEditingTestAccess::resumeAt(f.waveform);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton);
     WaveformEditingTestAccess::followAt(f.waveform, afterButton + 100.0);
-    juce::MouseWheelDetails wheel;
+    juce::MouseWheelDetails wheel{};
     wheel.deltaY = -1.0f;
     f.waveform.mouseWheelMove(pointerEvent(f.waveform, start, start), wheel);
     const float wheelOffset = WaveformEditingTestAccess::liveScroll(f.waveform);
