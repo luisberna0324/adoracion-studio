@@ -1,209 +1,107 @@
 ---
 type: Integration Contract
 title: FreeShow
-description: Contrato tecnico y workflow para integrar PlayWorship con FreeShow
-tags: [freeshow, lyrics, presenter, websocket, rest, remote, cues]
-timestamp: 2026-07-18T00:00:00Z
+description: Marcas de letras independientes y control local de FreeShow en escritorio
+tags: [freeshow, lyrics, rest, cues, desktop]
+timestamp: 2026-10-17T00:00:00Z
 ---
 
-# FreeShow Integration
+# FreeShow · Letras de escritorio
 
-FreeShow es un presentador open source con API documentada, control remoto por red y acciones reutilizables en slides, MIDI y funciones internas.
+La vista **Letras**, junto a Onda y Secciones, muestra el mapa completo de la
+canción. Las secciones musicales son únicamente una referencia tenue. Cada
+marca de letra tiene identidad propia y posición absoluta en el tiempo musical
+del arreglo; no pertenece a una sección ni se desplaza al editar una sección.
+No se añade esta función a iOS, Android ni al control remoto.
 
-Fuentes oficiales:
-- [API Docs](https://freeshow.app/api)
-- [Functions](https://freeshow.app/docs/functions)
-- [Remote](https://freeshow.app/docs/remote)
-- [Connect remotely](https://freeshow.app/docs/connecting)
-- [FAQ](https://freeshow.app/docs/faq)
+Los puntos conservan previews compactos visibles, dispuestos en filas para
+separar etiquetas próximas. Seleccionar una marca amplía su detalle sin enviar
+nada. Arrastrar cambia solamente su tiempo. El menú contextual permite añadir,
+cambiar destino/tiempo, duplicar, desactivar y eliminar. Ocultar letras es un
+destino explícito (`clear_slide`); no limpia fondo, audio ni overlays.
+**Probar en FreeShow** es una acción explícita. El seguimiento durante la
+reproducción requiere activar el control de letras de esa canción.
 
-## Capacidades relevantes de la API
+## Protocolo verificado
 
-### Control de proyectos y shows
+Fuentes primarias:
 
-La API permite seleccionar proyectos, shows y elementos dentro del proyecto.
+- [API oficial](https://freeshow.app/api)
+- [Formato .show](https://freeshow.app/docs/format-show)
+- [FreeShow v1.6.6](https://github.com/ChurchApps/FreeShow/tree/v1.6.6),
+  commit `98b5e19956ef61fb9df1ca5ae361898def87f63d`, publicado el 9 de octubre de 2026.
 
-Acciones relevantes:
-- seleccionar proyecto por id, índice o nombre
-- avanzar o retroceder item del proyecto
-- seleccionar show por nombre
-- iniciar un show
-- cambiar layout
-- rearranjar grupos
-- cambiar template
-- cambiar texto simple
+El cliente usa REST HTTP POST en el puerto configurable (5506 por defecto),
+con cuerpo JSON aplanado `{action, ...data}`. La clave opcional se envía en
+`Authorization: Bearer …`. Permanece sólo en memoria. El endpoint Socket.IO
+5505 no es un WebSocket genérico y no se utiliza.
+El socket se abre directamente al destino local validado: no utiliza proxies
+del entorno ni sigue redirecciones. El lector HTTP admite Content-Length y
+chunked, limita cabeceras/cuerpo y tiene un plazo de lectura acotado.
 
-### Edición y contenido
+`get_shows` proporciona IDs; `get_show` con `id` devuelve el show completo,
+incluidos sus arreglos. `get_show_layout` recibe sólo `id` y devuelve el arreglo
+activo, no un arreglo arbitrario. `get_groups` no determina el orden ni las
+repeticiones de una presentación y no se usa para resolver destinos.
 
-La API también expone acciones para crear y modificar contenido:
-- crear proyecto
-- crear show
-- agregar o remover items
-- renombrar proyecto
-- establecer texto plano
+Cada arreglo se expande en orden: grupo padre seguido de sus slides hijas;
+cada repetición vuelve a expandirse. `index_select_slide` recibe `showId`,
+`layoutId` y el índice absoluto **basado en 1**. El estado de salida utiliza
+índices basados en 0. El selector conserva el nombre literal del grupo,
+pantalla, aparición e identificadores; «Coro 2», pantalla 2 y segunda aparición
+son conceptos distintos. No se utilizan `next_slide` acumulativo, búsqueda
+aproximada ni nombres como identidad.
 
-### Consultas de estado
+Los destinos guardan IDs de show/arreglo/grupo/slide, número de aparición,
+referencia textual y firma del arreglo. Antes del envío se valida el destino
+contra el catálogo actualizado. Un cambio incompatible requiere revisión en
+vez de proyectar silenciosamente otra pantalla. El arreglo activo se contrasta
+con `get_show_layout` para detectar opciones de FreeShow que añaden una pantalla
+vacía inicial y alteran los índices. Al proyectar hacia otro arreglo se cambia
+primero el arreglo activo (sin proyectar), se consulta su orden real y se valida
+de nuevo. Consultar el catálogo o seleccionar una marca no cambia el arreglo.
 
-Permite leer el estado actual:
-- lista de shows
-- lista de proyectos
-- grupos
-- output actual
-- slide activa
-- thumbnails
-- texto de output
-- timers
-- variables
-- playlists
-- estado de reproducción de audio o video
-- si el contenido fue limpiado
+## Transporte y threading
 
-### Acciones generales
+El scheduler sigue los segmentos realmente recorridos por el callback de audio
+y sus discontinuidades confirmadas. Un cue se emite una vez por pasada. Seek e
+Ir aplicados recuperan solamente el cue vigente en el destino (el último
+habilitado con tiempo menor o igual); no se envían las marcas omitidas. Loop
+restablece el cue vigente en el inicio y permite recorrer las marcas otra vez.
+Si el destino precede la primera marca habilitada, se oculta la letra anterior.
+Una canción con el seguimiento apagado o sin marcas no envía esa limpieza.
+Cambiar el tempo conserva el anclaje al mismo transporte musical.
 
-La documentación oficial indica que las acciones se pueden disparar:
-- por MIDI,
-- al activar un slide,
-- y vía API.
+El callback usa datos acotados y entrega eventos a la capa de control. No hace
+HTTP, consulta de catálogos ni operaciones de disco. El cliente tiene un worker
+propio, expiración de órdenes y cancelación por generación. Desconectar no
+interrumpe el audio; reconectar no reproduce un historial pendiente.
 
-También existen acciones para ejecutar funciones nombradas y alternar estado de una acción.
+Una respuesta HTTP de envío no prueba proyección. La interfaz distingue el
+último destino enviado del confirmado mediante `get_output`. La confirmación
+se limita al estado comunicado por FreeShow; no certifica un proyector físico.
 
-### Transporte de conexión
+## Persistencia y conexión
 
-La API puede activarse como:
-- HTTP
-- REST por POST
-- WebSocket
+`ProjectSongSettings.lyrics` se conserva en el sidecar y en el `.pwproj` al
+consolidar cambios. Las canciones legacy usan `ImportedSongData.lyrics`.
+Canciones anteriores sin el campo se abren con un snapshot vacío. Los datos
+inválidos se rechazan sin aplicar un snapshot parcial. Los cambios de mezcla,
+tempo y arreglo deben conservar el snapshot de letras completo.
 
-La documentación oficial muestra puertos separados de ejemplo para HTTP/REST y WebSocket, y aclara que la API debe estar activa desde la sección de conexiones.
+La conexión admite loopback y direcciones IPv4 privadas de LAN. No crea
+servidores, credenciales persistentes ni reglas de red. Host, puerto y clave
+son configuración de la sesión de escritorio, no del proyecto portable.
 
-## Flujo de conexión
+## Verificación
 
-### Requisitos mínimos
+Las tablas admiten hasta 1024 marcas por canción. Si varios cues dejan de ser
+vigentes antes de que el dispatcher pueda atenderlos, sólo se entrega el último
+vigente: no se intenta recuperar pantallas atrasadas. Pausa no dispara cues por
+sí sola. Un seek efectivo detenido puede restablecer el cue de su destino.
 
-- FreeShow abierto en la máquina destino
-- API/WebSocket/REST habilitado en settings
-- red local compartida
-- IP y puerto accesibles
-
-### Descubrimiento / conexión
-
-1. Activar el servidor en `Connection`.
-2. Obtener IP y puerto.
-3. Conectar por:
-   - HTTP directo
-   - REST POST
-   - WebSocket
-4. Si se usa Remote, también puede usarse contraseña del propio remote.
-
-### Datos a guardar en PlayWorship
-
-- `host`
-- `port`
-- `transport`:
-  - `http`
-  - `rest`
-  - `websocket`
-  - `remote`
-- `password` si se usa Remote
-- `actionId`
-- `payload`
-- `targetShowId` o `targetProjectId`
-
-## Mapeo de capacidades hacia PlayWorship
-
-### 1. Sync de sección
-
-Cuando PlayWorship entra a una sección:
-- buscar una acción asociada a esa sección
-- ejecutar el action id de FreeShow
-- opcionalmente pasar payload con id/nombre del show o slide
-
-### 2. Navegación de show
-
-Mapeos directos recomendados:
-- `next section` -> `next_project_item`
-- `previous section` -> `previous_project_item`
-- `jump to song/show` -> `id_select_project`, `name_select_show` o `start_show`
-- `jump to specific slide` -> `get_show` + selección de slide o acción equivalente configurada por show
-
-### 3. Letras y coro
-
-Para control de letras en vivo, el mejor patrón es:
-- cada sección de PlayWorship guarda un `lyrics action`
-- al entrar al bloque se dispara `run_action`, `name_run_action` o `emit_action`
-- FreeShow resuelve internamente qué slide, group o layout activar
-
-### 4. Texto y overlays
-
-FreeShow soporta:
-- variables
-- timers
-- triggers por HTTP
-- texto plano
-
-Esto permite:
-- mandar un nombre de coro o verso como texto,
-- disparar overlays,
-- sincronizar textos auxiliares de stage display.
-
-### 5. Estado y monitoreo
-
-PlayWorship puede consultar:
-- output activo
-- slide actual
-- texto actual de output
-- duración y tiempo restante de audio/video
-- variables
-- timers
-
-Eso abre la puerta a una vista de estado del target en la UI del plugin.
-
-## Workflow recomendado
-
-### Workflow A: control de sección simple
-
-1. El usuario define una sección en PlayWorship.
-2. Asocia `FreeShow action`.
-3. Al entrar a la sección, PlayWorship llama a la API.
-4. FreeShow cambia el show o avanza la slide.
-
-### Workflow B: show-driven
-
-1. El usuario selecciona un show principal en FreeShow.
-2. PlayWorship sincroniza intro, verso, coro y puente con acciones.
-3. El plugin sólo dispara cues, y FreeShow mantiene su propia navegación interna.
-
-### Workflow C: bidireccional ligero
-
-1. PlayWorship envía comandos a FreeShow.
-2. PlayWorship consulta estado actual para mostrar feedback.
-3. La UI refleja slide, show y texto activo.
-
-### Workflow D: autorun por canción
-
-1. Una canción de PlayWorship tiene un mapping fijo a un show de FreeShow.
-2. Al cargar la canción, el plugin puede seleccionar el show.
-3. Al iniciar reproducción, dispara el primer cue.
-4. Cada cambio de sección dispara la acción siguiente.
-
-## Restricciones técnicas
-
-- El audio thread no debe hacer ninguna llamada de red.
-- Las acciones deben ir por un worker o dispatcher de control.
-- Las respuestas de estado deben tratarse como opcionales.
-- Si la API no responde, la reproducción debe seguir normal.
-
-## Prioridad de implementación
-
-1. Conector de conexión y health-check.
-2. Selección de proyecto/show.
-3. Disparo de acciones por sección.
-4. Lectura de estado y feedback UI.
-5. Soporte de variables, timers y triggers.
-6. Integración bidireccional avanzada.
-
-## Archivos relacionados
-
-- [LyricsControllers](LyricsControllers.md)
-- [SectionScheduler](../engine/SectionScheduler.md)
-- [Transport](../transport/Transport.md)
+Las pruebas están en `freeshow_protocol_tests.cpp`,
+`lyrics_cue_scheduler_tests.cpp`, `lyrics_processor_tests.cpp`,
+`lyrics_persistence_tests.cpp` y `lyrics_panel_tests.cpp`.
+La evidencia de ejecución, plataforma y límites se registra por entrega; una
+prueba con transporte simulado no se presenta como ensayo de FreeShow real.

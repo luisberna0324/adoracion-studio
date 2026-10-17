@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "integrations/FreeShowModel.h"
 
 #include <array>
 #include <functional>
@@ -179,6 +180,8 @@ struct ImportedSongData {
   std::vector<ImportedStemData> stems;
   SongArrangementSnapshot arrangement;
   SongTempoMapSnapshot tempoMap;
+  // Independent musical-time marks. Connection details are session-only.
+  playworship::lyrics::SongLyrics lyrics;
 };
 
 extern const std::array<const char *, 19> kTrackCategories;

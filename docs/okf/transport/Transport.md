@@ -4,10 +4,16 @@ title: Transport
 description: Control de transporte y arrange en MTControlsAudioProcessor
 resource: src/PluginProcessor.h
 tags: [juce, audio, transport, playback, arrange]
-timestamp: 2026-10-03T00:00:00Z
+timestamp: 2026-10-17T00:00:00Z
 ---
 
 # Transport API
+
+En escritorio, las marcas de [Letras / FreeShow](../integrations/FreeShow.md)
+se evalúan sobre los segmentos realmente renderizados y los seeks confirmados,
+con un scheduler independiente de las secciones. Ir/seek recuperan sólo el
+cue vigente en el destino y Loop abre otra pasada. Las órdenes vencidas se
+descartan fuera del audio thread; ninguna llamada de red entra al callback.
 
 La app standalone puede exponer este transporte mediante el
 [control remoto LAN](../integrations/RemoteControl.md). El servidor sigue

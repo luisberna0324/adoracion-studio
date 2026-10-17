@@ -39,6 +39,9 @@ class PracticePanel;
 class LearningGuideOverlay;
 class SongLoadProgressOverlay;
 class TeamsPanel;
+#if !JUCE_IOS && !JUCE_ANDROID
+class LyricsPanel;
+#endif
 
 
 class MTControlsAudioProcessorEditor : public juce::AudioProcessorEditor,
@@ -176,6 +179,10 @@ private:
 
   std::unique_ptr<TopBar> topBar;
   std::unique_ptr<juce::Component> waveformBar;
+#if !JUCE_IOS && !JUCE_ANDROID
+  std::unique_ptr<LyricsPanel> lyricsPanel;
+  bool lyricsViewActive = false;
+#endif
   std::unique_ptr<juce::Component> channelGridPanel;
   std::unique_ptr<juce::Component> songListPanel;
   std::unique_ptr<SetlistHandlePanel> setlistHandlePanel;

@@ -409,6 +409,7 @@ juce::var settingsToVar(const ProjectSongSettings &settings) {
   o->setProperty("arrangement", SongLibraryStore::songDataToVar(arrangementCarrier)
                                     .getDynamicObject()->getProperty("arrangement"));
   o->setProperty("arrangementCustomized", settings.arrangementCustomized);
+  o->setProperty("lyrics", playworship::lyrics::toVar(settings.lyrics));
   auto *guide = new juce::DynamicObject();
   guide->setProperty("enabled", settings.dynamicGuide.enabled);
   guide->setProperty("timing", static_cast<int>(settings.dynamicGuide.timing));
@@ -518,6 +519,7 @@ ProjectSongSettings settingsFromLegacySetlistItem(
   settings.windowCustomized = item.windowCustomized;
   settings.arrangement = item.arrangement;
   settings.arrangementCustomized = item.arrangementCustomized;
+  settings.lyrics = song.lyrics;
   settings.dynamicGuide = item.dynamicGuide;
   settings.dynamicGuideCustomized = item.dynamicGuideCustomized;
   settings.dynamicGuideMix = item.dynamicGuideMix;
@@ -534,6 +536,10 @@ juce::File cachedSettingsFile(const juce::String &projectId) {
 
 bool writeCachedSettings(const juce::String &projectId,
                          const ProjectSongSettings &settings) {
+  playworship::lyrics::SongLyrics validated;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(settings.lyrics),
+                                   validated))
+    return false;
   const auto target = cachedSettingsFile(projectId);
   if (target == juce::File{})
     return false;
@@ -561,8 +567,8 @@ bool readCachedSettings(const juce::String &projectId,
       static_cast<int>(root->getProperty("schemaVersion")) !=
           ProjectStore::kSchemaVersion)
     return false;
-  outSettings = settingsFromVar(root->getProperty("songSettings"));
-  return true;
+  return ProjectStore::deserializeSettings(root->getProperty("songSettings"),
+                                           outSettings);
 }
 
 bool copyZipEntry(juce::ZipFile &zip, const juce::String &name,
@@ -649,6 +655,13 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
     return false;
   }
   auto &song = document.song;
+  playworship::lyrics::SongLyrics validatedLyrics;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(song.lyrics),
+                                   validatedLyrics, errorMessage) ||
+      !playworship::lyrics::fromVar(
+          playworship::lyrics::toVar(document.settings.lyrics), validatedLyrics,
+          errorMessage))
+    return false;
   if (song.id.trim().isEmpty()) song.id = juce::Uuid().toString();
   if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
   if (song.stems.empty() && !isValidBlankSong(song)) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }
@@ -674,6 +687,7 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
   stageDir.createDirectory();
   auto cleanupStage = [&stageDir] { if (stageDir.exists()) stageDir.deleteRecursively(); };
   ImportedSongData manifestSong = song;
+  manifestSong.lyrics = document.settings.lyrics;
   manifestSong.id = song.projectId;
   manifestSong.projectId.clear();
   manifestSong.projectPath.clear();
@@ -903,7 +917,25 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
     if (errorMessage != nullptr) *errorMessage = "Unsupported project manifest."; return false;
   }
   bool changed = false;
+  ProjectSongSettings embeddedSettings;
+  playworship::lyrics::SongLyrics validatedLyrics;
+  const auto *songPayload = o->getProperty("song").getDynamicObject();
+  const auto settingsValue = o->hasProperty("songSettings")
+                                 ? o->getProperty("songSettings")
+                                 : juce::var(new juce::DynamicObject());
+  if ((songPayload != nullptr &&
+       !playworship::lyrics::fromVar(songPayload->getProperty("lyrics"),
+                                     validatedLyrics, errorMessage)) ||
+      !deserializeSettings(settingsValue, embeddedSettings)) {
+    if (errorMessage != nullptr && errorMessage->isEmpty())
+      *errorMessage = "Project has invalid lyric marks or settings.";
+    return false;
+  }
   auto song = SongLibraryStore::songDataFromVar(o->getProperty("song"), changed);
+  // Older packages could store marks only with their song descriptor.
+  const auto *settingsPayload = o->getProperty("songSettings").getDynamicObject();
+  if (settingsPayload == nullptr || !settingsPayload->hasProperty("lyrics"))
+    embeddedSettings.lyrics = song.lyrics;
   if (song.id.isEmpty() || (song.stems.empty() && !isValidBlankSong(song)) ||
       (song.blankSong && !isValidBlankSong(song))) {
     SessionAuthLogger::write("[ProjectOpen] invalid song payload path=" +
@@ -958,11 +990,17 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                    true);
   ProjectSongSettings newerCachedSettings;
   const auto settingsCacheFile = cachedSettingsFile(song.id);
-  const bool hasNewerCachedSettings =
+  const bool shouldReadNewerCachedSettings =
       rebuildCache && settingsCacheFile.existsAsFile() &&
-      settingsCacheFile.getLastModificationTime() >
-          file.getLastModificationTime() &&
+      settingsCacheFile.getLastModificationTime() >=
+          file.getLastModificationTime();
+  const bool hasNewerCachedSettings = shouldReadNewerCachedSettings &&
       readCachedSettings(song.id, newerCachedSettings);
+  if (shouldReadNewerCachedSettings && !hasNewerCachedSettings) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Project has invalid cached settings; the cache was kept unchanged.";
+    return false;
+  }
   auto cache = getCacheDirectory(song.id);
   const bool shouldRebuildCache =
       rebuildCache && !cacheMatchesProject(file, cache);
@@ -1264,10 +1302,9 @@ bool ProjectStore::open(const juce::File &file, ProjectDocument &outDocument,
                    L10n::tr("Restaurando configuración...",
                             "Restoring settings..."),
                    true);
-  const auto embeddedSettings =
-      settingsFromVar(o->getProperty("songSettings"));
   auto settings = hasNewerCachedSettings ? newerCachedSettings
                                          : embeddedSettings;
+  song.lyrics = settings.lyrics;
   if (rebuildCache) {
     settingsSaveQueue().remember(file, settings);
     writeCachedSettings(song.id, settings);
@@ -1491,6 +1528,12 @@ bool ProjectStore::writeCachedSettingsFromFile(const juce::File &file,
 
 void ProjectStore::scheduleSettingsSave(const juce::File &file,
                                         ProjectSongSettings settings) {
+  playworship::lyrics::SongLyrics validated;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(settings.lyrics),
+                                   validated)) {
+    SessionAuthLogger::write("[Project] Invalid lyric marks; settings kept unchanged");
+    return;
+  }
   settingsSaveQueue().schedule(file, std::move(settings));
 }
 
@@ -1549,7 +1592,13 @@ bool ProjectStore::deserializeSettings(const juce::var &value,
                                        ProjectSongSettings &outSettings) {
   if (value.getDynamicObject() == nullptr)
     return false;
-  outSettings = settingsFromVar(value);
+  playworship::lyrics::SongLyrics lyrics;
+  if (!playworship::lyrics::fromVar(
+          value.getDynamicObject()->getProperty("lyrics"), lyrics))
+    return false;
+  auto decoded = settingsFromVar(value);
+  decoded.lyrics = std::move(lyrics);
+  outSettings = std::move(decoded);
   return true;
 }
 
@@ -1560,7 +1609,13 @@ bool ProjectStore::getCachedSettings(const juce::File &file,
   ProjectDocument document;
   if (!open(file, document, nullptr, false))
     return false;
-  outSettings = document.settings;
+  auto settings = document.settings;
+  const auto sidecar = cachedSettingsFile(projectIdentityForSong(document.song));
+  if (sidecar.existsAsFile() &&
+      sidecar.getLastModificationTime() >= file.getLastModificationTime() &&
+      !readCachedSettings(projectIdentityForSong(document.song), settings))
+    return false;
+  outSettings = std::move(settings);
   settingsSaveQueue().remember(file, outSettings);
   return true;
 }

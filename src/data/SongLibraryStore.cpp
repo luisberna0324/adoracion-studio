@@ -36,6 +36,23 @@ constexpr const char *kProjectStemExtension = ".flac";
 constexpr const char *kProjectFfmpegAudioCodec = "flac";
 constexpr const char *kProjectStorageFormatLabel = "FLAC";
 
+bool hasValidLyricsPayload(const juce::var &songValue,
+                           juce::String *error = nullptr) {
+  const auto *song = songValue.getDynamicObject();
+  playworship::lyrics::SongLyrics lyrics;
+  return song == nullptr ||
+         playworship::lyrics::fromVar(song->getProperty("lyrics"), lyrics, error);
+}
+
+bool hasValidLibraryLyrics(const juce::var &libraryValue) {
+  if (const auto *root = libraryValue.getDynamicObject())
+    if (const auto *songs = root->getProperty("songs").getArray())
+      for (const auto &song : *songs)
+        if (!hasValidLyricsPayload(song))
+          return false;
+  return true;
+}
+
 juce::File managedImportedProjectsDirectory() {
   auto directory = SongLibraryStore::getRootDirectory()
                        .getChildFile("imports")
@@ -230,11 +247,10 @@ ClickDynMixSnapshot normalizeClickDynMixSnapshot(ClickDynMixSnapshot mix) {
 }
 
 ProjectSongSettings projectSettingsFromItem(const SetlistItem &item,
-                                            const ImportedSongData &song) {
-  ProjectSongSettings settings;
-  if (song.blankSong) {
-    ProjectStore::getCachedSettings(projectIdentityForSong(song), settings);
-  }
+                                            const ProjectSongSettings &cached) {
+  // Keep song-level fields (including independent lyric marks) when a
+  // setlist-style mixer update replaces just the fields represented by item.
+  ProjectSongSettings settings = cached;
   settings.mix = item.mix;
   settings.pitchSemitones = item.pitchSemitones;
   settings.tempoBpm = item.tempoBpm;
@@ -1154,6 +1170,9 @@ bool SongLibraryStore::updateSong(ImportedSongData song, juce::String *errorMess
   }
 
   const auto previousSong = *songIt;
+  // Metadata/stem editing has no lyric controls. Marks change only through
+  // updateSongLyrics and must survive a wizard draft with default fields.
+  song.lyrics = previousSong.lyrics;
   ensureSongHasStemIds(song);
 
   if (isProjectBackedSong(previousSong)) {
@@ -2123,6 +2142,80 @@ bool SongLibraryStore::resetSongArrangement(const juce::String &songId) {
   return updateSongArrangement(songId, emptyArrangement, false);
 }
 
+bool SongLibraryStore::getSongLyrics(
+    const juce::String &songId,
+    playworship::lyrics::SongLyrics &outLyrics) {
+  if (songId.isEmpty())
+    return false;
+  const auto library = loadLibrary();
+  const auto *song = findSongById(library.songs, songId);
+  if (song == nullptr)
+    return false;
+  if (isProjectBackedSong(*song)) {
+    ProjectSongSettings settings;
+    const juce::File file(song->projectPath);
+    if ((file.existsAsFile() && ProjectStore::getCachedSettings(file, settings)) ||
+        ProjectStore::getCachedSettings(projectIdentityForSong(*song), settings)) {
+      outLyrics = settings.lyrics;
+      return true;
+    }
+    // A project with invalid/unreadable settings must not be replaced by
+    // an incomplete snapshot containing only the library descriptor.
+    return false;
+  }
+  outLyrics = song->lyrics;
+  return true;
+}
+
+bool SongLibraryStore::updateSongLyrics(
+    const juce::String &songId,
+    const playworship::lyrics::SongLyrics &lyrics,
+    juce::String *errorMessage) {
+  if (errorMessage != nullptr)
+    errorMessage->clear();
+  playworship::lyrics::SongLyrics validated;
+  if (!playworship::lyrics::fromVar(playworship::lyrics::toVar(lyrics), validated,
+                                   errorMessage))
+    return false;
+  auto library = loadLibrary();
+  auto it = std::find_if(library.songs.begin(), library.songs.end(),
+                         [&songId](const ImportedSongData &song) {
+                           return song.id == songId;
+                         });
+  if (songId.isEmpty() || it == library.songs.end()) {
+    if (errorMessage != nullptr)
+      *errorMessage = "Song not found.";
+    return false;
+  }
+  if (isProjectBackedSong(*it)) {
+    ProjectSongSettings settings;
+    const juce::File file(it->projectPath);
+    const auto projectId = projectIdentityForSong(*it);
+    if (!((file.existsAsFile() && ProjectStore::getCachedSettings(file, settings)) ||
+          ProjectStore::getCachedSettings(projectId, settings))) {
+      if (errorMessage != nullptr)
+        *errorMessage = "Couldn't read the project's complete settings.";
+      return false;
+    }
+    settings.lyrics = std::move(validated);
+    ProjectStore::scheduleSettingsSave(file, projectId, settings);
+    ProjectSongSettings persisted;
+    if (!ProjectStore::getCachedSettings(projectId, persisted) ||
+        !ProjectStore::settingsJsonEqual(settings, persisted)) {
+      if (errorMessage != nullptr)
+        *errorMessage = "Couldn't save lyric marks.";
+      return false;
+    }
+    return true;
+  }
+  it->lyrics = std::move(validated);
+  if (saveLibrary(library))
+    return true;
+  if (errorMessage != nullptr)
+    *errorMessage = "Couldn't save lyric marks.";
+  return false;
+}
+
 bool SongLibraryStore::getActiveSetlistArrangement(
     const juce::String &songId, SongArrangementSnapshot &outArrangement,
     bool &outIsCustomArrangement) {
@@ -2367,6 +2460,12 @@ LibraryState SongLibraryStore::loadLibrary() {
     ensureDefaultSetlist(library);
     return library;
   }
+  if (!hasValidLibraryLyrics(parsed)) {
+    SessionAuthLogger::write(
+        "[SongLibrary] invalid lyric marks; library kept unchanged path=" +
+        dbFile.getFullPathName());
+    return library;
+  }
 
   const int version = static_cast<int>(rootObj->getProperty("version"));
   auto *songsArray = rootObj->getProperty("songs").getArray();
@@ -2511,10 +2610,20 @@ LibraryState SongLibraryStore::loadLibrary() {
 }
 
 bool SongLibraryStore::saveLibrary(const LibraryState &library) {
+  // Never repair invalid lyric JSON by dropping its marks during unrelated
+  // legacy migrations or metadata edits. A failed decode leaves disk intact.
+  const auto db = getDbFile();
+  if (db.existsAsFile() &&
+      !hasValidLibraryLyrics(juce::JSON::parse(db.loadFileAsString())))
+    return false;
   juce::Array<juce::var> songVars;
   songVars.ensureStorageAllocated(static_cast<int>(library.songs.size()));
-  for (const auto &song : library.songs)
-    songVars.add(songToVar(song));
+  for (const auto &song : library.songs) {
+    const auto value = songToVar(song);
+    if (!hasValidLyricsPayload(value))
+      return false;
+    songVars.add(value);
+  }
 
   juce::Array<juce::var> setlistVars;
   setlistVars.ensureStorageAllocated(
@@ -2925,6 +3034,7 @@ juce::var SongLibraryStore::songToVar(const ImportedSongData &song) {
   obj->setProperty("stems", juce::var(stemVars));
   obj->setProperty("arrangement", arrangementToVar(song.arrangement));
   obj->setProperty("tempoMap", tempoMapToVar(song.tempoMap));
+  obj->setProperty("lyrics", playworship::lyrics::toVar(song.lyrics));
   return juce::var(obj);
 }
 
@@ -2934,6 +3044,8 @@ ImportedSongData SongLibraryStore::songFromVar(const juce::var &v,
   auto *obj = v.getDynamicObject();
   if (obj == nullptr)
     return song;
+  if (!playworship::lyrics::fromVar(obj->getProperty("lyrics"), song.lyrics))
+    return {};
 
   song.id = obj->getProperty("id").toString();
   song.projectId = obj->getProperty("projectId").toString();
@@ -4025,6 +4137,7 @@ bool SongLibraryStore::updateActiveSetlistItem(
       cachedSettings.arrangement = song->arrangement;
       cachedSettings.arrangementCustomized =
           !song->arrangement.parts.empty() || !song->arrangement.cues.empty();
+      cachedSettings.lyrics = song->lyrics;
       cachedSettings.dynamicGuide = makeDefaultDynamicGuideSettings();
       cachedSettings.dynamicGuideMix = makeDefaultDynamicGuideMixSnapshot();
       cachedSettings.clickDynMix = makeDefaultClickDynMixSnapshot();
@@ -4033,7 +4146,7 @@ bool SongLibraryStore::updateActiveSetlistItem(
     updater(cachedItem, *song);
     cachedItem.updatedMs = juce::Time::getCurrentTime().toMilliseconds();
     ProjectStore::scheduleSettingsSave(
-        projectFile, projectId, projectSettingsFromItem(cachedItem, *song));
+        projectFile, projectId, projectSettingsFromItem(cachedItem, cachedSettings));
     return true;
   }
 

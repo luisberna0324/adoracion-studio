@@ -1491,3 +1491,11 @@ Backend: alta, retirada y salida generan correo transaccional con cola durable,
 reintentos e idempotencia. 60 pruebas aprobadas. Vistas previas en
 output/teams-email-preview; prueba de proveedor dirigida solo al buzón técnico
 de Resend, sin notificar a miembros existentes.
+
+## 2026-10-17 · Letras independientes / FreeShow desktop
+
+- Contrato actualizado para marcas independientes de secciones, catálogo real
+  por show/arreglo y selección absoluta por IDs y aparición.
+- REST verificado contra FreeShow v1.6.6; clave sólo en memoria y destinos LAN.
+- Persistencia portable, despacho desde segmentos efectivos del transporte y
+  estado separado de enviado/confirmado por la API.

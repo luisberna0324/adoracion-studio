@@ -13,4 +13,8 @@ repository. Update it when a task teaches something reusable.
 
 ## Current lessons
 
-No lessons recorded yet.
+Las marcas de letras de FreeShow son independientes de las secciones musicales.
+Conservar sus IDs, aparición y referencia del arreglo; nunca deducir pantallas
+por nombres ni avanzar mediante `next`. Verificar el protocolo en una versión
+publicada: las cachés de `main` pueden diferir. `get_show_layout` sólo describe
+el arreglo activo y puede incluir una pantalla vacía sintética inicial.

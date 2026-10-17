@@ -1,10 +1,17 @@
 # Controles de la barra de escritorio
 
-La barra superior de escritorio ofrece un selector compacto `Onda / Secciones`
-con ambas opciones siempre visibles y una sola seleccionada. Refleja el estado
-real de `WaveformBar`; elegir la vista actual no vuelve a alternarla. Ambas
+La barra superior de escritorio ofrece un selector compacto `Onda / Secciones / Letras`
+con una sola opción seleccionada. Letras abre el mapa completo de marcas
+independientes para FreeShow; no se añade al menú de móvil ni del control remoto.
+El selector refleja la vista real; elegir la vista actual no vuelve a alternarla. Las
 opciones quedan deshabilitadas cuando una edición impide cambiar de vista.
 La selección no modifica el transporte ni la posición de la canción.
+
+Las marcas de Letras muestran un punto temporal y un preview compacto permanente.
+Las secciones musicales se conservan como fondo de referencia. El menú contextual
+edita destinos y tiempos; seleccionar o arrastrar no proyecta. El botón explícito
+de prueba y el seguimiento de reproducción tienen acciones separadas. Véase
+[FreeShow](../integrations/FreeShow.md).
 
 El botón independiente `?` abre el catálogo existente de guías de aprendizaje.
 El menú de tres puntos de esta barra desaparece sólo en escritorio: MIDI Learn,

@@ -400,6 +400,11 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
     }
     transportClock.prepare(sampleRate);
     rebuildSectionScheduler();
+#if !JUCE_IOS && !JUCE_ANDROID
+    lyricsCueScheduler.setMaximumDeliveryAgeFrames(
+        playworship::audio::TransportClock::secondsToFrames(0.75, sampleRate));
+    rebuildLyricsCueScheduler();
+#endif
     configureSectionEntryCache();
     metronome.prepare(sampleRate);
     for (auto &track : stemTracks)
@@ -792,6 +797,11 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     const bool isPlaying = getTransportState() == TransportState::playing &&
                            transportClock.isPlaying();
     songTimelinePlaying = isPlaying;
+#if !JUCE_IOS && !JUCE_ANDROID
+    lyricsCueScheduler.beginBlock(lyricsCueScheduler.acquireSnapshot(),
+                                 getTransportState() == TransportState::stopped, numSamples);
+    freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
     const bool dynamicGuideEnabled =
         dynamicGuideEnabledState.load(std::memory_order_relaxed);
     const bool arrangementEditingActive =
@@ -947,6 +957,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
     if (controlSeekCommandObserved) {
       const double seekTarget =
           seekTargetSeconds.load(std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+      const bool synchroniseLyricsForSeek =
+          lyricsSeekSynchroniseCurrent.load(std::memory_order_relaxed);
+#endif
       const juce::int64 seekSamples =
           playworship::audio::TransportClock::secondsToFrames(
               seekTarget, playbackSampleRate);
@@ -980,6 +994,10 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         songCurrentPositionSeconds.store(seekTarget,
                                          std::memory_order_relaxed);
         appliedSeekRequestGeneration = requestedSeekGeneration;
+#if !JUCE_IOS && !JUCE_ANDROID
+        lyricsCueScheduler.discontinuity(seekSamples, true, synchroniseLyricsForSeek);
+        freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
         deferredArrangementTransitionPending = false;
         deferredArrangementTransitionPartIndex = -1;
 
@@ -2328,6 +2346,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         }
       }
 
+#if !JUCE_IOS && !JUCE_ANDROID
+      // Follow only the arrangement spans that this callback really rendered.
+      // The destination is published after prefetch/transition confirmation;
+      // section skips and forward jumps never replay their omitted marks.
+      if (inBlockArrangementTransitionApplied) {
+        lyricsCueScheduler.renderedSpan(blockStartFrame,
+            blockStartFrame + inBlockTransitionPrefixFrames);
+        lyricsCueScheduler.discontinuity(inBlockTransitionTargetFrame);
+        lyricsCueScheduler.renderedSpan(inBlockTransitionTargetFrame,
+            inBlockTransitionTargetFrame + juce::jmax(0,
+                sourceFramesThisBlock - inBlockTransitionPrefixFrames));
+      } else {
+        auto lyricsSpanEnd = blockStartFrame + sourceFramesThisBlock;
+        if (stopAtEnd && !deferredArrangementTransitionPending)
+          lyricsSpanEnd = std::min(lyricsSpanEnd,
+              playworship::audio::TransportClock::secondsToFrames(
+                  stopAtEndSec, playbackSampleRate));
+        lyricsCueScheduler.renderedSpan(blockStartFrame, lyricsSpanEnd);
+      }
+      freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+#endif
       if (inBlockArrangementTransitionApplied) {
         transportClock.seek(inBlockTransitionTargetFrame);
         transportClock.advance(
@@ -3399,7 +3438,68 @@ bool MTControlsAudioProcessor::consumePendingMidiUiCommand(int &outCommand) {
   return true;
 }
 
+#if !JUCE_IOS && !JUCE_ANDROID
+void MTControlsAudioProcessor::setSongLyrics(const playworship::lyrics::SongLyrics &lyrics) {
+  const juce::ScopedLock lock(lyricsStateLock);
+  songLyrics = lyrics;
+  rebuildLyricsCueScheduler();
+  freeShowClient.cancelPending();
+}
+
+playworship::lyrics::SongLyrics MTControlsAudioProcessor::getSongLyrics() const {
+  const juce::ScopedLock lock(lyricsStateLock);
+  return songLyrics;
+}
+
+void MTControlsAudioProcessor::rebuildLyricsCueScheduler() {
+  const juce::ScopedLock lock(lyricsStateLock);
+  std::vector<playworship::audio::LyricsCueScheduler::Cue> cues;
+  if (songLyrics.enabled) {
+    const auto count = juce::jmin(static_cast<int>(songLyrics.marks.size()),
+        playworship::audio::LyricsCueScheduler::maxCues);
+    cues.reserve(static_cast<size_t>(count));
+    for (int index = 0; index < count; ++index) {
+      const auto &mark = songLyrics.marks[static_cast<size_t>(index)];
+      const bool linkedTarget = mark.target.hide ||
+          (mark.target.showId.isNotEmpty() && mark.target.layoutId.isNotEmpty() &&
+           mark.target.showId == songLyrics.showId && mark.target.layoutId == songLyrics.layoutId);
+      if (mark.enabled && linkedTarget && std::isfinite(mark.seconds) &&
+          mark.seconds >= 0.0 && mark.seconds <= 604800.0)
+        cues.push_back({playworship::audio::TransportClock::secondsToFrames(
+            mark.seconds, playbackSampleRate > 0.0 ? playbackSampleRate : 44100.0), index});
+    }
+  }
+  lyricsCueScheduler.publish(std::move(cues), ++lyricsRevision, lyricsSongEpoch);
+  freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+}
+
+void MTControlsAudioProcessor::dispatchLyricsCueEvents() {
+  const auto status = freeShowClient.getStatus();
+  lyricsCueScheduler.setDeliveryState(status.connectionEpoch,
+      status.state == playworship::lyrics::ConnectionStatus::State::connected);
+  freeShowClient.setPlaybackGeneration(lyricsCueScheduler.currentSerial());
+  playworship::audio::LyricsCueScheduler::Event event;
+  while (lyricsCueScheduler.popEvent(event)) {
+    if (!lyricsCueScheduler.isCurrent(event)) continue;
+    playworship::lyrics::Target target;
+    {
+      const juce::ScopedLock lock(lyricsStateLock);
+      if (event.revision != lyricsRevision || event.cueIndex < -1 ||
+          event.cueIndex >= static_cast<int>(songLyrics.marks.size())) continue;
+      if (event.cueIndex == -1) target.hide = true; // No lyric is current before the first mark.
+      else target = songLyrics.marks[static_cast<size_t>(event.cueIndex)].target;
+    }
+    // queueTarget only hands work to the network worker. Its generation check
+    // also protects the interval between this dequeue and an effective seek.
+    freeShowClient.queueTarget(std::move(target), event.serial);
+  }
+}
+#endif
+
 void MTControlsAudioProcessor::timerCallback() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  dispatchLyricsCueEvents();
+#endif
   playworship::telemetry::flushAudioIncidents();
   const double diagnosticNow = juce::Time::getMillisecondCounterHiRes();
   if (diagnosticNow - lastDiagnosticDeviceSampleMs >= 1000.0) {
@@ -4600,7 +4700,7 @@ void MTControlsAudioProcessor::playSong() {
   if (current < start || (end > 0.0 && current >= end))
     seekSongTo(start);
   else if (customArrangement)
-    seekSongTo(current);
+    seekSongToInternal(current, false);
   setTransportState(TransportState::playing);
   // The audio callback owns grid attacks. A control-thread preview trigger
   // can arrive after the first callback or just before the next beat.
@@ -4625,6 +4725,9 @@ void MTControlsAudioProcessor::stopSong() {
       findArrangementPartIndexForArrangementTime(returnPositionSeconds),
       std::memory_order_relaxed);
   setArrangementJumpCommand(-1, false);
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(returnPositionSeconds, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
   globalSamplePosition.store(
@@ -4683,6 +4786,14 @@ void MTControlsAudioProcessor::seekSongRelative(const double deltaSeconds) {
 }
 
 void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
+  seekSongToInternal(positionSeconds, true);
+}
+
+void MTControlsAudioProcessor::seekSongToInternal(const double positionSeconds,
+                                                const bool synchroniseLyrics) {
+#if JUCE_IOS || JUCE_ANDROID
+  juce::ignoreUnused(synchroniseLyrics);
+#endif
   if (!songLoaded.load(std::memory_order_relaxed))
     return;
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -4742,6 +4853,9 @@ void MTControlsAudioProcessor::seekSongTo(const double positionSeconds) {
 
   // Write target atomically. processBlock will pick this up and apply it
   // to ALL stems in the same audio callback → zero inter-stem desync.
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(synchroniseLyrics, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(target, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
 
@@ -5317,6 +5431,9 @@ void MTControlsAudioProcessor::setSongArrangement(
         !preservePlaybackState &&
         getTransportState() != TransportState::playing) {
       const double target = songStartSeconds.load(std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+      lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
       seekTargetSeconds.store(target, std::memory_order_relaxed);
       seekRequestGeneration.fetch_add(1, std::memory_order_release);
       songCurrentPositionSeconds.store(target, std::memory_order_relaxed);
@@ -5474,7 +5591,7 @@ void MTControlsAudioProcessor::configureSectionEntryCache() {
 }
 void MTControlsAudioProcessor::setSectionEntryCacheBudget(juce::int64 bytes) {
   const juce::SpinLock::ScopedLockType lock(stemListLock);
-  sectionEntryCacheBudgetBytes = juce::jmax<juce::int64>(1, bytes);
+  sectionEntryCacheBudgetBytes = std::max<juce::int64>(1, bytes);
   configureSectionEntryCache();
 }
 juce::int64 MTControlsAudioProcessor::getSectionEntryCacheBytes() const {
@@ -7035,6 +7152,13 @@ bool MTControlsAudioProcessor::isClickDivisionEnabled() const noexcept {
 }
 
 void MTControlsAudioProcessor::clearLoadedSongState() {
+#if !JUCE_IOS && !JUCE_ANDROID
+  {
+    const juce::ScopedLock lock(lyricsStateLock);
+    ++lyricsSongEpoch;
+  }
+  setSongLyrics({}); // Invalidates commands belonging to the replaced song.
+#endif
   resetSectionAutomationState();
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
@@ -7069,6 +7193,9 @@ void MTControlsAudioProcessor::clearLoadedSongState() {
   songCurrentPositionSeconds.store(0.0, std::memory_order_relaxed);
   globalSamplePosition.store(0, std::memory_order_relaxed);
   requestedSeekPosition.store(-1, std::memory_order_relaxed);
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyricsSeekSynchroniseCurrent.store(true, std::memory_order_relaxed);
+#endif
   seekTargetSeconds.store(0.0, std::memory_order_relaxed);
   seekRequestGeneration.fetch_add(1, std::memory_order_release);
   songLoaded.store(false, std::memory_order_relaxed);

@@ -91,7 +91,9 @@ struct WaveformEditingTestAccess {
         if (other->isVisible()) expect(!child->getBounds().intersects(other->getBounds()), "topbar controls do not overlap");
       }
     }
-    expect(bar.songInfoBounds.getWidth() >= 80, "song title retains usable width");
+    expect(bar.songInfoBounds.getWidth() >= 80,
+           "song title retains usable width (bar=" + std::to_string(bar.getWidth()) +
+               ", title=" + std::to_string(bar.songInfoBounds.getWidth()) + ")");
     if (desktop) {
       expect(bar.waveformViewButton.getToggleState() != bar.sectionsViewButton.getToggleState(), "exactly one view is selected");
       expect(bar.sectionsViewButton.getToggleState() == (bar.liveModeState && bar.liveModeState()), "desktop state follows the real view");

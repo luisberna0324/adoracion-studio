@@ -273,6 +273,19 @@ TopBar::TopBar(MTControlsAudioProcessor &processorRef, PlaybackSession *sessionT
   sectionsViewButton.setToggleable(true);
   waveformViewButton.onClick = [this] { selectTimelineView(false); };
   sectionsViewButton.onClick = [this] { selectTimelineView(true); };
+#if !JUCE_IOS && !JUCE_ANDROID
+  addChildComponent(lyricsViewButton);
+  lyricsViewButton.setComponentID("timeline-lyrics");
+  lyricsViewButton.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  lyricsViewButton.setConnectedEdges(juce::Button::ConnectedOnLeft);
+  sectionsViewButton.setConnectedEdges(juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+  lyricsViewButton.setToggleable(true);
+  lyricsViewButton.onClick = [this] {
+    if (onLyricsViewSelect && (!lyricsViewEnabled || lyricsViewEnabled()))
+      onLyricsViewSelect(true);
+    refreshTimelineMenu();
+  };
+#endif
   helpButton.setButtonText("?");
   helpButton.onClick = [this] { if (onLearningRequested) onLearningRequested(); };
   refreshTimelineMenu();
@@ -540,11 +553,21 @@ void TopBar::refreshTimelineMenu() {
     resized();
   }
   const bool sections = liveModeState && liveModeState();
+  bool lyrics = false;
+#if !JUCE_IOS && !JUCE_ANDROID
+  lyrics = lyricsViewState && lyricsViewState();
+  lyricsViewButton.setButtonText(L10n::tr("Letras", "Lyrics"));
+  lyricsViewButton.setTitle(L10n::tr("Letras", "Lyrics"));
+  lyricsViewButton.setTooltip(L10n::tr("Marcas independientes de letras · FreeShow", "Independent lyrics marks · FreeShow"));
+  lyricsViewButton.setEnabled(true);
+  lyricsViewButton.setToggleState(lyrics, juce::dontSendNotification);
+  lyricsViewButton.setEnabled(available && onLyricsViewSelect && (!lyricsViewEnabled || lyricsViewEnabled()));
+#endif
   const bool enabled = available && onLiveModeToggle && (!liveModeEnabled || liveModeEnabled());
   for (auto *button : {&waveformViewButton, &sectionsViewButton}) {
     const auto text = button == &waveformViewButton ? L10n::tr("Onda", "Waveform")
                                                    : L10n::tr("Secciones", "Sections");
-    const bool selected = (button == &sectionsViewButton) == sections;
+    const bool selected = !lyrics && ((button == &sectionsViewButton) == sections);
     setButtonTextIfChanged(*button, text);
     button->setTitle(text);
     button->setTooltip(text);
@@ -565,9 +588,23 @@ void TopBar::refreshTimelineMenu() {
 void TopBar::selectTimelineView(bool sections) {
   if (!timelineControlsAvailable()) return;
   if (!onLiveModeToggle || (liveModeEnabled && !liveModeEnabled())) return;
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (onLyricsViewSelect) onLyricsViewSelect(false);
+#endif
   if (sections != (liveModeState && liveModeState())) onLiveModeToggle();
   refreshTimelineMenu();
 }
+
+#if !JUCE_IOS && !JUCE_ANDROID
+void TopBar::setLyricsViewControls(std::function<void(bool)> select,
+                                    std::function<bool()> state,
+                                    std::function<bool()> enabled) {
+  onLyricsViewSelect = std::move(select);
+  lyricsViewState = std::move(state);
+  lyricsViewEnabled = std::move(enabled);
+  refreshTimelineMenu();
+}
+#endif
 
 void TopBar::setOnSettingsWithAnchor(
     std::function<void(juce::Rectangle<int>, juce::Component *)> cb) {
@@ -1011,7 +1048,7 @@ void TopBar::resized() {
   }
 
   const bool desktopProfile = !useTouchOptimisedControls() && !minimalPhoneMode;
-  if (desktopProfile && contentBounds.getWidth() < 1120) {
+  if (desktopProfile && contentBounds.getWidth() < 1280) {
     square = 32;
     gap = 4;
     keyWidth = 52;
@@ -1073,10 +1110,19 @@ void TopBar::resized() {
   const bool showDesktopExtras = !tabletProfile;
   const bool showWindowButton = shouldShowWindowModeButton() && !tabletProfile;
   const bool showTabletMoreButton = tabletProfile;
-  const int waveformViewWidth = 62;
-  const int sectionsViewWidth = 78;
+  const bool compactTimeline = desktopProfile && contentBounds.getWidth() < 1280;
+  const int waveformViewWidth = compactTimeline ? 50 : 62;
+  const int sectionsViewWidth = compactTimeline ? 68 : 78;
+#if !JUCE_IOS && !JUCE_ANDROID
+  const int lyricsViewWidth = compactTimeline ? 50 : 62;
+#endif
   const bool showTimeline = timelineControlsAvailable();
-  const int timelineWidth = showTimeline ? waveformViewWidth + sectionsViewWidth : 0;
+  int timelineWidth = showTimeline ? waveformViewWidth + sectionsViewWidth : 0;
+#if !JUCE_IOS && !JUCE_ANDROID
+  if (showTimeline) timelineWidth += lyricsViewWidth;
+  setVisibleIfChanged(lyricsViewButton, desktopProfile && showTimeline);
+  if (!desktopProfile) lyricsViewButton.setBounds({});
+#endif
   setVisibleIfChanged(waveformViewButton, desktopProfile && showTimeline);
   setVisibleIfChanged(sectionsViewButton, desktopProfile && showTimeline);
   setVisibleIfChanged(helpButton, desktopProfile);
@@ -1171,7 +1217,13 @@ void TopBar::resized() {
       if (showTimeline) {
         rightRow.items.add(juce::FlexItem(waveformViewButton)
             .withWidth(static_cast<float>(waveformViewWidth)).withHeight(static_cast<float>(square)));
+#if !JUCE_IOS && !JUCE_ANDROID
+        rightRow.items.add(juce::FlexItem(sectionsViewButton)
+            .withWidth(static_cast<float>(sectionsViewWidth)).withHeight(static_cast<float>(square)));
+        addItem(lyricsViewButton, lyricsViewWidth);
+#else
         addItem(sectionsViewButton, sectionsViewWidth);
+#endif
       }
       addItem(helpButton, square, !usageVisible);
     } else {
