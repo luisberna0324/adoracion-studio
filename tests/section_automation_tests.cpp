@@ -18,6 +18,14 @@ struct SectionAutomationTestAccess {
     juce::AudioFormatManager formats; formats.registerBasicFormats();
     const bool loaded = processor.dynamicGuideEngine.loadGuideDirectories({directory}, formats);
     if (loaded) {
+      // Reloading the bank rebuilds trigger IDs; mirror the production reload
+      // before publishing the sections that cache those IDs.
+      {
+        const juce::SpinLock::ScopedLockType lock(processor.stemListLock);
+        for (auto &part : processor.arrangementParts)
+          part.guideTriggerId =
+              processor.dynamicGuideEngine.resolveTriggerId(part.sectionKey);
+      }
       processor.rebuildSectionScheduler();
       processor.dynamicGuideResetGeneration.fetch_add(1, std::memory_order_release);
     }
