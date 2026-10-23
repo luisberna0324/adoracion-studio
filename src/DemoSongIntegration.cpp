@@ -99,14 +99,18 @@ void MTControlsAudioProcessorEditor::prepareDemoSong(const bool startLesson) {
   const auto localDemo = localDemoSession;
   std::thread([safe, uid, generation, localDemo, startLesson] {
     ImportedSongData song;
-    const auto result = DemoSongService::ensureInstalled(song, [safe, generation](double progress, const juce::String &) {
-      juce::MessageManager::callAsync([safe, generation, progress] {
-        if (safe && generation == safe->authAttemptGeneration && safe->demoLoadingOverlay)
+    ProjectDocument preparedProject;
+    const auto result = DemoSongService::ensureInstalled(song, [safe, generation](double progress, const juce::String &phase) {
+      juce::MessageManager::callAsync([safe, generation, progress, phase] {
+        if (safe && generation == safe->authAttemptGeneration && safe->demoLoadingOverlay) {
           safe->demoLoadingOverlay->setProgress(progress);
+          safe->demoLoadingOverlay->setPhaseText(phase);
+        }
       });
-    });
+    }, &preparedProject);
     juce::MessageManager::callAsync([safe, uid, generation, localDemo, startLesson,
-                                   song = std::move(song), result] {
+                                   song = std::move(song),
+                                   preparedProject = std::move(preparedProject), result]() mutable {
       if (!safe) return;
       if (generation != safe->authAttemptGeneration || localDemo != safe->localDemoSession)
         return;
@@ -130,7 +134,13 @@ void MTControlsAudioProcessorEditor::prepareDemoSong(const bool startLesson) {
       // setlist, replace a user's project or autoplay during onboarding.
       auto &p = static_cast<MTControlsAudioProcessor &>(safe->processor);
       p.stopSong();
-      if (!safe->loadSongAction || !safe->loadSongAction(song, -1)) {
+      // Reuse the validated worker result, as ordinary disk imports do. The
+      // audio processor still activates synchronously; never reopen this ZIP
+      // on the message thread just after the preparation overlay completed.
+      safe->preparedProjectForNextSongLoad = std::move(preparedProject);
+      const bool loaded = safe->loadSongAction && safe->loadSongAction(song, -1);
+      safe->preparedProjectForNextSongLoad.reset();
+      if (!loaded) {
         if (safe->learningGuide) safe->learningGuide->setStatusMessage(L10n::tr(
             "La demo está en Biblioteca, pero no se pudo cargar. Inténtalo nuevamente.",
             "The demo is in your Library but could not be loaded. Try again."));

@@ -4,7 +4,7 @@ title: StemBufferingSource
 description: Read-ahead circular no bloqueante para reproducción de stems
 resource: src/StemBufferingSource.h
 tags: [juce, audio, stem, streaming, read-ahead, realtime]
-timestamp: 2026-10-06T00:00:00Z
+timestamp: 2026-10-23T00:00:00Z
 ---
 
 # StemBufferingSource
@@ -139,8 +139,33 @@ Cuando no hay trabajo vuelve a consultarse en 10 ms. El callback no usa
 `moveToFrontOfQueue()` al hacer seek, porque esa operación de JUCE sincroniza la
 lista interna del `TimeSliceThread`.
 
+### Preparación inicial y disponibilidad
+
+`prepareToPlay()` registra el cliente y solicita headroom inicial de entre
+cuatro y ocho bloques, limitado a la capacidad útil del ring (`capacidad - 4`).
+El prefill es una espera opcional con presupuesto máximo de 250 ms. Si el
+worker no está ejecutándose, está saliendo o tarda más que ese presupuesto,
+la preparación devuelve el control sin asegurar disponibilidad. No toma locks
+de la cola repetidamente: `addTimeSliceClient()` ya despierta al worker; la
+espera escucha `bufferReadyEvent` en intervalos cortos.
+
+Este presupuesto evita que la carga se quede esperando indefinidamente antes
+de alcanzar su comprobación de disponibilidad. No cancela el I/O que ya corre
+en el worker ni detiene el llenado del ring: el cliente sigue registrado y
+puede recuperarse cuando el worker vuelva a atenderlo. Tampoco cambia el
+contrato de liberación: `releaseResources()` debe esperar cualquier lectura de
+su cliente que todavía esté en curso antes de destruir buffers o readers.
+
 `waitForNextAudioBlockReady()` puede esperar y sólo debe invocarse fuera del
-audio thread, por ejemplo antes de publicar una canción nueva.
+audio thread. Es el gate que confirma el primer bloque antes de publicar una
+canción nueva; `loadSongStems()` conserva su comprobación separada de 250 ms y
+rechaza la carga si el bloque no está listo. Haber terminado `prepareToPlay()`
+por sí solo no autoriza reproducir una fuente sin datos.
+
+Las pruebas cubren un worker inactivo, otro activo demorado más allá del
+presupuesto, la recuperación de ambos y un prefill normal con muestras exactas
+y sin underrun. Los retrasos de prueba tienen una salida finita para que una
+regresión falle en vez de dejar bloqueado el proceso de pruebas.
 
 ## Seek
 

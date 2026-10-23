@@ -88,6 +88,12 @@ private:
             setFullScreen (true);
 #if JUCE_ANDROID
             juce::Desktop::getInstance().setKioskModeComponent (this);
+            // Render the whole window: application modals are siblings of the
+            // content root, so attaching GL only to that root hides their pixels
+            // behind the native surface while their modal state blocks input.
+            openGLContext.setContinuousRepainting (false);
+            openGLContext.setImageCacheSize (32 * 1024 * 1024);
+            openGLContext.attachTo (*this);
 #endif
             setVisible (true);
             PW_ANDROID_LOG ("main window visible");
@@ -95,8 +101,12 @@ private:
 
         ~MainWindow() override
         {
+#if JUCE_ANDROID
+            // Stop the renderer while the runtime and every window child still
+            // exist; DocumentWindow destroys its content after this body.
+            openGLContext.detach();
+#endif
             audioRuntime.stop();
-
         }
 
 #if JUCE_ANDROID
@@ -128,6 +138,7 @@ private:
     private:
         MTControlsAudioProcessor* audioProcessor = nullptr;
         StandaloneAudioRuntime audioRuntime;
+        juce::OpenGLContext openGLContext;
 
         class AndroidRootComponent final : public juce::Component
         {
@@ -137,19 +148,6 @@ private:
             {
                 setOpaque (true);
                 addAndMakeVisible (child.get());
-                // The Android software peer repaints and uploads the whole
-                // window even for small meter/playhead invalidations. JUCE's
-                // GL component renderer retains the surface and honours dirty
-                // regions, leaving the message thread available for touch.
-                openGLContext.setContinuousRepainting (false);
-                openGLContext.setImageCacheSize (32 * 1024 * 1024);
-                openGLContext.attachTo (*this);
-            }
-
-            ~AndroidRootComponent() override
-            {
-                // Stop rendering before the editor and its children disappear.
-                openGLContext.detach();
             }
 
             void paint (juce::Graphics& graphics) override
@@ -168,7 +166,6 @@ private:
 
         private:
             std::unique_ptr<juce::AudioProcessorEditor> child;
-            juce::OpenGLContext openGLContext;
         };
 #endif
     };

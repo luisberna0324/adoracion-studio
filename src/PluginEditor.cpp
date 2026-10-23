@@ -5575,13 +5575,19 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
   if (minimalPhoneProfile) {
     // Keep the mixer aligned to the waveform. The setlist is exposed through
     // stable TopBar actions instead of a persistent side column.
-    songListPanel->setVisible(false);
-    songListPanel->setBounds({});
+    // Keyboard/safe-area updates relayout the editor while a library field
+    // owns focus. Hiding its parent here, even until the drawer branch below,
+    // makes JUCE drop that focus and dismiss the Android input connection.
+    // Keep an open drawer attached and visible throughout the entire reflow.
+    if (!isSetlistDrawerOpen) {
+      songListPanel->setVisible(false);
+      songListPanel->setBounds({});
+      if (setlistDrawerScrim)
+        setlistDrawerScrim->setVisible(false);
+    }
     setlistHandlePanel->setVisible(false);
     if (auto *phoneTopBar = dynamic_cast<TopBar *>(topBar.get()))
       phoneTopBar->setPhoneOverlayStates(isSetlistDrawerOpen, phonePadsOpen);
-    if (setlistDrawerScrim)
-      setlistDrawerScrim->setVisible(false);
     if (padsHandlePanel)
       padsHandlePanel->setVisible(false);
     if (padsComponent && padsComponent->getParentComponent() == this)

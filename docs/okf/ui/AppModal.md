@@ -3,7 +3,7 @@ type: Technical Contract
 title: Diálogos de entrada y confirmación
 description: Presentación compartida de modales breves
 resource: src/ui/components/AppModal.cpp
-timestamp: 2026-09-29
+timestamp: 2026-10-23
 ---
 
 # Diálogos breves
@@ -36,3 +36,13 @@ el error se presenta en una tarjeta informativa del mismo estilo.
 
 La tarjeta es interna a JUCE y funciona con la misma presentación en iOS,
 Android y escritorio. La entrada de texto sigue usando el teclado del sistema.
+
+## Renderizado en Android
+
+El contexto OpenGL pertenece a `MainWindow` y renderiza la ventana completa,
+incluidos `AppModal` y los demas overlays globales agregados al componente
+superior. No se adjunta solo a la raiz del editor: estos modales son hermanos
+de esa raiz y deben verse en la misma superficie que bloquea sus controles.
+Se conserva el host superior y la cobertura habitual de cada modal, sin
+excepciones de alojamiento por tipo de dialogo. El contexto se desconecta
+antes de detener el runtime y destruir los hijos de la ventana.

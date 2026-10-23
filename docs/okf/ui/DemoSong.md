@@ -2,7 +2,7 @@
 type: UI and Storage Contract
 title: Canción demo para aprender
 resource: src/DemoSongIntegration.cpp
-timestamp: 2026-10-06
+timestamp: 2026-10-23
 ---
 
 # Canción demo para aprender
@@ -59,6 +59,19 @@ La preparación de disco usa un worker, con un overlay modal y bloqueo temporal
 de cargas/avance automático. El callback vuelve al message thread y valida
 SafePointer, generación de acceso, modo local, cuenta y acceso antes de cargar.
 Una respuesta antigua no cambia la sesión ni el overlay de un intento nuevo.
+El progreso muestra la fase real de copia, validación o registro. El worker
+puede devolver también el `ProjectDocument` preparado: tanto la instalación
+nueva como una demo existente lo entregan a la activación para no abrir otra
+vez el ZIP en el message thread. La demo existente usa sus recursos locales
+validados, sin volver a extraer ni validar los recursos internos del paquete: una
+onda empaquetada dañada no puede borrar su caché ni sus ajustes vigentes. Si no
+se pueden leer sus ajustes locales, informa el error conservando los archivos.
+La demo existente conserva su identidad y
+metadatos locales y usa sus ajustes locales actuales, incluso si la fecha del
+sidecar coincide con la del paquete. No se reescribe su paquete ni sus ajustes.
+La preparación de los transports de audio y la restauración de los controles
+siguen siendo síncronas durante la activación; este cambio evita la segunda
+apertura de disco, no convierte toda la carga en una tarea asíncrona.
 Durante el curso se suspende el
 avance automático del setlist, incluso si la demo ya pertenecía a él.
 
@@ -87,7 +100,8 @@ si la demo termina; ese control no tapa ni reemplaza el destino del ejercicio.
 ## Validación
 
 `demo_song`: paquete/audio, instalación, idempotencia, ajustes existentes,
-borrado/recuperación, invariancia de cuenta/setlists y fallos de almacenamiento.
+borrado/recuperación, documento preparado con recursos y ajustes actuales,
+invariancia de cuenta/setlists y fallos de almacenamiento.
 `demo_learning` y `learning_guide`: hechos por paso, transporte, Inicio
 personalizado, pares Mute/Solo, loops, Ensayo y contenido por plataforma/idioma.
 `learning_overlay`: catálogo, geometría y entrega de gestos a controles reales.

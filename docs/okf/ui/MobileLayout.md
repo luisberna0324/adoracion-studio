@@ -478,6 +478,13 @@ grandes puede recortar la accion final del bloque de metronomo/tono.
   nativa de entrada al cambiar de editor, actualizando texto, seleccion y rasgos
   del teclado mediante `reloadInputViews`. Deslizar el formulario no lo cierra.
   Al cerrar el teclado se recupera el pie con `Siguiente` sin reconstruir campos.
+- Un cambio de teclado, área segura o tamaño reajusta Biblioteca y su
+  asistente sin ocultarlos temporalmente ni vaciar sus límites mientras el
+  drawer esté abierto. Los mismos campos mantienen foco, texto, selección y
+  caret durante el reflow. Ocultar y volver a mostrar su padre en un mismo
+  `layoutMainUi` también descarta el foco en JUCE y puede cerrar/reabrir el IME
+  de Android; no se fuerza el foco ni se reabre el teclado para compensarlo.
+  Cerrar Biblioteca sí retira su superficie y finaliza la edición habitual.
 ### Estilo compartido de selección
 
 `applyTheme` instala `SelectionLookAndFeel` como estilo global de combos y menús
@@ -727,9 +734,14 @@ de orientación, tamaño de escena, área segura, drawer y Pads en el dispositiv
 
 ## Rendimiento en Android
 
-- El wrapper Android compila `juce_opengl` y conecta un `OpenGLContext` al
-  componente raiz que contiene el editor. JUCE conserva un framebuffer y
-  repinta sus regiones invalidadas con el renderer 2D de OpenGL. El peer
+- El wrapper Android compila `juce_opengl` y conecta un unico `OpenGLContext`
+  a `MainWindow`, que contiene la raiz del editor y sus modales globales como
+  componentes hermanos. La invitacion de la demo y las condiciones de Cloud
+  quedan dentro del mismo arbol renderizado; no pueden bloquear los controles
+  mientras sus pixeles quedan ocultos detras de una superficie GL del contenido.
+  `AndroidRootComponent` conserva solamente la propiedad y el layout del editor.
+  JUCE conserva un framebuffer y repinta sus regiones invalidadas con el renderer
+  2D de OpenGL. El peer
   software anterior rasterizaba y transferia la ventana completa incluso ante
   invalidaciones pequenas, ocupando el message thread durante los gestos.
 - Cada slot del mixer conserva una imagen rasterizada en memoria de CPU. El
@@ -739,8 +751,9 @@ de orientación, tamaño de escena, área segura, drawer y Pads en el dispositiv
   el tamano fisico del slot y se libera con el componente. El cache de texturas
   del contexto tiene un presupuesto de `32 MiB`.
 - El contexto solo dibuja cuando hay invalidaciones (`setContinuousRepainting(false)`).
-  No hay un bucle de render permanente mientras la UI esta quieta. La raiz es
-  opaca y desconecta el contexto antes de destruir el editor y sus controles.
+  No hay un bucle de render permanente mientras la UI esta quieta. La raiz de
+  contenido sigue siendo opaca. `MainWindow` desconecta el contexto antes de
+  detener el runtime de audio y destruir el contenido o los modales de ventana.
 - `assembleDebug` optimiza el codigo nativo con `-O2`, incluidos los modulos JUCE
   y el motor de audio. Conserva los simbolos de debug y el APK depurable. No
   activa `fast-math` ni cambia las opciones de Release. Para depuracion paso a

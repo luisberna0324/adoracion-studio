@@ -9,6 +9,8 @@
 #include "ui/panels/TopBar.h"
 #include "ui/panels/WaveformBar.h"
 #include "ui/panels/PadsComponent.h"
+#include "ui/panels/SongListPanel.h"
+#include "ui/panels/SongImportWizardComponent.h"
 #include "network/RemoteStateCodec.h"
 
 #include <atomic>
@@ -68,6 +70,36 @@ struct LocalDemoAccessTestAccess {
   static void layout(MTControlsAudioProcessorEditor &editor, int width, int height, bool phone) {
     editor.setSize(width, height);
     editor.layoutMainUi(phone); // Same layout used by resized(), without pretending Linux is an iPhone.
+  }
+  static void initializePhoneInputUi(MTControlsAudioProcessorEditor &editor) {
+    // Only the isolated fixture enters the ordinary UI without authentication;
+    // this keeps the input regression valid in production Release builds too.
+    editor.initializeMainUi();
+    expect(editor.mainUiInitialized, "phone input fixture builds the real application UI");
+    expect(!editor.localDemoSession && !hasCloudIdentity(editor),
+           "phone input fixture grants no demo login, Firebase identity or license");
+  }
+  static SongListPanel &library(MTControlsAudioProcessorEditor &editor) {
+    return *dynamic_cast<SongListPanel *>(editor.songListPanel.get());
+  }
+  static juce::Component &drawerScrim(MTControlsAudioProcessorEditor &editor) {
+    // The scrim's definition is intentionally private to PluginEditor.cpp.
+    for (auto *child : editor.getChildren())
+      if (static_cast<void *>(child) == static_cast<void *>(editor.setlistDrawerScrim.get()))
+        return *child;
+    throw std::runtime_error("editor contains its real drawer scrim");
+  }
+  static void layoutPhoneDrawer(MTControlsAudioProcessorEditor &editor,
+                                int width, int height, bool open = true) {
+    // A desktop build cannot infer a phone from its OS. Suppress only the
+    // automatic desktop-profile resize, then invoke the real phone layout.
+    {
+      juce::ScopedValueSetter<bool> deferDesktopLayout(editor.mainUiInitialized, false);
+      editor.setSize(width, height);
+    }
+    editor.isSetlistDrawerOpen = open;
+    editor.isSetlistCollapsed = false;
+    editor.layoutMainUi(true);
   }
   static auto &wave(MTControlsAudioProcessorEditor &editor) { return *editor.waveformBarPtr; }
   static auto &top(MTControlsAudioProcessorEditor &editor) { return *editor.topBar; }
@@ -159,6 +191,30 @@ struct LocalDemoAccessTestAccess {
     return !editor.teamsOnboardingPending && !editor.hasTeamsMembership &&
         !editor.canManageSharedCloud && editor.cloudCatalogSongs.empty() &&
         editor.cloudDownloadsInProgress.empty() && editor.cloudUploadsInProgress.empty();
+  }
+};
+
+struct SongListPanelTestAccess {
+  static SongImportWizardComponent &clickLibraryPlus(SongListPanel &panel) {
+    panel.viewMode = SongListPanel::ViewMode::Songs;
+    panel.showPage(1, false);
+    panel.openLibraryBrowser();
+    for (auto *child : panel.libraryCatalogPanel.getChildren()) {
+      if (child->getName() != "createSong") continue;
+      auto *button = dynamic_cast<juce::Button *>(child);
+      expect(button != nullptr, "Biblioteca exposes its real create-song button");
+      button->onClick();
+      expect(panel.libraryCreationWizard != nullptr && !panel.songImportOverlay,
+             "Biblioteca + opens the production internal creation page");
+      return *panel.libraryCreationWizard;
+    }
+    throw std::runtime_error("Biblioteca contains the create-song action");
+  }
+};
+
+struct SongImportWizardTestAccess {
+  static juce::TextEditor &title(SongImportWizardComponent &wizard) {
+    return wizard.songTitleEditor;
   }
 };
 
@@ -398,6 +454,95 @@ void testBlankSongLayoutAndTransitions() {
     expect(juce::File(capturePath).getChildFile("geometry.json").replaceWithText(juce::JSON::toString(juce::var(geometry))), "geometry report writes");
 }
 
+void testPhoneDrawerTextInputSurvivesRelayout() {
+  AppSettings::setLocalDemoSessionActive(false);
+  MTControlsAudioProcessor processor;
+  MTControlsAudioProcessorEditor editor(processor);
+  LocalDemoAccessTestAccess::initializePhoneInputUi(editor);
+  LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+  auto &library = LocalDemoAccessTestAccess::library(editor);
+  auto &wizard = SongListPanelTestAccess::clickLibraryPlus(library);
+  drainMessages(380); // Complete the actual Biblioteca -> Detalles transition.
+  LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+  auto &scrim = LocalDemoAccessTestAccess::drawerScrim(editor);
+  auto &title = SongImportWizardTestAccess::title(wizard);
+  title.setText("Ensayo Android", juce::dontSendNotification);
+  title.setHighlightedRegion({2, 7});
+  const auto draft = title.getText();
+  const auto selection = title.getHighlightedRegion();
+  const auto caret = title.getCaretPosition();
+
+  struct StabilityObserver final : juce::ComponentListener {
+    explicit StabilityObserver(juce::Component &target) : component(target) {
+      component.addComponentListener(this);
+    }
+    ~StabilityObserver() override { component.removeComponentListener(this); }
+    void componentVisibilityChanged(juce::Component &changed) override {
+      if (!changed.isVisible()) ++hidden;
+    }
+    void componentMovedOrResized(juce::Component &changed, bool, bool) override {
+      if (changed.getBounds().isEmpty()) ++emptyBounds;
+    }
+    juce::Component &component;
+    int hidden = 0, emptyBounds = 0;
+  } libraryChanges(library), scrimChanges(scrim);
+
+  // Android propagates IME/system insets to resized() even when window bounds
+  // are unchanged. Shorter viewport and orientation reflows exercise the same
+  // root phone-layout path; checking only the isolated wizard missed this bug.
+  for (const auto size : {juce::Point<int>{390, 800}, {390, 800}, {390, 560},
+                          {390, 800}, {800, 390}, {360, 720}, {390, 800}}) {
+    LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, size.x, size.y);
+    expect(libraryChanges.hidden == 0 && libraryChanges.emptyBounds == 0 &&
+               scrimChanges.hidden == 0 && scrimChanges.emptyBounds == 0,
+           "open phone drawer never hides or empties its text-input ancestors during relayout");
+    expect(library.isVisible() && scrim.isVisible() && title.isVisible() &&
+               !title.getBounds().isEmpty() && !wizard.getBounds().isEmpty(),
+           "the real creation page remains visible and laid out in the open drawer");
+    expect(title.getText() == draft && title.getHighlightedRegion() == selection &&
+               title.getCaretPosition() == caret,
+           "phone inset and orientation reflows preserve the draft, selection and caret");
+  }
+  title.insertTextAtCaret("ayo");
+  expect(title.getText() == draft.replaceSection(selection.getStart(), selection.getLength(), "ayo"),
+         "typing continues at the preserved selection after repeated root reflows");
+
+  // Native focus is additional evidence when the desktop grants it. The
+  // deterministic visibility regression above always runs, without OS focus.
+  juce::DocumentWindow focusWindow("PlayWorship phone input regression", juce::Colours::black, 0);
+  focusWindow.setUsingNativeTitleBar(true);
+  focusWindow.setContentNonOwned(&editor, false);
+  focusWindow.setContentComponentSize(390, 800);
+  focusWindow.centreWithSize(focusWindow.getWidth(), focusWindow.getHeight());
+  focusWindow.setVisible(true);
+  focusWindow.toFront(true);
+  LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+  // Creating the desktop host above is a separate profile transition, not an
+  // Android inset update. Observe the now-open phone drawer from this point.
+  libraryChanges.hidden = libraryChanges.emptyBounds = 0;
+  scrimChanges.hidden = scrimChanges.emptyBounds = 0;
+  title.grabKeyboardFocus();
+  const bool nativeFocusGranted = title.hasKeyboardFocus(false);
+  if (nativeFocusGranted) {
+    LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+    LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800);
+    expect(title.hasKeyboardFocus(false),
+           "an OS-focused text editor keeps focus through unchanged keyboard-inset relayouts");
+  } else {
+    std::cout << "Phone input: OS focus unavailable; deterministic drawer and draft checks ran.\n";
+  }
+  expect(libraryChanges.hidden == 0 && libraryChanges.emptyBounds == 0 &&
+             scrimChanges.hidden == 0 && scrimChanges.emptyBounds == 0,
+         "native focus checks do not hide or empty the open drawer");
+  LocalDemoAccessTestAccess::layoutPhoneDrawer(editor, 390, 800, false);
+  expect(!library.isVisible() && !scrim.isVisible() && libraryChanges.hidden == 1 &&
+             scrimChanges.hidden == 1,
+         "closing the phone drawer still hides the library and scrim exactly once");
+  if (nativeFocusGranted)
+    expect(!title.hasKeyboardFocus(false), "closing the drawer releases the hidden text editor's focus");
+  focusWindow.clearContentComponent();
+}
+
 void testLocalSessionIsolationAndRestart() {
   AccountFixture account;
   // Persisted local state takes priority even if there is also a denied/old
@@ -568,6 +713,12 @@ int main(int argc, char **argv) {
       std::cout << "Blank layout: " << checks << " checks passed; native editor, transport and remote snapshots\n";
       return 0;
     }
+    if (argc > 1 && juce::String(argv[1]) == "--phone-input-only") {
+      testPhoneDrawerTextInputSurvivesRelayout();
+      ProjectStore::flushAllPendingSettings();
+      std::cout << "Phone input: " << checks << " checks passed; real drawer and song-creation page\n";
+      return 0;
+    }
     const bool environmentPreview = juce::SystemStats::getEnvironmentVariable(
         "PLAYWORSHIP_LOCAL_DEMO_PREVIEW", {}) == "1";
     if (environmentPreview || (argc > 1 && juce::String(argv[1]) == "--preview")) {
@@ -576,6 +727,7 @@ int main(int argc, char **argv) {
       previewLocalDemoLogin(seconds);
       return 0;
     }
+    testPhoneDrawerTextInputSurvivesRelayout();
 #if JUCE_DEBUG
     testLocalSessionIsolationAndRestart();
     testAppleCredentialStateIsolation();
