@@ -11,6 +11,9 @@ struct Target
     juce::String showId, layoutId, groupId, slideId;
     int occurrence = 1;
     juce::String layoutSignature, title, text;
+    // New show-bound marks resolve this slide in the current active layout.
+    // Legacy marks keep their exact saved layout/occurrence/signature.
+    bool useActiveLayout = false;
 };
 struct Mark
 {
@@ -37,11 +40,17 @@ struct Layout
     juce::String id, name, signature;
     std::vector<SlideDestination> slides;
 };
+struct SlideGroup
+{
+    juce::String id, name;
+    std::vector<SlideDestination> slides;
+};
 struct ShowSummary { juce::String id, name; };
 struct ShowCatalog
 {
     juce::String id, name, activeLayoutId, error;
     std::vector<Layout> layouts;
+    std::vector<SlideGroup> groups; // All groups in the show, including unused groups.
     bool ok() const { return error.isEmpty() && id.isNotEmpty() && !layouts.empty(); }
 };
 struct Resolution

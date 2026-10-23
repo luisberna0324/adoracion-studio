@@ -356,7 +356,7 @@ private:
 
   void timerCallback() override;
   void showSettings(juce::Rectangle<int> anchor,
-                    juce::Component *parent);
+                    juce::Component *parent, bool freeShow = false);
   void closeSettings();
   void applyThemePreset(int presetId);
   void applyRoutingDefaultsToSong(const ImportedSongData &song);

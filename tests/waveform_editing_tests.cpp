@@ -264,8 +264,8 @@ struct WaveformEditingTestAccess {
 
   static void addCue(WaveformBar &waveform, const char *name, double seconds,
                      int countEnd = 0) {
-    waveform.sectionInsertionAnchorValid = true;
-    waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true;
+    waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addGuideCue(name, countEnd, countEnd > 0 ? 0.5 : 0.0);
   }
@@ -338,7 +338,7 @@ struct WaveformEditingTestAccess {
     waveform.createDuplicatedSection(waveform.findPartIndexById(id));
   }
   static void split(WaveformBar &waveform, double seconds) {
-    waveform.sectionInsertionAnchorValid = true; waveform.sectionInsertionAnchorSec = seconds;
+    waveform.sectionInsertionAnchor.valid = true; waveform.sectionInsertionAnchor.seconds = seconds;
     waveform.snapMode = WaveformBar::SnapMode::Free;
     waveform.addArrangementPart("Verse 2");
   }
@@ -366,7 +366,7 @@ struct WaveformEditingTestAccess {
   static void expectInsertionPointerStarted(const WaveformBar &waveform) {
     expect(waveform.dragMode == WaveformBar::DragMode::seek,
            "dragging the ruler uses the real insertion-pointer seek handler");
-    expect(waveform.sectionInsertionAnchorValid,
+    expect(waveform.sectionInsertionAnchor.valid,
            "the ruler gesture establishes a section insertion anchor (editing=" +
                std::to_string(waveform.isEditingArrangement()) + ", map=" +
                std::to_string(static_cast<int>(waveform.timelineViewMode)) +

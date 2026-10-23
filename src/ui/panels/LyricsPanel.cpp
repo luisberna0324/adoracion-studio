@@ -1,5 +1,6 @@
 #include "LyricsPanel.h"
-#include "../components/AppModal.h"
+#include "TimelineRulerStyle.h"
+#include "TimelineNavigationGestures.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -47,20 +48,36 @@ public:
   void mouseDown(const juce::MouseEvent &e) override {
     if (isShowing()) grabKeyboardFocus();
     const auto hit = owner.hitMark(e.position);
-    if (e.mods.isPopupMenu()) { owner.showMapMenu(e.position, hit); return; }
+    if (e.mods.isPopupMenu()) {
+      if (hit.isNotEmpty()) owner.showMapMenu(e.position, hit);
+      return;
+    }
     owner.selectMark(hit);
+    owner.draggingInsertionAnchor = hit.isEmpty();
+    if (owner.draggingInsertionAnchor)
+      owner.placeInsertionAnchor(owner.xToTime(e.position.x));
+    else {
+      owner.insertionAnchor.clear();
+      owner.rebuildMapLayout();
+    }
     owner.dragId = owner.hitMark(e.position, true);
     owner.dragChanged = false;
     if (const auto *mark = owner.findMark(owner.dragId)) owner.dragStartSeconds = mark->seconds;
   }
   void mouseDrag(const juce::MouseEvent &e) override {
-    if (owner.dragId.isEmpty() || !e.mouseWasDraggedSinceMouseDown()) return;
+    if (!e.mouseWasDraggedSinceMouseDown()) return;
+    if (owner.draggingInsertionAnchor) {
+      owner.placeInsertionAnchor(owner.xToTime(e.position.x));
+      return;
+    }
+    if (owner.dragId.isEmpty()) return;
     owner.dragChanged = true;
     owner.moveMark(owner.dragId, owner.xToTime(e.position.x), false);
   }
   void mouseUp(const juce::MouseEvent &) override {
     if (owner.dragChanged) owner.changed();
     owner.dragId.clear();
+    owner.draggingInsertionAnchor = false;
     owner.dragChanged = false;
     owner.rebuildMapLayout();
   }
@@ -71,144 +88,51 @@ public:
   }
   void mouseDoubleClick(const juce::MouseEvent &e) override {
     const auto id = owner.hitMark(e.position);
-    if (id.isEmpty()) owner.showDestinationPicker(owner.xToTime(e.position.x));
-    else owner.showDestinationPicker(0.0, id);
+    if (id.isNotEmpty()) owner.showDestinationMenu(0.0, id);
   }
-private:
-  LyricsPanel &owner;
-};
-
-class LyricsPanel::DestinationPicker final : public juce::Component,
-                                             private juce::ListBoxModel {
-public:
-  DestinationPicker(std::vector<SlideDestination> options,
-                    std::function<void(Target)> callback)
-      : destinations(std::move(options)), onUse(std::move(callback)), list("Destinos FreeShow", this) {
-    title.setText("Elegir destino FreeShow", juce::dontSendNotification);
-    title.setFont(makeAppFont(15.0f, AppFontWeight::SemiBold));
-    title.setColour(juce::Label::textColourId, UITheme::textPrimary);
-    addAndMakeVisible(title);
-    search.setTextToShowWhenEmpty(juce::String::fromUTF8("Buscar nombre o texto…"), UITheme::textSecondary);
-    applyTextEditorTheme(search);
-    search.onTextChange = [this] { filter(); };
-    addAndMakeVisible(search);
-    list.setRowHeight(71);
-    list.setColour(juce::ListBox::backgroundColourId, UITheme::panelDark);
-    list.setColour(juce::ListBox::outlineColourId, UITheme::dividerSoft);
-    list.setOutlineThickness(1);
-    addAndMakeVisible(list);
-    helper.setText(destinations.empty() ? juce::String::fromUTF8("Conecta FreeShow y elige un show/arreglo para consultar sus letras.")
-                                     : juce::String::fromUTF8("Aparición = repetición del grupo · Pantalla = slide del grupo"),
-                   juce::dontSendNotification);
-    helper.setFont(makeAppFont(10.5f));
-    helper.setColour(juce::Label::textColourId, UITheme::textSecondary);
-    addAndMakeVisible(helper);
-    use.setButtonText("Usar destino");
-    styleButton(use, true);
-    use.onClick = [this] {
-      const int row = list.getSelectedRow();
-      if (!juce::isPositiveAndBelow(row, static_cast<int>(filtered.size()))) return;
-      Target result;
-      if (filtered[static_cast<size_t>(row)] < 0) { result.hide = true; result.title = "Ocultar letras"; }
-      else result = destinations[static_cast<size_t>(filtered[static_cast<size_t>(row)])].target;
-      if (onUse) onUse(result);
-      if (auto *callout = findParentComponentOfClass<juce::CallOutBox>()) callout->dismiss();
-    };
-    addAndMakeVisible(use);
-    filter();
-    setSize(560, 414);
-  }
-  void paint(juce::Graphics &g) override { g.fillAll(UITheme::panelDark); }
-  void resized() override {
-    auto area = getLocalBounds().reduced(12);
-    title.setBounds(area.removeFromTop(27));
-    search.setBounds(area.removeFromTop(30));
-    area.removeFromTop(8);
-    auto bottom = area.removeFromBottom(35);
-    use.setBounds(bottom.removeFromRight(120));
-    helper.setBounds(area.removeFromBottom(28));
-    list.setBounds(area);
-  }
-private:
-  int getNumRows() override { return static_cast<int>(filtered.size()); }
-  void paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) override {
-    if (!juce::isPositiveAndBelow(row, static_cast<int>(filtered.size()))) return;
-    auto area = juce::Rectangle<int>(0, 0, width, height).reduced(10, 6);
-    if (selected) { g.setColour(UITheme::accent.withAlpha(0.14f)); g.fillRect(0, 0, width, height); }
-    const int index = filtered[static_cast<size_t>(row)];
-    g.setColour(selected ? UITheme::accent : UITheme::textPrimary);
-    g.setFont(makeAppFont(12.5f, AppFontWeight::SemiBold));
-    if (index < 0) {
-      g.drawText("Ocultar letras", area.removeFromTop(20), juce::Justification::centredLeft);
-      g.setColour(UITheme::textSecondary); g.setFont(makeAppFont(11.0f));
-      g.drawText("Limpiar la letra proyectada", area, juce::Justification::topLeft);
-    } else {
-      const auto &d = destinations[static_cast<size_t>(index)];
-      g.drawFittedText(d.displayName, area.removeFromTop(20), juce::Justification::centredLeft, 1);
-      g.setColour(UITheme::textPrimary.withAlpha(0.82f)); g.setFont(makeAppFont(11.5f));
-      g.drawFittedText(firstLines(d.target.text, 1), area.removeFromTop(20), juce::Justification::centredLeft, 1);
-      g.setColour(UITheme::textSecondary); g.setFont(makeAppFont(9.5f));
-      g.drawFittedText("Grupo " + d.target.groupId + juce::String::fromUTF8(" · Slide ") + d.target.slideId
-                      + juce::String::fromUTF8(" · Índice ") + juce::String(d.absoluteIndex), area, juce::Justification::centredLeft, 1);
+  void mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &wheel) override {
+    if (!hasNavigationTarget(e) || owner.draggingInsertionAnchor || owner.dragId.isNotEmpty()) return;
+    const auto gesture = timelineNavigation::fromWheel(wheel.deltaX, wheel.deltaY);
+    if (gesture.action == timelineNavigation::WheelAction::pan) {
+      owner.panTimeline(gesture.value);
+    } else if (gesture.action == timelineNavigation::WheelAction::zoom) {
+      owner.applyZoom(gesture.value, e.position.x);
     }
-    g.setColour(UITheme::dividerSoft); g.drawHorizontalLine(height - 1, 0.0f, static_cast<float>(width));
   }
-  void selectedRowsChanged(int row) override { use.setEnabled(row >= 0); }
-  void listBoxItemDoubleClicked(int, const juce::MouseEvent &) override { use.triggerClick(); }
-  void filter() {
-    filtered.clear();
-    const auto query = search.getText().trim();
-    if (query.isEmpty() || juce::String("Ocultar letras").containsIgnoreCase(query)) filtered.push_back(-1);
-    for (size_t i = 0; i < destinations.size(); ++i)
-      if (query.isEmpty() || (destinations[i].displayName + " " + destinations[i].target.text).containsIgnoreCase(query))
-        filtered.push_back(static_cast<int>(i));
-    list.updateContent(); list.selectRow(filtered.empty() ? -1 : 0); repaint();
+  void mouseMagnify(const juce::MouseEvent &e, float amount) override {
+    if (!hasNavigationTarget(e) || owner.draggingInsertionAnchor || owner.dragId.isNotEmpty()) return;
+    if (amount != 0.0f) owner.applyZoom(timelineNavigation::magnifyFactor(amount), e.position.x);
   }
-  std::vector<SlideDestination> destinations;
-  std::vector<int> filtered;
-  std::function<void(Target)> onUse;
-  juce::Label title, helper;
-  juce::TextEditor search;
-  juce::ListBox list;
-  juce::TextButton use;
+private:
+  bool hasNavigationTarget(const juce::MouseEvent &e) const {
+    const float x = e.position.x - owner.viewport.getViewPositionX();
+    return x >= mapInset && x < owner.viewport.getMaximumVisibleWidth() - mapInset;
+  }
+  LyricsPanel &owner;
 };
 
 LyricsPanel::LyricsPanel() : map(std::make_unique<SongMap>(*this)) {
   setOpaque(true);
   setWantsKeyboardFocus(true);
   viewport.setViewedComponent(map.get(), false);
-  viewport.setScrollBarsShown(true, false);
+  viewport.setScrollBarsShown(true, true);
+  // Keep the existing scrollbar gutter stable: changing collision lanes while
+  // zooming must not change the ruler width or shift the cursor anchor.
+  viewport.getVerticalScrollBar().setAutoHide(false);
   addAndMakeVisible(viewport);
-  for (auto *button : {&connectionButton, &testConnectionButton, &refreshButton,
-                       &addButton, &testButton, &detailMenuButton}) addAndMakeVisible(*button);
+  for (auto *button : {&connectionButton, &refreshButton}) addAndMakeVisible(*button);
+  map->addChildComponent(addButton);
+  addButton.setTooltip("Elegir grupo y diapositiva en el tiempo marcado");
+  refreshButton.setTooltip("Actualizar shows y destinos FreeShow");
   addAndMakeVisible(enabledToggle);
-  addAndMakeVisible(showCombo); addAndMakeVisible(layoutCombo);
-  for (auto *label : {&hostLabel, &portLabel, &tokenLabel, &showLabel, &layoutLabel}) {
-    label->setFont(makeAppFont(10.0f, AppFontWeight::Medium));
-    addAndMakeVisible(*label);
-  }
-  hostLabel.setText("Host local / LAN", juce::dontSendNotification);
-  portLabel.setText("REST", juce::dontSendNotification);
-  tokenLabel.setText(juce::String::fromUTF8("Token de sesión (opcional)"), juce::dontSendNotification);
-  showLabel.setText("SHOW", juce::dontSendNotification);
-  layoutLabel.setText("ARREGLO", juce::dontSendNotification);
-  for (auto *editor : {&hostEditor, &portEditor, &tokenEditor}) {
-    editor->setFont(makeAppFont(12.0f));
-    addAndMakeVisible(*editor);
-  }
-  hostEditor.setTitle("Host FreeShow"); portEditor.setTitle("Puerto REST FreeShow");
-  tokenEditor.setTitle(juce::String::fromUTF8("Token de sesión FreeShow")); tokenEditor.setPasswordCharacter(0x2022);
-  portEditor.setInputRestrictions(5, "0123456789");
-  hostEditor.setText("127.0.0.1"); portEditor.setText("5506");
+  addAndMakeVisible(showCombo);
+  showLabel.setFont(makeAppFont(10.0f, AppFontWeight::Medium));
+  showLabel.setText("SHOW", juce::dontSendNotification); addAndMakeVisible(showLabel);
   showCombo.setTextWhenNothingSelected(juce::String::fromUTF8("Elegir show…"));
-  layoutCombo.setTextWhenNothingSelected(juce::String::fromUTF8("Elegir arreglo…"));
-  connectionButton.onClick = [this] { settingsVisible = !settingsVisible; resized(); repaint(); };
-  testConnectionButton.onClick = [this] { testConnection(); };
+  connectionButton.onClick = [this] { if (onConnectionSettingsRequested) onConnectionSettingsRequested(); };
   refreshButton.onClick = [this] { refreshCatalogue(); };
-  addButton.onClick = [this] { showDestinationPicker(positionProvider ? positionProvider() : 0.0); };
-  testButton.onClick = [this] { testSelected(); };
-  detailMenuButton.onClick = [this] {
-    if (const auto *m = findMark(selectedId)) showMapMenu({timeToX(m->seconds), 50.0f}, selectedId);
+  addButton.onClick = [this] {
+    if (insertionAnchor.valid) showDestinationMenu(insertionAnchor.seconds);
   };
   enabledToggle.onClick = [this] { lyrics.enabled = enabledToggle.getToggleState(); changed(); };
   showCombo.onChange = [this] {
@@ -216,14 +140,6 @@ LyricsPanel::LyricsPanel() : map(std::make_unique<SongMap>(*this)) {
     const int index = showCombo.getSelectedId() - 1;
     if (!juce::isPositiveAndBelow(index, static_cast<int>(shows.size()))) return;
     loadShow(shows[static_cast<size_t>(index)].id, true);
-  };
-  layoutCombo.onChange = [this] {
-    if (updating) return;
-    const int index = layoutCombo.getSelectedId() - 1;
-    if (!juce::isPositiveAndBelow(index, static_cast<int>(catalogue.layouts.size()))) return;
-    const auto &layout = catalogue.layouts[static_cast<size_t>(index)];
-    lyrics.layoutId = layout.id; lyrics.layoutName = layout.name;
-    changed(); updateDetail(); map->repaint();
   };
   refreshThemeColours();
   startTimerHz(12);
@@ -234,10 +150,8 @@ LyricsPanel::~LyricsPanel() { stopTimer(); viewport.setViewedComponent(nullptr);
 void LyricsPanel::setClient(FreeShowClient *next) {
   client = next;
   lastReviewRevision = 0;
+  lastConnectionEpoch = 0; wasConnected = false;
   if (client != nullptr) {
-    const auto settings = client->getSettings();
-    hostEditor.setText(settings.host, false); portEditor.setText(juce::String(settings.port), false);
-    tokenEditor.setText(settings.authToken, false);
     if (client->getStatus().state == ConnectionStatus::State::connected) refreshCatalogue();
   }
   timerCallback();
@@ -253,9 +167,11 @@ void LyricsPanel::setSongLyrics(const SongLyrics &next) {
     loadingCatalogue = false;
   }
   lyrics = next;
+  insertionAnchor.clear();
+  draggingInsertionAnchor = false;
   if (findMark(selectedId) == nullptr) selectedId.clear();
   enabledToggle.setToggleState(lyrics.enabled, juce::dontSendNotification);
-  rebuildShowSelectors(); rebuildMapLayout(); updateDetail(); resized(); repaint();
+  rebuildShowSelectors(); rebuildMapLayout(); resized(); repaint();
   if (client != nullptr && next.showId.isNotEmpty()
       && (previousShow != next.showId || catalogue.id != next.showId)) loadShow(next.showId, false);
 }
@@ -265,102 +181,88 @@ void LyricsPanel::setDuration(double seconds) { duration = std::isfinite(seconds
 void LyricsPanel::setTransportProviders(std::function<double()> position, std::function<bool()> playing) {
   positionProvider = std::move(position); playingProvider = std::move(playing);
 }
+void LyricsPanel::setTimelineMarksProvider(std::function<std::vector<PracticeTimelineMark>(juce::Range<double>, float)> provider) {
+  timelineMarksProvider = std::move(provider); map->repaint();
+}
 
 void LyricsPanel::refreshThemeColours() {
-  for (auto *button : {&connectionButton, &testConnectionButton, &refreshButton, &detailMenuButton}) styleButton(*button);
-  styleButton(addButton, true); styleButton(testButton, true);
-  for (auto *label : {&hostLabel, &portLabel, &tokenLabel, &showLabel, &layoutLabel})
-    label->setColour(juce::Label::textColourId, UITheme::textSecondary);
-  for (auto *editor : {&hostEditor, &portEditor, &tokenEditor}) applyTextEditorTheme(*editor);
-  applyComboBoxTheme(showCombo); applyComboBoxTheme(layoutCombo);
+  for (auto *bar : {&viewport.getHorizontalScrollBar(), &viewport.getVerticalScrollBar()})
+    bar->setColour(juce::ScrollBar::thumbColourId, UITheme::textSecondary.withAlpha(0.35f));
+  for (auto *button : {&connectionButton, &refreshButton}) styleButton(*button);
+  styleButton(addButton, true);
+  showLabel.setColour(juce::Label::textColourId, UITheme::textSecondary);
+  applyComboBoxTheme(showCombo);
   applyToggleSwitchTheme(enabledToggle);
   repaint(); if (map != nullptr) map->repaint();
 }
 
 void LyricsPanel::paint(juce::Graphics &g) {
   g.fillAll(UITheme::panelDark);
-  g.setColour(UITheme::textPrimary); g.setFont(makeAppFont(14.0f, AppFontWeight::SemiBold));
-  g.drawText("Mapa de letras", titleBounds, juce::Justification::centredLeft);
   g.setColour(UITheme::textSecondary); g.setFont(makeAppFont(10.5f));
-  g.drawText(statusText, statusBounds, juce::Justification::centredLeft, true);
-  g.drawText(juce::String::fromUTF8("Canción completa · Arrastra los puntos para ajustar el tiempo · Clic derecho para editar"), helperBounds,
-             juce::Justification::centredLeft, true);
   g.setColour(UITheme::dividerSoft);
   g.drawHorizontalLine(viewport.getY() - 1, 12.0f, static_cast<float>(getWidth() - 12));
-  g.drawHorizontalLine(detailBounds.getY(), 12.0f, static_cast<float>(getWidth() - 12));
-  auto detail = detailBounds.reduced(12, 8);
-  detail.removeFromRight(179);
-  if (const auto *mark = findMark(selectedId)) {
-    g.setColour(mark->enabled ? UITheme::accent : UITheme::textSecondary);
-    g.setFont(makeAppFont(12.0f, AppFontWeight::SemiBold));
-    g.drawFittedText(formatTimeSeconds(mark->seconds) + "  " + markTitle(*mark)
-                    + (mark->enabled ? "" : juce::String::fromUTF8(" · Desactivada")), detail.removeFromTop(19), juce::Justification::centredLeft, 1);
-    const auto issue = reviewReason(*mark);
-    g.setColour(issue.isNotEmpty() ? juce::Colour(0xffe6ad59) : UITheme::textSecondary);
-    g.setFont(makeAppFont(10.0f));
-    g.drawFittedText(issue.isNotEmpty() ? "Revisar: " + issue : destinationDescription(*mark),
-                    detail.removeFromTop(17), juce::Justification::centredLeft, 1);
-    g.setColour(UITheme::textPrimary.withAlpha(0.86f)); g.setFont(makeAppFont(11.5f));
-    g.drawFittedText(mark->target.hide ? "Oculta la letra del output." : previewText(*mark),
-                    detail, juce::Justification::topLeft, 3);
-  } else {
-    g.setColour(UITheme::textSecondary); g.setFont(makeAppFont(11.0f));
-    g.drawFittedText(juce::String::fromUTF8("Selecciona una marca para ver el detalle. Probar en FreeShow requiere un clic explícito."),
-                    detail, juce::Justification::centredLeft, 2);
-  }
 }
 
 void LyricsPanel::resized() {
   const int width = getWidth();
   auto row = juce::Rectangle<int>(12, 8, juce::jmax(0, width - 24), 28);
-  titleBounds = row.removeFromLeft(136);
   connectionButton.setBounds(row.removeFromRight(175)); row.removeFromRight(8);
-  enabledToggle.setBounds(row.removeFromRight(162));
-  row = juce::Rectangle<int>(12, 43, juce::jmax(0, width - 24), 30);
-  addButton.setBounds(row.removeFromRight(82)); row.removeFromRight(8);
-  refreshButton.setBounds(row.removeFromRight(88)); row.removeFromRight(12);
+  enabledToggle.setBounds(row.removeFromRight(162)); row.removeFromRight(8);
+  refreshButton.setBounds(row.removeFromRight(30)); row.removeFromRight(10);
   showLabel.setBounds(row.removeFromLeft(38));
-  const int comboWidth = juce::jmax(100, (row.getWidth() - 84) / 2);
-  showCombo.setBounds(row.removeFromLeft(comboWidth)); row.removeFromLeft(12);
-  layoutLabel.setBounds(row.removeFromLeft(53)); layoutCombo.setBounds(row);
-  int top = 80;
-  for (auto *component : std::initializer_list<juce::Component *>{&hostLabel, &portLabel, &tokenLabel,
-                         &hostEditor, &portEditor, &tokenEditor, &testConnectionButton}) component->setVisible(settingsVisible);
-  if (settingsVisible) {
-    auto fields = juce::Rectangle<int>(12, top, juce::jmax(0, width - 24), 49);
-    auto test = fields.removeFromRight(140); testConnectionButton.setBounds(test.withTrimmedTop(19));
-    fields.removeFromRight(10);
-    auto host = fields.removeFromLeft(juce::jlimit(130, 230, fields.getWidth() / 3));
-    hostLabel.setBounds(host.removeFromTop(18)); hostEditor.setBounds(host);
-    fields.removeFromLeft(9); auto port = fields.removeFromLeft(65);
-    portLabel.setBounds(port.removeFromTop(18)); portEditor.setBounds(port);
-    fields.removeFromLeft(9); tokenLabel.setBounds(fields.removeFromTop(18)); tokenEditor.setBounds(fields);
-    top += 56;
-  }
-  statusBounds = {14, top, juce::jmax(0, width - 28), 18}; top += 22;
-  helperBounds = {14, top, juce::jmax(0, width - 28), 18}; top += 22;
-  const int detailHeight = selectedId.isNotEmpty() ? 100 : 46;
-  detailBounds = {0, juce::jmax(top + 80, getHeight() - detailHeight), width, detailHeight};
-  viewport.setBounds(6, top, juce::jmax(0, width - 12), juce::jmax(0, detailBounds.getY() - top));
-  const bool selected = findMark(selectedId) != nullptr;
-  testButton.setVisible(selected); detailMenuButton.setVisible(selected);
-  testButton.setBounds(width - 174, detailBounds.getY() + 12, 160, 29);
-  detailMenuButton.setBounds(width - 46, detailBounds.getY() + 49, 32, 25);
+  showCombo.setBounds(row.removeFromLeft(juce::jmin(row.getWidth(), 220)));
+  const int top = 44;
+  viewport.setBounds(6, top, juce::jmax(0, width - 12), juce::jmax(0, getHeight() - top - 6));
   rebuildMapLayout();
 }
 
 float LyricsPanel::timeToX(double seconds) const {
-  return mapInset + static_cast<float>(juce::jlimit(0.0, duration, seconds) / duration)
-                      * juce::jmax(1.0f, static_cast<float>(map->getWidth()) - 2.0f * mapInset);
+  return mapInset + mapOriginOffset + static_cast<float>(juce::jlimit(0.0, duration, seconds) / duration) * timelineWidth;
 }
 double LyricsPanel::xToTime(float x) const {
-  return juce::jlimit(0.0, duration, static_cast<double>((x - mapInset)
-                  / juce::jmax(1.0f, static_cast<float>(map->getWidth()) - 2.0f * mapInset)) * duration);
+  return juce::jlimit(0.0, duration, static_cast<double>((x - mapInset - mapOriginOffset) / timelineWidth) * duration);
 }
 
+void LyricsPanel::applyZoom(double factor, float mapAnchorX) {
+  if (!std::isfinite(factor) || factor <= 0.0 || factor == 1.0) return;
+  syncNavigationFromViewport();
+  const float anchor = (mapAnchorX - viewport.getViewPositionX() - mapInset)
+      / juce::jmax(1.0f, viewport.getMaximumVisibleWidth() - 2.0f * mapInset);
+  const auto next = timelineNavigation::zoomWindow({navigationStart, navigationSpan}, static_cast<float>(factor), anchor);
+  setTimelineWindow(next.start, next.span);
+}
+void LyricsPanel::panTimeline(float deltaX) {
+  syncNavigationFromViewport();
+  setTimelineWindow(navigationStart + timelineNavigation::panDelta(deltaX, navigationSpan), navigationSpan);
+}
+void LyricsPanel::syncNavigationFromViewport() {
+  const int x = viewport.getViewPositionX();
+  if (lastNavigationViewX >= 0 && x != lastNavigationViewX) {
+    const auto next = timelineNavigation::constrainWindow(
+        navigationStart + (x - lastNavigationViewX) / timelineWidth, navigationSpan);
+    navigationStart = next.start;
+  }
+  lastNavigationViewX = x;
+}
+void LyricsPanel::setTimelineWindow(float start, float span) {
+  syncNavigationFromViewport();
+  const auto next = timelineNavigation::constrainWindow(start, span);
+  navigationStart = next.start; navigationSpan = next.span;
+  zoomFactor = navigationSpan == timelineNavigation::minimumSpan ? timelineNavigation::maximumZoom : 1.0 / navigationSpan;
+  rebuildMapLayout();
+}
 void LyricsPanel::rebuildMapLayout() {
-  const int mapWidth = juce::jmax(100, viewport.getWidth() - viewport.getScrollBarThickness());
+  syncNavigationFromViewport();
+  const int viewWidth = juce::jmax(100, viewport.getMaximumVisibleWidth());
+  timelineWidth = (viewWidth - 2.0f * mapInset) / navigationSpan;
+  const int mapWidth = static_cast<int>(std::ceil(timelineWidth + 2.0f * mapInset));
+  const int oldY = viewport.getViewPositionY();
   map->setSize(mapWidth, juce::jmax(100, map->getHeight()));
+  viewport.setViewPosition(juce::roundToInt(navigationStart * timelineWidth), oldY);
+  lastNavigationViewX = viewport.getViewPositionX();
+  // Preserve fractional navigation in the drawing and hit geometry while JUCE's
+  // Viewport itself scrolls in integer pixels. Tiny trackpad events accumulate.
+  mapOriginOffset = lastNavigationViewX - navigationStart * timelineWidth;
   std::vector<const Mark *> ordered;
   for (const auto &mark : lyrics.marks) ordered.push_back(&mark);
   std::stable_sort(ordered.begin(), ordered.end(), [](const Mark *a, const Mark *b) { return a->seconds < b->seconds; });
@@ -378,7 +280,16 @@ void LyricsPanel::rebuildMapLayout() {
     placements.push_back({mark->id, {x, y}, {left, y + 14.0f, cardWidth, 57.0f}, lane});
   }
   const int required = static_cast<int>(rulerHeight + juce::jmax(1, static_cast<int>(laneEnds.size())) * laneHeight + 14.0f);
-  map->setSize(mapWidth, juce::jmax(required, viewport.getHeight()));
+  map->setSize(mapWidth, juce::jmax(required, viewport.getHeight()
+      - (zoomFactor > 1.0 ? viewport.getScrollBarThickness() : 0)));
+  addButton.setVisible(insertionAnchor.valid && lyrics.marks.size() < markLimit);
+  if (insertionAnchor.valid) {
+    auto bounds = TimelineInsertionAnchor::addButtonBounds(
+        timeToX(insertionAnchor.seconds), rulerHeight + 8.0f);
+    bounds.setX(juce::jlimit(mapInset, static_cast<float>(mapWidth) - mapInset - bounds.getWidth(), bounds.getX()));
+    addButton.setBounds(bounds.toNearestInt());
+    addButton.toFront(false);
+  }
   map->repaint();
 }
 
@@ -394,31 +305,27 @@ void LyricsPanel::paintMap(juce::Graphics &g) {
     g.drawFittedText(section.name, juce::Rectangle<float>(left + 5.0f, 25.0f, juce::jmax(0.0f, right-left-10.0f), 16.0f).toNearestInt(),
                     juce::Justification::centredLeft, 1);
   }
-  const int ticks = juce::jlimit(2, 12, map->getWidth() / 110);
-  g.setFont(makeAppFont(9.5f));
-  for (int i = 0; i <= ticks; ++i) {
-    const double seconds = duration * static_cast<double>(i) / ticks;
-    const float x = timeToX(seconds);
-    g.setColour(UITheme::dividerSoft.withAlpha(0.5f)); g.drawVerticalLine(juce::roundToInt(x), 19.0f, area.getBottom());
-    g.setColour(UITheme::textSecondary.withAlpha(0.8f));
-    auto tickArea = juce::Rectangle<int>(juce::roundToInt(x)-24, 1, 48, 17);
-    if (i == 0) tickArea.setX(juce::roundToInt(x));
-    if (i == ticks) tickArea.setRight(juce::roundToInt(x));
-    g.drawText(formatTimeSeconds(seconds), tickArea, i == 0 ? juce::Justification::centredLeft :
-               (i == ticks ? juce::Justification::centredRight : juce::Justification::centred), false);
+  const float rulerLeft = juce::jmax(mapInset, static_cast<float>(viewport.getViewPositionX()));
+  const float rulerRight = juce::jmin(area.getRight() - mapInset,
+      static_cast<float>(viewport.getViewPositionX() + viewport.getViewWidth()));
+  if (rulerRight > rulerLeft) {
+    const juce::Range<double> visible{xToTime(rulerLeft), xToTime(rulerRight)};
+    const auto marks = timelineMarksProvider ? timelineMarksProvider(visible, rulerRight - rulerLeft)
+        : PracticeTimelineRuler::build(visible, rulerRight - rulerLeft, 120.0, "4/4");
+    drawMusicalTimelineRuler(g, {rulerLeft, 0.0f, rulerRight - rulerLeft, 24.0f}, visible, duration, marks);
   }
+  if (insertionAnchor.valid)
+    TimelineInsertionAnchor::paint(g, timeToX(insertionAnchor.seconds), 0.0f, area.getBottom());
   if (positionProvider) {
     const float x = timeToX(positionProvider());
-    g.setColour(UITheme::textPrimary.withAlpha(playingProvider && playingProvider() ? 0.65f : 0.25f));
-    g.drawLine(x, 17.0f, x, area.getBottom(), 1.0f);
-    juce::Path flag; flag.addTriangle(x-4, 18, x+4, 18, x, 23); g.fillPath(flag);
+    drawTimelinePlayhead(g, x, 17.0f, area.getBottom(), playingProvider && playingProvider() ? 0.65f : 0.25f);
   }
   if (placements.empty()) {
     g.setColour(UITheme::textSecondary); g.setFont(makeAppFont(13.0f, AppFontWeight::Medium));
     g.drawText(juce::String::fromUTF8("Añade marcas de letra en cualquier momento de la canción"), area.toNearestInt().withTrimmedTop(50).withHeight(24),
                juce::Justification::centred);
     g.setFont(makeAppFont(11.0f));
-    g.drawText("Clic derecho sobre el mapa o + Marca. Las secciones solo sirven de referencia.",
+    g.drawText("Marca un tiempo y pulsa su +. Las secciones solo sirven de referencia.",
                area.toNearestInt().withTrimmedTop(80).withHeight(22), juce::Justification::centred);
   }
   for (const auto &placement : placements) {
@@ -460,32 +367,23 @@ const Mark *LyricsPanel::findMark(const juce::String &id) const {
   for (const auto &mark : lyrics.marks) if (mark.id == id) return &mark;
   return nullptr;
 }
-const Layout *LyricsPanel::selectedLayout() const {
-  for (const auto &layout : catalogue.layouts) if (layout.id == lyrics.layoutId) return &layout;
-  return nullptr;
-}
 juce::String LyricsPanel::reviewReason(const Mark &mark) const {
   if (mark.target.hide) return {};
   if (catalogueError.isNotEmpty()) return catalogueError;
   if (loadingCatalogue) return juce::String::fromUTF8("verificando catálogo FreeShow");
-  if (mark.target.showId != lyrics.showId || mark.target.layoutId != lyrics.layoutId)
+  if (mark.target.showId != lyrics.showId || (!mark.target.useActiveLayout && mark.target.layoutId != lyrics.layoutId))
     return "el destino pertenece a otro show o arreglo; vuelve a elegirlo";
   if (catalogue.id.isEmpty()) return juce::String::fromUTF8("catálogo pendiente de verificar");
   return resolve(mark.target, catalogue).error;
 }
-juce::String LyricsPanel::destinationDescription(const Mark &mark) const {
-  if (reviewReason(mark).isEmpty() && !mark.target.hide) {
-    const auto destination = resolve(mark.target, catalogue);
-    for (const auto &layout : catalogue.layouts) if (layout.id == mark.target.layoutId)
-      for (const auto &slide : layout.slides) if (slide.absoluteIndex == destination.absoluteIndex)
-        return slide.displayName;
-  }
-  return targetLabel(mark.target);
-}
 juce::String LyricsPanel::previewText(const Mark &mark) const {
+  if (mark.target.useActiveLayout && catalogue.id == mark.target.showId)
+    for (const auto &group : catalogue.groups) if (group.id == mark.target.groupId)
+      for (const auto &slide : group.slides) if (slide.target.slideId == mark.target.slideId)
+        return slide.target.text;
   if (reviewReason(mark).isEmpty() && !mark.target.hide) {
     const auto destination = resolve(mark.target, catalogue);
-    for (const auto &layout : catalogue.layouts) if (layout.id == mark.target.layoutId)
+    for (const auto &layout : catalogue.layouts) if (layout.id == (mark.target.useActiveLayout ? catalogue.activeLayoutId : mark.target.layoutId))
       for (const auto &slide : layout.slides) if (slide.absoluteIndex == destination.absoluteIndex)
         return slide.target.text;
   }
@@ -502,120 +400,118 @@ juce::Point<int> LyricsPanel::markerScreenPoint(const juce::String &id) const {
 }
 
 void LyricsPanel::selectMark(const juce::String &id) {
-  selectedId = id; updateDetail(); resized();
+  selectedId = id;
   for (const auto &p : placements) if (p.id == id) {
     const int top = viewport.getViewPositionY();
-    if (p.preview.getBottom() > top + viewport.getHeight())
-      viewport.setViewPosition(0, juce::roundToInt(p.preview.getBottom()) - viewport.getHeight() + 7);
+    if (p.preview.getBottom() > top + viewport.getViewHeight())
+      viewport.setViewPosition(viewport.getViewPositionX(), juce::roundToInt(p.preview.getBottom()) - viewport.getViewHeight() + 7);
     else if (p.point.y - 10.0f < top)
-      viewport.setViewPosition(0, juce::jmax(0, juce::roundToInt(p.point.y) - 15));
+      viewport.setViewPosition(viewport.getViewPositionX(), juce::jmax(0, juce::roundToInt(p.point.y) - 15));
     break;
   }
   repaint(); map->repaint();
 }
-void LyricsPanel::updateDetail() {
-  const auto *mark = findMark(selectedId);
-  const bool connected = client != nullptr && client->getStatus().state == ConnectionStatus::State::connected;
-  testButton.setEnabled(mark != nullptr && mark->enabled && connected && reviewReason(*mark).isEmpty());
-  repaint();
-}
 void LyricsPanel::changed() {
   if (onChanged) onChanged(lyrics);
-  updateDetail(); map->repaint(); repaint();
+  map->repaint(); repaint();
 }
 void LyricsPanel::moveMark(const juce::String &id, double seconds, bool notify) {
   if (auto *mark = findMark(id)) mark->seconds = juce::jlimit(0.0, duration, seconds);
-  rebuildMapLayout(); updateDetail(); if (notify) changed();
+  rebuildMapLayout(); if (notify) changed();
 }
 
-void LyricsPanel::showDestinationPicker(double seconds, const juce::String &id) {
+void LyricsPanel::placeInsertionAnchor(double seconds) {
+  insertionAnchor.place(juce::jlimit(0.0, duration, seconds));
+  rebuildMapLayout();
+}
+
+juce::PopupMenu LyricsPanel::buildDestinationMenu(std::vector<Target> &targets) const {
+  juce::PopupMenu menu;
+  Target hide; hide.hide = true; hide.title = "Ocultar letras";
+  targets.push_back(hide);
+  menu.addItem(1, "Ocultar letras");
+  if (catalogue.groups.empty()) {
+    menu.addItem(0, "Conecta FreeShow y elige un show para consultar sus grupos", false);
+    return menu;
+  }
+  for (const auto &group : catalogue.groups) {
+    juce::PopupMenu screens;
+    for (const auto &slide : group.slides) {
+      targets.push_back(slide.target);
+      auto label = juce::String::fromUTF8("Pantalla ") + juce::String(slide.screen);
+      const auto text = firstLines(slide.target.text, 1).substring(0, 70);
+      if (text.isNotEmpty()) label += juce::String::fromUTF8(" · ") + text;
+      screens.addItem(static_cast<int>(targets.size()), label);
+    }
+    auto name = group.name.isNotEmpty() ? group.name : group.id;
+    const auto sameName = std::count_if(catalogue.groups.begin(), catalogue.groups.end(),
+        [&group](const SlideGroup &other) { return other.name == group.name; });
+    if (sameName > 1) name += " [" + group.id.substring(0, 8) + "]";
+    menu.addSubMenu(name, screens);
+  }
+  return menu;
+}
+
+void LyricsPanel::applyDestination(const Target &target, double seconds, const juce::String &id) {
   if (id.isEmpty() && lyrics.marks.size() >= markLimit) return;
-  std::vector<SlideDestination> options;
-  if (const auto *layout = selectedLayout()) options = layout->slides;
+  if (id.isNotEmpty() && findMark(id) == nullptr) return;
+  if (auto *mark = findMark(id)) mark->target = target;
+  else {
+    Mark newMark; newMark.id = juce::Uuid().toString();
+    newMark.seconds = juce::jlimit(0.0, duration, seconds); newMark.target = target;
+    selectedId = newMark.id; lyrics.marks.push_back(std::move(newMark));
+    insertionAnchor.clear();
+  }
+  rebuildMapLayout(); changed(); resized();
+}
+
+void LyricsPanel::showDestinationMenu(double seconds, const juce::String &id) {
+  if (id.isEmpty() && (!insertionAnchor.valid || lyrics.marks.size() >= markLimit)) return;
+  std::vector<Target> targets;
+  auto menu = buildDestinationMenu(targets);
   const auto safe = juce::Component::SafePointer<LyricsPanel>(this);
   const auto request = catalogueRequest;
-  auto picker = std::make_unique<DestinationPicker>(std::move(options), [safe, id, seconds, request](Target target) {
-    if (safe == nullptr || request != safe->catalogueRequest) return;
-    if (id.isEmpty() && safe->lyrics.marks.size() >= markLimit) return;
-    if (id.isNotEmpty() && safe->findMark(id) == nullptr) return;
-    if (auto *mark = safe->findMark(id)) mark->target = std::move(target);
-    else {
-      Mark newMark; newMark.id = juce::Uuid().toString(); newMark.seconds = juce::jlimit(0.0, safe->duration, seconds);
-      newMark.target = std::move(target); safe->selectedId = newMark.id; safe->lyrics.marks.push_back(std::move(newMark));
-    }
-    safe->rebuildMapLayout(); safe->changed(); safe->resized();
-  });
-  auto anchor = addButton.getBounds();
+  auto anchor = getLocalArea(map.get(), addButton.getBounds());
   if (const auto *mark = findMark(id))
     anchor = getLocalArea(map.get(), juce::Rectangle<int>(juce::roundToInt(timeToX(mark->seconds)), 46, 1, 1));
   auto *parent = getTopLevelComponent();
-  presentActionPopover(std::move(picker), parent->getLocalArea(this, anchor), parent);
+  auto options = makeTouchPopupMenuOptions(nullptr)
+      .withTargetScreenArea(parent->localAreaToGlobal(parent->getLocalArea(this, anchor)))
+      .withParentComponent(parent);
+  menu.showMenuAsync(options,
+      [safe, id, seconds, request, targets = std::move(targets)](int result) {
+        if (safe == nullptr || request != safe->catalogueRequest || result < 1
+            || result > static_cast<int>(targets.size())) return;
+        safe->applyDestination(targets[static_cast<size_t>(result - 1)], seconds, id);
+      });
 }
 
-void LyricsPanel::editMarkTime(const juce::String &id) {
-  const auto *mark = findMark(id); if (mark == nullptr) return;
-  const auto safe = juce::Component::SafePointer<LyricsPanel>(this);
-  inputModal = std::make_unique<AppModal>(*this, AppModal::Kind::Input, "Tiempo de la marca",
-      juce::String::fromUTF8("Posición en segundos de la canción. No modifica las secciones musicales."), "Guardar", "Cancelar",
-      [safe, id](bool accepted, const juce::String &value) {
-        if (safe == nullptr || !accepted) return;
-        const auto text = value.trim().replaceCharacter(',', '.');
-        const int dot = text.indexOfChar('.');
-        if (text.containsAnyOf("0123456789") && text.containsOnly("0123456789.")
-            && (dot < 0 || text.indexOfChar(dot + 1, '.') < 0))
-          safe->moveMark(id, text.getDoubleValue(), true);
-      }, "Segundos", juce::String(mark->seconds, 3));
-  inputModal->show();
+bool LyricsPanel::canTestMark(const Mark &mark) const {
+  return mark.enabled && client != nullptr
+      && client->getStatus().state == ConnectionStatus::State::connected
+      && reviewReason(mark).isEmpty();
 }
-void LyricsPanel::editMarkName(const juce::String &id) {
-  const auto *mark = findMark(id); if (mark == nullptr) return;
-  const auto safe = juce::Component::SafePointer<LyricsPanel>(this);
-  inputModal = std::make_unique<AppModal>(*this, AppModal::Kind::Input, "Nombre de la marca",
-      "El nombre es una referencia visual; el destino mantiene su identidad FreeShow.", "Guardar", "Cancelar",
-      [safe, id](bool accepted, const juce::String &value) {
-        if (safe == nullptr || !accepted || value.trim().isEmpty()) return;
-        if (auto *mark = safe->findMark(id)) mark->target.title = value.trim().substring(0, 160);
-        safe->changed();
-      }, "Nombre", markTitle(*mark));
-  inputModal->show();
-}
-
-void LyricsPanel::showMapMenu(juce::Point<float> point, const juce::String &id) {
+juce::PopupMenu LyricsPanel::buildMarkMenu(const Mark &mark) const {
   juce::PopupMenu menu;
+  menu.addSectionHeader(formatTimeSeconds(mark.seconds) + juce::String::fromUTF8(" · ") + markTitle(mark));
+  menu.addItem(2, juce::String::fromUTF8("Cambiar destino FreeShow…"));
+  menu.addItem(7, "Probar en FreeShow", canTestMark(mark));
+  menu.addSeparator();
+  menu.addItem(8, "Eliminar marca");
+  return menu;
+}
+void LyricsPanel::showMapMenu(juce::Point<float> point, const juce::String &id) {
   const auto *mark = findMark(id);
-  if (mark != nullptr) selectMark(id);
-  const double seconds = xToTime(point.x);
-  menu.addSectionHeader(mark != nullptr ? formatTimeSeconds(mark->seconds) + juce::String::fromUTF8(" · ") + markTitle(*mark)
-                                       : juce::String::fromUTF8("Letras · ") + formatTimeSeconds(seconds));
-  menu.addItem(1, juce::String::fromUTF8("Añadir marca aquí…"), lyrics.marks.size() < markLimit);
-  if (mark != nullptr) {
-    menu.addSeparator();
-    menu.addItem(2, juce::String::fromUTF8("Cambiar destino FreeShow…"));
-    menu.addItem(3, juce::String::fromUTF8("Cambiar tiempo…"));
-    menu.addItem(4, juce::String::fromUTF8("Cambiar nombre…"));
-    menu.addItem(5, "Duplicar marca", lyrics.marks.size() < markLimit);
-    menu.addItem(6, mark->enabled ? "Desactivar marca" : "Activar marca");
-    menu.addSeparator();
-    menu.addItem(7, "Probar en FreeShow", testButton.isEnabled());
-    menu.addItem(8, "Eliminar marca");
-  }
+  if (mark == nullptr) return;
+  selectMark(id);
+  auto menu = buildMarkMenu(*mark);
   const auto safe = juce::Component::SafePointer<LyricsPanel>(this);
   const auto screen = map->localPointToGlobal(point.toInt());
   menu.showMenuAsync(makeTouchPopupMenuOptions(nullptr).withTargetScreenArea({screen.x, screen.y, 1, 1})
-      .withParentComponent(getTopLevelComponent()), [safe, id, seconds](int result) {
+      .withParentComponent(getTopLevelComponent()), [safe, id](int result) {
     if (safe == nullptr || result == 0) return;
-    if (result == 1) { safe->showDestinationPicker(seconds); return; }
     auto *mark = safe->findMark(id); if (mark == nullptr) return;
-    if (result == 2) { safe->showDestinationPicker(0.0, id); return; }
-    if (result == 3) { safe->editMarkTime(id); return; }
-    if (result == 4) { safe->editMarkName(id); return; }
-    if (result == 5) {
-      if (safe->lyrics.marks.size() >= markLimit) return;
-      Mark copy = *mark; copy.id = juce::Uuid().toString();
-      copy.seconds = juce::jmin(safe->duration, copy.seconds + 1.0);
-      safe->selectedId = copy.id; safe->lyrics.marks.push_back(std::move(copy));
-    }
-    if (result == 6) mark->enabled = !mark->enabled;
+    if (result == 2) { safe->showDestinationMenu(0.0, id); return; }
     if (result == 7) { safe->selectMark(id); safe->testSelected(); return; }
     if (result == 8) {
       safe->lyrics.marks.erase(std::remove_if(safe->lyrics.marks.begin(), safe->lyrics.marks.end(),
@@ -626,26 +522,6 @@ void LyricsPanel::showMapMenu(juce::Point<float> point, const juce::String &id) 
   });
 }
 
-void LyricsPanel::testConnection() {
-  if (client == nullptr) return;
-  ConnectionSettings settings;
-  settings.host = hostEditor.getText().trim(); settings.port = portEditor.getText().getIntValue();
-  settings.authToken = tokenEditor.getText();
-  juce::String error;
-  if (!FreeShowClient::validateSettings(settings, &error)) { catalogueError = error; timerCallback(); return; }
-  catalogueError.clear();
-  client->configure(std::move(settings));
-  const auto safe = juce::Component::SafePointer<LyricsPanel>(this);
-  client->testConnection([safe](bool ok, juce::String message) {
-    juce::MessageManager::callAsync([safe, ok, message] {
-      if (safe == nullptr) return;
-      safe->statusText = message;
-      if (ok) safe->refreshCatalogue();
-      safe->timerCallback();
-    });
-  });
-  timerCallback();
-}
 void LyricsPanel::refreshCatalogue() {
   if (client == nullptr) return;
   loadingCatalogue = true;
@@ -681,7 +557,7 @@ void LyricsPanel::loadShow(const juce::String &id, bool updateBinding) {
         for (const auto &layout : safe->catalogue.layouts)
           if (layout.id == safe->lyrics.layoutId) safe->lyrics.layoutName = layout.name;
       }
-      safe->rebuildShowSelectors(); safe->updateDetail(); safe->map->repaint();
+      safe->rebuildShowSelectors(); safe->map->repaint();
       if (updateBinding) safe->changed();
     });
   });
@@ -691,24 +567,16 @@ void LyricsPanel::rebuildShowSelectors() {
   showCombo.clear(juce::dontSendNotification);
   int selection = 0;
   for (size_t i = 0; i < shows.size(); ++i) {
-    showCombo.addItem(shows[i].name + "  [" + shows[i].id + "]", static_cast<int>(i) + 1);
+    showCombo.addItem(shows[i].name.isNotEmpty() ? shows[i].name : "Show sin nombre", static_cast<int>(i) + 1);
     if (shows[i].id == lyrics.showId) selection = static_cast<int>(i) + 1;
   }
   if (selection > 0) showCombo.setSelectedId(selection, juce::dontSendNotification);
-  else if (lyrics.showId.isNotEmpty()) showCombo.setText(lyrics.showName + "  [" + lyrics.showId + "]", juce::dontSendNotification);
-  layoutCombo.clear(juce::dontSendNotification); selection = 0;
-  for (size_t i = 0; i < catalogue.layouts.size(); ++i) {
-    const auto &layout = catalogue.layouts[i];
-    layoutCombo.addItem(layout.name + "  [" + layout.id + "]", static_cast<int>(i) + 1);
-    if (layout.id == lyrics.layoutId) selection = static_cast<int>(i) + 1;
-  }
-  if (selection > 0) layoutCombo.setSelectedId(selection, juce::dontSendNotification);
-  else if (lyrics.layoutId.isNotEmpty()) layoutCombo.setText(lyrics.layoutName + "  [" + lyrics.layoutId + "]", juce::dontSendNotification);
+  else if (lyrics.showId.isNotEmpty()) showCombo.setText(lyrics.showName.isNotEmpty() ? lyrics.showName : "Show sin nombre", juce::dontSendNotification);
   updating = false;
 }
 void LyricsPanel::testSelected() {
   const auto *mark = findMark(selectedId);
-  if (client == nullptr || mark == nullptr || !testButton.isEnabled()) return;
+  if (mark == nullptr || !canTestMark(*mark)) return;
   client->queueTarget(mark->target);
 }
 
@@ -716,6 +584,9 @@ void LyricsPanel::timerCallback() {
   if (client != nullptr) {
     const auto status = client->getStatus();
     const bool connected = status.state == ConnectionStatus::State::connected;
+    const bool connectionChanged = connected && (!wasConnected || status.connectionEpoch != lastConnectionEpoch);
+    wasConnected = connected; lastConnectionEpoch = status.connectionEpoch;
+    if (connectionChanged && !loadingCatalogue) refreshCatalogue();
     if (status.reviewRevision != lastReviewRevision && status.reviewShowId == lyrics.showId
         && !loadingCatalogue) {
       lastReviewRevision = status.reviewRevision;
@@ -731,16 +602,18 @@ void LyricsPanel::timerCallback() {
     if (loadingCatalogue) statusText += juce::String::fromUTF8(" · Consultando catálogo…");
     else if (catalogueError.isNotEmpty()) statusText += juce::String::fromUTF8(" · ") + catalogueError;
     refreshButton.setEnabled(connected && !loadingCatalogue);
-    testConnectionButton.setEnabled(status.state != ConnectionStatus::State::connecting);
   } else {
     statusText = juce::String::fromUTF8("FreeShow desconectado · Configura una conexión local para consultar shows y previews reales");
-    testConnectionButton.setEnabled(false); refreshButton.setEnabled(false);
+    refreshButton.setEnabled(false);
   }
-  updateDetail(); map->repaint(); repaint(statusBounds);
+  connectionButton.setTooltip(statusText);
+  map->repaint(); repaint();
 }
 
 bool LyricsPanel::keyPressed(const juce::KeyPress &key) {
-  if (key == juce::KeyPress::escapeKey) { selectMark({}); return false; }
+  if (key == juce::KeyPress::escapeKey) {
+    insertionAnchor.clear(); rebuildMapLayout(); selectMark({}); return false;
+  }
   const auto *selected = findMark(selectedId);
   if (selected != nullptr && (key.getKeyCode() == juce::KeyPress::leftKey || key.getKeyCode() == juce::KeyPress::rightKey)) {
     const double amount = key.getModifiers().isShiftDown() ? 1.0 : 0.1;

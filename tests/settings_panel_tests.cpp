@@ -231,7 +231,12 @@ struct SettingsPanelTestAccess {
     auto *home = panel.settingsViewport.getViewedComponent();
     expect(home != &panel.tabs && !panel.generalTabButton.isVisible() &&
                !panel.backButton.isVisible(), "compact settings opens with the grouped index");
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8),
+#if !JUCE_IOS && !JUCE_ANDROID
+    constexpr int integrationEntries = 1;
+#else
+    constexpr int integrationEntries = 0;
+#endif
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 7 : 8) + integrationEntries,
            "ordinary accounts expose only available settings destinations");
     for (auto *child : home->getChildren())
       if (auto *button = dynamic_cast<juce::Button *>(child))
@@ -247,7 +252,7 @@ struct SettingsPanelTestAccess {
                !panel.teamsLabel.isVisible() && !panel.teamsHelp.isVisible(),
            "default denied Teams cannot be opened through navigation or a direct callback");
     panel.setTeamsManagementEnabled(true);
-    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9),
+    expect(home->getNumChildComponents() == (useTouchOptimisedControls() ? 8 : 9) + integrationEntries,
            "enabled management profile gains exactly one Teams settings entry");
     snapshot(panel, "settings-home");
 
@@ -483,6 +488,22 @@ struct SettingsPanelTestAccess {
              "tutorial points to the existing close button");
       snapshot(panel, "settings-learning-remote-" + juce::String(size.x));
     }
+#if !JUCE_IOS && !JUCE_ANDROID
+    int probes = 0;
+    playworship::lyrics::FreeShowClient client([&](const playworship::lyrics::ConnectionSettings &, const juce::var &) {
+      ++probes; return playworship::lyrics::HttpResponse{200, juce::var(new juce::DynamicObject()), {}};
+    });
+    panel.setFreeShowClient(&client);
+    for (const auto size : {juce::Point<int>(650, 700), {1080, 780}}) {
+      panel.setSize(size.x, size.y); panel.showFreeShowSettings();
+      expect(panel.tabs.getCurrentTabIndex() == 5 && panel.freeShowPage != nullptr
+          && panel.freeShowPage->isVisible() && probes == 0,
+          "Both settings navigation layouts reveal FreeShow without probing or reconfiguring");
+      snapshot(panel, "settings-integrations-freeshow-" + juce::String(size.x));
+    }
+#endif
+    expect(juce::Desktop::getInstance().getNumComponents() == 0,
+           "Settings validation and captures use no desktop windows");
   }
 };
 

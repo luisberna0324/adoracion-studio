@@ -24,15 +24,18 @@ juce::var targetVar(const Target& t)
     put(v, "hide", t.hide); put(v, "showId", t.showId); put(v, "layoutId", t.layoutId);
     put(v, "groupId", t.groupId); put(v, "slideId", t.slideId); put(v, "occurrence", t.occurrence);
     put(v, "layoutSignature", t.layoutSignature); put(v, "title", t.title); put(v, "text", t.text);
+    if (t.useActiveLayout) put(v, "useActiveLayout", true);
     return v;
 }
 bool readTarget(const juce::var& v, Target& t)
 {
     if (!v.isObject() || !v.getProperty("hide", {}).isBool()) return false;
     t.hide = (bool) v.getProperty("hide", false);
-    if (!textField(v, "showId", t.showId, !t.hide, 512) || !textField(v, "layoutId", t.layoutId, !t.hide, 512)
+    if (v.hasProperty("useActiveLayout") && !v.getProperty("useActiveLayout", {}).isBool()) return false;
+    t.useActiveLayout = (bool) v.getProperty("useActiveLayout", false);
+    if (!textField(v, "showId", t.showId, !t.hide, 512) || !textField(v, "layoutId", t.layoutId, !t.hide && !t.useActiveLayout, 512)
         || !textField(v, "groupId", t.groupId, !t.hide, 512) || !textField(v, "slideId", t.slideId, !t.hide, 512)
-        || !textField(v, "layoutSignature", t.layoutSignature, !t.hide, 512)
+        || !textField(v, "layoutSignature", t.layoutSignature, !t.hide && !t.useActiveLayout, 512)
         || !textField(v, "title", t.title) || !textField(v, "text", t.text)) return false;
     const auto occurrence = v.getProperty("occurrence", {});
     if (!integer(occurrence) || (juce::int64) occurrence < 1 || (juce::int64) occurrence > 10000) return false;
@@ -140,6 +143,34 @@ ShowCatalog parseShow(const juce::String& showId, const juce::var& response, con
         return fail(juce::String::fromUTF8("FreeShow no devolvió un show completo"));
     catalog.name = show.getProperty("name", showId).toString();
     catalog.activeLayoutId = show.getProperty("settings", {}).getProperty("activeLayout", {}).toString();
+    // The creation menu represents show groups, not occurrences in an arrangement.
+    std::set<juce::String> children;
+    for (const auto &entry : slides.getDynamicObject()->getProperties())
+        for (const auto &id : childIds(entry.value)) children.insert(id);
+    size_t groupSlideCount = 0;
+    for (const auto &entry : slides.getDynamicObject()->getProperties())
+    {
+        const auto groupId = entry.name.toString();
+        if (children.count(groupId) != 0) continue;
+        SlideGroup group; group.id = groupId;
+        group.name = entry.value.getProperty("group", groupId).toString();
+        auto ids = childIds(entry.value); ids.insert(ids.begin(), groupId);
+        std::set<juce::String> unique;
+        for (const auto &id : ids)
+        {
+            const auto slide = slides.getProperty(id, {});
+            if (!slide.isObject() || !unique.insert(id).second)
+                return fail("Pantalla ausente o repetida en grupo; revisar FreeShow");
+            if (++groupSlideCount > 100000) return fail("Demasiadas pantallas FreeShow");
+            SlideDestination destination;
+            destination.target.showId = showId; destination.target.groupId = groupId;
+            destination.target.slideId = id; destination.target.title = group.name;
+            destination.target.text = slideText(slide); destination.target.useActiveLayout = true;
+            destination.screen = static_cast<int>(group.slides.size()) + 1;
+            group.slides.push_back(std::move(destination));
+        }
+        catalog.groups.push_back(std::move(group));
+    }
     const auto reference = unwrapResponse(referenceResponse);
     // The app-wide optional blank-first-slide setting is observable through get_show_layout.
     const bool prependBlank = reference.isArray() && reference.size() > 0 && reference[0].getProperty("id", {}).toString() == "fake_empty";
@@ -208,6 +239,21 @@ Resolution resolve(const Target& target, const ShowCatalog& catalog)
 {
     if (target.hide) return {true, 0, {}};
     if (!catalog.ok() || target.showId != catalog.id) return {false, 0, "Show no disponible; revisar destino"};
+    if (target.useActiveLayout)
+    {
+        for (const auto &layout : catalog.layouts)
+            if (layout.id == catalog.activeLayoutId)
+            {
+                auto current = target;
+                current.useActiveLayout = false; current.layoutId = layout.id;
+                current.layoutSignature = layout.signature; current.occurrence = 1;
+                const auto resolved = resolve(current, catalog);
+                if (!resolved.valid)
+                    return {false, 0, juce::String::fromUTF8("La diapositiva no está en el arreglo activo de FreeShow; revisar destino")};
+                return resolved;
+            }
+        return {false, 0, "Arreglo activo ausente; revisar FreeShow"};
+    }
     for (const auto& layout : catalog.layouts)
         if (layout.id == target.layoutId)
         {

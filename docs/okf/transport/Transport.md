@@ -582,6 +582,19 @@ su dibujo e interacción sobre esta referencia. Las indicaciones se superponen
 a la onda y no reservan altura adicional en la regla. En teléfono la regla
 está disponible en edición y permanece oculta en performance.
 
+Letras de escritorio usa esa misma regla y solicita las marcas al mapa de tempo
+de `WaveformBar`. Ambas vistas comparten la línea fina y bandera del playhead
+mediante `TimelineRulerStyle`; el cambio es de dibujo, sin alterar posición ni
+comandos de transporte. El zoom/desplazamiento de Letras transforma píxeles a
+segundos absolutos antes de crear o arrastrar marcas. Ampliar la referencia de
+secciones no cambia sus límites ni duraciones musicales.
+La navegación con rueda comparte `TimelineNavigationGestures` con la onda:
+componente horizontal dominante desplaza, vertical amplía/aleja bajo el cursor.
+El pellizco conserva la transformación existente de Onda (`1 + amount`, entrada
+cero sin efecto). El intervalo visible mínimo compartido es 1/18 de la canción.
+Los modificadores no cambian el gesto y no se vuelve a invertir `isReversed`.
+Estos gestos no publican ediciones y se ignoran durante un arrastre temporal en Letras.
+
 En el editor de guía, si no hay secciones se muestra un único botón `+` centrado
 sobre la waveform. Con secciones, el mismo `+` aparece como cuarta acción en la
 barra contextual de cada sección y abre el selector contextual. La lista inicial

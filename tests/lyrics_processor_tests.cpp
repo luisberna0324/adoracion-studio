@@ -109,6 +109,9 @@ struct Fixture {
       mark.id = "mark-" + juce::String(index++); mark.seconds = seconds;
       mark.target.showId = song.showId; mark.target.layoutId = song.layoutId;
       mark.target.groupId = "chorus"; mark.target.slideId = mark.id;
+      if (index == 1) {
+        mark.target.useActiveLayout = true; mark.target.layoutId.clear();
+      }
       song.marks.push_back(mark);
     }
     p->setSongLyrics(song);

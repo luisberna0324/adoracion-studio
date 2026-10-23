@@ -213,6 +213,12 @@ MTControlsAudioProcessor::MTControlsAudioProcessor()
               .withOutput("Output", juce::AudioChannelSet::discreteChannels(maxStemCount), true)),
       apvts(*this, nullptr, "PARAMETERS", createParameterLayout()) {
   playworship::telemetry::initialize();
+#if !JUCE_IOS && !JUCE_ANDROID
+  const auto freeShowEndpoint = AppSettings::getFreeShowEndpoint();
+  playworship::lyrics::ConnectionSettings freeShowSettings{freeShowEndpoint.host, freeShowEndpoint.port, {}};
+  if (playworship::lyrics::FreeShowClient::validateSettings(freeShowSettings))
+    freeShowClient.configure(std::move(freeShowSettings));
+#endif
   playbackFormatManager.registerBasicFormats();
   // P0 (perf): one-shot migration de directorios de cache legacy
   // cuyos nombres contengan caracteres que sanitizeCacheKey() ahora
@@ -3461,8 +3467,8 @@ void MTControlsAudioProcessor::rebuildLyricsCueScheduler() {
     for (int index = 0; index < count; ++index) {
       const auto &mark = songLyrics.marks[static_cast<size_t>(index)];
       const bool linkedTarget = mark.target.hide ||
-          (mark.target.showId.isNotEmpty() && mark.target.layoutId.isNotEmpty() &&
-           mark.target.showId == songLyrics.showId && mark.target.layoutId == songLyrics.layoutId);
+          (mark.target.showId.isNotEmpty() && mark.target.showId == songLyrics.showId &&
+           (mark.target.useActiveLayout || (mark.target.layoutId.isNotEmpty() && mark.target.layoutId == songLyrics.layoutId)));
       if (mark.enabled && linkedTarget && std::isfinite(mark.seconds) &&
           mark.seconds >= 0.0 && mark.seconds <= 604800.0)
         cues.push_back({playworship::audio::TransportClock::secondsToFrames(

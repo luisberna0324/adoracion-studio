@@ -40,6 +40,23 @@ void modelContracts()
 {
     const auto catalog = parseShow("test-show", envelope("get_show", fixture()));
     expect(catalog.ok(), "complete show parses");
+    expect(catalog.groups.size() == 2 && catalog.groups.front().slides.size() == 2,
+           "show menu groups deduplicate arrangement repetitions and preserve child slides");
+    const auto showTarget = catalog.groups.front().slides[1].target;
+    expect(showTarget.useActiveLayout && showTarget.layoutId.isEmpty()
+           && resolve(showTarget, catalog).absoluteIndex == 2,
+           "new show-bound marks resolve exact slide IDs in the active layout");
+    auto alternative = fixture();
+    alternative.getDynamicObject()->getProperty("settings").getDynamicObject()->setProperty("activeLayout", "alt");
+    expect(resolve(showTarget, parseShow("test-show", alternative)).absoluteIndex == 3,
+           "active-layout changes resolve the slide again rather than reuse an index");
+    auto unused = fixture();
+    unused.getDynamicObject()->getProperty("slides").getDynamicObject()->setProperty(
+        "unused-group", juce::JSON::parse(R"({"group":"Puente","items":[]})"));
+    const auto unusedCatalog = parseShow("test-show", unused);
+    expect(unusedCatalog.groups.size() == 3
+           && !resolve(unusedCatalog.groups.back().slides.front().target, unusedCatalog).valid,
+           "unused show groups remain selectable but cannot project an unrelated active index");
     const auto& layout = mainLayout(catalog);
     expect(layout.slides.size() == 5, "groups expand children and repeated occurrence");
     expect(layout.slides[1].target.slideId == "coro-child" && layout.slides[1].screen == 2 && layout.slides[1].absoluteIndex == 2,
@@ -66,6 +83,8 @@ void modelContracts()
     auto* blank = new juce::DynamicObject(); blank->setProperty("id", "fake_empty"); ref.getArray()->insert(0, juce::var(blank));
     const auto blankCatalog = parseShow("test-show", fixture(), ref);
     expect(blankCatalog.ok() && mainLayout(blankCatalog).slides[0].absoluteIndex == 2, "blank-first FreeShow setting offsets real indices safely");
+    expect(resolve(showTarget, blankCatalog).absoluteIndex == 3,
+           "show-bound destinations honor the verified blank-first offset");
     SongLyrics lyrics; lyrics.enabled = true; lyrics.showId = catalog.id; lyrics.layoutId = "main";
     lyrics.marks.push_back({"cue-b", 15.0, true, layout.slides[4].target});
     Target hide; hide.hide = true; lyrics.marks.push_back({"cue-a", 0.0, true, hide});
@@ -77,6 +96,11 @@ void modelContracts()
     invalid = toVar(lyrics); invalid.getDynamicObject()->getProperty("marks")[1].getDynamicObject()->setProperty("id", "cue-b");
     expect(!fromVar(invalid, parsed), "duplicate IDs reject");
     expect(fromVar({}, parsed) && !parsed.enabled && parsed.marks.empty(), "legacy missing lyrics remains compatible");
+    SongLyrics showBound; showBound.showId = catalog.id;
+    showBound.marks.push_back({"show-cue", 12.5, true, showTarget});
+    expect(fromVar(toVar(showBound), parsed) && parsed.marks.front().target.useActiveLayout
+           && parsed.marks.front().target.slideId == showTarget.slideId,
+           "new binding persists alongside unchanged legacy targets without migration");
     auto* outputSlide = new juce::DynamicObject(); outputSlide->setProperty("id", "test-show"); outputSlide->setProperty("layout", "main"); outputSlide->setProperty("index", 4);
     auto* output = new juce::DynamicObject(); output->setProperty("slide", juce::var(outputSlide));
     const juce::var outputValue(output);
@@ -276,6 +300,60 @@ void directHttpContracts()
         expect(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(2500), "read deadline is bounded independently of peer close");
     }
 }
+void activeLayoutSafety()
+{
+    const auto initial = parseShow("test-show", fixture());
+    const auto target = initial.groups.front().slides[1].target;
+    std::atomic<int> phase{0}, projections{0}, mutations{0};
+    std::mutex observedMutex;
+    juce::var selected;
+    const auto makeShow = [&] {
+        auto show = fixture();
+        if (phase == 1)
+            show.getDynamicObject()->getProperty("settings").getDynamicObject()->setProperty("activeLayout", "alt");
+        if (phase == 2)
+            show.getDynamicObject()->getProperty("layouts").getDynamicObject()->getProperty("main")
+                .getDynamicObject()->setProperty("slides", juce::JSON::parse(R"([{"id":"coro-literal-2"}])"));
+        return show;
+    };
+    FreeShowClient client([&](const ConnectionSettings&, const juce::var& request) {
+        const auto name = request.getProperty("action", {}).toString();
+        if (name == "get_shows") return HttpResponse{200, envelope(name, juce::JSON::parse("{}")), {}};
+        if (name == "get_show") return HttpResponse{200, envelope(name, makeShow()), {}};
+        if (name == "get_show_layout")
+            return HttpResponse{200, envelope(name, layoutRef(parseShow("test-show", makeShow()))), {}};
+        if (name == "change_layout" || name == "set_show") { ++mutations; return HttpResponse{204, {}, {}}; }
+        if (name == "index_select_slide") {
+            const std::lock_guard<std::mutex> lock(observedMutex);
+            selected = request; ++projections;
+            return HttpResponse{204, {}, {}};
+        }
+        if (name == "get_output") {
+            const std::lock_guard<std::mutex> lock(observedMutex);
+            auto* slide = new juce::DynamicObject();
+            slide->setProperty("id", selected.getProperty("showId", {}));
+            slide->setProperty("layout", selected.getProperty("layoutId", {}));
+            slide->setProperty("index", (int) selected.getProperty("index", 0) - 1);
+            auto* output = new juce::DynamicObject(); output->setProperty("slide", juce::var(slide));
+            return HttpResponse{200, envelope(name, juce::var(output)), {}};
+        }
+        return HttpResponse{200, envelope(name, {}), {}};
+    });
+    client.testConnection();
+    expect(until([&] { return client.getStatus().state == ConnectionStatus::State::connected; }), "active-layout connection");
+    for (int pass = 0; pass < 2; ++pass) {
+        phase = pass; client.queueTarget(target);
+        expect(until([&] { return projections == pass + 1 && client.getStatus().outputConfirmed; }), "show-bound destination is confirmed");
+        const std::lock_guard<std::mutex> lock(observedMutex);
+        expect(selected.getProperty("layoutId", {}).toString() == (pass == 0 ? "main" : "alt")
+               && (int) selected.getProperty("index", 0) == (pass == 0 ? 2 : 3),
+               "each request contains the verified active layout and its newly resolved index");
+    }
+    phase = 2; client.queueTarget(target);
+    expect(until([&] { return client.getStatus().message.contains(juce::String::fromUTF8("no está en el arreglo activo")); }),
+           "missing active slide is rejected with an actionable review reason");
+    expect(projections == 2 && mutations == 0, "new marks never mutate show/layout or fall back to an unrelated index");
+}
 void alternateBlankSafety()
 {
     const auto makeShow = [](const juce::String& active)
@@ -339,7 +417,7 @@ int main(int argc, char** argv)
 {
     try
     {
-        modelContracts(); settingsContracts(); clientContracts(); alternateBlankSafety(); directHttpContracts();
+        modelContracts(); settingsContracts(); clientContracts(); activeLayoutSafety(); alternateBlankSafety(); directHttpContracts();
         if (argc >= 3 && juce::String(argv[1]) == "--real") realIntegration(argv[2], argc > 3 ? juce::String(argv[3]).getIntValue() : 5506);
         std::cout << "FreeShow protocol, identity, persistence and worker tests passed\n"; return 0;
     }

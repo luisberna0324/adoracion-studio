@@ -1,6 +1,7 @@
 #include "WaveformBar.h"
 #include "TouchWaveformNavigation.h"
 #include "TimelineRulerStyle.h"
+#include "TimelineNavigationGestures.h"
 #include "../../PluginProcessor.h"
 #include "../../audio/DynamicGuideEngine.h"
 #include "../../audio/DynamicGuideTiming.h"
@@ -116,7 +117,7 @@ private:
 
 constexpr double kMinPartDurationSec = 0.25;
 constexpr double kPartSnapSeconds = 0.1;
-constexpr float kMinViewportSpan = 1.0f / 18.0f;
+constexpr float kMinViewportSpan = timelineNavigation::minimumSpan;
 constexpr float kEditToolbarHeight = 24.0f;
 constexpr float kEditToolbarBottomGap = 6.0f;
 constexpr float kSeekRulerHeight = 24.0f;
@@ -141,7 +142,6 @@ constexpr float kFollowWaveformCacheOverscan = 2.0f;
 constexpr float kFollowWaveformCacheOverscan = 3.0f;
 #endif
 constexpr double kFollowViewportPositionEpsilon = 1.0e-7;
-constexpr float kWheelPanSensitivity = 0.22f;
 
 constexpr float kPlayheadHeadHeight = 9.5f;
 constexpr float kPlayheadHeadHalfWidth = 5.8f;
@@ -165,6 +165,11 @@ void drawPlayheadNeedle(juce::Graphics &g, const juce::Rectangle<float> &bounds,
                         const float alpha = 1.0f) {
   if (bounds.getWidth() <= 1.0f || bounds.getHeight() <= 1.0f)
     return;
+
+#if !JUCE_IOS && !JUCE_ANDROID
+  drawTimelinePlayhead(g, x, bounds.getY(), bounds.getBottom(), alpha, drawHead);
+  return;
+#endif
 
   x = snapToPixelCenter(x);
   const auto coreColour = playheadPrimaryColour().withAlpha(alpha);
@@ -2014,13 +2019,13 @@ void WaveformBar::openSectionPicker(const juce::Rectangle<float> &anchor,
 
   if (juce::isPositiveAndBelow(
           insertionPartIndex, static_cast<int>(arrangement.parts.size()))) {
-    sectionInsertionAnchorSec =
+    sectionInsertionAnchor.seconds =
         arrangement.parts[static_cast<size_t>(insertionPartIndex)].endSec;
-    sectionInsertionAnchorValid = true;
-  } else if (arrangement.parts.empty() && !sectionInsertionAnchorValid) {
-    sectionInsertionAnchorSec =
+    sectionInsertionAnchor.valid = true;
+  } else if (arrangement.parts.empty() && !sectionInsertionAnchor.valid) {
+    sectionInsertionAnchor.seconds =
         playableRange.first + ((playableRange.second - playableRange.first) * 0.5);
-    sectionInsertionAnchorValid = true;
+    sectionInsertionAnchor.valid = true;
   }
 
   auto *editor = findParentComponentOfClass<juce::AudioProcessorEditor>();
@@ -2595,13 +2600,11 @@ void WaveformBar::resized() {
 
     contextualSectionInsertPartIndex = -1;
     juce::Rectangle<float> addBounds;
-    if (sectionInsertionAnchorValid) {
-      constexpr float addSize = 28.0f;
+    if (sectionInsertionAnchor.valid) {
       const float guideX = sourceSecondsToWindowX(
-          mainWaveBodyBounds, sectionInsertionAnchorSec);
-      addBounds = juce::Rectangle<float>(addSize, addSize).withCentre(
-          juce::Point<float>(guideX + (addSize * 0.5f),
-                             mainWaveBodyBounds.getCentreY()));
+          mainWaveBodyBounds, sectionInsertionAnchor.seconds);
+      addBounds = TimelineInsertionAnchor::addButtonBounds(
+          guideX, mainWaveBodyBounds.getCentreY());
     } else if (arrangement.parts.empty()) {
       addBounds = juce::Rectangle<float>(30.0f, 30.0f)
                       .withCentre(mainWaveBodyBounds.getCentre());
@@ -4578,7 +4581,7 @@ bool WaveformBar::keyPressed(const juce::KeyPress &key) {
   if (!isEditingArrangement())
     return false;
 
-  if (key == juce::KeyPress::escapeKey && sectionInsertionAnchorValid) {
+  if (key == juce::KeyPress::escapeKey && sectionInsertionAnchor.valid) {
     clearSectionInsertionAnchor();
     return true;
   }
@@ -4656,23 +4659,17 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
   if (!onWaveBody && !onSeekRuler)
     return;
 
-  const float absDx = std::abs(wheel.deltaX);
-  const float absDy = std::abs(wheel.deltaY);
-  const bool horizontalPanGesture = absDx > 0.0f && absDx > (absDy * 1.05f);
-  if (horizontalPanGesture) {
+  const auto gesture = timelineNavigation::fromWheel(wheel.deltaX, wheel.deltaY);
+  if (gesture.action == timelineNavigation::WheelAction::pan) {
     const auto window = getVisibleWindow();
-    const float intensity = juce::jlimit(1.0f, 3.0f, 1.0f + (absDx * 2.0f));
-    const float deltaStart =
-        -wheel.deltaX * intensity * juce::jmax(kMinViewportSpan, window.second) *
-        kWheelPanSensitivity;
+    const float deltaStart = timelineNavigation::panDelta(gesture.value, window.second);
     followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
                              kFollowSuspendAfterManualViewportMs;
     setVisibleWindow(window.first + deltaStart, window.second);
     return;
   }
 
-  const float dir = wheel.deltaY != 0.0f ? wheel.deltaY : wheel.deltaX;
-  if (dir == 0.0f)
+  if (gesture.action != timelineNavigation::WheelAction::zoom)
     return;
 
   const float anchor =
@@ -4682,11 +4679,9 @@ void WaveformBar::mouseWheelMove(const juce::MouseEvent &event,
                              mainWaveBodyBounds.getWidth())
           : 0.5f;
 
-  const float intensity = juce::jlimit(1.0f, 3.5f, 1.0f + std::abs(dir) * 2.4f);
-  const float step = 1.06f * intensity;
   followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
                            kFollowSuspendAfterManualViewportMs;
-  applyZoom(dir > 0.0f ? step : 1.0f / step, anchor);
+  applyZoom(gesture.value, anchor);
 }
 
 void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
@@ -4718,7 +4713,7 @@ void WaveformBar::mouseMagnify(const juce::MouseEvent &event,
           : 0.5f;
   followSuspendedUntilMs = juce::Time::getMillisecondCounterHiRes() +
                            kFollowSuspendAfterManualViewportMs;
-  applyZoom(1.0f + magnifyAmount, anchor);
+  applyZoom(timelineNavigation::magnifyFactor(magnifyAmount), anchor);
 }
 
 void WaveformBar::timerCallback() {
@@ -5121,9 +5116,9 @@ void WaveformBar::handleSeek(float x, const juce::Rectangle<float> &seekBounds) 
       juce::jlimit(playableStartSec, playableEndSec, rawTarget);
 
   if (isEditingArrangement() && timelineViewMode == TimelineViewMode::GuideMap) {
-    sectionInsertionAnchorSec = juce::jlimit(
+    sectionInsertionAnchor.seconds = juce::jlimit(
         playableStartSec, playableEndSec, snapSeconds(target));
-    sectionInsertionAnchorValid = true;
+    sectionInsertionAnchor.valid = true;
     resized();
     repaint();
   }
@@ -5164,13 +5159,8 @@ void WaveformBar::applyZoom(float factor, float anchorRatio) {
   if (!std::isfinite(factor) || factor <= 0.0f)
     return;
 
-  anchorRatio = juce::jlimit(0.0f, 1.0f, anchorRatio);
-  const float oldSpan = viewportSpan;
-  const float newSpan =
-      juce::jlimit(kMinViewportSpan, 1.0f, oldSpan / factor);
-  const float anchorSource = viewportStart + (anchorRatio * oldSpan);
-  const float newStart = anchorSource - (anchorRatio * newSpan);
-  setVisibleWindow(newStart, newSpan);
+  const auto next = timelineNavigation::zoomWindow({viewportStart, viewportSpan}, factor, anchorRatio);
+  setVisibleWindow(next.start, next.span);
 }
 
 bool WaveformBar::isFollowTrackingActive() const {
@@ -7180,8 +7170,12 @@ void WaveformBar::drawSeekRuler(juce::Graphics &g,
                                          juce::jmax(0.0001f, windowSpan));
       const float x = snapToPixelCenter(
           bounds.getX() + playheadNorm * bounds.getWidth());
-      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, false, false,
-                         0.96f);
+#if !JUCE_IOS && !JUCE_ANDROID
+      drawTimelinePlayhead(g, x, bounds.getY() + 17.0f, bounds.getBottom(),
+          playingProvider && playingProvider() ? 0.65f : 0.25f);
+#else
+      drawPlayheadNeedle(g, bounds.reduced(0.0f, 0.4f), x, false, false, 0.96f);
+#endif
 
       if (showPendingTravelSeek) {
         const float pendingTravelRatio = static_cast<float>(
@@ -7203,7 +7197,7 @@ void WaveformBar::drawSectionInsertionAnchor(
     juce::Graphics &g, const juce::Rectangle<float> &waveBounds,
     const juce::Rectangle<float> &rulerBounds, const float windowStart,
     const float windowSpan) const {
-  if (!sectionInsertionAnchorValid || !isEditingArrangement() ||
+  if (!sectionInsertionAnchor.valid || !isEditingArrangement() ||
       sectionAutomationEditingPartId.isNotEmpty() ||
       timelineViewMode != TimelineViewMode::GuideMap ||
       waveBounds.getWidth() <= 2.0f)
@@ -7214,7 +7208,7 @@ void WaveformBar::drawSectionInsertionAnchor(
     return;
 
   const float anchorRatio = static_cast<float>(
-      juce::jlimit(0.0, 1.0, sectionInsertionAnchorSec / songLength));
+      juce::jlimit(0.0, 1.0, sectionInsertionAnchor.seconds / songLength));
   const float visibleEnd = windowStart + windowSpan;
   if (anchorRatio < windowStart || anchorRatio > visibleEnd)
     return;
@@ -7225,13 +7219,7 @@ void WaveformBar::drawSectionInsertionAnchor(
       waveBounds.getX() + (localRatio * waveBounds.getWidth()));
   const float top = rulerBounds.getHeight() > 2.0f ? rulerBounds.getY()
                                                    : waveBounds.getY();
-  const float dashLengths[] = {4.0f, 3.0f};
-
-  g.setColour(juce::Colours::black.withAlpha(0.42f));
-  g.drawLine(x + 1.0f, top, x + 1.0f, waveBounds.getBottom(), 2.4f);
-  g.setColour(UITheme::accentSoft.withAlpha(0.92f));
-  g.drawDashedLine(juce::Line<float>(x, top, x, waveBounds.getBottom()),
-                   dashLengths, 2, 1.35f);
+  TimelineInsertionAnchor::paint(g, x, top, waveBounds.getBottom());
 }
 
 void WaveformBar::drawArrangementOverlay(
@@ -7853,11 +7841,10 @@ void WaveformBar::rebuildSectionAddButtons() {
 }
 
 void WaveformBar::clearSectionInsertionAnchor() {
-  if (!sectionInsertionAnchorValid)
+  if (!sectionInsertionAnchor.valid)
     return;
 
-  sectionInsertionAnchorValid = false;
-  sectionInsertionAnchorSec = 0.0;
+  sectionInsertionAnchor.clear();
   resized();
   repaint();
 }
@@ -7866,14 +7853,14 @@ bool WaveformBar::addArrangementPartAtInsertionAnchor(
     const juce::String &name, const double playableStartSec,
     const double playableEndSec, const double preferredDurationSec,
     const bool utilityCue) {
-  if (!sectionInsertionAnchorValid)
+  if (!sectionInsertionAnchor.valid)
     return false;
 
   constexpr double kBoundaryToleranceSec = 0.0001;
   const bool usePreferredDuration =
       preferredDurationSec >= kMinPartDurationSec;
   double insertionSec = juce::jlimit(
-      playableStartSec, playableEndSec, snapSeconds(sectionInsertionAnchorSec));
+      playableStartSec, playableEndSec, snapSeconds(sectionInsertionAnchor.seconds));
   const auto colourForName = [](const juce::String &partName) {
     auto colour = standardArrangementPartColorForName(partName);
     if (colour.isEmpty())
@@ -8116,7 +8103,7 @@ void WaveformBar::addArrangementPart(const juce::String &preferredName) {
   if (nextName.isEmpty())
     nextName = L10n::tr("Parte", "Part");
 
-  if (sectionInsertionAnchorValid) {
+  if (sectionInsertionAnchor.valid) {
     addArrangementPartAtInsertionAnchor(nextName, playableStartSec,
                                         playableEndSec);
     return;
@@ -8702,7 +8689,7 @@ void WaveformBar::addGuideCue(const juce::String &name, int countEnd,
   const auto [start, end] = getPlayableRangeSeconds();
   if (end <= start || name.trim().isEmpty()) return;
   const double position = juce::jlimit(start, juce::jmax(start,end-0.001), snapSeconds(
-      sectionInsertionAnchorValid ? sectionInsertionAnchorSec
+      sectionInsertionAnchor.valid ? sectionInsertionAnchor.seconds
           : (positionProvider ? positionProvider() : start)));
   SongArrangementCueSnapshot cue;
   cue.id = juce::Uuid().toString(); cue.name = name.trim();

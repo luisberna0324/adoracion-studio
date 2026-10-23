@@ -212,12 +212,15 @@ struct FreeShowClient::Impl
     {
         if (!current(cue)) return;
         Resolution destination{true, 0, {}};
+        Target effectiveTarget = cue.target;
         if (!cue.target.hide)
         {
             auto show = fetchShow(cue.target.showId, cue.epoch);
             if (!current(cue)) return;
             destination = resolve(cue.target, show);
-            if (destination.valid && show.activeLayoutId != cue.target.layoutId)
+            if (cue.target.useActiveLayout)
+                effectiveTarget.layoutId = show.activeLayoutId;
+            if (destination.valid && !cue.target.useActiveLayout && show.activeLayoutId != cue.target.layoutId)
             {
                 // An app-wide blank-first setting is only observable for the active arrangement.
                 // Changing arrangement does not project; verify its actual expanded reference before selecting.
@@ -244,14 +247,14 @@ struct FreeShowClient::Impl
             return;
         }
         if (!current(cue)) return;
-        const auto result = request(makeSelectRequest(cue.target, destination.absoluteIndex), cue.epoch);
+        const auto result = request(makeSelectRequest(effectiveTarget, destination.absoluteIndex), cue.epoch);
         if (!success(result)) return;
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (cue.epoch != status.connectionEpoch || cue.serial != cueSerial) return;
             status.lastSent = targetLabel(cue.target); status.outputConfirmed = false;
             status.message = juce::String::fromUTF8("Enviado · esperando salida FreeShow");
-            lastSent = cue; lastIndex = destination.absoluteIndex;
+            lastSent = cue; lastSent->target = std::move(effectiveTarget); lastIndex = destination.absoluteIndex;
         }
         observe(cue.epoch);
     }

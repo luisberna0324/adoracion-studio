@@ -42,6 +42,8 @@ SongLyrics exampleLyrics() {
   auto disabled = first;
   disabled.slideId = "screen-one";
   disabled.occurrence = 1;
+  disabled.useActiveLayout = true;
+  disabled.layoutId.clear(); disabled.layoutSignature.clear();
   result.marks.push_back({"disabled-mark", 0.5, false, disabled});
   Target hide;
   hide.hide = true;

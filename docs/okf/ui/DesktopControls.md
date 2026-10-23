@@ -9,9 +9,38 @@ La selección no modifica el transporte ni la posición de la canción.
 
 Las marcas de Letras muestran un punto temporal y un preview compacto permanente.
 Las secciones musicales se conservan como fondo de referencia. El menú contextual
-edita destinos y tiempos; seleccionar o arrastrar no proyecta. El botón explícito
-de prueba y el seguimiento de reproducción tienen acciones separadas. Véase
+permite cambiar destino, probar explícitamente en FreeShow y eliminar;
+seleccionar o arrastrar no proyecta. El seguimiento conserva su control propio. Véase
 [FreeShow](../integrations/FreeShow.md).
+
+Letras reúne Show, conexión/estado y seguimiento en una sola línea compacta.
+No ofrece selector de arreglo, botón superior para añadir ni buscador/panel de
+diapositivas. Para crear una marca se coloca o arrastra el puntero temporal en
+la regla/mapa y se pulsa su `+` contextual. El menú presenta grupos y un submenú
+de diapositivas; elegir un destino crea una marca en el tiempo fijado al abrir
+el menú. El mismo destino admite varias marcas con identidades y tiempos propios.
+El puntero comparte estado, dibujo y geometría del `+` con la onda de guía a
+través de `TimelineInsertionAnchor`; colocar el puntero en Letras no modifica
+el transporte, las secciones ni la proyección. Escape lo retira.
+Las marcas anteriores conservan sus destinos y persistencia; quitar el selector
+visible no elimina los identificadores de arreglo guardados ni su validación.
+
+El selector Show tiene un máximo de 220 puntos y muestra solo nombres. No hay
+texto de estado a su derecha, ayuda debajo ni panel inferior de detalle. El
+estado permanece en el badge y su tooltip. La conexión IP/LAN se edita en
+Configuración → Integraciones → FreeShow y solo se aplica con Guardar y probar.
+El mapa ocupa el alto liberado. Su zoom horizontal y barra de desplazamiento
+conservan las coordenadas temporales de las marcas y las secciones tenues.
+No hay botones de zoom ni una segunda fila: rueda vertical para ampliar/alejar,
+gesto horizontal para recorrer y pellizco con la transformación existente de Onda
+(`1 + amount`), sin modificadores. La rueda comparte clasificación, dirección y
+sensibilidad con Onda mediante `TimelineNavigationGestures`, sin volver a invertir
+la dirección configurada en el sistema. Ambas vistas limitan el zoom a 1–18×.
+El zoom se ancla bajo el cursor. Durante el arrastre
+de un punto o del puntero contextual, la navegación no cambia la vista. Seleccionar
+una tarjeta en otra fila conserva el desplazamiento horizontal.
+Letras reutiliza la regla musical de `WaveformBar` mediante `TimelineRulerStyle`;
+el playhead de escritorio de la onda reutiliza la línea fina y bandera de Letras.
 
 El botón independiente `?` abre el catálogo existente de guías de aprendizaje.
 El menú de tres puntos de esta barra desaparece sólo en escritorio: MIDI Learn,

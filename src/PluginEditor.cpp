@@ -1421,6 +1421,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   lyricsPanel->setTransportProviders(
       [&p] { return p.getSongCurrentPositionSeconds(); },
       [&p] { return p.isSongPlaying(); });
+  lyricsPanel->setTimelineMarksProvider([waveformBarRaw](juce::Range<double> visible, float width) {
+    return waveformBarRaw->getPracticeTimelineMarks(visible, width);
+  });
+  lyricsPanel->onConnectionSettingsRequested = [this] { showSettings({}, this, true); };
   lyricsPanel->onChanged = [this, &p](const playworship::lyrics::SongLyrics &lyrics) {
     if (playbackSession.isRemote() || !hasCurrentLoadedSong) return;
     juce::String error;
@@ -3502,7 +3506,7 @@ void MTControlsAudioProcessorEditor::enqueueAuthCallbackUrl(
 }
 
 void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
-                                                  juce::Component *parent) {
+                                                  juce::Component *parent, bool freeShow) {
   if (!mainUiInitialized)
     return;
 #if JUCE_IOS || JUCE_ANDROID
@@ -3774,6 +3778,12 @@ void MTControlsAudioProcessorEditor::showSettings(juce::Rectangle<int>,
   panel->onShareAudioDiagnostics = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr) safe->shareAudioDiagnostics();
   };
+#if !JUCE_IOS && !JUCE_ANDROID
+  panel->setFreeShowClient(&proc.getFreeShowClient());
+  if (freeShow) panel->showFreeShowSettings();
+#else
+  juce::ignoreUnused(freeShow);
+#endif
   panel->onLearningRequested = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     juce::MessageManager::callAsync([safe] {
       if (!safe) return;

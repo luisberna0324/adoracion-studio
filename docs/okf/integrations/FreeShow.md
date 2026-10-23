@@ -15,12 +15,44 @@ del arreglo; no pertenece a una sección ni se desplaza al editar una sección.
 No se añade esta función a iOS, Android ni al control remoto.
 
 Los puntos conservan previews compactos visibles, dispuestos en filas para
-separar etiquetas próximas. Seleccionar una marca amplía su detalle sin enviar
-nada. Arrastrar cambia solamente su tiempo. El menú contextual permite añadir,
-cambiar destino/tiempo, duplicar, desactivar y eliminar. Ocultar letras es un
+separar etiquetas próximas. Seleccionar una marca la resalta sin enviar nada;
+no hay panel inferior que repita la letra. Arrastrar cambia solamente su tiempo.
+El menú de una marca conserva Cambiar destino FreeShow, Probar en FreeShow y
+Eliminar marca. Ocultar letras es un
 destino explícito (`clear_slide`); no limpia fondo, audio ni overlays.
 **Probar en FreeShow** es una acción explícita. El seguimiento durante la
 reproducción requiere activar el control de letras de esa canción.
+
+La cabecera compacta vincula la canción al Show y no muestra selector de arreglo
+ni un botón superior de añadir. Show muestra solo el nombre, con un ancho máximo
+de 220 puntos; no añade IDs, texto contiguo ni ayuda bajo el selector. Conserva
+Actualizar catálogo, Seguir reproducción y el badge de conexión. La creación usa el puntero compartido con la
+onda de guía: colocar tiempo en regla/mapa, `+` contextual, grupo y diapositiva
+en menús en cascada. No se abre un buscador ni un panel de diapositivas.
+El menú contiene cada grupo del show una sola vez, con sus diapositivas hijas;
+elegir de nuevo un destino crea otro punto temporal independiente.
+
+La regla utiliza `TimelineRulerStyle` y las marcas de `WaveformBar`, por lo que
+comparte compases, métrica y mapa de tempo con la onda. No hay botones de zoom.
+La rueda vertical sobre la regla o el mapa amplía/aleja bajo el cursor; el
+desplazamiento horizontal del mouse o trackpad recorre la vista. Ambos usan
+`TimelineNavigationGestures`, con la misma dirección, sensibilidad y clasificación
+diagonal que Onda. No requieren modificadores; Shift, Ctrl, Cmd y Alt no cambian
+la interpretación. Se usan los deltas recibidos de JUCE sin volver a invertirlos
+por `isReversed`. Predomina el desplazamiento horizontal cuando
+`abs(deltaX) > abs(deltaY) * 1.05`; en los demás casos se amplía/aleja con `deltaY`.
+El pellizco conserva la transformación existente de Onda: factor `1 + amount`,
+con entrada cero sin efecto. No se reinterpreta como un factor nativo neutro en 1.
+Alejar hasta 1× devuelve la canción completa; el máximo compartido es 18×.
+Las barras de desplazamiento se conservan. El ancho temporal excluye los márgenes
+del mapa, de modo que pan y zoom usan la misma proporción visible que Onda.
+Ambas vistas comparten el cálculo del intervalo visible. Letras conserva las
+fracciones de desplazamiento y compensa el scroll entero del viewport al dibujar
+y resolver hits; secuencias pequeñas del trackpad no pierden movimiento.
+Mientras se arrastra un punto o el puntero contextual, rueda y pellizco no cambian
+la vista; después el `+` sigue ligado al mismo segundo. Zoom y desplazamiento son estado
+visual: las marcas mantienen segundos absolutos e identidad; no cambian tiempos
+de sección, transporte ni proyección.
 
 ## Protocolo verificado
 
@@ -52,7 +84,7 @@ pantalla, aparición e identificadores; «Coro 2», pantalla 2 y segunda aparici
 son conceptos distintos. No se utilizan `next_slide` acumulativo, búsqueda
 aproximada ni nombres como identidad.
 
-Los destinos guardan IDs de show/arreglo/grupo/slide, número de aparición,
+Las marcas anteriores guardan IDs de show/arreglo/grupo/slide, número de aparición,
 referencia textual y firma del arreglo. Antes del envío se valida el destino
 contra el catálogo actualizado. Un cambio incompatible requiere revisión en
 vez de proyectar silenciosamente otra pantalla. El arreglo activo se contrasta
@@ -60,6 +92,18 @@ con `get_show_layout` para detectar opciones de FreeShow que añaden una pantall
 vacía inicial y alteran los índices. Al proyectar hacia otro arreglo se cambia
 primero el arreglo activo (sin proyectar), se consulta su orden real y se valida
 de nuevo. Consultar el catálogo o seleccionar una marca no cambia el arreglo.
+
+Las marcas nuevas guardan `useActiveLayout: true` y los IDs estables de Show,
+grupo y diapositiva. Antes de cada envío se vuelven a consultar Show y orden
+activo; se resuelve la primera aparición de esa diapositiva dentro del arreglo
+activo validado y se envían explícitamente su `layoutId` e índice. Repetir un
+punto vuelve a señalar esa misma diapositiva, sin navegar por apariciones.
+No se omite `layoutId`, no se reutiliza el índice de otro arreglo, no se cambia
+el arreglo activo ni se crea/reescribe un arreglo del Show para estas marcas.
+Un grupo no incluido en el arreglo activo puede elegirse y guardarse, pero su
+envío se bloquea con aviso de revisión mientras falte allí. Las marcas antiguas
+mantienen su arreglo, aparición, firma y validación exacta; no hay migración
+automática. El nuevo campo es opcional y su ausencia conserva esa semántica.
 
 ## Transporte y threading
 
@@ -90,8 +134,12 @@ inválidos se rechazan sin aplicar un snapshot parcial. Los cambios de mezcla,
 tempo y arreglo deben conservar el snapshot de letras completo.
 
 La conexión admite loopback y direcciones IPv4 privadas de LAN. No crea
-servidores, credenciales persistentes ni reglas de red. Host, puerto y clave
-son configuración de la sesión de escritorio, no del proyecto portable.
+servidores, credenciales persistentes ni reglas de red. Los controles se alojan
+en Configuración → Integraciones → FreeShow. Abrirlos no cambia la conexión ni
+guarda valores; Guardar y probar valida y aplica explícitamente el destino.
+Host y puerto se guardan en `AppSettings` de este computador, con los valores
+predeterminados `127.0.0.1:5506`. Al arrancar se restaura el destino sin conectar
+automáticamente. El token sigue solo en memoria. Ninguno entra en `.pwproj`.
 
 ## Verificación
 

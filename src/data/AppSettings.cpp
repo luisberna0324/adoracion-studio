@@ -486,6 +486,30 @@ void AppSettings::setRemoteServerAlias(const juce::String &alias) {
   getSettingsFile().replaceWithText(juce::JSON::toString(root, true));
 }
 
+FreeShowEndpointSettings AppSettings::getFreeShowEndpoint() {
+  FreeShowEndpointSettings endpoint;
+  const auto file = getSettingsFile();
+  if (!file.existsAsFile()) return endpoint;
+  const auto value = juce::JSON::parse(file).getProperty("freeShow", {});
+  const auto host = value.getProperty("host", endpoint.host).toString().trim();
+  const int port = value.getProperty("port", endpoint.port);
+  if (host.isNotEmpty() && !host.containsAnyOf("\r\n")) endpoint.host = host;
+  if (port >= 1 && port <= 65535) endpoint.port = port;
+  return endpoint;
+}
+bool AppSettings::setFreeShowEndpoint(const FreeShowEndpointSettings &endpoint) {
+  if (endpoint.host.trim().isEmpty() || endpoint.host.containsAnyOf("\r\n")
+      || endpoint.port < 1 || endpoint.port > 65535) return false;
+  const juce::ScopedLock lock(backgroundSettingsWriteLock);
+  const auto file = getSettingsFile();
+  auto root = file.existsAsFile() ? juce::JSON::parse(file) : juce::var{};
+  if (!root.isObject()) root = juce::var(new juce::DynamicObject());
+  auto *value = new juce::DynamicObject();
+  value->setProperty("host", endpoint.host.trim()); value->setProperty("port", endpoint.port);
+  root.getDynamicObject()->setProperty("freeShow", juce::var(value));
+  return file.replaceWithText(juce::JSON::toString(root, true));
+}
+
 juce::int64 AppSettings::getLastSuccessfulLoginMs() {
   const auto f = getSettingsFile();
   if (!f.existsAsFile())
