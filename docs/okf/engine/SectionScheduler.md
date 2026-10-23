@@ -263,6 +263,24 @@ if (decision.transition) {
 El scheduler conserva la transición de loop; el processor silencia los stems
 instrumentales de esa sección en cada vuelta sin alterar click ni guía.
 
+Armar el primer loop fuera de la sección no solicita un salto: queda dormido
+hasta que la reproducción llegue naturalmente. Reemplazar un loop que tampoco
+está sonando conserva esa regla.
+
+Cambiar desde una sección que **sí está sonando en Loop** a otra prepara una
+transición distinta de Ir: mantiene el loop saliente mientras carga los buffers
+del destino y mientras espera el próximo final válido. Sólo cuando todos los
+stems tienen el destino residente se confirma la cola. En el límite exacto se
+consume el salto y el destino pasa a ser el nuevo loop; no hay seek inmediato,
+recuperación de un límite pasado ni reproducción de secciones intermedias.
+
+Preparando/En cola señala el destino y el estado Loop sigue señalando la sección
+saliente hasta entrar en la nueva. Otra pulsación en Loop del destino o limpiar
+el salto pendiente cancela ese cambio y conserva el loop saliente. Limpiar Loop
+apaga el loop y cancela también el cambio de loop que estuviera preparándose o
+en cola. Las solicitudes conservan revisión y validación por ID; una respuesta
+tardía o un destino rechazado no reemplaza una intención nueva ni cambia Mute.
+
 ### Jump a sección
 
 1. Ir publica una solicitud revisionada en estado **Preparando**. Conserva
@@ -329,9 +347,10 @@ una precedencia determinista (de mayor a menor prioridad):
    exacto dentro del bloque.
 3. **Pending jump escape** — si el playhead está dentro del loop y hay un
    `pendingSection` válido apuntando a una sección distinta, el jump gana
-   sobre la continuación del loop. La transición se programa al final de
-   la sección en loop (con el offset clampeado a `blockFrames` si el bloque
-   no llega al límite).
+   sobre la continuación del loop sólo cuando `blockEnd >= loop.endFrame`.
+   Si el bloque aún no llega al límite, no hay transición. Al alcanzarlo,
+   el destino pendiente prevalece sobre el wrap y usa el offset exacto del
+   final de la sección en loop.
 4. **Loop continuation** — sin pending jump, el playhead se queda dentro
    de la sección en loop.
 5. **Pending jump (no-loop)** — al cruzar el final de la sección actual,

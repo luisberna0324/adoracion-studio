@@ -158,11 +158,23 @@ Aceptar Ir no significa que ya haya sonado: conserva Preparando, confirmación
 de buffers y ejecución en la frontera válida. Loop no provoca un salto inmediato.
 
 `arrange.clearJumpById` y `arrange.clearLoopById` llevan el mismo contexto sin
-destino. Loop cancela el salto dentro de su única acción validada; un destino
-rechazado no cancela una intención anterior ni modifica el mute. La UI resuelve
-las acciones y los indicadores por ID, porque el runtime puede ordenar o
-filtrar partes de forma distinta a la metadata. La metadata y su persistencia
-conservan su orden y contenido.
+destino. Armar Loop fuera de la sección espera la llegada natural y cancela un
+Ir anterior dentro de la misma acción validada. Si está sonando otra sección
+en Loop, `arrange.loopById` prepara el nuevo destino y conserva el loop saliente
+hasta el salto en su próximo final válido; sólo confirma la cola cuando todos
+los stems tienen el destino residente. Al entrar, el destino queda en Loop.
+Preparando/En cola identifica el destino y `loopPartId` sigue identificando la
+sección saliente hasta el cruce. Repetir Loop en el destino o enviar
+`arrange.clearJumpById` cancela ese cambio conservando el loop saliente;
+`arrange.clearLoopById` apaga la repetición y cancela ese cambio pendiente.
+Reemplazar un loop armado que no está sonando no solicita salto.
+
+Un destino rechazado no cancela una intención anterior ni modifica el mute.
+Las reglas de Ir permanecen iguales: conserva Loop durante Preparando, lo
+libera al confirmar la cola y no activa Loop en su destino. La UI resuelve las
+acciones y los indicadores por ID, porque el runtime puede ordenar o filtrar
+partes de forma distinta a la metadata. La metadata y su persistencia conservan
+su orden y contenido.
 
 El cliente presenta `Solicitando` mientras espera ACK y snapshot posterior;
 un rechazo/timeout muestra `No aplicado` con el motivo en la ayuda del control.

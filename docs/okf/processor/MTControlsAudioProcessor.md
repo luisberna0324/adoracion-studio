@@ -778,18 +778,28 @@ int getPendingArrangementPartJumpIndex() const noexcept;
 
 **Semántica de toggleArrangementPartLoop(partIndex):**
 
-- Si no hay loop activo y la playhead está **fuera** de la sección: activa
-  el loop y queuea un jump para entrar a la sección en el próximo bloque
-  que cruce la frontera de la sección actual.
-- Si no hay loop activo y la playhead está **dentro** de la sección:
-  activa el loop sin queuear jump (ya estás ahí).
-- Si el loop activo es otra sección: cambia el loop al nuevo `partIndex` y
-  queuea un jump para entrar (mismo comportamiento que el primer caso).
-- Si el loop activo es **la misma** sección: apaga el loop **y limpia
-  cualquier pending jump** que estuviera esperando para entrar. Esto
-  garantiza que un doble-click rápido en el botón loop (encender y apagar)
-  no deje un jump fantasma que teletransporte al usuario a la sección
-  cancelada.
+- Si no hay loop activo y la playhead está **fuera** de la sección: arma
+  el loop sin salto. Sólo empieza a repetir cuando la reproducción alcanza
+  naturalmente la sección.
+- Si la playhead está **dentro** de la sección elegida: activa su loop sin
+  mover la posición.
+- Si se reemplaza otra sección marcada en Loop que **no está sonando**:
+  cambia el armado al nuevo `partIndex`, sin salto automático.
+- Si está **sonando una sección en Loop** y se elige otra: prepara el destino
+  conservando el loop saliente. Sólo confirma la cola cuando todos los stems
+  tienen los buffers residentes; al siguiente final válido de la sección
+  saliente, salta al destino y deja ese nuevo destino en Loop. No adelanta el
+  salto ni libera el loop anterior durante la preparación o la espera del límite.
+- Pulsar de nuevo Loop en el destino de ese cambio cancela la preparación/cola
+  y conserva el loop saliente. `clearPendingArrangementPartJump()` hace lo
+  mismo; `clearArrangementPartLoop()` apaga el loop y cancela ese cambio.
+- Si el loop activo es **la misma** sección: apaga el loop y limpia el salto
+  pendiente. Una cancelación no puede dejar un salto fantasma.
+
+Durante el cambio entre loops, Preparando/En cola identifica el destino;
+`getArrangementPartLoopIndex()` sigue identificando la sección saliente hasta
+la transición. Las reglas de Ir permanecen independientes: Ir conserva el loop
+mientras prepara, lo libera al confirmar y no activa Loop en el destino.
 
 ### Edición de arrange
 

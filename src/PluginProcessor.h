@@ -671,10 +671,13 @@ private:
   std::atomic<bool> arrangementCustomActive{false};
   std::atomic<int> arrangementCurrentPartIndex{0};
   std::atomic<int> arrangementPendingJumpPartIndex{-1};
-  // Low 16 bits: index+1; bit16: confirmed; high32: request revision.
+  // Low 16 bits: index+1; bit16: confirmed; bit17: loop on arrival;
+  // high32: request revision.
   // One CAS protects replacement/cancellation against late audio confirmations.
   std::atomic<uint64_t> arrangementJumpCommand{0};
-  void setArrangementJumpCommand(int index, bool confirmed) noexcept;
+  static constexpr uint64_t kArrangementLoopOnArrival = 0x20000u;
+  void setArrangementJumpCommand(int index, bool confirmed,
+                                 bool loopOnArrival = false) noexcept;
   void configureSectionEntryCache();
   std::atomic<juce::int64> sectionEntryCacheBudgetBytes{0};
   std::atomic<int> arrangementLoopPartIndex{-1};

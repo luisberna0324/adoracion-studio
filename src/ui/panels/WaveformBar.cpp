@@ -2951,7 +2951,7 @@ void WaveformBar::refreshLiveSectionActions(bool updateState) {
                      : (playingProvider && playingProvider()
                           ? L10n::tr("Preparar salto a esta sección con la espera de reproducción existente", "Prepare a jump to this section using the existing playback wait")
                           : L10n::tr("Ir al inicio de esta sección sin iniciar reproducción", "Go to this section start without starting playback")))
-          : action == 1 ? L10n::tr("Activar o quitar Loop; conserva la cancelación de salto existente", "Toggle Loop; preserves existing jump cancellation")
+          : action == 1 ? L10n::tr("Activar o quitar Loop; al cambiar desde un loop que suena, entra al final de la sección actual", "Toggle Loop; switching from a playing loop enters at the end of the current section")
                         : L10n::tr("Silenciar o habilitar instrumentos; el click continúa", "Mute or enable instruments; click continues");
       if (action != 2 && arrangementControlErrorProvider) {
         const auto error = arrangementControlErrorProvider(getArrangementPartId(static_cast<int>(i)));

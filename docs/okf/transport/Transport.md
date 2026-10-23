@@ -351,6 +351,17 @@ El loop y `muteInstruments` de una sección son independientes: se puede
 silenciar la instrumentación y repetir esa misma sección al mismo tiempo. La
 guía y el click conservan su tratamiento normal de mute. Activar o desactivar
 Loop no modifica Mute; pulsar Mute conserva el loop activo y el salto pendiente.
+Armar un loop fuera de la sección no mueve el transporte: espera la llegada
+natural. Si ya está sonando otra sección en Loop, elegir Loop en un nuevo
+destino conserva el loop saliente, prepara los buffers y confirma la cola sólo
+cuando todos los stems están listos. Al próximo final válido de la sección
+saliente salta al destino, que queda en Loop. Preparando/En cola señala el
+destino; el indicador Loop permanece en la sección saliente hasta el cruce.
+Pulsar otra vez Loop en ese destino o limpiar el salto cancela el cambio y
+mantiene el loop saliente. Limpiar Loop apaga la repetición y cancela también
+ese cambio pendiente. Reemplazar un loop armado que aún no está sonando sigue
+sin solicitar salto.
+
 Ir conserva Loop mientras muestra Preparando. Cuando todos los destinos están
 residentes, confirma la cola, cancela Loop y salta al siguiente final válido
 sin desmutear el destino. Mute sólo cambia por una acción explícita de mute/desmute. Un cambio de Mute, Skip o metadatos que mantenga los mismos

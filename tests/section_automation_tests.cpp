@@ -473,6 +473,222 @@ void testRepeatedLoopsStayInsideSection() {
   }
 }
 
+
+// A first out-of-range Loop is armed for natural playback. Replacing a Loop
+// which is actually sounding has different intent: reach and repeat the new
+// section at the outgoing boundary, without losing the outgoing audio first.
+void testLoopHandoffReachesAndRepeatsDestination() {
+  for (const bool backward : {false, true}) {
+    ProcessorFixture fixture; auto &p = *fixture.processor;
+    p.prepareToPlay(44100.0, 8192);
+    SongArrangementSnapshot arrangement;
+    for (int index = 0; index < 4; ++index) {
+      SongArrangementPartSnapshot part;
+      part.id = "loop-" + juce::String(index); part.name = part.id;
+      part.startSec = index; part.endSec = index + 1.0;
+      arrangement.parts.push_back(part);
+    }
+    const int outgoing = backward ? 3 : 0;
+    const int destination = backward ? 0 : 3;
+    arrangement.parts[static_cast<size_t>(destination)].muteInstruments = true;
+    // The UI publishes per-section Mute as a custom arrangement.
+    p.setSongArrangement(arrangement, true);
+    p.setStemVolume(1, 0.4f);
+    // Fixture control callbacks contain 256 frames; leave ample room even if
+    // the fixture later adopts the prepared 8192-frame maximum.
+    fixture.seekAndWait(outgoing + 0.2); p.playSong(); fixture.waitForPendingSeek();
+    expect(p.toggleArrangementPartLoop(destination), "first future Loop accepts");
+    fixture.block();
+    expect(p.getArrangementPartLoopIndex() == destination &&
+           p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getSongCurrentPositionSeconds() >= outgoing && p.getSongCurrentPositionSeconds() < outgoing + 1.0,
+           "a first Loop outside the current section remains armed without auto-jumping");
+    p.clearArrangementPartLoop();
+    expect(p.toggleArrangementPartLoop(outgoing), "outgoing Loop accepts");
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+           SectionAutomationTestAccess::waitForTransitionTarget(p, outgoing),
+           "outgoing source and loop entry are resident");
+
+    expect(p.toggleArrangementPartLoopById(arrangement.parts[static_cast<size_t>(destination)].id),
+           "nonadjacent destination Loop accepts by occurrence ID");
+    expect(p.getArrangementPartLoopIndex() == outgoing &&
+           p.getPreparingArrangementPartJumpIndex() == destination &&
+           p.getPendingArrangementPartJumpIndex() == -1,
+           "Loop replacement prepares its destination while preserving the sounding Loop");
+    expect(SectionAutomationTestAccess::waitForTransitionTarget(p, destination),
+           "loop handoff destination becomes resident");
+    fixture.block();
+    expect(p.getPreparingArrangementPartJumpIndex() == -1 &&
+           p.getPendingArrangementPartJumpIndex() == destination &&
+           p.getArrangementPartLoopIndex() == outgoing &&
+           p.getSongCurrentPositionSeconds() < outgoing + 1.0,
+           "resident handoff queues without changing the outgoing Loop before its boundary");
+    if (backward) {
+      auto updated = p.getSongArrangementSnapshot();
+      updated.parts[static_cast<size_t>(destination)].name = "Updated destination";
+      updated.parts[1].muteInstruments = true;
+      p.setSongArrangement(updated, true);
+      expect(p.getPendingArrangementPartJumpIndex() == destination &&
+             p.getPreparingArrangementPartJumpIndex() == -1 &&
+             p.getArrangementPartLoopIndex() == outgoing,
+             "same-geometry metadata and Mute publication preserve the queued Loop handoff by ID");
+    }
+
+    juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+    for (int callback = 0; callback < 8 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+      expect(SectionAutomationTestAccess::waitForSource(p, 8192), "handoff source stays readable");
+      p.processBlock(audio, midi);
+    }
+    expect(p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getPreparingArrangementPartJumpIndex() == -1 &&
+           p.getArrangementPartLoopIndex() == destination &&
+           SectionAutomationTestAccess::currentPart(p) == destination &&
+           p.getSongCurrentPositionSeconds() >= destination &&
+           p.getSongCurrentPositionSeconds() < destination + 0.4,
+           "forward or backward handoff skips intermediate sections and transfers Loop only on arrival");
+    expect(p.getSongArrangementSnapshot().parts[static_cast<size_t>(destination)].muteInstruments,
+           "loop handoff preserves destination Mute");
+
+    bool repeated = false;
+    for (int callback = 0; callback < 10 && !repeated; ++callback) {
+      const auto before = p.getSongCurrentPositionSeconds();
+      expect(SectionAutomationTestAccess::waitForSource(p, 8192) &&
+             SectionAutomationTestAccess::waitForTransitionTarget(p, destination),
+             "destination source and next wrap are resident");
+      p.processBlock(audio, midi);
+      const auto after = p.getSongCurrentPositionSeconds();
+      repeated = after < before;
+      expect(p.getArrangementPartLoopIndex() == destination &&
+             after >= destination && after < destination + 1.0,
+             "arrived destination continues to own its Loop");
+      near(audio.getSample(0, 7000), 0.04,
+           "destination instruments remain muted while its click stays audible");
+    }
+    expect(repeated, "the new destination actually wraps again rather than only receiving a one-shot jump");
+  }
+}
+
+void testColdLoopHandoffKeepsOutgoingLoop() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float));
+  fixture.seekAndWait(3.95); p.playSong(); fixture.waitForPendingSeek();
+  expect(SectionAutomationTestAccess::waitForSource(p, 256) &&
+         SectionAutomationTestAccess::waitForTransitionTarget(p, 2.0), "cold handoff outgoing entry is resident");
+  p.toggleArrangementPartLoop(1); fixture.block();
+  SectionAutomationTestAccess::setReadThreadsRunning(p, false);
+  p.toggleArrangementPartLoop(0);
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 256); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 24; ++callback) {
+    p.processBlock(audio, midi);
+    expect(p.getPreparingArrangementPartJumpIndex() == 0 &&
+           p.getPendingArrangementPartJumpIndex() == -1 &&
+           p.getArrangementPartLoopIndex() == 1 &&
+           p.getSongCurrentPositionSeconds() >= 2.0 && p.getSongCurrentPositionSeconds() < 4.0,
+           "cold Loop replacement stays Preparing while the old Loop crosses its wrap");
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f,
+           "cold Loop replacement never introduces a silent callback");
+  }
+  SectionAutomationTestAccess::setReadThreadsRunning(p, true);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cold replacement destination recovers");
+  p.processBlock(audio, midi);
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getArrangementPartLoopIndex() == 1,
+         "readiness preserves outgoing Loop until the future boundary is actually reached");
+  for (int callback = 0; callback < 400 && p.getPendingArrangementPartJumpIndex() >= 0; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 256), "recovered handoff source remains resident");
+    p.processBlock(audio, midi);
+    expect(audio.getMagnitude(0, 0, 256) > 0.02f, "recovered Loop handoff stays audible");
+  }
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 0 && p.getSongCurrentPositionSeconds() < 0.1,
+         "cold replacement eventually reaches and owns the destination Loop");
+}
+
+void testLoopHandoffCancellationAndReplacement() {
+  ProcessorFixture fixture; auto &p = *fixture.processor;
+  p.prepareToPlay(44100.0, 8192);
+  SongArrangementSnapshot arrangement;
+  for (int index = 0; index < 4; ++index) {
+    SongArrangementPartSnapshot part;
+    part.id = "handoff-" + juce::String(index); part.name = part.id;
+    part.startSec = index; part.endSec = index + 1.0;
+    arrangement.parts.push_back(part);
+  }
+  p.setSongArrangement(arrangement, false);
+  fixture.seekAndWait(3.5); p.playSong(); fixture.waitForPendingSeek(); p.toggleArrangementPartLoop(3);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 3.0), "cancellation fixture outgoing Loop is resident");
+  p.toggleArrangementPartLoop(0); p.toggleArrangementPartLoop(0);
+  expect(p.getArrangementPartLoopIndex() == 3 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "pressing the preparing destination Loop again cancels only the handoff");
+  // A cancelled destination may still finish its I/O. Its old readiness must
+  // not restore either the musical command or ownership of Loop.
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cancelled destination finishes stale I/O");
+  fixture.block();
+  expect(p.getArrangementPartLoopIndex() == 3 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "stale readiness cannot revive a cancelled preparing handoff");
+
+  p.toggleArrangementPartLoop(0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "second destination prepares");
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 0 && p.getArrangementPartLoopIndex() == 3,
+         "handoff becomes queued before testing explicit cancellation");
+  p.toggleArrangementPartLoop(0);
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "pressing the queued destination Loop again cancels only the handoff");
+  p.toggleArrangementPartLoop(0);
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "explicitly cancelled destination prepares again");
+  fixture.block();
+  expect(p.getPendingArrangementPartJumpIndex() == 0, "explicit cancellation starts with a confirmed handoff");
+  p.clearPendingArrangementPartJump();
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "clearing a queued handoff leaves the outgoing Loop active");
+
+  p.toggleArrangementPartLoop(0); p.toggleArrangementPartLoop(1);
+  expect(p.getPreparingArrangementPartJumpIndex() == 1 && p.getArrangementPartLoopIndex() == 3,
+         "a newer Loop destination replaces the older request without replacing the outgoing Loop");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "superseded target finishes stale I/O");
+  fixture.block();
+  expect(p.getPreparingArrangementPartJumpIndex() != 0 && p.getPendingArrangementPartJumpIndex() != 0 &&
+         p.getArrangementPartLoopIndex() == 3,
+         "superseded target readiness never wins against a newer Loop request");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 1.0), "newest Loop target prepares");
+  juce::AudioBuffer<float> audio(p.getTotalNumOutputChannels(), 8192); juce::MidiBuffer midi;
+  for (int callback = 0; callback < 4 && p.getArrangementPartLoopIndex() != 1; ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192), "replacement source remains readable");
+    p.processBlock(audio, midi);
+  }
+  expect(p.getArrangementPartLoopIndex() == 1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getSongCurrentPositionSeconds() >= 1.0 && p.getSongCurrentPositionSeconds() < 1.4,
+         "only the newest destination receives the handoff");
+
+  p.clearArrangementPartLoop(); fixture.seekAndWait(3.5); p.toggleArrangementPartLoop(3);
+  p.toggleArrangementPartLoop(0); p.clearArrangementPartLoop();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "clear Loop removes both its handoff and the outgoing Loop");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "cleared Loop target finishes stale I/O");
+  fixture.block();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == -1 &&
+         p.getPendingArrangementPartJumpIndex() == -1,
+         "cleared handoff cannot reappear after its I/O finishes");
+
+  p.toggleArrangementPartLoop(3); p.requestArrangementPartJump(0); p.clearArrangementPartLoop();
+  expect(p.getArrangementPartLoopIndex() == -1 && p.getPreparingArrangementPartJumpIndex() == 0,
+         "clear Loop does not cancel an ordinary Ir request");
+  expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "ordinary Ir destination is resident");
+  for (int callback = 0; callback < 4 &&
+       (p.getPreparingArrangementPartJumpIndex() >= 0 || p.getPendingArrangementPartJumpIndex() >= 0); ++callback) {
+    expect(SectionAutomationTestAccess::waitForSource(p, 8192), "ordinary Ir source remains readable");
+    p.processBlock(audio, midi);
+  }
+  expect(p.getPreparingArrangementPartJumpIndex() == -1 && p.getPendingArrangementPartJumpIndex() == -1 &&
+         p.getArrangementPartLoopIndex() == -1 && p.getSongCurrentPositionSeconds() < 0.4,
+         "ordinary Ir still executes and never inherits a cancelled Loop destination");
+}
+
 void testColdJumpKeepsCurrentLoopAudible() {
   ProcessorFixture fixture; auto &p = *fixture.processor;
   p.setSectionEntryCacheBudget(2 * 32768 * 2 * sizeof(float)); // One entry per stem.
@@ -812,6 +1028,8 @@ void testPendingJumpOwnsSectionGuide() {
     const auto directory = ApplicationDataPaths::isolatedTestRoot().getChildFile("pending-jump-guide-long");
     writeWav(directory.getChildFile("intro.wav"), 1024, 0.1f);
     expect(SectionAutomationTestAccess::loadGuides(p, directory), "long late-destination voice loads");
+    // Replacing the pack changes its trigger IDs; resolve section IDs again.
+    p.setSongArrangement(p.getSongArrangementSnapshot(), false);
     p.requestArrangementPartJump(0);
     expect(SectionAutomationTestAccess::waitForTransitionTarget(p, 0.0), "late jump destination is resident");
     int voicedSamples = 0;
@@ -1394,6 +1612,12 @@ int main(int argc, char **argv) {
     try { test(); std::cout << "PASS: " << name << '\n'; }
     catch (const std::exception &error) { ++failures; std::cerr << "FAIL: " << name << ": " << error.what() << '\n'; }
   };
+  if (argc > 1 && juce::String(argv[1]) == "--loop-handoff-only") {
+    run("Loop handoff reaches and repeats its destination", testLoopHandoffReachesAndRepeatsDestination);
+    run("cold Loop handoff preserves the outgoing Loop", testColdLoopHandoffKeepsOutgoingLoop);
+    run("Loop handoff cancellation, replacement and stale readiness", testLoopHandoffCancellationAndReplacement);
+    return failures == 0 ? 0 : 1;
+  }
   if (argc > 1 && juce::String(argv[1]) == "--click-only") {
     run("native metronome transport attacks", testMetronomeTransportAttacks);
     run("native metronome concurrent start", testMetronomeConcurrentStart);
@@ -1421,6 +1645,9 @@ int main(int argc, char **argv) {
   run("Ir intent survives interior Loop blocks", testJumpIntentSurvivesLoopBlocks);
   run("Ir publishes backward prefetch before its boundary", testIrPublishesBackwardPrefetchBeforeBoundary);
   run("repeated loops stay inside their section", testRepeatedLoopsStayInsideSection);
+  run("Loop handoff reaches and repeats its destination", testLoopHandoffReachesAndRepeatsDestination);
+  run("cold Loop handoff preserves the outgoing Loop", testColdLoopHandoffKeepsOutgoingLoop);
+  run("Loop handoff cancellation, replacement and stale readiness", testLoopHandoffCancellationAndReplacement);
   run("late cold readiness waits for a future boundary", testLateColdReadinessWaitsForFutureBoundary);
   run("prepared jump follows changing tempo", testPreparedJumpWithChangingTempo);
   run("cold jump keeps the current Loop audible", testColdJumpKeepsCurrentLoopAudible);

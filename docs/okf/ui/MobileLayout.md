@@ -912,8 +912,12 @@ activarse, pausarse o pasar por el recorte del viewport nunca cambia el tamaño
 ni el layout del título. `Sonando` depende de transporte reproduciendo;
 `Pausada` identifica la sección bajo el cursor con transporte detenido/pausado.
 `Preparando` permanece distinto de `Salto programado`, que requiere destino
-pendiente confirmado. Loop futuro se presenta como `Loop armado`. Ir conserva
-su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
+pendiente confirmado. Loop futuro se presenta como `Loop armado` y espera la
+llegada natural. Al cambiar desde una sección que está sonando en Loop hacia
+otra, Preparando/Salto programado identifica el destino y el borde/estado Loop
+permanece en la sección saliente hasta la entrada al nuevo loop. Otra pulsación
+en Loop del destino cancela ese cambio y conserva la repetición saliente.
+Ir conserva su etiqueta breve; Preparando no se duplica ni se comprime dentro del botón.
 Ir/Loop/Mute usan etiquetas de 13 puntos. La onda y el relleno de progreso
 ceden intensidad y una sombra gradual compartida mejora la lectura de las
 acciones, sin cajas individuales ni cambios en sus blancos de 44 × 44.
@@ -988,11 +992,15 @@ Con Reducir movimiento de macOS/iOS, el destino mantiene relleno/borde y
 `Salto programado` estáticos; el pulso consulta la misma preferencia que Loop,
 inercia y centrado. No se invalida periódicamente ese bloque sólo para pulsar.
 
-El estado muestra Preparando mientras conserva el recorrido actual y Loop. Sólo al
-estar listo en todos los stems se confirma Salto programado, libera Loop y espera el
-próximo final válido, también hacia atrás o al revisitar una sección. El destino
-no hereda Loop. Preparando aparece sólo en la línea de estado, sin pulso de cola,
-sin anunciar el destino y sin reducir sus blancos táctiles.
+Al usar Ir, el estado muestra Preparando mientras conserva el recorrido actual y
+Loop. Sólo al estar listo en todos los stems se confirma Salto programado, libera
+Loop y espera el próximo final válido, también hacia atrás o al revisitar una
+sección. El destino de Ir no hereda Loop. Al cambiar entre dos loops desde la
+sección que está sonando, en cambio, el loop saliente se conserva también después
+de confirmar la cola y el destino empieza a repetir al entrar. Limpiar el salto
+cancela ese cambio conservando el loop saliente; limpiar Loop cancela ambos.
+Preparando aparece sólo en la línea de estado, sin pulso de cola, sin anunciar
+el destino y sin reducir sus blancos táctiles.
 Mute persiste hasta el desmute explícito: Ir no desmutea y Mute no cancela Ir.
 Estas reglas se aplican en todas las presentaciones. Click conserva su excepción.
 La representación usa el estado real del transporte para cola, Loop y progreso.

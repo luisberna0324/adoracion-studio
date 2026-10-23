@@ -387,7 +387,8 @@ void MTControlsAudioProcessor::prepareToPlay(double sampleRate,
   {
     const juce::SpinLock::ScopedLockType lock(stemListLock);
     if (const int confirmed = getPendingArrangementPartJumpIndex(); confirmed >= 0) {
-      setArrangementJumpCommand(confirmed, false); // Re-prepare after device/rate invalidates resident buffers.
+      setArrangementJumpCommand(confirmed, false,
+          (arrangementJumpCommand.load() & kArrangementLoopOnArrival) != 0); // Re-prepare after device/rate invalidates resident buffers.
       arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
     }
     playbackSampleRate = sampleRate;
@@ -1270,18 +1271,27 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         // while it was Preparing. Fulfil it rather than leave a same-section
         // pending command which the scheduler cannot consume.
         const bool reachedNaturally = preparingIndex == mappedPartIndex;
+        const bool requestedLoopOnArrival = (jumpCommandThisBlock & kArrangementLoopOnArrival) != 0;
         const auto confirmed = reachedNaturally ? (((jumpCommandThisBlock >> 32) + 1) << 32)
                                                : jumpCommandThisBlock | 0x10000u;
         if (arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, confirmed)) {
           jumpCommandThisBlock = confirmed;
           arrangementPendingJumpPartIndex.store(reachedNaturally ? -1 : preparingIndex);
-          int expectedLoop = realtimeLoopPartIndex;
-          arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, -1);
-          realtimePendingPartIndex = reachedNaturally ? -1 : preparingIndex; realtimeLoopPartIndex = -1;
+          const bool loopOnArrival = requestedLoopOnArrival;
+          // A Loop-to-Loop request keeps the outgoing loop through preparation
+          // and the queued boundary. Ordinary Ir still releases it on confirmation.
+          if (!loopOnArrival || reachedNaturally) {
+            const int nextLoop = loopOnArrival ? preparingIndex : -1;
+            int expectedLoop = realtimeLoopPartIndex;
+            arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, nextLoop);
+            realtimeLoopPartIndex = nextLoop;
+          }
+          realtimePendingPartIndex = reachedNaturally ? -1 : preparingIndex;
           audioArrangementRuntimeSnapshot.pendingJumpPartIndex = realtimePendingPartIndex;
-          audioArrangementRuntimeSnapshot.loopPartIndex = -1;
+          audioArrangementRuntimeSnapshot.loopPartIndex = realtimeLoopPartIndex;
           arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
-          for (auto &track : stemTracks) track->protectSectionTargets(jumpSource, -1);
+          for (auto &track : stemTracks) track->protectSectionTargets(
+              jumpSource, realtimeLoopPartIndex >= 0 ? (reachedNaturally ? jumpSource : loopSource) : -1);
         }
       }
       const int loopPartIndex = realtimeLoopPartIndex;
@@ -2828,9 +2838,17 @@ void MTControlsAudioProcessor::processBlock(juce::AudioBuffer<float> &buffer,
         arrangementCurrentPartIndex.load(std::memory_order_relaxed);
     arrangementCurrentPartIndex.store(nextArrangementPartIndex,
                                       std::memory_order_relaxed);
-    if ((jumpCommandThisBlock & 0x10000u) != 0) {
+    if ((jumpCommandThisBlock & 0x10000u) != 0 &&
+        static_cast<int>(jumpCommandThisBlock & 0xffffu) - 1 == nextArrangementPartIndex) {
+      const bool loopOnArrival = (jumpCommandThisBlock & kArrangementLoopOnArrival) != 0;
       const auto consumed = ((jumpCommandThisBlock >> 32) + 1) << 32;
-      arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, consumed);
+      if (arrangementJumpCommand.compare_exchange_strong(jumpCommandThisBlock, consumed) &&
+          loopOnArrival) {
+        // Commit the new loop only when this same revision actually arrives.
+        // Cancellation or replacement must never activate a stale loop target.
+        int expectedLoop = audioArrangementRuntimeSnapshot.loopPartIndex;
+        arrangementLoopPartIndex.compare_exchange_strong(expectedLoop, nextArrangementPartIndex);
+      }
     }
     arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
     // Re-arm the jump and loop lead-ins so a fresh iteration can re-announce.
@@ -5035,6 +5053,7 @@ void MTControlsAudioProcessor::setSongArrangement(
                ? arrangementParts[static_cast<size_t>(index)].id
                : juce::String{};
   };
+  const bool loopOnArrival = (arrangementJumpCommand.load() & kArrangementLoopOnArrival) != 0;
   const auto preparingPartId = partIdAtIndex(getPreparingArrangementPartJumpIndex());
   const auto pendingPartId = partIdAtIndex(
       getPendingArrangementPartJumpIndex());
@@ -5296,8 +5315,8 @@ void MTControlsAudioProcessor::setSongArrangement(
       arrangementCurrentPartIndex.store(
           currentPartIndex >= 0 ? currentPartIndex : (isBlank ? -1 : 0),
           std::memory_order_relaxed);
-      if (preparingPartId.isNotEmpty()) setArrangementJumpCommand(findPartIndexById(preparingPartId), false);
-      else setArrangementJumpCommand(findPartIndexById(pendingPartId), true);
+      if (preparingPartId.isNotEmpty()) setArrangementJumpCommand(findPartIndexById(preparingPartId), false, loopOnArrival);
+      else setArrangementJumpCommand(findPartIndexById(pendingPartId), true, loopOnArrival);
       arrangementLoopPartIndex.store(findPartIndexById(loopPartId),
                                      std::memory_order_relaxed);
     } else {
@@ -5395,6 +5414,13 @@ bool MTControlsAudioProcessor::toggleArrangementPartLoopById(
 
     const int activeLoopIndex =
         arrangementLoopPartIndex.load(std::memory_order_relaxed);
+    const auto jumpCommand = arrangementJumpCommand.load(std::memory_order_acquire);
+    if ((jumpCommand & kArrangementLoopOnArrival) != 0 &&
+        static_cast<int>(jumpCommand & 0xffffu) - 1 == partIndex) {
+      setArrangementJumpCommand(-1, false);
+      arrangementTransitionIntentGeneration.fetch_add(1, std::memory_order_release);
+      return true;
+    }
     if (activeLoopIndex == partIndex) {
       arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
       // Toggling the loop off must also drop any pending jump that was queued
@@ -5406,13 +5432,19 @@ bool MTControlsAudioProcessor::toggleArrangementPartLoopById(
       return true;
     }
 
-    // Marking a section as loop must NOT auto-jump to it. The loop stays
-    // dormant until natural playback reaches the section's range; once there
-    // it wraps automatically on every section end. The previous behaviour
-    // (queueing a jump when the playhead was outside) interrupted worship
-    // flow by teleporting the user away from the section they were on.
-    arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
-    setArrangementJumpCommand(-1, false);
+    const int currentPartIndex = findArrangementPartIndexForArrangementTime(
+        getSongCurrentPositionSeconds());
+    if (getTransportState() == TransportState::playing &&
+        activeLoopIndex >= 0 && activeLoopIndex == currentPartIndex) {
+      // Replacing the loop that is actually sounding requests one prepared
+      // handoff. Retain it until the destination is resident and reached at
+      // the outgoing section boundary, then keep the destination repeating.
+      setArrangementJumpCommand(partIndex, false, true);
+    } else {
+      // A first/future loop remains dormant until natural playback reaches it.
+      arrangementLoopPartIndex.store(partIndex, std::memory_order_relaxed);
+      setArrangementJumpCommand(-1, false);
+    }
     arrangementTransitionIntentGeneration.fetch_add(
         1, std::memory_order_release);
   }
@@ -5423,6 +5455,14 @@ void MTControlsAudioProcessor::clearArrangementPartLoop() noexcept {
   clearPracticeLoop();
   transportControlRevision.fetch_add(1, std::memory_order_release);
   arrangementLoopPartIndex.store(-1, std::memory_order_relaxed);
+  auto command = arrangementJumpCommand.load(std::memory_order_acquire);
+  while ((command & kArrangementLoopOnArrival) != 0) {
+    const auto cancelled = ((command >> 32) + 1) << 32;
+    if (arrangementJumpCommand.compare_exchange_weak(command, cancelled)) {
+      arrangementPendingJumpPartIndex.store(-1, std::memory_order_relaxed);
+      break;
+    }
+  }
   arrangementTransitionIntentGeneration.fetch_add(
       1, std::memory_order_release);
 }
@@ -5437,11 +5477,14 @@ int MTControlsAudioProcessor::getArrangementPartLoopIndex() const noexcept {
   return arrangementLoopPartIndex.load(std::memory_order_relaxed);
 }
 
-void MTControlsAudioProcessor::setArrangementJumpCommand(int index, bool confirmed) noexcept {
+void MTControlsAudioProcessor::setArrangementJumpCommand(int index, bool confirmed,
+                                                         bool loopOnArrival) noexcept {
   auto old = arrangementJumpCommand.load();
   uint64_t next;
   do {
-    next = (((old >> 32) + 1) << 32) | static_cast<uint64_t>(index + 1) | (confirmed && index >= 0 ? 0x10000u : 0u);
+    next = (((old >> 32) + 1) << 32) | static_cast<uint64_t>(index + 1) |
+           (confirmed && index >= 0 ? 0x10000u : 0u) |
+           (loopOnArrival && index >= 0 ? kArrangementLoopOnArrival : 0u);
   } while (!arrangementJumpCommand.compare_exchange_weak(old, next));
   arrangementPendingJumpPartIndex.store(confirmed ? index : -1);
 }

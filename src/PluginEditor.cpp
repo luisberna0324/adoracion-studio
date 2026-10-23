@@ -1489,12 +1489,10 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         playbackSession.requestArrangementPartJumpById(waveformBarRaw->getArrangementPartId(partIndex));
       });
   waveformBarRaw->setOnArrangementPartLoopToggleRequest([this, waveformBarRaw](int partIndex) {
-    // Marking a loop must NOT auto-jump the playhead; the loop waits for
-    // natural playback to reach the section. We still drop any previously
-    // queued jump so the user can replace a pending jump with a loop target
-    // without the two intents fighting each other.
-    // The validated motor action cancels the jump atomically with Loop. An
-    // invalid/stale request must not cancel a different valid pending jump.
+    // First-time loop arming never seeks. Replacing a currently sounding
+    // section loop prepares a boundary handoff and keeps the outgoing loop
+    // until arrival. The processor owns cancellation and validates the ID
+    // before changing any intent, for both local and remote controls.
     playbackSession.toggleArrangementPartLoopById(waveformBarRaw->getArrangementPartId(partIndex));
   });
   waveformBarRaw->setOnArrangementPendingJumpClearRequest([this] {
