@@ -33,7 +33,6 @@ docs/okf/
 | [midi/MidiTargets](midi/MidiTargets.md) | Targets MIDI |
 | [integrations/FreeShow](integrations/FreeShow.md) | Integración con FreeShow |
 | [integrations/LyricsControllers](integrations/LyricsControllers.md) | Control de software de letras |
-| [ui/LyricsChords](ui/LyricsChords.md) | Letra y acordes para músicos |
 
 ## Uso con Agentes de IA
 

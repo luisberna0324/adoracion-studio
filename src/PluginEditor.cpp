@@ -1067,8 +1067,7 @@ bool MTControlsAudioProcessorEditor::shouldUsePhonePortraitOrientation() const {
     return true;
 #endif
   return isSetlistDrawerOpen || settingsOverlay != nullptr ||
-         practiceOverlay != nullptr || teamsOverlay != nullptr ||
-         songLyricsOverlay != nullptr;
+         practiceOverlay != nullptr || teamsOverlay != nullptr;
 }
 
 void MTControlsAudioProcessorEditor::updatePhoneOrientation() {
@@ -2128,7 +2127,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
         ProjectStore::flushPendingSettings(juce::File(currentLoadedSong.projectPath));
     }
     suppressPersistenceBeforeNextSongLoad = false;
-    closeSongLyrics(false);
     songLoadBusy = true;
     SongLoadUiScope loadUiScope{songLoadBusy, waveformBarRaw};
 
@@ -2944,7 +2942,6 @@ void MTControlsAudioProcessorEditor::initializeMainUi() {
   topBarRaw->setOnPhonePads(
       [this](juce::Component &anchor) { showPhonePadsPopover(anchor); });
   topBarRaw->setOnPhonePractice([this] { showPractice(); });
-  topBarRaw->setOnSongLyrics([this] { showSongLyrics(); });
   topBarRaw->setOnLearningRequested([this] { showLearningGuide(); });
   setlistDrawerScrim = std::make_unique<SetlistDrawerScrim>([this] {
     isSetlistDrawerOpen = false;
@@ -4193,8 +4190,6 @@ void MTControlsAudioProcessorEditor::showPractice() {
     });
   };
 
-  sources.canShowSongLyrics = [this] { return canShowSongLyrics(); };
-  sources.showSongLyrics = [this] { showSongLyrics(); };
   sources.showHelp = [safe = juce::Component::SafePointer<MTControlsAudioProcessorEditor>(this)] {
     if (safe != nullptr)
       safe->showPracticeLearningGuide();
@@ -4234,7 +4229,6 @@ void MTControlsAudioProcessorEditor::showWelcomeOnlyMode() {
   closeTeams();
   if (teamsClient) teamsClient->cancelAll();
   teamsPreparation.reset();
-  closeSongLyrics(false);
   closePractice();
   setResizable(true, true);
 #if JUCE_IOS || JUCE_ANDROID
@@ -4282,7 +4276,6 @@ void MTControlsAudioProcessorEditor::handleLogout() {
     setRemoteMode(playworship::remote::RemoteSession::Mode::Local);
   sessionResumeCancelled = true;
   closeSettings();
-  closeSongLyrics(false);
   closePractice();
   if (demoLoadingOverlay) demoLoadingOverlay->exitModalState(0);
   demoLoadingOverlay.reset();
@@ -4936,7 +4929,6 @@ void MTControlsAudioProcessorEditor::updateSystemUsageMetrics() {
 }
 
 void MTControlsAudioProcessorEditor::timerCallback() {
-  refreshSongLyricsContext();
   if (appleLinkFlow.stage != AppleLinkFlow::Stage::idle &&
       !appleLinkFlow.valid(juce::Time::currentTimeMillis())) {
     cancelAuthenticationAttempt();
@@ -5232,8 +5224,6 @@ MTControlsAudioProcessorEditor::~MTControlsAudioProcessorEditor() {
   stopTimer();
   if (!playbackSession.isRemote())
     static_cast<MTControlsAudioProcessor &>(processor).finishSectionAutomationEditing(false);
-  songLyricsReturnFocus = nullptr;
-  songLyricsOverlay.reset();
   closePractice();
   static_cast<MTControlsAudioProcessor &>(processor)
       .setPracticeListeningMode(-1, 0);
@@ -5332,8 +5322,6 @@ void MTControlsAudioProcessorEditor::resized() {
       settingsOverlay->setBounds(getLocalBounds());
     if (practiceOverlay != nullptr)
       practiceOverlay->setBounds(getLocalBounds());
-    if (songLyricsOverlay != nullptr)
-      songLyricsOverlay->setBounds(getLocalBounds());
     return;
   }
 
@@ -5415,8 +5403,6 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
     settingsOverlay->setBounds(getLocalBounds());
   if (practiceOverlay != nullptr)
     practiceOverlay->setBounds(getLocalBounds());
-  if (songLyricsOverlay != nullptr)
-    songLyricsOverlay->setBounds(getLocalBounds());
 
   int topBarH = kDefaultTopBarH;
   int waveformH = kDefaultWaveformH;
@@ -5708,8 +5694,6 @@ void MTControlsAudioProcessorEditor::layoutMainUi(const bool minimalPhoneProfile
 
   if (practiceOverlay != nullptr)
     practiceOverlay->toFront(false);
-  if (songLyricsOverlay != nullptr)
-    songLyricsOverlay->toFront(false);
 
   if (learningGuide != nullptr) {
     updateLearningGuideTarget();
@@ -6028,10 +6012,6 @@ void MTControlsAudioProcessorEditor::presentExportShareSheet(
 bool MTControlsAudioProcessorEditor::keyPressed(const juce::KeyPress &key) {
   if (!mainUiInitialized)
     return true;
-  if (songLyricsOverlay != nullptr) {
-    if (key == juce::KeyPress::escapeKey) closeSongLyrics();
-    return true;
-  }
   if (learningGuide && learningGuide->isVisible() && key == juce::KeyPress::escapeKey) {
     pauseLearningGuide();
     return true;

@@ -1,5 +1,4 @@
 #include "SongImportWizardComponent.h"
-#include "SongLyricsPanel.h"
 
 #include "../../data/Localization.h"
 #include "../../data/SessionAuthLogger.h"
@@ -467,11 +466,6 @@ SongImportWizardComponent::SongImportWizardComponent(
       resolveProjectDestination(std::move(projectDestinationResolver)),
       onMetadataOnlySubmit(std::move(onSaveMetadataOnly)),
       mode(modeIn), initialSong(std::move(initialSongIn)) {
-  lyricsDraft = initialSong.lyrics;
-  lyricsButton.setName("songLyrics");
-  lyricsButton.onClick = [this] { openLyricsEditor(); };
-  updateLyricsAction();
-  addChildComponent(lyricsButton);
   blankSongMetadataAction = std::make_unique<BlankSongMetadataCard>();
   blankSongMetadataAction->onClick = [this] { createBlankSong(); };
   addChildComponent(*blankSongMetadataAction);
@@ -1116,8 +1110,6 @@ void SongImportWizardComponent::paintOverChildren(juce::Graphics &g) {
 void SongImportWizardComponent::resized() {
   if (submissionOverlay != nullptr)
     submissionOverlay->setBounds(getLocalBounds());
-  if (lyricsPanel != nullptr && lyricsPanel->getParentComponent() == this)
-    lyricsPanel->setBounds(getLocalBounds());
   metadataScrollAnimating = false;
   phoneCreationLayout = usesPhoneCreationLayout();
   if (usesCreationLayout()) {
@@ -1387,7 +1379,6 @@ void SongImportWizardComponent::refreshThemeColours() {
   configureCombo(keyBox);
   configureCombo(timeSignatureBox);
 
-  styleSecondaryButton(lyricsButton);
   styleSecondaryButton(addFilesButton);
   styleSecondaryButton(replaceFilesButton);
   styleSecondaryButton(clearSongSearchButton);
@@ -1522,7 +1513,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
                   static_cast<juce::Component *>(&secuenciasArtworkCaption),
                   static_cast<juce::Component *>(&changeArtworkLabel),
                   static_cast<juce::Component *>(&clearSongSearchButton),
-                  static_cast<juce::Component *>(&lyricsButton),
                   static_cast<juce::Component *>(blankSongMetadataAction.get())}) {
     if (c->getParentComponent() != metadataParent)
       metadataParent->addChildComponent(c);
@@ -1559,7 +1549,7 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     metadataViewport.setBounds(bounds);
     // Content geometry is independent of keyboard height. Only its visible
     // window changes, so editing never swaps the form for a different layout.
-    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), phoneCreationLayout ? 550 : 500);
+    metadataContent.setSize(juce::jmax(1, bounds.getWidth() - 2), phoneCreationLayout ? 550 : 460);
     bounds = metadataContent.getLocalBounds();
     const int artworkSize = phoneCreationLayout ? 128 : 104;
     auto artworkLine = bounds.removeFromTop(artworkSize);
@@ -1596,8 +1586,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     bounds.removeFromTop(12);
     metadataCardBounds = bounds.removeFromTop(mode == Mode::Import ? 84 : 70);
     blankSongMetadataAction->setBounds(metadataCardBounds);
-    bounds.removeFromTop(12);
-    lyricsButton.setBounds(bounds.removeFromTop(44));
 
     if (!secuenciasResults.empty()) {
       const int listH = juce::jmin(
@@ -1672,8 +1660,6 @@ void SongImportWizardComponent::layoutStepMetadata(juce::Rectangle<int> bounds) 
     metadataCardBounds = left.removeFromTop(84);
     blankSongMetadataAction->setBounds(metadataCardBounds);
   }
-  left.removeFromTop(10);
-  lyricsButton.setBounds(left.removeFromTop(44));
   secuenciasStatusLabel.setBounds(left.removeFromTop(16));
   left.removeFromTop(4);
   secuenciasDetailLabel.setBounds(left.removeFromTop(40));
@@ -2167,9 +2153,6 @@ void SongImportWizardComponent::updateSummaryText() {
                                : L10n::tr(u8"Modo: Creación", "Mode: Create"));
   lines.add(L10n::tr(u8"Canción: ", "Song: ") + songTitleEditor.getText().trim());
   lines.add(L10n::tr("Artista: ", "Artist: ") + artistEditor.getText().trim());
-  if (hasSongLyrics(lyricsDraft))
-    lines.add(L10n::tr("Letra y acordes: ", "Lyrics and chords: ") +
-              juce::String(static_cast<int>(lyricsDraft->blocks.size())) + L10n::tr(" bloques", " blocks"));
   lines.add("BPM: " + bpmEditor.getText().trim() + "   " +
             L10n::tr("Tono: ", "Key: ") + keyBox.getText() + "   " +
             L10n::tr(u8"Compás: ", "Time: ") + timeSignatureBox.getText());
@@ -2439,7 +2422,6 @@ ImportedSongData SongImportWizardComponent::buildSongData() {
   song.bpm = bpmEditor.getText().getIntValue();
   song.key = keyBox.getText().trim();
   song.timeSignature = timeSignatureBox.getText().trim();
-  song.lyrics = lyricsDraft;
   song.fileType = (creatingBlankSong || song.blankSong) ? "blank"
       : (stems.empty() ? "remote-reference" : "FLAC");
   song.artworkSource = selectedArtworkUrl.trim();
@@ -2746,7 +2728,6 @@ void SongImportWizardComponent::setSubmitting(const bool submitting) {
                        &saveMetadataButton})
     button->setEnabled(!submitting);
   blankSongMetadataAction->setEnabled(!submitting);
-  lyricsButton.setEnabled(!submitting);
   mobileCloseButton.setEnabled(!submitting);
   keyboardDoneButton.setEnabled(!submitting);
 }
@@ -2829,34 +2810,6 @@ void SongImportWizardComponent::styleSecondaryButton(juce::TextButton &button) {
   button.setColour(juce::TextButton::buttonOnColourId, UITheme::cardBgPressed);
   button.setColour(juce::TextButton::textColourOffId, UITheme::textPrimary);
   button.setColour(juce::TextButton::textColourOnId, UITheme::textPrimary);
-}
-
-void SongImportWizardComponent::updateLyricsAction() {
-  lyricsButton.setButtonText(hasSongLyrics(lyricsDraft)
-      ? L10n::tr("Editar letra y acordes", "Edit lyrics and chords")
-      : L10n::tr("Agregar letra y acordes", "Add lyrics and chords"));
-}
-
-void SongImportWizardComponent::openLyricsEditor() {
-  if (isSubmitting || lyricsPanel != nullptr) return;
-  finishTextEditing();
-  auto safe = juce::Component::SafePointer<SongImportWizardComponent>(this);
-  const auto close = [safe] {
-    juce::MessageManager::callAsync([safe] {
-      if (safe != nullptr) safe->lyricsPanel.reset();
-    });
-  };
-  lyricsPanel = std::make_unique<SongLyricsPanel>(songTitleEditor.getText(), lyricsDraft, false,
-      [safe, close](std::optional<SongLyricsDocument> document) {
-        if (safe == nullptr) return;
-        safe->lyricsDraft = std::move(document);
-        safe->updateLyricsAction();
-        close();
-      }, close);
-  auto *host = getTopLevelComponent();
-  host->addAndMakeVisible(*lyricsPanel);
-  lyricsPanel->setBounds(host->getLocalBounds());
-  lyricsPanel->toFront(true);
 }
 
 void SongImportWizardComponent::openArtworkChooser() {

@@ -14,7 +14,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-class SongLyricsPanel;
 class SongLoadProgressOverlay;
 class MobileImportStaging;
 
@@ -138,8 +137,6 @@ private:
   void fetchSecuenciasDetailForSelected();
   void applySecuenciasMetadata(const SongSearchResult& result, const SongDetail* detail);
   void openArtworkChooser();
-  void openLyricsEditor();
-  void updateLyricsAction();
 
   juce::Image getCachedArtwork(const juce::String &url) const;
   void requestArtworkAsync(const juce::String &url);
@@ -156,8 +153,6 @@ private:
   ImportedSongData initialSong;
   bool isSubmitting = false;
   std::unique_ptr<SongLoadProgressOverlay> submissionOverlay;
-  std::unique_ptr<SongLyricsPanel> lyricsPanel;
-  std::optional<SongLyricsDocument> lyricsDraft;
   Step currentStep = Step::Metadata;
   std::unique_ptr<juce::FileChooser> stemChooser;
   std::unique_ptr<juce::FileChooser> artworkChooser;
@@ -211,7 +206,6 @@ private:
   juce::TextButton nextButton;
   juce::TextButton submitButton;
   juce::TextButton saveMetadataButton;
-  juce::TextButton lyricsButton;
   std::unique_ptr<juce::Button> blankSongMetadataAction;
   bool creatingBlankSong = false;
   juce::TextButton clearSongSearchButton;

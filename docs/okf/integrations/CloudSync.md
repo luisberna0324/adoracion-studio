@@ -800,26 +800,3 @@ Antes del login, también en Debug, el aviso es informativo. Los enlaces abren
 los documentos públicos actuales. No se borran ni simulan constancias anteriores
 para forzar esta revisión. La aceptación de cuenta requiere el flujo autenticado
 real, igual que Release, y el despliegue de los documentos y backend correspondientes.
-
-
-## Contenido de letras y acordes
-
-La letra opcional para músicos se serializa dentro de `song.lyrics` en el
-manifiesto portable, usando el codec de `SongLyrics` compartido con Biblioteca.
-Es contenido de la canción y no un ajuste de mezcla ni una acción de FreeShow.
-`CloudProjectArchive::buildUpload` conserva el documento en el manifiesto que
-se indexa por hash; cambiar sólo letra/acordes cambia ese hash y puede publicarse
-con la acción explícita habitual, sin recodificar ni duplicar los blobs de audio.
-`materializeCachedSong` y `rebuildProject` usan `songDataFromVar`, por lo que tanto
-la descarga ordinaria como la conversión portable conservan bloques, líneas,
-IDs y anclas Unicode.
-
-No se incorpora a `ProjectSongSettings`, su sidecar, snapshots de versiones de
-ajustes ni al protocolo de control remoto. La primera versión no implementa
-seguimiento sincronizado, transposición ni publicación de texto a pantallas
-remotas. No necesita un endpoint nuevo: el descriptor continúa referenciando
-el manifiesto portable como objeto de contenido. Un proyecto histórico sin
-`lyrics` sigue siendo válido. La prueba de integración prepara objetos locales,
-materializa y reconstruye el paquete sin llamar al backend ni a R2; verifica
-que un cambio exclusivo de letra cambia el manifiesto y conserva los hashes
-de stems.

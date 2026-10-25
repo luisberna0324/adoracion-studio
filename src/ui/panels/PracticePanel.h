@@ -95,8 +95,6 @@ public:
     std::function<void()> stop;
     std::function<void()> close;
     std::function<void()> showHelp;
-    std::function<bool()> canShowSongLyrics;
-    std::function<void()> showSongLyrics;
   };
 
   explicit PracticePanel(Sources sources);
@@ -215,7 +213,6 @@ private:
 
   Sources sources;
   HeaderIconButton closeButton;
-  HeaderIconButton lyricsButton;
   TransportIconButton playPauseButton;
   TransportIconButton stopButton;
   AccompanimentButton guideButton;

@@ -91,7 +91,6 @@ juce::String loopErrorMessage(const juce::String &error) {
 PracticePanel::PracticePanel(Sources nextSources)
     : sources(std::move(nextSources)),
       closeButton("practiceClose", IconGlyph::Close),
-      lyricsButton("practiceLyrics", IconGlyph::MusicNote),
       playPauseButton("practicePlay", SvgIconName::Play, true),
       stopButton("practiceStop", SvgIconName::Square),
       guideButton(L10n::tr("Guía", "Guide")),
@@ -105,20 +104,6 @@ PracticePanel::PracticePanel(Sources nextSources)
   setWantsKeyboardFocus(true);
 
   closeButton.setTitle(L10n::tr("Cerrar ensayo", "Close practice"));
-  lyricsButton.setTitle(L10n::tr("Letra y acordes", "Lyrics and chords"));
-  lyricsButton.setTooltip(L10n::tr("Leer la letra y los acordes de esta canción",
-                                  "Read this song's lyrics and chords"));
-  lyricsButton.setComponentID("practice-lyrics");
-  lyricsButton.setSubtleHighlight(true);
-  addChildComponent(lyricsButton);
-  lyricsButton.onClick = [this] {
-    if ((!sources.isRemote || !sources.isRemote()) &&
-        sources.songId && sources.songId() == displayedSongId &&
-        sources.canShowSongLyrics && sources.canShowSongLyrics()) {
-      auto open = sources.showSongLyrics;
-      if (open) open();
-    }
-  };
   playPauseButton.setTitle(L10n::tr("Reproducir o pausar", "Play or pause"));
   stopButton.setTitle(L10n::tr("Detener reproducción", "Stop playback"));
   listeningHelpButton.setTitle(L10n::tr("Abrir recorrido de Ensayo",
@@ -269,10 +254,6 @@ void PracticePanel::resized() {
   auto area = safeContentBounds();
   auto header = area.removeFromTop(64);
   closeButton.setBounds(header.removeFromRight(44).withSizeKeepingCentre(44, 44));
-  if (lyricsButton.isVisible()) {
-    header.removeFromRight(12);
-    lyricsButton.setBounds(header.removeFromRight(44).withSizeKeepingCentre(44, 44));
-  } else lyricsButton.setBounds({});
 
   auto tools = area.removeFromTop(74);
   tools.removeFromTop(22);
@@ -682,13 +663,6 @@ void PracticePanel::togglePracticeLoop() {
 }
 
 void PracticePanel::updatePracticeControls() {
-  const bool showLyrics = (!sources.isRemote || !sources.isRemote()) &&
-      sources.canShowSongLyrics && sources.canShowSongLyrics() && sources.showSongLyrics;
-  if (lyricsButton.isVisible() != showLyrics) {
-    lyricsButton.setVisible(showLyrics);
-    resized();
-    repaint(safeContentBounds().removeFromTop(64));
-  }
   updateAccompanimentControls();
   const double oldStart = loopStartSeconds;
   const double oldEnd = loopEndSeconds;
@@ -1107,7 +1081,7 @@ void PracticePanel::paint(juce::Graphics &g) {
   g.fillAll(UITheme::panelDark);
   auto content = safeContentBounds();
   auto header = content.removeFromTop(64);
-  header.removeFromRight(56 + (lyricsButton.isVisible() ? 56 : 0));
+  header.removeFromRight(56);
   const auto headingFont = makeAppFont(23.0f, AppFontWeight::SemiBold);
   const float baseline = header.toFloat().getCentreY() +
                          (headingFont.getAscent() - headingFont.getDescent()) * 0.5f;

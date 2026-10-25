@@ -11,9 +11,6 @@ timestamp: 2026-10-12T00:00:00-03:00
 La vista de performance en telefonos es horizontal. En iPhone y Android,
 el runtime habilita `upright` para Biblioteca, setlists, Configuración, Teams y Ensayo mientras su panel
 esta abierto y restaura ambas orientaciones landscape al volver a performance.
-El lector de letra y acordes también solicita portrait en teléfono; el editor
-se abre sobre la creación/edición ya vertical y ajusta su área útil al teclado.
-Ver [Letra y acordes](LyricsChords.md).
 En iPhone, el acceso (bienvenida, correo, recuperación y renovación de sesión)
 también usa `upright`. La máscara inicial es portrait para presentar el login;
 una sesión guardada válida restaura landscape al abrir la interfaz principal.

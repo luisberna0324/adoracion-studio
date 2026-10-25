@@ -5,7 +5,6 @@
 #include "data/ApplicationDataPaths.h"
 #include "data/AssetBootstrapManager.h"
 #include "data/Localization.h"
-#include "data/SongLyrics.h"
 #include "ui/components/ChannelStripCard.h"
 
 #include <algorithm>
@@ -1477,65 +1476,6 @@ void testLoopBorderPhaseAndCorners() {
     if (moving.getPixelAt(x, 3) != stopped.getPixelAt(x, 3)) ++differences;
   }
   expect(differences > 20, "real Loop activates the animated border in the production renderer");
-}
-
-void testSongLyricsTopbarAccess() {
-  ProcessorFixture fixture;
-  PlaybackSession session(fixture.processor);
-  TopBar bar(fixture.processor, &session);
-  ImportedSongData song;
-  song.id = "lyrics-local-song";
-  song.title = "A local song";
-  bar.setTransportProviders([] { return false; }, [] { return 12.0; },
-      [] { return 90.0; }, [] { return juce::String("C"); },
-      [&] { return song.id; }, [&] { return &song; });
-  int requests = 0;
-  bar.setOnSongLyrics([&] { ++requests; });
-  bar.setSize(1440, 64);
-  auto *direct = dynamic_cast<juce::Button *>(bar.findChildWithID("song-lyrics"));
-  expect(direct != nullptr && !direct->isVisible(),
-         "songs without lyrics do not add a desktop reading control");
-  auto menu = WaveformEditingTestAccess::morePanel(bar);
-  auto *entry = dynamic_cast<juce::Button *>(menu->findChildWithID("song-lyrics"));
-  expect(entry != nullptr && !entry->isVisible(),
-         "the adaptive menu also hides missing lyrics");
-  song.lyrics = lyricsFromPlainText("Esta es la letra de la canción");
-  WaveformEditingTestAccess::refreshTimeline(bar);
-  const auto revision = fixture.processor.getTransportControlRevision();
-  for (const int width : {1200, 1440, 1920}) {
-    bar.setSize(width, 64);
-    expect(direct->isVisible() && direct->getWidth() >= 44 &&
-               bar.getLocalBounds().contains(direct->getBounds()),
-           "desktop exposes lyrics with an accessible control inside TopBar");
-    WaveformEditingTestAccess::expectTopbarLiveLayout(bar);
-  }
-  direct->onClick();
-  expect(requests == 1 && fixture.processor.getTransportControlRevision() == revision,
-         "desktop reading never issues a transport command");
-  bar.setMinimalPhoneMode(true);
-  bar.setSize(700, 64);
-  menu = WaveformEditingTestAccess::morePanel(bar);
-  entry = dynamic_cast<juce::Button *>(menu->findChildWithID("song-lyrics"));
-  expect(!direct->isVisible() && entry != nullptr && entry->isVisible() &&
-             entry->getHeight() >= 44 && menu->getLocalBounds().contains(entry->getBounds()),
-         "mobile moves reading into the existing More menu");
-  entry->onClick();
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-  expect(requests == 2 && fixture.processor.getTransportControlRevision() == revision,
-         "mobile reading delivers one action without changing playback");
-  song.lyrics.reset();
-  WaveformEditingTestAccess::moreRefresh(bar);
-  expect(!entry->isVisible(), "an open mobile menu removes reading when content disappears");
-  entry->onClick();
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-  expect(requests == 2, "a stale lyric menu action revalidates song content");
-  song.lyrics = lyricsFromPlainText("Otra letra local");
-  session.setRemote(true);
-  WaveformEditingTestAccess::refreshTimeline(bar);
-  expect(!entry->isVisible(), "remote control never offers local song lyrics as synchronized content");
-  entry->onClick();
-  juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-  expect(requests == 2, "a stale action cannot expose local lyrics after switching to remote");
 }
 
 void testDesktopToolbarPreservesActionsAndTitle() {
@@ -3357,7 +3297,6 @@ int main() {
   run("mobile waveform gesture arbitration", testMobileWaveformGestureArbitration);
   run("section actions avoid global waveform controls", testSectionActionsClearGlobalControls);
   run("live section progress and protected manual navigation", testLiveSectionsAndNavigation);
-  run("local lyrics access preserves playback and remote boundaries", testSongLyricsTopbarAccess);
   run("desktop toolbar preserves actions and title", testDesktopToolbarPreservesActionsAndTitle);
   run("Live titles remain invariant through scroll and inertia", testLiveTitleLayoutInvariantDuringScroll);
   run("section view states, accessibility tree and keyboard", testSectionViewStatesAccessibilityAndKeyboard);

@@ -10,11 +10,6 @@ timestamp: 2026-07-18T00:00:00Z
 
 Este documento define el contrato técnico para integrar PlayWorship con software externo de letras y proyección.
 
-Este contrato de proyección externa es independiente del editor interno de
-[Letra y acordes](../ui/LyricsChords.md) para músicos. Ese documento opcional
-no genera cues ni modifica secciones. La integración existente con
-[FreeShow](FreeShow.md) conserva su flujo propio.
-
 ## Objetivo
 
 Permitir que una sección del arrange dispare una acción externa sobre una aplicación de letras cuando:

@@ -649,13 +649,6 @@ bool ProjectStore::save(ProjectDocument document, const juce::File &destination,
     return false;
   }
   auto &song = document.song;
-  if (song.lyrics.has_value() &&
-      !isValidSongLyricsDocument(*song.lyrics)) {
-    if (errorMessage != nullptr)
-      *errorMessage = L10n::tr("La letra o sus acordes contienen datos no válidos.",
-                              "The lyrics or chords contain invalid data.");
-    return false;
-  }
   if (song.id.trim().isEmpty()) song.id = juce::Uuid().toString();
   if (song.projectId.trim().isEmpty()) song.projectId = song.id.trim();
   if (song.stems.empty() && !isValidBlankSong(song)) { if (errorMessage != nullptr) *errorMessage = "A project needs at least one stem."; return false; }

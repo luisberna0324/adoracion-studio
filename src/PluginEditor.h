@@ -121,10 +121,6 @@ private:
   void showPhonePadsPopover(juce::Component &anchor);
   void showPractice();
   void closePractice();
-  bool canShowSongLyrics() const;
-  void showSongLyrics();
-  void closeSongLyrics(bool restoreFocus = true);
-  void refreshSongLyricsContext();
   bool phoneOrientationUpdatePending = false;
   void applyRemoteSnapshot(const juce::var &snapshot);
   void applyRemoteWaveform(const std::vector<uint8_t> &bytes);
@@ -246,10 +242,6 @@ private:
   juce::Component::SafePointer<juce::DialogWindow> settingsWindow;
   std::unique_ptr<juce::Component> settingsOverlay;
   std::unique_ptr<PracticePanel> practiceOverlay;
-  std::unique_ptr<juce::Component> songLyricsOverlay;
-  juce::String songLyricsContextId;
-  uint64_t songLyricsOverlayGeneration = 0;
-  juce::Component::SafePointer<juce::Component> songLyricsReturnFocus;
   playworship::remote::RemoteSession remoteSession;
   std::string remotePracticeOwner;
   std::string remoteSectionAutomationOwner;
